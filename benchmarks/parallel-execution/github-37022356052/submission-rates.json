@@ -1,0 +1,98 @@
+{
+  "target_tps": 50000,
+  "scope": "Raw sender pipeline counters and their time series; not confirmed canonical transaction throughput. These include sender bookkeeping and are distinct from the trimmed node benchmark summary.",
+  "generator_log": "All six generation invocations report signing_workers=2. Producer and sender stream through a pipe; these reports do not distinguish producer CPU limits from sender backpressure.",
+  "conclusion": "The 50k configuration is a target, not proof of 50k transactions per second actually being offered. No run sustains that submission rate in these raw samples. Execution gas-throughput regressions remain independently visible in the node summary.",
+  "runs": [
+    {
+      "role": "baseline",
+      "pair": 1,
+      "raw_sent_count": 862290,
+      "raw_sender_elapsed_seconds": 117.693530442,
+      "raw_sent_divided_by_sender_elapsed": 7326.5709403197925,
+      "raw_sent_divided_by_target_duration_90_seconds": 9581.0,
+      "sender_series_seconds_10_through_79": {
+        "samples": 54,
+        "mean_sent_per_second": 11316.685185185184,
+        "maximum_sent_per_second": 35467,
+        "minimum_sent_per_second": 0,
+        "seconds_at_or_above_target_50000": 0
+      }
+    },
+    {
+      "role": "baseline",
+      "pair": 2,
+      "raw_sent_count": 920240,
+      "raw_sender_elapsed_seconds": 131.569038052,
+      "raw_sent_divided_by_sender_elapsed": 6994.35075018405,
+      "raw_sent_divided_by_target_duration_90_seconds": 10224.888888888889,
+      "sender_series_seconds_10_through_79": {
+        "samples": 70,
+        "mean_sent_per_second": 9066.728571428572,
+        "maximum_sent_per_second": 49957,
+        "minimum_sent_per_second": 0,
+        "seconds_at_or_above_target_50000": 0
+      }
+    },
+    {
+      "role": "baseline",
+      "pair": 3,
+      "raw_sent_count": 839420,
+      "raw_sender_elapsed_seconds": 129.739433249,
+      "raw_sent_divided_by_sender_elapsed": 6470.045220476328,
+      "raw_sent_divided_by_target_duration_90_seconds": 9326.888888888889,
+      "sender_series_seconds_10_through_79": {
+        "samples": 60,
+        "mean_sent_per_second": 9692.1,
+        "maximum_sent_per_second": 32693,
+        "minimum_sent_per_second": 0,
+        "seconds_at_or_above_target_50000": 0
+      }
+    },
+    {
+      "role": "feature",
+      "pair": 1,
+      "raw_sent_count": 877273,
+      "raw_sender_elapsed_seconds": 113.304709981,
+      "raw_sent_divided_by_sender_elapsed": 7742.5995807862655,
+      "raw_sent_divided_by_target_duration_90_seconds": 9747.477777777778,
+      "sender_series_seconds_10_through_79": {
+        "samples": 70,
+        "mean_sent_per_second": 8746.271428571428,
+        "maximum_sent_per_second": 20238,
+        "minimum_sent_per_second": 0,
+        "seconds_at_or_above_target_50000": 0
+      }
+    },
+    {
+      "role": "feature",
+      "pair": 2,
+      "raw_sent_count": 843420,
+      "raw_sender_elapsed_seconds": 111.935388305,
+      "raw_sent_divided_by_sender_elapsed": 7534.88251366816,
+      "raw_sent_divided_by_target_duration_90_seconds": 9371.333333333334,
+      "sender_series_seconds_10_through_79": {
+        "samples": 70,
+        "mean_sent_per_second": 8888.285714285714,
+        "maximum_sent_per_second": 18901,
+        "minimum_sent_per_second": 0,
+        "seconds_at_or_above_target_50000": 0
+      }
+    },
+    {
+      "role": "feature",
+      "pair": 3,
+      "raw_sent_count": 796003,
+      "raw_sender_elapsed_seconds": 92.297468592,
+      "raw_sent_divided_by_sender_elapsed": 8624.321036568435,
+      "raw_sent_divided_by_target_duration_90_seconds": 8844.477777777778,
+      "sender_series_seconds_10_through_79": {
+        "samples": 70,
+        "mean_sent_per_second": 8495.728571428572,
+        "maximum_sent_per_second": 18546,
+        "minimum_sent_per_second": 0,
+        "seconds_at_or_above_target_50000": 0
+      }
+    }
+  ]
+}

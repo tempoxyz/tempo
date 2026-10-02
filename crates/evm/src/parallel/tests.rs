@@ -705,23 +705,39 @@ fn funded_tip20_db(users: u64) -> TestDB {
 }
 
 fn funded_tip20_accounts(users: impl IntoIterator<Item = Address>) -> TestDB {
+    funded_tip20_tokens(users.into_iter().collect(), 1).0
+}
+
+fn funded_tip20_tokens(users: Vec<Address>, token_count: usize) -> (TestDB, Vec<Address>) {
     use revm::context_interface::JournalTr;
-    use tempo_precompiles::{storage::StorageCtx, test_util::TIP20Setup};
+    use tempo_precompiles::{
+        storage::{ContractStorage, StorageCtx},
+        test_util::TIP20Setup,
+    };
+    let mut tokens = Vec::with_capacity(token_count);
     let mut evm = test_evm_with_basefee(TestDB::default(), 0);
     StorageCtx::enter_ctx(
         evm.ctx_mut(),
         tempo_precompiles::storage::StorageActions::disabled(),
         || {
-            let mut setup = TIP20Setup::path_usd(address(999)).with_issuer(address(999));
-            for user in users {
-                setup = setup.with_mint(user, U256::from(1_000_000_000u64));
+            for i in 0..token_count {
+                let mut setup = if i == 0 {
+                    TIP20Setup::path_usd(address(999))
+                } else {
+                    TIP20Setup::create("Benchmark USD", "bUSD", address(999))
+                        .with_salt(B256::from(U256::from(i)))
+                }
+                .with_issuer(address(999));
+                for &user in &users {
+                    setup = setup.with_mint(user, U256::from(1_000_000_000u64));
+                }
+                tokens.push(setup.apply().unwrap().address());
             }
-            setup.apply().unwrap();
         },
     );
     let state = evm.ctx_mut().journaled_state.finalize();
     evm.db_mut().commit(state);
-    evm.finish().0
+    (evm.finish().0, tokens)
 }
 
 const FEE_SPECS: [TempoHardfork; 8] = [
@@ -2264,8 +2280,12 @@ fn execution_throughput() {
                     | "tip20_paid_aa_existing"
                     | "tip20_paid_aa_expiring"
                     | "tip20_paid_aa_expiring_funded"
+                    | "tip20_paid_aa_expiring_multitoken"
             ));
-            let funded_expiring = workload == "tip20_paid_aa_expiring_funded";
+            let funded_expiring = matches!(
+                workload,
+                "tip20_paid_aa_expiring_funded" | "tip20_paid_aa_expiring_multitoken"
+            );
             if funded_expiring {
                 assert!(
                     hardfork.is_some_and(|spec| spec.is_t12()),
@@ -2285,16 +2305,22 @@ fn execution_throughput() {
             } else {
                 count
             };
-            let mut db = if matches!(workload, "storage" | "compute") {
-                TestDB::default()
+            let (mut db, transfer_tokens) = if matches!(workload, "storage" | "compute") {
+                (TestDB::default(), vec![PATH_USD_ADDRESS])
             } else if funded_expiring {
-                funded_tip20_accounts(
+                funded_tip20_tokens(
                     (0..users)
                         .chain(count + 1000..count * 2 + 1000)
-                        .map(address),
+                        .map(address)
+                        .collect(),
+                    if workload.ends_with("multitoken") {
+                        4
+                    } else {
+                        1
+                    },
                 )
             } else {
-                funded_tip20_db(users)
+                (funded_tip20_db(users), vec![PATH_USD_ADDRESS])
             };
             let target = address(count + 900);
             if workload == "storage" {
@@ -2341,7 +2367,9 @@ fn execution_throughput() {
                             valid_before: expiring
                                 .then_some(std::num::NonZeroU64::new(25).unwrap()),
                             calls: vec![Call {
-                                to: PATH_USD_ADDRESS.into(),
+                                to: transfer_tokens
+                                    [(recipient_seed >> 32) as usize % transfer_tokens.len()]
+                                .into(),
                                 value: U256::ZERO,
                                 input: ITIP20::transferCall {
                                     to: recipient,

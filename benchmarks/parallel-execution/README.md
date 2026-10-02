@@ -19,7 +19,7 @@ compute workload from 48,905 to 209,232 TPS with eight workers; native-transfer
 results were broadly unchanged relative to their sequential references. This is
 an in-memory diagnostic, not a node throughput claim. See `t14-worker-hash.json`.
 
-The first current-main GitHub comparison at 50,000 offered TPS measured **17,176
+The first current-main GitHub comparison targeting 50,000 TPS measured **17,176
 TPS on main versus 11,489 TPS with eight speculative workers (-33.11%)**.
 Builder gas throughput fell 61.88%. This run predates the T14 fee-rebase and
 worker hash-cache changes. The default preset resolved to public-mix (80%
@@ -74,6 +74,13 @@ remain enabled. This window is sparse, and newPayload gas throughput regresses
 14.93%; it is correctness coverage, not a saturation result. See
 `github-37025825306/`. The workflow's on-win policy correctly skipped Slack.
 
+Target rate is distinct from actual submission rate. In the fourth run, raw
+sender samples from seconds 10–79 average 8,496–11,317 submissions/s, and none
+sustain the 50,000 TPS target. Those counters are distinct from the trimmed
+canonical-block throughput above. The generator uses two signing workers and
+streams into the sender, so these observations alone cannot separate generation
+cost from sender backpressure. See `github-37022356052/submission-rates.json`.
+
 Workers also predict expiring-nonce ring positions in candidate order and
 prefetch those slots. Predicted values remain ordinary validated reads; skipped,
 reordered, rejected, or duplicate candidates cause replay when the prediction is
@@ -103,6 +110,14 @@ preference prefetch for explicit fee tokens improves a separate 500,000-transfer
 comparison from 171,179 to 175,845 TPS with eight workers (+2.7%), with preparation
 time down 6.4%. Sequential references vary by -1.7%; this small local improvement
 does not establish a node speedup. See `t14-explicit-fee-prefetch.json`.
+
+`tip20_paid_aa_expiring_multitoken` extends the funded fixture to four transfer
+tokens while retaining explicit pathUSD fees. A narrower prefetch experiment
+that omitted unrelated fee slots regressed eight-worker throughput from 161,382
+to 156,788 TPS (-2.85%) across alternating 500,000-transaction runs; preparation
+time also increased. The production change was reverted. The fixture and the
+expanded T7/T8/T13/T14 prefetch coverage check remain; see
+`t14-token-prefetch-rejected.*` for the patch and measurements.
 
 An experiment sharing immutable environments between candidates was rejected:
 eight-worker storage throughput fell 24.6% and paid compute fell 7.3% in the

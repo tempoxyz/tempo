@@ -1,0 +1,190 @@
+diff --git a/crates/revm/src/replay.rs b/crates/revm/src/replay.rs
+index 447560999..30d6c5cd1 100644
+--- a/crates/revm/src/replay.rs
++++ b/crates/revm/src/replay.rs
+@@ -180,9 +180,14 @@ impl PrefetchPlan {
+                 .ok()
+                 .map(|call| call.to)
+         });
++        // An explicit token rules out fee collection in the default or called
++        // token. Inferred fees keep both candidates as hints until actual reads
++        // resolve the preference; no prefetched value is authoritative.
+         let tokens = [
+-            Some(tempo_contracts::precompiles::DEFAULT_FEE_TOKEN),
+-            tx.fee_token,
++            Some(
++                tx.fee_token
++                    .unwrap_or(tempo_contracts::precompiles::DEFAULT_FEE_TOKEN),
++            ),
+             called_token,
+         ];
+         for (index, token) in tokens.iter().enumerate() {
+@@ -191,12 +196,14 @@ impl PrefetchPlan {
+                 continue;
+             }
+             let recipient = recipient.filter(|_| called_token == Some(token));
++            let fee_candidate = tx.fee_token.is_none_or(|fee| fee == token);
++            let pays_token_fees = pays_fees && fee_candidate;
+             let flags = self.tokens.entry(token).or_default();
+             if !flags.account {
+                 emit(ReadKey::Account(token));
+                 flags.account = true;
+             }
+-            if (pays_fees || recipient.is_some()) && !flags.transfer {
++            if (pays_token_fees || recipient.is_some()) && !flags.transfer {
+                 for slot in [token_slots::PAUSED, token_slots::TRANSFER_POLICY_ID] {
+                     emit(ReadKey::Storage(token, slot));
+                 }
+@@ -205,14 +212,14 @@ impl PrefetchPlan {
+             // T8 disables automatic reward settlement on transfers and fees.
+             // Avoid fetching three unused reward-info slots for every holder.
+             let rewards = !spec.is_t8();
+-            if rewards && (pays_fees || recipient.is_some()) && !flags.rewards {
++            if rewards && (pays_token_fees || recipient.is_some()) && !flags.rewards {
+                 emit(ReadKey::Storage(
+                     token,
+                     token_slots::GLOBAL_REWARD_PER_TOKEN,
+                 ));
+                 flags.rewards = true;
+             }
+-            if pays_fees && !flags.fee {
++            if pays_token_fees && !flags.fee {
+                 emit(ReadKey::Storage(
+                     token,
+                     TIP_FEE_MANAGER_ADDRESS.mapping_slot(token_slots::BALANCES),
+@@ -220,25 +227,27 @@ impl PrefetchPlan {
+                 emit(ReadKey::Storage(token, token_slots::CURRENCY));
+                 flags.fee = true;
+             }
+-            if pays_fees && self.collectors.insert((token, beneficiary)) {
++            if pays_token_fees && self.collectors.insert((token, beneficiary)) {
+                 emit(ReadKey::Storage(
+                     TIP_FEE_MANAGER_ADDRESS,
+                     token.mapping_slot(beneficiary.mapping_slot(fee_slots::COLLECTED_FEES)),
+                 ));
+             }
+-            self.holder(
+-                token,
+-                payer,
+-                rewards
+-                    && (pays_fees
+-                        || recipient.is_some_and(|to| payer == tx.inner.caller || payer == to)),
+-                &mut emit,
+-            );
++            if fee_candidate {
++                self.holder(
++                    token,
++                    payer,
++                    rewards
++                        && (pays_token_fees
++                            || recipient.is_some_and(|to| payer == tx.inner.caller || payer == to)),
++                    &mut emit,
++                );
++            }
+             if let Some(recipient) = recipient {
+-                if tx.inner.caller != payer {
++                if !fee_candidate || tx.inner.caller != payer {
+                     self.holder(token, tx.inner.caller, rewards, &mut emit);
+                 }
+-                if recipient != payer && recipient != tx.inner.caller {
++                if (!fee_candidate || recipient != payer) && recipient != tx.inner.caller {
+                     self.holder(token, recipient, rewards, &mut emit);
+                 }
+             }
+@@ -284,7 +293,7 @@ impl PrefetchPlan {
+     }
+ }
+ 
+-// Original per-transaction planner, retained as an independent coverage oracle.
++// Per-transaction planner retained as an independent coverage oracle.
+ #[cfg(test)]
+ fn reference_prefetch_keys(
+     tx: &crate::TempoTxEnv,
+@@ -337,26 +346,38 @@ fn reference_prefetch_keys(
+             .ok()
+             .map(|call| call.to)
+     });
+-    let mut tokens = vec![tempo_contracts::precompiles::DEFAULT_FEE_TOKEN];
+-    tokens.extend(tx.fee_token);
++    let mut tokens = vec![
++        tx.fee_token
++            .unwrap_or(tempo_contracts::precompiles::DEFAULT_FEE_TOKEN),
++    ];
+     tokens.extend(called_token);
+     tokens.sort_unstable();
+     tokens.dedup();
+     for token in tokens {
+-        keys.extend([
+-            ReadKey::Account(token),
+-            ReadKey::Storage(token, payer.mapping_slot(token_slots::BALANCES)),
+-        ]);
++        keys.push(ReadKey::Account(token));
++        let fee_candidate = tx.fee_token.is_none_or(|fee| fee == token);
++        if fee_candidate {
++            keys.push(ReadKey::Storage(
++                token,
++                payer.mapping_slot(token_slots::BALANCES),
++            ));
++        }
++        let pays_token_fees = pays_fees && fee_candidate;
+         let recipient = recipient.filter(|_| called_token == Some(token));
+-        if !pays_fees && recipient.is_none() {
++        if !pays_token_fees && recipient.is_none() {
+             continue;
+         }
+         keys.extend([
+             ReadKey::Storage(token, token_slots::PAUSED),
+             ReadKey::Storage(token, token_slots::TRANSFER_POLICY_ID),
+-            ReadKey::Storage(token, token_slots::GLOBAL_REWARD_PER_TOKEN),
+         ]);
+-        if pays_fees {
++        if !spec.is_t8() {
++            keys.push(ReadKey::Storage(
++                token,
++                token_slots::GLOBAL_REWARD_PER_TOKEN,
++            ));
++        }
++        if pays_token_fees {
+             keys.extend([
+                 ReadKey::Storage(
+                     token,
+@@ -370,7 +391,7 @@ fn reference_prefetch_keys(
+             ]);
+         }
+         let mut holders = Vec::with_capacity(3);
+-        if pays_fees {
++        if pays_token_fees {
+             holders.push(payer);
+         }
+         if let Some(recipient) = recipient {
+@@ -383,12 +404,12 @@ fn reference_prefetch_keys(
+                 token,
+                 holder.mapping_slot(token_slots::BALANCES),
+             ));
+-            let rewards = holder.mapping_slot(token_slots::USER_REWARD_INFO);
+-            keys.extend(
+-                (0..UserRewardInfo::SLOTS).map(|offset| {
++            if !spec.is_t8() {
++                let rewards = holder.mapping_slot(token_slots::USER_REWARD_INFO);
++                keys.extend((0..UserRewardInfo::SLOTS).map(|offset| {
+                     ReadKey::Storage(token, rewards.wrapping_add(U256::from(offset)))
+-                }),
+-            );
++                }));
++            }
+         }
+     }
+     keys
+@@ -648,7 +669,11 @@ mod prefetch_tests {
+                     TempoHardfork::T1,
+                     TempoHardfork::T1B,
+                     TempoHardfork::T4,
+-                ][step % 4];
++                    TempoHardfork::T7,
++                    TempoHardfork::T8,
++                    TempoHardfork::T13,
++                    TempoHardfork::T14,
++                ][step % 8];
+                 let original = reference_prefetch_keys(tx, beneficiary, spec);
+                 reference_count += original.len();
+                 expected.extend(original);

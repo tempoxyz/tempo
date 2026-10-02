@@ -354,8 +354,13 @@ fn reference_prefetch_keys(
         keys.extend([
             ReadKey::Storage(token, token_slots::PAUSED),
             ReadKey::Storage(token, token_slots::TRANSFER_POLICY_ID),
-            ReadKey::Storage(token, token_slots::GLOBAL_REWARD_PER_TOKEN),
         ]);
+        if !spec.is_t8() {
+            keys.push(ReadKey::Storage(
+                token,
+                token_slots::GLOBAL_REWARD_PER_TOKEN,
+            ));
+        }
         if pays_fees {
             keys.extend([
                 ReadKey::Storage(
@@ -383,12 +388,12 @@ fn reference_prefetch_keys(
                 token,
                 holder.mapping_slot(token_slots::BALANCES),
             ));
-            let rewards = holder.mapping_slot(token_slots::USER_REWARD_INFO);
-            keys.extend(
-                (0..UserRewardInfo::SLOTS).map(|offset| {
+            if !spec.is_t8() {
+                let rewards = holder.mapping_slot(token_slots::USER_REWARD_INFO);
+                keys.extend((0..UserRewardInfo::SLOTS).map(|offset| {
                     ReadKey::Storage(token, rewards.wrapping_add(U256::from(offset)))
-                }),
-            );
+                }));
+            }
         }
     }
     keys
@@ -648,7 +653,11 @@ mod prefetch_tests {
                     TempoHardfork::T1,
                     TempoHardfork::T1B,
                     TempoHardfork::T4,
-                ][step % 4];
+                    TempoHardfork::T7,
+                    TempoHardfork::T8,
+                    TempoHardfork::T13,
+                    TempoHardfork::T14,
+                ][step % 8];
                 let original = reference_prefetch_keys(tx, beneficiary, spec);
                 reference_count += original.len();
                 expected.extend(original);
