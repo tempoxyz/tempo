@@ -38,6 +38,8 @@ use tempo_primitives::{
 
 use crate::{TempoEvm, TempoInvalidTransaction, TempoTxEnv};
 
+mod tip1016;
+
 // ==================== Test Constants ====================
 
 /// Default balance for funded accounts (1 ETH)
@@ -232,9 +234,9 @@ fn create_funded_evm_t3(address: Address) -> TempoEvm<'static> {
     evm
 }
 
-/// Create an EVM with T4 hardfork enabled and a funded account.
-fn create_funded_evm_t4(address: Address) -> TempoEvm<'static> {
-    let mut evm = configured_evm(TempoHardfork::T4, 0, true, InMemoryDB::default());
+/// Creates the production TIP-1016 environment with a funded account.
+fn create_funded_evm_t14(address: Address) -> TempoEvm<'static> {
+    let mut evm = configured_evm(TempoHardfork::T14, 0, false, InMemoryDB::default());
     fund_account(&mut evm, address);
     evm
 }
@@ -3579,7 +3581,7 @@ fn test_aa_tx_gas_create_contract() -> eyre::Result<()> {
 /// TIP-1016: generic EVM CREATE charges deployed-bytecode HASH_COST(L)
 /// in addition to CREATE base gas and code deposit gas on the success path.
 #[test]
-fn test_t4_create_tx_charges_hash_cost() -> eyre::Result<()> {
+fn test_t14_create_tx_charges_hash_cost() -> eyre::Result<()> {
     let key_pair = P256KeyPair::random();
     let caller = key_pair.address;
 
@@ -3591,20 +3593,20 @@ fn test_t4_create_tx_charges_hash_cost() -> eyre::Result<()> {
     let signed_tx = key_pair.sign_tx(tx)?;
 
     let run_create = |without_word_cost: bool| -> eyre::Result<u64> {
-        let mut evm = create_funded_evm_t4(caller);
+        let mut evm = create_funded_evm_t14(caller);
         if without_word_cost {
             let mut version = *evm.version();
             version
                 .gas_params
                 .set(evm2::version::GasId::Keccak256PerWord, 0);
             let precompiles = tempo_precompiles::TempoPrecompiles::<TempoEvmTypes>::new(
-                TempoHardfork::T4,
+                TempoHardfork::T14,
                 evm.ext().actions.clone(),
                 evm.ext().non_creditable_slots.clone(),
             );
             evm.set_execution_config(
-                ExecutionConfig::for_spec_and_version(TempoHardfork::T4, version),
-                TempoHardfork::T4,
+                ExecutionConfig::for_spec_and_version(TempoHardfork::T14, version),
+                TempoHardfork::T14,
                 tempo_tx_registry(SpecId::OSAKA),
                 precompiles,
             );
@@ -3615,14 +3617,14 @@ fn test_t4_create_tx_charges_hash_cost() -> eyre::Result<()> {
         )?;
         assert!(
             result.status,
-            "T4 CREATE transaction should succeed with keccak256_per_word={without_word_cost:?}"
+            "T14 CREATE transaction should succeed with keccak256_per_word={without_word_cost:?}"
         );
         Ok(result.tx_gas_used())
     };
 
     assert_eq!(
         run_create(false)? - run_create(true)?, // gas_with_hash - gas_without_hash (test fixture)
-        tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::T4, true)
+        tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::T14, false)
             .gas_params
             .keccak256_word_cost(1),
         "generic CREATE should add HASH_COST(L) on top of the non-hash baseline"
@@ -3634,10 +3636,10 @@ fn test_t4_create_tx_charges_hash_cost() -> eyre::Result<()> {
 /// no matter where the CREATE sits.
 ///
 /// Each scenario's create-state-gas consumption is measured as the gas
-/// delta between default T4 params and `create_state_gas` overridden to
+/// delta between default T14 params and `create_state_gas` overridden to
 /// zero: equal gas across the override means the charge was fully refunded.
 #[test]
-fn test_t4_reverting_create_refunds_state_gas_like_inner_create() -> eyre::Result<()> {
+fn test_t14_reverting_create_refunds_state_gas_like_inner_create() -> eyre::Result<()> {
     let caller = Address::repeat_byte(0x11);
     // PUSH1 0 PUSH1 0 REVERT
     let reverting_initcode = bytes!("60006000fd");
@@ -3647,26 +3649,26 @@ fn test_t4_reverting_create_refunds_state_gas_like_inner_create() -> eyre::Resul
     let inner_create_code = bytes!("6460006000fd6000526005601b6000f05000");
 
     assert!(
-        tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::T4, true)
+        tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::T14, true)
             .gas_params
             .create_state_gas()
             > 0,
-        "T4 must price CREATE state gas for this test to be meaningful"
+        "T14 must price CREATE state gas for this test to be meaningful"
     );
 
     let run = |top_level: bool, zero_create_state_gas: bool| -> eyre::Result<u64> {
-        let mut evm = create_funded_evm_t4(caller);
+        let mut evm = create_funded_evm_t14(caller);
         if zero_create_state_gas {
             let mut version = *evm.version();
             version.gas_params.set(evm2::version::GasId::CreateState, 0);
             let precompiles = tempo_precompiles::TempoPrecompiles::<TempoEvmTypes>::new(
-                TempoHardfork::T4,
+                TempoHardfork::T14,
                 evm.ext().actions.clone(),
                 evm.ext().non_creditable_slots.clone(),
             );
             evm.set_execution_config(
-                ExecutionConfig::for_spec_and_version(TempoHardfork::T4, version),
-                TempoHardfork::T4,
+                ExecutionConfig::for_spec_and_version(TempoHardfork::T14, version),
+                TempoHardfork::T14,
                 tempo_tx_registry(SpecId::OSAKA),
                 precompiles,
             );
@@ -3723,7 +3725,7 @@ fn test_t4_reverting_create_refunds_state_gas_like_inner_create() -> eyre::Resul
 /// CREATE itself and a successfully deployed CREATE whose state is rolled
 /// back by the atomic batch revert.
 #[test]
-fn test_t4_aa_reverting_create_refunds_state_gas() -> eyre::Result<()> {
+fn test_t14_aa_reverting_create_refunds_state_gas() -> eyre::Result<()> {
     let key_pair = P256KeyPair::random();
     let caller = key_pair.address;
 
@@ -3751,18 +3753,18 @@ fn test_t4_aa_reverting_create_refunds_state_gas() -> eyre::Result<()> {
     )?;
 
     let run = |signed_tx: &AASigned, zero_create_state_gas: bool| -> eyre::Result<u64> {
-        let mut evm = create_funded_evm_t4(caller);
+        let mut evm = create_funded_evm_t14(caller);
         if zero_create_state_gas {
             let mut version = *evm.version();
             version.gas_params.set(evm2::version::GasId::CreateState, 0);
             let precompiles = tempo_precompiles::TempoPrecompiles::<TempoEvmTypes>::new(
-                TempoHardfork::T4,
+                TempoHardfork::T14,
                 evm.ext().actions.clone(),
                 evm.ext().non_creditable_slots.clone(),
             );
             evm.set_execution_config(
-                ExecutionConfig::for_spec_and_version(TempoHardfork::T4, version),
-                TempoHardfork::T4,
+                ExecutionConfig::for_spec_and_version(TempoHardfork::T14, version),
+                TempoHardfork::T14,
                 tempo_tx_registry(SpecId::OSAKA),
                 precompiles,
             );

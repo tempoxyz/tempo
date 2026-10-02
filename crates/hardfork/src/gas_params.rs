@@ -2,7 +2,7 @@
 
 use crate::{
     TempoHardfork,
-    constants::gas::{SSTORE_CREATE_COST, SSTORE_SET_COST},
+    constants::gas::{SSTORE_CREATE_COST, SSTORE_SET_COST, STORAGE_CREDIT_VALUE},
 };
 use evm2::{EvmFeatures, SpecId, Version, version::GasId};
 
@@ -11,16 +11,13 @@ const NEW_ACCOUNT_COST: u32 = 250_000;
 const CODE_DEPOSIT_COST_T1: u32 = 1_000;
 const EIP7702_PER_EMPTY_ACCOUNT_COST_T1: u32 = 12_500;
 
-const AMSTERDAM_SSTORE_SET_REGULAR: u32 = 20_000;
 const AMSTERDAM_NEW_ACCOUNT_REGULAR: u32 = 25_000;
 const AMSTERDAM_CREATE_REGULAR: u32 = 32_000;
 const AMSTERDAM_CODE_DEPOSIT_REGULAR: u32 = 200;
 
-const AMSTERDAM_SSTORE_SET_STATE: u32 = SSTORE_CREATE_COST as u32 - AMSTERDAM_SSTORE_SET_REGULAR;
 const AMSTERDAM_NEW_ACCOUNT_STATE: u32 = NEW_ACCOUNT_COST - AMSTERDAM_NEW_ACCOUNT_REGULAR;
 const AMSTERDAM_CREATE_STATE: u32 = CONTRACT_CREATE_COST - AMSTERDAM_CREATE_REGULAR;
 const AMSTERDAM_CODE_DEPOSIT_STATE: u32 = 2_300;
-const AMSTERDAM_SSTORE_SET_REFUND: u32 = AMSTERDAM_SSTORE_SET_STATE + 17_800;
 
 /// Applies Tempo's hardfork-specific features and gas parameters to an EVM2 version.
 pub fn configure_version(
@@ -28,13 +25,13 @@ pub fn configure_version(
     spec: TempoHardfork,
     amsterdam_eip8037_enabled: bool,
 ) -> Version {
-    debug_assert!(
-        !(spec.is_t7() && amsterdam_eip8037_enabled),
-        "TIP-1060 and TIP-1016 do not yet have a combined gas schedule"
-    );
-
+    // T14 activates TIP-1016. The explicit switch also allows exercising the
+    // reservoir model on earlier forks in tests.
+    let amsterdam_eip8037_enabled = amsterdam_eip8037_enabled || spec.is_t14();
     if amsterdam_eip8037_enabled {
         version.features.insert(EvmFeatures::EIP8037);
+        // TIP-1016 limits execution gas, not the user's execution + state budget.
+        version.features.remove(EvmFeatures::BLOCK_GAS_LIMIT_CHECK);
         apply_amsterdam(&mut version);
     } else {
         version.features.remove(EvmFeatures::EIP8037);
@@ -46,9 +43,6 @@ pub fn configure_version(
         }
     }
 
-    if spec.is_t7() {
-        version.gas_params[GasId::MaxRefundQuotient] = 1;
-    }
     version
 }
 
@@ -74,13 +68,16 @@ fn apply_t7(version: &mut Version) {
     gas[GasId::SstoreSetWithoutLoadCost] = SSTORE_SET_COST as u32;
     gas[GasId::SstoreSetRefund] = SSTORE_SET_COST as u32;
     gas[GasId::SstoreClearingSlotRefund] = 0;
+    gas[GasId::MaxRefundQuotient] = 1;
 }
 
 fn apply_amsterdam(version: &mut Version) {
+    // TIP-1016 activates after TIP-1060 and inherits its storage-credit schedule.
+    apply_t7(version);
     let gas = &mut version.gas_params;
-    gas[GasId::SstoreSetWithoutLoadCost] = AMSTERDAM_SSTORE_SET_REGULAR;
-    gas[GasId::SstoreSetState] = AMSTERDAM_SSTORE_SET_STATE;
-    gas[GasId::SstoreSetRefund] = AMSTERDAM_SSTORE_SET_REFUND;
+    // The credit hook owns charging and settlement; do not also apply
+    // EIP-8037's slot-restoration accounting to these writes.
+    gas[GasId::SstoreSetState] = STORAGE_CREDIT_VALUE as u32;
     gas[GasId::TxCreateCost] = AMSTERDAM_CREATE_REGULAR;
     gas[GasId::Create] = AMSTERDAM_CREATE_REGULAR;
     gas[GasId::CreateState] = AMSTERDAM_CREATE_STATE;
@@ -98,6 +95,64 @@ fn apply_amsterdam(version: &mut Version) {
 mod tests {
     use super::*;
 
+    /// Ported from origin/tip1016: uncapped refunds may only reverse execution
+    /// charges, and each restore pair must retain both warm accesses.
+    #[test]
+    fn test_t14_restore_refunds_net_warm_access_costs() {
+        let gas = version(SpecId::OSAKA, TempoHardfork::T14, false).gas_params;
+        let warm = gas[GasId::SstoreStatic];
+        for (write, refund) in [
+            (GasId::SstoreSetWithoutLoadCost, GasId::SstoreSetRefund),
+            (
+                GasId::SstoreResetWithoutColdLoadCost,
+                GasId::SstoreResetRefund,
+            ),
+        ] {
+            assert_eq!(warm + gas[write] + warm - gas[refund], 2 * warm);
+        }
+        assert_eq!(gas[GasId::SstoreClearingSlotRefund], 0);
+        assert_eq!(gas[GasId::SelfdestructRefund], 0);
+        assert_eq!(gas[GasId::TxEip7702AuthRefund], 0);
+    }
+
+    #[test]
+    fn tip1016_activates_at_t14() {
+        for &spec in TempoHardfork::VARIANTS {
+            let version = version(SpecId::OSAKA, spec, false);
+            assert_eq!(
+                version.feature(EvmFeatures::EIP8037),
+                spec.is_t14(),
+                "{spec:?}"
+            );
+            if spec.is_t14() {
+                assert_eq!(version.gas_params[GasId::SstoreSetState], 245_000);
+                assert_eq!(version.gas_params[GasId::CodeDepositState], 2_300);
+            }
+        }
+    }
+
+    #[test]
+    fn tip1016_preserves_tip1060_credits_and_execution_refunds() {
+        let version = version(SpecId::OSAKA, TempoHardfork::T14, false);
+        let gas = version.gas_params;
+        assert!(version.feature(EvmFeatures::EIP8037));
+        assert!(!version.feature(EvmFeatures::BLOCK_GAS_LIMIT_CHECK));
+        assert_eq!(gas[GasId::SstoreSetWithoutLoadCost], 5_000);
+        assert_eq!(gas[GasId::SstoreSetState], 245_000);
+        assert_eq!(gas[GasId::SstoreSetRefund], 5_000);
+        assert_eq!(gas[GasId::SstoreClearingSlotRefund], 0);
+        assert_eq!(gas[GasId::MaxRefundQuotient], 1);
+        assert_eq!(
+            gas[GasId::CodeDepositCost] + gas[GasId::CodeDepositState],
+            2_500
+        );
+        assert_eq!(
+            gas[GasId::NewAccountCost] + gas[GasId::NewAccountState],
+            250_000
+        );
+        assert_eq!(gas[GasId::Create] + gas[GasId::CreateState], 500_000);
+    }
+
     #[test]
     fn test_tempo_override_gas_params_match_across_forks() {
         let t1 = version(SpecId::OSAKA, TempoHardfork::T1, false);
@@ -105,13 +160,6 @@ mod tests {
         assert_eq!(
             t1.gas_params, t5.gas_params,
             "T1+ TIP-1000 gas params should have equal values"
-        );
-
-        let amsterdam_t4 = version(SpecId::OSAKA, TempoHardfork::T4, true);
-        let amsterdam_t5 = version(SpecId::OSAKA, TempoHardfork::T5, true);
-        assert_eq!(
-            amsterdam_t4.gas_params, amsterdam_t5.gas_params,
-            "Amsterdam gas params should have equal values"
         );
     }
 
@@ -189,31 +237,19 @@ mod tests {
         assert_eq!(gas[GasId::CreateState], upstream[GasId::CreateState]);
     }
 
-    /// TIP-1016 spec table: regular/state gas splits must match the spec exactly.
-    ///
-    /// | Operation                      | Execution Gas | Storage Gas | Total   |
-    /// |--------------------------------|---------------|-------------|---------|
-    /// | Cold SSTORE (zero → non-zero)  | 22,200        | 230,000     | 252,200 |
-    /// | Account creation (nonce 0 → 1) | 25,000        | 225,000     | 250,000 |
-    /// | Contract metadata (CREATE)     | 32,000        | 468,000     | 500,000 |
-    /// | Contract code storage (/byte)  | 200           | 2,300       | 2,500   |
-    /// | EIP-7702 delegation (per auth) | 25,000        | 225,000     | 250,000 |
-    ///
-    /// Note: The cold SSTORE total keeps Berlin's access charging. In EVM2 terms the
-    /// zero->non-zero write path is: warm read (100) + `SstoreSetWithoutLoadCost` (20,000)
-    /// + cold slot surcharge (2,100) + state gas (230,000) = 252,200.
+    /// TIP-1016 production prices inherit TIP-1060's SSTORE decomposition.
     #[test]
-    fn test_t4_gas_params_splits_storage_costs() {
-        let version = version(SpecId::OSAKA, TempoHardfork::T4, true);
+    fn test_t14_gas_params_splits_storage_costs() {
+        let version = version(SpecId::OSAKA, TempoHardfork::T14, false);
         let gas = version.gas_params;
         assert!(version.feature(EvmFeatures::EIP8037));
 
-        // T4 execution gas (regular/computational overhead)
-        // SSTORE keeps the decomposed accounting: static(100) + set_without_load(20,000),
+        // T14 execution gas (regular/computational overhead)
+        // SSTORE keeps the decomposed accounting: static(100) + set_without_load(5,000),
         // with cold slot access (2,100) retained separately through `ColdStorageCost`.
         assert_eq!(
             gas[GasId::SstoreSetWithoutLoadCost],
-            20_000,
+            5_000,
             "SSTORE set_without_load matches the retained zero->non-zero write component"
         );
         assert_eq!(
@@ -234,10 +270,10 @@ mod tests {
         );
         assert_eq!(gas[GasId::CodeDepositCost], 200);
 
-        // T4 state gas (permanent storage burden)
+        // T14 state gas (permanent storage burden)
         assert_eq!(
             gas[GasId::SstoreSetState],
-            230_000,
+            245_000,
             "SSTORE state gas per spec"
         );
         assert_eq!(
@@ -271,26 +307,23 @@ mod tests {
             "TIP-1000: no refund for existing accounts on T1+"
         );
 
-        // SSTORE set refund for 0→X→0 restoration (combined state + regular)
-        // Spec: state_gas(230,000) + regular(20,000 - 2,100 - 100 = 17,800) = 247,800
-        assert_eq!(
-            gas[GasId::SstoreSetRefund],
-            247_800,
-            "SSTORE set refund = state(230k) + regular(17.8k) per spec"
-        );
+        // Restoration refunds execution only; the credit-backed state gas
+        // is settled through TIP-1060 storage credits.
+        assert_eq!(gas[GasId::SstoreSetRefund], 5_000);
+        assert_eq!(gas[GasId::SstoreClearingSlotRefund], 0);
     }
 
     /// TIP-1016: Verify totals (regular + state) match the clarified spec table.
     /// Note: SSTORE total comparison needs to account for decomposed gas and the cold-slot charge.
     ///
     /// T1 SstoreSetWithoutLoadCost = 250,000 (full TIP-1000 cost as override).
-    /// T4 warm SSTORE = set_without_load(20,000) + warm_read(100) + state(230,000) = 250,100.
-    /// T4 cold SSTORE = warm path + cold_slot_access(2,100) = 252,200.
+    /// T14 warm SSTORE = set_without_load(5,000) + warm_read(100) + state(245,000) = 250,100.
+    /// T14 cold SSTORE = warm path + cold_slot_access(2,100) = 252,200.
     #[test]
-    fn test_t4_totals_match_spec() {
-        let gas = version(SpecId::OSAKA, TempoHardfork::T4, true).gas_params;
+    fn test_t14_totals_match_spec() {
+        let gas = version(SpecId::OSAKA, TempoHardfork::T14, false).gas_params;
 
-        // Warm SSTORE total: write component(20,000) + warm read(100) + state(230,000)
+        // Warm SSTORE total: write component(5,000) + warm read(100) + state(245,000)
         let warm_sstore_regular = u64::from(gas[GasId::SstoreSetWithoutLoadCost])
             + u64::from(gas[GasId::WarmStorageReadCost]);
         assert_eq!(

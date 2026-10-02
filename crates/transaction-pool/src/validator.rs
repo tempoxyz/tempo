@@ -20,8 +20,8 @@ use reth_storage_api::{
     errors::{ProviderError, ProviderResult},
 };
 use reth_transaction_pool::{
-    EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
-    TransactionValidator, error::InvalidPoolTransactionError,
+    BlockGasLimitPolicy, EthTransactionValidator, PoolTransaction, TransactionOrigin,
+    TransactionValidationOutcome, TransactionValidator, error::InvalidPoolTransactionError,
 };
 use std::{
     cell::RefCell,
@@ -766,15 +766,18 @@ where
         )
     }
 
-    fn on_new_head_block(&self, new_tip_block: &SealedBlock<Self::Block>) {
-        self.inner.on_new_head_block(new_tip_block);
+    fn block_gas_limit_policy(&self) -> BlockGasLimitPolicy {
+        self.inner.block_gas_limit_policy()
+    }
 
+    fn on_new_head_block(&self, new_tip_block: &SealedBlock<Self::Block>) {
         // Cache the EVM environment for the new tip block.
         let evm_env = self
             .inner
             .evm_config()
             .evm_env(new_tip_block.header())
             .expect("invalid block in on_new_head_block");
+        self.inner.on_new_head_block(new_tip_block);
         self.active_hardfork
             .store(evm_env.spec.variant_index(), Ordering::Relaxed);
         *self.cached_evm_env.write() = evm_env;
@@ -1089,6 +1092,58 @@ mod tests {
         validator.on_new_head_block(&mock_block);
 
         validator
+    }
+
+    #[test]
+    fn block_gas_policy_tracks_t14_without_changing_the_head() {
+        let mut spec = (*MODERATO).as_ref().clone();
+        for &fork in TempoHardfork::VARIANTS {
+            spec.inner.hardforks.insert(
+                fork,
+                reth_chainspec::ForkCondition::Timestamp(if fork.is_t14() { 100 } else { 0 }),
+            );
+        }
+        let spec = Arc::new(spec);
+        let provider =
+            MockEthProvider::<TempoPrimitives>::new().with_chain_spec(spec.as_ref().clone());
+        let initial = create_mock_block(0);
+        provider.add_block(initial.hash(), initial.clone().into_block());
+        let inner =
+            EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::new(spec))
+                .build(InMemoryBlobStore::default());
+        let validator = TempoTransactionValidator::new(
+            inner,
+            DEFAULT_AA_VALID_AFTER_MAX_SECS,
+            DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+            AmmLiquidityCache::new(provider).unwrap(),
+        );
+        assert_eq!(
+            validator.block_gas_limit_policy(),
+            BlockGasLimitPolicy::TotalGas
+        );
+        // Also exercise a reorg back across the activation boundary.
+        let execution_policy = BlockGasLimitPolicy::ExecutionGas {
+            tx_gas_limit_cap: 16_777_216,
+        };
+        for (timestamp, policy) in [
+            (99, BlockGasLimitPolicy::TotalGas),
+            (100, execution_policy),
+            (101, execution_policy),
+            (99, BlockGasLimitPolicy::TotalGas),
+        ] {
+            let head = create_mock_block(timestamp);
+            validator.on_new_head_block(&head);
+            assert_eq!(validator.block_gas_limit_policy(), policy);
+            assert_eq!(
+                validator.inner.block_gas_limit(),
+                head.header().inner.gas_limit
+            );
+            assert_eq!(validator.cached_state.read().0, head.hash());
+            assert_eq!(
+                validator.cached_evm_env.read().block.gas_limit,
+                U256::from(head.header().inner.gas_limit),
+            );
+        }
     }
 
     #[test]
