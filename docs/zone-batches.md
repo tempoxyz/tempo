@@ -1,10 +1,10 @@
 # Sample historical Zone PCRs by hardfork
 
-`tempo inspect-zone-batches` reports one successful direct Nitro submission's
+`tempo pcr-history` reports one successful direct Nitro submission's
 PCR0/1/2 tuple per T13-or-later hardfork interval, newest first.
 
 ```sh
-tempo inspect-zone-batches --rpc-url http://localhost:8545 > pcr-history.json
+tempo pcr-history --rpc-url http://localhost:8545 > pcr-history.json
 ```
 
 The RPC must provide `tempo_forkSchedule` and historical transactions, blocks,
@@ -14,7 +14,7 @@ future and empty intervals are skipped.
 ## Optional filters
 
 ```sh
-tempo inspect-zone-batches \
+tempo pcr-history \
   --rpc-url "$RPC_URL" \
   --portal "$PORTAL" \
   --from-block 100000 \

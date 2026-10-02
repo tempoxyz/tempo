@@ -28,7 +28,7 @@ type Pcrs = [FixedBytes<SHA384_SIZE>; 3];
 /// Inspect observed PCRs without changing or inferring the approved PCR policy.
 #[derive(Debug, clap::Args)]
 #[command(after_help = "Samples direct Nitro PCRs by hardfork as JSON from settled zone batches.")]
-pub struct InspectZoneBatches {
+pub struct PcrHistory {
     /// Historical RPC endpoint serving `tempo_forkSchedule`, transactions, blocks, and logs.
     #[arg(long)]
     rpc_url: String,
@@ -43,7 +43,7 @@ pub struct InspectZoneBatches {
     to_block: Option<u64>,
 }
 
-impl InspectZoneBatches {
+impl PcrHistory {
     pub async fn run(self) -> eyre::Result<()> {
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
             .connect(&self.rpc_url)
@@ -315,8 +315,8 @@ mod tests {
 
     const PORTAL: Address = address!("5ad0000000000000000000000000000000000001");
 
-    fn command(from: u64, to: u64) -> InspectZoneBatches {
-        InspectZoneBatches {
+    fn command(from: u64, to: u64) -> PcrHistory {
+        PcrHistory {
             rpc_url: String::new(),
             portal: Some(PORTAL),
             from_block: Some(from),
@@ -630,7 +630,7 @@ mod tests {
         asserter.push_success(&"0xa");
         asserter.push_success(&schedule(&[("T13", 0)]));
         asserter.push_success(&Vec::<Log>::new());
-        let cmd = InspectZoneBatches {
+        let cmd = PcrHistory {
             portal: None,
             from_block: None,
             to_block: None,
@@ -718,15 +718,10 @@ mod tests {
                 (Some(PORTAL), Some(10), Some(20)),
             ),
         ] {
-            let args = [
-                "tempo",
-                "inspect-zone-batches",
-                "--rpc-url",
-                "http://localhost:8545",
-            ]
-            .into_iter()
-            .chain(extra);
-            let crate::tempo_cmd::TempoSubcommand::InspectZoneBatches(cmd) =
+            let args = ["tempo", "pcr-history", "--rpc-url", "http://localhost:8545"]
+                .into_iter()
+                .chain(extra);
+            let crate::tempo_cmd::TempoSubcommand::PcrHistory(cmd) =
                 Cli::try_parse_from(args).unwrap().command
             else {
                 panic!("wrong subcommand")
