@@ -11,16 +11,13 @@ const NEW_ACCOUNT_COST: u32 = 250_000;
 const CODE_DEPOSIT_COST_T1: u32 = 1_000;
 const EIP7702_PER_EMPTY_ACCOUNT_COST_T1: u32 = 12_500;
 
-const AMSTERDAM_SSTORE_SET_REGULAR: u32 = 20_000;
 const AMSTERDAM_NEW_ACCOUNT_REGULAR: u32 = 25_000;
 const AMSTERDAM_CREATE_REGULAR: u32 = 32_000;
 const AMSTERDAM_CODE_DEPOSIT_REGULAR: u32 = 200;
 
-const AMSTERDAM_SSTORE_SET_STATE: u32 = SSTORE_CREATE_COST as u32 - AMSTERDAM_SSTORE_SET_REGULAR;
 const AMSTERDAM_NEW_ACCOUNT_STATE: u32 = NEW_ACCOUNT_COST - AMSTERDAM_NEW_ACCOUNT_REGULAR;
 const AMSTERDAM_CREATE_STATE: u32 = CONTRACT_CREATE_COST - AMSTERDAM_CREATE_REGULAR;
 const AMSTERDAM_CODE_DEPOSIT_STATE: u32 = 2_300;
-const AMSTERDAM_SSTORE_SET_REFUND: u32 = AMSTERDAM_SSTORE_SET_STATE + 17_800;
 
 /// Applies Tempo's hardfork-specific features and gas parameters to an EVM2 version.
 pub fn configure_version(
@@ -41,17 +38,11 @@ pub fn configure_version(
         if spec.is_t1() {
             apply_t1(&mut version);
         }
+        if spec.is_t7() {
+            apply_t7(&mut version);
+        }
     }
 
-    if spec.is_t7() {
-        apply_t7(&mut version);
-        if amsterdam_eip8037_enabled {
-            // The credit hook owns charging and settlement; do not also apply
-            // EIP-8037's slot-restoration accounting to these writes.
-            version.gas_params[GasId::SstoreSetState] = STORAGE_CREDIT_VALUE as u32;
-        }
-        version.gas_params[GasId::MaxRefundQuotient] = 1;
-    }
     version
 }
 
@@ -77,13 +68,16 @@ fn apply_t7(version: &mut Version) {
     gas[GasId::SstoreSetWithoutLoadCost] = SSTORE_SET_COST as u32;
     gas[GasId::SstoreSetRefund] = SSTORE_SET_COST as u32;
     gas[GasId::SstoreClearingSlotRefund] = 0;
+    gas[GasId::MaxRefundQuotient] = 1;
 }
 
 fn apply_amsterdam(version: &mut Version) {
+    // TIP-1016 activates after TIP-1060 and inherits its storage-credit schedule.
+    apply_t7(version);
     let gas = &mut version.gas_params;
-    gas[GasId::SstoreSetWithoutLoadCost] = AMSTERDAM_SSTORE_SET_REGULAR;
-    gas[GasId::SstoreSetState] = AMSTERDAM_SSTORE_SET_STATE;
-    gas[GasId::SstoreSetRefund] = AMSTERDAM_SSTORE_SET_REFUND;
+    // The credit hook owns charging and settlement; do not also apply
+    // EIP-8037's slot-restoration accounting to these writes.
+    gas[GasId::SstoreSetState] = STORAGE_CREDIT_VALUE as u32;
     gas[GasId::TxCreateCost] = AMSTERDAM_CREATE_REGULAR;
     gas[GasId::Create] = AMSTERDAM_CREATE_REGULAR;
     gas[GasId::CreateState] = AMSTERDAM_CREATE_STATE;
@@ -139,7 +133,7 @@ mod tests {
 
     #[test]
     fn tip1016_preserves_tip1060_credits_and_execution_refunds() {
-        let version = version(SpecId::OSAKA, TempoHardfork::T7, true);
+        let version = version(SpecId::OSAKA, TempoHardfork::T14, false);
         let gas = version.gas_params;
         assert!(version.feature(EvmFeatures::EIP8037));
         assert!(!version.feature(EvmFeatures::BLOCK_GAS_LIMIT_CHECK));
@@ -166,13 +160,6 @@ mod tests {
         assert_eq!(
             t1.gas_params, t5.gas_params,
             "T1+ TIP-1000 gas params should have equal values"
-        );
-
-        let amsterdam_t4 = version(SpecId::OSAKA, TempoHardfork::T4, true);
-        let amsterdam_t5 = version(SpecId::OSAKA, TempoHardfork::T5, true);
-        assert_eq!(
-            amsterdam_t4.gas_params, amsterdam_t5.gas_params,
-            "Amsterdam gas params should have equal values"
         );
     }
 

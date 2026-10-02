@@ -908,38 +908,18 @@ mod tests {
 
     impl TestEvm {
         fn new(spec: TempoHardfork) -> Self {
-            Self::with_amsterdam(spec, false)
-        }
-
-        /// Constructs a [`TestEvm`] with TIP-1016 (EIP-8037) manually enabled.
-        ///
-        /// Used by tests that exercise TIP-1016 behavior (state gas split, reservoir
-        /// accounting) before its automatic T14 activation.
-        fn new_with_tip1016(spec: TempoHardfork) -> Self {
-            Self::with_amsterdam(spec, true)
-        }
-
-        fn with_amsterdam(spec: TempoHardfork, amsterdam_eip8037_enabled: bool) -> Self {
-            Self::with_database(spec, amsterdam_eip8037_enabled, InMemoryDB::default())
+            Self::with_database(spec, InMemoryDB::default())
         }
 
         fn with_storage(spec: TempoHardfork, address: Address, key: U256, value: U256) -> Self {
             let mut database = InMemoryDB::default();
             database.insert_account_info(&address, Default::default());
             database.insert_account_storage(&address, &key, &value);
-            Self::with_database(spec, false, database)
+            Self::with_database(spec, database)
         }
 
-        fn with_database(
-            spec: TempoHardfork,
-            amsterdam_eip8037_enabled: bool,
-            database: InMemoryDB,
-        ) -> Self {
-            let version = tempo_chainspec::gas_params::version(
-                SpecId::OSAKA,
-                spec,
-                amsterdam_eip8037_enabled,
-            );
+        fn with_database(spec: TempoHardfork, database: InMemoryDB) -> Self {
+            let version = tempo_chainspec::gas_params::version(SpecId::OSAKA, spec, false);
             Self {
                 evm: Evm::new_with_execution_config(
                     ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
@@ -1478,7 +1458,7 @@ mod tests {
 
     #[test]
     fn test_state_gas_used_only_counts_state_creating_ops() -> eyre::Result<()> {
-        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
+        let mut evm = TestEvm::new(TempoHardfork::T14);
         let gas_params = evm.gas_params();
         let mut provider = evm.provider_with_reservoir(0);
 
@@ -1498,8 +1478,8 @@ mod tests {
         provider.sstore(address, slot, U256::from(1))?;
         let state_gas_after_set = provider.state_gas_used();
         assert_eq!(
-            state_gas_after_set, 230_000,
-            "SSTORE zero->non-zero should add 230k state gas"
+            state_gas_after_set, 245_000,
+            "SSTORE zero->non-zero should add 245k state gas"
         );
         assert!(
             provider.gas_used() > gas_before,
@@ -1532,24 +1512,24 @@ mod tests {
     /// spills into regular gas once the reservoir is exhausted.
     #[test]
     fn test_state_gas_spills_from_reservoir_to_regular_gas() -> eyre::Result<()> {
-        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
+        let mut evm = TestEvm::new(TempoHardfork::T14);
 
-        // Reservoir = 500k: enough for 2 full SSTOREs (2 × 230k = 460k)
-        // but the 3rd SSTORE (230k) must spill 190k into regular gas.
+        // Reservoir = 500k: enough for 2 full SSTOREs (2 × 245k = 490k)
+        // but the 3rd SSTORE (245k) must spill 235k into regular gas.
         let gas_limit = 1_000_000u64;
         let reservoir = 500_000u64;
-        let state_gas_per_sstore = 230_000u64;
+        let state_gas_per_sstore = 245_000u64;
         let mut provider = evm.provider_with_gas_limit(gas_limit, reservoir);
         let address = Address::random();
 
         // --- First SSTORE (zero→non-zero): fully covered by reservoir ---
         provider.sstore(address, U256::from(1), U256::from(42))?;
 
-        let regular_gas_per_sstore = provider.gas_used(); // static + dynamic (regular)
+        let regular_gas_per_sstore = provider.gas_used() - 2_000; // Subsequent credit-slot loads are warm.
         assert_eq!(
             provider.state_gas_used(),
             state_gas_per_sstore,
-            "first SSTORE should consume 230k state gas"
+            "first SSTORE should consume 245k state gas"
         );
         assert_eq!(
             provider.reservoir(),
@@ -1557,29 +1537,29 @@ mod tests {
             "reservoir should decrease by state gas cost"
         );
 
-        // --- Second SSTORE: still fits in remaining reservoir (270k left, need 230k) ---
+        // --- Second SSTORE: still fits in remaining reservoir (255k left, need 245k) ---
         provider.sstore(address, U256::from(2), U256::from(43))?;
 
         assert_eq!(
             provider.state_gas_used(),
             2 * state_gas_per_sstore,
-            "two SSTOREs should consume 460k state gas"
+            "two SSTOREs should consume 490k state gas"
         );
         assert_eq!(
             provider.reservoir(),
             reservoir - 2 * state_gas_per_sstore,
-            "reservoir should have 40k left after 2 SSTOREs"
+            "reservoir should have 10k left after 2 SSTOREs"
         );
-        let remaining_reservoir = provider.reservoir(); // 40k
+        let remaining_reservoir = provider.reservoir(); // 10k
         let regular_gas_before_spill = provider.gas_used();
 
-        // --- Third SSTORE: reservoir insufficient, 190k spills to regular gas ---
+        // --- Third SSTORE: reservoir insufficient, 235k spills to regular gas ---
         provider.sstore(address, U256::from(3), U256::from(44))?;
 
         assert_eq!(
             provider.state_gas_used(),
             3 * state_gas_per_sstore,
-            "three SSTOREs should consume 690k state gas total"
+            "three SSTOREs should consume 735k state gas total"
         );
         assert_eq!(
             provider.reservoir(),
@@ -1588,7 +1568,7 @@ mod tests {
         );
 
         // Regular gas increase = normal sstore cost + spill from reservoir
-        let spill = state_gas_per_sstore - remaining_reservoir; // 230k - 40k = 190k
+        let spill = state_gas_per_sstore - remaining_reservoir; // 245k - 10k = 235k
         let expected_regular_after = regular_gas_before_spill + regular_gas_per_sstore + spill;
         assert_eq!(
             provider.gas_used(),
@@ -1738,17 +1718,16 @@ mod tests {
     }
 
     #[test]
-    fn test_sstore_insufficient_gas_for_cold_load_t4() -> eyre::Result<()> {
-        // T4 fork sstore with a tight gas budget: cold-load cost is skipped when the
-        // pre-charged static gas leaves the remaining gas below the cold additional cost.
-        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
+    fn test_sstore_with_limited_execution_gas_t14() -> eyre::Result<()> {
+        // T14 SSTORE uses the reservoir for state gas and a limited execution budget.
+        let mut evm = TestEvm::new(TempoHardfork::T14);
         let gas_params = evm.gas_params();
 
         let static_gas = u64::from(gas_params.get(GasId::SstoreStatic));
         let dynamic_gas = 25_000u64;
         let gas_limit = static_gas + dynamic_gas;
 
-        // Generous reservoir so T4 state-gas (zero->non-zero) doesn't spill into regular gas.
+        // Generous reservoir so T14 state-gas (zero->non-zero) doesn't spill into regular gas.
         let mut provider = evm.provider_with_gas_limit(gas_limit, u64::MAX);
 
         let initial_gas = provider.gas_used();
@@ -1824,9 +1803,9 @@ mod tests {
     }
 
     #[test]
-    fn test_multiple_sstore_insufficient_gas_scenarios_t4() -> eyre::Result<()> {
-        // T4 fork multiple sstores under a constrained gas budget.
-        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
+    fn test_multiple_sstore_with_limited_execution_gas_t14() -> eyre::Result<()> {
+        // T14 multiple SSTOREs under a constrained execution gas budget.
+        let mut evm = TestEvm::new(TempoHardfork::T14);
         let gas_params = evm.gas_params();
 
         let static_gas = u64::from(gas_params.get(GasId::SstoreStatic));

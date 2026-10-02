@@ -234,13 +234,6 @@ fn create_funded_evm_t3(address: Address) -> TempoEvm<'static> {
     evm
 }
 
-/// Create an EVM with T4 hardfork enabled and a funded account.
-fn create_funded_evm_t4(address: Address) -> TempoEvm<'static> {
-    let mut evm = configured_evm(TempoHardfork::T4, 0, true, InMemoryDB::default());
-    fund_account(&mut evm, address);
-    evm
-}
-
 /// Creates the production TIP-1016 environment with a funded account.
 fn create_funded_evm_t14(address: Address) -> TempoEvm<'static> {
     let mut evm = configured_evm(TempoHardfork::T14, 0, false, InMemoryDB::default());
@@ -3588,7 +3581,7 @@ fn test_aa_tx_gas_create_contract() -> eyre::Result<()> {
 /// TIP-1016: generic EVM CREATE charges deployed-bytecode HASH_COST(L)
 /// in addition to CREATE base gas and code deposit gas on the success path.
 #[test]
-fn test_t4_create_tx_charges_hash_cost() -> eyre::Result<()> {
+fn test_t14_create_tx_charges_hash_cost() -> eyre::Result<()> {
     let key_pair = P256KeyPair::random();
     let caller = key_pair.address;
 
@@ -3600,20 +3593,20 @@ fn test_t4_create_tx_charges_hash_cost() -> eyre::Result<()> {
     let signed_tx = key_pair.sign_tx(tx)?;
 
     let run_create = |without_word_cost: bool| -> eyre::Result<u64> {
-        let mut evm = create_funded_evm_t4(caller);
+        let mut evm = create_funded_evm_t14(caller);
         if without_word_cost {
             let mut version = *evm.version();
             version
                 .gas_params
                 .set(evm2::version::GasId::Keccak256PerWord, 0);
             let precompiles = tempo_precompiles::TempoPrecompiles::<TempoEvmTypes>::new(
-                TempoHardfork::T4,
+                TempoHardfork::T14,
                 evm.ext().actions.clone(),
                 evm.ext().non_creditable_slots.clone(),
             );
             evm.set_execution_config(
-                ExecutionConfig::for_spec_and_version(TempoHardfork::T4, version),
-                TempoHardfork::T4,
+                ExecutionConfig::for_spec_and_version(TempoHardfork::T14, version),
+                TempoHardfork::T14,
                 tempo_tx_registry(SpecId::OSAKA),
                 precompiles,
             );
@@ -3624,14 +3617,14 @@ fn test_t4_create_tx_charges_hash_cost() -> eyre::Result<()> {
         )?;
         assert!(
             result.status,
-            "T4 CREATE transaction should succeed with keccak256_per_word={without_word_cost:?}"
+            "T14 CREATE transaction should succeed with keccak256_per_word={without_word_cost:?}"
         );
         Ok(result.tx_gas_used())
     };
 
     assert_eq!(
         run_create(false)? - run_create(true)?, // gas_with_hash - gas_without_hash (test fixture)
-        tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::T4, true)
+        tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::T14, false)
             .gas_params
             .keccak256_word_cost(1),
         "generic CREATE should add HASH_COST(L) on top of the non-hash baseline"
