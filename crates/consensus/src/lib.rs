@@ -61,8 +61,21 @@ pub async fn run_consensus_stack(
     executed_state: tempo_node::ExecutedState,
     feed_state: feed::FeedStateHandle,
     gossip_transport: Option<tempo_node::gossip::TransportHandle>,
+    estimator: tempo_payload_types::Estimator,
 ) -> eyre::Result<()> {
-    config.validate_simplex_timing()?;
+    config.validate()?;
+    estimator
+        .config()
+        .validate()
+        .map_err(|reason| eyre!("invalid proposal budget estimator configuration: {reason}"))?;
+    let expected = config.estimator_config(estimator.config().build_time_multiplier);
+    if estimator.config() != expected {
+        eyre::bail!(
+            "proposal budget estimator was configured differently than the consensus flags: \
+             {:?} vs {expected:?}",
+            estimator.config()
+        );
+    }
 
     let network_identity = config
         .network_identity()
@@ -101,11 +114,6 @@ pub async fn run_consensus_stack(
     let broadcaster = network.register(BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT);
     let marshal = network.register(MARSHAL_CHANNEL_IDENT, backfill_quota);
     let dkg = network.register(DKG_CHANNEL_IDENT, DKG_LIMIT);
-    let target_block_time = config.target_block_time.into_duration();
-    // Reserve time for propagation. The remaining application budget starts
-    // after commonware fetches the parent; that fetch time is not deducted.
-    let proposal_return_budget =
-        target_block_time.saturating_sub(config.network_budget.into_duration());
 
     let consensus_engine = crate::consensus::engine::Builder {
         network_identity,
@@ -134,7 +142,7 @@ pub async fn run_consensus_stack(
         time_for_peer_response: config.wait_for_peer_response.into_duration(),
         views_to_track: config.views_to_track,
         inactive_time_before_leader_skip: config.inactive_time_before_leader_skip.into_duration(),
-        proposal_return_budget,
+        estimator,
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
 
         feed_state,

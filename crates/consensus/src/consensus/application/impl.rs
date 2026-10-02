@@ -1,7 +1,7 @@
 //! Tempo's block building and verification.
 
 use std::{
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -21,7 +21,7 @@ use commonware_cryptography::{
 };
 use commonware_runtime::{
     Clock, Spawner,
-    telemetry::metrics::{Counter, MetricsExt as _},
+    telemetry::metrics::{Counter, Gauge, MetricsExt as _},
 };
 use commonware_utils::{Acknowledgement as _, SystemTimeExt as _};
 use eyre::{OptionExt as _, WrapErr as _, ensure, eyre};
@@ -30,7 +30,7 @@ use rand_core::Rng;
 use reth_primitives_traits::BlockBody as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_payload_types::{
-    TempoPayloadAttributes, ValidationLatencyEstimator, ValidationLatencyWorkload,
+    Estimator, EstimatorSnapshot, TempoPayloadAttributes, ValidationLatencyWorkload,
 };
 use tempo_primitives::TempoConsensusContext;
 use tempo_telemetry_util::display_duration;
@@ -58,13 +58,18 @@ pub(in crate::consensus) struct Config<TContext> {
     /// post-state of its parent.
     pub(in crate::consensus) parent_state: TempoParentState,
 
-    /// Local proposal return budget, excluding the network propagation allowance.
+    /// Shared proposal budget estimator.
     ///
-    /// Starts at `target_block_time - network_budget` when the application is
-    /// called. Commonware's parent fetch happens beforehand and is not charged
-    /// against this budget. Proposal preparation time is deducted before handing
-    /// the remaining budget to the payload builder.
-    pub(in crate::consensus) proposal_return_budget: Duration,
+    /// Provides the proposal return budget (the target block time minus the
+    /// learned network reservation). This application feeds it validation
+    /// times and, for the network reservation, when each own proposal was
+    /// returned and the header timestamp of the block built on top of it.
+    ///
+    /// The return budget starts when the application is called. Commonware's
+    /// parent fetch happens beforehand and is not charged against it. Proposal
+    /// preparation time is deducted before handing the remaining budget to the
+    /// payload builder.
+    pub(in crate::consensus) estimator: Estimator,
 
     /// The epoch strategy used by tempo, to map block heights to epochs.
     pub(in crate::consensus) epoch_strategy: FixedEpocher,
@@ -75,13 +80,14 @@ pub(in crate::consensus) struct Config<TContext> {
 pub(crate) struct Inner {
     public_key: PublicKey,
     epoch_strategy: FixedEpocher,
-    /// Local proposal window after reserving network propagation time.
-    proposal_return_budget: Duration,
+    /// Shared proposal budget estimator: provides the proposal window and
+    /// learns from this node's validations and from how long the chain took
+    /// to build on its proposals.
+    estimator: Estimator,
 
     executor: crate::executor::Mailbox,
     dkg_manager: crate::dkg::manager::Mailbox,
     parent_state: TempoParentState,
-    validation_latency_estimator: Arc<Mutex<ValidationLatencyEstimator>>,
 
     metrics: Metrics,
 }
@@ -93,11 +99,10 @@ impl Inner {
         Self {
             public_key: config.public_key,
             epoch_strategy: config.epoch_strategy,
-            proposal_return_budget: config.proposal_return_budget,
+            estimator: config.estimator,
             executor: config.executor,
             dkg_manager: config.dkg_manager,
             parent_state: config.parent_state,
-            validation_latency_estimator: Default::default(),
             metrics: Metrics::init(&config.context),
         }
     }
@@ -183,16 +188,17 @@ impl Inner {
         });
 
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
-        // Give the builder only the proposal window that remains when payload
-        // construction is requested.
-        let build_budget = self
-            .proposal_return_budget
+        // The proposal window is the target block time minus the learned
+        // network reservation. Starting the proposal is the one estimator
+        // call per own proposal that moves the reservation: from the previous
+        // own proposal's toward what the estimator has learned since, by at
+        // most one bounded step. A build that fails after this point has
+        // still stepped the reservation. Give the builder only what remains
+        // of the window when payload construction is requested.
+        let proposal_budget = self.estimator.start_proposal(Instant::now());
+        let build_budget = proposal_budget
+            .return_budget
             .saturating_sub(propose_start.elapsed());
-        let validation_latency_estimate = self
-            .validation_latency_estimator
-            .lock()
-            .ok()
-            .and_then(|estimator| estimator.estimate());
         let attrs = TempoPayloadAttributes::new(
             Some(proposer_public_key),
             timestamp,
@@ -200,8 +206,7 @@ impl Inner {
             extra_data,
             consensus_context,
         )
-        .with_payload_build_budget(build_budget)
-        .with_validation_latency_estimate(validation_latency_estimate);
+        .with_payload_build_budget(build_budget);
 
         // Subscribe to the payload build. The executor owns the build job
         // and runs it to completion; dropping the receiver (for example
@@ -225,6 +230,23 @@ impl Inner {
                 executor logs the cause) or the executor shut down",
             )?;
 
+        // If this node also proposed the parent, the start of this build
+        // (`epoch_millis`, the header timestamp) is what the chain waited for
+        // and completes that proposal's network sample; the estimator ignores
+        // parents this node did not propose. Children built by other leaders
+        // reach the estimator through `verify()`, which consensus does not
+        // run for a node's own proposal. Under deferred verification such a
+        // sample contains no execution (peers notarize on receipt and the
+        // parent is already executed here), so it lands near the floor and
+        // the window percentile discards it. This runs only once the payload
+        // is built, so a failed build never becomes a sample.
+        self.estimator.on_child_block_built(
+            Instant::now(),
+            (round.epoch().get(), parent_view.get()),
+            round.view().get(),
+            epoch_millis,
+        );
+
         let payload_build_elapsed = payload_build_start.elapsed();
         let payload_validation_work_elapsed = payload.validation_work_duration();
         let validation_latency_elapsed = payload.validation_latency_duration();
@@ -239,12 +261,24 @@ impl Inner {
         // Pace proposal return from the propose start. Validators still need
         // to repeat replayable build work, so leave room for it before
         // returning the proposal.
-        let return_delay = self
-            .proposal_return_budget
+        let return_delay = proposal_budget
+            .return_budget
             .saturating_sub(proposal_elapsed)
             .saturating_sub(validation_latency_elapsed);
+        // Decide from the plan, before the sleep, whether the proposal met
+        // its return budget and what the budget leaves for the validators'
+        // replay. When the build already ran past the budget the delay is
+        // zero, so this is decided by what the build spent. The sleep's timer
+        // overshoot must neither decide the overrun nor shrink the unspent
+        // budget: in production it is sub-millisecond and the sleep rarely
+        // fires at all, and in the deterministic e2e runtime the sleep runs
+        // on simulated time while `propose_start` is a real `Instant`.
+        let spent = proposal_elapsed + return_delay;
+        let unspent_return_budget = proposal_budget.unspent(spent);
         debug!(
             proposal.digest = %proposal.digest(),
+            return_budget = %display_duration(proposal_budget.return_budget),
+            network_reserve = %display_duration(proposal_budget.network_reserve),
             proposal_elapsed = %display_duration(proposal_elapsed),
             build_time = %display_duration(payload_build_elapsed),
             payload_validation_work = %display_duration(payload_validation_work_elapsed),
@@ -253,6 +287,37 @@ impl Inner {
             "sleeping before returning proposal"
         );
         runtime.sleep_until(runtime.current() + return_delay).await;
+
+        // The proposal leaves this node now. What the return budget has left
+        // is what it reserved for the validators' replay, so the chain's wait
+        // beyond it is the network sample that the block built on top of this
+        // proposal completes; record the return on the clock header
+        // timestamps use. A proposal that overran its budget by more than the
+        // configured tolerance, by default the builder's pacing precision,
+        // takes no sample: its gap lacks the
+        // unspent replay reserve that normal samples subtract, so it would
+        // sit above its neighbours by that reserve, and the overrun is the
+        // build time multiplier's to absorb. Overruns within the tolerance
+        // still count, with nothing unspent: they are idle builds that
+        // reserved next to nothing for replay and returned a millisecond or
+        // two late, and dropping them would drop nearly every sample taken
+        // while the pool is dry.
+        let returned_at = Instant::now();
+        match unspent_return_budget {
+            Some(unspent_return_budget) => self.estimator.on_proposal_returned(
+                returned_at,
+                runtime.current().epoch_millis(),
+                (round.epoch().get(), round.view().get()),
+                unspent_return_budget,
+            ),
+            None => debug!(
+                proposal.digest = %proposal.digest(),
+                overrun = %display_duration(spent.saturating_sub(proposal_budget.return_budget)),
+                "proposal overran its return budget; taking no network sample"
+            ),
+        }
+        self.metrics
+            .observe_estimator(&self.estimator.snapshot(returned_at));
 
         Ok(proposal)
     }
@@ -533,16 +598,14 @@ where
 
         match self.executor.verify_block(context, (*block).clone()).await {
             Ok(Some(duration)) => {
-                if let Ok(mut estimator) = self.validation_latency_estimator.lock() {
-                    estimator.observe(
-                        block.height().get(),
-                        ValidationLatencyWorkload::new(
-                            block.block().gas_used(),
-                            block.block().body().transaction_count(),
-                        ),
-                        duration,
-                    );
-                }
+                self.estimator.on_block_verified(
+                    block.height().get(),
+                    ValidationLatencyWorkload::new(
+                        block.block().gas_used(),
+                        block.block().body().transaction_count(),
+                    ),
+                    duration,
+                );
                 // The EL has checked timestamp encoding and parent ordering.
                 // Only the local clock gates voting: in deferred mode this
                 // delays certification, while notarization may happen earlier.
@@ -558,7 +621,7 @@ where
         // Only a boundary block carries a DKG outcome. Compare it after
         // `verify_block`: our outcome reads the parent's state, which the
         // engine has only once it has executed the block.
-        match proposed_outcome {
+        let accepted = match proposed_outcome {
             None => true,
             Some(outcome) => {
                 let (parent, ceremony) =
@@ -567,7 +630,33 @@ where
                     .await
                     .is_ok()
             }
+        };
+
+        // If this node proposed the parent, the child's timestamp is when the
+        // next leader could build on it: the network sample for that
+        // proposal. The sample completes immediately before the verdict, so
+        // an execution-valid child with a rejected DKG outcome, or a
+        // verification cancelled during the timestamp wait, never becomes a
+        // sample. The DKG check matters here because a boundary block built
+        // on one of our own proposals is in the same epoch as its parent:
+        // unlike the first block of the next epoch, it does match the
+        // pending proposal. The header check above ensured that the parent
+        // view the child claims is the one consensus handed us for this
+        // round.
+        if accepted {
+            let now = Instant::now();
+            if let Some(ctx) = block.header().consensus_context {
+                self.estimator.on_child_block_built(
+                    now,
+                    (ctx.epoch, ctx.parent_view),
+                    ctx.view,
+                    block.timestamp_millis(),
+                );
+            }
+            self.metrics
+                .observe_estimator(&self.estimator.snapshot(now));
         }
+        accepted
     }
 }
 
@@ -594,6 +683,19 @@ async fn wait_until_timestamp(runtime: &impl Clock, timestamp: u64) {
 #[derive(Clone)]
 struct Metrics {
     parent_ahead_of_local_time: Counter,
+    /// Network reservation the most recent own proposal subtracted from the
+    /// target block time.
+    estimator_network_reserve_ms: Gauge,
+    /// Learned network time before clamping, zero while the window holds no
+    /// completed proposal. The reservation moves toward it, clamped, by at
+    /// most one bounded step per own proposal.
+    estimator_network_observed_ms: Gauge,
+    /// Proposal return budget of the most recent own proposal.
+    estimator_proposal_return_budget_ms: Gauge,
+    /// Recent P90 execution-layer validation time.
+    estimator_validation_latency_p90_ms: Gauge,
+    /// Build time multiplier in thousandths.
+    estimator_build_time_multiplier_permille: Gauge,
 }
 
 impl Metrics {
@@ -605,7 +707,41 @@ impl Metrics {
 
         Self {
             parent_ahead_of_local_time,
+            estimator_network_reserve_ms: context.gauge(
+                "estimator_network_reserve_ms",
+                "time reserved for proposal propagation and votes, in milliseconds",
+            ),
+            estimator_network_observed_ms: context.gauge(
+                "estimator_network_observed_ms",
+                "learned proposal propagation and vote time before clamping, in milliseconds",
+            ),
+            estimator_proposal_return_budget_ms: context.gauge(
+                "estimator_proposal_return_budget_ms",
+                "local proposal return budget of the most recent own proposal, in milliseconds",
+            ),
+            estimator_validation_latency_p90_ms: context.gauge(
+                "estimator_validation_latency_p90_ms",
+                "recent p90 execution-layer block validation time, in milliseconds",
+            ),
+            estimator_build_time_multiplier_permille: context.gauge(
+                "estimator_build_time_multiplier_permille",
+                "payload build time multiplier in use, in thousandths",
+            ),
         }
+    }
+
+    fn observe_estimator(&self, snapshot: &EstimatorSnapshot) {
+        let millis = |duration: Duration| duration.as_millis().min(i64::MAX as u128) as i64;
+        self.estimator_network_reserve_ms
+            .set(millis(snapshot.network_reserve));
+        self.estimator_network_observed_ms
+            .set(snapshot.network_observed.map_or(0, millis));
+        self.estimator_proposal_return_budget_ms
+            .set(millis(snapshot.proposal_return_budget));
+        self.estimator_validation_latency_p90_ms
+            .set(snapshot.validation_latency_p90.map_or(0, millis));
+        self.estimator_build_time_multiplier_permille
+            .set((snapshot.build_time_multiplier * 1000.0).round() as i64);
     }
 }
 
