@@ -103,6 +103,38 @@ python3 scripts/native-payments/check-t16-factory-devnet.py --event-rpc-url http
 gzip -dc docs/evidence/evm2-t16-native-factory-proofs.json.gz | cargo run --quiet -p tempo-evm --example verify_native_earn_factory_proofs -- - docs/evidence/evm2-t16-native-factory-devnet.json
 ```
 
+## Settlement-forwarder admission check
+
+Tempo revision `d6700be7e` fixed native runtime copying from a contract already
+persisted in the database. Its release binary SHA-256 is
+`ad7d6e360aba8347f54feb74fc08342dbf2f8c3b44b4f77665b9ab2ff9058f78`.
+The [saved run](evm2-t16-native-settlement-forwarder-mock.json) uses the same
+T16 chain and genesis as the registration-event run above. A deployed 65-byte
+mock solver at `0xdc64a140aa3e981100a9beca4e685f962f0cf6c9` exposes an
+engine getter, returns true for caller authorization, and writes a marker and
+the observed caller during `solveAndForward`. The governor registered it in
+block `0xbba`; the receipt emitted `NativeEarnSettlementRegistered`. The
+original deployed runtime was copied to the deterministic snapshot at
+`0x5aec000117109dbf537fec8bc79cda3fb6db7c8c`, and the solver address
+received the native dispatcher.
+
+A canonical one-request forwarding transaction succeeded in block `0xbd3`,
+used 613,338 gas, wrote marker `42` and the original EOA caller to solver
+storage, and left vault assets and EarnShare supply aligned at 1,000,000.
+Seventeen [captured metric samples](evm2-t16-native-settlement-forwarder-mock-lanes.json.gz)
+matched that receipt gas in the payment lane with zero general gas. The
+[checker](../../scripts/native-payments/check-t16-settlement-forwarder-mock.py)
+replays receipt, code, storage, accounting, and lane assertions offline or
+against the devnet:
+
+```sh
+python3 scripts/native-payments/check-t16-settlement-forwarder-mock.py --rpc-url http://127.0.0.1:55545 --tempo-binary target/release/tempo
+```
+
+This mock exercises registration, persisted-code copying, and paid native
+delegatecall. It does **not** execute the Veda solver, engine payout, or vault
+finalization, so real async settlement remains an open gate.
+
 This run exercises new-stack registration and synchronous accounting on a
 fresh fork. The earlier [combined fork run](EVM2_T16_EARN_ZONE_FORK.md) covers
 legacy Earn and Zone migration and the mixed serial workload. Async engine
