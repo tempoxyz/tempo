@@ -240,9 +240,7 @@ impl super::types::TestEnv for Localnet {
     }
 
     async fn current_block_timestamp(&mut self) -> eyre::Result<u64> {
-        for _ in 0..3 {
-            self.setup.node.advance_block().await?;
-        }
+        self.setup.node.advance_blocks(3).await?;
         let block = self
             .provider
             .get_block_by_number(Default::default())
@@ -258,22 +256,10 @@ impl super::types::TestEnv for Localnet {
     ) -> eyre::Result<serde_json::Value> {
         self.setup.node.rpc.inject_tx(encoded.into()).await?;
 
-        // Try multiple blocks — the tx may not be pending in the first block
-        // if pool maintenance hasn't processed the previous block yet.
-        for _ in 0..3 {
-            self.setup.node.advance_block().await?;
-
-            let raw: Option<serde_json::Value> = self
-                .provider
-                .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
-                .await?;
-            if let Some(receipt) = raw {
-                return Ok(receipt);
-            }
-        }
-        Err(eyre::eyre!(
-            "Transaction receipt not found for {tx_hash} after 3 blocks"
-        ))
+        // The tx may not be pending in the first block if pool maintenance hasn't processed the
+        // previous block yet.
+        let receipt = self.setup.node.advance_until_receipt(tx_hash).await?;
+        Ok(serde_json::to_value(receipt)?)
     }
 
     async fn submit_tx_sync(
@@ -281,55 +267,19 @@ impl super::types::TestEnv for Localnet {
         encoded: Vec<u8>,
         tx_hash: B256,
     ) -> eyre::Result<serde_json::Value> {
-        let sync_provider: alloy::providers::RootProvider =
-            alloy::providers::RootProvider::new_http(self.setup.node.rpc_url());
-        let encoded_for_sync = encoded;
-        let mut sync_handle = tokio::spawn(async move {
-            sync_provider
-                .raw_request::<_, serde_json::Value>(
-                    "eth_sendRawTransactionSync".into(),
-                    [encoded_for_sync],
-                )
-                .await
-        });
+        let sync = self
+            .provider
+            .raw_request::<_, serde_json::Value>("eth_sendRawTransactionSync".into(), [encoded]);
+        self.setup
+            .node
+            .advance_while(sync)
+            .await?
+            .map_err(|err| eyre::eyre!("Sync request failed: {err}"))?;
 
-        tokio::time::timeout(std::time::Duration::from_secs(30), async {
-            loop {
-                tokio::select! {
-                    res = &mut sync_handle => {
-                        let res = res.map_err(|err| eyre::eyre!("Sync task failed: {err}"))?;
-                        let _raw_result = res.map_err(|err| eyre::eyre!("Sync request failed: {err}"))?;
-                        break;
-                    }
-                    _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {
-                        self.setup
-                            .node
-                            .advance_block()
-                            .await
-                            .map_err(|err| eyre::eyre!("Advance block failed: {err}"))?;
-                    }
-                }
-            }
-            // Poll for receipt after sync completes (may not be immediately queryable)
-            for _ in 0..10 {
-                let raw: Option<serde_json::Value> = self
-                    .provider
-                    .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
-                    .await?;
-                if let Some(receipt) = raw {
-                    let status = receipt["status"]
-                        .as_str()
-                        .ok_or_else(|| eyre::eyre!("Receipt missing status field for {tx_hash}"))?;
-                    assert_eq!(status, "0x1", "Receipt status mismatch for {tx_hash}");
-                    return Ok(receipt);
-                }
-                self.setup.node.advance_block().await
-                    .map_err(|err| eyre::eyre!("Advance block failed: {err}"))?;
-            }
-            Err(eyre::eyre!("Transaction receipt not found for {tx_hash} after sync"))
-        })
-        .await
-        .map_err(|_| eyre::eyre!("eth_sendRawTransactionSync timed out"))?
+        // The receipt may not be queryable as soon as the sync request completes.
+        let receipt = self.setup.node.advance_until_receipt(tx_hash).await?;
+        assert!(receipt.status(), "Receipt status mismatch for {tx_hash}");
+        Ok(serde_json::to_value(receipt)?)
     }
 }
 
@@ -1454,9 +1404,7 @@ async fn test_key_authorization_witness_burn_evicts_pending_replay() -> eyre::Re
     let chain_id = provider.get_chain_id().await?;
     let witness = B256::with_last_byte(0x54);
 
-    for _ in 0..2 {
-        setup.node.advance_block().await?;
-    }
+    setup.node.advance_blocks(2).await?;
     let current_timestamp = provider
         .get_block_by_number(Default::default())
         .await?
@@ -1782,9 +1730,7 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
     println!("\n=== STEP 2: Submit transaction with future valid_after using access key ===");
 
     // Advance a couple blocks to get a fresh timestamp
-    for _ in 0..2 {
-        setup.node.advance_block().await?;
-    }
+    setup.node.advance_blocks(2).await?;
 
     let block = provider
         .get_block_by_number(Default::default())
@@ -2015,9 +1961,7 @@ async fn test_aa_expiring_nonce_replay_protection() -> eyre::Result<()> {
     let recipient = Address::random();
 
     // Advance a few blocks to get a meaningful timestamp
-    for _ in 0..3 {
-        setup.node.advance_block().await?;
-    }
+    setup.node.advance_blocks(3).await?;
 
     // Get current block timestamp
     let block = provider
@@ -2144,9 +2088,7 @@ async fn test_aa_keychain_spending_limit_toctou_dos() -> eyre::Result<()> {
     println!("\n=== STEP 2: Submit transaction with future valid_after using access key ===");
 
     // Advance a couple blocks to get a fresh timestamp
-    for _ in 0..2 {
-        setup.node.advance_block().await?;
-    }
+    setup.node.advance_blocks(2).await?;
 
     let block = provider
         .get_block_by_number(Default::default())
