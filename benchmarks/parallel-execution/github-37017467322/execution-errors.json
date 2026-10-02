@@ -1,0 +1,61 @@
+[
+  {
+    "log": "logs-baseline-3-a",
+    "time": "2026-10-02T14:29:44.499779Z",
+    "fields": {
+      "error": "[failed delivering finalized block `0x675772b0a4e402ee5a9a3cd492323ce33a7f0b92ade40c1232c9289424eaa9e5` at height `217`, failed sending new-payload request to execution layer, beacon consensus engine task stopped]"
+    },
+    "spans": [
+      "start_next_execution_task",
+      "set_execution_task",
+      "handle_execution_task_finished",
+      "handle_finalized_delivered"
+    ]
+  },
+  {
+    "log": "logs-baseline-3-a",
+    "time": "2026-10-02T14:29:44.499791Z",
+    "fields": {
+      "error": "[failed delivering finalized block `0x675772b0a4e402ee5a9a3cd492323ce33a7f0b92ade40c1232c9289424eaa9e5` at height `217`, failed sending new-payload request to execution layer, beacon consensus engine task stopped]"
+    },
+    "spans": [
+      "start_next_execution_task",
+      "set_execution_task",
+      "handle_execution_task_finished"
+    ]
+  },
+  {
+    "log": "logs-baseline-3-a",
+    "time": "2026-10-02T14:29:44.499804Z",
+    "fields": {
+      "message": "executor encountered fatal execution-layer update error; shutting down to prevent consensus-execution divergence",
+      "error": "[failed delivering finalized block `0x675772b0a4e402ee5a9a3cd492323ce33a7f0b92ade40c1232c9289424eaa9e5` at height `217`, failed sending new-payload request to execution layer, beacon consensus engine task stopped]"
+    },
+    "spans": [
+      "shutdown"
+    ]
+  },
+  {
+    "log": "logs-baseline-1-a",
+    "time": "2026-10-02T14:17:49.724997Z",
+    "fields": {
+      "error": "[failed delivering block `0x14369abb3405500a7562138fce28b5c6328d248cd1b33e8127e5c62103a9611d` for verification (0, 210), failed sending new-payload request to execution layer, beacon consensus engine task stopped]"
+    },
+    "spans": [
+      "start_next_execution_task",
+      "set_execution_task",
+      "handle_execution_task_finished"
+    ]
+  },
+  {
+    "log": "logs-baseline-1-a",
+    "time": "2026-10-02T14:17:49.725014Z",
+    "fields": {
+      "message": "executor encountered fatal execution-layer update error; shutting down to prevent consensus-execution divergence",
+      "error": "[failed delivering block `0x14369abb3405500a7562138fce28b5c6328d248cd1b33e8127e5c62103a9611d` for verification (0, 210), failed sending new-payload request to execution layer, beacon consensus engine task stopped]"
+    },
+    "spans": [
+      "shutdown"
+    ]
+  }
+]

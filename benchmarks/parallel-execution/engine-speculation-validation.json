@@ -1,0 +1,34 @@
+{
+  "source_commit": "2855d574f564ef6776ae6c95cd1dab0d71e58877",
+  "latest_main": "61c979a524f9af5de9c540a0088c429a44741e4c",
+  "issue": "Reth Engine API precompile-cache installation called components_mut and disabled speculative workers. Earlier GitHub events came only from builders.",
+  "fix": "When a Tempo worker pool is enabled, disable only the optional engine precompile result cache. Keep conservative guards for actual custom precompiles.",
+  "tests": {
+    "evm": {
+      "passed": 145,
+      "ignored": 2
+    },
+    "revm": {
+      "passed": 200
+    },
+    "observer_engine_import": {
+      "passed": 2,
+      "description": "Sequential producer supplies canonical payloads to an observer with no builder transactions. Parallel observer asserts shared pool dispatch counter becomes nonzero and Engine API accepts roots; post-state is checked."
+    },
+    "real_node_expiring_aa": {
+      "passed": 2,
+      "description": "64 signed expiring TIP20 transfers, sequential/parallel, receipts/balances/ring pointer. Debug log also proves execute_block worker reuse."
+    },
+    "node_root_and_shared_trie": {
+      "passed": 6
+    },
+    "release_all_target_clippy": "tempo-evm, tempo-node, tempo-payload-builder passed with warnings denied using Rust 1.98.1",
+    "block_access_list": {
+      "passed": 1,
+      "description": "The expiring-AA differential test compares complete execution results and the actual revm State block access list, including per-transaction values, between sequential and speculative execution with omitted/reordered preview candidates and both reuse and replay.",
+      "release_all_target_clippy": "Passed for tempo-evm after extending the test.",
+      "test_commit": "defc78a54"
+    }
+  },
+  "compiler": "Rust 1.98.1; formatting cargo +nightly fmt. Latest-main pinned nightly Clippy was not run locally."
+}

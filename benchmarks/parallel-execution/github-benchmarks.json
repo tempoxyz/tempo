@@ -1,20 +1,21 @@
 {
-  "status": "nonce_prediction_throughput_in_progress",
+  "status": "reward_prefetch_throughput_and_engine_replay_pending",
   "pull_request": null,
   "user_preferences": {
     "open_pull_request": false,
-    "performance_gate": "Periodically run the real GitHub benchmark workflows after substantial scheduler changes; local measurements are diagnostic."
+    "performance_gate": "Periodically run the real GitHub benchmark workflows after substantial scheduler changes; local measurements are diagnostic.",
+    "slack": "Use workflow on-win notifications for future runs. No direct Slack fallback."
   },
   "repository": "tempoxyz/tempo",
   "published_branch": "onbjerg/parallel-execution",
-  "published_commit": "844f7bb21",
+  "published_commit": "2855d574f564ef6776ae6c95cd1dab0d71e58877",
   "source_commit": "c60f368fed2efe80fa9ecf9a3f07ba0285572dd3",
   "publication": "Git push; original local history linked to earlier API snapshot and latest main",
   "workflow": ".github/workflows/bench-e2e.yml",
   "workflow_inspected_at": "96c28fa63fd4c25c76b18c7a2bc04d690a402e72",
   "workflow_ref": "main",
   "trigger": "workflow_dispatch; no PR required",
-  "authentication": "Authenticated GitHub CLI verified for onbjerg (repo scope).",
+  "authentication": "Authenticated GitHub CLI for onbjerg; repo and workflow scopes verified by successful pushes and dispatches.",
   "compatibility": [
     "Current-main port: Tempo 1.14, Reth 2.7, revm 43; regenesis and consensus key handling retained.",
     "Current-main native storage-action replay, payload gas accounting and background state-root building retained."
@@ -175,7 +176,7 @@
       "id": 37017467322,
       "url": "https://github.com/tempoxyz/tempo/actions/runs/37017467322",
       "created_at": "2026-10-02T14:05:42Z",
-      "status": "in_progress",
+      "status": "completed",
       "workflow": ".github/workflows/bench-e2e.yml",
       "harness_sha": "4caada90d070419af2e72900914849867f4bb5e8",
       "inputs": {
@@ -201,14 +202,156 @@
         "run-pairs": "3"
       },
       "purpose": "Measure expiring nonce cursor prediction and prefetch with normal builder prewarming; profiling disabled, three pairs.",
-      "runner": "ghr-euw-05"
+      "runner": "ghr-euw-05",
+      "conclusion": "success",
+      "result": "throughput regression",
+      "baseline_tps": 15737,
+      "feature_tps": 2977,
+      "delta_pct": -81.08,
+      "artifact_id": 11233295001,
+      "artifact_bytes": 758818812,
+      "report": "github-37017467322/summary.md",
+      "scheduler_totals": {
+        "speculated": 978422,
+        "reused": 692154,
+        "conflicts": 208638,
+        "retries": 0,
+        "backoff": 0,
+        "fees_rebased": 684508
+      },
+      "validation_caveat": "All scheduler log events are in builder spans. Reth precompile-cache installation disables speculation in Engine API validation via the mutable-precompile guard; fixing node integration before claiming parallel historical validation.",
+      "sender_report_failures": {
+        "baseline": [
+          14184,
+          9209,
+          8120
+        ],
+        "feature": [
+          11122,
+          9029,
+          10555
+        ]
+      }
+    },
+    {
+      "id": 37020751576,
+      "url": "https://github.com/tempoxyz/tempo/actions/runs/37020751576",
+      "created_at": "2026-10-02T14:33:56Z",
+      "status": "completed",
+      "workflow": ".github/workflows/bench-replay.yml",
+      "harness_sha": "7c1f1b86ffcdf1e08e05628b4feac8d0c70dc6d2",
+      "runner": "ghr-euw-05",
+      "inputs": {
+        "chain": "mainnet",
+        "blocks": "5000",
+        "warmup": "1250",
+        "run-pairs": "2",
+        "samply": "false",
+        "otlp": "true",
+        "baseline": "4caada90d070419af2e72900914849867f4bb5e8",
+        "feature": "844f7bb21ba07005747fefb15d6d023fd8d7135f",
+        "feature-args": "--execution.threads 8 --execution.batch-size 128",
+        "slack": "never"
+      },
+      "validation_caveat": "5000 measured mainnet blocks, heights 42230064..42235063, 1232 transactions, two pairs passed canonical Engine API checks. Precompile-cache installation disabled speculative workers: sequential-path coverage only.",
+      "conclusion": "success",
+      "artifact_id": 11232937685,
+      "artifact_bytes": 55057395,
+      "report": "github-37020751576/comment.md"
+    },
+    {
+      "id": 37022356052,
+      "url": "https://github.com/tempoxyz/tempo/actions/runs/37022356052",
+      "created_at": "2026-10-02T14:47:36Z",
+      "status": "in_progress",
+      "workflow": ".github/workflows/bench-e2e.yml",
+      "harness_sha": "61c979a524f9af5de9c540a0088c429a44741e4c",
+      "runner": "ghr-euw-02",
+      "inputs": {
+        "baseline": "4caada90d070419af2e72900914849867f4bb5e8",
+        "feature": "7c1f1b86ffcdf1e08e05628b4feac8d0c70dc6d2",
+        "baseline-hardfork": "T14",
+        "feature-hardfork": "T14",
+        "preset": "default",
+        "duration": "90",
+        "bloat": "100",
+        "tps": "50000",
+        "accounts": "1000",
+        "max-concurrent-requests": "100",
+        "txgen-ref": "3f389beb990872bd3b9937d92a923e534f1d3515",
+        "token-count": "4",
+        "profiling": "samply",
+        "otlp": "true",
+        "valscope": "false",
+        "feature-args": "--execution.threads 8 --execution.batch-size 128 --engine.disable-precompile-cache",
+        "gas-limit": "1000000000000",
+        "general-gas-limit": "1500000000",
+        "no-slack": "true",
+        "run-pairs": "3"
+      },
+      "purpose": "Profile and measure T8+ reward-prefetch removal with normal builder prewarming; explicit engine cache disable enables actual validator speculation. Cache-off setting differs from prior runs; compare against paired baseline."
     }
   ],
   "replay_retry": {
-    "state": "scheduled_after_run_37017467322",
+    "state": "completed_sequential_path_only",
     "workflow_ref": "onbjerg/parallel-execution",
     "toolchain_fix_commit": "d99f396a0",
     "inputs_file": "/tmp/tempo-main-historical-replay-inputs.json",
-    "reason": "Both builds crashed in LLVM under unpinned Rust stable 1.99; retry pins 1.98.1 like e2e."
+    "reason": "Both builds crashed in LLVM under unpinned Rust stable 1.99; retry pins 1.98.1 like e2e.",
+    "run_id": 37020751576
+  },
+  "reward_prefetch_comparison": {
+    "state": "in_progress",
+    "inputs_file": "/tmp/tempo-main-github-50k-reward-prefetch-inputs.json",
+    "inputs": {
+      "baseline": "4caada90d070419af2e72900914849867f4bb5e8",
+      "feature": "7c1f1b86ffcdf1e08e05628b4feac8d0c70dc6d2",
+      "baseline-hardfork": "T14",
+      "feature-hardfork": "T14",
+      "preset": "default",
+      "duration": "90",
+      "bloat": "100",
+      "tps": "50000",
+      "accounts": "1000",
+      "max-concurrent-requests": "100",
+      "txgen-ref": "3f389beb990872bd3b9937d92a923e534f1d3515",
+      "token-count": "4",
+      "profiling": "samply",
+      "otlp": "true",
+      "valscope": "false",
+      "feature-args": "--execution.threads 8 --execution.batch-size 128 --engine.disable-precompile-cache",
+      "gas-limit": "1000000000000",
+      "general-gas-limit": "1500000000",
+      "no-slack": "true",
+      "run-pairs": "3"
+    },
+    "purpose": "Measure T8+ obsolete reward-prefetch removal and profile both sides. Explicit --engine.disable-precompile-cache enables validator speculation on pinned 7c1f1b86f, before automatic node configuration fix 2855d574f.",
+    "run_id": 37022356052
+  },
+  "latest_main_integrated": "61c979a524f9af5de9c540a0088c429a44741e4c",
+  "notification_configuration": {
+    "replay": "slack=on-win",
+    "e2e": "Dispatch branch onbjerg/parallel-execution with no-slack=false. Commit 16ea18c59 sets manual BENCH_SLACK=on-win and suppresses failure notifications; reusable workflow caller policy retained.",
+    "verification": "Workflow YAML parses with 25 manual inputs. Existing notifier dry-run with mocked filesystem and HTTP passes for regression, neutral and improvement; no messages actually sent.",
+    "already_running_exception": "37022356052 started before notification steering and keeps no-slack=true.",
+    "reusable_e2e": "Optional workflow_call slack input defaults to always; direct workflow_dispatch has no such input and falls back to on-win. This preserves manually-triggered scheduled callers too.",
+    "workflow_commit": "defc78a54"
+  },
+  "parallel_historical_replay": {
+    "state": "scheduled_after_run_37022356052",
+    "workflow_ref": "onbjerg/parallel-execution",
+    "inputs": {
+      "chain": "mainnet",
+      "blocks": "5000",
+      "warmup": "1250",
+      "run-pairs": "2",
+      "samply": "false",
+      "otlp": "true",
+      "baseline": "61c979a524f9af5de9c540a0088c429a44741e4c",
+      "feature": "2855d574f564ef6776ae6c95cd1dab0d71e58877",
+      "feature-args": "--execution.threads 8 --execution.batch-size 128",
+      "slack": "on-win"
+    },
+    "purpose": "Historical canonical root/receipt validation with verified Engine API worker activation. Collect scheduler events to confirm the path actually runs."
   }
 }

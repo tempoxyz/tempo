@@ -1,0 +1,151 @@
+diff --git a/crates/evm/src/evm.rs b/crates/evm/src/evm.rs
+index 99d404e00..22c178114 100644
+--- a/crates/evm/src/evm.rs
++++ b/crates/evm/src/evm.rs
+@@ -22,6 +22,7 @@ use std::{
+     cell::RefCell,
+     ops::{Deref, DerefMut},
+     rc::Rc,
++    sync::Arc,
+ };
+ use tempo_chainspec::hardfork::TempoHardfork;
+ use tempo_precompiles::{storage::StorageAction, storage_credits::NonCreditableSlots};
+@@ -211,6 +212,11 @@ impl<DB: Database, I> TempoEvm<DB, I> {
+         let timestamp = self.inner.ctx.block.timestamp.saturating_to();
+         let disable_nonce_check = self.inner.ctx.cfg.disable_nonce_check;
+         let mut prefetched = HashMap::default();
++        // All candidates in this window share the configuration and block, apart
++        // from their beneficiary. Keep one immutable environment per beneficiary
++        // instead of copying the full gas configuration into every input/result.
++        // Reuse still compares its values to the actual transaction context.
++        let mut environments: HashMap<_, _> = HashMap::default();
+         let inputs = transactions
+             .into_iter()
+             .take(executor.batch_size())
+@@ -236,15 +242,15 @@ impl<DB: Database, I> TempoEvm<DB, I> {
+                 if let Some(aa) = tx.tempo_tx_env.as_mut() {
+                     aa.expiring_nonce_idx = None;
+                 }
+-                let mut block_env = self.inner.ctx.block.clone();
+-                block_env.beneficiary = beneficiary;
+-                Some((
+-                    tx,
+-                    EvmEnv {
++                let env = environments.entry(beneficiary).or_insert_with(|| {
++                    let mut block_env = self.inner.ctx.block.clone();
++                    block_env.beneficiary = beneficiary;
++                    Arc::new(EvmEnv {
+                         block_env,
+                         cfg_env: self.inner.ctx.cfg.clone(),
+-                    },
+-                ))
++                    })
++                });
++                Some((tx, Arc::clone(env)))
+             })
+             .collect::<Vec<_>>();
+         self.execution_stats.speculated += inputs.len() as u64;
+diff --git a/crates/evm/src/parallel.rs b/crates/evm/src/parallel.rs
+index e28050d40..86cacbe34 100644
+--- a/crates/evm/src/parallel.rs
++++ b/crates/evm/src/parallel.rs
+@@ -163,7 +163,7 @@ impl SpeculativeExecutor {
+     pub(crate) fn speculate<DB: Database>(
+         &self,
+         db: &mut DB,
+-        inputs: Vec<(TempoTxEnv, Env)>,
++        inputs: Vec<(TempoTxEnv, Arc<Env>)>,
+         mut prefetched: HashMap<ReadKey, ReadValue>,
+     ) -> SpeculativeBatch<DB::Error> {
+         assert!(inputs.len() <= self.batch_size);
+@@ -342,7 +342,7 @@ fn prefetch<'a, DB: Database>(
+ 
+ #[derive(Debug)]
+ struct Work {
+-    inputs: Vec<(TempoTxEnv, Env)>,
++    inputs: Vec<(TempoTxEnv, Arc<Env>)>,
+     nonce_ptrs: Vec<Option<U256>>,
+     prefetched: HashMap<ReadKey, ReadValue>,
+     cache: RwLock<HashMap<ReadKey, ReadValue>>,
+@@ -375,7 +375,7 @@ fn run_worker<E: DBErrorMarker>(
+         predicted_nonce_ptr: None,
+     };
+     let mut indices = indices.map(Vec::into_iter);
+-    let mut evm = TempoEvm::new(db, shared.inputs[0].1.clone());
++    let mut evm = TempoEvm::new(db, shared.inputs[0].1.as_ref().clone());
+     evm.inner_mut().enable_body_recording(minimum_body_duration);
+     let mut standard_fee_gas = fee_rebasing
+         && evm.ctx().cfg.gas_params == tempo_revm::gas_params::tempo_gas_params(evm.ctx().cfg.spec);
+@@ -402,7 +402,7 @@ fn run_worker<E: DBErrorMarker>(
+         evm.ctx_mut().journaled_state.database.predicted_nonce_ptr = shared.nonce_ptrs[index];
+         if evm.ctx().cfg != env.cfg_env {
+             let (db, _) = evm.finish();
+-            evm = TempoEvm::new(db, env.clone());
++            evm = TempoEvm::new(db, env.as_ref().clone());
+             evm.inner_mut().enable_body_recording(minimum_body_duration);
+             standard_fee_gas = fee_rebasing
+                 && env.cfg_env.gas_params
+@@ -619,7 +619,7 @@ pub struct ExecutionStats {
+ 
+ #[derive(Debug)]
+ pub(crate) struct SpeculativeResult<E> {
+-    pub(crate) env: Env,
++    pub(crate) env: Arc<Env>,
+     reads: Vec<(ReadKey, ReadValue)>,
+     pub(crate) result: Outcome<E>,
+     pub(crate) validator_fee: U256,
+diff --git a/crates/evm/src/parallel/forwarding.rs b/crates/evm/src/parallel/forwarding.rs
+index 13a0afb73..633f71697 100644
+--- a/crates/evm/src/parallel/forwarding.rs
++++ b/crates/evm/src/parallel/forwarding.rs
+@@ -1,7 +1,7 @@
+ //! Bounded, advisory predecessor dependencies. These values are predictions:
+ //! the ordinary ordered read validation remains the authority for every result.
+ 
+-use super::{Env, ReadKey, ReadValue, TempoTxEnv};
++use super::{Arc, Env, ReadKey, ReadValue, TempoTxEnv};
+ use alloy_primitives::{U256, map::HashMap};
+ use alloy_sol_types::SolCall;
+ use reth_revm::state::EvmState;
+@@ -41,7 +41,7 @@ pub(super) struct Forwarding {
+ }
+ 
+ impl Forwarding {
+-    pub(super) fn new(inputs: &[(TempoTxEnv, Env)]) -> Self {
++    pub(super) fn new(inputs: &[(TempoTxEnv, Arc<Env>)]) -> Self {
+         let mut latest = HashMap::<ReadKey, (usize, usize)>::default();
+         let mut hints = Vec::with_capacity(inputs.len());
+         let mut dependents = vec![Vec::new(); inputs.len()];
+diff --git a/crates/evm/src/parallel/tests.rs b/crates/evm/src/parallel/tests.rs
+index 3abfea593..edf8e7c39 100644
+--- a/crates/evm/src/parallel/tests.rs
++++ b/crates/evm/src/parallel/tests.rs
+@@ -476,7 +476,7 @@ fn forwarding_cancellation_wakes_predecessor_waiters() {
+     let batch = pool.speculate(
+         &mut db,
+         (0..16)
+-            .map(|nonce| (transaction(0, target, nonce, &[]), env.clone()))
++            .map(|nonce| (transaction(0, target, nonce, &[]), env.clone().into()))
+             .collect(),
+         HashMap::default(),
+     );
+@@ -2723,8 +2723,8 @@ fn streaming_returns_before_later_reads_and_joins_cancelled_workers() {
+     let mut batch = pool.speculate(
+         &mut db,
+         vec![
+-            (tx.clone(), env.clone()),
+-            (transaction(1, later, 0, &[]), env),
++            (tx.clone(), env.clone().into()),
++            (transaction(1, later, 0, &[]), env.into()),
+         ],
+         HashMap::default(),
+     );
+@@ -2828,7 +2828,7 @@ fn worker_panic_releases_other_workers_waiting_for_reads() {
+     let (_, env) = test_evm_with_basefee(TestDB::default(), 0).finish();
+     let tx = transaction(0, address(900), 0, &[]);
+     let shared = Arc::new(Work {
+-        inputs: vec![(tx.clone(), env)],
++        inputs: vec![(tx.clone(), env.into())],
+         nonce_ptrs: vec![None],
+         prefetched: HashMap::default(),
+         cache: RwLock::default(),

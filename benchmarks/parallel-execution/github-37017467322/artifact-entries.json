@@ -1,0 +1,192 @@
+[
+  {
+    "name": "20261002-140625-480/clickhouse-run-id-feature-1.txt",
+    "bytes": 36,
+    "compressed_bytes": 38
+  },
+  {
+    "name": "20261002-140625-480/clickhouse-run-id.txt",
+    "bytes": 36,
+    "compressed_bytes": 38
+  },
+  {
+    "name": "20261002-140625-480/log-summary.json",
+    "bytes": 3509,
+    "compressed_bytes": 783
+  },
+  {
+    "name": "20261002-140625-480/logs-baseline-1-a/dev/reth.log",
+    "bytes": 35689673,
+    "compressed_bytes": 1998981
+  },
+  {
+    "name": "20261002-140625-480/logs-baseline-1-b/dev/reth.log",
+    "bytes": 35241823,
+    "compressed_bytes": 2023642
+  },
+  {
+    "name": "20261002-140625-480/logs-baseline-2-a/dev/reth.log",
+    "bytes": 40864651,
+    "compressed_bytes": 2338384
+  },
+  {
+    "name": "20261002-140625-480/logs-baseline-2-b/dev/reth.log",
+    "bytes": 38907761,
+    "compressed_bytes": 2272930
+  },
+  {
+    "name": "20261002-140625-480/logs-baseline-3-a/dev/reth.log",
+    "bytes": 38733820,
+    "compressed_bytes": 2191659
+  },
+  {
+    "name": "20261002-140625-480/logs-baseline-3-b/dev/reth.log",
+    "bytes": 38168811,
+    "compressed_bytes": 2197869
+  },
+  {
+    "name": "20261002-140625-480/logs-feature-1-a/dev/reth.log",
+    "bytes": 41822953,
+    "compressed_bytes": 2814395
+  },
+  {
+    "name": "20261002-140625-480/logs-feature-1-b/dev/reth.log",
+    "bytes": 42114889,
+    "compressed_bytes": 2802025
+  },
+  {
+    "name": "20261002-140625-480/logs-feature-2-a/dev/reth.log",
+    "bytes": 29681818,
+    "compressed_bytes": 1916335
+  },
+  {
+    "name": "20261002-140625-480/logs-feature-2-b/dev/reth.log",
+    "bytes": 29550158,
+    "compressed_bytes": 1898172
+  },
+  {
+    "name": "20261002-140625-480/logs-feature-3-a/dev/reth.log",
+    "bytes": 29893807,
+    "compressed_bytes": 1938920
+  },
+  {
+    "name": "20261002-140625-480/logs-feature-3-b/dev/reth.log",
+    "bytes": 29787502,
+    "compressed_bytes": 1924840
+  },
+  {
+    "name": "20261002-140625-480/phase-range-baseline-1.json",
+    "bytes": 90,
+    "compressed_bytes": 73
+  },
+  {
+    "name": "20261002-140625-480/phase-range-baseline-2.json",
+    "bytes": 90,
+    "compressed_bytes": 74
+  },
+  {
+    "name": "20261002-140625-480/phase-range-baseline-3.json",
+    "bytes": 90,
+    "compressed_bytes": 73
+  },
+  {
+    "name": "20261002-140625-480/phase-range-feature-1.json",
+    "bytes": 89,
+    "compressed_bytes": 72
+  },
+  {
+    "name": "20261002-140625-480/phase-range-feature-2.json",
+    "bytes": 89,
+    "compressed_bytes": 72
+  },
+  {
+    "name": "20261002-140625-480/phase-range-feature-3.json",
+    "bytes": 89,
+    "compressed_bytes": 72
+  },
+  {
+    "name": "20261002-140625-480/report-baseline-1.json",
+    "bytes": 42431,
+    "compressed_bytes": 5520
+  },
+  {
+    "name": "20261002-140625-480/report-baseline-1.samples.ndjson.gz",
+    "bytes": 132358838,
+    "compressed_bytes": 116346070
+  },
+  {
+    "name": "20261002-140625-480/report-baseline-2.json",
+    "bytes": 46536,
+    "compressed_bytes": 5907
+  },
+  {
+    "name": "20261002-140625-480/report-baseline-2.samples.ndjson.gz",
+    "bytes": 150792971,
+    "compressed_bytes": 132756301
+  },
+  {
+    "name": "20261002-140625-480/report-baseline-3.json",
+    "bytes": 45048,
+    "compressed_bytes": 5918
+  },
+  {
+    "name": "20261002-140625-480/report-baseline-3.samples.ndjson.gz",
+    "bytes": 127235952,
+    "compressed_bytes": 111949159
+  },
+  {
+    "name": "20261002-140625-480/report-feature-1.json",
+    "bytes": 54644,
+    "compressed_bytes": 6125
+  },
+  {
+    "name": "20261002-140625-480/report-feature-1.samples.ndjson.gz",
+    "bytes": 140356847,
+    "compressed_bytes": 124071954
+  },
+  {
+    "name": "20261002-140625-480/report-feature-2.json",
+    "bytes": 53924,
+    "compressed_bytes": 5947
+  },
+  {
+    "name": "20261002-140625-480/report-feature-2.samples.ndjson.gz",
+    "bytes": 140437226,
+    "compressed_bytes": 123975227
+  },
+  {
+    "name": "20261002-140625-480/report-feature-3.json",
+    "bytes": 54650,
+    "compressed_bytes": 6082
+  },
+  {
+    "name": "20261002-140625-480/report-feature-3.samples.ndjson.gz",
+    "bytes": 139912216,
+    "compressed_bytes": 123352396
+  },
+  {
+    "name": "20261002-140625-480/run-order.txt",
+    "bytes": 62,
+    "compressed_bytes": 33
+  },
+  {
+    "name": "20261002-140625-480/summary.json",
+    "bytes": 14380,
+    "compressed_bytes": 2878
+  },
+  {
+    "name": "20261002-140625-480/summary.md",
+    "bytes": 4338,
+    "compressed_bytes": 1829
+  },
+  {
+    "name": "20261002-140625-480/summary-config.json",
+    "bytes": 452,
+    "compressed_bytes": 257
+  },
+  {
+    "name": "20261002-140625-480/txgen-spec.yml",
+    "bytes": 1850,
+    "compressed_bytes": 754
+  }
+]

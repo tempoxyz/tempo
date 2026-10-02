@@ -1,0 +1,28 @@
+
+running 1 test
+# hardfork=T14
+workload	transactions	workers	seconds	tps	reused	conflicts	retries	backoff	bodies_reused	fees_rebased
+PHASES workload=storage count=50000 workers=0 batch=128 prepare=0.000007 ordered=0.105659 commit=0.011054
+storage	50000	0	0.119427	418665	0	0	0	0	0	0
+PHASES workload=storage count=50000 workers=8 batch=128 prepare=0.065527 ordered=0.084136 commit=0.040917
+storage	50000	8	0.193038	259016	50000	0	0	0	0	0
+PHASES workload=compute count=50000 workers=0 batch=128 prepare=0.000008 ordered=0.791597 commit=0.008946
+compute	50000	0	0.803070	62261	0	0	0	0	0	0
+PHASES workload=compute count=50000 workers=8 batch=128 prepare=0.060034 ordered=0.108018 commit=0.027735
+compute	50000	8	0.198431	251976	50000	0	0	0	0	0
+PHASES workload=compute_paid count=50000 workers=0 batch=128 prepare=0.000008 ordered=0.876788 commit=0.016713
+compute_paid	50000	0	0.896002	55803	0	0	0	0	0	0
+PHASES workload=compute_paid count=50000 workers=8 batch=128 prepare=0.071262 ordered=0.131443 commit=0.044716
+compute_paid	50000	8	0.250260	199792	48849	127	0	1024	0	48466
+PHASES workload=tip20_paid count=50000 workers=0 batch=128 prepare=0.000008 ordered=0.290389 commit=0.025432
+tip20_paid	50000	0	0.318744	156866	0	0	0	0	0	0
+PHASES workload=tip20_paid count=50000 workers=8 batch=128 prepare=0.109492 ordered=0.122324 commit=0.037152
+tip20_paid	50000	8	0.274807	181946	48849	127	0	1024	0	48466
+PHASES workload=tip20_paid_aa_existing count=50000 workers=0 batch=128 prepare=0.000008 ordered=0.260280 commit=0.019329
+tip20_paid_aa_existing	50000	0	0.282516	176981	0	0	0	0	0	0
+PHASES workload=tip20_paid_aa_existing count=50000 workers=8 batch=128 prepare=0.014922 ordered=0.265325 commit=0.024703
+tip20_paid_aa_existing	50000	8	0.308159	162254	1453	4179	0	44368	0	1409
+test parallel::tests::execution_throughput ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 146 filtered out; finished in 4.78s
+

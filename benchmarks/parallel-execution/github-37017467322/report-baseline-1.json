@@ -1,0 +1,1951 @@
+{
+  "benchmark_id": "bc9c2b70-730c-4772-bfaa-98ec0d305b35",
+  "sent": 1539814,
+  "success": 1525630,
+  "failed": 14184,
+  "elapsed_secs": 95.930850038,
+  "tps": 16051.291105937777,
+  "success_rate": 99.07884978315563,
+  "time_series": {
+    "throughput": [
+      {
+        "second": 0,
+        "sent": 43241,
+        "success": 43141,
+        "failed": 0
+      },
+      {
+        "second": 1,
+        "sent": 34441,
+        "success": 34470,
+        "failed": 0
+      },
+      {
+        "second": 2,
+        "sent": 24297,
+        "success": 24368,
+        "failed": 0
+      },
+      {
+        "second": 3,
+        "sent": 18877,
+        "success": 18877,
+        "failed": 0
+      },
+      {
+        "second": 4,
+        "sent": 22682,
+        "success": 22582,
+        "failed": 0
+      },
+      {
+        "second": 5,
+        "sent": 25312,
+        "success": 25412,
+        "failed": 0
+      },
+      {
+        "second": 6,
+        "sent": 24028,
+        "success": 23353,
+        "failed": 591
+      },
+      {
+        "second": 7,
+        "sent": 24023,
+        "success": 24036,
+        "failed": 0
+      },
+      {
+        "second": 8,
+        "sent": 20584,
+        "success": 19159,
+        "failed": 1396
+      },
+      {
+        "second": 9,
+        "sent": 24164,
+        "success": 24240,
+        "failed": 0
+      },
+      {
+        "second": 10,
+        "sent": 20621,
+        "success": 20545,
+        "failed": 0
+      },
+      {
+        "second": 11,
+        "sent": 13803,
+        "success": 13803,
+        "failed": 0
+      },
+      {
+        "second": 12,
+        "sent": 23073,
+        "success": 23087,
+        "failed": 0
+      },
+      {
+        "second": 13,
+        "sent": 20833,
+        "success": 20834,
+        "failed": 0
+      },
+      {
+        "second": 14,
+        "sent": 19345,
+        "success": 19330,
+        "failed": 0
+      },
+      {
+        "second": 15,
+        "sent": 31022,
+        "success": 31033,
+        "failed": 0
+      },
+      {
+        "second": 16,
+        "sent": 25610,
+        "success": 24996,
+        "failed": 661
+      },
+      {
+        "second": 17,
+        "sent": 16147,
+        "success": 15109,
+        "failed": 1080
+      },
+      {
+        "second": 18,
+        "sent": 22522,
+        "success": 22423,
+        "failed": 0
+      },
+      {
+        "second": 19,
+        "sent": 9534,
+        "success": 9553,
+        "failed": 0
+      },
+      {
+        "second": 20,
+        "sent": 10298,
+        "success": 10278,
+        "failed": 0
+      },
+      {
+        "second": 21,
+        "sent": 27349,
+        "success": 27350,
+        "failed": 0
+      },
+      {
+        "second": 22,
+        "sent": 27376,
+        "success": 27475,
+        "failed": 0
+      },
+      {
+        "second": 23,
+        "sent": 29241,
+        "success": 29165,
+        "failed": 0
+      },
+      {
+        "second": 24,
+        "sent": 34412,
+        "success": 34488,
+        "failed": 0
+      },
+      {
+        "second": 25,
+        "sent": 22404,
+        "success": 21661,
+        "failed": 743
+      },
+      {
+        "second": 26,
+        "sent": 0,
+        "success": 0,
+        "failed": 0
+      },
+      {
+        "second": 27,
+        "sent": 2,
+        "success": 2,
+        "failed": 0
+      },
+      {
+        "second": 28,
+        "sent": 11111,
+        "success": 11012,
+        "failed": 0
+      },
+      {
+        "second": 29,
+        "sent": 22042,
+        "success": 22041,
+        "failed": 0
+      },
+      {
+        "second": 30,
+        "sent": 23414,
+        "success": 23257,
+        "failed": 157
+      },
+      {
+        "second": 31,
+        "sent": 23497,
+        "success": 23505,
+        "failed": 0
+      },
+      {
+        "second": 32,
+        "sent": 18141,
+        "success": 18233,
+        "failed": 0
+      },
+      {
+        "second": 33,
+        "sent": 7021,
+        "success": 6958,
+        "failed": 0
+      },
+      {
+        "second": 34,
+        "sent": 22374,
+        "success": 22337,
+        "failed": 0
+      },
+      {
+        "second": 35,
+        "sent": 21080,
+        "success": 21180,
+        "failed": 0
+      },
+      {
+        "second": 36,
+        "sent": 16812,
+        "success": 16812,
+        "failed": 0
+      },
+      {
+        "second": 37,
+        "sent": 15614,
+        "success": 15530,
+        "failed": 0
+      },
+      {
+        "second": 38,
+        "sent": 28808,
+        "success": 28805,
+        "failed": 0
+      },
+      {
+        "second": 39,
+        "sent": 12445,
+        "success": 12432,
+        "failed": 0
+      },
+      {
+        "second": 40,
+        "sent": 25585,
+        "success": 25685,
+        "failed": 0
+      },
+      {
+        "second": 41,
+        "sent": 17903,
+        "success": 17903,
+        "failed": 0
+      },
+      {
+        "second": 42,
+        "sent": 16415,
+        "success": 16415,
+        "failed": 0
+      },
+      {
+        "second": 43,
+        "sent": 17843,
+        "success": 17843,
+        "failed": 0
+      },
+      {
+        "second": 44,
+        "sent": 10430,
+        "success": 10430,
+        "failed": 0
+      },
+      {
+        "second": 45,
+        "sent": 22806,
+        "success": 22806,
+        "failed": 0
+      },
+      {
+        "second": 46,
+        "sent": 19102,
+        "success": 19004,
+        "failed": 0
+      },
+      {
+        "second": 47,
+        "sent": 15657,
+        "success": 15655,
+        "failed": 0
+      },
+      {
+        "second": 48,
+        "sent": 21340,
+        "success": 21440,
+        "failed": 0
+      },
+      {
+        "second": 49,
+        "sent": 22951,
+        "success": 22851,
+        "failed": 0
+      },
+      {
+        "second": 50,
+        "sent": 26377,
+        "success": 26378,
+        "failed": 0
+      },
+      {
+        "second": 51,
+        "sent": 24939,
+        "success": 24980,
+        "failed": 0
+      },
+      {
+        "second": 52,
+        "sent": 27981,
+        "success": 28023,
+        "failed": 0
+      },
+      {
+        "second": 53,
+        "sent": 14655,
+        "success": 14671,
+        "failed": 0
+      },
+      {
+        "second": 54,
+        "sent": 0,
+        "success": 0,
+        "failed": 0
+      },
+      {
+        "second": 55,
+        "sent": 0,
+        "success": 0,
+        "failed": 0
+      },
+      {
+        "second": 56,
+        "sent": 0,
+        "success": 0,
+        "failed": 0
+      },
+      {
+        "second": 57,
+        "sent": 0,
+        "success": 0,
+        "failed": 0
+      },
+      {
+        "second": 58,
+        "sent": 0,
+        "success": 0,
+        "failed": 0
+      },
+      {
+        "second": 59,
+        "sent": 0,
+        "success": 0,
+        "failed": 0
+      },
+      {
+        "second": 60,
+        "sent": 387,
+        "success": 287,
+        "failed": 0
+      },
+      {
+        "second": 61,
+        "sent": 21369,
+        "success": 20618,
+        "failed": 851
+      },
+      {
+        "second": 62,
+        "sent": 24958,
+        "success": 24958,
+        "failed": 0
+      },
+      {
+        "second": 63,
+        "sent": 22654,
+        "success": 22654,
+        "failed": 0
+      },
+      {
+        "second": 64,
+        "sent": 22776,
+        "success": 22676,
+        "failed": 0
+      },
+      {
+        "second": 65,
+        "sent": 21241,
+        "success": 20732,
+        "failed": 512
+      },
+      {
+        "second": 66,
+        "sent": 24648,
+        "success": 24647,
+        "failed": 0
+      },
+      {
+        "second": 67,
+        "sent": 23102,
+        "success": 22387,
+        "failed": 713
+      },
+      {
+        "second": 68,
+        "sent": 24876,
+        "success": 24976,
+        "failed": 0
+      },
+      {
+        "second": 69,
+        "sent": 0,
+        "success": 0,
+        "failed": 0
+      },
+      {
+        "second": 70,
+        "sent": 0,
+        "success": 0,
+        "failed": 0
+      },
+      {
+        "second": 71,
+        "sent": 0,
+        "success": 0,
+        "failed": 0
+      },
+      {
+        "second": 72,
+        "sent": 19681,
+        "success": 12790,
+        "failed": 6812
+      },
+      {
+        "second": 73,
+        "sent": 1158,
+        "success": 569,
+        "failed": 668
+      },
+      {
+        "second": 74,
+        "sent": 0,
+        "success": 0,
+        "failed": 0
+      },
+      {
+        "second": 75,
+        "sent": 2046,
+        "success": 1946,
+        "failed": 0
+      },
+      {
+        "second": 76,
+        "sent": 12666,
+        "success": 12679,
+        "failed": 0
+      },
+      {
+        "second": 77,
+        "sent": 28577,
+        "success": 28593,
+        "failed": 0
+      },
+      {
+        "second": 78,
+        "sent": 25387,
+        "success": 25358,
+        "failed": 0
+      },
+      {
+        "second": 79,
+        "sent": 28943,
+        "success": 28947,
+        "failed": 0
+      },
+      {
+        "second": 80,
+        "sent": 27860,
+        "success": 27856,
+        "failed": 0
+      },
+      {
+        "second": 81,
+        "sent": 39094,
+        "success": 39121,
+        "failed": 0
+      },
+      {
+        "second": 82,
+        "sent": 22084,
+        "success": 22076,
+        "failed": 0
+      },
+      {
+        "second": 83,
+        "sent": 23578,
+        "success": 23659,
+        "failed": 0
+      },
+      {
+        "second": 84,
+        "sent": 0,
+        "success": 0,
+        "failed": 0
+      },
+      {
+        "second": 85,
+        "sent": 0,
+        "success": 0,
+        "failed": 0
+      },
+      {
+        "second": 86,
+        "sent": 0,
+        "success": 0,
+        "failed": 0
+      },
+      {
+        "second": 87,
+        "sent": 0,
+        "success": 0,
+        "failed": 0
+      },
+      {
+        "second": 88,
+        "sent": 0,
+        "success": 0,
+        "failed": 0
+      },
+      {
+        "second": 89,
+        "sent": 0,
+        "success": 0,
+        "failed": 0
+      },
+      {
+        "second": 90,
+        "sent": 0,
+        "success": 0,
+        "failed": 0
+      },
+      {
+        "second": 91,
+        "sent": 0,
+        "success": 0,
+        "failed": 0
+      },
+      {
+        "second": 92,
+        "sent": 0,
+        "success": 0,
+        "failed": 0
+      },
+      {
+        "second": 93,
+        "sent": 0,
+        "success": 0,
+        "failed": 0
+      },
+      {
+        "second": 94,
+        "sent": 1145,
+        "success": 1145,
+        "failed": 0
+      },
+      {
+        "second": 95,
+        "sent": 0,
+        "success": 0,
+        "failed": 0
+      }
+    ]
+  },
+  "blocks": [
+    {
+      "number": 7,
+      "timestamp_ms": 1790950548670,
+      "tx_count": 766,
+      "gas_used": 69178357,
+      "gas_limit": 1000000000000,
+      "block_time_ms": null
+    },
+    {
+      "number": 8,
+      "timestamp_ms": 1790950549046,
+      "tx_count": 8288,
+      "gas_used": 771017107,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 376
+    },
+    {
+      "number": 9,
+      "timestamp_ms": 1790950549724,
+      "tx_count": 10761,
+      "gas_used": 986900721,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 678
+    },
+    {
+      "number": 10,
+      "timestamp_ms": 1790950550006,
+      "tx_count": 10291,
+      "gas_used": 958785953,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 282
+    },
+    {
+      "number": 11,
+      "timestamp_ms": 1790950550557,
+      "tx_count": 7145,
+      "gas_used": 637896888,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 551
+    },
+    {
+      "number": 12,
+      "timestamp_ms": 1790950550817,
+      "tx_count": 7290,
+      "gas_used": 669798851,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 260
+    },
+    {
+      "number": 13,
+      "timestamp_ms": 1790950551072,
+      "tx_count": 7438,
+      "gas_used": 686117549,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 255
+    },
+    {
+      "number": 14,
+      "timestamp_ms": 1790950551518,
+      "tx_count": 9815,
+      "gas_used": 913783004,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 446
+    },
+    {
+      "number": 15,
+      "timestamp_ms": 1790950551935,
+      "tx_count": 9062,
+      "gas_used": 830844608,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 417
+    },
+    {
+      "number": 16,
+      "timestamp_ms": 1790950552354,
+      "tx_count": 10828,
+      "gas_used": 1019076804,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 419
+    },
+    {
+      "number": 17,
+      "timestamp_ms": 1790950552827,
+      "tx_count": 9415,
+      "gas_used": 881510134,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 473
+    },
+    {
+      "number": 18,
+      "timestamp_ms": 1790950553302,
+      "tx_count": 8198,
+      "gas_used": 764106796,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 475
+    },
+    {
+      "number": 19,
+      "timestamp_ms": 1790950553719,
+      "tx_count": 9809,
+      "gas_used": 902667431,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 417
+    },
+    {
+      "number": 20,
+      "timestamp_ms": 1790950554018,
+      "tx_count": 9744,
+      "gas_used": 911933625,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 299
+    },
+    {
+      "number": 21,
+      "timestamp_ms": 1790950554503,
+      "tx_count": 10255,
+      "gas_used": 943605071,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 485
+    },
+    {
+      "number": 22,
+      "timestamp_ms": 1790950554786,
+      "tx_count": 10302,
+      "gas_used": 953505678,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 283
+    },
+    {
+      "number": 23,
+      "timestamp_ms": 1790950555280,
+      "tx_count": 10295,
+      "gas_used": 944909467,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 494
+    },
+    {
+      "number": 24,
+      "timestamp_ms": 1790950555761,
+      "tx_count": 10895,
+      "gas_used": 1018091136,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 481
+    },
+    {
+      "number": 25,
+      "timestamp_ms": 1790950556207,
+      "tx_count": 11100,
+      "gas_used": 1033222545,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 446
+    },
+    {
+      "number": 26,
+      "timestamp_ms": 1790950556697,
+      "tx_count": 11883,
+      "gas_used": 1112051331,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 490
+    },
+    {
+      "number": 27,
+      "timestamp_ms": 1790950556975,
+      "tx_count": 10683,
+      "gas_used": 982296629,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 278
+    },
+    {
+      "number": 28,
+      "timestamp_ms": 1790950557332,
+      "tx_count": 9118,
+      "gas_used": 836144271,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 357
+    },
+    {
+      "number": 29,
+      "timestamp_ms": 1790950558061,
+      "tx_count": 7469,
+      "gas_used": 696157878,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 729
+    },
+    {
+      "number": 30,
+      "timestamp_ms": 1790950558548,
+      "tx_count": 9934,
+      "gas_used": 910512572,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 487
+    },
+    {
+      "number": 31,
+      "timestamp_ms": 1790950559081,
+      "tx_count": 10530,
+      "gas_used": 975751374,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 533
+    },
+    {
+      "number": 32,
+      "timestamp_ms": 1790950559586,
+      "tx_count": 10619,
+      "gas_used": 971107359,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 505
+    },
+    {
+      "number": 33,
+      "timestamp_ms": 1790950560140,
+      "tx_count": 7455,
+      "gas_used": 682837126,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 554
+    },
+    {
+      "number": 34,
+      "timestamp_ms": 1790950560510,
+      "tx_count": 6384,
+      "gas_used": 593937115,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 370
+    },
+    {
+      "number": 35,
+      "timestamp_ms": 1790950560856,
+      "tx_count": 12426,
+      "gas_used": 1133259619,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 346
+    },
+    {
+      "number": 36,
+      "timestamp_ms": 1790950561357,
+      "tx_count": 6583,
+      "gas_used": 625580735,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 501
+    },
+    {
+      "number": 37,
+      "timestamp_ms": 1790950561620,
+      "tx_count": 7860,
+      "gas_used": 730673936,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 263
+    },
+    {
+      "number": 38,
+      "timestamp_ms": 1790950562006,
+      "tx_count": 9851,
+      "gas_used": 906434361,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 386
+    },
+    {
+      "number": 39,
+      "timestamp_ms": 1790950562431,
+      "tx_count": 8324,
+      "gas_used": 769356916,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 425
+    },
+    {
+      "number": 40,
+      "timestamp_ms": 1790950562768,
+      "tx_count": 7852,
+      "gas_used": 722627800,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 337
+    },
+    {
+      "number": 41,
+      "timestamp_ms": 1790950563103,
+      "tx_count": 7023,
+      "gas_used": 637481826,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 335
+    },
+    {
+      "number": 42,
+      "timestamp_ms": 1790950563432,
+      "tx_count": 10513,
+      "gas_used": 966440300,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 329
+    },
+    {
+      "number": 43,
+      "timestamp_ms": 1790950563938,
+      "tx_count": 7867,
+      "gas_used": 740035540,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 506
+    },
+    {
+      "number": 44,
+      "timestamp_ms": 1790950564333,
+      "tx_count": 11661,
+      "gas_used": 1070300207,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 395
+    },
+    {
+      "number": 45,
+      "timestamp_ms": 1790950564609,
+      "tx_count": 10483,
+      "gas_used": 979280137,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 276
+    },
+    {
+      "number": 46,
+      "timestamp_ms": 1790950565153,
+      "tx_count": 9863,
+      "gas_used": 924290318,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 544
+    },
+    {
+      "number": 47,
+      "timestamp_ms": 1790950565603,
+      "tx_count": 12297,
+      "gas_used": 1121859457,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 450
+    },
+    {
+      "number": 48,
+      "timestamp_ms": 1790950565867,
+      "tx_count": 11213,
+      "gas_used": 1056170312,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 264
+    },
+    {
+      "number": 49,
+      "timestamp_ms": 1790950566539,
+      "tx_count": 8865,
+      "gas_used": 815646525,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 672
+    },
+    {
+      "number": 50,
+      "timestamp_ms": 1790950566984,
+      "tx_count": 7174,
+      "gas_used": 678794919,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 445
+    },
+    {
+      "number": 51,
+      "timestamp_ms": 1790950567358,
+      "tx_count": 6331,
+      "gas_used": 592042329,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 374
+    },
+    {
+      "number": 52,
+      "timestamp_ms": 1790950567697,
+      "tx_count": 7550,
+      "gas_used": 697425179,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 339
+    },
+    {
+      "number": 53,
+      "timestamp_ms": 1790950568026,
+      "tx_count": 6945,
+      "gas_used": 634755913,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 329
+    },
+    {
+      "number": 54,
+      "timestamp_ms": 1790950568586,
+      "tx_count": 9650,
+      "gas_used": 904602196,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 560
+    },
+    {
+      "number": 55,
+      "timestamp_ms": 1790950568934,
+      "tx_count": 8871,
+      "gas_used": 819449357,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 348
+    },
+    {
+      "number": 56,
+      "timestamp_ms": 1790950569301,
+      "tx_count": 10429,
+      "gas_used": 964505814,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 367
+    },
+    {
+      "number": 57,
+      "timestamp_ms": 1790950569942,
+      "tx_count": 6837,
+      "gas_used": 628102674,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 641
+    },
+    {
+      "number": 58,
+      "timestamp_ms": 1790950570323,
+      "tx_count": 11094,
+      "gas_used": 1026793016,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 381
+    },
+    {
+      "number": 59,
+      "timestamp_ms": 1790950570609,
+      "tx_count": 10855,
+      "gas_used": 1008385488,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 286
+    },
+    {
+      "number": 60,
+      "timestamp_ms": 1790950571135,
+      "tx_count": 8683,
+      "gas_used": 800957760,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 526
+    },
+    {
+      "number": 61,
+      "timestamp_ms": 1790950571389,
+      "tx_count": 7872,
+      "gas_used": 725487368,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 254
+    },
+    {
+      "number": 62,
+      "timestamp_ms": 1790950571632,
+      "tx_count": 8021,
+      "gas_used": 721049591,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 243
+    },
+    {
+      "number": 63,
+      "timestamp_ms": 1790950572035,
+      "tx_count": 11593,
+      "gas_used": 1076084271,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 403
+    },
+    {
+      "number": 64,
+      "timestamp_ms": 1790950572329,
+      "tx_count": 10505,
+      "gas_used": 971071744,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 294
+    },
+    {
+      "number": 65,
+      "timestamp_ms": 1790950572841,
+      "tx_count": 8243,
+      "gas_used": 747711370,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 512
+    },
+    {
+      "number": 66,
+      "timestamp_ms": 1790950573454,
+      "tx_count": 11258,
+      "gas_used": 1039181960,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 613
+    },
+    {
+      "number": 67,
+      "timestamp_ms": 1790950573762,
+      "tx_count": 10404,
+      "gas_used": 958131486,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 308
+    },
+    {
+      "number": 68,
+      "timestamp_ms": 1790950576364,
+      "tx_count": 11369,
+      "gas_used": 1050751977,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 2602
+    },
+    {
+      "number": 69,
+      "timestamp_ms": 1790950576667,
+      "tx_count": 9311,
+      "gas_used": 861922398,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 303
+    },
+    {
+      "number": 70,
+      "timestamp_ms": 1790950577703,
+      "tx_count": 7542,
+      "gas_used": 694149949,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 1036
+    },
+    {
+      "number": 71,
+      "timestamp_ms": 1790950578112,
+      "tx_count": 11619,
+      "gas_used": 1071828729,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 409
+    },
+    {
+      "number": 72,
+      "timestamp_ms": 1790950578599,
+      "tx_count": 7924,
+      "gas_used": 732281605,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 487
+    },
+    {
+      "number": 73,
+      "timestamp_ms": 1790950578971,
+      "tx_count": 12658,
+      "gas_used": 1173835922,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 372
+    },
+    {
+      "number": 74,
+      "timestamp_ms": 1790950579330,
+      "tx_count": 9635,
+      "gas_used": 887796443,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 359
+    },
+    {
+      "number": 75,
+      "timestamp_ms": 1790950579914,
+      "tx_count": 6957,
+      "gas_used": 639260744,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 584
+    },
+    {
+      "number": 76,
+      "timestamp_ms": 1790950580328,
+      "tx_count": 10785,
+      "gas_used": 994294952,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 414
+    },
+    {
+      "number": 77,
+      "timestamp_ms": 1790950580609,
+      "tx_count": 10250,
+      "gas_used": 923098608,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 281
+    },
+    {
+      "number": 78,
+      "timestamp_ms": 1790950581292,
+      "tx_count": 6994,
+      "gas_used": 648837243,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 683
+    },
+    {
+      "number": 79,
+      "timestamp_ms": 1790950581680,
+      "tx_count": 7125,
+      "gas_used": 674043118,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 388
+    },
+    {
+      "number": 80,
+      "timestamp_ms": 1790950582068,
+      "tx_count": 6188,
+      "gas_used": 574270468,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 388
+    },
+    {
+      "number": 81,
+      "timestamp_ms": 1790950582425,
+      "tx_count": 4569,
+      "gas_used": 421301149,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 357
+    },
+    {
+      "number": 82,
+      "timestamp_ms": 1790950582763,
+      "tx_count": 9136,
+      "gas_used": 852460340,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 338
+    },
+    {
+      "number": 83,
+      "timestamp_ms": 1790950583085,
+      "tx_count": 9002,
+      "gas_used": 836691135,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 322
+    },
+    {
+      "number": 84,
+      "timestamp_ms": 1790950583722,
+      "tx_count": 7461,
+      "gas_used": 704162133,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 637
+    },
+    {
+      "number": 85,
+      "timestamp_ms": 1790950584132,
+      "tx_count": 10958,
+      "gas_used": 1000696188,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 410
+    },
+    {
+      "number": 86,
+      "timestamp_ms": 1790950584914,
+      "tx_count": 5854,
+      "gas_used": 548381665,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 782
+    },
+    {
+      "number": 87,
+      "timestamp_ms": 1790950585365,
+      "tx_count": 10344,
+      "gas_used": 958051516,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 451
+    },
+    {
+      "number": 88,
+      "timestamp_ms": 1790950585918,
+      "tx_count": 7179,
+      "gas_used": 667459144,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 553
+    },
+    {
+      "number": 89,
+      "timestamp_ms": 1790950586199,
+      "tx_count": 8156,
+      "gas_used": 760681528,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 281
+    },
+    {
+      "number": 90,
+      "timestamp_ms": 1790950586464,
+      "tx_count": 7620,
+      "gas_used": 714422949,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 265
+    },
+    {
+      "number": 91,
+      "timestamp_ms": 1790950586766,
+      "tx_count": 8069,
+      "gas_used": 748985492,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 302
+    },
+    {
+      "number": 92,
+      "timestamp_ms": 1790950587236,
+      "tx_count": 10917,
+      "gas_used": 1018159048,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 470
+    },
+    {
+      "number": 93,
+      "timestamp_ms": 1790950587578,
+      "tx_count": 8761,
+      "gas_used": 809876222,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 342
+    },
+    {
+      "number": 94,
+      "timestamp_ms": 1790950588078,
+      "tx_count": 7927,
+      "gas_used": 726319526,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 500
+    },
+    {
+      "number": 95,
+      "timestamp_ms": 1790950588582,
+      "tx_count": 6432,
+      "gas_used": 594929675,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 504
+    },
+    {
+      "number": 96,
+      "timestamp_ms": 1790950588983,
+      "tx_count": 7047,
+      "gas_used": 650292703,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 401
+    },
+    {
+      "number": 97,
+      "timestamp_ms": 1790950589511,
+      "tx_count": 8718,
+      "gas_used": 801883702,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 528
+    },
+    {
+      "number": 98,
+      "timestamp_ms": 1790950589801,
+      "tx_count": 9185,
+      "gas_used": 854794092,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 290
+    },
+    {
+      "number": 99,
+      "timestamp_ms": 1790950590225,
+      "tx_count": 9151,
+      "gas_used": 850764951,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 424
+    },
+    {
+      "number": 100,
+      "timestamp_ms": 1790950590889,
+      "tx_count": 7264,
+      "gas_used": 667354376,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 664
+    },
+    {
+      "number": 101,
+      "timestamp_ms": 1790950591320,
+      "tx_count": 10194,
+      "gas_used": 951016394,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 431
+    },
+    {
+      "number": 102,
+      "timestamp_ms": 1790950591916,
+      "tx_count": 7649,
+      "gas_used": 716881477,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 596
+    },
+    {
+      "number": 103,
+      "timestamp_ms": 1790950592335,
+      "tx_count": 10561,
+      "gas_used": 992531758,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 419
+    },
+    {
+      "number": 104,
+      "timestamp_ms": 1790950592942,
+      "tx_count": 4645,
+      "gas_used": 428333781,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 607
+    },
+    {
+      "number": 105,
+      "timestamp_ms": 1790950593431,
+      "tx_count": 8343,
+      "gas_used": 765507531,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 489
+    },
+    {
+      "number": 106,
+      "timestamp_ms": 1790950593753,
+      "tx_count": 9687,
+      "gas_used": 920086779,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 322
+    },
+    {
+      "number": 107,
+      "timestamp_ms": 1790950594362,
+      "tx_count": 7494,
+      "gas_used": 699428993,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 609
+    },
+    {
+      "number": 108,
+      "timestamp_ms": 1790950594835,
+      "tx_count": 10019,
+      "gas_used": 917663412,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 473
+    },
+    {
+      "number": 109,
+      "timestamp_ms": 1790950595132,
+      "tx_count": 10377,
+      "gas_used": 966509283,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 297
+    },
+    {
+      "number": 110,
+      "timestamp_ms": 1790950595636,
+      "tx_count": 8794,
+      "gas_used": 824361335,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 504
+    },
+    {
+      "number": 111,
+      "timestamp_ms": 1790950596191,
+      "tx_count": 6724,
+      "gas_used": 628888320,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 555
+    },
+    {
+      "number": 112,
+      "timestamp_ms": 1790950596656,
+      "tx_count": 6024,
+      "gas_used": 548900343,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 465
+    },
+    {
+      "number": 113,
+      "timestamp_ms": 1790950596925,
+      "tx_count": 6667,
+      "gas_used": 614672496,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 269
+    },
+    {
+      "number": 114,
+      "timestamp_ms": 1790950597343,
+      "tx_count": 11233,
+      "gas_used": 1045609927,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 418
+    },
+    {
+      "number": 115,
+      "timestamp_ms": 1790950597826,
+      "tx_count": 9764,
+      "gas_used": 896258030,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 483
+    },
+    {
+      "number": 116,
+      "timestamp_ms": 1790950598265,
+      "tx_count": 11647,
+      "gas_used": 1079874724,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 439
+    },
+    {
+      "number": 117,
+      "timestamp_ms": 1790950598749,
+      "tx_count": 9796,
+      "gas_used": 908167276,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 484
+    },
+    {
+      "number": 118,
+      "timestamp_ms": 1790950599019,
+      "tx_count": 8985,
+      "gas_used": 837252206,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 270
+    },
+    {
+      "number": 119,
+      "timestamp_ms": 1790950599429,
+      "tx_count": 11241,
+      "gas_used": 1017668530,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 410
+    },
+    {
+      "number": 120,
+      "timestamp_ms": 1790950599754,
+      "tx_count": 10764,
+      "gas_used": 982847021,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 325
+    },
+    {
+      "number": 121,
+      "timestamp_ms": 1790950600267,
+      "tx_count": 10703,
+      "gas_used": 990864873,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 513
+    },
+    {
+      "number": 122,
+      "timestamp_ms": 1790950600759,
+      "tx_count": 12097,
+      "gas_used": 1132882170,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 492
+    },
+    {
+      "number": 123,
+      "timestamp_ms": 1790950601033,
+      "tx_count": 10629,
+      "gas_used": 976175187,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 274
+    },
+    {
+      "number": 124,
+      "timestamp_ms": 1790950601561,
+      "tx_count": 10044,
+      "gas_used": 935460736,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 528
+    },
+    {
+      "number": 125,
+      "timestamp_ms": 1790950602060,
+      "tx_count": 10894,
+      "gas_used": 1004226065,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 499
+    },
+    {
+      "number": 126,
+      "timestamp_ms": 1790950609386,
+      "tx_count": 10527,
+      "gas_used": 976922265,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 7326
+    },
+    {
+      "number": 127,
+      "timestamp_ms": 1790950609744,
+      "tx_count": 5511,
+      "gas_used": 508403260,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 358
+    },
+    {
+      "number": 128,
+      "timestamp_ms": 1790950610596,
+      "tx_count": 10055,
+      "gas_used": 939202445,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 852
+    },
+    {
+      "number": 129,
+      "timestamp_ms": 1790950611121,
+      "tx_count": 8876,
+      "gas_used": 814618226,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 525
+    },
+    {
+      "number": 130,
+      "timestamp_ms": 1790950611517,
+      "tx_count": 11976,
+      "gas_used": 1098085573,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 396
+    },
+    {
+      "number": 131,
+      "timestamp_ms": 1790950611813,
+      "tx_count": 10678,
+      "gas_used": 987987746,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 296
+    },
+    {
+      "number": 132,
+      "timestamp_ms": 1790950612392,
+      "tx_count": 8865,
+      "gas_used": 827320366,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 579
+    },
+    {
+      "number": 133,
+      "timestamp_ms": 1790950612810,
+      "tx_count": 11888,
+      "gas_used": 1096267773,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 418
+    },
+    {
+      "number": 134,
+      "timestamp_ms": 1790950613303,
+      "tx_count": 9355,
+      "gas_used": 868234483,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 493
+    },
+    {
+      "number": 135,
+      "timestamp_ms": 1790950613714,
+      "tx_count": 11005,
+      "gas_used": 1018395193,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 411
+    },
+    {
+      "number": 136,
+      "timestamp_ms": 1790950614027,
+      "tx_count": 10040,
+      "gas_used": 930931684,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 313
+    },
+    {
+      "number": 137,
+      "timestamp_ms": 1790950614621,
+      "tx_count": 8907,
+      "gas_used": 810854686,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 594
+    },
+    {
+      "number": 138,
+      "timestamp_ms": 1790950615058,
+      "tx_count": 10622,
+      "gas_used": 985785418,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 437
+    },
+    {
+      "number": 139,
+      "timestamp_ms": 1790950615557,
+      "tx_count": 9557,
+      "gas_used": 871156528,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 499
+    },
+    {
+      "number": 140,
+      "timestamp_ms": 1790950615969,
+      "tx_count": 13035,
+      "gas_used": 1202798832,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 412
+    },
+    {
+      "number": 141,
+      "timestamp_ms": 1790950616249,
+      "tx_count": 11400,
+      "gas_used": 1071717443,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 280
+    },
+    {
+      "number": 142,
+      "timestamp_ms": 1790950616594,
+      "tx_count": 10744,
+      "gas_used": 985202745,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 345
+    },
+    {
+      "number": 143,
+      "timestamp_ms": 1790950620834,
+      "tx_count": 13359,
+      "gas_used": 1241052548,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 4240
+    },
+    {
+      "number": 144,
+      "timestamp_ms": 1790950621127,
+      "tx_count": 12013,
+      "gas_used": 1116890438,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 293
+    },
+    {
+      "number": 145,
+      "timestamp_ms": 1790950623780,
+      "tx_count": 10592,
+      "gas_used": 952073164,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 2653
+    },
+    {
+      "number": 146,
+      "timestamp_ms": 1790950624265,
+      "tx_count": 10324,
+      "gas_used": 955825542,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 485
+    },
+    {
+      "number": 147,
+      "timestamp_ms": 1790950624982,
+      "tx_count": 5937,
+      "gas_used": 554824858,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 717
+    },
+    {
+      "number": 148,
+      "timestamp_ms": 1790950625390,
+      "tx_count": 6801,
+      "gas_used": 614208849,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 408
+    },
+    {
+      "number": 149,
+      "timestamp_ms": 1790950625656,
+      "tx_count": 7677,
+      "gas_used": 720863596,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 266
+    },
+    {
+      "number": 150,
+      "timestamp_ms": 1790950626071,
+      "tx_count": 12990,
+      "gas_used": 1194390206,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 415
+    },
+    {
+      "number": 151,
+      "timestamp_ms": 1790950626368,
+      "tx_count": 11322,
+      "gas_used": 1043713096,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 297
+    },
+    {
+      "number": 152,
+      "timestamp_ms": 1790950626725,
+      "tx_count": 10998,
+      "gas_used": 1007777397,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 357
+    },
+    {
+      "number": 153,
+      "timestamp_ms": 1790950627058,
+      "tx_count": 11147,
+      "gas_used": 1026229298,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 333
+    },
+    {
+      "number": 154,
+      "timestamp_ms": 1790950627661,
+      "tx_count": 9584,
+      "gas_used": 884640290,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 603
+    },
+    {
+      "number": 155,
+      "timestamp_ms": 1790950627971,
+      "tx_count": 8885,
+      "gas_used": 811331282,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 310
+    },
+    {
+      "number": 156,
+      "timestamp_ms": 1790950628402,
+      "tx_count": 10342,
+      "gas_used": 944996412,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 431
+    },
+    {
+      "number": 157,
+      "timestamp_ms": 1790950628716,
+      "tx_count": 11860,
+      "gas_used": 1105634057,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 314
+    },
+    {
+      "number": 158,
+      "timestamp_ms": 1790950629244,
+      "tx_count": 6815,
+      "gas_used": 646224410,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 528
+    },
+    {
+      "number": 159,
+      "timestamp_ms": 1790950629522,
+      "tx_count": 9390,
+      "gas_used": 869522147,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 278
+    },
+    {
+      "number": 160,
+      "timestamp_ms": 1790950629944,
+      "tx_count": 13186,
+      "gas_used": 1233082830,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 422
+    },
+    {
+      "number": 161,
+      "timestamp_ms": 1790950630484,
+      "tx_count": 9923,
+      "gas_used": 920014772,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 540
+    },
+    {
+      "number": 162,
+      "timestamp_ms": 1790950630965,
+      "tx_count": 11354,
+      "gas_used": 1051026557,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 481
+    },
+    {
+      "number": 163,
+      "timestamp_ms": 1790950631486,
+      "tx_count": 10776,
+      "gas_used": 987482387,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 521
+    },
+    {
+      "number": 164,
+      "timestamp_ms": 1790950631772,
+      "tx_count": 8319,
+      "gas_used": 763506315,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 286
+    },
+    {
+      "number": 165,
+      "timestamp_ms": 1790950638252,
+      "tx_count": 9869,
+      "gas_used": 905710965,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 6480
+    },
+    {
+      "number": 166,
+      "timestamp_ms": 1790950642800,
+      "tx_count": 4673,
+      "gas_used": 426540484,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 4548
+    },
+    {
+      "number": 167,
+      "timestamp_ms": 1790950643269,
+      "tx_count": 13128,
+      "gas_used": 1210020017,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 469
+    },
+    {
+      "number": 168,
+      "timestamp_ms": 1790950643832,
+      "tx_count": 6341,
+      "gas_used": 581770549,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 563
+    },
+    {
+      "number": 169,
+      "timestamp_ms": 1790950644063,
+      "tx_count": 7359,
+      "gas_used": 676414136,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 231
+    },
+    {
+      "number": 170,
+      "timestamp_ms": 1790950644382,
+      "tx_count": 9775,
+      "gas_used": 906762684,
+      "gas_limit": 1000000000000,
+      "block_time_ms": 319
+    }
+  ],
+  "run_stats": {
+    "start_block": 7,
+    "end_block": 170,
+    "total_blocks": 164,
+    "total_txs": 1525630,
+    "total_gas": 141094240093,
+    "duration_ms": 95712,
+    "avg_blocks_per_second": 1.7134737545971246,
+    "avg_tps": 15939.798562353728,
+    "avg_gas_per_second": 1474154130.0254931,
+    "block_time_p50_ms": 419,
+    "block_time_p95_ms": 782,
+    "block_time_p99_ms": 6480
+  },
+  "metadata": {
+    "job": "github-tempo-bench-e2e",
+    "max_pending": "50000",
+    "place_order_weight": "0.0",
+    "workload_mix_version": "1",
+    "git-sha": "4caada90d070419af2e72900914849867f4bb5e8",
+    "preset": "public-mix",
+    "node_commit_sha": "4caada90d070419af2e72900914849867f4bb5e8",
+    "chain_id": "1337",
+    "requested_preset": "default",
+    "benchmark_run": "baseline-1",
+    "tip20_token_count": "4",
+    "tip20_weight": "1.0",
+    "run_duration_secs": "90",
+    "run_type": "dispatch",
+    "mode": "e2e",
+    "bloat_mib": "100000",
+    "recipient_accounts": "409589998",
+    "benchmark_id": "bench-e2e-37017467322",
+    "erc20_weight": "0.0",
+    "measurement_send_start_unix_ms": "1790950548866",
+    "total_connections": "100",
+    "scenario": "public-mix",
+    "swap_weight": "0.0",
+    "git-ref": "4caada90d070419af2e72900914849867f4bb5e8",
+    "platform": "tempo",
+    "measurement_start_unix_ms": "1790950548866",
+    "build_profile": "profiling",
+    "bloat_token_count": "4",
+    "target_tps": "50000",
+    "initial_db_size_bytes": "205679997910",
+    "workload_mix_weights": "{\"mpp_open_only\":15,\"public_mint\":5,\"public_transfer\":80}",
+    "accounts": "409590998"
+  }
+}

@@ -34,8 +34,24 @@ See `github-37013292128/`. Keep normal prewarming in subsequent comparisons.
 The two runs used different runners and only their paired comparisons are
 interpretable; neither establishes a gain. Historical mainnet replay failed before executing blocks when Rust 1.99 crashed
 while compiling both binaries. The replay workflow is pinned to 1.98.1 for the
-retry; a third throughput comparison is running with cursor prediction and
-normal prewarming (see `github-benchmarks.json`).
+retry. The third comparison, with cursor prediction and normal prewarming,
+regressed to 2,977 versus 15,737 baseline TPS (-81.08%); builder gas throughput
+fell 91.57%. Reuse rose to 692,154 of 978,422 candidates (70.74%), with no
+speculative errors or backoff, but node throughput worsened. See
+`github-37017467322/` and `github-benchmarks.json`. Raw sender failure counters
+are nonzero on both sides; they are distinct from included-transaction errors.
+
+The third run also exposed an integration gap: all scheduler events came from
+the builder. Reth installs its precompile cache through mutable precompile access,
+which triggers the scheduler's conservative custom-precompile fallback. Engine
+validation therefore remained sequential. Historical retry 37020751576 passed
+5,000 mainnet blocks (heights 42,230,064–42,235,063, 1,232 transactions) per pair,
+but predates this finding and cannot establish speculative historical coverage.
+The node now disables this optional engine cache when speculation is enabled,
+preserving standard precompile outputs and gas. A validator-only integration
+test asserts that workers actually run while importing canonical blocks. See
+`engine-speculation-validation.json`. The next profiled throughput comparison
+and historical retry use this behavior.
 
 Workers also predict expiring-nonce ring positions in candidate order and
 prefetch those slots. Predicted values remain ordinary validated reads; skipped,
@@ -54,6 +70,12 @@ with preparation time falling 31.9%. All four runs preserve sequential receipts
 and roots; EVM and revm tests and all-target Clippy pass. These warm-memory results
 exclude trie hashing and are not the public-mix node workload. See
 `t14-reward-prefetch.json` and its raw logs; GitHub measurement is still required.
+
+An experiment sharing immutable environments between candidates was rejected:
+eight-worker storage throughput fell 24.6% and paid compute fell 7.3% in the
+broader comparison. The source patch, matching-build results, and sequential
+references are retained in `t14-shared-environment-rejected.*`; this change is
+not part of the implementation.
 
 Enable node validation and payload building with:
 
@@ -1913,11 +1935,18 @@ physical cores to each of two validators; begin with eight execution workers
 per validator and measure scaling. Include 10k, 25k, 50k and higher offered
 loads with normal state-root computation.
 
+Future runs notify Slack through the workflow's existing win-only policy.
+Replay uses `slack=on-win`; manual e2e dispatch uses this branch's workflow with
+`no-slack=false` (its `BENCH_SLACK=on-win` also suppresses failure notifications).
+The reusable e2e workflow caller policy is unchanged. Already-running comparison
+37022356052 predates this preference and retains `no-slack=true`.
+
 `github-benchmarks.json` records pinned snapshots, workflow revisions, inputs and
 results. The current-main port retains the harness's regenesis and encrypted
-consensus key interfaces. The first two completed throughput comparisons regress;
-cursor prediction is under measurement in the third. Historical replay is being
-retried with Rust 1.98.1 after an LLVM compiler crash. Local in-memory TPS is not
+consensus key interfaces. All three completed throughput comparisons regress.
+Historical replay is being retried with Rust 1.98.1 after an LLVM compiler crash;
+the engine-cache integration gap above also needs explicit worker coverage.
+Local in-memory TPS is not
 the GitHub performance gate, and forwarding remains opt-in pending measurement.
 
 ## Correctness model and integration

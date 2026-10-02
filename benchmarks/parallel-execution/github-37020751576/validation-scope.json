@@ -1,0 +1,16 @@
+{
+  "run": "https://github.com/tempoxyz/tempo/actions/runs/37020751576",
+  "artifact_id": 11232937685,
+  "artifact_bytes": 55057395,
+  "outcome": "Workflow succeeded; canonical Engine API root checks passed for 5000 measured mainnet blocks per pair.",
+  "window": {
+    "from": 42230064,
+    "to": 42235063,
+    "transactions": 1232,
+    "gas": 150962575
+  },
+  "pairs": 2,
+  "warmup_blocks": 1250,
+  "limitation": "The feature default engine precompile cache disables speculative workers via mutable-precompile access. This is historical sequential-path coverage only, not evidence for speculative historical execution. The window is sparse, not a saturated throughput workload.",
+  "reports": "Full per-block raw reports retained locally and in the GitHub artifact; summary and per-run metadata committed."
+}
