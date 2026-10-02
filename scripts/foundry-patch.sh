@@ -93,9 +93,6 @@ else
     printf '\n[patch."https://github.com/tempoxyz/tempo"]\n'
     while IFS=$'\t' read -r crate path; do
       [[ -n "$crate" ]] || continue
-      # Foundry's old tempo-revm must retain its matching git-sourced
-      # precompile API; the EVM2-only local crate no longer exports it.
-      [[ "$crate" == "tempo-precompiles" ]] && continue
       printf '%s = { path = "%s/%s" }\n' "$crate" "$TEMPO_ROOT" "$path"
     done <<< "$PATCHES"
   } >> "$FOUNDRY_CARGO"
@@ -173,7 +170,7 @@ update_stale_tempo_git_packages() {
         next
       }
       /^source = "git\+https:\/\/github.com\/tempoxyz\/tempo\?rev=/ {
-        if (name != "" && version != "" && name != "tempo-revm" && name != "tempo-precompiles") {
+        if (name != "" && version != "") {
           print name "@" version
         }
       }
@@ -274,17 +271,11 @@ for package in alloy-primitives alloy-sol-types revm; do
 done
 popd >/dev/null
 
-remaining_tempo_git_packages="$(awk '
-  /^\[\[package\]\]/ { name = "" }
-  /^name = / { name = $3; gsub(/"/, "", name) }
-  /^source = "git\+https:\/\/github.com\/tempoxyz\/tempo\?rev=/ { print name }
-' "$FOUNDRY_ROOT/Cargo.lock" | sort -u)"
-if [[ -n "$remaining_tempo_git_packages" && "$remaining_tempo_git_packages" != $'tempo-precompiles\ntempo-revm' ]]; then
-  echo "ERROR: unexpected Tempo git packages remain in Foundry's Cargo.lock:" >&2
-  printf '%s\n' "$remaining_tempo_git_packages" >&2
+if grep -q '^source = "git+https://github.com/tempoxyz/tempo?rev=' "$FOUNDRY_ROOT/Cargo.lock"; then
+  echo "ERROR: Tempo git sources still present in Cargo.lock after patching:" >&2
+  grep '^source = "git+https://github.com/tempoxyz/tempo?rev=' "$FOUNDRY_ROOT/Cargo.lock" >&2
+  echo "Expected all Tempo crates to resolve locally after patching" >&2
   exit 1
 fi
 
-# This pinned Foundry revision still uses tempo-revm and its precompile API for
-# legacy Anvil execution. Neither is a Tempo runtime dependency in this branch.
-echo "Foundry patched successfully – Tempo crates other than Foundry's legacy tempo-revm pair resolve from $TEMPO_ROOT"
+echo "Foundry patched successfully – all tempo crates resolve from $TEMPO_ROOT"
