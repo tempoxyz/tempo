@@ -271,11 +271,18 @@ for package in alloy-primitives alloy-sol-types revm; do
 done
 popd >/dev/null
 
-if grep -q '^source = "git+https://github.com/tempoxyz/tempo?rev=' "$FOUNDRY_ROOT/Cargo.lock"; then
-  echo "ERROR: Tempo git sources still present in Cargo.lock after patching:" >&2
-  grep '^source = "git+https://github.com/tempoxyz/tempo?rev=' "$FOUNDRY_ROOT/Cargo.lock" >&2
-  echo "Expected all Tempo crates to resolve locally after patching" >&2
+remaining_tempo_git_packages="$(awk '
+  /^\[\[package\]\]/ { name = "" }
+  /^name = / { name = $3; gsub(/"/, "", name) }
+  /^source = "git\+https:\/\/github.com\/tempoxyz\/tempo\?rev=/ { print name }
+' "$FOUNDRY_ROOT/Cargo.lock" | sort -u)"
+if [[ -n "$remaining_tempo_git_packages" && "$remaining_tempo_git_packages" != "tempo-revm" ]]; then
+  echo "ERROR: unexpected Tempo git packages remain in Foundry's Cargo.lock:" >&2
+  printf '%s\n' "$remaining_tempo_git_packages" >&2
   exit 1
 fi
 
-echo "Foundry patched successfully – all tempo crates resolve from $TEMPO_ROOT"
+# This pinned Foundry revision still uses tempo-revm for its legacy Anvil EVM.
+# It is not a Tempo runtime dependency and has no local counterpart after the
+# EVM2 migration. Every other Tempo crate must resolve from the checkout.
+echo "Foundry patched successfully – Tempo crates other than Foundry's legacy tempo-revm resolve from $TEMPO_ROOT"
