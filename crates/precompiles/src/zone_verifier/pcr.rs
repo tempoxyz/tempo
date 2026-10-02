@@ -1,25 +1,15 @@
-//! PCR measurement parsing shared with `build.rs`, which includes this file via `#[path]`, so it
-//! must only depend on `core`.
+//! PCR measurement parsing shared with `build.rs`, which includes this file via `#[path]`.
 
 /// Error returned when parsing PCR measurements.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum PcrError {
     /// Not exactly three 48-byte hex measurements.
+    #[error("expected three 48-byte hex PCR measurements (PCR0,PCR1,PCR2)")]
     Invalid,
     /// A zero (debug enclave) measurement.
+    #[error("zero/debug enclave PCR measurements are not permitted")]
     Debug,
 }
-
-impl core::fmt::Display for PcrError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(match self {
-            Self::Invalid => "expected three 48-byte hex PCR measurements (PCR0,PCR1,PCR2)",
-            Self::Debug => "zero/debug enclave PCR measurements are not permitted",
-        })
-    }
-}
-
-impl core::error::Error for PcrError {}
 
 /// Parses PCR0, PCR1 and PCR2 as 48-byte hex measurements with an optional `0x` prefix, rejecting
 /// zero (debug enclave) values.
