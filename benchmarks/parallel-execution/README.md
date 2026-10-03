@@ -250,6 +250,18 @@ prewarming. Use the workflow's `no-slack=false` option for future manual runs;
 the on-win policy posts only with a significant improvement and no significant
 regression. It suppresses neutral, losing and mixed results.
 
+The existing `bench-e2e-multi-region.yml` workflow also supports a single-region
+GCP run with two validators on `c4d-standard-48-lssd` VMs and a separate load
+generator. Pin both revisions and record the actual CPU topology, binary builds
+and measurement intervals; its workload controls and reporting differ from the
+bare-metal comparison. Cloud runs currently have no win classifier or Slack post.
+GCP teardown now snapshots resource identities, recovers verified leftovers and
+requires two empty inventories. After a lost runner, dispatch that same workflow
+with `cloud=gcp-cleanup` and `baseline=bench-e2e-multi-region-<run-id>-<attempt>`.
+Recovery requires a completed target run and checks exact ownership labels and
+resource IDs; it does not delete shared networking or cache buckets. The cleanup
+helper has mocked API coverage; its first real GCP run remains to be qualified.
+
 The workflow's builder gas throughput averages `gas_used / elapsed` over full
 payload builds. It includes setup, transaction selection, waits and finalization;
 it is not execution-only throughput. CPU profile shares describe sampled work

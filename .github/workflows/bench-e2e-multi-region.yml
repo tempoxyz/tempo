@@ -115,15 +115,16 @@ on:
   workflow_dispatch:
     inputs:
       cloud:
-        description: Cloud provider used for disposable benchmark infrastructure.
+        description: Cloud provider, or gcp-cleanup to recover a completed run without benchmarking.
         type: choice
         required: true
         default: gcp
         options:
           - aws
           - gcp
+          - gcp-cleanup
       baseline:
-        description: Git ref for the baseline run. Empty = merge-base of the selected branch with main.
+        description: "Baseline Git ref (empty = merge-base). In gcp-cleanup mode: exact bench-e2e-multi-region-<run-id>-<attempt> to recover."
         type: string
         required: false
         default: ""
@@ -279,6 +280,7 @@ env:
 
 jobs:
   bench-e2e-multi-region:
+    if: inputs.cloud != 'gcp-cleanup'
     permissions:
       actions: read
       contents: read
@@ -388,26 +390,27 @@ jobs:
             fi
           done
 
-      - name: Fetch ClickHouse metric allowlist
+      - name: Fetch benchmark helpers
+        id: benchmark-helpers
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const fs = require('fs');
-            const path = 'contrib/bench/clickhouse-metrics.txt';
-            const { data } = await github.rest.repos.getContent({
-              owner: 'tempoxyz',
-              repo: 'tempo',
-              path,
-              ref: context.repo.owner === 'tempoxyz' && context.repo.repo === 'tempo' ? context.sha : 'main',
-            });
-
-            if (Array.isArray(data) || data.type !== 'file' || !data.content) {
-              core.setFailed(`Expected ${path} to be a file at ${context.sha}`);
-              return;
+            const paths = ['contrib/bench/clickhouse-metrics.txt'];
+            if (process.env.BENCH_INPUT_CLOUD === 'gcp') {
+              paths.push('contrib/bench/gcp_cleanup.py');
             }
-
-            fs.mkdirSync('contrib/bench', { recursive: true });
-            fs.writeFileSync(path, Buffer.from(data.content, 'base64'));
+            for (const path of paths) {
+              const { data } = await github.rest.repos.getContent({
+                owner: 'tempoxyz', repo: 'tempo', path,
+                ref: context.repo.owner === 'tempoxyz' && context.repo.repo === 'tempo' ? context.sha : 'main',
+              });
+              if (Array.isArray(data) || data.type !== 'file' || !data.content) {
+                throw new Error(`Expected ${path} to be a file at the selected source ref`);
+              }
+              fs.mkdirSync('contrib/bench', { recursive: true });
+              fs.writeFileSync(path, Buffer.from(data.content, 'base64'));
+            }
 
       - name: Checkout benchmark repo
         id: checkout_benchmark_repo
@@ -555,6 +558,7 @@ jobs:
           service_account: ${{ env.BENCH_GCP_SERVICE_ACCOUNT }}
 
       - name: Setup Google Cloud CLI
+        id: gcloud
         if: env.BENCH_INPUT_CLOUD == 'gcp'
         uses: tempoxyz/gh-actions/vendor/google-github-actions/setup-gcloud@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
@@ -758,6 +762,15 @@ jobs:
             --victoriametrics-url "${{ secrets.VICTORIAMETRICS_URL }}" \
             --victorialogs-url "${{ secrets.VICTORIALOGS_URL }}"
 
+      - name: Snapshot GCP resource identities before teardown
+        id: gcp-inventory
+        if: always() && env.BENCH_INPUT_CLOUD == 'gcp' && steps.gcloud.outcome == 'success' && steps.benchmark-helpers.outcome == 'success'
+        timeout-minutes: 3
+        run: |
+          python3 contrib/bench/gcp_cleanup.py \
+            --benchmark-id "$BENCHMARK_ID" --snapshot \
+            --output "$BENCH_RESULTS_DIR/gcp-cleanup-before"
+
       - name: Start infrastructure teardown
         if: always() && steps.checkout_benchmark_repo.outcome == 'success'
         run: |
@@ -879,12 +892,149 @@ jobs:
             const body = `cc @${process.env.BENCH_ACTOR}\n\n${resultHeadline} [View job](${jobUrl})\n\n${summary}`;
             await core.summary.addRaw(body).write();
 
-      - name: Wait for infrastructure teardown
-        if: always() && steps.checkout_benchmark_repo.outcome == 'success'
+      - name: Wait for AWS infrastructure teardown
+        if: always() && steps.checkout_benchmark_repo.outcome == 'success' && env.BENCH_INPUT_CLOUD == 'aws'
         run: |
           "$BENCH_REPO_DIR/scripts/wait_terraform_destroy.sh" \
             --state-dir "$RUNNER_TEMP/terraform-destroy"
 
+      - name: Wait for GCP infrastructure teardown
+        if: always() && steps.checkout_benchmark_repo.outcome == 'success' && env.BENCH_INPUT_CLOUD == 'gcp'
+        timeout-minutes: 10
+        run: |
+          "$BENCH_REPO_DIR/scripts/wait_terraform_destroy.sh" \
+            --state-dir "$RUNNER_TEMP/terraform-destroy"
+
+      - name: Recover leftovers and verify GCP teardown
+        if: always() && env.BENCH_INPUT_CLOUD == 'gcp' && steps.gcloud.outcome == 'success' && steps.benchmark-helpers.outcome == 'success'
+        timeout-minutes: 12
+        env:
+          INVENTORY_OUTCOME: ${{ steps.gcp-inventory.outcome }}
+        run: |
+          prior=()
+          if [[ "$INVENTORY_OUTCOME" == 'success' ]]; then
+            prior=(--prior-inventory "$BENCH_RESULTS_DIR/gcp-cleanup-before/cleanup.json")
+          fi
+          python3 contrib/bench/gcp_cleanup.py \
+            --benchmark-id "$BENCHMARK_ID" --recover "${prior[@]}" \
+            --output "$BENCH_RESULTS_DIR/gcp-cleanup"
+
+      - name: Upload GCP cleanup evidence
+        if: always() && env.BENCH_INPUT_CLOUD == 'gcp'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tempo-bench-gcp-cleanup
+          path: |
+            ${{ env.BENCH_RESULTS_DIR }}/gcp-cleanup
+            ${{ env.BENCH_RESULTS_DIR }}/gcp-cleanup-before
+          if-no-files-found: warn
+
       - name: Check benchmark result
         if: always() && (steps.fetch_tempo_binaries.outcome == 'failure' || steps.generate_initial_validator_state.outcome == 'failure' || steps.initialize_validator_state.outcome == 'failure' || steps.benchmark.outcome == 'failure')
         run: exit 1
+
+  # This existing workflow can be dispatched with --ref before branch changes
+  # land on main. No new workflow registration or surviving Terraform state is needed.
+  gcp-cleanup:
+    if: github.event_name == 'workflow_dispatch' && inputs.cloud == 'gcp-cleanup'
+    runs-on: depot-ubuntu-latest-8
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    env:
+      CLEANUP_BENCHMARK_ID: ${{ inputs.baseline }}
+      CLOUDSDK_CORE_PROJECT: chain-benchmarking-zygis
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+
+      - name: Fetch GitHub token via STS
+        id: github-sts
+        uses: tempoxyz/gh-actions/actions/github-sts@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        with:
+          scope: tempoxyz/tempo-multi-region-benchmark
+          policy: bench-e2e-multi-region
+
+      - name: Check cleanup actor organization membership
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          github-token: ${{ steps.github-sts.outputs.token }}
+          script: |
+            const { status } = await github.rest.orgs.checkMembershipForUser({
+              org: 'tempoxyz', username: context.actor,
+            });
+            if (![204, 302].includes(status)) throw new Error('Cleanup requires organization membership');
+
+      - name: Validate completed cleanup target before cloud authentication
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            if (context.repo.owner !== 'tempoxyz' || context.repo.repo !== 'tempo') {
+              throw new Error('Cleanup is restricted to tempoxyz/tempo workflow runs');
+            }
+            const match = /^bench-e2e-multi-region-([1-9][0-9]{0,19})-([1-9][0-9]{0,9})$/.exec(process.env.CLEANUP_BENCHMARK_ID);
+            if (!match) throw new Error('baseline must be the exact benchmark ID in gcp-cleanup mode');
+            const run_id = Number(match[1]), attempt_number = Number(match[2]);
+            if (!Number.isSafeInteger(run_id) || !Number.isSafeInteger(attempt_number)) {
+              throw new Error('Invalid run/attempt number');
+            }
+            const { data: latest } = await github.rest.actions.getWorkflowRun({ ...context.repo, run_id });
+            const { data: attempt } = await github.rest.actions.getWorkflowRunAttempt({
+              ...context.repo, run_id, attempt_number,
+            });
+            const paths = ['.github/workflows/bench-e2e-multi-region.yml',
+                           '.github/workflows/bench-e2e-multi-region-scheduled.yml'];
+            for (const run of [latest, attempt]) {
+              if (run.id !== run_id || run.repository?.full_name !== 'tempoxyz/tempo' ||
+                  !paths.includes(run.path?.split('@')[0]) || run.status !== 'completed') {
+                throw new Error('Target must be a completed benchmark workflow run in this repository');
+              }
+            }
+            if (attempt.run_attempt !== attempt_number || latest.run_attempt < attempt_number) {
+              throw new Error('Target attempt does not match');
+            }
+            const fs = require('fs');
+            fs.mkdirSync('gcp-cleanup-evidence', { recursive: true });
+            fs.writeFileSync('gcp-cleanup-evidence/target.json', JSON.stringify({
+              benchmark_id: process.env.CLEANUP_BENCHMARK_ID, run_id, attempt_number,
+              target_head_sha: attempt.head_sha, workflow: attempt.path,
+              target_status: attempt.status, cleanup_sha: context.sha, actor: context.actor,
+            }, null, 2));
+
+      - name: Checkout cleanup helper
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          path: cleanup-source
+          sparse-checkout: contrib/bench
+          persist-credentials: false
+
+      - name: Isolate Google Cloud CLI state
+        run: |
+          echo "CLOUDSDK_CONFIG=$RUNNER_TEMP/gcloud-cleanup-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
+
+      - name: Authenticate to Google Cloud
+        uses: tempoxyz/gh-actions/vendor/google-github-actions/auth@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        with:
+          workload_identity_provider: projects/383683155128/locations/global/workloadIdentityPools/tempo-benchmark/providers/tempo-benchmark
+          service_account: benchmark-runner@chain-benchmarking-zygis.iam.gserviceaccount.com
+
+      - name: Setup Google Cloud CLI
+        uses: tempoxyz/gh-actions/vendor/google-github-actions/setup-gcloud@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        with:
+          project_id: chain-benchmarking-zygis
+
+      - name: Recover only verified benchmark resources
+        timeout-minutes: 12
+        run: |
+          python3 cleanup-source/contrib/bench/gcp_cleanup.py \
+            --benchmark-id "$CLEANUP_BENCHMARK_ID" --recover --output gcp-cleanup-evidence
+
+      - name: Upload GCP cleanup evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tempo-bench-gcp-cleanup
+          path: gcp-cleanup-evidence
+          if-no-files-found: warn
