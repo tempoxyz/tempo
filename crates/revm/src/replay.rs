@@ -73,6 +73,8 @@ pub fn bytecode_matches(left: &Bytecode, right: &Bytecode) -> bool {
 
 /// Compare balance, nonce, code hash and the supplied inline code representation.
 /// Different inline-code availability conservatively requires ordinary execution.
+/// Even absent versus empty code changes returned metadata/state hooks and can
+/// affect later code loading after public database mutations.
 pub fn account_info_matches(left: &AccountInfo, right: &AccountInfo) -> bool {
     left == right
         && match (&left.code, &right.code) {

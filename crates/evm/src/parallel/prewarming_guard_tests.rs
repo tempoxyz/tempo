@@ -312,3 +312,149 @@ fn changed_hashed_code_representation_generic() {
 fn changed_hashed_code_representation_cached() {
     check_changed_code_representation(false, true);
 }
+
+#[test]
+fn empty_code_availability_preserves_state_hook_metadata() {
+    use revm::DatabaseCommit as _;
+
+    let observed = Address::with_last_byte(103);
+    for cached in [false, true] {
+        for worker_has_code in [false, true] {
+            let (mut db, env, tx) = journal_guard_fixture(balance_code(observed));
+            db.insert_account_info(
+                observed,
+                AccountInfo {
+                    nonce: 1,
+                    balance: U256::from(7),
+                    code: worker_has_code.then(Bytecode::default),
+                    ..Default::default()
+                },
+            );
+            let candidate = PrewarmingExecutor::new(db.clone(), env.clone())
+                .execute(tx.clone(), None)
+                .unwrap();
+            db.cache.accounts.get_mut(&observed).unwrap().info.code =
+                (!worker_has_code).then(Bytecode::default);
+            let expected = TempoEvm::new(db.clone(), env.clone())
+                .transact_raw(tx.clone())
+                .unwrap();
+            // BALANCE observes metadata without loading inline code. Ordinary
+            // Account/Result equality ignores this hook-visible Option field.
+            assert!(!expected.state[&observed].is_touched());
+            assert_eq!(
+                expected.state[&observed].info.code.is_some(),
+                !worker_has_code
+            );
+            let hooks = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let captured = Arc::clone(&hooks);
+            let mut state = revm::database::State::builder()
+                .with_database(db)
+                .with_bundle_update()
+                .build()
+                .with_state_hook(Some(Box::new(move |state: revm::state::EvmState| {
+                    captured.lock().unwrap().push(state);
+                })));
+            state.basic(observed).unwrap();
+            let mut parallel = TempoEvm::new(&mut state, env);
+            if cached {
+                parallel.enable_state_cache_validation();
+            }
+            parallel.set_speculative_executor(Some(SpeculativeExecutor::new(1, 1).unwrap()));
+            parallel.set_preexecuted_transaction(candidate);
+            let actual = parallel.transact_raw(tx).unwrap();
+            assert_eq!(actual, expected);
+            parallel.db_mut().commit(actual.state);
+            let hooks = hooks.lock().unwrap();
+            assert_eq!(hooks.len(), 1);
+            let actual = &hooks[0][&observed];
+            let expected = &expected.state[&observed];
+            assert_eq!(actual.info.code.is_some(), expected.info.code.is_some());
+            assert_eq!(
+                actual.original_info().code.is_some(),
+                expected.original_info().code.is_some(),
+            );
+            assert_eq!(parallel.execution_stats().reused, 0);
+        }
+    }
+}
+
+#[test]
+fn empty_code_availability_preserves_subsequent_code_loads() {
+    use revm::DatabaseCommit as _;
+
+    let target = Address::with_last_byte(100);
+    let beneficiary = Address::with_last_byte(103);
+    let later_code = Bytecode::new_legacy(Bytes::from_static(&[
+        0x60, 42, 0x60, 0, 0x52, 0x60, 32, 0x60, 0, 0xf3,
+    ]));
+    let mut code = vec![0x73]; // PUSH20 beneficiary; SELFDESTRUCT.
+    code.extend_from_slice(beneficiary.as_slice());
+    code.push(0xff);
+    for cached in [false, true] {
+        let (mut db, env, tx) = journal_guard_fixture(code.clone().into());
+        db.cache.accounts.get_mut(&target).unwrap().info.balance = U256::from(777);
+        db.insert_account_info(
+            beneficiary,
+            AccountInfo {
+                nonce: 1,
+                balance: U256::from(7),
+                ..Default::default()
+            },
+        );
+        db.cache
+            .contracts
+            .insert(later_code.hash_slow(), later_code.clone());
+        let candidate = PrewarmingExecutor::new(db.clone(), env.clone())
+            .execute(tx.clone(), None)
+            .unwrap();
+        // SELFDESTRUCT touches its beneficiary without loading its code. Reusing
+        // Some(empty) here would persist it over the authoritative absent code.
+        db.cache.accounts.get_mut(&beneficiary).unwrap().info.code = None;
+        let mut expected_state = revm::database::State::builder()
+            .with_database(db.clone())
+            .build();
+        let mut actual_state = revm::database::State::builder().with_database(db).build();
+        actual_state.basic(beneficiary).unwrap();
+        let mut expected = TempoEvm::new(&mut expected_state, env.clone());
+        let mut actual = TempoEvm::new(&mut actual_state, env);
+        if cached {
+            actual.enable_state_cache_validation();
+        }
+        actual.set_speculative_executor(Some(SpeculativeExecutor::new(1, 1).unwrap()));
+        actual.set_preexecuted_transaction(candidate);
+        let expected_output = expected.transact_raw(tx.clone()).unwrap();
+        let actual_output = actual.transact_raw(tx.clone()).unwrap();
+        assert_eq!(actual_output, expected_output);
+        assert!(expected_output.state[&beneficiary].is_touched());
+        assert!(expected_output.state[&beneficiary].info.code.is_none());
+        expected.db_mut().commit(expected_output.state);
+        actual.db_mut().commit(actual_output.state);
+
+        // Public cache mutation must remain observable to subsequent execution.
+        // Changing only the hash makes None load the new code, whereas a stale
+        // Some(empty) would override the lookup and silently skip the contract.
+        for evm in [&mut expected, &mut actual] {
+            evm.db_mut()
+                .cache
+                .accounts
+                .get_mut(&beneficiary)
+                .unwrap()
+                .account
+                .as_mut()
+                .unwrap()
+                .info
+                .code_hash = later_code.hash_slow();
+        }
+        let mut next = tx;
+        next.inner.nonce = 1;
+        next.inner.kind = beneficiary.into();
+        let expected_output = expected.transact_raw(next.clone()).unwrap();
+        let actual_output = actual.transact_raw(next).unwrap();
+        assert_eq!(
+            expected_output.result.output().unwrap().as_ref(),
+            U256::from(42).to_be_bytes::<32>(),
+        );
+        assert_eq!(actual_output, expected_output);
+        assert_eq!(actual.execution_stats().reused, 0);
+    }
+}
