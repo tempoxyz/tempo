@@ -113,9 +113,12 @@ impl PrewarmingState {
             }
             cached.info = Some(account.info.clone());
             for (&slot, value) in &account.storage {
-                // Include unchanged observations too: a newly-created account
-                // can expose zero-valued storage without a changed slot.
-                cached.storage.insert(slot, value.present_value);
+                // Publish ordinary writes; omitted observations fall through
+                // to the parent provider and still require ordered validation.
+                // Created accounts retain every slot after clearing old storage.
+                if value.is_changed() || account.is_created() {
+                    cached.storage.insert(slot, value.present_value);
+                }
             }
         }
         if let Some(slot) = state

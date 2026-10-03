@@ -96,6 +96,13 @@ against `abb11d902`. Its sequential control falls 6.51% (121,668 to 113,743 TPS)
 All threaded runs match their binary's sequential receipts and roots; the
 sequential overhead remains under investigation. These are in-memory figures.
 
+Publishing only changed ordinary storage slots to advisory state hints measures
+179,175 to 180,273 TPS at eight workers (+0.61%, mixed paired results) and 141,105
+to 170,637 at sixteen (+20.93%, all three pairs improve), against `2109a4149`.
+All threaded runs match sequential receipts and roots, with similar reuse;
+creation still publishes all observed slots. Omitted hints may increase reads or replay
+after Engine pre-execution changes, so the GitHub comparison remains necessary.
+
 For historical data, use the read-only differential replay command:
 
 ```sh
