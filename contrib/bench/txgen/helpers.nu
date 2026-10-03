@@ -782,7 +782,9 @@ def txgen-run-preset-pipeline [
         print $"  Zones: ($zones), users: ($accounts), sizing window: ($window_ms)ms, capacity: 210 deposits/portal"
         $spec_path = (txgen-prepare-zones-preset $spec_path $tx_count $accounts $zones $mode)
     }
-    let skip_faucet_funding = $skip_funding and ($preset_name not-in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
+    # Test-only mixed fixture: fund its reserved deployer and fee-payer accounts.
+    let composition_fixture = $preset_name == "public-mix" and ((open --raw $spec_path) =~ 'template: vault_deposit')
+    let skip_faucet_funding = $skip_funding and ($preset_name not-in $TXGEN_HELPER_ALWAYS_FUND_PRESETS) and not $composition_fixture
     let is_vault = $preset_name in ["vault-deposit" "vault-withdraw"]
     if $is_vault {
         $spec_path = (txgen-prepare-vault-preset $spec_path $accounts $chain_id)
@@ -809,6 +811,7 @@ def txgen-run-preset-pipeline [
     }
 
     let txgen_duration = $"($duration)s"
+    let composition_setup_state = ($report_path | path dirname | path join "composition-setup-state.json")
     let txgen_cmd = [
         $txgen_tempo_bin
         "generate"
@@ -816,7 +819,8 @@ def txgen-run-preset-pipeline [
         "-n" $tx_count
         "--seed" $TXGEN_HELPER_DEFAULT_SEED
         "--rpc" $generate_rpc_url
-    ] | append (if $is_vault or $preset_name == "zones" { [] } else { ["--duration" $txgen_duration] })
+    ] | append (if $is_vault or $preset_name == "zones" or $composition_fixture { [] } else { ["--duration" $txgen_duration] })
+        | append (if $composition_fixture { ["--setup-state-in" $composition_setup_state] } else { [] })
     # Zones and vaults generate the full count: setup must not consume workload duration.
     let txgen_setup_cmd = [
         $txgen_tempo_bin
@@ -825,7 +829,7 @@ def txgen-run-preset-pipeline [
         "-n" 0
         "--seed" $TXGEN_HELPER_DEFAULT_SEED
         "--rpc" $generate_rpc_url
-    ]
+    ] | append (if $composition_fixture { ["--setup-state-out" $composition_setup_state] } else { [] })
     let metrics_url_args = ($metrics_url | each { |url| ["--metrics-url" $url] } | flatten)
     let bench_send_base_cmd = [
         $txgen_bench_bin
@@ -881,7 +885,7 @@ def txgen-run-preset-pipeline [
 
     let bench_env_export = if $bench_env != "" { $"export ($bench_env) && " } else { "" }
     let txgen_extra_args = (txgen-parse-bench-args $bench_args)
-    let use_two_phase_setup = $is_vault or (txgen-spec-has-keychain-setup $spec_path)
+    let use_two_phase_setup = $is_vault or $composition_fixture or (txgen-spec-has-keychain-setup $spec_path)
     let txgen_cmd_str = (txgen-shell-join ($txgen_cmd | append $txgen_extra_args))
     let bench_cmd = if $use_two_phase_setup { $bench_cmd | append "--skip-setup" } else { $bench_cmd }
     let bench_cmd = if $is_vault { $bench_cmd | append ["--drain-timeout" "300"] } else { $bench_cmd }

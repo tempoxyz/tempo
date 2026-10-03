@@ -3,7 +3,52 @@
 # These are benchmark assumptions, not a replay of mainnet activity.
 # Uses the native MPP open-only preset with txgen main.
 # Transfers and mints target prepopulated state-bloat accounts; requires nonzero bloat.
-include: mpp.yml
+# Temporary composition-validation preset; not intended to change the default mix.
+include: [mpp.yml, vault/base.yml]
+
+accounts:
+  zone_deployer:
+    mnemonic: "test test test test test test test test test test test junk"
+    index: 100002
+
+append:
+  setup:
+    steps:
+      - id: settlement
+        deploy:
+          type: eip1559
+          from: {pool: zone_deployer, select: {index: 0}}
+          artifact: SettlementFixture
+          gas_limit: 5000000
+      - id: portal
+        deploy:
+          type: eip1559
+          from: {pool: zone_deployer, select: {index: 0}}
+          artifact: PortalFixture
+          gas_limit: 10000000
+          constructor_args: [{var: setup.settlement.sender}, "0x20c0000000000000000000000000000000000000", {var: setup.settlement.address}]
+      - id: fund_portal
+        tx:
+          type: tempo
+          from: {pool: zone_deployer, select: {index: 0}}
+          gas_limit: 5000000
+          fee_token: "0x20c0000000000000000000000000000000000000"
+          call:
+            to: "0x20c0000000000000000000000000000000000000"
+            abi: ERC20
+            function: transfer
+            args: [{var: setup.portal.address}, 1000000]
+      - id: approve_portal
+        tx:
+          type: tempo
+          from: {pool: users, select: {index: 0}}
+          gas_limit: 5000000
+          fee_token: "0x20c0000000000000000000000000000000000000"
+          call:
+            to: "0x20c0000000000000000000000000000000000000"
+            abi: ERC20
+            function: approve
+            args: [{var: setup.portal.address}, "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"]
 
 address_pools:
   existing_recipients:
@@ -15,8 +60,42 @@ address_pools:
 
 artifacts:
   ERC20: ../tip20.abi.json
+  PortalFixture: ../zones/PortalFixture.json
+  SettlementFixture: ../zones/SettlementFixture.json
+  ZonePortal: ../zones/portal.abi.json
 
 templates:
+  zone_deposit:
+    type: tempo
+    from: {pool: users, select: {index: 0}}
+    gas_limit: 5000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    calls:
+      - to: {var: setup.portal.address}
+        abi: ZonePortal
+        function: deposit
+        args:
+          - "0x20c0000000000000000000000000000000000000"
+          - 1
+          - 0
+          - ["0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798", 2,
+             "0x11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111",
+             "0x111111111111111111111111", "0x11111111111111111111111111111111"]
+          - {pool: {pool: users, select: {index: 0}}}
+      - to: {var: setup.settlement.address}
+        abi: SettlementFixture
+        function: settle
+        args: [{var: setup.portal.address}, "0x20c0000000000000000000000000000000000000", {pool: {pool: users, select: {index: 0}}}, false]
+  zone_withdraw:
+    type: tempo
+    from: {pool: users, select: {index: 0}}
+    gas_limit: 5000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    call:
+      to: {var: setup.settlement.address}
+      abi: SettlementFixture
+      function: settle
+      args: [{var: setup.portal.address}, "0x20c0000000000000000000000000000000000000", {pool: {pool: users, select: {index: 0}}}, true]
   public_transfer:
     type: tempo
     from: {pool: users, select: random}
@@ -53,8 +132,14 @@ templates:
 # Each selection emits one transaction, including MPP.
 mix:
   - template: public_transfer
-    weight: 80
+    weight: 50
   - template: public_mint
     weight: 5
   - sequence: mpp_open_only
     weight: 15
+  - template: vault_deposit
+    weight: 20
+  - template: zone_deposit
+    weight: 5
+  - template: zone_withdraw
+    weight: 5
