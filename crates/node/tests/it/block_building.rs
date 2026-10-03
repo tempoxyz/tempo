@@ -130,6 +130,21 @@ fn count_transaction_types(transactions: &[TempoTxEnvelope]) -> (usize, usize) {
     (payment_count, transactions.len() - payment_count)
 }
 
+/// Advances the node until the pool has no pending transactions, returning the user transactions
+/// of the built blocks.
+async fn drained_user_txs(
+    node: &mut reth_e2e_test_utils::NodeHelperType<TempoNode>,
+) -> eyre::Result<Vec<TempoTxEnvelope>> {
+    Ok(node
+        .advance_until_pool_drained()
+        .await?
+        .iter()
+        .flat_map(|payload| {
+            extract_user_txs(payload.block().body().transactions().cloned().collect())
+        })
+        .collect())
+}
+
 /// Test with only a few mixed payment and non-payment transactions
 #[tokio::test(flavor = "multi_thread")]
 async fn test_block_building_few_mixed_txs() -> eyre::Result<()> {
@@ -385,33 +400,18 @@ async fn test_block_building_more_txs_than_fit() -> eyre::Result<()> {
 
     // Keep building blocks until all transactions are processed
     let mut all_blocks_user_txs = vec![first_user_txs];
-    let mut block_num = 2;
-
-    loop {
-        println!("Building block {block_num}...");
-        let payload = setup.node.advance_block().await?;
+    for payload in setup.node.advance_until_pool_drained().await? {
         let block = payload.block();
         let all_txs: Vec<_> = block.body().transactions().cloned().collect();
         let user_txs = extract_user_txs(all_txs.clone());
-
-        println!(
-            "Block {}: {} total transactions, {} user transactions",
-            block_num,
-            all_txs.len(),
-            user_txs.len()
-        );
-
-        if user_txs.is_empty() {
-            break;
-        }
-
         let (payment_count, non_payment_count) = count_transaction_types(&user_txs);
         println!(
-            "Block {block_num}: {payment_count} payment, {non_payment_count} non-payment transactions"
+            "Block {}: {} total transactions, {payment_count} payment, {non_payment_count} non-payment transactions",
+            block.header().inner.number,
+            all_txs.len(),
         );
 
         all_blocks_user_txs.push(user_txs);
-        block_num += 1;
     }
 
     // Calculate total transactions across all blocks
@@ -667,16 +667,8 @@ async fn test_block_building_channel_reserve_payment_v2() -> eyre::Result<()> {
 
     inject_reserve_payment_txs(&mut setup.node, &mut payer).await?;
 
-    // Drain pool — topUp + requestClose may already have been consumed by the dev-mode block timer.
-    let mut all_user_txs = Vec::new();
-    loop {
-        let payload = setup.node.advance_block().await?;
-        let user = extract_user_txs(payload.block().body().transactions().cloned().collect());
-        if user.is_empty() {
-            break;
-        }
-        all_user_txs.extend(user);
-    }
+    // Drain pool
+    let all_user_txs = drained_user_txs(&mut setup.node).await?;
     let (payment, non_payment) = count_transaction_types(&all_user_txs);
     assert_eq!(payment, 2);
     assert_eq!(non_payment, 0);
@@ -711,15 +703,7 @@ async fn test_block_building_mixed_tip20_and_reserve_payments() -> eyre::Result<
     inject_non_payment_txs(&mut setup.node, chain_id, 3, 10).await?;
 
     // Drain pool
-    let mut all_user_txs = Vec::new();
-    loop {
-        let payload = setup.node.advance_block().await?;
-        let user = extract_user_txs(payload.block().body().transactions().cloned().collect());
-        if user.is_empty() {
-            break;
-        }
-        all_user_txs.extend(user);
-    }
+    let all_user_txs = drained_user_txs(&mut setup.node).await?;
 
     let (payment, non_payment) = count_transaction_types(&all_user_txs);
     assert_eq!(payment, 5);
