@@ -231,7 +231,11 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     /// Publishes accepted block state as advisory hints for Engine workers.
     /// This is deliberately separate from transact_raw: executing or discarding
     /// a candidate must never advance the prefix seen by other workers.
-    pub(crate) fn record_engine_commit(&mut self, state: &reth_revm::state::EvmState) {
+    pub(crate) fn record_engine_commit(
+        &mut self,
+        state: &reth_revm::state::EvmState,
+        is_expiring_nonce: bool,
+    ) {
         let Some(session) = &self.engine_session else {
             return;
         };
@@ -250,7 +254,8 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         {
             return;
         }
-        let (waited, held) = session.record_commit(state);
+        let (waited, held) =
+            session.record_commit(state, is_expiring_nonce && self.inner.ctx.cfg.spec.is_t1());
         // The prefix guard has been dropped before touching EVM-local totals.
         self.engine_wait_timings.prefix_writes += 1;
         self.engine_wait_timings.prefix_write_wait += waited;

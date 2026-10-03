@@ -958,9 +958,7 @@ fn engine_prefix_publication_honors_execution_guards() {
     }
 }
 
-#[test]
-fn committed_engine_prefix_preserves_parent_relative_expiring_offsets() {
-    let spec = TempoHardfork::T14;
+fn nonce_prefix_parent(spec: TempoHardfork) -> TestDB {
     let caller = address(0);
     let mut setup = crate::test_utils::test_evm_with_basefee(TestDB::default(), 0);
     StorageCtx::enter_ctx(setup.ctx_mut(), StorageActions::disabled(), || {
@@ -990,85 +988,291 @@ fn committed_engine_prefix_preserves_parent_relative_expiring_offsets() {
             ..Default::default()
         },
     );
-    let parent_ptr = spec.expiring_nonce_set_capacity() - 2;
-    db.insert_account_storage(
-        NONCE_PRECOMPILE_ADDRESS,
-        crate::parallel::nonce_slots::EXPIRING_NONCE_RING_PTR,
-        U256::from(parent_ptr),
-    )
-    .unwrap();
-    let recovered = (0..5)
-        .map(|index| {
-            let signed = TempoTransaction {
-                chain_id: 1,
-                gas_limit: 1_000_000,
-                max_fee_per_gas: 1,
-                max_priority_fee_per_gas: 1,
-                fee_token: Some(PATH_USD_ADDRESS),
-                nonce: index,
-                nonce_key: U256::MAX,
-                valid_before: std::num::NonZeroU64::new(25),
-                calls: vec![Call {
-                    to: PATH_USD_ADDRESS.into(),
-                    value: U256::ZERO,
-                    input: ITIP20::transferCall {
-                        to: address(100),
-                        amount: U256::from(index + 1),
-                    }
-                    .abi_encode()
-                    .into(),
-                }],
-                ..Default::default()
+    db
+}
+
+fn nonce_prefix_transaction(
+    nonce_key: U256,
+    nonce: u64,
+    amount: u64,
+    signature: TempoSignature,
+) -> Recovered<TempoTxEnvelope> {
+    let signed = TempoTransaction {
+        chain_id: 1,
+        gas_limit: 1_000_000,
+        max_fee_per_gas: 1,
+        max_priority_fee_per_gas: 1,
+        fee_token: Some(PATH_USD_ADDRESS),
+        nonce,
+        nonce_key,
+        valid_before: std::num::NonZeroU64::new(25),
+        calls: vec![Call {
+            to: PATH_USD_ADDRESS.into(),
+            value: U256::ZERO,
+            input: ITIP20::transferCall {
+                to: address(100),
+                amount: U256::from(amount),
             }
-            .into_signed(TempoSignature::default());
-            Recovered::new_unchecked(TempoTxEnvelope::AA(signed), caller)
-        })
-        .collect::<Vec<_>>();
-    let transactions = recovered
-        .iter()
-        .map(|tx| TempoTxEnv::from_recovered_tx(tx.inner(), tx.signer()))
-        .collect::<Vec<_>>();
-    let env = env(spec);
-    let (factory, session) = factory(&env, &transactions);
-    let config = TempoEvmConfig::new(crate::test_utils::test_chainspec())
-        .with_speculative_executor(SpeculativeExecutor::new(1, 128).unwrap());
-    let mut actual =
-        config.create_executor(factory.create_evm(db.clone(), env.clone()), block_context());
-    let mut canonical =
-        config.create_executor(TempoEvm::new(db.clone(), env.clone()), block_context());
-    let mut worker = factory.create_evm(db.clone(), relaxed(&env));
-    for (index, tx) in recovered.iter().enumerate() {
-        let mut prewarm = transactions[index].clone();
-        prewarm.tempo_tx_env.as_mut().unwrap().expiring_nonce_idx = Some(index);
-        worker.transact_raw(prewarm).unwrap();
-        assert!(
-            session
-                .retained
-                .lock()
-                .unwrap()
-                .results
-                .contains_key(&index)
-        );
-        let expected = canonical.execute_transaction_without_commit(tx).unwrap();
-        let output = actual.execute_transaction_without_commit(tx).unwrap();
-        assert_eq!(output.result(), expected.result());
-        canonical.commit_transaction(expected);
-        actual.commit_transaction(output);
+            .abi_encode()
+            .into(),
+        }],
+        ..Default::default()
     }
-    assert_eq!(actual.evm().execution_stats().reused, 5);
-    assert_eq!(actual.evm().execution_stats().conflicts, 0);
-    assert_eq!(actual.receipts(), canonical.receipts());
-    assert_eq!(root(actual.evm().db()), root(canonical.evm().db()));
-    assert_eq!(
-        worker
-            .db_mut()
-            .storage(
-                NONCE_PRECOMPILE_ADDRESS,
-                crate::parallel::nonce_slots::EXPIRING_NONCE_RING_PTR
-            )
-            .unwrap(),
-        U256::from(parent_ptr),
-    );
+    .into_signed(signature);
+    Recovered::new_unchecked(TempoTxEnvelope::AA(signed), address(0))
+}
+
+#[test]
+fn committed_engine_prefix_preserves_parent_relative_expiring_offsets() {
+    use tempo_precompiles::storage::StorageKey;
+
+    let spec = TempoHardfork::T14;
+    let parent_ptr = spec.expiring_nonce_set_capacity() - 2;
+    let old_hash = B256::repeat_byte(0xf1);
+    // Empty, occupied-but-expired, and occupied-live slot zero. The first two
+    // accepted transactions wrap the pointer; the third must inspect that slot.
+    for old_expiry in [None, Some(5), Some(15)] {
+        let mut db = nonce_prefix_parent(spec);
+        db.insert_account_storage(
+            NONCE_PRECOMPILE_ADDRESS,
+            crate::parallel::nonce_slots::EXPIRING_NONCE_RING_PTR,
+            U256::from(parent_ptr),
+        )
+        .unwrap();
+        if let Some(expiry) = old_expiry {
+            for (slot, value) in [
+                (
+                    0u32.mapping_slot(crate::parallel::nonce_slots::EXPIRING_NONCE_RING),
+                    U256::from_be_bytes(old_hash.0),
+                ),
+                (
+                    old_hash.mapping_slot(crate::parallel::nonce_slots::EXPIRING_NONCE_SEEN),
+                    U256::from(expiry),
+                ),
+            ] {
+                db.insert_account_storage(NONCE_PRECOMPILE_ADDRESS, slot, value)
+                    .unwrap();
+            }
+        }
+        let recovered = (0..5)
+            .map(|index| {
+                nonce_prefix_transaction(U256::MAX, index, index + 1, TempoSignature::default())
+            })
+            .collect::<Vec<_>>();
+        let transactions = recovered
+            .iter()
+            .map(|tx| TempoTxEnv::from_recovered_tx(tx.inner(), tx.signer()))
+            .collect::<Vec<_>>();
+        let mut env = env(spec);
+        env.block_env.inner.timestamp = U256::from(10);
+        let (factory, session) = factory(&env, &transactions);
+        let config = TempoEvmConfig::new(crate::test_utils::test_chainspec())
+            .with_speculative_executor(SpeculativeExecutor::new(1, 128).unwrap());
+        let mut actual =
+            config.create_executor(factory.create_evm(db.clone(), env.clone()), block_context());
+        let mut canonical =
+            config.create_executor(TempoEvm::new(db.clone(), env.clone()), block_context());
+        let mut worker = factory.create_evm(db.clone(), relaxed(&env));
+        for (index, tx) in recovered.iter().enumerate() {
+            let mut prewarm = transactions[index].clone();
+            prewarm.tempo_tx_env.as_mut().unwrap().expiring_nonce_idx = Some(index);
+            let hint = worker.transact_raw(prewarm);
+            let expected = canonical.execute_transaction_without_commit(tx);
+            if old_expiry == Some(15) && index == 2 {
+                assert!(
+                    hint.is_err(),
+                    "strict and relaxed workers must reject the full ring"
+                );
+                assert!(
+                    !session
+                        .retained
+                        .lock()
+                        .unwrap()
+                        .results
+                        .contains_key(&index)
+                );
+                let expected = expected.unwrap_err();
+                let error = actual.execute_transaction_without_commit(tx).unwrap_err();
+                assert_eq!(error.to_string(), expected.to_string());
+                break;
+            }
+            assert!(hint.unwrap().result.is_success());
+            assert!(
+                session
+                    .retained
+                    .lock()
+                    .unwrap()
+                    .results
+                    .contains_key(&index)
+            );
+            let expected = expected.unwrap();
+            let output = actual.execute_transaction_without_commit(tx).unwrap();
+            assert_eq!(output.result(), expected.result());
+            canonical.commit_transaction(expected);
+            actual.commit_transaction(output);
+        }
+        assert_eq!(
+            actual.evm().execution_stats().reused,
+            if old_expiry == Some(15) { 2 } else { 5 }
+        );
+        assert_eq!(actual.evm().execution_stats().conflicts, 0);
+        assert_eq!(actual.receipts(), canonical.receipts());
+        assert_eq!(root(actual.evm().db()), root(canonical.evm().db()));
+        assert_eq!(
+            root(worker.db()),
+            root(&db),
+            "workers never commit ring changes"
+        );
+        if old_expiry == Some(5) {
+            assert_eq!(
+                actual
+                    .evm_mut()
+                    .db_mut()
+                    .storage(
+                        NONCE_PRECOMPILE_ADDRESS,
+                        old_hash.mapping_slot(crate::parallel::nonce_slots::EXPIRING_NONCE_SEEN)
+                    )
+                    .unwrap(),
+                U256::ZERO
+            );
+        }
+    }
+}
+
+#[test]
+fn delayed_engine_nonce_outputs_preserve_keyed_hints_and_reject_expiring_replay() {
+    use revm::database::State;
+    use tempo_primitives::transaction::tt_signature::PrimitiveSignature;
+
+    for typed_validation in [false, true] {
+        // T0 treats MAX as an ordinary keyed nonce. Keep its hints too.
+        for (spec, committed_expiring) in [
+            (TempoHardfork::T14, false),
+            (TempoHardfork::T14, true),
+            (TempoHardfork::T0, false),
+        ] {
+            let db = nonce_prefix_parent(spec);
+            let env = env(spec);
+            let key = if committed_expiring || !spec.is_t1() {
+                U256::MAX
+            } else {
+                U256::from(7)
+            };
+            let first = nonce_prefix_transaction(key, 0, 1, TempoSignature::default());
+            let discarded = nonce_prefix_transaction(
+                if committed_expiring || !spec.is_t1() {
+                    U256::from(8)
+                } else {
+                    U256::MAX
+                },
+                0,
+                2,
+                TempoSignature::default(),
+            );
+            let next = if committed_expiring {
+                // Different envelope signature/hash, identical sender-scoped
+                // replay identifier. Duplicate envelope hashes disable capture.
+                nonce_prefix_transaction(
+                    key,
+                    0,
+                    1,
+                    TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::new(
+                        U256::from(3),
+                        U256::from(4),
+                        true,
+                    ))),
+                )
+            } else {
+                nonce_prefix_transaction(key, 1, 3, TempoSignature::default())
+            };
+            let txs =
+                [&first, &next].map(|tx| TempoTxEnv::from_recovered_tx(tx.inner(), tx.signer()));
+            assert_ne!(txs[0].execution_context, txs[1].execution_context);
+            if committed_expiring {
+                assert_eq!(txs[0].unique_tx_identifier(), txs[1].unique_tx_identifier());
+            }
+            let (factory, session) = factory(&env, &txs);
+            let config = TempoEvmConfig::new(crate::test_utils::test_chainspec())
+                .with_speculative_executor(SpeculativeExecutor::new(1, 128).unwrap());
+            let mut actual_state = State::builder().with_database(db.clone()).build();
+            let mut expected_state = State::builder().with_database(db.clone()).build();
+            let mut evm = factory.create_evm(&mut actual_state, env.clone());
+            if typed_validation {
+                evm.enable_state_cache_validation();
+            }
+            let mut actual = config.create_executor(evm, block_context());
+            let mut canonical = config.create_executor(
+                TempoEvm::new(&mut expected_state, env.clone()),
+                block_context(),
+            );
+            let mut worker = factory.create_evm(db.clone(), relaxed(&env));
+            let mut prewarm = txs[0].clone();
+            if committed_expiring {
+                prewarm.tempo_tx_env.as_mut().unwrap().expiring_nonce_idx = Some(0);
+            }
+            assert!(worker.transact_raw(prewarm).unwrap().result.is_success());
+            assert!(session.retained.lock().unwrap().results.contains_key(&0));
+            let expected = canonical
+                .execute_transaction_without_commit(&first)
+                .unwrap();
+            let output = actual.execute_transaction_without_commit(&first).unwrap();
+            assert_eq!(output.result(), expected.result());
+            assert_eq!(actual.evm().execution_stats().reused, 1);
+
+            // The latest ctx.tx now has the opposite nonce mode; neither of
+            // these later outputs is committed. Clone the earlier output too.
+            let expected_discarded = canonical
+                .execute_transaction_without_commit(&discarded)
+                .unwrap();
+            let actual_discarded = actual
+                .execute_transaction_without_commit(&discarded)
+                .unwrap();
+            assert_eq!(actual_discarded.result(), expected_discarded.result());
+            drop((expected_discarded, actual_discarded));
+            canonical.commit_transaction(expected);
+            actual.commit_transaction(output.clone());
+            drop(output);
+            assert_eq!(actual.receipts(), canonical.receipts());
+
+            // Capture AFTER the commit with a fresh parent-owned provider. An
+            // expiring duplicate sees parent SEEN=0 because that hint was omitted;
+            // keyed nonce1 must see the published ordinary keyed nonce update.
+            let mut worker = factory.create_evm(db.clone(), relaxed(&env));
+            let mut prewarm = txs[1].clone();
+            if committed_expiring {
+                prewarm.tempo_tx_env.as_mut().unwrap().expiring_nonce_idx = Some(1);
+            }
+            assert!(worker.transact_raw(prewarm).unwrap().result.is_success());
+            assert!(session.retained.lock().unwrap().results.contains_key(&1));
+            if committed_expiring {
+                let expected = canonical
+                    .execute_transaction_without_commit(&next)
+                    .unwrap_err();
+                let error = actual
+                    .execute_transaction_without_commit(&next)
+                    .unwrap_err();
+                assert_eq!(error.to_string(), expected.to_string());
+                assert_eq!(actual.evm().execution_stats().nonce_conflicts, 1);
+                assert_eq!(actual.evm().execution_stats().reused, 1);
+                assert_eq!(actual.receipts().len(), 1);
+            } else {
+                let expected = canonical.execute_transaction_without_commit(&next).unwrap();
+                let output = actual.execute_transaction_without_commit(&next).unwrap();
+                assert_eq!(output.result(), expected.result());
+                canonical.commit_transaction(expected);
+                actual.commit_transaction(output);
+                assert_eq!(actual.evm().execution_stats().reused, 2);
+                assert_eq!(actual.evm().execution_stats().conflicts, 0);
+            }
+            assert_eq!(actual.receipts(), canonical.receipts());
+            assert_eq!(actual.evm().db().cache, canonical.evm().db().cache);
+            assert_eq!(
+                actual.evm().db().transition_state,
+                canonical.evm().db().transition_state
+            );
+            assert_eq!(root(worker.db()), root(&db));
+        }
+    }
 }
 
 #[test]

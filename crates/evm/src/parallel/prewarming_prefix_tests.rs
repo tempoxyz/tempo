@@ -231,3 +231,101 @@ fn cache_seed_starts_nonce_predictions_after_pre_execution() {
     prefix.seed_from_cache(&state.cache);
     assert_eq!(prefix.nonce_cursor(0), Some((U256::ZERO, 0)));
 }
+
+#[test]
+fn engine_expiring_omission_preserves_metadata_lifecycle_and_builder_hints() {
+    let ptr = nonce_slots::EXPIRING_NONCE_RING_PTR;
+    let keyed_slot = U256::from(70);
+    let ring_slot = U256::from(71);
+    let other = Address::with_last_byte(203);
+    let mut nonce = Account::from(account_with_code(&[0]));
+    nonce.mark_touch();
+    nonce.storage.insert(keyed_slot, changed_slot(0, 4));
+    let initial = EvmState::from_iter([(NONCE_PRECOMPILE_ADDRESS, nonce.clone())]);
+    let engine = PrewarmingState::default();
+    engine.record_engine_timed(&initial, false);
+    nonce.info.nonce = 2;
+    nonce.info.account_id = revm::state::AccountId::new(7);
+    nonce.info.code = Some(Bytecode::new_raw(Bytes::from_static(&[0x60, 0])));
+    nonce.info.code_hash = nonce.info.code.as_ref().unwrap().hash_slow();
+    nonce.storage.insert(ptr, changed_slot(6, 7));
+    nonce.storage.insert(ring_slot, changed_slot(0, 8));
+    let mut other_account = Account::from(account_with_code(&[0]));
+    other_account.mark_touch();
+    other_account.storage.insert(ring_slot, changed_slot(0, 9));
+    let changes = EvmState::from_iter([
+        (NONCE_PRECOMPILE_ADDRESS, nonce.clone()),
+        (other, other_account),
+    ]);
+    engine.record_engine_timed(&changes, true);
+    let ReadValue::Account(Some(info)) = engine
+        .read(ReadKey::Account(NONCE_PRECOMPILE_ADDRESS))
+        .unwrap()
+    else {
+        panic!("nonce metadata must remain published");
+    };
+    assert_eq!(info.nonce, 2);
+    assert_eq!(info.account_id, revm::state::AccountId::new(7));
+    assert_eq!(info.code, nonce.info.code);
+    assert_eq!(
+        engine.read(ReadKey::Code(info.code_hash)),
+        Some(ReadValue::Code(info.code.unwrap()))
+    );
+    assert_eq!(
+        engine.read(ReadKey::Storage(NONCE_PRECOMPILE_ADDRESS, keyed_slot)),
+        Some(ReadValue::Storage(U256::from(4)))
+    );
+    for slot in [ptr, ring_slot] {
+        assert_eq!(
+            engine.read(ReadKey::Storage(NONCE_PRECOMPILE_ADDRESS, slot)),
+            None
+        );
+    }
+    assert_eq!(engine.nonce_cursor(1), None);
+    assert_eq!(
+        engine.read(ReadKey::Storage(other, ring_slot)),
+        Some(ReadValue::Storage(U256::from(9)))
+    );
+
+    // Ordinary keyed commits and both builder entrypoints still publish storage;
+    // builder source offsets also retain the accepted ring cursor.
+    for timed in [false, true] {
+        let builder = PrewarmingState::default();
+        if timed {
+            builder.record_timed(&changes, Some(3));
+        } else {
+            builder.record(&changes, Some(3));
+        }
+        assert_eq!(
+            builder.read(ReadKey::Storage(NONCE_PRECOMPILE_ADDRESS, ring_slot)),
+            Some(ReadValue::Storage(U256::from(8)))
+        );
+        assert_eq!(builder.nonce_cursor(4), Some((U256::from(7), 0)));
+    }
+    engine.record_engine_timed(&changes, false);
+    assert_eq!(
+        engine.read(ReadKey::Storage(NONCE_PRECOMPILE_ADDRESS, ring_slot)),
+        Some(ReadValue::Storage(U256::from(8)))
+    );
+
+    // Omission must not bypass lifecycle clearing. Missing slots on a newly
+    // created account keep the existing implicit-zero hint semantics.
+    nonce.mark_created();
+    engine.record_engine_timed(
+        &EvmState::from_iter([(NONCE_PRECOMPILE_ADDRESS, nonce.clone())]),
+        true,
+    );
+    assert_eq!(
+        engine.read(ReadKey::Storage(NONCE_PRECOMPILE_ADDRESS, keyed_slot)),
+        Some(ReadValue::Storage(U256::ZERO))
+    );
+    nonce.mark_selfdestruct();
+    engine.record_engine_timed(
+        &EvmState::from_iter([(NONCE_PRECOMPILE_ADDRESS, nonce)]),
+        true,
+    );
+    assert_eq!(
+        engine.read(ReadKey::Account(NONCE_PRECOMPILE_ADDRESS)),
+        Some(ReadValue::Account(None))
+    );
+}

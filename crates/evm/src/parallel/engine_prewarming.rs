@@ -324,8 +324,12 @@ impl EnginePrewarmingSession {
     /// Never seed this prefix from a cache: Engine offsets remain relative to
     /// the worker's parent state. With no source offset, the nonce cursor stays
     /// absent and the recorder applies that original parent offset exactly once.
-    pub(crate) fn record_commit(&self, state: &reth_revm::state::EvmState) -> (Duration, Duration) {
-        self.prefix.record_timed(state, None)
+    pub(crate) fn record_commit(
+        &self,
+        state: &reth_revm::state::EvmState,
+        is_expiring_nonce: bool,
+    ) -> (Duration, Duration) {
+        self.prefix.record_engine_timed(state, is_expiring_nonce)
     }
 
     fn index(&self, tx: &TempoTxEnv) -> Option<usize> {

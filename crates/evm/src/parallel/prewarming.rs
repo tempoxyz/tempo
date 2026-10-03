@@ -27,7 +27,11 @@ struct PrefixAccount {
 
 impl PrefixState {
     #[inline]
-    fn record(&mut self, state: &reth_revm::state::EvmState, expiring_offset: Option<usize>) {
+    fn record<const OMIT_NONCE_STORAGE: bool>(
+        &mut self,
+        state: &reth_revm::state::EvmState,
+        expiring_offset: Option<usize>,
+    ) {
         for (&address, account) in state {
             if !account.is_touched() {
                 continue;
@@ -51,9 +55,16 @@ impl PrefixState {
                 continue;
             }
             cached.info = Some(account.info.clone());
+            // Engine predicts expiring pointers from the parent and source offset.
+            // Omit these storage hints while retaining metadata and lifecycle rules;
+            // all worker observations still require exact ordered validation.
+            if OMIT_NONCE_STORAGE && address == NONCE_PRECOMPILE_ADDRESS {
+                continue;
+            }
             for (&slot, value) in &account.storage {
-                // Publish ordinary writes; omitted observations fall through
-                // to the parent provider and still require ordered validation.
+                // Publish ordinary writes. Missing hints fall through to the
+                // parent; retained older hints may be stale. Both still require
+                // exact ordered validation.
                 // Created accounts retain every slot after clearing old storage.
                 if value.is_changed() || account.is_created() {
                     cached.storage.insert(slot, value.present_value);
@@ -138,7 +149,7 @@ impl PrewarmingState {
     /// pool filtering. The state is only a hint and never committed by workers.
     pub fn record(&self, state: &reth_revm::state::EvmState, expiring_offset: Option<usize>) {
         let mut prefix = self.0.write().expect("prewarming prefix poisoned");
-        prefix.record(state, expiring_offset);
+        prefix.record::<false>(state, expiring_offset);
     }
 
     /// Publishes accepted state and returns writer acquisition and hold wall time.
@@ -148,10 +159,31 @@ impl PrewarmingState {
         state: &reth_revm::state::EvmState,
         expiring_offset: Option<usize>,
     ) -> (Duration, Duration) {
+        self.record_filtered_timed::<false>(state, expiring_offset)
+    }
+
+    /// Omits advisory expiring storage hints; ordered validation still checks all reads.
+    pub(crate) fn record_engine_timed(
+        &self,
+        state: &reth_revm::state::EvmState,
+        is_expiring_nonce: bool,
+    ) -> (Duration, Duration) {
+        if is_expiring_nonce {
+            self.record_filtered_timed::<true>(state, None)
+        } else {
+            self.record_filtered_timed::<false>(state, None)
+        }
+    }
+
+    fn record_filtered_timed<const OMIT_NONCE_STORAGE: bool>(
+        &self,
+        state: &reth_revm::state::EvmState,
+        expiring_offset: Option<usize>,
+    ) -> (Duration, Duration) {
         let waiting = Instant::now();
         let mut prefix = self.0.write().expect("prewarming prefix poisoned");
         let acquired = Instant::now();
-        prefix.record(state, expiring_offset);
+        prefix.record::<OMIT_NONCE_STORAGE>(state, expiring_offset);
         drop(prefix);
         let held = acquired.elapsed();
         (acquired.duration_since(waiting), held)

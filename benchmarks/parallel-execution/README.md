@@ -18,6 +18,11 @@ BAL payloads retain the regular scheduler. Engine prewarming concurrency follows
 `--engine.prewarming-threads`; the regular pool follows `--execution.threads`.
 Typed block executors use authoritative State-cache validation, with received
 BALs retaining ordinary database validation.
+Engine expiring-AA commits omit nonce-precompile storage hints to reduce prefix
+publication work. Their ring-pointer predictions remain relative to the parent
+and source offset; missing or older hints still undergo full ordered validation
+and conflicting candidates execute ordinarily. Keyed nonce and builder hints
+retain their existing publication paths.
 Automatic generic scheduling starts at five transactions in the remaining
 candidate slice; shorter blocks, tails and system-delimited slices execute
 directly. Already prepared and prewarmed candidates remain eligible for reuse.

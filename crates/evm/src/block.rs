@@ -90,6 +90,8 @@ pub struct TempoTxResult {
     next_section: BlockSection,
     /// Whether the transaction is a payment transaction.
     is_payment: bool,
+    /// Outer transaction nonce mode, retained until this output is committed.
+    is_expiring_nonce: bool,
     /// Block gas consumed by this transaction. The block `gas_used` field will be incremented by this value.
     block_gas_used: u64,
     /// Validator-credited fee (in the validator's fee token) reported by `collectFeePostTx`.
@@ -110,6 +112,7 @@ impl Clone for TempoTxResult {
             execution_context: self.execution_context,
             next_section: self.next_section,
             is_payment: self.is_payment,
+            is_expiring_nonce: self.is_expiring_nonce,
             block_gas_used: self.block_gas_used,
             validator_fee: self.validator_fee,
         }
@@ -141,6 +144,7 @@ impl TempoTxResult {
             execution_context,
             next_section,
             is_payment,
+            is_expiring_nonce: tx.is_expiring_nonce(),
             block_gas_used,
             validator_fee,
         }
@@ -662,6 +666,7 @@ where
             execution_context,
             next_section,
             is_payment: self.is_payment(recovered.tx()),
+            is_expiring_nonce: recovered.tx().is_expiring_nonce(),
             block_gas_used,
             validator_fee,
         })
@@ -673,6 +678,7 @@ where
             execution_context,
             next_section,
             is_payment,
+            is_expiring_nonce,
             block_gas_used,
             validator_fee: _,
         } = output;
@@ -680,7 +686,9 @@ where
         // Publication belongs to the accepted, infallible commit path. Borrow
         // the state before the inner executor consumes it, avoiding a full clone.
         // Workers still validate all hints against the resulting ordered state.
-        self.inner.evm.record_engine_commit(&inner.result.state);
+        self.inner
+            .evm
+            .record_engine_commit(&inner.result.state, is_expiring_nonce);
         // Keep alloy's receipt/gas ordering: receipt builders observe the full
         // result and the pre-commit database. Only the final State commit differs.
         let EthTxResult {
@@ -1251,6 +1259,7 @@ mod tests {
             },
             next_section: BlockSection::NonShared,
             is_payment: false,
+            is_expiring_nonce: false,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
         };
@@ -1446,6 +1455,7 @@ mod tests {
             },
             next_section: BlockSection::NonShared,
             is_payment: false,
+            is_expiring_nonce: false,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
         };
@@ -1488,6 +1498,7 @@ mod tests {
             },
             next_section: BlockSection::NonShared,
             is_payment: false,
+            is_expiring_nonce: false,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
         };
@@ -1514,6 +1525,7 @@ mod tests {
             },
             next_section: BlockSection::NonShared,
             is_payment: false,
+            is_expiring_nonce: false,
             block_gas_used: 50000,
             validator_fee: U256::ZERO,
         };
@@ -1579,6 +1591,7 @@ mod tests {
             },
             next_section: BlockSection::NonShared,
             is_payment: false,
+            is_expiring_nonce: false,
             block_gas_used: 50000,
             validator_fee: U256::ZERO,
         };
@@ -1627,6 +1640,7 @@ mod tests {
             },
             next_section: BlockSection::NonShared,
             is_payment: false,
+            is_expiring_nonce: false,
             block_gas_used: 200_000,
             validator_fee: U256::ZERO,
         };
@@ -1678,6 +1692,7 @@ mod tests {
             },
             next_section: BlockSection::GasIncentive,
             is_payment: false,
+            is_expiring_nonce: false,
             block_gas_used: 200_000,
             validator_fee: U256::ZERO,
         };
