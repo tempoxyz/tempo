@@ -14,12 +14,13 @@ use alloy::{
     sol_types::SolCall,
 };
 use alloy_eips::Encodable2718;
-use reth_e2e_test_utils::wallet::test_signer;
+use eyre::WrapErr;
+use reth_e2e_test_utils::{receipt::await_successful_receipts, wallet::test_signer};
 use reth_ethereum::network::{NetworkSyncUpdater, SyncState};
 use reth_node_api::BuiltPayload;
 use reth_primitives_traits::transaction::TxHashRef;
 use reth_transaction_pool::TransactionPool;
-use tempo_alloy::{TempoNetwork, provider::TempoProviderBuilderExt};
+use tempo_alloy::{TempoNetwork, provider::TempoProviderBuilderExt, rpc::TempoTransactionReceipt};
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{
     DEFAULT_FEE_TOKEN,
@@ -111,6 +112,27 @@ impl Localnet {
             funder_addr,
         })
     }
+
+    /// Mines the encoded transaction alone in the next block and returns its receipt.
+    async fn mine_tx(
+        &mut self,
+        encoded: Vec<u8>,
+        tx_hash: B256,
+    ) -> eyre::Result<TempoTransactionReceipt> {
+        let receipt = self
+            .setup
+            .node
+            .mine([encoded.into()])
+            .await?
+            .receipts
+            .remove(0);
+        eyre::ensure!(
+            receipt.transaction_hash == tx_hash,
+            "mined transaction {} instead of {tx_hash}",
+            receipt.transaction_hash
+        );
+        Ok(receipt)
+    }
 }
 
 impl super::types::TestEnv for Localnet {
@@ -174,19 +196,9 @@ impl super::types::TestEnv for Localnet {
         encoded: Vec<u8>,
         tx_hash: B256,
     ) -> eyre::Result<serde_json::Value> {
-        self.setup.node.inject_and_advance(encoded.into()).await?;
-
-        let raw: Option<serde_json::Value> = self
-            .provider
-            .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
-            .await?;
-        let receipt =
-            raw.ok_or_else(|| eyre::eyre!("Transaction receipt not found for {tx_hash}"))?;
-        let status = receipt["status"]
-            .as_str()
-            .ok_or_else(|| eyre::eyre!("Receipt missing status field"))?;
-        assert_eq!(status, "0x1", "Receipt status mismatch for {tx_hash}");
-        Ok(receipt)
+        let receipt = self.mine_tx(encoded, tx_hash).await?;
+        assert!(receipt.status(), "Receipt status mismatch for {tx_hash}");
+        Ok(serde_json::to_value(receipt)?)
     }
 
     async fn bump_protocol_nonce(
@@ -212,11 +224,8 @@ impl super::types::TestEnv for Localnet {
 
             let signature = sign_aa_tx_secp256k1(&tx, signer)?;
             let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
-            let (tx_hash, _) = self
-                .setup
-                .node
-                .inject_and_advance(envelope.encoded_2718().into())
-                .await?;
+            let tx_hash = *envelope.tx_hash();
+            self.mine_tx(envelope.encoded_2718(), tx_hash).await?;
             wait_until_pool_not_contains(
                 &self.setup.node.inner.pool,
                 &tx_hash,
@@ -249,11 +258,7 @@ impl super::types::TestEnv for Localnet {
         encoded: Vec<u8>,
         tx_hash: B256,
     ) -> eyre::Result<serde_json::Value> {
-        self.setup.node.rpc.inject_tx(encoded.into()).await?;
-
-        // The tx may not be pending in the first block if pool maintenance hasn't processed the
-        // previous block yet.
-        let receipt = self.setup.node.advance_until_receipt(tx_hash).await?;
+        let receipt = self.mine_tx(encoded, tx_hash).await?;
         Ok(serde_json::to_value(receipt)?)
     }
 
@@ -1890,7 +1895,7 @@ async fn test_expiring_nonce_discriminators_across_t12(
         .with_expiring_nonces()
         .wallet(funder_signer)
         .connect_http(setup.node.rpc_url());
-    let mut accepted_hashes = Vec::new();
+    let mut accepted = Vec::new();
 
     for (discriminator, should_accept) in [0, 1, u64::MAX].into_iter().zip(expected_admission) {
         let mut tx = create_expiring_nonce_tx(chain_id, valid_before, recipient);
@@ -1901,7 +1906,7 @@ async fn test_expiring_nonce_discriminators_across_t12(
 
         let submission = tempo_provider.send_transaction(request).await;
         if should_accept {
-            accepted_hashes.push(*submission?.tx_hash());
+            accepted.push(submission?);
         } else {
             assert!(
                 submission.is_err(),
@@ -1911,15 +1916,13 @@ async fn test_expiring_nonce_discriminators_across_t12(
     }
 
     assert!(
-        accepted_hashes
+        accepted
             .iter()
-            .all(|hash| setup.node.inner.pool.contains(hash)),
+            .all(|tx| setup.node.inner.pool.contains(tx.tx_hash())),
         "{hardfork:?} accepted discriminators must coexist in the pool"
     );
     setup.node.advance_block().await?;
-    for hash in accepted_hashes {
-        assert_receipt_status(&provider, hash, true).await?;
-    }
+    await_successful_receipts(accepted).await?;
     assert_eq!(
         provider.get_transaction_count(funder_addr).await?,
         protocol_nonce,
@@ -1968,10 +1971,9 @@ async fn test_aa_expiring_nonce_replay_protection() -> eyre::Result<()> {
     // First submission should succeed
     setup
         .node
-        .inject_and_advance(encoded.clone().into())
-        .await?;
-
-    assert_receipt_status(&provider, tx_hash, true).await?;
+        .mine([encoded.clone().into()])
+        .await?
+        .ensure_success()?;
     println!("✓ First submission succeeded");
 
     // Second submission with SAME encoded tx (same hash) should fail
@@ -2484,12 +2486,9 @@ async fn test_aa_keychain_v2_signature() -> eyre::Result<()> {
     assert!(!v2_sig.is_legacy_keychain());
     assert!(v2_sig.is_keychain());
 
-    let tx_hash = submit_and_mine_aa_tx(&mut setup, transfer_tx, v2_sig).await?;
-    let receipt = provider
-        .get_transaction_receipt(tx_hash)
-        .await?
-        .expect("receipt must exist");
-    assert!(receipt.status(), "V2 keychain transfer must succeed");
+    submit_and_mine_aa_tx(&mut setup, transfer_tx, v2_sig)
+        .await
+        .wrap_err("V2 keychain transfer must succeed")?;
     println!("✓ V2 keychain signature accepted and transfer succeeded");
 
     // Step 3: V1 signature should be rejected at pool level (post-T1C)
