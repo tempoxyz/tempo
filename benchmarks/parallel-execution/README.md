@@ -280,6 +280,9 @@ Raw records, recorder completion, process lifetimes, independent clock samples,
 profile markers and accepted block hashes were reconciled. Perf can silently
 skip a failed final loss-counter read, so this is evidence of no observed loss,
 not an unconditional completeness guarantee.
+The separate Samply recorder lost 41,136 events on baseline node A. Its surviving
+scope markers match every retained accepted-block log inside the kernel capture;
+its sampled CPU shares are not qualified by the kernel recorder's loss audit.
 
 The offline decoder preserves numeric states from the saved tracepoint schema;
 the runner's textual output renders some preemptions as ordinary runnable state.
@@ -578,6 +581,17 @@ statistically neutral, so win-only Slack is suppressed. Across 1,562 verified
 canonical blocks and 9.72 million transactions, exact Engine reuse rises from
 31.54% to 50.48%, while internal execution time per transaction falls only 2.03%.
 The default remains 128 because increased reuse has not improved node throughput.
+
+[Worker comparison 37118414748](https://github.com/tempoxyz/tempo/actions/runs/37118414748)
+compares sixteen versus eight prewarming workers in the same `06f046cda`
+executable, with execution threads eight and both windows 128. TPS changes from
+16,901 to 16,797 (-0.62%, neutral), while builder and validator gas throughput
+fall 5.72% and 12.51%. Some latency measures improve, but the official result is
+mixed and win-only Slack is suppressed. Across 1,603 verified canonical blocks
+and 9.32 million transactions, Engine reuse rises from 29.77% to 65.71%; internal
+execution time per transaction nevertheless rises 18.48%. These descriptive
+cohorts differ across phases, and every pair runs feature first. Retain sixteen
+workers; increased reuse has not established faster execution.
 
 A local experiment made contended prefix reads fall back to the parent provider.
 It preserved differential correctness but reduced eight-worker reuse from about
