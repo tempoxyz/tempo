@@ -119,6 +119,16 @@ checks 904 source records and both finalized chains, with zero node errors.
 Receipts remain a live-oracle result: the archive retains their digests only.
 This is correctness evidence, not a throughput comparison against main.
 
+[Bounded-dispatch validation 37135338419](https://github.com/tempoxyz/tempo/actions/runs/37135338419)
+passes on `274320653` with capture window 512. Live checks match state/receipt
+roots, selected header fields, ordered transaction hashes and full receipt JSON
+across 166 finalized blocks and 1,530,645 transactions. Both peers produce blocks
+larger than the window. Included builder reuse is at least 753,216; accepted
+Engine logs show 476,364 reuses across 651,249 received transactions (73.15%). They bind
+every block to producer and fresh opposite-peer execution, with 1,637 `VALID`
+statuses and no node errors. The archive retains receipt digests rather than
+receipt bodies. Reuse on this generated workload does not establish a speedup.
+
 ```sh
 gh workflow run bench-e2e-scheduled.yml --ref onbjerg/parallel-execution \
   -F sequential-peer=true -f ref='<candidate-sha>'

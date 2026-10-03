@@ -407,7 +407,7 @@ def verify(config, report, rpcs=None, logs=None, finality_timeout=60, dense_tran
             f"insufficient dense generated cohort / both producer roles at >= {dense_transactions} transactions: {producers}")
     require(all(reuse.values()), f"missing positive canonical parallel reuse in each role: {reuse}")
     return {"status": "passed", "mode": "generated-correctness", "speedup_claim": False,
-            "scope": "same candidate binary with speculation on/off; exact finalized headers, bodies and full receipts for the interval; producer execution plus fresh opposite-peer Engine execution for every nonempty block",
+            "scope": "same candidate binary with speculation on/off; matching selected finalized header fields (including state and receipt roots), ordered transaction hashes and full receipt JSON for the interval; producer execution plus fresh opposite-peer Engine execution for every nonempty block",
             "shared_changes": "not independently checked against unmodified main; State commit has separate oracle tests",
             "config": config, "from_block": start, "to_block": end, "parent_anchor": anchor[0]["hash"],
             "verified_transactions": sum(block["tx_count"] for block in verified),
