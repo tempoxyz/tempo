@@ -100,6 +100,11 @@ const FEE_STATE: Expectation = Expectation {
         {
             return None;
         }
+        // With the same charge and refund, a gas-derived hook leaves the same fee state, so any
+        // remaining difference comes from the hook itself.
+        if real_charge == shadow_charge {
+            return None;
+        }
         // A different fee route cannot be inferred from a changed fee amount alone.
         let route = |actions: &[StorageAction], mut amount: U256| -> Option<Vec<U256>> {
             let mut keys = Vec::new();
@@ -501,6 +506,41 @@ mod tests {
         assert_eq!(field.address, Some(Address::ZERO));
         assert_eq!(field.slot, Some(U256::ZERO));
         assert!(field.fee_associated);
+    }
+
+    /// One transaction whose post-fee hook credits `credited` to the fee slot for a `gas` charge.
+    fn fee_hook_evidence(gas: u64, credited: u64) -> Evidence {
+        let mut evidence = evidence(&[gas]);
+        let tx = tx_mut(&mut evidence, 0);
+        let max = U256::from(5_000);
+        let charge = U256::from(gas);
+        tx.fee.log_ranges = std::iter::once(0..1).collect();
+        tx.fee.pre_tx_max = Some(max);
+        tx.fee.post_tx_transfer = Some((0, Address::ZERO, Address::ZERO, charge, max - charge));
+        tx.fee.post_tx_actions = vec![StorageAction::Sinc(
+            Address::ZERO,
+            U256::ZERO,
+            U256::from(1_000),
+            U256::from(credited),
+        )];
+        tx.fee_normalized = Some(B256::repeat_byte(1));
+        write_slot(tx, 1_000 + credited);
+        evidence
+    }
+
+    #[test]
+    fn fee_state_rejects_hook_change_with_equal_charge() {
+        let block = block(vec![signed_tx(vec![])]);
+        let real = fee_hook_evidence(1_000, 1_000);
+
+        let gas_derived = fee_hook_evidence(1_200, 1_200);
+        let report = Report::analyze(&real, &gas_derived, &[&FEE_STATE], &block);
+        assert_eq!(report.outcome(&gas_derived), ReplayOutcome::Expected);
+
+        let changed_hook = fee_hook_evidence(1_000, 2_000);
+        let report = Report::analyze(&real, &changed_hook, &[&FEE_STATE], &block);
+        assert_eq!(report.unexplained, 1);
+        assert_eq!(report.outcome(&changed_hook), ReplayOutcome::Findings);
     }
 
     fn signed_tx(calls: Vec<Call>) -> TempoTxEnvelope {
