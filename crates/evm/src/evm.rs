@@ -724,8 +724,11 @@ where
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         self.inner.set_body_replay(None);
-        if let Some(session) = self.engine_session.clone() {
+        if let Some(session) = self.engine_session.as_ref() {
             if let Some(capture) = self.engine_capture {
+                // Capture mutably inspects the EVM while holding its worker guard.
+                // Ordered consumption only needs to borrow the session.
+                let session = std::sync::Arc::clone(session);
                 let _capture_worker = session.worker_entry();
                 let guard_admitted = !self.inspect
                     && self.standard_configuration
