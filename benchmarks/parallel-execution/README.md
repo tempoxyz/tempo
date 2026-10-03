@@ -1,8 +1,8 @@
 # Speculative execution benchmarks
 
-Experimental and disabled by default. Completed GitHub saturation benchmarks
-still regress against sequential execution; this work has not demonstrated that
-execution is no longer the node's bottleneck. The implementation targets current
+Experimental and disabled by default. GitHub saturation benchmarks have not shown
+a consistent net improvement over sequential execution; this work has not demonstrated
+that execution is no longer the node's bottleneck. The implementation targets current
 main (Tempo 1.14, Reth 2.7, revm 43), with ordered read validation and replay.
 
 Engine payload validation now consumes strict results from its existing
@@ -17,7 +17,8 @@ bound. The Engine's external prewarming coordinator also bounds forward dispatch
 and queued/running transaction jobs by this window, polling canonical progress
 and cancellation every 100 microseconds. Workers do not wait for admission.
 These bounds also restrict cache/proof prefetch lead and exclude converted inputs,
-provider caches and the initial worker setup job; their performance is unproven.
+provider caches and the initial worker setup job. The first 128-window comparison
+regresses official latency metrics despite improving Engine reuse and execution time.
 The optional dispatcher is pinned to
 [Reth 382b9390f](https://github.com/paradigmxyz/reth/commit/382b9390f9901c51f1d0cb94836f80c175be9615).
 Small blocks, disabled prewarming and
@@ -294,12 +295,35 @@ against live resources. The run produced no performance result: its harness
 enabled T14 but disabled earlier forks by using lexical JSON field order,
 stalling baseline consensus before load. The workflow now pins
 [the numeric hardfork-order fix](https://github.com/tempoxyz/tempo-multi-region-benchmark/commit/49546631d5322ec32bdd9b986919bc25a05853ad);
-its local regression tests pass, with cloud validation still pending.
+its local regression tests and the following cloud run pass.
+
+[Cloud comparison 37135616796](https://github.com/tempoxyz/tempo/actions/runs/37135616796)
+compares main `61c979a524` with `274320653` on two 48-vCPU validators and a separate
+generator. In one 90-second pair at 50k requested TPS, chain TPS rises from 18,981
+to 21,025 (+10.77%), builder gas throughput rises 21.33% and validator gas throughput
+rises 5.61%; validator p90 also rises 16.74%. This is a descriptive, mixed result.
+Actual attempt rates are 19,726 and 21,920/s; pool-full errors dominate failures.
+All 322 measured blocks (3,535,780 transactions) match producer execution, fresh
+peer execution and later `VALID`. Both arms activate every fork through T14,
+and teardown evidence confirms all three VMs and boot disks absent. Cloud builds
+use Rust 1.99.0/default features, unlike the bare-metal comparison; profiling was
+off. The run establishes neither sustained 50k TPS nor CPU saturation, and sends
+no Slack notification.
 
 The workflow's builder gas throughput averages `gas_used / elapsed` over full
 payload builds. It includes setup, transaction selection, waits and finalization;
 it is not execution-only throughput. CPU profile shares describe sampled work
 and must be combined with elapsed-time measurements before identifying a bottleneck.
+
+[Bounded-dispatch comparison 37135326741](https://github.com/tempoxyz/tempo/actions/runs/37135326741)
+compares `274320653` with speculative predecessor `b4719cec6`, using window 128.
+The official result is **Regression**: TPS 15,723 to 15,884 is neutral, while
+validator p90 rises 5.60% and block-interval p90 rises 4.36%. Across the accepted
+chains, Engine reuse rises from 30.59% to 77.15% and execution falls from 25.29 to
+24.19 microseconds per transaction; foreground state-root finishing time rises
+in every pair. These log cohorts include warmup and differ from the official
+measurement cohorts. All 7,146 observed payload statuses are `VALID`; the workflow
+correctly skips its win-only Slack post. This is not a comparison against main.
 
 For a bounded scheduling diagnostic, the manual E2E workflow accepts
 `profiling=samply-scheduling`. It forwards both `--per-cpu-threads` and
