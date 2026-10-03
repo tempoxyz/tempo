@@ -524,13 +524,10 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
         .await;
 
     // Build and commit the block
-    let (attack_tx_hash, payload) = setup.node.inject_and_advance(attack_tx).await?;
-    let payload_fees = payload.fees();
+    let mined = setup.node.mine([attack_tx]).await?;
+    let payload_fees = mined.payload.fees();
 
-    let attack_receipt = user_provider
-        .get_transaction_receipt(attack_tx_hash)
-        .await?
-        .expect("attack tx receipt must exist");
+    let attack_receipt = &mined.receipts[0];
     let nominal_spending = calc_gas_balance_spending(
         attack_receipt.gas_used,
         attack_receipt.effective_gas_price(),
