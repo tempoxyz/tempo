@@ -1,16 +1,15 @@
-use crate::utils::with_t1_fees;
+use crate::utils::{tempo_test_setup, with_t1_fees};
 use alloy_primitives::{Address, B256};
 use alloy_rpc_types_eth::TransactionRequest;
 use reth_e2e_test_utils::wallet::Wallet;
-use reth_ethereum::{chainspec::EthChainSpec as _, tasks::Runtime};
+use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_node_api::BuiltPayload;
-use reth_node_builder::{NodeBuilder, NodeConfig};
 use reth_storage_api::{AccountReader as _, StateProviderFactory as _};
 use tempo_node::node::TempoNode;
 
 /// One node builds two blocks. A second node only executes them with
-/// `newPayload` and never receives a forkchoice update, so its head stays at
-/// genesis. The first block becomes the engine's pending block. The second
+/// `newPayload` and receives no forkchoice update for them, so its head stays
+/// at genesis. The first block becomes the engine's pending block. The second
 /// block is neither canonical nor pending, so the provider has no state for
 /// it, but [`tempo_node::ExecutedState`] reads it from the engine.
 #[tokio::test(flavor = "multi_thread")]
@@ -48,35 +47,27 @@ async fn executed_state_reads_blocks_that_are_not_canonical() -> eyre::Result<()
 
     let tempo_node = TempoNode::default();
     let executed_state = tempo_node.executed_state();
-    let runtime = Runtime::test();
-    let mut config = NodeConfig::new(chain_spec).with_unused_ports();
-    config.network.discovery.disable_discovery = true;
-    let observer_handle = NodeBuilder::new(config)
-        .testing_node(runtime.clone())
-        .node(tempo_node)
-        .launch()
+    let (observer, _) = tempo_test_setup(1, chain_spec)
+        .with_node(move |_| tempo_node.clone())
+        .build_single()
         .await?;
-    let observer = &observer_handle.node;
+    let provider = &observer.inner.provider;
 
     for payload in [first, second] {
-        let status = observer
-            .add_ons_handle
-            .beacon_engine_handle
-            .new_payload(payload.into())
-            .await?;
+        let status = observer.submit_payload_with_status(payload).await?;
         assert!(status.is_valid(), "unexpected payload status: {status:?}");
     }
 
     assert!(
-        observer.provider.state_by_block_hash(second_hash).is_err(),
+        provider.state_by_block_hash(second_hash).is_err(),
         "the provider must not serve state for a block that is neither canonical nor pending",
     );
-    let state = executed_state.state_by_block_hash(observer.provider.clone(), second_hash)?;
+    let state = executed_state.state_by_block_hash(provider.clone(), second_hash)?;
     assert_eq!(state.basic_account(&sender)?, expected);
 
     assert!(
         executed_state
-            .state_by_block_hash(observer.provider.clone(), B256::repeat_byte(0xab))
+            .state_by_block_hash(provider.clone(), B256::repeat_byte(0xab))
             .is_err(),
         "a block that the engine has not executed must not resolve",
     );
