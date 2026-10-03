@@ -6,7 +6,7 @@ use alloy_eips::{Decodable2718, Encodable2718};
 use alloy_primitives::{Address, TxKind, U64, U256};
 use eyre::WrapErr;
 use reth_chainspec::EthChainSpec;
-use reth_e2e_test_utils::wallet::test_signer;
+use reth_e2e_test_utils::{node::Finality, wallet::test_signer};
 use reth_ethereum::{
     evm::revm::primitives::hex, pool::TransactionPool, primitives::SignerRecoverable,
 };
@@ -197,27 +197,22 @@ async fn test_evict_expired_aa_tx() -> eyre::Result<()> {
 ///
 /// Reth's built-in `maintain_transaction_pool` handles this — no custom reorg logic needed.
 ///
-/// 1. Node2 builds an empty block B at height 1 (before the tx exists)
-/// 2. Node1 submits and mines a 2D nonce AA tx in block A at height 1
-/// 3. Import block B into node1 and FCU to it → reorg A→B
-/// 4. The orphaned tx reappears in node1's pool
+/// 1. Submit and mine a 2D nonce AA tx in block A at height 1
+/// 2. Build an empty block B on genesis and make it the head → reorg A→B
+/// 3. The orphaned tx reappears in the pool
 #[tokio::test(flavor = "multi_thread")]
 async fn test_2d_nonce_tx_reinjected_after_reorg() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // Two disconnected nodes — no tx propagation
-    let mut multi = crate::utils::TestNodeBuilder::new()
-        .with_node_count(2)
-        .build_multi_node()
-        .await?;
+    let mut node = crate::utils::TestNodeBuilder::new()
+        .build_with_node_access()
+        .await?
+        .node;
+    // Keep genesis finalized, so block A can be reorged.
+    node.set_finality(Finality::Keep);
+    let genesis = node.block_hash(0);
 
-    let mut node1 = multi.nodes.remove(0);
-    let mut node2 = multi.nodes.remove(0);
-
-    // Step 1: Build empty block B on node2 first (before the tx exists)
-    let block_b = node2.build_and_submit_payload().await?;
-
-    // Step 2: Submit a 2D nonce AA tx to node1 and mine it in block A
+    // Step 1: Submit a 2D nonce AA tx and mine it in block A
     let signer_wallet = test_signer(0);
 
     let tx_aa = TempoTransaction {
@@ -240,31 +235,26 @@ async fn test_2d_nonce_tx_reinjected_after_reorg() -> eyre::Result<()> {
     let recovered = envelope.try_into_recovered()?;
     let tx_hash = *recovered.tx_hash();
 
-    node1
-        .inner
+    node.inner
         .pool
         .add_consensus_transaction(recovered, TransactionOrigin::Local)
         .await?;
-    assert!(
-        node1.inner.pool.contains(&tx_hash),
-        "tx should be in node1 pool"
-    );
+    assert!(node.inner.pool.contains(&tx_hash), "tx should be in pool");
 
-    node1.advance_block().await?;
+    node.advance_block().await?;
 
-    node1
-        .wait_for_pool(|pool| !pool.contains(&tx_hash))
+    node.wait_for_pool(|pool| !pool.contains(&tx_hash))
         .await
         .wrap_err("tx should be mined out of pool")?;
 
-    // Step 3: Import block B into node1 and FCU to it → reorg A→B
-    node1.import_payload(block_b).await?;
+    // Step 2: Build block B on genesis and make it the head → reorg A→B. B is empty because the
+    // pool no longer holds the tx.
+    node.advance_block_on(genesis).await?;
 
-    // Step 4: Wait for the orphaned tx to reappear in node1's pool
-    node1
-        .wait_for_pool(|pool| pool.contains(&tx_hash))
+    // Step 3: Wait for the orphaned tx to reappear in the pool
+    node.wait_for_pool(|pool| pool.contains(&tx_hash))
         .await
-        .wrap_err("tx should be back in node1 pool after reorg")?;
+        .wrap_err("tx should be back in pool after reorg")?;
 
     Ok(())
 }
