@@ -776,10 +776,11 @@ establish a throughput improvement or an independent sequential receipt/root che
 compares `1c86a7ab5` with `ec0f4a6ea`, widening dispatch from 128 to 512 while
 keeping capture and in-flight limits at 128. The official result is improvement:
 builder p50 falls 2.03%; TPS rises from 13,144 to 13,891, statistically neutral.
-Across accepted nonempty blocks, Engine reuse falls from 76.31% to 42.44%.
-Engine time rises 5.86% and foreground root finishing falls 22.97%; their sum
-rises 1.12% per transaction, worsening in every pair. These descriptive costs
-include warmup and are distinct from official percentile metrics. The wider
+On the official block cohort, after removing the first five blocks per run,
+Engine reuse falls from 76.31% to 41.76%. Engine time rises 6.04% and foreground
+root finishing falls 24.11%; their sum rises 1.04% per transaction, worsening
+in every pair. These descriptive ratios differ from official metric means and
+percentiles, which filter their own samples separately. The wider
 lead is reverted because its root benefit is offset by lost reuse. All 6,157
 observed payload statuses are `VALID`; this does not replace sequential oracles.
 The workflow's on-win Slack step succeeds; it does not retain a message ID.
