@@ -209,7 +209,7 @@ on:
         required: false
         default: ""
       profiling:
-        description: Profiling.
+        description: Profiling (engine-cpu requires GCP and collects a bounded diagnostic window).
         type: choice
         required: true
         default: "off"
@@ -218,6 +218,7 @@ on:
           - samply
           - tracy
           - both
+          - engine-cpu
       otlp:
         description: Export OTLP traces and logs.
         type: boolean
@@ -418,7 +419,7 @@ jobs:
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
           # Keep genesis hardfork activation independent of JSON key order.
-          ref: ${{ github.repository == 'tempoxyz/tempo-multi-region-benchmark' && github.sha || '49546631d5322ec32bdd9b986919bc25a05853ad' }}
+          ref: ${{ github.repository == 'tempoxyz/tempo-multi-region-benchmark' && github.sha || '74973bf2dce7e8b8bb70b310763a2f1467ddc87b' }}
           path: ${{ env.BENCH_REPO_DIR }}
           token: ${{ steps.github-sts.outputs.token }}
           persist-credentials: false
