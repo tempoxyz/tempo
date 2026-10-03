@@ -469,6 +469,15 @@ is suppressed for the mixed result. This supports retaining the builder candidat
 provisionally, but does not isolate its change from the earlier implementation
 or establish an overall node improvement.
 
+[Isolated builder comparison 37103181238](https://github.com/tempoxyz/tempo/actions/runs/37103181238)
+compares `042ec0dc0` against `13e97e5be`, fixing both sides at sixteen prewarming
+workers, eight execution threads and batch size 128. The bounded builder window
+and result quota improve builder gas throughput 11.79% and TPS from 15,843 to
+16,533 (+4.36%). Validator gas throughput changes -1.40%, statistically neutral.
+Block-time p90 rises 8.23% and validation p99 rises 13.55%, so the result remains
+mixed and win-only Slack is suppressed. This isolates the builder improvement;
+it does not establish a win against main.
+
 A local experiment made contended prefix reads fall back to the parent provider.
 It preserved differential correctness but reduced eight-worker reuse from about
 97% to 62–65%, lowering median throughput 31.74% across three paired million-
