@@ -310,6 +310,24 @@ use Rust 1.99.0/default features, unlike the bare-metal comparison; profiling wa
 off. The run establishes neither sustained 50k TPS nor CPU saturation, and sends
 no Slack notification.
 
+[Cloud diagnostic 37139307488](https://github.com/tempoxyz/tempo/actions/runs/37139307488)
+repeats that comparison with profiling and Engine scheduler tracing. All 328
+measured blocks (3,678,010 transactions) bind to producer execution, fresh peer
+execution and later `VALID`; all three VMs and boot disks are absent after cleanup.
+TPS rises from 19,069 to 22,064, but validator p90 rises 22.33%. This is one
+instrumented pair, not a performance win. Kernel captures report no loss;
+Samply reports substantial loss and cannot establish absolute CPU attribution.
+In accepted Engine log-event envelopes, scheduled time falls from 20.93 to
+17.12 microseconds per transaction; feature runnable and nonrunnable time are
+1.00 and 1.16 microseconds, respectively. Scheduled time remains 88.79% of these
+feature intervals. These symbolic scheduler partitions use estimated clock
+alignment and include instrumentation and kernel interruptions. Independent
+matched `schedstat` counter intervals agree with scheduled time within 0.181%;
+runqueue totals differ by up to 4.744%. During sending, Tempo uses about 19–20
+CPU equivalents per validator while the hosts report 24–26 idle CPU equivalents.
+The machines expose 48 logical CPUs, but missing cgroup limit files prevent a
+claim about CPU entitlement. Execution still contains substantial serial work.
+
 The workflow's builder gas throughput averages `gas_used / elapsed` over full
 payload builds. It includes setup, transaction selection, waits and finalization;
 it is not execution-only throughput. CPU profile shares describe sampled work
@@ -324,6 +342,14 @@ chains, Engine reuse rises from 30.59% to 77.15% and execution falls from 25.29 
 in every pair. These log cohorts include warmup and differ from the official
 measurement cohorts. All 7,146 observed payload statuses are `VALID`; the workflow
 correctly skips its win-only Slack post. This is not a comparison against main.
+
+[Session-borrow comparison 37140139020](https://github.com/tempoxyz/tempo/actions/runs/37140139020)
+compares `1c86a7ab5` with `274320653`, removing an ordered-path session Arc clone.
+The official result is **No Difference**: TPS is 14,080 to 13,727 and every
+classified metric is neutral. All 6,437 observed payload statuses are `VALID`,
+and all six terminal peer heads match. Accepted Engine execution is 21.81 versus
+22.04 microseconds per transaction, with mixed changes across pairs. This change
+has not demonstrated a throughput improvement; win-only Slack correctly skips it.
 
 [Window comparison 37137516063](https://github.com/tempoxyz/tempo/actions/runs/37137516063)
 uses one verified `274320653` binary with capture windows 128 and 512. The official
