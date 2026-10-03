@@ -656,7 +656,8 @@ def start-e2e-local-node [
     job spawn {
         run-external ($runner | first) ...($runner | skip 1)
         | lines
-        | each { |line| print $"[e2e-($phase)-($role)] ($line)" }
+        # Already formatted text: avoid a terminal-size probe for every log line.
+        | each { |line| print --raw $"[e2e-($phase)-($role)] ($line)" }
     }
 }
 
