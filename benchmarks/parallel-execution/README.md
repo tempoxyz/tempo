@@ -633,6 +633,15 @@ but both sixteen-worker pairs regressed (6.68% overall). All ten million-transac
 receipt/root oracles, 279 unit tests and fourteen node integration tests passed.
 The prototype was reverted before committing or dispatching a node comparison.
 
+A diagnostic over 10k–100k public-mix transactions finds that 6.08–7.95% of
+recorded reads match previously written storage after excluding predicted nonce
+pointers. Read-time provenance and intervening generations remain unchecked.
+This does not bound the share
+of validation time. Separate instrumented local runs measure 0.93–1.36 microseconds
+per ordered validation, including fee/native rebasing; all receipt/root oracles
+pass. These are in-memory diagnostics, not node performance results. The temporary
+probes were removed; a broader versioning design still needs node cost evidence.
+
 [Lock-diagnostic replay 37096394462](https://github.com/tempoxyz/tempo/actions/runs/37096394462)
 measures 29.483 versus 28.421 Mgas/s (-3.60%), with p99 newPayload latency rising
 from 1.444 to 1.571 ms (+8.80%). All 250,000 submissions are valid; all four
