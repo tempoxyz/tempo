@@ -22,7 +22,10 @@ use crate::{
         block_transaction_length,
     },
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
-    prewarming::{BestTransactionsPrewarming, PrewarmedTransaction, PrewarmingExecutionContext},
+    prewarming::{
+        BestTransactionsPrewarming, PrewarmedTransaction, PrewarmingExecutionContext,
+        PrewarmingResultWaits,
+    },
 };
 use alloy_consensus::{BlockHeader as _, TxReceipt};
 use alloy_eip7928::bal::Bal;
@@ -522,6 +525,7 @@ where
         let mut skipped_oversized_block = false;
         let mut invalid_pool_transaction_execution_attempts = 0u64;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
+        let mut prewarming_result_waits = PrewarmingResultWaits::default();
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
@@ -677,7 +681,7 @@ where
                 .unwrap_or_default();
 
             let prewarming_offset = pool_tx.expiring_nonce_offset();
-            if let Some(candidate) = pool_tx.take_preexecuted() {
+            if let Some(candidate) = pool_tx.take_preexecuted(&mut prewarming_result_waits) {
                 executor.evm_mut().set_preexecuted_transaction(candidate);
                 check_cancel!();
             }
@@ -787,6 +791,17 @@ where
 
         // cancel pre-warming, if any, by dropping the iter
         drop(best_txs);
+
+        if speculative_prewarming {
+            info!(
+                target: "payload_builder",
+                parent_hash = %parent_header.hash(),
+                result_ready = prewarming_result_waits.ready,
+                result_pending = prewarming_result_waits.pending,
+                result_wait_seconds = prewarming_result_waits.wait_elapsed.as_secs_f64(),
+                "Prewarming result waits"
+            );
+        }
 
         let elapsed_at_tx_cutoff = start.elapsed();
         let validation_work_at_tx_cutoff =

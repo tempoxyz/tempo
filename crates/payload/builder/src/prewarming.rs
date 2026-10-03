@@ -5,6 +5,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, Sender},
     },
+    time::{Duration, Instant},
 };
 
 use alloy_primitives::B256;
@@ -22,7 +23,7 @@ use tempo_evm::{
     parallel::{PreexecutedTransaction, PrewarmingExecutor, PrewarmingState},
 };
 use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
-use tracing::{instrument, trace};
+use tracing::{info, instrument, trace};
 
 pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<EvmStateProviderBox>>>;
 type SpeculativePrewarmState =
@@ -73,6 +74,30 @@ pub(crate) struct BestTransactionsPrewarming {
     transactions_rx: Receiver<Option<PrewarmedTransaction>>,
     commands_tx: Sender<BestTransactionsCommand>,
     stop: Arc<AtomicBool>,
+    parent_hash: B256,
+    speculative: bool,
+    source_waits: PrewarmingSourceWaits,
+}
+
+/// Iterator-local diagnostics; buffered transactions do not sample the clock.
+#[derive(Default)]
+struct PrewarmingSourceWaits {
+    // Calls satisfied by the initial nonblocking buffer check.
+    buffered_hits: u64,
+    // Includes empty replies and disconnection; this measures the source
+    // receive path, not proof that every receive blocked.
+    receives: u64,
+    receive_elapsed: Duration,
+}
+
+/// Builder-local diagnostics for selected speculative handles. Readiness is
+/// observed after acquiring the result mutex; the elapsed time measures only
+/// the pending Condvar loop, including reacquiring that mutex after waking.
+#[derive(Debug, Default)]
+pub(crate) struct PrewarmingResultWaits {
+    pub(crate) ready: u64,
+    pub(crate) pending: u64,
+    pub(crate) wait_elapsed: Duration,
 }
 
 impl BestTransactionsPrewarming {
@@ -91,6 +116,9 @@ impl BestTransactionsPrewarming {
             transactions_rx,
             commands_tx: commands_tx.clone(),
             stop: prewarm.stop.clone(),
+            parent_hash: prewarm.parent_hash,
+            speculative: prewarm.speculative,
+            source_waits: PrewarmingSourceWaits::default(),
         };
 
         let prewarm_executor = prewarm.executor();
@@ -352,6 +380,15 @@ impl Drop for BestTransactionsPrewarming {
         let _ = self
             .commands_tx
             .send(BestTransactionsCommand::Stop { drain_rx });
+        info!(
+            target: "payload_builder",
+            parent_hash = %self.parent_hash,
+            speculative = self.speculative,
+            buffered_hits = self.source_waits.buffered_hits,
+            source_receives = self.source_waits.receives,
+            source_receive_seconds = self.source_waits.receive_elapsed.as_secs_f64(),
+            "Prewarming source waits"
+        );
     }
 }
 
@@ -362,6 +399,7 @@ impl Iterator for BestTransactionsPrewarming {
         // Empty replies describe earlier source polls. Drain them before deciding
         // whether a ready transaction exists, preserving the order of actual txs.
         if let Some(tx) = self.transactions_rx.try_iter().flatten().next() {
+            self.source_waits.buffered_hits += 1;
             return Some(tx);
         }
         self.commands_tx
@@ -370,8 +408,11 @@ impl Iterator for BestTransactionsPrewarming {
         // An eager advance can also reply empty while this receive is waiting.
         // Check for buffered transactions before reporting empty to the builder,
         // but do not wait for more replies: it must still check its build budget.
-        self.transactions_rx
-            .recv()
+        self.source_waits.receives += 1;
+        let receive_start = Instant::now();
+        let received = self.transactions_rx.recv();
+        self.source_waits.receive_elapsed += receive_start.elapsed();
+        received
             .ok()?
             .or_else(|| self.transactions_rx.try_iter().flatten().next())
     }
@@ -447,8 +488,11 @@ impl PrewarmedTransaction {
 
     /// Wait only for the selected transaction; discarded candidates never block
     /// selection. Each producer is bounded by the existing prewarming pool.
-    pub(crate) fn take_preexecuted(&mut self) -> Option<PreexecutedTransaction> {
-        self.preexecuted.take()?.recv()
+    pub(crate) fn take_preexecuted(
+        &mut self,
+        waits: &mut PrewarmingResultWaits,
+    ) -> Option<PreexecutedTransaction> {
+        self.preexecuted.take()?.recv(waits)
     }
 
     pub(crate) fn expiring_nonce_offset(&self) -> Option<usize> {
@@ -486,19 +530,26 @@ impl PreexecutedHandle {
         )
     }
 
-    fn recv(self) -> Option<PreexecutedTransaction> {
+    fn recv(self, waits: &mut PrewarmingResultWaits) -> Option<PreexecutedTransaction> {
         let mut result = self
             .completion
             .result
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        while result.value.is_none() {
-            result.waiting = true;
-            result = self
-                .completion
-                .ready
-                .wait(result)
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if result.value.is_some() {
+            waits.ready += 1;
+        } else {
+            waits.pending += 1;
+            let wait_start = Instant::now();
+            while result.value.is_none() {
+                result.waiting = true;
+                result = self
+                    .completion
+                    .ready
+                    .wait(result)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+            }
+            waits.wait_elapsed += wait_start.elapsed();
         }
         result.value.take().flatten()
     }
@@ -1128,10 +1179,16 @@ mod tests {
                 transactions_rx,
                 commands_tx,
                 stop: Arc::default(),
+                parent_hash: B256::ZERO,
+                speculative: false,
+                source_waits: PrewarmingSourceWaits::default(),
             };
 
             assert_eq!(prewarming.next().unwrap().tx.hash(), first.hash());
             assert_eq!(prewarming.next().unwrap().tx.hash(), second.hash());
+            assert_eq!(prewarming.source_waits.buffered_hits, 2);
+            assert_eq!(prewarming.source_waits.receives, 0);
+            assert_eq!(prewarming.source_waits.receive_elapsed, Duration::ZERO);
             assert!(matches!(
                 commands_rx.try_recv(),
                 Err(mpsc::TryRecvError::Empty)
@@ -1161,11 +1218,16 @@ mod tests {
             transactions_rx,
             commands_tx,
             stop: Arc::default(),
+            parent_hash: B256::ZERO,
+            speculative: false,
+            source_waits: PrewarmingSourceWaits::default(),
         };
 
         let next = prewarming.next();
         coordinator.join().unwrap();
         assert_eq!(*next.expect("fresh transaction").tx.hash(), expected);
+        assert_eq!(prewarming.source_waits.buffered_hits, 0);
+        assert_eq!(prewarming.source_waits.receives, 1);
     }
 
     #[test]
@@ -1187,15 +1249,25 @@ mod tests {
             transactions_rx,
             commands_tx,
             stop: Arc::default(),
+            parent_hash: B256::ZERO,
+            speculative: false,
+            source_waits: PrewarmingSourceWaits::default(),
         };
 
         assert!(prewarming.next().is_none());
+        assert_eq!(prewarming.source_waits.receives, 1);
         assert_eq!(
             *prewarming.next().expect("later transaction").tx.hash(),
             expected
         );
         coordinator.join().unwrap();
+        assert_eq!(prewarming.source_waits.receives, 2);
+        assert_eq!(prewarming.source_waits.buffered_hits, 0);
+        let receive_elapsed = prewarming.source_waits.receive_elapsed;
         assert!(prewarming.next().is_none());
+        // A failed Advance does not attempt or time another receive.
+        assert_eq!(prewarming.source_waits.receives, 2);
+        assert_eq!(prewarming.source_waits.receive_elapsed, receive_elapsed);
     }
 
     #[test]
@@ -1214,6 +1286,9 @@ mod tests {
             transactions_rx,
             commands_tx,
             stop: Arc::default(),
+            parent_hash: B256::ZERO,
+            speculative: false,
+            source_waits: PrewarmingSourceWaits::default(),
         };
 
         assert_eq!(
@@ -1462,13 +1537,56 @@ mod tests {
     }
 
     #[test]
+    fn speculative_wait_diagnostics_accumulate_only_selected_handles() {
+        let mut tx = PrewarmedTransaction::without_replay(test_tx(Address::random(), 0));
+        let mut waits = PrewarmingResultWaits::default();
+        assert!(tx.take_preexecuted(&mut waits).is_none());
+        assert_eq!((waits.ready, waits.pending), (0, 0));
+        assert_eq!(waits.wait_elapsed, Duration::ZERO);
+
+        for pending in 0..=2 {
+            let (commands_tx, commands_rx) = mpsc::channel();
+            let (producer, handle) = PreexecutedHandle::new(commands_tx, None);
+            tx.preexecuted = Some(handle);
+            let previous_wait_elapsed = waits.wait_elapsed;
+            if pending == 0 {
+                // A completed slot without a reusable result is still ready.
+                producer.send(None);
+                assert!(tx.take_preexecuted(&mut waits).is_none());
+                assert_eq!(waits.wait_elapsed, previous_wait_elapsed);
+            } else {
+                thread::scope(|scope| {
+                    let consumer = scope.spawn(|| tx.take_preexecuted(&mut waits));
+                    wait_for_speculative_reader(&producer);
+                    producer.send(None);
+                    assert!(consumer.join().unwrap().is_none());
+                });
+                // No latency threshold: the synchronized pending path must add
+                // its elapsed time instead of resetting the per-build total.
+                assert!(waits.wait_elapsed > previous_wait_elapsed);
+            }
+            let elapsed = waits.wait_elapsed;
+            assert!(tx.take_preexecuted(&mut waits).is_none());
+            assert_eq!((waits.ready, waits.pending), (1, pending));
+            assert_eq!(waits.wait_elapsed, elapsed);
+            assert!(matches!(
+                commands_rx.try_recv(),
+                Ok(BestTransactionsCommand::ConsumedSpeculative)
+            ));
+            assert!(commands_rx.try_recv().is_err());
+        }
+    }
+
+    #[test]
     fn speculative_producer_abort_closes_waiting_consumer() {
         for panic in [false, true] {
             let (commands_tx, commands_rx) = mpsc::channel();
             let (producer, handle) = PreexecutedHandle::new(commands_tx, None);
             let (returned_tx, returned_rx) = mpsc::channel();
             let consumer = thread::spawn(move || {
-                returned_tx.send(handle.recv().is_none()).unwrap();
+                let mut waits = PrewarmingResultWaits::default();
+                assert!(handle.recv(&mut waits).is_none());
+                returned_tx.send(waits).unwrap();
             });
             wait_for_speculative_reader(&producer);
             let outcome = catch_unwind(AssertUnwindSafe(move || {
@@ -1478,7 +1596,9 @@ mod tests {
                 }
             }));
             assert_eq!(outcome.is_err(), panic);
-            assert!(returned_rx.recv_timeout(Duration::from_secs(1)).unwrap());
+            let waits = returned_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+            assert_eq!(waits.ready, 0);
+            assert_eq!(waits.pending, 1);
             consumer.join().unwrap();
             assert!(matches!(
                 commands_rx.recv_timeout(Duration::from_secs(1)),
@@ -1516,22 +1636,32 @@ mod tests {
             if producer_first {
                 producer.send(Some(candidate));
                 assert!(commands_rx.try_recv().is_err());
-                assert_eq!(format!("{:?}", tx.take_preexecuted().unwrap()), expected);
-                assert!(tx.take_preexecuted().is_none());
+                let mut waits = PrewarmingResultWaits::default();
+                assert_eq!(
+                    format!("{:?}", tx.take_preexecuted(&mut waits).unwrap()),
+                    expected
+                );
+                assert!(tx.take_preexecuted(&mut waits).is_none());
+                assert_eq!(waits.ready, 1);
+                assert_eq!(waits.pending, 0);
+                assert_eq!(waits.wait_elapsed, Duration::ZERO);
             } else {
                 let (returned_tx, returned_rx) = mpsc::channel();
                 let consumer = thread::spawn(move || {
-                    let result = tx.take_preexecuted().unwrap();
-                    assert!(tx.take_preexecuted().is_none());
-                    returned_tx.send(format!("{result:?}")).unwrap();
+                    let mut waits = PrewarmingResultWaits::default();
+                    let result = tx.take_preexecuted(&mut waits).unwrap();
+                    let wait_elapsed = waits.wait_elapsed;
+                    assert!(tx.take_preexecuted(&mut waits).is_none());
+                    assert_eq!(waits.wait_elapsed, wait_elapsed);
+                    returned_tx.send((format!("{result:?}"), waits)).unwrap();
                 });
                 wait_for_speculative_reader(&producer);
                 assert!(commands_rx.try_recv().is_err());
                 producer.send(Some(candidate));
-                assert_eq!(
-                    returned_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
-                    expected
-                );
+                let (actual, waits) = returned_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+                assert_eq!(actual, expected);
+                assert_eq!(waits.ready, 0);
+                assert_eq!(waits.pending, 1);
                 consumer.join().unwrap();
             }
             assert!(matches!(
@@ -1581,7 +1711,7 @@ mod tests {
         let mut first = prewarming.next().expect("first source candidate");
         assert_eq!(*first.tx.hash(), hashes[0]);
         assert!(first.preexecuted.is_some());
-        let _ = first.take_preexecuted();
+        let _ = first.take_preexecuted(&mut PrewarmingResultWaits::default());
         wait_until(|| log.lock().unwrap().yielded == window + 1);
         for hash in &hashes[1..window] {
             let candidate = prewarming.next().expect("source candidate");
@@ -1621,6 +1751,9 @@ mod tests {
             transactions_rx,
             commands_tx,
             stop: Arc::default(),
+            parent_hash: B256::ZERO,
+            speculative: false,
+            source_waits: PrewarmingSourceWaits::default(),
         };
 
         // Leave the coordinator commands unprocessed: the original buffer must

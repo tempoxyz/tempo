@@ -177,6 +177,11 @@ prewarming. Use the workflow's `no-slack=false` option for future manual runs;
 the on-win policy posts only with a significant improvement and no significant
 regression. It suppresses neutral, losing and mixed results.
 
+The workflow's builder gas throughput averages `gas_used / elapsed` over full
+payload builds. It includes setup, transaction selection, waits and finalization;
+it is not execution-only throughput. CPU profile shares describe sampled work
+and must be combined with elapsed-time measurements before identifying a bottleneck.
+
 Completed sender-reuse comparisons against main `61c979a524f9`:
 
 | Target TPS | Sequential TPS | Feature TPS | Change | Workflow |
@@ -332,6 +337,20 @@ gaps, and the workflow suppresses Slack. The optimized commit runs on both node
 paths; commit, validation, prefix updates and handoff account for 16.33%, 16.67%,
 10.79% and 9.27% of sampled builder CPU. Cross-run profile shares do not isolate
 the optimization's effect, and this comparison still establishes no overall win.
+Within aligned nonempty fills, baseline builder CPU is 16.92–17.24 microseconds
+per transaction versus 10.14–10.58 for the feature, while fill elapsed time rises
+from 22.62 to 35.84 microseconds after subtracting explicit empty-pool sleep.
+This points to substantial off-CPU time in the feature. The cause is unresolved:
+baseline uses sixteen prewarming workers, feature eight, and their transactions
+and profile coverage differ.
+
+Builder diagnostics now report selected-result readiness and cumulative pending
+Condvar time, plus coordinator receive count and elapsed time. Result timing
+includes mutex reacquisition after waking, but excludes initial mutex acquisition.
+Source summaries also cover cancelled builds; result summaries require the normal
+fill exit. A same-binary handoff diagnostic measures approximately 10 ns extra
+per already-ready result; cross-thread pairs vary widely and do not establish
+node overhead. Scheduling and admission behavior are unchanged.
 
 [State-commit replay 37087375235](https://github.com/tempoxyz/tempo/actions/runs/37087375235)
 measures 30.36 versus 29.31 Mgas/s (-3.46%), with p99 newPayload latency rising
