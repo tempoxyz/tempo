@@ -1,6 +1,5 @@
-use crate::utils::{tempo_test_setup, with_t1_fees};
+use crate::utils::{t1_account, tempo_test_setup};
 use alloy_primitives::{Address, B256};
-use alloy_rpc_types_eth::TransactionRequest;
 use reth_e2e_test_utils::wallet::Wallet;
 use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_node_api::BuiltPayload;
@@ -23,14 +22,10 @@ async fn executed_state_reads_blocks_that_are_not_canonical() -> eyre::Result<()
     let chain_spec = producer.inner.chain_spec();
     let chain_id = chain_spec.chain().id();
 
-    let mut account = Wallet::default().with_chain_id(chain_id).account(0);
+    let mut account = t1_account(&Wallet::default().with_chain_id(chain_id), 0);
     let sender = account.address();
-    let tx = TransactionRequest::default()
-        .to(Address::ZERO)
-        .gas_limit(300_000);
-    let (_, first) = producer
-        .inject_and_advance(account.sign_tx_bytes(with_t1_fees(tx)).await)
-        .await?;
+    let tx = account.tx().to(Address::ZERO).gas_limit(300_000).await;
+    let (_, first) = producer.inject_and_advance(tx).await?;
     let second = producer.advance_block().await?;
     let second_hash = second.block().hash();
 

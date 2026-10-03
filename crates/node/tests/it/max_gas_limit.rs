@@ -9,24 +9,20 @@
 use alloy::{primitives::Address, providers::Provider};
 use alloy_eips::eip7825::MAX_TX_GAS_LIMIT_OSAKA;
 use alloy_primitives::Bytes;
-use alloy_rpc_types_eth::TransactionRequest;
 use reth_e2e_test_utils::wallet::Wallet;
 use reth_node_api::BuiltPayload;
 use reth_primitives_traits::transaction::TxHashRef;
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_TX_GAS_LIMIT_CAP};
 
-use crate::utils::{TestNodeBuilder, make_genesis_at, with_t1_fees};
+use crate::utils::{TestNodeBuilder, make_genesis_at, t1_account};
 
 /// Helper to build and encode a signed EIP-1559 transaction of the first test account with a
 /// specific gas limit.
 async fn build_tx(chain_id: u64, gas_limit: u64) -> Bytes {
-    let tx = TransactionRequest::default()
+    t1_account(&Wallet::default().with_chain_id(chain_id), 0)
+        .tx()
         .to(Address::ZERO)
-        .gas_limit(gas_limit);
-    Wallet::default()
-        .with_chain_id(chain_id)
-        .account(0)
-        .sign_tx_bytes(with_t1_fees(tx))
+        .gas_limit(gas_limit)
         .await
 }
 
