@@ -18,9 +18,7 @@ use alloy_eips::Encodable2718;
 use alloy_primitives::TxKind;
 use core::num::NonZeroU64;
 use eyre::WrapErr;
-use reth_e2e_test_utils::wait::poll_until;
 use reth_primitives_traits::transaction::TxHashRef;
-use reth_transaction_pool::TransactionPool;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
 use tempo_node::rpc::TempoTransactionRequest;
@@ -160,19 +158,6 @@ mod legacy_compat {
             Err(err) => Err(err),
         }
     }
-}
-
-/// Polls until the pool no longer contains the given tx hash, or returns error after timeout.
-pub(super) async fn wait_until_pool_not_contains(
-    pool: &impl TransactionPool,
-    tx_hash: &alloy::primitives::B256,
-    label: &str,
-) -> eyre::Result<()> {
-    poll_until(
-        format!("tx {tx_hash} to leave pool ({label})"),
-        || async move { Ok((!pool.contains(tx_hash)).then_some(())) },
-    )
-    .await
 }
 
 /// Fixed funding amount: 500 tokens (6 decimals).

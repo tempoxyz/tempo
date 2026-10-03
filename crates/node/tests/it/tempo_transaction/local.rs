@@ -226,12 +226,10 @@ impl super::types::TestEnv for Localnet {
             let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
             let tx_hash = *envelope.tx_hash();
             self.mine_tx(envelope.encoded_2718(), tx_hash).await?;
-            wait_until_pool_not_contains(
-                &self.setup.node.inner.pool,
-                &tx_hash,
-                "bump_protocol_nonce",
-            )
-            .await?;
+            self.setup
+                .node
+                .wait_for_pool(|pool| !pool.contains(&tx_hash))
+                .await?;
         }
 
         let final_nonce = self.provider.get_transaction_count(signer_addr).await?;
@@ -382,9 +380,11 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
     );
     println!("  ✓ Protocol nonce: {initial_nonce} → {protocol_nonce_after}",);
 
-    for tx_hash in &sent {
-        wait_until_pool_not_contains(&setup.node.inner.pool, tx_hash, "scenario 1").await?;
-    }
+    setup
+        .node
+        .wait_for_pool(|pool| sent.iter().all(|hash| !pool.contains(hash)))
+        .await
+        .wrap_err("scenario 1 transactions did not leave the pool")?;
     println!("  ✓ All 3 transactions from different pools included in block");
 
     // ===========================================================================
@@ -493,9 +493,11 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
     );
     println!("  ✓ All transactions included and ordered by descending priority fee");
 
-    for tx_hash in &sent {
-        wait_until_pool_not_contains(&setup.node.inner.pool, tx_hash, "scenario 2").await?;
-    }
+    setup
+        .node
+        .wait_for_pool(|pool| sent.iter().all(|hash| !pool.contains(hash)))
+        .await
+        .wrap_err("scenario 2 transactions did not leave the pool")?;
 
     // ===========================================================================
     // Scenario 3: Nonce Gap Handling
@@ -648,14 +650,15 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
     );
     println!("  ✓ Both nonce=1 and nonce=2 included");
 
-    wait_until_pool_not_contains(&setup.node.inner.pool, &pending, "scenario 3 pending").await?;
-    wait_until_pool_not_contains(&setup.node.inner.pool, &queued, "scenario 3 queued").await?;
-    wait_until_pool_not_contains(
-        &setup.node.inner.pool,
-        &new_pending,
-        "scenario 3 new_pending",
-    )
-    .await?;
+    setup
+        .node
+        .wait_for_pool(|pool| {
+            [pending, queued, new_pending]
+                .iter()
+                .all(|hash| !pool.contains(hash))
+        })
+        .await
+        .wrap_err("scenario 3 transactions did not leave the pool")?;
 
     Ok(())
 }
@@ -1457,12 +1460,10 @@ async fn test_key_authorization_witness_burn_evicts_pending_replay() -> eyre::Re
     );
 
     setup.node.advance_block().await?;
-    wait_until_pool_not_contains(
-        &setup.node.inner.pool,
-        &delayed_hash,
-        "key authorization nonce eviction",
-    )
-    .await?;
+    setup
+        .node
+        .wait_for_pool(|pool| !pool.contains(&delayed_hash))
+        .await?;
 
     Ok(())
 }
@@ -1817,12 +1818,10 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
     // Advance another block to trigger the commit notification
     setup.node.advance_block().await?;
 
-    wait_until_pool_not_contains(
-        &setup.node.inner.pool,
-        &delayed_tx_hash,
-        "keychain eviction",
-    )
-    .await?;
+    setup
+        .node
+        .wait_for_pool(|pool| !pool.contains(&delayed_tx_hash))
+        .await?;
 
     // ========================================
     // STEP 4: Verify transaction is evicted from the pool
@@ -2166,12 +2165,10 @@ async fn test_aa_keychain_spending_limit_toctou_dos() -> eyre::Result<()> {
     // Advance another block to trigger the commit notification
     setup.node.advance_block().await?;
 
-    wait_until_pool_not_contains(
-        &setup.node.inner.pool,
-        &delayed_tx_hash,
-        "spending limit eviction",
-    )
-    .await?;
+    setup
+        .node
+        .wait_for_pool(|pool| !pool.contains(&delayed_tx_hash))
+        .await?;
 
     // ========================================
     // STEP 4: Verify transaction is evicted from the pool
