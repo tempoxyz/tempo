@@ -52,6 +52,25 @@ def merge-e2e-features [...features: string] {
     | str join ","
 }
 
+# Record immutable build inputs and hash the binary without loading it as text.
+def e2e-worktree-sha [worktree: string] {
+    let result = (^git -C $worktree rev-parse HEAD | complete)
+    let sha = ($result.stdout | str trim)
+    if $result.exit_code != 0 or $sha !~ '^[0-9a-f]{40}$' {
+        error make { msg: $"Cannot resolve benchmark worktree commit: ($worktree)" }
+    }
+    $sha
+}
+
+def e2e-binary-sha256 [binary: string] {
+    let result = (^sha256sum -- $binary | complete)
+    let sha = ($result.stdout | str trim | split row ' ' | first)
+    if $result.exit_code != 0 or $sha !~ '^[0-9a-f]{64}$' {
+        error make { msg: $"Cannot hash benchmark binary: ($binary)" }
+    }
+    $sha
+}
+
 def tempo-node-help [tempo_bin: string] {
     let result = (run-external $tempo_bin "node" "--help" | complete)
     if $result.exit_code != 0 {
@@ -1085,7 +1104,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
             mode: sequential-peer
             phase: $phase
             feature_ref: $run.ref
-            binary_sha256: (open --raw $run.tempo | hash sha256)
+            binary_sha256: (e2e-binary-sha256 $run.tempo)
             a: { rpc_url: $a_rpc, args: $a_args, log_dir: $a_log_dir }
             b: { rpc_url: $b_rpc, args: $b_args, log_dir: $b_log_dir }
         } | to json | save -f $differential_config
@@ -1691,14 +1710,18 @@ def "main e2e" [
     let baseline_tbc = (tracy-build-config $baseline_build_features $tracy)
     let feature_tbc = (tracy-build-config $feature_build_features $tracy)
     let effective_no_cache = $no_cache or ($tracy != "off")
-    # Build benchmark binaries in parallel with independent target/ directories,
-    # so cargo invocations don't collide.
+    let baseline_sha = if $needs_baseline { e2e-worktree-sha $baseline_wt } else { "" }
+    let feature_sha = if $needs_feature { e2e-worktree-sha $feature_wt } else { "" }
+    # Profile, base RUSTFLAGS and default-feature controls are common to both arms.
+    # Identical effective build inputs must use the same executable for a config A/B.
+    let shared_build = $needs_baseline and $needs_feature and $baseline_sha == $feature_sha and $baseline_tbc == $feature_tbc
+    # Different builds keep independent target directories and parallel compilation.
     mut builds = []
     if $needs_baseline {
-        $builds = ($builds | append { wt: $baseline_wt, ref_name: $baseline, sha: $baseline, label: "baseline", features: $baseline_tbc.features, extra_rustflags: $baseline_tbc.extra_rustflags, bench_features: $baseline_build_features })
+        $builds = ($builds | append { wt: $baseline_wt, ref_name: $baseline, sha: $baseline_sha, label: "baseline", features: $baseline_tbc.features, extra_rustflags: $baseline_tbc.extra_rustflags, bench_features: $baseline_build_features })
     }
-    if $needs_feature {
-        $builds = ($builds | append { wt: $feature_wt, ref_name: $feature, sha: $feature, label: "feature", features: $feature_tbc.features, extra_rustflags: $feature_tbc.extra_rustflags, bench_features: $feature_build_features })
+    if $needs_feature and not $shared_build {
+        $builds = ($builds | append { wt: $feature_wt, ref_name: $feature, sha: $feature_sha, label: "feature", features: $feature_tbc.features, extra_rustflags: $feature_tbc.extra_rustflags, bench_features: $feature_build_features })
     }
     $builds | par-each { |b|
         if $effective_no_cache {
@@ -1708,7 +1731,24 @@ def "main e2e" [
         }
     } | ignore
     let baseline_tempo = if $needs_baseline { worktree-bin $baseline_wt $profile "tempo" } else { "" }
-    let feature_tempo = if $needs_feature { worktree-bin $feature_wt $profile "tempo" } else { "" }
+    let feature_tempo = if $shared_build { $baseline_tempo } else if $needs_feature { worktree-bin $feature_wt $profile "tempo" } else { "" }
+    let build_manifest = [
+        { side: "baseline", enabled: $needs_baseline, requested_ref: $baseline, resolved_ref: $baseline_sha, config: $baseline_tbc, path: $baseline_tempo }
+        { side: "feature", enabled: $needs_feature, requested_ref: $feature, resolved_ref: $feature_sha, config: $feature_tbc, path: $feature_tempo }
+    ] | where enabled | each { |arm|
+        {
+            side: $arm.side
+            requested_ref: $arm.requested_ref
+            resolved_ref: $arm.resolved_ref
+            features: $arm.config.features
+            rustflags: $"($RUSTFLAGS)($arm.config.extra_rustflags)"
+            profile: $profile
+            no_default_features: $no_default_features
+            path: ($arm.path | path expand)
+            sha256: (e2e-binary-sha256 $arm.path)
+        }
+    }
+    { shared_binary: $shared_build, arms: $build_manifest } | to json | save -f $"($results_dir)/build-manifest.json"
     let regenesis_tempo = if $regenesis_needed {
         if $needs_feature { $feature_tempo } else { $baseline_tempo }
     } else { "" }
