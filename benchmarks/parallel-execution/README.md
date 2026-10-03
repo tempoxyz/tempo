@@ -325,6 +325,24 @@ in every pair. These log cohorts include warmup and differ from the official
 measurement cohorts. All 7,146 observed payload statuses are `VALID`; the workflow
 correctly skips its win-only Slack post. This is not a comparison against main.
 
+[Window comparison 37137516063](https://github.com/tempoxyz/tempo/actions/runs/37137516063)
+uses one verified `274320653` binary with capture windows 128 and 512. The official
+result is **Mixed Results**: TPS 15,682 to 16,205 is neutral, mean block interval
+improves 6.01%, and builder p99 worsens 21.94%. Accepted Engine execution worsens
+from 22.36 to 23.41 microseconds per transaction in aggregate and in every pair;
+reuse falls from 75.72% to 70.67% as conflicts increase. The default remains 128.
+Each pair runs 512 first, so ordering may affect these descriptive comparisons.
+All 6,667 observed payload statuses are `VALID`; audited shutdown tails are
+excluded from the common-chain cohort. Win-only Slack correctly skips the result.
+
+[Historical comparison 37136697134](https://github.com/tempoxyz/tempo/actions/runs/37136697134)
+replays mainnet blocks 42,370,356–42,420,355 twice per arm against main `61c979a524`.
+All 250,000 submissions, including warmup, are `VALID`. Mean latency regresses
+0.24% and arithmetic mean gas throughput regresses 0.71%; Slack is skipped.
+Each measured pass contains 10,160 transactions, with only four blocks reaching
+five transactions. Retained logs provide no positive worker-reuse evidence;
+the generated differential run supplies that coverage separately.
+
 For a bounded scheduling diagnostic, the manual E2E workflow accepts
 `profiling=samply-scheduling`. It forwards both `--per-cpu-threads` and
 `--cswitch-markers` with 100 Hz stack sampling, records the runner profiler's version,
