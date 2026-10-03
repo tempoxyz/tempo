@@ -74,7 +74,8 @@ async fn send_tempo_tx<P: Provider>(
     provider
         .send_raw_transaction(&envelope.encoded_2718())
         .await?
-        .get_tempo_receipt()
+        .into_tempo()
+        .successful_receipt()
         .await
 }
 
@@ -471,7 +472,7 @@ async fn test_tip1060_fee_manager_credit_from_distribute_fees_is_not_redeemable(
             .await?;
     }
     let token_credit_before_seed = credits.balanceOf(fee_token_addr).call().await?;
-    let seed_credit_receipt = send_tempo_tx(
+    send_tempo_tx(
         &provider,
         &credit_source,
         TempoTransaction {
@@ -495,7 +496,6 @@ async fn test_tip1060_fee_manager_credit_from_distribute_fees_is_not_redeemable(
         },
     )
     .await?;
-    assert!(seed_credit_receipt.status());
     assert_eq!(
         credits.balanceOf(fee_token_addr).call().await?,
         token_credit_before_seed + 1,
@@ -804,7 +804,7 @@ async fn test_tip1060_distribute_fees_receive_policy_guard_creations_are_account
         .successful_receipt()
         .await?;
     let token_credit_before_seed = credits.balanceOf(fee_token_addr).call().await?;
-    let seed_token_credit_receipt = send_tempo_tx(
+    send_tempo_tx(
         &provider,
         &credit_source,
         TempoTransaction {
@@ -828,7 +828,6 @@ async fn test_tip1060_distribute_fees_receive_policy_guard_creations_are_account
         },
     )
     .await?;
-    assert!(seed_token_credit_receipt.status());
     assert_eq!(
         credits.balanceOf(fee_token_addr).call().await?,
         token_credit_before_seed + 1,
