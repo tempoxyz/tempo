@@ -1,6 +1,7 @@
 use super::*;
 use alloy_primitives::{Bytes, TxKind};
 use revm::{
+    Database as _,
     context::{CfgEnv, TxEnv},
     database::{CacheDB, EmptyDB},
 };
@@ -235,4 +236,79 @@ fn disabling_inspection_rechecks_persistent_journal_warming() {
     parallel.set_preexecuted_transaction(worker.execute(tx.clone(), None).unwrap());
     assert_eq!(parallel.transact_raw(tx).unwrap(), expected);
     assert_eq!(parallel.execution_stats().reused, 0);
+}
+
+fn check_changed_code_representation(inline: bool, cached: bool) {
+    let target = Address::with_last_byte(100);
+    let delegate = Address::with_last_byte(102);
+    let delegation = Bytecode::new_eip7702(delegate);
+    let legacy = Bytecode::new_legacy(delegation.original_bytes());
+    // Byte equality and content hashes omit the execution kind.
+    assert_eq!(legacy, delegation);
+    assert_eq!(legacy.hash_slow(), delegation.hash_slow());
+    assert_ne!(legacy.kind(), delegation.kind());
+    for (before, after) in [(legacy.clone(), delegation.clone()), (delegation, legacy)] {
+        let (mut db, env, tx) = journal_guard_fixture(Bytes::new());
+        db.insert_account_info(
+            delegate,
+            AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(&[
+                0x60, 1, 0x60, 0, 0x55, 0, // Store one in the authority's slot zero.
+            ]))),
+        );
+        let install = |db: &mut JournalGuardDB, code: Bytecode| {
+            let hash = code.hash_slow();
+            let mut info = AccountInfo::default().with_code(code.clone());
+            if !inline {
+                info.code = None;
+            }
+            db.insert_account_info(target, info);
+            db.cache.contracts.insert(hash, code);
+        };
+        install(&mut db, before);
+        let candidate = PrewarmingExecutor::new(db.clone(), env.clone())
+            .execute(tx.clone(), None)
+            .unwrap();
+        let old_result = candidate.prewarming_result();
+        install(&mut db, after.clone());
+        let expected = TempoEvm::new(db.clone(), env.clone())
+            .transact_raw(tx.clone())
+            .unwrap();
+        assert_eq!(expected.result.is_success(), after.is_eip7702());
+        assert_ne!(old_result.result, expected.result);
+
+        let mut state = revm::database::State::builder().with_database(db).build();
+        // Exercise borrowed warm-cache comparisons, not only cold DB fallback.
+        state.basic(target).unwrap();
+        state.code_by_hash(after.hash_slow()).unwrap();
+        let mut parallel = TempoEvm::new(&mut state, env);
+        if cached {
+            parallel.enable_state_cache_validation();
+        }
+        parallel.set_speculative_executor(Some(SpeculativeExecutor::new(1, 1).unwrap()));
+        parallel.set_preexecuted_transaction(candidate);
+        let actual = parallel.transact_raw(tx).unwrap();
+        assert_eq!(actual, expected, "inline={inline}, cached={cached}");
+        assert_eq!(parallel.execution_stats().reused, 0);
+        assert_eq!(parallel.execution_stats().metadata_conflicts, 1);
+    }
+}
+
+#[test]
+fn changed_inline_code_representation_generic() {
+    check_changed_code_representation(true, false);
+}
+
+#[test]
+fn changed_inline_code_representation_cached() {
+    check_changed_code_representation(true, true);
+}
+
+#[test]
+fn changed_hashed_code_representation_generic() {
+    check_changed_code_representation(false, false);
+}
+
+#[test]
+fn changed_hashed_code_representation_cached() {
+    check_changed_code_representation(false, true);
 }

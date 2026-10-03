@@ -89,6 +89,13 @@ T14 runs with eight workers. All receipts and roots match; sequential controls
 remain approximately 129k TPS. These local results exclude node I/O and do not
 establish a GitHub throughput improvement.
 
+The native-increment candidate `a5e6c3231` improves the million-transaction
+public mix from 148,076 to 167,539 TPS with eight workers (+13.14%) and 126,466
+to 146,659 with sixteen (+15.97%), comparing medians of three interleaved pairs
+against `abb11d902`. Its sequential control falls 6.51% (121,668 to 113,743 TPS).
+All threaded runs match their binary's sequential receipts and roots; the
+sequential overhead remains under investigation. These are in-memory figures.
+
 For historical data, use the read-only differential replay command:
 
 ```sh
@@ -252,3 +259,19 @@ validates all 250,000 submissions, with throughput down 2.73% and p99 up 7.76%.
 Its measured range is 42,267,216–42,317,215, different from the preceding replay;
 all four passes match 14,327 transactions. Only 25 blocks per pass meet the
 five-transaction capture threshold. Slack is suppressed.
+
+[Native-increment comparison 37077569936](https://github.com/tempoxyz/tempo/actions/runs/37077569936)
+measures 15,374 baseline versus 14,737 feature TPS (-4.14%). Builder reuse reaches
+96.76% and Engine reuse 68.24% of canonical transactions; native rebasing applies
+to 10.92% and 9.84%, respectively. Builder and validator gas throughput still fall
+24.63% and 15.46%, so Slack is suppressed. All 4,328 recorded feature payload
+statuses are valid. High reuse has not yet produced an end-to-end win.
+
+[Native-increment replay 37077572124](https://github.com/tempoxyz/tempo/actions/runs/37077572124)
+validates all 250,000 submissions over the same measured range as the preceding
+replay. All four passes match 14,327 transactions and 1,540,650,231 gas. Validation
+throughput falls 2.53% and p99 latency rises 8.67%, suppressing Slack. Retained
+logs cover 22 of 25 capture-eligible blocks per feature pass, with only 13
+available candidates among 130 transactions; ordinary two-to-four-transaction
+lookahead reuses 88.72%. This sparse sample provides limited Engine-capture
+coverage and no observed native rebases.

@@ -2,6 +2,7 @@
 
 use super::{Address, DBErrorMarker, Database, ReadKey, ReadValue, SpeculativeResult, U256, read};
 use reth_revm::{State, db::states::CacheAccount};
+use tempo_revm::replay::{account_info_matches, bytecode_matches};
 
 enum CachedRead {
     Equal,
@@ -83,9 +84,12 @@ fn cached_account_read(cached: &CacheAccount, key: ReadKey, expected: &ReadValue
     match (key, expected) {
         (ReadKey::Account(_), ReadValue::Account(expected)) => {
             let actual = cached.account.as_ref().map(|account| &account.info);
-            // Preserve AccountInfo's existing equality exactly; do not impose
-            // additional comparisons on inline code or BAL account IDs.
-            if actual == expected.as_ref() {
+            let matches = match (actual, expected.as_ref()) {
+                (Some(actual), Some(expected)) => account_info_matches(actual, expected),
+                (None, None) => true,
+                _ => false,
+            };
+            if matches {
                 CachedRead::Equal
             } else {
                 CachedRead::Different(ReadValue::Account(actual.cloned()))
@@ -119,7 +123,7 @@ fn cached_other_read<P: Database>(db: &State<P>, key: ReadKey, expected: &ReadVa
             let Some(actual) = db.cache.contracts.get(&hash) else {
                 return CachedRead::Unknown;
             };
-            if actual == expected {
+            if bytecode_matches(actual, expected) {
                 CachedRead::Equal
             } else {
                 CachedRead::Different(ReadValue::Code(actual.clone()))

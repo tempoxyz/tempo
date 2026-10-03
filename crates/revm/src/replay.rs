@@ -35,7 +35,7 @@ pub enum ReadKey {
 }
 
 /// The exact value corresponding to a [`ReadKey`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Eq)]
 pub enum ReadValue {
     /// Account metadata, including absence.
     Account(Option<AccountInfo>),
@@ -45,6 +45,41 @@ pub enum ReadValue {
     Code(Bytecode),
     /// A historical block hash.
     BlockHash(B256),
+}
+
+impl PartialEq for ReadValue {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Account(Some(left)), Self::Account(Some(right))) => {
+                account_info_matches(left, right)
+            }
+            (Self::Account(None), Self::Account(None)) => true,
+            (Self::Storage(left), Self::Storage(right)) => left == right,
+            (Self::Code(left), Self::Code(right)) => bytecode_matches(left, right),
+            (Self::BlockHash(left), Self::BlockHash(right)) => left == right,
+            _ => false,
+        }
+    }
+}
+
+/// Compare both code bytes and their execution kind. Bytecode's ordinary
+/// equality omits the distinction between legacy code and EIP-7702 delegation.
+pub fn bytecode_matches(left: &Bytecode, right: &Bytecode) -> bool {
+    // bytecode() borrows a field of the immutable shared BytecodeInner. Identity
+    // of that field proves that the complete representation is shared too.
+    std::ptr::eq(left.bytecode(), right.bytecode())
+        || (left.kind() == right.kind() && left == right)
+}
+
+/// Compare balance, nonce, code hash and the supplied inline code representation.
+/// Different inline-code availability conservatively requires ordinary execution.
+pub fn account_info_matches(left: &AccountInfo, right: &AccountInfo) -> bool {
+    left == right
+        && match (&left.code, &right.code) {
+            (Some(left), Some(right)) => bytecode_matches(left, right),
+            (None, None) => true,
+            _ => false,
+        }
 }
 
 /// Read from the current committed prefix without modifying its journal.
@@ -482,8 +517,8 @@ impl BodyCache {
         // every preloaded account; only storage gets per-slot relaxation.
         for (address, old) in &self.before.state {
             let new = fresh.state.get(address)?;
-            if old.info != new.info
-                || old.original_info() != new.original_info()
+            if !account_info_matches(&old.info, &new.info)
+                || !account_info_matches(&old.original_info(), &new.original_info())
                 || old.status != new.status
                 || old.transaction_id != new.transaction_id
             {

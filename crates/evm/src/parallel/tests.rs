@@ -2071,6 +2071,86 @@ fn paid_call_bodies_reuse_success_revert_and_halt() {
 }
 
 #[test]
+fn body_replay_rejects_changed_preloaded_code_representation() {
+    use revm::ExecuteEvm;
+
+    let caller = address(0);
+    let delegate = address(900);
+    let delegation = Bytecode::new_eip7702(delegate);
+    let legacy = Bytecode::new_legacy(delegation.original_bytes());
+    assert_eq!(legacy, delegation);
+    assert_eq!(legacy.hash_slow(), delegation.hash_slow());
+    let mut env = test_evm_with_basefee(TestDB::default(), 0).finish().1;
+    env.cfg_env = revm::context::CfgEnv::new_with_spec_and_gas_params(
+        TempoHardfork::T0,
+        tempo_revm::gas_params::tempo_gas_params(TempoHardfork::T0),
+    );
+    // A self-call preloads its target's code during caller validation, before
+    // body database recording. Permit both representations to reach that body.
+    env.cfg_env.disable_eip3607 = true;
+    let mut tx = transaction(0, caller, 0, &[]);
+    tx.inner.gas_price = 1;
+    let pool = SpeculativeExecutor::new(1, 1)
+        .unwrap()
+        .with_minimum_body_duration(Duration::ZERO);
+    let install = |db: &mut TestDB, code: Bytecode| {
+        db.insert_account_info(caller, AccountInfo::default().with_code(code.clone()));
+        db.cache.contracts.insert(code.hash_slow(), code);
+    };
+
+    for before in [&legacy, &delegation] {
+        for after in [&legacy, &delegation] {
+            let changed = before.kind() != after.kind();
+            let mut db = funded_tip20_db(1);
+            contract(&mut db, tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, &[0]);
+            // The delegated body returns 42; interpreting the same designation
+            // as legacy code halts on 0xef. No storage reads obscure the guard.
+            contract(
+                &mut db,
+                delegate,
+                &[0x60, 42, 0x60, 0, 0x52, 0x60, 32, 0x60, 0, 0xf3],
+            );
+            install(&mut db, before.clone());
+            let mut batch =
+                pool.speculate(&mut db, vec![(tx.clone(), env.clone())], HashMap::default());
+            let mut candidate = batch.take(&tx, &mut db).unwrap();
+            drop(batch);
+            let recorded = candidate.result.as_ref().unwrap();
+            assert_eq!(recorded.result.is_success(), before.is_eip7702());
+            let body = candidate.body.take().expect("paid T0 body was recorded");
+
+            install(&mut db, after.clone());
+            let mut sequential = TempoEvm::new(db.clone(), env.clone());
+            let expected = sequential.transact_raw(tx.clone()).unwrap();
+            assert_eq!(expected.result.is_success(), after.is_eip7702());
+            if after.is_eip7702() {
+                assert_eq!(
+                    expected.result.output().unwrap().as_ref(),
+                    U256::from(42).to_be_bytes::<32>(),
+                );
+            }
+            assert_eq!(recorded.result != expected.result, changed);
+
+            let mut replay = TempoEvm::new(db, env.clone());
+            // Offer only the real worker's body and its recorded body reads.
+            // Bypass outer candidate validation so this independently exercises
+            // BodyCache's check of metadata already loaded during pre-execution.
+            let inner = replay.inner_mut();
+            inner.set_body_replay(Some(body));
+            let actual = inner.transact(tx.clone()).unwrap();
+            assert_eq!(
+                actual,
+                expected,
+                "changed={changed}, kind={:?}",
+                after.kind()
+            );
+            assert_eq!(inner.validator_fee, sequential.validator_fee());
+            assert_eq!(inner.body_was_reused(), !changed);
+        }
+    }
+}
+
+#[test]
 fn native_fee_balance_reads_prevent_body_reuse_including_reverts() {
     use alloy_sol_types::SolCall;
     use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, tip20::ITIP20};
