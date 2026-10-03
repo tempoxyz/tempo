@@ -798,6 +798,7 @@ where
                 parent_hash = %parent_header.hash(),
                 result_ready = prewarming_result_waits.ready,
                 result_pending = prewarming_result_waits.pending,
+                result_contended = prewarming_result_waits.contended,
                 result_wait_seconds = prewarming_result_waits.wait_elapsed.as_secs_f64(),
                 "Prewarming result waits"
             );

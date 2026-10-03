@@ -344,13 +344,31 @@ This points to substantial off-CPU time in the feature. The cause is unresolved:
 baseline uses sixteen prewarming workers, feature eight, and their transactions
 and profile coverage differ.
 
-Builder diagnostics now report selected-result readiness and cumulative pending
+The blocking builder diagnostics in `0ca637201` report readiness and cumulative pending
 Condvar time, plus coordinator receive count and elapsed time. Result timing
 includes mutex reacquisition after waking, but excludes initial mutex acquisition.
 Source summaries also cover cancelled builds; result summaries require the normal
 fill exit. A same-binary handoff diagnostic measures approximately 10 ns extra
 per already-ready result; cross-thread pairs vary widely and do not establish
-node overhead. Scheduling and admission behavior are unchanged.
+node overhead. That instrumentation left scheduling and admission unchanged.
+
+[Builder-wait comparison 37091828345](https://github.com/tempoxyz/tempo/actions/runs/37091828345)
+measures 15,890 baseline versus 15,053 feature TPS (-5.27%); builder and validator
+gas throughput fall 25.08% and 21.31%. All 4,256 reported payload statuses are
+valid, and the workflow suppresses Slack. Across 671 canonical builds containing
+pool transactions, pending-result waits consume 85.88 of 151.24 seconds of fill
+time (56.79%); source receives consume another 4.47 seconds. About 14.96% of
+selected handles were pending. These elapsed timers include scheduling and call
+overhead; they are not pure off-CPU measurements.
+
+The builder now probes only the already-selected result once. A pending or
+contended slot falls back to ordinary execution in source order. Dropping the
+consumer does not return capacity until its worker also finishes; abandoned
+queued jobs skip per-job execution. Ready/pending/contended counters remain, with
+zero result-wait time. Thirty-nine builder tests and fourteen node checks pass,
+including fixed blocks produced by both builder modes and compared against
+sequential roots, receipts and full execution output. The performance effect
+still requires a GitHub comparison.
 
 [State-commit replay 37087375235](https://github.com/tempoxyz/tempo/actions/runs/37087375235)
 measures 30.36 versus 29.31 Mgas/s (-3.46%), with p99 newPayload latency rising

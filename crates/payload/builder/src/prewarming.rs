@@ -1,7 +1,7 @@
 use std::{
     cell::RefCell,
     sync::{
-        Arc, Condvar, Mutex,
+        Arc, Mutex, TryLockError,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, Sender},
     },
@@ -90,13 +90,14 @@ struct PrewarmingSourceWaits {
     receive_elapsed: Duration,
 }
 
-/// Builder-local diagnostics for selected speculative handles. Readiness is
-/// observed after acquiring the result mutex; the elapsed time measures only
-/// the pending Condvar loop, including reacquiring that mutex after waking.
+/// Builder-local diagnostics for selected speculative handles. Pending and
+/// contended slots use ordinary execution; neither path waits for the worker.
 #[derive(Debug, Default)]
 pub(crate) struct PrewarmingResultWaits {
     pub(crate) ready: u64,
     pub(crate) pending: u64,
+    pub(crate) contended: u64,
+    // Retain this field for comparison with the blocking diagnostic baseline.
     pub(crate) wait_elapsed: Duration,
 }
 
@@ -199,6 +200,13 @@ impl BestTransactionsPrewarming {
                         preexecuted: Some(handle),
                     }));
                     scope.spawn(move |_| {
+                        // A selected transaction can execute ordinarily before
+                        // this job starts. Let producer Drop return its permit.
+                        // Skip this job's with_worker call; the separate eager
+                        // initialization broadcast still runs for the build.
+                        if !producer.has_consumer() {
+                            return;
+                        }
                         let result = prewarm.with_worker(|worker| {
                             if prewarm.is_stopped() {
                                 return None;
@@ -486,13 +494,14 @@ impl PrewarmedTransaction {
         }
     }
 
-    /// Wait only for the selected transaction; discarded candidates never block
-    /// selection. Each producer is bounded by the existing prewarming pool.
+    /// Reuse only a ready result for the selected transaction. Ordinary execution
+    /// handles pending work without changing source order or releasing its
+    /// admission permit before the worker also finishes.
     pub(crate) fn take_preexecuted(
         &mut self,
         waits: &mut PrewarmingResultWaits,
     ) -> Option<PreexecutedTransaction> {
-        self.preexecuted.take()?.recv(waits)
+        self.preexecuted.take()?.try_recv(waits)
     }
 
     pub(crate) fn expiring_nonce_offset(&self) -> Option<usize> {
@@ -512,11 +521,7 @@ impl PreexecutedHandle {
         expiring_nonce_offset: Option<usize>,
     ) -> (PreexecutedProducer, Self) {
         let completion = Arc::new(SpeculativeCompletion {
-            result: Mutex::new(PreexecutedResult {
-                value: None,
-                waiting: false,
-            }),
-            ready: Condvar::new(),
+            result: Mutex::new(PreexecutedResult { value: None }),
             commands_tx,
         });
         (
@@ -530,26 +535,19 @@ impl PreexecutedHandle {
         )
     }
 
-    fn recv(self, waits: &mut PrewarmingResultWaits) -> Option<PreexecutedTransaction> {
-        let mut result = self
-            .completion
-            .result
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+    fn try_recv(self, waits: &mut PrewarmingResultWaits) -> Option<PreexecutedTransaction> {
+        let mut result = match self.completion.result.try_lock() {
+            Ok(result) => result,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => {
+                waits.contended += 1;
+                return None;
+            }
+        };
         if result.value.is_some() {
             waits.ready += 1;
         } else {
             waits.pending += 1;
-            let wait_start = Instant::now();
-            while result.value.is_none() {
-                result.waiting = true;
-                result = self
-                    .completion
-                    .ready
-                    .wait(result)
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-            }
-            waits.wait_elapsed += wait_start.elapsed();
         }
         result.value.take().flatten()
     }
@@ -562,6 +560,15 @@ struct PreexecutedProducer {
 }
 
 impl PreexecutedProducer {
+    /// Advisory only: the consumer can disappear immediately after this check.
+    /// These non-cloneable handles own exactly two strong references, with no
+    /// weak references from which another consumer could be created.
+    fn has_consumer(&self) -> bool {
+        self.completion
+            .as_ref()
+            .is_some_and(|completion| Arc::strong_count(completion) > 1)
+    }
+
     fn send(mut self, result: Option<PreexecutedTransaction>) {
         if let Some(completion) = self.completion.take() {
             completion.publish(result);
@@ -581,8 +588,6 @@ impl Drop for PreexecutedProducer {
 struct PreexecutedResult {
     // Outer None means pending; Some(None) means no reusable result.
     value: Option<Option<PreexecutedTransaction>>,
-    // Protected by the result mutex so publication cannot miss a waiting reader.
-    waiting: bool,
 }
 
 /// One result and one admission permit shared by exactly the worker and consumer.
@@ -591,24 +596,15 @@ struct PreexecutedResult {
 #[derive(Debug)]
 struct SpeculativeCompletion {
     result: Mutex<PreexecutedResult>,
-    ready: Condvar,
     commands_tx: Sender<BestTransactionsCommand>,
 }
 
 impl SpeculativeCompletion {
     fn publish(&self, value: Option<PreexecutedTransaction>) {
-        let notify = {
-            let mut result = self
-                .result
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            result.value = Some(value);
-            result.waiting
-        };
-        // Avoid a notification when publication precedes the reader's first wait.
-        if notify {
-            self.ready.notify_one();
-        }
+        self.result
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .value = Some(value);
     }
 }
 
@@ -1521,19 +1517,27 @@ mod tests {
         }
     }
 
-    fn wait_for_speculative_reader(producer: &PreexecutedProducer) {
-        // The receiver sets waiting while holding the mutex, then atomically
-        // releases it in Condvar::wait. Observing it here proves that path ran.
-        // Borrow the producer's owner; an extra Arc would delay permit return.
-        wait_until(|| {
-            producer
-                .completion
-                .as_ref()
-                .expect("producer has not published")
-                .result
-                .try_lock()
-                .is_ok_and(|result| result.waiting)
-        });
+    fn speculative_candidate() -> (BestTransaction, PreexecutedTransaction) {
+        let context = prewarming_context(TaskExecutor::test(), false);
+        let mut env = EvmEnvFor::<TempoEvmConfig>::default();
+        env.block_env.inner.gas_limit = 30_000_000;
+        let tx = test_tx(Address::with_last_byte(201), 0);
+        let mut tx_env = tx.transaction.clone_tx_env();
+        tx_env.inner.chain_id = None;
+        tx_env.inner.gas_price = 0;
+        tx_env.inner.gas_limit = 1_000_000;
+        let candidate = PrewarmingExecutor::new(context.database_for_ctx().unwrap(), env)
+            .execute(tx_env, None)
+            .expect("zero-fee speculative transaction");
+        (tx, candidate)
+    }
+
+    fn assert_one_speculative_permit(commands_rx: &Receiver<BestTransactionsCommand>) {
+        assert!(matches!(
+            commands_rx.try_recv(),
+            Ok(BestTransactionsCommand::ConsumedSpeculative)
+        ));
+        assert!(commands_rx.try_recv().is_err());
     }
 
     #[test]
@@ -1541,89 +1545,73 @@ mod tests {
         let mut tx = PrewarmedTransaction::without_replay(test_tx(Address::random(), 0));
         let mut waits = PrewarmingResultWaits::default();
         assert!(tx.take_preexecuted(&mut waits).is_none());
-        assert_eq!((waits.ready, waits.pending), (0, 0));
-        assert_eq!(waits.wait_elapsed, Duration::ZERO);
+        assert_eq!((waits.ready, waits.pending, waits.contended), (0, 0, 0));
 
         for pending in 0..=2 {
             let (commands_tx, commands_rx) = mpsc::channel();
             let (producer, handle) = PreexecutedHandle::new(commands_tx, None);
             tx.preexecuted = Some(handle);
-            let previous_wait_elapsed = waits.wait_elapsed;
+            assert!(producer.has_consumer());
             if pending == 0 {
                 // A completed slot without a reusable result is still ready.
                 producer.send(None);
                 assert!(tx.take_preexecuted(&mut waits).is_none());
-                assert_eq!(waits.wait_elapsed, previous_wait_elapsed);
             } else {
-                thread::scope(|scope| {
-                    let consumer = scope.spawn(|| tx.take_preexecuted(&mut waits));
-                    wait_for_speculative_reader(&producer);
-                    producer.send(None);
-                    assert!(consumer.join().unwrap().is_none());
-                });
-                // No latency threshold: the synchronized pending path must add
-                // its elapsed time instead of resetting the per-build total.
-                assert!(waits.wait_elapsed > previous_wait_elapsed);
+                assert!(tx.take_preexecuted(&mut waits).is_none());
+                assert!(!producer.has_consumer());
+                // Fallback cannot grant capacity while the producer still lives.
+                assert!(commands_rx.try_recv().is_err());
+                drop(producer);
             }
-            let elapsed = waits.wait_elapsed;
             assert!(tx.take_preexecuted(&mut waits).is_none());
-            assert_eq!((waits.ready, waits.pending), (1, pending));
-            assert_eq!(waits.wait_elapsed, elapsed);
-            assert!(matches!(
-                commands_rx.try_recv(),
-                Ok(BestTransactionsCommand::ConsumedSpeculative)
-            ));
-            assert!(commands_rx.try_recv().is_err());
+            assert_eq!(
+                (waits.ready, waits.pending, waits.contended),
+                (1, pending, 0)
+            );
+            assert_eq!(waits.wait_elapsed, Duration::ZERO);
+            assert_one_speculative_permit(&commands_rx);
         }
     }
 
     #[test]
-    fn speculative_producer_abort_closes_waiting_consumer() {
+    fn speculative_producer_abort_preserves_ready_only_consumer_and_permit() {
         for panic in [false, true] {
-            let (commands_tx, commands_rx) = mpsc::channel();
-            let (producer, handle) = PreexecutedHandle::new(commands_tx, None);
-            let (returned_tx, returned_rx) = mpsc::channel();
-            let consumer = thread::spawn(move || {
+            for consumer_first in [false, true] {
+                let (commands_tx, commands_rx) = mpsc::channel();
+                let (producer, handle) = PreexecutedHandle::new(commands_tx, None);
                 let mut waits = PrewarmingResultWaits::default();
-                assert!(handle.recv(&mut waits).is_none());
-                returned_tx.send(waits).unwrap();
-            });
-            wait_for_speculative_reader(&producer);
-            let outcome = catch_unwind(AssertUnwindSafe(move || {
-                let _producer = producer;
-                if panic {
-                    panic!("worker exited before publishing");
+                let handle = if consumer_first {
+                    assert!(handle.try_recv(&mut waits).is_none());
+                    assert!(!producer.has_consumer());
+                    None
+                } else {
+                    Some(handle)
+                };
+                assert!(commands_rx.try_recv().is_err());
+                let outcome = catch_unwind(AssertUnwindSafe(move || {
+                    let _producer = producer;
+                    if panic {
+                        panic!("worker exited before publishing");
+                    }
+                }));
+                assert_eq!(outcome.is_err(), panic);
+                if let Some(handle) = handle {
+                    assert!(commands_rx.try_recv().is_err());
+                    assert!(handle.try_recv(&mut waits).is_none());
                 }
-            }));
-            assert_eq!(outcome.is_err(), panic);
-            let waits = returned_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-            assert_eq!(waits.ready, 0);
-            assert_eq!(waits.pending, 1);
-            consumer.join().unwrap();
-            assert!(matches!(
-                commands_rx.recv_timeout(Duration::from_secs(1)),
-                Ok(BestTransactionsCommand::ConsumedSpeculative)
-            ));
-            assert!(commands_rx.try_recv().is_err());
+                assert_eq!(waits.ready, u64::from(!consumer_first));
+                assert_eq!(waits.pending, u64::from(consumer_first));
+                assert_eq!(waits.contended, 0);
+                assert_one_speculative_permit(&commands_rx);
+            }
         }
     }
 
     #[test]
-    fn speculative_result_is_delivered_once_before_capacity_returns() {
+    fn speculative_result_is_delivered_once_or_abandoned_before_capacity_returns() {
         for producer_first in [false, true] {
-            let context = prewarming_context(TaskExecutor::test(), false);
-            let mut env = EvmEnvFor::<TempoEvmConfig>::default();
-            env.block_env.inner.gas_limit = 30_000_000;
-            let tx = test_tx(Address::with_last_byte(201), 0);
-            let mut tx_env = tx.transaction.clone_tx_env();
-            tx_env.inner.chain_id = None;
-            tx_env.inner.gas_price = 0;
-            tx_env.inner.gas_limit = 1_000_000;
-            let candidate = PrewarmingExecutor::new(context.database_for_ctx().unwrap(), env)
-                .execute(tx_env, None)
-                .expect("zero-fee speculative transaction");
-            // This cross-crate type exposes Debug but no equality/result accessor.
-            // Moving the same value preserves its maps' iteration order.
+            let (tx, candidate) = speculative_candidate();
+            // Moving the same cross-crate value preserves its maps' debug order.
             let expected = format!("{candidate:?}");
             let (commands_tx, commands_rx) = mpsc::channel();
             let (producer, handle) = PreexecutedHandle::new(commands_tx, Some(7));
@@ -1632,44 +1620,205 @@ mod tests {
                 replay: None,
                 preexecuted: Some(handle),
             };
-            assert_eq!(tx.expiring_nonce_offset(), Some(7));
+            let offset = tx.expiring_nonce_offset();
+            let mut waits = PrewarmingResultWaits::default();
             if producer_first {
                 producer.send(Some(candidate));
                 assert!(commands_rx.try_recv().is_err());
-                let mut waits = PrewarmingResultWaits::default();
                 assert_eq!(
                     format!("{:?}", tx.take_preexecuted(&mut waits).unwrap()),
                     expected
                 );
-                assert!(tx.take_preexecuted(&mut waits).is_none());
-                assert_eq!(waits.ready, 1);
-                assert_eq!(waits.pending, 0);
-                assert_eq!(waits.wait_elapsed, Duration::ZERO);
             } else {
-                let (returned_tx, returned_rx) = mpsc::channel();
-                let consumer = thread::spawn(move || {
-                    let mut waits = PrewarmingResultWaits::default();
-                    let result = tx.take_preexecuted(&mut waits).unwrap();
-                    let wait_elapsed = waits.wait_elapsed;
-                    assert!(tx.take_preexecuted(&mut waits).is_none());
-                    assert_eq!(waits.wait_elapsed, wait_elapsed);
-                    returned_tx.send((format!("{result:?}"), waits)).unwrap();
-                });
-                wait_for_speculative_reader(&producer);
+                // A true advisory check may race with consumer fallback. The
+                // producer can still publish safely after its consumer is gone.
+                assert!(producer.has_consumer());
+                assert!(tx.take_preexecuted(&mut waits).is_none());
+                assert!(!producer.has_consumer());
                 assert!(commands_rx.try_recv().is_err());
                 producer.send(Some(candidate));
-                let (actual, waits) = returned_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-                assert_eq!(actual, expected);
-                assert_eq!(waits.ready, 0);
-                assert_eq!(waits.pending, 1);
-                consumer.join().unwrap();
             }
-            assert!(matches!(
-                commands_rx.recv_timeout(Duration::from_secs(1)),
-                Ok(BestTransactionsCommand::ConsumedSpeculative)
-            ));
-            assert!(commands_rx.try_recv().is_err());
+            assert_eq!(offset, Some(7));
+            assert!(tx.take_preexecuted(&mut waits).is_none());
+            assert_eq!(waits.ready, u64::from(producer_first));
+            assert_eq!(waits.pending, u64::from(!producer_first));
+            assert_eq!(waits.contended, 0);
+            assert_eq!(waits.wait_elapsed, Duration::ZERO);
+            assert_one_speculative_permit(&commands_rx);
         }
+    }
+
+    #[test]
+    fn speculative_contended_result_falls_back_before_publication_unlocks() {
+        for published in [false, true] {
+            let (commands_tx, commands_rx) = mpsc::channel();
+            let (producer, handle) = PreexecutedHandle::new(commands_tx, None);
+            // Borrow the real producer owner. An extra Arc would alter permits.
+            let mut result = producer.completion.as_ref().unwrap().result.lock().unwrap();
+            if published {
+                result.value = Some(None);
+            }
+            let (returned_tx, returned_rx) = mpsc::channel();
+            let consumer = thread::spawn(move || {
+                let mut waits = PrewarmingResultWaits::default();
+                assert!(handle.try_recv(&mut waits).is_none());
+                returned_tx.send(waits).unwrap();
+            });
+            // The producer still holds the mutex: completion proves no lock wait.
+            let waits = returned_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+            assert_eq!((waits.ready, waits.pending, waits.contended), (0, 0, 1));
+            assert_eq!(waits.wait_elapsed, Duration::ZERO);
+            assert!(!producer.has_consumer());
+            assert!(commands_rx.try_recv().is_err());
+            drop(result);
+            producer.send(None);
+            consumer.join().unwrap();
+            assert_one_speculative_permit(&commands_rx);
+        }
+    }
+
+    #[test]
+    fn speculative_poisoned_result_preserves_fallback_publication_and_permit() {
+        for published in [false, true] {
+            let (commands_tx, commands_rx) = mpsc::channel();
+            let (producer, handle) = PreexecutedHandle::new(commands_tx, None);
+            let outcome = catch_unwind(AssertUnwindSafe(|| {
+                let mut result = producer.completion.as_ref().unwrap().result.lock().unwrap();
+                if published {
+                    result.value = Some(None);
+                }
+                panic!("publication failed while holding the result mutex");
+            }));
+            assert!(outcome.is_err());
+            let mut waits = PrewarmingResultWaits::default();
+            assert!(handle.try_recv(&mut waits).is_none());
+            assert_eq!(waits.ready, u64::from(published));
+            assert_eq!(waits.pending, u64::from(!published));
+            assert_eq!(waits.contended, 0);
+            assert!(commands_rx.try_recv().is_err());
+            // Both publication and final cleanup recover the same poisoned lock.
+            drop(producer);
+            assert_one_speculative_permit(&commands_rx);
+        }
+    }
+
+    #[test]
+    fn abandoned_queued_producer_skips_work_and_returns_its_permit_on_drop() {
+        let (commands_tx, commands_rx) = mpsc::channel();
+        let (producer, handle) = PreexecutedHandle::new(commands_tx, None);
+        let (start_tx, start_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            start_rx.recv().unwrap();
+            if !producer.has_consumer() {
+                return;
+            }
+            // The build's separate eager initialization remains unchanged.
+            panic!("an abandoned queued job must not call with_worker or execute");
+        });
+        let mut waits = PrewarmingResultWaits::default();
+        assert!(handle.try_recv(&mut waits).is_none());
+        assert!(commands_rx.try_recv().is_err());
+        start_tx.send(()).unwrap();
+        worker.join().unwrap();
+        assert_one_speculative_permit(&commands_rx);
+    }
+
+    #[test]
+    fn delayed_first_result_preserves_source_order_and_expiring_nonce_offsets() {
+        let (transactions_tx, transactions_rx) = mpsc::channel();
+        let (commands_tx, commands_rx) = mpsc::channel();
+        let sender = Address::random();
+        let expiring = (0..3)
+            .map(|index| test_payment_tx_with_nonce_key(sender, 500_000 + index, U256::MAX))
+            .collect::<Vec<_>>();
+        let (ordinary, candidate) = speculative_candidate();
+        let expected_result = format!("{candidate:?}");
+        let transactions = expiring.into_iter().chain([ordinary]).collect::<Vec<_>>();
+        let expected_hashes = transactions.iter().map(|tx| *tx.hash()).collect::<Vec<_>>();
+        let mut delayed = Vec::new();
+        let mut candidate = Some(candidate);
+        for (index, tx) in transactions.into_iter().enumerate() {
+            let offset = (index < 3).then_some(index);
+            let (producer, handle) = PreexecutedHandle::new(commands_tx.clone(), offset);
+            transactions_tx
+                .send(Some(PrewarmedTransaction {
+                    tx,
+                    replay: None,
+                    preexecuted: Some(handle),
+                }))
+                .unwrap();
+            if index < 2 {
+                delayed.push(producer);
+            } else {
+                producer.send(if index == 3 { candidate.take() } else { None });
+            }
+        }
+        let mut prewarming = BestTransactionsPrewarming {
+            transactions_rx,
+            commands_tx,
+            stop: Arc::default(),
+            parent_hash: B256::ZERO,
+            speculative: true,
+            source_waits: PrewarmingSourceWaits::default(),
+        };
+        let skipped = prewarming.next().unwrap();
+        assert_eq!(*skipped.tx.hash(), expected_hashes[0]);
+        assert_eq!(skipped.expiring_nonce_offset(), Some(0));
+        prewarming.mark_invalid(
+            &skipped,
+            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
+        );
+        drop(skipped);
+        let mut waits = PrewarmingResultWaits::default();
+        let mut captured_offsets = Vec::new();
+        for (index, expected_hash) in expected_hashes.iter().enumerate().skip(1) {
+            let mut selected = prewarming.next().unwrap();
+            assert_eq!(selected.tx.hash(), expected_hash);
+            // The builder captures this before consuming the handle, including
+            // ordinary fallback, and publishes it with the authoritative result.
+            captured_offsets.push(selected.expiring_nonce_offset());
+            let result = selected.take_preexecuted(&mut waits);
+            if index == 3 {
+                assert_eq!(format!("{:?}", result.unwrap()), expected_result);
+            } else {
+                assert!(result.is_none());
+            }
+        }
+        assert_eq!(captured_offsets, [Some(1), Some(2), None]);
+        assert_eq!((waits.ready, waits.pending, waits.contended), (2, 1, 0));
+        assert_eq!(prewarming.source_waits.buffered_hits, 4);
+        assert_eq!(prewarming.source_waits.receives, 0);
+        assert!(delayed.iter().all(|producer| !producer.has_consumer()));
+        let commands = commands_rx.try_iter().collect::<Vec<_>>();
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|command| matches!(command, BestTransactionsCommand::ConsumedSpeculative))
+                .count(),
+            2
+        );
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|command| matches!(
+                    command,
+                    BestTransactionsCommand::InvalidExpiringNonce(_)
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(commands.len(), 3);
+        // Skipping or falling back did not release either delayed worker permit.
+        for producer in delayed {
+            producer.send(None);
+            assert_one_speculative_permit(&commands_rx);
+        }
+        drop(prewarming);
+        assert!(matches!(
+            commands_rx.try_recv(),
+            Ok(BestTransactionsCommand::Stop { .. })
+        ));
+        assert!(commands_rx.try_recv().is_err());
     }
 
     #[test]
@@ -1706,8 +1855,8 @@ mod tests {
         prewarming.no_updates();
         wait_until(|| log.lock().unwrap().no_updates == 1);
         assert_eq!(log.lock().unwrap().yielded, window);
-        // Waiting for the first result must not let worker completion drain the
-        // whole source. Consumption (or invalidation) releases exactly one slot.
+        // Taking the first result must not let worker completion drain the
+        // whole source. Both owners finishing releases exactly one slot.
         let mut first = prewarming.next().expect("first source candidate");
         assert_eq!(*first.tx.hash(), hashes[0]);
         assert!(first.preexecuted.is_some());
