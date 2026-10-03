@@ -553,6 +553,11 @@ and validator gas throughput remain statistically neutral. Win-only Slack is
 suppressed. The map change was reverted; local gains did not survive the node
 benchmark.
 
+Skipping identical prefix metadata and bytecode clones also failed local timing:
+geometric-mean throughput fell 1.59% across three eight-worker pairs and 0.93%
+across two sixteen-worker pairs. All ten million-transaction differential runs
+passed. The experiment was reverted before a node benchmark or source commit.
+
 [Lock-diagnostic replay 37096394462](https://github.com/tempoxyz/tempo/actions/runs/37096394462)
 measures 29.483 versus 28.421 Mgas/s (-3.60%), with p99 newPayload latency rising
 from 1.444 to 1.571 ms (+8.80%). All 250,000 submissions are valid; all four
