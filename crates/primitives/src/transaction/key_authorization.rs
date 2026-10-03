@@ -254,8 +254,16 @@ impl KeyAuthorization {
     }
 
     /// Set an expiry timestamp on this key authorization.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `expiry` is `0`. `None` is the encoding for "never expires", so mapping `0`
+    /// onto it would silently turn the most restrictive expiry into the most permissive one.
+    /// Use [`Self::unrestricted`] for a key that never expires.
     pub fn with_expiry(mut self, expiry: u64) -> Self {
-        self.expiry = NonZeroU64::new(expiry);
+        self.expiry = Some(
+            NonZeroU64::new(expiry).expect("key-authorization expiry must be non-zero"),
+        );
         self
     }
 
