@@ -6,6 +6,7 @@
 mod action_replay;
 mod assemble;
 mod pool;
+mod state_commit;
 pub use action_replay::{
     ExpiringNonceReplay, StorageActionReplay, StorageActionReplayError, StorageActionReplayOutcome,
     StorageActionReplayState,
@@ -210,6 +211,7 @@ impl ConfigureEvm for TempoEvmConfig {
         I: InspectorFor<Self, &'a mut State<DB>> + 'a,
     {
         evm.enable_state_cache_validation();
+        evm.enable_state_cache_commit();
         BlockExecutorFactory::create_executor(self, evm, ctx)
     }
 
@@ -223,6 +225,7 @@ impl ConfigureEvm for TempoEvmConfig {
         I: InspectorFor<Self, &'db mut State<DB>>,
     {
         evm.enable_state_cache_validation();
+        evm.enable_state_cache_commit();
         BlockExecutorFactory::create_executor(self, evm, ctx)
     }
 

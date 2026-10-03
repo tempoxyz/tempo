@@ -71,10 +71,16 @@ path with persistent workers and twice as many pending candidates as workers.
 `TEMPO_BENCH_STATE_VALIDATION=1` selects the builder's authoritative State-cache
 validator; unset or `0` uses generic database reads. Compare both settings using
 the same compiled binary.
+`TEMPO_BENCH_STATE_HOOK=1` includes block transitions and a no-op state hook,
+matching the node's borrowed commit path. With that enabled,
+`TEMPO_BENCH_STATE_COMMIT=1` selects the optimized repeated-storage commit;
+unset or `0` uses the ordinary State commit. Compare both settings in one binary.
+The sequential reference always uses ordinary commits.
 This mode always includes a sequential receipt/root comparison. It models the
 ordered reuse path with an in-memory provider and a standard thread queue;
 it excludes the node's provider I/O, shared Rayon pool, pool coordinator, bundle
-transitions and state hooks. Regular scheduler tuning switches are unsupported
+merging and real hook work. Without `TEMPO_BENCH_STATE_HOOK`, it also excludes
+transition accumulation and hook delivery. Regular scheduler tuning switches are unsupported
 in this mode. Results before the switch from `CacheDB` commits to `State` also
 used different account-deletion rules and are not comparable throughput figures.
 
@@ -82,6 +88,14 @@ A final paired 1,000,000-transaction T14 diagnostic with eight workers measures
 155,245 TPS with generic validation versus 168,645 with State-cache validation
 (+8.63%), with matching sequential receipts and roots. This is an in-memory
 result; the node benchmark remains the performance gate.
+
+With transition accumulation and hook delivery enabled, three paired
+1,000,000-transaction T14 public-mix runs measure 155,729 versus 172,733 TPS
+at eight workers (+10.92%) for ordinary versus optimized State commits. At
+sixteen workers the medians are 135,592 versus 138,566 (+2.19%), with mixed
+individual pairs. Ordinary sequential controls vary -0.34%. Every run matches
+ordinary sequential receipts and roots; these in-memory figures exclude bundle
+merging and actual hook work and do not establish a node-level win.
 
 Scanning consecutive warm reads under one account lookup further raises median
 throughput from 167,594 to 188,014 TPS (+12.18%) in three paired million-transaction
@@ -294,3 +308,17 @@ logs cover 22 of 25 capture-eligible blocks per feature pass, with only 13
 available candidates among 130 transactions; ordinary two-to-four-transaction
 lookahead reuses 88.72%. This sparse sample provides limited Engine-capture
 coverage and no observed native rebases.
+
+[Changed-slot prefix comparison 37082990580](https://github.com/tempoxyz/tempo/actions/runs/37082990580)
+measures 16,481 baseline versus 14,664 feature TPS (-11.02%); builder and validator
+gas throughput fall 25.07% and 14.72%. All 4,354 recorded payload statuses are valid.
+[Its replay 37082994464](https://github.com/tempoxyz/tempo/actions/runs/37082994464)
+validates all 250,000 submissions, with matching measured heights, transactions
+and gas; throughput falls 1.96% and p99 rises 8.87%. Win-only Slack is suppressed.
+
+[Single-result-slot comparison 37083942894](https://github.com/tempoxyz/tempo/actions/runs/37083942894)
+measures a statistically neutral TPS change of -5.69% with wide uncertainty;
+builder and validator gas throughput fall 29.29% and 27.44%. Long sender and block
+stalls affect both sides, limiting attribution to the handoff change. All 2,087
+recorded payload statuses are valid, and Slack is suppressed. Commit, validation,
+prefix updates and candidate handoff remain the largest ordered builder stages.

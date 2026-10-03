@@ -2601,6 +2601,9 @@ fn execution_throughput() {
     let state_validation =
         std::env::var("TEMPO_BENCH_STATE_VALIDATION").is_ok_and(|value| value != "0");
     println!("# state_cache_validation={state_validation}");
+    let state_hook = std::env::var("TEMPO_BENCH_STATE_HOOK").is_ok_and(|value| value == "1");
+    let state_commit = std::env::var("TEMPO_BENCH_STATE_COMMIT").is_ok_and(|value| value == "1");
+    println!("# state_hook={state_hook} state_cache_commit={state_commit}");
     let mut worker_counts = workers
         .split(',')
         .map(|s| s.parse::<usize>().unwrap())
@@ -2909,9 +2912,18 @@ fn execution_throughput() {
                 let mut state = revm::database::State::builder()
                     .with_database(db.clone())
                     .build();
+                if state_hook {
+                    state.transition_state = Some(Default::default());
+                    state.state_hook = Some(Box::new(|_: revm::state::EvmState| {}));
+                }
                 let mut evm = TempoEvm::new(&mut state, env);
                 if state_validation {
                     evm.enable_state_cache_validation();
+                }
+                // Keep the reference execution on ordinary State commits so the
+                // receipt/root comparison also checks the optimized commit path.
+                if state_commit && threads > 0 {
+                    evm.enable_state_cache_commit();
                 }
                 if threads > 0 {
                     evm.set_speculative_executor(Some(
@@ -2968,7 +2980,7 @@ fn execution_throughput() {
                         if let Some(pipeline) = &pipeline {
                             pipeline.record(&result.state);
                         }
-                        evm.db_mut().commit(result.state);
+                        evm.commit_state(result.state);
                         if let Some(start) = commit_start {
                             phases[2] += start.elapsed();
                         }

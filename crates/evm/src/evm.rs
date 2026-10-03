@@ -128,6 +128,7 @@ pub struct TempoEvm<DB: Database, I = NoOpInspector> {
     prepared: Option<SpeculativeBatch<DB::Error>>,
     preexecuted: Option<PreexecutedTransaction>,
     candidate_validator: Option<CandidateValidator<DB>>,
+    state_committer: Option<fn(&mut DB, reth_revm::state::EvmState)>,
     engine_session: Option<std::sync::Arc<EnginePrewarmingSession>>,
     engine_capture: Option<EngineCapture<DB>>,
     execution_stats: ExecutionStats,
@@ -158,6 +159,7 @@ impl<DB: Database> TempoEvm<DB> {
             prepared: None,
             preexecuted: None,
             candidate_validator: None,
+            state_committer: None,
             engine_session: None,
             engine_capture: None,
             execution_stats: ExecutionStats::default(),
@@ -175,6 +177,10 @@ impl<P: Database, I> TempoEvm<&mut State<P>, I> {
     /// validation. Cold reads and BAL-backed state retain Database validation.
     pub fn enable_state_cache_validation(&mut self) {
         self.candidate_validator = Some(|candidate, db| candidate.validate_state(*db));
+    }
+
+    pub(crate) fn enable_state_cache_commit(&mut self) {
+        self.state_committer = Some(|db, changes| crate::state_commit::commit(*db, changes));
     }
 }
 
@@ -367,6 +373,18 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         ));
     }
 
+    pub(crate) fn commit_state(&mut self, changes: reth_revm::state::EvmState)
+    where
+        DB: reth_revm::DatabaseCommit,
+    {
+        let db = &mut self.inner.ctx.journaled_state.database;
+        if let Some(commit) = self.state_committer {
+            commit(db, changes);
+        } else {
+            db.commit(changes);
+        }
+    }
+
     /// Consumes this EVM wrapper and returns the inner [`tempo_revm::TempoEvm`].
     pub fn into_inner(self) -> tempo_revm::TempoEvm<DB, I> {
         self.inner
@@ -458,6 +476,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             prepared: None,
             preexecuted: None,
             candidate_validator: self.candidate_validator,
+            state_committer: self.state_committer,
             engine_session: None,
             engine_capture: None,
             execution_stats: self.execution_stats,

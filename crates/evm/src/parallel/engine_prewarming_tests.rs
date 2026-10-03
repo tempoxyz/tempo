@@ -781,13 +781,21 @@ fn typed_state_executors_preserve_reused_outputs_and_bal_builder() {
         .with_speculative_executor(SpeculativeExecutor::new(1, 128).unwrap());
     let context = block_context();
     for short_borrow in [false, true] {
-        for build_bal in [false, true] {
+        for (build_bal, observe_state) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
             let (factory, _) = factory(&env, &transactions);
             let mut expected_state = State::builder().with_database(parent.clone()).build();
             let mut actual_state = State::builder().with_database(parent.clone()).build();
             if build_bal {
                 expected_state.bal_state.bal_builder = Some(Bal::new());
                 actual_state.bal_state.bal_builder = Some(Bal::new());
+            }
+            if observe_state {
+                for state in [&mut expected_state, &mut actual_state] {
+                    state.transition_state = Some(Default::default());
+                    state.state_hook = Some(Box::new(|_: revm::state::EvmState| {}));
+                }
             }
             // Both typed hooks must preserve generic executor semantics. The
             // context and config outlive these successive State borrows.
@@ -817,6 +825,10 @@ fn typed_state_executors_preserve_reused_outputs_and_bal_builder() {
             assert_eq!(actual.evm().execution_stats().conflicts, 0);
             assert_eq!(actual.receipts(), expected.receipts());
             assert_eq!(actual.evm().db().cache, expected.evm().db().cache);
+            assert_eq!(
+                actual.evm().db().transition_state,
+                expected.evm().db().transition_state
+            );
             assert_eq!(
                 actual.evm().db().bal_state.bal_builder,
                 expected.evm().db().bal_state.bal_builder,

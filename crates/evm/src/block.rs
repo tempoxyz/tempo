@@ -15,7 +15,7 @@ use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_rlp::Decodable;
 use alloy_sol_types::SolCall;
 use commonware_codec::ReadExt;
-use reth_chainspec::EthChainSpec as _;
+use reth_chainspec::{EthChainSpec as _, EthereumHardforks as _};
 use reth_evm::block::StateDB;
 use reth_primitives_traits::transaction::recover::recover_signers;
 use reth_revm::{
@@ -680,7 +680,37 @@ where
         // the state before the inner executor consumes it, avoiding a full clone.
         // Workers still validate all hints against the resulting ordered state.
         self.inner.evm.record_engine_commit(&inner.result.state);
-        let gas_output = self.inner.commit_transaction(inner);
+        // Keep alloy's receipt/gas ordering: receipt builders observe the full
+        // result and the pre-commit database. Only the final State commit differs.
+        let EthTxResult {
+            result: ResultAndState { result, state },
+            blob_gas_used,
+            tx_type,
+        } = inner;
+        let tx_gas_used = result.gas().tx_gas_used();
+        let regular_gas_used = result.gas().block_regular_gas_used();
+        let state_gas_used = result.gas().block_state_gas_used();
+        self.inner.block_regular_gas_used += regular_gas_used;
+        self.inner.block_state_gas_used += state_gas_used;
+        self.inner.cumulative_tx_gas_used += tx_gas_used;
+        if self
+            .inner
+            .spec
+            .is_cancun_active_at_timestamp(self.inner.evm.block().timestamp.saturating_to())
+        {
+            self.inner.blob_gas_used = self.inner.blob_gas_used.saturating_add(blob_gas_used);
+        }
+        self.inner
+            .receipts
+            .push(self.inner.receipt_builder.build_receipt(ReceiptBuilderCtx {
+                tx_type,
+                evm: &self.inner.evm,
+                result,
+                state: &state,
+                cumulative_gas_used: self.inner.cumulative_tx_gas_used,
+            }));
+        self.inner.evm.commit_state(state);
+        let gas_output = GasOutput::with_state_gas(tx_gas_used, state_gas_used);
 
         self.section = next_section;
 
