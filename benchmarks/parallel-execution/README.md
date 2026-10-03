@@ -627,6 +627,12 @@ geometric-mean throughput fell 1.59% across three eight-worker pairs and 0.93%
 across two sixteen-worker pairs. All ten million-transaction differential runs
 passed. The experiment was reverted before a node benchmark or source commit.
 
+A compact read-record prototype reduced each inline record from 152 to 120 bytes.
+Eight-worker geometric-mean throughput rose 3.53%, with mixed individual pairs,
+but both sixteen-worker pairs regressed (6.68% overall). All ten million-transaction
+receipt/root oracles, 279 unit tests and fourteen node integration tests passed.
+The prototype was reverted before committing or dispatching a node comparison.
+
 [Lock-diagnostic replay 37096394462](https://github.com/tempoxyz/tempo/actions/runs/37096394462)
 measures 29.483 versus 28.421 Mgas/s (-3.60%), with p99 newPayload latency rising
 from 1.444 to 1.571 ms (+8.80%). All 250,000 submissions are valid; all four
