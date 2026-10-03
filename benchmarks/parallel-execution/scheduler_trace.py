@@ -346,7 +346,7 @@ def loss_evidence(output):
     for name in ("record.stderr", "events.txt", "events.stderr", "raw.txt", "raw.stderr"):
         with open(output / name, errors="replace") as stream:
             for number, line in enumerate(stream, 1):
-                if re.search(r"PERF_RECORD_(?:LOST(?:_SAMPLES)?|THROTTLE|UNTHROTTLE)\b|\blost\s+[1-9]\d*\s+(?:events|samples)|\b(?:out of order|failed|truncated)\b", line, re.I):
+                if re.search(r"PERF_RECORD_(?:LOST(?:_SAMPLES)?|THROTTLE|UNTHROTTLE)\b|\blost\s+[1-9]\d*\s+(?:events|samples)|\b(?:out of order|size limit reached|failed|truncated)\b", line, re.I):
                     findings.append({"file": name, "line": number, "text": line.strip()[:1000]})
     return findings
 
@@ -395,7 +395,7 @@ def capture(args):
             result = checked_output(["sudo", "-n", sys.executable, SELF, "_decode", str(output / "record-config.json")], remaining(26))
             require(result.returncode == 0, "decoder failed; see decode-result.json")
             findings = loss_evidence(output); save(output / "loss-evidence.json", findings)
-            require(not findings, "loss/throttle/decoder anomaly; exact scheduler accounting unavailable")
+            require(not findings, "loss/throttle/limit/decoder anomaly; exact scheduler accounting unavailable")
             require((output / "events.txt").stat().st_size > 0, "empty decoded scheduler trace")
             manifest.update(ok=True, selected_tids=selected_tids(before), raw_bytes=(output / "perf.data").stat().st_size,
                 decode_accounting_ready=False,

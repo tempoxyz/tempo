@@ -114,6 +114,10 @@ class SchedulerTraceTests(unittest.TestCase):
         (self.root / "raw.txt").write_text("normal trace\n")
         (self.root / "record.stderr").write_text("Lost 0 events.\n")
         self.assertEqual(trace.loss_evidence(self.root), [])
+        # perf can stop at its soft file limit and exit successfully. Its wall
+        # duration includes setup/flush and cannot qualify that truncated run.
+        (self.root / "record.stderr").write_text("perf size limit reached (122880 KB), stopping session\n")
+        self.assertEqual(len(trace.loss_evidence(self.root)), 1)
 
     def test_owned_timeout_reaps_only_its_process_group(self):
         unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(20)"])

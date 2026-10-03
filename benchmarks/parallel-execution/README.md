@@ -267,6 +267,34 @@ thread-lifetime and accepted-block audit; the delay alone does not prove that
 capture occurred during measured load. Builder work on fallback Tokio threads
 is outside this named-thread trace's coverage.
 
+[Kernel capture 37116887722](https://github.com/tempoxyz/tempo/actions/runs/37116887722)
+records 138,465 scheduler events across both phases without recorded loss or
+internal target-thread transition anomalies. Accepted, fully contained scopes
+on baseline node A cover 12 Engine blocks (88,281 transactions) and 17 builder
+blocks (145,703 transactions). Engine execution spends 71.63% scheduled,
+10.78% runnable and 17.59% nonrunnable; builder transaction filling spends
+55.20%, 33.23% and 11.57%, respectively. These are one-window diagnostics on a
+32-logical-CPU runner, not an A/B performance result. Nonrunnable time does not
+identify the wait primitive, and scheduled time includes interrupts or steal.
+Raw records, recorder completion, process lifetimes, independent clock samples,
+profile markers and accepted block hashes were reconciled. Perf can silently
+skip a failed final loss-counter read, so this is evidence of no observed loss,
+not an unconditional completeness guarantee.
+
+The offline decoder preserves numeric states from the saved tracepoint schema;
+the runner's textual output renders some preemptions as ordinary runnable state.
+It rejects unsupported binary layouts, truncation, loss and throttle records,
+and positive recorded lost counters. Successful decoding alone does not qualify
+scheduler accounting or accepted-block coverage. Keep its output ignored:
+
+```sh
+python3 benchmarks/parallel-execution/decode_scheduler_trace.py \
+  --input /path/to/scheduler-baseline-1/perf.data \
+  --preflight /path/to/scheduler-baseline-1/preflight.json \
+  --output benchmark-artifacts/parallel-execution/scheduler-events.jsonl \
+  --summary benchmark-artifacts/parallel-execution/scheduler-decode.json
+```
+
 Completed sender-reuse comparisons against main `61c979a524f9`:
 
 | Target TPS | Sequential TPS | Feature TPS | Change | Workflow |
