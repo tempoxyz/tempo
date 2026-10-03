@@ -743,6 +743,17 @@ all six terminal peer heads agree. These are peer acceptance checks within each
 arm, not independent sequential receipt/root replay. Every pair runs feature
 first. The validator regression remains unresolved; this is not a win against main.
 
+[Current main comparison 37144723072](https://github.com/tempoxyz/tempo/actions/runs/37144723072)
+compares `61c979a52` with `1c86a7ab5`, including bounded Engine dispatch and the
+session borrow. Three 90-second pairs at 50,000 offered TPS achieve 14,433 versus
+13,834 TPS (-4.15%, statistically neutral). Validator gas throughput falls 7.56%
+and validator p90 rises 5.50%; builder p50 improves 2.61%. The official result is
+mixed and win-only Slack is skipped. All six terminal peer heads agree, with
+6,127 observed `VALID` statuses and no unexplained in-load errors. Accepted Engine
+reuse is 76.40%, but this has not established a net improvement over main. Every
+pair runs feature first; peer acceptance does not replace the separate sequential
+receipt/root oracles.
+
 A local experiment made contended prefix reads fall back to the parent provider.
 It preserved differential correctness but reduced eight-worker reuse from about
 97% to 62–65%, lowering median throughput 31.74% across three paired million-
