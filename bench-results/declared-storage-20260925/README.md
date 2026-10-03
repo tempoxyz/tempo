@@ -1,5 +1,16 @@
 # Declared read/write storage results
 
+**Logging qualification (2026-10-03):** The archived declared-read result of
+about 80,530 durable slots/s used per-transaction timing diagnostics and a
+line-by-line node-output relay. A later cached-workload investigation observed
+the builder blocked in `pipe_write` in 88 of 100 samples under that logging
+configuration. The historical run was not separately profiled, so its entire
+shortfall cannot be attributed to logging, but it is not a clean storage-capacity
+or cache-speedup baseline. The current harness captures node output directly in
+files and defaults transaction diagnostics off. Original measurements below are
+preserved; rerun the controls with the corrected harness before calibrating
+capacity or gas costs from them.
+
 Both runs and their correctness audits completed. Reads produced 81,094 slots/s. Writes produced 4,020 existing-slot updates/s, while the follower persisted 2,806 updates/s and accumulated backlog. Builder backpressure was active 93.2% of the write window. The follower first persisted through the final reported write block 22.4 minutes after load stopped. This write run demonstrates overload and does not establish sustainable capacity.
 
 Both cases: 128 declared slots per native Tempo transaction, 1,000 offered TPS, 1,000 signers, 1,200 seconds of load with the first 600 seconds excluded. Uniform random 128-slot ranges over 1,638,395,904 populated storage slots. Fresh fixture restore per case; AMD EPYC 4585PX with eight physical cores and 20 GiB total memory/node, no swap, verified scratch-file cache eviction, separate builder/follower CPU sets and NVMe devices. Same instrumented node binary as the previous latency runs; prewarming remains enabled.

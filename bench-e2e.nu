@@ -700,15 +700,15 @@ def start-e2e-local-node [
     let pinned_cmd = taskset-command [$tempo_bin ...$args] $cpus
     let node_cmd = wrap-samply $pinned_cmd $samply $full_samply_args
     let node_cmd_str = ($node_cmd | str join " ")
-    let script = $"($env_prefix)($otel_attrs)($tracy_env_prefix)($node_cmd_str) 2>&1"
+    # Timing diagnostics are opt-in through the explicit per-side environment.
+    let script = $"TEMPO_BENCH_TX_TIMING=0 ($env_prefix)($otel_attrs)($tracy_env_prefix)($node_cmd_str) 2>&1"
     let unit_phase = ($phase | str replace -a "_" "-" | str replace -a "." "-")
     let runner = (systemd-scope-command $"tempo-e2e-($role)-($unit_phase)" $cpus $memory $swap $script)
     print $"Starting local e2e validator ($role) for ($phase): ($runner | str join ' ')"
-    job spawn {
-        run-external ($runner | first) ...($runner | skip 1)
-        | lines
-        | each { |line| print $"[e2e-($phase)-($role)] ($line)" }
-    }
+    # A line-by-line console relay can fill its pipe and stall the payload builder.
+    let node_log = ($results_dir | path join $"node-($phase)-($role).log" | path expand)
+    print $"Node output captured directly in ($node_log)"
+    job spawn { run-external ($runner | first) ...($runner | skip 1) out+err> $node_log }
 }
 
 def build-e2e-consensus-args [node_dir: string, trusted_peers: string, port: int, consensus_ip: string] {
@@ -2325,6 +2325,7 @@ def "main state-access-prewarm-control" [
     --summary-warmup-seconds: int = 600
     --tps: int = 1000
     --profile: string = $DEFAULT_PROFILE
+    --transaction-timing                                # Opt-in per-transaction diagnostics; adds overhead
     --wait
     --dry-run
 ] {
@@ -2332,6 +2333,7 @@ def "main state-access-prewarm-control" [
         "--summary-warmup-seconds" ($summary_warmup_seconds | into string)
         "--tps" ($tps | into string) "--profile" $profile]
     if $feature_binary != "" { $args = ($args | append ["--feature-binary" $feature_binary]) }
+    if $transaction_timing { $args = ($args | append "--transaction-timing") }
     if $wait { $args = ($args | append "--wait") }
     if $dry_run { $args = ($args | append "--dry-run") }
     let final_args = $args

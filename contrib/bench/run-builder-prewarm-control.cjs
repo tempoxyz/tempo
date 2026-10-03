@@ -10,17 +10,19 @@ function plans(args) {
     '--summary-warmup-seconds', '--tps', '--profile']);
   const forwarded = [];
   for (let i = 0; i < args.length; i++) {
-    if (['--dry-run', '--wait', '--locked'].includes(args[i])) continue;
+    if (['--dry-run', '--wait', '--locked', '--transaction-timing'].includes(args[i])) continue;
     assert(allowed.has(args[i]) && args[i + 1] && !args[i + 1].startsWith('--'), `invalid option: ${args[i]}`);
     forwarded.push(args[i], args[++i]);
   }
   const nu = process.env.NU_BIN || 'nu';
   const plan = JSON.parse(execFileSync(nu, ['--no-config-file', 'bench-e2e.nu',
-    'state-access-bloat-worst-case', '--sized-transactions', '--feature-env', 'TEMPO_BENCH_TX_TIMING=1',
+    'state-access-bloat-worst-case', '--sized-transactions', '--feature-env',
+    `TEMPO_BENCH_TX_TIMING=${args.includes('--transaction-timing') ? '1' : '0'}`,
     ...forwarded, '--dry-run'], {cwd: root, encoding: 'utf8'}));
   return ['sload', 'bytecode'].flatMap(id => [true, false].map(enabled => {
     const cell = structuredClone(plan);
     cell.label = `${id}-${enabled ? 'on' : 'off'}`;
+    cell.configuration.diagnostic_transaction_logging = args.includes('--transaction-timing');
     cell.configuration.cases = plan.configuration.cases.filter(c => c.id === id);
     cell.options.feature_args = enabled ? '' : '--builder.disable-prewarming';
     cell.configuration.prewarming = `builder ${enabled ? 'enabled' : 'disabled'}; engine unchanged`;

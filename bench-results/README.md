@@ -1,5 +1,16 @@
 # State-access benchmark evidence
 
+**Logging qualification (2026-10-03):** The archived declared-read result of
+about 80,530 durable slots/s used per-transaction timing diagnostics and a
+line-by-line node-output relay. A later cached-workload investigation observed
+the builder blocked in `pipe_write` in 88 of 100 samples under that logging
+configuration. The historical run was not separately profiled, so its entire
+shortfall cannot be attributed to logging, but it is not a clean storage-capacity
+or cache-speedup baseline. The current harness captures node output directly in
+files and defaults transaction diagnostics off. Original measurements below are
+preserved; rerun the controls with the corrected harness before calibrating
+capacity or gas costs from them.
+
 Completed experiments through 2026-09-28. Source, presets, audits, and analyzers
 are under [contrib/bench](../contrib/bench/README.md). The separate txgen and Reth
 changes are included as pinned [dependency patches](../contrib/bench/patches/README.md).

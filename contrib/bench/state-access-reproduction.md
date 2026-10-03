@@ -89,6 +89,18 @@ Each suite retains a checksum-verified executable under its own results director
 and reuses it across cases, avoiding recompilation and build-timestamp changes.
 The cache is private to that new suite, not the shared commit-only binary cache.
 
+Local node stdout/stderr goes directly to `node-<phase>-<role>.log` in each
+case's results directory. The runner prints the paths; use `tail -f` to follow
+them separately. Structured JSON logs remain under `logs-<phase>-<role>/dev/`
+for the analyzers. No line-by-line console relay runs in the node output path.
+Per-transaction timing diagnostics default to off, including in the prewarming
+control. To collect them explicitly, pass `--feature-env TEMPO_BENCH_TX_TIMING=1`
+(and the matching `--baseline-env` for a comparison), or
+`--transaction-timing` to `state-access-prewarm-control`. Diagnostic logging adds
+overhead; compare capacity runs with diagnostics disabled. Without it, the
+latency analyzer's transaction-attempt distributions are empty; block, chain,
+I/O and durability measurements remain available.
+
 `--max-transaction-size` selects the deliberately near-30M-gas stress cases.
 Those can trigger proposal timeouts: they are not a sustained-throughput target.
 Sized transactions are a historical latency calibration, not a guarantee of

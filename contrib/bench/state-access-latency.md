@@ -29,7 +29,12 @@ For cancellation-aware calibration, build the diagnostic binary and pass
 `--feature-env TEMPO_BENCH_TX_TIMING=1`. Timing logs include each builder attempt's
 start, execution duration, elapsed build time, validity, and cancellation state.
 Logging is opt-in and does not change proposal deadlines or cancellation behavior.
-Use the same binary and logging setting for both workloads.
+It adds overhead and should remain disabled for throughput measurements. Use the
+same binary and logging setting for both workloads. The four-cell
+`state-access-prewarm-control` also defaults to diagnostics off; pass
+`--transaction-timing` when attempt-level latency analysis is required.
+Local node output is captured directly in per-phase/per-role files; see the
+[runbook](state-access-reproduction.md).
 
 ```sh
 node contrib/bench/analyze-state-access-latency.cjs bench-results/RESULT_DIRECTORY

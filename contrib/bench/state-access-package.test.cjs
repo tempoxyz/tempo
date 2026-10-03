@@ -28,6 +28,8 @@ test('prewarming control resolves all four fresh cells with matching limits', ()
     assert.equal(c.options.node_memory, '20G');
     assert.equal(c.options.node_swap_limit, '0');
     assert.match(c.options.feature_env, /RETH_BYTECODE_PREFETCH=1/);
+    assert.match(c.options.feature_env, /TEMPO_BENCH_TX_TIMING=0/);
+    assert.equal(c.configuration.diagnostic_transaction_logging, false);
     assert.equal(c.options.feature_args, c.label.endsWith('-off') ? '--builder.disable-prewarming' : '');
   }
 });
@@ -35,6 +37,14 @@ test('native control entry point is a no-side-effect dry-run', () => {
   const result = JSON.parse(execFileSync('nu', ['--no-config-file', 'bench-e2e.nu', 'state-access-prewarm-control',
     '--baseline', 'HEAD', '--feature', 'HEAD', '--dry-run'], {cwd: root, encoding: 'utf8'}));
   assert.equal(result.length, 4);
+});
+test('native prewarming control enables transaction diagnostics only on request', () => {
+  const cells = JSON.parse(execFileSync('nu', ['--no-config-file', 'bench-e2e.nu', 'state-access-prewarm-control',
+    '--transaction-timing', '--dry-run'], {cwd: root, encoding: 'utf8'}));
+  for (const cell of cells) {
+    assert.match(cell.options.feature_env, /TEMPO_BENCH_TX_TIMING=1/);
+    assert.equal(cell.configuration.diagnostic_transaction_logging, true);
+  }
 });
 test('patched worktree builds bypass the ordinary binary cache', () => {
   const source = fs.readFileSync(path.join(root, 'tempo.nu'), 'utf8');

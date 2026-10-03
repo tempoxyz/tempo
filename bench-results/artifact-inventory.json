@@ -13419,9 +13419,9 @@
     },
     {
       "path": "declared-storage-20260925/README.md",
-      "bytes": 5188,
+      "bytes": 5924,
       "in_git": true,
-      "sha256": "aff80af8638fbb5c2a5bbad9246231803c08696a57c55f0ed7797f30989940d4"
+      "sha256": "7c500680def4d6a83539038d4ccca5b3edae503fb961004fdc10da4599d843cd"
     },
     {
       "path": "declared-storage-20260925/results.json",
@@ -16822,9 +16822,9 @@
     },
     {
       "path": "README.md",
-      "bytes": 5271,
+      "bytes": 6007,
       "in_git": true,
-      "sha256": "a3d219542e1e7094ca9ce9ec1a0cd427f30b8316d9e0ac01bedc14302ad1ac2a"
+      "sha256": "b3de3c817a5425ce703b1647c3fb8059c89ddcba215fd13842db0d4dd935476a"
     },
     {
       "path": "resident-state-paths-brief.docx",
