@@ -116,10 +116,7 @@ async fn test_backfill_sync() -> eyre::Result<()> {
     println!("FCU returned SYNCING status - backfill mechanism triggered correctly");
 
     println!("Waiting for node2 to sync with node1...");
-    // Waits for the pipeline to finish at the target block and checks its hash.
-    node2
-        .wait_block(final_block_number, final_block_hash, true)
-        .await?;
+    node2.wait_for_head(final_block_hash).await?;
     println!("Node2 successfully synced to block {final_block_number}");
 
     // Verify that node2 can also access intermediate blocks
