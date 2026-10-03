@@ -396,7 +396,8 @@ is measured in [comparison 37094114130](https://github.com/tempoxyz/tempo/action
 throughput down 18.4% and 16.9%. The workflow suppresses Slack; removing the
 result wait has not established an overall win. The retained chains contain
 657 nonempty fills: result waits are zero, source receives consume 9.08 of
-140.24 seconds, and builder reuse is 75.59% of 4,083,219 included transactions.
+140.24 seconds. Builder reuse attempts amount to 75.59% of the 4,083,219 included
+transactions; that counter can include attempts later rejected before inclusion.
 All 4,237 reported payload statuses are valid.
 
 The preceding comparison's first-pair Engine metrics report 15.92 seconds inside
