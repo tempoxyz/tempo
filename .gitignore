@@ -9,6 +9,7 @@ coverage/
 
 # Benchmarking artifacts
 /benchmark-artifacts/
+/bench-results/
 .bench-tmp/
 contrib/bench/logs/
 report.json
