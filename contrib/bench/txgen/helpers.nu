@@ -708,7 +708,7 @@ def txgen-workload-metadata-args [preset_name: string, spec_path: string] {
     if $result.exit_code != 0 {
         error make {msg: $"Failed to extract public-mix metadata: ($result.stderr)"}
     }
-    ["-m" "workload_mix_version=1" "-m" $"workload_mix_weights=($result.stdout | str trim)"]
+    ["-m" "workload_mix_version=1" "-m" "workload_mix_weighting=gas" "-m" $"workload_mix_weights=($result.stdout | str trim)"]
 }
 
 def txgen-run-preset-pipeline [

@@ -17,7 +17,9 @@ The local bench harness interprets `public-mix` weights as target gas shares
 (transfer 80%, mint 5%, MPP 15%). It confirms setup, reuses the setup bindings,
 and invokes txgen with `--gas-weighted-mix`. Txgen simulates one workload item
 per kind at startup and every 10 seconds; a sampling failure aborts the run.
-Actual included shares are recorded in the report's `block_composition`.
+Actual included shares are recorded in the report's `block_composition` and
+copied to `summary.json` under `per_run[].block_composition` (the report's
+measured block window, before any additional summary-only warmup trimming).
 
 For the previous transfer-only default, explicitly select
 `tip20:recipient=existing,fee-token=any_tip20` (local) or
