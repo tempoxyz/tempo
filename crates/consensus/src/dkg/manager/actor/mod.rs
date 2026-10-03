@@ -975,7 +975,7 @@ where
                         true,
                     );
 
-                    // Follows the doc on the return value of of Sender::send.
+                    // Follows the doc on the return value of Sender::send.
                     if sent.is_empty() {
                         warn!(
                             "failed returning ACK to dealer because it was rate \
