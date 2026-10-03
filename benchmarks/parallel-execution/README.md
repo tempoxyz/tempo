@@ -13,13 +13,11 @@ completed results; `--execution.capture-window` also permits 256 or 512 for
 controlled comparisons. It changes Engine admission, retention and the in-flight
 cap, with the same 32 MiB limit on estimated result payload and the block's
 accepted-state hints retained separately. The estimate is not an allocator/RSS
-bound. The Engine's external prewarming coordinator admits work within 512
-transactions of the committed cursor, while the queued/running job cap follows
-the selected capture window. Jobs starting beyond capture range perform ordinary
-warming once and are not resubmitted. The coordinator polls progress and
-cancellation every 100 microseconds; workers do not wait for admission. This wider
-dispatch lead is an unbenchmarked experiment that may reduce strict reuse. The
-bounds exclude converted inputs, provider caches and the initial worker setup job.
+bound. The Engine's external prewarming coordinator uses the selected capture
+window for both its lead over the committed cursor and its queued/running job
+cap. The coordinator polls progress and cancellation every 100 microseconds;
+workers do not wait for admission. The bounds exclude converted inputs, provider
+caches and the initial worker setup job.
 The first 128-window comparison
 regresses official latency metrics despite improving Engine reuse and execution time.
 The optional dispatcher is pinned to
@@ -773,6 +771,18 @@ validator p99 improves 8.13%. All six terminal peer heads agree and all 7,646
 observed payload statuses are `VALID`; seven errors follow explicit shutdown.
 Win-only Slack correctly skips this result. This input-limited point does not
 establish a throughput improvement or an independent sequential receipt/root check.
+
+[Dispatch-lead comparison 37150430298](https://github.com/tempoxyz/tempo/actions/runs/37150430298)
+compares `1c86a7ab5` with `ec0f4a6ea`, widening dispatch from 128 to 512 while
+keeping capture and in-flight limits at 128. The official result is improvement:
+builder p50 falls 2.03%; TPS rises from 13,144 to 13,891, statistically neutral.
+Across accepted nonempty blocks, Engine reuse falls from 76.31% to 42.44%.
+Engine time rises 5.86% and foreground root finishing falls 22.97%; their sum
+rises 1.12% per transaction, worsening in every pair. These descriptive costs
+include warmup and are distinct from official percentile metrics. The wider
+lead is reverted because its root benefit is offset by lost reuse. All 6,157
+observed payload statuses are `VALID`; this does not replace sequential oracles.
+The workflow's on-win Slack step succeeds; it does not retain a message ID.
 
 A local experiment made contended prefix reads fall back to the parent provider.
 It preserved differential correctness but reduced eight-worker reuse from about

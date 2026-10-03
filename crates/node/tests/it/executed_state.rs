@@ -134,7 +134,7 @@ async fn executed_state_reads_blocks_that_are_not_canonical(
 #[test_case::test_case(4, 64, 64, 64, false, EngineCaptureWindow::Transactions128, false; "parallel_builder_independent")]
 #[test_case::test_case(4, 128, 16, 8, false, EngineCaptureWindow::Transactions128, false; "parallel_builder_repeated_senders_and_recipients")]
 #[test_case::test_case(4, 64, 64, 1, true, EngineCaptureWindow::Transactions128, false; "parallel_builder_native_reserve_opens")]
-#[test_case::test_case(4, 520, 64, 8, false, EngineCaptureWindow::Transactions128, false; "dispatch512_capture128_paid_aa_beyond_boundary")]
+#[test_case::test_case(4, 520, 64, 8, false, EngineCaptureWindow::Transactions128, false; "window128_paid_aa_beyond_boundary")]
 #[test_case::test_case(4, 520, 64, 8, false, EngineCaptureWindow::Transactions512, false; "window512_paid_aa_beyond_boundary")]
 #[test_case::test_case(4, 128, 16, 8, false, EngineCaptureWindow::Transactions128, true; "stage_diagnostics_paid_aa")]
 #[tokio::test(flavor = "multi_thread")]
@@ -293,8 +293,8 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
     assert!(expected_receipts.iter().all(|receipt| receipt.success));
 
     // Force an early canonical error in a block larger than the strict capture
-    // window, then submit the valid sibling. The 520-transaction cases also exceed the
-    // 512-transaction dispatch lead, including when strict capture is only 128.
+    // window, then submit the valid sibling. The 520-transaction cases exceed
+    // both the 128- and 512-transaction dispatch and capture windows.
     // Both configurations must reject identically and retire the failed
     // payload's actual prewarming scope before the valid sibling can complete.
     let invalid_payload = if transaction_count > capture_window.transactions() {
