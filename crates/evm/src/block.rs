@@ -744,6 +744,7 @@ where
         mut self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
         self.inner.evm.log_engine_wait_timings();
+        self.inner.evm.log_execution_stage_timings();
         let stats = self.inner.evm.execution_stats();
         if stats.speculated > 0 {
             tracing::debug!(target: "tempo::execution", ?stats, "Finished speculative block execution");

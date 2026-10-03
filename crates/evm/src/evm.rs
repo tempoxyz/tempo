@@ -22,7 +22,7 @@ use std::{
     cell::RefCell,
     ops::{Deref, DerefMut},
     rc::Rc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{storage::StorageAction, storage_credits::NonCreditableSlots};
@@ -67,6 +67,21 @@ struct EngineWaitTimings {
     prefix_writes: u64,
     prefix_write_wait: Duration,
     prefix_write_hold: Duration,
+}
+
+/// Wall times of completed calls on this EVM, separate from deterministic counters.
+/// System/inspected execution and commits bypassing this wrapper are not timed.
+#[derive(Debug, Default)]
+struct ExecutionStageTimings {
+    validation_calls: u64,
+    validation_conflicts: u64,
+    validation_errors: u64,
+    validation: Duration,
+    ordinary_calls: u64,
+    ordinary_errors: u64,
+    ordinary: Duration,
+    commit_calls: u64,
+    commit: Duration,
 }
 
 /// Factory for creating Tempo EVM instances.
@@ -144,6 +159,7 @@ pub struct TempoEvm<DB: Database, I = NoOpInspector> {
     engine_session: Option<std::sync::Arc<EnginePrewarmingSession>>,
     engine_capture: Option<EngineCapture<DB>>,
     engine_wait_timings: EngineWaitTimings,
+    execution_stage_timings: Option<Box<ExecutionStageTimings>>,
     execution_stats: ExecutionStats,
     last_sample: ExecutionStats,
     backoff_remaining: usize,
@@ -176,6 +192,7 @@ impl<DB: Database> TempoEvm<DB> {
             engine_session: None,
             engine_capture: None,
             engine_wait_timings: EngineWaitTimings::default(),
+            execution_stage_timings: None,
             execution_stats: ExecutionStats::default(),
             last_sample: ExecutionStats::default(),
             backoff_remaining: 0,
@@ -268,6 +285,12 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     pub fn set_speculative_executor(&mut self, executor: Option<SpeculativeExecutor>) {
         self.prepared = None;
         self.preexecuted = None;
+        // Each installation starts a fresh diagnostic interval. Disabling the
+        // executor drops its timers; disabled paths never read the clock.
+        self.execution_stage_timings = executor
+            .as_ref()
+            .is_some_and(SpeculativeExecutor::stage_diagnostics)
+            .then(Box::default);
         self.speculative = executor;
         self.last_sample = self.execution_stats;
         self.backoff_remaining = 0;
@@ -419,12 +442,43 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     where
         DB: reth_revm::DatabaseCommit,
     {
+        let started = self
+            .execution_stage_timings
+            .as_ref()
+            .map(|_| Instant::now());
         let db = &mut self.inner.ctx.journaled_state.database;
         if let Some(commit) = self.state_committer {
             commit(db, changes);
         } else {
             db.commit(changes);
         }
+        if let Some(started) = started {
+            let elapsed = started.elapsed();
+            let timings = self.execution_stage_timings.as_mut().unwrap();
+            timings.commit_calls += 1;
+            timings.commit += elapsed;
+        }
+    }
+
+    /// Snapshot before block finalization. These stages do not include receipt
+    /// construction, dispatch, prefix publication, system calls or finalization.
+    pub(crate) fn log_execution_stage_timings(&self) {
+        let Some(timings) = &self.execution_stage_timings else {
+            return;
+        };
+        tracing::debug!(target: "tempo::execution",
+            phase = "before_block_finalization",
+            validation_calls = timings.validation_calls,
+            validation_conflicts = timings.validation_conflicts,
+            validation_errors = timings.validation_errors,
+            validation_seconds = timings.validation.as_secs_f64(),
+            ordinary_calls = timings.ordinary_calls,
+            ordinary_errors = timings.ordinary_errors,
+            ordinary_seconds = timings.ordinary.as_secs_f64(),
+            commit_calls = timings.commit_calls,
+            commit_seconds = timings.commit.as_secs_f64(),
+            "Ordered execution stage timings"
+        );
     }
 
     /// Consumes this EVM wrapper and returns the inner [`tempo_revm::TempoEvm`].
@@ -522,6 +576,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             engine_session: None,
             engine_capture: None,
             engine_wait_timings: self.engine_wait_timings,
+            execution_stage_timings: self.execution_stage_timings,
             execution_stats: self.execution_stats,
             last_sample: self.last_sample,
             backoff_remaining: self.backoff_remaining,
@@ -762,39 +817,54 @@ where
         {
             if candidate.result.is_err() {
                 self.execution_stats.retries += 1;
-            } else if match self.candidate_validator {
-                Some(validate) => {
-                    validate(&mut candidate, &mut self.inner.ctx.journaled_state.database)
-                }
-                None => candidate.validate(&mut self.inner.ctx.journaled_state.database),
-            }
-            .unwrap_or(false)
-            {
-                self.execution_stats.reused += 1;
-                if prewarmed && let Some(executor) = &self.speculative {
-                    executor.record_prewarmed_reuse();
-                }
-                self.execution_stats.fees_rebased += u64::from(candidate.fees_rebased);
-                self.execution_stats.native_rebased += u64::from(candidate.native_rebased);
-                self.inner.ctx.tx = tx;
-                self.inner.validator_fee = candidate.validator_fee;
-                return candidate.result;
             } else {
-                self.execution_stats.conflicts += 1;
-                use crate::parallel::ConflictKind;
-                match candidate.conflict {
-                    Some(ConflictKind::Metadata) => self.execution_stats.metadata_conflicts += 1,
-                    Some(ConflictKind::NoncePointer) => {
-                        self.execution_stats.nonce_pointer_conflicts += 1
+                let started = self
+                    .execution_stage_timings
+                    .as_ref()
+                    .map(|_| Instant::now());
+                let valid = match self.candidate_validator {
+                    Some(validate) => {
+                        validate(&mut candidate, &mut self.inner.ctx.journaled_state.database)
                     }
-                    Some(ConflictKind::Nonce) => self.execution_stats.nonce_conflicts += 1,
-                    Some(ConflictKind::Storage) => self.execution_stats.storage_conflicts += 1,
-                    Some(ConflictKind::Fee) => self.execution_stats.fee_conflicts += 1,
-                    // Provider errors retain the ordinary ordered fallback.
-                    None => self.execution_stats.validation_errors += 1,
+                    None => candidate.validate(&mut self.inner.ctx.journaled_state.database),
+                };
+                if let Some(started) = started {
+                    let elapsed = started.elapsed();
+                    let timings = self.execution_stage_timings.as_mut().unwrap();
+                    timings.validation_calls += 1;
+                    timings.validation_conflicts += u64::from(matches!(valid, Ok(false)));
+                    timings.validation_errors += u64::from(valid.is_err());
+                    timings.validation += elapsed;
                 }
-                tracing::trace!(target: "tempo::execution::conflicts", caller = ?tx.inner.caller, payer = ?tx.fee_payer().ok(), "Conflicting candidate");
-                self.inner.set_body_replay(candidate.body);
+                if valid.unwrap_or(false) {
+                    self.execution_stats.reused += 1;
+                    if prewarmed && let Some(executor) = &self.speculative {
+                        executor.record_prewarmed_reuse();
+                    }
+                    self.execution_stats.fees_rebased += u64::from(candidate.fees_rebased);
+                    self.execution_stats.native_rebased += u64::from(candidate.native_rebased);
+                    self.inner.ctx.tx = tx;
+                    self.inner.validator_fee = candidate.validator_fee;
+                    return candidate.result;
+                } else {
+                    self.execution_stats.conflicts += 1;
+                    use crate::parallel::ConflictKind;
+                    match candidate.conflict {
+                        Some(ConflictKind::Metadata) => {
+                            self.execution_stats.metadata_conflicts += 1
+                        }
+                        Some(ConflictKind::NoncePointer) => {
+                            self.execution_stats.nonce_pointer_conflicts += 1
+                        }
+                        Some(ConflictKind::Nonce) => self.execution_stats.nonce_conflicts += 1,
+                        Some(ConflictKind::Storage) => self.execution_stats.storage_conflicts += 1,
+                        Some(ConflictKind::Fee) => self.execution_stats.fee_conflicts += 1,
+                        // Provider errors retain the ordinary ordered fallback.
+                        None => self.execution_stats.validation_errors += 1,
+                    }
+                    tracing::trace!(target: "tempo::execution::conflicts", caller = ?tx.inner.caller, payer = ?tx.fee_payer().ok(), "Conflicting candidate");
+                    self.inner.set_body_replay(candidate.body);
+                }
             }
         }
         if tx.is_system_tx {
@@ -823,7 +893,18 @@ where
         } else if self.inspect {
             self.inner.inspect_tx(tx)
         } else {
+            let started = self
+                .execution_stage_timings
+                .as_ref()
+                .map(|_| Instant::now());
             let result = self.inner.transact(tx);
+            if let Some(started) = started {
+                let elapsed = started.elapsed();
+                let timings = self.execution_stage_timings.as_mut().unwrap();
+                timings.ordinary_calls += 1;
+                timings.ordinary_errors += u64::from(result.is_err());
+                timings.ordinary += elapsed;
+            }
             if self.inner.body_was_reused() {
                 self.execution_stats.bodies_reused += 1;
             }
@@ -1064,6 +1145,113 @@ mod tests {
             .unwrap();
 
         assert!(result.result.is_success());
+    }
+
+    #[test]
+    fn execution_stage_diagnostics_preserve_reuse_fallback_and_reset() {
+        use revm::database_interface::EmptyDBTyped;
+        #[derive(Debug, thiserror::Error)]
+        #[error("validation provider error")]
+        struct ProviderError;
+        impl DBErrorMarker for ProviderError {}
+
+        let parent = CacheDB::new(EmptyDBTyped::<ProviderError>::new());
+        let env = test_evm_with_basefee(EmptyDB::default(), 0).finish().1;
+        let tx = TempoTxEnv {
+            inner: TxEnv {
+                caller: Address::with_last_byte(201),
+                kind: TxKind::Call(Address::with_last_byte(202)),
+                gas_limit: 1_000_000,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        for enabled in [false, true] {
+            for case in ["reuse", "conflict", "provider_error"] {
+                let mut expected = TempoEvm::new(parent.clone(), env.clone());
+                let mut actual = TempoEvm::new(parent.clone(), env.clone());
+                actual.set_speculative_executor(Some(
+                    SpeculativeExecutor::new(1, 1)
+                        .unwrap()
+                        .with_stage_diagnostics(enabled),
+                ));
+                let candidate = PrewarmingExecutor::new(parent.clone(), env.clone())
+                    .execute(tx.clone(), None)
+                    .unwrap();
+                actual.set_preexecuted_transaction(candidate);
+                if case == "conflict" {
+                    for evm in [&mut actual, &mut expected] {
+                        evm.db_mut().insert_account_info(
+                            tx.inner.caller,
+                            AccountInfo {
+                                balance: U256::ONE,
+                                ..Default::default()
+                            },
+                        );
+                    }
+                } else if case == "provider_error" {
+                    actual.candidate_validator = Some(|_, _| Err(ProviderError));
+                }
+                let reference = expected.transact_raw(tx.clone()).unwrap();
+                let result = actual.transact_raw(tx.clone()).unwrap();
+                assert_eq!(result, reference);
+                expected.commit_state(reference.state);
+                actual.commit_state(result.state);
+                assert_eq!(
+                    actual.db().cache.accounts.len(),
+                    expected.db().cache.accounts.len()
+                );
+                for (address, account) in &actual.db().cache.accounts {
+                    let expected_account = &expected.db().cache.accounts[address];
+                    assert!(tempo_revm::replay::account_info_matches(
+                        &account.info,
+                        &expected_account.info
+                    ));
+                    assert_eq!(account.storage, expected_account.storage);
+                    assert_eq!(account.account_state, expected_account.account_state);
+                }
+                let error = actual.transact_raw(tx.clone()).unwrap_err();
+                assert_eq!(
+                    error.to_string(),
+                    expected.transact_raw(tx.clone()).unwrap_err().to_string()
+                );
+                if enabled {
+                    let timings = actual.execution_stage_timings.as_ref().unwrap();
+                    assert_eq!(timings.validation_calls, 1);
+                    assert_eq!(timings.validation_conflicts, u64::from(case == "conflict"));
+                    assert_eq!(
+                        timings.validation_errors,
+                        u64::from(case == "provider_error")
+                    );
+                    assert_eq!(timings.ordinary_calls, if case == "reuse" { 1 } else { 2 });
+                    assert_eq!(timings.ordinary_errors, 1);
+                    assert_eq!(timings.commit_calls, 1);
+                    let inspected = actual.with_inspector(NoOpInspector {});
+                    assert_eq!(
+                        inspected
+                            .execution_stage_timings
+                            .as_ref()
+                            .unwrap()
+                            .validation_calls,
+                        1
+                    );
+                    actual = inspected;
+                } else {
+                    assert!(actual.execution_stage_timings.is_none());
+                }
+                actual.set_speculative_executor(Some(
+                    SpeculativeExecutor::new(1, 1)
+                        .unwrap()
+                        .with_stage_diagnostics(true),
+                ));
+                let timings = actual.execution_stage_timings.as_ref().unwrap();
+                assert_eq!(timings.validation_calls, 0);
+                assert_eq!(timings.ordinary_calls, 0);
+                assert_eq!(timings.commit_calls, 0);
+                actual.set_speculative_executor(None);
+                assert!(actual.execution_stage_timings.is_none());
+            }
+        }
     }
 
     #[test]

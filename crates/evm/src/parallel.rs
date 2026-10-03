@@ -119,6 +119,7 @@ pub struct SpeculativeExecutor {
     state_forwarding: bool,
     nonce_prediction: bool,
     capture_diagnostics: bool,
+    stage_diagnostics: bool,
     capture_window: EngineCaptureWindow,
     scheduled_transactions: Arc<AtomicU64>,
     prewarmed_reuses: Arc<AtomicU64>,
@@ -151,6 +152,7 @@ impl SpeculativeExecutor {
             state_forwarding: false,
             nonce_prediction: true,
             capture_diagnostics: false,
+            stage_diagnostics: false,
             capture_window: EngineCaptureWindow::default(),
             scheduled_transactions: Arc::default(),
             prewarmed_reuses: Arc::default(),
@@ -165,6 +167,17 @@ impl SpeculativeExecutor {
 
     pub(crate) const fn capture_diagnostics(&self) -> bool {
         self.capture_diagnostics
+    }
+
+    /// Records ordered validation, fallback execution and commit wall times.
+    /// Disabled by default; these diagnostics do not change scheduling.
+    pub fn with_stage_diagnostics(mut self, enabled: bool) -> Self {
+        self.stage_diagnostics = enabled;
+        self
+    }
+
+    pub(crate) const fn stage_diagnostics(&self) -> bool {
+        self.stage_diagnostics
     }
 
     /// Selects only the Engine capture window; generic and builder batches are unchanged.

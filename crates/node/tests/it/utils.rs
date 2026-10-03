@@ -429,6 +429,7 @@ pub(crate) struct HttpOnlySetup {
 /// Builder for creating test nodes
 pub(crate) struct TestNodeBuilder {
     execution_threads: usize,
+    execution_stage_diagnostics: bool,
     share_sparse_trie: bool,
     proof_window: Option<u64>,
     genesis_content: String,
@@ -445,6 +446,7 @@ impl TestNodeBuilder {
     pub(crate) fn new() -> Self {
         Self {
             execution_threads: 0,
+            execution_stage_diagnostics: false,
             share_sparse_trie: false,
             proof_window: None,
             genesis_content: include_str!("../assets/test-genesis.json").to_string(),
@@ -460,6 +462,11 @@ impl TestNodeBuilder {
     /// Configure speculative execution for a single local test node.
     pub(crate) fn with_execution_threads(mut self, threads: usize) -> Self {
         self.execution_threads = threads;
+        self
+    }
+
+    pub(crate) fn with_execution_stage_diagnostics(mut self, enabled: bool) -> Self {
+        self.execution_stage_diagnostics = enabled;
         self
     }
 
@@ -560,7 +567,11 @@ impl TestNodeBuilder {
             config.engine.cross_block_cache_size = 1;
             let handle = NodeBuilder::new(config)
                 .testing_node(Runtime::test())
-                .node(TempoNode::default().with_execution_threads(self.execution_threads, 32))
+                .node(
+                    TempoNode::default()
+                        .with_execution_threads(self.execution_threads, 32)
+                        .with_execution_stage_diagnostics(self.execution_stage_diagnostics),
+                )
                 // The engine launcher preserves manual timestamps; the debug
                 // launcher would start a local miner when dev mode is enabled.
                 .launch()
@@ -668,7 +679,11 @@ impl TestNodeBuilder {
             config.debug.startup_sync_state_idle = true;
             let handle = NodeBuilder::new(config)
                 .testing_node(Runtime::test())
-                .node(TempoNode::default().with_execution_threads(self.execution_threads, 32))
+                .node(
+                    TempoNode::default()
+                        .with_execution_threads(self.execution_threads, 32)
+                        .with_execution_stage_diagnostics(self.execution_stage_diagnostics),
+                )
                 .launch_with_debug_capabilities()
                 .map_debug_payload_attributes(map_attributes)
                 .await?;

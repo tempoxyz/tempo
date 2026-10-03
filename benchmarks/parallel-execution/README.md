@@ -28,6 +28,14 @@ It defaults off. Counters belong to a unique session and payload hash;
 has final counts but may be delayed or absent at process exit. Reconcile only
 final snapshots for accepted blocks. Worker completion counts cover the capture
 hook, not the full prewarming job. Confirm performance without these counters.
+`--execution.stage-diagnostics` independently enables ordered validation,
+ordinary execution and commit wall times when speculation is enabled. It defaults
+off and performs no clock reads when disabled. Counts include returned errors;
+ordinary execution also includes body replay after a conflict. Snapshots precede
+block finalization and must be reconciled with accepted blocks. These timers
+exclude dispatch, prefix publication, receipt construction, system and inspected
+execution, finalization, and commits bypassing the EVM wrapper. They do not measure
+CPU time or the full block cost; confirm performance with diagnostics disabled.
 Builder workers also follow `--engine.prewarming-threads`. Speculative admission
 uses `--execution.batch-size`, capped at 128 outstanding candidates, with a separate
 32 MiB estimate limit on completed results retained by each build. Running workers,
@@ -603,6 +611,18 @@ actual pool counts are verified; 1,603 common canonical blocks contain 9.50 mill
 transactions, with all 7,354 observed payload statuses `VALID`. Every pair runs
 feature first. Retain the existing proof-worker defaults; this comparison does
 not establish a throughput gain or a win against main.
+
+[Main comparison 37122789429](https://github.com/tempoxyz/tempo/actions/runs/37122789429)
+compares latest main `61c979a52` with retained parallel executor `06f046cda`, using
+sixteen prewarming workers in both and eight execution workers in the feature.
+Three 90-second pairs at 50,000 offered TPS measure 17,253 versus 16,469 achieved
+TPS (-4.54%, statistically neutral). Validator gas throughput falls 10.37% and
+validator p50 rises 8.08%; builder p50 and p90 improve. The official result is mixed
+and win-only Slack is suppressed. All 1,576 common canonical blocks contain
+9.61 million transactions, all 7,239 observed payload statuses are `VALID`, and
+all six terminal peer heads agree. These are peer acceptance checks within each
+arm, not independent sequential receipt/root replay. Every pair runs feature
+first. The validator regression remains unresolved; this is not a win against main.
 
 A local experiment made contended prefix reads fall back to the parent provider.
 It preserved differential correctness but reduced eight-worker reuse from about

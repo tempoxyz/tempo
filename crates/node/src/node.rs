@@ -80,6 +80,9 @@ pub struct TempoNodeArgs {
     /// Record diagnostic Engine capture outcomes; does not change scheduling.
     #[arg(long = "execution.capture-diagnostics", default_value_t = false)]
     pub execution_capture_diagnostics: bool,
+    /// Record ordered validation, fallback and commit wall times when speculation is enabled.
+    #[arg(long = "execution.stage-diagnostics", default_value_t = false)]
+    pub execution_stage_diagnostics: bool,
     /// Engine capture distance and retained-result count (128, 256, or 512).
     #[arg(long = "execution.capture-window", default_value_t = tempo_evm::parallel::EngineCaptureWindow::default())]
     pub execution_capture_window: tempo_evm::parallel::EngineCaptureWindow,
@@ -157,6 +160,7 @@ impl Default for TempoNodeArgs {
             execution_batch_size: 128,
             execution_state_forwarding: false,
             execution_capture_diagnostics: false,
+            execution_stage_diagnostics: false,
             execution_capture_window: Default::default(),
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
@@ -286,6 +290,12 @@ impl TempoNode {
         self
     }
 
+    /// Enables optional ordered execution stage wall-time diagnostics.
+    pub fn with_execution_stage_diagnostics(mut self, enabled: bool) -> Self {
+        self.executor_builder.stage_diagnostics = enabled;
+        self
+    }
+
     /// Create new instance of a Tempo node
     pub fn new(args: &TempoNodeArgs, validator_key: Option<B256>) -> Self {
         Self {
@@ -294,6 +304,7 @@ impl TempoNode {
                 batch_size: args.execution_batch_size.max(1) as usize,
                 state_forwarding: args.execution_state_forwarding,
                 capture_diagnostics: args.execution_capture_diagnostics,
+                stage_diagnostics: args.execution_stage_diagnostics,
                 capture_window: args.execution_capture_window,
             },
             pool_builder: args.pool_builder(),
@@ -598,6 +609,8 @@ pub struct TempoExecutorBuilder {
     pub state_forwarding: bool,
     /// Record opt-in Engine capture outcomes.
     pub capture_diagnostics: bool,
+    /// Record opt-in ordered execution stage wall times.
+    pub stage_diagnostics: bool,
     /// Bounded Engine-only capture window.
     pub capture_window: tempo_evm::parallel::EngineCaptureWindow,
 }
@@ -618,6 +631,7 @@ where
                 )?
                 .with_state_forwarding(self.state_forwarding)
                 .with_capture_diagnostics(self.capture_diagnostics)
+                .with_stage_diagnostics(self.stage_diagnostics)
                 .with_capture_window(self.capture_window),
             );
         }
@@ -1090,6 +1104,35 @@ mod tests {
         assert!(node.executor_builder.capture_diagnostics);
         assert_eq!(node.executor_builder.threads, 8);
         assert_eq!(node.executor_builder.batch_size, 128);
+    }
+
+    #[test]
+    fn stage_diagnostics_cli_is_independent_of_capture_diagnostics() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Args {
+            #[command(flatten)]
+            node: TempoNodeArgs,
+        }
+        let defaults = Args::try_parse_from(["tempo"]).unwrap();
+        assert!(!defaults.node.execution_stage_diagnostics);
+        assert!(!TempoNodeArgs::default().execution_stage_diagnostics);
+        assert!(
+            !TempoNode::new(&defaults.node, None)
+                .executor_builder
+                .stage_diagnostics
+        );
+        let enabled = Args::try_parse_from([
+            "tempo",
+            "--execution.threads",
+            "8",
+            "--execution.stage-diagnostics",
+        ])
+        .unwrap();
+        let node = TempoNode::new(&enabled.node, None);
+        assert!(node.executor_builder.stage_diagnostics);
+        assert!(!node.executor_builder.capture_diagnostics);
+        assert_eq!(node.executor_builder.threads, 8);
     }
 
     #[test]

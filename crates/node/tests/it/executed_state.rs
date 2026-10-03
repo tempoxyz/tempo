@@ -128,13 +128,14 @@ async fn executed_state_reads_blocks_that_are_not_canonical(
     Ok(())
 }
 
-#[test_case::test_case(0, 64, 64, 64, false, EngineCaptureWindow::Transactions128; "independent")]
-#[test_case::test_case(0, 128, 16, 8, false, EngineCaptureWindow::Transactions128; "repeated_senders_and_recipients")]
-#[test_case::test_case(0, 64, 64, 1, true, EngineCaptureWindow::Transactions128; "native_reserve_opens")]
-#[test_case::test_case(4, 64, 64, 64, false, EngineCaptureWindow::Transactions128; "parallel_builder_independent")]
-#[test_case::test_case(4, 128, 16, 8, false, EngineCaptureWindow::Transactions128; "parallel_builder_repeated_senders_and_recipients")]
-#[test_case::test_case(4, 64, 64, 1, true, EngineCaptureWindow::Transactions128; "parallel_builder_native_reserve_opens")]
-#[test_case::test_case(4, 520, 64, 8, false, EngineCaptureWindow::Transactions512; "window512_paid_aa_beyond_boundary")]
+#[test_case::test_case(0, 64, 64, 64, false, EngineCaptureWindow::Transactions128, false; "independent")]
+#[test_case::test_case(0, 128, 16, 8, false, EngineCaptureWindow::Transactions128, false; "repeated_senders_and_recipients")]
+#[test_case::test_case(0, 64, 64, 1, true, EngineCaptureWindow::Transactions128, false; "native_reserve_opens")]
+#[test_case::test_case(4, 64, 64, 64, false, EngineCaptureWindow::Transactions128, false; "parallel_builder_independent")]
+#[test_case::test_case(4, 128, 16, 8, false, EngineCaptureWindow::Transactions128, false; "parallel_builder_repeated_senders_and_recipients")]
+#[test_case::test_case(4, 64, 64, 1, true, EngineCaptureWindow::Transactions128, false; "parallel_builder_native_reserve_opens")]
+#[test_case::test_case(4, 520, 64, 8, false, EngineCaptureWindow::Transactions512, false; "window512_paid_aa_beyond_boundary")]
+#[test_case::test_case(4, 128, 16, 8, false, EngineCaptureWindow::Transactions128, true; "stage_diagnostics_paid_aa")]
 #[tokio::test(flavor = "multi_thread")]
 async fn engine_prewarming_preserves_paid_expiring_transfer_block(
     builder_threads: usize,
@@ -143,6 +144,7 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
     recipient_count: usize,
     native_opens: bool,
     capture_window: EngineCaptureWindow,
+    stage_diagnostics: bool,
 ) -> eyre::Result<()> {
     use crate::{
         tempo_transaction::helpers::{create_basic_aa_tx, sign_aa_tx_secp256k1},
@@ -169,6 +171,7 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
     reth_tracing::init_test_tracing();
     let mut producer = TestNodeBuilder::new()
         .with_execution_threads(builder_threads)
+        .with_execution_stage_diagnostics(stage_diagnostics)
         .with_schedule(ForkSchedule::DevnetAt(TempoHardfork::T14))
         .build_with_node_access()
         .await?
@@ -295,6 +298,7 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
                 execution_threads,
                 execution_batch_size: 32,
                 execution_capture_window: capture_window,
+                execution_stage_diagnostics: stage_diagnostics,
                 ..Default::default()
             },
             None,
