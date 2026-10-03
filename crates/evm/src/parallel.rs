@@ -765,7 +765,9 @@ impl<E: DBErrorMarker> SpeculativeResult<E> {
         self.validate_with(|reads| {
             for (offset, (key, expected)) in reads.iter().enumerate() {
                 let actual = read(db, *key)?;
-                if actual != *expected {
+                if matches!((key, expected), (ReadKey::Account(_), ReadValue::Account(Some(info))) if info.account_id.is_some())
+                    || actual != *expected
+                {
                     return Ok(Some((offset, actual)));
                 }
             }

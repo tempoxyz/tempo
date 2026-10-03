@@ -71,12 +71,13 @@ pub fn bytecode_matches(left: &Bytecode, right: &Bytecode) -> bool {
         || (left.kind() == right.kind() && left == right)
 }
 
-/// Compare balance, nonce, code hash and the supplied inline code representation.
+/// Compare balance, nonce, code hash, account ID and the supplied inline code representation.
 /// Different inline-code availability conservatively requires ordinary execution.
 /// Even absent versus empty code changes returned metadata/state hooks and can
 /// affect later code loading after public database mutations.
 pub fn account_info_matches(left: &AccountInfo, right: &AccountInfo) -> bool {
     left == right
+        && left.account_id == right.account_id
         && match (&left.code, &right.code) {
             (Some(left), Some(right)) => bytecode_matches(left, right),
             (None, None) => true,
@@ -451,6 +452,12 @@ pub struct BodyCache {
     after_error_context: Option<String>,
 }
 
+fn has_indexed_accounts(journal: &JournalInner<JournalEntry>) -> bool {
+    journal.state.values().any(|account| {
+        account.info.account_id.is_some() || account.original_info().account_id.is_some()
+    })
+}
+
 impl BodyCache {
     pub(crate) fn capture(
         before: JournalInner<JournalEntry>,
@@ -461,7 +468,12 @@ impl BodyCache {
         before_error_context: Option<String>,
         after_error_context: Option<String>,
     ) -> Option<Self> {
+        // The recording databases currently observe address-based storage only.
+        // An indexed provider can return a different error, even for an unchanged
+        // ID, so these bodies must execute against the authoritative database.
         if accesses.unsupported
+            || has_indexed_accounts(&before)
+            || has_indexed_accounts(&after)
             || before.depth != after.depth
             || !after.journal.starts_with(&before.journal)
             || !after.logs.starts_with(&before.logs)
@@ -501,7 +513,8 @@ impl BodyCache {
     ) -> Option<FrameResult> {
         let journal = &mut context.journaled_state;
         let fresh = &journal.inner;
-        if self.gas != *gas
+        if has_indexed_accounts(fresh)
+            || self.gas != *gas
             || self.before_error_context != context.local.precompile_error_message
             || self.before.cfg != fresh.cfg
             || self.before.transaction_id != fresh.transaction_id
@@ -541,7 +554,9 @@ impl BodyCache {
             }
         }
         for (key, expected) in self.reads.as_ref()? {
-            if read(&mut journal.database, *key).ok().as_ref() != Some(expected) {
+            if matches!(expected, ReadValue::Account(Some(info)) if info.account_id.is_some())
+                || read(&mut journal.database, *key).ok().as_ref() != Some(expected)
+            {
                 return None;
             }
         }

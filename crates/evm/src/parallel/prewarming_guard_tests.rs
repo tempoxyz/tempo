@@ -458,3 +458,228 @@ fn empty_code_availability_preserves_subsequent_code_loads() {
         assert_eq!(actual.execution_stats().reused, 0);
     }
 }
+
+#[derive(Clone, Debug)]
+struct IndexedStorageDb {
+    inner: JournalGuardDB,
+    indexed_reads: Arc<AtomicUsize>,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("indexed storage unavailable")]
+struct IndexedStorageError;
+impl DBErrorMarker for IndexedStorageError {}
+
+impl revm::Database for IndexedStorageDb {
+    type Error = IndexedStorageError;
+
+    fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+        Ok(self.inner.basic(address).unwrap())
+    }
+
+    fn storage(&mut self, address: Address, slot: U256) -> Result<U256, Self::Error> {
+        Ok(self.inner.storage(address, slot).unwrap())
+    }
+
+    fn storage_by_account_id(
+        &mut self,
+        _: Address,
+        _: revm::state::AccountId,
+        _: U256,
+    ) -> Result<U256, Self::Error> {
+        self.indexed_reads.fetch_add(1, Ordering::Relaxed);
+        Err(IndexedStorageError)
+    }
+
+    fn code_by_hash(&mut self, hash: B256) -> Result<Bytecode, Self::Error> {
+        Ok(self.inner.code_by_hash(hash).unwrap())
+    }
+
+    fn block_hash(&mut self, number: u64) -> Result<B256, Self::Error> {
+        Ok(self.inner.block_hash(number).unwrap())
+    }
+}
+
+#[test]
+fn indexed_storage_errors_require_authoritative_execution_even_with_unchanged_ids() {
+    let target = Address::with_last_byte(100);
+    let (mut db, env, tx) = journal_guard_fixture(Bytes::from_static(&[0x60, 0, 0x54, 0]));
+    db.cache.accounts.get_mut(&target).unwrap().info.account_id = revm::state::AccountId::new(0);
+    let db = IndexedStorageDb {
+        inner: db,
+        indexed_reads: Arc::new(AtomicUsize::new(0)),
+    };
+    let expected = TempoEvm::new(db.clone(), env.clone())
+        .transact_raw(tx.clone())
+        .unwrap_err()
+        .to_string();
+    for prewarmed in [false, true] {
+        let mut actual = TempoEvm::new(db.clone(), env.clone());
+        actual.set_speculative_executor(Some(SpeculativeExecutor::new(1, 1).unwrap()));
+        if prewarmed {
+            let candidate = PrewarmingExecutor::new(db.clone(), env.clone())
+                .execute(tx.clone(), None)
+                .unwrap();
+            // Address storage succeeds; the indexed method has its own error.
+            assert!(candidate.prewarming_result().result.is_success());
+            actual.set_preexecuted_transaction(candidate);
+        } else {
+            actual.prepare_transactions([(tx.clone(), Address::ZERO)]);
+        }
+        db.indexed_reads.store(0, Ordering::Relaxed);
+        assert_eq!(
+            actual.transact_raw(tx.clone()).unwrap_err().to_string(),
+            expected
+        );
+        assert_eq!(db.indexed_reads.load(Ordering::Relaxed), 1);
+        assert_eq!(actual.execution_stats().reused, 0);
+        assert_eq!(actual.execution_stats().bodies_reused, 0);
+        assert_eq!(actual.execution_stats().metadata_conflicts, 1);
+    }
+}
+
+#[test]
+fn account_ids_preserve_raw_state_hook_metadata_without_storage_reads() {
+    use revm::{DatabaseCommit as _, state::AccountId};
+
+    let observed = Address::with_last_byte(103);
+    let ids = [None, AccountId::new(0), AccountId::new(1)];
+    for cached in [false, true] {
+        for before in ids {
+            for after in ids {
+                let (mut db, env, tx) = journal_guard_fixture(balance_code(observed));
+                db.insert_account_info(
+                    observed,
+                    AccountInfo {
+                        nonce: 1,
+                        balance: U256::from(7),
+                        account_id: before,
+                        ..Default::default()
+                    },
+                );
+                let candidate = PrewarmingExecutor::new(db.clone(), env.clone())
+                    .execute(tx.clone(), None)
+                    .unwrap();
+                db.cache
+                    .accounts
+                    .get_mut(&observed)
+                    .unwrap()
+                    .info
+                    .account_id = after;
+                let expected = TempoEvm::new(db.clone(), env.clone())
+                    .transact_raw(tx.clone())
+                    .unwrap();
+                let hooks = Arc::new(std::sync::Mutex::new(Vec::new()));
+                let captured = Arc::clone(&hooks);
+                let mut state = revm::database::State::builder()
+                    .with_database(db)
+                    .build()
+                    .with_state_hook(Some(Box::new(move |state: revm::state::EvmState| {
+                        captured.lock().unwrap().push(state);
+                    })));
+                state.basic(observed).unwrap();
+                let mut actual = TempoEvm::new(&mut state, env.clone());
+                if cached {
+                    actual.enable_state_cache_validation();
+                }
+                actual.set_speculative_executor(Some(SpeculativeExecutor::new(1, 1).unwrap()));
+                actual.set_preexecuted_transaction(candidate);
+                let output = actual.transact_raw(tx).unwrap();
+                assert_eq!(output, expected);
+                actual.db_mut().commit(output.state);
+                let hooks = hooks.lock().unwrap();
+                assert_eq!(hooks.len(), 1);
+                let account = &hooks[0][&observed];
+                // Ordinary Account/Result equality deliberately omits the ID.
+                assert_eq!(account.info.account_id, after);
+                assert_eq!(account.original_info().account_id, after);
+                assert_eq!(
+                    actual.execution_stats().reused,
+                    u64::from(before.is_none() && after.is_none()),
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn indexed_accounts_cannot_enter_or_bypass_call_body_reuse() {
+    use revm::{DatabaseCommit as _, ExecuteEvm as _, context_interface::JournalTr};
+    use tempo_precompiles::{
+        TIP_FEE_MANAGER_ADDRESS,
+        storage::{StorageActions, StorageCtx},
+        test_util::TIP20Setup,
+    };
+
+    let target = Address::with_last_byte(100);
+    let (db, env, mut tx) = journal_guard_fixture(Bytes::from_static(&[0x60, 0, 0x54, 0]));
+    let caller = tx.inner.caller;
+    let mut setup = TempoEvm::new(db, env.clone());
+    StorageCtx::enter_ctx(setup.ctx_mut(), StorageActions::disabled(), || {
+        TIP20Setup::path_usd(caller)
+            .with_issuer(caller)
+            .with_mint(caller, U256::from(1_000_000_000u64))
+            .apply()
+            .unwrap();
+    });
+    let state = setup.ctx_mut().journaled_state.finalize();
+    setup.db_mut().commit(state);
+    let (mut parent, _) = setup.finish();
+    parent.insert_account_info(
+        TIP_FEE_MANAGER_ADDRESS,
+        AccountInfo::default().with_code(Bytecode::new_legacy(Bytes::from_static(&[0]))),
+    );
+    parent.insert_account_info(caller, AccountInfo::default().with_nonce(1));
+    tx.inner.nonce = 1;
+    tx.inner.gas_price = 1;
+    let pool = SpeculativeExecutor::new(1, 1)
+        .unwrap()
+        .with_minimum_body_duration(Duration::ZERO);
+
+    for indexed in [None, Some(caller), Some(target)] {
+        let mut db = IndexedStorageDb {
+            inner: parent.clone(),
+            indexed_reads: Arc::new(AtomicUsize::new(0)),
+        };
+        if let Some(indexed) = indexed {
+            db.inner
+                .cache
+                .accounts
+                .get_mut(&indexed)
+                .unwrap()
+                .info
+                .account_id = revm::state::AccountId::new(0);
+        }
+        let mut batch =
+            pool.speculate(&mut db, vec![(tx.clone(), env.clone())], HashMap::default());
+        let mut candidate = batch.take(&tx, &mut db).unwrap();
+        drop(batch);
+        assert!(candidate.result.as_ref().unwrap().result.is_success());
+        assert_eq!(candidate.body.is_none(), indexed.is_some());
+        let Some(body) = candidate.body.take() else {
+            continue;
+        };
+
+        // A previously ordinary account becomes indexed only on the canonical
+        // provider. Its body must perform the failing indexed read itself.
+        db.inner
+            .cache
+            .accounts
+            .get_mut(&target)
+            .unwrap()
+            .info
+            .account_id = revm::state::AccountId::new(1);
+        let expected = TempoEvm::new(db.clone(), env.clone())
+            .transact_raw(tx.clone())
+            .unwrap_err()
+            .to_string();
+        let mut actual = TempoEvm::new(db, env.clone());
+        let inner = actual.inner_mut();
+        inner.set_body_replay(Some(body));
+        assert_eq!(
+            inner.transact(tx.clone()).unwrap_err().to_string(),
+            expected
+        );
+        assert!(!inner.body_was_reused());
+    }
+}

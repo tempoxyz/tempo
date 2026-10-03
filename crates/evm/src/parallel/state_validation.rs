@@ -63,7 +63,9 @@ fn first_difference<P: Database>(
                 // A warm run may have advanced to this cold or malformed read.
                 let (key, expected) = &reads[offset];
                 let actual = read(db, *key)?;
-                if actual != *expected {
+                if matches!((key, expected), (ReadKey::Account(_), ReadValue::Account(Some(info))) if info.account_id.is_some())
+                    || actual != *expected
+                {
                     return Ok(Some((offset, actual)));
                 }
             }
@@ -85,7 +87,9 @@ fn cached_account_read(cached: &CacheAccount, key: ReadKey, expected: &ReadValue
         (ReadKey::Account(_), ReadValue::Account(expected)) => {
             let actual = cached.account.as_ref().map(|account| &account.info);
             let matches = match (actual, expected.as_ref()) {
-                (Some(actual), Some(expected)) => account_info_matches(actual, expected),
+                (Some(actual), Some(expected)) => {
+                    expected.account_id.is_none() && account_info_matches(actual, expected)
+                }
                 (None, None) => true,
                 _ => false,
             };
