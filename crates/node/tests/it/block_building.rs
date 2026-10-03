@@ -55,20 +55,10 @@ where
     let create_bytes = sender
         .call(TIP20_FACTORY_ADDRESS, create_tx.calldata().clone())
         .await;
-    node.inject_and_advance(create_bytes).await?;
+    let mined = node.mine([create_bytes]).await?;
 
     // Get token address from logs
-    let latest_block = provider.get_block_number().await?;
-    let receipts = provider
-        .get_block_receipts(latest_block.into())
-        .await?
-        .unwrap();
-    let token_create_receipt = receipts
-        .iter()
-        .find(|r| !r.inner.logs().is_empty())
-        .ok_or_else(|| eyre::eyre!("No receipt with logs found"))?;
-    let event =
-        ITIP20Factory::TokenCreated::decode_log(&token_create_receipt.inner.logs()[1].inner)?;
+    let event = ITIP20Factory::TokenCreated::decode_log(&mined.receipts[0].logs()[1].inner)?;
     let token_addr = event.token;
 
     // Grant issuer role
@@ -596,21 +586,6 @@ async fn fund_path_usd(
     Ok(())
 }
 
-/// Decode the first `ChannelOpened` event from the latest block.
-async fn decode_channel_opened(
-    node: &reth_e2e_test_utils::NodeHelperType<TempoNode>,
-) -> eyre::Result<ITIP20ChannelReserve::ChannelOpened> {
-    let provider = node.rpc_provider();
-    let latest = provider.get_block_number().await?;
-    let receipts = provider.get_block_receipts(latest.into()).await?.unwrap();
-    receipts
-        .iter()
-        .flat_map(|r| r.inner.logs())
-        .find_map(|log| ITIP20ChannelReserve::ChannelOpened::decode_log(&log.inner).ok())
-        .map(|log| log.data)
-        .ok_or_else(|| eyre::eyre!("ChannelOpened event not found"))
-}
-
 fn descriptor_from(
     e: &ITIP20ChannelReserve::ChannelOpened,
 ) -> ITIP20ChannelReserve::ChannelDescriptor {
@@ -649,9 +624,14 @@ async fn inject_reserve_payment_txs(
                 .into_transaction_request(),
         )
         .await;
-    node.inject_and_advance(open_tx).await?;
+    let mined = node.mine([open_tx]).await?;
 
-    let opened = decode_channel_opened(node).await?;
+    let opened = mined.receipts[0]
+        .logs()
+        .iter()
+        .find_map(|log| ITIP20ChannelReserve::ChannelOpened::decode_log(&log.inner).ok())
+        .map(|log| log.data)
+        .ok_or_else(|| eyre::eyre!("ChannelOpened event not found"))?;
     let desc = descriptor_from(&opened);
 
     // topUp (payment)
