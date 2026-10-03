@@ -322,3 +322,22 @@ builder and validator gas throughput fall 29.29% and 27.44%. Long sender and blo
 stalls affect both sides, limiting attribution to the handoff change. All 2,087
 recorded payload statuses are valid, and Slack is suppressed. Commit, validation,
 prefix updates and candidate handoff remain the largest ordered builder stages.
+
+[State-commit comparison 37087370471](https://github.com/tempoxyz/tempo/actions/runs/37087370471)
+measures 11,386 baseline versus 11,977 feature TPS (+5.19%, statistically neutral);
+builder and validator gas throughput fall 25.39% and 18.89%. All 3,548 feature
+payload statuses are valid. Builder reuse is 96.44% of attempted candidates and
+Engine reuse is 68.10% of canonical transactions. Both sides have long block
+gaps, and the workflow suppresses Slack. The optimized commit runs on both node
+paths; commit, validation, prefix updates and handoff account for 16.33%, 16.67%,
+10.79% and 9.27% of sampled builder CPU. Cross-run profile shares do not isolate
+the optimization's effect, and this comparison still establishes no overall win.
+
+[State-commit replay 37087375235](https://github.com/tempoxyz/tempo/actions/runs/37087375235)
+measures 30.36 versus 29.31 Mgas/s (-3.46%), with p99 newPayload latency rising
+from 1.362 to 1.503 ms (+10.35%). All 250,000 submissions are valid; all four
+passes match measured heights 42,292,723–42,342,722, 12,508 transactions and
+1,567,389,432 gas. Only twelve blocks per pass qualify for Engine capture, so
+that path still has sparse historical coverage. This range differs from the
+preceding comparison. The workflow suppresses Slack; the local commit speedup
+has not established a historical replay improvement.
