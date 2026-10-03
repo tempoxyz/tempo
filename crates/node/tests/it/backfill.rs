@@ -4,10 +4,7 @@ use alloy_eips::BlockNumberOrTag;
 use alloy_primitives::Address;
 use alloy_rpc_types_engine::ForkchoiceState;
 use alloy_rpc_types_eth::TransactionRequest;
-use reth_e2e_test_utils::{
-    wait::poll_until,
-    wallet::{Wallet, test_signer},
-};
+use reth_e2e_test_utils::wallet::{Wallet, test_signer};
 use reth_node_api::BuiltPayload;
 use reth_node_metrics::recorder::install_prometheus_recorder;
 use reth_primitives_traits::AlloyBlockHeader as _;
@@ -104,18 +101,10 @@ async fn test_backfill_sync() -> eyre::Result<()> {
     // Send Fork Choice Update to trigger backfill sync
     println!("Sending FCU to node2 with finalized block: {final_block_hash:?}");
 
-    let forkchoice_state = ForkchoiceState {
-        head_block_hash: final_block_hash.0.into(),
-        safe_block_hash: final_block_hash.0.into(),
-        finalized_block_hash: final_block_hash.0.into(),
-    };
-
     let metrics_recorder = install_prometheus_recorder();
     let result = node2
-        .inner
-        .add_ons_handle
-        .beacon_engine_handle
-        .fork_choice_updated(forkchoice_state, None)
+        .engine
+        .forkchoice_updated(ForkchoiceState::same_hash(final_block_hash))
         .await?;
 
     println!("FCU result: {result:?}");
@@ -130,30 +119,11 @@ async fn test_backfill_sync() -> eyre::Result<()> {
     println!("FCU returned SYNCING status - backfill mechanism triggered correctly");
 
     println!("Waiting for node2 to sync with node1...");
-    let synced_block_number = poll_until(
-        format!("node2 to sync to target block {final_block_number}"),
-        || async {
-            let current_block2 = provider2
-                .get_block_by_number(BlockNumberOrTag::Latest)
-                .await?
-                .expect("Could not get latest block");
-            let number = current_block2.header.number;
-            Ok((number >= final_block_number).then_some(number))
-        },
-    )
-    .await?;
-    println!("Node2 successfully synced to block {synced_block_number}");
-
-    // Verify that node2 has the same state as node1
-    let final_block2 = provider2
-        .get_block_by_number(BlockNumberOrTag::Number(final_block_number))
-        .await?
-        .expect("Could not get final block from node2");
-
-    assert_eq!(
-        final_block2.header.hash, final_block_hash,
-        "Block hashes don't match after sync"
-    );
+    // Waits for the pipeline to finish at the target block and checks its hash.
+    node2
+        .wait_block(final_block_number, final_block_hash, true)
+        .await?;
+    println!("Node2 successfully synced to block {final_block_number}");
 
     // Verify that node2 can also access intermediate blocks
     let mid_block_number = final_block_number / 2;
