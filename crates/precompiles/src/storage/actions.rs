@@ -124,6 +124,27 @@ impl StorageActions {
         self.replace(Vec::new())
     }
 
+    /// Returns the number of recorded storage actions, or `0` when recording is disabled.
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Disabled => 0,
+            Self::Enabled(state) => state.borrow().actions.len(),
+        }
+    }
+
+    /// Returns `true` when no storage actions are recorded.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Drops every storage action recorded after the first `len` entries.
+    pub fn truncate(&self, len: usize) {
+        match self {
+            Self::Disabled => {}
+            Self::Enabled(state) => state.borrow_mut().actions.truncate(len),
+        }
+    }
+
     /// Replaces the recorded storage actions with the given ones, returning the previous actions.
     pub fn replace(&self, actions: Vec<StorageAction>) -> Option<Vec<StorageAction>> {
         match self {
