@@ -8,8 +8,10 @@ main (Tempo 1.14, Reth 2.7, revm 43), with ordered read validation and replay.
 Engine payload validation now consumes strict results from its existing
 prewarming workers when available, and executes ordered misses directly.
 Workers receive advisory state hints only from accepted block commits; discarded
-execution results never advance those hints. The handoff retains at most 128
-completed results and 32 MiB of estimated result payload, with the block's
+execution results never advance those hints. The handoff defaults to at most 128
+completed results; `--execution.capture-window` also permits 256 or 512 for
+controlled comparisons. It changes only Engine admission and retention, with
+the same 32 MiB limit on estimated result payload and the block's
 accepted-state hints retained separately. The estimate is not an allocator/RSS
 bound. Small blocks, disabled prewarming and
 BAL payloads retain the regular scheduler. Engine prewarming concurrency follows
@@ -60,6 +62,9 @@ parallel roles. It fails if the generated cohort or required log evidence is
 missing. Both peers use the selected candidate binary; shared changes such as
 State commit optimization still require their separate ordinary-State oracle
 tests. These runs do not publish performance results or Slack notifications.
+The manual `capture-window` choice selects 128, 256 or 512. An explicitly
+configured window requires generated blocks larger than that window from both
+producers, as well as positive included reuse in each parallel role.
 
 [Generated validation 37103153124](https://github.com/tempoxyz/tempo/actions/runs/37103153124)
 passes on `0936aef39` (the same Rust implementation as `13e97e5be`). Both peers
@@ -480,6 +485,15 @@ and result quota improve builder gas throughput 11.79% and TPS from 15,843 to
 Block-time p90 rises 8.23% and validation p99 rises 13.55%, so the result remains
 mixed and win-only Slack is suppressed. This isolates the builder improvement;
 it does not establish a win against main.
+
+[Capture diagnostic 37104562656](https://github.com/tempoxyz/tempo/actions/runs/37104562656)
+compares eight versus sixteen prewarming workers in the same `46cb6f4f6` binary,
+with builder and Engine windows both fixed at 128. Final capture counters cover
+every eligible accepted block: admission beyond the Engine window rises from
+1.32% to 58.85% of hook entries, while count and byte quotas reject zero results.
+Validator gas throughput improves 17.36%, but block-time p99 rises 131.24%; the
+instrumented result is mixed and Slack is suppressed. A wider window would
+perform additional strict execution, so these counts do not predict a speedup.
 
 A local experiment made contended prefix reads fall back to the parent provider.
 It preserved differential correctness but reduced eight-worker reuse from about

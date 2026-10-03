@@ -80,6 +80,9 @@ pub struct TempoNodeArgs {
     /// Record diagnostic Engine capture outcomes; does not change scheduling.
     #[arg(long = "execution.capture-diagnostics", default_value_t = false)]
     pub execution_capture_diagnostics: bool,
+    /// Engine capture distance and retained-result count (128, 256, or 512).
+    #[arg(long = "execution.capture-window", default_value_t = tempo_evm::parallel::EngineCaptureWindow::default())]
+    pub execution_capture_window: tempo_evm::parallel::EngineCaptureWindow,
 
     /// Maximum allowed `valid_after` offset for AA txs.
     #[arg(long = "txpool.aa-valid-after-max-secs", default_value_t = DEFAULT_AA_VALID_AFTER_MAX_SECS)]
@@ -154,6 +157,7 @@ impl Default for TempoNodeArgs {
             execution_batch_size: 128,
             execution_state_forwarding: false,
             execution_capture_diagnostics: false,
+            execution_capture_window: Default::default(),
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
@@ -290,6 +294,7 @@ impl TempoNode {
                 batch_size: args.execution_batch_size.max(1) as usize,
                 state_forwarding: args.execution_state_forwarding,
                 capture_diagnostics: args.execution_capture_diagnostics,
+                capture_window: args.execution_capture_window,
             },
             pool_builder: args.pool_builder(),
             payload_builder_builder: args.payload_builder_builder(),
@@ -593,6 +598,8 @@ pub struct TempoExecutorBuilder {
     pub state_forwarding: bool,
     /// Record opt-in Engine capture outcomes.
     pub capture_diagnostics: bool,
+    /// Bounded Engine-only capture window.
+    pub capture_window: tempo_evm::parallel::EngineCaptureWindow,
 }
 
 impl<Node> ExecutorBuilder<Node> for TempoExecutorBuilder
@@ -610,7 +617,8 @@ where
                     self.batch_size.max(1),
                 )?
                 .with_state_forwarding(self.state_forwarding)
-                .with_capture_diagnostics(self.capture_diagnostics),
+                .with_capture_diagnostics(self.capture_diagnostics)
+                .with_capture_window(self.capture_window),
             );
         }
         if let Some(cache) = ctx.sender_recovery_cache() {
@@ -1003,6 +1011,57 @@ mod tests {
         AddressFilter, TempoNode, TempoNodeArgs, TempoPayloadBuilderBuilder, TempoPoolBuilder,
     };
     use alloy_primitives::Address;
+
+    #[test]
+    fn capture_window_cli_is_bounded_and_independent_of_batch_size() {
+        use clap::Parser;
+        use tempo_evm::parallel::EngineCaptureWindow;
+        #[derive(Parser)]
+        struct Args {
+            #[command(flatten)]
+            node: TempoNodeArgs,
+        }
+        assert_eq!(
+            Args::try_parse_from(["tempo"])
+                .unwrap()
+                .node
+                .execution_capture_window,
+            EngineCaptureWindow::Transactions128
+        );
+        assert_eq!(
+            TempoNodeArgs::default()
+                .execution_capture_window
+                .transactions(),
+            128
+        );
+        assert_eq!(
+            super::TempoExecutorBuilder::default()
+                .capture_window
+                .transactions(),
+            128
+        );
+        for value in ["128", "256", "512"] {
+            let args = Args::try_parse_from([
+                "tempo",
+                "--execution.capture-window",
+                value,
+                "--execution.threads",
+                "8",
+                "--execution.batch-size",
+                "17",
+            ])
+            .unwrap();
+            let node = TempoNode::new(&args.node, None);
+            assert_eq!(node.executor_builder.capture_window.to_string(), value);
+            assert_eq!(node.executor_builder.batch_size, 17);
+            assert!(!node.executor_builder.capture_diagnostics);
+        }
+        for invalid in ["0", "1", "127", "129", "255", "257", "513", "1024", "-1"] {
+            assert!(
+                Args::try_parse_from(["tempo", "--execution.capture-window", invalid]).is_err()
+            );
+        }
+    }
 
     #[test]
     fn capture_diagnostics_cli_defaults_off_and_reaches_executor_builder() {

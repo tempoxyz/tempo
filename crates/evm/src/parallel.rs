@@ -64,6 +64,48 @@ pub use prewarming::{PreexecutedTransaction, PrewarmingExecutor, PrewarmingState
 type Env = EvmEnv<TempoHardfork, TempoBlockEnv>;
 type Outcome<E> = Result<ResultAndState<TempoHaltReason>, EVMError<E, TempoInvalidTransaction>>;
 
+/// Bounded Engine capture distance and completed-result count, independent of generic batches.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EngineCaptureWindow {
+    /// Retain the default 128-transaction capture window.
+    #[default]
+    Transactions128,
+    /// Use a 256-transaction capture window.
+    Transactions256,
+    /// Use a 512-transaction capture window.
+    Transactions512,
+}
+
+impl EngineCaptureWindow {
+    /// Maximum forward distance and number of retained candidates.
+    pub const fn transactions(self) -> usize {
+        match self {
+            Self::Transactions128 => 128,
+            Self::Transactions256 => 256,
+            Self::Transactions512 => 512,
+        }
+    }
+}
+
+impl std::fmt::Display for EngineCaptureWindow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.transactions())
+    }
+}
+
+impl std::str::FromStr for EngineCaptureWindow {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "128" => Ok(Self::Transactions128),
+            "256" => Ok(Self::Transactions256),
+            "512" => Ok(Self::Transactions512),
+            _ => Err("Engine capture window must be 128, 256, or 512"),
+        }
+    }
+}
+
 /// A bounded worker pool shared by block executors and the payload builder.
 #[derive(Clone, Debug)]
 pub struct SpeculativeExecutor {
@@ -77,6 +119,7 @@ pub struct SpeculativeExecutor {
     state_forwarding: bool,
     nonce_prediction: bool,
     capture_diagnostics: bool,
+    capture_window: EngineCaptureWindow,
     scheduled_transactions: Arc<AtomicU64>,
     prewarmed_reuses: Arc<AtomicU64>,
 }
@@ -108,6 +151,7 @@ impl SpeculativeExecutor {
             state_forwarding: false,
             nonce_prediction: true,
             capture_diagnostics: false,
+            capture_window: EngineCaptureWindow::default(),
             scheduled_transactions: Arc::default(),
             prewarmed_reuses: Arc::default(),
         })
@@ -121,6 +165,17 @@ impl SpeculativeExecutor {
 
     pub(crate) const fn capture_diagnostics(&self) -> bool {
         self.capture_diagnostics
+    }
+
+    /// Selects only the Engine capture window; generic and builder batches are unchanged.
+    pub fn with_capture_window(mut self, window: EngineCaptureWindow) -> Self {
+        self.capture_window = window;
+        self
+    }
+
+    /// Selected Engine capture window.
+    pub const fn capture_window(&self) -> EngineCaptureWindow {
+        self.capture_window
     }
 
     /// Predicts expiring-nonce ring positions in input order. Every predicted read

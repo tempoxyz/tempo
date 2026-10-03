@@ -59,10 +59,13 @@ class GeneratedTests(unittest.TestCase):
         for role, threads, port in (("a", "8", 8545), ("b", "0", 8645)):
             self.config[role] = {"rpc_url": f"http://127.0.0.1:{port}", "log_dir": f"/logs/{role}",
                 "args": ["node", "--execution.threads", threads, "--log.file.format", "json"]}
+        self.build_chain()
+
+    def build_chain(self, transaction_counts=(6, 6, 6, 6, 6)):
         blocks, receipt_blocks, report_blocks = {}, {}, []
         self.events = [[], []]
-        for number in range(6):
-            txs = [digest(1000 + 10 * number + index) for index in range(6)] if number else []
+        for number, count in enumerate((0, *transaction_counts)):
+            txs = [digest(1000 + 1024 * number + index) for index in range(count)]
             block = {"number": hex(number), "hash": digest(number + 1), "parentHash": digest(number),
                      "stateRoot": digest(100 + number), "receiptsRoot": digest(200 + number),
                      "timestamp": hex(number), "timestampMillisPart": "0x0", "gasUsed": hex(21 * len(txs)),
@@ -110,6 +113,77 @@ class GeneratedTests(unittest.TestCase):
         self.assertIn("same candidate binary", result["scope"])
         self.assertEqual(len(result["blocks"]), 4)
         self.assertEqual(result["verified_transactions"], 24)
+        self.assertEqual(result["dense_transactions"], 5)
+        self.assertEqual(result["capture_window"], 128)
+        self.assertFalse(result["capture_window_explicit"])
+
+    def test_capture_window_configuration_matches_effective_peer_values(self):
+        self.config["a"]["args"].extend(["--execution.capture-window", "128"])
+        self.assertEqual(verify.check_config(self.config), (128, True))
+        # An explicit default still requires blocks larger than that window.
+        with self.assertRaisesRegex(verify.VerificationError, ">= 129 transactions"):
+            self.run_check()
+        for other in (None, "128", "256"):
+            with self.subTest(other=other):
+                self.setUp()
+                self.config["a"]["args"].append("--execution.capture-window=512")
+                if other is not None:
+                    self.config["b"]["args"].extend(["--execution.capture-window", other])
+                with self.assertRaisesRegex(verify.VerificationError, "capture windows must match"):
+                    verify.check_config(self.config)
+
+    def test_invalid_missing_and_duplicate_capture_window_fail_closed(self):
+        for role in ("a", "b"):
+            for value in ("", "0", "127", "129", "255", "513", "abc", "-128"):
+                for spelling in (["--execution.capture-window", value],
+                                 ["--execution.capture-window=" + value]):
+                    with self.subTest(role=role, spelling=spelling):
+                        config = copy.deepcopy(self.config)
+                        config[role]["args"].extend(spelling)
+                        with self.assertRaises(verify.VerificationError):
+                            verify.check_config(config)
+        for suffix in (["--execution.capture-window"],
+                       ["--execution.capture-window", "128", "--execution.capture-window=128"]):
+            config = copy.deepcopy(self.config)
+            config["a"]["args"].extend(suffix)
+            with self.assertRaisesRegex(verify.VerificationError, "missing value|duplicate"):
+                verify.check_config(config)
+
+    def test_explicit_capture_window_requires_larger_blocks_in_both_roles(self):
+        for window in (128, 256, 512):
+            with self.subTest(window=window):
+                self.setUp()
+                self.config["a"]["args"].extend(["--execution.capture-window", str(window)])
+                self.config["b"]["args"].append(f"--execution.capture-window={window}")
+                self.build_chain((window + 1,) * 5)
+                result = self.run_check()
+                self.assertEqual(result["capture_window"], window)
+                self.assertTrue(result["capture_window_explicit"])
+                self.assertEqual(result["dense_transactions"], window + 1)
+                self.assertEqual(result["dense_blocks_by_producer"], {"a": 2, "b": 2})
+                self.assertEqual(result["verified_transactions"], 4 * (window + 1))
+                self.assertEqual(result["parallel_reused"], {"builder_a": 6, "engine_a": 6})
+                self.build_chain((window,) * 5)
+                with self.assertRaisesRegex(verify.VerificationError, "insufficient dense"):
+                    self.run_check()
+                # Four qualifying blocks are insufficient when only one producer
+                # exceeds the window; the other role's roots/receipts still match.
+                for large_role in (0, 1):
+                    self.build_chain(tuple(window + (number % 2 == large_role)
+                                           for number in range(1, 10)))
+                    with self.assertRaisesRegex(verify.VerificationError, "both producer roles"):
+                        self.run_check()
+
+    def test_capture_window_coverage_still_requires_included_reuse(self):
+        for role in ("a", "b"):
+            self.config[role]["args"].extend(["--execution.capture-window", "512"])
+        self.build_chain((513,) * 5)
+        for item in self.events[0]:
+            if item["fields"]["message"] == "Built payload":
+                item["fields"]["invalid_pool_transaction_execution_attempts"] = 3
+                item["fields"]["pool_transactions_yielded"] += 3
+        with self.assertRaisesRegex(verify.VerificationError, "positive canonical parallel reuse"):
+            self.run_check()
 
     def test_header_parent_and_body_mismatches(self):
         for field in ("hash", "stateRoot", "receiptsRoot", "parentHash", "transactions"):

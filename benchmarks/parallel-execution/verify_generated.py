@@ -69,6 +69,7 @@ def check_config(config):
             "missing feature reference")
     forbidden = {"--debug.skip-state-root", "--builder.parallel", "--builder.disable-prewarming",
                  "--engine.disable-prewarming", "--engine.disable-caching-and-prewarming"}
+    windows, explicit_window = [], False
     for role in ("a", "b"):
         node = config.get(role, {})
         args = node.get("args")
@@ -80,6 +81,11 @@ def check_config(config):
         require(threads is not None and threads.isdecimal(), f"{role}: explicit execution threads required")
         require(int(threads) > 0 if role == "a" else int(threads) == 0,
                 f"{role}: expected parallel A and sequential B")
+        window = option(args, "--execution.capture-window")
+        require(window is None or window in ("128", "256", "512"),
+                f"{role}: capture window must be 128, 256 or 512")
+        windows.append(int(window) if window is not None else 128)
+        explicit_window |= window is not None
         require(option(args, "--log.file.format") == "json", f"{role}: JSON file logs required")
         parsed = urlparse(node.get("rpc_url", ""))
         require(parsed.scheme in ("http", "https") and parsed.hostname, f"{role}: invalid RPC URL")
@@ -87,6 +93,8 @@ def check_config(config):
     require(config["a"]["rpc_url"] != config["b"]["rpc_url"], "peer RPC URLs must differ")
     require(Path(config["a"]["log_dir"]).resolve() != Path(config["b"]["log_dir"]).resolve(),
             "peer log directories must differ")
+    require(windows[0] == windows[1], "peer capture windows must match (default: 128)")
+    return windows[0], explicit_window
 
 
 def rpc_result(payload, request_id):
@@ -311,7 +319,9 @@ def index_logs(events):
 
 
 def verify(config, report, rpcs=None, logs=None, finality_timeout=60, dense_transactions=5, min_dense_blocks=4):
-    check_config(config)
+    capture_window, explicit_window = check_config(config)
+    if explicit_window:
+        dense_transactions = max(dense_transactions, capture_window + 1)
     cohort = workload(report)
     start, end = min(cohort), max(cohort)
     rpcs = rpcs or [Rpc(config[role]["rpc_url"]) for role in ("a", "b")]
@@ -394,13 +404,14 @@ def verify(config, report, rpcs=None, logs=None, finality_timeout=60, dense_tran
                              else {"included_exact": included_reuse})
                 block["parallel_reuse"] = {**candidate, **inclusion}
     require(sum(producers.values()) >= min_dense_blocks and all(producers.values()),
-            f"insufficient dense generated cohort / both producer roles: {producers}")
+            f"insufficient dense generated cohort / both producer roles at >= {dense_transactions} transactions: {producers}")
     require(all(reuse.values()), f"missing positive canonical parallel reuse in each role: {reuse}")
     return {"status": "passed", "mode": "generated-correctness", "speedup_claim": False,
             "scope": "same candidate binary with speculation on/off; exact finalized headers, bodies and full receipts for the interval; producer execution plus fresh opposite-peer Engine execution for every nonempty block",
             "shared_changes": "not independently checked against unmodified main; State commit has separate oracle tests",
             "config": config, "from_block": start, "to_block": end, "parent_anchor": anchor[0]["hash"],
             "verified_transactions": sum(block["tx_count"] for block in verified),
+            "capture_window": capture_window, "capture_window_explicit": explicit_window,
             "dense_transactions": dense_transactions, "minimum_dense_blocks": min_dense_blocks,
             "dense_blocks_by_producer": producers, "parallel_reused": reuse,
             "reuse_count_semantics": "builder_a is an included-reuse lower bound after subtracting all invalid execution attempts; engine_a is exact",

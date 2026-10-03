@@ -120,9 +120,10 @@ impl TempoEvmConfig {
                 *self.inner.executor_factory.receipt_builder(),
                 self.inner.executor_factory.spec().clone(),
                 TempoEvmFactory {
-                    engine_prewarming: Some(parallel::EnginePrewarmingCache::new(
-                        executor.capture_diagnostics(),
-                    )),
+                    engine_prewarming: Some(
+                        parallel::EnginePrewarmingCache::new(executor.capture_diagnostics())
+                            .with_window(executor.capture_window()),
+                    ),
                 },
             );
         }

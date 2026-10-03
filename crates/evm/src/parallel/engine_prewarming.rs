@@ -3,7 +3,7 @@
 //! A hash locates a candidate; it never validates one. The recipient must still
 //! check the complete transaction, environment, configuration and recorded reads.
 
-use super::{Env, PreexecutedTransaction, PrewarmingState, ReadValue};
+use super::{EngineCaptureWindow, Env, PreexecutedTransaction, PrewarmingState, ReadValue};
 use alloy_primitives::{B256, map::HashMap};
 use std::{
     collections::BTreeMap,
@@ -18,7 +18,6 @@ use std::{
 use tempo_revm::{ExecutionContext, TempoTxEnv};
 
 const MAX_TRANSACTIONS: usize = 65_536;
-const LOOKAHEAD: usize = 128;
 const MAX_ESTIMATED_BYTES: usize = 32 * 1024 * 1024;
 
 // Allocated only for enabled diagnostic sessions. Padding separates distinct
@@ -141,6 +140,7 @@ impl Drop for CaptureWorkerGuard<'_> {
 pub(crate) struct EnginePrewarmingCache {
     current: Arc<Mutex<Option<Arc<EnginePrewarmingSession>>>>,
     capture_diagnostics: bool,
+    window: EngineCaptureWindow,
 }
 
 impl EnginePrewarmingCache {
@@ -149,6 +149,11 @@ impl EnginePrewarmingCache {
             capture_diagnostics,
             ..Self::default()
         }
+    }
+
+    pub(crate) fn with_window(mut self, window: EngineCaptureWindow) -> Self {
+        self.window = window;
+        self
     }
 
     /// Removes the lookup session for a payload that will not capture results.
@@ -179,6 +184,7 @@ impl EnginePrewarmingCache {
         let session = valid.then(|| {
             Arc::new(EnginePrewarmingSession {
                 env,
+                window: self.window,
                 indices,
                 next: AtomicUsize::new(0),
                 retained: Mutex::default(),
@@ -218,6 +224,7 @@ impl EnginePrewarmingCache {
 #[derive(Debug)]
 pub(crate) struct EnginePrewarmingSession {
     env: Env,
+    window: EngineCaptureWindow,
     indices: HashMap<B256, usize>,
     next: AtomicUsize,
     retained: Mutex<Retained>,
@@ -293,6 +300,7 @@ impl EnginePrewarmingSession {
             payload_hash = %diagnostics.payload_hash,
             block_number = %self.env.block_env.inner.number,
             transaction_count = self.indices.len(),
+            capture_window = self.window.transactions(),
             cursor = self.next.load(Ordering::Relaxed),
             phase,
             final_counts,
@@ -332,7 +340,7 @@ impl EnginePrewarmingSession {
         if index < next {
             self.capture_event(stale);
             false
-        } else if index >= next.saturating_add(LOOKAHEAD) {
+        } else if index >= next.saturating_add(self.window.transactions()) {
             self.capture_event(future);
             false
         } else {
@@ -356,7 +364,7 @@ impl EnginePrewarmingSession {
             self.capture_event(CaptureEvent::AdmissionStale);
             return false;
         }
-        if index >= next.saturating_add(LOOKAHEAD) {
+        if index >= next.saturating_add(self.window.transactions()) {
             self.capture_event(CaptureEvent::AdmissionFuture);
             self.capture_event(match index - next {
                 0..256 => CaptureEvent::Future128To255,
@@ -423,7 +431,7 @@ impl EnginePrewarmingSession {
             self.capture_event(CaptureEvent::PublishDuplicate);
             return false;
         }
-        if retained.results.len() >= LOOKAHEAD {
+        if retained.results.len() >= self.window.transactions() {
             drop(retained);
             self.capture_event(CaptureEvent::PublishCountLimit);
             return false;
@@ -737,6 +745,8 @@ mod tests {
     use alloy_primitives::{Address, Bytes, TxKind};
     use revm::{context::TxEnv, database::EmptyDB};
 
+    const LOOKAHEAD: usize = EngineCaptureWindow::Transactions128.transactions();
+
     fn hash(index: usize) -> B256 {
         B256::from(alloy_primitives::U256::from(index).to_be_bytes::<32>())
     }
@@ -777,6 +787,103 @@ mod tests {
     fn counts(session: &EnginePrewarmingSession) -> impl Fn(CaptureEvent) -> u64 + use<> {
         let snapshot = session.diagnostics.as_ref().unwrap().snapshot();
         move |event| snapshot.0[event as usize]
+    }
+
+    #[test]
+    fn selected_windows_enforce_admission_count_and_byte_limits() {
+        assert_eq!(EnginePrewarmingCache::default().window.transactions(), 128);
+        for window in [
+            EngineCaptureWindow::Transactions128,
+            EngineCaptureWindow::Transactions256,
+            EngineCaptureWindow::Transactions512,
+        ] {
+            let limit = window.transactions();
+            let cache = EnginePrewarmingCache::new(true).with_window(window);
+            let session = cache.begin(env(), (0..=limit).map(hash)).unwrap();
+            assert!(session.can_capture(&tx(limit - 1)));
+            assert!(!session.can_capture(&tx(limit)));
+            assert!(!session.publish(candidate(limit)));
+            for index in 0..limit {
+                assert!(session.publish(candidate(index)));
+            }
+            // The cursor may advance before take obtains the retention lock.
+            session.next.store(1, Ordering::Release);
+            assert!(!session.can_capture(&tx(0)));
+            assert!(session.can_capture(&tx(limit)));
+            assert!(!session.publish(candidate(limit)));
+            assert_eq!(counts(&session)(CaptureEvent::PublishCountLimit), 1);
+            assert!(session.take(&tx(limit - 1)).is_some());
+            assert!(session.publish(candidate(limit)));
+            assert!(session.take(&tx(limit)).is_some());
+            let retained = session.retained.lock().unwrap();
+            assert!(retained.results.is_empty());
+            assert_eq!(retained.estimated_bytes, 0);
+            drop(retained);
+
+            let session = cache.begin(env(), [hash(0), hash(1)]).unwrap();
+            for index in 0..2 {
+                let mut large = candidate(index);
+                large.tx.inner.data = Bytes::from(vec![0; MAX_ESTIMATED_BYTES / 2]);
+                assert_eq!(session.publish(large), index == 0);
+            }
+            assert_eq!(counts(&session)(CaptureEvent::PublishByteLimit), 1);
+            assert!(session.take(&tx(0)).is_some());
+            assert!(session.publish(candidate(1)));
+        }
+    }
+
+    #[test]
+    fn replacement_sessions_keep_their_selected_window() {
+        let cache =
+            EnginePrewarmingCache::default().with_window(EngineCaptureWindow::Transactions256);
+        let old = cache.begin(env(), (0..1024).map(hash)).unwrap();
+        let cache = cache.with_window(EngineCaptureWindow::Transactions512);
+        let new = cache.begin(env(), (0..1024).map(hash)).unwrap();
+        assert!(!old.can_capture(&tx(256)));
+        assert!(new.can_capture(&tx(256)));
+        assert!(old.publish(candidate(255)));
+        assert!(new.take(&tx(255)).is_none());
+        assert!(old.take(&tx(255)).is_some());
+        assert!(Arc::ptr_eq(&cache.session(&env()).unwrap(), &new));
+    }
+
+    #[test]
+    fn enlarged_windows_keep_absolute_future_distance_buckets() {
+        for (window, expected) in [
+            (EngineCaptureWindow::Transactions256, [0, 2, 2, 2]),
+            (EngineCaptureWindow::Transactions512, [0, 0, 2, 2]),
+        ] {
+            let session = EnginePrewarmingCache::new(true)
+                .with_window(window)
+                .begin(env(), (0..2048).map(hash))
+                .unwrap();
+            for index in [128, 255, 256, 511, 512, 1023, 1024, 2047] {
+                assert_eq!(
+                    session.can_capture(&tx(index)),
+                    index < window.transactions()
+                );
+            }
+            let count = counts(&session);
+            for (bucket, expected) in [
+                CaptureEvent::Future128To255,
+                CaptureEvent::Future256To511,
+                CaptureEvent::Future512To1023,
+                CaptureEvent::Future1024Plus,
+            ]
+            .into_iter()
+            .zip(expected)
+            {
+                assert_eq!(count(bucket), expected);
+            }
+            assert_eq!(
+                count(CaptureEvent::AdmissionFuture),
+                expected.iter().sum::<u64>()
+            );
+            assert_eq!(
+                count(CaptureEvent::AdmissionInWindow),
+                8 - expected.iter().sum::<u64>()
+            );
+        }
     }
 
     #[test]
@@ -931,7 +1038,8 @@ mod tests {
     fn diagnostic_snapshots_distinguish_concurrent_finish_and_final_session_drop() {
         let captured = SnapshotLog::default();
         let _subscriber = tracing::subscriber::set_default(captured.clone());
-        let cache = EnginePrewarmingCache::new(true);
+        let cache =
+            EnginePrewarmingCache::new(true).with_window(EngineCaptureWindow::Transactions512);
         let payload = hash(9999);
         let old = cache.begin_payload(env(), payload, [hash(0)]).unwrap();
         let old_id = old.diagnostics.as_ref().unwrap().session_id;
@@ -951,9 +1059,11 @@ mod tests {
         assert_eq!(rows[0]["session_id"], old_id.to_string());
         assert_eq!(rows[0]["phase"], "\"loop_finish\"");
         assert_eq!(rows[0]["final_counts"], "false");
+        assert_eq!(rows[0]["capture_window"], "512");
         assert_eq!(rows[0]["unfinished_worker_entries"], "1");
         assert_eq!(rows[1]["phase"], "\"session_drop\"");
         assert_eq!(rows[1]["final_counts"], "true");
+        assert_eq!(rows[1]["capture_window"], "512");
         assert_eq!(rows[1]["session_id"], old_id.to_string());
         assert_eq!(rows[1]["payload_hash"], payload.to_string());
         assert_eq!(rows[1]["retained_results"], "Some(1)");

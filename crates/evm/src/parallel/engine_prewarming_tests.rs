@@ -92,7 +92,21 @@ fn factory_with_diagnostics(
     transactions: &[TempoTxEnv],
     diagnostics: bool,
 ) -> (TempoEvmFactory, Arc<EnginePrewarmingSession>) {
-    let cache = EnginePrewarmingCache::new(diagnostics);
+    factory_with_window(
+        env,
+        transactions,
+        diagnostics,
+        EngineCaptureWindow::default(),
+    )
+}
+
+fn factory_with_window(
+    env: &Env,
+    transactions: &[TempoTxEnv],
+    diagnostics: bool,
+    window: EngineCaptureWindow,
+) -> (TempoEvmFactory, Arc<EnginePrewarmingSession>) {
+    let cache = EnginePrewarmingCache::new(diagnostics).with_window(window);
     let session = cache
         .begin(
             env.clone(),
@@ -274,6 +288,162 @@ fn diagnostic_configuration_reaches_only_the_engine_cache() {
         if let Some(diagnostics) = &session.diagnostics {
             assert_eq!(diagnostics.payload_hash, payload_hash);
         }
+    }
+}
+
+#[test]
+fn selected_window_reaches_only_marked_engine_sessions() {
+    assert!(
+        TempoEvmConfig::moderato()
+            .with_engine_prewarming()
+            .inner
+            .executor_factory
+            .evm_factory()
+            .engine_prewarming
+            .is_none()
+    );
+    for window in [
+        EngineCaptureWindow::Transactions128,
+        EngineCaptureWindow::Transactions256,
+        EngineCaptureWindow::Transactions512,
+    ] {
+        let pool = SpeculativeExecutor::new(1, 17).unwrap();
+        assert_eq!(pool.capture_window(), EngineCaptureWindow::Transactions128);
+        let pool = pool.with_capture_window(window);
+        assert_eq!(pool.batch_size(), 17);
+        let original = TempoEvmConfig::moderato().with_speculative_executor(pool);
+        let engine = original.clone().with_engine_prewarming();
+        assert!(
+            original
+                .inner
+                .executor_factory
+                .evm_factory()
+                .engine_prewarming
+                .is_none()
+        );
+        let cache = engine
+            .inner
+            .executor_factory
+            .evm_factory()
+            .engine_prewarming
+            .as_ref()
+            .unwrap();
+        let session = cache.begin(env(TempoHardfork::T0), [B256::ZERO]).unwrap();
+        assert_eq!(session.window, window);
+        assert!(session.diagnostics.is_none());
+    }
+}
+
+#[test]
+fn selected_windows_reuse_strict_results_beyond_the_default_boundary() {
+    for window in [
+        EngineCaptureWindow::Transactions256,
+        EngineCaptureWindow::Transactions512,
+    ] {
+        let db = contract(&[0x60, 1, 0x60, 0, 0x35, 0x55, 0]);
+        let env = env(TempoHardfork::T0);
+        let transactions = (0..520).map(tx).collect::<Vec<_>>();
+        let (factory, _) = factory_with_window(&env, &transactions, false, window);
+        let mut worker = factory.create_evm(db.clone(), relaxed(&env));
+        let mut canonical = TempoEvm::new(db.clone(), env.clone());
+        let mut actual = ordered(&factory, db.clone(), env);
+        for chunk in transactions.chunks(window.transactions()) {
+            for tx in chunk {
+                worker.transact_raw(tx.clone()).unwrap();
+            }
+            for tx in chunk {
+                let expected = canonical.transact_raw(tx.clone()).unwrap();
+                let result = actual.transact_raw(tx.clone()).unwrap();
+                assert_eq!(result, expected);
+                canonical.db_mut().commit(expected.state);
+                actual.db_mut().commit(result.state);
+            }
+        }
+        assert_eq!(actual.execution_stats().reused, 520);
+        assert_eq!(actual.execution_stats().conflicts, 0);
+        assert_eq!(root(actual.db()), root(canonical.db()));
+        assert_eq!(
+            root(worker.db()),
+            root(&db),
+            "strict capture cannot commit parent state"
+        );
+    }
+}
+
+#[test]
+fn enlarged_window_changed_reads_replay_against_the_ordered_prefix() {
+    for window in [
+        EngineCaptureWindow::Transactions256,
+        EngineCaptureWindow::Transactions512,
+    ] {
+        let db = contract(&[0x60, 0, 0x54, 0x60, 1, 0x01, 0x60, 0, 0x55, 0]);
+        let env = env(TempoHardfork::T0);
+        let transactions = (0..520).map(tx).collect::<Vec<_>>();
+        let (factory, _) = factory_with_window(&env, &transactions, false, window);
+        let mut worker = factory.create_evm(db.clone(), relaxed(&env));
+        worker
+            .transact_raw(transactions[window.transactions() - 1].clone())
+            .unwrap();
+        let mut canonical = TempoEvm::new(db.clone(), env.clone());
+        let mut actual = ordered(&factory, db, env);
+        for tx in transactions {
+            let expected = canonical.transact_raw(tx.clone()).unwrap();
+            let result = actual.transact_raw(tx).unwrap();
+            assert_eq!(result, expected);
+            canonical.db_mut().commit(expected.state);
+            actual.db_mut().commit(result.state);
+        }
+        assert_eq!(actual.execution_stats().speculated, 1);
+        assert_eq!(actual.execution_stats().reused, 0);
+        assert_eq!(actual.execution_stats().storage_conflicts, 1);
+        assert_eq!(root(actual.db()), root(canonical.db()));
+    }
+}
+
+#[test]
+fn enlarged_window_validation_does_not_hide_provider_failure() {
+    #[derive(Debug, thiserror::Error)]
+    #[error("capture window test provider failure")]
+    struct Unavailable;
+    impl reth_revm::database_interface::DBErrorMarker for Unavailable {}
+    #[derive(Debug)]
+    struct FailingStorage(TestDB);
+    impl Database for FailingStorage {
+        type Error = Unavailable;
+        fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+            Ok(self.0.basic(address).unwrap())
+        }
+        fn code_by_hash(&mut self, hash: B256) -> Result<Bytecode, Self::Error> {
+            Ok(self.0.code_by_hash(hash).unwrap())
+        }
+        fn storage(&mut self, _: Address, _: U256) -> Result<U256, Self::Error> {
+            Err(Unavailable)
+        }
+        fn block_hash(&mut self, number: u64) -> Result<B256, Self::Error> {
+            Ok(self.0.block_hash(number).unwrap())
+        }
+    }
+    for window in [
+        EngineCaptureWindow::Transactions256,
+        EngineCaptureWindow::Transactions512,
+    ] {
+        let db = contract(&[0x60, 0, 0x54, 0]);
+        let env = env(TempoHardfork::T0);
+        let transactions = (0..520).map(tx).collect::<Vec<_>>();
+        let (factory, _) = factory_with_window(&env, &transactions, false, window);
+        let tx = transactions[window.transactions() - 1].clone();
+        let mut worker = factory.create_evm(db.clone(), relaxed(&env));
+        worker.transact_raw(tx.clone()).unwrap();
+        let mut canonical = TempoEvm::new(FailingStorage(db.clone()), env.clone());
+        let mut actual = factory.create_evm(FailingStorage(db), env);
+        actual.set_speculative_executor(Some(SpeculativeExecutor::new(1, 128).unwrap()));
+        assert_eq!(
+            actual.transact_raw(tx.clone()).unwrap_err().to_string(),
+            canonical.transact_raw(tx).unwrap_err().to_string()
+        );
+        assert_eq!(actual.execution_stats().speculated, 1);
+        assert_eq!(actual.execution_stats().reused, 0);
+        assert_eq!(actual.execution_stats().validation_errors, 1);
     }
 }
 
