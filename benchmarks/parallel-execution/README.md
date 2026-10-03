@@ -331,6 +331,14 @@ CPU equivalents per validator while the hosts report 24–26 idle CPU equivalent
 The machines expose 48 logical CPUs, but missing cgroup limit files prevent a
 claim about CPU entitlement. Execution still contains substantial serial work.
 
+These earlier cloud results have unverified source-to-running-binary binding.
+[CPU diagnostic 37148468451](https://github.com/tempoxyz/tempo/actions/runs/37148468451)
+found that regional caches could retain an older ELF and checksum after a forced
+source rebuild, while receiving new provenance. Its live baseline ELF hash differs
+from the build provenance. The run also rejected unsupported perf metadata during
+preflight, before running the feature arm; it supplies no CPU attribution or A/B
+result. All three VMs and their boot disks were removed.
+
 The workflow's builder gas throughput averages `gas_used / elapsed` over full
 payload builds. It includes setup, transaction selection, waits and finalization;
 it is not execution-only throughput. CPU profile shares describe sampled work

@@ -419,7 +419,7 @@ jobs:
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
           # Keep genesis hardfork activation independent of JSON key order.
-          ref: ${{ github.repository == 'tempoxyz/tempo-multi-region-benchmark' && github.sha || 'aad38c35b50d8c4631307672f718c953676f09cf' }}
+          ref: ${{ github.repository == 'tempoxyz/tempo-multi-region-benchmark' && github.sha || 'd79312ef3d4f21075878b1ec46269dcdae04110e' }}
           path: ${{ env.BENCH_REPO_DIR }}
           token: ${{ steps.github-sts.outputs.token }}
           persist-credentials: false
