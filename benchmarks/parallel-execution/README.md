@@ -662,6 +662,20 @@ per ordered validation, including fee/native rebasing; all receipt/root oracles
 pass. These are in-memory diagnostics, not node performance results. The temporary
 probes were removed; a broader versioning design still needs node cost evidence.
 
+[Stage diagnostic 37125841828](https://github.com/tempoxyz/tempo/actions/runs/37125841828)
+uses identical `29ae49200` binaries and settings in both arms, with timers enabled.
+The audit covers 570 common canonical blocks and 2.98 million transactions;
+all 2,606 observed payload statuses are `VALID`. On accepted nonempty Engine
+blocks, ordered validation consumes 4.36% of internal execution elapsed time,
+ordinary execution 54.32%, commits 8.58%, and prefix publication 9.02%.
+These wall times include descheduling and exclude other execution stages.
+Engine reuse is 33.14–33.53%; builder validation costs about 3.17 microseconds per
+included transaction versus 1.01 in Engine validation. Nine completed builds
+outside the common chains are excluded; all eight `ERROR` log records follow
+explicit shutdown. This diagnostic does not establish a performance improvement;
+Slack is disabled. The low Engine validation share favors testing worker and
+prefix-publication costs before adding validation shortcuts.
+
 [Lock-diagnostic replay 37096394462](https://github.com/tempoxyz/tempo/actions/runs/37096394462)
 measures 29.483 versus 28.421 Mgas/s (-3.60%), with p99 newPayload latency rising
 from 1.444 to 1.571 ms (+8.80%). All 250,000 submissions are valid; all four
