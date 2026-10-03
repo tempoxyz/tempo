@@ -276,8 +276,15 @@ GCP teardown now snapshots resource identities, recovers verified leftovers and
 requires two empty inventories. After a lost runner, dispatch that same workflow
 with `cloud=gcp-cleanup` and `baseline=bench-e2e-multi-region-<run-id>-<attempt>`.
 Recovery requires a completed target run and checks exact ownership labels and
-resource IDs; it does not delete shared networking or cache buckets. The cleanup
-helper has mocked API coverage; its first real GCP run remains to be qualified.
+resource IDs; it does not delete shared networking or cache buckets.
+[Cloud setup run 37131504100](https://github.com/tempoxyz/tempo/actions/runs/37131504100)
+verifies all six VM/boot-disk identities absent after Terraform teardown and
+three empty inventories. Recovery deletion was unnecessary and remains untested
+against live resources. The run produced no performance result: its harness
+enabled T14 but disabled earlier forks by using lexical JSON field order,
+stalling baseline consensus before load. The workflow now pins
+[the numeric hardfork-order fix](https://github.com/tempoxyz/tempo-multi-region-benchmark/commit/49546631d5322ec32bdd9b986919bc25a05853ad);
+its local regression tests pass, with cloud validation still pending.
 
 The workflow's builder gas throughput averages `gas_used / elapsed` over full
 payload builds. It includes setup, transaction selection, waits and finalization;
