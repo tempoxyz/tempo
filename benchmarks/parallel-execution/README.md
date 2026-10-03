@@ -13,7 +13,14 @@ completed results; `--execution.capture-window` also permits 256 or 512 for
 controlled comparisons. It changes only Engine admission and retention, with
 the same 32 MiB limit on estimated result payload and the block's
 accepted-state hints retained separately. The estimate is not an allocator/RSS
-bound. Small blocks, disabled prewarming and
+bound. The Engine's external prewarming coordinator also bounds forward dispatch
+and queued/running transaction jobs by this window, polling canonical progress
+and cancellation every 100 microseconds. Workers do not wait for admission.
+These bounds also restrict cache/proof prefetch lead and exclude converted inputs,
+provider caches and the initial worker setup job; their performance is unproven.
+The optional dispatcher is pinned to
+[Reth 382b9390f](https://github.com/paradigmxyz/reth/commit/382b9390f9901c51f1d0cb94836f80c175be9615).
+Small blocks, disabled prewarming and
 BAL payloads retain the regular scheduler. Engine prewarming concurrency follows
 `--engine.prewarming-threads`; the regular pool follows `--execution.threads`.
 Typed block executors use authoritative State-cache validation, with received

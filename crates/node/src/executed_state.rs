@@ -145,6 +145,17 @@ where
             .resolve_datadir(ctx.config.chain.chain());
         let invalid_block_hook = ctx.create_invalid_block_hook(&data_dir).await?;
         let txpool_prewarming = tree_config.txpool_prewarming();
+        let transaction_prewarm_policy = (!tree_config.disable_prewarming())
+            .then(|| ctx.node.evm_config().speculative_executor.as_ref())
+            .flatten()
+            .and_then(|executor| {
+                let window = executor.capture_window().transactions();
+                reth_engine_tree::tree::payload_processor::prewarm::TransactionPrewarmPolicy::new(
+                    window,
+                    window,
+                    std::time::Duration::from_micros(100),
+                )
+            });
 
         // Give only the Engine a marked clone. RPC, builder, and invalid-block
         // hooks retain the original configuration from AddOnsContext.
@@ -163,7 +174,8 @@ where
             invalid_block_hook,
             overlay_manager,
             ctx.node.task_executor().clone(),
-        );
+        )
+        .with_transaction_prewarm_policy(transaction_prewarm_policy);
         if txpool_prewarming {
             validator =
                 validator.with_txpool_prewarming(TempoTxPoolPrewarmSource(ctx.node.pool().clone()));

@@ -291,6 +291,46 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
         .expect("producer receipts");
     assert!(expected_receipts.iter().all(|receipt| receipt.success));
 
+    // Force an early canonical error with more pending transactions than the
+    // prewarming window, then submit the valid sibling. Both configurations
+    // must reject identically and retire the failed payload's worker scope.
+    let invalid_payload = if transaction_count > capture_window.transactions() {
+        let mut expired = create_basic_aa_tx(
+            chain_id,
+            0,
+            vec![Call {
+                to: DEFAULT_FEE_TOKEN.into(),
+                value: U256::ZERO,
+                input: ITIP20::transferCall {
+                    to: signers[0].address(),
+                    amount: U256::ONE,
+                }
+                .abi_encode()
+                .into(),
+            }],
+            2_000_000,
+        );
+        expired.nonce_key = TEMPO_EXPIRING_NONCE_KEY;
+        expired.valid_before = std::num::NonZeroU64::new(1);
+        let signature = sign_aa_tx_secp256k1(&expired, &signers[0])?;
+        let mut block = payload.clone().into_execution_payload().0.into_block();
+        let first_user = block
+            .body
+            .transactions
+            .iter()
+            .position(|tx| !tx.is_system_tx())
+            .unwrap();
+        block.body.transactions[first_user] = expired.into_signed(signature).into();
+        block.header.inner.transactions_root =
+            alloy::consensus::proofs::calculate_transaction_root(&block.body.transactions);
+        Some(tempo_payload_types::TempoExecutionData {
+            block: reth_primitives_traits::SealedBlock::seal_slow(block).into(),
+            block_access_list: None,
+        })
+    } else {
+        None
+    };
+    let mut expected_invalid_error = None;
     let mut expected_output = None;
     for execution_threads in [0, 4] {
         let tempo_node = TempoNode::new(
@@ -336,11 +376,42 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
             )
             .await?;
         assert!(forkchoice.payload_status.is_valid());
-        let status = observer
-            .add_ons_handle
-            .beacon_engine_handle
-            .new_payload(payload.clone().into())
-            .await?;
+        if let Some(invalid) = &invalid_payload {
+            let status = tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                observer
+                    .add_ons_handle
+                    .beacon_engine_handle
+                    .new_payload(invalid.clone()),
+            )
+            .await??;
+            assert!(
+                status.status.is_invalid(),
+                "unexpected invalid-payload status: {status:?}"
+            );
+            let error = status
+                .status
+                .validation_error()
+                .expect("invalid payload error")
+                .to_owned();
+            assert!(
+                error.contains("transaction expired"),
+                "unexpected execution error: {error}"
+            );
+            if let Some(expected) = &expected_invalid_error {
+                assert_eq!(&error, expected);
+            } else {
+                expected_invalid_error = Some(error);
+            }
+        }
+        let status = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            observer
+                .add_ons_handle
+                .beacon_engine_handle
+                .new_payload(payload.clone().into()),
+        )
+        .await??;
         assert!(status.is_valid(), "unexpected payload status: {status:?}");
 
         // VALID checks both canonical roots. The child of the activation block
