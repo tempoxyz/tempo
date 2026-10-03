@@ -16,6 +16,12 @@ BAL payloads retain the regular scheduler. Engine prewarming concurrency follows
 `--engine.prewarming-threads`; the regular pool follows `--execution.threads`.
 Typed block executors use authoritative State-cache validation, with received
 BALs retaining ordinary database validation.
+Builder workers also follow `--engine.prewarming-threads`. Speculative admission
+uses `--execution.batch-size`, capped at 128 outstanding candidates, with a separate
+32 MiB estimate limit on completed results retained by each build. Running workers,
+the single extracted candidate and accepted-prefix hints are outside that estimate.
+Pending, contended or over-budget results fall back to ordinary ordered execution.
+Ordinary prewarming retains its two-candidates-per-worker window.
 Mutable context access and inspector use also require checking journal warming
 before reuse; custom warm sets retain ordinary execution and its gas charges.
 
@@ -78,6 +84,8 @@ unset or `0` uses the ordinary State commit. Compare both settings in one binary
 The sequential reference always uses ordinary commits.
 This mode always includes a sequential receipt/root comparison. It models the
 ordered reuse path with an in-memory provider and a standard thread queue;
+it waits for selected results and does not model the node's ready-only probes,
+configurable builder admission window or completed-result quota. In addition,
 it excludes the node's provider I/O, shared Rayon pool, pool coordinator, bundle
 merging and real hook work. Without `TEMPO_BENCH_STATE_HOOK`, it also excludes
 transition accumulation and hook delivery. Regular scheduler tuning switches are unsupported
@@ -220,7 +228,7 @@ measures 16,325 baseline versus 14,402 feature TPS (-11.78%); builder gas
 throughput falls 27.46% and validation throughput falls 32.71%. Builder reuse
 remains low at 13.63%; recording accepted-prefix hints takes 7.30% of sampled
 builder CPU. Validator reuse is 76.88%. Slack notifications were suppressed.
-Builder concurrency follows `--engine.prewarming-threads`, with twice that many
+Builder concurrency followed `--engine.prewarming-threads`, with twice that many
 admitted candidates. These earlier runs used a separate Engine speculative pool.
 Generated differential and real-node AA/Engine observer tests pass. Further
 optimization remains in progress.
@@ -398,6 +406,16 @@ waits remain zero. These timers include scheduling and on-CPU work, and the Engi
 denominator excludes parts of the official newPayload metric. Lock acquisition
 does not explain most of the regression. The third pair has an additional empty
 tail block without both nodes' retained canonical announcements; it is excluded.
+
+[Worker-configuration comparison 37098730158](https://github.com/tempoxyz/tempo/actions/runs/37098730158)
+compares `042ec0dc0` against itself with eight versus sixteen prewarming workers.
+TPS rises from 15,121 to 16,313 (+7.88%), builder gas throughput rises 7.28%, and
+validator throughput rises 14.00%. Builder p90 latency rises 3.52%, so win-only
+Slack is suppressed. This configuration also doubles the then-current builder
+window from sixteen to thirty-two candidates; it does not isolate worker count.
+Builder pending results fall from 21.63% to 9.56%, while Engine reuse falls from
+66.84% to 31.87%. Better throughput does not imply more whole-candidate reuse,
+and this comparison does not establish a win against main.
 
 A local experiment made contended prefix reads fall back to the parent provider.
 It preserved differential correctness but reduced eight-worker reuse from about

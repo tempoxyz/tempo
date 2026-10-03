@@ -497,7 +497,12 @@ where
             executor.evm().evm_env(),
             self.config.enable_parallel,
         )
-        .with_speculative(speculative_prewarming);
+        .with_speculative(if speculative_prewarming {
+            batch_size
+        } else {
+            0
+        });
+        let prewarming_window = prewarm_ctx.speculative_window();
         let prewarming_prefix = prewarm_ctx.prefix();
         if let Some(prefix) = &prewarming_prefix {
             prefix.seed_from_cache(&executor.evm().db().cache);
@@ -803,6 +808,7 @@ where
             info!(
                 target: "payload_builder",
                 parent_hash = %parent_header.hash(),
+                speculative_window = prewarming_window,
                 result_ready = prewarming_result_waits.ready,
                 result_pending = prewarming_result_waits.pending,
                 result_contended = prewarming_result_waits.contended,

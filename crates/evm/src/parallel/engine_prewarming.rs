@@ -164,7 +164,7 @@ impl EnginePrewarmingSession {
             return false;
         }
         // Traverse owned data before taking the publication lock.
-        let Some(bytes) = estimated_bytes(&mut candidate) else {
+        let Some(bytes) = candidate.estimated_retained_bytes() else {
             return false;
         };
         let Ok(mut retained) = self.retained.try_lock() else {
@@ -220,6 +220,17 @@ impl EnginePrewarmingSession {
         };
         let held = acquired.elapsed();
         (result, Some((acquired.duration_since(waiting), held)))
+    }
+}
+
+impl PreexecutedTransaction {
+    /// Checked estimate for retaining this completed result, returning `None`
+    /// above 32 MiB or on overflow. This is not an allocator or process RSS bound.
+    /// Shared code is charged per occurrence; hidden backing capacity, running
+    /// worker state and committed-prefix hints are outside the estimate.
+    /// The mutable receiver only exposes log-topic capacity; no values change.
+    pub fn estimated_retained_bytes(&mut self) -> Option<usize> {
+        estimated_bytes(self)
     }
 }
 

@@ -2,7 +2,7 @@ use std::{
     cell::RefCell,
     sync::{
         Arc, Mutex, TryLockError,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc::{self, Receiver, Sender},
     },
     time::{Duration, Instant},
@@ -24,6 +24,9 @@ use tempo_evm::{
 };
 use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
 use tracing::{info, instrument, trace};
+
+const MAX_SPECULATIVE_WINDOW: usize = 128;
+const MAX_RETAINED_RESULT_BYTES: usize = 32 * 1024 * 1024;
 
 pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<EvmStateProviderBox>>>;
 type SpeculativePrewarmState =
@@ -159,6 +162,11 @@ impl BestTransactionsPrewarming {
             context: ctx.prewarm.stop.clone(),
         };
 
+        let window = if ctx.prewarm.speculative {
+            ctx.prewarm.speculative_window
+        } else {
+            pool.current_num_threads() * 2
+        };
         pool.in_place_scope(|scope| {
             let prewarm = ctx.prewarm.clone();
             scope.spawn(move |_| {
@@ -166,9 +174,7 @@ impl BestTransactionsPrewarming {
             });
 
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
-                if ctx.prewarm.speculative
-                    && ctx.speculative_in_flight >= pool.current_num_threads() * 2
-                {
+                if ctx.prewarm.speculative && ctx.speculative_in_flight >= window {
                     return;
                 }
                 let Some(tx) = ctx.best_txs.next() else {
@@ -192,8 +198,15 @@ impl BestTransactionsPrewarming {
                     ctx.speculative_in_flight += 1;
                     // Publish handles in source order, before workers finish. The
                     // authoritative iterator can still skip or invalidate them.
-                    let (producer, handle) =
-                        PreexecutedHandle::new(commands_tx, expiring_nonce_offset);
+                    let (producer, handle) = PreexecutedHandle::with_budget(
+                        commands_tx,
+                        expiring_nonce_offset,
+                        prewarm
+                            .retained_results
+                            .as_ref()
+                            .expect("speculative result budget")
+                            .clone(),
+                    );
                     let _ = transactions_tx.send(Some(PrewarmedTransaction {
                         tx: tx.clone(),
                         replay: None,
@@ -240,8 +253,9 @@ impl BestTransactionsPrewarming {
 
             // Fill the initial batch of transactions to execute and prewarm.
             //
-            // We schedule 2x the number of threads to make sure that workers are never idle.
-            for _ in 0..pool.current_num_threads() * 2 {
+            // Speculative slots honor the configured count bound. Ordinary
+            // prewarming retains its existing two jobs per worker.
+            for _ in 0..window {
                 advance(&mut ctx);
             }
 
@@ -516,13 +530,23 @@ struct PreexecutedHandle {
 }
 
 impl PreexecutedHandle {
+    #[cfg(test)]
     fn new(
         commands_tx: Sender<BestTransactionsCommand>,
         expiring_nonce_offset: Option<usize>,
     ) -> (PreexecutedProducer, Self) {
+        Self::with_budget(commands_tx, expiring_nonce_offset, Arc::default())
+    }
+
+    fn with_budget(
+        commands_tx: Sender<BestTransactionsCommand>,
+        expiring_nonce_offset: Option<usize>,
+        budget: Arc<ResultBudget>,
+    ) -> (PreexecutedProducer, Self) {
         let completion = Arc::new(SpeculativeCompletion {
             result: Mutex::new(PreexecutedResult { value: None }),
             commands_tx,
+            budget,
         });
         (
             PreexecutedProducer {
@@ -549,7 +573,7 @@ impl PreexecutedHandle {
         } else {
             waits.pending += 1;
         }
-        result.value.take().flatten()
+        result.value.take().flatten().map(Budgeted::into_inner)
     }
 }
 
@@ -587,7 +611,7 @@ impl Drop for PreexecutedProducer {
 #[derive(Debug)]
 struct PreexecutedResult {
     // Outer None means pending; Some(None) means no reusable result.
-    value: Option<Option<PreexecutedTransaction>>,
+    value: Option<Option<Budgeted<PreexecutedTransaction>>>,
 }
 
 /// One result and one admission permit shared by exactly the worker and consumer.
@@ -597,10 +621,21 @@ struct PreexecutedResult {
 struct SpeculativeCompletion {
     result: Mutex<PreexecutedResult>,
     commands_tx: Sender<BestTransactionsCommand>,
+    budget: Arc<ResultBudget>,
 }
 
 impl SpeculativeCompletion {
     fn publish(&self, value: Option<PreexecutedTransaction>) {
+        // Estimate and reserve without holding the slot lock. A budget miss is
+        // an ordinary fallback, never a wait for another result to be consumed.
+        let value = value.and_then(|mut candidate| {
+            let bytes = candidate.estimated_retained_bytes()?;
+            let reservation = self.budget.reserve(bytes)?;
+            Some(Budgeted {
+                value: candidate,
+                reservation,
+            })
+        });
         self.result
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -625,6 +660,70 @@ impl Drop for SpeculativeCompletion {
     }
 }
 
+/// Per-build completed-payload estimate; running workers, the one extracted
+/// ordered candidate, providers and the committed prefix are outside this budget.
+#[derive(Debug)]
+struct ResultBudget {
+    retained: AtomicUsize,
+    limit: usize,
+}
+
+impl Default for ResultBudget {
+    fn default() -> Self {
+        Self {
+            retained: AtomicUsize::new(0),
+            limit: MAX_RETAINED_RESULT_BYTES,
+        }
+    }
+}
+
+impl ResultBudget {
+    fn reserve(self: &Arc<Self>, bytes: usize) -> Option<ResultReservation> {
+        self.retained
+            .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |retained| {
+                retained
+                    .checked_add(bytes)
+                    .filter(|&total| total <= self.limit)
+            })
+            .ok()?;
+        Some(ResultReservation {
+            budget: self.clone(),
+            bytes,
+        })
+    }
+}
+
+#[derive(Debug)]
+struct ResultReservation {
+    budget: Arc<ResultBudget>,
+    bytes: usize,
+}
+
+impl Drop for ResultReservation {
+    fn drop(&mut self) {
+        self.budget
+            .retained
+            .fetch_sub(self.bytes, Ordering::Release);
+    }
+}
+
+#[derive(Debug)]
+struct Budgeted<T> {
+    // Fields drop in declaration order: free discarded payloads before making
+    // their byte allowance available to another worker, including during unwind.
+    value: T,
+    reservation: ResultReservation,
+}
+
+impl<T> Budgeted<T> {
+    fn into_inner(self) -> T {
+        let Self { value, reservation } = self;
+        // Ownership moves to the single ordered executor, outside retained slots.
+        drop(reservation);
+        value
+    }
+}
+
 impl StateAwarePoolTransaction for PrewarmedTransaction {
     fn best_transaction(&self) -> &BestTransaction {
         &self.tx
@@ -642,6 +741,8 @@ pub(crate) struct PrewarmingExecutionContext<Provider> {
     stop: Arc<AtomicBool>,
     parallel: bool,
     speculative: bool,
+    speculative_window: usize,
+    retained_results: Option<Arc<ResultBudget>>,
     prefix: Option<PrewarmingState>,
 }
 
@@ -666,16 +767,28 @@ where
             stop: Arc::new(AtomicBool::new(false)),
             parallel,
             speculative: false,
+            speculative_window: 0,
+            retained_results: None,
             prefix: None,
         }
     }
 
     /// Reuses exact speculative results instead of duplicating prewarming and
     /// scheduling a second execution. Native storage-action replay stays separate.
-    pub(crate) fn with_speculative(mut self, enabled: bool) -> Self {
-        self.speculative = enabled && !self.parallel;
+    pub(crate) fn with_speculative(mut self, batch_size: usize) -> Self {
+        self.speculative = batch_size > 0 && !self.parallel;
+        self.speculative_window = if self.speculative {
+            batch_size.min(MAX_SPECULATIVE_WINDOW)
+        } else {
+            0
+        };
         self.prefix = self.speculative.then(PrewarmingState::default);
+        self.retained_results = self.speculative.then(Arc::default);
         self
+    }
+
+    pub(crate) fn speculative_window(&self) -> usize {
+        self.speculative_window
     }
 
     pub(crate) fn prefix(&self) -> Option<PrewarmingState> {
@@ -932,10 +1045,20 @@ mod tests {
     }
 
     fn test_tx_with_gas_limit(sender: Address, nonce: u64, gas_limit: u64) -> BestTransaction {
+        test_tx_with_pricing(sender, nonce, gas_limit, 20_000_000_000, Some(42431))
+    }
+
+    fn test_tx_with_pricing(
+        sender: Address,
+        nonce: u64,
+        gas_limit: u64,
+        gas_price: u128,
+        chain_id: Option<u64>,
+    ) -> BestTransaction {
         let tx = TxLegacy {
-            chain_id: Some(42431),
+            chain_id,
             nonce,
-            gas_price: 20_000_000_000,
+            gas_price,
             gas_limit,
             to: TxKind::Call(Address::random()),
             value: U256::ZERO,
@@ -1090,6 +1213,8 @@ mod tests {
             stop: Arc::default(),
             parallel,
             speculative: false,
+            speculative_window: 0,
+            retained_results: None,
             prefix: None,
         }
     }
@@ -1397,7 +1522,7 @@ mod tests {
         let executor = TaskExecutor::test();
         let mut engine = prewarming_context(executor.clone(), false);
         engine.cache = Some(SavedCache::new(B256::ZERO, ExecutionCache::new(1024)));
-        let builder = prewarming_context(executor, false).with_speculative(true);
+        let builder = prewarming_context(executor, false).with_speculative(128);
         let pool = WorkerPool::new(1, "prewarm-engine-isolation-test");
 
         // Engine initialization precedes a speculative builder job on the same
@@ -1439,10 +1564,10 @@ mod tests {
         let executor = TaskExecutor::test();
         let pool = WorkerPool::new(1, "prewarm-context-isolation-test");
         for speculative in [false, true] {
-            let mut first =
-                prewarming_context(executor.clone(), false).with_speculative(speculative);
-            let mut second =
-                prewarming_context(executor.clone(), false).with_speculative(speculative);
+            let mut first = prewarming_context(executor.clone(), false)
+                .with_speculative(if speculative { 128 } else { 0 });
+            let mut second = prewarming_context(executor.clone(), false)
+                .with_speculative(if speculative { 128 } else { 0 });
             first.cache = Some(SavedCache::new(B256::ZERO, ExecutionCache::new(1024)));
             second.cache = Some(SavedCache::new(B256::ZERO, ExecutionCache::new(1024)));
             let first_cache = first.cache.as_ref().unwrap();
@@ -1538,6 +1663,451 @@ mod tests {
             Ok(BestTransactionsCommand::ConsumedSpeculative)
         ));
         assert!(commands_rx.try_recv().is_err());
+    }
+
+    struct CandidateInputDropWitness {
+        input: [u8; 32],
+        budget: Arc<ResultBudget>,
+        observed_charge: Arc<std::sync::atomic::AtomicUsize>,
+        drops: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl AsRef<[u8]> for CandidateInputDropWitness {
+        fn as_ref(&self) -> &[u8] {
+            &self.input
+        }
+    }
+
+    impl Drop for CandidateInputDropWitness {
+        fn drop(&mut self) {
+            // Record instead of asserting in Drop so an unwind test cannot double-panic.
+            self.observed_charge.store(
+                self.budget.retained.load(Ordering::Relaxed),
+                Ordering::Relaxed,
+            );
+            self.drops.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn candidate_with_input_drop_witness(
+        budget: Arc<ResultBudget>,
+    ) -> (
+        PreexecutedTransaction,
+        Arc<std::sync::atomic::AtomicUsize>,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        let observed_charge = Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
+        let drops = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let context = prewarming_context(TaskExecutor::test(), false);
+        let mut env = EvmEnvFor::<TempoEvmConfig>::default();
+        env.block_env.inner.gas_limit = 30_000_000;
+        let tx = test_tx(Address::with_last_byte(201), 0);
+        let mut tx_env = tx.transaction.clone_tx_env();
+        tx_env.inner.chain_id = None;
+        tx_env.inner.gas_price = 0;
+        tx_env.inner.gas_limit = 1_000_000;
+        tx_env.inner.data = alloy_primitives::bytes::Bytes::from_owner(CandidateInputDropWitness {
+            input: [0; 32],
+            budget,
+            observed_charge: observed_charge.clone(),
+            drops: drops.clone(),
+        })
+        .into();
+        let mut worker = PrewarmingExecutor::new(context.database_for_ctx().unwrap(), env);
+        let candidate = worker
+            .execute(tx_env, None)
+            .expect("zero-fee captured transaction");
+        drop(worker);
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        (candidate, observed_charge, drops)
+    }
+
+    #[test]
+    fn genuine_candidate_drop_precedes_quota_return_except_on_delivery() {
+        // Delivery transfers ownership outside retained accounting. All other modes
+        // discard the real payload while its reservation is still charged.
+        for mode in [
+            "delivery",
+            "consumer-first",
+            "producer-first",
+            "poison",
+            "unwind",
+        ] {
+            let budget = Arc::new(ResultBudget {
+                retained: std::sync::atomic::AtomicUsize::new(0),
+                limit: 32 * 1024 * 1024,
+            });
+            let (mut candidate, observed_charge, drops) =
+                candidate_with_input_drop_witness(budget.clone());
+            let estimate = candidate
+                .estimated_retained_bytes()
+                .expect("small real result");
+            assert!(estimate > 0);
+            let expected = format!("{candidate:?}");
+            let (commands_tx, commands_rx) = mpsc::channel();
+            let (producer, handle) =
+                PreexecutedHandle::with_budget(commands_tx, Some(7), budget.clone());
+            assert_eq!(budget.retained.load(Ordering::Relaxed), 0);
+            if mode == "consumer-first" {
+                drop(handle);
+                assert!(commands_rx.try_recv().is_err());
+                producer.send(Some(candidate));
+            } else {
+                producer.send(Some(candidate));
+                assert_eq!(budget.retained.load(Ordering::Relaxed), estimate);
+                assert_eq!(drops.load(Ordering::Relaxed), 0);
+                assert!(commands_rx.try_recv().is_err());
+                if mode == "delivery" {
+                    let delivered = handle
+                        .try_recv(&mut PrewarmingResultWaits::default())
+                        .expect("real result retained for consumer");
+                    assert_eq!(format!("{delivered:?}"), expected);
+                    assert_eq!(budget.retained.load(Ordering::Relaxed), 0);
+                    assert_eq!(drops.load(Ordering::Relaxed), 0);
+                    assert_one_speculative_permit(&commands_rx);
+                    drop(delivered);
+                    assert_eq!(observed_charge.load(Ordering::Relaxed), 0);
+                    assert_eq!(drops.load(Ordering::Relaxed), 1);
+                    continue;
+                }
+                if mode == "poison" {
+                    let outcome = catch_unwind(AssertUnwindSafe(|| {
+                        let _guard = handle.completion.result.lock().unwrap();
+                        panic!("poison retained result before final-owner cleanup");
+                    }));
+                    assert!(outcome.is_err());
+                    drop(handle);
+                } else if mode == "unwind" {
+                    let outcome = catch_unwind(AssertUnwindSafe(move || {
+                        let _handle = handle;
+                        panic!("consumer unwinds while owning completed result");
+                    }));
+                    assert!(outcome.is_err());
+                } else {
+                    drop(handle);
+                }
+            }
+            assert_eq!(observed_charge.load(Ordering::Relaxed), estimate, "{mode}");
+            assert_eq!(drops.load(Ordering::Relaxed), 1, "{mode}");
+            assert_eq!(budget.retained.load(Ordering::Relaxed), 0, "{mode}");
+            assert_one_speculative_permit(&commands_rx);
+        }
+    }
+
+    #[test]
+    fn speculative_window_configuration_is_capped_and_disabled_paths_allocate_no_budget() {
+        let executor = TaskExecutor::test();
+        for (requested, expected) in [(0, 0), (1, 1), (32, 32), (128, 128), (usize::MAX, 128)] {
+            let context = prewarming_context(executor.clone(), false).with_speculative(requested);
+            assert_eq!(context.speculative_window(), expected);
+            assert_eq!(context.speculative, expected > 0);
+            assert_eq!(context.prefix.is_some(), expected > 0);
+            assert_eq!(context.retained_results.is_some(), expected > 0);
+        }
+        let native = prewarming_context(executor.clone(), true).with_speculative(128);
+        assert_eq!(native.speculative_window(), 0);
+        assert!(!native.speculative);
+        assert!(native.prefix.is_none());
+        assert!(native.retained_results.is_none());
+        let first = prewarming_context(executor.clone(), false).with_speculative(32);
+        let second = prewarming_context(executor, false).with_speculative(32);
+        assert!(!Arc::ptr_eq(
+            first.retained_results.as_ref().unwrap(),
+            second.retained_results.as_ref().unwrap()
+        ));
+    }
+
+    #[test]
+    fn speculative_empty_source_respects_configured_initial_fill_and_shuts_down() {
+        for window in [1, MAX_SPECULATIVE_WINDOW] {
+            let executor = TaskExecutor::test();
+            let context = prewarming_context(executor.clone(), false).with_speculative(window);
+            let budget = context.retained_results.as_ref().unwrap().clone();
+            let log = Arc::new(Mutex::new(TestLog::default()));
+            let mut prewarming = TestPrewarming {
+                prewarming: Some(BestTransactionsPrewarming::new(
+                    context,
+                    TestBestTransactions::new(Vec::new(), log.clone()),
+                )),
+                executor,
+            };
+            prewarming.no_updates();
+            wait_until(|| log.lock().unwrap().no_updates == 1);
+            assert_eq!(log.lock().unwrap().empty_polls, window);
+            assert_eq!(log.lock().unwrap().yielded, 0);
+            drop(prewarming);
+            assert_eq!(budget.retained.load(Ordering::Relaxed), 0);
+        }
+    }
+
+    #[test]
+    fn stopping_a_full_speculative_window_releases_genuine_completed_results() {
+        let executor = TaskExecutor::test();
+        let mut context = prewarming_context(executor.clone(), false).with_speculative(4);
+        context.evm_env = EvmEnvFor::<TempoEvmConfig>::default();
+        context.evm_env.block_env.inner.gas_limit = 30_000_000;
+        let budget = context.retained_results.as_ref().unwrap().clone();
+        let transactions = (0..12)
+            .map(|index| {
+                test_tx_with_pricing(Address::with_last_byte(201 + index), 0, 1_000_000, 0, None)
+            })
+            .collect();
+        let log = Arc::new(Mutex::new(TestLog::default()));
+        let prewarming = TestPrewarming {
+            prewarming: Some(BestTransactionsPrewarming::new(
+                context,
+                TestBestTransactions::new(transactions, log.clone()),
+            )),
+            executor,
+        };
+        wait_until(|| log.lock().unwrap().yielded == 4);
+        // These zero-fee transactions actually execute against the empty provider.
+        // At least one completed candidate is retained in the full source buffer.
+        wait_until(|| budget.retained.load(Ordering::Relaxed) > 0);
+        assert_eq!(log.lock().unwrap().yielded, 4);
+        drop(prewarming);
+        assert_eq!(budget.retained.load(Ordering::Relaxed), 0);
+        assert_eq!(log.lock().unwrap().yielded, 4);
+    }
+
+    #[test]
+    fn concurrent_completed_results_share_one_budget_and_released_capacity_is_reusable() {
+        let (_, mut first) = speculative_candidate();
+        let (_, mut second) = speculative_candidate();
+        let limit = first
+            .estimated_retained_bytes()
+            .unwrap()
+            .max(second.estimated_retained_bytes().unwrap());
+        let budget = Arc::new(ResultBudget {
+            retained: AtomicUsize::new(0),
+            limit,
+        });
+        let other_build = Arc::new(ResultBudget {
+            retained: AtomicUsize::new(0),
+            limit,
+        });
+        let other_reservation = other_build.reserve(limit).unwrap();
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let (commands_tx, commands_rx) = mpsc::channel();
+        let mut handles = Vec::new();
+        let workers = [first, second]
+            .into_iter()
+            .map(|candidate| {
+                let (producer, handle) =
+                    PreexecutedHandle::with_budget(commands_tx.clone(), None, budget.clone());
+                handles.push(handle);
+                let barrier = barrier.clone();
+                thread::spawn(move || {
+                    barrier.wait();
+                    producer.send(Some(candidate));
+                })
+            })
+            .collect::<Vec<_>>();
+        barrier.wait();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert!(budget.retained.load(Ordering::Relaxed) > 0);
+        assert!(budget.retained.load(Ordering::Relaxed) <= limit);
+        assert_eq!(other_build.retained.load(Ordering::Relaxed), limit);
+        // Completion alone returns neither slot's admission permit.
+        assert!(commands_rx.try_recv().is_err());
+        let mut waits = PrewarmingResultWaits::default();
+        let delivered = handles
+            .into_iter()
+            .filter_map(|handle| handle.try_recv(&mut waits))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            delivered.len(),
+            1,
+            "each result fits alone, their sum does not"
+        );
+        assert_eq!((waits.ready, waits.pending), (2, 0));
+        assert_eq!(budget.retained.load(Ordering::Relaxed), 0);
+        for _ in 0..2 {
+            assert!(matches!(
+                commands_rx.try_recv(),
+                Ok(BestTransactionsCommand::ConsumedSpeculative)
+            ));
+        }
+        assert!(commands_rx.try_recv().is_err());
+        // The extracted candidate remains live outside retained-slot accounting.
+        let (_, candidate) = speculative_candidate();
+        let (producer, handle) = PreexecutedHandle::with_budget(commands_tx, None, budget.clone());
+        producer.send(Some(candidate));
+        assert!(budget.retained.load(Ordering::Relaxed) > 0);
+        drop(handle);
+        assert_eq!(budget.retained.load(Ordering::Relaxed), 0);
+        assert_one_speculative_permit(&commands_rx);
+        drop(delivered);
+        drop(other_reservation);
+        assert_eq!(other_build.retained.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn result_budget_rejects_oversized_results_and_checked_aggregate_overflow() {
+        let (_, mut candidate) = speculative_candidate();
+        let bytes = candidate.estimated_retained_bytes().unwrap();
+        let budget = Arc::new(ResultBudget {
+            retained: AtomicUsize::new(0),
+            limit: bytes - 1,
+        });
+        let (commands_tx, commands_rx) = mpsc::channel();
+        let (producer, handle) = PreexecutedHandle::with_budget(commands_tx, None, budget.clone());
+        producer.send(Some(candidate));
+        assert_eq!(budget.retained.load(Ordering::Relaxed), 0);
+        assert!(commands_rx.try_recv().is_err());
+        let mut waits = PrewarmingResultWaits::default();
+        assert!(handle.try_recv(&mut waits).is_none());
+        assert_eq!((waits.ready, waits.pending), (1, 0));
+        assert_one_speculative_permit(&commands_rx);
+
+        let budget = Arc::new(ResultBudget {
+            retained: AtomicUsize::new(0),
+            limit: usize::MAX,
+        });
+        let reservation = budget.reserve(usize::MAX).unwrap();
+        assert!(budget.reserve(1).is_none());
+        assert_eq!(budget.retained.load(Ordering::Relaxed), usize::MAX);
+        drop(reservation);
+        assert_eq!(budget.retained.load(Ordering::Relaxed), 0);
+        assert!(budget.reserve(1).is_some());
+        assert_eq!(budget.retained.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn contended_completed_result_keeps_its_budget_and_permit_until_producer_finishes() {
+        let budget = Arc::new(ResultBudget::default());
+        let (candidate, observed_charge, drops) = candidate_with_input_drop_witness(budget.clone());
+        let (commands_tx, commands_rx) = mpsc::channel();
+        let (producer, handle) = PreexecutedHandle::with_budget(commands_tx, None, budget.clone());
+        producer
+            .completion
+            .as_ref()
+            .unwrap()
+            .publish(Some(candidate));
+        let charge = budget.retained.load(Ordering::Relaxed);
+        assert!(charge > 0);
+        let guard = producer.completion.as_ref().unwrap().result.lock().unwrap();
+        let (returned_tx, returned_rx) = mpsc::channel();
+        let consumer = thread::spawn(move || {
+            let mut waits = PrewarmingResultWaits::default();
+            assert!(handle.try_recv(&mut waits).is_none());
+            returned_tx.send(waits).unwrap();
+        });
+        let result = returned_rx.recv_timeout(Duration::from_secs(1));
+        // Always release the lock before joining, including a timeout failure.
+        drop(guard);
+        consumer.join().unwrap();
+        assert_eq!(result.unwrap().contended, 1);
+        assert_eq!(budget.retained.load(Ordering::Relaxed), charge);
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        assert!(commands_rx.try_recv().is_err());
+        drop(producer);
+        assert_eq!(observed_charge.load(Ordering::Relaxed), charge);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+        assert_eq!(budget.retained.load(Ordering::Relaxed), 0);
+        assert_one_speculative_permit(&commands_rx);
+    }
+
+    #[test]
+    fn speculative_refill_preserves_buffered_and_unseen_nonce_invalidation() {
+        for aa_lane in [false, true] {
+            let sender = Address::random();
+            let make = |nonce: u64| {
+                if aa_lane {
+                    test_payment_tx_with_nonce_key(sender, 500_000 + nonce, U256::ONE)
+                } else {
+                    test_tx(sender, nonce)
+                }
+            };
+            let rejected = make(0);
+            let unrelated = if aa_lane {
+                test_payment_tx_with_nonce_key(sender, 600_000, U256::from(2))
+            } else {
+                test_tx(Address::random(), 0)
+            };
+            let last = test_tx(Address::random(), 0);
+            let txs = vec![
+                rejected.clone(),
+                make(1),
+                unrelated.clone(),
+                make(2),
+                last.clone(),
+            ];
+            let log = Arc::new(Mutex::new(TestLog::default()));
+            let executor = TaskExecutor::test();
+            let context = prewarming_context(executor.clone(), false).with_speculative(2);
+            let mut prewarming = TestPrewarming {
+                prewarming: Some(BestTransactionsPrewarming::new(
+                    context,
+                    TestBestTransactions::new(txs, log.clone()),
+                )),
+                executor,
+            };
+            wait_until(|| log.lock().unwrap().yielded == 2);
+            let selected = prewarming.next().unwrap();
+            assert_eq!(selected.tx.hash(), rejected.hash());
+            prewarming.mark_invalid(
+                &selected,
+                InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
+            );
+            wait_until(|| log.lock().unwrap().invalid == 1);
+            drop(selected);
+            for expected in [unrelated, last] {
+                let selected = prewarming.next().unwrap();
+                assert_eq!(selected.tx.hash(), expected.hash());
+                drop(selected);
+            }
+        }
+    }
+
+    #[test]
+    fn speculative_expiring_offsets_include_skips_across_multiple_refills() {
+        let sender = Address::random();
+        let expiring = |n: u64| test_payment_tx_with_nonce_key(sender, 500_000 + n, U256::MAX);
+        let txs = vec![
+            expiring(0),
+            expiring(1),
+            test_tx(sender, 0),
+            expiring(2),
+            expiring(3),
+            test_tx(sender, 1),
+            expiring(4),
+        ];
+        let expected = txs.iter().map(|tx| *tx.hash()).collect::<Vec<_>>();
+        let log = Arc::new(Mutex::new(TestLog::default()));
+        let executor = TaskExecutor::test();
+        let context = prewarming_context(executor.clone(), false).with_speculative(2);
+        let mut prewarming = TestPrewarming {
+            prewarming: Some(BestTransactionsPrewarming::new(
+                context,
+                TestBestTransactions::new(txs, log.clone()),
+            )),
+            executor,
+        };
+        let mut offsets = Vec::new();
+        for (index, hash) in expected.into_iter().enumerate() {
+            let selected = prewarming.next().unwrap();
+            assert_eq!(*selected.tx.hash(), hash);
+            offsets.push(selected.expiring_nonce_offset());
+            if index == 1 {
+                for _ in 0..2 {
+                    prewarming.mark_invalid(
+                        &selected,
+                        InvalidPoolTransactionError::Consensus(
+                            InvalidTransactionError::TxTypeNotSupported,
+                        ),
+                    );
+                }
+            }
+            drop(selected);
+        }
+        assert_eq!(
+            offsets,
+            [Some(0), Some(1), None, Some(2), Some(3), None, Some(4)]
+        );
+        wait_until(|| log.lock().unwrap().invalid == 2);
     }
 
     #[test]
@@ -1822,20 +2392,26 @@ mod tests {
     }
 
     #[test]
-    fn speculative_prewarming_preserves_order_and_bounds_completed_results() {
+    fn configured_speculative_windows_preserve_order_and_bound_admission() {
         let executor = TaskExecutor::test();
+        let legacy_window = executor.prewarming_pool().current_num_threads() * 2;
+        for window in [1, legacy_window, 32, MAX_SPECULATIVE_WINDOW] {
+            assert_speculative_window(executor.clone(), window);
+        }
+    }
+
+    fn assert_speculative_window(executor: TaskExecutor, window: usize) {
         let engine = prewarming_context(executor.clone(), false);
         let shared_executor = executor.clone();
         shared_executor
             .prewarming_pool()
             .init::<PrewarmEvmState>(|_| engine.evm_for_ctx());
-        let window = executor.prewarming_pool().current_num_threads() * 2;
         let transactions = (0..window * 3)
             .map(|_| test_payment_tx(Address::random(), 500_000))
             .collect::<Vec<_>>();
         let hashes = transactions.iter().map(|tx| *tx.hash()).collect::<Vec<_>>();
         let log = Arc::new(Mutex::new(TestLog::default()));
-        let context = prewarming_context(executor.clone(), false).with_speculative(true);
+        let context = prewarming_context(executor.clone(), false).with_speculative(window);
         let mut prewarming = TestPrewarming {
             prewarming: Some(BestTransactionsPrewarming::new(
                 context,
