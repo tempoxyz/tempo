@@ -77,6 +77,18 @@ Both peers use sixteen prewarming workers, with execution threads eight versus
 zero. This is a correctness result for the paid expiring-AA public mix, not a
 comparison against unmodified main or a sustained 50,000 TPS result.
 
+[Generated validation 37108470757](https://github.com/tempoxyz/tempo/actions/runs/37108470757)
+passes on `06f046cda` with capture window 512. Live checks match finalized roots,
+headers, transaction bodies and full receipts for 171 blocks containing
+1,710,254 transactions. Every block exceeds the window; both peers produce
+blocks, and every block has fresh opposite-peer Engine execution followed by
+`VALID`. The parallel peer includes at least 911,939 builder reuses and exactly
+435,180 Engine reuses. Both peers launch the same verified binary, with eight
+versus zero execution threads and sixteen prewarming workers. Archived receipt
+digests and 855 independently checked log records support the live verification;
+the archive does not contain the complete receipt bodies. This correctness run
+does not establish a performance improvement.
+
 ```sh
 gh workflow run bench-e2e-scheduled.yml --ref onbjerg/parallel-execution \
   -F sequential-peer=true -f ref='<candidate-sha>'
@@ -487,13 +499,24 @@ mixed and win-only Slack is suppressed. This isolates the builder improvement;
 it does not establish a win against main.
 
 [Capture diagnostic 37104562656](https://github.com/tempoxyz/tempo/actions/runs/37104562656)
-compares eight versus sixteen prewarming workers in the same `46cb6f4f6` binary,
+compares eight versus sixteen prewarming workers at revision `46cb6f4f6`,
 with builder and Engine windows both fixed at 128. Final capture counters cover
 every eligible accepted block: admission beyond the Engine window rises from
 1.32% to 58.85% of hook entries, while count and byte quotas reject zero results.
 Validator gas throughput improves 17.36%, but block-time p99 rises 131.24%; the
 instrumented result is mixed and Slack is suppressed. A wider window would
 perform additional strict execution, so these counts do not predict a speedup.
+
+[Capture-window comparison 37108485802](https://github.com/tempoxyz/tempo/actions/runs/37108485802)
+compares windows 128 and 256 using the same verified `06f046cda` executable,
+with sixteen prewarming workers and capture diagnostics disabled. The workflow
+classifies block-time p90's 3.34% decrease as an improvement; TPS changes from
+15,900 to 15,706 (-1.22%), statistically neutral, as are builder and validator
+gas throughput. Its win-only Slack step succeeds. Exact Engine reuse rises
+from 30.68% to 46.95% across the matched canonical cohorts, while execution
+elapsed time per transaction falls only 1.91%. The default remains 128; this
+configuration comparison establishes neither a throughput gain nor a win
+against main.
 
 A local experiment made contended prefix reads fall back to the parent provider.
 It preserved differential correctness but reduced eight-worker reuse from about
