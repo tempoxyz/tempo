@@ -242,6 +242,15 @@ payload builds. It includes setup, transaction selection, waits and finalization
 it is not execution-only throughput. CPU profile shares describe sampled work
 and must be combined with elapsed-time measurements before identifying a bottleneck.
 
+For a bounded scheduling diagnostic, the manual E2E workflow accepts
+`profiling=samply-scheduling`. It forwards both `--per-cpu-threads` and
+`--cswitch-markers`, records the runner profiler's version, help and binary hash,
+and disables Slack. These profiles may distinguish gaps following preempted
+versus blocked switch-outs; they do not provide wakeup latency or blocking stacks.
+Audit the actual marker schema and event loss before drawing conclusions. The
+artifact includes a Bash/Nu command because the Derek bot does not expose these
+options. Confirm performance separately with ordinary profiling settings.
+
 Completed sender-reuse comparisons against main `61c979a524f9`:
 
 | Target TPS | Sequential TPS | Feature TPS | Change | Workflow |

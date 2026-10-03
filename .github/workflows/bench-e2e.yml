@@ -82,6 +82,7 @@ on:
         options:
           - "off"
           - samply
+          - samply-scheduling
           - tracy
           - both
       otlp:
@@ -390,7 +391,8 @@ jobs:
       BENCH_FEATURE_HARDFORK: ${{ inputs.feature-hardfork }}
       BENCH_TXGEN_REF: ${{ inputs.txgen-ref }}
       BENCH_TOKEN_COUNT: ${{ inputs.token-count || '4' }}
-      BENCH_SAMPLY: ${{ inputs.profiling == 'samply' || inputs.profiling == 'both' || inputs.samply == true || inputs.samply == 'true' }}
+      BENCH_SAMPLY: ${{ inputs.profiling == 'samply' || inputs.profiling == 'samply-scheduling' || inputs.profiling == 'both' || inputs.samply == true || inputs.samply == 'true' }}
+      BENCH_SAMPLY_ARGS: ${{ inputs.profiling == 'samply-scheduling' && '--per-cpu-threads --cswitch-markers' || '' }}
       BENCH_TRACY: ${{ inputs.tracy != '' && inputs.tracy || ((inputs.profiling == 'tracy' || inputs.profiling == 'both') && 'tracy' || ((inputs.profiling == 'off' || inputs.profiling == 'samply') && 'off' || 'off')) }}
       BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds || '10' }}
       BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset }}
@@ -407,7 +409,7 @@ jobs:
       BENCH_RUN_TYPE: ${{ inputs.run-type || 'dispatch' }}
       BENCH_FORCE_BLOAT: ${{ inputs.force-bloat || 'false' }}
       BENCH_NO_CACHE: ${{ inputs.no-cache || 'false' }}
-      BENCH_NO_SLACK: ${{ inputs.sequential-peer && 'true' || inputs.no-slack }}
+      BENCH_NO_SLACK: ${{ (inputs.sequential-peer || inputs.profiling == 'samply-scheduling') && 'true' || inputs.no-slack }}
       # The reusable input defaults to always. Direct manual dispatch has no slack
       # input and uses win-only notifications, without adding a 26th UI input.
       BENCH_SLACK: ${{ inputs.slack || 'on-win' }}
@@ -525,6 +527,46 @@ jobs:
           fetch-depth: 0
           ref: ${{ steps.checkout-ref.outputs.ref }}
 
+      - name: Validate scheduling profiler
+        if: env.BENCH_SAMPLY_ARGS != ''
+        run: |
+          mkdir -p bench-results
+          # Match the sudo login-shell context used by start-e2e-local-node.
+          samply_binary="$(sudo bash -lc 'command -v samply')"
+          sudo "$samply_binary" --version > bench-results/samply-version.txt
+          sudo "$samply_binary" record --help > bench-results/samply-record-help.txt
+          python3 - "$samply_binary" "$BENCH_SAMPLY_ARGS" <<'PY'
+          import hashlib, json, pathlib, re, sys
+          binary = pathlib.Path(sys.argv[1]).resolve(strict=True)
+          output = pathlib.Path('bench-results')
+          help_text = (output / 'samply-record-help.txt').read_text()
+          arguments = sys.argv[2].split()
+          required = arguments + ['--save-only', '--presymbolicate', '--output']
+          missing = [flag for flag in required if not re.search(
+              r'^\s*(?:-[^\s,]+,\s*)?' + re.escape(flag) + r'(?=\s|=|$)',
+              help_text, re.MULTILINE)]
+          with binary.open('rb') as source:
+              binary_sha256 = hashlib.file_digest(source, 'sha256').hexdigest()
+          provenance = {
+              'mode': 'samply-scheduling',
+              'binary_path': str(binary),
+              'binary_sha256': binary_sha256,
+              'version': (output / 'samply-version.txt').read_text().strip(),
+              'record_help_sha256': hashlib.sha256(help_text.encode()).hexdigest(),
+              'additional_record_arguments': arguments,
+              'required_options': required,
+              'missing_options': missing,
+              'launch_context': 'sudo bash -lc',
+              'derek_command_supported': False,
+              'scope': 'Instrumented scheduler diagnostic; marker semantics and event loss require a separate audit.',
+          }
+          (output / 'samply-provenance.json').write_text(json.dumps(provenance, indent=2) + '\n')
+          if missing:
+              sys.exit('::error::Runner samply lacks required options: ' + ', '.join(missing))
+          print(json.dumps(provenance, indent=2))
+          PY
+          echo 'Scheduling diagnostic: both --per-cpu-threads and --cswitch-markers enabled; Slack disabled.' >> "$GITHUB_STEP_SUMMARY"
+
       - name: Checkout ValScope report builder
         if: env.BENCH_VALSCOPE == 'true'
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -599,7 +641,9 @@ jobs:
             const txgenRef = process.env.BENCH_TXGEN_REF || 'default';
             const tokenCount = process.env.BENCH_TOKEN_COUNT || '4';
             const samply = process.env.BENCH_SAMPLY === 'true';
-            const samplyNote = samply ? ', samply: `enabled`' : '';
+            const samplyNote = process.env.BENCH_SAMPLY_ARGS
+              ? `, samply scheduling diagnostic: \`${process.env.BENCH_SAMPLY_ARGS}\``
+              : (samply ? ', samply: `enabled`' : '');
             const tracy = process.env.BENCH_TRACY;
             const tracyNote = tracy !== 'off' ? ', tracy: `enabled`' : '';
             const otlp = process.env.BENCH_OTLP === 'true';
@@ -845,7 +889,9 @@ jobs:
             const txgenRef = process.env.BENCH_TXGEN_REF || 'default';
             const tokenCount = process.env.BENCH_TOKEN_COUNT || '4';
             const samply = process.env.BENCH_SAMPLY === 'true';
-            const samplyNote = samply ? ', samply: `enabled`' : '';
+            const samplyNote = process.env.BENCH_SAMPLY_ARGS
+              ? `, samply scheduling diagnostic: \`${process.env.BENCH_SAMPLY_ARGS}\``
+              : (samply ? ', samply: `enabled`' : '');
             const tracy = process.env.BENCH_TRACY;
             const tracyNote = tracy !== 'off' ? ', tracy: `enabled`' : '';
             const otlp = process.env.BENCH_OTLP === 'true';
@@ -951,6 +997,7 @@ jobs:
           [ "$BENCH_NO_CACHE" = "true" ] && cmd+=(--no-cache)
           [ "$BENCH_SEQUENTIAL_PEER" = "true" ] && cmd+=(--sequential-peer)
           [ "$BENCH_SAMPLY" = "true" ] && cmd+=(--samply)
+          [ -n "$BENCH_SAMPLY_ARGS" ] && cmd+=(--samply-args="$BENCH_SAMPLY_ARGS")
           [ "$BENCH_TRACY" != "off" ] && cmd+=(--tracy "$BENCH_TRACY" --tracy-seconds "$BENCH_TRACY_SECONDS" --tracy-offset "$BENCH_TRACY_OFFSET")
           effective_baseline_args="$BENCH_BASELINE_ARGS"
           effective_feature_args="$BENCH_FEATURE_ARGS"
@@ -1042,12 +1089,43 @@ jobs:
           [ -n "$BENCH_BASELINE_ENV" ] && derek_cmd+=(baseline-env="$BENCH_BASELINE_ENV")
           [ -n "$BENCH_FEATURE_ENV" ] && derek_cmd+=(feature-env="$BENCH_FEATURE_ENV")
           DEREK_BENCH_COMMAND=""
-          for arg in "${derek_cmd[@]}"; do
-            if [ -n "$DEREK_BENCH_COMMAND" ]; then
-              DEREK_BENCH_COMMAND+=" "
-            fi
-            DEREK_BENCH_COMMAND+="$(quote_derek_arg "$arg")"
-          done
+          # The bot parser does not support scheduling options. An empty command
+          # omits the misleading reproduction claim from tempo.nu summaries.
+          if [ -z "$BENCH_SAMPLY_ARGS" ]; then
+            for arg in "${derek_cmd[@]}"; do
+              if [ -n "$DEREK_BENCH_COMMAND" ]; then
+                DEREK_BENCH_COMMAND+=" "
+              fi
+              DEREK_BENCH_COMMAND+="$(quote_derek_arg "$arg")"
+            done
+          else
+            # Preserve the actual Nu argv with protected values referenced by
+            # environment variable, never copied into the uploaded artifact.
+            mkdir -p bench-results
+            {
+              printf '#!/usr/bin/env bash\nset -euo pipefail\n'
+              printf '# Scheduling diagnostic runtime command; run from the same workflow checkout.\n'
+              printf '# Protected reporter URLs and extra environment values must be supplied through the named environment variables.\n'
+              printf '# This is a Bash/Nu command, not a supported Derek bot command.\n'
+              samply_command_env=""
+              for arg in "${cmd[@]}"; do
+                if [ -n "$samply_command_env" ]; then
+                  printf '"${%s:?}" ' "$samply_command_env"
+                  samply_command_env=""
+                  continue
+                fi
+                case "$arg" in
+                  --clickhouse-url) samply_command_env=CLICKHOUSE_URL ;;
+                  --victoriametrics-url) samply_command_env=BENCH_VICTORIAMETRICS_URL ;;
+                  --bench-env=*) printf '%s ' '--bench-env="${BENCH_BENCH_ENV:?}"'; continue ;;
+                  --baseline-env=*) printf '%s ' '--baseline-env="${BENCH_BASELINE_ENV:?}"'; continue ;;
+                  --feature-env=*) printf '%s ' '--feature-env="${BENCH_FEATURE_ENV:?}"'; continue ;;
+                esac
+                printf '%q ' "$arg"
+              done
+              printf '\n'
+            } > bench-results/samply-benchmark-command.sh
+          fi
           export DEREK_BENCH_COMMAND
           echo "DEREK_BENCH_COMMAND=$DEREK_BENCH_COMMAND" >> "$GITHUB_ENV"
 
