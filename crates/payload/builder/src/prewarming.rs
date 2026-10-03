@@ -218,11 +218,12 @@ impl BestTransactionsPrewarming {
                         ctx.speculative_in_flight -= 1;
                         advance(&mut ctx);
                     }
-                    BestTransactionsCommand::Invalid {
-                        invalid,
-                        old_rx,
-                        new_tx,
-                    } => {
+                    BestTransactionsCommand::Invalid(invalidation) => {
+                        let BufferedInvalidation {
+                            invalid,
+                            old_rx,
+                            new_tx,
+                        } = *invalidation;
                         ctx.best_txs.mark_invalid(&invalid.tx, invalid.kind);
                         ctx.transactions_tx = new_tx;
 
@@ -386,17 +387,23 @@ impl BestTransactions for BestTransactionsPrewarming {
         if transaction.tx.transaction.is_expiring_nonce() {
             let _ = self
                 .commands_tx
-                .send(BestTransactionsCommand::InvalidExpiringNonce(invalid));
+                .send(BestTransactionsCommand::InvalidExpiringNonce(Box::new(
+                    invalid,
+                )));
             return;
         }
 
         let (new_tx, new_rx) = mpsc::channel();
         let old_rx = core::mem::replace(&mut self.transactions_rx, new_rx);
-        let _ = self.commands_tx.send(BestTransactionsCommand::Invalid {
-            invalid,
-            old_rx,
-            new_tx,
-        });
+        let _ = self
+            .commands_tx
+            .send(BestTransactionsCommand::Invalid(Box::new(
+                BufferedInvalidation {
+                    invalid,
+                    old_rx,
+                    new_tx,
+                },
+            )));
     }
 
     fn no_updates(&mut self) {
@@ -725,18 +732,22 @@ impl<Provider> PrewarmingExecutionContext<Provider> {
 enum BestTransactionsCommand {
     Advance,
     ConsumedSpeculative,
-    Invalid {
-        invalid: InvalidTransaction,
-        old_rx: Receiver<Option<PrewarmedTransaction>>,
-        new_tx: Sender<Option<PrewarmedTransaction>>,
-    },
+    Invalid(Box<BufferedInvalidation>),
     NoUpdates,
     SkipBlobs(bool),
     Stop {
         /// Receiver moved out of the builder thread so queued transactions drain on the coordinator.
         drain_rx: Receiver<Option<PrewarmedTransaction>>,
     },
-    InvalidExpiringNonce(InvalidTransaction),
+    InvalidExpiringNonce(Box<InvalidTransaction>),
+}
+
+/// Keep infrequent invalidation data out of every advance and permit message.
+#[derive(Debug)]
+struct BufferedInvalidation {
+    invalid: InvalidTransaction,
+    old_rx: Receiver<Option<PrewarmedTransaction>>,
+    new_tx: Sender<Option<PrewarmedTransaction>>,
 }
 
 /// Invalid transaction encountered during execution.

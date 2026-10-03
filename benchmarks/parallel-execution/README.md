@@ -110,6 +110,11 @@ actual captured results reduce median handoff time 36.75% for ready results and
 common job and permit channels, excludes execution and validation, and does not
 establish a node throughput improvement.
 
+Boxing infrequent coordinator invalidations shrinks each command from 128 to
+16 bytes. With the single result slot, a separate interleaved comparison reduces
+handoff-only median time another 7.21% for ready results and 17.37% across threads.
+All three executable pairs improve; node-level impact remains unmeasured.
+
 For historical data, use the read-only differential replay command:
 
 ```sh
