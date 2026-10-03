@@ -239,7 +239,7 @@ async fn test_2d_nonce_tx_reinjected_after_reorg() -> eyre::Result<()> {
         .await?;
     assert!(node.inner.pool.contains(&tx_hash), "tx should be in pool");
 
-    node.advance_block().await?;
+    node.mine_pooled([tx_hash]).await?;
 
     node.wait_for_pool(|pool| !pool.contains(&tx_hash))
         .await

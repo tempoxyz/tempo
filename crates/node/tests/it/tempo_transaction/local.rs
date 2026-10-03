@@ -15,7 +15,7 @@ use alloy::{
 };
 use alloy_eips::Encodable2718;
 use eyre::WrapErr;
-use reth_e2e_test_utils::{receipt::await_successful_receipts, wallet::test_signer};
+use reth_e2e_test_utils::wallet::test_signer;
 use reth_ethereum::network::{NetworkSyncUpdater, SyncState};
 use reth_node_api::BuiltPayload;
 use reth_primitives_traits::transaction::TxHashRef;
@@ -352,23 +352,14 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
         );
     }
 
-    // Mine block
-    let payload1 = setup.node.advance_block().await?;
-    let block1_txs = &payload1.block().body().transactions;
+    // Mine block, which fails unless it includes all submitted transactions
+    let mined1 = setup.node.mine_pooled(sent.iter().copied()).await?;
 
     println!(
         "\n  Block {} mined with {} transactions",
-        payload1.block().inner.number,
-        block1_txs.len()
+        mined1.block().inner.number,
+        mined1.block().body().transactions.len()
     );
-
-    // Verify all submitted transactions were included in the block
-    for tx_hash in &sent {
-        assert!(
-            block1_txs.iter().any(|tx| tx.tx_hash() == tx_hash),
-            "Submitted tx {tx_hash} should be in the block"
-        );
-    }
 
     // Verify protocol nonce incremented
     let protocol_nonce_after = provider.get_transaction_count(alice_addr).await?;
@@ -442,13 +433,13 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
         );
     }
 
-    // Mine block
-    let payload2 = setup.node.advance_block().await?;
-    let block2_txs = &payload2.block().body().transactions;
+    // Mine block, which fails unless it includes all submitted transactions
+    let mined2 = setup.node.mine_pooled(sent.iter().copied()).await?;
+    let block2_txs = &mined2.block().body().transactions;
 
     println!(
         "\n  Block {} mined with {} transactions",
-        payload2.block().inner.number,
+        mined2.block().inner.number,
         block2_txs.len()
     );
 
@@ -457,14 +448,6 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
         initial_nonce + 2,
         "Protocol nonce should have incremented twice"
     );
-
-    // Verify all submitted transactions were included in the block
-    for tx_hash in &sent {
-        assert!(
-            block2_txs.iter().any(|tx| tx.tx_hash() == tx_hash),
-            "Submitted tx {tx_hash} should be in the block"
-        );
-    }
 
     // Extract priority fees in block order, filtered to only our submitted txs
     let priority_fees: Vec<u128> = block2_txs
@@ -1916,8 +1899,11 @@ async fn test_expiring_nonce_discriminators_across_t12(
             .all(|tx| setup.node.inner.pool.contains(tx.tx_hash())),
         "{hardfork:?} accepted discriminators must coexist in the pool"
     );
-    setup.node.advance_block().await?;
-    await_successful_receipts(accepted).await?;
+    setup
+        .node
+        .mine_pooled(accepted.iter().map(|tx| *tx.tx_hash()))
+        .await?
+        .ensure_success()?;
     assert_eq!(
         provider.get_transaction_count(funder_addr).await?,
         protocol_nonce,
