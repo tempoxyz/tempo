@@ -766,6 +766,13 @@ geometric-mean throughput fell 1.59% across three eight-worker pairs and 0.93%
 across two sixteen-worker pairs. All ten million-transaction differential runs
 passed. The experiment was reverted before a node benchmark or source commit.
 
+Batching four Engine prefix publications in ordered, bounded buffers also failed
+its local gate: median publication cost rose 8.24% across five pairs with sixteen
+EVM workers. Nine boundary tests and every final-prefix comparison passed. These
+short trials replay accepted T14 TIP-20/AA outputs, with only the final test crate
+optimized; they do not measure node TPS. The prototype remains an ignored artifact
+and is not integrated.
+
 A compact read-record prototype reduced each inline record from 152 to 120 bytes.
 Eight-worker geometric-mean throughput rose 3.53%, with mixed individual pairs,
 but both sixteen-worker pairs regressed (6.68% overall). All ten million-transaction
