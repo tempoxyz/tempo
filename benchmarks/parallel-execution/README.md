@@ -518,18 +518,31 @@ elapsed time per transaction falls only 1.91%. The default remains 128; this
 configuration comparison establishes neither a throughput gain nor a win
 against main.
 
+[Capture-window comparison 37110497271](https://github.com/tempoxyz/tempo/actions/runs/37110497271)
+compares windows 128 and 512 with that same executable and worker configuration.
+TPS changes from 17,575 to 17,477 (-0.56%); every official performance axis is
+statistically neutral, so win-only Slack is suppressed. Across 1,562 verified
+canonical blocks and 9.72 million transactions, exact Engine reuse rises from
+31.54% to 50.48%, while internal execution time per transaction falls only 2.03%.
+The default remains 128 because increased reuse has not improved node throughput.
+
 A local experiment made contended prefix reads fall back to the parent provider.
 It preserved differential correctness but reduced eight-worker reuse from about
 97% to 62–65%, lowering median throughput 31.74% across three paired million-
 transaction runs. Sixteen-worker throughput also fell 15.99%. The experiment was
 reverted; its patch and evidence remain in the ignored artifact directory.
 
-The private accepted-prefix maps now use Alloy's fixed-key map aliases. Local
-million-transaction public-mix comparisons improve geometric-mean throughput
+An experiment using Alloy's fixed-key aliases for the private accepted-prefix
+maps improved local million-transaction public-mix geometric-mean throughput
 3.21% across three eight-worker pairs and 8.75% across two sixteen-worker pairs.
 Individual gains vary substantially; all ten runs match sequential receipts
 and state roots. The harness waits for worker results and uses in-memory state,
 so these measurements do not establish a node throughput improvement.
+The [isolated node comparison 37111463672](https://github.com/tempoxyz/tempo/actions/runs/37111463672)
+regresses TPS from 16,550 to 15,449 (-6.65%) and block-time p99 by 248.48%; builder
+and validator gas throughput remain statistically neutral. Win-only Slack is
+suppressed. The map change was reverted; local gains did not survive the node
+benchmark.
 
 [Lock-diagnostic replay 37096394462](https://github.com/tempoxyz/tempo/actions/runs/37096394462)
 measures 29.483 versus 28.421 Mgas/s (-3.60%), with p99 newPayload latency rising
@@ -541,4 +554,13 @@ transactions. Rotated logs omit some earlier measured blocks, limiting aggregate
 reuse analysis. This is the same sparse range as
 [state-commit replay 37087375235](https://github.com/tempoxyz/tempo/actions/runs/37087375235),
 which also regressed. Win-only Slack is suppressed; historical replay has not
-established a performance improvement.
+established a performance improvement against main.
+
+[Small-batch replay 37110030307](https://github.com/tempoxyz/tempo/actions/runs/37110030307)
+isolates the five-transaction scheduling threshold (`46cb6f4f6` versus `f1b7b081f`).
+All 250,000 submissions are valid; four measured passes match 50,000 blocks,
+12,269 transactions and 1,525,956,457 gas. Official mean newPayload latency falls
+1.27%, p99 falls 12.12%, and mean Mgas/s rises 4.31%, with no classified regression;
+the win-only Slack posting step succeeds. The affected two-to-four-transaction
+cohort has 19.66% lower mean latency. This supports retaining the threshold,
+but does not establish a dense-workload gain or a win against main.
