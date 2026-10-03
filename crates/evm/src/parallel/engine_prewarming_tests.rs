@@ -84,7 +84,15 @@ fn factory(
     env: &Env,
     transactions: &[TempoTxEnv],
 ) -> (TempoEvmFactory, Arc<EnginePrewarmingSession>) {
-    let cache = EnginePrewarmingCache::default();
+    factory_with_diagnostics(env, transactions, false)
+}
+
+fn factory_with_diagnostics(
+    env: &Env,
+    transactions: &[TempoTxEnv],
+    diagnostics: bool,
+) -> (TempoEvmFactory, Arc<EnginePrewarmingSession>) {
+    let cache = EnginePrewarmingCache::new(diagnostics);
     let session = cache
         .begin(
             env.clone(),
@@ -140,6 +148,133 @@ fn ordered(factory: &TempoEvmFactory, db: TestDB, env: Env) -> TempoEvm<TestDB> 
     evm.set_speculative_executor(Some(SpeculativeExecutor::new(1, 128).unwrap()));
     assert!(evm.has_engine_prewarming());
     evm
+}
+
+#[test]
+fn capture_diagnostics_classify_strict_outcomes_and_short_circuit_guards() {
+    for enabled in [false, true] {
+        for outcome in ["success", "strict_failure", "guard", "journal"] {
+            let env = env(TempoHardfork::T0);
+            let mut transaction = tx(0);
+            if outcome == "strict_failure" {
+                transaction.inner.nonce = 7;
+            }
+            let (factory, session) =
+                factory_with_diagnostics(&env, std::slice::from_ref(&transaction), enabled);
+            let mut worker = factory.create_evm(TestDB::default(), relaxed(&env));
+            let mut legacy = TempoEvm::new(TestDB::default(), relaxed(&env));
+            for evm in [&mut worker, &mut legacy] {
+                if outcome == "guard" {
+                    evm.ctx_mut().block.inner.number += U256::ONE;
+                } else if outcome == "journal" {
+                    let mut access_list = alloy_primitives::map::AddressMap::default();
+                    access_list.insert(address(1000), [U256::ZERO].into_iter().collect());
+                    evm.ctx_mut().journaled_state.warm_access_list(access_list);
+                }
+            }
+            assert_eq!(
+                worker.transact_raw(transaction.clone()).unwrap(),
+                legacy.transact_raw(transaction.clone()).unwrap(),
+                "{outcome}"
+            );
+            assert_eq!(session.take(&transaction).is_some(), outcome == "success");
+            if let Some(diagnostics) = &session.diagnostics {
+                let counts = diagnostics.snapshot();
+                let count = |event: CaptureEvent| counts.0[event as usize];
+                assert_eq!(count(CaptureEvent::WorkerEntries), 1);
+                assert_eq!(count(CaptureEvent::WorkerFinished), 1);
+                assert_eq!(count(CaptureEvent::WorkerUnwound), 0);
+                assert_eq!(
+                    count(CaptureEvent::GuardRejected),
+                    u64::from(outcome == "guard")
+                );
+                assert_eq!(
+                    count(CaptureEvent::AdmissionInWindow),
+                    u64::from(outcome != "guard")
+                );
+                assert_eq!(
+                    count(CaptureEvent::JournalRejected),
+                    u64::from(outcome == "journal")
+                );
+                assert_eq!(
+                    count(CaptureEvent::StrictAttempts),
+                    u64::from(matches!(outcome, "success" | "strict_failure"))
+                );
+                assert_eq!(
+                    count(CaptureEvent::StrictSucceeded),
+                    u64::from(outcome == "success")
+                );
+                assert_eq!(
+                    count(CaptureEvent::StrictFailed),
+                    u64::from(outcome == "strict_failure")
+                );
+                assert_eq!(
+                    count(CaptureEvent::PublishAttempts),
+                    u64::from(outcome == "success")
+                );
+                assert_eq!(
+                    count(CaptureEvent::Published),
+                    u64::from(outcome == "success")
+                );
+                assert_eq!(
+                    count(CaptureEvent::WorkerEntries),
+                    count(CaptureEvent::GuardRejected)
+                        + count(CaptureEvent::AdmissionSystem)
+                        + count(CaptureEvent::AdmissionUnindexed)
+                        + count(CaptureEvent::AdmissionStale)
+                        + count(CaptureEvent::AdmissionFuture)
+                        + count(CaptureEvent::JournalRejected)
+                        + count(CaptureEvent::StrictSucceeded)
+                        + count(CaptureEvent::StrictFailed)
+                );
+                assert_eq!(
+                    count(CaptureEvent::AdmissionInWindow),
+                    count(CaptureEvent::JournalRejected) + count(CaptureEvent::StrictAttempts)
+                );
+                assert_eq!(
+                    count(CaptureEvent::StrictAttempts),
+                    count(CaptureEvent::StrictSucceeded) + count(CaptureEvent::StrictFailed)
+                );
+            } else {
+                assert!(!enabled);
+            }
+        }
+    }
+}
+
+#[test]
+fn diagnostic_configuration_reaches_only_the_engine_cache() {
+    for enabled in [false, true] {
+        let executor = SpeculativeExecutor::new(1, 128).unwrap();
+        assert!(!executor.capture_diagnostics());
+        let original = TempoEvmConfig::moderato()
+            .with_speculative_executor(executor.with_capture_diagnostics(enabled));
+        let engine = original.clone().with_engine_prewarming();
+        assert!(
+            original
+                .inner
+                .executor_factory
+                .evm_factory()
+                .engine_prewarming
+                .is_none()
+        );
+        let cache = engine
+            .inner
+            .executor_factory
+            .evm_factory()
+            .engine_prewarming
+            .as_ref()
+            .unwrap();
+        assert_eq!(cache.capture_diagnostics, enabled);
+        let payload_hash = B256::with_last_byte(42);
+        let session = cache
+            .begin_payload(env(TempoHardfork::T0), payload_hash, [B256::ZERO])
+            .unwrap();
+        assert_eq!(session.diagnostics.is_some(), enabled);
+        if let Some(diagnostics) = &session.diagnostics {
+            assert_eq!(diagnostics.payload_hash, payload_hash);
+        }
+    }
 }
 
 #[test]

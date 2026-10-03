@@ -34,9 +34,9 @@ use tempo_revm::{
 use crate::{
     TempoBlockEnv, TempoPoolValidationEvm, TempoPoolValidationResult,
     parallel::{
-        EnginePrewarmingCache, EnginePrewarmingSession, ExecutionStats, PreexecutedTransaction,
-        PrewarmingExecutor, PrewarmingState, SpeculativeBatch, SpeculativeExecutor,
-        SpeculativeResult,
+        CaptureEvent, EnginePrewarmingCache, EnginePrewarmingSession, ExecutionStats,
+        PreexecutedTransaction, PrewarmingExecutor, PrewarmingState, SpeculativeBatch,
+        SpeculativeExecutor, SpeculativeResult,
     },
 };
 
@@ -242,6 +242,11 @@ impl<DB: Database, I> TempoEvm<DB, I> {
 
     /// One summary at block-loop completion; worker capture does not update these.
     pub(crate) fn log_engine_wait_timings(&self) {
+        if self.engine_capture.is_none()
+            && let Some(session) = &self.engine_session
+        {
+            session.log_loop_finish_snapshot();
+        }
         let timings = &self.engine_wait_timings;
         if timings.takes == 0 && timings.prefix_writes == 0 {
             return;
@@ -661,7 +666,8 @@ where
         self.inner.set_body_replay(None);
         if let Some(session) = self.engine_session.clone() {
             if let Some(capture) = self.engine_capture {
-                if !self.inspect
+                let _capture_worker = session.worker_entry();
+                let guard_admitted = !self.inspect
                     && self.standard_configuration
                     && self.inner.ctx.cfg == self.worker_cfg
                     && self.inner.ctx.block == session.env().block_env
@@ -671,10 +677,15 @@ where
                     && !self.inner.skip_liquidity_check
                     && self.inner.ctx.journaled_state.state.is_empty()
                     && self.inner.ctx.journaled_state.transient_storage.is_empty()
-                    && self.inner.ctx.journaled_state.logs.is_empty()
-                    && session.can_capture(&tx)
-                    && self.standard_journal_for_reuse()
-                {
+                    && self.inner.ctx.journaled_state.logs.is_empty();
+                if guard_admitted && session.can_capture(&tx) && {
+                    let standard = self.standard_journal_for_reuse();
+                    if !standard {
+                        session.capture_event(CaptureEvent::JournalRejected);
+                    }
+                    standard
+                } {
+                    session.capture_event(CaptureEvent::StrictAttempts);
                     let mut strict_tx = tx.clone();
                     // Reth's index is a parent-relative ring prediction. The
                     // recorder applies it once, then records a canonical tx.
@@ -689,6 +700,7 @@ where
                         strict_tx,
                         offset,
                     ) {
+                        session.capture_event(CaptureEvent::StrictSucceeded);
                         // In pinned Reth this return value supplies proof
                         // prefetch targets only. It is never committed. Keep
                         // the strict result separate from the shared read cache.
@@ -696,8 +708,11 @@ where
                         session.publish(candidate);
                         return Ok(hint);
                     }
+                    session.capture_event(CaptureEvent::StrictFailed);
                     // A strict failure must retain the legacy relaxed prewarm,
                     // including its original transaction and AA offset.
+                } else if !guard_admitted {
+                    session.capture_event(CaptureEvent::GuardRejected);
                 }
             } else {
                 let (candidate, timings) = session.take_timed(&tx);

@@ -115,12 +115,14 @@ impl TempoEvmConfig {
     /// Call only on the Engine validator's clone, with prewarming enabled. RPC,
     /// builders and arbitrary relaxed EVMs must retain an unmarked factory.
     pub fn with_engine_prewarming(mut self) -> Self {
-        if self.speculative_executor.is_some() {
+        if let Some(executor) = &self.speculative_executor {
             self.inner.executor_factory = alloy_evm::eth::EthBlockExecutorFactory::new(
                 *self.inner.executor_factory.receipt_builder(),
                 self.inner.executor_factory.spec().clone(),
                 TempoEvmFactory {
-                    engine_prewarming: Some(Default::default()),
+                    engine_prewarming: Some(parallel::EnginePrewarmingCache::new(
+                        executor.capture_diagnostics(),
+                    )),
                 },
             );
         }

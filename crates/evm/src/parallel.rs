@@ -52,7 +52,7 @@ use reth_revm::context::result::HaltReason as TempoHaltReason;
 mod engine_prewarming;
 mod forwarding;
 mod native_rebase;
-pub(crate) use engine_prewarming::{EnginePrewarmingCache, EnginePrewarmingSession};
+pub(crate) use engine_prewarming::{CaptureEvent, EnginePrewarmingCache, EnginePrewarmingSession};
 mod prewarming;
 #[cfg(test)]
 mod prewarming_guard_tests;
@@ -76,6 +76,7 @@ pub struct SpeculativeExecutor {
     chained_workers: bool,
     state_forwarding: bool,
     nonce_prediction: bool,
+    capture_diagnostics: bool,
     scheduled_transactions: Arc<AtomicU64>,
     prewarmed_reuses: Arc<AtomicU64>,
 }
@@ -106,9 +107,20 @@ impl SpeculativeExecutor {
             chained_workers: true,
             state_forwarding: false,
             nonce_prediction: true,
+            capture_diagnostics: false,
             scheduled_transactions: Arc::default(),
             prewarmed_reuses: Arc::default(),
         })
+    }
+
+    /// Enables opt-in Engine capture accounting without changing scheduling.
+    pub fn with_capture_diagnostics(mut self, enabled: bool) -> Self {
+        self.capture_diagnostics = enabled;
+        self
+    }
+
+    pub(crate) const fn capture_diagnostics(&self) -> bool {
+        self.capture_diagnostics
     }
 
     /// Predicts expiring-nonce ring positions in input order. Every predicted read

@@ -16,6 +16,13 @@ BAL payloads retain the regular scheduler. Engine prewarming concurrency follows
 `--engine.prewarming-threads`; the regular pool follows `--execution.threads`.
 Typed block executors use authoritative State-cache validation, with received
 BALs retaining ordinary database validation.
+`--execution.capture-diagnostics` optionally records Engine admission, strict
+execution, publication and consumption outcomes without changing scheduling.
+It defaults off. Counters belong to a unique session and payload hash;
+`loop_finish` is concurrent and precedes block acceptance, while `session_drop`
+has final counts but may be delayed or absent at process exit. Reconcile only
+final snapshots for accepted blocks. Worker completion counts cover the capture
+hook, not the full prewarming job. Confirm performance without these counters.
 Builder workers also follow `--engine.prewarming-threads`. Speculative admission
 uses `--execution.batch-size`, capped at 128 outstanding candidates, with a separate
 32 MiB estimate limit on completed results retained by each build. Running workers,
@@ -50,6 +57,17 @@ parallel roles. It fails if the generated cohort or required log evidence is
 missing. Both peers use the selected candidate binary; shared changes such as
 State commit optimization still require their separate ordinary-State oracle
 tests. These runs do not publish performance results or Slack notifications.
+
+[Generated validation 37103153124](https://github.com/tempoxyz/tempo/actions/runs/37103153124)
+passes on `0936aef39` (the same Rust implementation as `13e97e5be`). Both peers
+match finalized headers, transaction bodies and full receipts for blocks 8–170:
+163 dense blocks containing 1,573,044 transactions. Each block has a producer
+execution and fresh opposite-peer Engine execution followed by `VALID`.
+The parallel peer builds 89 blocks and validates 74; its included builder reuse
+is at least 806,336 transactions, and Engine reuse is exactly 258,154.
+Both peers use sixteen prewarming workers, with execution threads eight versus
+zero. This is a correctness result for the paid expiring-AA public mix, not a
+comparison against unmodified main or a sustained 50,000 TPS result.
 
 ```sh
 gh workflow run bench-e2e-scheduled.yml --ref onbjerg/parallel-execution \

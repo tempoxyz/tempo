@@ -77,6 +77,9 @@ pub struct TempoNodeArgs {
     /// Forward likely native dependencies between speculative workers.
     #[arg(long = "execution.state-forwarding", default_value_t = false)]
     pub execution_state_forwarding: bool,
+    /// Record diagnostic Engine capture outcomes; does not change scheduling.
+    #[arg(long = "execution.capture-diagnostics", default_value_t = false)]
+    pub execution_capture_diagnostics: bool,
 
     /// Maximum allowed `valid_after` offset for AA txs.
     #[arg(long = "txpool.aa-valid-after-max-secs", default_value_t = DEFAULT_AA_VALID_AFTER_MAX_SECS)]
@@ -150,6 +153,7 @@ impl Default for TempoNodeArgs {
             execution_threads: 0,
             execution_batch_size: 128,
             execution_state_forwarding: false,
+            execution_capture_diagnostics: false,
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
@@ -285,6 +289,7 @@ impl TempoNode {
                 threads: args.execution_threads,
                 batch_size: args.execution_batch_size.max(1) as usize,
                 state_forwarding: args.execution_state_forwarding,
+                capture_diagnostics: args.execution_capture_diagnostics,
             },
             pool_builder: args.pool_builder(),
             payload_builder_builder: args.payload_builder_builder(),
@@ -586,6 +591,8 @@ pub struct TempoExecutorBuilder {
     pub batch_size: usize,
     /// Forward completed predecessor predictions.
     pub state_forwarding: bool,
+    /// Record opt-in Engine capture outcomes.
+    pub capture_diagnostics: bool,
 }
 
 impl<Node> ExecutorBuilder<Node> for TempoExecutorBuilder
@@ -602,7 +609,8 @@ where
                     self.threads,
                     self.batch_size.max(1),
                 )?
-                .with_state_forwarding(self.state_forwarding),
+                .with_state_forwarding(self.state_forwarding)
+                .with_capture_diagnostics(self.capture_diagnostics),
             );
         }
         if let Some(cache) = ctx.sender_recovery_cache() {
@@ -995,6 +1003,35 @@ mod tests {
         AddressFilter, TempoNode, TempoNodeArgs, TempoPayloadBuilderBuilder, TempoPoolBuilder,
     };
     use alloy_primitives::Address;
+
+    #[test]
+    fn capture_diagnostics_cli_defaults_off_and_reaches_executor_builder() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Args {
+            #[command(flatten)]
+            node: TempoNodeArgs,
+        }
+        let defaults = Args::try_parse_from(["tempo"]).unwrap();
+        assert!(!defaults.node.execution_capture_diagnostics);
+        assert!(!TempoNodeArgs::default().execution_capture_diagnostics);
+        assert!(
+            !TempoNode::new(&defaults.node, None)
+                .executor_builder
+                .capture_diagnostics
+        );
+        let enabled = Args::try_parse_from([
+            "tempo",
+            "--execution.threads",
+            "8",
+            "--execution.capture-diagnostics",
+        ])
+        .unwrap();
+        let node = TempoNode::new(&enabled.node, None);
+        assert!(node.executor_builder.capture_diagnostics);
+        assert_eq!(node.executor_builder.threads, 8);
+        assert_eq!(node.executor_builder.batch_size, 128);
+    }
 
     #[test]
     fn lane_limit_cli_reaches_pool_builder() {

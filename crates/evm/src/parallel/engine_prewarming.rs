@@ -7,10 +7,11 @@ use super::{Env, PreexecutedTransaction, PrewarmingState, ReadValue};
 use alloy_primitives::{B256, map::HashMap};
 use std::{
     collections::BTreeMap,
+    fmt,
     mem::size_of,
     sync::{
-        Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex, TryLockError,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -20,14 +21,136 @@ const MAX_TRANSACTIONS: usize = 65_536;
 const LOOKAHEAD: usize = 128;
 const MAX_ESTIMATED_BYTES: usize = 32 * 1024 * 1024;
 
+// Allocated only for enabled diagnostic sessions. Padding separates distinct
+// outcomes; relaxed counters are advisory and never control execution.
+#[derive(Debug, Default)]
+#[repr(align(64))]
+struct CaptureCounter(AtomicU64);
+
+macro_rules! capture_events {
+    ($($variant:ident => $name:literal),+ $(,)?) => {
+        #[derive(Clone, Copy)]
+        pub(crate) enum CaptureEvent { $($variant,)+ Count }
+        const COUNTER_COUNT: usize = CaptureEvent::Count as usize;
+        const COUNTER_NAMES: [&str; COUNTER_COUNT] = [$($name,)+];
+    };
+}
+
+capture_events! {
+    WorkerEntries => "worker_entries",
+    WorkerFinished => "worker_finished",
+    WorkerUnwound => "worker_unwound",
+    GuardRejected => "guard_rejected",
+    AdmissionSystem => "admission_system",
+    AdmissionUnindexed => "admission_unindexed",
+    AdmissionStale => "admission_stale",
+    AdmissionFuture => "admission_future",
+    Future128To255 => "future_128_255",
+    Future256To511 => "future_256_511",
+    Future512To1023 => "future_512_1023",
+    Future1024Plus => "future_1024_plus",
+    AdmissionInWindow => "admission_in_window",
+    JournalRejected => "journal_rejected",
+    StrictAttempts => "strict_attempts",
+    StrictSucceeded => "strict_succeeded",
+    StrictFailed => "strict_failed",
+    PublishAttempts => "publish_attempts",
+    PublishWrongEnv => "publish_wrong_env",
+    PublishSystem => "publish_system",
+    PublishUnindexed => "publish_unindexed",
+    PublishStaleBefore => "publish_stale_before_lock",
+    PublishFutureBefore => "publish_future_before_lock",
+    PublishEstimateRejected => "publish_estimate_rejected",
+    PublishContended => "publish_contended",
+    PublishPoisoned => "publish_poisoned",
+    PublishStaleAfter => "publish_stale_after_lock",
+    PublishFutureAfter => "publish_future_after_lock",
+    PublishDuplicate => "publish_duplicate",
+    PublishCountLimit => "publish_count_limit",
+    PublishOverflow => "publish_aggregate_overflow",
+    PublishByteLimit => "publish_byte_limit",
+    Published => "published",
+    TakeUnindexed => "take_unindexed",
+    Takes => "takes",
+    TakeFound => "take_found",
+    TakeMissing => "take_missing",
+    TakePoisoned => "take_poisoned",
+    Evicted => "evicted",
+}
+
+static NEXT_DIAGNOSTIC_SESSION: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Debug)]
+struct CaptureDiagnostics {
+    session_id: u64,
+    payload_hash: B256,
+    counters: [CaptureCounter; COUNTER_COUNT],
+}
+
+impl CaptureDiagnostics {
+    fn new(payload_hash: B256) -> Self {
+        Self {
+            session_id: NEXT_DIAGNOSTIC_SESSION.fetch_add(1, Ordering::Relaxed),
+            payload_hash,
+            counters: std::array::from_fn(|_| CaptureCounter::default()),
+        }
+    }
+
+    fn add(&self, event: CaptureEvent, value: u64) {
+        self.counters[event as usize]
+            .0
+            .fetch_add(value, Ordering::Relaxed);
+    }
+
+    fn snapshot(&self) -> CaptureSnapshot {
+        CaptureSnapshot(std::array::from_fn(|index| {
+            self.counters[index].0.load(Ordering::Relaxed)
+        }))
+    }
+}
+
+struct CaptureSnapshot([u64; COUNTER_COUNT]);
+
+impl fmt::Debug for CaptureSnapshot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut fields = f.debug_struct("CaptureCounters");
+        for (name, value) in COUNTER_NAMES.iter().zip(&self.0) {
+            fields.field(name, value);
+        }
+        fields.finish()
+    }
+}
+
+/// Tracks the capture hook, ending before any legacy relaxed fallback. It does
+/// not measure Reth worker-job completion. Unwinding is explicit: outcome sums
+/// need not close for an interrupted capture hook.
+pub(crate) struct CaptureWorkerGuard<'a>(&'a CaptureDiagnostics);
+
+impl Drop for CaptureWorkerGuard<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.add(CaptureEvent::WorkerUnwound, 1);
+        }
+        self.0.add(CaptureEvent::WorkerFinished, 1);
+    }
+}
+
 /// Holds only the latest Engine session. Outstanding workers may finish an old
 /// session, but cannot publish into its replacement.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct EnginePrewarmingCache {
     current: Arc<Mutex<Option<Arc<EnginePrewarmingSession>>>>,
+    capture_diagnostics: bool,
 }
 
 impl EnginePrewarmingCache {
+    pub(crate) fn new(capture_diagnostics: bool) -> Self {
+        Self {
+            capture_diagnostics,
+            ..Self::default()
+        }
+    }
+
     /// Removes the lookup session for a payload that will not capture results.
     /// Existing worker handles remain isolated from future sessions.
     pub(crate) fn clear(&self) {
@@ -38,9 +161,10 @@ impl EnginePrewarmingCache {
 
     /// Starts a new session. Invalid input clears the current session so that
     /// an earlier block with the same environment cannot supply its index map.
-    pub(crate) fn begin(
+    pub(crate) fn begin_payload(
         &self,
         env: Env,
+        payload_hash: B256,
         hashes: impl IntoIterator<Item = B256>,
     ) -> Option<Arc<EnginePrewarmingSession>> {
         let mut indices = HashMap::default();
@@ -59,10 +183,22 @@ impl EnginePrewarmingCache {
                 next: AtomicUsize::new(0),
                 retained: Mutex::default(),
                 prefix: PrewarmingState::default(),
+                diagnostics: self
+                    .capture_diagnostics
+                    .then(|| Box::new(CaptureDiagnostics::new(payload_hash))),
             })
         });
         *self.current.lock().ok()? = session.clone();
         session
+    }
+
+    #[cfg(test)]
+    pub(crate) fn begin(
+        &self,
+        env: Env,
+        hashes: impl IntoIterator<Item = B256>,
+    ) -> Option<Arc<EnginePrewarmingSession>> {
+        self.begin_payload(env, B256::ZERO, hashes)
     }
 
     /// Finds only an exact canonical environment. The factory must normalize
@@ -86,6 +222,7 @@ pub(crate) struct EnginePrewarmingSession {
     next: AtomicUsize,
     retained: Mutex<Retained>,
     prefix: PrewarmingState,
+    diagnostics: Option<Box<CaptureDiagnostics>>,
 }
 
 #[derive(Debug, Default)]
@@ -118,6 +255,55 @@ impl Retained {
 }
 
 impl EnginePrewarmingSession {
+    #[inline]
+    pub(crate) fn capture_event(&self, event: CaptureEvent) {
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.add(event, 1);
+        }
+    }
+
+    pub(crate) fn worker_entry(&self) -> Option<CaptureWorkerGuard<'_>> {
+        let diagnostics = self.diagnostics.as_deref()?;
+        diagnostics.add(CaptureEvent::WorkerEntries, 1);
+        Some(CaptureWorkerGuard(diagnostics))
+    }
+
+    /// Not an accepted-block or worker-completion barrier. Concurrent relaxed
+    /// reads can span updates, so these totals must not be reconciled as final.
+    pub(crate) fn log_loop_finish_snapshot(&self) {
+        if let Some(diagnostics) = &self.diagnostics {
+            self.log_snapshot(diagnostics, "loop_finish", false, None, None);
+        }
+    }
+
+    fn log_snapshot(
+        &self,
+        diagnostics: &CaptureDiagnostics,
+        phase: &'static str,
+        final_counts: bool,
+        retained_results: Option<usize>,
+        retained_estimated_bytes: Option<usize>,
+    ) {
+        let counters = diagnostics.snapshot();
+        let unfinished_worker_entries = counters.0[CaptureEvent::WorkerEntries as usize]
+            .saturating_sub(counters.0[CaptureEvent::WorkerFinished as usize]);
+        tracing::debug!(
+            target: "tempo::execution",
+            session_id = diagnostics.session_id,
+            payload_hash = %diagnostics.payload_hash,
+            block_number = %self.env.block_env.inner.number,
+            transaction_count = self.indices.len(),
+            cursor = self.next.load(Ordering::Relaxed),
+            phase,
+            final_counts,
+            unfinished_worker_entries,
+            ?retained_results,
+            ?retained_estimated_bytes,
+            ?counters,
+            "Engine capture diagnostics"
+        );
+    }
+
     pub(crate) const fn env(&self) -> &Env {
         &self.env
     }
@@ -141,49 +327,121 @@ impl EnginePrewarmingSession {
         self.indices.get(&tx_hash).copied()
     }
 
-    fn in_window(&self, index: usize) -> bool {
+    fn in_window(&self, index: usize, stale: CaptureEvent, future: CaptureEvent) -> bool {
         let next = self.next.load(Ordering::Acquire);
-        index >= next && index < next.saturating_add(LOOKAHEAD)
+        if index < next {
+            self.capture_event(stale);
+            false
+        } else if index >= next.saturating_add(LOOKAHEAD) {
+            self.capture_event(future);
+            false
+        } else {
+            true
+        }
     }
 
     /// Cheap admission only: publication checks the cursor again after work.
     pub(crate) fn can_capture(&self, tx: &TempoTxEnv) -> bool {
-        !tx.is_system_tx && self.index(tx).is_some_and(|index| self.in_window(index))
+        if tx.is_system_tx {
+            self.capture_event(CaptureEvent::AdmissionSystem);
+            return false;
+        }
+        let Some(index) = self.index(tx) else {
+            self.capture_event(CaptureEvent::AdmissionUnindexed);
+            return false;
+        };
+        // Classify using the same single cursor read as the admission decision.
+        let next = self.next.load(Ordering::Acquire);
+        if index < next {
+            self.capture_event(CaptureEvent::AdmissionStale);
+            return false;
+        }
+        if index >= next.saturating_add(LOOKAHEAD) {
+            self.capture_event(CaptureEvent::AdmissionFuture);
+            self.capture_event(match index - next {
+                0..256 => CaptureEvent::Future128To255,
+                256..512 => CaptureEvent::Future256To511,
+                512..1024 => CaptureEvent::Future512To1023,
+                _ => CaptureEvent::Future1024Plus,
+            });
+            return false;
+        }
+        self.capture_event(CaptureEvent::AdmissionInWindow);
+        true
     }
 
     /// Keeps a completed strict result without waiting on the ordered executor.
     /// Contention, stale work, duplicate work and budget misses simply fall back.
     pub(crate) fn publish(&self, mut candidate: PreexecutedTransaction) -> bool {
-        if candidate.env != self.env || candidate.tx.is_system_tx {
+        self.capture_event(CaptureEvent::PublishAttempts);
+        if candidate.env != self.env {
+            self.capture_event(CaptureEvent::PublishWrongEnv);
+            return false;
+        }
+        if candidate.tx.is_system_tx {
+            self.capture_event(CaptureEvent::PublishSystem);
             return false;
         }
         let Some(index) = self.index(&candidate.tx) else {
+            self.capture_event(CaptureEvent::PublishUnindexed);
             return false;
         };
-        if !self.in_window(index) {
+        if !self.in_window(
+            index,
+            CaptureEvent::PublishStaleBefore,
+            CaptureEvent::PublishFutureBefore,
+        ) {
             return false;
         }
-        // Traverse owned data before taking the publication lock.
+        // Traverse owned data before taking the publication lock. Estimator
+        // overflow and an individual result above the limit share this outcome.
         let Some(bytes) = candidate.estimated_retained_bytes() else {
+            self.capture_event(CaptureEvent::PublishEstimateRejected);
             return false;
         };
-        let Ok(mut retained) = self.retained.try_lock() else {
-            return false;
+        let mut retained = match self.retained.try_lock() {
+            Ok(retained) => retained,
+            Err(TryLockError::WouldBlock) => {
+                self.capture_event(CaptureEvent::PublishContended);
+                return false;
+            }
+            Err(TryLockError::Poisoned(poisoned)) => {
+                drop(poisoned);
+                self.capture_event(CaptureEvent::PublishPoisoned);
+                return false;
+            }
         };
-        if !self.in_window(index)
-            || retained.results.contains_key(&index)
-            || retained.results.len() >= LOOKAHEAD
-        {
+        if !self.in_window(
+            index,
+            CaptureEvent::PublishStaleAfter,
+            CaptureEvent::PublishFutureAfter,
+        ) {
+            return false;
+        }
+        if retained.results.contains_key(&index) {
+            drop(retained);
+            self.capture_event(CaptureEvent::PublishDuplicate);
+            return false;
+        }
+        if retained.results.len() >= LOOKAHEAD {
+            drop(retained);
+            self.capture_event(CaptureEvent::PublishCountLimit);
             return false;
         }
         let Some(total) = retained.estimated_bytes.checked_add(bytes) else {
+            drop(retained);
+            self.capture_event(CaptureEvent::PublishOverflow);
             return false;
         };
         if total > MAX_ESTIMATED_BYTES {
+            drop(retained);
+            self.capture_event(CaptureEvent::PublishByteLimit);
             return false;
         }
         retained.results.insert(index, (candidate, bytes));
         retained.estimated_bytes = total;
+        drop(retained);
+        self.capture_event(CaptureEvent::Published);
         true
     }
 
@@ -201,8 +459,10 @@ impl EnginePrewarmingSession {
         tx: &TempoTxEnv,
     ) -> (Option<PreexecutedTransaction>, Option<(Duration, Duration)>) {
         let Some(index) = self.index(tx) else {
+            self.capture_event(CaptureEvent::TakeUnindexed);
             return (None, None);
         };
+        self.capture_event(CaptureEvent::Takes);
         let previous = self
             .next
             .fetch_max(index.saturating_add(1), Ordering::AcqRel);
@@ -211,15 +471,52 @@ impl EnginePrewarmingSession {
         // timings, preserving the original lock().ok()? behavior.
         let retained = self.retained.lock();
         let acquired = Instant::now();
-        let result = match retained {
-            Ok(mut retained) => retained.take_through(index, previous, tx.is_system_tx),
+        let (result, evicted, poisoned) = match retained {
+            Ok(mut retained) => {
+                let before = self.diagnostics.as_ref().map(|_| retained.results.len());
+                let result = retained.take_through(index, previous, tx.is_system_tx);
+                let evicted = before
+                    .map(|before| before - retained.results.len() - usize::from(result.is_some()));
+                (result, evicted, false)
+            }
             Err(poisoned) => {
                 drop(poisoned);
-                None
+                (None, None, true)
             }
         };
         let held = acquired.elapsed();
+        self.capture_event(if result.is_some() {
+            CaptureEvent::TakeFound
+        } else {
+            CaptureEvent::TakeMissing
+        });
+        if poisoned {
+            self.capture_event(CaptureEvent::TakePoisoned);
+        }
+        if let (Some(diagnostics), Some(evicted)) = (&self.diagnostics, evicted) {
+            diagnostics.add(CaptureEvent::Evicted, evicted as u64);
+        }
         (result, Some((acquired.duration_since(waiting), held)))
+    }
+}
+
+impl Drop for EnginePrewarmingSession {
+    fn drop(&mut self) {
+        if self.diagnostics.is_none() {
+            return;
+        }
+        // Exclusive access: all session Arc owners are gone. Do not acquire a
+        // mutex merely to report final retained totals, including poisoned data.
+        let retained = self
+            .retained
+            .get_mut()
+            .unwrap_or_else(|error| error.into_inner());
+        let (count, bytes) = (retained.results.len(), retained.estimated_bytes);
+        if let Some(diagnostics) = &self.diagnostics {
+            // This can be delayed until cache replacement/shutdown. Process exit
+            // may omit the final retained session; it is not worker-finish time.
+            self.log_snapshot(diagnostics, "session_drop", true, Some(count), Some(bytes));
+        }
     }
 }
 
@@ -469,6 +766,222 @@ mod tests {
         PrewarmingExecutor::new(EmptyDB::default(), env())
             .execute(tx(index), None)
             .unwrap()
+    }
+
+    fn diagnostic_session(count: usize) -> Arc<EnginePrewarmingSession> {
+        EnginePrewarmingCache::new(true)
+            .begin_payload(env(), hash(9999), (0..count).map(hash))
+            .unwrap()
+    }
+
+    fn counts(session: &EnginePrewarmingSession) -> impl Fn(CaptureEvent) -> u64 + use<> {
+        let snapshot = session.diagnostics.as_ref().unwrap().snapshot();
+        move |event| snapshot.0[event as usize]
+    }
+
+    #[test]
+    fn diagnostics_default_off_and_classify_one_admission_read() {
+        let ordinary = EnginePrewarmingCache::default()
+            .begin(env(), [hash(0)])
+            .unwrap();
+        assert!(ordinary.diagnostics.is_none());
+        assert!(ordinary.worker_entry().is_none());
+        assert!(ordinary.can_capture(&tx(0)));
+        assert!(ordinary.publish(candidate(0)));
+        assert!(ordinary.take(&tx(0)).is_some());
+
+        let session = diagnostic_session(2048);
+        assert!(session.can_capture(&tx(127)));
+        for index in [128, 255, 256, 511, 512, 1023, 1024, 2047] {
+            assert!(!session.can_capture(&tx(index)));
+        }
+        assert!(session.take(&tx(0)).is_none());
+        assert!(!session.can_capture(&tx(0)));
+        assert!(session.can_capture(&tx(128)));
+        let mut system = tx(1);
+        system.is_system_tx = true;
+        assert!(!session.can_capture(&system));
+        assert!(!session.can_capture(&tx(2048)));
+        assert!(session.take(&tx(2048)).is_none());
+        let count = counts(&session);
+        assert_eq!(count(CaptureEvent::AdmissionInWindow), 2);
+        assert_eq!(count(CaptureEvent::AdmissionStale), 1);
+        assert_eq!(count(CaptureEvent::AdmissionFuture), 8);
+        for bucket in [
+            CaptureEvent::Future128To255,
+            CaptureEvent::Future256To511,
+            CaptureEvent::Future512To1023,
+            CaptureEvent::Future1024Plus,
+        ] {
+            assert_eq!(count(bucket), 2);
+        }
+        assert_eq!(count(CaptureEvent::AdmissionSystem), 1);
+        assert_eq!(count(CaptureEvent::AdmissionUnindexed), 1);
+        assert_eq!(count(CaptureEvent::Takes), 1);
+        assert_eq!(count(CaptureEvent::TakeMissing), 1);
+        assert_eq!(count(CaptureEvent::TakeUnindexed), 1);
+    }
+
+    #[test]
+    fn diagnostic_publication_terminal_reasons_and_evictions_reconcile() {
+        let session = diagnostic_session(129);
+        let mut changed = candidate(0);
+        changed.env.block_env.inner.basefee += 1;
+        assert!(!session.publish(changed));
+        let mut system = candidate(0);
+        system.tx.is_system_tx = true;
+        assert!(!session.publish(system));
+        assert!(!session.publish(candidate(129)));
+        assert!(!session.publish(candidate(128)));
+        let mut oversized = candidate(0);
+        oversized.tx.inner.data = Bytes::from(vec![0; MAX_ESTIMATED_BYTES]);
+        assert!(!session.publish(oversized));
+        {
+            let _guard = session.retained.lock().unwrap();
+            assert!(!session.publish(candidate(0)));
+        }
+        assert!(session.publish(candidate(0)));
+        assert!(!session.publish(candidate(0)));
+        assert!(session.publish(candidate(1)));
+        assert!(session.take(&tx(1)).is_some()); // Evicts the unconsumed zero.
+        assert!(!session.publish(candidate(0)));
+        assert!(session.take(&tx(1)).is_none()); // Duplicate take.
+        assert!(session.take(&tx(0)).is_none()); // Stale take cannot rewind the cursor.
+        assert!(session.take(&tx(2)).is_none());
+        let count = counts(&session);
+        for event in [
+            CaptureEvent::PublishWrongEnv,
+            CaptureEvent::PublishSystem,
+            CaptureEvent::PublishUnindexed,
+            CaptureEvent::PublishFutureBefore,
+            CaptureEvent::PublishEstimateRejected,
+            CaptureEvent::PublishContended,
+            CaptureEvent::PublishDuplicate,
+            CaptureEvent::PublishStaleBefore,
+        ] {
+            assert_eq!(count(event), 1);
+        }
+        assert_eq!(count(CaptureEvent::PublishAttempts), 10);
+        assert_eq!(count(CaptureEvent::Published), 2);
+        assert_eq!(count(CaptureEvent::Takes), 4);
+        assert_eq!(count(CaptureEvent::TakeFound), 1);
+        assert_eq!(count(CaptureEvent::TakeMissing), 3);
+        assert_eq!(count(CaptureEvent::Evicted), 1);
+        assert_eq!(
+            count(CaptureEvent::Published),
+            count(CaptureEvent::TakeFound) + count(CaptureEvent::Evicted)
+        );
+    }
+
+    #[test]
+    fn diagnostic_count_and_byte_limits_keep_original_fallbacks() {
+        let session = diagnostic_session(129);
+        for index in 0..LOOKAHEAD {
+            assert!(session.publish(candidate(index)));
+        }
+        // Model the existing gap between take's cursor advance and lock acquisition.
+        session.next.store(1, Ordering::Release);
+        assert!(!session.publish(candidate(128)));
+        assert_eq!(counts(&session)(CaptureEvent::PublishCountLimit), 1);
+        assert!(session.take(&tx(128)).is_none());
+        assert_eq!(counts(&session)(CaptureEvent::Evicted), LOOKAHEAD as u64);
+
+        let session = diagnostic_session(2);
+        for index in 0..2 {
+            let mut large = candidate(index);
+            large.tx.inner.data = Bytes::from(vec![0; MAX_ESTIMATED_BYTES / 2]);
+            assert_eq!(session.publish(large), index == 0);
+        }
+        assert_eq!(counts(&session)(CaptureEvent::Published), 1);
+        assert_eq!(counts(&session)(CaptureEvent::PublishByteLimit), 1);
+        assert!(session.take(&tx(0)).is_some());
+        assert!(session.publish(candidate(1)));
+    }
+
+    #[derive(Clone, Default)]
+    struct SnapshotLog(Arc<Mutex<Vec<BTreeMap<String, String>>>>);
+
+    impl tracing::Subscriber for SnapshotLog {
+        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+            metadata.fields().field("session_id").is_some()
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            #[derive(Default)]
+            struct Fields(BTreeMap<String, String>);
+            impl tracing::field::Visit for Fields {
+                fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn fmt::Debug) {
+                    self.0
+                        .insert(field.name().to_string(), format!("{value:?}"));
+                }
+            }
+            let mut fields = Fields::default();
+            event.record(&mut fields);
+            self.0.lock().unwrap().push(fields.0);
+        }
+    }
+
+    #[test]
+    fn diagnostic_snapshots_distinguish_concurrent_finish_and_final_session_drop() {
+        let captured = SnapshotLog::default();
+        let _subscriber = tracing::subscriber::set_default(captured.clone());
+        let cache = EnginePrewarmingCache::new(true);
+        let payload = hash(9999);
+        let old = cache.begin_payload(env(), payload, [hash(0)]).unwrap();
+        let old_id = old.diagnostics.as_ref().unwrap().session_id;
+        let worker = old.worker_entry().unwrap();
+        old.log_loop_finish_snapshot();
+        let new = cache.begin_payload(env(), payload, [hash(0)]).unwrap();
+        assert_ne!(old_id, new.diagnostics.as_ref().unwrap().session_id);
+        assert_eq!(counts(&new)(CaptureEvent::WorkerEntries), 0);
+        assert!(old.publish(candidate(0)));
+        assert!(new.take(&tx(0)).is_none());
+        drop(worker);
+        // The last worker/canonical Arc, not cache replacement, owns final logging.
+        assert_eq!(captured.0.lock().unwrap().len(), 1);
+        drop(old);
+        let rows = captured.0.lock().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["session_id"], old_id.to_string());
+        assert_eq!(rows[0]["phase"], "\"loop_finish\"");
+        assert_eq!(rows[0]["final_counts"], "false");
+        assert_eq!(rows[0]["unfinished_worker_entries"], "1");
+        assert_eq!(rows[1]["phase"], "\"session_drop\"");
+        assert_eq!(rows[1]["final_counts"], "true");
+        assert_eq!(rows[1]["session_id"], old_id.to_string());
+        assert_eq!(rows[1]["payload_hash"], payload.to_string());
+        assert_eq!(rows[1]["retained_results"], "Some(1)");
+        assert_eq!(rows[1]["unfinished_worker_entries"], "0");
+        assert!(rows[1]["counters"].contains("published: 1"));
+        drop(rows);
+    }
+
+    #[test]
+    fn diagnostic_unwind_and_poison_are_counted_without_changing_fallback() {
+        let session = diagnostic_session(2);
+        assert!(session.publish(candidate(0)));
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _worker = session.worker_entry().unwrap();
+            let _retained = session.retained.lock().unwrap();
+            panic!("diagnostic fixture");
+        }));
+        assert!(panic.is_err());
+        assert!(!session.publish(candidate(1)));
+        assert!(session.take(&tx(1)).is_none());
+        let count = counts(&session);
+        assert_eq!(count(CaptureEvent::WorkerEntries), 1);
+        assert_eq!(count(CaptureEvent::WorkerFinished), 1);
+        assert_eq!(count(CaptureEvent::WorkerUnwound), 1);
+        assert_eq!(count(CaptureEvent::PublishPoisoned), 1);
+        assert_eq!(count(CaptureEvent::TakePoisoned), 1);
+        assert_eq!(count(CaptureEvent::TakeMissing), 1);
+        drop(session); // Drop reports poisoned retained data using exclusive access.
     }
 
     #[test]

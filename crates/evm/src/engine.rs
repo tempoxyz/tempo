@@ -20,8 +20,9 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
             // Matches pinned Reth's SMALL_BLOCK_TX_THRESHOLD. Below it Reth
             // does not start transaction prewarming. BAL uses a separate path.
             if payload.block.body().transactions.len() >= 5 && payload.block_access_list.is_none() {
-                cache.begin(
+                cache.begin_payload(
                     env.clone(),
+                    payload.block.hash(),
                     payload
                         .block
                         .body()
