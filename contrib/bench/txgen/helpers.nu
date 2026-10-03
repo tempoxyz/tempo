@@ -983,6 +983,13 @@ def txgen-run-preset-pipeline [
     if $result.stdout != "" { print $result.stdout }
     if $result.stderr != "" { print $result.stderr }
 
+    # Test-only diagnostics: do not change the preset, rendering, or sender path.
+    if ($report_path | path exists) {
+        let diagnostics = (nu ([ (txgen-repo-root) "contrib/bench/txgen/capture-reverts.nu" ] | path join) $report_path $generate_rpc_url | complete)
+        if $diagnostics.stdout != "" { print $diagnostics.stdout }
+        if $diagnostics.stderr != "" { print $diagnostics.stderr }
+    }
+
     if $result.exit_code != 0 {
         return { ok: false, exit_code: $result.exit_code, report_path: $report_path }
     }
