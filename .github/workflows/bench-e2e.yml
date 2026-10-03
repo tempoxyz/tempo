@@ -392,7 +392,7 @@ jobs:
       BENCH_TXGEN_REF: ${{ inputs.txgen-ref }}
       BENCH_TOKEN_COUNT: ${{ inputs.token-count || '4' }}
       BENCH_SAMPLY: ${{ inputs.profiling == 'samply' || inputs.profiling == 'samply-scheduling' || inputs.profiling == 'both' || inputs.samply == true || inputs.samply == 'true' }}
-      BENCH_SAMPLY_ARGS: ${{ inputs.profiling == 'samply-scheduling' && '--per-cpu-threads --cswitch-markers' || '' }}
+      BENCH_SAMPLY_ARGS: ${{ inputs.profiling == 'samply-scheduling' && '--per-cpu-threads --cswitch-markers --rate 100' || '' }}
       BENCH_TRACY: ${{ inputs.tracy != '' && inputs.tracy || ((inputs.profiling == 'tracy' || inputs.profiling == 'both') && 'tracy' || ((inputs.profiling == 'off' || inputs.profiling == 'samply') && 'off' || 'off')) }}
       BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds || '10' }}
       BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset }}
@@ -541,7 +541,7 @@ jobs:
           output = pathlib.Path('bench-results')
           help_text = (output / 'samply-record-help.txt').read_text()
           arguments = sys.argv[2].split()
-          required = arguments + ['--save-only', '--presymbolicate', '--output']
+          required = [arg for arg in arguments if arg.startswith('--')] + ['--save-only', '--presymbolicate', '--output']
           missing = [flag for flag in required if not re.search(
               r'^\s*(?:-[^\s,]+,\s*)?' + re.escape(flag) + r'(?=\s|=|$)',
               help_text, re.MULTILINE)]
@@ -565,7 +565,7 @@ jobs:
               sys.exit('::error::Runner samply lacks required options: ' + ', '.join(missing))
           print(json.dumps(provenance, indent=2))
           PY
-          echo 'Scheduling diagnostic: both --per-cpu-threads and --cswitch-markers enabled; Slack disabled.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Scheduling diagnostic: sampling at 100 Hz with --per-cpu-threads and --cswitch-markers enabled; Slack disabled.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Checkout ValScope report builder
         if: env.BENCH_VALSCOPE == 'true'

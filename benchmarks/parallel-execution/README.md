@@ -244,7 +244,8 @@ and must be combined with elapsed-time measurements before identifying a bottlen
 
 For a bounded scheduling diagnostic, the manual E2E workflow accepts
 `profiling=samply-scheduling`. It forwards both `--per-cpu-threads` and
-`--cswitch-markers`, records the runner profiler's version, help and binary hash,
+`--cswitch-markers` with 100 Hz stack sampling, records the runner profiler's version,
+help and binary hash,
 and disables Slack. These profiles may distinguish gaps following preempted
 versus blocked switch-outs; they do not provide wakeup latency or blocking stacks.
 Audit the actual marker schema and event loss before drawing conclusions. The
