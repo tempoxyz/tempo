@@ -16,6 +16,9 @@ BAL payloads retain the regular scheduler. Engine prewarming concurrency follows
 `--engine.prewarming-threads`; the regular pool follows `--execution.threads`.
 Typed block executors use authoritative State-cache validation, with received
 BALs retaining ordinary database validation.
+Automatic generic scheduling starts at five transactions in the remaining
+candidate slice; shorter blocks, tails and system-delimited slices execute
+directly. Already prepared and prewarmed candidates remain eligible for reuse.
 `--execution.capture-diagnostics` optionally records Engine admission, strict
 execution, publication and consumption outcomes without changing scheduling.
 It defaults off. Counters belong to a unique session and payload hash;

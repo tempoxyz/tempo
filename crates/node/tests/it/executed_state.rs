@@ -17,6 +17,10 @@ use tempo_node::node::TempoNode;
 #[test_case::test_case(4, 1; "parallel_singleton")]
 #[test_case::test_case(0, 2; "sequential_pair")]
 #[test_case::test_case(4, 2; "parallel_pair")]
+#[test_case::test_case(0, 4; "sequential_below_threshold")]
+#[test_case::test_case(4, 4; "parallel_below_threshold")]
+#[test_case::test_case(0, 5; "sequential_threshold")]
+#[test_case::test_case(4, 5; "parallel_threshold")]
 #[tokio::test(flavor = "multi_thread")]
 async fn executed_state_reads_blocks_that_are_not_canonical(
     execution_threads: usize,
@@ -64,6 +68,9 @@ async fn executed_state_reads_blocks_that_are_not_canonical(
     let runtime = Runtime::test();
     let mut config = NodeConfig::new(chain_spec).with_unused_ports();
     config.network.discovery.disable_discovery = true;
+    // The positive scheduling fixture must use generic workers at the Engine
+    // prewarming boundary. Small blocks retain the ordinary Engine configuration.
+    config.engine.prewarming_disabled = transaction_count >= 5;
     let observer_handle = NodeBuilder::new(config)
         .testing_node(runtime.clone())
         .node(tempo_node)
@@ -89,13 +96,13 @@ async fn executed_state_reads_blocks_that_are_not_canonical(
     }
 
     // This observer has no builder or pool transactions. Only Engine API
-    // validation can dispatch work. Singleton blocks should execute directly,
-    // while a pair must use workers; canonical root checks alone would also
-    // pass if precompile-cache installation silently disabled the scheduler.
+    // validation can dispatch work. Short blocks should execute directly,
+    // while five transactions must use generic workers; canonical root checks
+    // alone would also pass if precompile-cache installation disabled scheduling.
     if let Some(workers) = workers {
         assert_eq!(
             workers.scheduled_transactions(),
-            if transaction_count > 1 {
+            if transaction_count >= 5 {
                 transaction_count
             } else {
                 0

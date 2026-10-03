@@ -34,6 +34,8 @@ use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxT
 use tempo_revm::{ExecutionContext, evm::TempoContext};
 use tracing::trace;
 
+const MIN_AUTOMATIC_BATCH_SIZE: usize = 5;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum BlockSection {
     /// Start of block system transactions.
@@ -591,10 +593,9 @@ where
                 .iter()
                 .position(TempoTxEnvelope::is_system_tx)
                 .unwrap_or(candidates.len())];
-            // A singleton has no execution to overlap: scheduling it only adds
-            // worker handoff and read validation before the same ordered commit.
+            // Avoid fixed handoff/read-validation overhead on short batches.
             // Keep already prepared/prewarmed results eligible for normal reuse.
-            if candidates.len() > 1 {
+            if candidates.len() >= MIN_AUTOMATIC_BATCH_SIZE {
                 let first_is_current = candidates.first().is_some_and(|tx| tx == recovered.tx());
                 let known_senders = self.senders.get(start..).unwrap_or_default();
                 let recovery_start = known_senders
@@ -630,7 +631,7 @@ where
                     };
                     inputs.push((env, fee_recipient));
                 }
-                if inputs.len() > 1 {
+                if inputs.len() >= MIN_AUTOMATIC_BATCH_SIZE {
                     self.inner.evm.prepare_transactions(inputs);
                 }
             }

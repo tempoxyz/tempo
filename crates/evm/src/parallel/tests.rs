@@ -3149,7 +3149,7 @@ fn block_executor_preserves_receipts_state_hooks_and_gas_limits() {
         if parallel {
             executor
                 .evm_mut()
-                .set_speculative_executor(Some(SpeculativeExecutor::new(4, 4).unwrap()));
+                .set_speculative_executor(Some(SpeculativeExecutor::new(4, 8).unwrap()));
         }
         executor.apply_pre_execution_changes().unwrap();
         for tx in &recovered {
@@ -3183,15 +3183,16 @@ fn block_executor_preserves_receipts_state_hooks_and_gas_limits() {
 }
 
 #[test]
-fn block_lookahead_skips_singletons_and_reuses_pairs() {
+fn block_lookahead_skips_short_batches_and_preserves_ordered_results() {
     use crate::test_utils::{TestExecutorBuilder, test_chainspec};
     use alloy_consensus::{Signed, TxLegacy};
     use alloy_evm::block::{BlockExecutor, TxResult};
     use alloy_primitives::Signature;
+    use alloy_rlp::Encodable;
     use reth_primitives_traits::{Recovered, SignedTransaction};
     use tempo_primitives::TempoTxEnvelope;
 
-    let transactions = (0..3)
+    let transactions = (0..10)
         .map(|i| {
             TempoTxEnvelope::Legacy(Signed::new_unhashed(
                 TxLegacy {
@@ -3205,10 +3206,38 @@ fn block_lookahead_skips_singletons_and_reuses_pairs() {
         })
         .collect::<Vec<_>>();
     let spec = test_chainspec();
-    // Include a final singleton after a useful pair, and an explicitly
-    // configured one-transaction lookahead over a larger block.
-    for (count, window, scheduled) in [(1, 2, 0), (2, 2, 2), (3, 2, 2), (3, 1, 0)] {
-        let txs = &transactions[..count];
+    // Cover the admission boundary, short tails after a useful batch, configured
+    // short windows, and a system envelope that truncates the candidate slice.
+    for (count, window, system_suffix, scheduled) in [
+        (0, 5, false, 0),
+        (1, 5, false, 0),
+        (2, 5, false, 0),
+        (3, 5, false, 0),
+        (4, 5, false, 0),
+        (5, 5, false, 5),
+        (6, 5, false, 5),
+        (9, 5, false, 5),
+        (10, 5, false, 10),
+        (5, 1, false, 0),
+        (5, 4, false, 0),
+        (4, 10, true, 0),
+        (5, 10, true, 5),
+    ] {
+        let mut txs = transactions[..count].to_vec();
+        if system_suffix {
+            let mut input = Vec::new();
+            Vec::<tempo_primitives::SubBlockMetadata>::new().encode(&mut input);
+            input.extend_from_slice(&U256::from(1).to_be_bytes::<32>());
+            txs.push(TempoTxEnvelope::Legacy(Signed::new_unhashed(
+                TxLegacy {
+                    to: Address::ZERO.into(),
+                    input: input.into(),
+                    ..Default::default()
+                },
+                tempo_primitives::transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
+            )));
+            assert!(txs.last().unwrap().is_system_tx());
+        }
         let recovered = txs
             .iter()
             .map(|tx| Recovered::new_unchecked(tx, tx.try_recover().unwrap()))
@@ -3218,7 +3247,7 @@ fn block_lookahead_skips_singletons_and_reuses_pairs() {
         for parallel in [false, true] {
             let mut executor = TestExecutorBuilder::default()
                 .with_parent_beacon_block_root(B256::ZERO)
-                .build_with_transactions(db.clone(), &spec, txs);
+                .build_with_transactions(db.clone(), &spec, &txs);
             if parallel {
                 executor.evm_mut().set_speculative_executor(Some(
                     SpeculativeExecutor::new(2, window)
@@ -3237,17 +3266,20 @@ fn block_lookahead_skips_singletons_and_reuses_pairs() {
             assert_eq!(
                 stats.speculated,
                 if parallel { scheduled } else { 0 },
-                "count={count}, window={window}, parallel={parallel}"
+                "count={count}, window={window}, system_suffix={system_suffix}, parallel={parallel}"
             );
             if parallel && scheduled > 0 {
-                assert!(stats.reused > 0, "the pair must exercise candidate reuse");
+                assert!(stats.reused > 0, "the completed batch must exercise reuse");
             } else {
                 assert_eq!(stats.reused, 0);
             }
             let (evm, result) = executor.finish().unwrap();
             let actual = (root(evm.db()), result, outcomes);
             if let Some(expected) = &expected {
-                assert_eq!(&actual, expected, "count={count}, window={window}");
+                assert_eq!(
+                    &actual, expected,
+                    "count={count}, window={window}, system_suffix={system_suffix}"
+                );
             } else {
                 expected = Some(actual);
             }
@@ -3264,63 +3296,73 @@ fn lookahead_invalid_signature_preserves_ordered_execution_prefix() {
     use reth_primitives_traits::{Recovered, SignedTransaction};
     use tempo_primitives::TempoTxEnvelope;
 
-    let txs = (0..4)
-        .map(|i| {
-            TempoTxEnvelope::Legacy(Signed::new_unhashed(
-                TxLegacy {
-                    gas_limit: 100_000,
-                    gas_price: 1,
-                    to: address(100 + i).into(),
-                    ..Default::default()
-                },
-                if i == 2 {
-                    // r = 0 is invalid; keep s nonzero to avoid Tempo's
-                    // special all-zero system transaction signature.
-                    Signature::new(U256::ZERO, U256::from(1), false)
-                } else {
-                    Signature::test_signature()
-                },
-            ))
-        })
-        .collect::<Vec<_>>();
-    assert!(!txs[2].is_system_tx());
-    assert!(txs[2].try_recover().is_err());
-    let recovered = txs[..2]
-        .iter()
-        .map(|tx| Recovered::new_unchecked(tx, tx.try_recover().unwrap()))
-        .collect::<Vec<_>>();
-    let db = funded_tip20_accounts(recovered.iter().map(|tx| tx.signer()));
-    let spec = test_chainspec();
-    let mut expected = None;
-    for mode in 0..4 {
-        let cache = (mode >= 2).then(reth_evm::SenderRecoveryCache::default);
-        if mode == 3 {
-            cache.as_ref().unwrap().recover(&txs[1]).unwrap();
-        }
-        let mut executor = TestExecutorBuilder::default()
-            .with_parent_beacon_block_root(B256::ZERO)
-            .build_with_recovered_transactions(db.clone(), &spec, &txs, &[], cache);
-        if mode > 0 {
-            executor
-                .evm_mut()
-                .set_speculative_executor(Some(SpeculativeExecutor::new(4, 4).unwrap()));
-        }
-        executor.apply_pre_execution_changes().unwrap();
-        // The invalid third signature must not prevent either earlier valid
-        // transaction from executing and committing in the original order.
-        for tx in &recovered {
-            executor.execute_transaction(tx).unwrap();
-        }
-        // Recovery of the malformed suffix leaves only the authoritative
-        // current transaction, which must not schedule a singleton batch.
-        assert_eq!(executor.evm().execution_stats().speculated, 0);
-        assert_eq!(executor.evm().execution_stats().reused, 0);
-        let (evm, result) = executor.finish().unwrap();
-        let output = (root(evm.db()), result);
-        if let Some(expected) = &expected {
-            assert_eq!(&output, expected);
-        } else {
-            expected = Some(output);
+    for valid_prefix in [2, 4] {
+        let txs = (0..5)
+            .map(|i| {
+                TempoTxEnvelope::Legacy(Signed::new_unhashed(
+                    TxLegacy {
+                        gas_limit: 100_000,
+                        gas_price: 1,
+                        to: address(100 + i).into(),
+                        ..Default::default()
+                    },
+                    if i == valid_prefix as u64 {
+                        // r = 0 is invalid; keep s nonzero to avoid Tempo's
+                        // special all-zero system transaction signature.
+                        Signature::new(U256::ZERO, U256::from(1), false)
+                    } else {
+                        Signature::test_signature()
+                    },
+                ))
+            })
+            .collect::<Vec<_>>();
+        assert!(!txs[valid_prefix].is_system_tx());
+        assert!(txs[valid_prefix].try_recover().is_err());
+        let recovered = txs[..valid_prefix]
+            .iter()
+            .map(|tx| Recovered::new_unchecked(tx, tx.try_recover().unwrap()))
+            .collect::<Vec<_>>();
+        let senders = recovered.iter().map(|tx| tx.signer()).collect::<Vec<_>>();
+        let db = funded_tip20_accounts(senders.iter().copied());
+        let spec = test_chainspec();
+        let mut expected = None;
+        for mode in 0..5 {
+            let cache = matches!(mode, 2 | 3).then(reth_evm::SenderRecoveryCache::default);
+            if mode == 3 {
+                cache.as_ref().unwrap().recover(&txs[1]).unwrap();
+            }
+            let mut executor = TestExecutorBuilder::default()
+                .with_parent_beacon_block_root(B256::ZERO)
+                .build_with_recovered_transactions(
+                    db.clone(),
+                    &spec,
+                    &txs,
+                    if mode == 4 { &senders } else { &[] },
+                    cache,
+                );
+            if mode > 0 {
+                executor
+                    .evm_mut()
+                    .set_speculative_executor(Some(SpeculativeExecutor::new(4, 5).unwrap()));
+            }
+            executor.apply_pre_execution_changes().unwrap();
+            // The invalid future signature must not prevent any earlier valid
+            // transaction from executing and committing in the original order.
+            for tx in &recovered {
+                executor.execute_transaction(tx).unwrap();
+            }
+            // Failed suffix recovery leaves either the current transaction or
+            // the known recovered prefix. Even four recovered inputs must remain
+            // direct when the original five-candidate slice loses its suffix.
+            assert_eq!(executor.evm().execution_stats().speculated, 0);
+            assert_eq!(executor.evm().execution_stats().reused, 0);
+            let (evm, result) = executor.finish().unwrap();
+            let output = (root(evm.db()), result);
+            if let Some(expected) = &expected {
+                assert_eq!(&output, expected);
+            } else {
+                expected = Some(output);
+            }
         }
     }
 }
