@@ -524,6 +524,13 @@ It preserved differential correctness but reduced eight-worker reuse from about
 transaction runs. Sixteen-worker throughput also fell 15.99%. The experiment was
 reverted; its patch and evidence remain in the ignored artifact directory.
 
+The private accepted-prefix maps now use Alloy's fixed-key map aliases. Local
+million-transaction public-mix comparisons improve geometric-mean throughput
+3.21% across three eight-worker pairs and 8.75% across two sixteen-worker pairs.
+Individual gains vary substantially; all ten runs match sequential receipts
+and state roots. The harness waits for worker results and uses in-memory state,
+so these measurements do not establish a node throughput improvement.
+
 [Lock-diagnostic replay 37096394462](https://github.com/tempoxyz/tempo/actions/runs/37096394462)
 measures 29.483 versus 28.421 Mgas/s (-3.60%), with p99 newPayload latency rising
 from 1.444 to 1.571 ms (+8.80%). All 250,000 submissions are valid; all four

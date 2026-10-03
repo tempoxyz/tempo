@@ -1,6 +1,7 @@
 //! Recorded execution on a worker-owned provider, reusable by the ordered executor.
 
 use super::*;
+use alloy_primitives::map::{AddressMap, B256Map, U256Map};
 use std::time::Instant;
 
 /// Advisory values from the builder's accepted prefix. Workers may read across
@@ -11,8 +12,8 @@ pub struct PrewarmingState(Arc<RwLock<PrefixState>>);
 
 #[derive(Debug, Default)]
 struct PrefixState {
-    accounts: HashMap<Address, PrefixAccount>,
-    code: HashMap<B256, Bytecode>,
+    accounts: AddressMap<PrefixAccount>,
+    code: B256Map<Bytecode>,
     /// Actual ring position and next source-preview offset after the last
     /// accepted expiring transaction. Skipped candidates don't advance the ring.
     nonce_cursor: Option<(U256, usize)>,
@@ -21,7 +22,7 @@ struct PrefixState {
 #[derive(Debug, Default)]
 struct PrefixAccount {
     info: Option<AccountInfo>,
-    storage: HashMap<U256, U256>,
+    storage: U256Map<U256>,
     cleared: bool,
 }
 
@@ -106,7 +107,7 @@ impl PrewarmingState {
                             .collect(),
                     )
                 }
-                None => (None, HashMap::default()),
+                None => (None, U256Map::default()),
             };
             prefix.accounts.insert(
                 address,
