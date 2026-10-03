@@ -252,6 +252,21 @@ Audit the actual marker schema and event loss before drawing conclusions. The
 artifact includes a Bash/Nu command because the Derek bot does not expose these
 options. Confirm performance separately with ordinary profiling settings.
 
+Both the [1,000 Hz](https://github.com/tempoxyz/tempo/actions/runs/37113738991)
+and [100 Hz](https://github.com/tempoxyz/tempo/actions/runs/37114793096) scheduling
+captures lost events in every recorder. They cannot partition off-CPU time
+reliably. The manual `profiling=kernel-scheduling` diagnostic instead adds one
+15-second kernel trace per phase after a 20-second delay, filtering scheduler
+switch and successful wakeup events for the two nodes' named Engine and builder
+threads across all CPUs. It requires `run-pairs=1` and `duration>=60`, keeps
+Samply at 100 Hz for scope identification, and forces Slack off. The preflight
+checks the actual runner's perf executable and tracepoint formats before builds.
+Raw traces, process identities, clock samples and recorder diagnostics are saved
+with the workflow artifacts. Exact accounting requires a separate zero-loss,
+thread-lifetime and accepted-block audit; the delay alone does not prove that
+capture occurred during measured load. Builder work on fallback Tokio threads
+is outside this named-thread trace's coverage.
+
 Completed sender-reuse comparisons against main `61c979a524f9`:
 
 | Target TPS | Sequential TPS | Feature TPS | Change | Workflow |

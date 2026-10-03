@@ -83,6 +83,7 @@ on:
           - "off"
           - samply
           - samply-scheduling
+          - kernel-scheduling
           - tracy
           - both
       otlp:
@@ -391,8 +392,9 @@ jobs:
       BENCH_FEATURE_HARDFORK: ${{ inputs.feature-hardfork }}
       BENCH_TXGEN_REF: ${{ inputs.txgen-ref }}
       BENCH_TOKEN_COUNT: ${{ inputs.token-count || '4' }}
-      BENCH_SAMPLY: ${{ inputs.profiling == 'samply' || inputs.profiling == 'samply-scheduling' || inputs.profiling == 'both' || inputs.samply == true || inputs.samply == 'true' }}
-      BENCH_SAMPLY_ARGS: ${{ inputs.profiling == 'samply-scheduling' && '--per-cpu-threads --cswitch-markers --rate 100' || '' }}
+      BENCH_SAMPLY: ${{ inputs.profiling == 'samply' || inputs.profiling == 'samply-scheduling' || inputs.profiling == 'kernel-scheduling' || inputs.profiling == 'both' || inputs.samply == true || inputs.samply == 'true' }}
+      BENCH_SAMPLY_ARGS: ${{ inputs.profiling == 'samply-scheduling' && '--per-cpu-threads --cswitch-markers --rate 100' || (inputs.profiling == 'kernel-scheduling' && '--rate 100' || '') }}
+      BENCH_SCHED_TRACE: ${{ inputs.profiling == 'kernel-scheduling' }}
       BENCH_TRACY: ${{ inputs.tracy != '' && inputs.tracy || ((inputs.profiling == 'tracy' || inputs.profiling == 'both') && 'tracy' || ((inputs.profiling == 'off' || inputs.profiling == 'samply') && 'off' || 'off')) }}
       BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds || '10' }}
       BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset }}
@@ -409,7 +411,7 @@ jobs:
       BENCH_RUN_TYPE: ${{ inputs.run-type || 'dispatch' }}
       BENCH_FORCE_BLOAT: ${{ inputs.force-bloat || 'false' }}
       BENCH_NO_CACHE: ${{ inputs.no-cache || 'false' }}
-      BENCH_NO_SLACK: ${{ (inputs.sequential-peer || inputs.profiling == 'samply-scheduling') && 'true' || inputs.no-slack }}
+      BENCH_NO_SLACK: ${{ (inputs.sequential-peer || inputs.profiling == 'samply-scheduling' || inputs.profiling == 'kernel-scheduling') && 'true' || inputs.no-slack }}
       # The reusable input defaults to always. Direct manual dispatch has no slack
       # input and uses win-only notifications, without adding a 26th UI input.
       BENCH_SLACK: ${{ inputs.slack || 'on-win' }}
@@ -536,7 +538,7 @@ jobs:
           sudo "$samply_binary" --version > bench-results/samply-version.txt
           sudo "$samply_binary" record --help > bench-results/samply-record-help.txt
           python3 - "$samply_binary" "$BENCH_SAMPLY_ARGS" <<'PY'
-          import hashlib, json, pathlib, re, sys
+          import hashlib, json, os, pathlib, re, sys
           binary = pathlib.Path(sys.argv[1]).resolve(strict=True)
           output = pathlib.Path('bench-results')
           help_text = (output / 'samply-record-help.txt').read_text()
@@ -548,7 +550,7 @@ jobs:
           with binary.open('rb') as source:
               binary_sha256 = hashlib.file_digest(source, 'sha256').hexdigest()
           provenance = {
-              'mode': 'samply-scheduling',
+              'mode': 'kernel-scheduling' if os.environ['BENCH_SCHED_TRACE'] == 'true' else 'samply-scheduling',
               'binary_path': str(binary),
               'binary_sha256': binary_sha256,
               'version': (output / 'samply-version.txt').read_text().strip(),
@@ -565,7 +567,17 @@ jobs:
               sys.exit('::error::Runner samply lacks required options: ' + ', '.join(missing))
           print(json.dumps(provenance, indent=2))
           PY
-          echo 'Scheduling diagnostic: sampling at 100 Hz with --per-cpu-threads and --cswitch-markers enabled; Slack disabled.' >> "$GITHUB_STEP_SUMMARY"
+          printf 'Scheduling diagnostic: Samply options `%s`; kernel trace `%s`; Slack disabled.\n' "$BENCH_SAMPLY_ARGS" "$BENCH_SCHED_TRACE" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Validate kernel scheduler tracing
+        if: env.BENCH_SCHED_TRACE == 'true'
+        run: |
+          python3 - <<'PY'
+          import os
+          if int(os.environ['BENCH_DURATION']) < 60 or os.environ['BENCH_RUN_PAIRS'] != '1':
+              raise SystemExit('Kernel scheduler diagnostics require duration >= 60 and run-pairs = 1.')
+          PY
+          python3 benchmarks/parallel-execution/scheduler_trace.py preflight --output bench-results/scheduler-preflight.json
 
       - name: Checkout ValScope report builder
         if: env.BENCH_VALSCOPE == 'true'
@@ -642,7 +654,7 @@ jobs:
             const tokenCount = process.env.BENCH_TOKEN_COUNT || '4';
             const samply = process.env.BENCH_SAMPLY === 'true';
             const samplyNote = process.env.BENCH_SAMPLY_ARGS
-              ? `, samply scheduling diagnostic: \`${process.env.BENCH_SAMPLY_ARGS}\``
+              ? `, samply scheduling diagnostic: \`${process.env.BENCH_SAMPLY_ARGS}\`${process.env.BENCH_SCHED_TRACE === 'true' ? ', kernel scheduler trace: `15s`' : ''}`
               : (samply ? ', samply: `enabled`' : '');
             const tracy = process.env.BENCH_TRACY;
             const tracyNote = tracy !== 'off' ? ', tracy: `enabled`' : '';
@@ -890,7 +902,7 @@ jobs:
             const tokenCount = process.env.BENCH_TOKEN_COUNT || '4';
             const samply = process.env.BENCH_SAMPLY === 'true';
             const samplyNote = process.env.BENCH_SAMPLY_ARGS
-              ? `, samply scheduling diagnostic: \`${process.env.BENCH_SAMPLY_ARGS}\``
+              ? `, samply scheduling diagnostic: \`${process.env.BENCH_SAMPLY_ARGS}\`${process.env.BENCH_SCHED_TRACE === 'true' ? ', kernel scheduler trace: `15s`' : ''}`
               : (samply ? ', samply: `enabled`' : '');
             const tracy = process.env.BENCH_TRACY;
             const tracyNote = tracy !== 'off' ? ', tracy: `enabled`' : '';
@@ -998,6 +1010,7 @@ jobs:
           [ "$BENCH_SEQUENTIAL_PEER" = "true" ] && cmd+=(--sequential-peer)
           [ "$BENCH_SAMPLY" = "true" ] && cmd+=(--samply)
           [ -n "$BENCH_SAMPLY_ARGS" ] && cmd+=(--samply-args="$BENCH_SAMPLY_ARGS")
+          [ "$BENCH_SCHED_TRACE" = "true" ] && cmd+=(--scheduler-trace)
           [ "$BENCH_TRACY" != "off" ] && cmd+=(--tracy "$BENCH_TRACY" --tracy-seconds "$BENCH_TRACY_SECONDS" --tracy-offset "$BENCH_TRACY_OFFSET")
           effective_baseline_args="$BENCH_BASELINE_ARGS"
           effective_feature_args="$BENCH_FEATURE_ARGS"

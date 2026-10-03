@@ -765,6 +765,37 @@ def wait-for-tracy-capture-exit [job_id: int, phase: string] {
     }
 }
 
+def recv-scheduler-trace [phase: string, timeout: duration] {
+    let deadline = (date now) + $timeout
+    loop {
+        let remaining = $deadline - (date now)
+        if $remaining <= 0sec { return null }
+        let result = (try { job recv --tag 19000 --timeout $remaining } catch { null })
+        if $result == null { return null }
+        if ($result | get -o phase) == $phase { return $result }
+        print $"Warning: ignoring scheduler completion for another phase while waiting for ($phase)"
+    }
+}
+
+def wait-for-scheduler-trace [phase: string, output: string, sender_exit: int] {
+    # The helper owns and bounds its recorder. A stop file requests graceful
+    # cleanup without discovering or signalling unrelated profiler processes.
+    if $sender_exit != 0 { "sender failed" | save -f ($output | path join "stop") }
+    let result = (recv-scheduler-trace $phase 60sec)
+    let result = if $result == null {
+        "join timed out" | save -f ($output | path join "stop")
+        recv-scheduler-trace $phase 30sec
+    } else { $result }
+    if $result == null {
+        print $"Error: scheduler trace did not report completion for ($phase)"
+        return 1
+    }
+    if $result.exit_code != 0 {
+        print $"Error: scheduler trace failed for ($phase): ($result.stderr)"
+    }
+    return $result.exit_code
+}
+
 def wait-for-samply-profile [] {
     print "  Waiting for samply to finish saving profile..."
     mut wait = 0
@@ -1066,6 +1097,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
         $"($ctx.results_dir)/profile-($phase)-b.json.gz"
         $"($ctx.results_dir)/tracy-profile-($phase).tracy"
         $"($ctx.results_dir)/tracy-capture-($phase).log"
+        $"($ctx.results_dir)/scheduler-($phase)"
         $"($ctx.results_dir)/logs-($phase)-a"
         $"($ctx.results_dir)/logs-($phase)-b"
     ] {
@@ -1184,6 +1216,21 @@ def run-local-e2e-phase [run: record, ctx: record] {
     if $phase_exit == 0 {
         let phase_started_ms = ((date now | into int) / 1_000_000 | into int)
         let initial_db_size_bytes = (e2e-db-size-bytes $ctx.a.datadir)
+        let scheduler_output = $"($ctx.results_dir)/scheduler-($phase)"
+        if $ctx.scheduler_trace {
+            mkdir $scheduler_output
+            print "  Scheduling a 15-second kernel trace after a 20-second delay..."
+            job spawn {
+                let result = (try {
+                    (^python3 benchmarks/parallel-execution/scheduler_trace.py capture
+                        --output $scheduler_output --binary $run.tempo
+                        --datadir-a $ctx.a.datadir --datadir-b $ctx.b.datadir
+                        --delay 20 --seconds 15) | complete
+                } catch { |e| { exit_code: 1, stdout: "", stderr: $e.msg } })
+                { phase: $phase, exit_code: $result.exit_code, stderr: $result.stderr }
+                    | job send --tag 19000 0
+            } | ignore
+        }
         let sender_exit = (try {
             let bench_result = (txgen-run-preset-pipeline
                 --txgen-tempo-bin $ctx.txgen.txgen_tempo_bin
@@ -1225,6 +1272,10 @@ def run-local-e2e-phase [run: record, ctx: record] {
             print $"Error: local e2e txgen sender failed for ($phase): ($e.msg)"
             1
         })
+        # Join before report parsing or any other fallible post-processing.
+        let scheduler_exit = if $ctx.scheduler_trace {
+            wait-for-scheduler-trace $phase $scheduler_output $sender_exit
+        } else { 0 }
         if $sender_exit == 0 and $phase_clickhouse_url != "" {
             let report = (open $"($ctx.results_dir)/report-($phase).json")
             let report_benchmark_id = ($report | get --optional benchmark_id | default "")
@@ -1239,7 +1290,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
             started_ms: $phase_started_ms
             finished_ms: $phase_finished_ms
         } | to json | save -f $"($ctx.results_dir)/phase-range-($phase).json"
-        $phase_exit = $sender_exit
+        $phase_exit = if $sender_exit != 0 { $sender_exit } else { $scheduler_exit }
     } else {
         print $"Skipping local e2e sender for ($phase) because readiness checks failed"
     }
@@ -1431,6 +1482,7 @@ def "main e2e" [
     --no-default-features                               # Disable Cargo default features
     --samply                                            # Profile validators with samply
     --samply-args: string = ""                          # Additional samply arguments
+    --scheduler-trace                                   # Capture a bounded kernel scheduler diagnostic (one pair, >=60s)
     --tracy: string = "off"                             # Tracy profiling: off, tracy
     --tracy-filter: string = "debug"                    # Tracy tracing filter level
     --tracy-seconds: int = 0                            # Tracy capture duration limit in seconds; 0 captures until stopped
@@ -1461,6 +1513,9 @@ def "main e2e" [
     --valscope-dir: string = "../valscope"               # Path to the ValScope checkout
     --skip-summary                                       # Leave summary generation to a later workflow step
 ] {
+    if $scheduler_trace and ($duration < 60 or $run_pairs != 1 or not $samply) {
+        error make { msg: "--scheduler-trace requires --samply, --duration >= 60 and --run-pairs 1" }
+    }
     let preset_spec = if $preset_path == "" {
         txgen-resolve-bench-spec $preset
     } else {
@@ -1802,6 +1857,7 @@ def "main e2e" [
         profile: $profile
         samply: $samply
         samply_args: $samply_args_list
+        scheduler_trace: $scheduler_trace
         tracy: $tracy
         tracy_filter: $tracy_filter
         tracy_seconds: $tracy_seconds
