@@ -81,7 +81,7 @@ producers, as well as positive included reuse in each parallel role.
 
 [Generated validation 37103153124](https://github.com/tempoxyz/tempo/actions/runs/37103153124)
 passes on `0936aef39` (the same Rust implementation as `13e97e5be`). Both peers
-match finalized headers, transaction bodies and full receipts for blocks 8–170:
+match selected finalized header fields, ordered transaction hashes and full receipts for blocks 8–170:
 163 dense blocks containing 1,573,044 transactions. Each block has a producer
 execution and fresh opposite-peer Engine execution followed by `VALID`.
 The parallel peer builds 89 blocks and validates 74; its included builder reuse
@@ -92,7 +92,7 @@ comparison against unmodified main or a sustained 50,000 TPS result.
 
 [Generated validation 37108470757](https://github.com/tempoxyz/tempo/actions/runs/37108470757)
 passes on `06f046cda` with capture window 512. Live checks match finalized roots,
-headers, transaction bodies and full receipts for 171 blocks containing
+selected header fields, ordered transaction hashes and full receipts for 171 blocks containing
 1,710,254 transactions. Every block exceeds the window; both peers produce
 blocks, and every block has fresh opposite-peer Engine execution followed by
 `VALID`. The parallel peer includes at least 911,939 builder reuses and exactly
@@ -101,6 +101,16 @@ versus zero execution threads and sixteen prewarming workers. Archived receipt
 digests and 855 independently checked log records support the live verification;
 the archive does not contain the complete receipt bodies. This correctness run
 does not establish a performance improvement.
+
+[Generated validation 37128602979](https://github.com/tempoxyz/tempo/actions/runs/37128602979)
+passes on `b4719cec6`, including the Engine nonce-hint omission, with capture
+window 512. Live checks match state/receipt roots, selected header fields, ordered
+transaction hashes and full receipts across 181 finalized blocks and 1,587,855
+transactions. Both peers produce dense blocks; the parallel peer includes at
+least 822,717 builder reuses and exactly 405,488 Engine reuses. Independent audit
+checks 904 source records and both finalized chains, with zero node errors.
+Receipts remain a live-oracle result: the archive retains their digests only.
+This is correctness evidence, not a throughput comparison against main.
 
 ```sh
 gh workflow run bench-e2e-scheduled.yml --ref onbjerg/parallel-execution \
