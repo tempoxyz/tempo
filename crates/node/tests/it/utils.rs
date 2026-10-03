@@ -278,7 +278,7 @@ use alloy_primitives::B256;
 use alloy_rpc_types_eth::TransactionRequest;
 use eyre::WrapErr;
 use reth_e2e_test_utils::{E2ETestSetupExt, node::NodeTestContext};
-use reth_ethereum::tasks::Runtime;
+use reth_ethereum::{chainspec::EthChainSpec as _, tasks::Runtime};
 use reth_node_builder::{NodeBuilder, NodeConfig};
 use reth_node_core::args::RpcServerArgs;
 use reth_rpc_builder::RpcModuleSelection;
@@ -457,7 +457,7 @@ impl TestNodeBuilder {
         }
     }
 
-    /// Configure speculative execution for an HTTP test node.
+    /// Configure speculative execution for a single local test node.
     pub(crate) fn with_execution_threads(mut self, threads: usize) -> Self {
         self.execution_threads = threads;
         self
@@ -540,10 +540,46 @@ impl TestNodeBuilder {
         let chain_spec = self.build_chain_spec()?;
         let hardfork = chain_spec.tempo_hardfork_at(0);
 
-        let (node, _wallet) = TempoNode::test_setup(1, Arc::new(chain_spec))
-            .with_dev_mode(true)
-            .build_single()
+        let node = if self.execution_threads > 0 {
+            // The setup helper constructs TempoNode::default(), so launch the
+            // configured node explicitly while keeping its manual block control.
+            let chain_spec = Arc::new(chain_spec);
+            let genesis_hash = chain_spec.genesis_hash();
+            let mut config = NodeConfig::new(chain_spec.clone())
+                .with_unused_ports()
+                .dev()
+                .with_rpc(
+                    RpcServerArgs::default()
+                        .with_unused_ports()
+                        .with_http()
+                        .with_http_api(RpcModuleSelection::All),
+                );
+            config.network.discovery.disable_discovery = true;
+            config.debug.startup_sync_state_idle = true;
+            // Match the setup helper's small test execution cache (MiB).
+            config.engine.cross_block_cache_size = 1;
+            let handle = NodeBuilder::new(config)
+                .testing_node(Runtime::test())
+                .node(TempoNode::default().with_execution_threads(self.execution_threads, 32))
+                // The engine launcher preserves manual timestamps; the debug
+                // launcher would start a local miner when dev mode is enabled.
+                .launch()
+                .await?;
+            let node = NodeTestContext::new(handle.node, move |timestamp| {
+                reth_e2e_test_utils::eth_payload_attributes(&chain_spec, timestamp).into()
+            })
             .await?;
+            // Like the setup helper, initialize head/safe/finalized to genesis
+            // before new_payload/advance_block requests its first payload.
+            node.update_forkchoice(genesis_hash, genesis_hash).await?;
+            node
+        } else {
+            let (node, _wallet) = TempoNode::test_setup(1, Arc::new(chain_spec))
+                .with_dev_mode(true)
+                .build_single()
+                .await?;
+            node
+        };
 
         Ok(SingleNodeSetup { node, hardfork })
     }

@@ -120,11 +120,15 @@ async fn executed_state_reads_blocks_that_are_not_canonical(
     Ok(())
 }
 
-#[test_case::test_case(64, 64, 64, false; "independent")]
-#[test_case::test_case(128, 16, 8, false; "repeated_senders_and_recipients")]
-#[test_case::test_case(64, 64, 1, true; "native_reserve_opens")]
+#[test_case::test_case(0, 64, 64, 64, false; "independent")]
+#[test_case::test_case(0, 128, 16, 8, false; "repeated_senders_and_recipients")]
+#[test_case::test_case(0, 64, 64, 1, true; "native_reserve_opens")]
+#[test_case::test_case(4, 64, 64, 64, false; "parallel_builder_independent")]
+#[test_case::test_case(4, 128, 16, 8, false; "parallel_builder_repeated_senders_and_recipients")]
+#[test_case::test_case(4, 64, 64, 1, true; "parallel_builder_native_reserve_opens")]
 #[tokio::test(flavor = "multi_thread")]
 async fn engine_prewarming_preserves_paid_expiring_transfer_block(
+    builder_threads: usize,
     transaction_count: usize,
     sender_count: usize,
     recipient_count: usize,
@@ -154,10 +158,16 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
 
     reth_tracing::init_test_tracing();
     let mut producer = TestNodeBuilder::new()
+        .with_execution_threads(builder_threads)
         .with_schedule(ForkSchedule::DevnetAt(TempoHardfork::T14))
         .build_with_node_access()
         .await?
         .node;
+    assert_eq!(
+        producer.inner.evm_config.speculative_executor.is_some(),
+        builder_threads > 0,
+        "the producing payload builder must use the requested executor"
+    );
     // The genesis tip is at zero, so use a deterministic timestamp compatible
     // with both pool expiry admission and the block's expiring-nonce checks.
     producer.set_next_payload_timestamp(1)?;
@@ -165,6 +175,8 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
     // snapshot cannot predict new marker code; exact read checks must replay
     // candidates that encounter those first-block metadata changes.
     let activation = producer.advance_block().await?;
+    assert_eq!(activation.block().header().inner.number, 1);
+    assert_eq!(activation.block().header().inner.timestamp, 1);
     let activation_hash = activation.block().hash();
     producer.set_next_payload_timestamp(2)?;
     let chain_spec = producer.inner.chain_spec();
@@ -244,6 +256,9 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
         *expected_balances.entry(recipient).or_default() += amount;
     }
     let payload = producer.advance_block().await?;
+    // Both producer configurations remain under manual payload control.
+    assert_eq!(payload.block().header().inner.number, 2);
+    assert_eq!(payload.block().header().inner.timestamp, 2);
     let block_hash = payload.block().hash();
     assert_eq!(
         payload
