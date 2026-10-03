@@ -6,7 +6,7 @@ use alloy_eips::{Decodable2718, Encodable2718};
 use alloy_primitives::{Address, TxKind, U64, U256};
 use eyre::WrapErr;
 use reth_chainspec::EthChainSpec;
-use reth_e2e_test_utils::{node::Finality, wallet::test_signer};
+use reth_e2e_test_utils::{node::Finality, wait::assert_holds_for, wallet::test_signer};
 use reth_ethereum::{
     evm::revm::primitives::hex, pool::TransactionPool, primitives::SignerRecoverable,
 };
@@ -16,7 +16,7 @@ use reth_transaction_pool::{
     TransactionOrigin,
     error::{InvalidPoolTransactionError, PoolError, PoolErrorKind},
 };
-use std::num::NonZeroU64;
+use std::{num::NonZeroU64, time::Duration};
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_precompiles::{DEFAULT_FEE_TOKEN, tip_fee_manager::TipFeeManager};
 use tempo_primitives::{
@@ -169,15 +169,14 @@ async fn test_evict_expired_aa_tx() -> eyre::Result<()> {
     assert_eq!(pooled_txs.len(), 1);
     assert_eq!(*pooled_txs[0].hash(), tx_hash,);
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-
-    // Verify tx is still there before commiting the new block
-    let pooled_txs_before = setup
-        .node
-        .inner
-        .pool
-        .get_transactions_by_sender(signer_addr);
-    assert_eq!(pooled_txs_before.len(), 1);
+    // Verify tx stays there before committing the new block
+    let pool = &setup.node.inner.pool;
+    assert_holds_for(
+        Duration::from_secs(2),
+        "tx to stay in the pool",
+        move || async move { Ok(pool.get_transactions_by_sender(signer_addr).len() == 1) },
+    )
+    .await?;
 
     // Build the next block at `valid_before`, so the tx expires instead of being mined.
     setup.node.set_next_payload_timestamp(tip_timestamp + 5)?;
@@ -330,18 +329,17 @@ async fn test_evict_tx_on_validator_token_change() -> eyre::Result<()> {
     };
     pool.evict_invalidated_transactions(&updates);
 
-    // Give time for any eviction to complete
-    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-
     // Transaction should NOT be evicted because the attacker's token is not in
     // the active validator set.
-    let pooled_txs_after = pool.get_transactions_by_sender(user_addr);
-    assert_eq!(
-        pooled_txs_after.len(),
-        1,
-        "Transaction should NOT be evicted when validator token change is from a non-active validator"
-    );
-    assert_eq!(*pooled_txs_after[0].hash(), tx_hash);
+    assert_holds_for(
+        Duration::from_millis(10),
+        "transaction to stay in the pool when validator token change is from a non-active validator",
+        move || async move {
+            let pooled_txs_after = pool.get_transactions_by_sender(user_addr);
+            Ok(pooled_txs_after.len() == 1 && *pooled_txs_after[0].hash() == tx_hash)
+        },
+    )
+    .await?;
 
     Ok(())
 }
