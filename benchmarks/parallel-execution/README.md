@@ -757,6 +757,15 @@ reuse is 76.40%, but this has not established a net improvement over main. Every
 pair runs feature first; peer acceptance does not replace the separate sequential
 receipt/root oracles.
 
+[10k comparison 37147944604](https://github.com/tempoxyz/tempo/actions/runs/37147944604)
+uses the same main and candidate at 10,000 offered TPS. Three 90-second pairs
+deliver 9,909 versus 9,910 TPS, statistically neutral. The official result is
+mixed: validator gas throughput falls 2.73% and validator p50 rises 5.29%, while
+validator p99 improves 8.13%. All six terminal peer heads agree and all 7,646
+observed payload statuses are `VALID`; seven errors follow explicit shutdown.
+Win-only Slack correctly skips this result. This input-limited point does not
+establish a throughput improvement or an independent sequential receipt/root check.
+
 A local experiment made contended prefix reads fall back to the parent provider.
 It preserved differential correctness but reduced eight-worker reuse from about
 97% to 62–65%, lowering median throughput 31.74% across three paired million-
