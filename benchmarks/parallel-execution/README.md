@@ -103,6 +103,13 @@ All threaded runs match sequential receipts and roots, with similar reuse;
 creation still publishes all observed slots. Omitted hints may increase reads or replay
 after Engine pre-execution changes, so the GitHub comparison remains necessary.
 
+A single builder result slot replaces the per-candidate result channel and
+separate completion allocation. Three interleaved million-handoff pairs using
+actual captured results reduce median handoff time 36.75% for ready results and
+21.72% with one worker and a sixteen-result window. This diagnostic includes
+common job and permit channels, excludes execution and validation, and does not
+establish a node throughput improvement.
+
 For historical data, use the read-only differential replay command:
 
 ```sh

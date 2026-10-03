@@ -1,7 +1,7 @@
 use std::{
     cell::RefCell,
     sync::{
-        Arc,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, Sender},
     },
@@ -163,16 +163,12 @@ impl BestTransactionsPrewarming {
                     ctx.speculative_in_flight += 1;
                     // Publish handles in source order, before workers finish. The
                     // authoritative iterator can still skip or invalidate them.
-                    let (result_tx, result_rx) = mpsc::sync_channel(1);
-                    let completion = Arc::new(SpeculativeCompletion { commands_tx });
+                    let (producer, handle) =
+                        PreexecutedHandle::new(commands_tx, expiring_nonce_offset);
                     let _ = transactions_tx.send(Some(PrewarmedTransaction {
                         tx: tx.clone(),
                         replay: None,
-                        preexecuted: Some(PreexecutedHandle {
-                            result_rx,
-                            _completion: completion.clone(),
-                            expiring_nonce_offset,
-                        }),
+                        preexecuted: Some(handle),
                     }));
                     scope.spawn(move |_| {
                         let result = prewarm.with_worker(|worker| {
@@ -186,8 +182,7 @@ impl BestTransactionsPrewarming {
                             evm.execute(tx.transaction.clone_tx_env(), expiring_nonce_offset)
                                 .ok()
                         });
-                        let _ = result_tx.send(result);
-                        drop(completion);
+                        producer.send(result);
                     });
                     return;
                 }
@@ -446,7 +441,7 @@ impl PrewarmedTransaction {
     /// Wait only for the selected transaction; discarded candidates never block
     /// selection. Each producer is bounded by the existing prewarming pool.
     pub(crate) fn take_preexecuted(&mut self) -> Option<PreexecutedTransaction> {
-        self.preexecuted.take()?.result_rx.recv().ok().flatten()
+        self.preexecuted.take()?.recv()
     }
 
     pub(crate) fn expiring_nonce_offset(&self) -> Option<usize> {
@@ -456,20 +451,120 @@ impl PrewarmedTransaction {
 
 #[derive(Debug)]
 struct PreexecutedHandle {
-    result_rx: Receiver<Option<PreexecutedTransaction>>,
-    _completion: Arc<SpeculativeCompletion>,
+    completion: Arc<SpeculativeCompletion>,
     expiring_nonce_offset: Option<usize>,
 }
 
-/// Capacity belongs to both the worker and the consumer. Discarding a handle
-/// never blocks, but cannot admit more work while its producer is still running.
+impl PreexecutedHandle {
+    fn new(
+        commands_tx: Sender<BestTransactionsCommand>,
+        expiring_nonce_offset: Option<usize>,
+    ) -> (PreexecutedProducer, Self) {
+        let completion = Arc::new(SpeculativeCompletion {
+            result: Mutex::new(PreexecutedResult {
+                value: None,
+                waiting: false,
+            }),
+            ready: Condvar::new(),
+            commands_tx,
+        });
+        (
+            PreexecutedProducer {
+                completion: Some(completion.clone()),
+            },
+            Self {
+                completion,
+                expiring_nonce_offset,
+            },
+        )
+    }
+
+    fn recv(self) -> Option<PreexecutedTransaction> {
+        let mut result = self
+            .completion
+            .result
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while result.value.is_none() {
+            result.waiting = true;
+            result = self
+                .completion
+                .ready
+                .wait(result)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        result.value.take().flatten()
+    }
+}
+
+/// Close the slot even if the worker exits early or unwinds before publishing.
+#[derive(Debug)]
+struct PreexecutedProducer {
+    completion: Option<Arc<SpeculativeCompletion>>,
+}
+
+impl PreexecutedProducer {
+    fn send(mut self, result: Option<PreexecutedTransaction>) {
+        if let Some(completion) = self.completion.take() {
+            completion.publish(result);
+        }
+    }
+}
+
+impl Drop for PreexecutedProducer {
+    fn drop(&mut self) {
+        if let Some(completion) = self.completion.take() {
+            completion.publish(None);
+        }
+    }
+}
+
+#[derive(Debug)]
+struct PreexecutedResult {
+    // Outer None means pending; Some(None) means no reusable result.
+    value: Option<Option<PreexecutedTransaction>>,
+    // Protected by the result mutex so publication cannot miss a waiting reader.
+    waiting: bool,
+}
+
+/// One result and one admission permit shared by exactly the worker and consumer.
+/// Discarding a handle never locks or waits. Capacity returns only after both
+/// owners finish, including when a discarded candidate's worker is still running.
 #[derive(Debug)]
 struct SpeculativeCompletion {
+    result: Mutex<PreexecutedResult>,
+    ready: Condvar,
     commands_tx: Sender<BestTransactionsCommand>,
+}
+
+impl SpeculativeCompletion {
+    fn publish(&self, value: Option<PreexecutedTransaction>) {
+        let notify = {
+            let mut result = self
+                .result
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            result.value = Some(value);
+            result.waiting
+        };
+        // Avoid a notification when publication precedes the reader's first wait.
+        if notify {
+            self.ready.notify_one();
+        }
+    }
 }
 
 impl Drop for SpeculativeCompletion {
     fn drop(&mut self) {
+        // Release any discarded result before admitting its replacement. Both
+        // owners are gone, so exclusive mutex access does not lock or wait.
+        drop(
+            self.result
+                .get_mut()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .value
+                .take(),
+        );
         let _ = self
             .commands_tx
             .send(BestTransactionsCommand::ConsumedSpeculative);
@@ -1313,18 +1408,11 @@ mod tests {
     fn discarded_speculative_handles_wait_for_worker_completion_to_refill() {
         for worker_first in [false, true] {
             let (commands_tx, commands_rx) = mpsc::channel();
-            let (result_tx, result_rx) = mpsc::channel();
-            let completion = Arc::new(SpeculativeCompletion { commands_tx });
-            let handle = PreexecutedHandle {
-                result_rx,
-                _completion: completion.clone(),
-                expiring_nonce_offset: None,
-            };
+            let (producer, handle) = PreexecutedHandle::new(commands_tx, None);
             let (finish_tx, finish_rx) = mpsc::channel();
             let worker = thread::spawn(move || {
                 finish_rx.recv().unwrap();
-                let _ = result_tx.send(None);
-                drop(completion);
+                producer.send(None);
             });
             if worker_first {
                 finish_tx.send(()).unwrap();
@@ -1341,6 +1429,102 @@ mod tests {
             }
             assert!(matches!(
                 commands_rx.try_recv(),
+                Ok(BestTransactionsCommand::ConsumedSpeculative)
+            ));
+            assert!(commands_rx.try_recv().is_err());
+        }
+    }
+
+    fn wait_for_speculative_reader(producer: &PreexecutedProducer) {
+        // The receiver sets waiting while holding the mutex, then atomically
+        // releases it in Condvar::wait. Observing it here proves that path ran.
+        // Borrow the producer's owner; an extra Arc would delay permit return.
+        wait_until(|| {
+            producer
+                .completion
+                .as_ref()
+                .expect("producer has not published")
+                .result
+                .try_lock()
+                .is_ok_and(|result| result.waiting)
+        });
+    }
+
+    #[test]
+    fn speculative_producer_abort_closes_waiting_consumer() {
+        for panic in [false, true] {
+            let (commands_tx, commands_rx) = mpsc::channel();
+            let (producer, handle) = PreexecutedHandle::new(commands_tx, None);
+            let (returned_tx, returned_rx) = mpsc::channel();
+            let consumer = thread::spawn(move || {
+                returned_tx.send(handle.recv().is_none()).unwrap();
+            });
+            wait_for_speculative_reader(&producer);
+            let outcome = catch_unwind(AssertUnwindSafe(move || {
+                let _producer = producer;
+                if panic {
+                    panic!("worker exited before publishing");
+                }
+            }));
+            assert_eq!(outcome.is_err(), panic);
+            assert!(returned_rx.recv_timeout(Duration::from_secs(1)).unwrap());
+            consumer.join().unwrap();
+            assert!(matches!(
+                commands_rx.recv_timeout(Duration::from_secs(1)),
+                Ok(BestTransactionsCommand::ConsumedSpeculative)
+            ));
+            assert!(commands_rx.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn speculative_result_is_delivered_once_before_capacity_returns() {
+        for producer_first in [false, true] {
+            let context = prewarming_context(TaskExecutor::test(), false);
+            let mut env = EvmEnvFor::<TempoEvmConfig>::default();
+            env.block_env.inner.gas_limit = 30_000_000;
+            let tx = test_tx(Address::with_last_byte(201), 0);
+            let mut tx_env = tx.transaction.clone_tx_env();
+            tx_env.inner.chain_id = None;
+            tx_env.inner.gas_price = 0;
+            tx_env.inner.gas_limit = 1_000_000;
+            let candidate = PrewarmingExecutor::new(context.database_for_ctx().unwrap(), env)
+                .execute(tx_env, None)
+                .expect("zero-fee speculative transaction");
+            // This cross-crate type exposes Debug but no equality/result accessor.
+            // Moving the same value preserves its maps' iteration order.
+            let expected = format!("{candidate:?}");
+            let (commands_tx, commands_rx) = mpsc::channel();
+            let (producer, handle) = PreexecutedHandle::new(commands_tx, Some(7));
+            let mut tx = PrewarmedTransaction {
+                tx,
+                replay: None,
+                preexecuted: Some(handle),
+            };
+            assert_eq!(tx.expiring_nonce_offset(), Some(7));
+            if producer_first {
+                producer.send(Some(candidate));
+                assert!(commands_rx.try_recv().is_err());
+                assert_eq!(format!("{:?}", tx.take_preexecuted().unwrap()), expected);
+                assert!(tx.take_preexecuted().is_none());
+            } else {
+                let (returned_tx, returned_rx) = mpsc::channel();
+                let consumer = thread::spawn(move || {
+                    let result = tx.take_preexecuted().unwrap();
+                    assert!(tx.take_preexecuted().is_none());
+                    returned_tx.send(format!("{result:?}")).unwrap();
+                });
+                wait_for_speculative_reader(&producer);
+                assert!(commands_rx.try_recv().is_err());
+                producer.send(Some(candidate));
+                assert_eq!(
+                    returned_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+                    expected
+                );
+                consumer.join().unwrap();
+            }
+            assert!(matches!(
+                commands_rx.recv_timeout(Duration::from_secs(1)),
                 Ok(BestTransactionsCommand::ConsumedSpeculative)
             ));
             assert!(commands_rx.try_recv().is_err());
