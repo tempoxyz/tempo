@@ -78,7 +78,8 @@ async fn send_tempo_tx<P: Provider>(
     provider
         .send_raw_transaction(&envelope.encoded_2718())
         .await?
-        .get_tempo_receipt()
+        .into_tempo()
+        .successful_receipt()
         .await
 }
 
@@ -96,13 +97,11 @@ async fn test_tip1060_keychain_fee_refund_does_not_retain_storage_credit() -> ey
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let root = test_signer(0);
     let root_addr = root.address();
-    let provider = ProviderBuilder::new()
-        .wallet(root.clone())
-        .connect_http(setup.http_url);
-    // Keep Alloy's pending-transaction heartbeat ahead of the 100ms dev block interval.
-    provider
-        .client()
-        .set_poll_interval(std::time::Duration::from_millis(10));
+    let provider = setup
+        .local_node
+        .as_ref()
+        .expect("local node")
+        .rpc_provider_with_wallet(root.clone());
     let access_key = PrivateKeySigner::random();
 
     let gas_limit = 500_000u64;
@@ -483,7 +482,7 @@ async fn test_tip1060_fee_manager_credit_from_distribute_fees_is_not_redeemable(
             .await?;
     }
     let token_credit_before_seed = credits.balanceOf(fee_token_addr).call().await?;
-    let seed_credit_receipt = send_tempo_tx(
+    send_tempo_tx(
         &provider,
         &credit_source,
         TempoTransaction {
@@ -507,7 +506,6 @@ async fn test_tip1060_fee_manager_credit_from_distribute_fees_is_not_redeemable(
         },
     )
     .await?;
-    assert!(seed_credit_receipt.status());
     assert_eq!(
         credits.balanceOf(fee_token_addr).call().await?,
         token_credit_before_seed + 1,
@@ -822,7 +820,7 @@ async fn test_tip1060_distribute_fees_receive_policy_guard_creations_are_account
         .successful_receipt()
         .await?;
     let token_credit_before_seed = credits.balanceOf(fee_token_addr).call().await?;
-    let seed_token_credit_receipt = send_tempo_tx(
+    send_tempo_tx(
         &provider,
         &credit_source,
         TempoTransaction {
@@ -846,7 +844,6 @@ async fn test_tip1060_distribute_fees_receive_policy_guard_creations_are_account
         },
     )
     .await?;
-    assert!(seed_token_credit_receipt.status());
     assert_eq!(
         credits.balanceOf(fee_token_addr).call().await?,
         token_credit_before_seed + 1,
@@ -1016,13 +1013,11 @@ async fn test_tip1060_successful_keychain_spend_fee_refund_cancels_restored_limi
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let root = test_signer(0);
     let root_addr = root.address();
-    let provider = ProviderBuilder::new()
-        .wallet(root.clone())
-        .connect_http(setup.http_url);
-    // Keep Alloy's pending-transaction heartbeat ahead of the 100ms dev block interval.
-    provider
-        .client()
-        .set_poll_interval(std::time::Duration::from_millis(10));
+    let provider = setup
+        .local_node
+        .as_ref()
+        .expect("local node")
+        .rpc_provider_with_wallet(root.clone());
     let access_key = PrivateKeySigner::random();
 
     let gas_limit = 500_000u64;
