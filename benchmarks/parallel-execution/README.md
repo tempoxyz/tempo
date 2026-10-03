@@ -337,6 +337,14 @@ from the build provenance. The run also rejected unsupported perf metadata durin
 preflight, before running the feature arm; it supplies no CPU attribution or A/B
 result. All three VMs and their boot disks were removed.
 
+[CPU retry 37152374490](https://github.com/tempoxyz/tempo/actions/runs/37152374490)
+verifies matching build, ready-marker and live baseline ELF hashes after the
+cache repair. Both preflights still fail: one has missing or broken DWARF callers,
+and the other starts during cooldown. The feature arm never runs. All three VMs
+and boot disks are removed; this supplies no CPU attribution or paired result.
+The next harness uses source-bound frame-pointer builds and waits for a fresh
+post-reset preparation marker before starting its activity window.
+
 The workflow's builder gas throughput averages `gas_used / elapsed` over full
 payload builds. It includes setup, transaction selection, waits and finalization;
 it is not execution-only throughput. CPU profile shares describe sampled work
@@ -771,6 +779,16 @@ validator p99 improves 8.13%. All six terminal peer heads agree and all 7,646
 observed payload statuses are `VALID`; seven errors follow explicit shutdown.
 Win-only Slack correctly skips this result. This input-limited point does not
 establish a throughput improvement or an independent sequential receipt/root check.
+
+[25k comparison 37153166293](https://github.com/tempoxyz/tempo/actions/runs/37153166293)
+uses the same commits and three 90-second pairs at 25,000 offered TPS. Achieved
+TPS is 14,440 versus 14,103 (-2.33%, statistically neutral). Validator gas
+throughput falls 7.89% and validator p50 rises 5.12%; builder p90 improves 6.01%.
+The result is mixed and win-only Slack skips it. All six sender reports have
+zero failures and match the common canonical transaction counts; all 6,340
+observed payload statuses are `VALID`. Five terminal peer heads agree; the sixth
+has one linked empty shutdown block. Losing siblings are excluded from accepted
+costs. Offered rate exceeds achieved rate despite zero sender errors.
 
 [Dispatch-lead comparison 37150430298](https://github.com/tempoxyz/tempo/actions/runs/37150430298)
 compares `1c86a7ab5` with `ec0f4a6ea`, widening dispatch from 128 to 512 while
