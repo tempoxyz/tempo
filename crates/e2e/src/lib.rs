@@ -4,7 +4,7 @@
 //! consensus engine in a deterministic runtime while maintaining a tokio
 //! async environment to launch execution nodes.
 //!
-//! All definitions herein are only intended to support the the tests defined
+//! All definitions herein are only intended to support the tests defined
 //! in tests/.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
