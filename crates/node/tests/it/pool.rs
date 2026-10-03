@@ -4,7 +4,6 @@ use alloy::{
 };
 use alloy_eips::{Decodable2718, Encodable2718};
 use alloy_primitives::{Address, TxKind, U64, U256};
-use eyre::WrapErr;
 use reth_chainspec::EthChainSpec;
 use reth_e2e_test_utils::{node::Finality, wait::assert_holds_for, wallet::test_signer};
 use reth_ethereum::{
@@ -241,18 +240,14 @@ async fn test_2d_nonce_tx_reinjected_after_reorg() -> eyre::Result<()> {
 
     node.mine_pooled([tx_hash]).await?;
 
-    node.wait_for_pool(|pool| !pool.contains(&tx_hash))
-        .await
-        .wrap_err("tx should be mined out of pool")?;
+    node.wait_for_pool_removal([tx_hash]).await?;
 
     // Step 2: Build block B on genesis and make it the head → reorg A→B. B is empty because the
     // pool no longer holds the tx.
     node.advance_block_on(genesis).await?;
 
     // Step 3: Wait for the orphaned tx to reappear in the pool
-    node.wait_for_pool(|pool| pool.contains(&tx_hash))
-        .await
-        .wrap_err("tx should be back in pool after reorg")?;
+    node.wait_for_pooled([tx_hash]).await?;
 
     Ok(())
 }
@@ -529,9 +524,8 @@ async fn test_evict_txs_on_transfer_policy_change() -> eyre::Result<()> {
 
     // Pool maintenance runs asynchronously; wait for it to evict the non-whitelisted txs
     node1
-        .wait_for_pool(|pool| evictable_hashes.iter().all(|hash| !pool.contains(hash)))
-        .await
-        .wrap_err("non-whitelisted tx should be evicted after policy change")?;
+        .wait_for_pool_removal(evictable_hashes.iter().copied())
+        .await?;
 
     // Whitelisted transaction should still be in the pool
     assert!(
