@@ -2232,7 +2232,7 @@ pub struct ValidationContext {
 ///   stipend above already covers the first call's target access
 /// - Per-call input data gas (calldata tokens * 4 gas)
 /// - Per-call CREATE costs (if applicable):
-///   - Additional 32k base (CREATE constant)
+///   - Additional base cost (`create_cost()`: 500k on T1+ per TIP-1000, 32k before)
 ///   - Initcode analysis gas (2 per 32-byte chunk, Shanghai+)
 /// - Check that value transfer is zero.
 /// - Access list costs (shared across batch)
