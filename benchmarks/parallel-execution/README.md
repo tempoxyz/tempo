@@ -867,6 +867,13 @@ but both sixteen-worker pairs regressed (6.68% overall). All ten million-transac
 receipt/root oracles, 279 unit tests and fourteen node integration tests passed.
 The prototype was reverted before committing or dispatching a node comparison.
 
+A prototype retained the authoritative account borrow across cold storage reads.
+Across three local 100k-transaction TIP-20/AA pairs, throughput changed +0.81% at
+eight workers and -0.92% at sixteen, with mixed pairs. All six receipt/root oracles
+and 235 EVM tests passed. Only the final test crate was optimized; these are not
+node throughput measurements. The production change was reverted, retaining two
+provider-order and cache-equivalence tests, which also pass on the restored code.
+
 A diagnostic over 10k–100k public-mix transactions finds that 6.08–7.95% of
 recorded reads match previously written storage after excluding predicted nonce
 pointers. Read-time provenance and intervening generations remain unchecked.

@@ -55,9 +55,9 @@ fn fixture() -> (CacheDB<EmptyDB>, Address, B256, Vec<ReadKey>) {
     )
 }
 
-fn compare(
-    canonical: &mut State<CacheDB<EmptyDB>>,
-    cached: &mut State<CacheDB<EmptyDB>>,
+fn compare<P: Database>(
+    canonical: &mut State<P>,
+    cached: &mut State<P>,
     reads: &[(ReadKey, ReadValue)],
 ) -> Result<bool, String> {
     let mut normal = candidate(reads.to_vec());
@@ -75,6 +75,8 @@ fn compare(
     );
     assert_eq!(fast.result.unwrap(), normal.result.unwrap());
     assert_eq!(fast.fees_rebased, normal.fees_rebased);
+    assert_eq!(cached.cache, canonical.cache);
+    assert_eq!(cached.bal_state, canonical.bal_state);
     actual
 }
 
@@ -405,5 +407,203 @@ fn canonical_cache_validation_stops_warm_runs_before_later_provider_errors() {
             // still reach the provider and return its error.
             assert!(actual.is_err());
         }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct TracedProvider {
+    reads: Vec<ReadKey>,
+    failing_slot: Option<(Address, U256)>,
+}
+
+impl revm::Database for TracedProvider {
+    type Error = Unavailable;
+
+    fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+        self.reads.push(ReadKey::Account(address));
+        Ok(Some(AccountInfo {
+            nonce: 1,
+            ..Default::default()
+        }))
+    }
+
+    fn storage(&mut self, address: Address, slot: U256) -> Result<U256, Self::Error> {
+        self.reads.push(ReadKey::Storage(address, slot));
+        if self.failing_slot == Some((address, slot)) {
+            return Err(Unavailable);
+        }
+        Ok(slot + U256::from(10))
+    }
+
+    fn code_by_hash(&mut self, hash: B256) -> Result<Bytecode, Self::Error> {
+        self.reads.push(ReadKey::Code(hash));
+        Err(Unavailable)
+    }
+
+    fn block_hash(&mut self, number: u64) -> Result<B256, Self::Error> {
+        self.reads.push(ReadKey::BlockHash(number));
+        Err(Unavailable)
+    }
+}
+
+#[test]
+fn canonical_cache_validation_materializes_cold_runs_in_provider_order() {
+    let address = Address::with_last_byte(216);
+    let other = Address::with_last_byte(217);
+    let info = AccountInfo {
+        nonce: 1,
+        ..Default::default()
+    };
+    let storage = |address, slot| ReadKey::Storage(address, U256::from(slot));
+    for scenario in ["success", "conflict", "error", "malformed"] {
+        let provider = TracedProvider {
+            // A conflict or malformed read must stop before the later error.
+            failing_slot: match scenario {
+                "error" => Some((address, U256::from(3))),
+                "conflict" | "malformed" => Some((address, U256::from(4))),
+                _ => None,
+            },
+            ..Default::default()
+        };
+        let mut canonical = State::builder().with_database(provider.clone()).build();
+        let mut cached = State::builder().with_database(provider).build();
+        for db in [&mut canonical, &mut cached] {
+            db.insert_account_with_storage(
+                address,
+                info.clone(),
+                HashMap::from_iter([(U256::ONE, U256::from(11))]),
+            );
+        }
+        let reads = vec![
+            (
+                ReadKey::Account(address),
+                ReadValue::Account(Some(info.clone())),
+            ),
+            (storage(address, 1), ReadValue::Storage(U256::from(11))),
+            (storage(address, 2), ReadValue::Storage(U256::from(12))),
+            (storage(address, 2), ReadValue::Storage(U256::from(12))),
+            (
+                storage(address, 3),
+                match scenario {
+                    "conflict" => ReadValue::Storage(U256::from(14)),
+                    "malformed" => ReadValue::Account(None),
+                    _ => ReadValue::Storage(U256::from(13)),
+                },
+            ),
+            (storage(address, 4), ReadValue::Storage(U256::from(14))),
+            (
+                ReadKey::Account(other),
+                ReadValue::Account(Some(info.clone())),
+            ),
+            (storage(other, 2), ReadValue::Storage(U256::from(12))),
+            (storage(address, 4), ReadValue::Storage(U256::from(14))),
+        ];
+        let result = compare(&mut canonical, &mut cached, &reads);
+        if scenario == "error" {
+            assert!(result.is_err());
+        } else {
+            assert_eq!(result, Ok(scenario == "success"), "{scenario}");
+        }
+        let mut expected_calls = vec![storage(address, 2), storage(address, 3)];
+        if scenario == "success" {
+            expected_calls.extend([
+                storage(address, 4),
+                ReadKey::Account(other),
+                storage(other, 2),
+            ]);
+        }
+        assert_eq!(canonical.database.reads, expected_calls, "{scenario}");
+        assert_eq!(cached.database.reads, expected_calls, "{scenario}");
+        let slots = &cached.cache.accounts[&address]
+            .account
+            .as_ref()
+            .unwrap()
+            .storage;
+        assert_eq!(slots.get(&U256::from(2)), Some(&U256::from(12)));
+        // Successful reads are materialized even if they expose a conflict.
+        // Failed reads insert nothing, and no later read is performed.
+        assert_eq!(
+            slots.get(&U256::from(3)).copied(),
+            (scenario != "error").then_some(U256::from(13)),
+            "{scenario}"
+        );
+        assert_eq!(slots.contains_key(&U256::from(4)), scenario == "success");
+    }
+}
+
+#[test]
+fn canonical_cache_validation_preserves_bundle_slots_and_bal_builder() {
+    use revm::database::{AccountStatus, BundleAccount, BundleState, states::StorageSlot};
+
+    let address = Address::with_last_byte(218);
+    let info = AccountInfo {
+        nonce: 2,
+        ..Default::default()
+    };
+    for status in [AccountStatus::Loaded, AccountStatus::InMemoryChange] {
+        let mut bundle = BundleState::default();
+        bundle.state.insert(
+            address,
+            BundleAccount::new(
+                Some(info.clone()),
+                Some(info.clone()),
+                HashMap::from_iter([(
+                    U256::ONE,
+                    StorageSlot::new_changed(U256::ZERO, U256::from(77)),
+                )]),
+                status,
+            ),
+        );
+        let provider = TracedProvider::default();
+        let mut canonical = State::builder()
+            .with_database(provider.clone())
+            .with_bundle_prestate(bundle.clone())
+            .with_bal_builder()
+            .build();
+        let mut cached = State::builder()
+            .with_database(provider)
+            .with_bundle_prestate(bundle.clone())
+            .with_bal_builder()
+            .build();
+        let bal_before = cached.bal_state.clone();
+        assert!(!cached.has_bal());
+        assert!(cached.bal_state.bal_builder.is_some());
+        let mut reads = vec![
+            (
+                ReadKey::Account(address),
+                ReadValue::Account(Some(info.clone())),
+            ),
+            (
+                ReadKey::Storage(address, U256::ONE),
+                ReadValue::Storage(U256::from(77)),
+            ),
+        ];
+        for slot in [2, 3, 2] {
+            reads.push((
+                ReadKey::Storage(address, U256::from(slot)),
+                ReadValue::Storage(if status.is_storage_known() {
+                    U256::ZERO
+                } else {
+                    U256::from(slot + 10)
+                }),
+            ));
+        }
+        assert_eq!(compare(&mut canonical, &mut cached, &reads), Ok(true));
+        let expected_calls = if status.is_storage_known() {
+            vec![]
+        } else {
+            vec![
+                ReadKey::Storage(address, U256::from(2)),
+                ReadKey::Storage(address, U256::from(3)),
+            ]
+        };
+        assert_eq!(canonical.database.reads, expected_calls);
+        assert_eq!(cached.database.reads, expected_calls);
+        assert_eq!(cached.bal_state, bal_before);
+        assert_eq!(cached.bundle_state, bundle);
+        assert_eq!(canonical.bundle_state, bundle);
+        let account = &cached.cache.accounts[&address];
+        assert_eq!(account.status, status);
+        assert_eq!(account.account.as_ref().unwrap().storage.len(), 3);
     }
 }
