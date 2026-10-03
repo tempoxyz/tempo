@@ -790,6 +790,17 @@ observed payload statuses are `VALID`. Five terminal peer heads agree; the sixth
 has one linked empty shutdown block. Losing siblings are excluded from accepted
 costs. Offered rate exceeds achieved rate despite zero sender errors.
 
+[75k comparison 37155408370](https://github.com/tempoxyz/tempo/actions/runs/37155408370)
+uses the same commits and three 90-second pairs at 75,000 offered TPS. Achieved
+TPS is 13,329 versus 13,666 (+2.53%, statistically neutral). Validator gas
+throughput falls 10.05% and validator p50/p90/p99 rise 12.25%/10.93%/28.40%;
+block-time p99 improves 28.38%. The result is mixed and win-only Slack skips it.
+All six terminal peer heads agree and all 5,941 observed payload statuses are
+`VALID`; eighteen errors follow explicit shutdown. Heavy sender failures occur
+in every phase. One baseline has 3,751 more RPC acceptances than canonical
+transactions, reconciled with additional failure events; individual outcomes
+are unproven. This offered-load point does not demonstrate 75,000 delivered TPS.
+
 [Dispatch-lead comparison 37150430298](https://github.com/tempoxyz/tempo/actions/runs/37150430298)
 compares `1c86a7ab5` with `ec0f4a6ea`, widening dispatch from 128 to 512 while
 keeping capture and in-flight limits at 128. The official result is improvement:
