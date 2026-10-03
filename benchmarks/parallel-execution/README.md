@@ -703,6 +703,18 @@ explicit shutdown. This diagnostic does not establish a performance improvement;
 Slack is disabled. The low Engine validation share favors testing worker and
 prefix-publication costs before adding validation shortcuts.
 
+[Nonce-hint comparison 37128598935](https://github.com/tempoxyz/tempo/actions/runs/37128598935)
+isolates Engine expiring-nonce storage-hint omission (`29ae49200` versus
+`b4719cec6`). Three pairs at 50k offered TPS classify as **No Difference**:
+TPS is 15,387 versus 15,230 (-1.02%) and validator gas throughput changes +1.43%;
+all official axes are neutral and win-only Slack is skipped. Across 1,454 accepted
+common-chain blocks and 8.76 million transactions, aggregate Engine prefix hold
+falls from 1.887 to 1.400 microseconds per transaction, consistently lower in all
+three pairs. These different accepted workloads measure wall time, including
+descheduling, and do not isolate nonce-only CPU cost or establish a throughput
+gain. All 6,685 payload statuses are `VALID`; seven errors follow explicit shutdown,
+and three unfinished next-child builds at shutdown are excluded from accepted work.
+
 [Lock-diagnostic replay 37096394462](https://github.com/tempoxyz/tempo/actions/runs/37096394462)
 measures 29.483 versus 28.421 Mgas/s (-3.60%), with p99 newPayload latency rising
 from 1.444 to 1.571 ms (+8.80%). All 250,000 submissions are valid; all four
