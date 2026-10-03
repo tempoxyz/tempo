@@ -1,6 +1,7 @@
 //! Recorded execution on a worker-owned provider, reusable by the ordered executor.
 
 use super::*;
+use std::time::Instant;
 
 /// Advisory values from the builder's accepted prefix. Workers may read across
 /// updates; ordered validation still checks every dependency before reuse.
@@ -22,6 +23,54 @@ struct PrefixAccount {
     info: Option<AccountInfo>,
     storage: HashMap<U256, U256>,
     cleared: bool,
+}
+
+impl PrefixState {
+    #[inline]
+    fn record(&mut self, state: &reth_revm::state::EvmState, expiring_offset: Option<usize>) {
+        for (&address, account) in state {
+            if !account.is_touched() {
+                continue;
+            }
+            if let Some(code) = &account.info.code {
+                self.code.insert(account.info.code_hash, code.clone());
+            }
+            let cached = self.accounts.entry(address).or_default();
+            // Match revm State's commit semantics. In particular, AA callers
+            // can be touched while retaining zero nonce/balance/code, so EIP-161
+            // removes them even though execution returns an Account value.
+            // Created accounts take precedence over empty-account clearing;
+            // the journal also uses that flag to normalize pre-EIP-161 output.
+            let removed = account_is_removed(account);
+            if account.is_created() || removed {
+                cached.storage.clear();
+                cached.cleared = true;
+            }
+            if removed {
+                cached.info = None;
+                continue;
+            }
+            cached.info = Some(account.info.clone());
+            for (&slot, value) in &account.storage {
+                // Publish ordinary writes; omitted observations fall through
+                // to the parent provider and still require ordered validation.
+                // Created accounts retain every slot after clearing old storage.
+                if value.is_changed() || account.is_created() {
+                    cached.storage.insert(slot, value.present_value);
+                }
+            }
+        }
+        if let Some(slot) = state
+            .get(&NONCE_PRECOMPILE_ADDRESS)
+            .and_then(|account| account.storage.get(&nonce_slots::EXPIRING_NONCE_RING_PTR))
+        {
+            if let Some(next_offset) = expiring_offset.and_then(|offset| offset.checked_add(1)) {
+                self.nonce_cursor = Some((slot.present_value, next_offset));
+            } else if slot.is_changed() {
+                self.nonce_cursor = None;
+            }
+        }
+    }
 }
 
 impl PrewarmingState {
@@ -89,48 +138,23 @@ impl PrewarmingState {
     /// pool filtering. The state is only a hint and never committed by workers.
     pub fn record(&self, state: &reth_revm::state::EvmState, expiring_offset: Option<usize>) {
         let mut prefix = self.0.write().expect("prewarming prefix poisoned");
-        for (&address, account) in state {
-            if !account.is_touched() {
-                continue;
-            }
-            if let Some(code) = &account.info.code {
-                prefix.code.insert(account.info.code_hash, code.clone());
-            }
-            let cached = prefix.accounts.entry(address).or_default();
-            // Match revm State's commit semantics. In particular, AA callers
-            // can be touched while retaining zero nonce/balance/code, so EIP-161
-            // removes them even though execution returns an Account value.
-            // Created accounts take precedence over empty-account clearing;
-            // the journal also uses that flag to normalize pre-EIP-161 output.
-            let removed = account_is_removed(account);
-            if account.is_created() || removed {
-                cached.storage.clear();
-                cached.cleared = true;
-            }
-            if removed {
-                cached.info = None;
-                continue;
-            }
-            cached.info = Some(account.info.clone());
-            for (&slot, value) in &account.storage {
-                // Publish ordinary writes; omitted observations fall through
-                // to the parent provider and still require ordered validation.
-                // Created accounts retain every slot after clearing old storage.
-                if value.is_changed() || account.is_created() {
-                    cached.storage.insert(slot, value.present_value);
-                }
-            }
-        }
-        if let Some(slot) = state
-            .get(&NONCE_PRECOMPILE_ADDRESS)
-            .and_then(|account| account.storage.get(&nonce_slots::EXPIRING_NONCE_RING_PTR))
-        {
-            if let Some(next_offset) = expiring_offset.and_then(|offset| offset.checked_add(1)) {
-                prefix.nonce_cursor = Some((slot.present_value, next_offset));
-            } else if slot.is_changed() {
-                prefix.nonce_cursor = None;
-            }
-        }
+        prefix.record(state, expiring_offset);
+    }
+
+    /// Publishes accepted state and returns writer acquisition and hold wall time.
+    /// Builder and Engine diagnostics call this; ordinary record calls remain untimed.
+    pub fn record_timed(
+        &self,
+        state: &reth_revm::state::EvmState,
+        expiring_offset: Option<usize>,
+    ) -> (Duration, Duration) {
+        let waiting = Instant::now();
+        let mut prefix = self.0.write().expect("prewarming prefix poisoned");
+        let acquired = Instant::now();
+        prefix.record(state, expiring_offset);
+        drop(prefix);
+        let held = acquired.elapsed();
+        (acquired.duration_since(waiting), held)
     }
 
     fn read(&self, key: ReadKey) -> Option<ReadValue> {

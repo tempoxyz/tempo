@@ -526,6 +526,9 @@ where
         let mut invalid_pool_transaction_execution_attempts = 0u64;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
         let mut prewarming_result_waits = PrewarmingResultWaits::default();
+        let mut prefix_writes = 0u64;
+        let mut prefix_write_wait_elapsed = Duration::ZERO;
+        let mut prefix_write_hold_elapsed = Duration::ZERO;
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
@@ -700,7 +703,11 @@ where
                 // Notify transactions iterator about the new state.
                 best_txs.on_new_result(result);
                 if let Some(prefix) = &prewarming_prefix {
-                    prefix.record(&result.result().state, prewarming_offset);
+                    let (waited, held) =
+                        prefix.record_timed(&result.result().state, prewarming_offset);
+                    prefix_writes += 1;
+                    prefix_write_wait_elapsed += waited;
+                    prefix_write_hold_elapsed += held;
                 }
             };
 
@@ -800,6 +807,9 @@ where
                 result_pending = prewarming_result_waits.pending,
                 result_contended = prewarming_result_waits.contended,
                 result_wait_seconds = prewarming_result_waits.wait_elapsed.as_secs_f64(),
+                prefix_writes,
+                prefix_write_wait_seconds = prefix_write_wait_elapsed.as_secs_f64(),
+                prefix_write_hold_seconds = prefix_write_hold_elapsed.as_secs_f64(),
                 "Prewarming result waits"
             );
         }

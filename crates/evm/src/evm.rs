@@ -22,6 +22,7 @@ use std::{
     cell::RefCell,
     ops::{Deref, DerefMut},
     rc::Rc,
+    time::Duration,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{storage::StorageAction, storage_credits::NonCreditableSlots};
@@ -56,6 +57,17 @@ type EngineCapture<DB> = fn(
     PreexecutedTransaction,
     EVMError<<DB as reth_revm::Database>::Error, TempoInvalidTransaction>,
 >;
+
+/// Ordered Engine diagnostics, separate from deterministic execution counters.
+#[derive(Debug, Default)]
+struct EngineWaitTimings {
+    takes: u64,
+    take_wait: Duration,
+    take_hold: Duration,
+    prefix_writes: u64,
+    prefix_write_wait: Duration,
+    prefix_write_hold: Duration,
+}
 
 /// Factory for creating Tempo EVM instances.
 #[derive(Debug, Default, Clone)]
@@ -131,6 +143,7 @@ pub struct TempoEvm<DB: Database, I = NoOpInspector> {
     state_committer: Option<fn(&mut DB, reth_revm::state::EvmState)>,
     engine_session: Option<std::sync::Arc<EnginePrewarmingSession>>,
     engine_capture: Option<EngineCapture<DB>>,
+    engine_wait_timings: EngineWaitTimings,
     execution_stats: ExecutionStats,
     last_sample: ExecutionStats,
     backoff_remaining: usize,
@@ -162,6 +175,7 @@ impl<DB: Database> TempoEvm<DB> {
             state_committer: None,
             engine_session: None,
             engine_capture: None,
+            engine_wait_timings: EngineWaitTimings::default(),
             execution_stats: ExecutionStats::default(),
             last_sample: ExecutionStats::default(),
             backoff_remaining: 0,
@@ -200,7 +214,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     /// Publishes accepted block state as advisory hints for Engine workers.
     /// This is deliberately separate from transact_raw: executing or discarding
     /// a candidate must never advance the prefix seen by other workers.
-    pub(crate) fn record_engine_commit(&self, state: &reth_revm::state::EvmState) {
+    pub(crate) fn record_engine_commit(&mut self, state: &reth_revm::state::EvmState) {
         let Some(session) = &self.engine_session else {
             return;
         };
@@ -219,7 +233,30 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         {
             return;
         }
-        session.record_commit(state);
+        let (waited, held) = session.record_commit(state);
+        // The prefix guard has been dropped before touching EVM-local totals.
+        self.engine_wait_timings.prefix_writes += 1;
+        self.engine_wait_timings.prefix_write_wait += waited;
+        self.engine_wait_timings.prefix_write_hold += held;
+    }
+
+    /// One summary at block-loop completion; worker capture does not update these.
+    pub(crate) fn log_engine_wait_timings(&self) {
+        let timings = &self.engine_wait_timings;
+        if timings.takes == 0 && timings.prefix_writes == 0 {
+            return;
+        }
+        tracing::debug!(
+            target: "tempo::execution",
+            block_number = %self.inner.ctx.block.number,
+            takes = timings.takes,
+            take_wait_seconds = timings.take_wait.as_secs_f64(),
+            take_hold_seconds = timings.take_hold.as_secs_f64(),
+            prefix_writes = timings.prefix_writes,
+            prefix_write_wait_seconds = timings.prefix_write_wait.as_secs_f64(),
+            prefix_write_hold_seconds = timings.prefix_write_hold.as_secs_f64(),
+            "Engine prewarming lock timings"
+        );
     }
 
     /// Enables bounded speculative execution using the standard Tempo EVM configuration.
@@ -479,6 +516,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             state_committer: self.state_committer,
             engine_session: None,
             engine_capture: None,
+            engine_wait_timings: self.engine_wait_timings,
             execution_stats: self.execution_stats,
             last_sample: self.last_sample,
             backoff_remaining: self.backoff_remaining,
@@ -661,8 +699,17 @@ where
                     // A strict failure must retain the legacy relaxed prewarm,
                     // including its original transaction and AA offset.
                 }
-            } else if let Some(candidate) = session.take(&tx) {
-                self.set_preexecuted_transaction(candidate);
+            } else {
+                let (candidate, timings) = session.take_timed(&tx);
+                if let Some((waited, held)) = timings {
+                    // The retained-map guard has already been dropped.
+                    self.engine_wait_timings.takes += 1;
+                    self.engine_wait_timings.take_wait += waited;
+                    self.engine_wait_timings.take_hold += held;
+                }
+                if let Some(candidate) = candidate {
+                    self.set_preexecuted_transaction(candidate);
+                }
             }
         }
         if self.backoff_remaining > 0 && !tx.is_system_tx {

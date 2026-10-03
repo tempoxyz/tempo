@@ -369,7 +369,23 @@ queued jobs skip per-job execution. Ready/pending/contended counters remain, wit
 zero result-wait time. Thirty-nine builder tests and fourteen node checks pass,
 including fixed blocks produced by both builder modes and compared against
 sequential roots, receipts and full execution output. The performance effect
-still requires a GitHub comparison.
+is measured in [comparison 37094114130](https://github.com/tempoxyz/tempo/actions/runs/37094114130):
+15,908 baseline versus 14,919 feature TPS (-6.2%), with builder and validator gas
+throughput down 18.4% and 16.9%. The workflow suppresses Slack; removing the
+result wait has not established an overall win. The retained chains contain
+657 nonempty fills: result waits are zero, source receives consume 9.08 of
+140.24 seconds, and builder reuse is 75.59% of 4,083,219 included transactions.
+All 4,237 reported payload statuses are valid.
+
+The preceding comparison's first-pair Engine metrics report 15.92 seconds inside
+transaction execution versus 0.29 seconds receiving transactions. Profile CPU
+bounds leave at least 7.01 seconds of execution wall time unexplained by recorded
+Engine CPU; they cannot identify the blocking call. The next diagnostics split
+result-map and prefix-writer lock acquisition from hold time, with per-block
+totals and unchanged validation, commit and lock behavior.
+The diagnostic passes 254 EVM/builder unit tests and fourteen node checks,
+including sequential state-root, receipt and full-output comparisons for both
+builder modes, TIP-20 transfers and expiring AA transactions.
 
 [State-commit replay 37087375235](https://github.com/tempoxyz/tempo/actions/runs/37087375235)
 measures 30.36 versus 29.31 Mgas/s (-3.46%), with p99 newPayload latency rising

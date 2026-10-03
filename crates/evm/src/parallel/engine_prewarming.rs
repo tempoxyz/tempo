@@ -12,6 +12,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
+    time::{Duration, Instant},
 };
 use tempo_revm::{ExecutionContext, TempoTxEnv};
 
@@ -93,6 +94,29 @@ struct Retained {
     estimated_bytes: usize,
 }
 
+impl Retained {
+    fn take_through(
+        &mut self,
+        index: usize,
+        previous: usize,
+        is_system_tx: bool,
+    ) -> Option<PreexecutedTransaction> {
+        let mut result = None;
+        while self
+            .results
+            .first_key_value()
+            .is_some_and(|(&key, _)| key <= index)
+        {
+            let (key, (candidate, bytes)) = self.results.pop_first()?;
+            self.estimated_bytes -= bytes;
+            if key == index && index >= previous && !is_system_tx {
+                result = Some(candidate);
+            }
+        }
+        result
+    }
+}
+
 impl EnginePrewarmingSession {
     pub(crate) const fn env(&self) -> &Env {
         &self.env
@@ -106,8 +130,8 @@ impl EnginePrewarmingSession {
     /// Never seed this prefix from a cache: Engine offsets remain relative to
     /// the worker's parent state. With no source offset, the nonce cursor stays
     /// absent and the recorder applies that original parent offset exactly once.
-    pub(crate) fn record_commit(&self, state: &reth_revm::state::EvmState) {
-        self.prefix.record(state, None);
+    pub(crate) fn record_commit(&self, state: &reth_revm::state::EvmState) -> (Duration, Duration) {
+        self.prefix.record_timed(state, None)
     }
 
     fn index(&self, tx: &TempoTxEnv) -> Option<usize> {
@@ -165,25 +189,37 @@ impl EnginePrewarmingSession {
 
     /// Advances even on a miss. Call for every canonical transaction, including
     /// transactions for which the ordinary scheduler already prepared a result.
+    #[cfg(test)]
     pub(crate) fn take(&self, tx: &TempoTxEnv) -> Option<PreexecutedTransaction> {
-        let index = self.index(tx)?;
+        self.take_timed(tx).0
+    }
+
+    /// The same ordered take, with serial-consumer lock acquisition/hold wall time.
+    /// Unindexed transactions acquire no lock and return no timing sample.
+    pub(crate) fn take_timed(
+        &self,
+        tx: &TempoTxEnv,
+    ) -> (Option<PreexecutedTransaction>, Option<(Duration, Duration)>) {
+        let Some(index) = self.index(tx) else {
+            return (None, None);
+        };
         let previous = self
             .next
             .fetch_max(index.saturating_add(1), Ordering::AcqRel);
-        let mut retained = self.retained.lock().ok()?;
-        let mut result = None;
-        while retained
-            .results
-            .first_key_value()
-            .is_some_and(|(&key, _)| key <= index)
-        {
-            let (key, (candidate, bytes)) = retained.results.pop_first()?;
-            retained.estimated_bytes -= bytes;
-            if key == index && index >= previous && !tx.is_system_tx {
-                result = Some(candidate);
+        let waiting = Instant::now();
+        // Poisoning still declines reuse. Drop the poisoned guard before returning
+        // timings, preserving the original lock().ok()? behavior.
+        let retained = self.retained.lock();
+        let acquired = Instant::now();
+        let result = match retained {
+            Ok(mut retained) => retained.take_through(index, previous, tx.is_system_tx),
+            Err(poisoned) => {
+                drop(poisoned);
+                None
             }
-        }
-        result
+        };
+        let held = acquired.elapsed();
+        (result, Some((acquired.duration_since(waiting), held)))
     }
 }
 
