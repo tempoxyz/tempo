@@ -1,9 +1,8 @@
-use crate::utils::with_t1_fees;
+use crate::utils::t1_account;
 use alloy::{network::EthereumWallet, providers::Provider};
 use alloy_eips::BlockNumberOrTag;
 use alloy_primitives::Address;
 use alloy_rpc_types_engine::ForkchoiceState;
-use alloy_rpc_types_eth::TransactionRequest;
 use reth_e2e_test_utils::wallet::{Wallet, test_signer};
 use reth_node_api::BuiltPayload;
 use reth_node_metrics::recorder::install_prometheus_recorder;
@@ -50,12 +49,10 @@ async fn test_backfill_sync() -> eyre::Result<()> {
     // For simplicity, let's just send one transaction per block using the simple approach
     for i in 0..target_blocks {
         // Use a different account for each transaction to avoid nonce conflicts
-        let tx = TransactionRequest::default()
+        let raw_tx = t1_account(&accounts, i as u32)
+            .tx()
             .to(Address::ZERO)
-            .gas_limit(300_000);
-        let raw_tx = accounts
-            .account(i as u32)
-            .sign_tx_bytes(with_t1_fees(tx))
+            .gas_limit(300_000)
             .await;
 
         // Send the transaction and advance the block that includes it

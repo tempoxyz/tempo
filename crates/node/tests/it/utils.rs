@@ -275,9 +275,11 @@ use alloy::{
     transports::http::reqwest::Url,
 };
 use alloy_primitives::{B256, Bytes};
-use alloy_rpc_types_eth::TransactionRequest;
 use eyre::WrapErr;
-use reth_e2e_test_utils::E2ETestSetupBuilder;
+use reth_e2e_test_utils::{
+    E2ETestSetupBuilder,
+    wallet::{TestAccount, Wallet},
+};
 use reth_rpc_builder::RpcModuleSelection;
 use std::{sync::Arc, time::Duration};
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
@@ -409,10 +411,14 @@ impl PendingTransactionBuilderExt for PendingTransactionBuilder<Ethereum> {
     }
 }
 
-/// Sets the max fee and max priority fee per gas of `tx` to [`TEMPO_T1_BASE_FEE`].
-pub(crate) fn with_t1_fees(tx: TransactionRequest) -> TransactionRequest {
-    tx.max_fee_per_gas(TEMPO_T1_BASE_FEE as u128)
-        .max_priority_fee_per_gas(TEMPO_T1_BASE_FEE as u128)
+/// Returns test account `index` of `wallet`, which signs transactions that set no fees with
+/// [`TEMPO_T1_BASE_FEE`] as max fee and max priority fee per gas, and transactions that set no gas
+/// limit with a 5M gas limit.
+pub(crate) fn t1_account(wallet: &Wallet, index: u32) -> TestAccount {
+    wallet
+        .account(index)
+        .with_fees(TEMPO_T1_BASE_FEE as u128, TEMPO_T1_BASE_FEE as u128)
+        .with_gas_limit(5_000_000)
 }
 
 /// Result type for single node setup

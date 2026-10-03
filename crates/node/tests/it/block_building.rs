@@ -1,4 +1,4 @@
-use crate::utils::{TestNodeBuilder, with_t1_fees};
+use crate::utils::{TestNodeBuilder, t1_account};
 use alloy::{
     consensus::Transaction,
     primitives::{Address, B256, U256, aliases::U96},
@@ -6,8 +6,6 @@ use alloy::{
     sol_types::SolEvent,
 };
 use alloy_network::ReceiptResponse;
-use alloy_primitives::Bytes;
-use alloy_rpc_types_eth::TransactionRequest;
 use reth_e2e_test_utils::wallet::{TestAccount, Wallet};
 use reth_node_api::BuiltPayload;
 use tempo_contracts::precompiles::{
@@ -54,7 +52,9 @@ where
         sender_address,
         salt,
     );
-    let create_bytes = sign_tx(sender, create_tx.into_transaction_request()).await;
+    let create_bytes = sender
+        .call(TIP20_FACTORY_ADDRESS, create_tx.calldata().clone())
+        .await;
     node.inject_and_advance(create_bytes).await?;
 
     // Get token address from logs
@@ -74,13 +74,13 @@ where
     // Grant issuer role
     let roles = IRolesAuth::new(token_addr, provider.clone());
     let grant_tx = roles.grantRole(ISSUER_ROLE, sender_address);
-    let grant_bytes = sign_tx(sender, grant_tx.into_transaction_request()).await;
+    let grant_bytes = sender.call(token_addr, grant_tx.calldata().clone()).await;
     node.inject_and_advance(grant_bytes).await?;
 
     // Mint tokens
     let token = ITIP20::ITIP20Instance::new(token_addr, provider.clone());
     let mint_tx = token.mint(sender_address, U256::from(1_000_000));
-    let mint_bytes = sign_tx(sender, mint_tx.into_transaction_request()).await;
+    let mint_bytes = sender.call(token_addr, mint_tx.calldata().clone()).await;
     node.inject_and_advance(mint_bytes).await?;
 
     Ok(token)
@@ -103,10 +103,11 @@ async fn inject_non_payment_txs(
 ) -> eyre::Result<()> {
     let wallet = Wallet::default().with_chain_id(chain_id);
     for i in 0..count as u32 {
-        let tx = TransactionRequest::default()
+        let tx_bytes = t1_account(&wallet, start_index + i)
+            .tx()
             .to(Address::ZERO)
-            .gas_limit(2_000_000);
-        let tx_bytes = sign_tx(&mut wallet.account(start_index + i), tx).await;
+            .gas_limit(2_000_000)
+            .await;
         node.rpc.inject_tx(tx_bytes).await?;
     }
     Ok(())
@@ -127,17 +128,10 @@ where
             .transfer(sender.address(), U256::from((i + 1) as u64))
             .into_transaction_request()
             .gas_limit(1_000_000);
-        let tx_bytes = sign_tx(sender, tx).await;
+        let tx_bytes = sender.sign_tx_bytes(tx).await;
         node.rpc.inject_tx(tx_bytes).await?;
     }
     Ok(())
-}
-
-/// Signs `tx` with T1 base fees and, unless it sets one, a 5M gas limit, returning the encoded
-/// transaction.
-async fn sign_tx(sender: &mut TestAccount, mut tx: TransactionRequest) -> Bytes {
-    tx.gas.get_or_insert(5_000_000);
-    sender.sign_tx_bytes(with_t1_fees(tx)).await
 }
 
 /// Helper to count payment and non-payment transactions
@@ -158,7 +152,7 @@ async fn test_block_building_few_mixed_txs() -> eyre::Result<()> {
     let provider = setup.node.rpc_provider();
 
     let chain_id = provider.get_chain_id().await?;
-    let mut payment_sender = Wallet::default().with_chain_id(chain_id).account(0);
+    let mut payment_sender = t1_account(&Wallet::default().with_chain_id(chain_id), 0);
 
     let payment_token = setup_token_manual(&mut setup.node, &provider, &mut payment_sender).await?;
 
@@ -233,7 +227,7 @@ async fn test_block_building_only_payment_txs() -> eyre::Result<()> {
     let provider = setup.node.rpc_provider();
 
     let chain_id = provider.get_chain_id().await?;
-    let mut payment_sender = Wallet::default().with_chain_id(chain_id).account(0);
+    let mut payment_sender = t1_account(&Wallet::default().with_chain_id(chain_id), 0);
 
     // Setup payment token
     let payment_token = setup_token_manual(&mut setup.node, &provider, &mut payment_sender).await?;
@@ -362,7 +356,7 @@ async fn test_block_building_more_txs_than_fit() -> eyre::Result<()> {
 
     let wallet = Wallet::default().with_chain_id(chain_id);
     for sender_idx in 0..num_payment_senders {
-        let mut sender = wallet.account(sender_idx as u32);
+        let mut sender = t1_account(&wallet, sender_idx as u32);
         let token = setup_token_manual(&mut setup.node, &provider, &mut sender).await?;
 
         payment_senders.push(sender);
@@ -465,7 +459,7 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
 
     let user_provider = setup.node.rpc_provider();
     let chain_id = user_provider.get_chain_id().await?;
-    let mut user = Wallet::default().with_chain_id(chain_id).account(1);
+    let mut user = t1_account(&Wallet::default().with_chain_id(chain_id), 1);
     let user_address = user.address();
 
     let fee_beneficiary = Address::ZERO;
@@ -487,41 +481,41 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
 
     // Seed AMM liquidity for user_token <-> hop_token <-> PATH_USD.
     let liquidity = U256::from(500_000u64);
-    let mint_tx = sign_tx(
-        &mut user,
-        fee_amm
-            .mint(
-                *user_fee_token.address(),
-                *hop_fee_token.address(),
-                liquidity,
-                user_address,
-            )
-            .into_transaction_request(),
-    )
-    .await;
+    let mint_tx = user
+        .sign_tx_bytes(
+            fee_amm
+                .mint(
+                    *user_fee_token.address(),
+                    *hop_fee_token.address(),
+                    liquidity,
+                    user_address,
+                )
+                .into_transaction_request(),
+        )
+        .await;
     setup.node.inject_and_advance(mint_tx).await?;
-    let mint_tx = sign_tx(
-        &mut user,
-        fee_amm
-            .mint(
-                *hop_fee_token.address(),
-                PATH_USD_ADDRESS,
-                liquidity,
-                user_address,
-            )
-            .into_transaction_request(),
-    )
-    .await;
+    let mint_tx = user
+        .sign_tx_bytes(
+            fee_amm
+                .mint(
+                    *hop_fee_token.address(),
+                    PATH_USD_ADDRESS,
+                    liquidity,
+                    user_address,
+                )
+                .into_transaction_request(),
+        )
+        .await;
     setup.node.inject_and_advance(mint_tx).await?;
 
     // Set the user's fee token preference to the custom token
-    let set_user_token_tx = sign_tx(
-        &mut user,
-        fee_manager
-            .setUserToken(*user_fee_token.address())
-            .into_transaction_request(),
-    )
-    .await;
+    let set_user_token_tx = user
+        .sign_tx_bytes(
+            fee_manager
+                .setUserToken(*user_fee_token.address())
+                .into_transaction_request(),
+        )
+        .await;
     setup.node.inject_and_advance(set_user_token_tx).await?;
 
     // Record collected fees before the attack block
@@ -531,13 +525,13 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
         .await?;
 
     // Submit a transaction that pays fees in user_fee_token and settles through the two-hop route.
-    let attack_tx = sign_tx(
-        &mut user,
-        ITIP20::new(PATH_USD_ADDRESS, user_provider.clone())
-            .transfer(Address::random(), U256::ONE)
-            .into_transaction_request(),
-    )
-    .await;
+    let attack_tx = user
+        .sign_tx_bytes(
+            ITIP20::new(PATH_USD_ADDRESS, user_provider.clone())
+                .transfer(Address::random(), U256::ONE)
+                .into_transaction_request(),
+        )
+        .await;
 
     // Build and commit the block
     let (attack_tx_hash, payload) = setup.node.inject_and_advance(attack_tx).await?;
@@ -590,13 +584,13 @@ async fn fund_path_usd(
 ) -> eyre::Result<()> {
     let token = ITIP20::new(PATH_USD_ADDRESS, node.rpc_provider());
 
-    let transfer_tx = sign_tx(
-        funder,
-        token
-            .transfer(user, U256::from(20_000_000u64))
-            .into_transaction_request(),
-    )
-    .await;
+    let transfer_tx = funder
+        .sign_tx_bytes(
+            token
+                .transfer(user, U256::from(20_000_000u64))
+                .into_transaction_request(),
+        )
+        .await;
     node.inject_and_advance(transfer_tx).await?;
 
     Ok(())
@@ -641,41 +635,39 @@ async fn inject_reserve_payment_txs(
     let reserve = ITIP20ChannelReserve::new(TIP20_CHANNEL_RESERVE_ADDRESS, node.rpc_provider());
 
     // open (payment)
-    let open_tx = sign_tx(
-        sender,
-        reserve
-            .open(
-                Address::random(),
-                Address::ZERO,
-                PATH_USD_ADDRESS,
-                U96::from(1_000u64),
-                B256::random(),
-                Address::ZERO,
-            )
-            .into_transaction_request(),
-    )
-    .await;
+    let open_tx = sender
+        .sign_tx_bytes(
+            reserve
+                .open(
+                    Address::random(),
+                    Address::ZERO,
+                    PATH_USD_ADDRESS,
+                    U96::from(1_000u64),
+                    B256::random(),
+                    Address::ZERO,
+                )
+                .into_transaction_request(),
+        )
+        .await;
     node.inject_and_advance(open_tx).await?;
 
     let opened = decode_channel_opened(node).await?;
     let desc = descriptor_from(&opened);
 
     // topUp (payment)
-    let top_up_tx = sign_tx(
-        sender,
-        reserve
-            .topUp(desc.clone(), U96::from(500u64))
-            .into_transaction_request(),
-    )
-    .await;
+    let top_up_tx = sender
+        .sign_tx_bytes(
+            reserve
+                .topUp(desc.clone(), U96::from(500u64))
+                .into_transaction_request(),
+        )
+        .await;
     node.rpc.inject_tx(top_up_tx).await?;
 
     // requestClose (payment)
-    let request_close_tx = sign_tx(
-        sender,
-        reserve.requestClose(desc).into_transaction_request(),
-    )
-    .await;
+    let request_close_tx = sender
+        .sign_tx_bytes(reserve.requestClose(desc).into_transaction_request())
+        .await;
     node.rpc.inject_tx(request_close_tx).await?;
 
     Ok(())
@@ -691,8 +683,8 @@ async fn test_block_building_channel_reserve_payment_v2() -> eyre::Result<()> {
     let provider = setup.node.rpc_provider();
     let chain_id = provider.get_chain_id().await?;
     let wallet = Wallet::default().with_chain_id(chain_id);
-    let mut funder = wallet.account(0);
-    let mut payer = wallet.account(1);
+    let mut funder = t1_account(&wallet, 0);
+    let mut payer = t1_account(&wallet, 1);
 
     fund_path_usd(&mut setup.node, &mut funder, payer.address()).await?;
 
@@ -724,9 +716,9 @@ async fn test_block_building_mixed_tip20_and_reserve_payments() -> eyre::Result<
     let tip20_provider = setup.node.rpc_provider();
     let chain_id = tip20_provider.get_chain_id().await?;
     let wallet = Wallet::default().with_chain_id(chain_id);
-    let mut funder = wallet.account(0);
-    let mut tip20_sender = wallet.account(1);
-    let mut reserve_sender = wallet.account(2);
+    let mut funder = t1_account(&wallet, 0);
+    let mut tip20_sender = t1_account(&wallet, 1);
+    let mut reserve_sender = t1_account(&wallet, 2);
 
     let payment_token =
         setup_token_manual(&mut setup.node, &tip20_provider, &mut tip20_sender).await?;
