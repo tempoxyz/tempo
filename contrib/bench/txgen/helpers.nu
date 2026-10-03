@@ -666,6 +666,19 @@ def txgen-prepare-zones-preset [spec_path: string, count: int, accounts: int, zo
     $output
 }
 
+# Test-only bridge for the multi-region runner's mixed-fixture preparation hook.
+# This preset already defines one funded portal and the complete vault setup.
+def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: int, zones: int, chain_id: int] {
+    if $chain_id != 1337 { error make {msg: "Composition fixture requires chain 1337"} }
+    let output_dir = ([ (txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR (random uuid) ] | path join)
+    mkdir $output_dir
+    let output = ($output_dir | path join public-mix.yml)
+    let mix = (^uv run --no-project --with yq==3.4.3 yq -c '.mix' $spec_path | from json)
+    {include: $spec_path, accounts: {users: {range: [0 $accounts]}}, mix: $mix}
+        | to yaml | save -f $output
+    $output
+}
+
 def txgen-prepare-vault-preset [spec_path: string, accounts: int, chain_id: int] {
     if $chain_id != 1337 or $accounts <= 0 or $accounts > 100000 {
         error make { msg: "Vault presets require chain ID 1337 and 1..100000 user accounts" }
