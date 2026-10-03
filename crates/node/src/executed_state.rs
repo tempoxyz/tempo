@@ -149,10 +149,14 @@ where
             .then(|| ctx.node.evm_config().speculative_executor.as_ref())
             .flatten()
             .and_then(|executor| {
-                let window = executor.capture_window().transactions();
+                let capture_window = executor.capture_window().transactions();
+                // Let cache and proof prefetch run ahead of strict capture,
+                // keeping its admission/retention window and in-flight cap.
+                // Future jobs may only warm reads; they are not resubmitted.
+                let dispatch_lookahead = capture_window.max(512);
                 reth_engine_tree::tree::payload_processor::prewarm::TransactionPrewarmPolicy::new(
-                    window,
-                    window,
+                    dispatch_lookahead,
+                    capture_window,
                     std::time::Duration::from_micros(100),
                 )
             });

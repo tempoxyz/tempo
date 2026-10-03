@@ -371,6 +371,49 @@ fn selected_windows_reuse_strict_results_beyond_the_default_boundary() {
 }
 
 #[test]
+fn warming_beyond_capture_window_does_not_create_strict_candidates() {
+    // A wider dispatcher can warm these inputs once before they enter capture range.
+    let db = contract(&[0x60, 1, 0x60, 0, 0x35, 0x55, 0]);
+    let env = env(TempoHardfork::T0);
+    let transactions = (0..520).map(tx).collect::<Vec<_>>();
+    let (factory, session) = factory_with_diagnostics(&env, &transactions, true);
+    let mut worker = factory.create_evm(db.clone(), relaxed(&env));
+    let mut legacy = TempoEvm::new(db.clone(), relaxed(&env));
+    for transaction in &transactions[127..512] {
+        assert_eq!(
+            worker.transact_raw(transaction.clone()).unwrap(),
+            legacy.transact_raw(transaction.clone()).unwrap()
+        );
+    }
+    let counts = session.diagnostics.as_ref().unwrap().snapshot();
+    let count = |event: CaptureEvent| counts.0[event as usize];
+    assert_eq!(count(CaptureEvent::WorkerEntries), 385);
+    assert_eq!(count(CaptureEvent::WorkerFinished), 385);
+    assert_eq!(count(CaptureEvent::AdmissionFuture), 384);
+    assert_eq!(count(CaptureEvent::Future128To255), 128);
+    assert_eq!(count(CaptureEvent::Future256To511), 256);
+    assert_eq!(count(CaptureEvent::StrictAttempts), 1);
+    assert_eq!(count(CaptureEvent::Published), 1);
+    assert_eq!(root(worker.db()), root(&db));
+
+    let mut canonical = TempoEvm::new(db.clone(), env.clone());
+    let mut actual = ordered(&factory, db, env);
+    for transaction in transactions {
+        let expected = canonical.transact_raw(transaction.clone()).unwrap();
+        let result = actual.transact_raw(transaction).unwrap();
+        assert_eq!(result, expected);
+        canonical.db_mut().commit(expected.state);
+        actual.db_mut().commit(result.state);
+    }
+    assert_eq!(actual.execution_stats().speculated, 1);
+    assert_eq!(actual.execution_stats().reused, 1);
+    assert_eq!(root(actual.db()), root(canonical.db()));
+    let final_counts = session.diagnostics.as_ref().unwrap().snapshot();
+    assert_eq!(final_counts.0[CaptureEvent::StrictAttempts as usize], 1);
+    assert_eq!(final_counts.0[CaptureEvent::WorkerEntries as usize], 385);
+}
+
+#[test]
 fn enlarged_window_changed_reads_replay_against_the_ordered_prefix() {
     for window in [
         EngineCaptureWindow::Transactions256,
