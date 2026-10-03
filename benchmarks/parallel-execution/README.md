@@ -380,18 +380,39 @@ All 4,237 reported payload statuses are valid.
 The preceding comparison's first-pair Engine metrics report 15.92 seconds inside
 transaction execution versus 0.29 seconds receiving transactions. Profile CPU
 bounds leave at least 7.01 seconds of execution wall time unexplained by recorded
-Engine CPU; they cannot identify the blocking call. The next diagnostics split
+Engine CPU; they cannot identify the blocking call. Diagnostics now split
 result-map and prefix-writer lock acquisition from hold time, with per-block
-totals and unchanged validation, commit and lock behavior.
-The diagnostic passes 254 EVM/builder unit tests and fourteen node checks,
+totals and unchanged validation, commit and lock behavior. The diagnostic passes
+254 EVM/builder unit tests and fourteen node checks,
 including sequential state-root, receipt and full-output comparisons for both
 builder modes, TIP-20 transfers and expiring AA transactions.
 
-[State-commit replay 37087375235](https://github.com/tempoxyz/tempo/actions/runs/37087375235)
-measures 30.36 versus 29.31 Mgas/s (-3.46%), with p99 newPayload latency rising
-from 1.362 to 1.503 ms (+10.35%). All 250,000 submissions are valid; all four
+[Lock-diagnostic comparison 37096389581](https://github.com/tempoxyz/tempo/actions/runs/37096389581)
+measures 15,634 baseline versus 15,355 feature TPS (-1.78%, statistically neutral);
+builder and validator gas throughput fall 18.47% and 18.52%. All 4,224 reported
+payload statuses are valid, and win-only Slack is suppressed. Across 648 nonempty
+blocks on the highest common retained chains, Engine lock acquisition consumes
+1.69% of internal execution wall time; acquisition plus hold time consumes 8.80%.
+Builder prefix acquisition and hold consume 0.82% and 5.92% of fill time; result
+waits remain zero. These timers include scheduling and on-CPU work, and the Engine
+denominator excludes parts of the official newPayload metric. Lock acquisition
+does not explain most of the regression. The third pair has an additional empty
+tail block without both nodes' retained canonical announcements; it is excluded.
+
+A local experiment made contended prefix reads fall back to the parent provider.
+It preserved differential correctness but reduced eight-worker reuse from about
+97% to 62–65%, lowering median throughput 31.74% across three paired million-
+transaction runs. Sixteen-worker throughput also fell 15.99%. The experiment was
+reverted; its patch and evidence remain in the ignored artifact directory.
+
+[Lock-diagnostic replay 37096394462](https://github.com/tempoxyz/tempo/actions/runs/37096394462)
+measures 29.483 versus 28.421 Mgas/s (-3.60%), with p99 newPayload latency rising
+from 1.444 to 1.571 ms (+8.80%). All 250,000 submissions are valid; all four
 passes match measured heights 42,292,723–42,342,722, 12,508 transactions and
-1,567,389,432 gas. Only twelve blocks per pass qualify for Engine capture, so
-that path still has sparse historical coverage. This range differs from the
-preceding comparison. The workflow suppresses Slack; the local commit speedup
-has not established a historical replay improvement.
+1,567,389,432 gas. Only twelve measured blocks per pass qualify for Engine capture;
+both feature passes retain this complete cohort but reuse just two of its seventy
+transactions. Rotated logs omit some earlier measured blocks, limiting aggregate
+reuse analysis. This is the same sparse range as
+[state-commit replay 37087375235](https://github.com/tempoxyz/tempo/actions/runs/37087375235),
+which also regressed. Win-only Slack is suppressed; historical replay has not
+established a performance improvement.
