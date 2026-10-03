@@ -345,6 +345,20 @@ and boot disks are removed; this supplies no CPU attribution or paired result.
 The next harness uses source-bound frame-pointer builds and waits for a fresh
 post-reset preparation marker before starting its activity window.
 
+[CPU diagnostic 37157291850](https://github.com/tempoxyz/tempo/actions/runs/37157291850)
+qualifies all four recordings against source-bound frame-pointer builds and
+accepted Engine intervals. The audit covers 1,046 measured blocks and 10,413,660
+transactions; all three VMs and boot disks are removed. At 50k offered TPS, this
+single instrumented pair delivers 16,791 versus 18,038 TPS, while validator p90
+rises from 258.11 to 293.45 ms. It is a mixed diagnostic, not a performance win.
+Feature caller-presence counts are 230/186 for ordered validation, 161/152 for
+prefix publication, 132/108 for commit and 371/314 for ordinary execution or replay,
+over 1,464/1,223 in-interval samples on the two validators. These groups are
+nonadditive; kernel and unresolved samples remain in the denominators. Storage
+provider leaves account for 76/52 validation samples, motivating work on repeated
+cold reads. Host counters still lack ancestor CPU limits and worker affinity;
+the next harness captures those separately at a bounded ten-second cadence.
+
 The workflow's builder gas throughput averages `gas_used / elapsed` over full
 payload builds. It includes setup, transaction selection, waits and finalization;
 it is not execution-only throughput. CPU profile shares describe sampled work
