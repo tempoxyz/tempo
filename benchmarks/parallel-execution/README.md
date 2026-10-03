@@ -593,6 +593,17 @@ execution time per transaction nevertheless rises 18.48%. These descriptive
 cohorts differ across phases, and every pair runs feature first. Retain sixteen
 workers; increased reuse has not established faster execution.
 
+[Proof-worker comparison 37120629626](https://github.com/tempoxyz/tempo/actions/runs/37120629626)
+reduces both storage and account proof pools from 32 to 16 in the same executable,
+with sixteen prewarming workers and otherwise unchanged settings. TPS rises from
+16,699 to 17,450 (+4.50%, statistically neutral), while validator gas throughput
+falls 5.42%. Builder p50, validator p99 and mean block time improve, but the
+official result is mixed and win-only Slack is suppressed. All twelve processes'
+actual pool counts are verified; 1,603 common canonical blocks contain 9.50 million
+transactions, with all 7,354 observed payload statuses `VALID`. Every pair runs
+feature first. Retain the existing proof-worker defaults; this comparison does
+not establish a throughput gain or a win against main.
+
 A local experiment made contended prefix reads fall back to the parent provider.
 It preserved differential correctness but reduced eight-worker reuse from about
 97% to 62–65%, lowering median throughput 31.74% across three paired million-
