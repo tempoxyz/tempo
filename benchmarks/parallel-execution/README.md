@@ -800,6 +800,9 @@ All six terminal peer heads agree and all 5,941 observed payload statuses are
 in every phase. One baseline has 3,751 more RPC acceptances than canonical
 transactions, reconciled with additional failure events; individual outcomes
 are unproven. This offered-load point does not demonstrate 75,000 delivered TPS.
+All 952 accepted nonempty builds stop at the proposal time budget. No empty-pool
+sleep is recorded for 456/464 baseline builds and 481/488 feature builds; other
+waits remain included in wall time. Both arms use identical budgeting logic.
 
 [Dispatch-lead comparison 37150430298](https://github.com/tempoxyz/tempo/actions/runs/37150430298)
 compares `1c86a7ab5` with `ec0f4a6ea`, widening dispatch from 128 to 512 while
