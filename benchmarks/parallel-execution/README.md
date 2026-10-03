@@ -355,11 +355,12 @@ node overhead. That instrumentation left scheduling and admission unchanged.
 [Builder-wait comparison 37091828345](https://github.com/tempoxyz/tempo/actions/runs/37091828345)
 measures 15,890 baseline versus 15,053 feature TPS (-5.27%); builder and validator
 gas throughput fall 25.08% and 21.31%. All 4,256 reported payload statuses are
-valid, and the workflow suppresses Slack. Across 671 canonical builds containing
-pool transactions, pending-result waits consume 85.88 of 151.24 seconds of fill
-time (56.79%); source receives consume another 4.47 seconds. About 14.96% of
-selected handles were pending. These elapsed timers include scheduling and call
-overhead; they are not pure off-CPU measurements.
+valid, and the workflow suppresses Slack. Across the retained chains' 669 builds
+containing pool transactions, pending-result waits consume 85.69 of 150.92 seconds
+of fill time (56.78%); source receives consume another 4.46 seconds. About 14.95%
+of selected handles were pending. These elapsed timers include scheduling and
+call overhead; they are not pure off-CPU measurements. Seven transient locally
+canonical blocks are excluded, including two containing 8,483 transactions.
 
 The builder now probes only the already-selected result once. A pending or
 contended slot falls back to ordinary execution in source order. Dropping the
