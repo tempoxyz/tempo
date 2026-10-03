@@ -1076,6 +1076,26 @@ def run-local-e2e-phase [run: record, ctx: record] {
         | append (benchmark-otlp-args $ctx.tracing_otlp)
     let a_args = (dedup-args $a_base_args $extra_args)
     let b_args = (dedup-args $b_base_args $extra_args)
+    let b_args = if $ctx.sequential_peer {
+        dedup-args $b_args ["--execution.threads" "0"]
+    } else { $b_args }
+    let differential_config = $"($ctx.results_dir)/differential-config-($phase).json"
+    if $ctx.sequential_peer {
+        {
+            mode: sequential-peer
+            phase: $phase
+            feature_ref: $run.ref
+            binary_sha256: (open --raw $run.tempo | hash sha256)
+            a: { rpc_url: $a_rpc, args: $a_args, log_dir: $a_log_dir }
+            b: { rpc_url: $b_rpc, args: $b_args, log_dir: $b_log_dir }
+        } | to json | save -f $differential_config
+        let checked = (^python3 benchmarks/parallel-execution/verify_generated.py --config $differential_config --check-config | complete)
+        if $checked.exit_code != 0 {
+            print $checked.stderr
+            restore-system-tuning $tuning_state
+            return $checked.exit_code
+        }
+    }
 
     if $ctx.tracy != "off" {
         print $"  Tracy mode: ($ctx.tracy), sampling hz: ($TRACY_SAMPLING_HZ)"
@@ -1203,6 +1223,21 @@ def run-local-e2e-phase [run: record, ctx: record] {
         $phase_exit = $sender_exit
     } else {
         print $"Skipping local e2e sender for ($phase) because readiness checks failed"
+    }
+
+    if $phase_exit == 0 and $ctx.sequential_peer {
+        let verification = (try {
+            (^python3 benchmarks/parallel-execution/verify_generated.py
+                --config $differential_config
+                --report $"($ctx.results_dir)/report-($phase).json"
+                --output $"($ctx.results_dir)/differential-($phase).json")
+                | complete
+        } catch { |e| { exit_code: 1, stdout: "", stderr: $e.msg } })
+        print $verification.stdout
+        if $verification.exit_code != 0 {
+            print $verification.stderr
+            $phase_exit = $verification.exit_code
+        }
     }
 
     if $tracy_capture_started {
@@ -1388,6 +1423,7 @@ def "main e2e" [
     --runner-metrics-url: string = $E2E_RUNNER_METRICS_URL # Runner node-exporter metrics URL (empty disables runner metrics)
     --run-pairs: int = 3                                # Number of baseline/feature run pairs
     --run-side: string = "comparison"                   # Phases to run: comparison, feature, or baseline
+    --sequential-peer                                  # Verify generated blocks with sequential peer B; feature-only
     --run-type: string = ""                             # Run type label (dispatch, nightly, release)
     --baseline-args: string = ""                        # Additional node args for baseline phases
     --feature-args: string = ""                         # Additional node args for feature phases
@@ -1438,6 +1474,12 @@ def "main e2e" [
     if $run_side not-in ["comparison" "feature" "baseline"] {
         print $"Error: --run-side must be one of: comparison, feature, baseline \(got '($run_side)'\)"
         exit 1
+    }
+    if $sequential_peer and $run_side != "feature" {
+        error make { msg: "--sequential-peer requires --run-side feature; this is a correctness run" }
+    }
+    if $sequential_peer and ($clickhouse_url != "" or $victoriametrics_url != "" or $valscope_static_report) {
+        error make { msg: "--sequential-peer cannot publish performance reports" }
     }
     if $summary_warmup_blocks < 0 {
         print "Error: --summary-warmup-blocks must be non-negative"
@@ -1726,6 +1768,7 @@ def "main e2e" [
         tracy_offset: $tracy_offset
         baseline_args: $baseline_args
         feature_args: $feature_args
+        sequential_peer: $sequential_peer
         bench_args: $bench_args
         baseline_env: $baseline_env
         feature_env: $feature_env

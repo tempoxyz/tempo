@@ -33,13 +33,18 @@ on:
         required: false
         default: false
         type: boolean
+      sequential-peer:
+        description: "Run generated sequential/parallel correctness validation on ref (default: selected workflow commit), instead of scheduled benchmarks."
+        required: false
+        default: false
+        type: boolean
 
 permissions: {}
 
 jobs:
   resolve-refs:
     name: resolve-refs
-    if: ${{ github.event_name != 'schedule' || github.repository == 'tempoxyz/tempo' }}
+    if: ${{ !inputs.sequential-peer && (github.event_name != 'schedule' || github.repository == 'tempoxyz/tempo') }}
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -152,6 +157,33 @@ jobs:
             echo "has-benchmarks=$has_benchmarks"
             echo "has-nightly-benchmarks=$has_nightly_benchmarks"
           } >> "$GITHUB_OUTPUT"
+
+  generated-differential:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.sequential-peer }}
+    name: generated sequential/parallel validation
+    uses: ./.github/workflows/bench-e2e.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      baseline: ${{ inputs.ref || github.sha }}
+      feature: ${{ inputs.ref || github.sha }}
+      baseline-hardfork: T14
+      feature-hardfork: T14
+      preset: default
+      duration: "90"
+      bloat: "100"
+      tps: "50000"
+      accounts: "1000"
+      max-concurrent-requests: "100"
+      token-count: "4"
+      txgen-ref: 3f389beb990872bd3b9937d92a923e534f1d3515
+      feature-args: --execution.threads 8 --execution.batch-size 128 --engine.prewarming-threads 16
+      run-side: feature
+      run-pairs: "1"
+      sequential-peer: true
+      no-slack: "true"
+      otlp: "false"
 
   bench-e2e:
     needs: resolve-refs

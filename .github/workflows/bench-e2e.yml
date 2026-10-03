@@ -313,6 +313,11 @@ on:
         type: string
         required: false
         default: comparison
+      sequential-peer:
+        description: Validate the generated chain with parallel peer A and sequential peer B (feature-only).
+        type: boolean
+        required: false
+        default: false
       clickhouse-run:
         type: string
         required: false
@@ -402,7 +407,7 @@ jobs:
       BENCH_RUN_TYPE: ${{ inputs.run-type || 'dispatch' }}
       BENCH_FORCE_BLOAT: ${{ inputs.force-bloat || 'false' }}
       BENCH_NO_CACHE: ${{ inputs.no-cache || 'false' }}
-      BENCH_NO_SLACK: ${{ inputs.no-slack }}
+      BENCH_NO_SLACK: ${{ inputs.sequential-peer && 'true' || inputs.no-slack }}
       # The reusable input defaults to always. Direct manual dispatch has no slack
       # input and uses win-only notifications, without adding a 26th UI input.
       BENCH_SLACK: ${{ inputs.slack || 'on-win' }}
@@ -413,6 +418,7 @@ jobs:
       BENCH_FEATURE_ENV: ${{ inputs.feature-env }}
       BENCH_RUN_PAIRS: ${{ inputs.run-pairs || '3' }}
       BENCH_RUN_SIDE: ${{ inputs.run-side || 'comparison' }}
+      BENCH_SEQUENTIAL_PEER: ${{ inputs.sequential-peer == true }}
       BENCH_CLICKHOUSE_RUN: ${{ inputs.clickhouse-run || 'feature-1' }}
       BENCHMARK_ID: bench-e2e-${{ github.run_id }}
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}
@@ -898,6 +904,16 @@ jobs:
             echo "::error::run-side must be one of: comparison, feature, baseline"
             exit 1
           fi
+          if [ "$BENCH_SEQUENTIAL_PEER" = "true" ]; then
+            if [ "$BENCH_RUN_SIDE" != "feature" ] || [ "$BENCH_SKIP_STATE_ROOT" = "true" ] || [ "$BENCH_NO_SLACK" != "true" ]; then
+              echo "::error::sequential-peer requires feature-only, state-root validation, and no-slack"
+              exit 1
+            fi
+            # Correctness checks must not enter the performance reporting series.
+            CLICKHOUSE_URL=""
+            unset CLICKHOUSE_USER CLICKHOUSE_PASSWORD
+            BENCH_VICTORIAMETRICS_URL=""
+          fi
           if [ "$BENCH_RUN_SIDE" = "baseline" ] && [ "$BENCH_CLICKHOUSE_RUN" = "feature-1" ]; then
             BENCH_CLICKHOUSE_RUN="baseline-1"
           fi
@@ -933,6 +949,7 @@ jobs:
           [ -n "$BENCH_TXGEN_SPEC_PATH" ] && cmd+=(--preset-path "$BENCH_TXGEN_SPEC_PATH")
           [ "$BENCH_FORCE_BLOAT" = "true" ] && cmd+=(--force-bloat)
           [ "$BENCH_NO_CACHE" = "true" ] && cmd+=(--no-cache)
+          [ "$BENCH_SEQUENTIAL_PEER" = "true" ] && cmd+=(--sequential-peer)
           [ "$BENCH_SAMPLY" = "true" ] && cmd+=(--samply)
           [ "$BENCH_TRACY" != "off" ] && cmd+=(--tracy "$BENCH_TRACY" --tracy-seconds "$BENCH_TRACY_SECONDS" --tracy-offset "$BENCH_TRACY_OFFSET")
           effective_baseline_args="$BENCH_BASELINE_ARGS"

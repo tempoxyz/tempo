@@ -42,6 +42,20 @@ and link the corresponding workflow run.
 
 ## Correctness and in-memory execution
 
+The scheduled E2E workflow also provides a separate manual generated-correctness
+mode. It runs the public mix with speculative peer A and sequential peer B,
+compares their finalized canonical blocks and complete receipts, and requires
+fresh opposite-peer Engine execution plus positive canonical reuse in both
+parallel roles. It fails if the generated cohort or required log evidence is
+missing. Both peers use the selected candidate binary; shared changes such as
+State commit optimization still require their separate ordinary-State oracle
+tests. These runs do not publish performance results or Slack notifications.
+
+```sh
+gh workflow run bench-e2e-scheduled.yml --ref onbjerg/parallel-execution \
+  -F sequential-peer=true -f ref='<candidate-sha>'
+```
+
 ```sh
 cargo +1.98.1 test --release --locked -p tempo-evm --lib
 cargo +1.98.1 test --release --locked -p tempo-payload-builder --lib
@@ -416,6 +430,25 @@ window from sixteen to thirty-two candidates; it does not isolate worker count.
 Builder pending results fall from 21.63% to 9.56%, while Engine reuse falls from
 66.84% to 31.87%. Better throughput does not imply more whole-candidate reuse,
 and this comparison does not establish a win against main.
+
+[Provider-diagnostic comparison 37100288877](https://github.com/tempoxyz/tempo/actions/runs/37100288877)
+compares `042ec0dc0` against main with sixteen prewarming workers and provider
+timers on both sides. TPS falls from 17,104 to 16,035 (-6.25%); builder and validator
+gas throughput fall 9.19% and 7.32%. Win-only Slack is suppressed. Matched first-pair
+log and metric cohorts show provider elapsed time rising from 1.52 to 3.23
+microseconds per transaction, chiefly storage reads, despite similar call counts.
+Provider time accounts for 12.37% of feature Engine execution elapsed time. These
+timers include cache work, I/O and scheduling; they do not identify the cause of
+the increase or account for most total execution time. This instrumented run is
+separate from the subsequent bounded-builder experiment.
+
+[Bounded-builder comparison 37100753798](https://github.com/tempoxyz/tempo/actions/runs/37100753798)
+compares `13e97e5be` against main with sixteen prewarming workers on both sides.
+Builder gas throughput improves 3.07%, while validator throughput regresses 6.16%.
+TPS changes from 15,510 to 15,290 (-1.42%, statistically neutral); win-only Slack
+is suppressed for the mixed result. This supports retaining the builder candidate
+provisionally, but does not isolate its change from the earlier implementation
+or establish an overall node improvement.
 
 A local experiment made contended prefix reads fall back to the parent provider.
 It preserved differential correctness but reduced eight-worker reuse from about
