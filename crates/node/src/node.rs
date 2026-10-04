@@ -86,6 +86,9 @@ pub struct TempoNodeArgs {
     /// Engine capture distance and retained-result count (128, 256, or 512).
     #[arg(long = "execution.capture-window", default_value_t = tempo_evm::parallel::EngineCaptureWindow::default())]
     pub execution_capture_window: tempo_evm::parallel::EngineCaptureWindow,
+    /// Prefetch bounded proof keys ahead of speculative Engine execution.
+    #[arg(long = "execution.proof-prefetch", default_value_t = false)]
+    pub execution_proof_prefetch: bool,
 
     /// Maximum allowed `valid_after` offset for AA txs.
     #[arg(long = "txpool.aa-valid-after-max-secs", default_value_t = DEFAULT_AA_VALID_AFTER_MAX_SECS)]
@@ -162,6 +165,7 @@ impl Default for TempoNodeArgs {
             execution_capture_diagnostics: false,
             execution_stage_diagnostics: false,
             execution_capture_window: Default::default(),
+            execution_proof_prefetch: false,
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
@@ -306,6 +310,7 @@ impl TempoNode {
                 capture_diagnostics: args.execution_capture_diagnostics,
                 stage_diagnostics: args.execution_stage_diagnostics,
                 capture_window: args.execution_capture_window,
+                proof_prefetch: args.execution_proof_prefetch,
             },
             pool_builder: args.pool_builder(),
             payload_builder_builder: args.payload_builder_builder(),
@@ -613,6 +618,8 @@ pub struct TempoExecutorBuilder {
     pub stage_diagnostics: bool,
     /// Bounded Engine-only capture window.
     pub capture_window: tempo_evm::parallel::EngineCaptureWindow,
+    /// Prefetch bounded proof keys ahead of the Engine capture window.
+    pub proof_prefetch: bool,
 }
 
 impl<Node> ExecutorBuilder<Node> for TempoExecutorBuilder
@@ -632,7 +639,8 @@ where
                 .with_state_forwarding(self.state_forwarding)
                 .with_capture_diagnostics(self.capture_diagnostics)
                 .with_stage_diagnostics(self.stage_diagnostics)
-                .with_capture_window(self.capture_window),
+                .with_capture_window(self.capture_window)
+                .with_proof_prefetch(self.proof_prefetch),
             );
         }
         if let Some(cache) = ctx.sender_recovery_cache() {
@@ -1133,6 +1141,42 @@ mod tests {
         assert!(node.executor_builder.stage_diagnostics);
         assert!(!node.executor_builder.capture_diagnostics);
         assert_eq!(node.executor_builder.threads, 8);
+    }
+
+    #[test]
+    fn proof_prefetch_cli_keeps_execution_and_capture_limits() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Args {
+            #[command(flatten)]
+            node: TempoNodeArgs,
+        }
+        assert!(
+            !Args::try_parse_from(["tempo"])
+                .unwrap()
+                .node
+                .execution_proof_prefetch
+        );
+        assert!(!TempoNodeArgs::default().execution_proof_prefetch);
+        assert!(!super::TempoExecutorBuilder::default().proof_prefetch);
+        let args = Args::try_parse_from([
+            "tempo",
+            "--execution.proof-prefetch",
+            "--execution.threads",
+            "8",
+            "--execution.batch-size",
+            "17",
+            "--execution.capture-window",
+            "256",
+        ])
+        .unwrap();
+        let node = TempoNode::new(&args.node, None);
+        assert!(node.executor_builder.proof_prefetch);
+        assert_eq!(node.executor_builder.threads, 8);
+        assert_eq!(node.executor_builder.batch_size, 17);
+        assert_eq!(node.executor_builder.capture_window.transactions(), 256);
+        assert!(!node.executor_builder.capture_diagnostics);
+        assert!(!node.executor_builder.stage_diagnostics);
     }
 
     #[test]

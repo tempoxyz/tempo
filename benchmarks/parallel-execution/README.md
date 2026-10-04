@@ -18,10 +18,19 @@ window for both its lead over the committed cursor and its queued/running job
 cap. The coordinator polls progress and cancellation every 100 microseconds;
 workers do not wait for admission. The bounds exclude converted inputs, provider
 caches and the initial worker setup job.
+`--execution.proof-prefetch` additionally enables experimental, advisory proof keys
+up to twice that window ahead, without expanding the near EVM job window or executing
+extra transactions. It defaults off. The coordinator retains at most 1024 handles
+and 1 MiB of inline queue storage; converted transaction payloads and downstream trie
+allocations are excluded. Each batch examines at most 16 transactions and 512 keys,
+with at most 16,384 emitted keys per block. The 512-byte charge per key estimates hint
+payload, not proof memory or RSS. Debug summaries identify the block and report
+dispatch, emitted keys, saturated batches and rejected callbacks; they precede worker
+retirement and block acceptance. Performance remains unverified.
 The first 128-window comparison
 regresses official latency metrics despite improving Engine reuse and execution time.
-The optional dispatcher is pinned to
-[Reth 382b9390f](https://github.com/paradigmxyz/reth/commit/382b9390f9901c51f1d0cb94836f80c175be9615).
+The dispatcher and proof-key interface are pinned to
+[Reth cb9ed0202](https://github.com/paradigmxyz/reth/commit/cb9ed02021bce5016cab7de998b901539b4887bc).
 Small blocks, disabled prewarming and
 BAL payloads retain the regular scheduler. Engine prewarming concurrency follows
 `--engine.prewarming-threads`; the regular pool follows `--execution.threads`.

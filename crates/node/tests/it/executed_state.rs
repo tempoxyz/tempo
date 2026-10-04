@@ -128,15 +128,17 @@ async fn executed_state_reads_blocks_that_are_not_canonical(
     Ok(())
 }
 
-#[test_case::test_case(0, 64, 64, 64, false, EngineCaptureWindow::Transactions128, false; "independent")]
-#[test_case::test_case(0, 128, 16, 8, false, EngineCaptureWindow::Transactions128, false; "repeated_senders_and_recipients")]
-#[test_case::test_case(0, 64, 64, 1, true, EngineCaptureWindow::Transactions128, false; "native_reserve_opens")]
-#[test_case::test_case(4, 64, 64, 64, false, EngineCaptureWindow::Transactions128, false; "parallel_builder_independent")]
-#[test_case::test_case(4, 128, 16, 8, false, EngineCaptureWindow::Transactions128, false; "parallel_builder_repeated_senders_and_recipients")]
-#[test_case::test_case(4, 64, 64, 1, true, EngineCaptureWindow::Transactions128, false; "parallel_builder_native_reserve_opens")]
-#[test_case::test_case(4, 520, 64, 8, false, EngineCaptureWindow::Transactions128, false; "window128_paid_aa_beyond_boundary")]
-#[test_case::test_case(4, 520, 64, 8, false, EngineCaptureWindow::Transactions512, false; "window512_paid_aa_beyond_boundary")]
-#[test_case::test_case(4, 128, 16, 8, false, EngineCaptureWindow::Transactions128, true; "stage_diagnostics_paid_aa")]
+#[test_case::test_case(0, 64, 64, 64, false, (EngineCaptureWindow::Transactions128, false, false); "independent")]
+#[test_case::test_case(0, 128, 16, 8, false, (EngineCaptureWindow::Transactions128, false, false); "repeated_senders_and_recipients")]
+#[test_case::test_case(0, 64, 64, 1, true, (EngineCaptureWindow::Transactions128, false, false); "native_reserve_opens")]
+#[test_case::test_case(4, 64, 64, 64, false, (EngineCaptureWindow::Transactions128, false, false); "parallel_builder_independent")]
+#[test_case::test_case(4, 128, 16, 8, false, (EngineCaptureWindow::Transactions128, false, false); "parallel_builder_repeated_senders_and_recipients")]
+#[test_case::test_case(4, 64, 64, 1, true, (EngineCaptureWindow::Transactions128, false, false); "parallel_builder_native_reserve_opens")]
+#[test_case::test_case(4, 520, 64, 8, false, (EngineCaptureWindow::Transactions128, false, false); "window128_paid_aa_beyond_boundary")]
+#[test_case::test_case(4, 520, 64, 8, false, (EngineCaptureWindow::Transactions512, false, false); "window512_paid_aa_beyond_boundary")]
+#[test_case::test_case(4, 128, 16, 8, false, (EngineCaptureWindow::Transactions128, true, false); "stage_diagnostics_paid_aa")]
+#[test_case::test_case(4, 520, 64, 8, false, (EngineCaptureWindow::Transactions128, false, true); "proof_prefetch_paid_aa")]
+#[test_case::test_case(4, 520, 64, 1, true, (EngineCaptureWindow::Transactions128, false, true); "proof_prefetch_native_opens")]
 #[tokio::test(flavor = "multi_thread")]
 async fn engine_prewarming_preserves_paid_expiring_transfer_block(
     builder_threads: usize,
@@ -144,8 +146,7 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
     sender_count: usize,
     recipient_count: usize,
     native_opens: bool,
-    capture_window: EngineCaptureWindow,
-    stage_diagnostics: bool,
+    (capture_window, stage_diagnostics, proof_prefetch): (EngineCaptureWindow, bool, bool),
 ) -> eyre::Result<()> {
     use crate::{
         tempo_transaction::helpers::{create_basic_aa_tx, sign_aa_tx_secp256k1},
@@ -342,6 +343,7 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
                 execution_batch_size: 32,
                 execution_capture_window: capture_window,
                 execution_stage_diagnostics: stage_diagnostics,
+                execution_proof_prefetch: proof_prefetch,
                 ..Default::default()
             },
             None,
@@ -446,6 +448,7 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
         );
         if let Some(workers) = &observer.evm_config.speculative_executor {
             assert_eq!(workers.capture_window(), capture_window);
+            assert_eq!(workers.proof_prefetch(), proof_prefetch);
             assert_eq!(workers.batch_size(), 32);
             // This observer has no pool or builder jobs. A prewarming session
             // must reuse ready results or execute directly, never start the

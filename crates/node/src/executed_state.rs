@@ -156,6 +156,20 @@ where
                     std::time::Duration::from_micros(100),
                 )
             });
+        let proof_key_prewarm_policy = transaction_prewarm_policy
+            .filter(|_| {
+                ctx.node
+                    .evm_config()
+                    .speculative_executor
+                    .as_ref()
+                    .is_some_and(|executor| executor.proof_prefetch())
+            })
+            .and_then(|near| {
+                reth_engine_tree::tree::payload_processor::prewarm::ProofKeyPrewarmPolicy::new(
+                    near,
+                    near.lookahead() * 2,
+                )
+            });
 
         // Give only the Engine a marked clone. RPC, builder, and invalid-block
         // hooks retain the original configuration from AddOnsContext.
@@ -175,7 +189,8 @@ where
             overlay_manager,
             ctx.node.task_executor().clone(),
         )
-        .with_transaction_prewarm_policy(transaction_prewarm_policy);
+        .with_transaction_prewarm_policy(transaction_prewarm_policy)
+        .with_proof_key_prewarm_policy(proof_key_prewarm_policy);
         if txpool_prewarming {
             validator =
                 validator.with_txpool_prewarming(TempoTxPoolPrewarmSource(ctx.node.pool().clone()));

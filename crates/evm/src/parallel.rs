@@ -121,6 +121,7 @@ pub struct SpeculativeExecutor {
     capture_diagnostics: bool,
     stage_diagnostics: bool,
     capture_window: EngineCaptureWindow,
+    proof_prefetch: bool,
     scheduled_transactions: Arc<AtomicU64>,
     prewarmed_reuses: Arc<AtomicU64>,
 }
@@ -154,6 +155,7 @@ impl SpeculativeExecutor {
             capture_diagnostics: false,
             stage_diagnostics: false,
             capture_window: EngineCaptureWindow::default(),
+            proof_prefetch: false,
             scheduled_transactions: Arc::default(),
             prewarmed_reuses: Arc::default(),
         })
@@ -189,6 +191,18 @@ impl SpeculativeExecutor {
     /// Selected Engine capture window.
     pub const fn capture_window(&self) -> EngineCaptureWindow {
         self.capture_window
+    }
+
+    /// Prefetches advisory proof keys beyond the Engine's execution window.
+    /// This does not schedule extra transactions or change read validation.
+    pub fn with_proof_prefetch(mut self, enabled: bool) -> Self {
+        self.proof_prefetch = enabled;
+        self
+    }
+
+    /// Whether the Engine may send bounded lookahead proof hints.
+    pub const fn proof_prefetch(&self) -> bool {
+        self.proof_prefetch
     }
 
     /// Predicts expiring-nonce ring positions in input order. Every predicted read

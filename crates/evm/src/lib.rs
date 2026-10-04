@@ -62,6 +62,8 @@ pub use tempo_revm::{
 };
 
 #[cfg(test)]
+mod proof_hints_tests;
+#[cfg(test)]
 mod test_utils;
 
 /// Tempo-related EVM configuration.
@@ -202,6 +204,93 @@ impl ConfigureEvm for TempoEvmConfig {
 
     fn block_assembler(&self) -> &Self::BlockAssembler {
         &self.block_assembler
+    }
+
+    fn prewarm_proof_keys<'a>(
+        &self,
+        txs: impl IntoIterator<Item = &'a TempoTxEnv>,
+        env: &EvmEnvFor<Self>,
+        mut emit: impl FnMut(reth_evm::ProofKeyHint) -> bool,
+    ) where
+        TempoTxEnv: 'a,
+    {
+        use alloy_primitives::map::HashSet;
+        use tempo_revm::{
+            ExecutionContext,
+            replay::{PrefetchPlan, ReadKey, nonce_hint},
+        };
+
+        // Generic prewarming, builders, RPC and relaxed environments never plan
+        // these hints. In particular, the default-off path allocates nothing.
+        if !self
+            .speculative_executor
+            .as_ref()
+            .is_some_and(|executor| executor.proof_prefetch())
+            || self
+                .inner
+                .executor_factory
+                .evm_factory()
+                .engine_prewarming
+                .is_none()
+            || env.cfg_env.disable_nonce_check
+            || env.cfg_env.disable_balance_check
+            || env.cfg_env.disable_base_fee
+            || env.cfg_env.disable_fee_charge
+        {
+            return;
+        }
+        let Ok(timestamp) = u64::try_from(env.block_env.inner.timestamp) else {
+            return;
+        };
+        let mut plan = PrefetchPlan::default();
+        let mut seen = HashSet::<ReadKey>::default();
+        let mut emit_key = |key| {
+            let hint = match key {
+                ReadKey::Account(address) => reth_evm::ProofKeyHint::Account(address),
+                ReadKey::Storage(address, slot) => reth_evm::ProofKeyHint::Storage(address, slot),
+                _ => return true,
+            };
+            !seen.insert(key) || (emit(hint) && seen.len() < 512)
+        };
+        // Bound our own work even if another caller supplies an unbounded batch.
+        // The planner and deduplication set are private to this one batch.
+        for tx in txs.into_iter().take(16) {
+            if tx.is_system_tx
+                || !matches!(tx.execution_context(), ExecutionContext::Transaction { .. })
+                || tx.fee_payer().is_err()
+            {
+                continue;
+            }
+            if !emit_key(ReadKey::Account(tx.inner.caller)) {
+                return;
+            }
+            for (kind, _) in tx.calls().take(4) {
+                if let Some(&target) = kind.to()
+                    && !emit_key(ReadKey::Account(target))
+                {
+                    return;
+                }
+            }
+            if let Some((key, _)) = nonce_hint(tx, env.cfg_env.spec, timestamp)
+                && !emit_key(key)
+            {
+                return;
+            }
+            let mut keep_going = true;
+            plan.visit(
+                tx,
+                env.block_env.inner.beneficiary,
+                env.cfg_env.spec,
+                |key| {
+                    if keep_going {
+                        keep_going = emit_key(key);
+                    }
+                },
+            );
+            if !keep_going {
+                return;
+            }
+        }
     }
 
     fn create_executor<'a, DB, I>(
