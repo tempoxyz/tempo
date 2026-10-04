@@ -213,7 +213,7 @@ async fn sample_interval(
         let start = end_block
             .saturating_sub(LOG_QUERY_BLOCKS - 1)
             .max(interval.from_block);
-        if ((interval.to_block - end_block) / LOG_QUERY_BLOCKS) % 10 == 0 {
+        if ((interval.to_block - end_block) / LOG_QUERY_BLOCKS).is_multiple_of(10) {
             info!(hardfork = %interval.hardfork, from_block = start, to_block = end_block, end_block = end_block, "Sampling progress");
         }
         filter = filter.from_block(start).to_block(end_block);
@@ -264,6 +264,9 @@ async fn discover_portals(
         .block(to.into())
         .await?;
     let next = IZoneFactory::nextZoneIdCall::abi_decode_returns(&output)?;
+    if next <= 1 {
+        return Ok(BTreeSet::new());
+    }
     let zones = provider
         .multicall()
         .dynamic::<IZoneFactory::zonesCall>()
@@ -316,11 +319,13 @@ mod tests {
         transaction::{Recovered, TxHashRef},
     };
     use alloy_primitives::{B256, Bytes, Signature, U256, address};
+    use alloy_provider::bindings::IMulticall3;
     use alloy_rpc_types_eth::{Block, BlockTransactions, Log, Transaction};
     use base64::Engine;
     use clap::Parser;
     use serde_json::json;
     use tempo_alloy::rpc::ForkInfo;
+    use tempo_contracts::precompiles::ZoneInfo;
     use tempo_primitives::{TempoTransaction, transaction::Call};
 
     const PORTAL: Address = address!("5ad0000000000000000000000000000000000001");
@@ -580,8 +585,6 @@ mod tests {
 
     #[tokio::test]
     async fn portal_discovery() {
-        use alloy_provider::bindings::IMulticall3;
-        use tempo_contracts::precompiles::ZoneInfo;
         let zone = ZoneInfo {
             zoneId: 1,
             portal: PORTAL,
@@ -593,7 +596,7 @@ mod tests {
             verifier: Address::ZERO,
             rpcUrl: String::new(),
         };
-        for next in [1u32, 3] {
+        for next in [0u32, 1, 3] {
             let asserter = Asserter::new();
             asserter.push_success(&Bytes::from(
                 IZoneFactory::nextZoneIdCall::abi_encode_returns(&next),
@@ -612,7 +615,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 portals,
-                if next == 1 {
+                if next <= 1 {
                     BTreeSet::new()
                 } else {
                     BTreeSet::from([PORTAL])
