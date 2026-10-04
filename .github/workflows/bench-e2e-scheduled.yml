@@ -47,6 +47,11 @@ on:
           - "128"
           - "256"
           - "512"
+      state-provider-metrics:
+        description: "Enable Engine provider diagnostics for generated sequential-peer correctness validation only"
+        required: false
+        default: false
+        type: boolean
 
 permissions: {}
 
@@ -187,7 +192,7 @@ jobs:
       max-concurrent-requests: "100"
       token-count: "4"
       txgen-ref: 3f389beb990872bd3b9937d92a923e534f1d3515
-      feature-args: --execution.threads 8 --execution.batch-size 128 --engine.prewarming-threads 16 --execution.capture-window ${{ inputs.capture-window || '128' }}
+      feature-args: --execution.threads 8 --execution.batch-size 128 --engine.prewarming-threads 16 --execution.capture-window ${{ inputs.capture-window || '128' }} ${{ inputs.state-provider-metrics && '--engine.state-provider-metrics' || '' }}
       run-side: feature
       run-pairs: "1"
       sequential-peer: true
