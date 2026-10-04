@@ -239,6 +239,7 @@ if [ "$REMOTE_HASH" != "$LOCAL_HASH" ] || [ ! -d "$DATADIR/db" ]; then
 
   # Download snapshot using the feature binary
   "$FEATURE_BIN" download \
+    --chain "$CHAIN_NAME" \
     --manifest-url "$MANIFEST_URL" \
     -y \
     --minimal \

@@ -1,11 +1,37 @@
 #!/usr/bin/env python3
-"""Exercise the replay runner's actual cleanup registration after scope unwind."""
+"""Exercise replay chain routing and cleanup registration after scope unwind."""
 
 import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+
+
+class SnapshotChainTests(unittest.TestCase):
+    def test_download_uses_selected_chain(self):
+        source = Path(__file__).with_name("bench-tempo-replay.sh").read_text()
+        configuration = source.split("# Chain-specific configuration\n", 1)[1].split("set +x", 1)[0]
+        download = source.split("  # Download snapshot using the feature binary\n", 1)[1].split("\n\n", 1)[0]
+        for selected, expected in (("mainnet", "mainnet"), ("testnet", "moderato")):
+            with self.subTest(chain=selected), tempfile.TemporaryDirectory(prefix="replay-chain-") as root:
+                trace = Path(root) / "arguments"
+                script = """set -euo pipefail
+record_download() { printf '%s\\0' "$@" > "$TRACE"; }
+FEATURE_BIN=record_download
+MANIFEST_URL='https://snapshots.invalid/manifest.json'
+DATADIR='/snapshot path/tempo replay'
+""" + configuration + download
+                result = subprocess.run(
+                    ["bash", "-c", script], text=True, capture_output=True,
+                    env={**os.environ, "BENCH_CHAIN": selected, "TRACE": str(trace)},
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(trace.read_bytes().decode().split("\0"), [
+                    "download", "--chain", expected, "--manifest-url",
+                    "https://snapshots.invalid/manifest.json", "-y", "--minimal",
+                    "--datadir", "/snapshot path/tempo replay", "",
+                ])
 
 
 class CleanupTests(unittest.TestCase):
