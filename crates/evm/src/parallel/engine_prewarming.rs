@@ -558,6 +558,9 @@ fn estimated_bytes(candidate: &mut PreexecutedTransaction) -> Option<usize> {
     // Includes the outer result allocation, BTreeMap node allowance and the
     // environment's shared 256-word gas table, counted afresh for each candidate.
     budget.add(size_of::<PreexecutedTransaction>().checked_add(4096)?)?;
+    if let Some(parent_reads) = &candidate.parent_reads {
+        budget.add(parent_reads.estimated_bytes)?;
+    }
     budget.transaction(&candidate.tx)?;
     budget.vector(&candidate.reads)?;
     for (_, value) in &candidate.reads {

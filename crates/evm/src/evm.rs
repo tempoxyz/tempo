@@ -11,6 +11,7 @@ use alloy_evm::{
     },
 };
 use alloy_primitives::{Address, Bytes, TxKind, map::HashMap};
+use reth_evm::parent_reads::{CaptureParentReads, ParentReadHooks, ValidateParentReads};
 use reth_revm::{
     InspectSystemCallEvm, MainContext, State,
     context::{
@@ -36,13 +37,14 @@ use crate::{
     parallel::{
         CaptureEvent, EnginePrewarmingCache, EnginePrewarmingSession, ExecutionStats,
         PreexecutedTransaction, PrewarmingExecutor, PrewarmingState, SpeculativeBatch,
-        SpeculativeExecutor, SpeculativeResult,
+        SpeculativeExecutor, SpeculativeResult, capture_with_parent_reads,
     },
 };
 
 type CandidateValidator<DB> = fn(
     &mut SpeculativeResult<<DB as reth_revm::Database>::Error>,
     &mut DB,
+    Option<ValidateParentReads<DB>>,
 ) -> Result<bool, <DB as reth_revm::Database>::Error>;
 
 // Install this only in the marked factory. A function pointer also keeps the
@@ -53,6 +55,7 @@ type EngineCapture<DB> = fn(
     PrewarmingState,
     TempoTxEnv,
     Option<usize>,
+    Option<CaptureParentReads<DB>>,
 ) -> Result<
     PreexecutedTransaction,
     EVMError<<DB as reth_revm::Database>::Error, TempoInvalidTransaction>,
@@ -122,10 +125,14 @@ impl EvmFactory for TempoEvmFactory {
         let session = cache.session(&canonical);
         let mut evm = TempoEvm::new(db, input);
         if session.is_some() && capture {
-            evm.engine_capture = Some(|db, env, prefix, tx, offset| {
-                PrewarmingExecutor::new(db, env)
-                    .with_state(prefix)
-                    .execute(tx, offset)
+            evm.engine_capture = Some(|db, env, prefix, tx, offset, parent_reads| {
+                if let Some(hooks) = parent_reads {
+                    capture_with_parent_reads(db, env, prefix, tx, offset, hooks)
+                } else {
+                    PrewarmingExecutor::new(db, env)
+                        .with_state(prefix)
+                        .execute(tx, offset)
+                }
             });
         }
         evm.engine_session = session;
@@ -158,6 +165,8 @@ pub struct TempoEvm<DB: Database, I = NoOpInspector> {
     state_committer: Option<fn(&mut DB, reth_revm::state::EvmState)>,
     engine_session: Option<std::sync::Arc<EnginePrewarmingSession>>,
     engine_capture: Option<EngineCapture<DB>>,
+    parent_capture: Option<CaptureParentReads<DB>>,
+    parent_validation: Option<ValidateParentReads<DB>>,
     engine_wait_timings: EngineWaitTimings,
     execution_stage_timings: Option<Box<ExecutionStageTimings>>,
     execution_stats: ExecutionStats,
@@ -191,6 +200,8 @@ impl<DB: Database> TempoEvm<DB> {
             state_committer: None,
             engine_session: None,
             engine_capture: None,
+            parent_capture: None,
+            parent_validation: None,
             engine_wait_timings: EngineWaitTimings::default(),
             execution_stage_timings: None,
             execution_stats: ExecutionStats::default(),
@@ -207,7 +218,8 @@ impl<P: Database, I> TempoEvm<&mut State<P>, I> {
     /// Uses the current authoritative State cache for exact speculative read
     /// validation. Cold reads and BAL-backed state retain Database validation.
     pub fn enable_state_cache_validation(&mut self) {
-        self.candidate_validator = Some(|candidate, db| candidate.validate_state(*db));
+        self.candidate_validator =
+            Some(|candidate, db, hooks| candidate.validate_state_with_parent_reads(db, hooks));
     }
 
     pub(crate) fn enable_state_cache_commit(&mut self) {
@@ -216,11 +228,28 @@ impl<P: Database, I> TempoEvm<&mut State<P>, I> {
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
+    /// Installs operations only on the Engine EVM role for which they were supplied.
+    pub(crate) fn set_parent_read_hooks(&mut self, hooks: ParentReadHooks<DB>) {
+        if self.engine_session.is_none() || self.inspect || !self.standard_configuration {
+            return;
+        }
+        match hooks {
+            ParentReadHooks::Capture(hooks) if self.engine_capture.is_some() => {
+                self.parent_capture = Some(hooks);
+            }
+            ParentReadHooks::Validate(hooks) if self.engine_capture.is_none() => {
+                self.parent_validation = Some(hooks);
+            }
+            _ => {}
+        }
+    }
+
     /// A block executor can consume strict candidates, but must never return
     /// hint-only prewarming results even if given a relaxed EVM by a caller.
     pub(crate) fn disarm_engine_capture(&mut self) {
         if self.engine_capture.take().is_some() {
             self.engine_session = None;
+            self.parent_capture = None;
         }
     }
 
@@ -580,6 +609,8 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             state_committer: self.state_committer,
             engine_session: None,
             engine_capture: None,
+            parent_capture: None,
+            parent_validation: None,
             engine_wait_timings: self.engine_wait_timings,
             execution_stage_timings: self.execution_stage_timings,
             execution_stats: self.execution_stats,
@@ -762,6 +793,7 @@ where
                         session.prefix(),
                         strict_tx,
                         offset,
+                        self.parent_capture,
                     ) {
                         session.capture_event(CaptureEvent::StrictSucceeded);
                         // In pinned Reth this return value supplies proof
@@ -831,9 +863,11 @@ where
                     .as_ref()
                     .map(|_| Instant::now());
                 let valid = match self.candidate_validator {
-                    Some(validate) => {
-                        validate(&mut candidate, &mut self.inner.ctx.journaled_state.database)
-                    }
+                    Some(validate) => validate(
+                        &mut candidate,
+                        &mut self.inner.ctx.journaled_state.database,
+                        self.parent_validation,
+                    ),
                     None => candidate.validate(&mut self.inner.ctx.journaled_state.database),
                 };
                 if let Some(started) = started {
@@ -1198,7 +1232,7 @@ mod tests {
                         );
                     }
                 } else if case == "provider_error" {
-                    actual.candidate_validator = Some(|_, _| Err(ProviderError));
+                    actual.candidate_validator = Some(|_, _, _| Err(ProviderError));
                 }
                 let reference = expected.transact_raw(tx.clone()).unwrap();
                 let result = actual.transact_raw(tx.clone()).unwrap();

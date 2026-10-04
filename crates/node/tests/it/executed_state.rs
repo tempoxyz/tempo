@@ -350,6 +350,8 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
         let runtime = Runtime::test();
         let mut config = NodeConfig::new(chain_spec.clone()).with_unused_ports();
         config.network.discovery.disable_discovery = true;
+        config.engine.slow_block_threshold = Some(std::time::Duration::ZERO);
+        config.engine.prewarming_threads = Some(16);
         let observer_handle = NodeBuilder::new(config)
             .testing_node(runtime.clone())
             .node(tempo_node)
@@ -457,6 +459,9 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
                 workers.prewarmed_reuses()
             );
         }
+        eprintln!(
+            "Engine parent read oracle VALID: block_hash={block_hash:?} execution_threads={execution_threads} capture_window={capture_window} transaction_count={transaction_count}"
+        );
     }
     Ok(())
 }

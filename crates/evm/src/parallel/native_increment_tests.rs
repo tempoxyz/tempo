@@ -460,7 +460,7 @@ fn provider_error_after_native_mismatch_leaves_result_unmodified() {
     let original = candidate.result.as_ref().unwrap().clone();
     let key = ReadKey::Storage(token, slot);
     let mut visited_native = false;
-    let result = candidate.validate_with(|reads| {
+    let result = candidate.validate_with(|_, reads| {
         if let Some(offset) = reads.iter().position(|(read, _)| *read == key) {
             visited_native = true;
             Ok(Some((offset, ReadValue::Storage(U256::from(20)))))

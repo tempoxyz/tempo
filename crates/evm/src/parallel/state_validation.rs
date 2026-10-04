@@ -1,6 +1,7 @@
 //! Exact validation against the current authoritative revm State cache.
 
 use super::{Address, DBErrorMarker, Database, ReadKey, ReadValue, SpeculativeResult, U256, read};
+use reth_evm::parent_reads::{ParentReadBatch, ValidateParentReads};
 use reth_revm::{State, db::states::CacheAccount};
 use tempo_revm::replay::{account_info_matches, bytecode_matches};
 
@@ -13,23 +14,43 @@ enum CachedRead {
 impl<E: DBErrorMarker> SpeculativeResult<E> {
     /// Validates using borrowed, current cache values when available. BAL-backed
     /// state always uses Database reads, including indexed values and BAL errors.
-    pub(crate) fn validate_state<P: Database>(&mut self, db: &mut State<P>) -> Result<bool, E>
+    #[cfg(test)]
+    pub(crate) fn validate_state<P: Database>(&mut self, mut db: &mut State<P>) -> Result<bool, E>
+    where
+        State<P>: Database<Error = E>,
+    {
+        self.validate_state_with_parent_reads(&mut db, None)
+    }
+
+    /// Offers provider-certified parent values only below ordinary State reads.
+    /// Warm values, account lifecycle, cache materialization and every comparison
+    /// retain the normal validator. Generic or BAL state receives no offers.
+    pub(crate) fn validate_state_with_parent_reads<'db, P: Database>(
+        &mut self,
+        db: &mut &'db mut State<P>,
+        hooks: Option<ValidateParentReads<&'db mut State<P>>>,
+    ) -> Result<bool, E>
     where
         State<P>: Database<Error = E>,
     {
         if db.has_bal() {
             return self.validate(db);
         }
-        self.validate_with(|reads| first_difference(db, reads))
+        let hooks = hooks.filter(|_| !db.use_preloaded_bundle);
+        let batch = hooks.and(self.parent_reads.as_ref()).cloned();
+        self.validate_with(|start, reads| first_difference(db, reads, start, batch.as_ref(), hooks))
     }
 }
 
 /// Borrow an account once for consecutive warm reads. The borrow ends before
 /// any cold read can populate or replace entries in the authoritative cache.
 /// Nothing is retained across calls, commits or mutable access to State.
-fn first_difference<P: Database>(
-    db: &mut State<P>,
+fn first_difference<'db, P: Database>(
+    db: &mut &'db mut State<P>,
     reads: &[(ReadKey, ReadValue)],
+    start: usize,
+    batch: Option<&ParentReadBatch>,
+    hooks: Option<ValidateParentReads<&'db mut State<P>>>,
 ) -> Result<Option<(usize, ReadValue)>, <State<P> as reth_revm::Database>::Error> {
     let mut offset = 0;
     'reads: while let Some((key, expected)) = reads.get(offset) {
@@ -54,7 +75,7 @@ fn first_difference<P: Database>(
                 None => CachedRead::Unknown,
             }
         } else {
-            cached_other_read(db, *key, expected)
+            cached_other_read(&**db, *key, expected)
         };
         match cached {
             CachedRead::Equal => {}
@@ -62,7 +83,20 @@ fn first_difference<P: Database>(
             CachedRead::Unknown => {
                 // A warm run may have advanced to this cold or malformed read.
                 let (key, expected) = &reads[offset];
-                let actual = read(db, *key)?;
+                let actual = if let (
+                    Some(hooks),
+                    Some(batch),
+                    ReadKey::Storage(address, slot),
+                    ReadValue::Storage(expected),
+                ) = (hooks, batch, key, expected)
+                {
+                    (hooks.offer)(db, batch, start + offset, *address, *slot, *expected);
+                    let actual = read(db, *key);
+                    (hooks.clear)(db);
+                    actual?
+                } else {
+                    read(db, *key)?
+                };
                 if matches!((key, expected), (ReadKey::Account(_), ReadValue::Account(Some(info))) if info.account_id.is_some())
                     || actual != *expected
                 {

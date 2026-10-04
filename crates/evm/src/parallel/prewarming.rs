@@ -1,6 +1,7 @@
 //! Recorded execution on a worker-owned provider, reusable by the ordered executor.
 
 use super::*;
+use reth_evm::parent_reads::{CaptureParentReads, ParentReadBatch};
 use std::time::Instant;
 
 /// Advisory values from the builder's accepted prefix. Workers may read across
@@ -237,6 +238,7 @@ pub struct PreexecutedTransaction {
     pub(super) result: ResultAndState<TempoHaltReason>,
     pub(super) validator_fee: U256,
     pub(super) reads: Vec<(ReadKey, ReadValue)>,
+    pub(super) parent_reads: Option<ParentReadBatch>,
     pub(super) fee_updates: Vec<FeeUpdate>,
     pub(super) native_increment: Option<NativeIncrementWitness>,
 }
@@ -252,6 +254,7 @@ impl PreexecutedTransaction {
             result: Ok(self.result),
             validator_fee: self.validator_fee,
             reads: self.reads,
+            parent_reads: self.parent_reads,
             fee_updates: self.fee_updates,
             fees_rebased: false,
             native_increment: self.native_increment,
@@ -279,6 +282,7 @@ impl<DB: Database> PrewarmingExecutor<DB> {
                 reads: Vec::new(),
                 predicted_nonce_ptr: None,
                 prefix: None,
+                parent_reads: None,
             },
             env.clone(),
         );
@@ -292,10 +296,35 @@ impl<DB: Database> PrewarmingExecutor<DB> {
         self
     }
 
+    pub(super) fn with_parent_reads(mut self, hooks: CaptureParentReads<DB>) -> Self {
+        self.evm.ctx_mut().journaled_state.database.parent_reads = Some(hooks);
+        self
+    }
+
     /// Executes without committing. The optional expiring-nonce offset is only
     /// a prediction: its observed pointer is validated like every other read.
     /// Errors return no reusable result and are executed normally by the owner.
     pub fn execute(
+        &mut self,
+        tx: TempoTxEnv,
+        expiring_nonce_offset: Option<usize>,
+    ) -> Result<PreexecutedTransaction, EVMError<DB::Error, TempoInvalidTransaction>> {
+        let db = &mut self.evm.ctx_mut().journaled_state.database;
+        if let Some(hooks) = db.parent_reads {
+            (hooks.begin)(&mut db.db);
+        }
+        let mut result = self.execute_recorded(tx, expiring_nonce_offset);
+        let db = &mut self.evm.ctx_mut().journaled_state.database;
+        if let Some(hooks) = db.parent_reads {
+            match &mut result {
+                Ok(candidate) => candidate.parent_reads = (hooks.finish)(&mut db.db),
+                Err(_) => (hooks.discard)(&mut db.db),
+            }
+        }
+        result
+    }
+
+    fn execute_recorded(
         &mut self,
         tx: TempoTxEnv,
         expiring_nonce_offset: Option<usize>,
@@ -360,6 +389,7 @@ impl<DB: Database> PrewarmingExecutor<DB> {
             result: result?,
             validator_fee: self.evm.validator_fee(),
             reads,
+            parent_reads: None,
             fee_updates,
             native_increment,
         })
@@ -367,11 +397,12 @@ impl<DB: Database> PrewarmingExecutor<DB> {
 }
 
 #[derive(Debug)]
-struct ReadRecorder<DB> {
+struct ReadRecorder<DB: Database> {
     db: DB,
     reads: Vec<(ReadKey, ReadValue)>,
     predicted_nonce_ptr: Option<U256>,
     prefix: Option<PrewarmingState>,
+    parent_reads: Option<CaptureParentReads<DB>>,
 }
 
 impl<DB: Database> ReadRecorder<DB> {
@@ -382,6 +413,15 @@ impl<DB: Database> ReadRecorder<DB> {
             ReadValue::Storage(ptr)
         } else if let Some(value) = self.prefix.as_ref().and_then(|prefix| prefix.read(key)) {
             value
+        } else if let ReadKey::Storage(address, slot) = key
+            && let Some(hooks) = self.parent_reads
+        {
+            ReadValue::Storage((hooks.storage)(
+                &mut self.db,
+                self.reads.len(),
+                address,
+                slot,
+            )?)
         } else {
             read(&mut self.db, key)?
         };
@@ -389,6 +429,10 @@ impl<DB: Database> ReadRecorder<DB> {
         Ok(value)
     }
 }
+
+#[cfg(test)]
+#[path = "parent_reads_capture_tests.rs"]
+mod parent_reads_capture_tests;
 
 impl<DB: Database> reth_revm::Database for ReadRecorder<DB> {
     type Error = DB::Error;

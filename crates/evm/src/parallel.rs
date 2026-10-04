@@ -17,6 +17,7 @@ use crate::{TempoBlockEnv, evm::TempoEvm};
 use alloy_evm::{Database, Evm, EvmEnv};
 use alloy_primitives::{Address, B256, U256, map::HashMap};
 use rayon::{ThreadPool, ThreadPoolBuildError, ThreadPoolBuilder};
+use reth_evm::parent_reads::ParentReadBatch;
 use reth_revm::{
     DatabaseCommit, DatabaseRef,
     context::result::{EVMError, ResultAndState},
@@ -52,7 +53,11 @@ use reth_revm::context::result::HaltReason as TempoHaltReason;
 mod engine_prewarming;
 mod forwarding;
 mod native_rebase;
+mod parent_reads;
+#[cfg(test)]
+mod parent_reads_validation_tests;
 pub(crate) use engine_prewarming::{CaptureEvent, EnginePrewarmingCache, EnginePrewarmingSession};
+pub(crate) use parent_reads::capture_with_parent_reads;
 mod prewarming;
 #[cfg(test)]
 mod prewarming_guard_tests;
@@ -622,6 +627,7 @@ fn run_worker<E: DBErrorMarker>(
                 body,
                 fee_updates,
                 fees_rebased: false,
+                parent_reads: None,
                 native_increment,
                 native_rebased: false,
                 conflict: None,
@@ -794,6 +800,7 @@ pub struct ExecutionStats {
 pub(crate) struct SpeculativeResult<E> {
     pub(crate) env: Env,
     reads: Vec<(ReadKey, ReadValue)>,
+    parent_reads: Option<ParentReadBatch>,
     pub(crate) result: Outcome<E>,
     pub(crate) validator_fee: U256,
     pub(crate) body: Option<BodyCache>,
@@ -842,7 +849,7 @@ impl<E: DBErrorMarker> SpeculativeResult<E> {
     /// Read values, rather than touched addresses, determine dependencies. Two transfers
     /// touching distinct balances in the same TIP-20 therefore need not conflict.
     pub(crate) fn validate<DB: Database<Error = E>>(&mut self, db: &mut DB) -> Result<bool, E> {
-        self.validate_with(|reads| {
+        self.validate_with(|_, reads| {
             for (offset, (key, expected)) in reads.iter().enumerate() {
                 let actual = read(db, *key)?;
                 if matches!((key, expected), (ReadKey::Account(_), ReadValue::Account(Some(info))) if info.account_id.is_some())
@@ -861,13 +868,16 @@ impl<E: DBErrorMarker> SpeculativeResult<E> {
     fn validate_with(
         &mut self,
         mut first_difference: impl FnMut(
+            usize,
             &[(ReadKey, ReadValue)],
         ) -> Result<Option<(usize, ReadValue)>, E>,
     ) -> Result<bool, E> {
         let mut patches = Vec::new();
         let mut native_patch = None;
         let mut remaining = self.reads.as_slice();
-        while let Some((offset, actual)) = first_difference(remaining)? {
+        while let Some((offset, actual)) =
+            first_difference(self.reads.len() - remaining.len(), remaining)?
+        {
             let (key, expected) = &remaining[offset];
             remaining = &remaining[offset + 1..];
             let (ReadKey::Storage(address, slot), ReadValue::Storage(old), ReadValue::Storage(new)) =

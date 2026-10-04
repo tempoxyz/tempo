@@ -204,6 +204,25 @@ impl ConfigureEvm for TempoEvmConfig {
         &self.block_assembler
     }
 
+    fn supports_parent_read_cache(&self) -> bool {
+        self.inner
+            .executor_factory
+            .evm_factory()
+            .engine_prewarming
+            .is_some()
+    }
+
+    fn evm_with_env_and_parent_reads<DB: Database>(
+        &self,
+        db: DB,
+        env: EvmEnvFor<Self>,
+        hooks: reth_evm::parent_reads::ParentReadHooks<DB>,
+    ) -> EvmFor<Self, DB> {
+        let mut evm = self.evm_with_env(db, env);
+        evm.set_parent_read_hooks(hooks);
+        evm
+    }
+
     fn create_executor<'a, DB, I>(
         &'a self,
         mut evm: EvmFor<Self, &'a mut State<DB>, I>,
