@@ -7,7 +7,7 @@ use crate::{
     best::MergeBestTransactions,
     ordering::TempoTipOrdering,
     transaction::TempoPooledTransaction,
-    tt_2d_pool::AA2dPool,
+    tt_2d_pool::{AA2dPool, AASequenceId},
     validator::{ConfigureTempoPoolEvm, TempoTransactionValidator},
 };
 use alloy_consensus::Transaction;
@@ -38,6 +38,7 @@ use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
     error::Result as TempoPrecompileResult,
+    nonce::NonceManager,
     storage::{Handler, StorageActions},
     tip20::TIP20Token,
     tip403_registry::{REJECT_ALL_POLICY_ID, TIP403Registry},
@@ -122,6 +123,61 @@ where
             .inner()
             .notify_on_transaction_updates(promoted, discarded);
         mined
+    }
+
+    /// Returns the tracked 2D nonce lanes whose `NonceManager` storage slot is in `slots`.
+    pub(crate) fn aa_lanes_for_nonce_slots(
+        &self,
+        slots: impl IntoIterator<Item = U256>,
+    ) -> Vec<AASequenceId> {
+        self.aa_2d_pool.read().lanes_for_nonce_slots(slots)
+    }
+
+    /// Resets the nonce state for the given 2D nonce sequence IDs by reading from a specific
+    /// block's state.
+    ///
+    /// Used during reorgs to correct the pool's nonce tracking for lanes that were modified in
+    /// the old chain but not in the new chain: the new chain's state diff doesn't contain those
+    /// slots, so they are never reclassified by [`Self::notify_aa_pool_on_state_updates`].
+    pub(crate) fn reset_2d_nonces_from_state(
+        &self,
+        seq_ids: Vec<AASequenceId>,
+        block_hash: B256,
+    ) -> Result<(), reth_provider::ProviderError> {
+        if seq_ids.is_empty() {
+            return Ok(());
+        }
+
+        // Spec doesn't affect raw storage reads (sload), so default is safe here.
+        let spec = TempoHardfork::default();
+        let mut state_provider = self.client().state_by_block_hash(block_hash)?;
+
+        let nonce_changes = state_provider
+            .with_read_only_storage_ctx(
+                spec,
+                StorageActions::disabled(),
+                || -> TempoPrecompileResult<_> {
+                    let mut changes = HashMap::default();
+                    // Read the current on-chain nonce for this sequence ID
+                    for id in &seq_ids {
+                        let current_nonce =
+                            NonceManager::new().nonces[id.address][id.nonce_key].read()?;
+                        changes.insert(*id, current_nonce);
+                    }
+                    Ok(changes)
+                },
+            )
+            .map_err(reth_provider::ProviderError::other)?;
+
+        // Apply the nonce changes to the 2D pool
+        let (promoted, _mined) = self.aa_2d_pool.write().on_nonce_changes(nonce_changes);
+        if !promoted.is_empty() {
+            self.protocol_pool
+                .inner()
+                .notify_on_transaction_updates(promoted, Vec::new());
+        }
+
+        Ok(())
     }
 
     /// Evicts transactions that are no longer valid due to on-chain events.
@@ -1472,7 +1528,13 @@ mod tests {
         txs.iter().map(|tx| *tx.hash()).collect()
     }
 
-    use crate::{test_utils::MockProviderStorageExt, transaction::KeychainSubject};
+    use crate::{
+        maintain::reset_aa_state_after_reorg,
+        test_utils::{
+            MockProviderStorageExt, TxBuilder, create_chain_with_nonce_writes, wrap_valid_tx,
+        },
+        transaction::KeychainSubject,
+    };
     use alloy_consensus::Header;
     use alloy_primitives::{Signature, U256, address, uint};
     use alloy_signer::SignerSync;
@@ -1689,8 +1751,6 @@ mod tests {
 
     #[test]
     fn pending_transactions_by_address_and_nonce_key() {
-        use crate::test_utils::{TxBuilder, wrap_valid_tx};
-
         let pool = create_test_pool(create_provider_with_tip());
         let sender = Address::random();
         let nonce_key = U256::from(7);
@@ -2990,5 +3050,192 @@ mod tests {
             10,
             TempoHardfork::T3,
         ));
+    }
+
+    /// Nonce slot written by `NonceManager` for the given lane.
+    fn lane_nonce_slot(sender: Address, nonce_key: U256) -> U256 {
+        TxBuilder::aa(sender)
+            .nonce_key(nonce_key)
+            .build()
+            .nonce_key_slot()
+            .expect("2D nonce tx should have nonce key slot")
+    }
+
+    /// CYCLOPS-2707: an orphaned predecessor that is not re-admitted must not leave its successor
+    /// pending, even if the new chain never wrote the lane's nonce slot.
+    #[test]
+    fn reorg_resets_lane_nonce_of_old_chain_without_reinjection() {
+        let provider = create_provider_with_tip();
+        let sender = Address::random();
+        let nonce_key = U256::from(7);
+        // The new tip's state has the lane at nonce 3: the old chain's block that mined the
+        // predecessor is gone.
+        provider
+            .setup_storage(TempoHardfork::default(), || {
+                NonceManager::new().nonces[sender][nonce_key].write(3)
+            })
+            .unwrap();
+        let pool = create_test_pool(provider);
+
+        let predecessor = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(3).build();
+        let successor = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(4).build();
+
+        // The old chain mined the predecessor, so the successor is the lane's pending head.
+        pool.aa_2d_pool
+            .write()
+            .add_transaction(
+                Arc::new(wrap_valid_tx(successor.clone(), TransactionOrigin::Local)),
+                4,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        assert_eq!(
+            pool.aa_2d_pool.read().pending_and_queued_txn_count(),
+            (1, 0)
+        );
+
+        let old = create_chain_with_nonce_writes(
+            1,
+            &[&predecessor],
+            [(lane_nonce_slot(sender, nonce_key), U256::from(4))],
+        );
+        let new = create_chain_with_nonce_writes(1, &[], []);
+
+        let orphaned = reset_aa_state_after_reorg(&pool, &old, &new);
+        assert_eq!(
+            orphaned.iter().map(|tx| *tx.hash()).collect::<Vec<_>>(),
+            vec![*predecessor.hash()]
+        );
+
+        // The predecessor is not re-admitted (e.g. rejected as near-expiry), so the successor has
+        // a nonce gap and must not be offered to builders.
+        assert_eq!(
+            pool.aa_2d_pool.read().pending_and_queued_txn_count(),
+            (0, 1)
+        );
+        assert!(
+            pool.get_pending_transactions_by_address_and_nonce_key(sender, nonce_key)
+                .is_empty()
+        );
+        pool.aa_2d_pool.read().assert_invariants();
+
+        // Re-admitting the predecessor closes the gap again.
+        pool.aa_2d_pool
+            .write()
+            .add_transaction(
+                Arc::new(wrap_valid_tx(predecessor, TransactionOrigin::External)),
+                3,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        assert_eq!(
+            pool.aa_2d_pool.read().pending_and_queued_txn_count(),
+            (2, 0)
+        );
+        assert!(pool.contains(successor.hash()));
+    }
+
+    /// The lane is reset from the old chain's nonce slot writes alone, without having to decode
+    /// the orphaned transaction.
+    #[test]
+    fn reorg_resets_lane_nonce_from_old_chain_nonce_slot() {
+        let sender = Address::random();
+        let nonce_key = U256::from(7);
+        let pool = create_test_pool(create_provider_with_tip());
+
+        let successor = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(1).build();
+        pool.aa_2d_pool
+            .write()
+            .add_transaction(
+                Arc::new(wrap_valid_tx(successor, TransactionOrigin::Local)),
+                1,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        assert_eq!(
+            pool.aa_2d_pool.read().pending_and_queued_txn_count(),
+            (1, 0)
+        );
+
+        let old = create_chain_with_nonce_writes(
+            1,
+            &[],
+            [(lane_nonce_slot(sender, nonce_key), U256::from(1))],
+        );
+        let new = create_chain_with_nonce_writes(1, &[], []);
+
+        assert!(reset_aa_state_after_reorg(&pool, &old, &new).is_empty());
+        assert_eq!(
+            pool.aa_2d_pool.read().pending_and_queued_txn_count(),
+            (0, 1)
+        );
+    }
+
+    /// CYCLOPS-2837: if the old chain's commit was applied to the AA pool before the reorg is
+    /// handled, the orphaned transaction is gone from the pool and must be selected for
+    /// re-injection, for expiring nonce and regular 2D lane transactions alike.
+    #[test_case::test_case(U256::MAX; "expiring nonce")]
+    #[test_case::test_case(U256::from(7); "lane nonce")]
+    fn reorg_selects_tx_removed_by_stale_commit_for_reinjection(nonce_key: U256) {
+        let sender = Address::random();
+        let pool = create_test_pool(create_provider_with_tip());
+
+        let tx = TxBuilder::aa(sender)
+            .nonce_key(nonce_key)
+            .valid_before(u64::MAX)
+            .build();
+        let tx_hash = *tx.hash();
+        // Expiring nonce txs are marked as seen, lane txs bump the lane nonce.
+        let (slot, value) = if nonce_key == U256::MAX {
+            (tx.expiring_nonce_slot().unwrap(), U256::from(u64::MAX))
+        } else {
+            (lane_nonce_slot(sender, nonce_key), U256::from(1))
+        };
+
+        pool.aa_2d_pool
+            .write()
+            .add_transaction(
+                Arc::new(wrap_valid_tx(tx.clone(), TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+
+        let old = create_chain_with_nonce_writes(1, &[&tx], [(slot, value)]);
+        let new = create_chain_with_nonce_writes(1, &[], []);
+
+        // Reth's re-injection saw the tx still in the pool (AlreadyImported) and Tempo's loop
+        // had not applied the old chain's commit yet: Tempo then removes it as mined.
+        let mined = pool.notify_aa_pool_on_state_updates(old.execution_outcome().state().state());
+        assert_eq!(mined.len(), 1);
+        assert!(!pool.contains(&tx_hash));
+
+        // Handling the reorg in order selects it for re-injection.
+        let orphaned = reset_aa_state_after_reorg(&pool, &old, &new);
+        assert_eq!(
+            orphaned.iter().map(|tx| *tx.hash()).collect::<Vec<_>>(),
+            vec![tx_hash]
+        );
+
+        // Re-injection restores it as pending against the new tip's state.
+        pool.aa_2d_pool
+            .write()
+            .add_transaction(
+                Arc::new(wrap_valid_tx(
+                    orphaned.into_iter().next().unwrap(),
+                    TransactionOrigin::External,
+                )),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        assert!(pool.contains(&tx_hash));
+        assert_eq!(
+            pool.aa_2d_pool.read().pending_and_queued_txn_count(),
+            (1, 0)
+        );
+
+        // A tx that is already back in the pool is not selected again.
+        assert!(reset_aa_state_after_reorg(&pool, &old, &new).is_empty());
     }
 }

@@ -1130,7 +1130,6 @@ impl AA2dPool {
     /// This takes changed [`AASequenceId`]s with their current on-chain nonce.
     ///
     /// This will prune mined transactions and promote unblocked transactions if any, returns `(promoted, mined)`
-    #[cfg(test)]
     pub(crate) fn on_nonce_changes(
         &mut self,
         on_chain_ids: HashMap<AASequenceId, u64>,
@@ -1441,6 +1440,23 @@ impl AA2dPool {
     /// Returns `true` if the transaction with the given hash is already included in this pool.
     pub(crate) fn contains(&self, tx_hash: &TxHash) -> bool {
         self.by_hash.contains_key(tx_hash)
+    }
+
+    /// Returns the tracked 2D nonce lanes whose `NonceManager` storage slot is in `slots`.
+    ///
+    /// Slots that don't belong to a lane with transactions in this pool, including expiring nonce
+    /// `seen` slots, are ignored.
+    pub(crate) fn lanes_for_nonce_slots(
+        &self,
+        slots: impl IntoIterator<Item = U256>,
+    ) -> Vec<AASequenceId> {
+        slots
+            .into_iter()
+            .filter_map(|slot| match self.slot_to_nonce_entry.get(&slot) {
+                Some(NonceSlotEntry::Sequence(seq_id)) => Some(*seq_id),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Returns hashes of transactions in the pool that can be propagated.

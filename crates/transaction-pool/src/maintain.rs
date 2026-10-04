@@ -2,11 +2,13 @@
 
 use crate::{
     RevokedKeys, SpendingLimitUpdates, TempoTransactionPool, metrics::TempoPoolMaintenanceMetrics,
-    transaction::TempoPooledTransaction, validator::ConfigureTempoPoolEvm,
+    transaction::TempoPooledTransaction, tt_2d_pool::AASequenceId,
+    validator::ConfigureTempoPoolEvm,
 };
+use alloy_consensus::transaction::TxHashRef;
 use alloy_primitives::{
-    Address, B256, Log, TxHash,
-    map::{AddressMap, AddressSet, B256Set},
+    Address, B256, Log, TxHash, U256,
+    map::{AddressMap, AddressSet, B256Set, HashSet},
 };
 use alloy_sol_types::SolEvent;
 use futures::StreamExt;
@@ -15,12 +17,15 @@ use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain, HeaderProvider};
 use reth_storage_api::StateProviderFactory;
-use reth_transaction_pool::{AllPoolTransactions, TransactionPool};
+use reth_transaction_pool::{
+    AllPoolTransactions, PoolTransaction, TransactionOrigin, TransactionPool,
+};
 use std::time::Instant;
 use tempo_chainspec::hardfork::TempoHardforks;
 use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
 use tempo_precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    TIP403_REGISTRY_ADDRESS,
 };
 use tempo_primitives::{TempoAddressExt, TempoHeader, TempoPrimitives};
 use tracing::{debug, error};
@@ -493,7 +498,41 @@ where
     // Process all maintenance operations on new block commit or reorg.
     while let Some(event) = chain_events.next().await {
         let new = match event {
-            CanonStateNotification::Reorg { old: _, new } => {
+            CanonStateNotification::Reorg { old, new } => {
+                // Reth's own maintenance re-injects orphaned transactions on a separate task, so
+                // it can't fix up the AA 2D pool: it may run before this loop has applied the
+                // old chain's commit, in which case the re-injection is a no-op and the commit
+                // then removes the transaction as mined. Notifications are handled in order
+                // here, so by now the old chain's commit has been applied and the orphaned
+                // transactions can be restored.
+                let orphaned_txs = reset_aa_state_after_reorg(&pool, &old, &new);
+
+                if !orphaned_txs.is_empty() {
+                    let count = orphaned_txs.len();
+                    debug!(
+                        target: "txpool",
+                        count,
+                        "Re-injecting orphaned AA 2D transactions after reorg"
+                    );
+
+                    // Validation can be slow, don't block the maintenance loop on it.
+                    let pool_clone = pool.clone();
+                    tokio::spawn(async move {
+                        // Same origin as reth's re-injection, the original origin is unknown.
+                        let results = pool_clone
+                            .add_transactions(TransactionOrigin::External, orphaned_txs)
+                            .await;
+                        let failed = results.iter().filter(|r| r.is_err()).count();
+                        if failed > 0 {
+                            debug!(
+                                target: "txpool",
+                                failed,
+                                "Some orphaned AA 2D transactions failed to re-inject"
+                            );
+                        }
+                    });
+                }
+
                 // Repopulate AMM liquidity cache from the new canonical chain
                 // to invalidate stale entries from orphaned blocks.
                 if let Err(err) = amm_cache.repopulate(pool.client()) {
@@ -677,6 +716,132 @@ where
         // Deallocating removed transactions is expensive, so do it after all updates are done.
         drop(removed_txs);
     }
+}
+
+/// Resets the AA 2D nonce lanes touched by the old chain of a reorg and returns the orphaned
+/// AA transactions that should be re-injected.
+///
+/// The new chain's state diff doesn't contain nonce slots that were only changed by the old
+/// chain, so those lanes are re-read from the new tip. This happens independently of whether
+/// re-injection succeeds: an orphaned predecessor may be rejected on re-validation, which would
+/// otherwise leave its successors falsely pending. It has to run before the new chain's state
+/// diff is applied.
+///
+/// Orphaned transactions that are in the pool right now are not returned, the pool is checked at
+/// this moment because the caller re-injects them immediately.
+pub(crate) fn reset_aa_state_after_reorg<Client, EvmConfig>(
+    pool: &TempoTransactionPool<Client, EvmConfig>,
+    old: &Chain<TempoPrimitives>,
+    new: &Chain<TempoPrimitives>,
+) -> Vec<TempoPooledTransaction>
+where
+    EvmConfig: ConfigureTempoPoolEvm,
+    Client: StateProviderFactory
+        + ChainSpecProvider<ChainSpec: EthChainSpec<Header = TempoHeader> + TempoHardforks>
+        + 'static,
+{
+    let orphaned = handle_reorg(old, new, |hash| pool.contains(hash));
+
+    let mut affected_seq_ids = orphaned.affected_seq_ids;
+    affected_seq_ids.extend(pool.aa_lanes_for_nonce_slots(orphaned.old_only_nonce_slots));
+    if !affected_seq_ids.is_empty()
+        && let Err(err) = pool
+            .reset_2d_nonces_from_state(affected_seq_ids.into_iter().collect(), new.tip().hash())
+    {
+        error!(target: "txpool", ?err, "Failed to reset 2D nonce state after reorg");
+    }
+
+    orphaned.txs
+}
+
+/// AA state of an old chain that a reorg orphaned.
+#[derive(Debug, Default)]
+struct OrphanedAaState {
+    /// AA transactions with a non-zero nonce key mined in the old chain but not in the new chain,
+    /// excluding those for which `is_in_pool` returned `true`.
+    ///
+    /// Nonce key `0` transactions are handled by the vanilla pool.
+    txs: Vec<TempoPooledTransaction>,
+    /// Sequence IDs of all orphaned AA transactions with a non-zero nonce key, regardless of
+    /// whether they are in the pool.
+    affected_seq_ids: HashSet<AASequenceId>,
+    /// `NonceManager` storage slots written by the old chain but not by the new chain.
+    old_only_nonce_slots: Vec<U256>,
+}
+
+/// Handles a reorg event by identifying the AA 2D state orphaned from the old chain.
+///
+/// State diffs of the new chain only contain slots that changed in the new chain, so the nonce
+/// lanes touched only by the old chain have to be reset from the new tip's state. All orphaned
+/// sequence IDs are reported because a transaction's presence in the old chain doesn't tell
+/// whether the new chain rewrote its nonce slot.
+fn handle_reorg<F>(
+    old_chain: &Chain<TempoPrimitives>,
+    new_chain: &Chain<TempoPrimitives>,
+    is_in_pool: F,
+) -> OrphanedAaState
+where
+    F: Fn(&TxHash) -> bool,
+{
+    let (new_blocks, new_outcome) = new_chain.inner();
+    let (old_blocks, old_outcome) = old_chain.inner();
+
+    // Collect transaction hashes from the new chain to identify what's still mined.
+    let new_mined_hashes: B256Set = new_blocks.transaction_hashes().collect();
+
+    let mut orphaned = OrphanedAaState::default();
+
+    // Find AA 2D transactions from the old chain that are NOT in the new chain.
+    for tx in old_blocks.transactions_ecrecovered() {
+        if new_mined_hashes.contains(tx.tx_hash()) {
+            continue;
+        }
+
+        let Some(aa_tx) = tx.as_aa() else {
+            continue;
+        };
+
+        // Only process 2D nonce transactions (nonce_key > 0). Expiring nonce transactions
+        // (nonce_key == U256::MAX) are included: they are re-injected like any other, and
+        // before T1 they are tracked as a regular lane.
+        let nonce_key = aa_tx.tx().nonce_key;
+        if nonce_key.is_zero() {
+            continue;
+        }
+
+        orphaned
+            .affected_seq_ids
+            .insert(AASequenceId::new(tx.signer(), nonce_key));
+
+        let pooled_tx = TempoPooledTransaction::new(tx);
+        if is_in_pool(pooled_tx.hash()) {
+            continue;
+        }
+
+        orphaned.txs.push(pooled_tx);
+    }
+
+    // Nonce slots only the old chain wrote also need a reset, even if no orphaned transaction
+    // maps to them.
+    let old_nonce_storage = old_outcome
+        .state()
+        .state()
+        .get(&NONCE_PRECOMPILE_ADDRESS)
+        .map(|account| &account.storage);
+    let new_nonce_storage = new_outcome
+        .state()
+        .state()
+        .get(&NONCE_PRECOMPILE_ADDRESS)
+        .map(|account| &account.storage);
+    if let Some(old_storage) = old_nonce_storage {
+        orphaned.old_only_nonce_slots = old_storage
+            .keys()
+            .filter(|slot| new_nonce_storage.is_none_or(|new| !new.contains_key(*slot)))
+            .copied()
+            .collect();
+    }
+
+    orphaned
 }
 
 #[cfg(test)]
@@ -1069,6 +1234,96 @@ mod tests {
     /// Helper to extract a TempoTxEnvelope from a TempoPooledTransaction.
     fn extract_envelope(tx: &crate::transaction::TempoPooledTransaction) -> TempoTxEnvelope {
         tx.inner().clone().into_inner()
+    }
+
+    mod handle_reorg_tests {
+        use super::*;
+        use crate::test_utils::create_chain_with_nonce_writes;
+
+        /// Tests all reorg handling scenarios:
+        /// 1. AA 2D tx orphaned in reorg -> should be re-injected
+        /// 2. AA expiring nonce tx orphaned in reorg -> should be re-injected
+        /// 3. AA tx with nonce_key=0 -> should NOT be re-injected (handled by vanilla pool)
+        /// 4. EIP-1559 tx -> should NOT be re-injected (not AA)
+        /// 5. AA 2D tx in both old and new chain -> should NOT be re-injected
+        /// 6. AA 2D tx already in pool -> should NOT be re-injected
+        /// 7. All orphaned 2D seq_ids should be in affected_seq_ids (for nonce reset)
+        #[test]
+        fn identifies_orphaned_aa_2d_transactions() {
+            let sender = Address::random();
+
+            let orphaned = TxBuilder::aa(sender).nonce_key(U256::from(1)).build();
+            let expiring = TxBuilder::aa(sender)
+                .nonce_key(U256::MAX)
+                .valid_before(123)
+                .build();
+            let reincluded = TxBuilder::aa(sender).nonce_key(U256::from(2)).build();
+            let in_pool = TxBuilder::aa(sender).nonce_key(U256::from(3)).build();
+            let protocol_nonce = TxBuilder::aa(sender).nonce_key(U256::ZERO).build();
+            let eip1559 = TxBuilder::eip1559(Address::random()).build();
+
+            let old_chain = create_chain_with_nonce_writes(
+                1,
+                &[
+                    &orphaned,
+                    &expiring,
+                    &reincluded,
+                    &in_pool,
+                    &protocol_nonce,
+                    &eip1559,
+                ],
+                [],
+            );
+            let new_chain = create_chain_with_nonce_writes(1, &[&reincluded], []);
+
+            let pool_hashes: B256Set = [*in_pool.hash()].into_iter().collect();
+            let result = handle_reorg(&old_chain, &new_chain, |hash| pool_hashes.contains(hash));
+
+            let hashes: Vec<_> = result.txs.iter().map(|tx| *tx.hash()).collect();
+            assert_eq!(hashes, vec![*orphaned.hash(), *expiring.hash()]);
+
+            // The in-pool tx is not re-injected but its lane still needs a reset, the re-included
+            // and nonce key 0 txs are not orphaned AA 2D txs.
+            let expected: HashSet<_> = [
+                AASequenceId::new(sender, U256::from(1)),
+                AASequenceId::new(sender, U256::MAX),
+                AASequenceId::new(sender, U256::from(3)),
+            ]
+            .into_iter()
+            .collect();
+            assert_eq!(result.affected_seq_ids, expected);
+            assert!(result.old_only_nonce_slots.is_empty());
+        }
+
+        /// Nonce slots written only by the old chain are reported even without an orphaned tx.
+        #[test]
+        fn collects_nonce_slots_written_only_by_old_chain() {
+            let old_only = U256::from(1);
+            let both = U256::from(2);
+            let new_only = U256::from(3);
+
+            let old_chain = create_chain_with_nonce_writes(
+                1,
+                &[],
+                [(old_only, U256::from(1)), (both, U256::from(1))],
+            );
+            let new_chain = create_chain_with_nonce_writes(
+                1,
+                &[],
+                [(both, U256::from(2)), (new_only, U256::from(1))],
+            );
+
+            let result = handle_reorg(&old_chain, &new_chain, |_| false);
+            assert!(result.txs.is_empty());
+            assert!(result.affected_seq_ids.is_empty());
+            assert_eq!(result.old_only_nonce_slots, vec![old_only]);
+
+            // Without any new chain nonce writes, all old slots are reported.
+            let new_chain = create_chain_with_nonce_writes(1, &[], []);
+            let mut slots = handle_reorg(&old_chain, &new_chain, |_| false).old_only_nonce_slots;
+            slots.sort();
+            assert_eq!(slots, vec![old_only, both]);
+        }
     }
 
     mod from_chain_spending_limit_spends {

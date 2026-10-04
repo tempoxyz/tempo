@@ -6,16 +6,23 @@
 use crate::transaction::TempoPooledTransaction;
 use alloy_consensus::{Transaction, TxEip1559};
 use alloy_eips::eip2930::AccessList;
-use alloy_primitives::{Address, B256, Signature, TxKind, U256};
+use alloy_primitives::{Address, B256, Signature, TxKind, U256, map::U256Map};
 use core::num::NonZeroU64;
-use reth_primitives_traits::Recovered;
-use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
-use reth_transaction_pool::{TransactionOrigin, ValidPoolTransaction};
-use std::time::Instant;
+use reth_primitives_traits::{Recovered, RecoveredBlock};
+use reth_provider::{
+    Chain, ExecutionOutcome,
+    test_utils::{ExtendedAccount, MockEthProvider},
+};
+use reth_transaction_pool::{PoolTransaction, TransactionOrigin, ValidPoolTransaction};
+use revm::database::{AccountStatus, BundleAccount, BundleState, states::StorageSlot};
+use std::{sync::Arc, time::Instant};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork, spec::DEV};
-use tempo_precompiles::storage::{StorageCtx, hashmap::HashMapStorageProvider};
+use tempo_precompiles::{
+    NONCE_PRECOMPILE_ADDRESS,
+    storage::{StorageCtx, hashmap::HashMapStorageProvider},
+};
 use tempo_primitives::{
-    TempoPrimitives, TempoTxEnvelope,
+    Block, BlockBody, TempoHeader, TempoPrimitives, TempoTxEnvelope,
     transaction::{
         SignedKeyAuthorization, TempoSignedAuthorization, TempoTransaction,
         tempo_transaction::Call,
@@ -401,4 +408,55 @@ impl<T: reth_primitives_traits::NodePrimitives> MockProviderStorageExt
 
         result
     }
+}
+
+/// Creates a single-block chain that contains the given transactions and whose execution outcome
+/// sets the given `NonceManager` storage slots to their new values.
+///
+/// `block_number` makes the block hash unique per call site, e.g. to tell an old chain from a new
+/// chain in reorg tests.
+pub(crate) fn create_chain_with_nonce_writes(
+    block_number: u64,
+    txs: &[&TempoPooledTransaction],
+    nonce_writes: impl IntoIterator<Item = (U256, U256)>,
+) -> Arc<Chain<TempoPrimitives>> {
+    let senders = txs.iter().map(|tx| tx.sender()).collect();
+    let transactions = txs
+        .iter()
+        .map(|tx| tx.inner().clone().into_inner())
+        .collect();
+    let block = Block::new(
+        TempoHeader {
+            inner: alloy_consensus::Header {
+                number: block_number,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        BlockBody {
+            transactions,
+            ..Default::default()
+        },
+    );
+
+    let storage = nonce_writes
+        .into_iter()
+        .map(|(slot, value)| (slot, StorageSlot::new_changed(U256::ZERO, value)))
+        .collect::<U256Map<_>>();
+    let mut bundle = BundleState::default();
+    if !storage.is_empty() {
+        bundle.state.insert(
+            NONCE_PRECOMPILE_ADDRESS,
+            BundleAccount::new(None, None, storage, AccountStatus::Changed),
+        );
+    }
+
+    Arc::new(Chain::new(
+        vec![RecoveredBlock::new_unhashed(block, senders)],
+        ExecutionOutcome {
+            bundle,
+            ..Default::default()
+        },
+        Default::default(),
+    ))
 }
