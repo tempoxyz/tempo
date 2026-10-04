@@ -125,7 +125,7 @@ impl ConsensusFeed for FeedStateHandle {
                     epoch: finalization.proposal.round.epoch().get(),
                     view: finalization.proposal.round.view().get(),
                     block: block.into_execution_block(),
-                    digest: finalization.proposal.payload.0,
+                    digest: finalization.proposal.payload.get(),
                     certificate: hex::encode(finalization.encode()),
                 })
             }

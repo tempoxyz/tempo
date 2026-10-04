@@ -305,17 +305,17 @@ impl Order {
 impl From<Order> for IStablecoinDEX::Order {
     fn from(value: Order) -> Self {
         Self {
-            orderId: value.order_id,
-            maker: value.maker,
-            bookKey: value.book_key,
-            isBid: value.is_bid,
-            tick: value.tick,
-            amount: value.amount,
-            remaining: value.remaining,
-            prev: value.prev,
-            next: value.next,
-            isFlip: value.is_flip,
-            flipTick: value.flip_tick,
+            orderId: value.order_id(),
+            maker: value.maker(),
+            bookKey: value.book_key(),
+            isBid: value.is_bid(),
+            tick: value.tick(),
+            amount: value.amount(),
+            remaining: value.remaining(),
+            prev: value.prev(),
+            next: value.next(),
+            isFlip: value.is_flip(),
+            flipTick: value.flip_tick(),
         }
     }
 }

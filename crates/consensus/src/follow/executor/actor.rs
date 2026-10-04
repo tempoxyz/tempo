@@ -331,7 +331,7 @@ async fn submit_forkchoice_update<TContext: Pacer, E: ExecutionEngine + ?Sized>(
     execution_engine: &E,
     tip: &Target,
 ) -> eyre::Result<()> {
-    let hash = tip.digest.0;
+    let hash = tip.digest.get();
     let forkchoice = ForkchoiceState {
         head_block_hash: hash,
         safe_block_hash: hash,

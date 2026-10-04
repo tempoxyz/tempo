@@ -142,7 +142,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
     ) -> Result<StateLoad<U256>, TempoPrecompileError> {
         let mut account = self.internals.load_account_mut(address)?;
         let val = account.sload(key, skip_cold_load)?;
-        Ok(StateLoad::new(val.present_value, val.is_cold))
+        Ok(StateLoad::new(val.present_value(), val.is_cold))
     }
 
     /// Performs a raw journaled SSTORE without metering gas or recording a storage action.
@@ -405,7 +405,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     #[inline]
     fn account_code(&mut self, address: Address) -> Result<(B256, Bytecode), TempoPrecompileError> {
         self.with_loaded_account(address, |exists, info| {
-            let code_hash = if exists { info.code_hash } else { B256::ZERO };
+            let code_hash = if exists { info.code_hash() } else { B256::ZERO };
             let code = info.code.clone().unwrap_or_default();
             (code_hash, code)
         })

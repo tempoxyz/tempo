@@ -144,7 +144,7 @@ impl From<AbiCallScope> for CallScope {
 impl From<CallScope> for AbiCallScope {
     fn from(scope: CallScope) -> Self {
         Self {
-            target: scope.target,
+            target: scope.target(),
             selectorRules: scope.selector_rules.into_iter().map(Into::into).collect(),
         }
     }
@@ -162,7 +162,7 @@ impl From<AbiSelectorRule> for SelectorRule {
 impl From<SelectorRule> for AbiSelectorRule {
     fn from(rule: SelectorRule) -> Self {
         Self {
-            selector: rule.selector.into(),
+            selector: rule.selector().into(),
             recipients: rule.recipients,
         }
     }
@@ -691,8 +691,8 @@ mod rlp {
                     expiry: authorization.expiry,
                     limits: authorization.limits.clone(),
                     allowed_calls: authorization.allowed_calls.clone(),
-                    witness: authorization.witness,
-                    is_admin: authorization.is_admin.then_some(NonZeroU64::MIN),
+                    witness: authorization.witness(),
+                    is_admin: authorization.is_admin().then_some(NonZeroU64::MIN),
                     account: authorization.account,
                 };
                 let encoded = alloy_rlp::encode(&authorization);
@@ -1173,7 +1173,7 @@ mod tests {
         assert!(header.list);
         assert_eq!(
             header.payload_length,
-            scope.target.length() + Vec::<SelectorRule>::new().length()
+            scope.target().length() + Vec::<SelectorRule>::new().length()
         );
 
         let decoded =
@@ -1196,7 +1196,7 @@ mod tests {
 
         let decoded =
             <CallScope as Decodable>::decode(&mut encoded.as_slice()).expect("decode scope");
-        assert_eq!(decoded.target, target);
+        assert_eq!(decoded.target(), target);
         assert!(decoded.selector_rules.is_empty());
 
         let mut reencoded = Vec::new();
@@ -1235,7 +1235,7 @@ mod tests {
         assert!(header.list);
         assert_eq!(
             header.payload_length,
-            rule.selector.length() + Vec::<Address>::new().length()
+            rule.selector().length() + Vec::<Address>::new().length()
         );
 
         let decoded =
@@ -1258,7 +1258,7 @@ mod tests {
 
         let decoded =
             <SelectorRule as Decodable>::decode(&mut encoded.as_slice()).expect("decode rule");
-        assert_eq!(decoded.selector, selector);
+        assert_eq!(decoded.selector(), selector);
         assert!(decoded.recipients.is_empty());
 
         let mut reencoded = Vec::new();
@@ -1321,7 +1321,7 @@ mod tests {
         }))
         .expect("deserialize selector rule with hex selector");
 
-        assert_eq!(decoded.selector, [0xaa, 0xbb, 0xcc, 0xdd]);
+        assert_eq!(decoded.selector(), [0xaa, 0xbb, 0xcc, 0xdd]);
         assert_eq!(decoded.recipients, vec![recipient]);
     }
 
@@ -1334,7 +1334,7 @@ mod tests {
         }))
         .expect("deserialize selector rule with legacy selector array");
 
-        assert_eq!(decoded.selector, [0xaa, 0xbb, 0xcc, 0xdd]);
+        assert_eq!(decoded.selector(), [0xaa, 0xbb, 0xcc, 0xdd]);
         assert!(decoded.recipients.is_empty());
     }
 

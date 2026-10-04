@@ -136,7 +136,10 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         let Some(account) = self.accounts.get(&address) else {
             return Ok((B256::ZERO, Bytecode::default()));
         };
-        Ok((account.code_hash, account.code.clone().unwrap_or_default()))
+        Ok((
+            account.code_hash(),
+            account.code.clone().unwrap_or_default(),
+        ))
     }
 
     fn sstore(

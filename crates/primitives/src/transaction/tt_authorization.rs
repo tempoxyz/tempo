@@ -338,7 +338,7 @@ pub mod tests {
         // Test Deref to Authorization
         assert_eq!(signed.chain_id, auth.chain_id);
         assert_eq!(signed.address, auth.address);
-        assert_eq!(signed.nonce, auth.nonce);
+        assert_eq!(signed.nonce(), auth.nonce());
 
         // Test strip_signature
         let stripped = signed.strip_signature();

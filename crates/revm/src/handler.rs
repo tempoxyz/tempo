@@ -264,12 +264,12 @@ fn translate_allowed_calls_for_precompile(
     scopes
         .iter()
         .map(|scope| PrecompileCallScope {
-            target: scope.target,
+            target: scope.target(),
             selectorRules: scope
                 .selector_rules
                 .iter()
                 .map(|rule| PrecompileSelectorRule {
-                    selector: rule.selector.into(),
+                    selector: rule.selector().into(),
                     recipients: rule.recipients.clone(),
                 })
                 .collect(),
@@ -1060,7 +1060,7 @@ where
 
             // Validate that regular gas does not exceed the cap.
             if cfg.is_amsterdam_eip8037_enabled()
-                && init_gas.initial_regular_gas().max(init_gas.floor_gas) > cfg.tx_gas_limit_cap()
+                && init_gas.initial_regular_gas().max(init_gas.floor_gas()) > cfg.tx_gas_limit_cap()
             {
                 return Err(InvalidTransaction::GasFloorMoreThanGasLimit {
                     gas_floor: init_gas.initial_regular_gas(),
@@ -1090,7 +1090,7 @@ where
             }
 
             let replay_hash = if spec.is_t1b() {
-                tx.unique_tx_identifier()
+                tx.channel_open_context_hash()
                     .ok_or(TempoInvalidTransaction::ExpiringNonceMissingTxEnv)?
             } else {
                 tempo_tx_env.tx_hash
@@ -1885,7 +1885,7 @@ where
                     }
                 }
 
-                if (key_auth.is_admin || key_auth.account.is_some()) && !cfg.spec.is_t6() {
+                if (key_auth.is_admin() || key_auth.account.is_some()) && !cfg.spec.is_t6() {
                     return Err(TempoInvalidTransaction::KeychainValidationFailed {
                         reason: "T6 key authorization fields are not active before T6".to_string(),
                     }
@@ -2120,7 +2120,7 @@ where
             // EIP-7702 authorisation list entries with `auth_list.nonce == 0` require an additional 250,000 gas.
             // no need for v1 fork check as gas_params would be zero
             for auth in tx.authorization_list() {
-                if spec.is_t1() && auth.nonce == 0 {
+                if spec.is_t1() && auth.nonce() == 0 {
                     init_gas.initial_regular_gas += gas_params.get(GasId::new_account_cost());
                     init_gas.initial_state_gas += gas_params.new_account_state_gas();
                 }
@@ -2152,17 +2152,17 @@ where
         }
 
         // Validate floor gas (Prague+)
-        if gas_limit < init_gas.floor_gas {
+        if gas_limit < init_gas.floor_gas() {
             return Err(InvalidTransaction::GasFloorMoreThanGasLimit {
                 gas_limit,
-                gas_floor: init_gas.floor_gas,
+                gas_floor: init_gas.floor_gas(),
             }
             .into());
         }
 
         // Validate that regular gas does not exceed the cap.
         if evm.ctx.cfg.is_amsterdam_eip8037_enabled()
-            && init_gas.initial_regular_gas().max(init_gas.floor_gas)
+            && init_gas.initial_regular_gas().max(init_gas.floor_gas())
                 > evm.ctx.cfg.tx_gas_limit_cap()
         {
             return Err(InvalidTransaction::GasFloorMoreThanGasLimit {
@@ -2276,7 +2276,7 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
         gas.initial_regular_gas += tempo_signature_verification_gas(auth.signature());
         // TIP-1000: Storage pricing updates for launch
         // EIP-7702 authorisation list entries with `auth_list.nonce == 0` require an additional 250,000 gas.
-        if spec.is_t1() && auth.nonce == 0 {
+        if spec.is_t1() && auth.nonce() == 0 {
             gas.initial_regular_gas += gas_params.get(GasId::new_account_cost());
             gas.initial_state_gas += gas_params.new_account_state_gas();
         }

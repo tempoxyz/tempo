@@ -873,7 +873,7 @@ impl TempoStoredAccessKey {
     pub fn authorization_witness(&self) -> Option<B256> {
         self.key_authorization
             .as_ref()
-            .and_then(|authorization| authorization.witness)
+            .and_then(|authorization| authorization.witness())
     }
 
     /// Whether the store contains usable local signing material for this key.
@@ -2553,7 +2553,7 @@ fn writable_scopes(authorization: &SignedKeyAuthorization) -> Option<Vec<Writabl
             .flat_map(|scope| {
                 if scope.selector_rules.is_empty() {
                     return vec![WritableScope {
-                        address: scope.target,
+                        address: scope.target(),
                         selector: None,
                         recipients: Vec::new(),
                     }];
@@ -2562,8 +2562,8 @@ fn writable_scopes(authorization: &SignedKeyAuthorization) -> Option<Vec<Writabl
                     .selector_rules
                     .iter()
                     .map(|rule| WritableScope {
-                        address: scope.target,
-                        selector: Some(alloy_primitives::hex::encode_prefixed(rule.selector)),
+                        address: scope.target(),
+                        selector: Some(alloy_primitives::hex::encode_prefixed(rule.selector())),
                         recipients: rule.recipients.clone(),
                     })
                     .collect()
@@ -2602,8 +2602,8 @@ fn writable_access_key(
             expiry: authorization.expiry.map(NonZeroU64::get),
             limits,
             scopes: writable_scopes(authorization),
-            witness: authorization.witness,
-            is_admin: authorization.is_admin,
+            witness: authorization.witness(),
+            is_admin: authorization.is_admin(),
             account: authorization.account,
             key_type: "secp256k1",
             signature: writable_signature(&authorization.signature)?,
@@ -3115,7 +3115,7 @@ fn persisted_scopes_to_call_scopes(
 
         let index = match grouped
             .iter()
-            .position(|candidate| candidate.target == scope.address)
+            .position(|candidate| candidate.target() == scope.address)
         {
             Some(index) => index,
             None => {
@@ -3133,7 +3133,7 @@ fn persisted_scopes_to_call_scopes(
         if entry
             .selector_rules
             .iter()
-            .any(|rule| rule.selector == selector.0)
+            .any(|rule| rule.selector() == selector.0)
         {
             return Err(PersistedKeyError::InvalidCallScope);
         }

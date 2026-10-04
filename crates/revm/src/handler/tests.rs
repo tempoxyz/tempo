@@ -926,7 +926,8 @@ fn test_aa_gas_floor_gas_prague() {
 
     // Floor gas should match revm's calculation for same calldata
     assert_eq!(
-        gas.floor_gas, base_gas.floor_gas,
+        gas.floor_gas(),
+        base_gas.floor_gas(),
         "Should calculate floor gas for Prague matching revm"
     );
 }
@@ -1722,7 +1723,7 @@ fn test_t3_scope_validation_moves_to_execution() {
 
     let init_gas = test.validate_initial_tx_gas();
     assert!(
-        init_gas.floor_gas <= init_gas.initial_total_gas(),
+        init_gas.floor_gas() <= init_gas.initial_total_gas(),
         "test requires floor gas to not exceed intrinsic gas"
     );
 
@@ -3712,7 +3713,8 @@ fn test_state_gas_standard_create_tx_populates_initial_state_gas() {
         "State gas constants should be non-zero"
     );
     assert_eq!(
-        init_gas.initial_state_gas, expected_state_gas,
+        init_gas.initial_state_gas_final(),
+        expected_state_gas,
         "CREATE tx should have initial_state_gas = create_state_gas ({expected_state_gas})",
     );
 }
@@ -3729,7 +3731,8 @@ fn test_state_gas_standard_call_tx_zero_initial_state_gas() {
     );
 
     assert_eq!(
-        init_gas.initial_state_gas, 0,
+        init_gas.initial_state_gas_final(),
+        0,
         "CALL tx should have zero initial_state_gas"
     );
 }
@@ -3765,7 +3768,8 @@ fn test_state_gas_aa_create_tx_populates_initial_state_gas() {
     let expected_state_gas = gas_params.create_state_gas();
 
     assert_eq!(
-        gas.initial_state_gas, expected_state_gas,
+        gas.initial_state_gas_final(),
+        expected_state_gas,
         "AA CREATE tx should have initial_state_gas = create_state_gas"
     );
 }
@@ -3799,7 +3803,8 @@ fn test_state_gas_aa_call_tx_zero_initial_state_gas() {
     .unwrap();
 
     assert_eq!(
-        gas.initial_state_gas, 0,
+        gas.initial_state_gas_final(),
+        0,
         "AA CALL tx should have zero initial_state_gas"
     );
 }
@@ -3822,7 +3827,8 @@ fn test_state_gas_validate_initial_tx_gas_create_t4() {
         test.gas_params().create_state_gas() + test.gas_params().new_account_state_gas();
 
     assert_eq!(
-        init_gas.initial_state_gas, expected_state_gas,
+        init_gas.initial_state_gas_final(),
+        expected_state_gas,
         "T4 CREATE tx with nonce==0 should have create_state_gas + new_account_state_gas"
     );
 }
@@ -3926,7 +3932,7 @@ fn test_state_gas_backward_compat_t1_no_state_gas_enabled() {
     let init_gas = handler.validate_initial_tx_gas(&mut evm).unwrap();
 
     // CALL tx - no state gas in either case
-    assert_eq!(init_gas.initial_state_gas, 0);
+    assert_eq!(init_gas.initial_state_gas_final(), 0);
 }
 
 /// TIP-1016: AA batch with multiple calls including CREATE should track
@@ -3970,7 +3976,8 @@ fn test_state_gas_aa_mixed_batch_create_and_call() {
     let expected_state_gas = gas_params.create_state_gas();
 
     assert_eq!(
-        gas.initial_state_gas, expected_state_gas,
+        gas.initial_state_gas_final(),
+        expected_state_gas,
         "Mixed batch should have state gas only from CREATE call"
     );
 }
@@ -4014,7 +4021,7 @@ fn test_state_gas_aa_multiple_create_calls() {
     let per_create_state_gas = gas_params.create_state_gas();
 
     assert_eq!(
-        gas.initial_state_gas,
+        gas.initial_state_gas_final(),
         per_create_state_gas * 2,
         "Multiple CREATE calls should accumulate initial_state_gas"
     );
@@ -4027,7 +4034,8 @@ fn test_state_gas_aa_multiple_create_calls() {
 fn test_state_gas_multi_call_per_call_init_has_zero_state_gas() {
     let zero_init_gas = InitialAndFloorGas::new(0, 0);
     assert_eq!(
-        zero_init_gas.initial_state_gas, 0,
+        zero_init_gas.initial_state_gas_final(),
+        0,
         "Per-call init gas in multi-call must have zero initial_state_gas; \
              state gas is deducted once upfront, not per call"
     );
@@ -4108,7 +4116,7 @@ fn test_state_gas_aa_auth_list_nonce_zero() {
     // State gas = per-auth state gas (225k) + nonce==0 account creation state gas (225k)
     // Use hard-coded expected values to catch missing gas_params overrides.
     assert_eq!(
-        gas.initial_state_gas,
+        gas.initial_state_gas_final(),
         225_000 + 225_000,
         "Auth list entry should track per-auth state gas (225k) + nonce==0 account creation state gas (225k)"
     );
@@ -4135,7 +4143,7 @@ fn test_state_gas_aa_nonce_zero_new_account() {
     let init_gas = test.validate_initial_tx_gas();
 
     assert_eq!(
-        init_gas.initial_state_gas,
+        init_gas.initial_state_gas_final(),
         test.gas_params().new_account_state_gas(),
         "AA tx with nonce==0 should track new_account_state_gas in T4"
     );
@@ -4180,7 +4188,8 @@ fn test_state_gas_auth_list_zero_on_t1() {
     .unwrap();
 
     assert_eq!(
-        gas.initial_state_gas, 0,
+        gas.initial_state_gas_final(),
+        0,
         "T1 auth list nonce==0 should have zero initial_state_gas"
     );
 }
@@ -4198,7 +4207,7 @@ fn test_state_gas_standard_tx_nonce_zero_t4() {
     let init_gas = test.validate_initial_tx_gas();
 
     assert_eq!(
-        init_gas.initial_state_gas,
+        init_gas.initial_state_gas_final(),
         test.gas_params().new_account_state_gas(),
         "T4 standard tx with nonce==0 should track new_account_state_gas"
     );
@@ -4218,7 +4227,8 @@ fn test_state_gas_standard_tx_nonce_zero_t1_no_state_gas() {
     let init_gas = test.validate_initial_tx_gas();
 
     assert_eq!(
-        init_gas.initial_state_gas, 0,
+        init_gas.initial_state_gas_final(),
+        0,
         "T1 standard tx with nonce==0 must NOT track state gas"
     );
 }
@@ -4255,10 +4265,10 @@ fn test_state_gas_aa_create_total_gas_includes_state_gas() {
     .unwrap();
 
     assert!(
-        gas.initial_total_gas() >= gas.initial_state_gas,
+        gas.initial_total_gas() >= gas.initial_state_gas_final(),
         "invariant violated: initial_total_gas ({}) < initial_state_gas ({})",
         gas.initial_total_gas(),
-        gas.initial_state_gas,
+        gas.initial_state_gas_final(),
     );
 }
 
@@ -4297,10 +4307,10 @@ fn test_state_gas_aa_auth_nonce_zero_total_gas_includes_state_gas() {
     .unwrap();
 
     assert!(
-        gas.initial_total_gas() >= gas.initial_state_gas,
+        gas.initial_total_gas() >= gas.initial_state_gas_final(),
         "invariant violated: initial_total_gas ({}) < initial_state_gas ({})",
         gas.initial_total_gas(),
-        gas.initial_state_gas,
+        gas.initial_state_gas_final(),
     );
 }
 
@@ -4337,7 +4347,7 @@ fn test_state_gas_failed_batch_preserves_upfront_create_intrinsic_gas() {
 
     let init_gas = test.validate_initial_tx_gas();
     assert_eq!(
-        init_gas.initial_state_gas,
+        init_gas.initial_state_gas_final(),
         test.gas_params().create_state_gas(),
         "first-call CREATE should contribute create_state_gas to AA intrinsic gas"
     );

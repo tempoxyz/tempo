@@ -37,7 +37,7 @@ use eyre::{Report, WrapErr as _};
 use parking_lot::Mutex;
 use reth_ethereum::rpc::eth::primitives::BlockNumHash;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
-use reth_node_core::primitives::{RecoveredBlock, SealedBlock};
+use reth_node_core::primitives::SealedBlock;
 use tempo_node::TempoExecutionData;
 use tempo_payload_types::{EncodedBlock, TempoBuiltPayload, TempoPayloadAttributes};
 use tempo_primitives::{Block as TempoBlock, TempoConsensusContext, TempoHeader};
@@ -99,7 +99,7 @@ pub(super) fn make_block_with_proposer(
 /// Wraps `block` in a [`TempoBuiltPayload`] the way the payload builder
 /// would deliver it.
 pub(super) fn built_payload(block: &Block) -> TempoBuiltPayload {
-    let recovered = RecoveredBlock::new_sealed(block.block().clone(), Vec::new());
+    let recovered = block.block().clone().with_senders(Vec::new());
     TempoBuiltPayload::new(
         EthBuiltPayload::new(Arc::new(recovered), U256::ZERO, None, None),
         None,
@@ -149,9 +149,9 @@ pub(super) trait ForkchoiceStateExt {
 impl ForkchoiceStateExt for ForkchoiceState {
     fn from_finalized_head(finalized: Digest, head: Digest) -> Self {
         Self {
-            head_block_hash: head.0,
-            safe_block_hash: finalized.0,
-            finalized_block_hash: finalized.0,
+            head_block_hash: head.get(),
+            safe_block_hash: finalized.get(),
+            finalized_block_hash: finalized.get(),
         }
     }
 }
@@ -303,7 +303,7 @@ impl FakeExecution {
     /// A fake whose chain consists only of the genesis block, with no
     /// finalized marker set.
     pub(super) fn new() -> Self {
-        let genesis = GENESIS.0;
+        let genesis = GENESIS.get();
         Self {
             inner: Arc::new(FakeExecutionInner {
                 genesis,
@@ -356,7 +356,7 @@ impl FakeExecution {
     }
 
     pub(super) fn set_finalized(&self, height: u64, digest: Digest) {
-        self.inner.state.lock().finalized = Some(BlockNumHash::new(height, digest.0));
+        self.inner.state.lock().finalized = Some(BlockNumHash::new(height, digest.get()));
     }
 
     /// Makes `block` servable through `block_by_digest`.
@@ -382,7 +382,7 @@ impl FakeExecution {
     ) {
         self.inner
             .payload_overrides
-            .push(digest.0, ScriptedResult::Immediate(response));
+            .push(digest.get(), ScriptedResult::Immediate(response));
     }
 
     /// Appends a delayed new-payload response for `digest` and returns the
@@ -395,7 +395,7 @@ impl FakeExecution {
         let (sender, release) = oneshot::channel();
         self.inner
             .payload_overrides
-            .push(digest.0, ScriptedResult::Delayed { response, release });
+            .push(digest.get(), ScriptedResult::Delayed { response, release });
         sender
     }
 
@@ -448,7 +448,7 @@ impl FakeExecution {
         digest: Digest,
         outcome: Result<Option<Block>, &'static str>,
     ) {
-        self.inner.block_overrides.push(digest.0, outcome);
+        self.inner.block_overrides.push(digest.get(), outcome);
     }
 
     /// Rejects all forkchoice updates until re-enabled.
@@ -551,7 +551,7 @@ impl FakeExecution {
     }
 
     pub(super) fn knows_block(&self, digest: Digest) -> bool {
-        self.inner.state.lock().blocks.contains_key(&digest.0)
+        self.inner.state.lock().blocks.contains_key(&digest.get())
     }
 
     fn record(&self, call: ElCall) {
