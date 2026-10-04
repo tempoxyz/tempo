@@ -210,6 +210,11 @@ REMOTE_HASH=$($MC cat "$MANIFEST_REMOTE" 2>/dev/null | sha256sum | awk '{print $
 LOCAL_HASH=""
 [ -f "$SNAPSHOT_HASH_FILE" ] && LOCAL_HASH=$(cat "$SNAPSHOT_HASH_FILE")
 
+# Recover from an interrupted prior run before the first snapshot operation.
+sudo systemctl stop "$TEMPO_SCOPE" 2>/dev/null || true
+sudo systemctl reset-failed "$TEMPO_SCOPE" 2>/dev/null || true
+cleanup_reth_ipc
+
 # Mount schelk before checking $DATADIR/db existence
 bench_schelk restore "$SCHELK_STATE_PATH" "$SCHELK_MOUNT"
 
