@@ -57,11 +57,17 @@ impl AmmLiquidityCache {
     /// validators for the given fee token and fee amount. On T5+, as per [TIP-1033], considers
     /// the two-hop fallback through an intermediate `userToken.quoteToken()`.
     ///
+    /// `generation` must come from [`Self::generation`] and be sampled before `state_provider`
+    /// was obtained. Reserves read from the state are only cached if the generation is still
+    /// current, so any [`Self::on_new_state`] or [`Self::clear`] that ran after the state was
+    /// taken prevents this lookup from caching reserves that may be older than the cache.
+    ///
     /// [TIP-1033]: <https://docs.tempo.xyz/protocol/tips/tip-1033>
     pub fn has_enough_liquidity<S, M>(
         &self,
         user_token: Address,
         fee: U256,
+        generation: u64,
         mut state_provider: S,
     ) -> Result<bool, ProviderError>
     where
@@ -69,13 +75,11 @@ impl AmmLiquidityCache {
     {
         let mut missing_in_cache = Vec::new();
         let hardfork;
-        let generation;
 
         // Hot path: decide each `(user, validator)` pair entirely from the primitive cache.
         {
             let inner = self.inner.read();
             hardfork = inner.hardfork;
-            generation = inner.generation;
 
             // Validators always accept fees in their own token, and this is the common case, so
             // answer it before doing any swap math.
@@ -362,6 +366,14 @@ struct AmmLiquidityCacheInner {
 }
 
 impl AmmLiquidityCache {
+    /// Returns the current cache generation, which is bumped whenever canonical state is applied
+    /// or the cache is cleared.
+    ///
+    /// Sample this before obtaining the state passed to [`Self::has_enough_liquidity`].
+    pub fn generation(&self) -> u64 {
+        self.inner.read().generation
+    }
+
     /// Returns `true` if the given address is a validator that has produced recent blocks.
     ///
     /// Use this to filter validator token change events: only process changes from
@@ -445,7 +457,8 @@ mod tests {
         let state = provider.latest().unwrap();
 
         let user_token = address!("1111111111111111111111111111111111111111");
-        let result = cache.has_enough_liquidity(user_token, U256::from(100), &state);
+        let result =
+            cache.has_enough_liquidity(user_token, U256::from(100), cache.generation(), &state);
 
         assert!(result.is_ok());
         assert!(
@@ -471,7 +484,8 @@ mod tests {
                     })),
                 };
 
-                let result = cache.has_enough_liquidity(user_token, U256::MAX, &state);
+                let result =
+                    cache.has_enough_liquidity(user_token, U256::MAX, cache.generation(), &state);
                 if validator_token == user_token {
                     assert!(result.unwrap(), "same-token fees need no swap arithmetic");
                 } else {
@@ -504,7 +518,8 @@ mod tests {
         let provider = create_mock_provider();
         let state = provider.latest().unwrap();
 
-        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &state);
+        let result =
+            cache.has_enough_liquidity(user_token, U256::from(1000), cache.generation(), &state);
         assert!(result.is_ok());
         assert!(
             result.unwrap(),
@@ -532,7 +547,8 @@ mod tests {
         let provider = create_mock_provider();
         let state = provider.latest().unwrap();
 
-        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &state);
+        let result =
+            cache.has_enough_liquidity(user_token, U256::from(1000), cache.generation(), &state);
         assert!(result.is_ok());
         assert!(
             !result.unwrap(),
@@ -550,7 +566,8 @@ mod tests {
         let state = provider.latest().unwrap();
 
         let user_token = address!("1111111111111111111111111111111111111111");
-        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &state);
+        let result =
+            cache.has_enough_liquidity(user_token, U256::from(1000), cache.generation(), &state);
         assert!(result.is_ok());
         assert!(
             !result.unwrap(),
@@ -589,7 +606,7 @@ mod tests {
         let provider = create_mock_provider();
         let state = provider.latest().unwrap();
 
-        let result = cache.has_enough_liquidity(user, U256::from(100), &state);
+        let result = cache.has_enough_liquidity(user, U256::from(100), cache.generation(), &state);
         assert!(result.is_ok());
         assert!(
             result.unwrap(),
@@ -614,7 +631,8 @@ mod tests {
         let state = provider.latest().unwrap();
 
         // Provider returns default (zero) storage values
-        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &state);
+        let result =
+            cache.has_enough_liquidity(user_token, U256::from(1000), cache.generation(), &state);
         assert!(result.is_ok());
         assert!(
             !result.unwrap(),
@@ -633,6 +651,62 @@ mod tests {
             !inner.slot_to_pool.is_empty(),
             "slot_to_pool reverse index should be populated for the check pool",
         );
+    }
+
+    #[test]
+    fn test_has_enough_liquidity_skips_caching_for_stale_generation() {
+        use reth_provider::ExecutionOutcome;
+        use tempo_primitives::TempoReceipt;
+
+        let user_token = address!("2222222222222222222222222222222222222222");
+        let validator_token = address!("3333333333333333333333333333333333333333");
+        let new_cache = || AmmLiquidityCache {
+            inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
+                unique_tokens: vec![validator_token],
+                ..Default::default()
+            })),
+        };
+
+        let provider = create_mock_provider();
+        let state = provider.latest().unwrap();
+
+        // The generation is sampled before the state was taken and a new block is applied
+        // afterwards: the lookup must not cache reserves read from the older state.
+        let stale = new_cache();
+        let generation = stale.generation();
+        stale.on_new_state(&ExecutionOutcome::<TempoReceipt>::default());
+        assert_ne!(generation, stale.generation());
+
+        let result = stale.has_enough_liquidity(user_token, U256::from(1000), generation, &state);
+        assert!(!result.unwrap());
+        {
+            let inner = stale.inner.read();
+            assert!(inner.pool_cache.is_empty());
+            assert!(inner.slot_to_pool.is_empty());
+            assert!(inner.quote_token_cache.is_empty());
+        }
+
+        // `clear` also invalidates a previously sampled generation.
+        let cleared = new_cache();
+        let generation = cleared.generation();
+        cleared.clear();
+        cleared
+            .has_enough_liquidity(user_token, U256::from(1000), generation, &state)
+            .unwrap();
+        assert!(cleared.inner.read().pool_cache.is_empty());
+
+        // An unchanged generation still caches the reserves.
+        let fresh = new_cache();
+        let generation = fresh.generation();
+        fresh
+            .has_enough_liquidity(user_token, U256::from(1000), generation, &state)
+            .unwrap();
+        let inner = fresh.inner.read();
+        assert_eq!(
+            inner.pool_cache.get(&(user_token, validator_token)),
+            Some(&U256::ZERO)
+        );
+        assert!(!inner.slot_to_pool.is_empty());
     }
 
     #[test]
@@ -659,7 +733,8 @@ mod tests {
         let provider = create_mock_provider();
         let state = provider.latest().unwrap();
 
-        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &state);
+        let result =
+            cache.has_enough_liquidity(user_token, U256::from(1000), cache.generation(), &state);
         assert!(!result.unwrap());
         assert_eq!(
             cache
