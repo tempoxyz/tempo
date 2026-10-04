@@ -308,8 +308,15 @@ impl TempoTransactionRequest {
             ));
         };
 
+        // `calls` and `to` are two alternative encodings of the same batch, not two
+        // separate batches: only fall back to `to` when no explicit call list was
+        // supplied. Appending unconditionally would add a phantom extra call (and,
+        // with it, an unrequested `value` transfer) whenever both are set, which is
+        // exactly what `From<TempoTransaction>` avoids by leaving `to` unset.
         let mut calls = self.calls;
-        if let Some(to) = self.inner.to {
+        if calls.is_empty()
+            && let Some(to) = self.inner.to
+        {
             calls.push(Call {
                 to,
                 value: self.inner.value.unwrap_or_default(),
@@ -565,7 +572,7 @@ impl<P: Provider<TempoNetwork>, D: CallDecoder> TempoCallBuilderExt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{Bytes, Signature, address};
+    use alloy_primitives::{Bytes, Signature, TxKind, address};
     use tempo_primitives::transaction::{
         Call, KeyAuthorization, PrimitiveSignature, TEMPO_EXPIRING_NONCE_KEY,
     };
@@ -922,5 +929,58 @@ mod tests {
             roundtrip.calls, batch,
             "multi-call AA must not gain phantom calls on round-trip"
         );
+    }
+
+    #[test]
+    fn test_build_aa_ignores_to_when_calls_present() {
+        // Regression: `calls` and `to` are alternative encodings of the same batch.
+        // When both are set, `to` must not be appended as an extra call, or the
+        // transaction would carry an unrequested call (and value transfer).
+        let batch = vec![Call {
+            to: address!("0x1111111111111111111111111111111111111111").into(),
+            value: U256::from(7),
+            input: Bytes::from(vec![0xaa]),
+        }];
+
+        let mut request = TempoTransactionRequest::default().with_calls(batch.clone());
+        request.inner.nonce = Some(0);
+        request.inner.gas = Some(100_000);
+        request.inner.max_fee_per_gas = Some(1_000_000_000);
+        request.inner.max_priority_fee_per_gas = Some(1_000_000);
+        request.inner.to = Some(address!("0x9999999999999999999999999999999999999999").into());
+        request.inner.value = Some(U256::from(123));
+
+        let tx = request.build_aa().expect("should build transaction");
+
+        assert_eq!(
+            tx.calls, batch,
+            "an explicit call list must not gain a phantom call from `to`"
+        );
+    }
+
+    #[test]
+    fn test_build_aa_falls_back_to_to_without_calls() {
+        // `to` remains a valid way to express a single-call AA transaction.
+        let mut request = TempoTransactionRequest::default();
+        request.inner.nonce = Some(0);
+        request.inner.gas = Some(100_000);
+        request.inner.max_fee_per_gas = Some(1_000_000_000);
+        request.inner.max_priority_fee_per_gas = Some(1_000_000);
+        request.inner.to = Some(address!("0x2222222222222222222222222222222222222222").into());
+        request.inner.value = Some(U256::from(5));
+        request.inner.input = alloy_rpc_types_eth::TransactionInput::Bytes(Bytes::from(vec![
+            0xbb,
+        ]));
+
+        let tx = request.build_aa().expect("should build transaction");
+
+        assert_eq!(tx.calls.len(), 1, "single-call AA must derive exactly one call");
+        assert_eq!(
+            tx.calls[0].to,
+            TxKind::Call(address!("0x2222222222222222222222222222222222222222")),
+            "`to` must be used when no explicit call list is set"
+        );
+        assert_eq!(tx.calls[0].value, U256::from(5));
+        assert_eq!(tx.calls[0].input, Bytes::from(vec![0xbb]));
     }
 }
