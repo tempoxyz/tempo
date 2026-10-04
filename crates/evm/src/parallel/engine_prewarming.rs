@@ -234,7 +234,7 @@ pub(crate) struct EnginePrewarmingSession {
 
 #[derive(Debug, Default)]
 struct Retained {
-    results: BTreeMap<usize, (PreexecutedTransaction, usize)>,
+    results: BTreeMap<usize, (Box<PreexecutedTransaction>, usize)>,
     estimated_bytes: usize,
 }
 
@@ -244,7 +244,7 @@ impl Retained {
         index: usize,
         previous: usize,
         is_system_tx: bool,
-    ) -> Option<PreexecutedTransaction> {
+    ) -> Option<Box<PreexecutedTransaction>> {
         let mut result = None;
         while self
             .results
@@ -411,6 +411,8 @@ impl EnginePrewarmingSession {
             self.capture_event(CaptureEvent::PublishEstimateRejected);
             return false;
         };
+        // Allocate before taking the lock so publication only moves a pointer.
+        let candidate = Box::new(candidate);
         let mut retained = match self.retained.try_lock() {
             Ok(retained) => retained,
             Err(TryLockError::WouldBlock) => {
@@ -508,6 +510,8 @@ impl EnginePrewarmingSession {
         if let (Some(diagnostics), Some(evicted)) = (&self.diagnostics, evicted) {
             diagnostics.add(CaptureEvent::Evicted, evicted as u64);
         }
+        // Move the payload and release its allocation after leaving the lock.
+        let result = result.map(|candidate| *candidate);
         (result, Some((acquired.duration_since(waiting), held)))
     }
 }
@@ -551,8 +555,8 @@ impl PreexecutedTransaction {
 fn estimated_bytes(candidate: &mut PreexecutedTransaction) -> Option<usize> {
     use reth_revm::context::result::ExecutionResult;
     let mut budget = ByteBudget(0);
-    // Includes the BTreeMap node allowance and the environment's shared 256-word
-    // gas table, counted afresh for each candidate rather than amortized.
+    // Includes the outer result allocation, BTreeMap node allowance and the
+    // environment's shared 256-word gas table, counted afresh for each candidate.
     budget.add(size_of::<PreexecutedTransaction>().checked_add(4096)?)?;
     budget.transaction(&candidate.tx)?;
     budget.vector(&candidate.reads)?;
