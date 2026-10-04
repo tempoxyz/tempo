@@ -15,7 +15,7 @@ use tempo_chainspec::{
 };
 pub use tempo_contracts::precompiles::IZoneVerifier;
 use tempo_contracts::precompiles::{NitroBatchAttestation, ZONE_VERIFIER_ADDRESS};
-use tempo_nitro_attestation::AWS_NITRO_ROOT_DER;
+use tempo_nitro_attestation::{AWS_NITRO_ROOT_DER, to_measurements};
 use tempo_precompiles_macros::contract;
 
 pub use self::pcr::PcrError;
@@ -101,13 +101,7 @@ impl ZoneVerifier {
         let Some(approved_pcrs) = approved_pcrs else {
             return Ok(false);
         };
-        if !approved_pcrs.iter().enumerate().all(|(index, expected)| {
-            attestation
-                .pcrs
-                .iter()
-                .find(|pcr| usize::from(pcr.index) == index)
-                .is_some_and(|pcr| pcr.value.as_slice() == expected)
-        }) {
+        if to_measurements(&attestation.pcrs) != Some(approved_pcrs) {
             return Ok(false);
         }
 
