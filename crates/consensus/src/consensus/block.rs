@@ -444,7 +444,7 @@ mod tests {
     use alloy_primitives::{B256, bytes, keccak256};
     #[cfg(not(feature = "bal"))]
     use commonware_codec::Write as _;
-    use commonware_codec::{Encode, Read as _};
+    use commonware_codec::{Encode, ReadExt as _};
     use reth_node_core::primitives::SealedBlock;
     use tempo_primitives::{Block as TempoBlock, TempoHeader};
 
@@ -520,7 +520,7 @@ mod tests {
             .expect("block has no BAL side data");
         let block_bytes = alloy_rlp::encode(&execution_block);
 
-        let decoded = Block::read_cfg(&mut block_bytes.as_ref(), &()).unwrap();
+        let decoded = Block::read(&mut block_bytes.as_ref()).unwrap();
         assert_eq!(decoded, expected);
         #[cfg(feature = "bal")]
         assert!(decoded.block_access_list.is_none());
@@ -552,7 +552,7 @@ mod tests {
         });
         let encoded = alloy_rlp::encode(&execution_block);
 
-        let err = Block::read_cfg(&mut encoded.as_slice(), &()).unwrap_err();
+        let err = Block::read(&mut encoded.as_slice()).unwrap_err();
 
         assert!(
             matches!(
@@ -596,7 +596,7 @@ mod tests {
         let mut encoded = alloy_rlp::encode(&execution_block);
         block_access_list.write(&mut encoded);
 
-        let err = Block::read_cfg(&mut encoded.as_ref(), &()).unwrap_err();
+        let err = Block::read(&mut encoded.as_ref()).unwrap_err();
 
         assert!(matches!(
             err,
@@ -640,7 +640,7 @@ mod tests {
         let execution_block = execution_block_with_block_access_list_hash(B256::ZERO);
         let encoded = alloy_rlp::encode(&execution_block);
 
-        let err = Block::read_cfg(&mut encoded.as_ref(), &()).unwrap_err();
+        let err = Block::read(&mut encoded.as_ref()).unwrap_err();
 
         assert!(matches!(
             err,
@@ -659,7 +659,7 @@ mod tests {
                 .unwrap();
 
         let encoded = block.encode();
-        let decoded = Block::read_cfg(&mut encoded.as_ref(), &()).unwrap();
+        let decoded = Block::read(&mut encoded.as_ref()).unwrap();
 
         assert_eq!(decoded, block);
         assert_eq!(
@@ -695,7 +695,7 @@ mod tests {
         let execution_block = execution_block_with_block_access_list_hash(B256::ZERO);
         let block = Block::from_execution_block_unchecked(execution_block, Some(block_access_list));
         let encoded = block.encode();
-        let err = Block::read_cfg(&mut encoded.as_ref(), &()).unwrap_err();
+        let err = Block::read(&mut encoded.as_ref()).unwrap_err();
 
         assert!(matches!(
             err,
