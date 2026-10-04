@@ -852,6 +852,19 @@ Retain boxed results. This comparison is against the previous parallel executor,
 not main, and does not establish 50,000 achieved TPS. The win-only Slack notifier
 succeeds without retaining a delivery receipt.
 
+[Main comparison 37168821638](https://github.com/tempoxyz/tempo/actions/runs/37168821638)
+compares main `61c979a52` with `7cedad7a4` in three 90-second pairs at 50,000
+offered TPS. The result is mixed: achieved TPS is 15,999 versus 16,285,
+statistically neutral. Builder gas throughput improves 3.57%, but validator gas
+throughput falls 6.51%, validation p50 rises 7.17%, and block-interval p90 rises
+5.33%. Win-only Slack explicitly skips all notifications. The common chains
+contain 9,071,192 transactions matching sender acceptances; all 6,775 recorded
+payload statuses are `VALID`. Three one-peer empty tail blocks and one losing
+nonempty sibling are excluded. On the official block cohort, Engine wall time
+falls from 21.501 to 21.138 microseconds per transaction while root finishing
+rises from 4.000 to 4.469; their sum rises 0.41%. These descriptive timings do
+not replace the official metric statistics or establish an overall main win.
+
 A local experiment made contended prefix reads fall back to the parent provider.
 It preserved differential correctness but reduced eight-worker reuse from about
 97% to 62–65%, lowering median throughput 31.74% across three paired million-
