@@ -24,8 +24,8 @@ HEAD = json.dumps({"jsonrpc": "2.0", "result": hex(42291673), "id": 1})
 
 
 class SnapshotTests(unittest.TestCase):
-    def choose(self, listing=LISTING, response=HEAD, blocks=50000, warmup=12500):
-        return snapshot.select_snapshot(listing, "tempo-4217-", response, blocks, warmup)
+    def choose(self, listing=LISTING, response=HEAD, blocks=50000, warmup=12500, requested=None):
+        return snapshot.select_snapshot(listing, "tempo-4217-", response, blocks, warmup, requested)
 
     def test_failed_live_window_selects_older_available_snapshot(self):
         self.assertEqual(self.choose(), ("tempo-4217-42228813-100", 42291673, 42228814, 42291313))
@@ -40,6 +40,24 @@ class SnapshotTests(unittest.TestCase):
 
     def test_newest_is_excluded_even_when_it_fits(self):
         self.assertEqual(self.choose(response='{"result":"0x3000000"}')[0], "tempo-4217-42254715-200")
+
+    def test_pin_keeps_the_same_range_when_new_snapshots_arrive(self):
+        pin = "tempo-4217-42228813-100"
+        expected = self.choose(blocks=500, warmup=1250, requested=pin)
+        newer = LISTING + "tempo-4217-42280000-500/\n"
+        self.assertEqual(self.choose(listing=newer, blocks=500, warmup=1250, requested=pin), expected)
+        self.assertEqual(expected[2:], (42228814, 42230563))
+
+    def test_pin_rejects_wrong_chain_unknown_newest_and_path_inputs(self):
+        for pin in ("tempo-42431-10000000-400", "tempo-4217-1-1",
+                    "tempo-4217-42278000-300", "../tempo-4217-42228813-100",
+                    "tempo-4217-42228813-100/", "$(touch injected)"):
+            with self.subTest(pin=pin), self.assertRaisesRegex(ValueError, "Requested snapshot must"):
+                self.choose(blocks=1, warmup=0, requested=pin)
+
+    def test_pin_fails_instead_of_silently_choosing_another_range(self):
+        with self.assertRaisesRegex(ValueError, "Requested snapshot replay window exceeds"):
+            self.choose(requested="tempo-4217-42254715-200")
 
     def test_missing_source_capacity(self):
         with self.assertRaisesRegex(ValueError, "No snapshot excluding the newest"):
@@ -80,8 +98,14 @@ class SnapshotTests(unittest.TestCase):
                    "CARGO_HOME": str(root / "cargo"),
                    "BENCHMARK_ID": "snapshot-test", "BENCH_BLOCKS": "50000",
                    "BENCH_WARMUP_BLOCKS": "12500", "BENCH_WORK_DIR": str(root / "work")}
-            for source, expected in [('{"result":"0x100"}', 1), ('{"error":{}}', 1), (HEAD, 99)]:
-                with self.subTest(response=source):
+            cases = [('{"result":"0x100"}', "", 1), ('{"error":{}}', "", 1),
+                     (HEAD, "tempo-4217-42254715-200", 1),
+                     (HEAD, "$(touch injected)", 1),
+                     (HEAD, "tempo-4217-42228813-100", 99), (HEAD, "", 99)]
+            for source, pin, expected in cases:
+                with self.subTest(response=source, pin=pin):
+                    cargo_called.unlink(missing_ok=True)
+                    env["BENCH_SNAPSHOT_NAME"] = pin
                     response.write_text(source)
                     result = subprocess.run(["bash", str(SCRIPTS / "bench-tempo-replay.sh")],
                                             env=env, text=True, capture_output=True)

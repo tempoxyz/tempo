@@ -140,10 +140,14 @@ if ! SOURCE_HEAD=$(curl --fail --silent --show-error --max-time 30 --retry 2 \
   exit 1
 fi
 set -x
+SNAPSHOT_ARGS=()
+if [ -n "${BENCH_SNAPSHOT_NAME:-}" ]; then
+  SNAPSHOT_ARGS+=(--snapshot "$BENCH_SNAPSHOT_NAME")
+fi
 SNAPSHOT_NAME=$(printf '%s\n' "$SNAPSHOTS" | python3 \
   "$(dirname "${BASH_SOURCE[0]}")/bench-replay-snapshot.py" \
   --prefix "$SNAPSHOT_PREFIX" --source-head "$SOURCE_HEAD" \
-  --blocks "$BLOCKS" --warmup "$WARMUP")
+  --blocks "$BLOCKS" --warmup "$WARMUP" "${SNAPSHOT_ARGS[@]}")
 SNAPSHOT_BLOCK=$(echo "$SNAPSHOT_NAME" | awk -F- '{print $3}')
 echo "Selected snapshot: $SNAPSHOT_NAME"
 echo "Snapshot block: $SNAPSHOT_BLOCK"

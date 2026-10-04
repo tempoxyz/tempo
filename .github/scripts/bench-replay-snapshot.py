@@ -7,7 +7,7 @@ import re
 import sys
 
 
-def select_snapshot(listing, prefix, source_response, blocks, warmup):
+def select_snapshot(listing, prefix, source_response, blocks, warmup, requested=None):
     if blocks < 0 or warmup < 0:
         raise ValueError("Replay block and warmup counts must be non-negative")
     try:
@@ -34,6 +34,18 @@ def select_snapshot(listing, prefix, source_response, blocks, warmup):
     if len(snapshots) < 2:
         raise ValueError(f"Need at least 2 snapshots matching {prefix}*, found {len(snapshots)}")
 
+    if requested:
+        # A pin must still satisfy the chain, completed-listing, newest-exclusion,
+        # and source-range checks. Never interpret an arbitrary input as a path.
+        candidates = [item for item in snapshots[:-1] if item[2] == requested]
+        if not candidates:
+            raise ValueError("Requested snapshot must be listed for this chain and cannot be the newest")
+        height, _, name = candidates[0]
+        end = height + warmup + blocks
+        if end > head:
+            raise ValueError("Requested snapshot replay window exceeds the source head")
+        return name, head, height + 1, end
+
     # Preserve the existing policy of excluding the newest snapshot. If the
     # second-newest is too recent, use an older one instead of replaying past head.
     for height, _, name in reversed(snapshots[:-1]):
@@ -52,10 +64,11 @@ def main():
     parser.add_argument("--source-head", required=True, help="eth_blockNumber JSON-RPC response")
     parser.add_argument("--blocks", required=True, type=int)
     parser.add_argument("--warmup", required=True, type=int)
+    parser.add_argument("--snapshot", help="Pin a listed snapshot while retaining all eligibility checks")
     args = parser.parse_args()
     try:
         name, head, start, end = select_snapshot(
-            sys.stdin.read(), args.prefix, args.source_head, args.blocks, args.warmup
+            sys.stdin.read(), args.prefix, args.source_head, args.blocks, args.warmup, args.snapshot
         )
     except ValueError as error:
         print(f"::error::{error}", file=sys.stderr)

@@ -23,6 +23,10 @@ on:
         description: "Number of warmup blocks (default: one-quarter of blocks)"
         type: string
         default: ""
+      snapshot:
+        description: "Optional listed snapshot to pin the historical range (newest snapshot remains excluded)"
+        type: string
+        default: ""
       run-pairs:
         description: "Number of baseline/feature run pairs"
         type: string
@@ -128,6 +132,10 @@ on:
       warmup:
         type: string
         required: true
+      snapshot:
+        type: string
+        required: false
+        default: ""
       run-pairs:
         type: string
         required: false
@@ -242,6 +250,7 @@ jobs:
       BENCH_FEATURE_ARGS: "--dev.block-time 999999s ${{ inputs.feature-args }}"
       BENCH_BLOCKS: ${{ inputs.blocks || '5000' }}
       BENCH_WARMUP_BLOCKS: ${{ inputs.warmup }}
+      BENCH_SNAPSHOT_NAME: ${{ inputs.snapshot }}
       BENCH_RUN_PAIRS: ${{ inputs.run-pairs || '2' }}
       BENCH_VERIFY_RECEIPTS: ${{ inputs.verify-receipts && 'true' || 'false' }}
       BENCH_METRICS: ${{ inputs.metrics == true || inputs.metrics == 'true' }}
