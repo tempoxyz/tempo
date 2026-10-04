@@ -286,6 +286,15 @@ prewarming. Use the workflow's `no-slack=false` option for future manual runs;
 the on-win policy posts only with a significant improvement and no significant
 regression. It suppresses neutral, losing and mixed results.
 
+Historical replay accepts `verify-receipts=true` (disabled by default) to compare
+every measured block's complete RPC receipts across passes while each node is
+still live. It checks the same block hashes and header roots against the source
+network, then retains bounded compressed digest ledgers rather than full receipt
+bodies. Network roots commit consensus receipt contents; the separate comparison
+covers all returned receipt fields and array order. Checks run after measured
+replay, with a 20-minute deadline per pass and a 50,000-block limit; enabled runs
+are correctness checks and should not be used for performance claims.
+
 The existing `bench-e2e-multi-region.yml` workflow also supports a single-region
 GCP run with two validators on `c4d-standard-48-lssd` VMs and a separate load
 generator. Pin both revisions and record the actual CPU topology, binary builds

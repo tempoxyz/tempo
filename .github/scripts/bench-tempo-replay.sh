@@ -69,6 +69,15 @@ if ! [[ "$RUN_PAIRS" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 mkdir -p "$BENCH_WORK_DIR"
+if [ "${BENCH_VERIFY_RECEIPTS:-false}" = "true" ]; then
+  if ! [[ "$BLOCKS" =~ ^[0-9]+$ ]] || [ "$BLOCKS" -lt 1 ] || [ "$BLOCKS" -gt 50000 ] || [ "$RUN_PAIRS" -gt 50 ]; then
+    echo "::error::Receipt verification requires 1..50000 measured blocks and at most 50 run pairs"
+    exit 1
+  fi
+  # A new directory prevents a prior runner job from becoming the reference.
+  RECEIPT_ORACLE_DIR=$(mktemp -d "$BENCH_WORK_DIR/receipt-oracle.XXXXXX")
+  export REPLAY_RPC_URL
+fi
 
 # `cargo install` writes binaries to CARGO_HOME/bin, but self-hosted runner
 # services do not necessarily inherit a login-shell PATH for the runner user.
@@ -457,6 +466,18 @@ run_single() {
       -m "run_type=$run_type" \
       -m "blocks=$BLOCKS" 2>&1 | sed -u "s/^/[bench] /"
 
+  if [ "${BENCH_VERIFY_RECEIPTS:-false}" = "true" ]; then
+    # Compare complete receipts while this node is live, after measured replay.
+    # The source URL is inherited through the environment, never a CLI argument.
+    set +x
+    python3 .github/scripts/bench-replay-receipts.py capture \
+      --report "$output_dir/report.json" \
+      --reference "$RECEIPT_ORACLE_DIR/reference.jsonl.gz" \
+      --output-dir "$output_dir" --first "$from_block" --last "$bench_to" \
+      --chain-id "$CHAIN_ID" --label "$label" --git-sha "$git_sha"
+    set -x
+  fi
+
   # Cleanup (runs via EXIT trap; call explicitly for the success log line)
   cleanup_run
   trap - EXIT
@@ -536,5 +557,9 @@ for ((run_pos = 0; run_pos < ${#RUN_ORDER}; run_pos++)); do
   update_bench_status "Running replay phase ${run_label} (${run_progress}/${run_total})..."
   run_single "$run_label" "$binary" "$BENCH_WORK_DIR/$run_label"
 done
+
+if [ "${BENCH_VERIFY_RECEIPTS:-false}" = "true" ]; then
+  python3 .github/scripts/bench-replay-receipts.py finalize --work-dir "$BENCH_WORK_DIR"
+fi
 
 echo "All replay benchmark runs complete."

@@ -27,6 +27,10 @@ on:
         description: "Number of baseline/feature run pairs"
         type: string
         default: "2"
+      verify-receipts:
+        description: "Compare full historical receipts after each pass (correctness check, outside timing)"
+        type: boolean
+        default: false
       samply:
         description: "Enable samply profiling"
         type: string
@@ -124,6 +128,10 @@ on:
         type: string
         required: false
         default: "2"
+      verify-receipts:
+        type: boolean
+        required: false
+        default: false
       metrics:
         type: string
         required: false
@@ -205,6 +213,7 @@ jobs:
       BENCH_BLOCKS: ${{ inputs.blocks || '5000' }}
       BENCH_WARMUP_BLOCKS: ${{ inputs.warmup }}
       BENCH_RUN_PAIRS: ${{ inputs.run-pairs || '2' }}
+      BENCH_VERIFY_RECEIPTS: ${{ inputs.verify-receipts && 'true' || 'false' }}
       BENCH_METRICS: ${{ inputs.metrics == true || inputs.metrics == 'true' }}
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}
       BENCH_PR_HEAD_SHA: ${{ inputs.pr-head-sha }}
