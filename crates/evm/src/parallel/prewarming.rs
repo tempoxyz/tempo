@@ -292,6 +292,17 @@ impl<DB: Database> PrewarmingExecutor<DB> {
         self
     }
 
+    /// Borrows the original parent for a call-scoped relaxed prewarm. This
+    /// bypasses speculative reads and prefix hints without exposing the journal.
+    pub(crate) fn parent_db_mut(&mut self) -> &mut DB {
+        &mut self.evm.db_mut().db
+    }
+
+    /// Releases the parent when a worker switches to customized precompiles.
+    pub(crate) fn into_db(self) -> DB {
+        self.evm.into_db().db
+    }
+
     /// Executes without committing. The optional expiring-nonce offset is only
     /// a prediction: its observed pointer is validated like every other read.
     /// Errors return no reusable result and are executed normally by the owner.

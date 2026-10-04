@@ -40,6 +40,8 @@ use crate::{
     },
 };
 
+mod prewarming;
+
 type CandidateValidator<DB> = fn(
     &mut SpeculativeResult<<DB as reth_revm::Database>::Error>,
     &mut DB,

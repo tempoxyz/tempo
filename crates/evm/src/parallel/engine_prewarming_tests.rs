@@ -1,5 +1,8 @@
 //! Deterministic capture/consume coverage for the marked Engine factory.
 
+#[path = "owned_prewarming_tests.rs"]
+mod owned_prewarming_tests;
+
 use super::*;
 use crate::{
     TempoBlockEnv, TempoBlockExecutionCtx, TempoEvmConfig,
