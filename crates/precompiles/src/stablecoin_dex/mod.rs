@@ -666,9 +666,7 @@ impl StablecoinDEX {
         }
 
         // Enforce that the tick adheres to tick spacing
-        if tick % TICK_SPACING != 0 {
-            return Err(StablecoinDEXError::invalid_tick().into());
-        }
+        orderbook::validate_tick_spacing(tick)?;
 
         // Validate order amount meets minimum requirement
         if amount < MIN_ORDER_AMOUNT {
@@ -833,9 +831,7 @@ impl StablecoinDEX {
         }
 
         // Enforce that the tick adheres to tick spacing
-        if tick % TICK_SPACING != 0 {
-            return Err(StablecoinDEXError::invalid_tick().into());
-        }
+        orderbook::validate_tick_spacing(tick)?;
 
         if !(MIN_TICK..=MAX_TICK).contains(&flip_tick) {
             return Err(StablecoinDEXError::tick_out_of_bounds(flip_tick).into());
