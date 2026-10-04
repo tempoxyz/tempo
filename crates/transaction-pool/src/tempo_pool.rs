@@ -171,6 +171,10 @@ where
         // - blacklist/whitelist (policy check)
         // - fee payer balance changes (balance check)
         // - spending limit spends (remaining limit check)
+        //
+        // The AMM cache generation is sampled before the provider is obtained so liquidity
+        // lookups never cache reserves from state older than the cache.
+        let amm_generation = self.amm_liquidity_cache().generation();
         let mut state_provider = if !updates.validator_token_changes.is_empty()
             || !updates.blacklist_additions.is_empty()
             || !updates.whitelist_removals.is_empty()
@@ -364,7 +368,7 @@ where
                 let user_token = tx.transaction.effective_fee_token();
                 let cost = tx.transaction.fee_token_cost();
 
-                match amm_cache.has_enough_liquidity(user_token, cost, provider) {
+                match amm_cache.has_enough_liquidity(user_token, cost, amm_generation, provider) {
                     Ok(true) => {}
                     Ok(false) => {
                         to_remove.push(*tx.hash());

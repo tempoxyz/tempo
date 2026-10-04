@@ -361,6 +361,7 @@ where
         &self,
         state_provider: P,
         cached_state: Arc<StateCache>,
+        amm_generation: u64,
         transactions: impl IntoIterator<Item = (TransactionOrigin, TempoPooledTransaction)>,
     ) -> Vec<TransactionValidationOutcome<TempoPooledTransaction>> {
         let db = StateCacheDb::new(
@@ -378,7 +379,9 @@ where
 
         transactions
             .into_iter()
-            .map(|(origin, transaction)| self.validate_one_with_evm(origin, transaction, &mut evm))
+            .map(|(origin, transaction)| {
+                self.validate_one_with_evm(origin, transaction, amm_generation, &mut evm)
+            })
             .collect()
     }
 
@@ -411,6 +414,7 @@ where
         &self,
         origin: TransactionOrigin,
         transaction: TempoPooledTransaction,
+        amm_generation: u64,
         evm: &mut EV,
     ) -> TransactionValidationOutcome<TempoPooledTransaction>
     where
@@ -560,6 +564,7 @@ where
             match self.amm_liquidity_cache.has_enough_liquidity(
                 validation_ctx.fee_token,
                 fee,
+                amm_generation,
                 evm.db_mut(),
             ) {
                 Ok(true) => {}
@@ -709,6 +714,8 @@ where
         origin: TransactionOrigin,
         transaction: Self::Transaction,
     ) -> TransactionValidationOutcome<Self::Transaction> {
+        // Sampled before the provider so the AMM cache never keeps reserves from older state.
+        let amm_generation = self.amm_liquidity_cache.generation();
         let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
             Ok(provider_and_cache) => provider_and_cache,
             Err(err) => {
@@ -719,6 +726,7 @@ where
         self.validate_batch(
             state_provider,
             cached_state,
+            amm_generation,
             core::iter::once((origin, transaction)),
         )
         .pop()
@@ -730,6 +738,8 @@ where
         transactions: impl IntoIterator<Item = (TransactionOrigin, Self::Transaction), IntoIter: Send>
         + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
+        // Sampled before the provider so the AMM cache never keeps reserves from older state.
+        let amm_generation = self.amm_liquidity_cache.generation();
         let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
             Ok(provider_and_cache) => provider_and_cache,
             Err(err) => {
@@ -742,7 +752,7 @@ where
             }
         };
 
-        self.validate_batch(state_provider, cached_state, transactions)
+        self.validate_batch(state_provider, cached_state, amm_generation, transactions)
     }
 
     async fn validate_transactions_with_origin(
@@ -750,6 +760,8 @@ where
         origin: TransactionOrigin,
         transactions: impl IntoIterator<Item = Self::Transaction> + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
+        // Sampled before the provider so the AMM cache never keeps reserves from older state.
+        let amm_generation = self.amm_liquidity_cache.generation();
         let (state_provider, cached_state) = match self.latest_state_provider_and_cache() {
             Ok(provider_and_cache) => provider_and_cache,
             Err(err) => {
@@ -765,6 +777,7 @@ where
         self.validate_batch(
             state_provider,
             cached_state,
+            amm_generation,
             transactions.into_iter().map(|tx| (origin, tx)),
         )
     }
@@ -2823,8 +2836,12 @@ mod tests {
 
         // Verify has_enough_liquidity would bypass (return true) for this token
         // because it matches a validator token. This confirms the vulnerability we're testing.
-        let liquidity_result =
-            amm_cache.has_enough_liquidity(paused_validator_token, U256::from(1000), &state);
+        let liquidity_result = amm_cache.has_enough_liquidity(
+            paused_validator_token,
+            U256::from(1000),
+            amm_cache.generation(),
+            &state,
+        );
         assert!(
             liquidity_result.is_ok() && liquidity_result.unwrap(),
             "Token in unique_tokens should bypass liquidity check and return true"
