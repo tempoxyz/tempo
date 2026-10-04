@@ -82,6 +82,7 @@ on:
         options:
           - "off"
           - samply
+          - samply-low-rate
           - samply-scheduling
           - kernel-scheduling
           - tracy
@@ -392,8 +393,8 @@ jobs:
       BENCH_FEATURE_HARDFORK: ${{ inputs.feature-hardfork }}
       BENCH_TXGEN_REF: ${{ inputs.txgen-ref }}
       BENCH_TOKEN_COUNT: ${{ inputs.token-count || '4' }}
-      BENCH_SAMPLY: ${{ inputs.profiling == 'samply' || inputs.profiling == 'samply-scheduling' || inputs.profiling == 'kernel-scheduling' || inputs.profiling == 'both' || inputs.samply == true || inputs.samply == 'true' }}
-      BENCH_SAMPLY_ARGS: ${{ inputs.profiling == 'samply-scheduling' && '--per-cpu-threads --cswitch-markers --rate 100' || (inputs.profiling == 'kernel-scheduling' && '--rate 100' || '') }}
+      BENCH_SAMPLY: ${{ inputs.profiling == 'samply' || inputs.profiling == 'samply-low-rate' || inputs.profiling == 'samply-scheduling' || inputs.profiling == 'kernel-scheduling' || inputs.profiling == 'both' || inputs.samply == true || inputs.samply == 'true' }}
+      BENCH_SAMPLY_ARGS: ${{ inputs.profiling == 'samply-scheduling' && '--per-cpu-threads --cswitch-markers --rate 100' || ((inputs.profiling == 'kernel-scheduling' || inputs.profiling == 'samply-low-rate') && '--rate 100' || '') }}
       BENCH_SCHED_TRACE: ${{ inputs.profiling == 'kernel-scheduling' }}
       BENCH_TRACY: ${{ inputs.tracy != '' && inputs.tracy || ((inputs.profiling == 'tracy' || inputs.profiling == 'both') && 'tracy' || ((inputs.profiling == 'off' || inputs.profiling == 'samply') && 'off' || 'off')) }}
       BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds || '10' }}
@@ -411,7 +412,7 @@ jobs:
       BENCH_RUN_TYPE: ${{ inputs.run-type || 'dispatch' }}
       BENCH_FORCE_BLOAT: ${{ inputs.force-bloat || 'false' }}
       BENCH_NO_CACHE: ${{ inputs.no-cache || 'false' }}
-      BENCH_NO_SLACK: ${{ (inputs.sequential-peer || inputs.profiling == 'samply-scheduling' || inputs.profiling == 'kernel-scheduling') && 'true' || inputs.no-slack }}
+      BENCH_NO_SLACK: ${{ (inputs.sequential-peer || inputs.profiling == 'samply-low-rate' || inputs.profiling == 'samply-scheduling' || inputs.profiling == 'kernel-scheduling') && 'true' || inputs.no-slack }}
       # The reusable input defaults to always. Direct manual dispatch has no slack
       # input and uses win-only notifications, without adding a 26th UI input.
       BENCH_SLACK: ${{ inputs.slack || 'on-win' }}
@@ -529,7 +530,7 @@ jobs:
           fetch-depth: 0
           ref: ${{ steps.checkout-ref.outputs.ref }}
 
-      - name: Validate scheduling profiler
+      - name: Validate profiler options
         if: env.BENCH_SAMPLY_ARGS != ''
         run: |
           mkdir -p bench-results
@@ -550,7 +551,9 @@ jobs:
           with binary.open('rb') as source:
               binary_sha256 = hashlib.file_digest(source, 'sha256').hexdigest()
           provenance = {
-              'mode': 'kernel-scheduling' if os.environ['BENCH_SCHED_TRACE'] == 'true' else 'samply-scheduling',
+              'mode': ('kernel-scheduling' if os.environ['BENCH_SCHED_TRACE'] == 'true'
+                       else 'samply-scheduling' if '--cswitch-markers' in arguments
+                       else 'samply-low-rate'),
               'binary_path': str(binary),
               'binary_sha256': binary_sha256,
               'version': (output / 'samply-version.txt').read_text().strip(),
@@ -560,14 +563,14 @@ jobs:
               'missing_options': missing,
               'launch_context': 'sudo bash -lc',
               'derek_command_supported': False,
-              'scope': 'Instrumented scheduler diagnostic; marker semantics and event loss require a separate audit.',
+              'scope': 'Instrumented profiling diagnostic; accepted-block binding and event loss require a separate audit.',
           }
           (output / 'samply-provenance.json').write_text(json.dumps(provenance, indent=2) + '\n')
           if missing:
               sys.exit('::error::Runner samply lacks required options: ' + ', '.join(missing))
           print(json.dumps(provenance, indent=2))
           PY
-          printf 'Scheduling diagnostic: Samply options `%s`; kernel trace `%s`; Slack disabled.\n' "$BENCH_SAMPLY_ARGS" "$BENCH_SCHED_TRACE" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Profiling diagnostic: Samply options `%s`; kernel trace `%s`; Slack disabled.\n' "$BENCH_SAMPLY_ARGS" "$BENCH_SCHED_TRACE" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Validate kernel scheduler tracing
         if: env.BENCH_SCHED_TRACE == 'true'
@@ -654,7 +657,7 @@ jobs:
             const tokenCount = process.env.BENCH_TOKEN_COUNT || '4';
             const samply = process.env.BENCH_SAMPLY === 'true';
             const samplyNote = process.env.BENCH_SAMPLY_ARGS
-              ? `, samply scheduling diagnostic: \`${process.env.BENCH_SAMPLY_ARGS}\`${process.env.BENCH_SCHED_TRACE === 'true' ? ', kernel scheduler trace: `15s`' : ''}`
+              ? `, samply diagnostic: \`${process.env.BENCH_SAMPLY_ARGS}\`${process.env.BENCH_SCHED_TRACE === 'true' ? ', kernel scheduler trace: `15s`' : ''}`
               : (samply ? ', samply: `enabled`' : '');
             const tracy = process.env.BENCH_TRACY;
             const tracyNote = tracy !== 'off' ? ', tracy: `enabled`' : '';
@@ -902,7 +905,7 @@ jobs:
             const tokenCount = process.env.BENCH_TOKEN_COUNT || '4';
             const samply = process.env.BENCH_SAMPLY === 'true';
             const samplyNote = process.env.BENCH_SAMPLY_ARGS
-              ? `, samply scheduling diagnostic: \`${process.env.BENCH_SAMPLY_ARGS}\`${process.env.BENCH_SCHED_TRACE === 'true' ? ', kernel scheduler trace: `15s`' : ''}`
+              ? `, samply diagnostic: \`${process.env.BENCH_SAMPLY_ARGS}\`${process.env.BENCH_SCHED_TRACE === 'true' ? ', kernel scheduler trace: `15s`' : ''}`
               : (samply ? ', samply: `enabled`' : '');
             const tracy = process.env.BENCH_TRACY;
             const tracyNote = tracy !== 'off' ? ', tracy: `enabled`' : '';
@@ -1102,7 +1105,7 @@ jobs:
           [ -n "$BENCH_BASELINE_ENV" ] && derek_cmd+=(baseline-env="$BENCH_BASELINE_ENV")
           [ -n "$BENCH_FEATURE_ENV" ] && derek_cmd+=(feature-env="$BENCH_FEATURE_ENV")
           DEREK_BENCH_COMMAND=""
-          # The bot parser does not support scheduling options. An empty command
+          # The bot parser does not support custom Samply options. An empty command
           # omits the misleading reproduction claim from tempo.nu summaries.
           if [ -z "$BENCH_SAMPLY_ARGS" ]; then
             for arg in "${derek_cmd[@]}"; do
@@ -1117,7 +1120,7 @@ jobs:
             mkdir -p bench-results
             {
               printf '#!/usr/bin/env bash\nset -euo pipefail\n'
-              printf '# Scheduling diagnostic runtime command; run from the same workflow checkout.\n'
+              printf '# Profiling diagnostic runtime command; run from the same workflow checkout.\n'
               printf '# Protected reporter URLs and extra environment values must be supplied through the named environment variables.\n'
               printf '# This is a Bash/Nu command, not a supported Derek bot command.\n'
               samply_command_env=""
