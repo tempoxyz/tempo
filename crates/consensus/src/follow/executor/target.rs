@@ -19,10 +19,9 @@ pub(super) struct Target {
 
 impl Target {
     pub(super) fn from_header(header: &SealedHeader<TempoHeader>) -> Self {
-        let tip = header.num_hash();
         Self {
             round: header.consensus_context.map(round_from_context),
-            digest: Digest(tip.hash),
+            digest: Digest(header.hash()),
         }
     }
 

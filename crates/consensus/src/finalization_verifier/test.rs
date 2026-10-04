@@ -1,10 +1,8 @@
-use alloy_consensus::{BlockHeader as _, Header};
+use alloy_consensus::BlockHeader as _;
 use commonware_consensus::types::{Epoch, FixedEpocher};
 use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
-use reth_node_core::primitives::SealedBlock;
 use tempo_chainspec::NetworkIdentity;
-use tempo_primitives::{Block as TempoBlock, BlockBody, TempoHeader};
 
 use super::{Error, FinalizationVerifier};
 use crate::follow::test_utils::{
@@ -85,24 +83,9 @@ fn rejects_block_body_that_does_not_match_header() {
         let block = make_block(1, None);
         let finalization = make_finalization(&block, Epoch::zero(), &fixture.schemes);
         let mut certified = make_certified_block(block, &finalization);
-        let hash = certified.block.hash();
-        certified.block = SealedBlock::new_unchecked(
-            TempoBlock {
-                header: TempoHeader {
-                    inner: Header {
-                        number: 1,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-                body: BlockBody {
-                    withdrawals: Some(Default::default()),
-                    ..Default::default()
-                },
-            },
-            hash,
-        )
-        .into();
+        let mut sealed = certified.block.into_sealed_block();
+        sealed.body_mut().withdrawals = Some(Default::default());
+        certified.block = sealed.into();
 
         assert!(matches!(
             verifier.decode_and_verify(&mut context, &certified),
