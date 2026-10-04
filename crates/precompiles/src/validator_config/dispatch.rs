@@ -137,7 +137,7 @@ mod tests {
             validator_config.initialize(owner)?;
 
             // Add validator via dispatch
-            let public_key = FixedBytes::<32>::from([0x42; 32]);
+            let public_key = FixedBytes::<32>::repeat_byte(0x42);
             let add_call = IValidatorConfig::addValidatorCall {
                 newValidatorAddress: validator_addr,
                 publicKey: public_key,
@@ -178,7 +178,7 @@ mod tests {
             validator_config.initialize(owner)?;
 
             // Try to add validator as non-owner
-            let public_key = FixedBytes::<32>::from([0x42; 32]);
+            let public_key = FixedBytes::<32>::repeat_byte(0x42);
             let add_call = IValidatorConfig::addValidatorCall {
                 newValidatorAddress: validator_addr,
                 publicKey: public_key,
@@ -221,7 +221,7 @@ mod tests {
 
         let owner = Address::random();
         let validator = Address::random();
-        let public_key = FixedBytes::<32>::from([0x42; 32]);
+        let public_key = FixedBytes::<32>::repeat_byte(0x42);
 
         // T0: changeValidatorStatusByIndex returns UnknownFunctionSelector
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);

@@ -777,8 +777,8 @@ mod tests {
         };
         let filter = node_cmd.ext.node_args.txpool_filter.as_ref().unwrap();
         assert_eq!(filter.len(), 2);
-        assert!(filter.contains(&address!("0000000000000000000000000000000000000001")));
-        assert!(filter.contains(&address!("0000000000000000000000000000000000000002")));
+        assert!(filter.contains(&Address::with_last_byte(1)));
+        assert!(filter.contains(&Address::with_last_byte(2)));
 
         let file = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(
@@ -802,9 +802,9 @@ mod tests {
         };
         let filter = node_cmd.ext.node_args.txpool_filter.as_ref().unwrap();
         assert_eq!(filter.len(), 3);
-        assert!(filter.contains(&address!("0000000000000000000000000000000000000003")));
-        assert!(filter.contains(&address!("0000000000000000000000000000000000000004")));
-        assert!(filter.contains(&address!("0000000000000000000000000000000000000005")));
+        assert!(filter.contains(&Address::with_last_byte(3)));
+        assert!(filter.contains(&Address::with_last_byte(4)));
+        assert!(filter.contains(&Address::with_last_byte(5)));
     }
 
     #[test]

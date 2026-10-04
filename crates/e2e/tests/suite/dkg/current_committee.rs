@@ -44,12 +44,11 @@ fn current_committee_matches_boundary_dkg_outcome() {
             .unwrap_or_default()
             .to::<u64>();
         let public_keys_len = state
-            .storage(CURRENT_COMMITTEE_ADDRESS, U256::from(1).into())
+            .storage(CURRENT_COMMITTEE_ADDRESS, U256::ONE.into())
             .unwrap()
             .unwrap_or_default()
             .to::<usize>();
-        let public_keys_data_slot =
-            U256::from_be_bytes(keccak256(U256::from(1).to_be_bytes::<32>()).0);
+        let public_keys_data_slot = U256::from_be_bytes(keccak256(B256::with_last_byte(1)).0);
         let public_keys = (0..public_keys_len)
             .map(|index| {
                 state
