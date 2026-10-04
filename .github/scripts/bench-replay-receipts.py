@@ -2,6 +2,7 @@
 """Compare live historical receipts; retain commitments, not full receipt bodies."""
 
 import argparse
+import base64
 import datetime
 import gzip
 import hashlib
@@ -13,6 +14,8 @@ import shutil
 import signal
 import sys
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 
 MAX_BLOCKS = 50_000
@@ -81,12 +84,26 @@ class Rpc:
         timeout = self.budget.remaining()
         # Never include the source URL (which may contain credentials) in failures.
         try:
-            request = urllib.request.Request(self.url, canonical(requests),
-                                             {"Content-Type": "application/json"})
+            parts = urllib.parse.urlsplit(self.url)
+            headers = {"Content-Type": "application/json"}
+            if parts.username is not None:
+                # Unlike curl/reqwest, urllib does not translate URL userinfo to
+                # HTTP Basic authentication and would treat it as part of the host.
+                credentials = urllib.parse.unquote(parts.username) + ":" + urllib.parse.unquote(parts.password or "")
+                headers["Authorization"] = "Basic " + base64.b64encode(credentials.encode()).decode("ascii")
+                parts = parts._replace(netloc=parts.netloc.rsplit("@", 1)[1])
+            authorization = headers.pop("Authorization", None)
+            request = urllib.request.Request(urllib.parse.urlunsplit(parts), canonical(requests), headers)
+            if authorization is not None:
+                # Credentials belong to this endpoint, never a redirect destination.
+                request.add_unredirected_header("Authorization", authorization)
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 data = response.read(MAX_RESPONSE_BYTES + 1)
-        except Exception:
-            raise ValueError(f"{self.name} RPC request failed") from None
+        except urllib.error.HTTPError as error:
+            raise ValueError(f"{self.name} RPC request failed (HTTP {error.code})") from None
+        except Exception as error:
+            # Exception messages/reasons can contain credentials, paths or query tokens.
+            raise ValueError(f"{self.name} RPC request failed ({type(error).__name__})") from None
         require(len(data) <= MAX_RESPONSE_BYTES, "RPC response exceeds byte limit")
         self.budget.bytes += len(data)
         require(self.budget.bytes <= MAX_TOTAL_BYTES, "RPC total exceeds byte limit")
@@ -316,6 +333,8 @@ def finalize(work_dir):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
+    preflight = sub.add_parser("preflight")
+    preflight.add_argument("--chain-id", type=int, required=True)
     finish = sub.add_parser("finalize")
     finish.add_argument("--work-dir", type=Path, required=True)
     capture = sub.add_parser("capture")
@@ -330,6 +349,23 @@ def main():
     capture.add_argument("--git-sha", required=True)
     capture.add_argument("--deadline-seconds", type=int, default=1200)
     args = parser.parse_args()
+    if args.command == "preflight":
+        def preflight_expired(_signum, _frame):
+            raise ValueError("receipt preflight deadline exceeded")
+        try:
+            signal.signal(signal.SIGALRM, preflight_expired)
+            signal.alarm(60)
+            rpc = Rpc(os.environ["REPLAY_RPC_URL"], Budget(60), "source")
+            chain, height = rpc.batch([("eth_chainId", []), ("eth_blockNumber", [])])
+            require(quantity(chain) == args.chain_id, "source RPC chain id mismatch")
+            quantity(height)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            print(f"Receipt oracle preflight failed: {error}", file=sys.stderr)
+            return 1
+        finally:
+            signal.alarm(0)
+        print("Receipt oracle source RPC preflight passed")
+        return 0
     if args.command == "finalize":
         try:
             result = finalize(args.work_dir)

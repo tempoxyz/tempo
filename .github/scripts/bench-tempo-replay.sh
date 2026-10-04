@@ -77,6 +77,10 @@ if [ "${BENCH_VERIFY_RECEIPTS:-false}" = "true" ]; then
   # A new directory prevents a prior runner job from becoming the reference.
   RECEIPT_ORACLE_DIR=$(mktemp -d "$BENCH_WORK_DIR/receipt-oracle.XXXXXX")
   export REPLAY_RPC_URL
+  # Check authenticated batch transport before building or restoring a snapshot.
+  set +x
+  python3 .github/scripts/bench-replay-receipts.py preflight --chain-id "$CHAIN_ID"
+  set -x
 fi
 
 # `cargo install` writes binaries to CARGO_HOME/bin, but self-hosted runner
@@ -340,6 +344,8 @@ run_single() {
 
   # Ensure node and tail are cleaned up on any exit from run_single
   cleanup_run() {
+    # EXIT can run after run_single's local variables have gone out of scope.
+    local tail_pid="$1" output_dir="$2"
     kill "$tail_pid" 2>/dev/null || true
     if [ "${BENCH_SAMPLY:-false}" = "true" ]; then
       sudo pkill -INT -x tempo 2>/dev/null || true
@@ -355,7 +361,9 @@ run_single() {
     sudo chown -R "$(id -un):$(id -gn)" "$output_dir" 2>/dev/null || true
     bench_schelk cleanup "$SCHELK_STATE_PATH" || true
   }
-  trap cleanup_run EXIT
+  local cleanup_command
+  printf -v cleanup_command 'cleanup_run %q %q' "$tail_pid" "$output_dir"
+  trap "$cleanup_command" EXIT
 
   # Wait for RPC
   local rpc_wait
@@ -479,7 +487,7 @@ run_single() {
   fi
 
   # Cleanup (runs via EXIT trap; call explicitly for the success log line)
-  cleanup_run
+  cleanup_run "$tail_pid" "$output_dir"
   trap - EXIT
   echo "=== Finished run: $label ==="
 }

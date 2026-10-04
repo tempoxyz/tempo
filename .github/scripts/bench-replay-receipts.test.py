@@ -2,10 +2,12 @@
 """Synthetic RPC fixtures; no historical execution coverage is claimed."""
 
 import copy
+import base64
 import contextlib
 import gzip
 import importlib.util
 import io
+import http.client
 import json
 import os
 from pathlib import Path
@@ -190,8 +192,53 @@ class ReceiptTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "deadline"):
             oracle.Budget(-1).remaining()
         rpc = oracle.Rpc("secret-invalid-url", oracle.Budget(10), "source")
-        with self.assertRaisesRegex(ValueError, "^source RPC request failed$"):
+        with self.assertRaisesRegex(ValueError, r"^source RPC request failed \(ValueError\)$"):
             rpc.batch([("eth_chainId", [])])
+
+    def test_rpc_url_credentials_become_basic_auth_before_http_transport(self):
+        reply = b'[{"jsonrpc":"2.0","id":0,"result":"0x1079"}]'
+        for authority in ("example.invalid", "example.invalid:443", "[::1]:8545"):
+            def open_request(request, timeout):
+                self.assertEqual(request.full_url, f"https://{authority}/rpc?token=fixture")
+                self.assertEqual(request.get_header("Authorization"),
+                                 "Basic " + base64.b64encode(b"user@example:pa:ss@word").decode())
+                # Exercise the stdlib's actual host parsing, without opening a socket.
+                connection = http.client.HTTPSConnection(request.host, timeout=timeout)
+                self.assertNotIn("@", connection.host)
+                connection.close()
+                redirected = oracle.urllib.request.HTTPRedirectHandler().redirect_request(
+                    request, None, 302, "redirect", {}, "https://different.invalid/rpc")
+                self.assertIsNone(redirected.get_header("Authorization"))
+                return io.BytesIO(reply)
+            rpc = oracle.Rpc(f"https://user%40example:pa%3Ass%40word@{authority}/rpc?token=fixture",
+                             oracle.Budget(10), "source")
+            with patch.object(oracle.urllib.request, "urlopen", side_effect=open_request):
+                self.assertEqual(rpc.batch([("eth_chainId", [])]), ["0x1079"])
+
+    def test_rpc_errors_preserve_status_or_type_without_secret_details(self):
+        url = "https://user:password@example.invalid/rpc?token=secret"
+        for error, diagnostic in (
+            (oracle.urllib.error.HTTPError(url, 403, url, {}, None), "HTTP 403"),
+            (oracle.urllib.error.URLError(url), "URLError"),
+            (http.client.InvalidURL(url), "InvalidURL"),
+        ):
+            rpc = oracle.Rpc(url, oracle.Budget(10), "source")
+            with patch.object(oracle.urllib.request, "urlopen", side_effect=error):
+                with self.assertRaises(ValueError) as caught:
+                    rpc.batch([("eth_chainId", [])])
+            self.assertEqual(str(caught.exception), f"source RPC request failed ({diagnostic})")
+
+    def test_preflight_checks_source_batch_transport_and_chain(self):
+        replies = [{"jsonrpc": "2.0", "id": 0, "result": "0x1079"},
+                   {"jsonrpc": "2.0", "id": 1, "result": "0x100"}]
+        for expected_chain, expected_status in ((4217, 0), (1, 1)):
+            with patch.object(sys, "argv", ["oracle", "preflight", "--chain-id", str(expected_chain)]), \
+                    patch.dict(os.environ, {"REPLAY_RPC_URL": "https://user:password@example.invalid"}), \
+                    patch.object(oracle.urllib.request, "urlopen", return_value=io.BytesIO(json.dumps(replies).encode())) as call, \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(oracle.main(), expected_status)
+                self.assertEqual([item["method"] for item in json.loads(call.call_args.args[0].data)],
+                                 ["eth_chainId", "eth_blockNumber"])
 
     def test_cli_deadline_interrupts_stalled_response_and_writes_failure(self):
         report = self.root / "report.json"
