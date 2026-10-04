@@ -1,12 +1,13 @@
-use crate::utils::{TEST_MNEMONIC, TestNodeBuilder, setup_test_token};
+use crate::utils::{TestNodeBuilder, setup_test_token};
 use alloy::{
     consensus::Transaction,
     primitives::{Address, Bytes, TxKind, U256},
     providers::{Provider, ProviderBuilder},
     rpc::types::TransactionRequest,
-    signers::{SignerSync, local::MnemonicBuilder},
+    signers::SignerSync,
 };
 use alloy_network::TransactionResponse;
+use reth_e2e_test_utils::{receipt::PendingTransactionExt, wallet::test_signer};
 use reth_primitives_traits::SignerRecoverable;
 use reth_rpc_eth_api::helpers::{EthTransactions, LoadState};
 use reth_transaction_pool::{TransactionOrigin, TransactionPool, pool::AddedTransactionState};
@@ -22,7 +23,7 @@ async fn test_get_transaction_by_sender_and_nonce() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
@@ -39,8 +40,7 @@ async fn test_get_transaction_by_sender_and_nonce() -> eyre::Result<()> {
         .await?;
 
     let tx_hash = *pending_tx.tx_hash();
-    let receipt = pending_tx.get_receipt().await?;
-    assert!(receipt.status());
+    pending_tx.successful_receipt().await?;
 
     let nonce_after = provider.get_transaction_count(caller).await?;
     assert_eq!(nonce_after, nonce_before + 1);
@@ -75,7 +75,7 @@ async fn test_next_available_nonce_for_2d_key_includes_pending_txs() -> eyre::Re
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
     let eth_api = setup.node.rpc.inner.eth_api().clone();
 
-    let wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let sender = wallet.address();
     let nonce_key = U256::from(42);
 

@@ -981,6 +981,159 @@ impl EthPoolTransaction for TempoPooledTransaction {
     }
 }
 
+// ========================================
+// Keychain invalidation types
+// ========================================
+
+/// Index of revoked keychain keys, keyed by account for efficient lookup.
+///
+/// Uses account as the primary key with a list of revoked key_ids,
+/// avoiding the need to construct full keys during lookup.
+#[derive(Debug, Clone, Default)]
+pub struct RevokedKeys {
+    /// Map from account to list of revoked key_ids.
+    by_account: AddressMap<Vec<Address>>,
+}
+
+impl RevokedKeys {
+    /// Creates a new empty index.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Inserts a revoked key.
+    pub fn insert(&mut self, account: Address, key_id: Address) {
+        self.by_account.entry(account).or_default().push(key_id);
+    }
+
+    /// Returns true if the index is empty.
+    pub fn is_empty(&self) -> bool {
+        self.by_account.is_empty()
+    }
+
+    /// Returns the total number of revoked keys.
+    pub fn len(&self) -> usize {
+        self.by_account.values().map(Vec::len).sum()
+    }
+
+    /// Returns true if the given (account, key_id) combination is in the index.
+    pub fn contains(&self, account: Address, key_id: Address) -> bool {
+        self.by_account
+            .get(&account)
+            .is_some_and(|key_ids| key_ids.contains(&key_id))
+    }
+}
+
+/// Index of spending limit updates, keyed by account for efficient lookup.
+///
+/// Uses account as the primary key with a list of (key_id, token) pairs,
+/// avoiding the need to construct full keys during lookup.
+#[derive(Debug, Clone, Default)]
+pub struct SpendingLimitUpdates {
+    /// Map from account to list of (key_id, token) pairs that had limit changes.
+    /// `None` token acts as a wildcard matching any fee token for that key_id.
+    by_account: AddressMap<Vec<(Address, Option<Address>)>>,
+}
+
+impl SpendingLimitUpdates {
+    /// Creates a new empty index.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Inserts a spending limit update. `None` token matches any fee token.
+    pub fn insert(&mut self, account: Address, key_id: Address, token: Option<Address>) {
+        self.by_account
+            .entry(account)
+            .or_default()
+            .push((key_id, token));
+    }
+
+    /// Returns true if the index is empty.
+    pub fn is_empty(&self) -> bool {
+        self.by_account.is_empty()
+    }
+
+    /// Returns the total number of spending limit updates.
+    pub fn len(&self) -> usize {
+        self.by_account.values().map(Vec::len).sum()
+    }
+
+    /// Returns true if the given (account, key_id, token) combination is in the index.
+    ///
+    /// A `None` entry matches any token for that key_id. This is used for included
+    /// block txs whose fee token could not be resolved without state access.
+    pub fn contains(&self, account: Address, key_id: Address, token: Address) -> bool {
+        self.by_account
+            .get(&account)
+            .is_some_and(|pairs: &Vec<(Address, Option<Address>)>| {
+                pairs
+                    .iter()
+                    .any(|&(k, t)| k == key_id && t.is_none_or(|t| t == token))
+            })
+    }
+}
+
+/// Keychain identity extracted from a transaction.
+///
+/// Contains the account (user_address), key_id, and fee_token for matching against
+/// revocation and spending limit events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KeychainSubject {
+    /// The account that owns the keychain key (from `user_address` in the signature).
+    pub account: Address,
+    /// The key ID recovered from the keychain signature.
+    pub key_id: Address,
+    /// The fee token used by this transaction.
+    pub fee_token: Address,
+}
+
+impl KeychainSubject {
+    /// Returns true if this subject matches any of the revoked keys.
+    ///
+    /// Uses account-keyed index for O(1) account lookup, then linear scan over
+    /// the typically small list of key_ids for that account.
+    pub fn matches_revoked(&self, revoked_keys: &RevokedKeys) -> bool {
+        revoked_keys.contains(self.account, self.key_id)
+    }
+
+    /// Returns true if this subject is affected by any of the spending limit updates.
+    ///
+    /// Uses account-keyed index for O(1) account lookup, then linear scan over
+    /// the typically small list of (key_id, token) pairs for that account.
+    pub fn matches_spending_limit_update(
+        &self,
+        spending_limit_updates: &SpendingLimitUpdates,
+    ) -> bool {
+        spending_limit_updates.contains(self.account, self.key_id, self.fee_token)
+    }
+}
+
+/// Key-authorization witness identity extracted from an AA transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KeyAuthorizationWitnessSubject {
+    /// The account whose key-authorization witness is carried or burned.
+    pub account: Address,
+    /// The TIP-1053 witness.
+    pub witness: B256,
+}
+
+/// Target key identity extracted from an inline key authorization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KeyAuthorizationTargetSubject {
+    /// The account that owns the target key.
+    pub account: Address,
+    /// The key being authorized.
+    pub key_id: Address,
+}
+
+impl KeyAuthorizationTargetSubject {
+    /// Returns true if this target key is affected by a key status update.
+    pub fn matches_key_update(&self, key_updates: &RevokedKeys) -> bool {
+        key_updates.contains(self.account, self.key_id)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1641,158 +1794,5 @@ mod tests {
                 vec![sender.mapping_slot(tip20_slots::BALANCES)],
             );
         }
-    }
-}
-
-// ========================================
-// Keychain invalidation types
-// ========================================
-
-/// Index of revoked keychain keys, keyed by account for efficient lookup.
-///
-/// Uses account as the primary key with a list of revoked key_ids,
-/// avoiding the need to construct full keys during lookup.
-#[derive(Debug, Clone, Default)]
-pub struct RevokedKeys {
-    /// Map from account to list of revoked key_ids.
-    by_account: AddressMap<Vec<Address>>,
-}
-
-impl RevokedKeys {
-    /// Creates a new empty index.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Inserts a revoked key.
-    pub fn insert(&mut self, account: Address, key_id: Address) {
-        self.by_account.entry(account).or_default().push(key_id);
-    }
-
-    /// Returns true if the index is empty.
-    pub fn is_empty(&self) -> bool {
-        self.by_account.is_empty()
-    }
-
-    /// Returns the total number of revoked keys.
-    pub fn len(&self) -> usize {
-        self.by_account.values().map(Vec::len).sum()
-    }
-
-    /// Returns true if the given (account, key_id) combination is in the index.
-    pub fn contains(&self, account: Address, key_id: Address) -> bool {
-        self.by_account
-            .get(&account)
-            .is_some_and(|key_ids| key_ids.contains(&key_id))
-    }
-}
-
-/// Index of spending limit updates, keyed by account for efficient lookup.
-///
-/// Uses account as the primary key with a list of (key_id, token) pairs,
-/// avoiding the need to construct full keys during lookup.
-#[derive(Debug, Clone, Default)]
-pub struct SpendingLimitUpdates {
-    /// Map from account to list of (key_id, token) pairs that had limit changes.
-    /// `None` token acts as a wildcard matching any fee token for that key_id.
-    by_account: AddressMap<Vec<(Address, Option<Address>)>>,
-}
-
-impl SpendingLimitUpdates {
-    /// Creates a new empty index.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Inserts a spending limit update. `None` token matches any fee token.
-    pub fn insert(&mut self, account: Address, key_id: Address, token: Option<Address>) {
-        self.by_account
-            .entry(account)
-            .or_default()
-            .push((key_id, token));
-    }
-
-    /// Returns true if the index is empty.
-    pub fn is_empty(&self) -> bool {
-        self.by_account.is_empty()
-    }
-
-    /// Returns the total number of spending limit updates.
-    pub fn len(&self) -> usize {
-        self.by_account.values().map(Vec::len).sum()
-    }
-
-    /// Returns true if the given (account, key_id, token) combination is in the index.
-    ///
-    /// A `None` entry matches any token for that key_id. This is used for included
-    /// block txs whose fee token could not be resolved without state access.
-    pub fn contains(&self, account: Address, key_id: Address, token: Address) -> bool {
-        self.by_account
-            .get(&account)
-            .is_some_and(|pairs: &Vec<(Address, Option<Address>)>| {
-                pairs
-                    .iter()
-                    .any(|&(k, t)| k == key_id && t.is_none_or(|t| t == token))
-            })
-    }
-}
-
-/// Keychain identity extracted from a transaction.
-///
-/// Contains the account (user_address), key_id, and fee_token for matching against
-/// revocation and spending limit events.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct KeychainSubject {
-    /// The account that owns the keychain key (from `user_address` in the signature).
-    pub account: Address,
-    /// The key ID recovered from the keychain signature.
-    pub key_id: Address,
-    /// The fee token used by this transaction.
-    pub fee_token: Address,
-}
-
-impl KeychainSubject {
-    /// Returns true if this subject matches any of the revoked keys.
-    ///
-    /// Uses account-keyed index for O(1) account lookup, then linear scan over
-    /// the typically small list of key_ids for that account.
-    pub fn matches_revoked(&self, revoked_keys: &RevokedKeys) -> bool {
-        revoked_keys.contains(self.account, self.key_id)
-    }
-
-    /// Returns true if this subject is affected by any of the spending limit updates.
-    ///
-    /// Uses account-keyed index for O(1) account lookup, then linear scan over
-    /// the typically small list of (key_id, token) pairs for that account.
-    pub fn matches_spending_limit_update(
-        &self,
-        spending_limit_updates: &SpendingLimitUpdates,
-    ) -> bool {
-        spending_limit_updates.contains(self.account, self.key_id, self.fee_token)
-    }
-}
-
-/// Key-authorization witness identity extracted from an AA transaction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct KeyAuthorizationWitnessSubject {
-    /// The account whose key-authorization witness is carried or burned.
-    pub account: Address,
-    /// The TIP-1053 witness.
-    pub witness: B256,
-}
-
-/// Target key identity extracted from an inline key authorization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct KeyAuthorizationTargetSubject {
-    /// The account that owns the target key.
-    pub account: Address,
-    /// The key being authorized.
-    pub key_id: Address,
-}
-
-impl KeyAuthorizationTargetSubject {
-    /// Returns true if this target key is affected by a key status update.
-    pub fn matches_key_update(&self, key_updates: &RevokedKeys) -> bool {
-        key_updates.contains(self.account, self.key_id)
     }
 }

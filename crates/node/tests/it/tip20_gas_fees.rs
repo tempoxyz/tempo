@@ -1,12 +1,13 @@
 use alloy::{
     primitives::{Address, U256},
     providers::{Provider, ProviderBuilder},
-    signers::local::{MnemonicBuilder, PrivateKeySigner},
+    signers::local::PrivateKeySigner,
     sol_types::SolEvent,
 };
 use alloy_network::{ReceiptResponse, TransactionBuilder};
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::TransactionRequest;
+use reth_e2e_test_utils::wallet::test_signer;
 use std::env;
 use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_contracts::precompiles::{IFeeManager, ITIP20};
@@ -26,7 +27,7 @@ async fn test_fee_in_stable() -> eyre::Result<()> {
     };
     let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
@@ -73,7 +74,7 @@ async fn test_default_fee_token() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let caller = wallet.address();
     let provider = ProviderBuilder::new()
         .wallet(wallet)
@@ -144,7 +145,7 @@ async fn test_fee_transfer_logs() -> eyre::Result<()> {
     };
     let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 

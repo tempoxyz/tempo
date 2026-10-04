@@ -5,15 +5,14 @@ use alloy::{
     sol_types::SolEvent,
 };
 use alloy_network::ReceiptResponse;
+use reth_e2e_test_utils::wallet::test_signer;
 use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::ITIP20ChannelReserve;
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS};
 use test_case::test_case;
 
-use super::helpers::{
-    GasSnapshot, Receipt, TempoTxSender, fixed_signer, print_gas_snapshot, test_signer,
-};
+use super::helpers::{GasSnapshot, Receipt, TempoTxSender, fixed_signer, print_gas_snapshot};
 use crate::utils::{TestNodeBuilder, make_genesis_at};
 
 const DEPOSIT: u64 = 1_000_000;
@@ -242,7 +241,7 @@ async fn test_tip20_channel_reserve_gas_snapshots(hardfork: TempoHardfork) -> ey
         .await?;
     let http_url = setup.http_url;
 
-    let mut funder = TempoTxSender::connect(http_url.clone(), test_signer(0)?).await?;
+    let mut funder = TempoTxSender::connect(http_url.clone(), test_signer(0)).await?;
     let mut payer =
         TempoTxSender::connect_with_zero_nonce(http_url.clone(), fixed_signer(0x11)).await?;
     let mut payee =

@@ -1,13 +1,11 @@
-use alloy::consensus::{SignableTransaction, TxEip1559, TxEnvelope};
-use alloy_eips::Encodable2718;
-use alloy_network::TxSignerSync;
+use crate::utils::with_t1_fees;
 use alloy_primitives::{Address, B256};
+use alloy_rpc_types_eth::TransactionRequest;
 use reth_e2e_test_utils::wallet::Wallet;
 use reth_ethereum::{chainspec::EthChainSpec as _, tasks::Runtime};
 use reth_node_api::BuiltPayload;
 use reth_node_builder::{NodeBuilder, NodeConfig};
 use reth_storage_api::{AccountReader as _, StateProviderFactory as _};
-use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_node::node::TempoNode;
 
 /// One node builds two blocks. A second node only executes them with
@@ -26,29 +24,14 @@ async fn executed_state_reads_blocks_that_are_not_canonical() -> eyre::Result<()
     let chain_spec = producer.inner.chain_spec();
     let chain_id = chain_spec.chain().id();
 
-    let signer = Wallet::new(1)
-        .with_chain_id(chain_id)
-        .wallet_gen()
-        .remove(0);
-    let sender = signer.address();
-    let mut tx = TxEip1559 {
-        chain_id,
-        gas_limit: 300_000,
-        to: Address::ZERO.into(),
-        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        ..Default::default()
-    };
-    let signature = signer.sign_transaction_sync(&mut tx)?;
-    producer
-        .rpc
-        .inject_tx(
-            TxEnvelope::Eip1559(tx.into_signed(signature))
-                .encoded_2718()
-                .into(),
-        )
+    let mut account = Wallet::default().with_chain_id(chain_id).account(0);
+    let sender = account.address();
+    let tx = TransactionRequest::default()
+        .to(Address::ZERO)
+        .gas_limit(300_000);
+    let (_, first) = producer
+        .inject_and_advance(account.sign_tx_bytes(with_t1_fees(tx)).await)
         .await?;
-    let first = producer.advance_block().await?;
     let second = producer.advance_block().await?;
     let second_hash = second.block().hash();
 
