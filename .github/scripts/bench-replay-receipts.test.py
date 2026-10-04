@@ -11,6 +11,7 @@ import http.client
 import json
 import os
 from pathlib import Path
+import signal
 import tempfile
 import time
 import sys
@@ -261,6 +262,153 @@ class ReceiptTests(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 3)
         self.assertEqual(json.loads((self.root / "receipt-oracle-summary.json").read_text())["status"], "failed")
         self.assertNotIn("password", output.getvalue())
+
+
+class DiagnosticTests(unittest.TestCase):
+    url = 'https://user:password@example.invalid/rpc?token=secret'
+    batch = [{"jsonrpc": "2.0", "id": i, "method": method, "params": []}
+             for i, method in enumerate(("eth_chainId", "eth_blockNumber"))]
+    replies = [{"jsonrpc": "2.0", "id": 0, "result": "0x1079"},
+               {"jsonrpc": "2.0", "id": 1, "result": "0x100"}]
+
+    def test_paired_transport_branches_are_bounded_and_use_identical_initial_body(self):
+        for curl_ok, urllib_ok, expected in ((True, True, 2), (False, True, 5),
+                                            (False, False, 5), (True, False, 5)):
+            calls = []
+            def fake_probe(url, request, chain, budget, transport, label, **kwargs):
+                calls.append((transport, label, copy.deepcopy(request), kwargs))
+                passed = curl_ok if transport == "curl" else urllib_ok
+                return {"status": "response", "http_status": 200 if passed else 403,
+                        "ids_valid": passed, "quantities_valid": passed, "chain_match": True}
+            with patch.object(oracle, "diagnostic_probe", side_effect=fake_probe), \
+                    patch.object(oracle, "bounded_command", return_value=(0, b"curl 8.5.0 (fixture)\n")):
+                result = oracle.diagnose(self.url, 4217)
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(len(calls), expected)
+            self.assertEqual(calls[0][2], self.batch)
+            self.assertEqual(calls[0][2], calls[1][2])
+            if not curl_ok:
+                self.assertEqual([call[2] for call in calls[2:]], [self.batch[0], self.batch[1], [self.batch[1]]])
+            elif not urllib_ok:
+                self.assertTrue(calls[2][3]["user_agent"].startswith("Python-urllib/"))
+                self.assertEqual(calls[3][3]["user_agent"], "curl/8.5.0")
+                self.assertTrue(calls[4][3]["http1"])
+
+    def test_curl_config_escapes_quotes_backslashes_and_rejects_control_injection(self):
+        url = self.url + '&x="\\$(touch /tmp/never);`false`'
+        config = oracle.curl_config(url, oracle.canonical(self.batch), None).decode()
+        self.assertEqual(len(config.splitlines()), 3)
+        self.assertIn('url = "' + url.replace('\\', '\\\\').replace('"', '\\"') + '"\n', config)
+        for bad in (self.url + '\noutput = "/tmp/never"', self.url + '\rheader = "secret"',
+                    self.url + '\x00', self.url + '\x7f', self.url + 'x' * 17000):
+            with self.assertRaises(ValueError):
+                oracle.curl_config(bad, b"{}", None)
+
+    def test_curl_keeps_secrets_off_argv_and_discards_server_error_text(self):
+        def command(args, data, timeout, limit):
+            self.assertEqual(args[:2], ["curl", "--disable"])
+            self.assertIn("--globoff", args)
+            self.assertLessEqual(timeout, 8)
+            self.assertEqual(limit, 65540)
+            self.assertNotIn("password", " ".join(args))
+            self.assertNotIn("secret", " ".join(args))
+            self.assertIn(self.url.encode(), data)
+            return 0, self.url.encode() + b"\n403"
+        with patch.object(oracle, "bounded_command", side_effect=command), \
+                patch.object(oracle.signal, "setitimer"):
+            result = oracle.diagnostic_probe(self.url, self.batch, 4217, oracle.Budget(60), "curl", "curl_batch")
+        self.assertEqual(result["http_status"], 403)
+        self.assertEqual(result["response_shape"], "non_json")
+        self.assertNotIn("password", json.dumps(result))
+        self.assertNotIn("secret", json.dumps(result))
+
+    def test_response_metadata_rejects_wrong_ids_shape_and_chain_without_echoing_fields(self):
+        cases = [(self.replies, "array", True, True),
+                 (self.replies[::-1], "array", True, True),
+                 (self.replies[0], "object", False, None),
+                 ([self.replies[0], self.replies[0]], "array", False, None),
+                 ([{**self.replies[0], "id": False}, self.replies[1]], "array", False, None),
+                 ([{**self.replies[0], "result": "0x1"}, self.replies[1]], "array", True, False),
+                 ([{**self.replies[0], "error": {"message": self.url}}, self.replies[1]], "array", True, None)]
+        for replies, shape, ids, chain in cases:
+            result = oracle.diagnostic_response(json.dumps(replies).encode(), self.batch, 4217)
+            self.assertEqual((result["response_shape"], result["ids_valid"], result["chain_match"]),
+                             (shape, ids, chain))
+            self.assertNotIn("secret", json.dumps(result))
+
+    def test_urllib_reuses_auth_and_caps_read_even_for_http_errors(self):
+        payload = json.dumps(self.replies).encode()
+        for status, data in ((200, payload), (403, self.url.encode()), (200, b"x" * 65537)):
+            response = oracle.urllib.error.HTTPError(self.url, status, self.url, {}, io.BytesIO(data))
+            def open_request(request, timeout):
+                self.assertEqual(request.full_url, self.url.replace("user:password@", ""))
+                self.assertTrue(request.get_header("Authorization").startswith("Basic "))
+                self.assertLessEqual(timeout, 8)
+                raise response
+            with patch.object(oracle.urllib.request, "urlopen", side_effect=open_request), \
+                    patch.object(oracle.signal, "setitimer"):
+                result = oracle.diagnostic_probe(self.url, self.batch, 4217, oracle.Budget(60), "urllib", "urllib_batch")
+            self.assertEqual(result["http_status"], status)
+            if len(data) > 65536:
+                self.assertEqual(result["status"], "response_too_large")
+            self.assertNotIn("secret", json.dumps(result))
+
+    def test_bounded_subprocess_does_not_invoke_shell_and_reaps_on_timeout_or_overflow(self):
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / "never"
+            payload = f'$(touch "{target}"); `touch "{target}"`'.encode()
+            code, output = oracle.bounded_command(
+                [sys.executable, "-c", "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())"],
+                payload, 2, 4096)
+            self.assertEqual((code, output), (0, payload))
+            self.assertFalse(target.exists())
+            real_popen = oracle.subprocess.Popen
+            children = []
+            def popen(*args, **kwargs):
+                child = real_popen(*args, **kwargs)
+                children.append(child)
+                return child
+            for script, expected in (("import time; time.sleep(10)", TimeoutError),
+                                     ("import os,time; os.write(1,b'x'*4096); time.sleep(10)", OverflowError)):
+                with patch.object(oracle.subprocess, "Popen", side_effect=popen), self.assertRaises(expected):
+                    oracle.bounded_command([sys.executable, "-c", script], b"", .2, 1024)
+                self.assertIsNotNone(children[-1].poll())
+                with self.assertRaises(ChildProcessError):
+                    os.waitpid(children[-1].pid, os.WNOHANG)
+
+    def test_urllib_wall_deadline_interrupts_a_stalled_body_read(self):
+        class StalledResponse(io.BytesIO):
+            code = 200
+            def read(self, *_args):
+                time.sleep(2)
+                return b""
+        def expired(_signum, _frame):
+            raise TimeoutError()
+        previous_handler = signal.signal(signal.SIGALRM, expired)
+        started = time.monotonic()
+        try:
+            with patch.object(oracle.urllib.request, "urlopen", return_value=StalledResponse()):
+                result = oracle.diagnostic_probe(self.url, self.batch, 4217, oracle.Budget(.05),
+                                                 "urllib", "urllib_batch")
+            self.assertEqual(result["status"], "timeout")
+            self.assertLess(time.monotonic() - started, .5)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous_handler)
+
+    def test_diagnostic_cli_never_prints_unexpected_exception_text(self):
+        output = io.StringIO()
+        previous_handler = signal.getsignal(signal.SIGALRM)
+        try:
+            with patch.object(sys, "argv", ["oracle", "diagnose", "--chain-id", "4217"]), \
+                    patch.dict(os.environ, {"REPLAY_RPC_URL": self.url}), \
+                    patch.object(oracle, "diagnose", side_effect=ValueError(self.url)), \
+                    contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+                self.assertEqual(oracle.main(), 1)
+            self.assertEqual(json.loads(output.getvalue()), {"status": "stopped"})
+            self.assertEqual(signal.getitimer(signal.ITIMER_REAL)[0], 0)
+        finally:
+            signal.signal(signal.SIGALRM, previous_handler)
 
 
 if __name__ == "__main__":

@@ -10,8 +10,10 @@ import json
 import os
 from pathlib import Path
 import re
+import selectors
 import shutil
 import signal
+import subprocess
 import sys
 import time
 import urllib.error
@@ -23,6 +25,7 @@ MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 MAX_TOTAL_BYTES = 512 * 1024 * 1024
 MAX_LEDGER_BYTES = 64 * 1024 * 1024
 BATCH_BLOCKS = 8
+MAX_DIAGNOSTIC_BYTES = 64 * 1024
 
 
 def require(condition, message):
@@ -74,6 +77,24 @@ class Budget:
         return min(15, remaining)
 
 
+def rpc_request(url, data, user_agent=None):
+    parts = urllib.parse.urlsplit(url)
+    headers = {"Content-Type": "application/json"}
+    if user_agent is not None:
+        headers["User-Agent"] = user_agent
+    authorization = None
+    if parts.username is not None:
+        # urllib does not translate URL userinfo to HTTP Basic authentication.
+        credentials = urllib.parse.unquote(parts.username) + ":" + urllib.parse.unquote(parts.password or "")
+        authorization = "Basic " + base64.b64encode(credentials.encode()).decode("ascii")
+        parts = parts._replace(netloc=parts.netloc.rsplit("@", 1)[1])
+    request = urllib.request.Request(urllib.parse.urlunsplit(parts), data, headers)
+    if authorization is not None:
+        # Credentials belong to this endpoint, never a redirect destination.
+        request.add_unredirected_header("Authorization", authorization)
+    return request
+
+
 class Rpc:
     def __init__(self, url, budget, name):
         self.url, self.budget, self.name = url, budget, name
@@ -84,19 +105,7 @@ class Rpc:
         timeout = self.budget.remaining()
         # Never include the source URL (which may contain credentials) in failures.
         try:
-            parts = urllib.parse.urlsplit(self.url)
-            headers = {"Content-Type": "application/json"}
-            if parts.username is not None:
-                # Unlike curl/reqwest, urllib does not translate URL userinfo to
-                # HTTP Basic authentication and would treat it as part of the host.
-                credentials = urllib.parse.unquote(parts.username) + ":" + urllib.parse.unquote(parts.password or "")
-                headers["Authorization"] = "Basic " + base64.b64encode(credentials.encode()).decode("ascii")
-                parts = parts._replace(netloc=parts.netloc.rsplit("@", 1)[1])
-            authorization = headers.pop("Authorization", None)
-            request = urllib.request.Request(urllib.parse.urlunsplit(parts), canonical(requests), headers)
-            if authorization is not None:
-                # Credentials belong to this endpoint, never a redirect destination.
-                request.add_unredirected_header("Authorization", authorization)
+            request = rpc_request(self.url, canonical(requests))
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 data = response.read(MAX_RESPONSE_BYTES + 1)
         except urllib.error.HTTPError as error:
@@ -119,6 +128,167 @@ class Rpc:
             require("error" not in reply and reply.get("result") is not None, "RPC returned error or null")
             indexed[index] = reply["result"]
         return [indexed[i] for i in range(len(calls))]
+
+
+def bounded_command(args, data, timeout, limit):
+    """Bound output while draining it; always reap a timed-out/oversized child."""
+    deadline = time.monotonic() + timeout
+    process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                               stderr=subprocess.DEVNULL)
+    output = bytearray()
+    try:
+        with selectors.DefaultSelector() as selector:
+            os.set_blocking(process.stdin.fileno(), False)
+            os.set_blocking(process.stdout.fileno(), False)
+            if data:
+                selector.register(process.stdin, selectors.EVENT_WRITE)
+            else:
+                process.stdin.close()
+            selector.register(process.stdout, selectors.EVENT_READ)
+            pending = memoryview(data)
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError()
+                for key, _ in selector.select(remaining):
+                    if key.fileobj is process.stdin:
+                        pending = pending[os.write(process.stdin.fileno(), pending):]
+                        if not pending:
+                            selector.unregister(process.stdin)
+                            process.stdin.close()
+                    else:
+                        chunk = os.read(process.stdout.fileno(), min(8192, limit + 1 - len(output)))
+                        if not chunk:
+                            selector.unregister(process.stdout)
+                        output.extend(chunk)
+                        if len(output) > limit:
+                            raise OverflowError()
+            returncode = process.wait(timeout=max(0.001, deadline - time.monotonic()))
+        return returncode, bytes(output)
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+        process.stdin.close()
+        process.stdout.close()
+
+
+def curl_config(url, payload, user_agent):
+    # curl's quoted config syntax, not shell syntax. Reject controls outright so
+    # neither a URL nor credentials can create an additional config directive.
+    def quoted(value):
+        require(not any(ord(char) < 32 or ord(char) == 127 for char in value), "invalid diagnostic input")
+        return '"' + value.replace('\\', '\\\\').replace('"', '\\"') + '"'
+    lines = ["url = " + quoted(url), 'header = "Content-Type: application/json"',
+             "data-raw = " + quoted(payload.decode("ascii"))]
+    if user_agent is not None:
+        lines.append("user-agent = " + quoted(user_agent))
+    config = ("\n".join(lines) + "\n").encode()
+    require(len(config) <= 16 * 1024, "excessive diagnostic input")
+    return config
+
+
+def diagnostic_response(data, request, chain_id):
+    result = {"response_shape": "non_json", "ids_valid": False,
+              "quantities_valid": False, "chain_match": None}
+    try:
+        reply = decode(data)
+        result["response_shape"] = "array" if isinstance(reply, list) else "object" if isinstance(reply, dict) else "scalar"
+        calls = request if isinstance(request, list) else [request]
+        replies = reply if isinstance(reply, list) else [reply]
+        require(isinstance(request, list) == isinstance(reply, list), "shape")
+        require(len(replies) == len(calls), "count")
+        indexed = {}
+        for item in replies:
+            require(isinstance(item, dict) and item.get("jsonrpc") == "2.0", "reply")
+            index = item.get("id")
+            require(type(index) is int and index not in indexed, "id")
+            indexed[index] = item
+        require(set(indexed) == {call["id"] for call in calls}, "ids")
+        result["ids_valid"] = True
+        for call in calls:
+            item = indexed[call["id"]]
+            require("error" not in item, "RPC error")
+            value = quantity(item.get("result"))
+            if call["method"] == "eth_chainId":
+                result["chain_match"] = value == chain_id
+        result["quantities_valid"] = True
+    except Exception:
+        pass  # The server's response and error text must never reach the log.
+    return result
+
+
+def diagnostic_probe(url, request, chain_id, budget, transport, label, user_agent=None, http1=False):
+    result = {"probe": label, "status": "transport_error", "http_status": None,
+              "response_shape": "unavailable", "ids_valid": False,
+              "quantities_valid": False, "chain_match": None}
+    timeout = min(8, budget.remaining())
+    signal.setitimer(signal.ITIMER_REAL, timeout)
+    try:
+        payload = canonical(request)
+        if transport == "curl":
+            args = ["curl", "--disable", "--silent", "--globoff", "--config", "-", "--proto", "=http,https",
+                    "--max-time", str(timeout), "--max-filesize", str(MAX_DIAGNOSTIC_BYTES),
+                    "--write-out", "\n%{http_code}"]
+            if http1:
+                args.append("--http1.1")
+            code, output = bounded_command(args, curl_config(url, payload, user_agent), timeout,
+                                           MAX_DIAGNOSTIC_BYTES + 4)
+            data, _, status = output.rpartition(b"\n")
+            require(re.fullmatch(rb"[0-9]{3}", status), "missing HTTP status")
+            result["http_status"] = int(status)
+            if code != 0:
+                return result
+        else:
+            try:
+                response = urllib.request.urlopen(rpc_request(url, payload, user_agent), timeout=timeout)
+            except urllib.error.HTTPError as error:
+                response = error
+            with response:
+                result["http_status"] = response.code
+                data = response.read(MAX_DIAGNOSTIC_BYTES + 1)
+        if len(data) > MAX_DIAGNOSTIC_BYTES:
+            raise OverflowError()
+        result.update(diagnostic_response(data, request, chain_id), status="response")
+    except (TimeoutError, subprocess.TimeoutExpired):
+        result["status"] = "timeout"
+    except OverflowError:
+        result["status"] = "response_too_large"
+    except Exception:
+        pass
+    finally:
+        remaining = budget.deadline - time.monotonic()
+        signal.setitimer(signal.ITIMER_REAL, max(0, remaining))
+    return result
+
+
+def diagnose(url, chain_id):
+    """A bounded transport experiment only; never used as an oracle fallback."""
+    budget = Budget(60)
+    batch = [{"jsonrpc": "2.0", "id": i, "method": method, "params": []}
+             for i, method in enumerate(("eth_chainId", "eth_blockNumber"))]
+    probes = []
+    def probe(transport, label, request=batch, **kwargs):
+        result = diagnostic_probe(url, request, chain_id, budget, transport, label, **kwargs)
+        probes.append(result)
+        return (result["status"] == "response" and result["http_status"] == 200 and
+                result["ids_valid"] and result["quantities_valid"] and result["chain_match"] is not False)
+    curl_ok = probe("curl", "curl_batch")
+    urllib_ok = probe("urllib", "urllib_batch")
+    if not curl_ok:
+        probe("curl", "curl_chain_object", batch[0])
+        probe("curl", "curl_height_object", batch[1])
+        probe("curl", "curl_height_array", [batch[1]])
+    elif not urllib_ok:
+        python_agent = "Python-urllib/" + str(sys.version_info.major) + "." + str(sys.version_info.minor)
+        probe("curl", "curl_python_agent", user_agent=python_agent)
+        code, version = bounded_command(["curl", "--disable", "--version"], b"",
+                                        min(2, budget.remaining()), 4096)
+        match = re.match(rb"curl ([0-9]+\.[0-9]+\.[0-9]+)(?:\s|$)", version)
+        require(code == 0 and match is not None, "curl version unavailable")
+        probe("urllib", "urllib_curl_agent", user_agent="curl/" + match[1].decode("ascii"))
+        probe("curl", "curl_http1", http1=True)
+    return {"status": "completed", "probes": probes}
 
 
 def header_record(header):
@@ -333,6 +503,8 @@ def finalize(work_dir):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
+    diagnostic = sub.add_parser("diagnose")
+    diagnostic.add_argument("--chain-id", type=int, required=True)
     preflight = sub.add_parser("preflight")
     preflight.add_argument("--chain-id", type=int, required=True)
     finish = sub.add_parser("finalize")
@@ -349,6 +521,19 @@ def main():
     capture.add_argument("--git-sha", required=True)
     capture.add_argument("--deadline-seconds", type=int, default=1200)
     args = parser.parse_args()
+    if args.command == "diagnose":
+        def diagnostic_expired(_signum, _frame):
+            raise TimeoutError()
+        signal.signal(signal.SIGALRM, diagnostic_expired)
+        signal.alarm(60)
+        try:
+            result = diagnose(os.environ["REPLAY_RPC_URL"], args.chain_id)
+        except Exception:
+            result = {"status": "stopped"}
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+        print(json.dumps(result))
+        return 0 if result["status"] == "completed" else 1
     if args.command == "preflight":
         def preflight_expired(_signum, _frame):
             raise ValueError("receipt preflight deadline exceeded")

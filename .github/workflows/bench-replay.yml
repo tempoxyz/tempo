@@ -31,6 +31,10 @@ on:
         description: "Compare full historical receipts after each pass (correctness check, outside timing)"
         type: boolean
         default: false
+      diagnose-rpc:
+        description: "Only diagnose source RPC transport; skip builds, replay, and notifications"
+        type: boolean
+        default: false
       samply:
         description: "Enable samply profiling"
         type: string
@@ -192,7 +196,33 @@ permissions:
   id-token: write
 
 jobs:
+  diagnose-rpc:
+    if: github.event_name == 'workflow_dispatch' && inputs.diagnose-rpc
+    runs-on: [self-hosted, Linux, X64, bare-metal-dual-schelk]
+    timeout-minutes: 5
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          path: rpc-diagnostics
+      - name: Diagnose source RPC
+        working-directory: rpc-diagnostics
+        env:
+          REPLAY_CHAIN: ${{ inputs.chain || 'mainnet' }}
+          REPLAY_RPC_URL: ${{ inputs.chain == 'testnet' && secrets.BENCH_TESTNET_RPC_URL || secrets.BENCH_MAINNET_RPC_URL }}
+        run: |
+          case "$REPLAY_CHAIN" in
+            mainnet) chain_id=4217; export REPLAY_RPC_URL="${REPLAY_RPC_URL:-https://rpc.tempo.xyz}" ;;
+            testnet) chain_id=42431; export REPLAY_RPC_URL="${REPLAY_RPC_URL:-https://rpc.moderato.tempo.xyz}" ;;
+            *) exit 1 ;;
+          esac
+          python3 .github/scripts/bench-replay-receipts.py diagnose --chain-id "$chain_id"
+
   bench-replay:
+    if: ${{ !inputs.diagnose-rpc }}
     permissions:
       contents: read
       id-token: write
