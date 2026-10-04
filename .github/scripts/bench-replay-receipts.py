@@ -26,6 +26,7 @@ MAX_TOTAL_BYTES = 512 * 1024 * 1024
 MAX_LEDGER_BYTES = 64 * 1024 * 1024
 BATCH_BLOCKS = 8
 MAX_DIAGNOSTIC_BYTES = 64 * 1024
+RPC_USER_AGENT = "tempo-bench-receipts/1.0"
 
 
 def require(condition, message):
@@ -79,9 +80,8 @@ class Budget:
 
 def rpc_request(url, data, user_agent=None):
     parts = urllib.parse.urlsplit(url)
-    headers = {"Content-Type": "application/json"}
-    if user_agent is not None:
-        headers["User-Agent"] = user_agent
+    headers = {"Content-Type": "application/json",
+               "User-Agent": RPC_USER_AGENT if user_agent is None else user_agent}
     authorization = None
     if parts.username is not None:
         # urllib does not translate URL userinfo to HTTP Basic authentication.

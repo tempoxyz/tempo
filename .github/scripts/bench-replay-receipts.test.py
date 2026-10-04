@@ -201,6 +201,7 @@ class ReceiptTests(unittest.TestCase):
         for authority in ("example.invalid", "example.invalid:443", "[::1]:8545"):
             def open_request(request, timeout):
                 self.assertEqual(request.full_url, f"https://{authority}/rpc?token=fixture")
+                self.assertEqual(request.get_header("User-agent"), "tempo-bench-receipts/1.0")
                 self.assertEqual(request.get_header("Authorization"),
                                  "Basic " + base64.b64encode(b"user@example:pa:ss@word").decode())
                 # Exercise the stdlib's actual host parsing, without opening a socket.
