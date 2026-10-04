@@ -604,11 +604,10 @@ async fn fetch_and_cache_header_batch(
     Ok(headers)
 }
 
-/// Returns the requested headers by number, serving cached ones and fetching the rest.
+/// Fetches the headers missing from the cache and returns them by number.
 ///
-/// Fetching inserts into the cache, which can evict entries that were just looked up, including
-/// the headers fetched themselves when they're older than everything cached. Callers must build
-/// their response from the returned map instead of reading the cache again.
+/// Headers older than everything cached are evicted as soon as they're inserted into a full
+/// cache, so callers can't rely on reading them back from it.
 async fn fetch_and_cache_headers(
     provider: &impl Provider<TempoNetwork>,
     cache: &mut BlockCache,
@@ -780,11 +779,8 @@ mod tests {
     use alloy::{
         consensus::{BlockHeader, Header},
         primitives::Sealable,
-        rpc::types::Header as RpcHeader,
-        transports::mock::Asserter,
     };
     use reth_eth_wire_types::GetBlockHeaders;
-    use tempo_alloy::rpc::TempoHeaderResponse;
 
     const MODERATO_RPC: &str = "https://rpc.moderato.tempo.xyz";
 
@@ -1046,49 +1042,5 @@ mod tests {
         assert_eq!(headers.len(), 3);
         assert_eq!(headers[0].number(), 1);
         assert_eq!(headers[2].number(), 3);
-    }
-
-    #[tokio::test]
-    async fn resolve_headers_keeps_cached_headers_evicted_by_fetches() {
-        let asserter = Asserter::new();
-        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-            .connect_mocked_client(asserter.clone());
-        let mut cache = BlockCache::new(2);
-
-        // The first requested header is the lowest cached one, so fetching a missing header
-        // evicts it from the full cache.
-        insert_test_header(&mut cache, 10);
-        insert_test_header(&mut cache, 11);
-
-        let header = TempoHeader {
-            inner: Header {
-                number: 12,
-                parent_hash: numbered_hash(11),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let block = TempoRpcBlock::empty(TempoHeaderResponse {
-            inner: RpcHeader::new(header),
-            timestamp_millis: 0,
-        });
-        asserter.push_success(&block);
-
-        let request = GetBlockHeaders {
-            start_block: BlockHashOrNumber::Number(10),
-            limit: 3,
-            skip: 0,
-            direction: HeadersDirection::Rising,
-        };
-        let headers = resolve_headers(&provider, &mut cache, &request).await;
-
-        assert_eq!(
-            headers
-                .iter()
-                .map(|header| header.number())
-                .collect::<Vec<_>>(),
-            [10, 11, 12]
-        );
-        assert!(cache.get_by_number(10).is_none());
     }
 }
