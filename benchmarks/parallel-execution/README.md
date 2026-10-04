@@ -189,6 +189,11 @@ from dense generated coverage.
 
 ## Profiling and cloud diagnostics
 
+`profiling=samply-buffered` builds a pinned job-local Samply with larger perf
+buffers, records build provenance and reports allocations and observed lost
+events. It uses 100 Hz sampling and disables Slack. A zero lost-event count alone
+does not prove complete CPU coverage, valid unwinding or lossless accounting.
+
 `profiling=samply-scheduling` adds switch markers at 100 Hz and disables Slack.
 Audit actual schema/loss before interpreting gaps; it supplies neither wakeup
 latency nor blocking stacks. `profiling=kernel-scheduling` requires one pair and

@@ -60,7 +60,20 @@ def start-localnet-consensus-secret-writer [secret_path: string] {
 # Wrap command with samply if enabled
 def wrap-samply [cmd: list<string>, samply: bool, samply_args: list<string>] {
     if $samply {
-        ["samply" "record" ...$samply_args "--" ...$cmd]
+        let override = $env.BENCH_SAMPLY_BINARY? | default ""
+        let binary = if $override == "" {
+            "samply"
+        } else {
+            # Some launchers join argv into a shell command before sudo.
+            if $override !~ '^/[A-Za-z0-9_./-]+$' {
+                error make {msg: "BENCH_SAMPLY_BINARY must be an absolute path without spaces or shell metacharacters"}
+            }
+            if (do { ^test -f $override -a -x $override } | complete).exit_code != 0 {
+                error make {msg: "BENCH_SAMPLY_BINARY must name an executable file"}
+            }
+            $override
+        }
+        [$binary "record" ...$samply_args "--" ...$cmd]
     } else {
         $cmd
     }

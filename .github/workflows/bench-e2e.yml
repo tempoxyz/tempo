@@ -83,6 +83,7 @@ on:
           - "off"
           - samply
           - samply-low-rate
+          - samply-buffered
           - samply-scheduling
           - kernel-scheduling
           - tracy
@@ -393,8 +394,12 @@ jobs:
       BENCH_FEATURE_HARDFORK: ${{ inputs.feature-hardfork }}
       BENCH_TXGEN_REF: ${{ inputs.txgen-ref }}
       BENCH_TOKEN_COUNT: ${{ inputs.token-count || '4' }}
-      BENCH_SAMPLY: ${{ inputs.profiling == 'samply' || inputs.profiling == 'samply-low-rate' || inputs.profiling == 'samply-scheduling' || inputs.profiling == 'kernel-scheduling' || inputs.profiling == 'both' || inputs.samply == true || inputs.samply == 'true' }}
-      BENCH_SAMPLY_ARGS: ${{ inputs.profiling == 'samply-scheduling' && '--per-cpu-threads --cswitch-markers --rate 100' || ((inputs.profiling == 'kernel-scheduling' || inputs.profiling == 'samply-low-rate') && '--rate 100' || '') }}
+      BENCH_SAMPLY: ${{ inputs.profiling == 'samply' || inputs.profiling == 'samply-low-rate' || inputs.profiling == 'samply-buffered' || inputs.profiling == 'samply-scheduling' || inputs.profiling == 'kernel-scheduling' || inputs.profiling == 'both' || inputs.samply == true || inputs.samply == 'true' }}
+      BENCH_SAMPLY_ARGS: ${{ inputs.profiling == 'samply-scheduling' && '--per-cpu-threads --cswitch-markers --rate 100' || ((inputs.profiling == 'kernel-scheduling' || inputs.profiling == 'samply-low-rate' || inputs.profiling == 'samply-buffered') && '--rate 100' || '') }}
+      BENCH_SAMPLY_BUFFERED: ${{ inputs.profiling == 'samply-buffered' }}
+      BENCH_SAMPLY_BINARY: ""
+      BENCH_SAMPLY_BINARY_SHA256: ""
+      BENCH_SAMPLY_BUILD_MANIFEST: ""
       BENCH_SCHED_TRACE: ${{ inputs.profiling == 'kernel-scheduling' }}
       BENCH_TRACY: ${{ inputs.tracy != '' && inputs.tracy || ((inputs.profiling == 'tracy' || inputs.profiling == 'both') && 'tracy' || ((inputs.profiling == 'off' || inputs.profiling == 'samply') && 'off' || 'off')) }}
       BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds || '10' }}
@@ -412,7 +417,7 @@ jobs:
       BENCH_RUN_TYPE: ${{ inputs.run-type || 'dispatch' }}
       BENCH_FORCE_BLOAT: ${{ inputs.force-bloat || 'false' }}
       BENCH_NO_CACHE: ${{ inputs.no-cache || 'false' }}
-      BENCH_NO_SLACK: ${{ (inputs.sequential-peer || inputs.profiling == 'samply-low-rate' || inputs.profiling == 'samply-scheduling' || inputs.profiling == 'kernel-scheduling') && 'true' || inputs.no-slack }}
+      BENCH_NO_SLACK: ${{ (inputs.sequential-peer || inputs.profiling == 'samply-low-rate' || inputs.profiling == 'samply-buffered' || inputs.profiling == 'samply-scheduling' || inputs.profiling == 'kernel-scheduling') && 'true' || inputs.no-slack }}
       # The reusable input defaults to always. Direct manual dispatch has no slack
       # input and uses win-only notifications, without adding a 26th UI input.
       BENCH_SLACK: ${{ inputs.slack || 'on-win' }}
@@ -529,48 +534,6 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ steps.checkout-ref.outputs.ref }}
-
-      - name: Validate profiler options
-        if: env.BENCH_SAMPLY_ARGS != ''
-        run: |
-          mkdir -p bench-results
-          # Match the sudo login-shell context used by start-e2e-local-node.
-          samply_binary="$(sudo bash -lc 'command -v samply')"
-          sudo "$samply_binary" --version > bench-results/samply-version.txt
-          sudo "$samply_binary" record --help > bench-results/samply-record-help.txt
-          python3 - "$samply_binary" "$BENCH_SAMPLY_ARGS" <<'PY'
-          import hashlib, json, os, pathlib, re, sys
-          binary = pathlib.Path(sys.argv[1]).resolve(strict=True)
-          output = pathlib.Path('bench-results')
-          help_text = (output / 'samply-record-help.txt').read_text()
-          arguments = sys.argv[2].split()
-          required = [arg for arg in arguments if arg.startswith('--')] + ['--save-only', '--presymbolicate', '--output']
-          missing = [flag for flag in required if not re.search(
-              r'^\s*(?:-[^\s,]+,\s*)?' + re.escape(flag) + r'(?=\s|=|$)',
-              help_text, re.MULTILINE)]
-          with binary.open('rb') as source:
-              binary_sha256 = hashlib.file_digest(source, 'sha256').hexdigest()
-          provenance = {
-              'mode': ('kernel-scheduling' if os.environ['BENCH_SCHED_TRACE'] == 'true'
-                       else 'samply-scheduling' if '--cswitch-markers' in arguments
-                       else 'samply-low-rate'),
-              'binary_path': str(binary),
-              'binary_sha256': binary_sha256,
-              'version': (output / 'samply-version.txt').read_text().strip(),
-              'record_help_sha256': hashlib.sha256(help_text.encode()).hexdigest(),
-              'additional_record_arguments': arguments,
-              'required_options': required,
-              'missing_options': missing,
-              'launch_context': 'sudo bash -lc',
-              'derek_command_supported': False,
-              'scope': 'Instrumented profiling diagnostic; accepted-block binding and event loss require a separate audit.',
-          }
-          (output / 'samply-provenance.json').write_text(json.dumps(provenance, indent=2) + '\n')
-          if missing:
-              sys.exit('::error::Runner samply lacks required options: ' + ', '.join(missing))
-          print(json.dumps(provenance, indent=2))
-          PY
-          printf 'Profiling diagnostic: Samply options `%s`; kernel trace `%s`; Slack disabled.\n' "$BENCH_SAMPLY_ARGS" "$BENCH_SCHED_TRACE" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Validate kernel scheduler tracing
         if: env.BENCH_SCHED_TRACE == 'true'
@@ -690,6 +653,132 @@ jobs:
           toolchain: 1.98.1
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         continue-on-error: true
+
+      - name: Build buffered Samply recorder
+        id: samply-buffered
+        if: env.BENCH_SAMPLY_BUFFERED == 'true'
+        timeout-minutes: 30
+        env:
+          RUSTC_WRAPPER: ""
+          RUSTC_WORKSPACE_WRAPPER: ""
+          RUSTFLAGS: ""
+          CARGO_ENCODED_RUSTFLAGS: ""
+        run: |
+          set -euo pipefail
+          samply_dir="$(mktemp -d "$RUNNER_TEMP/tempo-samply-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-XXXXXX")"
+          samply_dir="$(realpath -- "$samply_dir")"
+          if ! [[ "$samply_dir" =~ ^/[A-Za-z0-9_./-]+$ ]]; then
+            echo "::error::Recorder directory cannot be passed safely through the benchmark launch shell"
+            exit 1
+          fi
+          git init "$samply_dir/source"
+          git -C "$samply_dir/source" remote add origin https://github.com/mstange/samply
+          git -C "$samply_dir/source" fetch --depth 1 origin 247df8fe0fa259ddb5e671bfe3121728e0d6119d
+          git -C "$samply_dir/source" checkout --detach FETCH_HEAD
+          python3 .github/scripts/bench-samply-buffered.py prepare "$samply_dir/source" "$samply_dir/prepare.json"
+          git -C "$samply_dir/source" diff --binary > "$samply_dir/source.patch"
+          samply_build=(cargo +1.98.1 build --locked --release --jobs 4 --package samply --bin samply
+            --target x86_64-unknown-linux-gnu --target-dir "$samply_dir/target")
+          # Avoid the Tempo checkout's Cargo configuration and build/cache paths.
+          (cd "$samply_dir/source" && "${samply_build[@]}")
+          install -D -m 0755 "$samply_dir/target/x86_64-unknown-linux-gnu/release/samply" "$samply_dir/bin/samply"
+          samply_sha="$(sha256sum -- "$samply_dir/bin/samply" | cut -d ' ' -f 1)"
+          printf 'binary=%s\nbinary_sha256=%s\n' "$samply_dir/bin/samply" "$samply_sha" >> "$GITHUB_OUTPUT"
+          python3 - "$samply_dir" "${samply_build[@]}" <<'PY'
+          import hashlib, json, os, pathlib, subprocess, sys
+          directory = pathlib.Path(sys.argv[1])
+          def sha(path):
+              with path.open('rb') as source:
+                  return hashlib.file_digest(source, 'sha256').hexdigest()
+          preparation = json.loads((directory / 'prepare.json').read_text())
+          for row in preparation['files']:
+              if sha(directory / 'source' / row['path']) != row['patched_sha256']:
+                  raise SystemExit('Patched Samply source changed during build')
+          if sha(directory / 'source/Cargo.lock') != preparation['cargo_lock']['sha256']:
+              raise SystemExit('Pinned Samply Cargo.lock changed during build')
+          configuration = {
+              'argv': sys.argv[2:], 'working_directory': str(directory / 'source'),
+              'environment': {key: os.environ[key] for key in (
+                  'RUSTC_WRAPPER', 'RUSTC_WORKSPACE_WRAPPER', 'RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS')},
+              'rustc': subprocess.check_output(['rustc', '+1.98.1', '-vV'], text=True),
+              'cargo': subprocess.check_output(['cargo', '+1.98.1', '-V'], text=True),
+          }
+          manifest = {
+              'preparation': preparation, 'preparation_sha256': sha(directory / 'prepare.json'),
+              'source_diff_sha256': sha(directory / 'source.patch'),
+              'build': configuration,
+              'toolchain_sha256': hashlib.sha256(json.dumps({key: configuration[key] for key in ('rustc', 'cargo')}, sort_keys=True).encode()).hexdigest(),
+              'build_configuration_sha256': hashlib.sha256(json.dumps(configuration, sort_keys=True).encode()).hexdigest(),
+              'binary_path': str(directory / 'bin/samply'), 'binary_sha256': sha(directory / 'bin/samply'),
+          }
+          (directory / 'build.json').write_text(json.dumps(manifest, indent=2) + '\n')
+          PY
+          printf 'BENCH_SAMPLY_BINARY=%s\nBENCH_SAMPLY_BINARY_SHA256=%s\nBENCH_SAMPLY_BUILD_MANIFEST=%s\n' \
+            "$samply_dir/bin/samply" "$samply_sha" "$samply_dir/build.json" >> "$GITHUB_ENV"
+
+      - name: Validate profiler options
+        if: env.BENCH_SAMPLY_ARGS != ''
+        run: |
+          mkdir -p bench-results
+          # Resolve the override before sudo; the login shell receives an absolute argv token.
+          samply_binary="$BENCH_SAMPLY_BINARY"
+          if [ -z "$samply_binary" ]; then
+            samply_binary="$(sudo bash -lc 'command -v samply')"
+          elif ! [[ "$samply_binary" =~ ^/[A-Za-z0-9_./-]+$ ]] || [ ! -f "$samply_binary" ] || [ ! -x "$samply_binary" ]; then
+            echo "::error::Invalid job-local Samply executable"
+            exit 1
+          fi
+          sudo bash -lc 'exec "$1" --version' _ "$samply_binary" > bench-results/samply-version.txt
+          sudo bash -lc 'exec "$1" record --help' _ "$samply_binary" > bench-results/samply-record-help.txt
+          python3 - "$samply_binary" "$BENCH_SAMPLY_ARGS" <<'PY'
+          import hashlib, json, os, pathlib, re, sys
+          binary = pathlib.Path(sys.argv[1]).resolve(strict=True)
+          output = pathlib.Path('bench-results')
+          help_text = (output / 'samply-record-help.txt').read_text()
+          arguments = sys.argv[2].split()
+          required = [arg for arg in arguments if arg.startswith('--')] + ['--save-only', '--presymbolicate', '--output']
+          missing = [flag for flag in required if not re.search(
+              r'^\s*(?:-[^\s,]+,\s*)?' + re.escape(flag) + r'(?=\s|=|$)',
+              help_text, re.MULTILINE)]
+          with binary.open('rb') as source:
+              binary_sha256 = hashlib.file_digest(source, 'sha256').hexdigest()
+          buffered = os.environ['BENCH_SAMPLY_BUFFERED'] == 'true'
+          provenance = {
+              'mode': ('samply-buffered' if buffered
+                       else 'kernel-scheduling' if os.environ['BENCH_SCHED_TRACE'] == 'true'
+                       else 'samply-scheduling' if '--cswitch-markers' in arguments
+                       else 'samply-low-rate'),
+              'binary_path': str(binary),
+              'binary_sha256': binary_sha256,
+              'version': (output / 'samply-version.txt').read_text().strip(),
+              'record_help_sha256': hashlib.sha256(help_text.encode()).hexdigest(),
+              'additional_record_arguments': arguments,
+              'required_options': required,
+              'missing_options': missing,
+              'launch_context': 'sudo bash -lc',
+              'derek_command_supported': False,
+              'scope': 'Instrumented profiling diagnostic; accepted-block binding and event loss require a separate audit.',
+          }
+          if buffered:
+              manifest_bytes = pathlib.Path(os.environ['BENCH_SAMPLY_BUILD_MANIFEST']).read_bytes()
+              manifest = json.loads(manifest_bytes)
+              if (str(binary) != manifest['binary_path']
+                      or binary_sha256 != manifest['binary_sha256']
+                      or binary_sha256 != os.environ['BENCH_SAMPLY_BINARY_SHA256']
+                      or arguments != ['--rate', '100']
+                      or os.environ['BENCH_SCHED_TRACE'] != 'false'
+                      or os.environ['BENCH_TRACY'] != 'off'
+                      or os.environ['BENCH_NO_SLACK'] != 'true'):
+                  raise SystemExit('Buffered Samply build identity or diagnostic controls changed')
+              provenance['buffered_build'] = manifest
+              provenance['build_manifest_sha256'] = hashlib.sha256(manifest_bytes).hexdigest()
+              provenance['preflight_binary_verified'] = True
+          (output / 'samply-provenance.json').write_text(json.dumps(provenance, indent=2) + '\n')
+          if missing:
+              sys.exit('::error::Runner samply lacks required options: ' + ', '.join(missing))
+          print(json.dumps(provenance, indent=2))
+          PY
+          printf 'Profiling diagnostic: Samply options `%s`; kernel trace `%s`; Slack disabled.\n' "$BENCH_SAMPLY_ARGS" "$BENCH_SCHED_TRACE" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
@@ -1123,6 +1212,11 @@ jobs:
               printf '# Profiling diagnostic runtime command; run from the same workflow checkout.\n'
               printf '# Protected reporter URLs and extra environment values must be supplied through the named environment variables.\n'
               printf '# This is a Bash/Nu command, not a supported Derek bot command.\n'
+              if [ "$BENCH_SAMPLY_BUFFERED" = "true" ]; then
+                printf '%s\n' ': "${BENCH_SAMPLY_BINARY:?Set the absolute path to the matching buffered recorder from samply-provenance.json}"'
+                printf 'test "$(sha256sum -- "$BENCH_SAMPLY_BINARY" | cut -d " " -f 1)" = %q\n' "$BENCH_SAMPLY_BINARY_SHA256"
+                printf '%s\n' 'export BENCH_SAMPLY_BINARY'
+              fi
               samply_command_env=""
               for arg in "${cmd[@]}"; do
                 if [ -n "$samply_command_env" ]; then
@@ -1146,6 +1240,39 @@ jobs:
           echo "DEREK_BENCH_COMMAND=$DEREK_BENCH_COMMAND" >> "$GITHUB_ENV"
 
           "${cmd[@]}"
+
+      - name: Verify buffered recorder after benchmark
+        if: ${{ always() && steps.samply-buffered.outputs.binary != '' }}
+        env:
+          VERIFY_SAMPLY_BINARY: ${{ steps.samply-buffered.outputs.binary }}
+          VERIFY_SAMPLY_SHA256: ${{ steps.samply-buffered.outputs.binary_sha256 }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib
+          output = pathlib.Path('bench-results/samply-provenance.json')
+          output.parent.mkdir(exist_ok=True)
+          provenance = json.loads(output.read_text()) if output.exists() else {
+              'mode': 'samply-buffered', 'preflight_binary_verified': False,
+          }
+          verification = {
+              'binary_path': os.environ['VERIFY_SAMPLY_BINARY'],
+              'expected_sha256': os.environ['VERIFY_SAMPLY_SHA256'],
+              'scope': 'After benchmark step or prior failure; binary identity only, not capture quality.',
+          }
+          try:
+              with pathlib.Path(verification['binary_path']).open('rb') as source:
+                  verification['actual_sha256'] = hashlib.file_digest(source, 'sha256').hexdigest()
+          except OSError as error:
+              verification['error'] = type(error).__name__
+          verification['verified'] = (
+              verification.get('actual_sha256') == verification['expected_sha256']
+              and provenance.get('binary_sha256', verification['expected_sha256']) == verification['expected_sha256'])
+          provenance['post_benchmark_binary_verification'] = verification
+          output.write_text(json.dumps(provenance, indent=2) + '\n')
+          if not verification['verified']:
+              raise SystemExit('Buffered Samply binary changed or disappeared after build')
+          print('Buffered Samply binary hash verified after benchmark step or prior failure.')
+          PY
 
       - name: Generate e2e summary
         id: results-dir
