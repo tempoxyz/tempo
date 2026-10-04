@@ -8,8 +8,9 @@ scripts/data
 coverage/
 
 # Benchmarking artifacts
-/benchmark-artifacts/
-/bench-results/
+# Match both directories and local symlinks to external artifact storage.
+/benchmark-artifacts
+/bench-results
 .bench-tmp/
 contrib/bench/logs/
 report.json
