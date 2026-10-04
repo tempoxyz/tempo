@@ -96,7 +96,7 @@ def validate-mode [mode: string] {
 def build-tempo [bins: list<string>, profile: string, features: string, --no-default-features, --extra-rustflags: string = ""] {
     let bin_args = ($bins | each { |bin| ["--bin" $bin] } | flatten)
     let feature_args = (cargo-feature-args $features $no_default_features)
-    let build_cmd = ["cargo" "build" "--profile" $profile]
+    let build_cmd = ["cargo" "build" "--locked" "--profile" $profile]
         | append $feature_args
         | append $bin_args
     let rustflags = $"($RUSTFLAGS)($extra_rustflags)"
@@ -541,7 +541,7 @@ def build-in-worktree [worktree_dir: string, ref: string, profile: string, featu
 
     print $"Building tempo for ($ref) in ($worktree_dir)..."
     let feature_args = (cargo-feature-args $features $no_default_features)
-    let build_cmd = ["cargo" "build" "--profile" $profile]
+    let build_cmd = ["cargo" "build" "--locked" "--profile" $profile]
         | append $feature_args
         | append ["--bin" "tempo"]
     with-env { RUSTFLAGS: $rustflags } {

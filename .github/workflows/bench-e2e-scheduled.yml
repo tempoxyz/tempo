@@ -197,6 +197,7 @@ jobs:
       run-pairs: "1"
       sequential-peer: true
       no-slack: "true"
+      no-cache: "true"
       otlp: "false"
 
   bench-e2e:
