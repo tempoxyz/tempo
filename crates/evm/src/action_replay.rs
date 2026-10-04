@@ -606,7 +606,7 @@ impl ExpiringNonceReplayState {
 mod tests {
     use super::*;
     use revm::{
-        database::{CacheDB, EmptyDB},
+        database::{EmptyDB, InMemoryDB},
         state::AccountInfo,
     };
 
@@ -640,7 +640,7 @@ mod tests {
     fn recorded_sload_uses_recorded_value_when_slot_is_not_cached() {
         let address = Address::repeat_byte(0x42);
         let slot = U256::from(7);
-        let mut cache_db = CacheDB::new(EmptyDB::default());
+        let mut cache_db = InMemoryDB::default();
         cache_db.insert_account_info(
             address,
             AccountInfo {
@@ -674,7 +674,7 @@ mod tests {
     fn current_sload_uses_recorded_value_when_slot_is_not_cached() {
         let address = Address::repeat_byte(0x42);
         let slot = U256::from(7);
-        let mut cache_db = CacheDB::new(EmptyDB::default());
+        let mut cache_db = InMemoryDB::default();
         cache_db.insert_account_info(
             address,
             AccountInfo {

@@ -733,7 +733,7 @@ mod tests {
 
     /// Integer square root using the Babylonian method
     fn sqrt(x: U256) -> U256 {
-        if x == U256::ZERO {
+        if x.is_zero() {
             return U256::ZERO;
         }
         let mut z = (x + U256::ONE) / uint!(2_U256);
@@ -760,7 +760,7 @@ mod tests {
         };
         amm.pools[pool_id].write(pool)?;
         let liquidity = sqrt(user_amount * validator_amount);
-        amm.total_supply[pool_id].write(liquidity)?;
+        amm.set_total_supply(pool_id, liquidity)?;
         Ok(pool_id)
     }
 

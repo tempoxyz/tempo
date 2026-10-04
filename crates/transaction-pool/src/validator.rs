@@ -5,7 +5,7 @@ use crate::{
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 
-use alloy_consensus::{Transaction, constants::KECCAK_EMPTY};
+use alloy_consensus::Transaction;
 use alloy_evm::{Database, EvmEnv};
 use alloy_primitives::{Address, B256};
 use parking_lot::RwLock;
@@ -831,7 +831,7 @@ where
         Ok(self.db.basic_ref(*address)?.map(|account| Account {
             nonce: account.nonce,
             balance: account.balance,
-            bytecode_hash: (account.code_hash != KECCAK_EMPTY).then_some(account.code_hash),
+            bytecode_hash: (!account.is_empty_code_hash()).then_some(account.code_hash),
         }))
     }
 }
@@ -933,7 +933,6 @@ mod tests {
             envelope::TEMPO_SYSTEM_TX_SIGNATURE,
             tempo_transaction::Call,
             tt_signature::{PrimitiveSignature, TempoSignature},
-            tt_signed::AASigned,
         },
     };
 
@@ -1299,8 +1298,7 @@ mod tests {
         use alloy_signer::SignerSync;
         use alloy_signer_local::PrivateKeySigner;
         use tempo_primitives::transaction::{
-            TempoSignedAuthorization,
-            tt_signature::{PrimitiveSignature, TempoSignature},
+            TempoSignedAuthorization, tt_signature::TempoSignature,
         };
 
         let current_time = std::time::SystemTime::now()
@@ -1318,10 +1316,8 @@ mod tests {
         let signature = authority_signer
             .sign_hash_sync(&authorization.signature_hash())
             .expect("authorization signing should succeed");
-        let tempo_authorization = TempoSignedAuthorization::new_unchecked(
-            authorization,
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
-        );
+        let tempo_authorization =
+            TempoSignedAuthorization::new_unchecked(authorization, TempoSignature::from(signature));
 
         let transaction = TxBuilder::aa(Address::random())
             .fee_token(PATH_USD_ADDRESS)
@@ -1426,10 +1422,7 @@ mod tests {
             ..Default::default()
         };
 
-        let signed = AASigned::new_unhashed(
-            tx,
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
-        );
+        let signed = tx.into_signed(TempoSignature::from(Signature::test_signature()));
         let transaction = TempoPooledTransaction::new(
             TempoTxEnvelope::from(signed).try_into_recovered().unwrap(),
         );
@@ -1484,10 +1477,7 @@ mod tests {
                 .expect("fee payer signing should succeed"),
         );
 
-        let signed = AASigned::new_unhashed(
-            tx,
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
-        );
+        let signed = tx.into_signed(TempoSignature::from(Signature::test_signature()));
 
         let envelope: TempoTxEnvelope = signed.into();
         let transaction = TempoPooledTransaction::new(
@@ -1634,10 +1624,7 @@ mod tests {
     async fn test_aa_intrinsic_gas_validation() {
         use alloy_primitives::{Signature, TxKind};
         use tempo_primitives::transaction::{
-            TempoTransaction,
-            tempo_transaction::Call,
-            tt_signature::{PrimitiveSignature, TempoSignature},
-            tt_signed::AASigned,
+            TempoTransaction, tempo_transaction::Call, tt_signature::TempoSignature,
         };
 
         let current_time = std::time::SystemTime::now()
@@ -1667,12 +1654,7 @@ mod tests {
                 ..Default::default()
             };
 
-            let signed = AASigned::new_unhashed(
-                tx,
-                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-                    Signature::test_signature(),
-                )),
-            );
+            let signed = tx.into_signed(TempoSignature::from(Signature::test_signature()));
             TempoPooledTransaction::new(TempoTxEnvelope::from(signed).try_into_recovered().unwrap())
         };
 
@@ -1730,10 +1712,7 @@ mod tests {
     async fn test_aa_create_tx_with_2d_nonce_intrinsic_gas() {
         use alloy_primitives::Signature;
         use tempo_primitives::transaction::{
-            TempoTransaction,
-            tempo_transaction::Call as TxCall,
-            tt_signature::{PrimitiveSignature, TempoSignature},
-            tt_signed::AASigned,
+            TempoTransaction, tempo_transaction::Call as TxCall, tt_signature::TempoSignature,
         };
 
         let current_time = std::time::SystemTime::now()
@@ -1778,12 +1757,7 @@ mod tests {
                 ..Default::default()
             };
 
-            let signed = AASigned::new_unhashed(
-                tx,
-                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-                    Signature::test_signature(),
-                )),
-            );
+            let signed = tx.into_signed(TempoSignature::from(Signature::test_signature()));
             TempoPooledTransaction::new(TempoTxEnvelope::from(signed).try_into_recovered().unwrap())
         };
 
@@ -1885,10 +1859,7 @@ mod tests {
     async fn test_expiring_nonce_intrinsic_gas_uses_lower_cost() {
         use alloy_primitives::{Signature, TxKind};
         use tempo_primitives::transaction::{
-            TempoTransaction,
-            tempo_transaction::Call,
-            tt_signature::{PrimitiveSignature, TempoSignature},
-            tt_signed::AASigned,
+            TempoTransaction, tempo_transaction::Call, tt_signature::TempoSignature,
         };
 
         let current_time = std::time::SystemTime::now()
@@ -1917,12 +1888,7 @@ mod tests {
                 ..Default::default()
             };
 
-            let signed = AASigned::new_unhashed(
-                tx,
-                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-                    Signature::test_signature(),
-                )),
-            );
+            let signed = tx.into_signed(TempoSignature::from(Signature::test_signature()));
             TempoPooledTransaction::new(TempoTxEnvelope::from(signed).try_into_recovered().unwrap())
         };
 
@@ -1964,10 +1930,7 @@ mod tests {
     async fn test_existing_2d_nonce_key_intrinsic_gas() {
         use alloy_primitives::{Signature, TxKind};
         use tempo_primitives::transaction::{
-            TempoTransaction,
-            tempo_transaction::Call,
-            tt_signature::{PrimitiveSignature, TempoSignature},
-            tt_signed::AASigned,
+            TempoTransaction, tempo_transaction::Call, tt_signature::TempoSignature,
         };
 
         let current_time = std::time::SystemTime::now()
@@ -1995,12 +1958,7 @@ mod tests {
                 ..Default::default()
             };
 
-            let signed = AASigned::new_unhashed(
-                tx,
-                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-                    Signature::test_signature(),
-                )),
-            );
+            let signed = tx.into_signed(TempoSignature::from(Signature::test_signature()));
             TempoPooledTransaction::new(TempoTxEnvelope::from(signed).try_into_recovered().unwrap())
         };
 
@@ -2381,10 +2339,8 @@ mod tests {
         use alloy_eips::eip7702::Authorization;
         use alloy_primitives::{Signature, TxKind};
         use tempo_primitives::transaction::{
-            TempoSignedAuthorization, TempoTransaction,
-            tempo_transaction::Call,
-            tt_signature::{PrimitiveSignature, TempoSignature},
-            tt_signed::AASigned,
+            TempoSignedAuthorization, TempoTransaction, tempo_transaction::Call,
+            tt_signature::TempoSignature,
         };
 
         // Create dummy authorizations
@@ -2397,9 +2353,7 @@ mod tests {
                 };
                 TempoSignedAuthorization::new_unchecked(
                     auth,
-                    TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-                        Signature::test_signature(),
-                    )),
+                    TempoSignature::from(Signature::test_signature()),
                 )
             })
             .collect();
@@ -2425,10 +2379,7 @@ mod tests {
             key_authorization: None,
         };
 
-        let signed_tx = AASigned::new_unhashed(
-            tx_aa,
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
-        );
+        let signed_tx = tx_aa.into_signed(TempoSignature::from(Signature::test_signature()));
         let envelope: TempoTxEnvelope = signed_tx.into();
         let recovered = envelope.try_into_recovered().unwrap();
         TempoPooledTransaction::new(recovered)
@@ -2677,8 +2628,7 @@ mod tests {
         use alloy_eips::eip7702::Authorization;
         use alloy_primitives::Signature;
         use tempo_primitives::transaction::{
-            TempoSignedAuthorization,
-            tt_signature::{PrimitiveSignature, TempoSignature},
+            TempoSignedAuthorization, tt_signature::TempoSignature,
         };
 
         let current_time = std::time::SystemTime::now()
@@ -2701,7 +2651,7 @@ mod tests {
         };
         let authorization = TempoSignedAuthorization::new_unchecked(
             auth,
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
+            TempoSignature::from(Signature::test_signature()),
         );
 
         let transaction = TxBuilder::aa(Address::random())
@@ -3367,17 +3317,11 @@ mod tests {
                 key_authorization,
                 ..Default::default()
             };
-            let unsigned = AASigned::new_unhashed(
-                tx.clone(),
-                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-                    Signature::test_signature(),
-                )),
-            );
+            let unsigned = tx
+                .clone()
+                .into_signed(TempoSignature::from(Signature::test_signature()));
             let signature = root.sign_hash_sync(&unsigned.signature_hash()).unwrap();
-            let signed = AASigned::new_unhashed(
-                tx,
-                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
-            );
+            let signed = tx.into_signed(TempoSignature::from(signature));
             TempoPooledTransaction::new(TempoTxEnvelope::from(signed).try_into_recovered().unwrap())
         };
 

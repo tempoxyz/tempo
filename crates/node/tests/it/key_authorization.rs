@@ -58,11 +58,7 @@ fn build_create_key_auth_tx(
     };
 
     let tx_sig = signer.sign_hash_sync(&tx.signature_hash())?;
-    let envelope: TempoTxEnvelope = tx
-        .into_signed(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            tx_sig,
-        )))
-        .into();
+    let envelope: TempoTxEnvelope = tx.into_signed(TempoSignature::from(tx_sig)).into();
 
     Ok(envelope.encoded_2718())
 }

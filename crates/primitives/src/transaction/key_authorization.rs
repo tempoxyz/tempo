@@ -1046,17 +1046,7 @@ mod tests {
     }
 
     fn make_auth_with_chain_id(chain_id: u64) -> KeyAuthorization {
-        KeyAuthorization {
-            chain_id,
-            key_type: SignatureType::Secp256k1,
-            key_id: Address::random(),
-            expiry: None,
-            limits: None,
-            allowed_calls: None,
-            witness: None,
-            is_admin: false,
-            account: None,
-        }
+        KeyAuthorization::unrestricted(chain_id, SignatureType::Secp256k1, Address::random())
     }
 
     #[test]

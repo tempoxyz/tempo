@@ -715,7 +715,7 @@ async fn test_payment_lane_gas_limits_channel_reserve() -> eyre::Result<()> {
         .await?;
     let sig = payer.sign_hash_sync(&digest)?;
     let settle_r = reserve
-        .settle(desc, settle_amount, Bytes::copy_from_slice(&sig.as_bytes()))
+        .settle(desc, settle_amount, Bytes::from(sig.as_bytes()))
         .gas(5_000_000)
         .max_fee_per_gas(TEMPO_T1_BASE_FEE as u128)
         .max_priority_fee_per_gas(0)

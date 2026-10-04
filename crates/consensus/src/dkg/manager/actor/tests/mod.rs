@@ -1862,7 +1862,7 @@ fn outcome_request_switches_notarized_ancestry_branches() {
         assert_eq!(first_output, state.output);
         assert_eq!(second_output, state.output);
         let fetch_round = |view| DigestFallback::FetchByRound {
-            round: ConsensusRound::new(Epoch::new(0), View::new(view)),
+            round: ConsensusRound::new(Epoch::zero(), View::new(view)),
         };
         // Use each branch's parent views, including skipped views, rather
         // than deriving the fetch round from the height or the child's view.

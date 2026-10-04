@@ -16,13 +16,10 @@ use common::{
     hardfork_bench_cases, txgen_signers,
 };
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
-use reth_revm::DatabaseCommit;
-use revm::{
-    context::JournalTr,
-    database::{CacheDB, EmptyDB},
-};
-use std::{hint::black_box, sync::Arc};
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
+use reth_revm::{DatabaseCommit, db::InMemoryDB};
+use revm::context::JournalTr;
+use std::hint::black_box;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{IStablecoinDEX, ITIP20, tip20_factory::createTokenCall};
 use tempo_evm::{TempoEvmConfig, TempoEvmFactory};
 use tempo_precompiles::{
@@ -58,9 +55,9 @@ fn seed_dex_cache_db(
     participants: &[Address],
     block_timestamp: u64,
     hardfork: TempoHardfork,
-) -> CacheDB<EmptyDB> {
+) -> InMemoryDB {
     let mut evm = TempoEvmFactory::default().create_evm(
-        CacheDB::new(EmptyDB::default()),
+        InMemoryDB::default(),
         common::bench_env(hardfork, block_timestamp),
     );
     let admin = participants
@@ -151,8 +148,7 @@ fn sign_dex_calls(
     use common::{CHAIN_ID, DEFAULT_BLOCK_TIMESTAMP, TXGEN_FEE_PER_GAS};
     use std::num::NonZeroU64;
     use tempo_primitives::{
-        AASigned, TempoSignature, TempoTransaction,
-        transaction::{PrimitiveSignature, TEMPO_EXPIRING_NONCE_KEY},
+        TempoSignature, TempoTransaction, transaction::TEMPO_EXPIRING_NONCE_KEY,
     };
 
     let tx = TempoTransaction {
@@ -174,10 +170,7 @@ fn sign_dex_calls(
     let signature = signer
         .sign_hash_sync(&tx.signature_hash())
         .expect("failed to sign generated DEX transaction");
-    let signed = AASigned::new_unhashed(
-        tx,
-        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
-    );
+    let signed = tx.into_signed(TempoSignature::from(signature));
 
     TempoTxEnvelope::from(signed)
         .try_into_recovered()
@@ -356,7 +349,7 @@ fn dex_bench_workloads() -> Vec<DexBenchWorkload> {
 }
 fn dex_order_execution(c: &mut Criterion) {
     let hardfork_cases = hardfork_bench_cases();
-    let config = TempoEvmConfig::new(Arc::new(TempoChainSpec::moderato()));
+    let config = TempoEvmConfig::moderato();
 
     let dex_workloads = dex_bench_workloads();
     for &(label, hardfork) in &hardfork_cases {

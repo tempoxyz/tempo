@@ -15,6 +15,7 @@
 //! 7. Multiple storage-creating txs in a single block correctly accumulate exemptions
 //! 8. Reverted inner CALLs do NOT contribute state gas to the parent frame's exemption
 
+use alloy_primitives::B256;
 use reth_e2e_test_utils::wallet::Wallet;
 use reth_node_api::BuiltPayload;
 
@@ -25,7 +26,7 @@ use alloy::{
     providers::Provider,
     sol_types::SolCall,
 };
-use alloy_eips::{BlockId, BlockNumberOrTag, Encodable2718};
+use alloy_eips::{BlockId, Encodable2718};
 use reth_e2e_test_utils::wait::poll_until;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
@@ -40,7 +41,7 @@ async fn get_createx_deployed_address<P: Provider>(
     provider: &P,
     block_number: u64,
 ) -> eyre::Result<Address> {
-    let block_id = BlockId::Number(BlockNumberOrTag::Number(block_number));
+    let block_id = BlockId::number(block_number);
     poll_until(
         format!("deploy receipts at block {block_number}"),
         || async move {
@@ -53,9 +54,7 @@ async fn get_createx_deployed_address<P: Provider>(
                         .find(|r| !r.inner.logs().is_empty())
                         .expect("should have a receipt with logs");
                     assert!(receipt.status(), "deployment should succeed");
-                    Address::from_slice(
-                        &receipt.inner.logs()[0].inner.data.topics()[1].as_slice()[12..],
-                    )
+                    Address::from_word(receipt.inner.logs()[0].inner.data.topics()[1])
                 }))
         },
     )
@@ -67,7 +66,7 @@ async fn total_receipt_gas_for_block<P: Provider>(
     provider: &P,
     block_number: u64,
 ) -> eyre::Result<u64> {
-    let block_id = BlockId::Number(BlockNumberOrTag::Number(block_number));
+    let block_id = BlockId::number(block_number);
     poll_until(format!("receipts at block {block_number}"), || async move {
         Ok(provider
             .get_block_receipts(block_id)
@@ -170,10 +169,7 @@ async fn test_tip1016_sstore_zero_to_nonzero_exempts_storage_gas() -> eyre::Resu
     let contract_addr = get_createx_deployed_address(&provider, deploy_block_number).await?;
 
     // Step 2: Call the deployed contract to trigger SSTORE zero->non-zero at slot 42
-    let calldata: Bytes = alloy_primitives::B256::left_padding_from(&42u64.to_be_bytes())
-        .as_slice()
-        .to_vec()
-        .into();
+    let calldata: Bytes = B256::left_padding_from(&42u64.to_be_bytes()).into();
     let call_raw = build_call_tx(&mut account, contract_addr, calldata).await;
     let (_, call_payload) = setup.node.inject_and_advance(call_raw).await?;
 
@@ -231,13 +227,13 @@ async fn test_tip1016_sstore_nonzero_to_nonzero_no_exemption() -> eyre::Result<(
     // First call: SSTORE zero->non-zero at slot 0
     let mut calldata1 = [0u8; 64];
     calldata1[63] = 1; // value = 1
-    let call1_raw = build_call_tx(&mut account, contract_addr, calldata1.to_vec().into()).await;
+    let call1_raw = build_call_tx(&mut account, contract_addr, calldata1.into()).await;
     setup.node.inject_and_advance(call1_raw).await?;
 
     // Second call: SSTORE non-zero->non-zero at slot 0 (value 1->2)
     let mut calldata2 = [0u8; 64];
     calldata2[63] = 2; // value = 2
-    let call2_raw = build_call_tx(&mut account, contract_addr, calldata2.to_vec().into()).await;
+    let call2_raw = build_call_tx(&mut account, contract_addr, calldata2.into()).await;
     let (_, call2_payload) = setup.node.inject_and_advance(call2_raw).await?;
 
     let blk_number = call2_payload.block().header().inner.number;
@@ -380,7 +376,7 @@ async fn test_tip1016_reverted_sstore_still_exempts_state_gas() -> eyre::Result<
     let receipts_total_gas = total_receipt_gas_for_block(&provider, call_block_number).await?;
 
     // Verify the tx reverted by checking receipts
-    let block_id = BlockId::Number(BlockNumberOrTag::Number(call_block_number));
+    let block_id = BlockId::number(call_block_number);
     let receipts = provider
         .get_block_receipts(block_id)
         .await?
@@ -519,14 +515,8 @@ async fn test_tip1016_two_storage_txs_same_block() -> eyre::Result<()> {
     let contract_addr = get_createx_deployed_address(&provider, deploy_blk).await?;
 
     // Submit two txs that each do SSTORE zero->non-zero at different slots
-    let slot_100: Bytes = alloy_primitives::B256::left_padding_from(&100u64.to_be_bytes())
-        .as_slice()
-        .to_vec()
-        .into();
-    let slot_200: Bytes = alloy_primitives::B256::left_padding_from(&200u64.to_be_bytes())
-        .as_slice()
-        .to_vec()
-        .into();
+    let slot_100: Bytes = B256::left_padding_from(&100u64.to_be_bytes()).into();
+    let slot_200: Bytes = B256::left_padding_from(&200u64.to_be_bytes()).into();
 
     let tx1_raw = build_call_tx(&mut account, contract_addr, slot_100).await;
     let tx2_raw = build_call_tx(&mut account, contract_addr, slot_200).await;
@@ -643,10 +633,7 @@ async fn test_tip1016_inner_call_revert_no_state_gas_exemption() -> eyre::Result
 
     // Step 3: Call A, passing B's address as calldata.
     // A will CALL B, B does SSTORE + REVERT, A continues and STOPs.
-    let b_addr_calldata: Bytes = alloy_primitives::B256::left_padding_from(b_addr.as_slice())
-        .as_slice()
-        .to_vec()
-        .into();
+    let b_addr_calldata: Bytes = b_addr.into_word().into();
 
     let call_raw = build_call_tx(&mut account, a_addr, b_addr_calldata).await;
     let (_, call_payload) = setup.node.inject_and_advance(call_raw).await?;
@@ -656,7 +643,7 @@ async fn test_tip1016_inner_call_revert_no_state_gas_exemption() -> eyre::Result
     let receipts_total_gas = total_receipt_gas_for_block(&provider, call_blk).await?;
 
     // Verify the tx succeeded (A ignores B's revert)
-    let block_id = BlockId::Number(BlockNumberOrTag::Number(call_blk));
+    let block_id = BlockId::number(call_blk);
     let receipts = provider
         .get_block_receipts(block_id)
         .await?

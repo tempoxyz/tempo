@@ -19,7 +19,7 @@ use commonware_consensus::{
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_resolver::opaque;
-use commonware_runtime::{Clock, Metrics, Spawner, telemetry::metrics::Registered};
+use commonware_runtime::{Clock, Metrics, Spawner};
 use eyre::Report;
 use parking_lot::Mutex;
 use prometheus_client::metrics::counter::Counter;
@@ -108,7 +108,7 @@ struct Fetcher<TContext, P, U, N> {
     upstream: U,
     block_network: N,
     upstream_request_timeout: Duration,
-    upstream_request_timeouts: Registered<Counter>,
+    upstream_request_timeouts: commonware_runtime::telemetry::metrics::Counter,
     retries: Arc<Mutex<RetryState>>,
 }
 

@@ -212,8 +212,8 @@ fn verifications_queue_per_round_and_builds_keep_their_own_slot() {
             crate::executor::Config {
                 execution_node: FakeExecution::new(),
                 marshal: FakeMarshal::new(),
-                finalized_floor: Height::new(0),
-                finalized_tip: (round(0), Height::new(0), GENESIS),
+                finalized_floor: Height::zero(),
+                finalized_tip: (round(0), Height::zero(), GENESIS),
                 fcu_heartbeat_interval: std::time::Duration::from_secs(3600),
                 public_key: None,
             },

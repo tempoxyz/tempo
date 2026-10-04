@@ -416,7 +416,7 @@ mod tests {
         let data_slot = calc_data_slot(base_slot);
 
         // Manual computation
-        let expected = U256::from_be_bytes(keccak256(base_slot.to_be_bytes::<32>()).0);
+        let expected = crate::storage::vec::calc_data_slot(base_slot);
 
         assert_eq!(
             data_slot, expected,

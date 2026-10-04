@@ -191,8 +191,7 @@ impl TempoPooledTransaction {
         self.inner
             .transaction
             .as_aa()
-            .map(|tx| !tx.tx().nonce_key.is_zero())
-            .unwrap_or(false)
+            .is_some_and(|tx| !tx.tx().nonce_key.is_zero())
     }
 
     /// Returns true if this is an expiring nonce transaction.
@@ -864,14 +863,10 @@ impl PoolTransaction for TempoPooledTransaction {
     }
 
     fn requires_nonce_check(&self) -> bool {
-        self.inner
-            .transaction()
-            .as_aa()
-            .map(|tx| {
-                // for AA transaction with a custom nonce key we can skip the nonce validation
-                tx.tx().nonce_key.is_zero()
-            })
-            .unwrap_or(true)
+        self.inner.transaction().as_aa().is_none_or(|tx| {
+            // for AA transaction with a custom nonce key we can skip the nonce validation
+            tx.tx().nonce_key.is_zero()
+        })
     }
 
     fn requires_nonce_bound_check(&self) -> bool {
@@ -1148,10 +1143,8 @@ mod tests {
     use tempo_contracts::precompiles::ITIP20;
     use tempo_precompiles::{PATH_USD_ADDRESS, nonce::NonceManager};
     use tempo_primitives::transaction::{
-        TEMPO_EXPIRING_NONCE_KEY, TempoTransaction,
-        tempo_transaction::Call,
-        tt_signature::{PrimitiveSignature, TempoSignature},
-        tt_signed::AASigned,
+        TEMPO_EXPIRING_NONCE_KEY, TempoTransaction, tempo_transaction::Call,
+        tt_signature::TempoSignature,
     };
 
     const TEMPO_TRANSACTION_ARBITRARY_SIZE: usize = 4096;
@@ -1161,10 +1154,7 @@ mod tests {
         let signature = signer
             .sign_hash_sync(&tx.signature_hash())
             .expect("signing failed");
-        let signed = AASigned::new_unhashed(
-            tx,
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
-        );
+        let signed = tx.into_signed(TempoSignature::from(signature));
         (signed.into(), signer.address())
     }
 
@@ -1560,9 +1550,8 @@ mod tests {
             ..Default::default()
         };
 
-        let signature =
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
-        let aa_signed = AASigned::new_unhashed(aa_tx, signature);
+        let signature = TempoSignature::from(Signature::test_signature());
+        let aa_signed = aa_tx.into_signed(signature);
         let envelope: TempoTxEnvelope = aa_signed.into();
         let recovered = Recovered::new_unchecked(envelope, sender);
 
