@@ -382,12 +382,9 @@ where
             .collect()
     }
 
-    /// Returns a state provider for the current tip and a state cache valid for that same tip.
+    /// Returns the current tip's state provider and matching read cache.
     ///
-    /// The tip hash is read once and the provider is built for exactly that block, so the provider
-    /// and the cache tag always refer to the same state. Reading `latest()` and the tip separately
-    /// would let a tip that commits in between pair the older provider with the newer tip's
-    /// cache, and the provider's reads would then be written into that cache.
+    /// Using one tip hash prevents a concurrent head update from pairing old state with a new cache.
     fn latest_state_provider_and_cache(
         &self,
     ) -> ProviderResult<(StateProviderBox, Arc<StateCache>)> {
@@ -396,10 +393,7 @@ where
         self.provider_and_cache_for_tip(tip, tip_provider)
     }
 
-    /// Returns the shared cache if it matches `tip_hash`, otherwise an empty ephemeral cache.
-    ///
-    /// A mismatch happens when `on_new_head_block` has already re-tagged the validator's cached
-    /// state for a newer tip than `tip_hash`.
+    /// Returns the shared cache if its tip matches `tip_hash`, otherwise a fresh cache.
     fn state_cache_for_tip(&self, tip_hash: B256) -> Arc<StateCache> {
         let (cached_tip_hash, cached_state) = self.cached_state.read().clone();
         if cached_tip_hash == tip_hash {
@@ -409,12 +403,9 @@ where
         }
     }
 
-    /// Pairs `tip_provider`, the state provider obtained for `tip`, with the cache for `tip`.
+    /// Uses the tip's cache when its state provider is available.
     ///
-    /// If no provider could be obtained for `tip`, for example because the block was reorged out
-    /// right after the tip was read, this falls back to the latest state. That state cannot be
-    /// attributed to a known tip, so it is paired with an ephemeral cache and none of its reads
-    /// reach the shared cache.
+    /// Falls back to `latest()` with a private cache because the fallback state's tip is unknown.
     fn provider_and_cache_for_tip(
         &self,
         tip: B256,
@@ -1264,8 +1255,7 @@ mod tests {
         assert!(!Arc::ptr_eq(&validation_cache, &shared_cache));
     }
 
-    /// Interleaving: the provider is taken for tip X, then `on_new_head_block` re-tags the shared
-    /// cache for tip Y before the cache is looked up. X-state reads must not reach the Y cache.
+    /// A head update between provider and cache lookup must keep old state out of the new cache.
     #[test]
     fn provider_for_old_tip_never_uses_cache_retagged_to_new_tip() {
         let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
@@ -1295,14 +1285,12 @@ mod tests {
         let shared_cache = Arc::new(StateCache::default());
         *validator.cached_state.write() = (tip, shared_cache.clone());
 
-        // Even though the shared cache is tagged with `tip`, state that is not known to belong to
-        // `tip` must never be paired with it.
+        // Fallback state must not use the shared cache, even when its tag matches `tip`.
         let (provider, validation_cache) = validator
             .provider_and_cache_for_tip(tip, Err(ProviderError::StateForHashNotFound(tip)))
             .unwrap();
 
         assert!(!Arc::ptr_eq(&validation_cache, &shared_cache));
-        // The fallback provider is usable.
         provider.basic_account(&Address::ZERO).unwrap();
     }
 
