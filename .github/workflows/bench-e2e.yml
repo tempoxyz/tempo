@@ -524,7 +524,9 @@ jobs:
       - name: Render txgen spec
         run: |
           rm -rf .bench-tmp/txgen-specs
-          spec_path="$(nu bench-e2e.nu render-txgen-spec --preset "$BENCH_PRESET" --out-dir ".bench-tmp/txgen-specs" | tail -n 1)"
+          spec_path="$(nu bench-e2e.nu render-txgen-spec \
+            --preset "$BENCH_PRESET" --out-dir ".bench-tmp/txgen-specs" \
+            --accounts "$BENCH_ACCOUNTS" --tps "$BENCH_TPS" --duration "$BENCH_DURATION" | tail -n 1)"
           if [ -z "$spec_path" ] || [ ! -f "$spec_path" ]; then
             echo "::error::failed to render txgen spec for preset '$BENCH_PRESET'"
             exit 1
