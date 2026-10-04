@@ -131,6 +131,13 @@ every block to producer and fresh opposite-peer execution, with 1,637 `VALID`
 statuses and no node errors. The archive retains receipt digests rather than
 receipt bodies. Reuse on this generated workload does not establish a speedup.
 
+[Generated validation 37164999238](https://github.com/tempoxyz/tempo/actions/runs/37164999238)
+passes on boxed-result candidate `7cedad7a4`: the same executable with eight versus
+zero execution workers matches finalized roots, ordered transactions and full
+receipts for 187 blocks containing 1,579,481 transactions. Engine reuse is 534,584
+and included builder reuse is at least 789,795; both peers produce dense blocks.
+The archive retains receipt digests; full receipt comparison ran live.
+
 ```sh
 gh workflow run bench-e2e-scheduled.yml --ref onbjerg/parallel-execution \
   -F sequential-peer=true -f ref='<candidate-sha>'
@@ -830,6 +837,20 @@ percentiles, which filter their own samples separately. The wider
 lead is reverted because its root benefit is offset by lost reuse. All 6,157
 observed payload statuses are `VALID`; this does not replace sequential oracles.
 The workflow's on-win Slack step succeeds; it does not retain a message ID.
+
+[Boxed-result comparison 37165703119](https://github.com/tempoxyz/tempo/actions/runs/37165703119)
+compares `1c86a7ab5` with `7cedad7a4` in three 90-second pairs at 50,000 offered
+TPS. The official result is improvement: block-interval p99 falls 34.06%, with no
+significant regressions. Achieved TPS rises from 13,506 to 14,330, statistically
+neutral. All 8,267,605 accepted transactions reconcile exactly with sender reports;
+all six terminal peer heads agree and all 6,092 payload statuses are `VALID`.
+Retained-result lock wait/hold fall from 0.715/0.461 to 0.143/0.109 microseconds
+per accepted transaction, and Engine reuse rises from 76.44% to 80.51%. Total
+Engine wall time on the official block cohort improves only 0.85% descriptively;
+moving unboxing outside the lock explains part of the shorter hold interval.
+Retain boxed results. This comparison is against the previous parallel executor,
+not main, and does not establish 50,000 achieved TPS. The win-only Slack notifier
+succeeds without retaining a delivery receipt.
 
 A local experiment made contended prefix reads fall back to the parent provider.
 It preserved differential correctness but reduced eight-worker reuse from about
