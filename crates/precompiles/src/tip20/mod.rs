@@ -109,6 +109,14 @@ pub struct TIP20Token {
     user_reward_info: Mapping<Address, UserRewardInfo>,
 }
 
+// Keep the proof consumer's versioned protocol layout tied to the actual generated handlers.
+const _: () = {
+    assert!(slots::TOTAL_SUPPLY.const_eq(&tempo_primitives::tip20::TOTAL_SUPPLY_SLOT));
+    assert!(slots::BALANCES.const_eq(&tempo_primitives::tip20::BALANCES_SLOT));
+    assert!(slots::ALLOWANCES.const_eq(&tempo_primitives::tip20::ALLOWANCES_SLOT));
+    assert!(slots::TOTAL_SUPPLY_OFFSET == 0);
+};
+
 /// EIP-712 Permit typehash: keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)")
 pub const PERMIT_TYPEHASH: B256 = B256::new(
     Keccak256::new()
@@ -1679,6 +1687,27 @@ mod recipient_tests {
                 .validate()
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn light_layout_matches_native_mapping_keys() {
+        use crate::storage::StorageKey as _;
+        for owner in [
+            Address::ZERO,
+            Address::repeat_byte(0xff),
+            alloy::primitives::address!("1234567890123456789012345678901234567890"),
+        ] {
+            assert_eq!(
+                tempo_primitives::tip20::balance_slot(owner),
+                B256::from(owner.mapping_slot(slots::BALANCES))
+            );
+            for spender in [Address::ZERO, Address::repeat_byte(0xab)] {
+                assert_eq!(
+                    tempo_primitives::tip20::allowance_slot(owner, spender),
+                    B256::from(spender.mapping_slot(owner.mapping_slot(slots::ALLOWANCES)))
+                );
+            }
+        }
     }
 
     #[test]

@@ -17,6 +17,7 @@ use jsonrpsee::{
     types::{ErrorObject, error::INTERNAL_ERROR_CODE},
 };
 
+pub use tempo_finality::CertifiedHeader;
 pub use types::{CertifiedBlock, ConsensusFeed, ConsensusState, Event, Query, SharedEvent};
 
 /// Custom error codes for the consensus RPC.
@@ -65,6 +66,15 @@ pub trait TempoConsensusApi {
     #[method(name = "getFinalization")]
     async fn get_finalization(&self, query: Query) -> RpcResult<CertifiedBlock>;
 
+    /// Get a finalization certificate and complete canonical header, without a block body.
+    /// The same query and availability semantics as `getFinalization` apply.
+    #[method(name = "getFinalizedHeader")]
+    async fn get_finalized_header(&self, query: Query) -> RpcResult<CertifiedHeader>;
+
+    /// Subscribe to compact finalized headers. Notifications are untrusted discovery hints.
+    #[subscription(name = "subscribeFinalizedHeaders" => "finalizedHeader", unsubscribe = "unsubscribeFinalizedHeaders", item = CertifiedHeader)]
+    async fn subscribe_finalized_headers(&self) -> jsonrpsee::core::SubscriptionResult;
+
     /// Get the current consensus state snapshot.
     ///
     /// Returns the latest finalized block. The notarized field is retained for compatibility.
@@ -87,21 +97,11 @@ impl<I: ConsensusFeed> TempoConsensusRpc<I> {
     pub fn new(consensus_feed: I) -> Self {
         Self { consensus_feed }
     }
-}
 
-#[async_trait::async_trait]
-impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
-    async fn get_finalization(&self, query: Query) -> RpcResult<CertifiedBlock> {
-        self.consensus_feed.get_finalization(query).await.into()
-    }
-
-    async fn get_latest(&self) -> RpcResult<ConsensusState> {
-        Ok(self.consensus_feed.get_latest().await)
-    }
-
-    async fn subscribe_events(
+    async fn subscribe(
         &self,
         pending: jsonrpsee::PendingSubscriptionSink,
+        compact: bool,
     ) -> jsonrpsee::core::SubscriptionResult {
         let sink = pending.accept().await?;
         let mut rx = self.consensus_feed.subscribe().await.ok_or_else(|| {
@@ -119,10 +119,18 @@ impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
                 };
                 match recv {
                     Ok(event) => {
+                        let json = if compact {
+                            let Some(json) = event.finalized_header_json().await else {
+                                continue;
+                            };
+                            json
+                        } else {
+                            event.json().await
+                        };
                         let msg = jsonrpsee::SubscriptionMessage::new(
                             sink.method_name(),
                             sink.subscription_id().clone(),
-                            &event.json().await,
+                            &json,
                         )
                         .expect("Event should be serializable");
                         if sink.send(msg).await.is_err() {
@@ -136,5 +144,36 @@ impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
         });
 
         Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
+    async fn get_finalization(&self, query: Query) -> RpcResult<CertifiedBlock> {
+        self.consensus_feed.get_finalization(query).await.into()
+    }
+
+    async fn get_finalized_header(&self, query: Query) -> RpcResult<CertifiedHeader> {
+        let block: RpcResult<CertifiedBlock> =
+            self.consensus_feed.get_finalization(query).await.into();
+        block.map(|block| block.header_evidence())
+    }
+
+    async fn get_latest(&self) -> RpcResult<ConsensusState> {
+        Ok(self.consensus_feed.get_latest().await)
+    }
+
+    async fn subscribe_events(
+        &self,
+        pending: jsonrpsee::PendingSubscriptionSink,
+    ) -> jsonrpsee::core::SubscriptionResult {
+        self.subscribe(pending, false).await
+    }
+
+    async fn subscribe_finalized_headers(
+        &self,
+        pending: jsonrpsee::PendingSubscriptionSink,
+    ) -> jsonrpsee::core::SubscriptionResult {
+        self.subscribe(pending, true).await
     }
 }

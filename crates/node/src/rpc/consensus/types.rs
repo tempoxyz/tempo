@@ -27,6 +27,20 @@ pub struct CertifiedBlock {
     pub block: SealedOrRecoveredBlock<Block>,
 }
 
+impl CertifiedBlock {
+    /// Project compact evidence without trusting the remote seal or certificate type.
+    /// Only finalization-feed callers may expose this as finalized-header evidence.
+    pub fn header_evidence(&self) -> tempo_finality::CertifiedHeader {
+        tempo_finality::CertifiedHeader {
+            epoch: self.epoch,
+            view: self.view,
+            digest: self.digest,
+            certificate: self.certificate.clone(),
+            header: self.block.header().clone(),
+        }
+    }
+}
+
 impl Display for CertifiedBlock {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match serde_json::to_string(self) {
@@ -72,6 +86,7 @@ pub struct SharedEvent {
     /// Encoded on first use. tokio's [`OnceCell`] makes concurrent subscribers await that
     /// encoding instead of blocking runtime threads.
     json: OnceCell<Box<RawValue>>,
+    compact_json: OnceCell<Option<Box<RawValue>>>,
 }
 
 impl SharedEvent {
@@ -80,12 +95,30 @@ impl SharedEvent {
         Arc::new(Self {
             event,
             json: Default::default(),
+            compact_json: Default::default(),
         })
     }
 
     /// Returns the underlying event.
     pub const fn event(&self) -> &Event {
         &self.event
+    }
+
+    /// Returns body-independent finalization evidence, encoded once for light subscribers.
+    /// Notarization and nullification events are deliberately excluded.
+    pub async fn finalized_header_json(&self) -> Option<&RawValue> {
+        self.compact_json
+            .get_or_init(|| async {
+                match &self.event {
+                    Event::Finalized { block, .. } => Some(
+                        serde_json::value::to_raw_value(&block.header_evidence())
+                            .expect("CertifiedHeader should be serializable"),
+                    ),
+                    _ => None,
+                }
+            })
+            .await
+            .as_deref()
     }
 
     /// Returns the JSON encoding of the event, serializing it on the first call.
@@ -233,6 +266,36 @@ mod tests {
         let roundtripped = serde_json::to_value(certified).unwrap();
 
         assert_eq!(roundtripped, fixture);
+    }
+
+    #[tokio::test]
+    async fn compact_events_exclude_non_finalizations_and_preserve_full_header() {
+        let block: CertifiedBlock = serde_json::from_value(certified_block_fixture()).unwrap();
+        let shared = SharedEvent::new(Event::Finalized {
+            block: block.clone(),
+            seen: 42,
+        });
+        let compact = shared.finalized_header_json().await.unwrap();
+        let evidence: tempo_finality::CertifiedHeader =
+            serde_json::from_str(compact.get()).unwrap();
+        assert_eq!(evidence, block.header_evidence());
+        assert!(!compact.get().contains("transactions\":"));
+        assert!(
+            SharedEvent::new(Event::Notarized { block, seen: 42 })
+                .finalized_header_json()
+                .await
+                .is_none()
+        );
+        assert!(
+            SharedEvent::new(Event::Nullified {
+                epoch: 7,
+                view: 11,
+                seen: 42
+            })
+            .finalized_header_json()
+            .await
+            .is_none()
+        );
     }
 
     #[tokio::test]

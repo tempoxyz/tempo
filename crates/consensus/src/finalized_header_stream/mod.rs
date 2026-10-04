@@ -28,7 +28,9 @@ use tempo_node::rpc::consensus::{CertifiedBlock, Query};
 use tempo_primitives::TempoHeader;
 use tracing::{instrument, warn};
 
-use crate::finalization_verifier::{Error as VerificationError, FinalizationVerifier};
+use crate::finalization_verifier::{
+    CertifiedBlockVerification as _, Error as VerificationError, FinalizationVerifier,
+};
 
 #[cfg(test)]
 mod test;

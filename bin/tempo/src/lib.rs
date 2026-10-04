@@ -28,6 +28,7 @@ use opentelemetry_otlp as _;
 pub mod cli;
 mod defaults;
 mod follow;
+mod light;
 mod overrides;
 pub mod p2p_proxy;
 pub mod regenesis;
@@ -246,6 +247,25 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         Ok(cli) => cli,
         Err(err) => err.exit(),
     };
+
+    // Dispatch before full-node overrides, credentials, telemetry, consensus threads, builders,
+    // database initialization, or snapshot/download logic. Light mode owns its own runtime path.
+    if let Commands::Node(node_cmd) = &cli.command
+        && node_cmd.ext.light.enabled
+    {
+        light::validate_options(&TempoCli::command(), &matches)?;
+        if overrides.tempo_node_mapper.is_some() {
+            eyre::bail!("full-node programmatic overrides are incompatible with --light");
+        }
+        let chain = node_cmd.chain.clone();
+        let args = node_cmd.ext.light.clone();
+        let runner = CliRunner::try_default_runtime().wrap_err("failed to build light runtime")?;
+        let mut tracing_app = cli.configure();
+        tracing_app
+            .init_tracing(&runner)
+            .wrap_err("failed to initialize light tracing")?;
+        return runner.block_on(light::run(chain, args));
+    }
 
     apply_tempo_cli_overrides(&mut cli)?;
 
@@ -717,7 +737,7 @@ mod tests {
         ZONE_VERIFIER_ADDRESS, initial_zone_factory_config,
     };
 
-    fn init_defaults_once() {
+    pub(super) fn init_defaults_once() {
         static INIT: Once = Once::new();
         INIT.call_once(defaults::init_defaults);
     }

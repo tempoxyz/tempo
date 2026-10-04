@@ -33,6 +33,7 @@ tempo-validator-config.workspace = true
 tempo-chainspec = { workspace = true, features = ["default"] }
 tempo-evm.workspace = true
 tempo-faucet.workspace = true
+tempo-light = { workspace = true, features = ["rpc-server"] }
 tempo-telemetry-util.workspace = true
 tempo-state-bloat.workspace = true
 

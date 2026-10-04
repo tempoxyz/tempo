@@ -6,7 +6,7 @@ use reth_node_core::primitives::SealedBlock;
 use tempo_chainspec::NetworkIdentity;
 use tempo_primitives::{Block as TempoBlock, BlockBody, TempoHeader};
 
-use super::{Error, FinalizationVerifier};
+use super::{CertifiedBlockVerification as _, Error, FinalizationVerifier};
 use crate::follow::test_utils::{
     EPOCH_LENGTH, dkg_fixture, make_block, make_certified_block, make_finalization,
 };
@@ -61,11 +61,11 @@ fn rejects_epoch_mismatching_block_height() {
         let certified = make_certified_block(block, &finalization);
         assert!(matches!(
             verifier.decode_and_verify(&mut context, &certified),
-            Err(Error::EpochMismatch {
+            Err(Error::Header(tempo_finality::Error::EpochMismatch {
                 height,
                 expected: 1,
                 actual: 0,
-            }) if height == EPOCH_LENGTH.get()
+            })) if height == EPOCH_LENGTH.get()
         ));
     });
 }
@@ -107,6 +107,35 @@ fn rejects_block_body_that_does_not_match_header() {
         assert!(matches!(
             verifier.decode_and_verify(&mut context, &certified),
             Err(Error::BlockBodyMismatch(_))
+        ));
+    });
+}
+
+#[test_traced]
+fn rejects_remote_seal_that_does_not_match_canonical_header() {
+    deterministic::Runner::default().start(|mut context| async move {
+        let fixture = dkg_fixture(&mut context, Epoch::zero());
+        let verifier = FinalizationVerifier::new(
+            NetworkIdentity {
+                from_epoch: 0,
+                identity: *fixture.outcome.network_identity(),
+            },
+            FixedEpocher::new(EPOCH_LENGTH),
+        );
+        let block = make_block(1, None);
+        let finalization = make_finalization(&block, Epoch::zero(), &fixture.schemes);
+        let mut certified = make_certified_block(block, &finalization);
+        certified.block = SealedBlock::new_unchecked(
+            TempoBlock {
+                header: certified.block.header().clone(),
+                body: certified.block.body().clone(),
+            },
+            alloy_primitives::B256::ZERO,
+        )
+        .into();
+        assert!(matches!(
+            verifier.decode_and_verify(&mut context, &certified),
+            Err(Error::Header(tempo_finality::Error::BlockDigestMismatch))
         ));
     });
 }

@@ -1,0 +1,47 @@
+[package]
+name = "tempo-light"
+description = "Native Tempo light-client verification primitives"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["client"]
+client = ["dep:reqwest", "dep:tokio", "dep:futures", "dep:url", "dep:rand"]
+rpc-server = ["client", "dep:jsonrpsee"]
+
+[dependencies]
+jsonrpsee = { workspace = true, optional = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+reqwest = { workspace = true, features = ["rustls"], optional = true }
+tokio = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
+alloy-consensus.workspace = true
+alloy-primitives.workspace = true
+alloy-rlp.workspace = true
+alloy-rpc-types-eth.workspace = true
+alloy-trie = { workspace = true, features = ["std"] }
+commonware-codec.workspace = true
+commonware-consensus.workspace = true
+tempo-dkg-onchain-artifacts = { workspace = true, features = ["commonware-consensus"] }
+rand_core.workspace = true
+schnellru.workspace = true
+tempo-finality.workspace = true
+tempo-primitives = { workspace = true, features = ["std", "serde"] }
+thiserror.workspace = true
+
+[dev-dependencies]
+reqwest = { workspace = true, features = ["json", "rustls"] }
+tempfile.workspace = true
+tempo-finality = { workspace = true, features = ["test-utils"] }
+rand.workspace = true
+serde_json.workspace = true

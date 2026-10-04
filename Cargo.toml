@@ -27,6 +27,8 @@ members = [
   "crates/hardfork",
   "crates/e2e",
   "crates/faucet",
+  "crates/finality",
+  "crates/light",
   "crates/node",
   "crates/nitro-attestation",
   "crates/payload/builder",
@@ -137,6 +139,9 @@ tempo-consensus-config = { path = "crates/consensus-config", default-features = 
 tempo-dkg-onchain-artifacts = { path = "crates/dkg-onchain-artifacts", default-features = false }
 tempo-e2e = { path = "crates/e2e" }
 tempo-faucet = { path = "crates/faucet", default-features = false }
+tempo-finality = { path = "crates/finality" }
+tempo-light = { path = "crates/light" }
+alloy-trie = { version = "0.9.8", default-features = false }
 tempo-evm = { path = "crates/evm", default-features = false }
 tempo-eyre = { path = "crates/eyre", default-features = false }
 tempo-hardfork = { path = "crates/hardfork", default-features = false }

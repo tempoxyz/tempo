@@ -40,6 +40,9 @@ impl RpcModuleValidator for TempoRpcModuleValidator {
 // TODO: migrate this to tempo_node eventually.
 #[derive(Debug, Clone, clap::Args)]
 pub struct TempoArgs {
+    #[command(flatten)]
+    pub(crate) light: crate::light::LightArgs,
+
     /// Run in follow mode from an upstream node.
     /// If provided without a value, defaults to the RPC URL for the selected chain.
     #[arg(long, value_name = "WEBSOCKET_URL", default_missing_value = "auto", num_args(0..=1), env = "TEMPO_FOLLOW")]
@@ -120,9 +123,9 @@ impl TempoArgs {
 
     /// Whether the consensus engine should be active.
     ///
-    /// The engine runs when not in dev mode and not following uncertified.
+    /// The engine runs when not in light/dev mode and not following uncertified.
     pub fn has_consensus_engine(&self, dev: bool) -> bool {
-        !dev && !self.is_following_uncertified()
+        !self.light.enabled && !dev && !self.is_following_uncertified()
     }
 
     /// Whether the node should register the `tempo/1` subprotocol.

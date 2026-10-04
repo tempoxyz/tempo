@@ -72,7 +72,7 @@ pub struct Args {
     /// startup using the passphrase read from the secret path.
     #[arg(
         long = "consensus.signing-key",
-        required_unless_present_any = ["follow", "dev"],
+        required_unless_present_any = ["follow", "dev", "light"],
     )]
     signing_key: Option<PathBuf>,
 
@@ -631,7 +631,7 @@ mod tests {
 
     #[derive(Debug, clap::Parser)]
     struct TestCli {
-        // Stubs for the `required_unless_present_any = ["follow", "dev"]`
+        // Stubs for the `required_unless_present_any = ["follow", "dev", "light"]`
         // gate on `--consensus.signing-key`. These args live in the outer
         // binary's CLI struct; we re-declare them here just so clap can
         // resolve the references during parse-time validation.
@@ -644,6 +644,9 @@ mod tests {
         #[arg(long = "dev")]
         #[allow(dead_code)]
         dev: bool,
+        #[arg(long = "light")]
+        #[allow(dead_code)]
+        light: bool,
 
         #[command(flatten)]
         consensus: Args,

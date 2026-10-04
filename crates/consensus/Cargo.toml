@@ -16,6 +16,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+tempo-finality.workspace = true
 tempo-alloy.workspace = true
 tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-consensus-config.workspace = true
@@ -85,6 +86,7 @@ tracing.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+tempo-finality = { workspace = true, features = ["test-utils"] }
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempo-primitives = { workspace = true, features = ["arbitrary", "test-utils"] }
 

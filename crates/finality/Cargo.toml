@@ -1,0 +1,36 @@
+[package]
+name = "tempo-finality"
+description = "Body-independent Tempo finalization certificate verification"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+alloy-consensus.workspace = true
+alloy-primitives = { workspace = true, features = ["serde"] }
+bytes.workspace = true
+commonware-codec.workspace = true
+commonware-consensus.workspace = true
+commonware-cryptography = { workspace = true, features = ["bls12381", "std"] }
+commonware-math.workspace = true
+commonware-parallel.workspace = true
+commonware-utils.workspace = true
+eyre.workspace = true
+rand_core.workspace = true
+serde = { workspace = true, features = ["derive"] }
+tempo-dkg-onchain-artifacts = { workspace = true, features = ["commonware-consensus"] }
+tempo-primitives = { workspace = true, features = ["std", "serde"] }
+thiserror.workspace = true
+
+[features]
+test-utils = []
+
+[dev-dependencies]
+rand.workspace = true
+serde_json.workspace = true

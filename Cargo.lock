@@ -13509,6 +13509,7 @@ dependencies = [
  "tempo-ext",
  "tempo-eyre",
  "tempo-faucet",
+ "tempo-light",
  "tempo-node",
  "tempo-precompiles",
  "tempo-primitives",
@@ -13582,7 +13583,6 @@ dependencies = [
  "alloy-primitives",
  "clap",
  "commonware-codec",
- "commonware-cryptography",
  "eyre",
  "once_cell",
  "paste",
@@ -13591,7 +13591,7 @@ dependencies = [
  "reth-network-peers",
  "serde",
  "serde_json",
- "tempo-dkg-onchain-artifacts",
+ "tempo-finality",
  "tempo-hardfork",
  "tempo-primitives",
 ]
@@ -13653,6 +13653,7 @@ dependencies = [
  "tempo-consensus-config",
  "tempo-dkg-onchain-artifacts",
  "tempo-evm",
+ "tempo-finality",
  "tempo-node",
  "tempo-payload-types",
  "tempo-precompiles",
@@ -13855,6 +13856,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-finality"
+version = "1.14.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-primitives",
+ "bytes",
+ "commonware-codec",
+ "commonware-consensus",
+ "commonware-cryptography",
+ "commonware-math",
+ "commonware-parallel",
+ "commonware-utils",
+ "eyre",
+ "rand 0.10.2",
+ "rand_core 0.10.1",
+ "serde",
+ "serde_json",
+ "tempo-dkg-onchain-artifacts",
+ "tempo-primitives",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "tempo-hardfork"
 version = "1.11.0"
 dependencies = [
@@ -13864,6 +13888,34 @@ dependencies = [
  "paste",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "tempo-light"
+version = "1.14.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-primitives",
+ "alloy-rlp",
+ "alloy-rpc-types-eth",
+ "alloy-trie",
+ "commonware-codec",
+ "commonware-consensus",
+ "futures",
+ "jsonrpsee",
+ "rand 0.10.2",
+ "rand_core 0.10.1",
+ "reqwest 0.13.3",
+ "schnellru",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tempo-dkg-onchain-artifacts",
+ "tempo-finality",
+ "tempo-primitives",
+ "thiserror 2.0.18",
+ "tokio",
+ "url",
 ]
 
 [[package]]
@@ -13948,6 +14000,7 @@ dependencies = [
  "tempo-contracts",
  "tempo-e2e",
  "tempo-evm",
+ "tempo-finality",
  "tempo-payload-builder",
  "tempo-payload-types",
  "tempo-precompiles",

@@ -17,13 +17,13 @@ publish = true
 workspace = true
 
 [dependencies]
+tempo-finality = { workspace = true, optional = true }
 tempo-hardfork.workspace = true
 tempo-primitives.workspace = true
 
 reth-cli = { workspace = true, optional = true }
 reth-chainspec = { workspace = true, optional = true }
 reth-network-peers = { workspace = true, optional = true }
-tempo-dkg-onchain-artifacts = { workspace = true, optional = true }
 
 alloy-evm = { workspace = true, optional = true }
 clap = { workspace = true, optional = true }
@@ -35,10 +35,9 @@ eyre = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 paste.workspace = true
-commonware-codec = { workspace = true, optional = true }
-commonware-cryptography = { workspace = true, optional = true }
 
 [dev-dependencies]
+commonware-codec.workspace = true
 
 [features]
 default = ["std", "serde", "reth", "cli"]
@@ -48,7 +47,6 @@ std = [
     "alloy-evm?/std",
     "alloy-genesis/std",
     "alloy-primitives/std",
-    "commonware-cryptography?/std",
     "once_cell/std",
     "reth-chainspec?/std",
     "reth-network-peers?/std",
@@ -65,13 +63,10 @@ serde = [
 evm = ["dep:alloy-evm", "tempo-hardfork/evm", "tempo-primitives/evm"]
 reth = [
     "std",
+    "dep:tempo-finality",
     "evm",
-    "dep:commonware-codec",
-    "dep:commonware-cryptography",
-    "dep:eyre",
     "dep:reth-chainspec",
     "dep:reth-network-peers",
-    "dep:tempo-dkg-onchain-artifacts",
     "tempo-primitives/reth",
 ]
 cli = [

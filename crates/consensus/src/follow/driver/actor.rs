@@ -16,7 +16,8 @@ use super::{Config, ExecutionProvider, Mailbox, Marshal, ingress::Message};
 use crate::{
     consensus::Block,
     finalization_verifier::{
-        CertificateVerificationError, Error as VerificationError, FinalizationVerifier,
+        CertificateVerificationError, CertifiedBlockVerification as _, Error as VerificationError,
+        FinalizationVerifier,
     },
     gossip::{Certificate, CertificateError},
 };
@@ -224,9 +225,9 @@ where
         {
             Ok(finalization) => finalization,
             Err(
-                error @ VerificationError::CertificateVerification(
+                error @ VerificationError::Header(tempo_finality::Error::CertificateVerification(
                     CertificateVerificationError::FallbackVerificationFailed,
-                ),
+                )),
             ) => {
                 debug!(%error, "failed to verify finalization certificate");
                 let target_epoch = self
@@ -245,9 +246,9 @@ where
                 }
                 return Ok(());
             }
-            Err(VerificationError::CertificateVerification(
+            Err(VerificationError::Header(tempo_finality::Error::CertificateVerification(
                 CertificateVerificationError::Invalid,
-            )) => return Ok(()),
+            ))) => return Ok(()),
             Err(error) => return Err(Report::new(error)),
         };
 

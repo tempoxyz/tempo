@@ -61,14 +61,16 @@ async fn subscription_task_exits_on_disconnect_without_events() {
     })
     .into_rpc();
 
-    let subscription = module
-        .subscribe_unbounded("consensus_subscribe", EmptyServerParams::new())
-        .await
-        .unwrap();
-    wait_for_live_subscriptions(&events_tx, 1).await;
+    for method in ["consensus_subscribe", "consensus_subscribeFinalizedHeaders"] {
+        let subscription = module
+            .subscribe_unbounded(method, EmptyServerParams::new())
+            .await
+            .unwrap();
+        wait_for_live_subscriptions(&events_tx, 1).await;
 
-    drop(subscription);
-    wait_for_live_subscriptions(&events_tx, 0).await;
+        drop(subscription);
+        wait_for_live_subscriptions(&events_tx, 0).await;
+    }
 }
 
 #[tokio::test]
@@ -145,4 +147,67 @@ async fn subscription_notification_carries_event() {
     };
     assert_eq!(received_block, block);
     assert_eq!(seen, 42);
+}
+
+#[tokio::test]
+async fn compact_subscription_carries_only_complete_finalized_headers() {
+    let (events_tx, _) = broadcast::channel(4);
+    let module = TempoConsensusRpc::new(IdleFeed {
+        events_tx: events_tx.clone(),
+    })
+    .into_rpc();
+    let mut subscription = module
+        .subscribe_unbounded(
+            "consensus_subscribeFinalizedHeaders",
+            EmptyServerParams::new(),
+        )
+        .await
+        .unwrap();
+    wait_for_live_subscriptions(&events_tx, 1).await;
+    let block = CertifiedBlock {
+        epoch: 7,
+        view: 11,
+        digest: B256::repeat_byte(0x11),
+        certificate: "0x1234".to_owned(),
+        block: SealedBlock::seal_slow(Block::default()).into(),
+    };
+    events_tx
+        .send(SharedEvent::new(Event::Notarized {
+            block: block.clone(),
+            seen: 1,
+        }))
+        .unwrap();
+    events_tx
+        .send(SharedEvent::new(Event::Nullified {
+            epoch: 7,
+            view: 12,
+            seen: 2,
+        }))
+        .unwrap();
+    events_tx
+        .send(SharedEvent::new(Event::Finalized {
+            block: block.clone(),
+            seen: 3,
+        }))
+        .unwrap();
+    let (received, _) = tokio::time::timeout(
+        Duration::from_secs(5),
+        subscription.next::<CertifiedHeader>(),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .unwrap();
+    assert_eq!(received, block.header_evidence());
+    drop(subscription);
+    wait_for_live_subscriptions(&events_tx, 0).await;
+}
+
+#[tokio::test]
+async fn compact_query_preserves_existing_availability_error() {
+    let (events_tx, _) = broadcast::channel(1);
+    let rpc = TempoConsensusRpc::new(IdleFeed { events_tx });
+    let full = rpc.get_finalization(Query::Latest).await.unwrap_err();
+    let compact = rpc.get_finalized_header(Query::Latest).await.unwrap_err();
+    assert_eq!(full, compact);
 }
