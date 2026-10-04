@@ -327,15 +327,8 @@ async fn submit_forkchoice_update<TContext: Pacer, E: ExecutionEngine + ?Sized>(
     execution_engine: &E,
     tip: &Target,
 ) -> eyre::Result<()> {
-    let hash = tip.digest.0;
-    let forkchoice = ForkchoiceState {
-        head_block_hash: hash,
-        safe_block_hash: hash,
-        finalized_block_hash: hash,
-    };
-
     let response = execution_engine
-        .fork_choice_updated(forkchoice, None)
+        .fork_choice_updated(ForkchoiceState::same_hash(tip.digest.0), None)
         .pace(context, Duration::from_millis(20))
         .await
         .wrap_err("failed to update forkchoice state")?;

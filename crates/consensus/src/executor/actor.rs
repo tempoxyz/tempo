@@ -719,7 +719,7 @@ where
         if !walk.awaits(digest) {
             return Ok(());
         }
-        if status == PayloadStatusEnum::Syncing && digest == self.pending_head.digest {
+        if status.is_syncing() && digest == self.pending_head.digest {
             self.pending_head.executed = None;
         }
         let (_, finalized_height, finalized_digest) = self.network_finalized_tip;
@@ -2358,7 +2358,7 @@ async fn execute_build(
         Ok(status) => status,
         Err(error) => return BuildOutcome::ParentDeliveryFailed(error),
     };
-    if status != PayloadStatusEnum::Valid {
+    if !status.is_valid() {
         warn!(%status, "build parent was not VALID");
         return BuildOutcome::Aborted {
             delivery_attempted: true,
