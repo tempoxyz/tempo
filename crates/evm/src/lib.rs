@@ -204,18 +204,6 @@ impl ConfigureEvm for TempoEvmConfig {
         &self.block_assembler
     }
 
-    fn prewarm_runner<DB>(
-        &self,
-        db: DB,
-        env: EvmEnvFor<Self>,
-    ) -> reth_evm::BoxedPrewarmRunner<Self, DB>
-    where
-        DB: Database + 'static,
-        EvmFor<Self, DB>: 'static,
-    {
-        BlockExecutorFactory::evm_factory(self).prewarm_runner(db, env)
-    }
-
     fn create_executor<'a, DB, I>(
         &'a self,
         mut evm: EvmFor<Self, &'a mut State<DB>, I>,
