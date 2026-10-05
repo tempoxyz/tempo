@@ -2161,7 +2161,7 @@ mod tests {
             .await;
 
         assert!(
-            matches!(outcome, TransactionValidationOutcome::Valid { .. }),
+            outcome.is_valid(),
             "Zero-value tx should pass validation, got: {outcome:?}"
         );
     }
@@ -2284,7 +2284,7 @@ mod tests {
                 .validate_transaction(TransactionOrigin::External, transaction)
                 .await;
             assert!(
-                matches!(outcome, TransactionValidationOutcome::Valid { .. }),
+                outcome.is_valid(),
                 "zero fee cap should be admitted with a zero floor: {outcome:?}"
             );
         }
@@ -2314,7 +2314,7 @@ mod tests {
                     .validate_transaction(TransactionOrigin::External, transaction)
                     .await;
                 assert!(
-                    matches!(outcome, TransactionValidationOutcome::Valid { .. }),
+                    outcome.is_valid(),
                     "fee cap {fee} should be admitted below the tip base fee: {outcome:?}"
                 );
             }
@@ -3053,7 +3053,7 @@ mod tests {
 
         match outcome {
             TransactionValidationOutcome::Invalid(_, ref err) => {
-                let is_oversized = matches!(err, InvalidPoolTransactionError::OversizedData { .. });
+                let is_oversized = err.is_oversized();
                 let is_call_input_too_large = matches!(
                     err.downcast_other_ref::<TempoPoolTransactionError>(),
                     Some(TempoPoolTransactionError::CallInputTooLarge { .. })
@@ -3413,7 +3413,7 @@ mod tests {
             "unexpected keychain error: {reason}"
         );
         assert!(
-            matches!(&outcomes[1], TransactionValidationOutcome::Valid { .. }),
+            outcomes[1].is_valid(),
             "the valid root-signed AA transaction was rejected after the invalid transaction: {:?}",
             outcomes[1]
         );

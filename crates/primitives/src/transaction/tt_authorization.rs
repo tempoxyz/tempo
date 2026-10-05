@@ -410,10 +410,7 @@ pub mod tests {
             TempoSignedAuthorization::new_unchecked(auth.clone(), signature.clone());
         let lazy_recovered = RecoveredTempoAuthorization::new(signed_for_lazy);
         assert_eq!(lazy_recovered.authority(), Some(expected_address));
-        assert!(matches!(
-            lazy_recovered.authority_status(),
-            RecoveredAuthority::Valid(_)
-        ));
+        assert!(lazy_recovered.authority_status().is_valid());
 
         // RecoveredTempoAuthorization::recover() - eager recovery
         let signed_for_eager =

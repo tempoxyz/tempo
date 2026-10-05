@@ -104,7 +104,7 @@ pub fn is_invalid_recovery_authority(authority: Address) -> bool {
 
 /// Validate a raw receive-policy recovery authority.
 pub fn validate_recovery_authority(authority: Address) -> Result<(), ReceivePolicyError> {
-    if authority != Address::ZERO && is_invalid_recovery_authority(authority) {
+    if !authority.is_zero() && is_invalid_recovery_authority(authority) {
         return Err(ReceivePolicyError::InvalidRecoveryAuthority(authority));
     }
     Ok(())

@@ -478,7 +478,7 @@ mod tests {
         let f = [field("a", parse_quote!(U256), None, None)];
         let r = allocate_slots(&f).unwrap();
         assert!(
-            matches!(r[0].assigned_slot, SlotAssignment::Auto { base_slot } if base_slot == U256::ZERO)
+            matches!(r[0].assigned_slot, SlotAssignment::Auto { base_slot } if base_slot.is_zero())
         );
 
         // single manual

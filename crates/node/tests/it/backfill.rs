@@ -121,9 +121,9 @@ async fn test_backfill_sync() -> eyre::Result<()> {
     println!("FCU result: {result:?}");
 
     // Assert that FCU returns Syncing status, indicating backfill is triggered
-    use alloy_rpc_types_engine::PayloadStatusEnum;
+
     assert!(
-        matches!(result.payload_status.status, PayloadStatusEnum::Syncing),
+        result.payload_status.status.is_syncing(),
         "Expected FCU to return SYNCING status for backfill, got: {:?}",
         result.payload_status.status
     );

@@ -265,7 +265,7 @@ impl AccountKeychain {
         let is_t3 = self.storage.spec().is_t3();
 
         // Validate inputs
-        if key_id == Address::ZERO {
+        if key_id.is_zero() {
             return Err(AccountKeychainError::zero_public_key().into());
         }
         // Admin keys are explicit access-key rows; the root key remains implicit.
@@ -797,7 +797,7 @@ impl AccountKeychain {
         to: &TxKind,
         input: &[u8],
     ) -> Result<()> {
-        if key_id == Address::ZERO || !self.storage.spec().is_t3() {
+        if key_id.is_zero() || !self.storage.spec().is_t3() {
             return Ok(());
         }
 
@@ -1358,7 +1358,7 @@ impl AccountKeychain {
         amount: U256,
     ) -> Result<()> {
         // If using main key (zero address), no spending limits apply
-        if key_id == Address::ZERO {
+        if key_id.is_zero() {
             return Ok(());
         }
 
@@ -1448,7 +1448,7 @@ impl AccountKeychain {
     ) -> Result<()> {
         let transaction_key = self.transaction_key.t_read()?;
 
-        if transaction_key == Address::ZERO {
+        if transaction_key.is_zero() {
             return Ok(());
         }
 
@@ -1522,7 +1522,7 @@ impl AccountKeychain {
         let transaction_key = self.transaction_key.t_read()?;
 
         // If using main key (Address::ZERO), no spending limits apply
-        if transaction_key == Address::ZERO {
+        if transaction_key.is_zero() {
             return Ok(());
         }
 
@@ -1557,7 +1557,7 @@ impl AccountKeychain {
         let transaction_key = self.transaction_key.t_read()?;
 
         // If using main key (Address::ZERO), no spending limits apply
-        if transaction_key == Address::ZERO {
+        if transaction_key.is_zero() {
             return Ok(());
         }
 
