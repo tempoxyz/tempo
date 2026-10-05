@@ -35,6 +35,12 @@ managers, changed execution environments and nonstandard journal warming retain
 ordinary execution. Small blocks and BALs retain standard prewarming scheduling;
 automatic generic slices shorter than five transactions execute directly.
 
+Engine captures reuse complete results after validation. A conflicting T14
+capture executes the whole transaction again. The generic scheduler's call-body
+cache is limited to pre-T7 execution and is not carried by Engine captures;
+modern storage-credit accounting needs additional recording before that cache
+can safely skip a body after fresh validation and fee processing.
+
 Engine and builder each limit retained result payload estimates to 32 MiB.
 These are not allocator/RSS limits: accepted-prefix hints, provider caches,
 converted inputs, running workers and extracted results are outside the estimate.
@@ -115,8 +121,9 @@ TEMPO_BENCH_HARDFORK=T14 TEMPO_BENCH_COUNTS=10000,25000,50000,100000 \
 Counts are transactions per run, not offered TPS; zero workers selects sequential
 execution. Every threaded run checks complete receipts and final trie roots
 against ordinary sequential State commits. The T14 public mix models 80%
-transfers, 5% mints and 15% MPP opens with existing recipients, explicit pathUSD
-fees and expiring AA nonces. `tip20_paid_aa_expiring_multitoken` isolates transfers.
+transfers, 5% mints and 15% MPP opens **by transaction count**, with existing
+recipients, explicit pathUSD fees and expiring AA nonces. This differs from the
+official gas-weighted preset. `tip20_paid_aa_expiring_multitoken` isolates transfers.
 
 | Environment variable | Diagnostic control |
 | --- | --- |
@@ -166,6 +173,16 @@ experimental args are `--execution.threads 8 --execution.batch-size 128
 --engine.prewarming-threads 16 --execution.capture-window 128`; confirm CLI support
 on each revision before comparing with main. `no-cache=true` forces fresh locked
 binary builds, not fresh state bloat. Retain snapshot and actual binary provenance.
+
+The current official harness interprets preset weights as target gas shares:
+public mix targets 80% transfers, 5% mints and 15% MPP. Pin a txgen revision with
+`--gas-weighted-mix` support (for example, `8ca73369c4b42ffffaf40066bbde8673141049c1`).
+Setup is confirmed separately, then sampling calibrates item selection before
+generation and every ten seconds. Check achieved `block_composition`, generation
+failures and delivered load; calibration can pause generation. Count-weighted
+historical runs and local screens are different workloads. This txgen revision
+freezes sender elapsed time before collecting receipt metrics; setup and receipt
+collection are separate from the measured workload clock.
 
 Manual E2E `no-slack=false` means on-win: at least one significant improvement
 and no significant regression. Neutral, losing and mixed results are suppressed.
