@@ -867,10 +867,7 @@ async fn submit_expecting<E: TestEnv>(
             } else {
                 env.submit_tx(envelope.encoded_2718(), tx_hash).await?
             };
-            let status = receipt["status"]
-                .as_str()
-                .map(|s| s == "0x1")
-                .unwrap_or(false);
+            let status = receipt["status"].as_str().is_some_and(|s| s == "0x1");
             assert!(status, "Transaction should succeed");
             if let Some(ctx) = fee_payer_ctx {
                 assert_fee_payer_spent(env.provider(), ctx, &receipt).await?;
@@ -884,10 +881,7 @@ async fn submit_expecting<E: TestEnv>(
             let receipt = env
                 .submit_tx_unchecked(envelope.encoded_2718(), tx_hash)
                 .await?;
-            let status = receipt["status"]
-                .as_str()
-                .map(|s| s == "0x1")
-                .unwrap_or(false);
+            let status = receipt["status"].as_str().is_some_and(|s| s == "0x1");
             assert!(!status, "Transaction should revert (status 0x0)");
         }
     }

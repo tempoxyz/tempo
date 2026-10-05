@@ -531,7 +531,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         } else {
             None
         };
-        let chain_id = builder.config().chain.chain().id();
+        let chain_id = builder.config().chain.chain_id();
 
         #[cfg(feature = "custom-pcrs")]
         if let Some(policy) = args.custom_pcrs.clone() {

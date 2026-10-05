@@ -16,7 +16,7 @@ use alloy::{
 };
 use alloy_evm::EvmInternalsError;
 use revm::{
-    context::journaled_state::JournalLoadError,
+    context::journaled_state::{JournalLoadErasedError, JournalLoadError},
     precompile::{PrecompileError, PrecompileHalt, PrecompileOutput, PrecompileResult},
 };
 use tempo_contracts::{
@@ -150,8 +150,8 @@ impl From<JournalLoadError<EvmInternalsError>> for TempoPrecompileError {
     }
 }
 
-impl From<JournalLoadError<revm::context::ErasedError>> for TempoPrecompileError {
-    fn from(value: JournalLoadError<revm::context::ErasedError>) -> Self {
+impl From<JournalLoadErasedError> for TempoPrecompileError {
+    fn from(value: JournalLoadErasedError) -> Self {
         match value {
             JournalLoadError::DBError(e) => Self::Fatal(e.to_string()),
             JournalLoadError::ColdLoadSkipped => Self::OutOfGas,
