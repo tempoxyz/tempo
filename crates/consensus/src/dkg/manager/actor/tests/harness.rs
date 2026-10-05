@@ -3,7 +3,6 @@
 use std::{
     collections::BTreeMap,
     io,
-    num::{NonZeroU64, NonZeroUsize},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -43,7 +42,8 @@ use commonware_p2p::{CheckedSender, LimitedSender, Receiver, Recipients};
 use commonware_parallel::Sequential;
 use commonware_runtime::{Handle, IoBufs, Supervisor as _, deterministic::Context};
 use commonware_utils::{
-    Acknowledgement as _, N3f1, TryFromIterator as _, acknowledgement::Exact, ordered,
+    Acknowledgement as _, N3f1, NZU64, NZUsize, TryFromIterator as _, acknowledgement::Exact,
+    ordered,
 };
 use futures::{StreamExt as _, channel::mpsc};
 use rand::{SeedableRng as _, rngs::StdRng};
@@ -106,9 +106,7 @@ pub(super) struct HarnessBuilder {
 
 impl HarnessBuilder {
     pub(super) fn epoch_length(mut self, epoch_length: u64) -> Self {
-        self.epoch_strategy = FixedEpocher::new(
-            NonZeroU64::new(epoch_length).expect("epoch length must be non-zero"),
-        );
+        self.epoch_strategy = FixedEpocher::new(NZU64!(epoch_length));
         self
     }
 
@@ -240,7 +238,7 @@ impl Harness {
         HarnessBuilder {
             context,
             partition_prefix: partition_prefix.into(),
-            epoch_strategy: FixedEpocher::new(NonZeroU64::new(10).unwrap()),
+            epoch_strategy: FixedEpocher::new(NZU64!(10)),
             identity: PrivateKey::from_seed(0),
             last_finalized_height: Height::new(9),
             initial_state: InitialState::None,
@@ -280,7 +278,7 @@ impl Harness {
                 epoch_strategy: self.epoch_strategy.clone(),
                 namespace: crate::config::NAMESPACE.to_vec(),
                 me: self.identity.clone(),
-                mailbox_size: NonZeroUsize::new(1).unwrap(),
+                mailbox_size: NZUsize!(1),
                 marshal: self.marshal.clone(),
                 last_finalized_height: self.last_finalized_height,
                 finalized_tip: self.finalized_tip.clone(),
