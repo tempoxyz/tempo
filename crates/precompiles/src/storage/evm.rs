@@ -269,10 +269,11 @@ where
             self.deduct_gas(u64::from(self.version.gas_params.get(GasId::SstoreStatic)))?;
         }
 
+        let dynamic_gas = self.version.gas_params.sstore_dynamic_gas(true, &result);
         let state_gas = self.version.feature(EvmFeatures::EIP8037);
         if state_gas {
             // Charge execution gas before the storage-credit hook charges state gas.
-            self.deduct_gas(self.version.gas_params.sstore_dynamic_gas(true, &result))?;
+            self.deduct_gas(dynamic_gas)?;
         }
 
         // TIP-1060 (T7+): run the storage credits policy so precompile-driven storage
@@ -282,7 +283,7 @@ where
         }
 
         if !state_gas {
-            self.deduct_gas(self.version.gas_params.sstore_dynamic_gas(true, &result))?;
+            self.deduct_gas(dynamic_gas)?;
         }
 
         // TIP-1060 owns creation charges and credits, including dirty writes.
