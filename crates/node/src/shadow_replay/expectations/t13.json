@@ -1,0 +1,17 @@
+[
+  {
+    "id": "t13.zone-runtime-upgrade",
+    "description": "T13 shared ZonePortal runtime upgrade.",
+    "code_upgrade": "0x5AD1000000000000000000000000000000000000"
+  },
+  {
+    "id": "t13.zone-verifier-upgrade",
+    "description": "T13 ZoneVerifier runtime upgrade.",
+    "code_upgrade": "0x5A56000000000000000000000000000000000000"
+  },
+  {
+    "id": "t13.zone-messenger-upgrade",
+    "description": "T13 shared ZoneMessenger runtime upgrade.",
+    "code_upgrade": "0x5A4D000000000000000000000000000000000000"
+  }
+]

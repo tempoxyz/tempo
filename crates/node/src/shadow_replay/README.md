@@ -50,8 +50,10 @@ that could not execute are reported as incomplete coverage.
 
 After execution finishes, analysis compares pre-block changes, shadow transactions, and post-block
 changes in order. Transaction comparisons cover the full success/revert/halt outcome, output,
-ordered receipt logs, and net account and storage transitions. Gas-only differences are not findings, although gas is still
-checked against canonical receipts and used to validate fee-derived effects. This compares
+ordered receipt logs, and net account and storage transitions. EVM calls are not inspected:
+equal transaction outcomes and outputs can hide different failing or unreached AA calls.
+Gas-only differences are not findings, although gas is still checked against canonical receipts
+and used to validate fee-derived effects. This compares
 observable effects at completed boundaries, not opcode traces or internal write history.
 
 Because every shadow transaction starts from the same canonical prefix, findings at later
@@ -65,26 +67,43 @@ other state differences still require fork expectations.
 
 ## Expectations
 
-`expectations.rs` always enables the fee-state check and registers feature-specific checks at
-their introducing hardfork. For each block, replay selects the baseline check followed by those in
-`(canonical fork, candidate fork]` after validating the control. The T12 channel and DEX rules
-retain their precompile-scoped storage checks, including TIP-1060 credits; they no longer need to
-accept gas differences because those are not compared.
+The native fee-state check (`expectations.rs`) always runs first. Fork-specific rules are data in
+embedded per-hardfork files, [`expectations/<fork>.json`](expectations), evaluated by `rules.rs`.
+For each block, replay selects the files whose hardfork is in `(canonical fork, candidate fork]`,
+in fork then rule order, after validating the control. The first accepting rule owns attribution. Rules cannot accept
+transaction invalidation (`execution`), failed boundaries, or missing coverage.
 
-A check receives existing execution evidence and a changed field descriptor. It returns `None` when
-it cannot explain the difference and `Some(())` when it accepts it. The first accepting check owns
-attribution. The baseline check runs first, followed by fork-specific checks in fork and
-registration order. `Context::call()` iterates every call in an AA batch (or the single call of a
-non-AA transaction), but cannot see internal EVM calls. Fee-slot provenance alone never accepts a
-difference.
+A generic rule has a `boundary` (`pre_block`, `transaction`, `call`, `post_block`), an optional `when`
+condition, and `accept` entries listing explicit `fields`, an `address` (`"any"` or an address),
+a `slot` (required for `storage`), and an optional `where` condition. A `call` rule is evaluated
+against every envelope call, including every AA subcall: its `call` filter (`to`, `functions`
+signatures) matches the envelope target and first four calldata bytes. Nested EVM calls are not
+matched. `tx_changed_storage` requires the transaction to have changed the address's storage in
+either arm, not the matching call. This is a heuristic: the matching AA call may be unreached or
+unrelated to the write or revert. `call.*` references inspect envelope calldata; `real.*` and
+`shadow.*` references read transaction evidence.
+
+Conditions use a closed vocabulary: `all`, `any`, `not`, `eq`, `lte`, `sub` (checked),
+`to_u256`, `tx_changed_storage`, typed literals (`u256`, `b256`, `address`, `bool`, `outcome`),
+and `ref`s such as `real.outcome`, `tx.gas_limit`, or `real.output_hash`. Unknown keys,
+references, and type mismatches fail at load; unavailable operands and failed checked arithmetic
+never accept a difference.
+
+A code upgrade needs only `id`, `description`, and `"code_upgrade": "0x<address>"`.
+The file's hardfork selects the canonical old/new runtime definitions (currently T13 zone upgrades).
+Hashes are resolved at load time; unknown hardfork/address pairs fail to load. The rule accepts only
+pre-block code changes at that address, from empty or the expected previous runtime to the exact new
+runtime, while the control code remains unchanged. Do not combine it with generic conditions or scopes.
+New hardfork upgrade sets must be wired to their canonical definitions in `rules::load`, not copied
+into a separate address/runtime table.
 
 ## Adding an expectation
 
-1. Add a stable, unique rule ID under the introducing fork, keeping registry entries ordered
-   (unless the rule applies to every fork pair).
-2. Match `Field` metadata and read typed values from `Context`; do not parse diagnostic strings.
-3. Return `None` when evidence is insufficient.
-4. Test accepted effects, nearby incorrect effects, and unrelated differences at the same boundary.
+1. Append a rule with a stable, unique `id` to `expectations/<fork>.json` for its introducing
+   hardfork. A new file also needs an entry in `RULE_FILES` (`expectations.rs`), oldest fork first.
+2. Keep scopes explicit: list fields, and use `"any"` addresses or slots only for intentional
+   heuristics, described in `description`.
+3. Test accepted effects, nearby incorrect effects, and unrelated differences at the same boundary.
 
 ## Reporting and observability
 
