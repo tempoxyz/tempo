@@ -29,6 +29,30 @@ impl Precompile for ZoneFactory {
                     nextZoneId(call) => view(call, |_| self.next_zone_id()),
                     zones(call) => view(call, |call| self.zone(call.id)),
                     isZonePortal(call) => view(call, |call| self.is_zone_portal(call.portal)),
+                    FAST_PROTOCOL_NATIVE_PIN(call) => {
+                        view(call, |_| Ok(self.fast_protocol_native_pin()))
+                    },
+                    configureFastEpoch(call) => mutate(call, msg_sender, |sender, call| {
+                        self.configure_fast_epoch(sender, call)
+                    }),
+                    closeFastEpoch(call) => mutate(call, msg_sender, |sender, call| {
+                        self.close_fast_epoch(sender, call)
+                    }),
+                    recordFastPeerBarrier(call) => mutate(call, msg_sender, |sender, call| {
+                        self.record_fast_peer_barrier(sender, call)
+                    }),
+                    finalizeFastPeerBarrier(call) => mutate(call, msg_sender, |sender, call| {
+                        self.finalize_fast_peer_barrier(sender, call)
+                    }),
+                    recordFastFinalSettlement(call) => mutate(call, msg_sender, |sender, call| {
+                        self.record_fast_final_settlement(sender, call)
+                    }),
+                    installFastCheckpoint(call) => mutate(call, msg_sender, |sender, call| {
+                        self.install_fast_checkpoint(sender, call)
+                    }),
+                    retireFastEpoch(call) => mutate(call, msg_sender, |sender, call| {
+                        self.retire_fast_epoch(sender, call)
+                    }),
                 }
             }
         )

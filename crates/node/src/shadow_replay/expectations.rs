@@ -15,7 +15,8 @@ use tempo_contracts::{
     precompiles::*,
     zones::{
         T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-        ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
+        T14_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
+        ZONE_VERIFIER_RUNTIME,
     },
 };
 use tempo_precompiles::{
@@ -284,6 +285,38 @@ const T13_ZONE_RUNTIME_UPGRADE: Expectation = Expectation {
     },
 };
 
+const T14_ZONE_PORTAL_UPGRADE: Expectation = Expectation {
+    id: "t14.zone-portal-upgrade",
+    check: |ctx, field| {
+        if ctx.boundary != Boundary::PreBlock
+            || field.name != "code"
+            || field.slot.is_some()
+            || field.address != Some(ZONE_PORTAL_IMPL_ADDRESS)
+        {
+            return None;
+        }
+        let real = ctx.real.pre_block.as_ref()?;
+        let shadow = ctx.shadow.pre_block.as_ref()?;
+        if AccountDelta(real.transitions.get(&ZONE_PORTAL_IMPL_ADDRESS))
+            .info(|info| info.code_hash)
+            .is_some()
+        {
+            return None;
+        }
+        let transition = shadow.transitions.get(&ZONE_PORTAL_IMPL_ADDRESS)?;
+        let before = transition
+            .previous_info
+            .as_ref()
+            .map_or(KECCAK256_EMPTY, |info| info.code_hash);
+        let after = transition.info.as_ref()?.code_hash;
+        ((before == KECCAK256_EMPTY
+            || before == keccak256(&ZONE_PORTAL_RUNTIME)
+            || before == keccak256(&T13_ZONE_PORTAL_RUNTIME))
+            && after == keccak256(&T14_ZONE_PORTAL_RUNTIME))
+        .then_some(())
+    },
+};
+
 /// Treats low-headroom success-to-halt transitions as T12 SSTORE sentry failures.
 const T12_SSTORE_SENTRY: Expectation = Expectation {
     id: "t12.sstore-sentry",
@@ -319,6 +352,7 @@ const REGISTRY: &[(TempoHardfork, &[Expectation])] = &[
         ],
     ),
     (TempoHardfork::T13, &[T13_ZONE_RUNTIME_UPGRADE]),
+    (TempoHardfork::T14, &[T14_ZONE_PORTAL_UPGRADE]),
 ];
 
 pub(crate) fn between(
@@ -415,9 +449,13 @@ mod tests {
             ]
         );
         assert_eq!(ids(T12, T13), [FEE_STATE.id, T13_ZONE_RUNTIME_UPGRADE.id]);
+        assert_eq!(ids(T13, T14), [FEE_STATE.id, T14_ZONE_PORTAL_UPGRADE.id]);
         let mut combined = ids(T11, T12);
         combined.extend(ids(T12, T13).into_iter().skip(1)); // baseline runs only once
         assert_eq!(ids(T11, T13), combined);
+        let mut combined = ids(T12, T13);
+        combined.extend(ids(T13, T14).into_iter().skip(1));
+        assert_eq!(ids(T12, T14), combined);
         assert_eq!(ids(T12, T12), [FEE_STATE.id]);
         assert_eq!(ids(T13, T12), [FEE_STATE.id]);
     }
