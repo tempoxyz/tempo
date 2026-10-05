@@ -25,7 +25,7 @@ use alloy::{
     providers::Provider,
     sol_types::SolCall,
 };
-use alloy_eips::{BlockId, BlockNumberOrTag, Encodable2718};
+use alloy_eips::{BlockId, Encodable2718};
 use reth_e2e_test_utils::wait::poll_until;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
@@ -40,7 +40,7 @@ async fn get_createx_deployed_address<P: Provider>(
     provider: &P,
     block_number: u64,
 ) -> eyre::Result<Address> {
-    let block_id = BlockId::Number(BlockNumberOrTag::Number(block_number));
+    let block_id = BlockId::number(block_number);
     poll_until(
         format!("deploy receipts at block {block_number}"),
         || async move {
@@ -67,7 +67,7 @@ async fn total_receipt_gas_for_block<P: Provider>(
     provider: &P,
     block_number: u64,
 ) -> eyre::Result<u64> {
-    let block_id = BlockId::Number(BlockNumberOrTag::Number(block_number));
+    let block_id = BlockId::number(block_number);
     poll_until(format!("receipts at block {block_number}"), || async move {
         Ok(provider
             .get_block_receipts(block_id)
@@ -380,7 +380,7 @@ async fn test_tip1016_reverted_sstore_still_exempts_state_gas() -> eyre::Result<
     let receipts_total_gas = total_receipt_gas_for_block(&provider, call_block_number).await?;
 
     // Verify the tx reverted by checking receipts
-    let block_id = BlockId::Number(BlockNumberOrTag::Number(call_block_number));
+    let block_id = BlockId::number(call_block_number);
     let receipts = provider
         .get_block_receipts(block_id)
         .await?
@@ -656,7 +656,7 @@ async fn test_tip1016_inner_call_revert_no_state_gas_exemption() -> eyre::Result
     let receipts_total_gas = total_receipt_gas_for_block(&provider, call_blk).await?;
 
     // Verify the tx succeeded (A ignores B's revert)
-    let block_id = BlockId::Number(BlockNumberOrTag::Number(call_blk));
+    let block_id = BlockId::number(call_blk);
     let receipts = provider
         .get_block_receipts(block_id)
         .await?

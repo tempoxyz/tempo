@@ -1210,16 +1210,16 @@ jobs:
           [ -n "$BENCH_BASELINE_ENV" ] && derek_cmd+=(baseline-env="$BENCH_BASELINE_ENV")
           [ -n "$BENCH_FEATURE_ENV" ] && derek_cmd+=(feature-env="$BENCH_FEATURE_ENV")
           DEREK_BENCH_COMMAND=""
-          # The bot parser does not support custom Samply options. An empty command
-          # omits the misleading reproduction claim from tempo.nu summaries.
-          if [ -z "$BENCH_SAMPLY_ARGS" ]; then
+          # The bot parser cannot reproduce custom Samply options or disposal
+          # clock controls. Omit unsupported shortcuts from tempo.nu summaries.
+          if [ "$BENCH_DISPOSAL_CLOCK" != "true" ] && [ -z "$BENCH_SAMPLY_ARGS" ]; then
             for arg in "${derek_cmd[@]}"; do
               if [ -n "$DEREK_BENCH_COMMAND" ]; then
                 DEREK_BENCH_COMMAND+=" "
               fi
               DEREK_BENCH_COMMAND+="$(quote_derek_arg "$arg")"
             done
-          else
+          elif [ -n "$BENCH_SAMPLY_ARGS" ]; then
             # Preserve the actual Nu argv with protected values referenced by
             # environment variable, never copied into the uploaded artifact.
             mkdir -p bench-results

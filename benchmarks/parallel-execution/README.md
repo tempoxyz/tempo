@@ -24,7 +24,7 @@ The previous detailed diary is archived locally as
 | `--engine.prewarming-threads 16` | Existing Engine and builder prewarming worker count. |
 | `--execution.capture-window 128` | Engine lead, in-flight and retained-result count bounds; choices are 128, 256 and 512. Independent of builder batch size. |
 | `--execution.capture-diagnostics` | Optional Engine admission/publication/consumption counters; defaults off. |
-| `--execution.stage-diagnostics` | Optional ordered validation, ordinary execution and commit wall timers; defaults off. |
+| `--execution.stage-diagnostics` | Optional ordered validation, ordinary execution, commit and consumed-candidate disposal wall timers; defaults off. |
 
 Engine consumes strict prewarming results when ready and executes ordered misses
 or conflicts directly. Canonical transaction commits publish advisory prefix
@@ -58,6 +58,12 @@ hashes and sessions; `session_drop` has final counters but can be absent at exit
 Stage timers include descheduling/errors, exclude several block stages, and are
 neither CPU time nor total validation/build time. Confirm performance with
 diagnostics disabled.
+
+The official workflow's `disposal-clock` profiling choice runs a fixed 25k
+same-binary comparison with stage timers disabled and enabled. It calibrates the
+empty timer on the runner before and after each phase, retains the controls as
+artifacts, and disables Slack and performance-series publication. The calibration
+is a clock-floor diagnostic, not a bound on total instrumentation overhead.
 
 ## Correctness
 
