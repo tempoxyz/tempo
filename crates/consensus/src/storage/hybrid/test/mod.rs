@@ -341,7 +341,7 @@ fn get_by_height_skips_reth_blocks_above_reth_finalized_watermark() {
         // Seed reth with a block at height 10 but leave reth's
         // finalized watermark unset (fresh chain) so the by-height
         // fallback is not allowed to surface it.
-        let block = make_chain(10, 1).pop().unwrap();
+        let block = make_block(10, B256::ZERO);
         provider.add_block(&block);
 
         let result = hybrid
@@ -387,7 +387,7 @@ fn get_returns_none_when_neither_archive_nor_reth_has_block() {
         let result = hybrid.get(Identifier::Index(7)).await.expect("get");
         assert!(result.is_none());
 
-        let digest = make_chain(1, 1).pop().unwrap().digest();
+        let digest = make_block(1, B256::ZERO).digest();
         let result = hybrid.get(Identifier::Key(&digest)).await.expect("get");
         assert!(result.is_none());
     });
@@ -654,16 +654,16 @@ fn put_at_existing_index_is_idempotent() {
     executor.start(|context| async move {
         let (mut hybrid, _) = SetupHybrid::default().build(&context).await;
 
-        let blocks = make_chain(1, 1);
-        hybrid = hybrid.put(blocks[0].clone()).await.expect("first put");
-        hybrid = hybrid.put(blocks[0].clone()).await.expect("idempotent put");
+        let block = make_block(1, B256::ZERO);
+        hybrid = hybrid.put(block.clone()).await.expect("first put");
+        hybrid = hybrid.put(block.clone()).await.expect("idempotent put");
 
         let stored = hybrid
             .get(Identifier::Index(1))
             .await
             .expect("get")
             .expect("present");
-        assert_eq!(stored, blocks[0]);
+        assert_eq!(stored, block);
     });
 }
 
@@ -1029,7 +1029,7 @@ fn reth_provider_errors_propagate_to_caller() {
         );
 
         // Digest path.
-        let digest = make_chain(99, 1).pop().unwrap().digest();
+        let digest = make_block(99, B256::ZERO).digest();
         let result = hybrid.get(Identifier::Key(&digest)).await;
         assert!(
             matches!(result, Err(Error::Provider(_))),
