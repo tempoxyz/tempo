@@ -770,6 +770,9 @@ impl ZoneFactory {
             || statement.finalBlockHash != config.final_settlement_block_hash
             || statement.finalWithdrawalBatchIndex != config.final_settlement_withdrawal_batch_index
             || statement.finalSettlementHash != config.final_settlement_hash
+            || statement.checkpointLogIndex == 0
+            || statement.checkpointHeight != config.final_settlement_height
+            || statement.checkpointBlockHash != config.final_settlement_block_hash
             || statement.checkpointStateRoot == B256::ZERO
         {
             return Err(ZoneFactoryError::fast_epoch_not_drained(statement.oldEpoch).into());
@@ -1856,7 +1859,7 @@ mod tests {
                     .unwrap_err(),
                 ZoneFactoryError::invalid_fast_certificate().into()
             );
-            let mut fabricated = first_statement.clone();
+            let mut fabricated = first_statement;
             fabricated.completeLockRoot = B256::repeat_byte(0xff);
             assert_eq!(
                 factory
@@ -2047,6 +2050,53 @@ mod tests {
                     .unwrap_err(),
                 ZoneFactoryError::invalid_fast_certificate().into()
             );
+
+            let checkpoint_digest = |statement: &IZoneFactory::FastCheckpointStatement| {
+                keccak256(
+                    (
+                        keccak256(FAST_CHECKPOINT_DOMAIN),
+                        U256::from(1),
+                        statement.clone(),
+                    )
+                        .abi_encode(),
+                )
+            };
+            let mut later_head = checkpoint_statement.clone();
+            later_head.checkpointHeight = U256::from(101);
+            later_head.checkpointBlockHash = B256::repeat_byte(0x99);
+            let mut substituted_hash = checkpoint_statement.clone();
+            substituted_hash.checkpointBlockHash = B256::repeat_byte(0x99);
+            let mut substituted_height = checkpoint_statement.clone();
+            substituted_height.checkpointHeight = U256::from(99);
+            let mut empty_log_prefix = checkpoint_statement.clone();
+            empty_log_prefix.checkpointLogIndex = 0;
+            for invalid_statement in [
+                later_head,
+                substituted_hash,
+                substituted_height,
+                empty_log_prefix,
+            ] {
+                let digest = checkpoint_digest(&invalid_statement);
+                assert_eq!(
+                    factory
+                        .install_fast_checkpoint(
+                            OWNER,
+                            IZoneFactory::installFastCheckpointCall {
+                                portal,
+                                statement: invalid_statement,
+                                nextMembers: next_members.clone(),
+                                signatures: sign_fast(&next_signers, digest)?,
+                            },
+                        )
+                        .unwrap_err(),
+                    ZoneFactoryError::fast_epoch_not_drained(7).into()
+                );
+                assert_eq!(
+                    ZonePortalStorage::new(portal).fast_epochs[7].read()?,
+                    settled,
+                    "invalid checkpoint must not mutate epoch state"
+                );
+            }
             factory.install_fast_checkpoint(
                 OWNER,
                 IZoneFactory::installFastCheckpointCall {
@@ -2067,6 +2117,12 @@ mod tests {
             assert!(config.retired);
             assert_eq!(config.recorded_peer_barriers, 9);
             assert_eq!(config.finalized_peer_barriers, 9);
+            assert_eq!(config.checkpoint_log_index, 101);
+            assert_eq!(config.checkpoint_height, config.final_settlement_height);
+            assert_eq!(
+                config.checkpoint_block_hash,
+                config.final_settlement_block_hash
+            );
             assert_eq!(state.fast_epoch_members[7].read()?, members);
             assert_eq!(state.fast_epoch_peers[7].read()?, peers);
             assert!(state.fast_peer_barriers[7][portals[1]].read()?.finalized);
