@@ -69,11 +69,10 @@ pub trait StorageCreditsBackend {
             return self.charge_gas(STORAGE_CREDIT_VALUE);
         }
         let gas = self.gas_tracker();
-        if gas.remaining() < STORAGE_CREDIT_VALUE.saturating_sub(gas.reservoir()) {
-            return Err(Self::Error::out_of_gas());
-        }
-        gas.spend_state(STORAGE_CREDIT_VALUE)
-            .map_err(|_| Self::Error::out_of_gas())
+        gas.spend_state(STORAGE_CREDIT_VALUE).map_err(|_| {
+            gas.set_remaining(0);
+            Self::Error::out_of_gas()
+        })
     }
 
     /// SLOAD `address[key]`, optionally skipping the cold load.
