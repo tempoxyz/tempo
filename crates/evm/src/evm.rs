@@ -505,7 +505,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let factory_config = U256::from(1) | (U256::from_be_slice(owner.as_slice()) << u32::BITS);
+        let factory_config = U256::ONE | (U256::from_be_slice(owner.as_slice()) << u32::BITS);
         db.insert_account_storage(ZONE_FACTORY_ADDRESS, U256::ZERO, factory_config)
             .unwrap();
     }

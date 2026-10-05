@@ -1549,8 +1549,9 @@ mod tests {
 
 #[cfg(all(test, feature = "reth-codec"))]
 mod compact_tests {
+
     use super::*;
-    use alloy_primitives::{address, hex};
+    use alloy_primitives::hex;
     use reth_codecs::Compact;
 
     /// Ensures backwards compatibility of compact bitflags.
@@ -1565,7 +1566,7 @@ mod compact_tests {
     #[test]
     fn token_limit_compact_roundtrip() {
         let token_limit = TokenLimit {
-            token: address!("0x0000000000000000000000000000000000000042"),
+            token: Address::with_last_byte(0x42),
             limit: U256::from(1_000_000u64),
             period: 86400,
         };

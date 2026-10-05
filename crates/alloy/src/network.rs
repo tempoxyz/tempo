@@ -372,8 +372,8 @@ mod tests {
                 nonce: Some(57),
                 gas: Some(123456),
                 access_list: Some(AccessList(vec![AccessListItem {
-                    address: Address::from([3u8; 20]),
-                    storage_keys: vec![B256::from([4u8; 32])],
+                    address: Address::repeat_byte(3u8),
+                    storage_keys: vec![B256::repeat_byte(4u8)],
                 }])),
                 ..Default::default()
             },
@@ -386,8 +386,8 @@ mod tests {
             gas_limit: 123456,
             chain_id: 1,
             access_list: AccessList(vec![AccessListItem {
-                address: Address::from([3u8; 20]),
-                storage_keys: vec![B256::from([4u8; 32])],
+                address: Address::repeat_byte(3u8),
+                storage_keys: vec![B256::repeat_byte(4u8)],
             }]),
             ..Default::default()
         });

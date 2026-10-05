@@ -196,15 +196,16 @@ pub(super) fn create_mock_primitive_signature(
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
-    use alloy_primitives::{TxKind, address};
+    use alloy_primitives::TxKind;
     use alloy_rpc_types_eth::TransactionRequest;
 
     #[test]
     fn access_key_request_populates_typed_simulation_env() {
-        let root = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-        let key_id = address!("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
-        let target = address!("0xcccccccccccccccccccccccccccccccccccccccc");
+        let root = Address::repeat_byte(0xaa);
+        let key_id = Address::repeat_byte(0xbb);
+        let target = Address::repeat_byte(0xcc);
         let request = TempoTransactionRequest {
             inner: TransactionRequest {
                 from: Some(root),

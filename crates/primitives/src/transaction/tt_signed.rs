@@ -787,7 +787,7 @@ pub(crate) mod tests {
             TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
 
         // Two txs identical except for fee_payer_signature
-        let tx1 = make_sponsored_tx(Signature::new(U256::from(1), U256::from(2), false));
+        let tx1 = make_sponsored_tx(Signature::new(U256::ONE, U256::from(2), false));
         let tx2 = make_sponsored_tx(Signature::new(U256::from(3), U256::from(4), true));
 
         let signed1 = AASigned::new_unhashed(tx1, sig.clone());

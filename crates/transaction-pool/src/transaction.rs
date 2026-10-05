@@ -1220,10 +1220,7 @@ mod tests {
             B256::ZERO,
         ));
 
-        let recovered = Recovered::new_unchecked(
-            envelope,
-            address!("0000000000000000000000000000000000000001"),
-        );
+        let recovered = Recovered::new_unchecked(envelope, Address::with_last_byte(1));
 
         let pooled_tx = TempoPooledTransaction::new(recovered);
         assert!(pooled_tx.is_payment());
@@ -1245,10 +1242,7 @@ mod tests {
             B256::ZERO,
         ));
 
-        let recovered = Recovered::new_unchecked(
-            envelope,
-            address!("0000000000000000000000000000000000000001"),
-        );
+        let recovered = Recovered::new_unchecked(envelope, Address::with_last_byte(1));
 
         let pooled_tx = TempoPooledTransaction::new(recovered);
         assert!(!pooled_tx.is_payment());
@@ -1473,7 +1467,7 @@ mod tests {
             ),
             (
                 TxBuilder::aa(Address::random())
-                    .nonce_key(U256::from(1))
+                    .nonce_key(U256::ONE)
                     .build(),
                 false,
                 "AA with nonce_key > 0 should NOT require nonce check",
@@ -1759,7 +1753,7 @@ mod tests {
 
         let mut unknown_selector = ITIP20::transferCall {
             to: Address::repeat_byte(0x33),
-            amount: U256::from(1u64),
+            amount: U256::ONE,
         }
         .abi_encode();
         unknown_selector[..4].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);

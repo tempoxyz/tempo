@@ -281,7 +281,7 @@ impl<P: Provider + Clone> TransferGasEnv<P> {
                 self.token_addr,
                 ITIP20::transferCall {
                     to: self.reward_recipient,
-                    amount: U256::from(1),
+                    amount: U256::ONE,
                 },
             )
             .await?;

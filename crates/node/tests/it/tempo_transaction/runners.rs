@@ -55,7 +55,7 @@ pub(super) async fn run_raw_send_matrix<E: TestEnv>(env: &mut E) -> eyre::Result
     // fund_account returns rand_funding_amount() ∈ [1M, 1000M], so all amounts
     // must stay well below 1M to avoid insufficient-balance reverts.
     let spending_limit = U256::from(100_000u64);
-    let transfer_over = spending_limit + U256::from(1u64);
+    let transfer_over = spending_limit + U256::ONE;
     let transfer_under = spending_limit / U256::from(2);
     let transfer_small = U256::from(50_000u64);
     let keyauth_expected = ExpectedOutcome::Rejection;
