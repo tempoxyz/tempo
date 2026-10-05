@@ -950,20 +950,21 @@ impl StablecoinDEX {
         let batch = self.storage.checkpoint();
 
         // Prepare the flipped order
-        let flipped = order.create_flipped_order(order.order_id);
+        let flipped = order.create_flipped_order(order.order_id());
 
         // Calculate escrow amount and token based on order side
-        let (escrow_token, escrow_amount, non_escrow_token) = if flipped.is_bid {
+        let (escrow_token, escrow_amount, non_escrow_token) = if flipped.is_bid() {
             // For bids, escrow quote tokens based on price
-            let quote_amount = base_to_quote(flipped.amount, flipped.tick, RoundingDirection::Up)
-                .ok_or(StablecoinDEXError::insufficient_balance())?;
+            let quote_amount =
+                base_to_quote(flipped.amount(), flipped.tick(), RoundingDirection::Up)
+                    .ok_or(StablecoinDEXError::insufficient_balance())?;
             (quote_token, quote_amount, base_token)
         } else {
             // For asks, escrow base tokens
-            (base_token, flipped.amount, quote_token)
+            (base_token, flipped.amount(), quote_token)
         };
 
-        let user_balance = self.balance_of(flipped.maker, escrow_token)?;
+        let user_balance = self.balance_of(flipped.maker(), escrow_token)?;
         if user_balance < escrow_amount {
             return Err(StablecoinDEXError::insufficient_balance().into());
         }
@@ -972,15 +973,15 @@ impl StablecoinDEX {
         // Direction: maker → DEX
         let escrow_tip20 = TIP20Token::from_address(escrow_token)?;
         escrow_tip20.check_not_paused()?;
-        escrow_tip20.ensure_transfer_authorized(flipped.maker, self.address)?;
+        escrow_tip20.ensure_transfer_authorized(flipped.maker(), self.address)?;
 
         // Check policy and pause state on non-escrow token
         // Direction: DEX → maker (order placer receives non-escrow token when filled)
         let non_escrow_tip20 = TIP20Token::from_address(non_escrow_token)?;
         non_escrow_tip20.check_not_paused()?;
-        non_escrow_tip20.ensure_transfer_authorized(self.address, flipped.maker)?;
+        non_escrow_tip20.ensure_transfer_authorized(self.address, flipped.maker())?;
 
-        self.sub_balance(flipped.maker, escrow_token, escrow_amount)?;
+        self.sub_balance(flipped.maker(), escrow_token, escrow_amount)?;
 
         debug_assert_eq!(order.order_id(), flipped.order_id());
         debug_assert_eq!(order.book_key(), flipped.book_key());
@@ -990,13 +991,13 @@ impl StablecoinDEX {
         // Emit OrderFlipped event for flip order
         self.emit_event(StablecoinDEXEvents::OrderFlipped(
             IStablecoinDEX::OrderFlipped {
-                orderId: flipped.order_id,
-                maker: flipped.maker,
+                orderId: flipped.order_id(),
+                maker: flipped.maker(),
                 token: base_token,
-                amount: flipped.amount,
-                isBid: flipped.is_bid,
-                tick: flipped.tick,
-                flipTick: flipped.flip_tick,
+                amount: flipped.amount(),
+                isBid: flipped.is_bid(),
+                tick: flipped.tick(),
+                flipTick: flipped.flip_tick(),
             },
         ))?;
 

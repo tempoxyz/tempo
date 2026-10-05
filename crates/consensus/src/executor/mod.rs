@@ -180,7 +180,7 @@ impl ExecutionLayer for Arc<TempoFullNode> {
     fn block_by_digest(&self, digest: Digest) -> eyre::Result<Option<Block>> {
         Ok(self
             .provider
-            .find_sealed_or_recovered_block(digest.0, BlockSource::Any)?
+            .find_sealed_or_recovered_block(digest.get(), BlockSource::Any)?
             .map(|block| Block::from_execution_block_unchecked(block, None)))
     }
 

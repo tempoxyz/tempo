@@ -138,7 +138,7 @@ fn set_zone_factory_genesis_owner(genesis: &mut Genesis, owner: Address) -> eyre
 
 /// Runs the Tempo node CLI.
 pub fn tempo_main() -> eyre::Result<()> {
-    tempo_main_with(TempoOverrides::default())
+    tempo_main_with(TempoOverrides::new())
 }
 
 /// Runs the Tempo node CLI with programmatic startup overrides.

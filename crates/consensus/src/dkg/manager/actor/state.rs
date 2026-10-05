@@ -361,7 +361,7 @@ where
     /// is expected that the actor reads the dealer logs from the marshal actor
     /// and forwards them one-by-one to the state cache.
     pub(super) fn cache_notarized_block(&mut self, round: &Round, block: Block) {
-        let cache = self.cache.entry(round.epoch).or_default();
+        let cache = self.cache.entry(round.epoch()).or_default();
         let log = ReducedBlock::from_block_for_round(&block, round);
         cache.notarized_blocks.insert(log.digest, log);
     }
@@ -412,7 +412,7 @@ where
 
         // Replay stored acks
         let mut unsent: BTreeMap<PublicKey, DealerPrivMsg> = priv_msgs.into_iter().collect();
-        for (player, ack) in self.acks_for_epoch(round.epoch) {
+        for (player, ack) in self.acks_for_epoch(round.epoch()) {
             if unsent.contains_key(player)
                 && dealer
                     .receive_player_ack(player.clone(), ack.clone())
@@ -1193,7 +1193,7 @@ impl ReducedBlock {
                 )
             })
             .ok()
-            .and_then(|log| match log.check(&round.info) {
+            .and_then(|log| match log.check(round.info()) {
                 Some((dealer, log)) => Some((dealer, log)),
                 None => {
                     // TODO(janis): some more fidelity here would be nice.

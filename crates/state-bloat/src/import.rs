@@ -274,7 +274,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
         let storage_settings = provider_rw.cached_storage_settings();
         ensure!(
-            storage_settings.storage_v2,
+            storage_settings.is_v2(),
             "init-from-binary-dump only supports storage v2 databases"
         );
 

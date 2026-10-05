@@ -237,7 +237,7 @@ mod tests {
             let recovered = recovered.unwrap();
             let (env, _) = recovered.into_parts();
             assert!(matches!(
-                env.execution_context,
+                env.execution_context(),
                 tempo_revm::ExecutionContext::Transaction { .. }
             ));
         }

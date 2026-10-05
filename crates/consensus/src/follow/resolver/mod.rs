@@ -335,7 +335,7 @@ where
 
             #[cfg(feature = "bal")]
             let (block, block_access_list) = client
-                .get_full_block_with_access_lists(digest.0)
+                .get_full_block_with_access_lists(digest.get())
                 .await
                 .split();
 
@@ -356,7 +356,7 @@ where
     N::Primitives: NodePrimitives<Block = TempoBlock>,
 {
     fn block_by_hash(&self, digest: Digest) -> eyre::Result<Option<Block>> {
-        self.find_sealed_or_recovered_block(digest.0, BlockSource::Any)
+        self.find_sealed_or_recovered_block(digest.get(), BlockSource::Any)
             .map_err(eyre::Report::new)
             .map(|block| block.map(|block| Block::from_execution_block_unchecked(block, None)))
     }

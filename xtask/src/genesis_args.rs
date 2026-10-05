@@ -456,7 +456,7 @@ impl GenesisArgs {
                 let storage = account
                     .storage
                     .iter()
-                    .map(|(key, val)| (*key, val.present_value));
+                    .map(|(key, val)| (*key, val.present_value()));
                 (*address, genesis_account(&account.info, storage))
             })
             .collect();

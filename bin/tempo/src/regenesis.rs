@@ -226,7 +226,7 @@ where
 
     let storage_settings = provider_rw.cached_storage_settings();
     ensure!(
-        storage_settings.storage_v2 && storage_settings.use_hashed_state(),
+        storage_settings.is_v2() && storage_settings.use_hashed_state(),
         "regenesis account sync requires a storage v2 database with hashed state enabled"
     );
 

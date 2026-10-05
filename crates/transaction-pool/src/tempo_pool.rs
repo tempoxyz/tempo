@@ -1482,8 +1482,7 @@ mod tests {
     use reth_storage_api::StateProviderFactory;
     use reth_transaction_pool::{
         PoolConfig, TransactionOrigin, TransactionPool, TransactionValidationTaskExecutor,
-        blobstore::InMemoryBlobStore,
-        validate::{EthTransactionValidatorBuilder, ValidTransaction},
+        blobstore::InMemoryBlobStore, validate::ValidTransaction,
     };
     use tempo_chainspec::{
         TempoChainSpec,
@@ -1629,10 +1628,12 @@ mod tests {
     fn create_test_pool(
         provider: MockEthProvider<TempoPrimitives, TempoChainSpec>,
     ) -> TempoTransactionPool<MockEthProvider<TempoPrimitives, TempoChainSpec>> {
-        let inner =
-            EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::mainnet())
-                .disable_balance_check()
-                .build(InMemoryBlobStore::default());
+        let inner = TransactionValidationTaskExecutor::eth_builder(
+            provider.clone(),
+            TempoEvmConfig::mainnet(),
+        )
+        .disable_balance_check()
+        .build(InMemoryBlobStore::default());
         let amm_cache =
             AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
         let validator = TempoTransactionValidator::new(
@@ -2066,10 +2067,12 @@ mod tests {
         let initial_balance = pooled.fee_token_cost() + U256::ONE;
         set_fee_token_balance(&provider, PATH_USD_ADDRESS, fee_payer, initial_balance);
 
-        let inner =
-            EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::mainnet())
-                .disable_balance_check()
-                .build(InMemoryBlobStore::default());
+        let inner = TransactionValidationTaskExecutor::eth_builder(
+            provider.clone(),
+            TempoEvmConfig::mainnet(),
+        )
+        .disable_balance_check()
+        .build(InMemoryBlobStore::default());
         let amm_cache =
             AmmLiquidityCache::new(provider.clone()).expect("failed to setup AmmLiquidityCache");
         let validator = TempoTransactionValidator::new(
@@ -2227,9 +2230,10 @@ mod tests {
             },
         );
 
-        let inner = EthTransactionValidatorBuilder::new(provider, TempoEvmConfig::mainnet())
-            .disable_balance_check()
-            .build(InMemoryBlobStore::default());
+        let inner =
+            TransactionValidationTaskExecutor::eth_builder(provider, TempoEvmConfig::mainnet())
+                .disable_balance_check()
+                .build(InMemoryBlobStore::default());
         let amm_cache = AmmLiquidityCache::with_unique_validators(vec![validator_address]);
         let validator = TempoTransactionValidator::new(
             inner,
@@ -2306,10 +2310,12 @@ mod tests {
             },
         );
 
-        let inner =
-            EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::mainnet())
-                .disable_balance_check()
-                .build(InMemoryBlobStore::default());
+        let inner = TransactionValidationTaskExecutor::eth_builder(
+            provider.clone(),
+            TempoEvmConfig::mainnet(),
+        )
+        .disable_balance_check()
+        .build(InMemoryBlobStore::default());
         let amm_cache =
             AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
         let validator = TempoTransactionValidator::new(
@@ -2397,10 +2403,12 @@ mod tests {
             },
         );
 
-        let inner =
-            EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::mainnet())
-                .disable_balance_check()
-                .build(InMemoryBlobStore::default());
+        let inner = TransactionValidationTaskExecutor::eth_builder(
+            provider.clone(),
+            TempoEvmConfig::mainnet(),
+        )
+        .disable_balance_check()
+        .build(InMemoryBlobStore::default());
         let amm_cache =
             AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
         let validator = TempoTransactionValidator::new(
@@ -2484,10 +2492,12 @@ mod tests {
             },
         );
 
-        let inner =
-            EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::mainnet())
-                .disable_balance_check()
-                .build(InMemoryBlobStore::default());
+        let inner = TransactionValidationTaskExecutor::eth_builder(
+            provider.clone(),
+            TempoEvmConfig::mainnet(),
+        )
+        .disable_balance_check()
+        .build(InMemoryBlobStore::default());
         let amm_cache =
             AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
         let validator = TempoTransactionValidator::new(

@@ -372,10 +372,10 @@ fn tips_are_monotonic_and_coalesced_while_forkchoice_is_in_flight() {
         wait_until(&context, || provider.forkchoices().len() == 2).await;
 
         let forkchoices = provider.forkchoices();
-        assert_eq!(forkchoices[0].head_block_hash, first_digest.0);
-        assert_eq!(forkchoices[1].head_block_hash, highest_digest.0);
-        assert_eq!(forkchoices[1].safe_block_hash, highest_digest.0);
-        assert_eq!(forkchoices[1].finalized_block_hash, highest_digest.0);
+        assert_eq!(forkchoices[0].head_block_hash, first_digest.get());
+        assert_eq!(forkchoices[1].head_block_hash, highest_digest.get());
+        assert_eq!(forkchoices[1].safe_block_hash, highest_digest.get());
+        assert_eq!(forkchoices[1].finalized_block_hash, highest_digest.get());
     });
 }
 
@@ -416,9 +416,9 @@ fn tip_drives_forkchoice_by_round() {
 
         let forkchoices = provider.forkchoices();
         assert_eq!(forkchoices.len(), 2);
-        assert_eq!(forkchoices[1].head_block_hash, finalized.0);
-        assert_eq!(forkchoices[1].safe_block_hash, finalized.0);
-        assert_eq!(forkchoices[1].finalized_block_hash, finalized.0);
+        assert_eq!(forkchoices[1].head_block_hash, finalized.get());
+        assert_eq!(forkchoices[1].safe_block_hash, finalized.get());
+        assert_eq!(forkchoices[1].finalized_block_hash, finalized.get());
     });
 }
 
@@ -429,7 +429,7 @@ fn delayed_tip_does_not_regress_newer_block_forkchoice() {
     deterministic::Runner::default().start(|context| async move {
         let current = Digest(B256::with_last_byte(10));
         let provider = StubExecutionProvider::default();
-        provider.set_finalized(100, current.0, round(10));
+        provider.set_finalized(100, current.get(), round(10));
         let release_block_forkchoice = provider.pause_next_forkchoice();
 
         let (actor, mut mailbox) = init(
@@ -445,7 +445,7 @@ fn delayed_tip_does_not_regress_newer_block_forkchoice() {
         );
         actor.start();
 
-        let block = make_block_at_round(101, current.0, round(13));
+        let block = make_block_at_round(101, current.get(), round(13));
         let newest = block.digest();
         let (ack, waiter) = Exact::handle();
         let _ = mailbox.report(Update::Block(block.into(), ack));
@@ -466,10 +466,10 @@ fn delayed_tip_does_not_regress_newer_block_forkchoice() {
 
         let forkchoices = provider.forkchoices();
         assert_eq!(forkchoices.len(), 1);
-        assert_eq!(forkchoices[0].head_block_hash, newest.0);
+        assert_eq!(forkchoices[0].head_block_hash, newest.get());
 
         wait_until(&context, || provider.forkchoices().len() == 2).await;
-        assert_eq!(provider.forkchoices()[1].head_block_hash, newest.0);
+        assert_eq!(provider.forkchoices()[1].head_block_hash, newest.get());
     });
 }
 
@@ -499,7 +499,7 @@ fn execution_tip_round_orders_finalizations_after_restart() {
         let newer = digest(102);
         let _ = mailbox.report(Update::Tip(round(8), Height::new(102), newer));
         wait_until(&context, || !provider.forkchoices().is_empty()).await;
-        assert_eq!(provider.forkchoices()[0].head_block_hash, newer.0);
+        assert_eq!(provider.forkchoices()[0].head_block_hash, newer.get());
     });
 }
 
@@ -528,7 +528,7 @@ fn tip_supersedes_roundless_prefork_execution_tip() {
         let finalized = digest(101);
         let _ = mailbox.report(Update::Tip(round(1), Height::new(101), finalized));
         wait_until(&context, || !provider.forkchoices().is_empty()).await;
-        assert_eq!(provider.forkchoices()[0].head_block_hash, finalized.0);
+        assert_eq!(provider.forkchoices()[0].head_block_hash, finalized.get());
     });
 }
 
@@ -557,7 +557,8 @@ fn tip_is_driven_to_from_genesis() {
         let forkchoices = provider.forkchoices();
         assert_eq!(forkchoices.len(), 1);
         assert_eq!(
-            forkchoices[0].head_block_hash, finalized.0,
+            forkchoices[0].head_block_hash,
+            finalized.get(),
             "nothing is below genesis, so the tip is driven directly",
         );
     });
@@ -593,7 +594,7 @@ fn heartbeat_resubmits_latest_tip_after_interval() {
 
         let forkchoices = provider.forkchoices();
         assert_eq!(forkchoices[0], forkchoices[1]);
-        assert_eq!(forkchoices[1].head_block_hash, digest.0);
+        assert_eq!(forkchoices[1].head_block_hash, digest.get());
     });
 }
 

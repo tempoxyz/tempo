@@ -294,7 +294,7 @@ where
                 .basic(destination)
                 .map_err(BlockExecutionError::other)?
                 .unwrap_or_default();
-            if info.code_hash == code_hash {
+            if info.code_hash() == code_hash {
                 continue;
             }
             let mut account = Account::from(info);
@@ -560,7 +560,7 @@ where
         tx: impl ExecutableTx<Self>,
     ) -> Result<Self::Result, BlockExecutionError> {
         let (mut tx_env, recovered) = tx.into_parts();
-        let execution_context = tx_env.execution_context;
+        let execution_context = tx_env.execution_context();
         // Remove any prewarming-specific context that was added to the tx env.
         if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
             tempo_tx_env.expiring_nonce_idx = None;

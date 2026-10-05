@@ -544,7 +544,7 @@ fn failed_dkg_outcomes_carry_share_forward() {
         let first_outcome = boundary_outcome(state.epoch, first_output, state.players());
 
         let mut first_boundary = header(Height::new(19));
-        first_boundary.inner.parent_hash = first_digest.0;
+        first_boundary.inner.parent_hash = first_digest.get();
         first_boundary.inner.extra_data = first_outcome.encode().into();
         harness.report_finalized_header(first_boundary).await;
         assert!(!harness.has_dealer_log(first_outcome.epoch()).await);
@@ -572,7 +572,7 @@ fn failed_dkg_outcomes_carry_share_forward() {
             boundary_outcome(first_outcome.epoch(), second_output, state.players());
 
         let mut second_boundary = header(Height::new(29));
-        second_boundary.inner.parent_hash = second_digest.0;
+        second_boundary.inner.parent_hash = second_digest.get();
         second_boundary.inner.extra_data = second_outcome.encode().into();
         harness.report_finalized_header(second_boundary).await;
         assert!(!harness.has_dealer_log(second_outcome.epoch()).await);
@@ -830,7 +830,7 @@ fn epoch_shares_only_distributed_in_the_first_half() {
             .unwrap();
 
         let mut boundary = header(Height::new(19));
-        boundary.inner.parent_hash = digest.0;
+        boundary.inner.parent_hash = digest.get();
         boundary.inner.extra_data = boundary_outcome(state.epoch, output, state.players())
             .encode()
             .into();
@@ -1230,7 +1230,7 @@ fn reshare_produces_new_shares() {
         let outcome = boundary_outcome(state.epoch, first_output, state.players());
 
         let mut boundary = header(Height::new(19));
-        boundary.inner.parent_hash = digest.0;
+        boundary.inner.parent_hash = digest.get();
         boundary.inner.extra_data = outcome.encode().into();
         first_harness
             .report_finalized_header(boundary.clone())
@@ -1801,7 +1801,7 @@ fn outcome_request_switches_notarized_ancestry_branches() {
         let mut first_chain = Vec::new();
         for height in 6..=8 {
             let mut header = header(Height::new(height));
-            header.inner.parent_hash = first_parent.0;
+            header.inner.parent_hash = first_parent.get();
             header.inner.timestamp = 1;
             header.consensus_context = Some(TempoConsensusContext {
                 epoch: 0,
@@ -1833,7 +1833,7 @@ fn outcome_request_switches_notarized_ancestry_branches() {
         let mut second_chain = Vec::new();
         for height in 6..=8 {
             let mut header = header(Height::new(height));
-            header.inner.parent_hash = second_parent.0;
+            header.inner.parent_hash = second_parent.get();
             header.inner.timestamp = 2;
             header.consensus_context = Some(TempoConsensusContext {
                 epoch: 0,

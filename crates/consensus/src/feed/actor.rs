@@ -74,7 +74,7 @@ impl<TContext: Spawner> Actor<TContext> {
         let certified = CertifiedBlock {
             epoch: tip.round.epoch().get(),
             view: tip.round.view().get(),
-            digest: tip.digest.0,
+            digest: tip.digest.get(),
             block: block.into_execution_block(),
             certificate: hex::encode(finalization.encode()),
         };

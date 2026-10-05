@@ -165,11 +165,11 @@ where
             }
 
             for (&slot, storage_slot) in &account.storage {
-                if storage_slot.present_value < storage_slot.original_value {
+                if storage_slot.present_value() < storage_slot.original_value() {
                     self.decreased_balances
-                        .insert((address, slot), storage_slot.present_value);
+                        .insert((address, slot), storage_slot.present_value());
                 } else if let Some(balance) = self.decreased_balances.get_mut(&(address, slot)) {
-                    *balance = storage_slot.present_value;
+                    *balance = storage_slot.present_value();
                 }
             }
         }
@@ -330,7 +330,7 @@ mod tests {
                 .transaction
                 .aa_transaction_id()
                 .expect("AA2D transaction must have an AA transaction id");
-            let on_chain_nonce = on_chain_nonces[&id.seq_id];
+            let on_chain_nonce = on_chain_nonces[id.seq_id()];
             pool.add_transaction(tx, on_chain_nonce, TempoHardfork::T1)
                 .expect("AA2D transaction must be added successfully");
         }

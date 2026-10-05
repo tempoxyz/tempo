@@ -298,12 +298,10 @@ impl Read for Block {
         let execution_block_encoded_size = header.length_with_payload();
         let bytes = buf.copy_to_bytes(execution_block_encoded_size);
 
-        let inner = <tempo_primitives::Block as reth_primitives_traits::Block>::decode_sealed(
-            &mut bytes.as_ref(),
-        )
-        .map_err(|rlp_err| {
-            commonware_codec::Error::Wrapped("reading RLP encoded block", rlp_err.into())
-        })?;
+        let inner = SealedBlock::<tempo_primitives::Block>::decode_sealed(&mut bytes.as_ref())
+            .map_err(|rlp_err| {
+                commonware_codec::Error::Wrapped("reading RLP encoded block", rlp_err.into())
+            })?;
 
         #[cfg(feature = "bal")]
         let block_access_list = {

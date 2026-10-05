@@ -137,11 +137,11 @@ impl Args {
 
         let consensus_manifest = TempoConsensusManifest {
             execution_finalized_height: consensus_state.execution_finalized_height,
-            execution_finalized_digest: consensus_state.execution_finalized_digest.0,
+            execution_finalized_digest: consensus_state.execution_finalized_digest.get(),
             tip_finalization_height: consensus_state.tip_finalization_height,
-            tip_finalization_digest: consensus_state.tip_finalization_digest.0,
+            tip_finalization_digest: consensus_state.tip_finalization_digest.get(),
             anchor_finalization_height: consensus_state.anchor_finalization_height,
-            anchor_finalization_digest: consensus_state.anchor_finalization_digest.0,
+            anchor_finalization_digest: consensus_state.anchor_finalization_digest.get(),
             consensus_archive,
         };
 

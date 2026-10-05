@@ -2522,7 +2522,7 @@ fn is_stale_forkchoice(
             )
         })?;
     ensure!(
-        canonical_digest == target.finalized.1.0,
+        canonical_digest == target.finalized.1.get(),
         "tracked finalized block `{}` at height `{}` conflicts with the execution \
         layer's canonical block `{canonical_digest}` at the same height, which the \
         execution layer already considers final; two different blocks must never be \
