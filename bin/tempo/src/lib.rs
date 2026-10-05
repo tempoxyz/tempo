@@ -132,10 +132,7 @@ fn set_zone_factory_genesis_owner(genesis: &mut Genesis, owner: Address) -> eyre
         .storage
         .as_mut()
         .ok_or_eyre("DEV ZoneFactory is missing storage")?;
-    storage.insert(
-        B256::ZERO,
-        B256::from(initial_zone_factory_config(owner).to_be_bytes()),
-    );
+    storage.insert(B256::ZERO, B256::from(initial_zone_factory_config(owner)));
     Ok(())
 }
 
@@ -858,7 +855,7 @@ mod tests {
             code: Some(Bytes::from_static(&[0xef])),
             storage: Some(BTreeMap::from([(
                 B256::ZERO,
-                B256::from(initial_zone_factory_config(owner).to_be_bytes()),
+                B256::from(initial_zone_factory_config(owner)),
             )])),
             ..Default::default()
         };

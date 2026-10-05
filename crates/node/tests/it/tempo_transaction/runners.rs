@@ -224,7 +224,7 @@ fn gas_estimation_cases() -> Vec<GasCase> {
             name: "webauthn",
             auth: AuthKind::KeyType {
                 key_type: SignatureType::WebAuthn,
-                key_data: Some(Bytes::from(116u16.to_be_bytes().to_vec())),
+                key_data: Some(116u16.to_be_bytes().into()),
             },
             noop_expected: ExpectedGasDiff::GreaterThan("p256::noop".into()),
         },
