@@ -16,7 +16,7 @@ use crate::{
 };
 use alloy_primitives::{Address, B256, KECCAK256_EMPTY, TxKind, U256};
 use evm2::{
-    Evm, EvmFeatures, TxResult,
+    Evm, EvmFeatures, TxResult, Version,
     env::TxEnv,
     ethereum::{
         access_list_counts, execute_initial_frame, initial_gas_and_reservoir,
@@ -32,7 +32,7 @@ use evm2::{
     },
     precompiles::PrecompileError,
     registry::{HandlerError, HandlerResult, TxRequest},
-    version::{GasId, GasParams},
+    version::GasId,
 };
 use std::cmp::Ordering;
 use tempo_chainspec::{constants::gas::STORAGE_CREDIT_VALUE, hardfork::TempoHardfork};
@@ -206,12 +206,14 @@ fn call_scope_extra_gas(auth: &tempo_primitives::transaction::KeyAuthorization) 
 #[inline]
 fn calculate_key_authorization_gas(
     key_auth: &tempo_primitives::transaction::SignedKeyAuthorization,
-    gas_params: &GasParams,
+    version: &Version,
     spec: TempoHardfork,
 ) -> (u64, u64) {
     // The base 21k includes one ecrecover, for the transaction's own signature. The key
     // authorization's signature is verified on top of that, so it pays the full verification gas.
     let sig_gas = key_auth.signature.verification_gas().unwrap_or(u64::MAX);
+    let gas_params = &version.gas_params;
+    let state_gas_enabled = version.feature(EvmFeatures::EIP8037);
 
     let num_limits = key_auth
         .authorization
@@ -245,7 +247,7 @@ fn calculate_key_authorization_gas(
         }
 
         let mut sstore_cost = gas_params.get(GasId::SstoreSetWithoutLoadCost);
-        if spec.is_t7() && gas_params.get(GasId::SstoreSetState) == 0 {
+        if spec.is_t7() && !state_gas_enabled {
             // T7 exposes only the SSTORE residual in the gas table. Since key-auth storage is
             // intrinsic-only, we must also add the creditable portion here.
             sstore_cost = sstore_cost.saturating_add(STORAGE_CREDIT_VALUE);
@@ -266,9 +268,11 @@ fn calculate_key_authorization_gas(
         }
 
         // TIP-1016: each storage-creating SSTORE also incurs state gas.
-        let state_gas = gas_params
-            .get(GasId::SstoreSetState)
-            .saturating_mul(num_sstores);
+        let state_gas = if state_gas_enabled {
+            gas_params.get(GasId::SstoreSetState).saturating_mul(num_sstores)
+        } else {
+            0
+        };
 
         (regular_gas, state_gas)
     } else {
@@ -278,6 +282,15 @@ fn calculate_key_authorization_gas(
             0,
         )
     }
+}
+
+#[cfg(test)]
+fn key_authorization_gas(
+    authorization: &tempo_primitives::transaction::SignedKeyAuthorization,
+    host: &Evm<'_, TempoEvmTypes>,
+    spec: TempoHardfork,
+) -> (u64, u64) {
+    calculate_key_authorization_gas(authorization, host.version(), spec)
 }
 
 /// Calculates intrinsic gas for an AA transaction batch using EVM2 gas parameters.
@@ -340,7 +353,7 @@ fn intrinsic_gas(
     // 5. Key authorization costs (if present)
     if let Some(authorization) = &tx.key_authorization {
         let (auth_regular, auth_state) =
-            calculate_key_authorization_gas(authorization, params, spec);
+            calculate_key_authorization_gas(authorization, host.version(), spec);
         regular = regular.saturating_add(auth_regular);
         state = state.saturating_add(auth_state);
     }
