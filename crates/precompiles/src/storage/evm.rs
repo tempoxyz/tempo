@@ -1413,6 +1413,34 @@ mod tests {
     }
 
     #[test]
+    fn test_storage_creation_oog_consumes_execution_gas_and_settles_state_gas() -> eyre::Result<()>
+    {
+        let mut evm = TestEvm::new(TempoHardfork::T14);
+        let mut provider = evm.provider_with_gas_limit(100, 50);
+        provider.deduct_state_gas(75)?;
+        provider.refund_gas(5_000);
+
+        assert_eq!(
+            crate::storage_credits::StorageCreditsBackend::charge_storage_creation(&mut provider),
+            Err(TempoPrecompileError::OutOfGas)
+        );
+        assert_eq!(provider.gas_tracker.remaining(), 0);
+        assert_eq!(provider.state_gas_used(), 75);
+        assert_eq!(provider.state_gas_spilled(), 25);
+        assert_eq!(provider.reservoir(), 0);
+
+        provider
+            .gas_tracker
+            .settle_gas(evm2::interpreter::InstrStop::OutOfGas);
+        assert_eq!(provider.gas_tracker.remaining(), 0);
+        assert_eq!(provider.state_gas_used(), 0);
+        assert_eq!(provider.state_gas_spilled(), 0);
+        assert_eq!(provider.reservoir(), 50);
+        assert_eq!(provider.gas_refunded(), 0);
+        Ok(())
+    }
+
+    #[test]
     fn test_recover_signer_gas() -> eyre::Result<()> {
         let mut evm = TestEvm::default();
         let mut provider = evm.provider_max_gas();
