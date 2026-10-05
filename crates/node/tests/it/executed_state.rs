@@ -8,6 +8,7 @@ use reth_node_builder::{NodeBuilder, NodeConfig};
 use reth_storage_api::{AccountReader as _, StateProviderFactory as _};
 use tempo_evm::parallel::EngineCaptureWindow;
 use tempo_node::node::{TempoNode, TempoNodeArgs};
+use tempo_primitives::SignatureType;
 
 /// One node builds two blocks. A second node only executes them with
 /// `newPayload` and never receives a forkchoice update, so its head stays at
@@ -128,15 +129,19 @@ async fn executed_state_reads_blocks_that_are_not_canonical(
     Ok(())
 }
 
-#[test_case::test_case(0, 64, 64, 64, false, EngineCaptureWindow::Transactions128, false; "independent")]
-#[test_case::test_case(0, 128, 16, 8, false, EngineCaptureWindow::Transactions128, false; "repeated_senders_and_recipients")]
-#[test_case::test_case(0, 64, 64, 1, true, EngineCaptureWindow::Transactions128, false; "native_reserve_opens")]
-#[test_case::test_case(4, 64, 64, 64, false, EngineCaptureWindow::Transactions128, false; "parallel_builder_independent")]
-#[test_case::test_case(4, 128, 16, 8, false, EngineCaptureWindow::Transactions128, false; "parallel_builder_repeated_senders_and_recipients")]
-#[test_case::test_case(4, 64, 64, 1, true, EngineCaptureWindow::Transactions128, false; "parallel_builder_native_reserve_opens")]
-#[test_case::test_case(4, 520, 64, 8, false, EngineCaptureWindow::Transactions128, false; "window128_paid_aa_beyond_boundary")]
-#[test_case::test_case(4, 520, 64, 8, false, EngineCaptureWindow::Transactions512, false; "window512_paid_aa_beyond_boundary")]
-#[test_case::test_case(4, 128, 16, 8, false, EngineCaptureWindow::Transactions128, true; "stage_diagnostics_paid_aa")]
+#[test_case::test_case(0, 64, 64, 64, false, EngineCaptureWindow::Transactions128, false, None, false; "independent")]
+#[test_case::test_case(0, 128, 16, 8, false, EngineCaptureWindow::Transactions128, false, None, false; "repeated_senders_and_recipients")]
+#[test_case::test_case(0, 64, 64, 1, true, EngineCaptureWindow::Transactions128, false, None, false; "native_reserve_opens")]
+#[test_case::test_case(4, 64, 64, 64, false, EngineCaptureWindow::Transactions128, false, None, false; "parallel_builder_independent")]
+#[test_case::test_case(4, 128, 16, 8, false, EngineCaptureWindow::Transactions128, false, None, false; "parallel_builder_repeated_senders_and_recipients")]
+#[test_case::test_case(4, 64, 64, 1, true, EngineCaptureWindow::Transactions128, false, None, false; "parallel_builder_native_reserve_opens")]
+#[test_case::test_case(4, 520, 64, 8, false, EngineCaptureWindow::Transactions128, false, None, false; "window128_paid_aa_beyond_boundary")]
+#[test_case::test_case(4, 520, 64, 8, false, EngineCaptureWindow::Transactions512, false, None, false; "window512_paid_aa_beyond_boundary")]
+#[test_case::test_case(4, 128, 16, 8, false, EngineCaptureWindow::Transactions128, true, None, false; "stage_diagnostics_paid_aa")]
+#[test_case::test_case(4, 256, 16, 16, false, EngineCaptureWindow::Transactions128, false, Some(SignatureType::Secp256k1), false; "signed_secp256k1_keychain")]
+#[test_case::test_case(4, 256, 16, 16, false, EngineCaptureWindow::Transactions128, false, Some(SignatureType::Secp256k1), true; "signed_secp256k1_keychain_sponsored")]
+#[test_case::test_case(4, 256, 16, 16, false, EngineCaptureWindow::Transactions128, false, Some(SignatureType::P256), false; "signed_p256_keychain")]
+#[test_case::test_case(4, 256, 16, 16, false, EngineCaptureWindow::Transactions128, false, Some(SignatureType::P256), true; "signed_p256_keychain_sponsored")]
 #[tokio::test(flavor = "multi_thread")]
 async fn engine_prewarming_preserves_paid_expiring_transfer_block(
     builder_threads: usize,
@@ -146,12 +151,17 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
     native_opens: bool,
     capture_window: EngineCaptureWindow,
     stage_diagnostics: bool,
+    access_key_type: Option<SignatureType>,
+    sponsored: bool,
 ) -> eyre::Result<()> {
     use crate::{
-        tempo_transaction::helpers::{create_basic_aa_tx, sign_aa_tx_secp256k1},
+        tempo_transaction::helpers::{
+            create_basic_aa_tx, generate_p256_access_key, sign_aa_tx_secp256k1,
+            sign_aa_tx_with_p256_access_key, sign_aa_tx_with_secp256k1_access_key, sign_fee_payer,
+        },
         utils::{ForkSchedule, TestNodeBuilder},
     };
-    use alloy::{primitives::U256, sol_types::SolCall};
+    use alloy::{primitives::U256, signers::SignerSync as _, sol_types::SolCall};
     use alloy_eips::Encodable2718;
     use alloy_rpc_types_engine::ForkchoiceState;
     use reth_e2e_test_utils::wallet::test_signer;
@@ -165,8 +175,10 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
         tip20::{ITIP20, slots::BALANCES},
     };
     use tempo_primitives::{
-        TempoTxEnvelope,
-        transaction::{Call, TEMPO_EXPIRING_NONCE_KEY},
+        TempoTxEnvelope, TempoTxType,
+        transaction::{
+            Call, KeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, tt_signature::PrimitiveSignature,
+        },
     };
 
     reth_tracing::init_test_tracing();
@@ -191,16 +203,33 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
     let activation = producer.advance_block().await?;
     assert_eq!(activation.block().header().inner.number, 1);
     assert_eq!(activation.block().header().inner.timestamp, 1);
-    let activation_hash = activation.block().hash();
+    let mut parents = vec![activation];
     producer.set_next_payload_timestamp(2)?;
     let chain_spec = producer.inner.chain_spec();
     let chain_id = chain_spec.chain().id();
     let signers = (0..sender_count)
         .map(|index| test_signer(u32::try_from(index).unwrap()))
         .collect::<Vec<_>>();
+    let sponsors = (0..if sponsored { sender_count } else { 0 })
+        .map(|index| test_signer(u32::try_from(sender_count + index).unwrap()))
+        .collect::<Vec<_>>();
+    let secp_access_keys = (0..if access_key_type == Some(SignatureType::Secp256k1) {
+        sender_count
+    } else {
+        0
+    })
+        .map(|index| test_signer(u32::try_from(100 + index).unwrap()))
+        .collect::<Vec<_>>();
+    let p256_access_keys = (0..if access_key_type == Some(SignatureType::P256) {
+        sender_count
+    } else {
+        0
+    })
+        .map(|_| generate_p256_access_key())
+        .collect::<Vec<_>>();
     {
         let genesis = producer.inner.provider.latest()?;
-        for signer in &signers {
+        for signer in signers.iter().chain(&sponsors) {
             assert!(
                 genesis
                     .storage(
@@ -209,13 +238,95 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
                     )?
                     .unwrap_or_default()
                     > U256::ZERO,
-                "the fixture requires funded TIP20 senders"
+                "the fixture requires funded TIP20 senders and sponsors"
             );
         }
     }
+    if let Some(key_type) = access_key_type {
+        // Pool admission must see the real on-chain authorization. Both its
+        // root signature and the enclosing transaction signature are recovered
+        // through the normal node path before the measured child is submitted.
+        for (index, signer) in signers.iter().enumerate() {
+            let key_id = match key_type {
+                SignatureType::Secp256k1 => secp_access_keys[index].address(),
+                SignatureType::P256 => p256_access_keys[index].3,
+                SignatureType::WebAuthn => unreachable!("not a fixture signature mode"),
+            };
+            let authorization = KeyAuthorization::unrestricted(chain_id, key_type, key_id);
+            let signature = signer.sign_hash_sync(&authorization.signature_hash())?;
+            let mut tx = create_basic_aa_tx(
+                chain_id,
+                0,
+                vec![Call {
+                    to: DEFAULT_FEE_TOKEN.into(),
+                    value: U256::ZERO,
+                    input: ITIP20::balanceOfCall {
+                        account: signer.address(),
+                    }
+                    .abi_encode()
+                    .into(),
+                }],
+                2_000_000,
+            );
+            tx.key_authorization =
+                Some(authorization.into_signed(PrimitiveSignature::Secp256k1(signature)));
+            let signature = sign_aa_tx_secp256k1(&tx, signer)?;
+            let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+            producer
+                .rpc
+                .inject_tx(envelope.encoded_2718().into())
+                .await?;
+        }
+        let authorization = producer.advance_block().await?;
+        assert_eq!(authorization.block().header().inner.number, 2);
+        assert_eq!(authorization.block().header().inner.timestamp, 2);
+        assert_eq!(
+            authorization
+                .block()
+                .body()
+                .transactions
+                .iter()
+                .filter(|tx| !tx.is_system_tx())
+                .count(),
+            sender_count,
+        );
+        assert!(
+            producer
+                .inner
+                .provider
+                .receipts_by_block(authorization.block().hash().into())?
+                .expect("authorization receipts")
+                .iter()
+                .all(|receipt| receipt.success)
+        );
+        parents.push(authorization);
+        producer.set_next_payload_timestamp(3)?;
+    }
+    let initial_balances = if access_key_type.is_some() {
+        let parent = producer.inner.provider.latest()?;
+        signers
+            .iter()
+            .chain(&sponsors)
+            .map(|signer| {
+                Ok((
+                    signer.address(),
+                    parent
+                        .storage(
+                            DEFAULT_FEE_TOKEN,
+                            signer.address().mapping_slot(BALANCES).into(),
+                        )?
+                        .unwrap_or_default(),
+                ))
+            })
+            .collect::<eyre::Result<std::collections::BTreeMap<_, _>>>()?
+    } else {
+        std::collections::BTreeMap::new()
+    };
     let mut expected_balances = std::collections::BTreeMap::<Address, u64>::new();
+    let mut expected_transfers = std::collections::BTreeMap::<Address, u64>::new();
     for index in 0..transaction_count {
-        let signer = &signers[index % sender_count];
+        let sender_index = index % sender_count;
+        let signer = &signers[sender_index];
         let (calls, recipient, amount) = if native_opens {
             // Deposit and fees both use pathUSD. Opening a channel credits
             // custody, so the balance assertion targets the reserve, not payee.
@@ -261,19 +372,62 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
         let mut tx = create_basic_aa_tx(chain_id, index as u64, calls, 2_000_000);
         tx.nonce_key = TEMPO_EXPIRING_NONCE_KEY;
         tx.valid_before = std::num::NonZeroU64::new(300);
-        let signature = sign_aa_tx_secp256k1(&tx, signer)?;
+        if sponsored {
+            // Sponsorship commits to the root account, not the access key.
+            // Set it before computing the final keychain transaction signature.
+            sign_fee_payer(&mut tx, signer.address(), &sponsors[sender_index])?;
+        }
+        let signature = match access_key_type {
+            None => sign_aa_tx_secp256k1(&tx, signer)?,
+            Some(SignatureType::Secp256k1) => sign_aa_tx_with_secp256k1_access_key(
+                &tx,
+                &secp_access_keys[sender_index],
+                signer.address(),
+            )?,
+            Some(SignatureType::P256) => {
+                let (key, x, y, _) = &p256_access_keys[sender_index];
+                sign_aa_tx_with_p256_access_key(&tx, key, x, y, signer.address())?
+            }
+            Some(SignatureType::WebAuthn) => unreachable!("not a fixture signature mode"),
+        };
+        assert_eq!(signature.is_keychain(), access_key_type.is_some());
+        assert!(!signature.is_legacy_keychain());
         let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+        assert_eq!(
+            envelope.fee_payer(signer.address())?,
+            if sponsored {
+                sponsors[sender_index].address()
+            } else {
+                signer.address()
+            },
+        );
         producer
             .rpc
             .inject_tx(envelope.encoded_2718().into())
             .await?;
         *expected_balances.entry(recipient).or_default() += amount;
+        *expected_transfers.entry(signer.address()).or_default() += amount;
     }
     let payload = producer.advance_block().await?;
     // Both producer configurations remain under manual payload control.
-    assert_eq!(payload.block().header().inner.number, 2);
-    assert_eq!(payload.block().header().inner.timestamp, 2);
+    assert_eq!(
+        payload.block().header().inner.number,
+        parents.len() as u64 + 1
+    );
+    assert_eq!(
+        payload.block().header().inner.timestamp,
+        parents.len() as u64 + 1
+    );
     let block_hash = payload.block().hash();
+    if access_key_type.is_some() {
+        for signer in signers.iter().chain(&sponsors) {
+            assert_ne!(
+                payload.block().header().inner.beneficiary,
+                signer.address(),
+                "payer balance assertions require a separate validator fee recipient",
+            );
+        }
+    }
     assert_eq!(
         payload
             .block()
@@ -291,6 +445,36 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
         .receipts_by_block(block_hash.into())?
         .expect("producer receipts");
     assert!(expected_receipts.iter().all(|receipt| receipt.success));
+    assert_eq!(
+        expected_receipts.len(),
+        payload.block().body().transactions.len()
+    );
+    for (tx, receipt) in payload
+        .block()
+        .body()
+        .transactions
+        .iter()
+        .zip(&expected_receipts)
+    {
+        if tx.is_system_tx() {
+            continue;
+        }
+        let signed = tx
+            .as_aa()
+            .expect("the measured cohort contains AA transactions");
+        assert_eq!(signed.tx().nonce_key, TEMPO_EXPIRING_NONCE_KEY);
+        assert_eq!(signed.tx().fee_payer_signature.is_some(), sponsored);
+        assert_eq!(signed.signature().is_keychain(), access_key_type.is_some());
+        assert!(!signed.signature().is_legacy_keychain());
+        if let Some(key_type) = access_key_type {
+            assert_eq!(signed.signature().signature_type(), key_type);
+            assert!(
+                signed.tx().key_authorization.is_none(),
+                "authorization belongs in the parent"
+            );
+        }
+        assert_eq!(receipt.tx_type, TempoTxType::AA);
+    }
 
     // Force an early canonical error in a block larger than the strict capture
     // window, then submit the valid sibling. The 520-transaction cases exceed
@@ -335,6 +519,7 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
     };
     let mut expected_invalid_error = None;
     let mut expected_output = None;
+    let mut expected_parent_outputs = std::collections::BTreeMap::new();
     for execution_threads in [0, 4] {
         let tempo_node = TempoNode::new(
             &TempoNodeArgs {
@@ -342,6 +527,7 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
                 execution_batch_size: 32,
                 execution_capture_window: capture_window,
                 execution_stage_diagnostics: stage_diagnostics,
+                execution_capture_diagnostics: access_key_type.is_some(),
                 ..Default::default()
             },
             None,
@@ -360,25 +546,48 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
             observer.evm_config.speculative_executor.is_some(),
             execution_threads > 0
         );
-        let status = observer
-            .add_ons_handle
-            .beacon_engine_handle
-            .new_payload(activation.clone().into())
-            .await?;
-        assert!(status.is_valid());
-        let forkchoice = observer
-            .add_ons_handle
-            .beacon_engine_handle
-            .fork_choice_updated(
-                ForkchoiceState {
-                    head_block_hash: activation_hash,
-                    safe_block_hash: activation_hash,
-                    finalized_block_hash: activation_hash,
-                },
-                None,
-            )
-            .await?;
-        assert!(forkchoice.payload_status.is_valid());
+        for parent in &parents {
+            let status = observer
+                .add_ons_handle
+                .beacon_engine_handle
+                .new_payload(parent.clone().into())
+                .await?;
+            assert!(status.is_valid());
+            let parent_hash = parent.block().hash();
+            if access_key_type.is_some() {
+                let pending = observer
+                    .provider
+                    .pending_block_and_receipts()?
+                    .expect("the validated setup parent is pending");
+                assert_eq!(pending.block().hash(), parent_hash);
+                assert_eq!(
+                    pending.execution_output().result.receipts,
+                    producer
+                        .inner
+                        .provider
+                        .receipts_by_block(parent_hash.into())?
+                        .expect("producer setup receipts"),
+                );
+                if let Some(expected) = expected_parent_outputs.get(&parent_hash) {
+                    assert_eq!(pending.execution_output(), expected);
+                } else {
+                    expected_parent_outputs.insert(parent_hash, pending.execution_output().clone());
+                }
+            }
+            let forkchoice = observer
+                .add_ons_handle
+                .beacon_engine_handle
+                .fork_choice_updated(
+                    ForkchoiceState {
+                        head_block_hash: parent_hash,
+                        safe_block_hash: parent_hash,
+                        finalized_block_hash: parent_hash,
+                    },
+                    None,
+                )
+                .await?;
+            assert!(forkchoice.payload_status.is_valid());
+        }
         if let Some(invalid) = &invalid_payload {
             let status = tokio::time::timeout(
                 std::time::Duration::from_secs(30),
@@ -407,6 +616,11 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
                 expected_invalid_error = Some(error);
             }
         }
+        // Exclude authorization-parent work and the rejected sibling. The
+        // observer has no producer jobs that could increment these counters.
+        let workers = observer.evm_config.speculative_executor.as_ref();
+        let reuses_before = workers.map_or(0, |pool| pool.prewarmed_reuses());
+        let scheduled_before = workers.map_or(0, |pool| pool.scheduled_transactions());
         let status = tokio::time::timeout(
             std::time::Duration::from_secs(30),
             observer
@@ -417,7 +631,7 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
         .await??;
         assert!(status.is_valid(), "unexpected payload status: {status:?}");
 
-        // VALID checks both canonical roots. The child of the activation block
+        // VALID checks both canonical roots. The child of the last setup block
         // also exposes actual receipts and full execution output as pending.
         let pending = observer
             .provider
@@ -440,6 +654,34 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
                 Some(U256::from(*balance))
             );
         }
+        if access_key_type.is_some() {
+            for (index, signer) in signers.iter().enumerate() {
+                let before = initial_balances[&signer.address()];
+                let transferred = U256::from(expected_transfers[&signer.address()]);
+                let after = state
+                    .storage(
+                        DEFAULT_FEE_TOKEN,
+                        signer.address().mapping_slot(BALANCES).into(),
+                    )?
+                    .unwrap_or_default();
+                if sponsored {
+                    assert_eq!(after, before - transferred, "the root pays transfers only");
+                    let sponsor = sponsors[index].address();
+                    let sponsor_after = state
+                        .storage(DEFAULT_FEE_TOKEN, sponsor.mapping_slot(BALANCES).into())?
+                        .unwrap_or_default();
+                    assert!(
+                        sponsor_after < initial_balances[&sponsor],
+                        "the real sponsor pays fees"
+                    );
+                } else {
+                    assert!(
+                        after < before - transferred,
+                        "the root pays transfers and fees"
+                    );
+                }
+            }
+        }
         assert_eq!(
             state.storage(NONCE_PRECOMPILE_ADDRESS, EXPIRING_NONCE_RING_PTR.into())?,
             Some(U256::from(transaction_count))
@@ -455,6 +697,17 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
             eprintln!(
                 "Engine-only prewarming reuses: {}",
                 workers.prewarmed_reuses()
+            );
+        }
+        if let Some(key_type) = access_key_type {
+            eprintln!(
+                "Signed AA differential: key_type={key_type:?} sponsored={sponsored} \
+                 execution_threads={execution_threads} block_hash={block_hash} \
+                 transactions={transaction_count} authorization_parent={} \
+                 reuse_delta={} scheduled_delta={}",
+                parents.last().unwrap().block().hash(),
+                workers.map_or(0, |pool| pool.prewarmed_reuses()) - reuses_before,
+                workers.map_or(0, |pool| pool.scheduled_transactions()) - scheduled_before,
             );
         }
     }
