@@ -104,8 +104,7 @@ use commonware_storage::{
 use reth_node_core::primitives::SealedBlock;
 use reth_primitives_traits::SealedOrRecoveredBlock;
 use reth_provider::{
-    BalProvider, BalStoreHandle, BlockReader, BlockSource, HeaderProvider, ProviderError,
-    ProviderResult,
+    BlockReader, BlockSource, HeaderProvider, ProviderError, ProviderResult,
     providers::{BlockchainProvider, ProviderNodeTypes},
 };
 use tempo_primitives::TempoHeader;
