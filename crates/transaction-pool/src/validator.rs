@@ -382,19 +382,18 @@ where
             .collect()
     }
 
-    /// Returns the latest state provider and a state cache valid for the provider's tip.
+    /// Returns the current tip's state provider and matching read cache.
+    ///
+    /// Using one tip hash prevents a concurrent head update from pairing old state with a new cache.
     fn latest_state_provider_and_cache(
         &self,
     ) -> ProviderResult<(StateProviderBox, Arc<StateCache>)> {
-        let state_provider = self.inner.client().latest()?;
-        let latest_hash = self.inner.client().chain_info()?.best_hash;
-        Ok((state_provider, self.state_cache_for_tip(latest_hash)))
+        let tip = self.inner.client().chain_info()?.best_hash;
+        let tip_provider = self.inner.client().state_by_block_hash(tip);
+        self.provider_and_cache_for_tip(tip, tip_provider)
     }
 
-    /// Returns the shared cache if it matches `tip_hash`, otherwise an empty ephemeral cache.
-    ///
-    /// A mismatch can happen when `.latest()` observes state for a newer canonical tip before
-    /// `on_new_head_block` has refreshed the validator's cached state for that tip.
+    /// Returns the shared cache if its tip matches `tip_hash`, otherwise a fresh cache.
     fn state_cache_for_tip(&self, tip_hash: B256) -> Arc<StateCache> {
         let (cached_tip_hash, cached_state) = self.cached_state.read().clone();
         if cached_tip_hash == tip_hash {
@@ -1216,6 +1215,19 @@ mod tests {
             }
             _ => panic!("Expected Invalid outcome with address check error, got: {outcome:?}"),
         }
+    }
+
+    #[test]
+    fn latest_state_provider_uses_shared_cache_for_current_tip() {
+        let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
+        let validator = setup_validator(&tx, 1);
+        let latest_hash = validator.client().chain_info().unwrap().best_hash;
+        let shared_cache = Arc::new(StateCache::default());
+        *validator.cached_state.write() = (latest_hash, shared_cache.clone());
+
+        let (_, validation_cache) = validator.latest_state_provider_and_cache().unwrap();
+
+        assert!(Arc::ptr_eq(&validation_cache, &shared_cache));
     }
 
     #[test]
