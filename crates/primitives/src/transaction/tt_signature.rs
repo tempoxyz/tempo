@@ -1673,7 +1673,7 @@ mod tests {
             alloy_primitives::U256::from_be_slice(&s_bytes),
             false,
         );
-        let secp256k1_sig = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(sig));
+        let secp256k1_sig = TempoSignature::from(sig);
 
         let json = serde_json::to_string(&secp256k1_sig).unwrap();
         let decoded: TempoSignature = serde_json::from_str(&json).unwrap();
@@ -2166,8 +2166,7 @@ mod tests {
 
     #[test]
     fn test_is_keychain_returns_false_for_primitive() {
-        let sig =
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let sig = TempoSignature::from(Signature::test_signature());
         assert!(!sig.is_keychain());
     }
 
