@@ -18,6 +18,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+tempo-tdx-attestation = { workspace = true, optional = true }
 base64.workspace = true
 blake3.workspace = true
 tar.workspace = true
@@ -225,3 +226,4 @@ min-trace-logs = [
 trie-debug = ["tempo-node/trie-debug"]
 # Devnet-only: accept zone verifier PCRs via `--zone-verifier.custom-pcrs`.
 custom-pcrs = ["tempo-precompiles/custom-pcrs"]
+custom-tdx = ["tempo-precompiles/custom-tdx", "dep:tempo-tdx-attestation"]

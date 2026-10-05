@@ -7,8 +7,11 @@ use crate::{Precompile, charge_input_cost, dispatch, view};
 use super::ZoneVerifier;
 
 // selector + 17 static ABI words + one-byte config tail + maximum proof tail.
-const MAX_CALLDATA_LEN: usize =
-    4 + 17 * 32 + 2 * 32 + 32 + tempo_nitro_attestation::MAX_DOCUMENT_SIZE;
+#[cfg(not(feature = "custom-tdx"))]
+const MAX_PROOF_BYTES: usize = tempo_nitro_attestation::MAX_DOCUMENT_SIZE;
+#[cfg(feature = "custom-tdx")]
+const MAX_PROOF_BYTES: usize = tempo_tdx_attestation::MAX_EVIDENCE_BYTES;
+const MAX_CALLDATA_LEN: usize = 4 + 17 * 32 + 2 * 32 + 32 + MAX_PROOF_BYTES;
 
 impl Precompile for ZoneVerifier {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {

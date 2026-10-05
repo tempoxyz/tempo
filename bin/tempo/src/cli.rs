@@ -111,6 +111,23 @@ pub struct TempoArgs {
         env = "TEMPO_ZONE_VERIFIER_CUSTOM_PCRS"
     )]
     pub(crate) custom_pcrs: Option<tempo_precompiles::zone_verifier::PcrPolicy>,
+
+    /// Exact TDX measurement policy JSON. DEVNET ONLY; requires the custom-tdx build feature.
+    #[cfg(feature = "custom-tdx")]
+    #[arg(
+        long = "zone-verifier.tdx-policy",
+        env = "TEMPO_ZONE_VERIFIER_TDX_POLICY"
+    )]
+    pub(crate) tdx_policy: Option<std::path::PathBuf>,
+
+    /// Native verifier hardfork at which the development TDX policy becomes active.
+    #[cfg(feature = "custom-tdx")]
+    #[arg(
+        long = "zone-verifier.tdx-activation",
+        default_value = "T13",
+        requires = "tdx_policy"
+    )]
+    pub(crate) tdx_activation: tempo_chainspec::hardfork::TempoHardfork,
 }
 
 impl TempoArgs {

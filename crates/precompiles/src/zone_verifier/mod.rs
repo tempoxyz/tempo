@@ -3,6 +3,8 @@
 mod attestation;
 pub mod dispatch;
 mod pcr;
+#[cfg(feature = "custom-tdx")]
+pub mod tdx;
 
 use alloy::{
     primitives::{Address, B256, U256, keccak256},
@@ -47,6 +49,11 @@ pub struct ZoneVerifier {}
 impl ZoneVerifier {
     pub fn verify(&self, portal: Address, call: IZoneVerifier::verifyCall) -> Result<bool> {
         let hardfork = self.storage.spec();
+
+        #[cfg(feature = "custom-tdx")]
+        if call.verifierConfig.as_ref() == [3] {
+            return self.verify_tdx(portal, &call, tdx::CUSTOM_TDX.get());
+        }
 
         #[cfg(feature = "custom-pcrs")]
         if let Some(policy) = CUSTOM_PCRS.get() {
@@ -236,7 +243,7 @@ mod tests {
 
     const BLOCK_TIMESTAMP: u64 = attestation::tests::BLOCK_TIMESTAMP;
 
-    fn call() -> IZoneVerifier::verifyCall {
+    pub(super) fn call() -> IZoneVerifier::verifyCall {
         IZoneVerifier::verifyCall {
             zoneId: 12,
             tempoBlockNumber: 9,
