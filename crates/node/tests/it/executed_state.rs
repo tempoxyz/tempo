@@ -129,28 +129,37 @@ async fn executed_state_reads_blocks_that_are_not_canonical(
     Ok(())
 }
 
-#[test_case::test_case(0, 64, 64, 64, false, EngineCaptureWindow::Transactions128, false, None, false; "independent")]
-#[test_case::test_case(0, 128, 16, 8, false, EngineCaptureWindow::Transactions128, false, None, false; "repeated_senders_and_recipients")]
-#[test_case::test_case(0, 64, 64, 1, true, EngineCaptureWindow::Transactions128, false, None, false; "native_reserve_opens")]
-#[test_case::test_case(4, 64, 64, 64, false, EngineCaptureWindow::Transactions128, false, None, false; "parallel_builder_independent")]
-#[test_case::test_case(4, 128, 16, 8, false, EngineCaptureWindow::Transactions128, false, None, false; "parallel_builder_repeated_senders_and_recipients")]
-#[test_case::test_case(4, 64, 64, 1, true, EngineCaptureWindow::Transactions128, false, None, false; "parallel_builder_native_reserve_opens")]
-#[test_case::test_case(4, 520, 64, 8, false, EngineCaptureWindow::Transactions128, false, None, false; "window128_paid_aa_beyond_boundary")]
-#[test_case::test_case(4, 520, 64, 8, false, EngineCaptureWindow::Transactions512, false, None, false; "window512_paid_aa_beyond_boundary")]
-#[test_case::test_case(4, 128, 16, 8, false, EngineCaptureWindow::Transactions128, true, None, false; "stage_diagnostics_paid_aa")]
-#[test_case::test_case(4, 256, 16, 16, false, EngineCaptureWindow::Transactions128, false, Some(SignatureType::Secp256k1), false; "signed_secp256k1_keychain")]
-#[test_case::test_case(4, 256, 16, 16, false, EngineCaptureWindow::Transactions128, false, Some(SignatureType::Secp256k1), true; "signed_secp256k1_keychain_sponsored")]
-#[test_case::test_case(4, 256, 16, 16, false, EngineCaptureWindow::Transactions128, false, Some(SignatureType::P256), false; "signed_p256_keychain")]
-#[test_case::test_case(4, 256, 16, 16, false, EngineCaptureWindow::Transactions128, false, Some(SignatureType::P256), true; "signed_p256_keychain_sponsored")]
-#[test_case::test_case(4, 256, 16, 16, false, EngineCaptureWindow::Transactions128, false, Some(SignatureType::WebAuthn), false; "signed_webauthn_keychain")]
-#[test_case::test_case(4, 256, 16, 16, false, EngineCaptureWindow::Transactions128, false, Some(SignatureType::WebAuthn), true; "signed_webauthn_keychain_sponsored")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PaidBlockWorkload {
+    Transfers,
+    ReserveOpens,
+    DirectMints,
+}
+
+#[test_case::test_case(0, 64, 64, 64, PaidBlockWorkload::Transfers, EngineCaptureWindow::Transactions128, false, None, false; "independent")]
+#[test_case::test_case(0, 128, 16, 8, PaidBlockWorkload::Transfers, EngineCaptureWindow::Transactions128, false, None, false; "repeated_senders_and_recipients")]
+#[test_case::test_case(0, 64, 64, 1, PaidBlockWorkload::ReserveOpens, EngineCaptureWindow::Transactions128, false, None, false; "native_reserve_opens")]
+#[test_case::test_case(4, 64, 64, 64, PaidBlockWorkload::Transfers, EngineCaptureWindow::Transactions128, false, None, false; "parallel_builder_independent")]
+#[test_case::test_case(4, 128, 16, 8, PaidBlockWorkload::Transfers, EngineCaptureWindow::Transactions128, false, None, false; "parallel_builder_repeated_senders_and_recipients")]
+#[test_case::test_case(4, 64, 64, 1, PaidBlockWorkload::ReserveOpens, EngineCaptureWindow::Transactions128, false, None, false; "parallel_builder_native_reserve_opens")]
+#[test_case::test_case(4, 520, 64, 8, PaidBlockWorkload::Transfers, EngineCaptureWindow::Transactions128, false, None, false; "window128_paid_aa_beyond_boundary")]
+#[test_case::test_case(4, 520, 64, 8, PaidBlockWorkload::Transfers, EngineCaptureWindow::Transactions512, false, None, false; "window512_paid_aa_beyond_boundary")]
+#[test_case::test_case(4, 128, 16, 8, PaidBlockWorkload::Transfers, EngineCaptureWindow::Transactions128, true, None, false; "stage_diagnostics_paid_aa")]
+#[test_case::test_case(4, 256, 16, 16, PaidBlockWorkload::Transfers, EngineCaptureWindow::Transactions128, false, Some(SignatureType::Secp256k1), false; "signed_secp256k1_keychain")]
+#[test_case::test_case(4, 256, 16, 16, PaidBlockWorkload::Transfers, EngineCaptureWindow::Transactions128, false, Some(SignatureType::Secp256k1), true; "signed_secp256k1_keychain_sponsored")]
+#[test_case::test_case(4, 256, 16, 16, PaidBlockWorkload::Transfers, EngineCaptureWindow::Transactions128, false, Some(SignatureType::P256), false; "signed_p256_keychain")]
+#[test_case::test_case(4, 256, 16, 16, PaidBlockWorkload::Transfers, EngineCaptureWindow::Transactions128, false, Some(SignatureType::P256), true; "signed_p256_keychain_sponsored")]
+#[test_case::test_case(4, 256, 16, 16, PaidBlockWorkload::Transfers, EngineCaptureWindow::Transactions128, false, Some(SignatureType::WebAuthn), false; "signed_webauthn_keychain")]
+#[test_case::test_case(4, 256, 16, 16, PaidBlockWorkload::Transfers, EngineCaptureWindow::Transactions128, false, Some(SignatureType::WebAuthn), true; "signed_webauthn_keychain_sponsored")]
+#[test_case::test_case(0, 256, 16, 256, PaidBlockWorkload::DirectMints, EngineCaptureWindow::Transactions128, false, None, false; "signed_direct_mint_sequential_builder")]
+#[test_case::test_case(4, 256, 16, 256, PaidBlockWorkload::DirectMints, EngineCaptureWindow::Transactions128, false, None, false; "signed_direct_mint_parallel_builder")]
 #[tokio::test(flavor = "multi_thread")]
 async fn engine_prewarming_preserves_paid_expiring_transfer_block(
     builder_threads: usize,
     transaction_count: usize,
     sender_count: usize,
     recipient_count: usize,
-    native_opens: bool,
+    workload: PaidBlockWorkload,
     capture_window: EngineCaptureWindow,
     stage_diagnostics: bool,
     access_key_type: Option<SignatureType>,
@@ -175,7 +184,10 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
         NONCE_PRECOMPILE_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
         nonce::slots::EXPIRING_NONCE_RING_PTR,
         storage::StorageKey as _,
-        tip20::{ITIP20, slots::BALANCES},
+        tip20::{
+            IRolesAuth, ISSUER_ROLE, ITIP20,
+            slots::{BALANCES, ROLES, SUPPLY_CAP, TOTAL_SUPPLY},
+        },
     };
     use tempo_primitives::{
         TempoTxEnvelope, TempoTxType,
@@ -183,6 +195,16 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
             Call, KeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, tt_signature::PrimitiveSignature,
         },
     };
+
+    let direct_mints = workload == PaidBlockWorkload::DirectMints;
+    if direct_mints {
+        assert_eq!(
+            (transaction_count, sender_count, recipient_count),
+            (256, 16, 256)
+        );
+        assert!(access_key_type.is_none() && !sponsored);
+    }
+    let issuer_role_slot = |account: Address| ISSUER_ROLE.mapping_slot(account.mapping_slot(ROLES));
 
     async fn finish_fixture_worker(
         runtime: &Runtime,
@@ -311,6 +333,102 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
             );
         }
     }
+    if direct_mints {
+        // The default pool permits sixteen pending AA transactions per sender.
+        // Grant sixteen funded roots real issuer permissions before their child
+        // block, using the genesis admin's ordinary signed transaction path.
+        let admin = &signers[0];
+        assert_eq!(
+            producer
+                .inner
+                .provider
+                .latest()?
+                .storage(DEFAULT_FEE_TOKEN, issuer_role_slot(admin.address()).into(),)?,
+            Some(U256::ONE),
+            "the genesis root must already have the issuer role",
+        );
+        let calls = signers
+            .iter()
+            .skip(1)
+            .map(|signer| Call {
+                to: DEFAULT_FEE_TOKEN.into(),
+                value: U256::ZERO,
+                input: IRolesAuth::grantRoleCall {
+                    role: ISSUER_ROLE,
+                    account: signer.address(),
+                }
+                .abi_encode()
+                .into(),
+            })
+            .collect();
+        // Fifteen zero-to-one role writes include native storage-credit gas.
+        let tx = create_basic_aa_tx(chain_id, 0, calls, 5_000_000);
+        let signature = sign_aa_tx_secp256k1(&tx, admin)?;
+        let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+        producer
+            .rpc
+            .inject_tx(envelope.encoded_2718().into())
+            .await?;
+        let roles = producer.advance_block().await?;
+        assert_eq!(roles.block().header().inner.number, 2);
+        assert_eq!(roles.block().header().inner.timestamp, 2);
+        assert_eq!(
+            roles
+                .block()
+                .body()
+                .transactions
+                .iter()
+                .filter(|tx| !tx.is_system_tx())
+                .count(),
+            1
+        );
+        assert!(
+            producer
+                .inner
+                .provider
+                .receipts_by_block(roles.block().hash().into())?
+                .expect("issuer setup receipts")
+                .iter()
+                .all(|receipt| receipt.success)
+        );
+        parents.push(roles);
+        producer.set_next_payload_timestamp(3)?;
+    }
+    let mint_parent_state = if direct_mints {
+        let parent = producer.inner.provider.latest()?;
+        for signer in &signers {
+            assert_eq!(
+                parent.storage(DEFAULT_FEE_TOKEN, issuer_role_slot(signer.address()).into())?,
+                Some(U256::ONE)
+            );
+        }
+        assert_eq!(
+            parent
+                .storage(NONCE_PRECOMPILE_ADDRESS, EXPIRING_NONCE_RING_PTR.into())?
+                .unwrap_or_default(),
+            U256::ZERO,
+            "ordinary-nonce issuer setup must not advance the expiring ring",
+        );
+        let supply = parent
+            .storage(DEFAULT_FEE_TOKEN, TOTAL_SUPPLY.into())?
+            .unwrap_or_default();
+        let cap = parent
+            .storage(DEFAULT_FEE_TOKEN, SUPPLY_CAP.into())?
+            .unwrap_or_default();
+        assert!(
+            supply > U256::ZERO,
+            "the measured supply write must remain nonzero-to-nonzero"
+        );
+        assert!(
+            supply
+                .checked_add(U256::from(transaction_count))
+                .expect("mint supply arithmetic")
+                <= cap
+        );
+        Some((supply, cap))
+    } else {
+        None
+    };
     if let Some(key_type) = access_key_type {
         // Pool admission must see the real on-chain authorization. Both its
         // root signature and the enclosing transaction signature are recovered
@@ -370,7 +488,7 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
         parents.push(authorization);
         producer.set_next_payload_timestamp(3)?;
     }
-    let initial_balances = if access_key_type.is_some() {
+    let initial_balances = if access_key_type.is_some() || direct_mints {
         let parent = producer.inner.provider.latest()?;
         signers
             .iter()
@@ -392,10 +510,11 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
     };
     let mut expected_balances = std::collections::BTreeMap::<Address, u64>::new();
     let mut expected_transfers = std::collections::BTreeMap::<Address, u64>::new();
+    let mut expected_mints = std::collections::BTreeMap::<B256, (Address, Address, U256)>::new();
     for index in 0..transaction_count {
         let sender_index = index % sender_count;
         let signer = &signers[sender_index];
-        let (calls, recipient, amount) = if native_opens {
+        let (calls, recipient, amount) = if workload == PaidBlockWorkload::ReserveOpens {
             // Deposit and fees both use pathUSD. Opening a channel credits
             // custody, so the balance assertion targets the reserve, not payee.
             (
@@ -414,6 +533,22 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
                     .into(),
                 }],
                 TIP20_CHANNEL_RESERVE_ADDRESS,
+                1,
+            )
+        } else if direct_mints {
+            let recipient = Address::from_word(B256::from(U256::from(0x10000 + index)));
+            (
+                vec![Call {
+                    to: DEFAULT_FEE_TOKEN.into(),
+                    value: U256::ZERO,
+                    input: ITIP20::mintCall {
+                        to: recipient,
+                        amount: U256::ONE,
+                    }
+                    .abi_encode()
+                    .into(),
+                }],
+                recipient,
                 1,
             )
         } else {
@@ -437,7 +572,10 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
                 4,
             )
         };
-        let mut tx = create_basic_aa_tx(chain_id, index as u64, calls, 2_000_000);
+        // A single mint has ample gas for a new recipient balance while the
+        // 256 declared limits total only 256M, below the 500M genesis block cap.
+        let gas_limit = if direct_mints { 1_000_000 } else { 2_000_000 };
+        let mut tx = create_basic_aa_tx(chain_id, index as u64, calls, gas_limit);
         tx.nonce_key = TEMPO_EXPIRING_NONCE_KEY;
         tx.valid_before = std::num::NonZeroU64::new(300);
         if sponsored {
@@ -479,12 +617,35 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
                 signer.address()
             },
         );
+        if direct_mints {
+            assert!(
+                expected_mints
+                    .insert(
+                        *envelope.as_aa().unwrap().hash(),
+                        (signer.address(), recipient, U256::from(amount)),
+                    )
+                    .is_none()
+            );
+        }
         producer
             .rpc
             .inject_tx(envelope.encoded_2718().into())
             .await?;
         *expected_balances.entry(recipient).or_default() += amount;
-        *expected_transfers.entry(signer.address()).or_default() += amount;
+        *expected_transfers.entry(signer.address()).or_default() +=
+            if direct_mints { 0 } else { amount };
+    }
+    if direct_mints {
+        let parent = producer.inner.provider.latest()?;
+        for recipient in expected_balances.keys() {
+            assert!(signers.iter().all(|signer| signer.address() != *recipient));
+            assert_eq!(
+                parent
+                    .storage(DEFAULT_FEE_TOKEN, recipient.mapping_slot(BALANCES).into())?
+                    .unwrap_or_default(),
+                U256::ZERO
+            );
+        }
     }
     let payload = producer.advance_block().await?;
     // Both producer configurations remain under manual payload control.
@@ -497,7 +658,7 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
         parents.len() as u64 + 1
     );
     let block_hash = payload.block().hash();
-    if access_key_type.is_some() {
+    if access_key_type.is_some() || direct_mints {
         for signer in signers.iter().chain(&sponsors) {
             assert_ne!(
                 payload.block().header().inner.beneficiary,
@@ -544,6 +705,40 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
         assert_eq!(signed.tx().fee_payer_signature.is_some(), sponsored);
         assert_eq!(signed.signature().is_keychain(), access_key_type.is_some());
         assert!(!signed.signature().is_legacy_keychain());
+        if direct_mints {
+            let (issuer, recipient, amount) = expected_mints
+                .remove(signed.hash())
+                .expect("included signed mint hash");
+            assert_eq!(
+                signed
+                    .signature()
+                    .recover_signer(&signed.signature_hash())?,
+                issuer
+            );
+            assert_eq!(
+                signed.signature().signature_type(),
+                SignatureType::Secp256k1
+            );
+            assert_eq!(signed.tx().fee_token, Some(DEFAULT_FEE_TOKEN));
+            assert!(
+                signed.tx().key_authorization.is_none()
+                    && signed.tx().tempo_authorization_list.is_empty()
+            );
+            let [call] = signed.tx().calls.as_slice() else {
+                panic!("measured mints must be single calls")
+            };
+            assert_eq!(call.to, DEFAULT_FEE_TOKEN.into());
+            assert!(call.value.is_zero());
+            assert_eq!(
+                call.input.as_ref(),
+                ITIP20::mintCall {
+                    to: recipient,
+                    amount
+                }
+                .abi_encode()
+                .as_slice()
+            );
+        }
         if let Some(key_type) = access_key_type {
             assert_eq!(signed.signature().signature_type(), key_type);
             assert!(
@@ -553,6 +748,10 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
         }
         assert_eq!(receipt.tx_type, TempoTxType::AA);
     }
+    assert!(
+        expected_mints.is_empty(),
+        "every submitted mint must be included exactly once"
+    );
 
     // Force an early canonical error in a block larger than the strict capture
     // window, then submit the valid sibling. The 520-transaction cases exceed
@@ -605,7 +804,7 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
                 execution_batch_size: 32,
                 execution_capture_window: capture_window,
                 execution_stage_diagnostics: stage_diagnostics,
-                execution_capture_diagnostics: access_key_type.is_some(),
+                execution_capture_diagnostics: access_key_type.is_some() || direct_mints,
                 ..Default::default()
             },
             None,
@@ -634,7 +833,7 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
                 .await?;
             assert!(status.is_valid());
             let parent_hash = parent.block().hash();
-            if access_key_type.is_some() {
+            if access_key_type.is_some() || direct_mints {
                 let pending = observer
                     .provider
                     .pending_block_and_receipts()?
@@ -701,6 +900,12 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
         let workers = observer.evm_config.speculative_executor.as_ref();
         let reuses_before = workers.map_or(0, |pool| pool.prewarmed_reuses());
         let scheduled_before = workers.map_or(0, |pool| pool.scheduled_transactions());
+        if direct_mints {
+            eprintln!(
+                "Signed mint differential begin: builder_threads={builder_threads} execution_threads={execution_threads} block_hash={block_hash} transactions={transaction_count} issuer_parent={}",
+                parents.last().unwrap().block().hash(),
+            );
+        }
         let status = tokio::time::timeout(
             std::time::Duration::from_secs(30),
             observer
@@ -734,7 +939,23 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
                 Some(U256::from(*balance))
             );
         }
-        if access_key_type.is_some() {
+        if let Some((supply, cap)) = mint_parent_state {
+            assert_eq!(
+                state.storage(DEFAULT_FEE_TOKEN, TOTAL_SUPPLY.into())?,
+                Some(supply + U256::from(transaction_count))
+            );
+            assert_eq!(
+                state.storage(DEFAULT_FEE_TOKEN, SUPPLY_CAP.into())?,
+                Some(cap)
+            );
+            for signer in &signers {
+                assert_eq!(
+                    state.storage(DEFAULT_FEE_TOKEN, issuer_role_slot(signer.address()).into())?,
+                    Some(U256::ONE)
+                );
+            }
+        }
+        if access_key_type.is_some() || direct_mints {
             for (index, signer) in signers.iter().enumerate() {
                 let before = initial_balances[&signer.address()];
                 let transferred = U256::from(expected_transfers[&signer.address()]);
@@ -754,6 +975,9 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
                         sponsor_after < initial_balances[&sponsor],
                         "the real sponsor pays fees"
                     );
+                } else if direct_mints {
+                    assert!(transferred.is_zero());
+                    assert!(after < before, "the issuer pays mint fees only");
                 } else {
                     assert!(
                         after < before - transferred,
@@ -777,6 +1001,16 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
             eprintln!(
                 "Engine-only prewarming reuses: {}",
                 workers.prewarmed_reuses()
+            );
+        }
+        if direct_mints {
+            // Retained diagnostics can qualify candidate-specific reuse in this
+            // accepted observer interval. Ready results remain scheduling-
+            // dependent; the differential oracle needs no waits or retries.
+            eprintln!(
+                "Signed mint differential complete: builder_threads={builder_threads} execution_threads={execution_threads} block_hash={block_hash} transactions={transaction_count} reuse_delta={} scheduled_delta={} all_oracles_passed=true",
+                workers.map_or(0, |pool| pool.prewarmed_reuses()) - reuses_before,
+                workers.map_or(0, |pool| pool.scheduled_transactions()) - scheduled_before,
             );
         }
         if let Some(key_type) = access_key_type {
