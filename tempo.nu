@@ -1408,6 +1408,7 @@ def generate-summary [
             ok: $total_ok
             err: $total_err
             total_gas: $total_gas
+            block_composition: ($report | get -o block_composition.summary | default null)
             block_time_mean: $block_time_mean
             builder_latency_p50: $run_builder.p50
             builder_latency_p90: $run_builder.p90
