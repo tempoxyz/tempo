@@ -181,14 +181,77 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
         },
     };
 
+    async fn finish_fixture_worker(
+        runtime: &Runtime,
+        worker: &'static str,
+        deadline: tokio::time::Instant,
+    ) -> eyre::Result<()> {
+        let (done, finished) = tokio::sync::oneshot::channel();
+        runtime.spawn_blocking_named(worker, move || {
+            let _ = done.send(());
+        });
+        tokio::time::timeout_at(deadline, finished).await??;
+        Ok(())
+    }
+
+    async fn shutdown_fixture_node(runtime: &Runtime) -> eyre::Result<()> {
+        let timeout = std::time::Duration::from_secs(30);
+        let deadline = tokio::time::Instant::now() + timeout;
+        let manager = runtime.take_task_manager_handle();
+        // Keep the Tokio workers free to process the shutdown signal. Dropping
+        // node handles alone leaves the engine's self-owned input sender alive.
+        // This path awaits engine termination inside the consensus task before
+        // it exits, rather than polling the closed tree as a fatal event.
+        // The SDK's acknowledgment does not join its detached engine thread.
+        let shutdown_runtime = runtime.clone();
+        let stopped = tokio::time::timeout_at(
+            deadline,
+            tokio::task::spawn_blocking(move || {
+                shutdown_runtime.graceful_shutdown_with_timeout(
+                    deadline.saturating_duration_since(tokio::time::Instant::now()),
+                )
+            }),
+        )
+        .await??;
+        eyre::ensure!(stopped, "fixture runtime shutdown timed out");
+        if let Some(manager) = manager {
+            tokio::time::timeout_at(deadline, manager).await???;
+        }
+        // Named jobs are outside Tokio's graceful-task count. Retain this
+        // external Runtime and the node's provider handles until they finish,
+        // so the last Runtime cannot be dropped on one of its own workers.
+        // Producers precede their downstream jobs, and deferred drops run last.
+        for worker in [
+            "prewarm",
+            "prewarm-txs",
+            "tx-iterator",
+            "payload-convert",
+            "builder-bal-task",
+            "builder-roots-task",
+            "sparse-trie",
+            "trie-hashing",
+            "account-workers",
+            "storage-workers",
+            "hash-post-state",
+            "receipt-root",
+            "deferred-trie",
+            "wait-exec-cache",
+            "wait-sparse-tri",
+            "drop",
+        ] {
+            finish_fixture_worker(runtime, worker, deadline).await?;
+        }
+        Ok(())
+    }
+
     reth_tracing::init_test_tracing();
-    let mut producer = TestNodeBuilder::new()
+    let (producer_setup, producer_database) = TestNodeBuilder::new()
         .with_execution_threads(builder_threads)
         .with_execution_stage_diagnostics(stage_diagnostics)
         .with_schedule(ForkSchedule::DevnetAt(TempoHardfork::T14))
-        .build_with_node_access()
-        .await?
-        .node;
+        .build_with_node_access_and_database()
+        .await?;
+    let mut producer = producer_setup.node;
     assert_eq!(
         producer.inner.evm_config.speculative_executor.is_some(),
         builder_threads > 0,
@@ -536,11 +599,13 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
         let runtime = Runtime::test();
         let mut config = NodeConfig::new(chain_spec.clone()).with_unused_ports();
         config.network.discovery.disable_discovery = true;
-        let observer_handle = NodeBuilder::new(config)
+        let observer_builder = NodeBuilder::new(config)
             .testing_node(runtime.clone())
-            .node(tempo_node)
-            .launch()
-            .await?;
+            .node(tempo_node);
+        // ProviderFactory drops its database field before its RocksDB fields.
+        // Retain the datadir while releasing node handles and runtime jobs.
+        let observer_database = observer_builder.db().clone();
+        let observer_handle = observer_builder.launch().await?;
         let observer = &observer_handle.node;
         assert_eq!(
             observer.evm_config.speculative_executor.is_some(),
@@ -710,6 +775,39 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
                 workers.map_or(0, |pool| pool.scheduled_transactions()) - scheduled_before,
             );
         }
+        drop(state);
+        drop(pending);
+        // RPC servers run on Tokio directly, outside Runtime's shutdown guard.
+        // Request their stop while the database guard and node still exist.
+        observer.rpc_server_handle().clone().stop()?;
+        observer.auth_server_handle().clone().stop()?;
+        shutdown_fixture_node(&runtime).await?;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            observer_handle.wait_for_node_exit(),
+        )
+        .await??;
+        finish_fixture_worker(
+            &runtime,
+            "drop",
+            tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+        )
+        .await?;
+        drop(runtime);
+        drop(observer_database);
     }
+    let producer_runtime = producer.inner.task_executor.clone();
+    producer.inner.rpc_server_handle().clone().stop()?;
+    producer.inner.auth_server_handle().clone().stop()?;
+    shutdown_fixture_node(&producer_runtime).await?;
+    drop(producer);
+    finish_fixture_worker(
+        &producer_runtime,
+        "drop",
+        tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+    )
+    .await?;
+    drop(producer_runtime);
+    drop(producer_database);
     Ok(())
 }

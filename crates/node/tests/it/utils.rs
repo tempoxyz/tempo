@@ -532,6 +532,27 @@ impl TestNodeBuilder {
 
     /// Build a single node with direct access (NodeHelperType)
     pub(crate) async fn build_with_node_access(self) -> eyre::Result<SingleNodeSetup> {
+        Ok(self.build_with_node_access_inner(false).await?.0)
+    }
+
+    /// Retain the temporary database separately for explicit node teardown.
+    ///
+    /// This lets fixtures keep the datadir alive while releasing node handles
+    /// and draining runtime jobs.
+    pub(crate) async fn build_with_node_access_and_database(
+        self,
+    ) -> eyre::Result<(SingleNodeSetup, reth_e2e_test_utils::TmpDB)> {
+        let (setup, database) = self.build_with_node_access_inner(true).await?;
+        Ok((
+            setup,
+            database.expect("explicit node launch retains its database"),
+        ))
+    }
+
+    async fn build_with_node_access_inner(
+        self,
+        retain_database: bool,
+    ) -> eyre::Result<(SingleNodeSetup, Option<reth_e2e_test_utils::TmpDB>)> {
         if self.node_count != 1 {
             return Err(eyre::eyre!(
                 "build_with_node_access requires node_count=1, use build_multi_node for multiple nodes"
@@ -547,7 +568,7 @@ impl TestNodeBuilder {
         let chain_spec = self.build_chain_spec()?;
         let hardfork = chain_spec.tempo_hardfork_at(0);
 
-        let node = if self.execution_threads > 0 {
+        let (node, database) = if self.execution_threads > 0 || retain_database {
             // The setup helper constructs TempoNode::default(), so launch the
             // configured node explicitly while keeping its manual block control.
             let chain_spec = Arc::new(chain_spec);
@@ -565,17 +586,33 @@ impl TestNodeBuilder {
             config.debug.startup_sync_state_idle = true;
             // Match the setup helper's small test execution cache (MiB).
             config.engine.cross_block_cache_size = 1;
-            let handle = NodeBuilder::new(config)
-                .testing_node(Runtime::test())
-                .node(
-                    TempoNode::default()
-                        .with_execution_threads(self.execution_threads, 32)
-                        .with_execution_stage_diagnostics(self.execution_stage_diagnostics),
-                )
-                // The engine launcher preserves manual timestamps; the debug
-                // launcher would start a local miner when dev mode is enabled.
-                .launch()
-                .await?;
+            let runtime = Runtime::test();
+            let tempo_node = if self.execution_threads > 0 {
+                TempoNode::default()
+                    .with_execution_threads(self.execution_threads, 32)
+                    .with_execution_stage_diagnostics(self.execution_stage_diagnostics)
+            } else {
+                TempoNode::default()
+            };
+            // Preserve the SDK setup helper's tree configuration at zero
+            // threads, including any distinction from CLI engine defaults.
+            let tree_config = if self.execution_threads > 0 {
+                config.tree_config()
+            } else {
+                reth_node_api::TreeConfig::default().with_cross_block_cache_size(1024 * 1024)
+            };
+            let builder = NodeBuilder::new(config)
+                .testing_node(runtime.clone())
+                .node(tempo_node);
+            let database = retain_database.then(|| builder.db().clone());
+            let launcher = reth_node_builder::EngineNodeLauncher::new(
+                runtime,
+                builder.config().datadir(),
+                tree_config,
+            );
+            // The engine launcher preserves manual timestamps; the debug
+            // launcher would start a local miner when dev mode is enabled.
+            let handle = builder.launch_with(launcher).await?;
             let node = NodeTestContext::new(handle.node, move |timestamp| {
                 reth_e2e_test_utils::eth_payload_attributes(&chain_spec, timestamp).into()
             })
@@ -583,16 +620,16 @@ impl TestNodeBuilder {
             // Like the setup helper, initialize head/safe/finalized to genesis
             // before new_payload/advance_block requests its first payload.
             node.update_forkchoice(genesis_hash, genesis_hash).await?;
-            node
+            (node, database)
         } else {
             let (node, _wallet) = TempoNode::test_setup(1, Arc::new(chain_spec))
                 .with_dev_mode(true)
                 .build_single()
                 .await?;
-            node
+            (node, None)
         };
 
-        Ok(SingleNodeSetup { node, hardfork })
+        Ok((SingleNodeSetup { node, hardfork }, database))
     }
 
     /// Build multiple nodes with direct access
