@@ -6,6 +6,7 @@ use alloy::{
 };
 use alloy_rpc_types_eth::TransactionReceipt;
 use eyre::OptionExt;
+use reth_e2e_test_utils::wallet::test_signer;
 use tempo_contracts::precompiles::{
     IReceivePolicyGuard, IRolesAuth, ITIP20, ITIP20Factory, ITIP403Registry,
 };
@@ -16,7 +17,7 @@ use tempo_precompiles::{
     tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID},
 };
 
-use super::helpers::{GAS_LIMIT, GasSnapshot, print_gas_snapshot, test_signer};
+use super::helpers::{GAS_LIMIT, GasSnapshot, print_gas_snapshot};
 use crate::utils::TestNodeBuilder;
 
 struct BlockedTransfer {
@@ -40,9 +41,7 @@ where
             salt,
         )
         .gas(GAS_LIMIT)
-        .send()
-        .await?
-        .get_receipt()
+        .send_sync()
         .await?;
     assert!(receipt.status(), "createToken failed");
 
@@ -55,11 +54,9 @@ where
 
     let roles = IRolesAuth::new(token, provider);
     let grant = roles
-        .grantRole(*ISSUER_ROLE, admin)
+        .grantRole(ISSUER_ROLE, admin)
         .gas(GAS_LIMIT)
-        .send()
-        .await?
-        .get_receipt()
+        .send_sync()
         .await?;
     assert!(grant.status(), "grantRole failed");
 
@@ -75,9 +72,7 @@ async fn set_receive_policy<P: Provider + Clone>(
     let receipt = registry
         .setReceivePolicy(sender_policy_id, token_filter_id, recovery)
         .gas(GAS_LIMIT)
-        .send()
-        .await?
-        .get_receipt()
+        .send_sync()
         .await?;
     assert!(receipt.status(), "setReceivePolicy failed");
 
@@ -94,9 +89,7 @@ async fn create_blocked_transfer<P: Provider + Clone>(
     let receipt = token
         .transfer(receiver, amount)
         .gas(GAS_LIMIT)
-        .send()
-        .await?
-        .get_receipt()
+        .send_sync()
         .await?;
     assert!(receipt.status(), "blocked transfer failed");
 
@@ -139,9 +132,7 @@ async fn create_allowed_transfer<P: Provider + Clone>(
     let receipt = token
         .transfer(receiver, amount)
         .gas(GAS_LIMIT)
-        .send()
-        .await?
-        .get_receipt()
+        .send_sync()
         .await?;
     assert!(receipt.status(), "allowed transfer failed");
     assert!(
@@ -160,9 +151,7 @@ async fn claim_blocked<P: Provider + Clone>(
     let receipt = guard
         .claim(to, blocked.receipt.clone())
         .gas(GAS_LIMIT)
-        .send()
-        .await?
-        .get_receipt()
+        .send_sync()
         .await?;
     assert!(receipt.status(), "claim failed");
 
@@ -184,7 +173,10 @@ fn transfer_blocked(
 async fn test_receive_policy_guard_gas_snapshots() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .with_instant_mining()
+        .build_http_only()
+        .await?;
     let http_url = setup.http_url;
 
     let [
@@ -198,7 +190,7 @@ async fn test_receive_policy_guard_gas_snapshots() -> eyre::Result<()> {
         allowed_third_party_receiver,
     ] = (0..8)
         .map(test_signer)
-        .collect::<eyre::Result<Vec<_>>>()?
+        .collect::<Vec<_>>()
         .try_into()
         .map_err(|_| eyre::eyre!("expected 8 test signers"))?;
 
@@ -220,9 +212,7 @@ async fn test_receive_policy_guard_gas_snapshots() -> eyre::Result<()> {
     let mint = admin_token
         .mint(originator.address(), U256::from(30_000))
         .gas(GAS_LIMIT)
-        .send()
-        .await?
-        .get_receipt()
+        .send_sync()
         .await?;
     assert!(mint.status(), "mint failed");
 

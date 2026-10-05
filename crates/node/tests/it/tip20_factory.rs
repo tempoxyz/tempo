@@ -1,9 +1,9 @@
 use alloy::{
     primitives::{B256, U256},
     providers::{Provider, ProviderBuilder},
-    signers::local::MnemonicBuilder,
     sol_types::SolEvent,
 };
+use reth_e2e_test_utils::wallet::test_signer;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::{ITIP20, ITIP20Factory};
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS};
@@ -16,7 +16,7 @@ async fn test_create_token() -> eyre::Result<()> {
         .await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
@@ -77,7 +77,7 @@ async fn test_is_tip20_checks_code_deployment() -> eyre::Result<()> {
         .await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());

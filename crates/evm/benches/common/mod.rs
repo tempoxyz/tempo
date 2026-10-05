@@ -18,8 +18,9 @@ use reth_execution_cache::{
 use reth_primitives_traits::{Account as RethAccount, Bytecode as RethBytecode};
 use reth_revm::{State, database::StateProviderDatabase};
 use reth_storage_api::{
-    AccountReader, BlockHashReader, BytecodeReader, HashedPostStateProvider, StateProofProvider,
-    StateProvider, StateRootProvider, StorageRootProvider,
+    AccountReader, BlockHashReader, BytecodeReader, EvmStateProviderAdapter,
+    HashedPostStateProvider, StateProofProvider, StateProvider, StateRootProvider,
+    StorageRootProvider,
     errors::{ProviderError, ProviderResult},
 };
 use reth_trie::{
@@ -85,13 +86,14 @@ pub(crate) struct ExecutionFixture {
     metrics: CachedStateMetrics,
 }
 
-pub(crate) type FixedCacheDb =
-    State<StateProviderDatabase<CachedStateProvider<InMemoryStateProvider>>>;
+pub(crate) type FixedCacheDb = State<
+    StateProviderDatabase<CachedStateProvider<EvmStateProviderAdapter<InMemoryStateProvider>>>,
+>;
 
 impl ExecutionFixture {
     pub(crate) fn state_db(&self) -> FixedCacheDb {
         let provider = CachedStateProvider::new(
-            self.provider.clone(),
+            self.provider.clone().into_evm_state_provider(),
             self.cache.clone(),
             Some(self.metrics.clone()),
         );
@@ -102,7 +104,10 @@ impl ExecutionFixture {
     }
 
     pub(crate) fn prewarm_state_db(&self) -> FixedCacheDb {
-        let provider = CachedStateProvider::new_prewarm(self.provider.clone(), self.cache.clone());
+        let provider = CachedStateProvider::new_prewarm(
+            self.provider.clone().into_evm_state_provider(),
+            self.cache.clone(),
+        );
         State::builder()
             .with_database(StateProviderDatabase::new(provider))
             .with_bundle_update()
@@ -257,7 +262,7 @@ pub(crate) fn bench_env(
         cfg_env,
         block_env: TempoBlockEnv {
             inner: BlockEnv {
-                number: U256::from(1),
+                number: U256::ONE,
                 beneficiary: Address::repeat_byte(0x42),
                 timestamp: U256::from(block_timestamp),
                 basefee: TEMPO_T1_BASE_FEE,
@@ -407,9 +412,7 @@ where
         },
         general_gas_limit: 10_000_000_000,
         shared_gas_limit: 0,
-        validator_set: None,
         consensus_context: None,
-        subblock_fee_recipients: Default::default(),
     };
     let mut executor = config.create_executor(evm, ctx);
     executor

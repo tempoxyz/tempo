@@ -21,7 +21,7 @@ pub enum TempoInvalidTransaction {
 
     /// System transaction execution failed.
     #[error("system transaction execution failed, result: {_0:?}")]
-    SystemTransactionFailed(Box<ExecutionResult<TempoHaltReason>>),
+    SystemTransactionFailed(Box<ExecutionResult<HaltReason>>),
 
     /// Fee payer signature recovery failed.
     ///
@@ -86,13 +86,13 @@ pub enum TempoInvalidTransaction {
     #[error("expiring nonce transaction requires valid_before to be set")]
     ExpiringNonceMissingValidBefore,
 
-    /// Expiring nonce transaction must have nonce == 0.
-    #[error("expiring nonce transaction must have nonce == 0")]
+    /// Pre-T12 expiring nonce transaction must have nonce == 0.
+    #[error("expiring nonce transaction must have nonce == 0 before T12")]
     ExpiringNonceNonceNotZero,
 
-    /// Subblock transaction must have zero fee.
-    #[error("subblock transaction must have zero fee")]
-    SubblockTransactionMustHaveZeroFee,
+    /// The nonce key uses the reserved subblock prefix.
+    #[error("subblock transactions are not supported")]
+    SubblockTransactionsDisabled,
 
     /// Invalid fee token fallback.
     #[error("invalid fee token: {0}")]
@@ -232,10 +232,6 @@ pub enum TempoInvalidTransaction {
     #[error("V2 keychain signature (type 0x04) is not valid before T1C activation")]
     V2KeychainBeforeActivation,
 
-    /// Keychain operations are not supported in subblock transactions.
-    #[error("keychain operations are not supported in subblock transactions")]
-    KeychainOpInSubblockTransaction,
-
     /// Fee payment error.
     #[error(transparent)]
     CollectFeePreTx(#[from] FeePaymentError),
@@ -309,15 +305,14 @@ impl TempoInvalidTransaction {
             | Self::ValueTransferNotAllowedInAATx
             | Self::ExpiringNonceMissingTxEnv
             | Self::ExpiringNonceMissingValidBefore
-            | Self::ExpiringNonceNonceNotZero
-            | Self::SubblockTransactionMustHaveZeroFee
-            | Self::KeychainOpInSubblockTransaction
+            | Self::SubblockTransactionsDisabled
             | Self::LegacyKeychainSignature
             | Self::CallsValidation(_) => true,
 
-            // State-dependent: may resolve as state advances.
+            // State- or fork-dependent: may resolve as the chain advances.
             Self::ValidAfter { .. }
             | Self::ValidBefore { .. }
+            | Self::ExpiringNonceNonceNotZero
             | Self::InvalidFeeToken(_)
             | Self::FeeTokenNotTip20 { .. }
             | Self::FeeTokenNotUsdCurrency { .. }
@@ -430,32 +425,6 @@ fn liquidity_pair_msg(user_token: &Option<Address>, validator_token: &Option<Add
     String::new()
 }
 
-/// Tempo-specific halt reason.
-///
-/// Used to extend basic [`HaltReason`] with an edge case of a subblock transaction fee payment error.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, derive_more::From)]
-pub enum TempoHaltReason {
-    /// Basic Ethereum halt reason.
-    #[from]
-    Ethereum(HaltReason),
-    /// Subblock transaction failed to pay fees.
-    SubblockTxFeePayment,
-}
-
-#[cfg(feature = "rpc")]
-impl reth_rpc_eth_types::error::api::FromEvmHalt<TempoHaltReason>
-    for reth_rpc_eth_types::EthApiError
-{
-    fn from_evm_halt(halt_reason: TempoHaltReason, gas_limit: u64) -> Self {
-        match halt_reason {
-            TempoHaltReason::Ethereum(halt_reason) => Self::from_evm_halt(halt_reason, gas_limit),
-            TempoHaltReason::SubblockTxFeePayment => {
-                Self::EvmCustom("subblock transaction failed to pay fees".to_string())
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -520,6 +489,22 @@ mod tests {
         for err in cases {
             assert!(!err.is_bad_transaction(), "{err} should not be bad");
         }
+    }
+
+    #[test]
+    fn test_pre_t12_expiring_nonce_discriminator_is_not_bad() {
+        assert!(
+            !TempoInvalidTransaction::ExpiringNonceNonceNotZero.is_bad_transaction(),
+            "a discriminator rejected only before T12 must not poison gossip or bad imports"
+        );
+
+        assert!(
+            TempoInvalidTransaction::EthInvalidTransaction(
+                InvalidTransaction::NonceOverflowInTransaction
+            )
+            .is_bad_transaction(),
+            "ordinary nonce overflow remains permanently invalid"
+        );
     }
 
     #[test]

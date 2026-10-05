@@ -7,13 +7,13 @@ use std::{
 };
 
 use alloy_primitives::{Address, U256};
-use reth_evm::{EvmError, EvmInternals};
+use reth_evm::EvmInternals;
 use revm::{
     Database,
     context::{
-        Block, Cfg, ContextTr, JournalTr, LocalContextTr, Transaction, TransactionType,
+        Block, Cfg, ContextTr, JournalTr, Transaction, TransactionType,
         journaled_state::account::JournaledAccountTr,
-        result::{EVMError, ExecutionResult, InvalidTransaction, ResultGas},
+        result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction, ResultGas},
         transaction::{AccessListItem, AccessListItemTr},
     },
     context_interface::{
@@ -61,7 +61,7 @@ use tempo_primitives::{
 
 use crate::{
     ProtocolFeeContext, TempoBatchCallEnv, TempoEvm, TempoInvalidTransaction,
-    error::{FeePaymentError, TempoHaltReason},
+    error::FeePaymentError,
     evm::TempoContext,
     gas_credits,
     signature_gas::{primitive_signature_verification_gas, tempo_signature_verification_gas},
@@ -803,7 +803,7 @@ where
 {
     type Evm = TempoEvm<DB, I>;
     type Error = EVMError<DB::Error, TempoInvalidTransaction>;
-    type HaltReason = TempoHaltReason;
+    type HaltReason = HaltReason;
 
     /// Overridden transaction-level gas builder that reproduces the pre-T0
     /// behavior when the initial gas spending exceeds the gas limit.
@@ -923,9 +923,7 @@ where
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
         evm.clear();
 
-        MainnetHandler::default()
-            .execution_result(evm, result, result_gas)
-            .map(|result| result.map_haltreason(Into::into))
+        MainnetHandler::default().execution_result(evm, result, result_gas)
     }
 
     /// Override apply_eip7702_auth_list to support AA transactions with authorization lists.
@@ -1007,9 +1005,9 @@ where
             return Err(TempoInvalidTransaction::FeeTokenNotTip20 { address: fee_token }.into());
         }
 
-        // Skip fee token validation when the transaction is free and not part of a subblock.
+        // Skip fee token validation when the transaction is free.
         // The TIP20 prefix is already validated above.
-        if !tx.max_balance_spending()?.is_zero() || tx.is_subblock_transaction() {
+        if !tx.max_balance_spending()?.is_zero() {
             fee_manager.validate_fee_token(journal, fee_token, cfg.spec, actions.clone())?;
         }
 
@@ -1086,8 +1084,10 @@ where
                 .as_ref()
                 .ok_or(TempoInvalidTransaction::ExpiringNonceMissingTxEnv)?;
 
-            // Expiring nonce txs must have nonce == 0
-            if tx.nonce() != 0 {
+            // Before TIP-1106 activates, expiring nonce txs must have nonce == 0.
+            // At T12+, the nonce is an opaque discriminator committed to by the
+            // signing and replay-protection hashes.
+            if !spec.is_t12() && tx.nonce() != 0 {
                 return Err(TempoInvalidTransaction::ExpiringNonceNonceNotZero.into());
             }
 
@@ -1784,15 +1784,40 @@ where
             return Err(TempoInvalidTransaction::ValueTransferNotAllowed.into());
         }
 
-        // First perform standard validation (header + transaction environment)
+        // First perform standard validation (header + transaction environment).
         // This validates: prevrandao, excess_blob_gas, chain_id, gas limits, tx type support, etc.
-        validation::validate_env::<_, Self::Error>(evm.ctx())?;
+        // REVM rejects u64::MAX because protocol nonces are incremented after execution. Expiring
+        // nonces are never incremented, so validate the rest of the environment with a temporary
+        // in-range value. Before T12, Tempo's fork-specific validation below still rejects the
+        // discriminator, but does so with a transient error instead of a permanent nonce-overflow
+        // error. At T12+, the discriminator is accepted.
+        // TODO: Remove this workaround when migrating to EVM2. Its per-transaction-type handlers
+        // let Tempo omit the nonce-overflow check for expiring nonce transactions.
+        let is_max_expiring_nonce = evm.ctx.cfg.spec.is_t1()
+            && evm.ctx.tx.nonce() == u64::MAX
+            && evm
+                .ctx
+                .tx
+                .tempo_tx_env
+                .as_ref()
+                .is_some_and(|aa| aa.nonce_key == TEMPO_EXPIRING_NONCE_KEY);
+        if is_max_expiring_nonce {
+            evm.ctx.tx.inner.nonce = 0;
+        }
+        let validation_result = validation::validate_env::<_, Self::Error>(evm.ctx());
+        if is_max_expiring_nonce {
+            evm.ctx.tx.inner.nonce = u64::MAX;
+        }
+        validation_result?;
 
         // AA-specific validations
         let cfg = &evm.inner.cfg;
         let tx = &evm.inner.tx;
 
         if let Some(aa_env) = tx.tempo_tx_env.as_ref() {
+            if tempo_primitives::subblock::has_sub_block_nonce_key_prefix(&aa_env.nonce_key) {
+                return Err(TempoInvalidTransaction::SubblockTransactionsDisabled.into());
+            }
             // Validate AA transaction structure (calls list, CREATE rules)
             validate_calls(
                 &aa_env.aa_calls,
@@ -1826,13 +1851,6 @@ where
                 auth.signature()
                     .validate_version(cfg.spec().is_t1c())
                     .map_err(TempoInvalidTransaction::from)?;
-            }
-
-            let has_keychain_fields =
-                aa_env.key_authorization.is_some() || aa_env.signature.is_keychain();
-
-            if aa_env.subblock_transaction && has_keychain_fields {
-                return Err(TempoInvalidTransaction::KeychainOpInSubblockTransaction.into());
             }
 
             if let Some(key_auth) = &aa_env.key_authorization {
@@ -2165,38 +2183,7 @@ where
         error: Self::Error,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
         evm.clear();
-
-        // For subblock transactions that failed `collectFeePreTx` call we catch error and treat such transactions as valid.
-        if evm.ctx.tx.is_subblock_transaction()
-            && let Some(
-                TempoInvalidTransaction::CollectFeePreTx(_)
-                | TempoInvalidTransaction::FeeTokenPaused { .. }
-                | TempoInvalidTransaction::EthInvalidTransaction(
-                    InvalidTransaction::LackOfFundForMaxFee { .. },
-                ),
-            ) = error.as_invalid_tx_err()
-        {
-            // Commit the transaction.
-            //
-            // `collectFeePreTx` call will happen after the nonce bump so this will only commit the nonce increment.
-            evm.ctx.journaled_state.commit_tx();
-
-            evm.ctx().local_mut().clear();
-            evm.frame_stack().clear();
-
-            // On fee payment failure, treat the transaction as a halt that consumed entire regular gas limit.
-            let total_spent = core::cmp::min(evm.ctx.tx.gas_limit, evm.ctx.cfg.tx_gas_limit_cap());
-
-            Ok(ExecutionResult::Halt {
-                reason: TempoHaltReason::SubblockTxFeePayment,
-                logs: Default::default(),
-                gas: ResultGas::new_with_state_gas(total_spent, 0, 0, 0),
-            })
-        } else {
-            MainnetHandler::default()
-                .catch_error(evm, error)
-                .map(|result| result.map_haltreason(Into::into))
-        }
+        MainnetHandler::default().catch_error(evm, error)
     }
 }
 
@@ -2241,7 +2228,8 @@ pub struct ValidationContext {
 /// This includes:
 /// - Base 21k stipend (once for the transaction)
 /// - Signature verification gas (P256: 5k, WebAuthn: 5k + webauthn_data)
-/// - Per-call account access cost (COLD_ACCOUNT_ACCESS_COST * calls.len())
+/// - Per-call account access cost (`COLD_ACCOUNT_ACCESS_COST * (calls.len() - 1)`); the 21k
+///   stipend above already covers the first call's target access
 /// - Per-call input data gas (calldata tokens * 4 gas)
 /// - Per-call CREATE costs (if applicable):
 ///   - Additional 32k base (CREATE constant)
@@ -2273,8 +2261,8 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
     let cold_account_cost =
         gas_params.warm_storage_read_cost() + gas_params.cold_account_additional_cost();
 
-    // 3. Per-call overhead: cold account access
-    // if the `to` address has not appeared in the call batch before.
+    // 3. Per-call overhead: cold account access for calls after the first. The 21k base stipend
+    // already covers the first call's target access.
     gas.initial_regular_gas += cold_account_cost * calls.len().saturating_sub(1) as u64;
 
     // 4. Authorization list costs (EIP-7702)
@@ -2558,8 +2546,7 @@ pub fn validate_time_window(
         });
     }
 
-    // Validate validBefore constraint
-    // IMPORTANT: must be aligned with `RecoveredSubBlock::has_expired_transactions`.
+    // Validate validBefore constraint.
     if let Some(before) = valid_before
         && block_timestamp >= before
     {

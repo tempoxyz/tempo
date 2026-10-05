@@ -32,10 +32,10 @@ use crate::{
     tip403_registry::{ALLOW_ALL_POLICY_ID, AuthRole, ITIP403Registry, TIP403Registry},
 };
 use alloy::{
-    primitives::{Address, B256, U256, keccak256, uint},
+    primitives::{Address, B256, U256, uint},
     sol_types::SolValue,
 };
-use std::sync::LazyLock;
+use keccak_const::Keccak256;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     DECIMALS as TIP20_DECIMALS, ReceivePolicyGuardError, STABLECOIN_DEX_ADDRESS,
@@ -110,29 +110,40 @@ pub struct TIP20Token {
 }
 
 /// EIP-712 Permit typehash: keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)")
-pub static PERMIT_TYPEHASH: LazyLock<B256> = LazyLock::new(|| {
-    keccak256(b"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)")
-});
+pub const PERMIT_TYPEHASH: B256 = B256::new(
+    Keccak256::new()
+        .update(
+            b"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)",
+        )
+        .finalize(),
+);
 
 /// EIP-712 domain separator typehash
-pub static EIP712_DOMAIN_TYPEHASH: LazyLock<B256> = LazyLock::new(|| {
-    keccak256(b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
-});
+pub const EIP712_DOMAIN_TYPEHASH: B256 = B256::new(
+    Keccak256::new()
+        .update(
+            b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)",
+        )
+        .finalize(),
+);
 
 /// EIP-712 version hash: keccak256("1")
-pub static VERSION_HASH: LazyLock<B256> = LazyLock::new(|| keccak256(b"1"));
+pub const VERSION_HASH: B256 = B256::new(Keccak256::new().update(b"1").finalize());
 
 /// Role hash for pausing token transfers.
-pub static PAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"PAUSE_ROLE"));
+pub const PAUSE_ROLE: B256 = B256::new(Keccak256::new().update(b"PAUSE_ROLE").finalize());
 /// Role hash for unpausing token transfers.
-pub static UNPAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"UNPAUSE_ROLE"));
+pub const UNPAUSE_ROLE: B256 = B256::new(Keccak256::new().update(b"UNPAUSE_ROLE").finalize());
 /// Role hash for minting new tokens.
-pub static ISSUER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"ISSUER_ROLE"));
+pub const ISSUER_ROLE: B256 = B256::new(Keccak256::new().update(b"ISSUER_ROLE").finalize());
 /// Role hash that authorizes burning tokens from blocked accounts.
-pub static BURN_BLOCKED_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"BURN_BLOCKED_ROLE"));
+pub const BURN_BLOCKED_ROLE: B256 =
+    B256::new(Keccak256::new().update(b"BURN_BLOCKED_ROLE").finalize());
+/// Role hash that authorizes burning tokens from any unprotected account.
+pub const BURN_AT_ROLE: B256 = B256::new(Keccak256::new().update(b"BURN_AT_ROLE").finalize());
 
 #[rustfmt::skip]
-/// System custody addresses added to burn-blocked protection at each hardfork.
+/// System custody addresses protected from both privileged burn functions at each hardfork.
 pub const PROTECTED: &[(TempoHardfork, &[Address])] = &[
     (TempoHardfork::Genesis, &[TIP_FEE_MANAGER_ADDRESS, STABLECOIN_DEX_ADDRESS]),
     (TempoHardfork::T5, &[TIP20_CHANNEL_RESERVE_ADDRESS]),
@@ -219,7 +230,7 @@ impl TIP20Token {
     /// This role identifier grants permission to pause the token contract.
     /// The role is computed as `keccak256("PAUSE_ROLE")`.
     pub fn pause_role() -> B256 {
-        *PAUSE_ROLE
+        PAUSE_ROLE
     }
 
     /// Returns the UNPAUSE_ROLE constant
@@ -227,7 +238,7 @@ impl TIP20Token {
     /// This role identifier grants permission to unpause the token contract.
     /// The role is computed as `keccak256("UNPAUSE_ROLE")`.
     pub fn unpause_role() -> B256 {
-        *UNPAUSE_ROLE
+        UNPAUSE_ROLE
     }
 
     /// Returns the ISSUER_ROLE constant
@@ -235,7 +246,7 @@ impl TIP20Token {
     /// This role identifier grants permission to mint and burn tokens.
     /// The role is computed as `keccak256("ISSUER_ROLE")`.
     pub fn issuer_role() -> B256 {
-        *ISSUER_ROLE
+        ISSUER_ROLE
     }
 
     /// Returns the BURN_BLOCKED_ROLE constant
@@ -243,7 +254,12 @@ impl TIP20Token {
     /// This role identifier grants permission to burn tokens from blocked accounts.
     /// The role is computed as `keccak256("BURN_BLOCKED_ROLE")`.
     pub fn burn_blocked_role() -> B256 {
-        *BURN_BLOCKED_ROLE
+        BURN_BLOCKED_ROLE
+    }
+
+    /// Returns the `BURN_AT_ROLE` constant (TIP-1006).
+    pub fn burn_at_role() -> B256 {
+        BURN_AT_ROLE
     }
 
     /// Returns the token balance of `account`.
@@ -401,7 +417,7 @@ impl TIP20Token {
     /// # Errors
     /// - `Unauthorized` — caller does not hold `PAUSE_ROLE`
     pub fn pause(&mut self, msg_sender: Address, _call: ITIP20::pauseCall) -> Result<()> {
-        self.check_role(msg_sender, *PAUSE_ROLE)?;
+        self.check_role(msg_sender, PAUSE_ROLE)?;
         self.paused.write(true)?;
 
         self.emit_event(TIP20Event::pause_state_update(msg_sender, true))
@@ -412,7 +428,7 @@ impl TIP20Token {
     /// # Errors
     /// - `Unauthorized` — caller does not hold `UNPAUSE_ROLE`
     pub fn unpause(&mut self, msg_sender: Address, _call: ITIP20::unpauseCall) -> Result<()> {
-        self.check_role(msg_sender, *UNPAUSE_ROLE)?;
+        self.check_role(msg_sender, UNPAUSE_ROLE)?;
         self.paused.write(false)?;
 
         self.emit_event(TIP20Event::pause_state_update(msg_sender, false))
@@ -615,17 +631,10 @@ impl TIP20Token {
         if hardfork.is_t3() {
             self.check_not_paused()?;
         }
-        self.check_role(msg_sender, *BURN_BLOCKED_ROLE)?;
+        self.check_role(msg_sender, BURN_BLOCKED_ROLE)?;
 
         if check_protected {
-            // Prevent burning from system custody addresses to protect accounting invariants.
-            if PROTECTED
-                .iter()
-                .any(|(hf, addr)| hardfork >= *hf && addr.contains(&owner))
-                || (hardfork.is_t5() && owner == self.address)
-            {
-                return Err(TIP20Error::protected_address().into());
-            }
+            self.check_burn_address(owner)?;
         }
 
         // Check if the address is blocked from transferring (sender authorization)
@@ -656,12 +665,51 @@ impl TIP20Token {
         self.emit_event(TIP20Event::burn_blocked(owner, amount))
     }
 
+    /// Burns from an unprotected account without checking its transfer policy (TIP-1006).
+    ///
+    /// Requires `BURN_AT_ROLE` and an unpaused token. When `from` is the transaction origin,
+    /// the burn consumes the access key's spending limit even if a bridge is the caller.
+    pub fn burn_at(&mut self, msg_sender: Address, call: ITIP20::burnAtCall) -> Result<()> {
+        self.check_not_paused()?;
+        self.check_role(msg_sender, BURN_AT_ROLE)?;
+        self.check_burn_address(call.from)?;
+        self.check_and_update_spending_limit(call.from, call.amount)?;
+
+        self._transfer(call.from, &Recipient::direct(Address::ZERO), call.amount)?;
+        let total_supply = self.total_supply()?;
+        let new_supply =
+            total_supply
+                .checked_sub(call.amount)
+                .ok_or(TIP20Error::insufficient_balance(
+                    total_supply,
+                    call.amount,
+                    self.address,
+                ))?;
+        self.set_total_supply(new_supply)?;
+
+        self.emit_event(TIP20Event::burn_at(msg_sender, call.from, call.amount))
+    }
+
+    /// Rejects pooled custody balances whose destruction would leave outstanding claims unbacked.
+    fn check_burn_address(&self, from: Address) -> Result<()> {
+        let hardfork = self.storage.spec();
+        if PROTECTED
+            .iter()
+            .any(|(hf, addresses)| hardfork >= *hf && addresses.contains(&from))
+            || (hardfork.is_t5() && from == self.address)
+            || (hardfork.is_t12() && from.as_slice().starts_with(&Address::ZONE_PORTAL_PREFIX))
+        {
+            return Err(TIP20Error::protected_address().into());
+        }
+        Ok(())
+    }
+
     fn _burn(&mut self, msg_sender: Address, amount: U256) -> Result<()> {
         // Validate issuer role and (+T3) ensure token is not paused
         if self.storage.spec().is_t3() {
             self.check_not_paused()?;
         }
-        self.check_role(msg_sender, *ISSUER_ROLE)?;
+        self.check_role(msg_sender, ISSUER_ROLE)?;
 
         self._transfer(msg_sender, &Recipient::direct(Address::ZERO), amount)?;
 
@@ -714,9 +762,9 @@ impl TIP20Token {
         let chain_id = U256::from(self.storage.chain_id());
 
         let encoded = (
-            *EIP712_DOMAIN_TYPEHASH,
+            EIP712_DOMAIN_TYPEHASH,
             name_hash,
-            *VERSION_HASH,
+            VERSION_HASH,
             chain_id,
             self.address,
         )
@@ -743,7 +791,7 @@ impl TIP20Token {
         let nonce = self.permit_nonces[call.owner].read()?;
         let struct_hash = self.storage.keccak256(
             &(
-                *PERMIT_TYPEHASH,
+                PERMIT_TYPEHASH,
                 call.owner,
                 call.spender,
                 call.value,
@@ -777,7 +825,7 @@ impl TIP20Token {
         // 5. Increment nonce
         self.permit_nonces[call.owner].write(
             nonce
-                .checked_add(U256::from(1))
+                .checked_add(U256::ONE)
                 .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
 
@@ -914,6 +962,46 @@ impl TIP20Token {
         Ok(true)
     }
 
+    /// Moves channel-reserve custody after the reserve applies operation-specific TIP-403 rules.
+    ///
+    /// This is an internal TIP-1034 integration, not an ABI entrypoint. At least one physical
+    /// endpoint must be the canonical channel reserve. The reserve checks the logical payer-payee
+    /// path before funding and capture, and derives refunds from authenticated channel state.
+    ///
+    /// `receive_policy_sender` is the sender presented to TIP-1028. It may differ from the physical
+    /// balance owner when reserve custody pays a channel's payee. Unlike ordinary TIP-20 transfers,
+    /// channel custody movements revert when TIP-1028 rejects delivery because channel accounting
+    /// cannot represent a pending guarded payment.
+    pub(crate) fn channel_reserve_transfer(
+        &mut self,
+        from: Address,
+        to: Recipient,
+        amount: U256,
+        receive_policy_sender: Address,
+    ) -> Result<()> {
+        if from != TIP20_CHANNEL_RESERVE_ADDRESS
+            && to.original_address() != TIP20_CHANNEL_RESERVE_ADDRESS
+        {
+            return Err(TIP20Error::unauthorized().into());
+        }
+
+        self.check_not_paused()?;
+        to.validate()?;
+        self.check_and_update_spending_limit(from, amount)?;
+
+        if to.target == RECEIVE_POLICY_GUARD_ADDRESS {
+            return Err(ReceivePolicyGuardError::address_reserved().into());
+        }
+        self.ensure_receive_policy_authorized(receive_policy_sender, to.target)?;
+
+        self._transfer(from, &to, amount)?;
+        if let Some(hop) = to.build_virtual_transfer_event(amount) {
+            self.emit_event(hop)?;
+        }
+
+        Ok(())
+    }
+
     /// Debits `spender`'s allowance on `owner`. No-op when unlimited.
     fn consume_allowance(&mut self, owner: Address, spender: Address, amount: U256) -> Result<()> {
         let allowed = self.get_allowance(owner, spender)?;
@@ -1015,6 +1103,15 @@ impl TIP20Token {
         self.grant_default_admin(msg_sender, admin)
     }
 
+    /// Returns the token's name, symbol and currency.
+    pub fn metadata(&self) -> Result<Tip20TokenMetadata> {
+        Ok(Tip20TokenMetadata {
+            name: self.name()?,
+            symbol: self.symbol()?,
+            currency: self.currency()?,
+        })
+    }
+
     fn get_balance(&self, account: Address) -> Result<U256> {
         self.balances[account].read()
     }
@@ -1112,7 +1209,7 @@ impl TIP20Token {
         memo: B256,
     ) -> Result<Option<(U256, Recipient)>> {
         let to = Recipient::resolve(to)?;
-        self.check_role(msg_sender, *ISSUER_ROLE)?;
+        self.check_role(msg_sender, ISSUER_ROLE)?;
         let total_supply = self.total_supply()?;
 
         if self.storage.spec().is_t3() {
@@ -1159,6 +1256,24 @@ impl TIP20Token {
     /// - `PolicyForbids` — sender or recipient is not authorized by the active transfer policy
     pub fn ensure_transfer_authorized(&self, from: Address, to: Address) -> Result<()> {
         if !self.is_transfer_authorized(from, to)? {
+            return Err(TIP20Error::policy_forbids().into());
+        }
+
+        Ok(())
+    }
+
+    /// Ensures `receiver` currently accepts this token from `sender` under TIP-1028.
+    ///
+    /// Receive policies remain mutable, so a later policy change can still block delivery.
+    pub(crate) fn ensure_receive_policy_authorized(
+        &self,
+        sender: Address,
+        receiver: Address,
+    ) -> Result<()> {
+        if TIP403Registry::new()
+            .validate_receive_policy(self.address, sender, receiver)?
+            .is_some()
+        {
             return Err(TIP20Error::policy_forbids().into());
         }
 
@@ -1396,6 +1511,18 @@ impl TIP20Token {
     }
 }
 
+/// Descriptive TIP-20 token metadata, written once when the token is initialized.
+///
+/// `decimals` is omitted because all TIP-20 tokens use a fixed decimal count.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+pub struct Tip20TokenMetadata {
+    pub name: String,
+    pub symbol: String,
+    pub currency: String,
+}
+
 /// Resolved transfer recipient for [TIP-1022] virtual address support.
 ///
 /// `target` is always the effective (resolved) address where the balance is credited. For virtual
@@ -1436,6 +1563,11 @@ impl Recipient {
         })
     }
 
+    /// Returns the original recipient address used by the transfer.
+    fn original_address(&self) -> Address {
+        self.virtual_addr.unwrap_or(self.target)
+    }
+
     /// Validates that the recipient is not:
     /// - the zero address (preventing accidental burns)
     /// - an address with the TIP-20 prefix (preventing transfers to token contracts)
@@ -1451,7 +1583,7 @@ impl Recipient {
     /// For virtual recipients `to` is the virtual address (first hop); for regular
     /// recipients this is the only `Transfer` event needed.
     pub(crate) fn build_transfer_event(&self, from: Address, amount: U256) -> TIP20Event {
-        TIP20Event::transfer(from, self.virtual_addr.unwrap_or(self.target), amount)
+        TIP20Event::transfer(from, self.original_address(), amount)
     }
 
     /// Builds the forwarding `Transfer(virtual, master, amount)` event for virtual recipients.
@@ -1579,25 +1711,49 @@ mod recipient_tests {
 
 #[cfg(test)]
 pub(crate) mod tests {
+
     use super::*;
     use crate::{
-        PATH_USD_ADDRESS,
+        PATH_USD_ADDRESS, Precompile,
         account_keychain::{
             AccountKeychain, KeyRestrictions, SignatureType, TokenLimit, getRemainingLimitCall,
         },
         address_registry::{AddressRegistry, MasterId, UserTag},
         error::TempoPrecompileError,
         receive_policy_guard::ReceivePolicyGuard,
-        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        storage::{StorageCtx, actions::StorageActions, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, VIRTUAL_MASTER, register_virtual_master, setup_storage},
         tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID},
     };
-    use alloy::primitives::{Address, FixedBytes, IntoLogData, U256, hex};
-    use rand_08::{Rng, distributions::Alphanumeric, thread_rng};
-    use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{
-        IReceivePolicyGuard, ReceivePolicyGuardEvent, createTokenCall,
+    use alloy::{
+        primitives::{Address, Bytes, FixedBytes, IntoLogData, TxKind, U256, address, keccak256},
+        sol_types::{SolCall, SolError, SolEvent},
     };
+    use alloy_evm::{Evm, EvmEnv};
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
+    use proptest::prelude::*;
+    use rand_08::{Rng, distributions::Alphanumeric, thread_rng};
+    use revm::{
+        DatabaseCommit,
+        context::{CfgEnv, TxEnv, result::ExecutionResult},
+        database::{CacheDB, EmptyDB},
+        state::{AccountInfo, Bytecode},
+    };
+    use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_contracts::{
+        MULTICALL3_ADDRESS, Multicall3,
+        precompiles::{
+            AccountKeychainError, AccountKeychainEvent, IAccountKeychain, IReceivePolicyGuard,
+            ReceivePolicyGuardEvent, UnknownFunctionSelector, createTokenCall,
+        },
+    };
+    use tempo_evm::{TempoBlockEnv, evm::TempoEvm};
+    use tempo_primitives::{
+        TempoSignature,
+        transaction::{Call, KeychainSignature, PrimitiveSignature},
+    };
+    use tempo_revm::{TempoBatchCallEnv, TempoTxEnv};
 
     #[test]
     fn test_mint_increases_balance_and_supply() -> eyre::Result<()> {
@@ -2369,7 +2525,7 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
-                .with_role(admin, *PAUSE_ROLE)
+                .with_role(admin, PAUSE_ROLE)
                 .with_mint(user, amount)
                 .apply()?;
 
@@ -2825,8 +2981,7 @@ pub(crate) mod tests {
 
             // Try to set a TIP20 address that hasn't been deployed yet
             // This has the correct TIP20 address pattern but hasn't been created
-            let undeployed_token_address =
-                Address::from(hex!("20C0000000000000000000000000000000000999"));
+            let undeployed_token_address = address!("20C0000000000000000000000000000000000999");
             let result = token.set_next_quote_token(
                 admin,
                 ITIP20::setNextQuoteTokenCall {
@@ -3334,6 +3489,694 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn burn_at_selectors_activate_at_t12() -> eyre::Result<()> {
+        let admin = Address::random();
+        for &spec in TempoHardfork::VARIANTS {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let mut token = TIP20Setup::create("Token", "TKN", admin)
+                    .with_issuer(admin)
+                    .with_role(admin, BURN_AT_ROLE)
+                    .with_mint(admin, U256::from(10))
+                    .clear_events()
+                    .apply()?;
+                let role = token.call(&ITIP20::BURN_AT_ROLECall {}.abi_encode(), admin)?;
+                let burn = token.call(
+                    &ITIP20::burnAtCall {
+                        from: admin,
+                        amount: U256::ONE,
+                    }
+                    .abi_encode(),
+                    admin,
+                )?;
+                if spec.is_t12() {
+                    assert!(role.is_success());
+                    assert_eq!(
+                        ITIP20::BURN_AT_ROLECall::abi_decode_returns(&role.bytes)?,
+                        keccak256("BURN_AT_ROLE")
+                    );
+                    assert!(burn.is_success());
+                    assert_eq!(token.get_balance(admin)?, U256::from(9));
+                } else {
+                    for output in [role, burn] {
+                        assert!(output.is_revert());
+                        UnknownFunctionSelector::abi_decode(&output.bytes)?;
+                    }
+                    assert_eq!(token.get_balance(admin)?, U256::from(10));
+                    assert_eq!(token.total_supply()?, U256::from(10));
+                    assert!(token.emitted_events().is_empty());
+                }
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn burn_at_requires_its_own_role_and_respects_pause() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+        let admin = Address::random();
+        let burner = Address::random();
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut token = TIP20Setup::create("Token", "TKN", admin)
+                .with_issuer(admin)
+                .with_role(burner, BURN_BLOCKED_ROLE)
+                .with_role(admin, PAUSE_ROLE)
+                .with_role(admin, UNPAUSE_ROLE)
+                .with_mint(admin, U256::from(10))
+                .apply()?;
+            let call = ITIP20::burnAtCall {
+                from: admin,
+                amount: U256::ZERO,
+            };
+            // Neither the issuer nor the blocked-burn role grants arbitrary burning authority.
+            for caller in [admin, burner] {
+                assert_eq!(
+                    token.burn_at(caller, call.clone()),
+                    Err(RolesAuthError::unauthorized().into())
+                );
+            }
+            assert_eq!(
+                token.get_role_admin(IRolesAuth::getRoleAdminCall { role: BURN_AT_ROLE })?,
+                DEFAULT_ADMIN_ROLE
+            );
+            token.grant_role(
+                admin,
+                IRolesAuth::grantRoleCall {
+                    role: BURN_AT_ROLE,
+                    account: burner,
+                },
+            )?;
+            token.burn_at(burner, call.clone())?;
+            token.pause(admin, ITIP20::pauseCall {})?;
+            assert_eq!(
+                token.burn_at(burner, call.clone()),
+                Err(TIP20Error::contract_paused().into())
+            );
+            token.unpause(admin, ITIP20::unpauseCall {})?;
+            token.revoke_role(
+                admin,
+                IRolesAuth::revokeRoleCall {
+                    role: BURN_AT_ROLE,
+                    account: burner,
+                },
+            )?;
+            assert_eq!(
+                token.burn_at(burner, call),
+                Err(RolesAuthError::unauthorized().into())
+            );
+            assert_eq!(token.get_balance(admin)?, U256::from(10));
+            assert_eq!(token.total_supply()?, U256::from(10));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn burn_at_ignores_policy_and_emits_caller_and_holder() -> eyre::Result<()> {
+        let admin = Address::random();
+        let holder = Address::random();
+        let burner = Address::random();
+        for policy in [ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let mut token = TIP20Setup::create("Token", "TKN", admin)
+                    .with_issuer(admin)
+                    .with_role(burner, BURN_AT_ROLE)
+                    .with_mint(holder, U256::from(100))
+                    .apply()?;
+                token.change_transfer_policy_id(
+                    admin,
+                    ITIP20::changeTransferPolicyIdCall {
+                        newPolicyId: policy,
+                    },
+                )?;
+                for amount in [U256::ZERO, U256::from(100)] {
+                    token.clear_emitted_events();
+                    token.burn_at(
+                        burner,
+                        ITIP20::burnAtCall {
+                            from: holder,
+                            amount,
+                        },
+                    )?;
+                    assert_eq!(token.get_balance(holder)?, U256::from(100) - amount);
+                    assert_eq!(token.total_supply()?, U256::from(100) - amount);
+                    token.assert_emitted_events(vec![
+                        TIP20Event::transfer(holder, Address::ZERO, amount),
+                        TIP20Event::burn_at(burner, holder, amount),
+                    ]);
+                }
+                assert_eq!(
+                    token.burn_at(
+                        burner,
+                        ITIP20::burnAtCall {
+                            from: holder,
+                            amount: U256::ONE
+                        }
+                    ),
+                    Err(
+                        TIP20Error::insufficient_balance(U256::ZERO, U256::ONE, token.address)
+                            .into()
+                    ),
+                );
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn burn_at_and_burn_blocked_share_protected_addresses() -> eyre::Result<()> {
+        let admin = Address::random();
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut token = TIP20Setup::create("Token", "TKN", admin)
+                .with_role(admin, BURN_AT_ROLE)
+                .with_role(admin, BURN_BLOCKED_ROLE)
+                .apply()?;
+            token.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: REJECT_ALL_POLICY_ID,
+                },
+            )?;
+            for from in [
+                token.address,
+                TIP_FEE_MANAGER_ADDRESS,
+                STABLECOIN_DEX_ADDRESS,
+                TIP20_CHANNEL_RESERVE_ADDRESS,
+                RECEIVE_POLICY_GUARD_ADDRESS,
+                // Protect the entire reserved prefix, including undeployed portals and the zero suffix.
+                address!("5AD0000000000000000000000000000000000000"),
+                address!("5AD0000000000000000000000000000000000001"),
+                address!("5AD000000000000000000000ffffffffffffffff"),
+            ] {
+                for amount in [U256::ZERO, U256::ONE] {
+                    assert_eq!(
+                        token.burn_at(admin, ITIP20::burnAtCall { from, amount }),
+                        Err(TIP20Error::protected_address().into())
+                    );
+                    assert_eq!(
+                        token.burn_blocked(admin, from, amount, true),
+                        Err(TIP20Error::protected_address().into())
+                    );
+                }
+            }
+            // Adjacent prefixes are ordinary balances, not protected protocol custody.
+            token.burn_at(
+                admin,
+                ITIP20::burnAtCall {
+                    from: address!("5AD0000000000000000000010000000000000001"),
+                    amount: U256::ZERO,
+                },
+            )?;
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn burn_blocked_portal_protection_preserves_pre_t12_behavior() -> eyre::Result<()> {
+        let admin = Address::random();
+        let portal = address!("5AD0000000000000000000000000000000000001");
+        for spec in [TempoHardfork::T11, TempoHardfork::T12] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let mut token = TIP20Setup::create("Token", "TKN", admin)
+                    .with_issuer(admin)
+                    .with_role(admin, BURN_BLOCKED_ROLE)
+                    .with_mint(portal, U256::from(10))
+                    .apply()?;
+                token.change_transfer_policy_id(
+                    admin,
+                    ITIP20::changeTransferPolicyIdCall {
+                        newPolicyId: REJECT_ALL_POLICY_ID,
+                    },
+                )?;
+                let result = token.burn_blocked(admin, portal, U256::ONE, true);
+                if spec.is_t12() {
+                    assert_eq!(result, Err(TIP20Error::protected_address().into()));
+                    assert_eq!(token.get_balance(portal)?, U256::from(10));
+                } else {
+                    result?;
+                    assert_eq!(token.get_balance(portal)?, U256::from(9));
+                }
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn burn_at_preserves_settled_rewards() -> eyre::Result<()> {
+        let admin = Address::random();
+        let holder = Address::random();
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut token = TIP20Setup::create("Token", "TKN", admin)
+                .with_issuer(admin)
+                .with_role(admin, BURN_AT_ROLE)
+                .with_mint(holder, U256::from(100))
+                .apply()?;
+            // Seed reward state settled before T8, including the balance backing the claim.
+            token.set_balance(token.address, U256::from(20))?;
+            token.set_total_supply(U256::from(120))?;
+            token.global_reward_per_token.write(U256::from(3))?;
+            token.opted_in_supply.write(100)?;
+            token.user_reward_info[holder].write(UserRewardInfo {
+                reward_recipient: holder,
+                reward_per_token: U256::from(2),
+                reward_balance: U256::from(20),
+            })?;
+            token.burn_at(
+                admin,
+                ITIP20::burnAtCall {
+                    from: holder,
+                    amount: U256::from(100),
+                },
+            )?;
+            let rewards = token.get_user_reward_info(holder)?;
+            assert_eq!(rewards.reward_recipient, holder);
+            assert_eq!(rewards.reward_per_token, U256::from(2));
+            assert_eq!(rewards.reward_balance, U256::from(20));
+            assert_eq!(token.get_global_reward_per_token()?, U256::from(3));
+            assert_eq!(token.get_opted_in_supply()?, 100);
+            assert_eq!(token.get_balance(token.address)?, U256::from(20));
+            assert_eq!(token.claim_rewards(holder)?, U256::from(20));
+            assert_eq!(token.get_balance(holder)?, U256::from(20));
+            Ok(())
+        })
+    }
+
+    fn authorize_burn_key(
+        account: Address,
+        key: Address,
+        token: Address,
+        period: u64,
+    ) -> Result<AccountKeychain> {
+        let mut keychain = AccountKeychain::new();
+        keychain.initialize()?;
+        keychain.set_tx_origin(account)?;
+        keychain.authorize_key(
+            account,
+            key,
+            IAccountKeychain::SignatureType::Secp256k1,
+            IAccountKeychain::KeyRestrictions {
+                expiry: u64::MAX,
+                enforceLimits: true,
+                limits: vec![IAccountKeychain::TokenLimit {
+                    token,
+                    amount: U256::from(100),
+                    period,
+                }],
+                allowAnyCalls: true,
+                allowedCalls: vec![],
+            },
+            None,
+        )?;
+        keychain.set_transaction_key(key)?;
+        Ok(keychain)
+    }
+
+    #[test]
+    fn burn_at_charges_the_holder_access_key_and_resets_periodic_limits() -> eyre::Result<()> {
+        let admin = Address::random();
+        let holder = Address::random();
+        let bridge = Address::random();
+        let key = Address::random();
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+        storage.set_timestamp(U256::from(1000));
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut token = TIP20Setup::create("Token", "TKN", admin)
+                .with_issuer(admin)
+                .with_role(bridge, BURN_AT_ROLE)
+                .with_mint(holder, U256::from(300))
+                .with_mint(bridge, U256::from(200))
+                .apply()?;
+            let mut keychain = authorize_burn_key(holder, key, token.address, 60)?;
+            keychain.clear_emitted_events();
+            token.burn_at(
+                bridge,
+                ITIP20::burnAtCall {
+                    from: holder,
+                    amount: U256::from(100),
+                },
+            )?;
+            keychain.assert_emitted_events(vec![AccountKeychainEvent::access_key_spend(
+                holder,
+                key,
+                token.address,
+                U256::from(100),
+                U256::ZERO,
+            )]);
+            assert_eq!(
+                token.burn_at(
+                    bridge,
+                    ITIP20::burnAtCall {
+                        from: holder,
+                        amount: U256::ONE
+                    }
+                ),
+                Err(AccountKeychainError::spending_limit_exceeded().into())
+            );
+            // Burning a different account must not charge the transaction origin's exhausted limit.
+            token.burn_at(
+                bridge,
+                ITIP20::burnAtCall {
+                    from: bridge,
+                    amount: U256::from(200),
+                },
+            )?;
+            StorageCtx.set_timestamp(U256::from(1060));
+            token.burn_at(
+                bridge,
+                ITIP20::burnAtCall {
+                    from: holder,
+                    amount: U256::from(40),
+                },
+            )?;
+            assert_eq!(
+                keychain.get_remaining_limit(IAccountKeychain::getRemainingLimitCall {
+                    account: holder,
+                    keyId: key,
+                    token: token.address
+                })?,
+                U256::from(60)
+            );
+            Ok(())
+        })
+    }
+
+    proptest! {
+        #[test]
+        fn burn_at_conserves_supply(balance in any::<u128>(), requested in any::<u128>()) {
+            let admin = Address::repeat_byte(1);
+            let holder = Address::repeat_byte(2);
+            let amount = U256::from(requested.min(balance));
+            let balance = U256::from(balance);
+            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+            StorageCtx::enter(&mut storage, || -> Result<()> {
+                let mut token = TIP20Setup::create("Token", "TKN", admin)
+                    .with_issuer(admin)
+                    .with_role(admin, BURN_AT_ROLE)
+                    .apply()?;
+                token.set_balance(holder, balance)?;
+                token.set_total_supply(balance)?;
+                token.burn_at(admin, ITIP20::burnAtCall { from: holder, amount })?;
+                assert_eq!(token.get_balance(holder)?, balance - amount);
+                assert_eq!(token.total_supply()?, balance - amount);
+                assert_eq!(token.get_balance(Address::ZERO)?, U256::ZERO);
+                Ok(())
+            }).unwrap();
+        }
+    }
+
+    struct BurnAtFixture {
+        evm: TempoEvm<CacheDB<EmptyDB>>,
+        holder: Address,
+        key: PrivateKeySigner,
+        token: Address,
+    }
+
+    impl BurnAtFixture {
+        fn new(balance: u64) -> eyre::Result<Self> {
+            let holder = Address::repeat_byte(0x11);
+            let key = PrivateKeySigner::random();
+            let mut cfg = CfgEnv::default();
+            cfg.set_spec_and_mainnet_gas_params(TempoHardfork::T12);
+            let mut evm = TempoEvm::new(
+                CacheDB::new(EmptyDB::default()),
+                EvmEnv {
+                    cfg_env: cfg,
+                    block_env: TempoBlockEnv::default(),
+                },
+            );
+            let token = StorageCtx::enter_ctx(
+                evm.ctx_mut(),
+                StorageActions::disabled(),
+                || -> Result<Address> {
+                    TIP20Setup::path_usd(holder).with_issuer(holder).apply()?;
+                    let token = TIP20Setup::create("Token", "TKN", holder)
+                        .with_issuer(holder)
+                        .with_role(MULTICALL3_ADDRESS, BURN_AT_ROLE)
+                        .with_mint(holder, U256::from(balance))
+                        .apply()?;
+                    authorize_burn_key(holder, key.address(), token.address, 0)?;
+                    Ok(token.address)
+                },
+            )?;
+            let setup_state = evm.ctx_mut().journaled_state.finalize();
+            evm.db_mut().commit(setup_state);
+            let code = Bytecode::new_raw(Multicall3::DEPLOYED_BYTECODE.clone());
+            evm.db_mut().insert_account_info(
+                MULTICALL3_ADDRESS,
+                AccountInfo {
+                    code_hash: code.hash_slow(),
+                    code: Some(code),
+                    ..Default::default()
+                },
+            );
+            Ok(Self {
+                evm,
+                holder,
+                key,
+                token,
+            })
+        }
+
+        fn burn_call(&self, amount: U256) -> Multicall3::Call3 {
+            Multicall3::Call3 {
+                target: self.token,
+                allowFailure: false,
+                callData: ITIP20::burnAtCall {
+                    from: self.holder,
+                    amount,
+                }
+                .abi_encode()
+                .into(),
+            }
+        }
+
+        fn transact(&mut self, calls: Vec<Multicall3::Call3>) -> eyre::Result<ExecutionResult> {
+            let data: Bytes = Multicall3::aggregate3Call { calls }.abi_encode().into();
+            let signature_hash = keccak256(&data);
+            let signature = self.key.sign_hash_sync(&KeychainSignature::signing_hash(
+                signature_hash,
+                self.holder,
+            ))?;
+            let nonce = self.evm.db_mut().load_account(self.holder)?.info.nonce;
+            let result = self.evm.transact_raw(TempoTxEnv {
+                inner: TxEnv {
+                    caller: self.holder,
+                    gas_limit: 1_000_000,
+                    gas_price: 0,
+                    kind: TxKind::Call(MULTICALL3_ADDRESS),
+                    nonce,
+                    data: data.clone(),
+                    ..Default::default()
+                },
+                fee_token: Some(PATH_USD_ADDRESS),
+                tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+                    signature: TempoSignature::Keychain(KeychainSignature::new(
+                        self.holder,
+                        PrimitiveSignature::Secp256k1(signature),
+                    )),
+                    signature_hash,
+                    aa_calls: vec![Call {
+                        to: TxKind::Call(MULTICALL3_ADDRESS),
+                        value: U256::ZERO,
+                        input: data,
+                    }],
+                    ..Default::default()
+                })),
+                ..Default::default()
+            })?;
+            self.evm.db_mut().commit(result.state);
+            Ok(result.result)
+        }
+
+        fn assert_state(&mut self, balance: u64, remaining_limit: u64) -> eyre::Result<()> {
+            StorageCtx::enter_ctx(
+                self.evm.ctx_mut(),
+                StorageActions::disabled(),
+                || -> Result<()> {
+                    let token = TIP20Token::from_address(self.token)?;
+                    assert_eq!(token.get_balance(self.holder)?, U256::from(balance));
+                    assert_eq!(token.total_supply()?, U256::from(balance));
+                    assert_eq!(
+                        AccountKeychain::new().get_remaining_limit(
+                            IAccountKeychain::getRemainingLimitCall {
+                                account: self.holder,
+                                keyId: self.key.address(),
+                                token: self.token,
+                            }
+                        )?,
+                        U256::from(remaining_limit)
+                    );
+                    Ok(())
+                },
+            )?;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn burn_at_bridge_success_charges_access_key_and_emits_events() -> eyre::Result<()> {
+        let mut fixture = BurnAtFixture::new(40)?;
+        let amount = U256::from(20);
+        let result = fixture.transact(vec![fixture.burn_call(amount)])?;
+        assert!(result.is_success(), "{result:?}");
+        let logs: Vec<_> = result
+            .logs()
+            .iter()
+            .filter(|log| log.address == fixture.token)
+            .collect();
+        assert_eq!(logs.len(), 2);
+        let transfer = ITIP20::Transfer::decode_log(logs[0])?;
+        assert_eq!(transfer.data.from, fixture.holder);
+        assert_eq!(transfer.data.to, Address::ZERO);
+        assert_eq!(transfer.data.amount, amount);
+        assert_eq!(
+            logs[1].topics(),
+            &[
+                ITIP20::BurnAt::SIGNATURE_HASH,
+                MULTICALL3_ADDRESS.into_word(),
+                fixture.holder.into_word(),
+                B256::from(amount.to_be_bytes::<32>()),
+            ]
+        );
+        assert!(logs[1].data.data.is_empty());
+        let spends: Vec<_> = result
+            .logs()
+            .iter()
+            .filter(|log| log.address == crate::ACCOUNT_KEYCHAIN_ADDRESS)
+            .filter_map(|log| IAccountKeychain::AccessKeySpend::decode_log(log).ok())
+            .filter(|log| log.data.token == fixture.token)
+            .collect();
+        assert_eq!(spends.len(), 1);
+        assert_eq!(spends[0].data.amount, amount);
+        fixture.assert_state(20, 80)
+    }
+
+    #[test]
+    fn burn_at_bridge_insufficient_balance_reverts_transaction() -> eyre::Result<()> {
+        let mut fixture = BurnAtFixture::new(40)?;
+        let result = fixture.transact(vec![fixture.burn_call(U256::from(50))])?;
+        assert!(
+            matches!(result, ExecutionResult::Revert { .. }),
+            "{result:?}"
+        );
+        assert!(result.logs().is_empty());
+        fixture.assert_state(40, 100)
+    }
+
+    #[test]
+    fn burn_at_bridge_caught_failure_restores_access_key_limit() -> eyre::Result<()> {
+        let mut fixture = BurnAtFixture::new(40)?;
+        let result = fixture.transact(vec![Multicall3::Call3 {
+            allowFailure: true,
+            ..fixture.burn_call(U256::from(50))
+        }])?;
+        assert!(result.is_success(), "{result:?}");
+        let calls = Multicall3::aggregate3Call::abi_decode_returns(result.output().unwrap())?;
+        assert_eq!(calls.len(), 1);
+        assert!(!calls[0].success);
+        assert_eq!(
+            calls[0].returnData.as_ref(),
+            ITIP20::InsufficientBalance {
+                available: U256::from(40),
+                required: U256::from(50),
+                token: fixture.token,
+            }
+            .abi_encode()
+        );
+        assert!(result.logs().iter().all(|log| log.address != fixture.token));
+        assert!(
+            result
+                .logs()
+                .iter()
+                .filter_map(|log| IAccountKeychain::AccessKeySpend::decode_log(log).ok())
+                .all(|log| log.data.token != fixture.token)
+        );
+        fixture.assert_state(40, 100)
+    }
+
+    #[test]
+    fn burn_at_bridge_enclosing_revert_restores_burn_and_access_key_limit() -> eyre::Result<()> {
+        let mut fixture = BurnAtFixture::new(40)?;
+        let result = fixture.transact(vec![
+            fixture.burn_call(U256::from(20)),
+            fixture.burn_call(U256::MAX),
+        ])?;
+        assert!(
+            matches!(result, ExecutionResult::Revert { .. }),
+            "{result:?}"
+        );
+        assert!(result.logs().is_empty());
+        fixture.assert_state(40, 100)
+    }
+
+    #[test]
+    fn burn_at_bridge_rejects_spending_limit_with_sufficient_balance() -> eyre::Result<()> {
+        let mut fixture = BurnAtFixture::new(200)?;
+        let setup = fixture.transact(vec![fixture.burn_call(U256::from(20))])?;
+        assert!(setup.is_success(), "{setup:?}");
+        fixture.assert_state(180, 80)?;
+
+        let result = fixture.transact(vec![Multicall3::Call3 {
+            allowFailure: true,
+            ..fixture.burn_call(U256::from(81))
+        }])?;
+        assert!(result.is_success(), "{result:?}");
+        let calls = Multicall3::aggregate3Call::abi_decode_returns(result.output().unwrap())?;
+        assert_eq!(calls.len(), 1);
+        assert!(!calls[0].success);
+        assert_eq!(
+            calls[0].returnData.as_ref(),
+            IAccountKeychain::SpendingLimitExceeded::SELECTOR
+        );
+        assert!(result.logs().iter().all(|log| log.address != fixture.token));
+        assert!(
+            result
+                .logs()
+                .iter()
+                .filter_map(|log| IAccountKeychain::AccessKeySpend::decode_log(log).ok())
+                .all(|log| log.data.token != fixture.token)
+        );
+        fixture.assert_state(180, 80)
+    }
+
+    #[test]
+    fn burn_at_bridge_zero_amount_emits_events_without_charging_limit() -> eyre::Result<()> {
+        let mut fixture = BurnAtFixture::new(40)?;
+        let result = fixture.transact(vec![fixture.burn_call(U256::ZERO)])?;
+        assert!(result.is_success(), "{result:?}");
+        let logs: Vec<_> = result
+            .logs()
+            .iter()
+            .filter(|log| log.address == fixture.token)
+            .collect();
+        assert_eq!(logs.len(), 2);
+        let transfer = ITIP20::Transfer::decode_log(logs[0])?;
+        assert_eq!(transfer.data.from, fixture.holder);
+        assert_eq!(transfer.data.to, Address::ZERO);
+        assert_eq!(transfer.data.amount, U256::ZERO);
+        let burn = ITIP20::BurnAt::decode_log(logs[1])?;
+        assert_eq!(burn.data.burner, MULTICALL3_ADDRESS);
+        assert_eq!(burn.data.from, fixture.holder);
+        assert_eq!(burn.data.amount, U256::ZERO);
+        let spends: Vec<_> = result
+            .logs()
+            .iter()
+            .filter(|log| log.address == crate::ACCOUNT_KEYCHAIN_ADDRESS)
+            .filter_map(|log| IAccountKeychain::AccessKeySpend::decode_log(log).ok())
+            .filter(|log| log.data.token == fixture.token)
+            .collect();
+        assert_eq!(spends.len(), 1);
+        assert_eq!(spends[0].data.amount, U256::ZERO);
+        fixture.assert_state(40, 100)
+    }
+
+    #[test]
     fn test_unable_to_burn_blocked_from_protected_address() -> eyre::Result<()> {
         let admin = Address::random();
         let burner = Address::random();
@@ -3344,7 +4187,7 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Token", "TKN", admin)
                 .with_issuer(admin)
-                .with_role(burner, *BURN_BLOCKED_ROLE)
+                .with_role(burner, BURN_BLOCKED_ROLE)
                 .with_mint(TIP_FEE_MANAGER_ADDRESS, amount)
                 .with_mint(STABLECOIN_DEX_ADDRESS, amount)
                 .with_mint(TIP20_CHANNEL_RESERVE_ADDRESS, amount)
@@ -3375,7 +4218,7 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Token", "TKN", admin)
                 .with_issuer(admin)
-                .with_role(burner, *BURN_BLOCKED_ROLE)
+                .with_role(burner, BURN_BLOCKED_ROLE)
                 .apply()?;
 
             for protected in [
@@ -3413,7 +4256,7 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Token", "TKN", admin)
                 .with_issuer(admin)
-                .with_role(burner, *BURN_BLOCKED_ROLE)
+                .with_role(burner, BURN_BLOCKED_ROLE)
                 .with_mint(TIP20_CHANNEL_RESERVE_ADDRESS, amount)
                 .apply()?;
 
@@ -3666,7 +4509,7 @@ pub(crate) mod tests {
                 Address::random(),
                 ITIP20::approveCall {
                     spender,
-                    amount: U256::from(1),
+                    amount: U256::ONE,
                 },
             )?;
 
@@ -4170,7 +5013,7 @@ pub(crate) mod tests {
             let domain_separator = compute_domain_separator(token_name, token_address);
             let struct_hash = keccak256(
                 (
-                    *PERMIT_TYPEHASH,
+                    PERMIT_TYPEHASH,
                     signer.address(),
                     spender,
                     value,
@@ -4198,9 +5041,9 @@ pub(crate) mod tests {
         fn compute_domain_separator(token_name: &str, token_address: Address) -> B256 {
             keccak256(
                 (
-                    *EIP712_DOMAIN_TYPEHASH,
+                    EIP712_DOMAIN_TYPEHASH,
                     keccak256(token_name.as_bytes()),
-                    *VERSION_HASH,
+                    VERSION_HASH,
                     U256::from(CHAIN_ID),
                     token_address,
                 )
@@ -4277,7 +5120,7 @@ pub(crate) mod tests {
 
                 // Verify nonce was incremented
                 let nonce = token.nonces(ITIP20::noncesCall { owner })?;
-                assert_eq!(nonce, U256::from(1));
+                assert_eq!(nonce, U256::ONE);
 
                 Ok(())
             })
@@ -4465,7 +5308,7 @@ pub(crate) mod tests {
 
             StorageCtx::enter(&mut storage, || {
                 let mut token = TIP20Setup::create("Test", "TST", admin)
-                    .with_role(admin, *PAUSE_ROLE)
+                    .with_role(admin, PAUSE_ROLE)
                     .apply()?;
 
                 // Pause the token
@@ -4569,7 +5412,7 @@ pub(crate) mod tests {
                     spender,
                     token.address,
                     U256::ZERO,
-                    U256::from(1),
+                    U256::ONE,
                     U256::MAX,
                 );
                 token.permit(call)?;
@@ -4686,7 +5529,7 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
-                .with_role(admin, *PAUSE_ROLE)
+                .with_role(admin, PAUSE_ROLE)
                 .apply()?;
             token.pause(admin, ITIP20::pauseCall {})?;
 
@@ -4719,7 +5562,7 @@ pub(crate) mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut token = TIP20Setup::create("Test", "TST", admin)
                     .with_issuer(admin)
-                    .with_role(admin, *PAUSE_ROLE)
+                    .with_role(admin, PAUSE_ROLE)
                     .apply()?;
 
                 token.pause(admin, ITIP20::pauseCall {})?;
@@ -4755,7 +5598,7 @@ pub(crate) mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut token = TIP20Setup::create("Test", "TST", admin)
                     .with_issuer(admin)
-                    .with_role(admin, *PAUSE_ROLE)
+                    .with_role(admin, PAUSE_ROLE)
                     .with_mint(admin, amount * U256::from(2))
                     .apply()?;
 
@@ -4811,8 +5654,8 @@ pub(crate) mod tests {
 
                 let mut token = TIP20Setup::create("Test", "TST", admin)
                     .with_issuer(admin)
-                    .with_role(admin, *PAUSE_ROLE)
-                    .with_role(admin, *BURN_BLOCKED_ROLE)
+                    .with_role(admin, PAUSE_ROLE)
+                    .with_role(admin, BURN_BLOCKED_ROLE)
                     .with_mint(blocked, amount)
                     .apply()?;
 

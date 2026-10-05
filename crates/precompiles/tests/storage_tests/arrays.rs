@@ -4,8 +4,6 @@ use super::*;
 
 #[test]
 fn test_array_storage() {
-    use alloy::primitives::address;
-
     #[contract]
     pub struct Layout {
         pub field_a: U256, // Auto: slot 0
@@ -34,7 +32,7 @@ fn test_array_storage() {
         assert_eq!(layout.field_d.slot(), U256::from(6));
 
         // Verify slots module
-        assert_eq!(slots::FIELD_A, U256::from(0));
+        assert_eq!(slots::FIELD_A, U256::ZERO);
         assert_eq!(slots::SMALL_ARRAY, U256::from(10));
         assert_eq!(slots::FIELD_B, U256::ONE);
         assert_eq!(slots::LARGE_ARRAY, U256::from(20));
@@ -52,9 +50,9 @@ fn test_array_storage() {
             U256::from(500),
         ];
         let auto_array = [
-            address!("0x0000000000000000000000000000000000000011"),
-            address!("0x0000000000000000000000000000000000000022"),
-            address!("0x0000000000000000000000000000000000000033"),
+            Address::with_last_byte(0x11),
+            Address::with_last_byte(0x22),
+            Address::with_last_byte(0x33),
         ];
 
         layout.field_a.write(U256::ONE).unwrap();

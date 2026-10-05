@@ -519,6 +519,7 @@ impl StorableType for OrderMapping {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::{
         stablecoin_dex::{
@@ -531,15 +532,14 @@ mod tests {
         tip20::{ITIP20, TIP20Token},
         tip403_registry::{ITIP403Registry, TIP403Registry},
     };
-    use alloy::primitives::{address, b256};
+    use alloy::primitives::address;
     use proptest::prelude::*;
     use tempo_chainspec::hardfork::TempoHardfork;
 
-    const TEST_MAKER: Address = address!("0x1111111111111111111111111111111111111111");
-    const TEST_BASE: Address = address!("0x2222222222222222222222222222222222222222");
-    const TEST_QUOTE: Address = address!("0x3333333333333333333333333333333333333333");
-    const TEST_BOOK_KEY: B256 =
-        b256!("0x0000000000000000000000000000000000000000000000000000000000000001");
+    const TEST_MAKER: Address = Address::repeat_byte(0x11);
+    const TEST_BASE: Address = Address::repeat_byte(0x22);
+    const TEST_QUOTE: Address = Address::repeat_byte(0x33);
+    const TEST_BOOK_KEY: B256 = B256::with_last_byte(1);
 
     #[derive(Default)]
     struct DexTestSetup {
@@ -594,12 +594,8 @@ mod tests {
                 OrderVersion::V2 => "BASE_V2",
             };
             let salt = match version {
-                OrderVersion::Legacy | OrderVersion::V1 => {
-                    b256!("0x1111111111111111111111111111111111111111111111111111111111111111")
-                }
-                OrderVersion::V2 => {
-                    b256!("0x2222222222222222222222222222222222222222222222222222222222222222")
-                }
+                OrderVersion::Legacy | OrderVersion::V1 => B256::repeat_byte(0x11),
+                OrderVersion::V2 => B256::repeat_byte(0x22),
             };
             let base = TIP20Setup::create(name, name, self.admin)
                 .with_salt(salt)
@@ -1084,15 +1080,15 @@ mod tests {
                 let bid_level = exchange.books[book_key]
                     .tick_level_handler(tick, true)
                     .read()?;
-                assert_eq!(bid_level.head, resting_id);
-                assert_eq!(bid_level.tail, resting_id);
+                assert_eq!(bid_level.links.head, resting_id);
+                assert_eq!(bid_level.links.tail, resting_id);
                 assert_eq!(bid_level.total_liquidity, amount);
 
                 let ask_level = exchange.books[book_key]
                     .tick_level_handler(tick, false)
                     .read()?;
-                assert_eq!(ask_level.head, flip_id);
-                assert_eq!(ask_level.tail, flip_id);
+                assert_eq!(ask_level.links.head, flip_id);
+                assert_eq!(ask_level.links.tail, flip_id);
                 assert_eq!(ask_level.total_liquidity, amount);
 
                 Ok::<_, TempoPrecompileError>(())
@@ -1175,15 +1171,15 @@ mod tests {
                 let source_level = exchange.books[book_key]
                     .tick_level_handler(tick, true)
                     .read()?;
-                assert_eq!(source_level.head, source_next_id);
-                assert_eq!(source_level.tail, source_next_id);
+                assert_eq!(source_level.links.head, source_next_id);
+                assert_eq!(source_level.links.tail, source_next_id);
                 assert_eq!(source_level.total_liquidity, amount);
 
                 let destination_level = exchange.books[book_key]
                     .tick_level_handler(flip_tick, false)
                     .read()?;
-                assert_eq!(destination_level.head, destination_tail_id);
-                assert_eq!(destination_level.tail, flip_id);
+                assert_eq!(destination_level.links.head, destination_tail_id);
+                assert_eq!(destination_level.links.tail, flip_id);
                 assert_eq!(destination_level.total_liquidity, amount * 2);
 
                 let destination_tail = exchange.get_order(destination_tail_id)?;
@@ -1233,15 +1229,15 @@ mod tests {
                 let source_level = exchange.books[book_key]
                     .tick_level_handler(tick, true)
                     .read()?;
-                assert_eq!(source_level.head, source_next_id);
-                assert_eq!(source_level.tail, source_next_id);
+                assert_eq!(source_level.links.head, source_next_id);
+                assert_eq!(source_level.links.tail, source_next_id);
                 assert_eq!(source_level.total_liquidity, amount);
 
                 let destination_level = exchange.books[book_key]
                     .tick_level_handler(flip_tick, false)
                     .read()?;
-                assert_eq!(destination_level.head, destination_tail_id);
-                assert_eq!(destination_level.tail, destination_tail_id);
+                assert_eq!(destination_level.links.head, destination_tail_id);
+                assert_eq!(destination_level.links.tail, destination_tail_id);
                 assert_eq!(destination_level.total_liquidity, amount);
 
                 let destination_tail = exchange.get_order(destination_tail_id)?;
@@ -1309,15 +1305,15 @@ mod tests {
                 let source_level = exchange.books[book_key]
                     .tick_level_handler(tick, true)
                     .read()?;
-                assert_eq!(source_level.head, source_next_id);
-                assert_eq!(source_level.tail, source_next_id);
+                assert_eq!(source_level.links.head, source_next_id);
+                assert_eq!(source_level.links.tail, source_next_id);
                 assert_eq!(source_level.total_liquidity, amount);
 
                 let destination_level = exchange.books[book_key]
                     .tick_level_handler(flip_tick, false)
                     .read()?;
-                assert_eq!(destination_level.head, destination_tail_id);
-                assert_eq!(destination_level.tail, destination_tail_id);
+                assert_eq!(destination_level.links.head, destination_tail_id);
+                assert_eq!(destination_level.links.tail, destination_tail_id);
                 assert_eq!(destination_level.total_liquidity, amount);
 
                 let destination_tail = exchange.get_order(destination_tail_id)?;
@@ -1386,15 +1382,15 @@ mod tests {
                 let bid_level = exchange.books[book_key]
                     .tick_level_handler(tick, true)
                     .read()?;
-                assert_eq!(bid_level.head, flip_id);
-                assert_eq!(bid_level.tail, flip_id);
+                assert_eq!(bid_level.links.head, flip_id);
+                assert_eq!(bid_level.links.tail, flip_id);
                 assert_eq!(bid_level.total_liquidity, amount);
 
                 let ask_level = exchange.books[book_key]
                     .tick_level_handler(tick, false)
                     .read()?;
-                assert_eq!(ask_level.head, 0);
-                assert_eq!(ask_level.tail, 0);
+                assert_eq!(ask_level.links.head, 0);
+                assert_eq!(ask_level.links.tail, 0);
                 assert_eq!(ask_level.total_liquidity, 0);
 
                 Ok(())
@@ -1443,8 +1439,8 @@ mod tests {
                 let ask_level = exchange.books[book_key]
                     .tick_level_handler(tick, false)
                     .read()?;
-                assert_eq!(ask_level.head, new_tail_id);
-                assert_eq!(ask_level.tail, new_tail_id);
+                assert_eq!(ask_level.links.head, new_tail_id);
+                assert_eq!(ask_level.links.tail, new_tail_id);
                 assert_eq!(ask_level.total_liquidity, amount);
 
                 Ok::<_, TempoPrecompileError>(())
@@ -1520,15 +1516,15 @@ mod tests {
                 let bid_level = exchange.books[book_key]
                     .tick_level_handler(tick, true)
                     .read()?;
-                assert_eq!(bid_level.head, source_next_id);
-                assert_eq!(bid_level.tail, source_next_id);
+                assert_eq!(bid_level.links.head, source_next_id);
+                assert_eq!(bid_level.links.tail, source_next_id);
                 assert_eq!(bid_level.total_liquidity, amount);
 
                 let ask_level = exchange.books[book_key]
                     .tick_level_handler(flip_tick, false)
                     .read()?;
-                assert_eq!(ask_level.head, 0);
-                assert_eq!(ask_level.tail, 0);
+                assert_eq!(ask_level.links.head, 0);
+                assert_eq!(ask_level.links.tail, 0);
                 assert_eq!(ask_level.total_liquidity, 0);
 
                 Ok(())

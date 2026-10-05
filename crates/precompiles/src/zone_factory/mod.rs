@@ -365,12 +365,12 @@ mod tests {
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::ZonePortalCapability;
 
-    const OWNER: Address = address!("0x0000000000000000000000000000000000000011");
-    const ADMIN: Address = address!("0x0000000000000000000000000000000000000022");
-    const SEQUENCER_A: Address = address!("0x0000000000000000000000000000000000000033");
-    const SEQUENCER_B: Address = address!("0x0000000000000000000000000000000000000044");
-    const ALLOWED_ACCOUNT: Address = address!("0x0000000000000000000000000000000000000055");
-    const ZONE_GATEWAY: Address = address!("0x0000000000000000000000000000000000000066");
+    const OWNER: Address = Address::with_last_byte(0x11);
+    const ADMIN: Address = Address::with_last_byte(0x22);
+    const SEQUENCER_A: Address = Address::with_last_byte(0x33);
+    const SEQUENCER_B: Address = Address::with_last_byte(0x44);
+    const ALLOWED_ACCOUNT: Address = Address::with_last_byte(0x55);
+    const ZONE_GATEWAY: Address = Address::with_last_byte(0x66);
     const CREATION_BLOCK: u64 = 42;
 
     fn create_params(initial_token: Address) -> IZoneFactory::CreateZoneParams {
@@ -601,27 +601,33 @@ mod tests {
     }
 
     #[test]
-    fn create_zone_initializes_token_cursor_at_t12() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
-        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-            TIP20Setup::path_usd(ADMIN).apply()?;
-            let mut factory = factory_with_owner(OWNER)?;
-            let created = factory.create_zone(
-                OWNER,
-                IZoneFactory::createZoneCall {
-                    params: create_params(PATH_USD_ADDRESS),
-                },
-            )?;
+    fn create_zone_initializes_token_cursor_at_t13() -> eyre::Result<()> {
+        for hardfork in [TempoHardfork::T12, TempoHardfork::T13] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                TIP20Setup::path_usd(ADMIN).apply()?;
+                let mut factory = factory_with_owner(OWNER)?;
+                let created = factory.create_zone(
+                    OWNER,
+                    IZoneFactory::createZoneCall {
+                        params: create_params(PATH_USD_ADDRESS),
+                    },
+                )?;
 
-            let portal = ZonePortalStorage::new(created.portal);
-            assert_eq!(portal.last_processed_enabled_token_count.read()?, 0);
-            assert!(portal.token_enablement_cursor_initialized.read()?);
-            assert_eq!(
-                StorageCtx.sload(created.portal, U256::from(28))?,
-                U256::ONE << 64
-            );
-            Ok(())
-        })
+                let portal = ZonePortalStorage::new(created.portal);
+                assert_eq!(portal.last_processed_enabled_token_count.read()?, 0);
+                assert_eq!(
+                    portal.token_enablement_cursor_initialized.read()?,
+                    hardfork.is_t13()
+                );
+                assert_eq!(
+                    StorageCtx.sload(created.portal, U256::from(28))?,
+                    U256::from(u64::from(hardfork.is_t13())) << 64
+                );
+                Ok(())
+            })?;
+        }
+        Ok(())
     }
 
     #[test]

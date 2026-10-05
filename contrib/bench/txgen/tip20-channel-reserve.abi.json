@@ -1,0 +1,39 @@
+[
+  {
+    "type": "function",
+    "name": "open",
+    "inputs": [
+      {
+        "name": "payee",
+        "type": "address"
+      },
+      {
+        "name": "operator",
+        "type": "address"
+      },
+      {
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "name": "deposit",
+        "type": "uint96"
+      },
+      {
+        "name": "salt",
+        "type": "bytes32"
+      },
+      {
+        "name": "authorizedSigner",
+        "type": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "channelId",
+        "type": "bytes32"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  }
+]

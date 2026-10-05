@@ -5,7 +5,7 @@ use crate::{
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 
-use alloy_consensus::constants::KECCAK_EMPTY;
+use alloy_consensus::{Transaction, constants::KECCAK_EMPTY};
 use alloy_evm::{Database, EvmEnv};
 use alloy_primitives::{Address, B256};
 use parking_lot::RwLock;
@@ -17,7 +17,8 @@ use reth_primitives_traits::{
 use reth_provider::BlockReaderIdExt;
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{
-    AccountReader, BytecodeReader, StateProvider, StateProviderBox, StateProviderFactory,
+    AccountReader, BytecodeReader, EvmStateProviderAdapter, StateProvider, StateProviderBox,
+    StateProviderFactory,
     errors::{ProviderError, ProviderResult},
 };
 use reth_transaction_pool::{
@@ -32,7 +33,10 @@ use std::sync::{
     Arc,
     atomic::{AtomicU8, Ordering},
 };
-use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
+use tempo_chainspec::{
+    hardfork::{TempoHardfork, TempoHardforks},
+    spec::TEMPO_T7_BASE_FEE_FLOOR,
+};
 use tempo_evm::{TempoEvmConfig, TempoPoolValidationEvm};
 use tempo_precompiles::{
     nonce::{INonce, NonceManager},
@@ -98,6 +102,8 @@ pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
     pub(crate) amm_liquidity_cache: AmmLiquidityCache,
     /// Whether to skip the FeeAMM liquidity check during pool admission.
     pub(crate) disable_fee_amm_check: bool,
+    /// Minimum fee cap accepted by this chain's pool.
+    minimum_fee_cap: u128,
     /// Addresses checked against transaction senders and direct call targets.
     address_filter: AddressFilter,
     /// Cached EVM environment from the latest tip block, updated on each `on_new_head_block`.
@@ -144,6 +150,7 @@ where
             max_tempo_authorizations,
             amm_liquidity_cache,
             disable_fee_amm_check: false,
+            minimum_fee_cap: u128::from(TEMPO_T7_BASE_FEE_FLOOR),
             address_filter: AddressFilter::default(),
             cached_evm_env: parking_lot::RwLock::new(evm_env),
             cached_state: RwLock::new((latest_header.hash(), Arc::new(StateCache::default()))),
@@ -154,6 +161,15 @@ where
     /// Configures whether to skip the FeeAMM liquidity check during pool admission.
     pub const fn with_disable_fee_amm_check(mut self, disable: bool) -> Self {
         self.disable_fee_amm_check = disable;
+        self
+    }
+
+    /// Sets the minimum fee cap for chains with a custom protocol fee policy.
+    ///
+    /// Tempo defaults to the T7 fee floor. Zero-base-fee chains such as Zones can opt into
+    /// accepting zero-fee transactions without disabling any other admission checks.
+    pub const fn with_minimum_fee_cap(mut self, minimum_fee_cap: u128) -> Self {
+        self.minimum_fee_cap = minimum_fee_cap;
         self
     }
 
@@ -349,7 +365,9 @@ where
     ) -> Vec<TransactionValidationOutcome<TempoPooledTransaction>> {
         let db = StateCacheDb::new(
             &cached_state,
-            StateProviderDatabase::new(&state_provider as &dyn StateProvider),
+            StateProviderDatabase::new(
+                (&state_provider as &dyn StateProvider).into_evm_state_provider(),
+            ),
         );
         let evm_env = self.cached_evm_env.read().clone();
 
@@ -364,25 +382,49 @@ where
             .collect()
     }
 
-    /// Returns the latest state provider and a state cache valid for the provider's tip.
+    /// Returns the current tip's state provider and matching read cache.
+    ///
+    /// Using one tip hash prevents a concurrent head update from pairing old state with a new cache.
     fn latest_state_provider_and_cache(
         &self,
     ) -> ProviderResult<(StateProviderBox, Arc<StateCache>)> {
-        let state_provider = self.inner.client().latest()?;
-        let latest_hash = self.inner.client().chain_info()?.best_hash;
-        Ok((state_provider, self.state_cache_for_tip(latest_hash)))
+        let tip = self.inner.client().chain_info()?.best_hash;
+        let tip_provider = self.inner.client().state_by_block_hash(tip);
+        self.provider_and_cache_for_tip(tip, tip_provider)
     }
 
-    /// Returns the shared cache if it matches `tip_hash`, otherwise an empty ephemeral cache.
-    ///
-    /// A mismatch can happen when `.latest()` observes state for a newer canonical tip before
-    /// `on_new_head_block` has refreshed the validator's cached state for that tip.
+    /// Returns the shared cache if its tip matches `tip_hash`, otherwise a fresh cache.
     fn state_cache_for_tip(&self, tip_hash: B256) -> Arc<StateCache> {
         let (cached_tip_hash, cached_state) = self.cached_state.read().clone();
         if cached_tip_hash == tip_hash {
             cached_state
         } else {
             Arc::new(StateCache::default())
+        }
+    }
+
+    /// Uses the tip's cache when its state provider is available.
+    ///
+    /// Falls back to `latest()` with a private cache because the fallback state's tip is unknown.
+    fn provider_and_cache_for_tip(
+        &self,
+        tip: B256,
+        tip_provider: ProviderResult<StateProviderBox>,
+    ) -> ProviderResult<(StateProviderBox, Arc<StateCache>)> {
+        match tip_provider {
+            Ok(provider) => Ok((provider, self.state_cache_for_tip(tip))),
+            Err(err) => {
+                tracing::debug!(
+                    target: "txpool",
+                    %err,
+                    %tip,
+                    "no state provider for tip, validating against latest state"
+                );
+                Ok((
+                    self.inner.client().latest()?,
+                    Arc::new(StateCache::default()),
+                ))
+            }
         }
     }
 
@@ -407,6 +449,19 @@ where
             return TransactionValidationOutcome::Invalid(
                 transaction,
                 InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
+            );
+        }
+
+        // Fees below the chain's configured floor can never become executable; fees below
+        // the current dynamic base fee can wait for block selection.
+        if transaction.max_fee_per_gas() < self.minimum_fee_cap {
+            return TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
+                    TempoInvalidTransaction::EthInvalidTransaction(
+                        InvalidTransaction::GasPriceLessThanBasefee,
+                    ),
+                )),
             );
         }
 
@@ -804,10 +859,13 @@ pub trait ConfigureTempoPoolEvm:
 {
     fn pool_evm<'a>(
         &self,
-        db: StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>,
+        db: StateCacheDb<'a, StateProviderDatabase<EvmStateProviderAdapter<&'a dyn StateProvider>>>,
         evm_env: EvmEnvFor<Self>,
     ) -> impl TempoPoolValidationEvm<
-        DB = StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>,
+        DB = StateCacheDb<
+            'a,
+            StateProviderDatabase<EvmStateProviderAdapter<&'a dyn StateProvider>>,
+        >,
     > + 'a;
 }
 
@@ -819,15 +877,20 @@ where
                 EvmFactory: EvmFactory<Spec = TempoHardfork, BlockEnv = TempoBlockEnv>,
             >,
         > + 'static,
-    for<'a> EvmFor<T, StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>>:
-        TempoPoolValidationEvm,
+    for<'a> EvmFor<
+        T,
+        StateCacheDb<'a, StateProviderDatabase<EvmStateProviderAdapter<&'a dyn StateProvider>>>,
+    >: TempoPoolValidationEvm,
 {
     fn pool_evm<'a>(
         &self,
-        db: StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>,
+        db: StateCacheDb<'a, StateProviderDatabase<EvmStateProviderAdapter<&'a dyn StateProvider>>>,
         evm_env: EvmEnvFor<Self>,
     ) -> impl TempoPoolValidationEvm<
-        DB = StateCacheDb<'a, StateProviderDatabase<&'a dyn StateProvider>>,
+        DB = StateCacheDb<
+            'a,
+            StateProviderDatabase<EvmStateProviderAdapter<&'a dyn StateProvider>>,
+        >,
     > + 'a {
         let mut evm = self.evm_with_env(db, evm_env);
         evm.configure_for_pool();
@@ -857,7 +920,7 @@ mod tests {
     };
     use tempo_chainspec::{
         TempoChainSpec,
-        spec::{MODERATO, TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE, TEMPO_T1_TX_GAS_LIMIT_CAP},
+        spec::{MODERATO, TEMPO_T0_BASE_FEE, TEMPO_T1_TX_GAS_LIMIT_CAP},
     };
     use tempo_precompiles::{
         PATH_USD_ADDRESS,
@@ -986,8 +1049,7 @@ mod tests {
         valid_after: Option<u64>,
         valid_before: Option<u64>,
     ) -> TempoPooledTransaction {
-        let mut builder = TxBuilder::aa(Address::random())
-            .fee_token(address!("0000000000000000000000000000000000000002"));
+        let mut builder = TxBuilder::aa(Address::random()).fee_token(Address::with_last_byte(2));
         if let Some(va) = valid_after {
             builder = builder.valid_after(va);
         }
@@ -1069,6 +1131,45 @@ mod tests {
     }
 
     #[test]
+    fn nonce_bound_check_only_exempts_expiring_nonces() {
+        for nonce in [0, 1, u64::MAX - 1, u64::MAX] {
+            let sender = Address::random();
+            for tx in [
+                TxBuilder::eip1559(sender).nonce(nonce).build_eip1559(),
+                TxBuilder::aa(sender).nonce(nonce).build(),
+                TxBuilder::aa(sender)
+                    .nonce_key(U256::ONE)
+                    .nonce(nonce)
+                    .build(),
+                TxBuilder::aa(sender)
+                    .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
+                    .nonce(nonce)
+                    .valid_before(TEST_VALIDITY_WINDOW)
+                    .build(),
+            ] {
+                assert_eq!(
+                    tx.nonce(),
+                    nonce,
+                    "test transaction must preserve its nonce"
+                );
+                let validator = setup_validator(&tx, 1);
+                let result = validator
+                    .inner
+                    .validate_stateless(TransactionOrigin::External, &tx);
+                if nonce == u64::MAX && !tx.is_expiring_nonce() {
+                    assert!(
+                        matches!(result, Err(InvalidPoolTransactionError::Eip2681)),
+                        "expected EIP-2681 rejection for nonce key {:?}, got {result:?}",
+                        tx.nonce_key(),
+                    );
+                } else {
+                    assert!(result.is_ok(), "unexpected stateless rejection: {result:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn state_cache_for_tip_reuses_only_matching_tip_cache() {
         let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
         let validator = setup_validator(&tx, 1);
@@ -1123,6 +1224,19 @@ mod tests {
     }
 
     #[test]
+    fn latest_state_provider_uses_shared_cache_for_current_tip() {
+        let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
+        let validator = setup_validator(&tx, 1);
+        let latest_hash = validator.client().chain_info().unwrap().best_hash;
+        let shared_cache = Arc::new(StateCache::default());
+        *validator.cached_state.write() = (latest_hash, shared_cache.clone());
+
+        let (_, validation_cache) = validator.latest_state_provider_and_cache().unwrap();
+
+        assert!(Arc::ptr_eq(&validation_cache, &shared_cache));
+    }
+
+    #[test]
     fn latest_state_provider_uses_ephemeral_cache_when_tip_hash_mismatches_latest() {
         let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
         let validator = setup_validator(&tx, 1);
@@ -1138,6 +1252,45 @@ mod tests {
         let (_, validation_cache) = validator.latest_state_provider_and_cache().unwrap();
 
         assert!(!Arc::ptr_eq(&validation_cache, &shared_cache));
+    }
+
+    /// A head update between provider and cache lookup must keep old state out of the new cache.
+    #[test]
+    fn provider_for_old_tip_never_uses_cache_retagged_to_new_tip() {
+        let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
+        let validator = setup_validator(&tx, 1);
+        let tip_x = validator.client().chain_info().unwrap().best_hash;
+        let tip_y = B256::repeat_byte(0x59);
+        assert_ne!(tip_x, tip_y);
+
+        let provider_x = validator.client().state_by_block_hash(tip_x);
+
+        let cache_y = Arc::new(StateCache::default());
+        *validator.cached_state.write() = (tip_y, cache_y.clone());
+
+        let (_, validation_cache) = validator
+            .provider_and_cache_for_tip(tip_x, provider_x)
+            .unwrap();
+
+        assert!(!Arc::ptr_eq(&validation_cache, &cache_y));
+        assert!(Arc::ptr_eq(&validator.cached_state.read().1, &cache_y));
+    }
+
+    #[test]
+    fn missing_tip_provider_falls_back_to_latest_with_ephemeral_cache() {
+        let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
+        let validator = setup_validator(&tx, 1);
+        let tip = validator.client().chain_info().unwrap().best_hash;
+        let shared_cache = Arc::new(StateCache::default());
+        *validator.cached_state.write() = (tip, shared_cache.clone());
+
+        // Fallback state must not use the shared cache, even when its tag matches `tip`.
+        let (provider, validation_cache) = validator
+            .provider_and_cache_for_tip(tip, Err(ProviderError::StateForHashNotFound(tip)))
+            .unwrap();
+
+        assert!(!Arc::ptr_eq(&validation_cache, &shared_cache));
+        provider.basic_account(&Address::ZERO).unwrap();
     }
 
     #[tokio::test]
@@ -1158,7 +1311,7 @@ mod tests {
         let authority_signer = PrivateKeySigner::random();
         let expected_authority = authority_signer.address();
         let authorization = Authorization {
-            chain_id: U256::from(1),
+            chain_id: U256::ONE,
             nonce: 0,
             address: Address::random(),
         };
@@ -1197,7 +1350,7 @@ mod tests {
     #[tokio::test]
     async fn test_some_balance() {
         let transaction = TxBuilder::eip1559(Address::random())
-            .value(U256::from(1))
+            .value(U256::ONE)
             .build_eip1559();
         let validator = setup_validator(&transaction, 0);
 
@@ -1479,7 +1632,7 @@ mod tests {
     /// This is the fix for the audit finding about mempool DoS via gas calculation mismatch.
     #[tokio::test]
     async fn test_aa_intrinsic_gas_validation() {
-        use alloy_primitives::{Signature, TxKind, address};
+        use alloy_primitives::{Signature, TxKind};
         use tempo_primitives::transaction::{
             TempoTransaction,
             tempo_transaction::Call,
@@ -1496,7 +1649,7 @@ mod tests {
         let create_aa_tx = |gas_limit: u64| {
             let calls: Vec<Call> = (0..10)
                 .map(|i| Call {
-                    to: TxKind::Call(Address::from([i as u8; 20])),
+                    to: TxKind::Call(Address::repeat_byte(i as u8)),
                     value: U256::ZERO,
                     input: alloy_primitives::Bytes::from(vec![0x00; 100]),
                 })
@@ -1510,7 +1663,7 @@ mod tests {
                 calls,
                 nonce_key: U256::ZERO,
                 nonce: 0,
-                fee_token: Some(address!("0000000000000000000000000000000000000002")),
+                fee_token: Some(Address::with_last_byte(2)),
                 ..Default::default()
             };
 
@@ -1599,7 +1752,7 @@ mod tests {
             } else {
                 (0..10)
                     .map(|i| TxCall {
-                        to: TxKind::Call(Address::from([i as u8; 20])),
+                        to: TxKind::Call(Address::repeat_byte(i as u8)),
                         value: U256::ZERO,
                         input: alloy_primitives::Bytes::from(vec![0x00; 100]),
                     })
@@ -1621,7 +1774,7 @@ mod tests {
                 nonce_key,
                 nonce: 0,
                 valid_before,
-                fee_token: Some(address!("0000000000000000000000000000000000000002")),
+                fee_token: Some(Address::with_last_byte(2)),
                 ..Default::default()
             };
 
@@ -1730,7 +1883,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_expiring_nonce_intrinsic_gas_uses_lower_cost() {
-        use alloy_primitives::{Signature, TxKind, address};
+        use alloy_primitives::{Signature, TxKind};
         use tempo_primitives::transaction::{
             TempoTransaction,
             tempo_transaction::Call,
@@ -1746,7 +1899,7 @@ mod tests {
         // Helper to create expiring nonce AA tx with given gas limit
         let create_expiring_nonce_tx = |gas_limit: u64| {
             let calls: Vec<Call> = vec![Call {
-                to: TxKind::Call(Address::from([1u8; 20])),
+                to: TxKind::Call(Address::repeat_byte(1u8)),
                 value: U256::ZERO,
                 input: alloy_primitives::Bytes::from(vec![0xd0, 0x9d, 0xe0, 0x8a]), // increment()
             }];
@@ -1760,7 +1913,7 @@ mod tests {
                 nonce_key: TEMPO_EXPIRING_NONCE_KEY, // Expiring nonce
                 nonce: 0,
                 valid_before: Some(core::num::NonZeroU64::new(current_time + 25).unwrap()), // Valid for 25 seconds
-                fee_token: Some(address!("0000000000000000000000000000000000000002")),
+                fee_token: Some(Address::with_last_byte(2)),
                 ..Default::default()
             };
 
@@ -1809,7 +1962,7 @@ mod tests {
     /// pass pool validation but fail at execution time.
     #[tokio::test]
     async fn test_existing_2d_nonce_key_intrinsic_gas() {
-        use alloy_primitives::{Signature, TxKind, address};
+        use alloy_primitives::{Signature, TxKind};
         use tempo_primitives::transaction::{
             TempoTransaction,
             tempo_transaction::Call,
@@ -1825,7 +1978,7 @@ mod tests {
         // Helper to create AA tx with a specific nonce_key and nonce
         let create_aa_tx = |gas_limit: u64, nonce_key: U256, nonce: u64| {
             let calls: Vec<Call> = vec![Call {
-                to: TxKind::Call(Address::from([1u8; 20])),
+                to: TxKind::Call(Address::repeat_byte(1u8)),
                 value: U256::ZERO,
                 input: alloy_primitives::Bytes::from(vec![0xd0, 0x9d, 0xe0, 0x8a]), // increment()
             }];
@@ -1838,7 +1991,7 @@ mod tests {
                 calls,
                 nonce_key,
                 nonce,
-                fee_token: Some(address!("0000000000000000000000000000000000000002")),
+                fee_token: Some(Address::with_last_byte(2)),
                 ..Default::default()
             };
 
@@ -1879,7 +2032,7 @@ mod tests {
 
         // Test 2: 2D nonce (nonce_key != 0) with nonce > 0, same 50k gas.
         // This triggers the EXISTING_NONCE_KEY_GAS branch (+5k), but 50k is still enough.
-        let tx_2d_ok = create_aa_tx(50_000, U256::from(1), 5);
+        let tx_2d_ok = create_aa_tx(50_000, U256::ONE, 5);
         let validator = setup_validator(&tx_2d_ok, current_time);
         let outcome = validator
             .validate_transaction(TransactionOrigin::External, tx_2d_ok)
@@ -1906,7 +2059,7 @@ mod tests {
         // Test 3: 2D nonce (nonce_key != 0), nonce > 0, with gas that is sufficient for
         // base intrinsic gas but NOT sufficient when EXISTING_NONCE_KEY_GAS (5k) is added.
         // Use 22_000 gas: enough for base ~21k + calldata but not when +5k is charged.
-        let tx_2d_low = create_aa_tx(22_000, U256::from(1), 5);
+        let tx_2d_low = create_aa_tx(22_000, U256::ONE, 5);
         let validator = setup_validator(&tx_2d_low, current_time);
         let outcome = validator
             .validate_transaction(TransactionOrigin::External, tx_2d_low)
@@ -1965,7 +2118,7 @@ mod tests {
     #[tokio::test]
     async fn test_non_zero_value_in_eip1559_rejected() {
         let transaction = TxBuilder::eip1559(Address::random())
-            .value(U256::from(1))
+            .value(U256::ONE)
             .build_eip1559();
 
         let current_time = std::time::SystemTime::now()
@@ -2075,148 +2228,96 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_fee_cap_below_min_base_fee_rejected() {
+    async fn test_fee_cap_below_floor_rejected() {
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-
-        // T0 base fee is 10 gwei (10_000_000_000 wei)
-        // Create a transaction with max_fee_per_gas below this
-        let transaction = TxBuilder::aa(Address::random())
-            .max_fee(1_000_000_000) // 1 gwei, below T0's 10 gwei
-            .max_priority_fee(1_000_000_000)
-            .build();
-
-        let validator = setup_validator(&transaction, current_time);
-
-        let outcome = validator
-            .validate_transaction(TransactionOrigin::External, transaction)
-            .await;
-
-        match outcome {
-            TransactionValidationOutcome::Invalid(_, ref err) => {
-                assert!(
-                    matches!(
-                        err.downcast_other_ref::<TempoPoolTransactionError>(),
-                        Some(TempoPoolTransactionError::Evm(
-                            TempoInvalidTransaction::EthInvalidTransaction(
-                                InvalidTransaction::GasPriceLessThanBasefee
-                            )
-                        ))
-                    ),
-                    "Expected Evm error, got: {err:?}"
-                );
-            }
-            _ => panic!("Expected Invalid outcome with Evm error, got: {outcome:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_fee_cap_at_min_base_fee_passes() {
-        let current_time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-
-        // Create a transaction with max_fee_per_gas exactly at the fixed T1+ minimum.
-        let transaction = TxBuilder::aa(Address::random())
-            .max_fee(u128::from(TEMPO_T1_BASE_FEE))
-            .max_priority_fee(1_000_000_000)
-            .build();
-
-        let validator = setup_validator(&transaction, current_time);
-
-        let outcome = validator
-            .validate_transaction(TransactionOrigin::External, transaction)
-            .await;
-
-        // Should not fail with FeeCapBelowMinBaseFee
-        if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
+        for transaction in [
+            TxBuilder::aa(Address::random())
+                .max_fee(u128::from(TEMPO_T7_BASE_FEE_FLOOR - 1))
+                .max_priority_fee(0)
+                .build(),
+            TxBuilder::eip1559(Address::random())
+                .max_fee(u128::from(TEMPO_T7_BASE_FEE_FLOOR - 1))
+                .max_priority_fee(0)
+                .build_eip1559(),
+        ] {
+            let validator = setup_validator(&transaction, current_time);
+            let outcome = validator
+                .validate_transaction(TransactionOrigin::External, transaction)
+                .await;
             assert!(
-                !matches!(
-                    err.downcast_other_ref::<TempoPoolTransactionError>(),
-                    Some(TempoPoolTransactionError::Evm(
-                        TempoInvalidTransaction::EthInvalidTransaction(
-                            InvalidTransaction::GasPriceLessThanBasefee
-                        )
-                    ))
+                matches!(
+                    outcome,
+                    TransactionValidationOutcome::Invalid(_, ref err)
+                        if matches!(err.downcast_other_ref::<TempoPoolTransactionError>(),
+                            Some(TempoPoolTransactionError::Evm(
+                                TempoInvalidTransaction::EthInvalidTransaction(
+                                    InvalidTransaction::GasPriceLessThanBasefee
+                                )
+                            )))
                 ),
-                "Should not fail with FeeCapBelowMinBaseFee when fee cap equals min base fee"
+                "expected floor rejection, got {outcome:?}"
             );
         }
     }
 
     #[tokio::test]
-    async fn test_fee_cap_above_min_base_fee_passes() {
+    async fn test_zero_fee_cap_with_custom_floor() {
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-
-        // T0 base fee is 10 gwei (10_000_000_000 wei)
-        // Create a transaction with max_fee_per_gas above minimum
-        let transaction = TxBuilder::aa(Address::random())
-            .max_fee(20_000_000_000) // 20 gwei, above T0's 10 gwei
-            .max_priority_fee(1_000_000_000)
-            .build();
-
-        let validator = setup_validator(&transaction, current_time);
-
-        let outcome = validator
-            .validate_transaction(TransactionOrigin::External, transaction)
-            .await;
-
-        // Should not fail with FeeCapBelowMinBaseFee
-        if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
+        for transaction in [
+            TxBuilder::aa(Address::random())
+                .max_fee(0)
+                .max_priority_fee(0)
+                .build(),
+            TxBuilder::eip1559(Address::random())
+                .max_fee(0)
+                .max_priority_fee(0)
+                .build_eip1559(),
+        ] {
+            let validator = setup_validator(&transaction, current_time).with_minimum_fee_cap(0);
+            let outcome = validator
+                .validate_transaction(TransactionOrigin::External, transaction)
+                .await;
             assert!(
-                !matches!(
-                    err.downcast_other_ref::<TempoPoolTransactionError>(),
-                    Some(TempoPoolTransactionError::Evm(
-                        TempoInvalidTransaction::EthInvalidTransaction(
-                            InvalidTransaction::GasPriceLessThanBasefee
-                        )
-                    ))
-                ),
-                "Should not fail with FeeCapBelowMinBaseFee when fee cap is above min base fee"
+                matches!(outcome, TransactionValidationOutcome::Valid { .. }),
+                "zero fee cap should be admitted with a zero floor: {outcome:?}"
             );
         }
     }
 
     #[tokio::test]
-    async fn test_eip1559_fee_cap_below_min_base_fee_rejected() {
+    async fn test_fee_cap_at_floor_below_tip_base_fee_passes() {
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-
-        // T0 base fee is 10 gwei, create EIP-1559 tx with lower fee
-        let transaction = TxBuilder::eip1559(Address::random())
-            .max_fee(1_000_000_000) // 1 gwei, below T0's 10 gwei
-            .max_priority_fee(1_000_000_000)
-            .build_eip1559();
-
-        let validator = setup_validator(&transaction, current_time);
-
-        let outcome = validator
-            .validate_transaction(TransactionOrigin::External, transaction)
-            .await;
-
-        match outcome {
-            TransactionValidationOutcome::Invalid(_, ref err) => {
+        for fee in [TEMPO_T7_BASE_FEE_FLOOR, TEMPO_T7_BASE_FEE_FLOOR + 1] {
+            for transaction in [
+                TxBuilder::aa(Address::random())
+                    .max_fee(u128::from(fee))
+                    .max_priority_fee(0)
+                    .build(),
+                TxBuilder::eip1559(Address::random())
+                    .max_fee(u128::from(fee))
+                    .max_priority_fee(0)
+                    .build_eip1559(),
+            ] {
+                let validator = setup_validator(&transaction, current_time);
+                assert!(validator.active_hardfork().is_t7());
+                assert!(validator.cached_evm_env.read().block_env.inner.basefee > fee);
+                let outcome = validator
+                    .validate_transaction(TransactionOrigin::External, transaction)
+                    .await;
                 assert!(
-                    matches!(
-                        err.downcast_other_ref::<TempoPoolTransactionError>(),
-                        Some(TempoPoolTransactionError::Evm(
-                            TempoInvalidTransaction::EthInvalidTransaction(
-                                InvalidTransaction::GasPriceLessThanBasefee
-                            )
-                        ))
-                    ),
-                    "Expected Evm error for EIP-1559 tx, got: {err:?}"
+                    matches!(outcome, TransactionValidationOutcome::Valid { .. }),
+                    "fee cap {fee} should be admitted below the tip base fee: {outcome:?}"
                 );
             }
-            _ => panic!("Expected Invalid outcome with Evm error, got: {outcome:?}"),
         }
     }
 
@@ -2278,7 +2379,7 @@ mod tests {
         authorization_count: usize,
     ) -> TempoPooledTransaction {
         use alloy_eips::eip7702::Authorization;
-        use alloy_primitives::{Signature, TxKind, address};
+        use alloy_primitives::{Signature, TxKind};
         use tempo_primitives::transaction::{
             TempoSignedAuthorization, TempoTransaction,
             tempo_transaction::Call,
@@ -2290,9 +2391,9 @@ mod tests {
         let authorizations: Vec<TempoSignedAuthorization> = (0..authorization_count)
             .map(|i| {
                 let auth = Authorization {
-                    chain_id: U256::from(1),
+                    chain_id: U256::ONE,
                     nonce: i as u64,
-                    address: address!("0000000000000000000000000000000000000001"),
+                    address: Address::with_last_byte(1),
                 };
                 TempoSignedAuthorization::new_unchecked(
                     auth,
@@ -2309,13 +2410,13 @@ mod tests {
             max_fee_per_gas: 20_000_000_000, // 20 gwei, above T1's minimum
             gas_limit: 1_000_000,
             calls: vec![Call {
-                to: TxKind::Call(address!("0000000000000000000000000000000000000001")),
+                to: TxKind::Call(Address::with_last_byte(1)),
                 value: U256::ZERO,
                 input: alloy_primitives::Bytes::new(),
             }],
             nonce_key: U256::ZERO,
             nonce: 0,
-            fee_token: Some(address!("0000000000000000000000000000000000000002")),
+            fee_token: Some(Address::with_last_byte(2)),
             fee_payer_signature: None,
             valid_after: None,
             valid_before: None,
@@ -2397,7 +2498,7 @@ mod tests {
 
         // Create an AA transaction with no calls
         let transaction = TxBuilder::aa(Address::random())
-            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .fee_token(Address::with_last_byte(2))
             .calls(vec![]) // Empty calls
             .build();
         let validator = setup_validator(&transaction, current_time);
@@ -2445,7 +2546,7 @@ mod tests {
         ];
 
         let transaction = TxBuilder::aa(Address::random())
-            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .fee_token(Address::with_last_byte(2))
             .calls(calls)
             .build();
         let validator = setup_validator(&transaction, current_time);
@@ -2493,7 +2594,7 @@ mod tests {
         ];
 
         let transaction = TxBuilder::aa(Address::random())
-            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .fee_token(Address::with_last_byte(2))
             .calls(calls)
             .build();
         let validator = setup_validator(&transaction, current_time);
@@ -2544,7 +2645,7 @@ mod tests {
         ];
 
         let transaction = TxBuilder::aa(Address::random())
-            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .fee_token(Address::with_last_byte(2))
             .calls(calls)
             .gas_limit(TEMPO_T1_TX_GAS_LIMIT_CAP)
             .build();
@@ -2594,9 +2695,9 @@ mod tests {
 
         // Create a single authorization entry
         let auth = Authorization {
-            chain_id: U256::from(1),
+            chain_id: U256::ONE,
             nonce: 0,
-            address: address!("0000000000000000000000000000000000000001"),
+            address: Address::with_last_byte(1),
         };
         let authorization = TempoSignedAuthorization::new_unchecked(
             auth,
@@ -2604,7 +2705,7 @@ mod tests {
         );
 
         let transaction = TxBuilder::aa(Address::random())
-            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .fee_token(Address::with_last_byte(2))
             .calls(calls)
             .authorization_list(vec![authorization])
             .gas_limit(TEMPO_T1_TX_GAS_LIMIT_CAP)
@@ -2646,7 +2747,7 @@ mod tests {
             fee_token,
             ExtendedAccount::new(0, U256::ZERO).extend_storage([
                 (tip20_slots::CURRENCY.into(), usd_currency_value),
-                (tip20_slots::PAUSED.into(), U256::from(1)),
+                (tip20_slots::PAUSED.into(), U256::ONE),
             ]),
         );
 
@@ -2777,7 +2878,7 @@ mod tests {
             paused_validator_token,
             ExtendedAccount::new(0, U256::ZERO).extend_storage([
                 (tip20_slots::CURRENCY.into(), usd_currency_value),
-                (tip20_slots::PAUSED.into(), U256::from(1)),
+                (tip20_slots::PAUSED.into(), U256::ONE),
             ]),
         );
 
@@ -2830,7 +2931,7 @@ mod tests {
             .collect();
 
         let transaction = TxBuilder::aa(Address::random())
-            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .fee_token(Address::with_last_byte(2))
             .gas_limit(TEMPO_T1_TX_GAS_LIMIT_CAP)
             .calls(calls)
             .build();
@@ -2867,7 +2968,7 @@ mod tests {
             .collect();
 
         let transaction = TxBuilder::aa(Address::random())
-            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .fee_token(Address::with_last_byte(2))
             .gas_limit(TEMPO_T1_TX_GAS_LIMIT_CAP)
             .calls(calls)
             .build();
@@ -2905,7 +3006,7 @@ mod tests {
         }];
 
         let transaction = TxBuilder::aa(Address::random())
-            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .fee_token(Address::with_last_byte(2))
             .gas_limit(TEMPO_T1_TX_GAS_LIMIT_CAP)
             .calls(calls)
             .build();
@@ -2940,7 +3041,7 @@ mod tests {
         }];
 
         let transaction = TxBuilder::aa(Address::random())
-            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .fee_token(Address::with_last_byte(2))
             .gas_limit(TEMPO_T1_TX_GAS_LIMIT_CAP)
             .calls(calls)
             .build();
@@ -2983,7 +3084,7 @@ mod tests {
             .collect();
 
         let transaction = TxBuilder::aa(Address::random())
-            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .fee_token(Address::with_last_byte(2))
             .gas_limit(TEMPO_T1_TX_GAS_LIMIT_CAP)
             .access_list(AccessList(items))
             .build();
@@ -3021,7 +3122,7 @@ mod tests {
             .collect();
 
         let transaction = TxBuilder::aa(Address::random())
-            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .fee_token(Address::with_last_byte(2))
             .gas_limit(TEMPO_T1_TX_GAS_LIMIT_CAP)
             .access_list(AccessList(items))
             .build();
@@ -3064,7 +3165,7 @@ mod tests {
         }];
 
         let transaction = TxBuilder::aa(Address::random())
-            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .fee_token(Address::with_last_byte(2))
             .gas_limit(TEMPO_T1_TX_GAS_LIMIT_CAP)
             .access_list(AccessList(items))
             .build();
@@ -3102,7 +3203,7 @@ mod tests {
         }];
 
         let transaction = TxBuilder::aa(Address::random())
-            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .fee_token(Address::with_last_byte(2))
             .gas_limit(TEMPO_T1_TX_GAS_LIMIT_CAP)
             .access_list(AccessList(items))
             .build();
@@ -3151,7 +3252,7 @@ mod tests {
         );
 
         let transaction = TxBuilder::aa(Address::random())
-            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .fee_token(Address::with_last_byte(2))
             .gas_limit(TEMPO_T1_TX_GAS_LIMIT_CAP)
             .access_list(AccessList(items))
             .build();
@@ -3199,7 +3300,7 @@ mod tests {
         );
 
         let transaction = TxBuilder::aa(Address::random())
-            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .fee_token(Address::with_last_byte(2))
             .gas_limit(TEMPO_T1_TX_GAS_LIMIT_CAP)
             .access_list(AccessList(items))
             .build();
@@ -3223,5 +3324,98 @@ mod tests {
                 "Expected Invalid outcome with TooManyTotalStorageKeys error, got: {outcome:?}"
             ),
         }
+    }
+
+    #[tokio::test]
+    async fn rejected_inline_key_authorization_does_not_poison_next_root_aa_transaction() {
+        use alloy_signer::SignerSync;
+        use alloy_signer_local::PrivateKeySigner;
+        use tempo_primitives::transaction::{KeyAuthorization, SignatureType};
+
+        const TIP_TIMESTAMP: u64 = 1_788_393_600;
+
+        let root = PrivateKeySigner::from_bytes(&B256::with_last_byte(1)).unwrap();
+        let access_key = PrivateKeySigner::from_bytes(&B256::with_last_byte(2)).unwrap();
+        let chain_id = MODERATO.chain_id();
+
+        let authorization = KeyAuthorization::unrestricted(
+            chain_id,
+            SignatureType::Secp256k1,
+            access_key.address(),
+        )
+        .with_expiry(TIP_TIMESTAMP);
+        let authorization_signature = root
+            .sign_hash_sync(&authorization.signature_hash())
+            .unwrap();
+        let signed_authorization =
+            authorization.into_signed(PrimitiveSignature::Secp256k1(authorization_signature));
+
+        let build_root_aa = |target: Address, key_authorization| {
+            let tx = TempoTransaction {
+                chain_id,
+                max_priority_fee_per_gas: 1_000_000_000,
+                max_fee_per_gas: 20_000_000_000,
+                gas_limit: 1_000_000,
+                calls: vec![Call {
+                    to: TxKind::Call(target),
+                    value: U256::ZERO,
+                    input: Bytes::new(),
+                }],
+                nonce_key: U256::ZERO,
+                nonce: 0,
+                fee_token: Some(PATH_USD_ADDRESS),
+                key_authorization,
+                ..Default::default()
+            };
+            let unsigned = AASigned::new_unhashed(
+                tx.clone(),
+                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                    Signature::test_signature(),
+                )),
+            );
+            let signature = root.sign_hash_sync(&unsigned.signature_hash()).unwrap();
+            let signed = AASigned::new_unhashed(
+                tx,
+                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
+            );
+            TempoPooledTransaction::new(TempoTxEnvelope::from(signed).try_into_recovered().unwrap())
+        };
+
+        let rejected = build_root_aa(Address::repeat_byte(0x44), Some(signed_authorization));
+        let valid = build_root_aa(Address::repeat_byte(0x55), None);
+        assert!(rejected.is_aa());
+        assert!(valid.is_aa());
+        assert_eq!(rejected.sender(), root.address());
+        assert_eq!(valid.sender(), root.address());
+
+        let validator = setup_validator(&rejected, TIP_TIMESTAMP);
+        let outcomes = validator
+            .validate_transactions([
+                (TransactionOrigin::External, rejected),
+                (TransactionOrigin::External, valid),
+            ])
+            .await;
+
+        let TransactionValidationOutcome::Invalid(_, error) = &outcomes[0] else {
+            panic!(
+                "the expired inline authorization must be rejected: {:?}",
+                outcomes[0]
+            );
+        };
+        let Some(TempoPoolTransactionError::Evm(
+            TempoInvalidTransaction::KeychainPrecompileError { reason },
+        )) = error.downcast_other_ref::<TempoPoolTransactionError>()
+        else {
+            panic!("unexpected rejection for the expired inline authorization: {error:?}");
+        };
+        assert!(
+            reason.contains("ExpiryInPast"),
+            "unexpected keychain error: {reason}"
+        );
+        assert!(
+            matches!(&outcomes[1], TransactionValidationOutcome::Valid { .. }),
+            "the valid root-signed AA transaction was rejected after the invalid transaction: {:?}",
+            outcomes[1]
+        );
     }
 }

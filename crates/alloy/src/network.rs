@@ -169,7 +169,7 @@ impl NetworkTransactionBuilder<TempoNetwork> for TempoTransactionRequest {
     }
 
     fn can_build(&self) -> bool {
-        NetworkTransactionBuilder::<Ethereum>::can_build(&self.inner) || self.can_build_aa()
+        self.output_tx_type_checked().is_some()
     }
 
     fn output_tx_type(&self) -> TempoTxType {
@@ -372,8 +372,8 @@ mod tests {
                 nonce: Some(57),
                 gas: Some(123456),
                 access_list: Some(AccessList(vec![AccessListItem {
-                    address: Address::from([3u8; 20]),
-                    storage_keys: vec![B256::from([4u8; 32])],
+                    address: Address::repeat_byte(3u8),
+                    storage_keys: vec![B256::repeat_byte(4u8)],
                 }])),
                 ..Default::default()
             },
@@ -386,8 +386,8 @@ mod tests {
             gas_limit: 123456,
             chain_id: 1,
             access_list: AccessList(vec![AccessListItem {
-                address: Address::from([3u8; 20]),
-                storage_keys: vec![B256::from([4u8; 32])],
+                address: Address::repeat_byte(3u8),
+                storage_keys: vec![B256::repeat_byte(4u8)],
             }]),
             ..Default::default()
         });
@@ -468,6 +468,35 @@ mod tests {
             .to_string();
 
         assert_eq!(actual_error, expected_error);
+    }
+
+    #[test]
+    fn can_build_respects_aa_fields() {
+        let mut request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                to: Some(TxKind::Call(Address::ZERO)),
+                gas_price: Some(1),
+                nonce: Some(0),
+                gas: Some(21_000),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(request.can_build());
+        assert!(request.clone().build_unsigned().is_ok());
+
+        request.nonce_key = Some(U256::ONE);
+        assert_eq!(request.output_tx_type(), TempoTxType::AA);
+        assert!(!request.can_build());
+        assert!(request.clone().build_unsigned().is_err());
+
+        request.inner.max_fee_per_gas = Some(1);
+        request.inner.max_priority_fee_per_gas = Some(0);
+        assert!(request.can_build());
+        assert!(matches!(
+            request.build_unsigned(),
+            Ok(TempoTypedTransaction::AA(_))
+        ));
     }
 
     #[test]

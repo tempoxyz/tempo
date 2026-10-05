@@ -288,7 +288,10 @@ impl StorageCtx {
     }
 
     /// Deducts gas from the remaining gas and returns an error if insufficient.
-    pub fn deduct_gas(&mut self, gas: u64) -> Result<()> {
+    ///
+    /// Gas accounting is allowed during static execution and does not grant state-write access,
+    /// so callers only need a shared storage context.
+    pub fn deduct_gas(&self, gas: u64) -> Result<()> {
         Self::try_with_storage(|s| s.deduct_gas(gas))
     }
 
@@ -612,7 +615,7 @@ mod tests {
     fn test_checkpoint_commit_and_revert() {
         let mut storage = t1c_storage();
         let addr = Address::ZERO;
-        let key = U256::from(1);
+        let key = U256::ONE;
 
         StorageCtx::enter(&mut storage, || {
             let mut ctx = StorageCtx;
@@ -627,7 +630,7 @@ mod tests {
             // drop reverts state
             {
                 let _guard = ctx.checkpoint();
-                ctx.sstore(addr, key, U256::from(1)).unwrap();
+                ctx.sstore(addr, key, U256::ONE).unwrap();
             }
             assert_eq!(ctx.sload(addr, key).unwrap(), U256::from(99));
         });
@@ -637,7 +640,7 @@ mod tests {
     fn test_nested_checkpoints_lifo() {
         let mut storage = t1c_storage();
         let addr = Address::ZERO;
-        let key = U256::from(1);
+        let key = U256::ONE;
 
         StorageCtx::enter(&mut storage, || {
             let mut ctx = StorageCtx;
@@ -684,7 +687,7 @@ mod tests {
     fn test_checkpoint_noop_pre_t1c() {
         let mut storage = HashMapStorageProvider::new(1); // default = T0
         let addr = Address::ZERO;
-        let key = U256::from(1);
+        let key = U256::ONE;
 
         StorageCtx::enter(&mut storage, || {
             let mut ctx = StorageCtx;
