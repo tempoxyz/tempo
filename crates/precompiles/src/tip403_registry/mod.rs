@@ -158,8 +158,8 @@ impl PolicyData {
     fn policy_type(&self) -> Result<PolicyType> {
         let is_t2 = StorageCtx.spec().is_t2();
 
-        match PolicyType::try_from(self.policy_type) {
-            Ok(ty) if is_t2 || !ty.is_compound() => Ok(ty),
+        match self.policy_type.try_into() {
+            Ok(ty) if is_t2 || ty != PolicyType::COMPOUND => Ok(ty),
             _ => Err(if is_t2 {
                 TIP403RegistryError::invalid_policy_type().into()
             } else {
