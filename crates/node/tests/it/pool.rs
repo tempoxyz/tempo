@@ -15,7 +15,6 @@ use reth_primitives_traits::transaction::{TxHashRef, error::InvalidTransactionEr
 use reth_transaction_pool::{
     TransactionOrigin,
     error::{InvalidPoolTransactionError, PoolError, PoolErrorKind},
-    pool::AddedTransactionState,
 };
 use std::num::NonZeroU64;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
@@ -49,7 +48,7 @@ async fn submit_pending_tx() -> eyre::Result<()> {
         .add_consensus_transaction(tx, TransactionOrigin::Local)
         .await
         .unwrap();
-    assert!(matches!(res.state, AddedTransactionState::Pending));
+    assert!(res.state.is_pending());
     let pooled_tx = node.pool.get_transactions_by_sender(signer);
     assert_eq!(pooled_tx.len(), 1);
 
@@ -166,7 +165,7 @@ async fn test_evict_expired_aa_tx() -> eyre::Result<()> {
         .pool
         .get_transactions_by_sender(signer_addr);
 
-    assert!(matches!(res.state, AddedTransactionState::Pending),);
+    assert!(res.state.is_pending(),);
     assert_eq!(pooled_txs.len(), 1);
     assert_eq!(*pooled_txs[0].hash(), tx_hash,);
 
@@ -322,7 +321,7 @@ async fn test_evict_tx_on_validator_token_change() -> eyre::Result<()> {
     let res = pool
         .add_consensus_transaction(recovered, TransactionOrigin::Local)
         .await?;
-    assert!(matches!(res.state, AddedTransactionState::Pending));
+    assert!(res.state.is_pending());
 
     // Verify transaction is in the pool
     let pooled_txs = pool.get_transactions_by_sender(user_addr);

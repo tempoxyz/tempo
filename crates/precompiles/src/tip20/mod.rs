@@ -1339,7 +1339,7 @@ impl TIP20Token {
             self.decrement_balance(from, amount)?;
         }
 
-        if to.target != Address::ZERO {
+        if !to.target.is_zero() {
             self.increment_balance(to.target, amount)?;
         }
 
@@ -1447,7 +1447,7 @@ impl TIP20Token {
         let from_reward_recipient = self.update_rewards(from)?;
 
         // If user is opted into rewards, decrease opted-in supply
-        if from_reward_recipient != Address::ZERO {
+        if !from_reward_recipient.is_zero() {
             let opted_in_supply = U256::from(self.get_opted_in_supply()?)
                 .checked_sub(amount)
                 .ok_or(TempoPrecompileError::under_overflow())?;
@@ -1493,7 +1493,7 @@ impl TIP20Token {
         let to_reward_recipient = self.update_rewards(to)?;
 
         // If user is opted into rewards, increase opted-in supply by refund amount
-        if to_reward_recipient != Address::ZERO {
+        if !to_reward_recipient.is_zero() {
             let opted_in_supply = U256::from(self.get_opted_in_supply()?)
                 .checked_add(refund)
                 .ok_or(TempoPrecompileError::under_overflow())?;

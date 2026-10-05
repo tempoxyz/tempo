@@ -337,7 +337,7 @@ impl TempoTxEnvelope {
 
     /// Returns true if this is a Tempo transaction
     pub fn is_aa(&self) -> bool {
-        matches!(self, Self::AA(_))
+        self.is_fee_token()
     }
 
     /// Returns iterator over the calls in the transaction.
