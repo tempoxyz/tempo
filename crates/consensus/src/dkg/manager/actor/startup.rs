@@ -51,7 +51,7 @@ pub(super) fn verify_finalized_tip(
             height >= finalized_floor,
             "finalized tip is below the finalized floor"
         );
-        let cert_epoch = certificate.proposal.round.epoch();
+        let cert_epoch = certificate.round().epoch();
 
         if cert_epoch.get() < trusted.from_epoch {
             // A rotation's outgoing boundary certificate can precede the latest

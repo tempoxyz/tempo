@@ -348,7 +348,7 @@ where
                     debug!(%height, "finalized tip is missing its persisted certificate");
                     return;
                 };
-                debug_assert_eq!(round, certificate.proposal.round);
+                debug_assert_eq!(round, certificate.round());
                 self.advance_latest_verified_round(round);
                 let frame = wire::encode(&certificate).freeze().into();
                 self.publish(round, frame);

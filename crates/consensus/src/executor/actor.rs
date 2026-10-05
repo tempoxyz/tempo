@@ -377,7 +377,7 @@ where
         };
         let finalized_round = if finalized.1 == finalized_tip.2 {
             finalized_tip.0
-        } else if finalized.0 == Height::zero() {
+        } else if finalized.0.is_zero() {
             Round::zero()
         } else {
             execution_node
