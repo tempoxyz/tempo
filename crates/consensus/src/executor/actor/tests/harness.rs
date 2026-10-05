@@ -600,7 +600,7 @@ impl FakeExecution {
 impl ExecutionLayer for FakeExecution {
     fn current_forkchoice_state(&self) -> eyre::Result<ForkchoiceState> {
         let state = self.inner.state.lock();
-        eyre::ensure!(state.head != B256::ZERO, "fake has a zero canonical head");
+        eyre::ensure!(!state.head.is_zero(), "fake has a zero canonical head");
         let finalized_block_hash = state
             .finalized
             .map_or(B256::ZERO, |finalized| finalized.hash);
@@ -683,7 +683,7 @@ impl ExecutionLayer for FakeExecution {
                     Digest(digest)
                 )
             })?;
-            if status == PayloadStatusEnum::Valid {
+            if status.is_valid() {
                 inner.bodies.lock().insert(digest, block);
                 let mut state = inner.state.lock();
                 state.buffered.remove(&digest);
@@ -697,7 +697,7 @@ impl ExecutionLayer for FakeExecution {
                     state.buffered.remove(&hash);
                     state.blocks.insert(hash, block);
                 }
-            } else if status == PayloadStatusEnum::Syncing {
+            } else if status.is_syncing() {
                 inner.state.lock().buffered.insert(digest, (height, parent));
             }
             Ok(PayloadStatus::from_status(status))

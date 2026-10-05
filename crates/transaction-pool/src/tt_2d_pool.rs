@@ -2601,12 +2601,7 @@ mod tests {
     use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
     use tempo_primitives::{
         TempoTxEnvelope,
-        transaction::{
-            TempoTransaction,
-            tempo_transaction::Call,
-            tt_signature::{PrimitiveSignature, TempoSignature},
-            tt_signed::AASigned,
-        },
+        transaction::{TempoTransaction, tempo_transaction::Call, tt_signature::TempoSignature},
     };
 
     #[test_case::test_case(U256::ZERO)]
@@ -7113,10 +7108,8 @@ mod tests {
                 key_authorization: None,
             };
 
-            let signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-                Signature::test_signature(),
-            ));
-            let aa_signed = AASigned::new_unhashed(tx, signature);
+            let signature = TempoSignature::from(Signature::test_signature());
+            let aa_signed = tx.into_signed(signature);
             let envelope: TempoTxEnvelope = aa_signed.into();
             let recovered = Recovered::new_unchecked(envelope, sender);
             TempoPooledTransaction::new(recovered)
@@ -7199,9 +7192,8 @@ mod tests {
             valid_after: None,
         };
 
-        let signature =
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
-        let aa_signed = AASigned::new_unhashed(tx, signature);
+        let signature = TempoSignature::from(Signature::test_signature());
+        let aa_signed = tx.into_signed(signature);
         let envelope: TempoTxEnvelope = aa_signed.into();
         let recovered = Recovered::new_unchecked(envelope, sender);
         let pooled = TempoPooledTransaction::new(recovered);

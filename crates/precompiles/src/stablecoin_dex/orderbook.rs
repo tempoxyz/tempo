@@ -434,7 +434,7 @@ impl Orderbook {
 
     /// Returns true if this orderbook is initialized
     pub fn is_initialized(&self) -> bool {
-        self.base != Address::ZERO
+        !self.base.is_zero()
     }
 
     /// Returns true if the base and quote tokens match the provided base and quote token options.
@@ -553,7 +553,7 @@ impl OrderbookHandler {
         let bit_index = (tick & 0xFF) as usize;
         let mask = U256::ONE << bit_index;
 
-        Ok((word & mask) != U256::ZERO)
+        Ok(!(word & mask).is_zero())
     }
 
     /// Finds the next initialized tick with liquidity. Searches downward for bids, upward for asks.
@@ -596,7 +596,7 @@ impl OrderbookHandler {
             };
             let masked_word = word & mask;
 
-            if masked_word != U256::ZERO {
+            if !masked_word.is_zero() {
                 // Find the lowest set bit position using trailing_zeros
                 let lowest_bit = masked_word.trailing_zeros();
                 let found_tick = (word_index << 8) | (lowest_bit as i16);
@@ -646,7 +646,7 @@ impl OrderbookHandler {
             };
             let masked_word = word & mask;
 
-            if masked_word != U256::ZERO {
+            if !masked_word.is_zero() {
                 // Find the highest set bit position using leading_zeros
                 // U256 is 256 bits, so highest bit index = 255 - leading_zeros
                 let leading = masked_word.leading_zeros();

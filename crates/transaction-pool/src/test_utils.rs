@@ -20,7 +20,6 @@ use tempo_primitives::{
         SignedKeyAuthorization, TempoSignedAuthorization, TempoTransaction,
         tempo_transaction::Call,
         tt_signature::{KeychainVersion, PrimitiveSignature, TempoSignature},
-        tt_signed::AASigned,
     },
 };
 
@@ -216,9 +215,8 @@ impl TxBuilder {
             key_authorization: self.key_authorization,
         };
 
-        let signature =
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
-        let aa_signed = AASigned::new_unhashed(tx, signature);
+        let signature = TempoSignature::from(Signature::test_signature());
+        let aa_signed = tx.into_signed(signature);
         let envelope: TempoTxEnvelope = aa_signed.into();
 
         let recovered = Recovered::new_unchecked(envelope, self.sender);
@@ -273,9 +271,8 @@ impl TxBuilder {
         };
 
         // Create a temp AASigned to get the signature hash
-        let temp_sig =
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
-        let unsigned = AASigned::new_unhashed(tx.clone(), temp_sig);
+        let temp_sig = TempoSignature::from(Signature::test_signature());
+        let unsigned = tx.clone().into_signed(temp_sig);
         let sig_hash = unsigned.signature_hash();
 
         let (effective_hash, keychain_sig) = match version {
@@ -309,7 +306,7 @@ impl TxBuilder {
         };
         let _ = effective_hash;
 
-        let signed_tx = AASigned::new_unhashed(tx, keychain_sig);
+        let signed_tx = tx.into_signed(keychain_sig);
         let envelope: TempoTxEnvelope = signed_tx.into();
         let recovered = {
             use reth_primitives_traits::SignerRecoverable;

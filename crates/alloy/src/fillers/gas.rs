@@ -155,7 +155,7 @@ where
             key_id,
         }));
     }
-    if key.keyId == Address::ZERO {
+    if key.keyId.is_zero() {
         return Ok(Some(Some(authorization.clone())));
     }
     if key.keyId != key_id {

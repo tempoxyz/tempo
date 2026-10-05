@@ -70,11 +70,7 @@ async fn send_tempo_tx<P: Provider>(
     tx: TempoTransaction,
 ) -> eyre::Result<TempoTransactionReceipt> {
     let sig = signer.sign_hash_sync(&tx.signature_hash())?;
-    let envelope: TempoTxEnvelope = tx
-        .into_signed(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            sig,
-        )))
-        .into();
+    let envelope: TempoTxEnvelope = tx.into_signed(TempoSignature::from(sig)).into();
     provider
         .send_raw_transaction(&envelope.encoded_2718())
         .await?
@@ -305,11 +301,7 @@ async fn test_tip1060_rebalance_swap_does_not_mint_stale_fee_manager_custody_cre
         ..Default::default()
     };
     let sig = root.sign_hash_sync(&fee_tx.signature_hash())?;
-    let envelope: TempoTxEnvelope = fee_tx
-        .into_signed(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            sig,
-        )))
-        .into();
+    let envelope: TempoTxEnvelope = fee_tx.into_signed(TempoSignature::from(sig)).into();
     root_provider
         .send_raw_transaction(&envelope.encoded_2718())
         .await?
@@ -378,11 +370,7 @@ async fn test_tip1060_rebalance_swap_does_not_mint_stale_fee_manager_custody_cre
         ..Default::default()
     };
     let sig = root.sign_hash_sync(&recreate_tx.signature_hash())?;
-    let envelope: TempoTxEnvelope = recreate_tx
-        .into_signed(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            sig,
-        )))
-        .into();
+    let envelope: TempoTxEnvelope = recreate_tx.into_signed(TempoSignature::from(sig)).into();
     root_provider
         .send_raw_transaction(&envelope.encoded_2718())
         .await?
@@ -541,9 +529,7 @@ async fn test_tip1060_fee_manager_credit_from_distribute_fees_is_not_redeemable(
     };
     let collect_fees_signature = root.sign_hash_sync(&collect_fees_tx.signature_hash())?;
     let collect_fees_envelope: TempoTxEnvelope = collect_fees_tx
-        .into_signed(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            collect_fees_signature,
-        )))
+        .into_signed(TempoSignature::from(collect_fees_signature))
         .into();
     provider
         .send_raw_transaction(&collect_fees_envelope.encoded_2718())
@@ -640,9 +626,7 @@ async fn test_tip1060_fee_manager_credit_from_distribute_fees_is_not_redeemable(
     };
     let recreate_signature = user.sign_hash_sync(&recreate_collected_fees_tx.signature_hash())?;
     let recreate_envelope: TempoTxEnvelope = recreate_collected_fees_tx
-        .into_signed(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            recreate_signature,
-        )))
+        .into_signed(TempoSignature::from(recreate_signature))
         .into();
     provider
         .send_raw_transaction(&recreate_envelope.encoded_2718())
@@ -791,9 +775,7 @@ async fn test_tip1060_distribute_fees_receive_policy_guard_creations_are_account
     };
     let collect_fees_signature = root.sign_hash_sync(&collect_fees_tx.signature_hash())?;
     let collect_fees_envelope: TempoTxEnvelope = collect_fees_tx
-        .into_signed(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            collect_fees_signature,
-        )))
+        .into_signed(TempoSignature::from(collect_fees_signature))
         .into();
     provider
         .send_raw_transaction(&collect_fees_envelope.encoded_2718())
@@ -1196,11 +1178,7 @@ async fn test_tip1060_successful_fee_token_spend_fee_refund_cancels_restored_bal
         ..Default::default()
     };
     let sig = fee_payer.sign_hash_sync(&tx.signature_hash())?;
-    let envelope: TempoTxEnvelope = tx
-        .into_signed(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            sig,
-        )))
-        .into();
+    let envelope: TempoTxEnvelope = tx.into_signed(TempoSignature::from(sig)).into();
 
     let receipt = fee_payer_provider
         .send_raw_transaction(&envelope.encoded_2718())
@@ -1287,11 +1265,7 @@ async fn test_tip1060_tip20_clear_mints_and_later_creation_redeems_credit() -> e
         ..Default::default()
     };
     let sig = root.sign_hash_sync(&tx.signature_hash())?;
-    let envelope: TempoTxEnvelope = tx
-        .into_signed(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            sig,
-        )))
-        .into();
+    let envelope: TempoTxEnvelope = tx.into_signed(TempoSignature::from(sig)).into();
     provider
         .send_raw_transaction(&envelope.encoded_2718())
         .await?

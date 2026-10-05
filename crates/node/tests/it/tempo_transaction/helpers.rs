@@ -726,11 +726,7 @@ pub(crate) fn create_mock_p256_sig(pub_key_x: B256, pub_key_y: B256) -> TempoSig
 
 /// Helper to create a mock secp256k1 signature for key authorization
 pub(crate) fn create_mock_secp256k1_sig() -> TempoSignature {
-    TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::new(
-        U256::ZERO,
-        U256::ZERO,
-        false,
-    )))
+    TempoSignature::from(Signature::new(U256::ZERO, U256::ZERO, false))
 }
 
 /// Helper to create a mock WebAuthn signature for key authorization
@@ -815,9 +811,7 @@ pub(crate) fn sign_aa_tx_secp256k1(
 ) -> eyre::Result<TempoSignature> {
     let sig_hash = tx.signature_hash();
     let signature = signer.sign_hash_sync(&sig_hash)?;
-    Ok(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-        signature,
-    )))
+    Ok(TempoSignature::from(signature))
 }
 
 /// Helper to sign AA transaction with P256 key (with pre-hash)

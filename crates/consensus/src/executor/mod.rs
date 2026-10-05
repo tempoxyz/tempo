@@ -145,7 +145,7 @@ impl ExecutionLayer for Arc<TempoFullNode> {
         let state = self.provider.canonical_in_memory_state();
         let head_block_hash = state.get_canonical_head().hash();
         eyre::ensure!(
-            head_block_hash != B256::ZERO,
+            !head_block_hash.is_zero(),
             "execution layer returned a zero canonical head"
         );
 

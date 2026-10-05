@@ -252,7 +252,7 @@ impl Inner {
             return_time = %display_duration(return_delay),
             "sleeping before returning proposal"
         );
-        runtime.sleep_until(runtime.current() + return_delay).await;
+        runtime.sleep(return_delay).await;
 
         Ok(proposal)
     }

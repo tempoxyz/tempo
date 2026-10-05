@@ -50,9 +50,7 @@ fn rejected_pool_transaction_does_not_leak_key_expiry() {
         },
         fee_token: Some(PATH_USD_ADDRESS),
         tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
-            signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-                root.sign_hash_sync(&B256::ZERO).unwrap(),
-            )),
+            signature: TempoSignature::from(root.sign_hash_sync(&B256::ZERO).unwrap()),
             aa_calls: vec![Call {
                 to: TxKind::Call(Address::repeat_byte(0x44)),
                 value: U256::ZERO,

@@ -2145,7 +2145,7 @@ struct AccountsU256(U256);
 
 impl AccountsU256 {
     fn into_b256(self) -> B256 {
-        B256::from(self.0.to_be_bytes::<32>())
+        B256::from(self.0)
     }
 }
 
@@ -2648,10 +2648,8 @@ fn take_field<T: for<'de> Deserialize<'de>>(
 
 fn decode_editable_store(bytes: &[u8]) -> Result<EditableTempoCliStore, serde_json::Error> {
     let mut root: BTreeMap<String, Box<RawValue>> = serde_json::from_slice(bytes)?;
-    let mut envelope: BTreeMap<String, Box<RawValue>> =
-        serde_json::from_str(take_raw(&mut root, "tempo-cli.store")?.get())?;
-    let mut state: BTreeMap<String, Box<RawValue>> =
-        serde_json::from_str(take_raw(&mut envelope, "state")?.get())?;
+    let mut envelope: BTreeMap<String, Box<RawValue>> = take_field(&mut root, "tempo-cli.store")?;
+    let mut state: BTreeMap<String, Box<RawValue>> = take_field(&mut envelope, "state")?;
     let active_account = take_raw(&mut state, "activeAccount")?;
     let chain_id = take_field(&mut state, "chainId")?;
     let accounts = take_field(&mut state, "accounts")?;
@@ -4373,7 +4371,7 @@ mod tests {
             inner: TransactionRequest {
                 from: Some(root.address()),
                 to: Some(target.into()),
-                input: TransactionInput::new(Bytes::copy_from_slice(&selector)),
+                input: TransactionInput::new(Bytes::from(selector)),
                 ..Default::default()
             },
             ..Default::default()

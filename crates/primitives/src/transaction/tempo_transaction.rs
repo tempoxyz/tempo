@@ -857,7 +857,7 @@ impl<'a> arbitrary::Arbitrary<'a> for TempoTransaction {
         }
 
         // Filter out CREATEs from non-first positions and ensure only one CREATE (if any)
-        let first_is_create = calls.first().map(|c| c.to.is_create()).unwrap_or(false);
+        let first_is_create = calls.first().is_some_and(|c| c.to.is_create());
         if first_is_create {
             // Keep the first CREATE, remove all other CREATEs
             for call in calls.iter_mut().skip(1) {
@@ -1023,7 +1023,7 @@ mod tests {
             call.value.encode(&mut fields);
             call.input.encode(&mut fields);
             let mut expected = Vec::new();
-            RlpHeader { list: true, payload_length: fields.len() }.encode(&mut expected);
+            rlp_header(fields.len()).encode(&mut expected);
             expected.extend_from_slice(&fields);
             proptest::prop_assert_eq!(call.length(), expected.len());
             proptest::prop_assert_eq!(alloy_rlp::encode(&call), expected);
@@ -1974,9 +1974,8 @@ mod tests {
             tempo_authorization_list: vec![],
         };
 
-        let signature =
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
-        let signed = AASigned::new_unhashed(tx, signature);
+        let signature = TempoSignature::from(Signature::test_signature());
+        let signed = tx.into_signed(signature);
 
         // Test direct RLP encoding/decoding
         let mut buf = Vec::new();
@@ -2014,9 +2013,8 @@ mod tests {
             tempo_authorization_list: vec![],
         };
 
-        let signature =
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
-        let signed = AASigned::new_unhashed(tx, signature);
+        let signature = TempoSignature::from(Signature::test_signature());
+        let signed = tx.into_signed(signature);
         let envelope = TempoTxEnvelope::AA(signed);
 
         // Encode and decode the envelope
@@ -2152,11 +2150,9 @@ mod tests {
 
         let mut malformed = Vec::new();
         malformed.extend_from_slice(&encoded[..signature_start]);
-        RlpHeader {
-            list: true,
-            payload_length: signature_header.payload_length
-                + (authorization_list_end - authorization_list_start),
-        }
+        rlp_header(
+            signature_header.payload_length + (authorization_list_end - authorization_list_start),
+        )
         .encode(&mut malformed);
         malformed
             .extend_from_slice(&encoded[signature_start + signature_header_len..signature_end]);
@@ -2252,7 +2248,7 @@ mod tests {
                 address: Address::random(),
                 nonce: 1,
             },
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
+            TempoSignature::from(Signature::test_signature()),
         );
 
         // Invalid: CREATE call with auth list
@@ -2460,11 +2456,7 @@ mod compact_tests {
                     address: Address::with_last_byte(0x99),
                     nonce: 1,
                 },
-                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::new(
-                    U256::from(3u64),
-                    U256::from(4u64),
-                    true,
-                ))),
+                TempoSignature::from(Signature::new(U256::from(3u64), U256::from(4u64), true)),
             )],
         };
 

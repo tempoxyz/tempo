@@ -1339,7 +1339,7 @@ impl TIP20Token {
             self.decrement_balance(from, amount)?;
         }
 
-        if to.target != Address::ZERO {
+        if !to.target.is_zero() {
             self.increment_balance(to.target, amount)?;
         }
 
@@ -1447,7 +1447,7 @@ impl TIP20Token {
         let from_reward_recipient = self.update_rewards(from)?;
 
         // If user is opted into rewards, decrease opted-in supply
-        if from_reward_recipient != Address::ZERO {
+        if !from_reward_recipient.is_zero() {
             let opted_in_supply = U256::from(self.get_opted_in_supply()?)
                 .checked_sub(amount)
                 .ok_or(TempoPrecompileError::under_overflow())?;
@@ -1493,7 +1493,7 @@ impl TIP20Token {
         let to_reward_recipient = self.update_rewards(to)?;
 
         // If user is opted into rewards, increase opted-in supply by refund amount
-        if to_reward_recipient != Address::ZERO {
+        if !to_reward_recipient.is_zero() {
             let opted_in_supply = U256::from(self.get_opted_in_supply()?)
                 .checked_add(refund)
                 .ok_or(TempoPrecompileError::under_overflow())?;
@@ -1622,13 +1622,7 @@ mod recipient_tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         StorageCtx::enter(&mut storage, || {
             let r = Recipient::resolve(addr)?;
-            assert_eq!(
-                r,
-                Recipient {
-                    target: addr,
-                    virtual_addr: None
-                }
-            );
+            assert_eq!(r, Recipient::direct(addr));
 
             // T3: registered virtual → master
             let mut registry = AddressRegistry::new();
@@ -1654,13 +1648,7 @@ mod recipient_tests {
         StorageCtx::enter(&mut storage, || {
             let virtual_addr = Address::new_virtual(MasterId::ZERO, UserTag::ZERO);
             let r = Recipient::resolve(virtual_addr)?;
-            assert_eq!(
-                r,
-                Recipient {
-                    target: virtual_addr,
-                    virtual_addr: None
-                }
-            );
+            assert_eq!(r, Recipient::direct(virtual_addr));
             Ok::<_, TempoPrecompileError>(())
         })?;
         Ok(())
@@ -1737,7 +1725,7 @@ pub(crate) mod tests {
     use revm::{
         DatabaseCommit,
         context::{CfgEnv, TxEnv, result::ExecutionResult},
-        database::{CacheDB, EmptyDB},
+        database::InMemoryDB,
         state::{AccountInfo, Bytecode},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -3891,7 +3879,7 @@ pub(crate) mod tests {
     }
 
     struct BurnAtFixture {
-        evm: TempoEvm<CacheDB<EmptyDB>>,
+        evm: TempoEvm<InMemoryDB>,
         holder: Address,
         key: PrivateKeySigner,
         token: Address,
@@ -3904,7 +3892,7 @@ pub(crate) mod tests {
             let mut cfg = CfgEnv::default();
             cfg.set_spec_and_mainnet_gas_params(TempoHardfork::T12);
             let mut evm = TempoEvm::new(
-                CacheDB::new(EmptyDB::default()),
+                InMemoryDB::default(),
                 EvmEnv {
                     cfg_env: cfg,
                     block_env: TempoBlockEnv::default(),
@@ -4041,7 +4029,7 @@ pub(crate) mod tests {
                 ITIP20::BurnAt::SIGNATURE_HASH,
                 MULTICALL3_ADDRESS.into_word(),
                 fixture.holder.into_word(),
-                B256::from(amount.to_be_bytes::<32>()),
+                B256::from(amount),
             ]
         );
         assert!(logs[1].data.data.is_empty());

@@ -392,7 +392,7 @@ impl ExecutionRuntime {
                                     egress.to_string(),
                                     fee_recipient,
                                     sign_add_validator_args(
-                                        EthChainSpec::chain(&chain_spec).id(),
+                                        chain_spec.chain_id(),
                                         &private_key,
                                         address,
                                         ingress,
@@ -480,7 +480,7 @@ impl ExecutionRuntime {
                                     ingress.to_string(),
                                     egress.to_string(),
                                     sign_rotate_validator_args(
-                                        EthChainSpec::chain(&chain_spec).id(),
+                                        chain_spec.chain_id(),
                                         &private_key,
                                         address,
                                         ingress,
