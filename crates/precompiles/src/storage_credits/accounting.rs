@@ -70,6 +70,8 @@ pub trait StorageCreditsBackend {
         }
         let gas = self.gas_tracker();
         gas.spend_state(STORAGE_CREDIT_VALUE).map_err(|_| {
+            // The execution-gas spill uses wrapping subtraction, even on failure.
+            // Clear the wrapped balance so OOG cannot leave an inflated gas budget.
             gas.set_remaining(0);
             Self::Error::out_of_gas()
         })
