@@ -1897,7 +1897,7 @@ mod tests {
                 owner,
                 tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
                     newValidatorAddress: v1_addr,
-                    publicKey: FixedBytes::<32>::from([0x11; 32]),
+                    publicKey: FixedBytes::<32>::repeat_byte(0x11),
                     active: true,
                     inboundAddress: "192.168.1.1:8000".to_string(),
                     outboundAddress: "192.168.1.1:9000".to_string(),
@@ -1908,7 +1908,7 @@ mod tests {
                 owner,
                 tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
                     newValidatorAddress: v2_addr,
-                    publicKey: FixedBytes::<32>::from([0x22; 32]),
+                    publicKey: FixedBytes::<32>::repeat_byte(0x22),
                     active: false,
                     inboundAddress: "192.168.1.2:8000".to_string(),
                     outboundAddress: "192.168.1.2:9000".to_string(),
@@ -1925,7 +1925,7 @@ mod tests {
             assert_eq!(v2.validator_count()?, 1);
             let migrated = v2.validator_by_index(0)?;
             assert_eq!(migrated.validatorAddress, v2_addr);
-            assert_eq!(migrated.publicKey, FixedBytes::<32>::from([0x22; 32]));
+            assert_eq!(migrated.publicKey, FixedBytes::<32>::repeat_byte(0x22));
             assert_eq!(migrated.deactivatedAtHeight, 100);
 
             // Migrate first validator
@@ -1968,7 +1968,7 @@ mod tests {
                 owner,
                 tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
                     newValidatorAddress: v1_addr,
-                    publicKey: FixedBytes::<32>::from([0x11; 32]),
+                    publicKey: FixedBytes::<32>::repeat_byte(0x11),
                     active: true,
                     inboundAddress: "192.168.1.1:8000".to_string(),
                     outboundAddress: "192.168.1.1:9000".to_string(),
@@ -2021,7 +2021,7 @@ mod tests {
                 owner,
                 tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
                     newValidatorAddress: Address::random(),
-                    publicKey: FixedBytes::<32>::from([0x11; 32]),
+                    publicKey: FixedBytes::<32>::repeat_byte(0x11),
                     active: true,
                     inboundAddress: "192.168.1.1:8000".to_string(),
                     outboundAddress: "192.168.1.1:9000".to_string(),
@@ -2032,7 +2032,7 @@ mod tests {
                 owner,
                 tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
                     newValidatorAddress: Address::random(),
-                    publicKey: FixedBytes::<32>::from([0x22; 32]),
+                    publicKey: FixedBytes::<32>::repeat_byte(0x22),
                     active: true,
                     inboundAddress: "192.168.1.2:8000".to_string(),
                     outboundAddress: "192.168.1.2:9000".to_string(),
@@ -2068,7 +2068,7 @@ mod tests {
                 owner,
                 tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
                     newValidatorAddress: Address::random(),
-                    publicKey: FixedBytes::<32>::from([0x11; 32]),
+                    publicKey: FixedBytes::<32>::repeat_byte(0x11),
                     active: true,
                     inboundAddress: "192.168.1.1:8000".to_string(),
                     outboundAddress: "192.168.1.1:9000".to_string(),
@@ -2079,7 +2079,7 @@ mod tests {
                 owner,
                 tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
                     newValidatorAddress: Address::random(),
-                    publicKey: FixedBytes::<32>::from([0x22; 32]),
+                    publicKey: FixedBytes::<32>::repeat_byte(0x22),
                     active: true,
                     inboundAddress: "192.168.1.2:8000".to_string(),
                     outboundAddress: "192.168.1.2:9000".to_string(),
@@ -2336,7 +2336,7 @@ mod tests {
                 owner,
                 tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
                     newValidatorAddress: v1_addr,
-                    publicKey: FixedBytes::<32>::from([0x11; 32]),
+                    publicKey: FixedBytes::<32>::repeat_byte(0x11),
                     active: true,
                     inboundAddress: "192.168.1.1:8000".to_string(),
                     outboundAddress: "192.168.1.1:9000".to_string(),
@@ -2423,7 +2423,7 @@ mod tests {
                 owner,
                 tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
                     newValidatorAddress: Address::random(),
-                    publicKey: FixedBytes::<32>::from([0x11; 32]),
+                    publicKey: FixedBytes::<32>::repeat_byte(0x11),
                     active: true,
                     inboundAddress: "192.168.1.1:8000".to_string(),
                     outboundAddress: "192.168.1.1:9000".to_string(),
@@ -2433,7 +2433,7 @@ mod tests {
                 owner,
                 tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
                     newValidatorAddress: Address::random(),
-                    publicKey: FixedBytes::<32>::from([0x22; 32]),
+                    publicKey: FixedBytes::<32>::repeat_byte(0x22),
                     active: true,
                     inboundAddress: "192.168.1.1:8000".to_string(),
                     outboundAddress: "192.168.2.1:9000".to_string(),
@@ -2468,7 +2468,7 @@ mod tests {
                 owner,
                 tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
                     newValidatorAddress: Address::random(),
-                    publicKey: FixedBytes::<32>::from([0xDD; 32]),
+                    publicKey: FixedBytes::<32>::repeat_byte(0xDD),
                     active: true,
                     inboundAddress: "192.168.1.1:8000".to_string(),
                     outboundAddress: "192.168.1.1:9000".to_string(),
@@ -2478,7 +2478,7 @@ mod tests {
                 owner,
                 tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
                     newValidatorAddress: Address::random(),
-                    publicKey: FixedBytes::<32>::from([0x22; 32]),
+                    publicKey: FixedBytes::<32>::repeat_byte(0x22),
                     active: true,
                     inboundAddress: "192.168.1.2:8000".to_string(),
                     outboundAddress: "192.168.1.2:9000".to_string(),
@@ -2517,7 +2517,7 @@ mod tests {
                 owner,
                 tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
                     newValidatorAddress: addr1,
-                    publicKey: FixedBytes::<32>::from([0x11; 32]),
+                    publicKey: FixedBytes::<32>::repeat_byte(0x11),
                     active: true,
                     inboundAddress: "192.168.1.1:8000".to_string(),
                     outboundAddress: "192.168.1.1:9000".to_string(),
@@ -2527,7 +2527,7 @@ mod tests {
                 owner,
                 tempo_contracts::precompiles::IValidatorConfig::addValidatorCall {
                     newValidatorAddress: addr2,
-                    publicKey: FixedBytes::<32>::from([0x11; 32]),
+                    publicKey: FixedBytes::<32>::repeat_byte(0x11),
                     active: true,
                     inboundAddress: "192.168.1.2:8000".to_string(),
                     outboundAddress: "192.168.1.2:9000".to_string(),
@@ -3541,7 +3541,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1);
         let owner = Address::random();
         let v1_addr = Address::random();
-        let v1_pk = FixedBytes::<32>::from([0x11; 32]);
+        let v1_pk = FixedBytes::<32>::repeat_byte(0x11);
 
         StorageCtx::enter(&mut storage, || {
             let mut v1 = v1();

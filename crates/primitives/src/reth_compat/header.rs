@@ -185,45 +185,29 @@ mod codec {
                 timestamp_millis_part: 500,
                 consensus_context: None,
                 inner: Header {
-                    parent_hash: b256!(
-                        "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                    ),
+                    parent_hash: B256::repeat_byte(0xaa),
                     ommers_hash: b256!(
                         "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347"
                     ),
                     beneficiary: address!("0x000000000000000000000000000000000000beef"),
-                    state_root: b256!(
-                        "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-                    ),
-                    transactions_root: b256!(
-                        "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-                    ),
-                    receipts_root: b256!(
-                        "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-                    ),
+                    state_root: B256::repeat_byte(0xbb),
+                    transactions_root: B256::repeat_byte(0xcc),
+                    receipts_root: B256::repeat_byte(0xdd),
                     logs_bloom: Bloom::with_last_byte(0xff),
-                    difficulty: U256::from(1u64),
+                    difficulty: U256::ONE,
                     number: 1000,
                     gas_limit: 30_000_000,
                     gas_used: 15_000_000,
                     timestamp: 1_700_000_000,
                     extra_data: bytes!("deadbeef"),
-                    mix_hash: b256!(
-                        "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-                    ),
+                    mix_hash: B256::repeat_byte(0xee),
                     nonce: alloy_primitives::B64::from(42u64),
                     base_fee_per_gas: Some(7),
-                    withdrawals_root: Some(b256!(
-                        "0x1111111111111111111111111111111111111111111111111111111111111111"
-                    )),
+                    withdrawals_root: Some(B256::repeat_byte(0x11)),
                     blob_gas_used: Some(131072),
                     excess_blob_gas: Some(65536),
-                    parent_beacon_block_root: Some(b256!(
-                        "0x2222222222222222222222222222222222222222222222222222222222222222"
-                    )),
-                    requests_hash: Some(b256!(
-                        "0x3333333333333333333333333333333333333333333333333333333333333333"
-                    )),
+                    parent_beacon_block_root: Some(B256::repeat_byte(0x22)),
+                    requests_hash: Some(B256::repeat_byte(0x33)),
                     block_access_list_hash: None,
                     slot_number: None,
                 },

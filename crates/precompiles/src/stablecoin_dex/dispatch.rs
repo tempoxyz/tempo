@@ -304,7 +304,7 @@ mod tests {
             exchange.initialize()?;
 
             let sender = Address::random();
-            let base = Address::from([2u8; 20]);
+            let base = Address::repeat_byte(2u8);
 
             let call = IStablecoinDEX::createPairCall { base };
             let calldata = call.abi_encode();

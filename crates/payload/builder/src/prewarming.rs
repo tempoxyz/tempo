@@ -1476,12 +1476,8 @@ mod tests {
         };
 
         pool.install_fn(|| {
-            let failed_action = StorageAction::Sstore(
-                Address::random(),
-                U256::from(1),
-                U256::from(2),
-                U256::from(3),
-            );
+            let failed_action =
+                StorageAction::Sstore(Address::random(), U256::ONE, U256::from(2), U256::from(3));
             context.with_worker(|worker| {
                 let BuilderWorkerEvm::Regular(evm) = worker else {
                     panic!("prewarm EVM")

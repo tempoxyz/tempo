@@ -735,7 +735,7 @@ async fn test_tip1016_high_gas_limit_batch_tip20_transfers() -> eyre::Result<()>
                 target: PATH_USD_ADDRESS,
                 callData: ITIP20::transferCall {
                     to,
-                    amount: U256::from(1),
+                    amount: U256::ONE,
                 }
                 .abi_encode()
                 .into(),

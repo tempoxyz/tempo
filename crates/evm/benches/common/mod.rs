@@ -262,7 +262,7 @@ pub(crate) fn bench_env(
         cfg_env,
         block_env: TempoBlockEnv {
             inner: BlockEnv {
-                number: U256::from(1),
+                number: U256::ONE,
                 beneficiary: Address::repeat_byte(0x42),
                 timestamp: U256::from(block_timestamp),
                 basefee: TEMPO_T1_BASE_FEE,

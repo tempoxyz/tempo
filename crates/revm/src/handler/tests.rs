@@ -2525,7 +2525,7 @@ fn test_t1_2d_nonce_key_charges_250k_gas() {
     use revm::{context_interface::cfg::GasId, handler::Handler};
 
     // Deterministic test addresses
-    const TEST_TARGET: Address = Address::new([0xAA; 20]);
+    const TEST_TARGET: Address = Address::repeat_byte(0xAA);
     const TEST_NONCE_KEY: U256 = U256::from_limbs([42, 0, 0, 0]);
     const SPEC: TempoHardfork = TempoHardfork::T1;
     const NEW_NONCE_KEY_GAS: u64 = SPEC.gas_new_nonce_key();
@@ -2629,7 +2629,7 @@ fn test_t1_existing_2d_nonce_key_charges_5k_gas() {
     use revm::handler::Handler;
 
     const BASE_INTRINSIC_GAS: u64 = 21_000;
-    const TEST_TARGET: Address = Address::new([0xBB; 20]);
+    const TEST_TARGET: Address = Address::repeat_byte(0xBB);
     const TEST_NONCE_KEY: U256 = U256::from_limbs([99, 0, 0, 0]);
     const SPEC: TempoHardfork = TempoHardfork::T1;
     const EXISTING_NONCE_KEY_GAS: u64 = SPEC.gas_existing_nonce_key();
@@ -2701,6 +2701,7 @@ mod keychain {
     use super::*;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
+
     use tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS;
     use tempo_primitives::transaction::{
         KeychainSignature, KeychainVersion, SignatureType,

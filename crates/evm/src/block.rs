@@ -2036,7 +2036,7 @@ mod tests {
             Bytes::from_static(&[0xef])
         );
         let expected_factory_config =
-            U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
+            U256::ONE | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
         assert_eq!(
             factory.storage_slot(U256::ZERO),
             Some(expected_factory_config)

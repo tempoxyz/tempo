@@ -606,7 +606,7 @@ async fn test_payment_lane_gas_limits() -> eyre::Result<()> {
     println!("\nSending payment transactions (should succeed despite non-payment gas usage)...");
     for i in 0..3 {
         // Send valid TIP20 transfer transactions
-        let transfer_tx = token.transfer(caller, U256::from(1));
+        let transfer_tx = token.transfer(caller, U256::ONE);
         let tx = transfer_tx
             .into_transaction_request()
             .from(caller)

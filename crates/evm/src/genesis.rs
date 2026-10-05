@@ -176,7 +176,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(genesis_account(&info, []).storage, None);
-        let account = genesis_account(&info, [(U256::from(1), U256::from(2))]);
+        let account = genesis_account(&info, [(U256::ONE, U256::from(2))]);
         assert_eq!(account.nonce, Some(3));
         assert_eq!(account.storage.unwrap().len(), 1);
     }
