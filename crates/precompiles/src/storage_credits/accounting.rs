@@ -45,7 +45,10 @@ pub trait StorageCreditsBackend {
     /// Gas parameters for the active spec.
     fn gas_params(&self) -> &GasParams;
 
-    /// Gas tracker for the active execution context.
+    /// Whether EIP-8037 charges storage creation to state gas instead of execution gas.
+    fn state_gas_enabled(&self) -> bool;
+
+    /// Gas tracker for the active EVM2 execution context.
     fn gas_tracker(&mut self) -> &mut GasTracker;
 
     /// Charges `cost` regular gas, returning [`out_of_gas`](StorageCreditsErr::out_of_gas) if insufficient.
@@ -62,7 +65,7 @@ pub trait StorageCreditsBackend {
     /// Charges the credit-backed creation cost in the active gas dimension.
     #[inline]
     fn charge_storage_creation(&mut self) -> Result<(), Self::Error> {
-        if self.gas_params().get(GasId::SstoreSetState) == 0 {
+        if !self.state_gas_enabled() {
             return self.charge_gas(STORAGE_CREDIT_VALUE);
         }
         let gas = self.gas_tracker();
