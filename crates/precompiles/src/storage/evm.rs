@@ -429,33 +429,29 @@ where
         self.ensure_not_static()?;
         let code = Bytecode::new_raw(code);
         let code_len = code.len();
-        let state_gas = self.version.feature(EvmFeatures::EIP8037);
-        let was_empty = if state_gas {
-            self.evm
+        let code_deposit_gas = u64::from(self.version.gas_params.get(GasId::CodeDepositCost))
+            .saturating_mul(code_len as u64);
+        if self.version.feature(EvmFeatures::EIP8037) {
+            let was_empty = self
+                .evm
                 .state_mut()
                 .account(&address)?
                 .get()
-                .is_none_or(AccountInfo::is_empty)
-        } else {
-            false
-        };
-        // Charge all execution work before drawing on the state reservoir.
-        if state_gas {
+                .is_none_or(AccountInfo::is_empty);
+
+            // Charge all execution work before drawing on the state reservoir.
             self.deduct_gas(self.version.gas_params.keccak256_word_cost(code_len))?;
             if was_empty {
                 self.deduct_gas(u64::from(self.version.gas_params.get(GasId::Create)))?;
             }
-        }
-        self.deduct_gas(
-            u64::from(self.version.gas_params.get(GasId::CodeDepositCost))
-                .saturating_mul(code_len as u64),
-        )?;
+            self.deduct_gas(code_deposit_gas)?;
 
-        if state_gas {
             if was_empty {
                 self.deduct_state_gas(self.version.gas_params.create_state_gas())?;
             }
             self.deduct_state_gas(self.version.gas_params.code_deposit_state_gas(code_len))?;
+        } else {
+            self.deduct_gas(code_deposit_gas)?;
         }
         self.evm.state_mut().account(&address)?.set_code_slow(code);
 
