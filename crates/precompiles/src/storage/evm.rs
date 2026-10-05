@@ -278,20 +278,13 @@ where
 
         // TIP-1060 (T7+): run the storage credits policy so precompile-driven storage
         // writes honor the same accounting as the opcode-level SSTORE hook.
+        // Its settlement replaces EIP-8037's immediate slot-restoration refill.
         if self.tip1060_storage_credits_enabled {
             sstore_storage_credits(self, address, Some(key), &result)?
         }
 
         if !state_gas {
             self.deduct_gas(dynamic_gas)?;
-        }
-
-        // TIP-1060 owns creation charges and credits, including dirty writes.
-        // Its settlement replaces EIP-8037's immediate slot-restoration refill.
-        if state_gas && !self.tip1060_storage_credits_enabled && !self.spec.is_t7() {
-            self.deduct_state_gas(self.version.gas_params.sstore_state_gas(&result))?;
-            self.gas_tracker
-                .refill_reservoir(self.version.gas_params.sstore_state_gas_refill(&result));
         }
 
         // Native precompile storage did not surface SSTORE refunds before TIP-1016.
