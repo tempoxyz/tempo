@@ -3,6 +3,11 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+// Calibrate execution diagnostics with the node's allocator.
+#[cfg(test)]
+#[global_allocator]
+static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::new_allocator();
+
 mod action_replay;
 mod assemble;
 mod pool;

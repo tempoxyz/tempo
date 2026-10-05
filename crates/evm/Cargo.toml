@@ -53,6 +53,7 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+reth-cli-util = { workspace = true, features = ["jemalloc"] }
 alloy-trie = "0.9.5"
 alloy-eips.workspace = true
 alloy-genesis = { workspace = true, features = ["std"] }

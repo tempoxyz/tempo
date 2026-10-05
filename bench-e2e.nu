@@ -1047,6 +1047,17 @@ def build-valscope-static-reports [
     }
 }
 
+# Opt-in only: the helper refuses live nodes/workloads/compilers and retains failures.
+def e2e-disposal-clock [config: string, phase: string, boundary: string] {
+    let result = (try {
+        (^python3 benchmarks/parallel-execution/official_disposal_clock.py sample
+            --config $config --phase $phase --boundary $boundary) | complete
+    } catch { |e| { exit_code: 1, stdout: "", stderr: $e.msg } })
+    print $result.stdout
+    if $result.exit_code != 0 { print $result.stderr }
+    $result.exit_code
+}
+
 def run-local-e2e-phase [run: record, ctx: record] {
     let phase = $run.phase
     print $"=== Starting local e2e phase: ($phase) ==="
@@ -1156,6 +1167,22 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let env_prefix = if $side_env != "" { $"($side_env) " } else { "" }
     let a_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=a,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
     let b_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=b,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
+
+    if $ctx.disposal_clock {
+        {
+            phase: $phase
+            binary_sha256: (e2e-binary-sha256 $run.tempo)
+            source_ref: $run.ref
+            a: { args: $a_args, cpus: $ctx.a.cpus }
+            b: { args: $b_args, cpus: $ctx.b.cpus }
+            tracing_otlp_enabled: ($ctx.tracing_otlp != "")
+        } | to json | save $"($ctx.results_dir)/disposal-clock/($phase)-node-config.json"
+        let clock_exit = (e2e-disposal-clock $ctx.disposal_clock_config $phase "pre")
+        if $clock_exit != 0 {
+            restore-system-tuning $tuning_state
+            return $clock_exit
+        }
+    }
 
     mark-schelk-dirty-at $ctx.a.state_path
     mark-schelk-dirty-at $ctx.b.state_path
@@ -1315,6 +1342,16 @@ def run-local-e2e-phase [run: record, ctx: record] {
         print "  Stopping validators before tracy-capture so Tracy can record graceful node shutdown..."
     }
     stop-e2e-processes-gracefully
+    if $ctx.disposal_clock {
+        # A stop request, including SIGKILL escalation, is not proof of exit.
+        if ((find-tempo-pids) | length) != 0 {
+            print "Error: validators remain live; refusing post-phase clock calibration"
+            $phase_exit = 1
+        } else {
+            let clock_exit = (e2e-disposal-clock $ctx.disposal_clock_config $phase "post")
+            if $phase_exit == 0 and $clock_exit != 0 { $phase_exit = $clock_exit }
+        }
+    }
     if $tracy_capture_started {
         stop-tracy-capture
         if $tracy_capture_job > 0 {
@@ -1496,6 +1533,7 @@ def "main e2e" [
     --run-pairs: int = 3                                # Number of baseline/feature run pairs
     --run-side: string = "comparison"                   # Phases to run: comparison, feature, or baseline
     --sequential-peer                                  # Verify generated blocks with sequential peer B; feature-only
+    --disposal-clock-calibration                       # Fixed 25k same-binary stage timer diagnostic
     --run-type: string = ""                             # Run type label (dispatch, nightly, release)
     --baseline-args: string = ""                        # Additional node args for baseline phases
     --feature-args: string = ""                         # Additional node args for feature phases
@@ -1514,6 +1552,23 @@ def "main e2e" [
     --valscope-dir: string = "../valscope"               # Path to the ValScope checkout
     --skip-summary                                       # Leave summary generation to a later workflow step
 ] {
+    if $disposal_clock_calibration {
+        if $profile != "profiling" or not $no_default_features or $run_side != "comparison" or $run_pairs != 3 or $duration != 90 or $tps != 25000 or $accounts != 1000 or $max_concurrent_requests != 100 or $bloat != 100 or $token_count != 4 {
+            error make { msg: "disposal calibration requires the frozen profiling/25k/90s/3-pair/1000-account/100-RPC/100GiB/4-token controls" }
+        }
+        if $preset != "public-mix" or $baseline_hardfork != "T14" or $feature_hardfork != "T14" or $gas_limit != "1000000000000" or $general_gas_limit != "1500000000" {
+            error make { msg: "disposal calibration requires the frozen public-mix/T14/gas controls" }
+        }
+        if $samply or $scheduler_trace or $tracy != "off" or $sequential_peer or $valscope_static_report or $clickhouse_url != "" or $victoriametrics_url != "" or $baseline_env != "" or $feature_env != "" or $bench_env != "" or $bench_args != "" or not $tune or $init_only or $summary_warmup_blocks != 5 {
+            error make { msg: "disposal calibration cannot combine profilers, workload/runtime overrides or performance publication" }
+        }
+        let expected = ["--execution.threads" "8" "--execution.batch-size" "128" "--execution.capture-window" "128" "--engine.prewarming-threads" "16" "--engine.account-worker-count" "32" "--engine.storage-worker-count" "32" "--log.file.filter=debug"]
+        if (parse-cli-args $baseline_args) != $expected or (parse-cli-args $feature_args) != ($expected | append "--execution.stage-diagnostics") {
+            error make { msg: "disposal calibration requires identical frozen node arguments with only feature stage diagnostics enabled" }
+        }
+        let checked = (^python3 benchmarks/parallel-execution/official_disposal_clock.py environment | complete)
+        if $checked.exit_code != 0 { error make { msg: $"disposal calibration environment rejected: ($checked.stdout) ($checked.stderr)" } }
+    }
     if $scheduler_trace and ($duration < 60 or $run_pairs != 1 or not $samply) {
         error make { msg: "--scheduler-trace requires --samply, --duration >= 60 and --run-pairs 1" }
     }
@@ -1623,6 +1678,9 @@ def "main e2e" [
     let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
     let general_gas_limit_args = if $general_gas_limit != "" { ["--general-gas-limit" $general_gas_limit] } else { [] }
     let tracing_otlp = (derive-tracing-otlp $tracing_otlp)
+    if $disposal_clock_calibration and $tracing_otlp == "" {
+        error make { msg: "disposal calibration requires the original node OTLP endpoint" }
+    }
     if $tracing_otlp != "" {
         $env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT = $tracing_otlp
     }
@@ -1765,12 +1823,15 @@ def "main e2e" [
     let feature_build_features = if $feature_features != "" { merge-e2e-features $global_build_features $feature_features } else { $global_build_features }
     let baseline_tbc = (tracy-build-config $baseline_build_features $tracy)
     let feature_tbc = (tracy-build-config $feature_build_features $tracy)
-    let effective_no_cache = $no_cache or ($tracy != "off")
+    let effective_no_cache = $no_cache or ($tracy != "off") or $disposal_clock_calibration
     let baseline_sha = if $needs_baseline { e2e-worktree-sha $baseline_wt } else { "" }
     let feature_sha = if $needs_feature { e2e-worktree-sha $feature_wt } else { "" }
     # Profile, base RUSTFLAGS and default-feature controls are common to both arms.
     # Identical effective build inputs must use the same executable for a config A/B.
     let shared_build = $needs_baseline and $needs_feature and $baseline_sha == $feature_sha and $baseline_tbc == $feature_tbc
+    if $disposal_clock_calibration and not $shared_build {
+        error make { msg: "disposal calibration requires identical source refs and node feature sets" }
+    }
     # Different builds keep independent target directories and parallel compilation.
     mut builds = []
     if $needs_baseline {
@@ -1805,6 +1866,24 @@ def "main e2e" [
         }
     }
     { shared_binary: $shared_build, arms: $build_manifest } | to json | save -f $"($results_dir)/build-manifest.json"
+    let disposal_clock_config = $"($results_dir)/disposal-clock-config.json"
+    if $disposal_clock_calibration {
+        {
+            schema: 1
+            worktree: ($baseline_wt | path expand)
+            source_commit: $baseline_sha
+            node_binary: ($baseline_tempo | path expand)
+            build_manifest: ($"($results_dir)/build-manifest.json" | path expand)
+            output: ($"($results_dir)/disposal-clock" | path expand)
+            profile: $profile
+            rustflags: $RUSTFLAGS
+            no_default_features: $no_default_features
+            cpus: { a: $E2E_A_CPUS, b: $E2E_B_CPUS }
+        } | to json | save $disposal_clock_config
+        let checked = (^python3 benchmarks/parallel-execution/official_disposal_clock.py build --config $disposal_clock_config | complete)
+        print $checked.stdout
+        if $checked.exit_code != 0 { error make { msg: $"disposal clock build failed: ($checked.stderr)" } }
+    }
     let regenesis_tempo = if $regenesis_needed {
         if $needs_feature { $feature_tempo } else { $baseline_tempo }
     } else { "" }
@@ -1866,6 +1945,8 @@ def "main e2e" [
         baseline_args: $baseline_args
         feature_args: $feature_args
         sequential_peer: $sequential_peer
+        disposal_clock: $disposal_clock_calibration
+        disposal_clock_config: $disposal_clock_config
         bench_args: $bench_args
         baseline_env: $baseline_env
         feature_env: $feature_env

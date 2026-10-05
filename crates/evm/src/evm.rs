@@ -82,6 +82,39 @@ struct ExecutionStageTimings {
     ordinary: Duration,
     commit_calls: u64,
     commit: Duration,
+    prewarmed_reuse_disposal_calls: u64,
+    prewarmed_reuse_disposal: Duration,
+    prewarmed_fallback_disposal_calls: u64,
+    prewarmed_fallback_disposal: Duration,
+}
+
+/// Opt-in disposal timing at the existing partial-move boundary. A local
+/// candidate must be declared after this guard so Rust drops its remaining
+/// fields in their normal order before the guard takes the end timestamp.
+struct ConsumedCandidateDropTimer<'a> {
+    elapsed: &'a mut Duration,
+    started: Option<Instant>,
+}
+
+impl<'a> ConsumedCandidateDropTimer<'a> {
+    fn new(elapsed: &'a mut Duration) -> Self {
+        Self {
+            elapsed,
+            started: None,
+        }
+    }
+
+    fn start(&mut self) {
+        self.started = Some(Instant::now());
+    }
+}
+
+impl Drop for ConsumedCandidateDropTimer<'_> {
+    fn drop(&mut self) {
+        if let Some(started) = self.started {
+            *self.elapsed = started.elapsed();
+        }
+    }
 }
 
 /// Factory for creating Tempo EVM instances.
@@ -482,6 +515,10 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             ordinary_seconds = timings.ordinary.as_secs_f64(),
             commit_calls = timings.commit_calls,
             commit_seconds = timings.commit.as_secs_f64(),
+            prewarmed_reuse_disposal_calls = timings.prewarmed_reuse_disposal_calls,
+            prewarmed_reuse_disposal_seconds = timings.prewarmed_reuse_disposal.as_secs_f64(),
+            prewarmed_fallback_disposal_calls = timings.prewarmed_fallback_disposal_calls,
+            prewarmed_fallback_disposal_seconds = timings.prewarmed_fallback_disposal.as_secs_f64(),
             "Ordered execution stage timings"
         );
     }
@@ -853,6 +890,19 @@ where
                     self.execution_stats.native_rebased += u64::from(candidate.native_rebased);
                     self.inner.ctx.tx = tx;
                     self.inner.validator_fee = candidate.validator_fee;
+                    if prewarmed && self.execution_stage_timings.is_some() {
+                        let mut elapsed = Duration::ZERO;
+                        let result = {
+                            let mut timer = ConsumedCandidateDropTimer::new(&mut elapsed);
+                            let candidate = candidate;
+                            timer.start();
+                            candidate.result
+                        };
+                        let timings = self.execution_stage_timings.as_mut().unwrap();
+                        timings.prewarmed_reuse_disposal_calls += 1;
+                        timings.prewarmed_reuse_disposal += elapsed;
+                        return result;
+                    }
                     return candidate.result;
                 } else {
                     self.execution_stats.conflicts += 1;
@@ -871,7 +921,20 @@ where
                         None => self.execution_stats.validation_errors += 1,
                     }
                     tracing::trace!(target: "tempo::execution::conflicts", caller = ?tx.inner.caller, payer = ?tx.fee_payer().ok(), "Conflicting candidate");
-                    self.inner.set_body_replay(candidate.body);
+                    if prewarmed && self.execution_stage_timings.is_some() {
+                        let mut elapsed = Duration::ZERO;
+                        {
+                            let mut timer = ConsumedCandidateDropTimer::new(&mut elapsed);
+                            let candidate = candidate;
+                            self.inner.set_body_replay(candidate.body);
+                            timer.start();
+                        }
+                        let timings = self.execution_stage_timings.as_mut().unwrap();
+                        timings.prewarmed_fallback_disposal_calls += 1;
+                        timings.prewarmed_fallback_disposal += elapsed;
+                    } else {
+                        self.inner.set_body_replay(candidate.body);
+                    }
                 }
             }
         }
@@ -1156,6 +1219,160 @@ mod tests {
     }
 
     #[test]
+    fn consumed_candidate_disposal_scope_preserves_partial_move_drop_order() {
+        use std::cell::RefCell;
+
+        struct Probe<'a> {
+            name: &'static str,
+            events: &'a RefCell<Vec<(&'static str, Instant)>>,
+        }
+        impl Drop for Probe<'_> {
+            fn drop(&mut self) {
+                self.events.borrow_mut().push((self.name, Instant::now()));
+            }
+        }
+        struct Candidate<'a> {
+            before: Probe<'a>,
+            result: Probe<'a>,
+            body: Probe<'a>,
+            after: Probe<'a>,
+        }
+        let events = RefCell::new(Vec::new());
+        let candidate = || Candidate {
+            before: Probe {
+                name: "before",
+                events: &events,
+            },
+            result: Probe {
+                name: "result",
+                events: &events,
+            },
+            body: Probe {
+                name: "body",
+                events: &events,
+            },
+            after: Probe {
+                name: "after",
+                events: &events,
+            },
+        };
+        let names = || {
+            events
+                .borrow()
+                .iter()
+                .map(|(name, _)| *name)
+                .collect::<Vec<_>>()
+        };
+
+        let mut elapsed = Duration::ZERO;
+        let started;
+        let result = {
+            let mut timer = ConsumedCandidateDropTimer::new(&mut elapsed);
+            let candidate = candidate();
+            // Read the fields used only for their destructors, retaining their
+            // declaration positions and avoiding dead-field lint suppression.
+            assert_eq!(candidate.before.name, "before");
+            assert_eq!(candidate.after.name, "after");
+            timer.start();
+            started = timer.started.unwrap();
+            candidate.result
+        };
+        assert_eq!(names(), ["before", "body", "after"]);
+        let finished = started + elapsed;
+        assert!(
+            events
+                .borrow()
+                .iter()
+                .all(|(_, at)| started <= *at && *at <= finished)
+        );
+        drop(result);
+        assert_eq!(names(), ["before", "body", "after", "result"]);
+        events.borrow_mut().clear();
+
+        let mut elapsed = Duration::ZERO;
+        let started;
+        let mut transferred_body = None;
+        {
+            let mut timer = ConsumedCandidateDropTimer::new(&mut elapsed);
+            let candidate = candidate();
+            let mut transfer_body = |body| {
+                assert!(events.borrow().is_empty());
+                assert!(transferred_body.is_none());
+                transferred_body = Some(body);
+            };
+            transfer_body(candidate.body);
+            timer.start();
+            started = timer.started.unwrap();
+        }
+        assert_eq!(names(), ["before", "result", "after"]);
+        let finished = started + elapsed;
+        assert!(
+            events
+                .borrow()
+                .iter()
+                .all(|(_, at)| started <= *at && *at <= finished)
+        );
+        drop(transferred_body);
+        assert_eq!(names(), ["before", "result", "after", "body"]);
+        events.borrow_mut().clear();
+
+        let mut elapsed = Duration::ZERO;
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut timer = ConsumedCandidateDropTimer::new(&mut elapsed);
+            let candidate = candidate();
+            let transfer_body: fn(Probe<'_>) = |_body| panic!("body transfer failure");
+            transfer_body(candidate.body);
+            timer.start();
+        }));
+        assert!(unwound.is_err());
+        assert_eq!(
+            elapsed,
+            Duration::ZERO,
+            "transfer failure must not start timing"
+        );
+        assert_eq!(names(), ["body", "before", "result", "after"]);
+    }
+
+    /// Empty-scope clock floor only, never a destructor or executor benchmark.
+    /// Run on the measurement host before and after an execution diagnostic.
+    #[test]
+    #[ignore = "bounded disposal clock calibration"]
+    fn consumed_candidate_disposal_clock_calibration() {
+        const SAMPLES: usize = 16_384;
+        let mut reuse = Vec::with_capacity(SAMPLES);
+        let mut fallback = Vec::with_capacity(SAMPLES);
+        for _ in 0..SAMPLES {
+            let mut elapsed = Duration::ZERO;
+            let result = {
+                let mut timer = ConsumedCandidateDropTimer::new(&mut elapsed);
+                let candidate = std::hint::black_box((0_u8, 0_u8));
+                timer.start();
+                candidate.0
+            };
+            std::hint::black_box(result);
+            reuse.push(elapsed.as_nanos());
+
+            let mut elapsed = Duration::ZERO;
+            {
+                let mut timer = ConsumedCandidateDropTimer::new(&mut elapsed);
+                let candidate = std::hint::black_box((0_u8, 0_u8));
+                std::hint::black_box(candidate.1);
+                timer.start();
+            }
+            fallback.push(elapsed.as_nanos());
+        }
+        for (kind, mut samples) in [("reuse", reuse), ("fallback", fallback)] {
+            samples.sort_unstable();
+            eprintln!(
+                "consumed_candidate_disposal_clock kind={kind} samples={SAMPLES} p50_ns={} p99_ns={} max_ns={}",
+                samples[SAMPLES / 2],
+                samples[SAMPLES * 99 / 100],
+                samples[SAMPLES - 1],
+            );
+        }
+    }
+
+    #[test]
     fn execution_stage_diagnostics_preserve_reuse_fallback_and_reset() {
         use revm::database_interface::EmptyDBTyped;
         #[derive(Debug, thiserror::Error)]
@@ -1234,6 +1451,14 @@ mod tests {
                     assert_eq!(timings.ordinary_calls, if case == "reuse" { 1 } else { 2 });
                     assert_eq!(timings.ordinary_errors, 1);
                     assert_eq!(timings.commit_calls, 1);
+                    assert_eq!(
+                        timings.prewarmed_reuse_disposal_calls,
+                        u64::from(case == "reuse")
+                    );
+                    assert_eq!(
+                        timings.prewarmed_fallback_disposal_calls,
+                        u64::from(case != "reuse")
+                    );
                     let inspected = actual.with_inspector(NoOpInspector {});
                     assert_eq!(
                         inspected
@@ -1256,6 +1481,10 @@ mod tests {
                 assert_eq!(timings.validation_calls, 0);
                 assert_eq!(timings.ordinary_calls, 0);
                 assert_eq!(timings.commit_calls, 0);
+                assert_eq!(timings.prewarmed_reuse_disposal_calls, 0);
+                assert_eq!(timings.prewarmed_reuse_disposal, Duration::ZERO);
+                assert_eq!(timings.prewarmed_fallback_disposal_calls, 0);
+                assert_eq!(timings.prewarmed_fallback_disposal, Duration::ZERO);
                 actual.set_speculative_executor(None);
                 assert!(actual.execution_stage_timings.is_none());
             }

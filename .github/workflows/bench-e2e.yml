@@ -81,6 +81,7 @@ on:
         default: "off"
         options:
           - "off"
+          - disposal-clock
           - samply
           - samply-low-rate
           - samply-buffered
@@ -401,6 +402,7 @@ jobs:
       BENCH_SAMPLY_BINARY_SHA256: ""
       BENCH_SAMPLY_BUILD_MANIFEST: ""
       BENCH_SCHED_TRACE: ${{ inputs.profiling == 'kernel-scheduling' }}
+      BENCH_DISPOSAL_CLOCK: ${{ inputs.profiling == 'disposal-clock' }}
       BENCH_TRACY: ${{ inputs.tracy != '' && inputs.tracy || ((inputs.profiling == 'tracy' || inputs.profiling == 'both') && 'tracy' || ((inputs.profiling == 'off' || inputs.profiling == 'samply') && 'off' || 'off')) }}
       BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds || '10' }}
       BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset }}
@@ -417,7 +419,7 @@ jobs:
       BENCH_RUN_TYPE: ${{ inputs.run-type || 'dispatch' }}
       BENCH_FORCE_BLOAT: ${{ inputs.force-bloat || 'false' }}
       BENCH_NO_CACHE: ${{ inputs.no-cache || 'false' }}
-      BENCH_NO_SLACK: ${{ (inputs.sequential-peer || inputs.profiling == 'samply-low-rate' || inputs.profiling == 'samply-buffered' || inputs.profiling == 'samply-scheduling' || inputs.profiling == 'kernel-scheduling') && 'true' || inputs.no-slack }}
+      BENCH_NO_SLACK: ${{ (inputs.sequential-peer || inputs.profiling == 'samply-low-rate' || inputs.profiling == 'samply-buffered' || inputs.profiling == 'samply-scheduling' || inputs.profiling == 'kernel-scheduling' || inputs.profiling == 'disposal-clock') && 'true' || inputs.no-slack }}
       # The reusable input defaults to always. Direct manual dispatch has no slack
       # input and uses win-only notifications, without adding a 26th UI input.
       BENCH_SLACK: ${{ inputs.slack || 'on-win' }}
@@ -1067,6 +1069,19 @@ jobs:
           if [ "$BENCH_RUN_SIDE" = "baseline" ] && [ "$BENCH_CLICKHOUSE_RUN" = "feature-1" ]; then
             BENCH_CLICKHOUSE_RUN="baseline-1"
           fi
+          if [ "$BENCH_DISPOSAL_CLOCK" = "true" ]; then
+            if [ "$BASELINE_REF" != "$FEATURE_REF" ] || [ "$BENCH_RUN_SIDE" != "comparison" ] || [ "$BENCH_OTLP" != "true" ] || [ "$BENCH_SKIP_STATE_ROOT" = "true" ] || [ "$BENCH_VALSCOPE" = "true" ] || [ "$BENCH_METRICS" = "true" ]; then
+              echo "::error::disposal-clock requires same-source comparison, unchanged OTLP, state-root validation, and no performance publication"
+              exit 1
+            fi
+            # Keep node tracing and the normal sender metrics collection. This
+            # diagnostic must not enter the performance result series or Slack.
+            CLICKHOUSE_URL=""
+            unset CLICKHOUSE_USER CLICKHOUSE_PASSWORD
+            # Pin the same direct compiler path for both freshly built node and
+            # clock artifacts; the job normally inherits RUSTC_WRAPPER=sccache.
+            export RUSTC_WRAPPER="" RUSTC_WORKSPACE_WRAPPER=""
+          fi
           if ! [[ "$BENCH_TOKEN_COUNT" =~ ^[1-9][0-9]*$ ]]; then
             echo "::error::token-count must be a positive integer"
             exit 1
@@ -1100,6 +1115,7 @@ jobs:
           [ "$BENCH_FORCE_BLOAT" = "true" ] && cmd+=(--force-bloat)
           [ "$BENCH_NO_CACHE" = "true" ] && cmd+=(--no-cache)
           [ "$BENCH_SEQUENTIAL_PEER" = "true" ] && cmd+=(--sequential-peer)
+          [ "$BENCH_DISPOSAL_CLOCK" = "true" ] && cmd+=(--disposal-clock-calibration)
           [ "$BENCH_SAMPLY" = "true" ] && cmd+=(--samply)
           [ -n "$BENCH_SAMPLY_ARGS" ] && cmd+=(--samply-args="$BENCH_SAMPLY_ARGS")
           [ "$BENCH_SCHED_TRACE" = "true" ] && cmd+=(--scheduler-trace)
@@ -1302,7 +1318,7 @@ jobs:
           fi
 
       - name: Upload results
-        if: ${{ !cancelled() }}
+        if: ${{ always() && (!cancelled() || env.BENCH_DISPOSAL_CLOCK == 'true') }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: tempo-bench-results

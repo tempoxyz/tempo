@@ -13790,6 +13790,7 @@ dependencies = [
  "rand 0.10.2",
  "rayon",
  "reth-chainspec",
+ "reth-cli-util",
  "reth-consensus",
  "reth-consensus-common",
  "reth-ethereum-consensus",
