@@ -11,7 +11,7 @@ use super::ZoneVerifier;
 const MAX_PROOF_BYTES: usize = tempo_nitro_attestation::MAX_DOCUMENT_SIZE;
 #[cfg(feature = "custom-tdx")]
 const MAX_PROOF_BYTES: usize = tempo_tdx_attestation::MAX_EVIDENCE_BYTES;
-const MAX_CALLDATA_LEN: usize = 4 + 17 * 32 + 2 * 32 + 32 + MAX_PROOF_BYTES;
+const MAX_CALLDATA_LEN: usize = 4 + 17 * 32 + 2 * 32 + 32 + MAX_PROOF_BYTES.div_ceil(32) * 32;
 
 impl Precompile for ZoneVerifier {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -94,10 +94,10 @@ mod tests {
 
     #[test]
     fn calldata_limit_applies_before_decoding() {
-        let call = call(vec![0; tempo_nitro_attestation::MAX_DOCUMENT_SIZE]);
+        let call = call(vec![0; MAX_PROOF_BYTES]);
         let portal = crate::zone_factory::portal_address(call.zoneId);
         let mut calldata = call.abi_encode();
-        assert_eq!(calldata.len(), 25_220);
+        assert_eq!(calldata.len(), MAX_CALLDATA_LEN);
 
         // Corrupt the final head word (the proof offset). At the exact maximum
         // length this must reach ABI decoding and revert; one extra byte must

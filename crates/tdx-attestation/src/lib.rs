@@ -33,10 +33,23 @@ pub struct Measurements {
 }
 
 /// Explicit measurement allowlist. The same schema is used by Zone transport clients.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "backend", rename = "tdx", deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "backend", rename = "tdx")]
 pub struct Policy {
     pub measurements: Vec<Measurements>,
+}
+
+impl<'de> Deserialize<'de> for Policy {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(tag = "backend", deny_unknown_fields)]
+        enum TaggedPolicy {
+            #[serde(rename = "tdx")]
+            Tdx { measurements: Vec<Measurements> },
+        }
+        let TaggedPolicy::Tdx { measurements } = TaggedPolicy::deserialize(deserializer)?;
+        Ok(Self { measurements })
+    }
 }
 
 /// A malformed, untrusted, expired, or policy-rejected evidence bundle.
@@ -320,6 +333,22 @@ mod tests {
             assert!(validate_quote(&q).is_err());
         }
     }
+    #[test]
+    fn policy_requires_explicit_backend_and_rejects_extra_fields() {
+        let (_, policy, _) = fixture();
+        let mut json = serde_json::to_value(&policy).unwrap();
+        assert_eq!(json["backend"], "tdx");
+        assert_eq!(
+            serde_json::from_value::<Policy>(json.clone()).unwrap(),
+            policy
+        );
+        json["backend"] = "nitro".into();
+        assert!(serde_json::from_value::<Policy>(json.clone()).is_err());
+        json["backend"] = "tdx".into();
+        json["unexpected"] = true.into();
+        assert!(serde_json::from_value::<Policy>(json).is_err());
+    }
+
     #[test]
     fn debug_zero_and_empty_policy_are_rejected() {
         let (_, mut policy, _) = fixture();
