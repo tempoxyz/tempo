@@ -66,19 +66,21 @@ def command(argv, cwd=None):
 
 def environment():
     forbidden = ("CARGO_PROFILE_", "CARGO_TARGET_")
-    exact = {"CARGO_ENCODED_RUSTFLAGS", "CARGO_BUILD_RUSTFLAGS", "CARGO_INCREMENTAL",
+    exact = {"CARGO_ENCODED_RUSTFLAGS", "CARGO_BUILD_RUSTFLAGS",
              "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "LD_PRELOAD",
              "MALLOC_CONF", "_RJEM_MALLOC_CONF"}
     for name, value in os.environ.items():
         if value and (name in exact or name.startswith(forbidden)):
             raise ValueError("unsupported inherited build/allocator override: " + name)
+    require(os.environ.get("CARGO_INCREMENTAL") == "0", "CARGO_INCREMENTAL must be pinned to 0")
     rustc = command(["rustc", "-vV"])
     require("release: 1.98.1\n" in rustc + "\n", "default Rust must be 1.98.1")
     pinned = command(["rustc", "+1.98.1", "-vV"])
     require(rustc == pinned, "default and pinned Rust differ")
     require(shutil.which("taskset") is not None, "taskset is required")
     return {"rustc": rustc, "cargo": command(["cargo", "+1.98.1", "-V"]),
-            "rustflags": RUSTFLAGS, "cpu_affinity": sorted(os.sched_getaffinity(0)),
+            "rustflags": RUSTFLAGS, "cargo_incremental": "0",
+            "cpu_affinity": sorted(os.sched_getaffinity(0)),
             "kernel": os.uname().release, "machine": os.uname().machine}
 
 
@@ -194,6 +196,7 @@ def check_config(path):
     require(cfg["cpus"] == CPU_SETS, "validator affinity changed")
     require(cfg["rustflags"] == RUSTFLAGS and cfg["no_default_features"] is True,
             "node build flags changed")
+    require(cfg["cargo_incremental"] == "0", "node incremental setting changed")
     manifest = read(cfg["build_manifest"])
     require(manifest["shared_binary"] is True and len(manifest["arms"]) == 2,
             "diagnostic requires one shared node binary")
@@ -229,14 +232,15 @@ def compile_clock(config_path):
             "EVM test allocator has not been integrated")
     require(TEST.rsplit("::", 1)[-1] in (worktree / "crates/evm/src/evm.rs").read_text(),
             "clock calibration test has not been integrated")
-    env = dict(os.environ, RUSTFLAGS=RUSTFLAGS)
+    env = dict(os.environ, RUSTFLAGS=RUSTFLAGS, CARGO_INCREMENTAL="0")
     argv = ["cargo", "+1.98.1", "test", "--locked", "--profile", "profiling", "--jobs", "4",
             "-p", "tempo-evm", "--lib", "--no-run", "--message-format=json-render-diagnostics",
             "--features", "alloy-primitives/asm-keccak,alloy-primitives/keccak-cache-global,reth-cli-util/jemalloc"]
     pending = {"schema": 1, "status": "building", "config": reference(config_path),
                "node_build_manifest": reference(cfg["build_manifest"]), "sources": hashes,
                "source_commit": cfg["source_commit"], "adapter": reference(__file__),
-               "system": system, "command": argv, "environment_set": {"RUSTFLAGS": RUSTFLAGS},
+               "system": system, "command": argv,
+               "environment_set": {"RUSTFLAGS": RUSTFLAGS, "CARGO_INCREMENTAL": "0"},
                "limits": {"build_wall_seconds": BUILD_SECONDS, "build_log_bytes": BUILD_BYTES,
                           "sample_wall_seconds": SAMPLE_SECONDS, "sample_log_bytes": SAMPLE_BYTES,
                           "disk_floor_bytes": DISK_FLOOR, "mem_available_floor_bytes": MEM_AVAILABLE_FLOOR},

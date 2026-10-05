@@ -52,9 +52,25 @@ class PreflightTests(unittest.TestCase):
                 command.assert_not_called()
 
     def test_wrong_default_rust_refused(self):
-        with mock.patch.dict(clock.os.environ, {}, clear=True), mock.patch.object(clock, "command", return_value="rustc 1.99.0\nrelease: 1.99.0"):
+        with mock.patch.dict(clock.os.environ, {"CARGO_INCREMENTAL": "0"}, clear=True), mock.patch.object(clock, "command", return_value="rustc 1.99.0\nrelease: 1.99.0"):
             with self.assertRaises(ValueError):
                 clock.environment()
+
+    def test_ci_nonincremental_build_setting_is_accepted_and_recorded(self):
+        def command(argv):
+            return "cargo 1.98.1" if argv[0] == "cargo" else "rustc 1.98.1\nrelease: 1.98.1"
+        with mock.patch.dict(clock.os.environ, {"CARGO_INCREMENTAL": "0"}, clear=True), \
+                mock.patch.object(clock, "command", side_effect=command), \
+                mock.patch.object(clock.shutil, "which", return_value="/usr/bin/taskset"):
+            self.assertEqual(clock.environment()["cargo_incremental"], "0")
+
+    def test_missing_or_changed_incremental_setting_refused_before_commands(self):
+        for env in [{}, {"CARGO_INCREMENTAL": "1"}, {"CARGO_INCREMENTAL": "false"}]:
+            with self.subTest(env=env), mock.patch.dict(clock.os.environ, env, clear=True), \
+                    mock.patch.object(clock, "command") as command:
+                with self.assertRaisesRegex(ValueError, "CARGO_INCREMENTAL must be pinned to 0"):
+                    clock.environment()
+                command.assert_not_called()
 
     def test_live_node_or_workload_refused_without_command_line_disclosure(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -156,6 +172,7 @@ class BuildTests(unittest.TestCase):
             log.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
             self.assertEqual(seconds, 3600)
             self.assertEqual(env["RUSTFLAGS"], clock.RUSTFLAGS)
+            self.assertEqual(env["CARGO_INCREMENTAL"], "0")
             return {"argv": argv, "exit_code": 0, "stop_reason": None, "log": clock.reference(log)}
         with mock.patch.object(clock, "check_config", return_value=(cfg, root)), \
                 mock.patch.object(clock, "environment", return_value={}), \

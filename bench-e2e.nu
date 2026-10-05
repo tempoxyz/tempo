@@ -1877,6 +1877,7 @@ def "main e2e" [
             output: ($"($results_dir)/disposal-clock" | path expand)
             profile: $profile
             rustflags: $RUSTFLAGS
+            cargo_incremental: ($env.CARGO_INCREMENTAL? | default "")
             no_default_features: $no_default_features
             cpus: { a: $E2E_A_CPUS, b: $E2E_B_CPUS }
         } | to json | save $disposal_clock_config

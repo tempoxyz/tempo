@@ -1081,6 +1081,8 @@ jobs:
             # Pin the same direct compiler path for both freshly built node and
             # clock artifacts; the job normally inherits RUSTC_WRAPPER=sccache.
             export RUSTC_WRAPPER="" RUSTC_WORKSPACE_WRAPPER=""
+            # Preserve CI's nonincremental setting for both node and clock builds.
+            export CARGO_INCREMENTAL=0
           fi
           if ! [[ "$BENCH_TOKEN_COUNT" =~ ^[1-9][0-9]*$ ]]; then
             echo "::error::token-count must be a positive integer"
