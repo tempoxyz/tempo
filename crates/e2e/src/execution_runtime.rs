@@ -27,10 +27,7 @@ use futures::{StreamExt, future::BoxFuture};
 use reth_chainspec::EthChainSpec;
 use reth_db::mdbx::DatabaseEnv;
 use reth_ethereum::{
-    evm::{
-        primitives::EvmEnv,
-        revm::db::{CacheDB, EmptyDB},
-    },
+    evm::{primitives::EvmEnv, revm::db::InMemoryDB},
     network::{
         Peers as _,
         api::{NetworkEventListenerProvider, PeerKind, PeersInfo, events::NetworkEvent},
@@ -1115,8 +1112,8 @@ pub fn address(index: u32) -> Address {
     secret_key_to_address(MnemonicBuilder::from_phrase_nth(TEST_MNEMONIC, index).credential())
 }
 
-fn setup_tempo_evm(chain_id: u64) -> TempoEvm<CacheDB<EmptyDB>> {
-    let db = CacheDB::default();
+fn setup_tempo_evm(chain_id: u64) -> TempoEvm<InMemoryDB> {
+    let db = InMemoryDB::default();
     // revm sets timestamp to 1 by default, override it to 0 for genesis initializations
     let mut env = EvmEnv::default().with_timestamp(U256::ZERO);
     env.cfg_env.chain_id = chain_id;
