@@ -185,6 +185,7 @@ impl AddressRegistry {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::{
         error::TempoPrecompileError,
@@ -192,6 +193,7 @@ mod tests {
         test_util::{VIRTUAL_MASTER, VIRTUAL_SALT},
     };
     use alloy_primitives::hex_literal::hex;
+
     use tempo_chainspec::hardfork::TempoHardfork;
 
     #[test]

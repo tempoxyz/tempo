@@ -286,7 +286,7 @@ mod tests {
     }
 
     fn aa_2d_tx_for_sequence(sender: Address, nonce: u64, priority: u128) -> TestTx {
-        tx_with_nonce_key(U256::from(1), sender, nonce, priority)
+        tx_with_nonce_key(U256::ONE, sender, nonce, priority)
     }
 
     fn protocol_best_transactions(

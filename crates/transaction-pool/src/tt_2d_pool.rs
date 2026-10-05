@@ -180,6 +180,12 @@ impl AA2dPool {
         self.metrics.set_transaction_counts(total, pending, queued);
     }
 
+    /// Returns the base fee the eviction orders are currently keyed against.
+    #[cfg(test)]
+    pub(crate) const fn base_fee(&self) -> u64 {
+        self.base_fee
+    }
+
     pub(crate) fn set_base_fee(&mut self, base_fee: u64) {
         if self.base_fee == base_fee {
             return;
@@ -4036,7 +4042,7 @@ mod tests {
     fn append_pooled_transaction_elements_respects_limit() {
         let mut pool = AA2dPool::default();
         let sender = Address::random();
-        let nonce_key = U256::from(1);
+        let nonce_key = U256::ONE;
 
         // Add 3 transactions with consecutive nonces
         let tx0 = TxBuilder::aa(sender).nonce_key(nonce_key).build();
@@ -4207,7 +4213,7 @@ mod tests {
         let sender2 = Address::random();
 
         let tx1 = TxBuilder::aa(sender1).build();
-        let tx2 = TxBuilder::aa(sender2).nonce_key(U256::from(1)).build();
+        let tx2 = TxBuilder::aa(sender2).nonce_key(U256::ONE).build();
 
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)),
@@ -4347,7 +4353,7 @@ mod tests {
         let sender2 = Address::random();
 
         let tx1 = TxBuilder::aa(sender1).nonce_key(U256::ZERO).build();
-        let tx2 = TxBuilder::aa(sender2).nonce_key(U256::from(1)).build();
+        let tx2 = TxBuilder::aa(sender2).nonce_key(U256::ONE).build();
 
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)),
@@ -4594,9 +4600,7 @@ mod tests {
         let incoming_sender = Address::random();
 
         let snapshot_tx = TxBuilder::aa(snapshot_sender).nonce_key(U256::ZERO).build();
-        let incoming_tx = TxBuilder::aa(incoming_sender)
-            .nonce_key(U256::from(1))
-            .build();
+        let incoming_tx = TxBuilder::aa(incoming_sender).nonce_key(U256::ONE).build();
 
         pool.add_transaction(
             Arc::new(wrap_valid_tx(snapshot_tx, TransactionOrigin::Local)),
@@ -4691,7 +4695,7 @@ mod tests {
         let sender2 = Address::random();
 
         let tx1 = TxBuilder::aa(sender1).nonce_key(U256::ZERO).build();
-        let tx2 = TxBuilder::aa(sender2).nonce_key(U256::from(1)).build();
+        let tx2 = TxBuilder::aa(sender2).nonce_key(U256::ONE).build();
 
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)),
@@ -5064,7 +5068,7 @@ mod tests {
     fn test_pending_size_limit_enforced() {
         let tx0 = wrap_valid_tx(
             TxBuilder::aa(Address::random())
-                .nonce_key(U256::from(1))
+                .nonce_key(U256::ONE)
                 .build(),
             TransactionOrigin::Local,
         );
@@ -5114,7 +5118,7 @@ mod tests {
     fn test_queued_size_limit_enforced() {
         let tx0 = wrap_valid_tx(
             TxBuilder::aa(Address::random())
-                .nonce_key(U256::from(1))
+                .nonce_key(U256::ONE)
                 .nonce(1000)
                 .build(),
             TransactionOrigin::Local,
@@ -5159,7 +5163,7 @@ mod tests {
     #[test]
     fn test_size_tracking_across_promotion_demotion_and_removal() {
         let sender = Address::random();
-        let nonce_key = U256::from(1);
+        let nonce_key = U256::ONE;
         let child = wrap_valid_tx(
             TxBuilder::aa(sender).nonce_key(nonce_key).nonce(1).build(),
             TransactionOrigin::Local,
@@ -5198,7 +5202,7 @@ mod tests {
     #[test]
     fn test_replacement_updates_tracked_size() {
         let sender = Address::random();
-        let nonce_key = U256::from(1);
+        let nonce_key = U256::ONE;
         let original = wrap_valid_tx(
             TxBuilder::aa(sender).nonce_key(nonce_key).build(),
             TransactionOrigin::Local,
@@ -5456,8 +5460,8 @@ mod tests {
         }
 
         // Stage a low-priority nonce chain with its root missing, so all descendants are queued.
-        let attacker = Address::from_word(B256::from(U256::from(1)));
-        let nonce_key = U256::from(1);
+        let attacker = Address::with_last_byte(1);
+        let nonce_key = U256::ONE;
         for nonce in 1..=4 {
             let tx = TxBuilder::aa(attacker)
                 .nonce_key(nonce_key)
@@ -5632,7 +5636,7 @@ mod tests {
         // Add a third tx that triggers eviction
         // effective_tip = min(30 gwei - 20 gwei, 3 gwei) = 3 gwei (medium)
         let trigger_tx = TxBuilder::aa(Address::random())
-            .nonce_key(U256::from(1))
+            .nonce_key(U256::ONE)
             .max_fee(high_max_fee)
             .max_priority_fee(3_000_000_000) // 3 gwei - medium priority
             .build();
@@ -5856,7 +5860,7 @@ mod tests {
             ..Default::default()
         });
         let sender = Address::random();
-        let nonce_key = U256::from(1);
+        let nonce_key = U256::ONE;
         let seq_id = AASequenceId::new(sender, nonce_key);
         let make_tx = |nonce, fee| {
             Arc::new(wrap_valid_tx(
@@ -5944,7 +5948,7 @@ mod tests {
             ..Default::default()
         });
         let sender = Address::random();
-        for key in [U256::from(1), U256::MAX] {
+        for key in [U256::ONE, U256::MAX] {
             let tx = TxBuilder::aa(sender)
                 .nonce_key(key)
                 .nonce(u64::from(key != U256::MAX))
@@ -5998,10 +6002,7 @@ mod tests {
         .unwrap();
 
         // The 3rd transaction (either type) should be rejected
-        let tx3 = TxBuilder::aa(sender)
-            .nonce_key(U256::from(1))
-            .nonce(0)
-            .build();
+        let tx3 = TxBuilder::aa(sender).nonce_key(U256::ONE).nonce(0).build();
         let result = pool.add_transaction(
             Arc::new(wrap_valid_tx(tx3, TransactionOrigin::Local)),
             0,
@@ -6032,7 +6033,7 @@ mod tests {
             .nonce_key(U256::ZERO)
             .nonce(1)
             .build();
-        let tx2_0 = TxBuilder::aa(sender2).nonce_key(U256::from(1)).build();
+        let tx2_0 = TxBuilder::aa(sender2).nonce_key(U256::ONE).build();
 
         let tx1_0_hash = *tx1_0.hash();
         let tx2_0_hash = *tx2_0.hash();
@@ -6100,7 +6101,7 @@ mod tests {
             .max_fee(2_000_000)
             .build();
         let high_priority = TxBuilder::aa(sender2)
-            .nonce_key(U256::from(1))
+            .nonce_key(U256::ONE)
             .max_priority_fee(10_000_000_000)
             .max_fee(20_000_000_000)
             .build();
@@ -6141,7 +6142,7 @@ mod tests {
         pool.set_base_fee(TEMPO_T1_BASE_FEE);
 
         let high_at_insert_low_at_block = TxBuilder::aa(Address::random())
-            .nonce_key(U256::from(1))
+            .nonce_key(U256::ONE)
             .max_priority_fee(10_000_000_000)
             .max_fee(u128::from(block_base_fee) + 1)
             .build();
@@ -6230,12 +6231,12 @@ mod tests {
         let sequence_sender = Address::random();
 
         let underpriced_parent = TxBuilder::aa(sequence_sender)
-            .nonce_key(U256::from(1))
+            .nonce_key(U256::ONE)
             .max_fee(u128::from(block_base_fee - 1))
             .max_priority_fee(1_000_000_000)
             .build();
         let valid_child = TxBuilder::aa(sequence_sender)
-            .nonce_key(U256::from(1))
+            .nonce_key(U256::ONE)
             .nonce(1)
             .max_fee(u128::from(block_base_fee) + 10_000_000_000)
             .max_priority_fee(10_000_000_000)
@@ -6304,7 +6305,7 @@ mod tests {
         let max_fee = 30_000_000_000u128;
 
         let regular_low = TxBuilder::aa(Address::random())
-            .nonce_key(U256::from(1))
+            .nonce_key(U256::ONE)
             .max_fee(max_fee)
             .max_priority_fee(1_000_000_000)
             .build();
@@ -6369,7 +6370,7 @@ mod tests {
             .build();
         let expiring_older_hash = *expiring_older.hash();
         let regular_newer = TxBuilder::aa(Address::random())
-            .nonce_key(U256::from(1))
+            .nonce_key(U256::ONE)
             .max_fee(max_fee)
             .max_priority_fee(1_000_000_000)
             .build();
@@ -6395,7 +6396,7 @@ mod tests {
 
         let mut regular_older_pool = AA2dPool::default();
         let regular_older = TxBuilder::aa(Address::random())
-            .nonce_key(U256::from(1))
+            .nonce_key(U256::ONE)
             .max_fee(max_fee)
             .max_priority_fee(1_000_000_000)
             .build();
@@ -6434,7 +6435,7 @@ mod tests {
     fn on_state_updates_clears_scratch_buffers_without_nonce_state() {
         let mut pool = AA2dPool::default();
         pool.state_update_nonce_changes
-            .insert(AASequenceId::new(Address::random(), U256::from(1)), 1);
+            .insert(AASequenceId::new(Address::random(), U256::ONE), 1);
         pool.state_update_included_expiring_nonce_hashes
             .push(B256::random());
 
@@ -6454,7 +6455,7 @@ mod tests {
 
         let mut pool = AA2dPool::default();
         let sender = Address::random();
-        let nonce_key = U256::from(1);
+        let nonce_key = U256::ONE;
 
         let tx0 = TxBuilder::aa(sender).nonce_key(nonce_key).build();
         let tx1 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(1).build();
@@ -6518,7 +6519,7 @@ mod tests {
 
         let mut pool = AA2dPool::default();
         let sender = Address::random();
-        let nonce_key = U256::from(1);
+        let nonce_key = U256::ONE;
 
         let tx0 = TxBuilder::aa(sender).nonce_key(nonce_key).build();
         let tx1 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(1).build();
@@ -6586,7 +6587,7 @@ mod tests {
             ..Default::default()
         });
         let sender = Address::random();
-        let nonce_key = U256::from(1);
+        let nonce_key = U256::ONE;
         let max_fee = 30_000_000_000u128;
         let tx2 = TxBuilder::aa(sender)
             .nonce_key(nonce_key)
@@ -6694,7 +6695,7 @@ mod tests {
         let sender = Address::random();
 
         let key_a = U256::ZERO;
-        let key_b = U256::from(1);
+        let key_b = U256::ONE;
 
         let tx_a0 = TxBuilder::aa(sender).nonce_key(key_a).build();
         let tx_b0 = TxBuilder::aa(sender).nonce_key(key_b).build();
@@ -7121,7 +7122,7 @@ mod tests {
             TempoPooledTransaction::new(recovered)
         };
 
-        let tx1 = build_tx(Signature::new(U256::from(1), U256::from(2), false));
+        let tx1 = build_tx(Signature::new(U256::ONE, U256::from(2), false));
         let tx2 = build_tx(Signature::new(U256::from(3), U256::from(4), false));
 
         assert_ne!(tx1.hash(), tx2.hash(), "tx hashes must differ");
@@ -7190,7 +7191,7 @@ mod tests {
             nonce_key: U256::MAX,
             nonce: 0,
             fee_token: Some(fee_token),
-            fee_payer_signature: Some(Signature::new(U256::from(1), U256::from(2), false)),
+            fee_payer_signature: Some(Signature::new(U256::ONE, U256::from(2), false)),
             valid_before: Some(core::num::NonZeroU64::new(123).unwrap()),
             access_list: AccessList::default(),
             tempo_authorization_list: Vec::new(),
@@ -7344,10 +7345,7 @@ mod tests {
         let mut pool = eviction_test_pool();
         let sender = Address::random();
 
-        let tx1 = TxBuilder::aa(sender)
-            .nonce_key(U256::from(1))
-            .nonce(0)
-            .build();
+        let tx1 = TxBuilder::aa(sender).nonce_key(U256::ONE).nonce(0).build();
         let tx2 = TxBuilder::aa(sender)
             .nonce_key(U256::from(2))
             .nonce(0)
@@ -7388,10 +7386,7 @@ mod tests {
         let sender = Address::random();
 
         let tx_exp = TxBuilder::aa(sender).nonce_key(U256::MAX).build();
-        let tx2 = TxBuilder::aa(sender)
-            .nonce_key(U256::from(1))
-            .nonce(0)
-            .build();
+        let tx2 = TxBuilder::aa(sender).nonce_key(U256::ONE).nonce(0).build();
         let tx3 = TxBuilder::aa(sender)
             .nonce_key(U256::from(2))
             .nonce(0)
@@ -7438,10 +7433,7 @@ mod tests {
             .max_priority_fee(100)
             .max_fee(200)
             .build();
-        let tx2 = TxBuilder::aa(sender)
-            .nonce_key(U256::from(1))
-            .nonce(0)
-            .build();
+        let tx2 = TxBuilder::aa(sender).nonce_key(U256::ONE).nonce(0).build();
         let tx3 = TxBuilder::aa(sender)
             .nonce_key(U256::from(2))
             .nonce(0)
@@ -7484,7 +7476,7 @@ mod tests {
 
         // 2D tx with low priority added first
         let tx_low = TxBuilder::aa(sender)
-            .nonce_key(U256::from(1))
+            .nonce_key(U256::ONE)
             .nonce(0)
             .max_priority_fee(100)
             .max_fee(200)
@@ -7848,10 +7840,7 @@ mod tests {
         let mut pool = AA2dPool::new(config);
         let sender = Address::random();
 
-        let tx0 = TxBuilder::aa(sender)
-            .nonce_key(U256::from(1))
-            .nonce(0)
-            .build();
+        let tx0 = TxBuilder::aa(sender).nonce_key(U256::ONE).nonce(0).build();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)),
             0,

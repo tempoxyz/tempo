@@ -441,7 +441,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
         // If the value goes from zero to non-zero, do not record it as `Sinc`,
         // because it requires special TIP-1060 gas credits accounting.
-        let sstore_action = if current == U256::ZERO && value != U256::ZERO {
+        let sstore_action = if current.is_zero() && !value.is_zero() {
             self.actions
                 .record(StorageAction::Sload(address, key, current));
             StorageAction::Sstore(address, key, current, value)
@@ -468,7 +468,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
         // If the value goes from non-zero to zero, do not record it as `Sdec`,
         // because it requires special TIP-1060 gas credits accounting.
-        let sstore_action = if current != U256::ZERO && value == U256::ZERO {
+        let sstore_action = if !current.is_zero() && value.is_zero() {
             self.actions
                 .record(StorageAction::Sload(address, key, current));
             StorageAction::Sstore(address, key, current, value)
@@ -761,8 +761,9 @@ pub fn deduct_gas(
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
-    use alloy::primitives::{B256, b256, bytes, keccak256};
+    use alloy::primitives::{B256, bytes, keccak256};
     use alloy_evm::{EvmEnv, EvmFactory, EvmInternals, revm::context::Host};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
@@ -905,7 +906,7 @@ mod tests {
             .provider_max_gas()
             .with_actions(StorageActions::enabled());
 
-        let (k1, v1) = (U256::from(1), U256::from(10));
+        let (k1, v1) = (U256::ONE, U256::from(10));
         let (k2, v2) = (U256::from(2), U256::from(20));
         let v1_new = U256::from(11);
 
@@ -938,8 +939,8 @@ mod tests {
         let mut evm = TestEvm::default();
         let mut provider = evm.provider_max_gas();
         let addr = Address::random();
-        provider.sstore(addr, U256::from(1), U256::from(100))?;
-        let _ = provider.sload(addr, U256::from(1))?;
+        provider.sstore(addr, U256::ONE, U256::from(100))?;
+        let _ = provider.sload(addr, U256::ONE)?;
 
         assert_eq!(provider.take_actions(), None);
 
@@ -1004,7 +1005,7 @@ mod tests {
         let mut evm = TestEvm::default();
         let mut provider = evm.provider_max_gas();
 
-        let topic = b256!("0000000000000000000000000000000000000000000000000000000000000001");
+        let topic = B256::with_last_byte(1);
         let data = bytes!(
             "00000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000001"
         );
@@ -1284,7 +1285,7 @@ mod tests {
 
         // SSTORE zero->non-zero should add state gas
         let gas_before = provider.gas_used();
-        provider.sstore(address, slot, U256::from(1))?;
+        provider.sstore(address, slot, U256::ONE)?;
         let state_gas_after_set = provider.state_gas_used();
         assert_eq!(
             state_gas_after_set, 230_000,
@@ -1335,7 +1336,7 @@ mod tests {
         let address = Address::random();
 
         // --- First SSTORE (zero→non-zero): fully covered by reservoir ---
-        provider.sstore(address, U256::from(1), U256::from(42))?;
+        provider.sstore(address, U256::ONE, U256::from(42))?;
 
         let regular_gas_per_sstore = provider.gas_used(); // static + dynamic (regular)
         assert_eq!(
@@ -1513,7 +1514,7 @@ mod tests {
 
         let addr1 = Address::random();
         let addr2 = Address::random();
-        let key1 = U256::from(1);
+        let key1 = U256::ONE;
         let key2 = U256::from(2);
 
         // Cold writes

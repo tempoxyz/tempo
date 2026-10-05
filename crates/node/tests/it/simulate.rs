@@ -1,8 +1,8 @@
 use alloy::{
     primitives::{Address, U256, address},
     providers::{Provider, ProviderBuilder},
-    signers::local::MnemonicBuilder,
 };
+use reth_e2e_test_utils::wallet::test_signer;
 use serde_json::json;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_node::rpc::simulate::TempoSimulateV1Response;
@@ -16,7 +16,7 @@ async fn test_tempo_simulate_v1() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
