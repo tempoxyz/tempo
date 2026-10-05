@@ -486,6 +486,7 @@ mod tests {
     use commonware_runtime::{Runner as _, deterministic::Runner};
     use commonware_utils::{N3f1, TryFromIterator as _};
     use rand::SeedableRng as _;
+    use reth_ethereum::evm::revm::{State, database::StateProviderDatabase};
     use reth_node_builder::ConfigureEvm as _;
     use reth_provider::{
         EvmStateProviderBox, StateProvider as _,
@@ -498,7 +499,6 @@ mod tests {
     };
 
     use super::*;
-    use crate::validators::ValidatorEvmDb;
 
     const VALIDATOR_CONFIG_V2_ADDRESS: AlloyAddress =
         alloy_primitives::address!("0xCCCCCCCC00000000000000000000000000000001");
@@ -525,9 +525,9 @@ mod tests {
 
         fn evm_for_block(
             &self,
-            db: ValidatorEvmDb,
+            db: State<StateProviderDatabase<EvmStateProviderBox>>,
             header: &TempoHeader,
-        ) -> eyre::Result<TempoEvm<ValidatorEvmDb>> {
+        ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<EvmStateProviderBox>>>> {
             TempoEvmConfig::moderato()
                 .evm_for_block(db, header)
                 .map_err(eyre::Report::new)
