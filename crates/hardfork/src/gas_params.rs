@@ -68,6 +68,8 @@ fn apply_t7(version: &mut Version) {
     gas[GasId::SstoreSetWithoutLoadCost] = SSTORE_SET_COST as u32;
     gas[GasId::SstoreSetRefund] = SSTORE_SET_COST as u32;
     gas[GasId::SstoreClearingSlotRefund] = 0;
+    // The creditable cost is unchanged when TIP-1016 moves it to state gas.
+    gas[GasId::SstoreSetState] = STORAGE_CREDIT_VALUE as u32;
     gas[GasId::MaxRefundQuotient] = 1;
 }
 
@@ -75,9 +77,6 @@ fn apply_amsterdam(version: &mut Version) {
     // TIP-1016 activates after TIP-1060 and inherits its storage-credit schedule.
     apply_t7(version);
     let gas = &mut version.gas_params;
-    // The credit hook owns charging and settlement; do not also apply
-    // EIP-8037's slot-restoration accounting to these writes.
-    gas[GasId::SstoreSetState] = STORAGE_CREDIT_VALUE as u32;
     gas[GasId::TxCreateCost] = AMSTERDAM_CREATE_REGULAR;
     gas[GasId::Create] = AMSTERDAM_CREATE_REGULAR;
     gas[GasId::CreateState] = AMSTERDAM_CREATE_STATE;
@@ -88,12 +87,37 @@ fn apply_amsterdam(version: &mut Version) {
     gas[GasId::CodeDepositState] = AMSTERDAM_CODE_DEPOSIT_STATE;
     gas[GasId::TxEip7702PerEmptyAccountCost] = AMSTERDAM_NEW_ACCOUNT_REGULAR;
     gas[GasId::TxEip7702AuthRefund] = 0;
+    // evm2 sums NewAccountState + TxEip7702PerAuthState per authorization.
+    // The former already provides TIP-1016's fixed 225k charge; no extra
+    // delegation-bytecode component is charged (matching the revm schedule).
     gas[GasId::TxEip7702PerAuthState] = 0;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tip1016_preserves_t7_sstore_prices() {
+        let t7 = version(SpecId::OSAKA, TempoHardfork::T7, false).gas_params;
+        for &spec in TempoHardfork::VARIANTS.iter().filter(|spec| spec.is_t7()) {
+            let gas = version(SpecId::OSAKA, spec, false).gas_params;
+            for id in [
+                GasId::SstoreStatic,
+                GasId::SstoreSetWithoutLoadCost,
+                GasId::SstoreResetWithoutColdLoadCost,
+                GasId::SstoreSetState,
+                GasId::SstoreSetRefund,
+                GasId::SstoreResetRefund,
+                GasId::SstoreClearingSlotRefund,
+                GasId::ColdStorageCost,
+                GasId::WarmStorageReadCost,
+                GasId::MaxRefundQuotient,
+            ] {
+                assert_eq!(gas[id], t7[id], "{spec:?}: {id:?}");
+            }
+        }
+    }
 
     /// Ported from origin/tip1016: uncapped refunds may only reverse execution
     /// charges, and each restore pair must retain both warm accesses.
@@ -194,12 +218,12 @@ mod tests {
         assert_eq!(gas[GasId::Create], 500_000);
         assert_eq!(gas[GasId::CodeDepositCost], 1_000);
 
-        // No TIP-1016 state-gas split: state gas params stay at upstream defaults.
-        let upstream = evm2::Version::new(SpecId::OSAKA).gas_params;
+        // The creditable price exists at T7, but stays in execution gas until TIP-1016.
+        assert!(!t7.feature(EvmFeatures::EIP8037));
         assert_eq!(
             gas[GasId::SstoreSetState],
-            upstream[GasId::SstoreSetState],
-            "T7 (EIP-8037 disabled) must not split SSTORE into state gas"
+            STORAGE_CREDIT_VALUE as u32,
+            "T7 defines the storage-credit price inherited by TIP-1016"
         );
 
         assert_eq!(gas[GasId::MaxRefundQuotient], 1);

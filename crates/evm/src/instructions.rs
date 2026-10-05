@@ -38,6 +38,10 @@ impl StorageCreditsBackend for StorageCreditsContext<'_, '_, '_> {
         self.state.gas_params()
     }
 
+    fn state_gas_enabled(&self) -> bool {
+        self.state.feature(EvmFeatures::EIP8037)
+    }
+
     fn gas_tracker(&mut self) -> &mut GasTracker {
         self.gas.tracker_mut()
     }

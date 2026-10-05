@@ -642,10 +642,6 @@ fn key_authorization(num_limits: usize) -> SignedKeyAuthorization {
 
 const COLD_ACCOUNT_ACCESS_COST: u64 = 2_600;
 
-fn genesis_gas_params() -> GasParams {
-    tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::Genesis, false).gas_params
-}
-
 fn tempo_gas_params(spec: TempoHardfork) -> GasParams {
     tempo_chainspec::gas_params::version(SpecId::OSAKA, spec, spec.is_t4()).gas_params
 }

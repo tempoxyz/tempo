@@ -352,6 +352,11 @@ where
     }
 
     #[inline]
+    fn state_gas_enabled(&self) -> bool {
+        self.version.feature(EvmFeatures::EIP8037)
+    }
+
+    #[inline]
     fn gas_tracker(&mut self) -> &mut GasTracker {
         &mut self.gas_tracker
     }
@@ -1574,6 +1579,23 @@ mod tests {
             "regular gas should include spill of {spill} from exhausted reservoir"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_sstore_credit_price_changes_dimension_at_tip1016() -> eyre::Result<()> {
+        for (spec, expected_execution, expected_state) in [
+            (TempoHardfork::T7, 254_300, 0),
+            (TempoHardfork::T13, 254_300, 0),
+            (TempoHardfork::T14, 9_300, 245_000),
+        ] {
+            let mut evm = TestEvm::new(spec);
+            let mut provider = evm.provider_with_reservoir(245_000);
+            provider.sstore(Address::repeat_byte(0x22), U256::ZERO, U256::ONE)?;
+            assert_eq!(provider.gas_used(), expected_execution, "{spec:?}");
+            assert_eq!(provider.state_gas_used(), expected_state, "{spec:?}");
+            assert_eq!(provider.reservoir(), 245_000 - expected_state, "{spec:?}");
+        }
         Ok(())
     }
 

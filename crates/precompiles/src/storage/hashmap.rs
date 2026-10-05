@@ -301,6 +301,10 @@ impl StorageCreditsBackend for HashMapStorageProvider {
         &self.gas_params
     }
 
+    fn state_gas_enabled(&self) -> bool {
+        self.amsterdam_eip8037_enabled()
+    }
+
     fn gas_tracker(&mut self) -> &mut GasTracker {
         &mut self.gas_tracker
     }
