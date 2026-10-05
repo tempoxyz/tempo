@@ -6,17 +6,15 @@ use super::{
     local::Localnet,
     types::TestEnv,
 };
-use crate::utils::{TEST_MNEMONIC, TestNodeBuilder, make_genesis_at};
+use crate::utils::{TestNodeBuilder, make_genesis_at};
 use alloy::{
     primitives::{Address, B256, Bytes, U256},
     providers::{Provider, RootProvider},
-    signers::{
-        SignerSync,
-        local::{MnemonicBuilder, PrivateKeySigner},
-    },
+    signers::{SignerSync, local::PrivateKeySigner},
     sol_types::SolCall,
 };
 use alloy_eips::Encodable2718;
+use reth_e2e_test_utils::wallet::test_signer;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{INativeMultisig, NATIVE_MULTISIG_ADDRESS};
 use tempo_primitives::{
@@ -321,7 +319,7 @@ async fn environment() -> eyre::Result<Localnet> {
         .await?;
     let provider = RootProvider::new_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
-    let funder_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let funder_signer = test_signer(0);
     let funder_addr = funder_signer.address();
     Ok(Localnet {
         setup,
