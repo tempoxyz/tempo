@@ -1,6 +1,6 @@
 use crate::zones::{
     T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-    ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
+    T14_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
 };
 use alloy_primitives::{Address, Bytes, U256, address};
 
@@ -91,6 +91,13 @@ pub fn t13_zone_factory_state(owner: Address) -> [InitialZoneFactoryAccount; 4] 
             storage: None,
         },
     ]
+}
+
+/// Returns the native ZoneFactory state with the T14 forced-exit portal runtime.
+pub fn t14_zone_factory_state(owner: Address) -> [InitialZoneFactoryAccount; 4] {
+    let [factory, mut portal, verifier, messenger] = t13_zone_factory_state(owner);
+    portal.code = T14_ZONE_PORTAL_RUNTIME;
+    [factory, portal, verifier, messenger]
 }
 
 crate::sol! {
