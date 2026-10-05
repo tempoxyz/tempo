@@ -271,6 +271,7 @@ where
 
         let state_gas = self.version.feature(EvmFeatures::EIP8037);
         if state_gas {
+            // Charge execution gas before the storage-credit hook charges state gas.
             self.deduct_gas(self.version.gas_params.sstore_dynamic_gas(true, &result))?;
         }
 
