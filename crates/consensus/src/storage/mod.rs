@@ -25,10 +25,7 @@ use eyre::{OptionExt as _, WrapErr as _, ensure, eyre};
 use reth_provider::{BlockIdReader, BlockReader};
 use tracing::{info, instrument, warn};
 
-use crate::{
-    config::BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
-    consensus::{Digest, block::Block},
-};
+use crate::{config::BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES, consensus::Digest};
 
 pub(crate) mod hybrid;
 pub mod snapshot;
@@ -186,7 +183,7 @@ async fn init_prunable_finalized_blocks_archive<TContext>(
     context: &TContext,
     partition_prefix: &str,
     page_cache: CacheRef,
-) -> Result<prunable::Archive<TwoCap, TContext, Digest, Block>, commonware_storage::archive::Error>
+) -> Result<hybrid::Prunable<TContext>, commonware_storage::archive::Error>
 where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
 {
