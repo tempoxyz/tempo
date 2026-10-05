@@ -1481,7 +1481,7 @@ mod tests {
                 payer,
                 ITIP20::transferCall {
                     to: stranger,
-                    amount: U256::from(1u128),
+                    amount: U256::ONE,
                 },
             );
             assert_eq!(result.unwrap_err(), TIP20Error::policy_forbids().into());

@@ -712,7 +712,7 @@ mod tests {
         )?);
 
         // Set paused=true
-        db.insert_account_storage(token_address, tip20_slots::PAUSED, U256::from(1))?;
+        db.insert_account_storage(token_address, tip20_slots::PAUSED, U256::ONE)?;
         assert!(db.is_fee_token_paused(
             TempoHardfork::Genesis,
             token_address,

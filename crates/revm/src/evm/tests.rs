@@ -54,9 +54,7 @@ use revm::context::result::InvalidTransaction;
 const DEFAULT_BALANCE: u128 = 1_000_000_000_000_000_000;
 
 /// Identity precompile address (0x04)
-const IDENTITY_PRECOMPILE: Address = Address::new([
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04,
-]);
+const IDENTITY_PRECOMPILE: Address = Address::with_last_byte(4);
 
 // ==================== Test Utility Functions ====================
 
@@ -375,7 +373,7 @@ impl P256KeyPair {
         delegate_address: Address,
     ) -> eyre::Result<TempoSignedAuthorization> {
         let auth = Authorization {
-            chain_id: U256::from(1),
+            chain_id: U256::ONE,
             address: delegate_address,
             nonce: 0,
         };
@@ -995,7 +993,7 @@ fn test_tempo_tx() -> eyre::Result<()> {
         .db()
         .storage_ref(NONCE_PRECOMPILE_ADDRESS, nonce_slot)
         .unwrap_or_default();
-    assert_eq!(stored_nonce, U256::from(1));
+    assert_eq!(stored_nonce, U256::ONE);
 
     // Test second 2D nonce transaction
     let tx_2d_2 = TxBuilder::new()
@@ -1097,7 +1095,7 @@ fn test_t3_key_authorization_accepts_empty_recipient_allowlist_as_unconstrained(
     let transfer_to = Address::repeat_byte(0xaa);
     let transfer_input = ITIP20::transferCall {
         to: transfer_to,
-        amount: U256::from(1_u64),
+        amount: U256::ONE,
     }
     .abi_encode();
 
@@ -1674,7 +1672,7 @@ fn test_aa_tx_gas_sstore_warm_slot() -> eyre::Result<()> {
     // Pre-populate storage slot 0 with a non-zero value
     evm.ctx
         .db_mut()
-        .insert_account_storage(contract, U256::ZERO, U256::from(1))
+        .insert_account_storage(contract, U256::ZERO, U256::ONE)
         .unwrap();
 
     // T1 costs: new account (250k) + SSTORE reset (not new slot) + base costs
@@ -2589,7 +2587,7 @@ fn test_tip1060_spec_transition_classes_credit_accounting_table() -> eyre::Resul
 /// recreation costs 245k) before the Direct phase runs, so the transaction reverts.
 #[test]
 fn test_tip1060_preserve_churn_attack() -> eyre::Result<()> {
-    use alloy_primitives::{Address, Bytes, TxKind, U256, hex};
+    use alloy_primitives::{Address, TxKind, U256};
     use revm::{
         Context, Database, ExecuteCommitEvm, MainContext,
         context::{CfgEnv, TxEnv},
@@ -2605,17 +2603,14 @@ fn test_tip1060_preserve_churn_attack() -> eyre::Result<()> {
     //   constructor: SSTORE(0, 1)
     //   runtime: setMode(Preserve); 500x clear/restore slot0; setMode(Direct); 500x create
     // Selector 0x21175b4a = setMode(uint8); precompile = 0x1060...0000.
-    let init = Bytes::from(
-        hex!(
-            "60016000556100a660136000396100a66000f3\
+    let init = bytes!(
+        "60016000556100a660136000396100a66000f3\
                 60216000536017600153605b600253604a6003536001602353\
                 6000600060246000600073106000000000000000000000000000000000000\
                 05af1506101f45b60006000556002600055600190038061003e5750\
                 60216000536017600153605b600253604a6003536002602353\
                 6000600060246000600073106000000000000000000000000000000000000\
                 05af1506101f45b8061010001600190556001900380610091575000"
-        )
-        .to_vec(),
     );
 
     let caller = Address::repeat_byte(0x11);
@@ -2726,7 +2721,7 @@ fn test_tip1060_preserve_churn_mints_one_credit_per_clear() -> eyre::Result<()> 
     // Slot 0 starts non-zero.
     evm.ctx
         .db_mut()
-        .insert_account_storage(contract, U256::ZERO, U256::from(1))
+        .insert_account_storage(contract, U256::ZERO, U256::ONE)
         .unwrap();
     seed_storage_credit_balance(&mut evm, contract, 0);
 
@@ -2781,7 +2776,7 @@ fn test_tip1060_dirty_restore_after_direct_spend_repays_credit_value() -> eyre::
     );
     evm.ctx
         .db_mut()
-        .insert_account_storage(contract, U256::ZERO, U256::from(1))
+        .insert_account_storage(contract, U256::ZERO, U256::ONE)
         .unwrap();
     seed_storage_credit_balance(&mut evm, contract, 0);
 
@@ -2797,8 +2792,8 @@ fn test_tip1060_dirty_restore_after_direct_spend_repays_credit_value() -> eyre::
 
     // The fresh slot exists, the original slot is restored, and the credit balance nets to zero.
     assert_eq!(
-        evm.ctx.db().storage_ref(contract, U256::from(1)).unwrap(),
-        U256::from(1),
+        evm.ctx.db().storage_ref(contract, U256::ONE).unwrap(),
+        U256::ONE,
         "the genuinely new slot must be created"
     );
     assert_eq!(
@@ -3279,7 +3274,7 @@ fn test_tip1060_same_tx_create_before_delete_different_slots() -> eyre::Result<(
     );
     evm.ctx
         .db_mut()
-        .insert_account_storage(contract, U256::from(1), U256::ONE)?;
+        .insert_account_storage(contract, U256::ONE, U256::ONE)?;
     seed_storage_credit_balance(&mut evm, contract, 0);
 
     let tx = TxBuilder::new()

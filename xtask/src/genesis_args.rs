@@ -957,7 +957,7 @@ mod tests {
         insert_zone_state_at_genesis(&hardforks, &mut alloc);
         let account = alloc.remove(&ZONE_FACTORY_ADDRESS).unwrap();
         let expected_config =
-            U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
+            U256::ONE | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
 
         assert_eq!(account.code, Some(Bytes::from_static(&[0xef])));
         assert_eq!(

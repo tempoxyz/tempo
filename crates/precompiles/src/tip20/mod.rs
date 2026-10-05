@@ -828,7 +828,7 @@ impl TIP20Token {
         // 5. Increment nonce
         self.permit_nonces[call.owner].write(
             nonce
-                .checked_add(U256::from(1))
+                .checked_add(U256::ONE)
                 .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
 
@@ -1724,6 +1724,7 @@ mod recipient_tests {
 
 #[cfg(test)]
 pub(crate) mod tests {
+
     use super::*;
     use crate::{
         PATH_USD_ADDRESS, Precompile,
@@ -1738,9 +1739,7 @@ pub(crate) mod tests {
         tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID},
     };
     use alloy::{
-        primitives::{
-            Address, Bytes, FixedBytes, IntoLogData, TxKind, U256, address, hex, keccak256,
-        },
+        primitives::{Address, Bytes, FixedBytes, IntoLogData, TxKind, U256, address, keccak256},
         sol_types::{SolCall, SolError, SolEvent},
     };
     use alloy_evm::{Evm, EvmEnv};
@@ -2995,8 +2994,7 @@ pub(crate) mod tests {
 
             // Try to set a TIP20 address that hasn't been deployed yet
             // This has the correct TIP20 address pattern but hasn't been created
-            let undeployed_token_address =
-                Address::from(hex!("20C0000000000000000000000000000000000999"));
+            let undeployed_token_address = address!("20C0000000000000000000000000000000000999");
             let result = token.set_next_quote_token(
                 admin,
                 ITIP20::setNextQuoteTokenCall {
@@ -4524,7 +4522,7 @@ pub(crate) mod tests {
                 Address::random(),
                 ITIP20::approveCall {
                     spender,
-                    amount: U256::from(1),
+                    amount: U256::ONE,
                 },
             )?;
 
@@ -5135,7 +5133,7 @@ pub(crate) mod tests {
 
                 // Verify nonce was incremented
                 let nonce = token.nonces(ITIP20::noncesCall { owner })?;
-                assert_eq!(nonce, U256::from(1));
+                assert_eq!(nonce, U256::ONE);
 
                 Ok(())
             })
@@ -5427,7 +5425,7 @@ pub(crate) mod tests {
                     spender,
                     token.address,
                     U256::ZERO,
-                    U256::from(1),
+                    U256::ONE,
                     U256::MAX,
                 );
                 token.permit(call)?;

@@ -1955,7 +1955,7 @@ mod tests {
                         updateSpendingLimitCall {
                             keyId: admin_key,
                             token,
-                            newLimit: U256::from(1),
+                            newLimit: U256::ONE,
                         },
                     )
                     .expect_err("admin keys cannot receive spending limits"),
@@ -1996,7 +1996,7 @@ mod tests {
                         updateSpendingLimitCall {
                             keyId: account,
                             token,
-                            newLimit: U256::from(1),
+                            newLimit: U256::ONE,
                         },
                     )
                     .expect_err("missing self-key row cannot receive spending limits"),
@@ -2042,7 +2042,7 @@ mod tests {
                 updateSpendingLimitCall {
                     keyId: account,
                     token,
-                    newLimit: U256::from(1),
+                    newLimit: U256::ONE,
                 },
             )?;
             assert_eq!(
@@ -2051,7 +2051,7 @@ mod tests {
                     keyId: account,
                     token,
                 })?,
-                U256::from(1)
+                U256::ONE
             );
 
             keychain.set_allowed_calls(
@@ -3207,7 +3207,7 @@ mod tests {
             );
 
             // Test 4: Alice cannot exceed her spending limit
-            let exceed_result = keychain.authorize_transfer(eoa_alice, token, U256::from(1));
+            let exceed_result = keychain.authorize_transfer(eoa_alice, token, U256::ONE);
             assert!(
                 exceed_result.is_err(),
                 "Should fail when Alice tries to exceed spending limit"
@@ -4270,7 +4270,7 @@ mod tests {
         let invalid_key_id = Address::random();
         let valid_key_id = Address::random();
         let token = Address::random();
-        let oversized_limit = U256::from(u128::MAX) + U256::from(1u8);
+        let oversized_limit = U256::from(u128::MAX) + U256::ONE;
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();

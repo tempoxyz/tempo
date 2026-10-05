@@ -390,7 +390,7 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     let transfer_token = ITIP20::new(DEFAULT_FEE_TOKEN, provider.clone());
 
     transfer_token
-        .transfer(Address::random(), U256::from(1))
+        .transfer(Address::random(), U256::ONE)
         .send()
         .await?
         .successful_receipt()
@@ -518,7 +518,7 @@ async fn test_transact_two_hop_fee_route(direct_pool_exists: bool) -> eyre::Resu
 
     let transfer_token = ITIP20::new(DEFAULT_FEE_TOKEN, provider.clone());
     let receipt = transfer_token
-        .transfer(Address::random(), U256::from(1))
+        .transfer(Address::random(), U256::ONE)
         .gas_price(TEMPO_T1_BASE_FEE as u128)
         .send()
         .await?

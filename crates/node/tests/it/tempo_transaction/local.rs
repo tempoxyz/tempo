@@ -1056,7 +1056,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     let mut authenticator_data3 = vec![0u8; 37];
     authenticator_data3[32] = 0x01; // UP flag set
 
-    let wrong_challenge = B256::from([0xFF; 32]); // Different hash
+    let wrong_challenge = B256::repeat_byte(0xFF); // Different hash
     let wrong_challenge_b64url = URL_SAFE_NO_PAD.encode(wrong_challenge.as_slice());
     let client_data_json3 = format!(
         r#"{{"type":"webauthn.get","challenge":"{wrong_challenge_b64url}","origin":"https://example.com","crossOrigin":false}}"#
@@ -1180,7 +1180,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     let mut bad_auth_data = vec![0u8; 37];
     bad_auth_data[32] = 0x01;
 
-    let wrong_challenge = B256::from([0xAA; 32]);
+    let wrong_challenge = B256::repeat_byte(0xAA);
     let wrong_challenge_b64 = URL_SAFE_NO_PAD.encode(wrong_challenge.as_slice());
     let bad_client_data = format!(
         r#"{{"type":"webauthn.get","challenge":"{wrong_challenge_b64}","origin":"https://example.com","crossOrigin":false}}"#
@@ -1439,7 +1439,7 @@ async fn test_key_authorization_witness_burn_evicts_pending_replay() -> eyre::Re
         }],
         2_000_000,
     );
-    burn_tx.nonce_key = U256::from(1);
+    burn_tx.nonce_key = U256::ONE;
     let burn_sig = sign_aa_tx_secp256k1(&burn_tx, &root_signer)?;
     submit_and_mine_aa_tx(&mut setup, burn_tx, burn_sig).await?;
 
@@ -1793,7 +1793,7 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
         2_000_000,
     );
     revoke_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
-    revoke_tx.nonce_key = U256::from(1); // Use a different nonce key so it's independent
+    revoke_tx.nonce_key = U256::ONE; // Use a different nonce key so it's independent
 
     let revoke_sig = sign_aa_tx_secp256k1(&revoke_tx, &root_signer)?;
     submit_and_mine_aa_tx(&mut setup, revoke_tx, revoke_sig).await?;
@@ -2245,7 +2245,7 @@ async fn test_aa_keychain_spending_limit_toctou_dos() -> eyre::Result<()> {
         2_000_000,
     );
     update_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
-    update_tx.nonce_key = U256::from(1); // Use a different nonce key so it's independent
+    update_tx.nonce_key = U256::ONE; // Use a different nonce key so it's independent
 
     let update_sig = sign_aa_tx_secp256k1(&update_tx, &root_signer)?;
     submit_and_mine_aa_tx(&mut setup, update_tx, update_sig).await?;

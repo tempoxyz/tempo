@@ -304,18 +304,19 @@ impl AuthorizationTr for RecoveredTempoAuthorization {
 
 #[cfg(test)]
 pub mod tests {
+
     use super::*;
     use crate::TempoSignature;
     use alloc::vec::Vec;
-    use alloy_primitives::{U256, address, keccak256};
+    use alloy_primitives::{U256, keccak256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
 
     #[test]
     fn test_aa_signed_auth_encode_decode_roundtrip() {
         let auth = Authorization {
-            chain_id: U256::from(1),
-            address: address!("0000000000000000000000000000000000000006"),
+            chain_id: U256::ONE,
+            address: Address::with_last_byte(6),
             nonce: 1,
         };
 
@@ -347,8 +348,8 @@ pub mod tests {
     #[test]
     fn test_signature_hash() {
         let auth = Authorization {
-            chain_id: U256::from(1),
-            address: address!("0000000000000000000000000000000000000006"),
+            chain_id: U256::ONE,
+            address: Address::with_last_byte(6),
             nonce: 1,
         };
 

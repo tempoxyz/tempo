@@ -569,7 +569,7 @@ mod tests {
                 admin,
                 ITIP20::mintCall {
                     to: admin,
-                    amount: U256::from(1),
+                    amount: U256::ONE,
                 },
             )?;
             let result =
