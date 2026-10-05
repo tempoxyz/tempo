@@ -142,6 +142,8 @@ async fn executed_state_reads_blocks_that_are_not_canonical(
 #[test_case::test_case(4, 256, 16, 16, false, EngineCaptureWindow::Transactions128, false, Some(SignatureType::Secp256k1), true; "signed_secp256k1_keychain_sponsored")]
 #[test_case::test_case(4, 256, 16, 16, false, EngineCaptureWindow::Transactions128, false, Some(SignatureType::P256), false; "signed_p256_keychain")]
 #[test_case::test_case(4, 256, 16, 16, false, EngineCaptureWindow::Transactions128, false, Some(SignatureType::P256), true; "signed_p256_keychain_sponsored")]
+#[test_case::test_case(4, 256, 16, 16, false, EngineCaptureWindow::Transactions128, false, Some(SignatureType::WebAuthn), false; "signed_webauthn_keychain")]
+#[test_case::test_case(4, 256, 16, 16, false, EngineCaptureWindow::Transactions128, false, Some(SignatureType::WebAuthn), true; "signed_webauthn_keychain_sponsored")]
 #[tokio::test(flavor = "multi_thread")]
 async fn engine_prewarming_preserves_paid_expiring_transfer_block(
     builder_threads: usize,
@@ -157,7 +159,8 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
     use crate::{
         tempo_transaction::helpers::{
             create_basic_aa_tx, generate_p256_access_key, sign_aa_tx_secp256k1,
-            sign_aa_tx_with_p256_access_key, sign_aa_tx_with_secp256k1_access_key, sign_fee_payer,
+            sign_aa_tx_with_p256_access_key, sign_aa_tx_with_secp256k1_access_key,
+            sign_aa_tx_with_webauthn_access_key, sign_fee_payer,
         },
         utils::{ForkSchedule, TestNodeBuilder},
     };
@@ -283,7 +286,10 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
     })
         .map(|index| test_signer(u32::try_from(100 + index).unwrap()))
         .collect::<Vec<_>>();
-    let p256_access_keys = (0..if access_key_type == Some(SignatureType::P256) {
+    let p256_access_keys = (0..if matches!(
+        access_key_type,
+        Some(SignatureType::P256 | SignatureType::WebAuthn)
+    ) {
         sender_count
     } else {
         0
@@ -312,8 +318,7 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
         for (index, signer) in signers.iter().enumerate() {
             let key_id = match key_type {
                 SignatureType::Secp256k1 => secp_access_keys[index].address(),
-                SignatureType::P256 => p256_access_keys[index].3,
-                SignatureType::WebAuthn => unreachable!("not a fixture signature mode"),
+                SignatureType::P256 | SignatureType::WebAuthn => p256_access_keys[index].3,
             };
             let authorization = KeyAuthorization::unrestricted(chain_id, key_type, key_id);
             let signature = signer.sign_hash_sync(&authorization.signature_hash())?;
@@ -451,7 +456,17 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
                 let (key, x, y, _) = &p256_access_keys[sender_index];
                 sign_aa_tx_with_p256_access_key(&tx, key, x, y, signer.address())?
             }
-            Some(SignatureType::WebAuthn) => unreachable!("not a fixture signature mode"),
+            Some(SignatureType::WebAuthn) => {
+                let (key, x, y, _) = &p256_access_keys[sender_index];
+                sign_aa_tx_with_webauthn_access_key(
+                    &tx,
+                    key,
+                    *x,
+                    *y,
+                    "https://example.com",
+                    signer.address(),
+                )?
+            }
         };
         assert_eq!(signature.is_keychain(), access_key_type.is_some());
         assert!(!signature.is_legacy_keychain());
