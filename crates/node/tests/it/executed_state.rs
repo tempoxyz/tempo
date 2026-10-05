@@ -41,7 +41,7 @@ async fn executed_state_reads_blocks_that_are_not_canonical() -> eyre::Result<()
         .state_by_block_hash(second_hash)?
         .basic_account(&sender)?;
     assert_eq!(
-        expected.map(|account| account.nonce),
+        expected.as_ref().map(|account| account.nonce),
         Some(1),
         "the transfer must be part of the first block",
     );

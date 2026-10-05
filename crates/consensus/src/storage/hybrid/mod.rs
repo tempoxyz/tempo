@@ -189,9 +189,7 @@ where
             return Ok(None);
         }
         match self.block_by_number(height) {
-            Ok(Some(block)) => {
-                restore_block(SealedBlock::seal_slow(block).into(), self.bal_store()).map(Some)
-            }
+            Ok(Some(block)) => restore_block(SealedBlock::seal_slow(block).into()).map(Some),
             Ok(None) => Ok(None),
             Err(err @ ProviderError::BlockExpired { .. }) => {
                 info!(error = %eyre::Report::new(err), "cannot find block");
@@ -207,7 +205,7 @@ where
         // block that lives only in reth's pending in-memory tree — see
         // [`Blocks::get`] on [`Hybrid`].
         match self.find_sealed_or_recovered_block(hash, BlockSource::Canonical) {
-            Ok(Some(block)) => restore_block(block, self.bal_store()).map(Some),
+            Ok(Some(block)) => restore_block(block).map(Some),
             Ok(None) => Ok(None),
             Err(err @ ProviderError::BlockExpired { .. }) => {
                 info!(error = %eyre::Report::new(err), "cannot find block");
@@ -231,24 +229,14 @@ where
     }
 }
 
-/// Restore sidecars before handing an EL block to marshal, which may encode it for
-/// a peer or re-propose it at an epoch boundary. A missing BAL or a BAL-bearing
-/// block with BAL support disabled is an invariant violation and returns an error.
-fn restore_block(
-    block: SealedOrRecoveredBlock<tempo_primitives::Block>,
-    bal_store: &BalStoreHandle,
-) -> ProviderResult<Block> {
-    let block_access_list = if block.block_access_list_hash().is_some() {
-        if !cfg!(feature = "bal") {
-            return Err(ProviderError::other(
-                reth_consensus::ConsensusError::BlockAccessListHashUnexpected,
-            ));
-        }
-        bal_store.get_by_hash(block.hash())?
-    } else {
-        None
-    };
-    Block::try_from_execution_block(block, block_access_list).map_err(ProviderError::other)
+/// Rejects unsupported BAL-bearing EL blocks before handing them to marshal.
+fn restore_block(block: SealedOrRecoveredBlock<tempo_primitives::Block>) -> ProviderResult<Block> {
+    if block.block_access_list_hash().is_some() {
+        return Err(ProviderError::other(
+            reth_consensus::ConsensusError::BlockAccessListHashUnexpected,
+        ));
+    }
+    Block::try_from_execution_block(block, None).map_err(ProviderError::other)
 }
 
 /// Error returned by [`Hybrid`]'s [`Blocks`] impl.
