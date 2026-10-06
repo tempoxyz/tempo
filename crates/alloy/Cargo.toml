@@ -67,6 +67,7 @@ serde_json.workspace = true
 test-case.workspace = true
 tokio.workspace = true
 tower = { workspace = true, features = ["util"] }
+rustls.workspace = true
 
 [features]
 default = []

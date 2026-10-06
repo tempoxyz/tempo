@@ -93,6 +93,14 @@ pub struct TempoArgs {
     #[command(flatten)]
     pub(crate) node_args: TempoNodeArgs,
 
+    /// Disable the loopback fee-payer relay automatically started on the dev chain.
+    #[arg(long = "dev.relay-disable", requires = "dev")]
+    pub(crate) dev_relay_disable: bool,
+
+    /// Loopback port for the development JSON-RPC relay (zero chooses a free port).
+    #[arg(long = "dev.relay-port", requires = "dev", default_value_t = 8547)]
+    pub(crate) dev_relay_port: u16,
+
     #[command(flatten)]
     #[cfg(feature = "pyroscope")]
     pub(crate) pyroscope_args: PyroscopeArgs,

@@ -35,6 +35,7 @@ tempo-evm.workspace = true
 tempo-faucet.workspace = true
 tempo-telemetry-util.workspace = true
 tempo-state-bloat.workspace = true
+tempo-relay = { workspace = true, features = ["storage"] }
 
 alloy = { workspace = true, default-features = false, features = [
 	"network",

@@ -1,0 +1,16 @@
+{
+  "name": "tempo-relay-interop",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node relay.mjs",
+    "reference": "tsx reference.mjs"
+  },
+  "dependencies": {
+    "viem": "2.56.8",
+    "ox": "0.14.45"
+  },
+  "devDependencies": {
+    "tsx": "4.20.6"
+  }
+}

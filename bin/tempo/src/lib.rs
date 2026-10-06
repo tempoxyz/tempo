@@ -495,6 +495,17 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             };
 
         let faucet_args = args.faucet_args.clone();
+        let dev_relay_enabled = builder.config().dev.dev
+            && builder.config().chain.chain().id() == 1337
+            && !args.dev_relay_disable;
+        let dev_relay_store_path = builder.config().datadir.clone()
+            .resolve_datadir(builder.config().chain.chain()).data_dir().join("relay.sqlite");
+        let dev_relay_listener = if dev_relay_enabled {
+            Some(tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, args.dev_relay_port))
+                .await.wrap_err("failed to bind development relay; change --dev.relay-port or use --dev.relay-disable")?)
+        } else {
+            None
+        };
         let validator_key = args
             .consensus
             .public_key()
@@ -562,6 +573,9 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         } = builder
             .node(tempo_node)
             .apply(|mut builder: WithLaunchContext<_>| {
+                if dev_relay_enabled {
+                    builder.config_mut().rpc.http = true;
+                }
                 // Uncertified follower mode: set debug RPC when certification is off
                 if args.is_following_uncertified() {
                     let follow_url = args
@@ -602,6 +616,46 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         if let Some(hardfork) = args.node_args.shadow_replay {
             let hardfork = hardfork.unwrap_or_else(|| *TempoHardfork::VARIANTS.last().unwrap());
             ShadowReplayer::new(node.provider.clone(), hardfork).spawn(node.tasks().clone());
+        }
+
+        if let Some(listener) = dev_relay_listener {
+            let mut upstream = node.add_ons_handle.rpc_server_handles.rpc.http_local_addr()
+                .ok_or_eyre("development relay requires the node HTTP RPC")?;
+            if upstream.ip().is_unspecified() {
+                upstream.set_ip(if upstream.is_ipv4() {
+                    std::net::Ipv4Addr::LOCALHOST.into()
+                } else {
+                    std::net::Ipv6Addr::LOCALHOST.into()
+                });
+            }
+            let signer = MnemonicBuilder::try_from_phrase_first(
+                "test test test test test test test test test test test junk",
+            )?;
+            let address = signer.address();
+            let backend = Arc::new(
+                tempo_relay::http::HttpBackend::new(&format!("http://{upstream}"))?,
+            );
+            let store = Arc::new(tempo_relay::store::sql::SqliteStore::connect(
+                &format!("sqlite://{}", dev_relay_store_path.display()),
+            ).await?);
+            let relay = tempo_relay::Relay::new(backend.clone())
+                .with_multisig(store.clone(), chain_id)
+                .with_plugin(tempo_relay::external::ExternalFeePayers::new(false))
+                .with_plugin(tempo_relay::simulation::FeeTokens::new(
+                    backend.clone(), vec![tempo_contracts::precompiles::DEFAULT_FEE_TOKEN],
+                )?)
+                .with_plugin(tempo_relay::simulation::Simulate::new(chain_id, Some(store)))
+                .with_sponsor(tempo_relay::sponsor::Sponsor::new(
+                    Arc::new(signer), chain_id, tempo_contracts::precompiles::DEFAULT_FEE_TOKEN,
+                    30_000_000, 100_000_000_000,
+                )?)?;
+            info!(url = %format!("http://{}", listener.local_addr()?), fee_payer = %address,
+                "Development relay enabled; public test key, never use for real funds");
+            node.tasks().spawn_critical_task("dev-relay", async move {
+                if let Err(error) = tempo_relay::http::serve(listener, relay, std::future::pending()).await {
+                    panic!("development relay stopped: {error}");
+                }
+            });
         }
 
         // Fetch bootnodes from the endpoint in a background task and inject
@@ -751,6 +805,33 @@ mod tests {
             cli.command,
             Commands::Ext(crate::tempo_cmd::TempoSubcommand::ShadowReplay(_))
         ));
+    }
+
+    #[test]
+    fn dev_relay_flags() {
+        let cli = TempoCli::try_parse_from(["tempo", "node", "--dev"]).unwrap();
+        let Commands::Node(command) = cli.command else {
+            panic!("expected node command");
+        };
+        assert!(!command.ext.dev_relay_disable);
+        assert_eq!(command.ext.dev_relay_port, 8547);
+
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--dev",
+            "--dev.relay-disable",
+            "--dev.relay-port",
+            "0",
+        ])
+        .unwrap();
+        let Commands::Node(command) = cli.command else {
+            panic!("expected node command");
+        };
+        assert!(command.ext.dev_relay_disable);
+        assert_eq!(command.ext.dev_relay_port, 0);
+        assert!(TempoCli::try_parse_from(["tempo", "node", "--dev.relay-disable"]).is_err());
+        assert!(TempoCli::try_parse_from(["tempo", "node"]).is_ok());
     }
 
     #[test]

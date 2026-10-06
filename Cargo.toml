@@ -15,6 +15,7 @@ exclude = ["crates/nitro-attestation/fuzz"]
 members = [
   "bin/tempo",
   "bin/tempo-sidecar",
+  "bin/tempo-relay",
   "crates/alloy",
   "crates/chainspec",
   "crates/consensus",
@@ -39,6 +40,7 @@ members = [
   "crates/transaction-pool",
   "crates/revm",
   "crates/state-bloat",
+  "crates/relay",
   "xtask",
 ]
 
@@ -151,6 +153,7 @@ tempo-contracts = { path = "crates/contracts", default-features = false, feature
 tempo-telemetry-util = { path = "crates/telemetry-util", default-features = false }
 tempo-transaction-pool = { path = "crates/transaction-pool", default-features = false }
 tempo-validator-config = { path = "crates/validator-config", default-features = false }
+tempo-relay = { path = "crates/relay" }
 
 reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "42fa3c5" }
 reth-chainspec = { git = "https://github.com/paradigmxyz/reth", rev = "42fa3c5", default-features = false }
