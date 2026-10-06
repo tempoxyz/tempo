@@ -6,7 +6,7 @@ use alloy_evm::{
     EvmFactory,
     eth::receipt_builder::{ReceiptBuilder, ReceiptBuilderCtx},
 };
-use alloy_primitives::{Bytes, Log, TxKind};
+use alloy_primitives::{Bytes, Log, TxKind, keccak256};
 use alloy_trie::{
     TrieAccount,
     root::{state_root_unhashed, storage_root_unhashed},
@@ -18,7 +18,7 @@ use revm::{
         result::{ResultGas, SuccessReason},
     },
     database::EmptyDB,
-    state::EvmState,
+    state::{Account, AccountId, AccountStatus, EvmState, EvmStorageSlot, TransactionId},
 };
 use std::{collections::BTreeMap, convert::Infallible};
 use tempo_primitives::{TempoReceipt, TempoTxType};
@@ -59,6 +59,227 @@ fn proof_targets(state: EvmState) -> ProofTargets {
         storage,
         storage_count,
     }
+}
+
+#[test]
+fn hint_state_projection_preserves_lifecycle_and_original_info_targets() {
+    let tx_id = TransactionId::new(7).unwrap();
+    let original_info = AccountInfo {
+        balance: U256::from(11),
+        nonce: 12,
+        account_id: AccountId::new(13),
+        ..AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(&[0x5b, 0x00])))
+    };
+    let mut state = EvmState::default();
+    let mut retained = Vec::new();
+    let mut expected = ProofTargets {
+        accounts: Vec::new(),
+        storage: BTreeMap::new(),
+        storage_count: 0,
+    };
+    let cases = [
+        (AccountStatus::empty(), false),
+        (AccountStatus::Touched, true),
+        (AccountStatus::SelfDestructed, false),
+        (
+            AccountStatus::Touched | AccountStatus::SelfDestructed,
+            false,
+        ),
+        (
+            AccountStatus::Touched | AccountStatus::Created | AccountStatus::SelfDestructed,
+            false,
+        ),
+        // The SDK checks the global flag, not the local selfdestruct flag.
+        (
+            AccountStatus::Touched | AccountStatus::SelfDestructedLocal,
+            true,
+        ),
+        (
+            AccountStatus::Touched | AccountStatus::Created | AccountStatus::CreatedLocal,
+            true,
+        ),
+        (
+            AccountStatus::Touched | AccountStatus::LoadedAsNotExisting,
+            true,
+        ),
+        (AccountStatus::Touched | AccountStatus::Cold, true),
+    ];
+    for (index, (status, keeps_targets)) in cases.into_iter().enumerate() {
+        let address = Address::with_last_byte(index as u8 + 1);
+        let mut account = Account::from(original_info.clone());
+        account.info.nonce += 1;
+        account.transaction_id = tx_id;
+        account.status = status;
+        for (key, original, present) in [(1, 0, 0), (2, 9, 9), (3, 0, 7), (4, 7, 0), (5, 8, 8)] {
+            account.storage.insert(
+                U256::from(key),
+                EvmStorageSlot {
+                    original_value: U256::from(original),
+                    present_value: U256::from(present),
+                    transaction_id: tx_id,
+                    is_cold: true,
+                },
+            );
+        }
+        if keeps_targets {
+            let address_hash = keccak256(address);
+            expected.accounts.push((address_hash, None));
+            let keys = vec![U256::from(3), U256::from(4)];
+            let mut targets = keys
+                .iter()
+                .map(|key| (keccak256(key.to_be_bytes::<32>()), None))
+                .collect::<Vec<_>>();
+            targets.sort_unstable();
+            expected.storage.insert(address_hash, targets);
+            expected.storage_count += keys.len();
+            retained.push((address, keys));
+        }
+        state.insert(address, account);
+    }
+
+    // Account-info targets and storage targets are independent. These accounts
+    // also cover empty originals and account clearing without a selfdestruct.
+    for index in 0..12 {
+        let address = Address::with_last_byte(30 + index);
+        let mut account = Account::from(original_info.clone());
+        account.status = AccountStatus::Touched | AccountStatus::Cold;
+        account.transaction_id = tx_id;
+        let mut keeps_account_target = false;
+        let mut storage_keys = Vec::new();
+        match index {
+            0 => {
+                account.storage.insert(
+                    U256::from(6),
+                    EvmStorageSlot::new_changed(U256::from(9), U256::ZERO, tx_id),
+                );
+                storage_keys.push(U256::from(6));
+            }
+            1 => {
+                account.info.nonce += 1;
+                keeps_account_target = true;
+            }
+            2 => {
+                account.info.balance += U256::from(1);
+                keeps_account_target = true;
+            }
+            3 => {
+                account.info.code_hash = B256::with_last_byte(21);
+                keeps_account_target = true;
+            }
+            4 => {
+                // Code handles and account IDs do not affect AccountInfo equality.
+                account.info.code = None;
+                account.info.account_id = AccountId::new(22);
+            }
+            5 => {
+                *account.original_info_mut() = AccountInfo::default();
+                keeps_account_target = true;
+            }
+            6 => {
+                account.info = AccountInfo::default();
+                keeps_account_target = true;
+            }
+            7 => {
+                account.info = AccountInfo::default();
+                *account.original_info_mut() = AccountInfo::default();
+            }
+            8 | 9 => {
+                account.info = AccountInfo::default();
+                *account.original_info_mut() = AccountInfo {
+                    code_hash: B256::ZERO,
+                    ..Default::default()
+                };
+                if index == 8 {
+                    // Account::from(original) would normalize ZERO to EMPTY,
+                    // incorrectly omitting this account's target.
+                    keeps_account_target = true;
+                } else {
+                    // The same normalization would invent a target here.
+                    account.info.code_hash = B256::ZERO;
+                }
+            }
+            10 => {
+                *account.original_info_mut() = AccountInfo::default();
+                account.info = AccountInfo {
+                    code_hash: B256::ZERO,
+                    ..Default::default()
+                };
+                keeps_account_target = true;
+            }
+            11 => {
+                // An original equal to default can be implicit in the hint,
+                // while the canonical candidate keeps its complete representation.
+                *account.original_info_mut() = AccountInfo {
+                    code: None,
+                    account_id: AccountId::new(23),
+                    ..Default::default()
+                };
+                keeps_account_target = true;
+            }
+            _ => unreachable!(),
+        }
+        let address_hash = keccak256(address);
+        if keeps_account_target {
+            expected.accounts.push((address_hash, None));
+        }
+        if !storage_keys.is_empty() {
+            expected.storage.insert(
+                address_hash,
+                storage_keys
+                    .iter()
+                    .map(|key| (keccak256(key.to_be_bytes::<32>()), None))
+                    .collect(),
+            );
+            expected.storage_count += storage_keys.len();
+        }
+        retained.push((address, storage_keys));
+        state.insert(address, account);
+    }
+    expected.accounts.sort_unstable();
+    assert_eq!(proof_targets(state.clone()), expected);
+
+    let (db, env, tx) = fixture(false, 0xf3);
+    let mut candidate = PrewarmingExecutor::new(db, env)
+        .execute(tx.clone(), None)
+        .unwrap();
+    candidate.result.state = state;
+    let before = candidate.result.clone();
+    let mut hint = candidate.prewarming_hint_result();
+    assert_eq!(hint.state.len(), retained.len());
+    assert_eq!(proof_targets(hint.state.clone()), expected);
+    for (address, keys) in retained {
+        let source = &before.state[&address];
+        let projected = &hint.state[&address];
+        assert_eq!(projected.info, source.info);
+        assert_eq!(projected.info.code, source.info.code);
+        assert_eq!(projected.info.account_id, source.info.account_id);
+        assert_eq!(projected.original_info(), source.original_info());
+        assert_eq!(projected.status, source.status);
+        assert_eq!(projected.transaction_id, source.transaction_id);
+        assert_eq!(projected.storage.len(), keys.len());
+        for key in keys {
+            assert_eq!(projected.storage[&key], source.storage[&key]);
+        }
+    }
+    hint.state.clear();
+    assert_eq!(candidate.result, before);
+    for (address, source) in &before.state {
+        let unchanged = &candidate.result.state[address];
+        // Account equality intentionally ignores these representation fields.
+        assert_eq!(unchanged.info.code, source.info.code);
+        assert_eq!(unchanged.info.account_id, source.info.account_id);
+        assert_eq!(unchanged.original_info().code, source.original_info().code);
+        assert_eq!(
+            unchanged.original_info().account_id,
+            source.original_info().account_id
+        );
+    }
+    let retained = candidate
+        .into_candidate::<Infallible>(&tx)
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(retained, before);
 }
 
 fn fixture(create: bool, end: u8) -> (TestDB, Env, TempoTxEnv) {
@@ -244,7 +465,6 @@ fn hint_projection_preserves_variants_gas_create_address_and_proof_targets() {
             | ExecutionResult::Halt { logs, .. } => logs,
         };
         assert_eq!(hint_logs.capacity(), 0);
-        assert_eq!(hint.state, before.state);
         assert_eq!(proof_targets(hint.state.clone()), expected_targets);
         assert_eq!(candidate.result, before);
         assert_eq!(receipt(&evm, &candidate.result), before_receipt);
@@ -281,7 +501,6 @@ fn engine_hint_projection_keeps_full_canonical_results_receipts_and_roots() {
 
         let hint = worker.transact_raw(tx.clone()).unwrap();
         let expected = canonical.transact_raw(tx.clone()).unwrap();
-        assert_eq!(hint.state, expected.state);
         assert_eq!(
             proof_targets(hint.state),
             proof_targets(expected.state.clone())

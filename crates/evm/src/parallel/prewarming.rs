@@ -1,7 +1,10 @@
 //! Recorded execution on a worker-owned provider, reusable by the ordered executor.
 
 use super::*;
-use reth_revm::context::result::{ExecutionResult, Output};
+use reth_revm::{
+    context::result::{ExecutionResult, Output},
+    state::{Account, EvmState},
+};
 use std::time::Instant;
 
 /// Advisory values from the builder's accepted prefix. Workers may read across
@@ -242,6 +245,33 @@ pub struct PreexecutedTransaction {
     pub(super) native_increment: Option<NativeIncrementWitness>,
 }
 
+/// Keeps the state consumed by the pinned SDK's proof-target conversion. This
+/// owned hint is never committed; the published candidate retains full state.
+fn prewarming_hint_state(state: &EvmState) -> EvmState {
+    state
+        .iter()
+        .filter(|(_, account)| account.is_touched() && !account.is_selfdestructed())
+        .map(|(&address, account)| {
+            let mut hint = Account::default();
+            let original = account.original_info();
+            // The SDK compares current and original info for account targets.
+            // Keep an equal-to-default original implicit. Account::from can
+            // instead normalize a ZERO code hash to EMPTY.
+            if original != hint.info {
+                *hint.original_info_mut() = original;
+            }
+            hint.info = account.info.clone();
+            hint.transaction_id = account.transaction_id;
+            hint.status = account.status;
+            hint.storage = account
+                .changed_storage_slots()
+                .map(|(&slot, value)| (slot, value.clone()))
+                .collect();
+            (address, hint)
+        })
+        .collect()
+}
+
 impl PreexecutedTransaction {
     /// Projects the private Engine prewarm return value for the pinned SDK's
     /// proof-target consumer. It consumes only state; canonical execution keeps
@@ -275,7 +305,7 @@ impl PreexecutedTransaction {
         };
         ResultAndState {
             result,
-            state: self.result.state.clone(),
+            state: prewarming_hint_state(&self.result.state),
         }
     }
 
