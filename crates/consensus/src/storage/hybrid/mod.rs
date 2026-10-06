@@ -93,7 +93,6 @@
 //!
 //! [`alias::marshal::init`]: crate::alias::marshal::init
 
-use alloy_consensus::BlockHeader as _;
 use alloy_primitives::B256;
 use commonware_consensus::{Heightable as _, marshal::store::Blocks, types::Height};
 use commonware_runtime::{BufferPooler, Clock, Metrics, Storage};
@@ -188,7 +187,9 @@ where
             return Ok(None);
         }
         match self.block_by_number(height) {
-            Ok(Some(block)) => restore_block(SealedBlock::seal_slow(block).into()).map(Some),
+            Ok(Some(block)) => {
+                validate_execution_block(SealedBlock::seal_slow(block).into()).map(Some)
+            }
             Ok(None) => Ok(None),
             Err(err @ ProviderError::BlockExpired { .. }) => {
                 info!(error = %eyre::Report::new(err), "cannot find block");
@@ -204,7 +205,7 @@ where
         // block that lives only in reth's pending in-memory tree — see
         // [`Blocks::get`] on [`Hybrid`].
         match self.find_sealed_or_recovered_block(hash, BlockSource::Canonical) {
-            Ok(Some(block)) => restore_block(block).map(Some),
+            Ok(Some(block)) => validate_execution_block(block).map(Some),
             Ok(None) => Ok(None),
             Err(err @ ProviderError::BlockExpired { .. }) => {
                 info!(error = %eyre::Report::new(err), "cannot find block");
@@ -228,13 +229,10 @@ where
     }
 }
 
-/// Reject unsupported BAL commitments before handing an EL block to marshal.
-fn restore_block(block: SealedOrRecoveredBlock<tempo_primitives::Block>) -> ProviderResult<Block> {
-    if block.block_access_list_hash().is_some() {
-        return Err(ProviderError::other(
-            reth_consensus::ConsensusError::BlockAccessListHashUnexpected,
-        ));
-    }
+/// Validate an execution-layer block before handing it to marshal.
+fn validate_execution_block(
+    block: SealedOrRecoveredBlock<tempo_primitives::Block>,
+) -> ProviderResult<Block> {
     Block::try_from_execution_block(block).map_err(ProviderError::other)
 }
 

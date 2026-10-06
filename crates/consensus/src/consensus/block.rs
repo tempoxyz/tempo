@@ -1,7 +1,6 @@
 //! The foundational data structure the Tempo network comes to consensus over.
 //!
-//! The Tempo [`Block`] contains the execution-layer block plus
-//! consensus-layer validation data that is transmitted over commonware p2p.
+//! The Tempo [`Block`] wraps the execution-layer block transmitted over commonware p2p.
 
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{B256, Bytes};
@@ -28,8 +27,8 @@ use tempo_evm::consensus::validate_body_against_header;
 
 /// Consensus block shared through commonware.
 ///
-/// This wraps the execution-layer block Tempo commits to, plus any consensus sidecars that are not
-/// part of the EL block body. Locally built blocks keep recovered senders so follow-up validation
+/// This wraps the execution-layer block Tempo commits to.
+/// Locally built blocks keep recovered senders so follow-up validation
 /// paths can avoid recovery work; blocks received from the network or storage may only be sealed.
 ///
 /// The shared encoded-byte cache lets payload building, proposal broadcast, and commonware
@@ -73,9 +72,8 @@ impl Block {
 
     /// Creates a block without validating its body or rejecting BAL header commitments.
     ///
-    /// This is for reconstructing blocks from persisted EL data that does not include
-    /// commonware sidecars. Callers must not encode or broadcast a block whose header
-    /// commits to a BAL.
+    /// This is for reconstructing trusted blocks from persisted execution-layer data.
+    /// Callers must not encode or broadcast a block whose header commits to a BAL.
     pub(crate) fn from_execution_block_unchecked<T>(execution_block: T) -> Self
     where
         T: Into<SealedOrRecoveredBlock<tempo_primitives::Block>>,

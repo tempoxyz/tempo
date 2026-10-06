@@ -286,8 +286,7 @@ async fn resolve_finalized<U: Upstream>(upstream: &U, height: Height) -> Option<
         .inspect_err(|error| warn!(%error, "failed decoding certificate"))
         .ok()?;
 
-    // Upstream finalization responses carry persisted EL blocks only; no p2p BAL
-    // is available when reconstructing this consensus block.
+    // Reconstruct the consensus block from the persisted execution-layer block.
     let consensus_block = Block::from_execution_block_unchecked(certified_block.block);
     Some((finalization, consensus_block).encode())
 }

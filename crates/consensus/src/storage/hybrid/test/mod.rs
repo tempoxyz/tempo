@@ -43,9 +43,8 @@ fn execution_fallback_rejects_bal() {
         body: Default::default(),
     });
 
-    let error = restore_block(block.into()).expect_err(
-        "a stored BAL block with support disabled is an invariant violation, not a miss",
-    );
+    let error = validate_execution_block(block.into())
+        .expect_err("a stored BAL block is unsupported, not a miss");
     assert!(matches!(
         error
             .as_other()
@@ -58,7 +57,7 @@ fn execution_fallback_rejects_bal() {
 fn execution_fallback_without_bal_remains_available() {
     let block = make_block(42, B256::ZERO);
     assert_eq!(
-        restore_block(block.clone().into_execution_block()).unwrap(),
+        validate_execution_block(block.clone().into_execution_block()).unwrap(),
         block
     );
 }

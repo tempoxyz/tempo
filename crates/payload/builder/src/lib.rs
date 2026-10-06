@@ -969,7 +969,6 @@ where
                 max_rlp_length: MAX_RLP_BLOCK_SIZE,
             }));
         }
-        let recorded_block_size_bytes = estimated_rlp_block_size;
         let final_workload = ValidationLatencyWorkload::new(gas_used, total_transactions);
         let validation_latency_duration = validation_latency
             .and_then(|estimate| estimate.estimate(final_workload))
@@ -981,10 +980,10 @@ where
         self.metrics.gas_per_second_last.set(gas_per_second);
         self.metrics
             .rlp_block_size_bytes
-            .record(recorded_block_size_bytes as f64);
+            .record(estimated_rlp_block_size as f64);
         self.metrics
             .rlp_block_size_bytes_last
-            .set(recorded_block_size_bytes as f64);
+            .set(estimated_rlp_block_size as f64);
 
         info!(
             parent_hash = ?block.parent_hash(),

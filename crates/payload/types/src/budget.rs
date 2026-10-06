@@ -109,9 +109,8 @@ impl ValidationLatencyEstimate {
     /// Recent elapsed validation feedback is the floor so faster replay feedback
     /// still reclaims budget without shrinking smaller current blocks. If the
     /// current block carries more gas or transactions than the recent P90 workload,
-    /// the estimate scales up by that excess. Encoded bytes are intentionally
-    /// not used here because BAL sidecar bytes are charged through marshal
-    /// persistence, not execution-layer validation work.
+    /// the estimate scales up by that excess. Encoded byte size is not used to
+    /// estimate execution-layer validation work.
     pub fn estimate(self, workload: ValidationLatencyWorkload) -> Option<Duration> {
         if self.elapsed == Duration::ZERO {
             return None;
