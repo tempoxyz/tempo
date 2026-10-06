@@ -2,15 +2,18 @@
 
 use std::{sync::Arc, time::Instant};
 
-use alloy_primitives::Address;
+use alloy::{consensus::TxReceipt as _, sol_types::SolCall as _};
+use alloy_primitives::{Address, U256};
 use alloy_rpc_types_eth::TransactionRequest;
 use reth_e2e_test_utils::wallet::Wallet;
 use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_node_api::BuiltPayload;
 use reth_primitives_traits::Transaction as _;
-use reth_storage_api::{AccountReader as _, StateProviderFactory as _};
+use reth_storage_api::{AccountReader as _, ReceiptProvider as _, StateProviderFactory as _};
 use tempo_chainspec::TempoChainSpec;
+use tempo_contracts::precompiles::ITIP20;
 use tempo_node::{TempoNode, node::TempoNodeArgs, qmdb::StateRootBackend};
+use tempo_precompiles::PATH_USD_ADDRESS;
 
 use crate::utils::with_t1_fees;
 
@@ -99,20 +102,41 @@ async fn bench_mpt_vs_qmdb() -> eyre::Result<()> {
     let blocks = std::env::var("QMDB_BENCH_BLOCKS")
         .unwrap_or_else(|_| "100".into())
         .parse::<u64>()?;
+    let transactions = std::env::var("QMDB_BENCH_TXS")
+        .unwrap_or_else(|_| "16".into())
+        .parse::<u64>()?;
+    eyre::ensure!(blocks > 0 && (1..=16).contains(&transactions));
     for backend in [StateRootBackend::Mpt, StateRootBackend::Qmdb] {
         let mut node = node(backend).await?;
         let chain_id = node.inner.chain_spec().chain_id();
         let mut sender = Wallet::default().with_chain_id(chain_id).account(0);
         let mut samples = Vec::new();
         for index in 0..blocks + 10 {
-            let transaction = with_t1_fees(
-                TransactionRequest::default()
-                    .to(Address::ZERO)
-                    .gas_limit(300_000),
-            );
-            let signed = sender.sign_tx_bytes(transaction).await;
+            let mut signed = Vec::new();
+            for transaction_index in 0..transactions {
+                let recipient = Address::from_word(
+                    U256::from(10_000 + index * transactions + transaction_index).into(),
+                );
+                let data = ITIP20::transferCall {
+                    to: recipient,
+                    amount: U256::from(1),
+                }
+                .abi_encode();
+                let transaction = with_t1_fees(
+                    TransactionRequest::default()
+                        .to(PATH_USD_ADDRESS)
+                        .input(data.into())
+                        .gas_limit(300_000),
+                );
+                signed.push(sender.sign_tx_bytes(transaction).await);
+            }
             let start = Instant::now();
-            let (_, payload) = node.inject_and_advance(signed).await?;
+            let mut hashes = Vec::new();
+            for transaction in signed {
+                hashes.push(node.rpc.inject_tx(transaction).await?);
+            }
+            node.wait_for_pooled(hashes).await?;
+            let payload = node.advance_block_synced().await?;
             assert_eq!(
                 payload
                     .block()
@@ -121,23 +145,33 @@ async fn bench_mpt_vs_qmdb() -> eyre::Result<()> {
                     .iter()
                     .filter(|tx| tx.gas_limit() > 0)
                     .count(),
-                1
+                transactions as usize
             );
             node.wait_for_persisted_block(index + 1).await?;
             if index >= 10 {
                 samples.push(start.elapsed().as_secs_f64() * 1000.0);
             }
+            let receipts = node
+                .inner
+                .provider
+                .receipts_by_block(payload.block().hash().into())?
+                .expect("persisted block receipts");
+            assert!(
+                receipts.iter().all(|receipt| receipt.status()),
+                "all transfers must succeed"
+            );
         }
         let total = samples.iter().sum::<f64>();
         samples.sort_by(f64::total_cmp);
         println!(
             "QMDB_BENCH {}",
             serde_json::json!({
-                "backend": format!("{backend:?}"), "blocks": blocks, "transactions_per_block": 1,
+                "backend": format!("{backend:?}"), "blocks": blocks, "transactions_per_block": transactions,
+                "workload": "TIP20 transfers to fresh recipients",
                 "warmup_blocks": 10, "mean_ms": total / blocks as f64,
                 "p50_ms": samples[samples.len() / 2],
                 "p95_ms": samples[(samples.len() * 95 / 100).min(samples.len() - 1)],
-                "transactions_per_second": blocks as f64 * 1000.0 / total,
+                "transactions_per_second": (blocks * transactions) as f64 * 1000.0 / total,
             })
         );
         node.stop().await?;
