@@ -777,7 +777,7 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
         expired.nonce_key = TEMPO_EXPIRING_NONCE_KEY;
         expired.valid_before = std::num::NonZeroU64::new(1);
         let signature = sign_aa_tx_secp256k1(&expired, &signers[0])?;
-        let mut block = payload.clone().into_execution_payload().0.into_block();
+        let mut block = payload.clone().into_execution_payload().into_block();
         let first_user = block
             .body
             .transactions
@@ -789,7 +789,6 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
             alloy::consensus::proofs::calculate_transaction_root(&block.body.transactions);
         Some(tempo_payload_types::TempoExecutionData {
             block: reth_primitives_traits::SealedBlock::seal_slow(block).into(),
-            block_access_list: None,
         })
     } else {
         None

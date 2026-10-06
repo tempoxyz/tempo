@@ -18,8 +18,8 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         let env = self.evm_env(payload.block.header())?;
         if let Some(cache) = &self.inner.executor_factory.evm_factory().engine_prewarming {
             // Matches pinned Reth's SMALL_BLOCK_TX_THRESHOLD. Below it Reth
-            // does not start transaction prewarming. BAL uses a separate path.
-            if payload.block.body().transactions.len() >= 5 && payload.block_access_list.is_none() {
+            // does not start transaction prewarming.
+            if payload.block.body().transactions.len() >= 5 {
                 cache.begin_payload(
                     env.clone(),
                     payload.block.hash(),
@@ -41,10 +41,7 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         &self,
         payload: &'a TempoExecutionData,
     ) -> Result<ExecutionCtxFor<'a, Self>, Self::Error> {
-        let TempoExecutionData {
-            block,
-            block_access_list: _,
-        } = payload;
+        let TempoExecutionData { block } = payload;
         let mut ctx = self.context_for_block(block)?;
         if let Some(block) = block.recovered_block() {
             ctx.senders = block.senders();
@@ -241,7 +238,6 @@ mod tests {
 
         let payload = TempoExecutionData {
             block: block.into(),
-            block_access_list: None,
         };
 
         let result = evm_config.tx_iterator_for_payload(&payload);
@@ -278,7 +274,6 @@ mod tests {
         let block = create_test_block(vec![system_tx]);
         let payload = TempoExecutionData {
             block: block.into(),
-            block_access_list: None,
         };
 
         let result = evm_config.context_for_payload(&payload);
@@ -299,7 +294,6 @@ mod tests {
             .unwrap();
         let payload = TempoExecutionData {
             block: recovered.into(),
-            block_access_list: None,
         };
         let context = evm_config.context_for_payload(&payload).unwrap();
         assert_eq!(context.senders, &[Address::ZERO]);
@@ -347,17 +341,10 @@ mod tests {
             .collect::<Vec<_>>();
         let mut payload = TempoExecutionData {
             block: create_test_block(transactions.clone()).into(),
-            block_access_list: None,
         };
         let env = engine.evm_env_for_payload(&payload).unwrap();
         assert!(cache.session(&env).is_some());
 
-        payload.block_access_list = Some(Bytes::new());
-        engine.evm_env_for_payload(&payload).unwrap();
-        assert!(cache.session(&env).is_none(), "BAL must clear the handoff");
-        payload.block_access_list = None;
-        engine.evm_env_for_payload(&payload).unwrap();
-        assert!(cache.session(&env).is_some());
         payload.block = create_test_block(transactions[..4].to_vec()).into();
         engine.evm_env_for_payload(&payload).unwrap();
         assert!(
@@ -376,7 +363,6 @@ mod tests {
 
         let payload = TempoExecutionData {
             block: block.clone().into(),
-            block_access_list: None,
         };
 
         let result = evm_config.evm_env_for_payload(&payload);
