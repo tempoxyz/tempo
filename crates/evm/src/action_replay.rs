@@ -623,9 +623,7 @@ mod tests {
             executor.replay_state.reset_tx_changes();
             let state = executor
                 .replay_actions(
-                    Address::ZERO,
                     [],
-                    false,
                     Some(ExpiringNonceReplay {
                         hash,
                         valid_before: expiry,
@@ -659,9 +657,7 @@ mod tests {
         assert!(
             executor
                 .replay_actions(
-                    Address::ZERO,
                     [],
-                    false,
                     Some(ExpiringNonceReplay {
                         hash: B256::repeat_byte(1),
                         valid_before: 1020
