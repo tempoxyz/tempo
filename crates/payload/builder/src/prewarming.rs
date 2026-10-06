@@ -218,13 +218,15 @@ impl BestTransactionsPrewarming {
             }
 
             let actions = evm.take_actions()?;
-            let expiring_nonce = tx
-                .transaction
-                .is_expiring_nonce()
+            let expiring_nonce = (tx.transaction.is_expiring_nonce() && evm.cfg.spec.is_t1())
                 .then(|| {
                     let valid_before = tx.transaction.inner().valid_before()?;
                     Some(ExpiringNonceReplay {
-                        hash: tx.transaction.expiring_nonce_hash()?,
+                        hash: if evm.cfg.spec.is_t1b() {
+                            tx.transaction.expiring_nonce_hash()?
+                        } else {
+                            *tx.transaction.hash()
+                        },
                         valid_before,
                     })
                 })

@@ -146,6 +146,8 @@ impl TestExecutorBuilder {
         );
 
         let ctx = TempoBlockExecutionCtx {
+            expiring_nonce_root: None,
+            block_hash: None,
             inner: EthBlockExecutionCtx {
                 parent_hash: self.parent_hash,
                 parent_beacon_block_root: self.parent_beacon_block_root,

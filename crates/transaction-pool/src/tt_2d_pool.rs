@@ -1390,7 +1390,7 @@ impl AA2dPool {
     /// Use when removal starts from a hash, such as direct removal, sender
     /// removal, or nonce-state inclusion. This path removes the matching
     /// eviction key by lookup.
-    fn remove_expiring_nonce_tx(
+    pub(crate) fn remove_expiring_nonce_tx(
         &mut self,
         expiring_hash: &B256,
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {

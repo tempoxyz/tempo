@@ -30,6 +30,11 @@ pub struct TempoBlockEnv {
 
     /// Proposer's Ed25519 public key. `Some` only for post-T4 blocks.
     pub proposer_public_key: Option<PublicKey>,
+
+    /// Fork-local replay state when expiring nonces are managed outside EVM storage.
+    /// Runtime only: reconstruct from the block history when creating an EVM environment.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub expiring_nonces: Option<tempo_expiring_nonces::ExpiringNonceState>,
 }
 
 impl Default for TempoBlockEnv {
@@ -39,6 +44,7 @@ impl Default for TempoBlockEnv {
             timestamp_millis_part: 0,
             epoch_length: NonZeroU64::MIN,
             proposer_public_key: None,
+            expiring_nonces: None,
         }
     }
 }

@@ -14,12 +14,14 @@ use tempo_primitives::TempoHeader;
 #[derive(Debug, Clone)]
 pub struct TempoBlockAssembler {
     pub(crate) inner: EthBlockAssembler<TempoChainSpec>,
+    pub(crate) expiring_nonce_cache: Option<crate::ExpiringNonceCache>,
 }
 
 impl TempoBlockAssembler {
     pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
         Self {
             inner: EthBlockAssembler::new(chain_spec),
+            expiring_nonce_cache: None,
         }
     }
 
@@ -38,6 +40,8 @@ impl TempoBlockAssembler {
                     general_gas_limit,
                     shared_gas_limit,
                     consensus_context,
+                    expiring_nonce_root: _,
+                    block_hash: _,
                 },
             parent,
             transactions,
@@ -52,6 +56,12 @@ impl TempoBlockAssembler {
         let parent = SealedHeader::new_unhashed(parent.clone().into_header().inner);
 
         let timestamp_millis_part = evm_env.block_env.timestamp_millis_part;
+        let expiring_nonces = evm_env.block_env.expiring_nonces.clone();
+        let expiring_nonce_root = evm_env
+            .block_env
+            .expiring_nonces
+            .as_ref()
+            .map(|state| state.root());
 
         // Delegate block building to the inner assembler
         let block = self.inner.assemble_block(
@@ -73,13 +83,21 @@ impl TempoBlockAssembler {
             receipts_bloom,
         )?;
 
-        Ok(block.map_header(|inner| TempoHeader {
+        let block = block.map_header(|inner| TempoHeader {
             inner,
             general_gas_limit,
             timestamp_millis_part,
             shared_gas_limit,
             consensus_context,
-        }))
+            expiring_nonce_root,
+        });
+        if let (Some(cache), Some(state)) = (&self.expiring_nonce_cache, &expiring_nonces) {
+            cache.remember(
+                state,
+                Some(alloy_consensus::Sealable::hash_slow(&block.header)),
+            );
+        }
+        Ok(block)
     }
 }
 
@@ -176,6 +194,8 @@ mod tests {
         let parent = SealedHeader::seal_slow(parent_header);
 
         let execution_ctx = TempoBlockExecutionCtx {
+            expiring_nonce_root: None,
+            block_hash: None,
             inner: EthBlockExecutionCtx {
                 parent_hash: parent.hash(),
                 parent_beacon_block_root: Some(B256::ZERO),
@@ -285,6 +305,8 @@ mod tests {
         let parent = SealedHeader::seal_slow(parent_header);
 
         let execution_ctx = TempoBlockExecutionCtx {
+            expiring_nonce_root: None,
+            block_hash: None,
             inner: EthBlockExecutionCtx {
                 parent_hash: parent.hash(),
                 parent_beacon_block_root: Some(B256::ZERO),
@@ -365,6 +387,8 @@ mod tests {
         let parent = SealedHeader::seal_slow(parent_header);
 
         let execution_ctx = TempoBlockExecutionCtx {
+            expiring_nonce_root: None,
+            block_hash: None,
             inner: EthBlockExecutionCtx {
                 parent_hash: parent.hash(),
                 parent_beacon_block_root: Some(B256::ZERO),

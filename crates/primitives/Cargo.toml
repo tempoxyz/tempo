@@ -18,6 +18,7 @@ workspace = true
 
 [dependencies]
 tempo-contracts.workspace = true
+tempo-expiring-nonces = { workspace = true, optional = true }
 
 # Reth
 reth-db-api = { workspace = true, optional = true }
@@ -123,7 +124,7 @@ serde = [
 	"revm?/serde",
 	"tempo-contracts/serde",
 ]
-evm = ["dep:alloy-evm", "dep:revm"]
+evm = ["dep:alloy-evm", "dep:revm", "dep:tempo-expiring-nonces"]
 reth-codec = [
 	"reth",
 	"serde",

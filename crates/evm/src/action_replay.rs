@@ -42,6 +42,7 @@ where
         commit_reads: bool,
     ) -> Result<(), BlockExecutionError> {
         let (tx_env, recovered) = tx.into_parts();
+        let external_nonce = self.external_expiring_nonce(&tx_env)?;
 
         let StorageActionReplay {
             result,
@@ -49,6 +50,9 @@ where
             expiring_nonce,
             validator_fee,
         } = replay;
+        if self.inner.evm.block.expiring_nonces.is_some() && external_nonce != expiring_nonce {
+            return Err(StorageActionReplayError::ActionConflict.into());
+        }
         self.replay_state.reset_tx_changes();
 
         // TODO: handle reverted transactions
@@ -88,6 +92,7 @@ where
             block_gas_used,
             validator_fee,
         );
+        let result = result.with_expiring_nonce(external_nonce);
         result_closure(&result);
 
         self.commit_transaction(result);
@@ -239,6 +244,18 @@ where
             return Err(StorageActionReplayError::ActionConflict.into());
         }
 
+        if let Some(state) = &self.inner.evm.block.expiring_nonces {
+            state
+                .check(
+                    expiring_nonce.hash,
+                    expiring_nonce.valid_before,
+                    max_expiry_secs,
+                    capacity as usize,
+                )
+                .map_err(|_| StorageActionReplayError::ActionConflict)?;
+            return Ok(());
+        }
+
         let db = self.inner.evm_mut().db_mut();
 
         let nonce_manager = NonceManager::new();
@@ -333,7 +350,7 @@ pub struct StorageActionReplay {
 }
 
 /// Replay data for expiring nonce transactions.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExpiringNonceReplay {
     pub hash: B256,
     pub valid_before: u64,

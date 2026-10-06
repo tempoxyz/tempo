@@ -13783,6 +13783,8 @@ dependencies = [
  "reth-chainspec",
  "reth-consensus",
  "reth-consensus-common",
+ "reth-db",
+ "reth-db-api",
  "reth-ethereum-consensus",
  "reth-evm",
  "reth-evm-ethereum",
@@ -13792,11 +13794,14 @@ dependencies = [
  "reth-rpc-eth-api",
  "reth-storage-api",
  "reth-trie",
+ "reth-trie-db",
  "revm",
  "serde_json",
+ "tempfile",
  "tempo-chainspec",
  "tempo-contracts",
  "tempo-dkg-onchain-artifacts",
+ "tempo-expiring-nonces",
  "tempo-payload-types",
  "tempo-precompiles",
  "tempo-primitives",
@@ -13804,6 +13809,15 @@ dependencies = [
  "thiserror 2.0.18",
  "tikv-jemallocator",
  "tracing",
+]
+
+[[package]]
+name = "tempo-expiring-nonces"
+version = "1.16.0"
+dependencies = [
+ "alloy-primitives",
+ "imbl",
+ "proptest",
 ]
 
 [[package]]
@@ -14102,6 +14116,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempo-contracts",
+ "tempo-expiring-nonces",
  "tracing-subscriber",
 ]
 

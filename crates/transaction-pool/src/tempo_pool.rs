@@ -124,6 +124,17 @@ where
         mined
     }
 
+    /// Removes all fee-payer variants of replay IDs included in a committed block.
+    pub(crate) fn remove_included_expiring_nonces(
+        &self,
+        ids: impl IntoIterator<Item = B256>,
+    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        let mut pool = self.aa_2d_pool.write();
+        ids.into_iter()
+            .filter_map(|id| pool.remove_expiring_nonce_tx(&id))
+            .collect()
+    }
+
     /// Evicts transactions that are no longer valid due to on-chain events.
     ///
     /// This performs a single scan of all pooled transactions and checks for:

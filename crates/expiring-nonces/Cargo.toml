@@ -1,0 +1,17 @@
+[package]
+name = "tempo-expiring-nonces"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+alloy-primitives.workspace = true
+imbl = "7.0.2"
+
+[dev-dependencies]
+proptest.workspace = true

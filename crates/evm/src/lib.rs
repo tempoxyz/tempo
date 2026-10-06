@@ -5,6 +5,7 @@
 
 mod action_replay;
 mod assemble;
+mod expiring_nonces;
 mod pool;
 pub use action_replay::{
     ExpiringNonceReplay, StorageActionReplay, StorageActionReplayError, StorageActionReplayOutcome,
@@ -12,6 +13,7 @@ pub use action_replay::{
 };
 use alloy_consensus::BlockHeader as _;
 pub use assemble::TempoBlockAssembler;
+pub use expiring_nonces::ExpiringNonceCache;
 pub use pool::{TempoPoolValidationEvm, TempoPoolValidationResult};
 mod block;
 pub use block::{TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
@@ -68,6 +70,9 @@ pub struct TempoEvmConfig {
 
     /// Block assembler
     pub block_assembler: TempoBlockAssembler,
+
+    /// Enables expiring nonce state outside the EVM trie.
+    pub expiring_nonce_cache: Option<ExpiringNonceCache>,
 }
 
 impl FeeTokenResolver for TempoEvmConfig {
@@ -94,7 +99,37 @@ impl TempoEvmConfig {
         Self {
             inner,
             block_assembler: TempoBlockAssembler::new(chain_spec),
+            expiring_nonce_cache: None,
         }
+    }
+
+    /// Enables the STF-breaking, reconstructible in-memory replay protection backend.
+    pub fn with_expiring_nonce_source(
+        mut self,
+        source: impl Fn(alloy_primitives::B256) -> Result<Option<Block>, String> + Send + Sync + 'static,
+    ) -> Self {
+        self.expiring_nonce_cache = Some(ExpiringNonceCache::new(source));
+        self.block_assembler.expiring_nonce_cache = self.expiring_nonce_cache.clone();
+        self
+    }
+
+    fn expiring_nonce_state(
+        &self,
+        parent_hash: alloy_primitives::B256,
+        timestamp: u64,
+    ) -> Result<Option<tempo_expiring_nonces::ExpiringNonceState>, TempoEvmError> {
+        self.expiring_nonce_cache
+            .as_ref()
+            .map(|cache| {
+                let mut state = cache
+                    .state_at(parent_hash, self.chain_spec())
+                    .map_err(TempoEvmError::InvalidEvmConfig)?;
+                state
+                    .advance(timestamp)
+                    .map_err(|e| TempoEvmError::InvalidEvmConfig(e.to_string()))?;
+                Ok(state)
+            })
+            .transpose()
     }
 
     /// Uses the provided sender recovery cache.
@@ -145,7 +180,9 @@ impl BlockExecutorFactory for TempoEvmConfig {
         DB: StateDB,
         I: Inspector<TempoContext<DB>>,
     {
-        TempoBlockExecutor::new(evm, ctx, self.chain_spec())
+        let mut executor = TempoBlockExecutor::new(evm, ctx, self.chain_spec());
+        executor.expiring_nonce_cache = self.expiring_nonce_cache.clone();
+        executor
     }
 }
 
@@ -165,6 +202,13 @@ impl ConfigureEvm for TempoEvmConfig {
     }
 
     fn evm_env(&self, header: &TempoHeader) -> Result<EvmEnvFor<Self>, Self::Error> {
+        if header.number() != 0
+            && header.expiring_nonce_root.is_some() != self.expiring_nonce_cache.is_some()
+        {
+            return Err(TempoEvmError::InvalidEvmConfig(
+                "expiring nonce backend does not match header".into(),
+            ));
+        }
         let EvmEnv { cfg_env, block_env } = EvmEnv::for_eth_block(
             header,
             self.chain_spec(),
@@ -204,6 +248,13 @@ impl ConfigureEvm for TempoEvmConfig {
                     .epoch_length()
                     .unwrap_or(NonZeroU64::MIN),
                 proposer_public_key: header.consensus_context.map(|ctx| ctx.proposer),
+                expiring_nonces: if header.number() == 0 {
+                    self.expiring_nonce_cache
+                        .as_ref()
+                        .map(|_| Default::default())
+                } else {
+                    self.expiring_nonce_state(header.parent_hash(), header.timestamp())?
+                },
             },
         })
     }
@@ -259,6 +310,10 @@ impl ConfigureEvm for TempoEvmConfig {
                     .epoch_length()
                     .unwrap_or(NonZeroU64::MIN),
                 proposer_public_key: attributes.consensus_context.map(|ctx| ctx.proposer),
+                expiring_nonces: self.expiring_nonce_state(
+                    alloy_consensus::Sealable::hash_slow(parent),
+                    attributes.timestamp,
+                )?,
             },
         })
     }
@@ -285,6 +340,8 @@ impl ConfigureEvm for TempoEvmConfig {
             general_gas_limit: block.header().general_gas_limit,
             shared_gas_limit: block.header().shared_gas_limit,
             consensus_context: block.header().consensus_context,
+            expiring_nonce_root: block.header().expiring_nonce_root,
+            block_hash: Some(block.hash()),
         })
     }
 
@@ -309,6 +366,8 @@ impl ConfigureEvm for TempoEvmConfig {
             general_gas_limit: attributes.general_gas_limit,
             shared_gas_limit: attributes.shared_gas_limit,
             consensus_context: attributes.consensus_context,
+            expiring_nonce_root: None,
+            block_hash: None,
         })
     }
 }

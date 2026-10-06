@@ -14,6 +14,10 @@ pub struct TempoBlockExecutionCtx<'a> {
     pub shared_gas_limit: u64,
     /// Consensus metadata for the block. `None` for pre-fork blocks.
     pub consensus_context: Option<TempoConsensusContext>,
+    /// Expected replay-state commitment when validating an existing block.
+    pub expiring_nonce_root: Option<alloy_primitives::B256>,
+    /// Hash of the block being validated, absent while building a new block.
+    pub block_hash: Option<alloy_primitives::B256>,
 }
 
 /// Context required for next block environment.

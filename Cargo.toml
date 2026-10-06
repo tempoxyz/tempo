@@ -24,6 +24,7 @@ members = [
   "crates/eyre",
   "crates/ext",
   "crates/evm",
+  "crates/expiring-nonces",
   "crates/hardfork",
   "crates/e2e",
   "crates/faucet",
@@ -147,6 +148,7 @@ tempo-payload-types = { path = "crates/payload/types", default-features = false 
 tempo-precompiles = { path = "crates/precompiles", default-features = false }
 tempo-precompiles-macros = { path = "crates/precompiles-macros" }
 tempo-primitives = { path = "crates/primitives", default-features = false }
+tempo-expiring-nonces = { path = "crates/expiring-nonces" }
 tempo-contracts = { path = "crates/contracts", default-features = false, features = ["serde"] }
 tempo-telemetry-util = { path = "crates/telemetry-util", default-features = false }
 tempo-transaction-pool = { path = "crates/transaction-pool", default-features = false }

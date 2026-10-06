@@ -1100,35 +1100,45 @@ where
                 .ok_or(TempoInvalidTransaction::ExpiringNonceMissingValidBefore)?;
 
             let block_timestamp = block.timestamp().saturating_to::<u64>();
-            StorageCtx::enter_evm_without_tip1060_accounting(
-                journal,
-                block,
-                cfg,
-                tx,
-                actions.clone(),
-                || {
-                    let mut nonce_manager = NonceManager::new();
+            if let Some(state) = &block.expiring_nonces {
+                state
+                    .check(
+                        replay_hash,
+                        valid_before,
+                        max_expiry_secs,
+                        capacity as usize,
+                    )
+                    .map_err(|err| TempoInvalidTransaction::NonceManagerError(err.to_string()))?;
+            } else {
+                StorageCtx::enter_evm_without_tip1060_accounting(
+                    journal,
+                    block,
+                    cfg,
+                    tx,
+                    actions.clone(),
+                    || {
+                        let mut nonce_manager = NonceManager::new();
 
-                    let prev_ptr = if let Some(expiring_nonce_idx) = tempo_tx_env.expiring_nonce_idx
-                    {
-                        let ptr = nonce_manager
-                            .expiring_nonce_ring_ptr
-                            .read()
-                            .map_err(|err| EVMError::Custom(err.to_string()))?;
+                        let prev_ptr =
+                            if let Some(expiring_nonce_idx) = tempo_tx_env.expiring_nonce_idx {
+                                let ptr = nonce_manager
+                                    .expiring_nonce_ring_ptr
+                                    .read()
+                                    .map_err(|err| EVMError::Custom(err.to_string()))?;
 
-                        let next = (ptr + expiring_nonce_idx as u32) % capacity;
+                                let next = (ptr + expiring_nonce_idx as u32) % capacity;
+
+                                nonce_manager
+                                    .expiring_nonce_ring_ptr
+                                    .write(next)
+                                    .map_err(|err| EVMError::Custom(err.to_string()))?;
+
+                                Some(ptr)
+                            } else {
+                                None
+                            };
 
                         nonce_manager
-                            .expiring_nonce_ring_ptr
-                            .write(next)
-                            .map_err(|err| EVMError::Custom(err.to_string()))?;
-
-                        Some(ptr)
-                    } else {
-                        None
-                    };
-
-                    nonce_manager
                     .check_and_mark_expiring_nonce(replay_hash, valid_before)
                     .map_err(|err| match err {
                         TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
@@ -1151,16 +1161,17 @@ where
                         err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
                     })?;
 
-                    if let Some(prev_ptr) = prev_ptr {
-                        nonce_manager
-                            .expiring_nonce_ring_ptr
-                            .write(prev_ptr)
-                            .map_err(|err| EVMError::Custom(err.to_string()))?;
-                    }
+                        if let Some(prev_ptr) = prev_ptr {
+                            nonce_manager
+                                .expiring_nonce_ring_ptr
+                                .write(prev_ptr)
+                                .map_err(|err| EVMError::Custom(err.to_string()))?;
+                        }
 
-                    Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
-                },
-            )?;
+                        Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
+                    },
+                )?;
+            }
         } else if !nonce_key.is_zero() {
             // 2D nonce transaction
             StorageCtx::enter_evm_without_tip1060_accounting(

@@ -521,6 +521,20 @@ where
         // unblocked transactions before later pool scans.
         let nonce_pool_start = Instant::now();
         removed_txs.push(pool.notify_aa_pool_on_state_updates(bundle_state));
+        // External replay state produces no nonce-precompile storage changes.
+        // Remove by replay ID so differently sponsored copies cannot remain pending.
+        removed_txs.push(
+            pool.remove_included_expiring_nonces(
+                tip.blocks_iter()
+                    .filter(|block| block.header().expiring_nonce_root.is_some())
+                    .flat_map(|block| block.transactions_with_sender())
+                    .filter_map(|(sender, tx)| {
+                        tx.as_aa()
+                            .filter(|signed| signed.tx().is_expiring_nonce_tx())
+                            .map(|signed| signed.expiring_nonce_hash(*sender))
+                    }),
+            ),
+        );
         metrics
             .nonce_pool_update_duration_seconds
             .record(nonce_pool_start.elapsed());

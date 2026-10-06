@@ -11,6 +11,7 @@ mod blocked_transfers;
 mod consensus_context;
 mod consensus_rpc;
 mod dkg;
+mod expiring_nonces;
 mod fee_recipient;
 mod follow;
 mod linkage;

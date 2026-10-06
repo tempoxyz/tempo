@@ -213,6 +213,7 @@ impl TempoChainSpec {
         base_spec.hardforks.extend(tempo_forks);
 
         let inner = base_spec.map_header(|inner| TempoHeader {
+            expiring_nonce_root: None,
             general_gas_limit: 0,
             timestamp_millis_part: inner.timestamp % 1000,
             shared_gas_limit: 0,
@@ -261,6 +262,7 @@ impl TempoChainSpec {
 impl From<ChainSpec> for TempoChainSpec {
     fn from(spec: ChainSpec) -> Self {
         let inner = spec.map_header(|inner| TempoHeader {
+            expiring_nonce_root: None,
             general_gas_limit: 0,
             timestamp_millis_part: inner.timestamp % 1000,
             shared_gas_limit: 0,

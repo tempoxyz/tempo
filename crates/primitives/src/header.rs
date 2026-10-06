@@ -24,12 +24,13 @@ pub struct TempoConsensusContext {
 /// Tempo block header.
 ///
 /// RLP-encoded as `[general_gas_limit, shared_gas_limit, timestamp_millis_part, inner,
-/// consensus_context?]`. The `consensus_context` is trailing and omitted for pre-fork blocks.
+/// consensus_context?, expiring_nonce_root?]`. Missing trailing fields are omitted;
+/// an absent consensus context before a nonce root is an empty-string placeholder.
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq, RlpEncodable, RlpDecodable)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
-#[rlp(trailing(no_gaps))]
+#[rlp(trailing(canonical))]
 pub struct TempoHeader {
     /// Non-payment gas limit for the block.
     #[cfg_attr(
@@ -56,6 +57,14 @@ pub struct TempoHeader {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub consensus_context: Option<TempoConsensusContext>,
+
+    /// Commitment to the live expiring nonce state outside the EVM trie.
+    /// Required by nodes configured with the in-memory nonce backend, except at genesis.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub expiring_nonce_root: Option<B256>,
 }
 
 impl TempoHeader {
@@ -179,6 +188,30 @@ mod tests {
     use super::*;
     use alloy_rlp::{Decodable as _, EMPTY_STRING_CODE, Header as RlpHeader};
 
+    #[test]
+    fn expiring_nonce_root_rlp_and_header_hash() {
+        let base = TempoHeader::default();
+        let header = TempoHeader {
+            expiring_nonce_root: Some(B256::repeat_byte(1)),
+            ..base.clone()
+        };
+        let encoded = alloy_rlp::encode(&header);
+        assert_eq!(
+            TempoHeader::decode(&mut encoded.as_slice()).unwrap(),
+            header
+        );
+        assert_ne!(base.hash_slow(), header.hash_slow());
+        let changed = TempoHeader {
+            expiring_nonce_root: Some(B256::repeat_byte(2)),
+            ..header.clone()
+        };
+        assert_ne!(changed.hash_slow(), header.hash_slow());
+        assert!(
+            TempoHeader::decode(&mut append_explicit_none_to_rlp_list(&encoded).as_slice())
+                .is_err()
+        );
+    }
+
     fn append_explicit_none_to_rlp_list(encoded: &[u8]) -> Vec<u8> {
         let mut payload = encoded;
         let header = RlpHeader::decode(&mut payload).unwrap();
@@ -275,6 +308,7 @@ mod tests {
     #[test]
     fn header_rlp_roundtrip() {
         let header = TempoHeader {
+            expiring_nonce_root: None,
             general_gas_limit: 15_000_000,
             shared_gas_limit: 5_000_000,
             timestamp_millis_part: 123,
@@ -297,6 +331,7 @@ mod tests {
 
         // without consensus_context
         let header_no_ctx = TempoHeader {
+            expiring_nonce_root: None,
             general_gas_limit: 10_000_000,
             shared_gas_limit: 3_000_000,
             timestamp_millis_part: 0,
@@ -311,6 +346,7 @@ mod tests {
     #[test]
     fn header_rejects_explicit_none_context_rlp() {
         let header = TempoHeader {
+            expiring_nonce_root: None,
             general_gas_limit: 10_000_000,
             shared_gas_limit: 3_000_000,
             timestamp_millis_part: 0,

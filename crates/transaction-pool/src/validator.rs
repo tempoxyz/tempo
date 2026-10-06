@@ -5,7 +5,7 @@ use crate::{
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 
-use alloy_consensus::Transaction;
+use alloy_consensus::{Transaction, transaction::TxHashRef};
 use alloy_evm::{Database, EvmEnv};
 use alloy_primitives::{Address, B256};
 use parking_lot::RwLock;
@@ -132,17 +132,25 @@ where
         amm_liquidity_cache: AmmLiquidityCache,
     ) -> Self
     where
-        Client: BlockReaderIdExt<Header = TempoHeader>,
+        Client: BlockReaderIdExt<Header = TempoHeader, Block = Block>,
     {
         let latest_header = inner
             .client()
             .latest_header()
             .expect("failed to fetch latest header")
             .expect("latest header is None");
-        let evm_env = inner
+        let mut evm_env = inner
             .evm_config()
             .evm_env(latest_header.header())
             .expect("failed constructing EvmEnv from latest header");
+        if evm_env.block_env.expiring_nonces.is_some() {
+            let block = inner
+                .client()
+                .block_by_hash(latest_header.hash())
+                .expect("failed to read nonce history")
+                .expect("missing latest block");
+            apply_tip_nonces(&mut evm_env, &block.header, &block.body.transactions);
+        }
         let active_hardfork = AtomicU8::new(evm_env.cfg_env.spec.variant_index());
         Self {
             inner,
@@ -797,11 +805,16 @@ where
         self.inner.on_new_head_block(new_tip_block);
 
         // Cache the EVM environment for the new tip block.
-        let evm_env = self
+        let mut evm_env = self
             .inner
             .evm_config()
             .evm_env(new_tip_block.header())
             .expect("invalid block in on_new_head_block");
+        apply_tip_nonces(
+            &mut evm_env,
+            new_tip_block.header(),
+            &new_tip_block.body().transactions,
+        );
         self.active_hardfork
             .store(evm_env.cfg_env.spec.variant_index(), Ordering::Relaxed);
         *self.cached_evm_env.write() = evm_env;
@@ -842,6 +855,47 @@ where
 {
     fn bytecode_by_hash(&self, code_hash: &B256) -> ProviderResult<Option<Bytecode>> {
         Ok(Some(Bytecode(self.db.code_by_hash_ref(*code_hash)?)))
+    }
+}
+
+/// Pool admission reads post-tip replay protection, while execution environments
+/// start from the parent state. Canonical block bodies supply the committed delta.
+fn apply_tip_nonces(
+    env: &mut EvmEnv<TempoHardfork, TempoBlockEnv>,
+    header: &TempoHeader,
+    transactions: &[tempo_primitives::TempoTxEnvelope],
+) {
+    let Some(state) = env.block_env.expiring_nonces.as_mut() else {
+        return;
+    };
+    let spec = env.cfg_env.spec;
+    state
+        .advance(header.inner.timestamp)
+        .expect("canonical timestamp");
+    for tx in transactions {
+        if !spec.is_t1() || !tx.is_expiring_nonce() {
+            continue;
+        }
+        let signed = tx.as_aa().expect("AA nonce");
+        let id = if spec.is_t1b() {
+            signed.expiring_nonce_hash(
+                alloy_consensus::transaction::SignerRecoverable::recover_signer(tx)
+                    .expect("canonical sender"),
+            )
+        } else {
+            *tx.tx_hash()
+        };
+        state
+            .insert(
+                id,
+                signed.tx().valid_before.expect("canonical expiry").get(),
+                spec.expiring_nonce_max_expiry_secs(),
+                spec.expiring_nonce_set_capacity() as usize,
+            )
+            .expect("canonical replay protection");
+    }
+    if let Some(root) = header.expiring_nonce_root {
+        assert_eq!(state.root(), root, "canonical nonce commitment");
     }
 }
 

@@ -94,6 +94,7 @@ pub struct TempoTxResult {
     /// Used by the payload builder to score blocks by actual proposer revenue. The value is the
     /// post-feeAMM amount, regardless of route shape — absorbs any number of pool haircuts.
     validator_fee: U256,
+    expiring_nonce: Option<crate::ExpiringNonceReplay>,
 }
 
 impl Clone for TempoTxResult {
@@ -109,6 +110,7 @@ impl Clone for TempoTxResult {
             is_payment: self.is_payment,
             block_gas_used: self.block_gas_used,
             validator_fee: self.validator_fee,
+            expiring_nonce: self.expiring_nonce,
         }
     }
 }
@@ -140,7 +142,13 @@ impl TempoTxResult {
             is_payment,
             block_gas_used,
             validator_fee,
+            expiring_nonce: None,
         }
+    }
+
+    pub(crate) fn with_expiring_nonce(mut self, nonce: Option<crate::ExpiringNonceReplay>) -> Self {
+        self.expiring_nonce = nonce;
+        self
     }
 
     /// Returns the block gas consumed by this transaction.
@@ -189,6 +197,9 @@ pub struct TempoBlockExecutor<'a, DB: Database, I> {
     non_payment_gas_left: u64,
     /// Incentive-section gas from real transactions; simulations are exempt.
     incentive_gas_used: u64,
+    pub(crate) expiring_nonce_cache: Option<crate::ExpiringNonceCache>,
+    expected_expiring_nonce_root: Option<B256>,
+    block_hash: Option<B256>,
 }
 
 impl<'a, DB, I> TempoBlockExecutor<'a, DB, I>
@@ -202,6 +213,9 @@ where
         chain_spec: &'a TempoChainSpec,
     ) -> Self {
         Self {
+            expiring_nonce_cache: None,
+            expected_expiring_nonce_root: ctx.expiring_nonce_root,
+            block_hash: ctx.block_hash,
             incentive_gas_used: 0,
             non_payment_gas_left: ctx.general_gas_limit,
             non_shared_gas_left: evm.block().gas_limit.saturating_sub(ctx.shared_gas_limit),
@@ -215,6 +229,58 @@ where
             section: BlockSection::StartOfBlock,
             replay_state: StorageActionReplayState::default(),
         }
+    }
+
+    /// Validates an external nonce before execution; only commit consumes it.
+    pub(crate) fn external_expiring_nonce(
+        &self,
+        tx: &tempo_revm::TempoTxEnv,
+    ) -> Result<Option<crate::ExpiringNonceReplay>, BlockExecutionError> {
+        let Some(state) = &self.inner.evm.block.expiring_nonces else {
+            return Ok(None);
+        };
+        let spec = self.inner.evm.cfg.spec;
+        let Some(aa) = tx
+            .tempo_tx_env
+            .as_ref()
+            .filter(|aa| aa.nonce_key == U256::MAX && spec.is_t1())
+        else {
+            return Ok(None);
+        };
+        let invalid = |error| BlockValidationError::InvalidTx {
+            hash: aa.tx_hash,
+            error: Box::new(error),
+        };
+        if !spec.is_t12() && tx.inner.nonce != 0 {
+            return Err(
+                invalid(tempo_revm::TempoInvalidTransaction::ExpiringNonceNonceNotZero).into(),
+            );
+        }
+        let nonce = crate::ExpiringNonceReplay {
+            hash: if spec.is_t1b() {
+                tx.unique_tx_identifier.ok_or_else(|| {
+                    invalid(tempo_revm::TempoInvalidTransaction::ExpiringNonceMissingTxEnv)
+                })?
+            } else {
+                aa.tx_hash
+            },
+            valid_before: aa.valid_before.ok_or_else(|| {
+                invalid(tempo_revm::TempoInvalidTransaction::ExpiringNonceMissingValidBefore)
+            })?,
+        };
+        state
+            .check(
+                nonce.hash,
+                nonce.valid_before,
+                spec.expiring_nonce_max_expiry_secs(),
+                spec.expiring_nonce_set_capacity() as usize,
+            )
+            .map_err(|err| {
+                invalid(tempo_revm::TempoInvalidTransaction::NonceManagerError(
+                    err.to_string(),
+                ))
+            })?;
+        Ok(Some(nonce))
     }
 
     /// Deploys `0xEF` marker bytecode and initializes storage at a precompile address.
@@ -500,6 +566,9 @@ where
     type Result = TempoTxResult;
 
     fn apply_pre_execution_changes(&mut self) -> Result<(), alloy_evm::block::BlockExecutionError> {
+        if self.expiring_nonce_cache.is_some() && self.inner.evm.block.expiring_nonces.is_none() {
+            return Err(BlockValidationError::msg("missing external expiring nonce state").into());
+        }
         if self
             .inner
             .ctx
@@ -561,6 +630,7 @@ where
     ) -> Result<Self::Result, BlockExecutionError> {
         let (mut tx_env, recovered) = tx.into_parts();
         let execution_context = tx_env.execution_context;
+        let expiring_nonce = self.external_expiring_nonce(&tx_env)?;
         // Remove any prewarming-specific context that was added to the tx env.
         if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
             tempo_tx_env.expiring_nonce_idx = None;
@@ -594,6 +664,7 @@ where
             is_payment: self.is_payment(recovered.tx()),
             block_gas_used,
             validator_fee,
+            expiring_nonce,
         })
     }
 
@@ -605,7 +676,25 @@ where
             is_payment,
             block_gas_used,
             validator_fee: _,
+            expiring_nonce,
         } = output;
+
+        if let Some(nonce) = expiring_nonce {
+            let spec = self.evm().cfg.spec;
+            self.inner
+                .evm
+                .block
+                .expiring_nonces
+                .as_mut()
+                .expect("external nonce state")
+                .insert(
+                    nonce.hash,
+                    nonce.valid_before,
+                    spec.expiring_nonce_max_expiry_secs(),
+                    spec.expiring_nonce_set_capacity() as usize,
+                )
+                .expect("committed nonce was validated against this executor");
+        }
 
         let gas_output = self.inner.commit_transaction(inner);
 
@@ -664,6 +753,21 @@ where
             result.gas_used = regular_gas_used;
         }
 
+        if self.expected_expiring_nonce_root.is_some() && evm.block.expiring_nonces.is_none() {
+            return Err(BlockValidationError::msg("missing external expiring nonce state").into());
+        }
+        if let Some(state) = &evm.block.expiring_nonces {
+            if let Some(expected) = self.expected_expiring_nonce_root {
+                if state.root() != expected {
+                    return Err(
+                        BlockValidationError::msg("expiring nonce commitment mismatch").into(),
+                    );
+                }
+            }
+            if let Some(cache) = &self.expiring_nonce_cache {
+                cache.remember(state, self.block_hash);
+            }
+        }
         Ok((evm, result))
     }
 
@@ -697,6 +801,140 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn external_nonce_commits_only_with_the_transaction() {
+        use alloy_signer::SignerSync as _;
+        use alloy_signer_local::PrivateKeySigner;
+        use tempo_primitives::{TempoTransaction, transaction::Call};
+        for (revert, replay) in [(false, false), (true, false), (false, true)] {
+            let chainspec = test_chainspec();
+            let target = Address::repeat_byte(0x42);
+            let mut database = revm::database::InMemoryDB::default();
+            if revert {
+                database.insert_account_info(
+                    target,
+                    AccountInfo {
+                        code: Some(Bytecode::new_legacy(alloy_primitives::bytes!("60006000fd"))),
+                        ..Default::default()
+                    },
+                );
+            }
+            let mut db = State::builder()
+                .with_database(database)
+                .with_bundle_update()
+                .build();
+            let mut executor = TestExecutorBuilder::default()
+                .with_spec(TempoHardfork::T11)
+                .build(&mut db, &chainspec);
+            executor.inner.evm.block.basefee = 0;
+            executor.inner.evm.block.timestamp = U256::from(100);
+            let mut nonce_state = tempo_expiring_nonces::ExpiringNonceState::default();
+            nonce_state.advance(100).unwrap();
+            executor.inner.evm.block.expiring_nonces = Some(nonce_state);
+            let signer = PrivateKeySigner::from_bytes(&B256::repeat_byte(1)).unwrap();
+            let tx = TempoTransaction {
+                chain_id: executor.inner.evm.cfg.chain_id,
+                nonce_key: U256::MAX,
+                valid_before: std::num::NonZeroU64::new(130),
+                gas_limit: 1_000_000,
+                calls: vec![Call {
+                    to: TxKind::Call(target),
+                    value: U256::ZERO,
+                    input: Bytes::new(),
+                }],
+                ..Default::default()
+            };
+            let signature = signer.sign_hash_sync(&tx.signature_hash()).unwrap();
+            let tx: TempoTxEnvelope = tx.into_signed(signature.into()).into();
+            let recovered = Recovered::new_unchecked(tx, signer.address());
+            let before = executor
+                .inner
+                .evm
+                .block
+                .expiring_nonces
+                .as_ref()
+                .unwrap()
+                .root();
+            let result = executor
+                .execute_transaction_without_commit(&recovered)
+                .unwrap();
+            assert_eq!(result.result().result.is_success(), !revert);
+            assert_eq!(
+                executor
+                    .inner
+                    .evm
+                    .block
+                    .expiring_nonces
+                    .as_ref()
+                    .unwrap()
+                    .root(),
+                before
+            );
+            assert!(
+                !result
+                    .result()
+                    .state
+                    .get(&tempo_precompiles::NONCE_PRECOMPILE_ADDRESS)
+                    .is_some_and(|account| account.changed_storage_slots().next().is_some())
+            );
+            // Discarding an otherwise executable transaction must not consume its ID.
+            drop(result);
+            let result = executor
+                .execute_transaction_without_commit(&recovered)
+                .unwrap();
+            if replay {
+                let replay = crate::StorageActionReplay {
+                    result: result.result().result.clone(),
+                    actions: vec![],
+                    expiring_nonce: result.expiring_nonce,
+                    validator_fee: result.validator_fee(),
+                };
+                drop(result);
+                executor
+                    .execute_transaction_with_actions(&recovered, replay, |_| {}, false)
+                    .unwrap();
+            } else {
+                executor.commit_transaction(result);
+            }
+            assert_eq!(
+                executor
+                    .inner
+                    .evm
+                    .block
+                    .expiring_nonces
+                    .as_ref()
+                    .unwrap()
+                    .len(),
+                1
+            );
+            let err = executor
+                .execute_transaction_without_commit(&recovered)
+                .unwrap_err();
+            assert!(err.to_string().contains("replay"));
+            assert!(matches!(
+                err,
+                BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn external_nonce_commitment_is_checked_at_finish() {
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+        executor.inner.evm.block.expiring_nonces = Some(Default::default());
+        executor.expected_expiring_nonce_root = Some(B256::ZERO);
+        assert!(
+            executor
+                .finish()
+                .err()
+                .expect("invalid root")
+                .to_string()
+                .contains("expiring nonce commitment mismatch")
+        );
+    }
     use crate::test_utils::{TestExecutorBuilder, test_chainspec, test_evm};
     use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
     use alloy_evm::{block::BlockExecutor, eth::receipt_builder::ReceiptBuilder};
@@ -1123,6 +1361,7 @@ mod tests {
 
         let tx = create_legacy_tx();
         let output = TempoTxResult {
+            expiring_nonce: None,
             execution_context: ExecutionContext::Transaction {
                 tx_hash: B256::ZERO,
             },
@@ -1318,6 +1557,7 @@ mod tests {
 
         let tx = create_legacy_tx();
         let output = TempoTxResult {
+            expiring_nonce: None,
             execution_context: ExecutionContext::Transaction {
                 tx_hash: B256::ZERO,
             },
@@ -1360,6 +1600,7 @@ mod tests {
         // Commit first transaction (21000 gas)
         let tx1 = create_legacy_tx();
         let output1 = TempoTxResult {
+            expiring_nonce: None,
             execution_context: ExecutionContext::Transaction {
                 tx_hash: B256::ZERO,
             },
@@ -1386,6 +1627,7 @@ mod tests {
         // Commit second transaction (50000 gas)
         let tx2 = create_legacy_tx();
         let output2 = TempoTxResult {
+            expiring_nonce: None,
             execution_context: ExecutionContext::Transaction {
                 tx_hash: B256::ZERO,
             },
@@ -1451,6 +1693,7 @@ mod tests {
 
         let tx = create_legacy_tx();
         let output = TempoTxResult {
+            expiring_nonce: None,
             execution_context: ExecutionContext::Transaction {
                 tx_hash: B256::ZERO,
             },
@@ -1499,6 +1742,7 @@ mod tests {
         // tx_gas_used = max(300k - 0_refund, 0) = 300k
         let tx = create_legacy_tx();
         let output = TempoTxResult {
+            expiring_nonce: None,
             execution_context: ExecutionContext::Transaction {
                 tx_hash: B256::ZERO,
             },
@@ -1550,6 +1794,7 @@ mod tests {
 
         let tx = create_legacy_tx();
         let output = TempoTxResult {
+            expiring_nonce: None,
             execution_context: ExecutionContext::Transaction {
                 tx_hash: B256::ZERO,
             },
