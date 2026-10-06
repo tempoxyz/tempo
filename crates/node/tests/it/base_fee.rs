@@ -29,9 +29,9 @@ async fn test_base_fee() -> eyre::Result<()> {
 
     // Get initial block to check base fee
     let block = provider
-        .get_block_by_number(BlockNumberOrTag::Latest)
+        .get_block_by_number(BlockNumberOrTag::Number(0))
         .await?
-        .expect("Could not get latest block");
+        .expect("Could not get genesis block");
 
     let base_fee = block
         .header
