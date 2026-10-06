@@ -237,6 +237,14 @@ The [50k offered-load comparison](https://github.com/tempoxyz/tempo/actions/runs
 also rejected 31,785 submissions because the pool was full; it does not establish
 50k capacity. Both comparisons suppressed Slack.
 
+The [latest-main 25k refresh](https://github.com/tempoxyz/tempo/actions/runs/37409583515)
+also found no net gain: 17,322 versus 15,752 accepted TPS, with validator gas
+throughput down 9.99%. Its classification was Mixed Results because builder P90
+improved; Slack was explicitly skipped. The audit linked 1,118 reported blocks
+and 9,162,556 transactions with zero reported RPC failures or receipt reverts.
+Main and the integrated branch use different SDK revisions, so this comparison
+does not isolate executor cost from SDK changes or establish 25k capacity.
+
 Separate offered TPS, actual submissions, RPC outcomes and accepted-chain TPS.
 Audit six phase launches, source/build hashes, paired metrics, sender accounting,
 canonical hash cohorts, peer heads, fresh `VALID` evidence and all node errors.
