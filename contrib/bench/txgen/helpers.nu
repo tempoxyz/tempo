@@ -691,7 +691,7 @@ def txgen-prepare-vault-preset [spec_path: string, accounts: int, chain_id: int]
     $output
 }
 
-# Only public-mix needs category metadata; all presets use gas weighting.
+# Only public-mix needs category metadata for gas weighting.
 def txgen-workload-metadata-args [preset_name: string, spec_path: string] {
     if $preset_name != "public-mix" { return ["-m" "workload_mix_weighting=gas"] }
 
@@ -807,7 +807,18 @@ def txgen-run-preset-pipeline [
         0
     }
     let total_accounts = $accounts + $recipient_accounts
-    let workload_metadata = (txgen-workload-metadata-args $preset_name $spec_path)
+    # Stock txgen cannot serialize keychain adapter state. Keep setup and workload
+    # in one generator so the sender can confirm authorizations before measuring.
+    let keychain_setup = (txgen-spec-has-keychain-setup $spec_path)
+    let txgen_extra_args = (txgen-parse-bench-args $bench_args)
+    if $keychain_setup and ($producer_context != "" or "--gas-weighted-mix" in $txgen_extra_args) {
+        error make { msg: "Keychain setup requires a single transaction-weighted stream; saved setup and gas sampling are unsupported by the pinned txgen" }
+    }
+    let workload_metadata = if $keychain_setup {
+        ["-m" "workload_mix_weighting=transaction"]
+    } else {
+        txgen-workload-metadata-args $preset_name $spec_path
+    }
     if not $skip_faucet_funding {
         txgen-fund-accounts $txgen_tempo_bin $spec_path $generate_rpc_url
     }
@@ -820,8 +831,8 @@ def txgen-run-preset-pipeline [
         "-n" $tx_count
         "--seed" $TXGEN_HELPER_DEFAULT_SEED
         "--rpc" $generate_rpc_url
-    ] | append (if $is_vault or $preset_name == "zones" { [] } else { ["--duration" $txgen_duration] })
-    # Zones and vaults generate the full count: setup must not consume workload duration.
+    ] | append (if $keychain_setup or $is_vault or $preset_name == "zones" { [] } else { ["--duration" $txgen_duration] })
+    # Keychains, zones and vaults generate the full count: setup must not consume workload duration.
     let txgen_setup_cmd = [
         $txgen_tempo_bin
         "generate"
@@ -884,12 +895,13 @@ def txgen-run-preset-pipeline [
     let bench_cmd = $bench_base_cmd | append $report_args | append $metadata_args
 
     let bench_env_export = if $bench_env != "" { $"export ($bench_env) && " } else { "" }
-    let txgen_extra_args = (txgen-parse-bench-args $bench_args)
     let setup_state_path = $"($report_path).setup.json"
-    let gas_mix_args = ["--gas-weighted-mix" "--setup-state-in" $setup_state_path]
+    let gas_mix_args = if $keychain_setup { [] } else {
+        ["--gas-weighted-mix" "--setup-state-in" $setup_state_path]
+    }
     let workload_extra_args = ($txgen_extra_args | where { |arg| $arg != "--gas-weighted-mix" })
     let txgen_cmd_str = (txgen-shell-join ($txgen_cmd | append $workload_extra_args | append $gas_mix_args))
-    let bench_cmd = $bench_cmd | append "--skip-setup"
+    let bench_cmd = if $keychain_setup { $bench_cmd } else { $bench_cmd | append "--skip-setup" }
     let bench_cmd = if $is_vault { $bench_cmd | append ["--drain-timeout" "300"] } else { $bench_cmd }
     let bench_cmd_str = (txgen-shell-join $bench_cmd)
     let pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_cmd_str) | ($bench_cmd_str)"
@@ -899,13 +911,19 @@ def txgen-run-preset-pipeline [
     let bench_setup_cmd_str = (txgen-shell-join ($bench_send_base_cmd | append ["--drain-timeout" 0]))
     let setup_pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_setup_cmd_str) | ($bench_setup_cmd_str)"
 
-    print "  Confirming setup before gas sampling..."
-    let setup_result = (bash -lc $setup_pipeline | complete)
-    if $setup_result.stdout != "" { print $setup_result.stdout }
-    if $setup_result.stderr != "" { print $setup_result.stderr }
-
-    if $setup_result.exit_code != 0 {
-        return { ok: false, exit_code: $setup_result.exit_code, report_path: $report_path }
+    let setup_result = if $keychain_setup {
+        print "  Sender will confirm keychain setup before measuring the workload..."
+        null
+    } else {
+        print "  Confirming setup before gas sampling..."
+        bash -lc $setup_pipeline | complete
+    }
+    if $setup_result != null {
+        if $setup_result.stdout != "" { print $setup_result.stdout }
+        if $setup_result.stderr != "" { print $setup_result.stderr }
+        if $setup_result.exit_code != 0 {
+            return { ok: false, exit_code: $setup_result.exit_code, report_path: $report_path }
+        }
     }
 
     if $producer_context != "" {
@@ -942,7 +960,7 @@ def txgen-run-preset-pipeline [
         return { ok: ($measured.exit_code == 0), exit_code: $measured.exit_code, report_path: $"($output)/attempt/result.json", diagnostic: "producer-isolation" }
     }
 
-    if $is_vault or $preset_name == "zones" {
+    if $keychain_setup or $is_vault or $preset_name == "zones" {
         print $"  Streaming ($tx_count) ($preset_name) transactions at target ($tps) TPS into bench send..."
     } else {
         print $"  Streaming up to ($tx_count) txgen transaction\(s\) over ($txgen_duration) into bench send..."
