@@ -26,6 +26,7 @@ use tracy_client as _;
 use opentelemetry_otlp as _;
 
 pub mod cli;
+mod consensus_shutdown;
 mod defaults;
 mod follow;
 mod overrides;
@@ -376,6 +377,9 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
         let runner = commonware_runtime::tokio::Runner::new(runtime_config);
         let ret = runner.start(async move |ctx| {
+            if shutdown_token_clone.is_cancelled() {
+                return Ok(());
+            }
             let mut metrics_server = tempo_consensus::metrics::install(
                 ctx.child("metrics"),
                 args.consensus.metrics_address,
@@ -428,20 +432,26 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                 ))
             };
 
+            // The stack has not been polled yet. Do not start it if cancellation
+            // arrived during telemetry setup. Once running, prefer a ready stack
+            // failure over a simultaneous shutdown request in the select below.
+            if shutdown_token_clone.is_cancelled() {
+                return Ok(());
+            }
             tokio::pin!(consensus_stack);
             loop {
                 tokio::select!(
                     biased;
-
-                    () = shutdown_token_clone.cancelled() => {
-                        break Ok(());
-                    }
 
                     ret = &mut consensus_stack => {
                         break ret.and_then(|()| Err(eyre::eyre!(
                             "consensus stack exited unexpectedly"))
                         )
                         .wrap_err("consensus stack failed");
+                    }
+
+                    () = shutdown_token_clone.cancelled() => {
+                        break Ok(());
                     }
 
                     ret = &mut metrics_server, if !metrics_server.is_terminated() => {
@@ -465,7 +475,10 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
     let components =
         |spec: Arc<TempoChainSpec>| (TempoEvmConfig::new(spec.clone()), TempoConsensus::new(spec));
 
-    cli.run_with_components::<TempoNode>(components, async move |builder, args| {
+    let mut consensus_thread =
+        consensus_shutdown::ConsensusThread::new(shutdown_token, consensus_handle);
+    let consensus_thread_ref = &mut consensus_thread;
+    let node_result = cli.run_with_components::<TempoNode>(components, async move |builder, args| {
         if let Some(value) = args.consensus.message_backlog {
             warn!(
                 flag = "--consensus.message-backlog",
@@ -660,37 +673,35 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         }
 
         let _ = consensus_startup_tx.send((node, executed_state, args, gossip_transport));
+        // The SDK can drop this future on SIGINT or SIGTERM without polling
+        // another local signal listener. Join consensus before it shuts down
+        // the execution runtime, which consensus may still be calling into.
+        // Arm only after the startup sender is consumed, so cancellation cannot
+        // join a thread waiting for a sender held by this same future.
+        let _consensus_shutdown = consensus_thread_ref.stop_on_drop();
 
         // TODO: emit these inside a span
-        tokio::select! {
-            _ = node_exit_future => {
+        let result = tokio::select! {
+            result = node_exit_future => {
                 tracing::info!("execution node exited");
+                result
             }
             _ = &mut consensus_dead_rx => {
                 tracing::info!("consensus node exited");
+                Ok(())
             }
-            _ = tokio::signal::ctrl_c() => {
-                tracing::info!("received shutdown signal");
-            }
-        }
+        };
 
         #[cfg(feature = "pyroscope")]
         if let Some(agent) = pyroscope_agent {
             agent.shutdown();
         }
 
-        Ok(())
+        result
     })
-    .wrap_err("execution node failed")?;
+    .wrap_err("execution node failed");
 
-    shutdown_token.cancel();
-
-    match consensus_handle.join() {
-        Ok(Ok(())) => {}
-        Ok(Err(err)) => return Err(err).wrap_err("consensus task exited with error"),
-        Err(unwind) => std::panic::resume_unwind(unwind),
-    }
-    Ok(())
+    consensus_thread.finish(node_result)
 }
 
 #[cfg(test)]
