@@ -705,7 +705,7 @@ async fn test_create_receipts_with_non_protocol_nonces() -> eyre::Result<()> {
             assert_ne!(nonce, protocol_nonce);
             serde_json::Value::Null
         };
-        assert_eq!(receipt["contractAddress"], expected_address);
+        assert_eq!(receipt.get("contractAddress"), Some(&expected_address));
         assert_eq!(
             localnet
                 .provider
@@ -727,11 +727,15 @@ async fn test_create_receipts_with_non_protocol_nonces() -> eyre::Result<()> {
             .iter()
             .find(|block_receipt| block_receipt["transactionHash"] == receipt["transactionHash"])
             .expect("deployment receipt must be present in block receipts");
-        assert_eq!(block_receipt["contractAddress"], expected_address);
+        assert_eq!(
+            block_receipt.get("contractAddress"),
+            Some(&expected_address)
+        );
     }
 
     Ok(())
 }
+
 /// Sign and inject a secp256k1 AA transaction with a custom nonce key and priority fee.
 async fn send_tx(
     setup: &mut crate::utils::SingleNodeSetup,
