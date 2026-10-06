@@ -460,7 +460,7 @@ mod tests {
             validator_config.initialize(owner1)?;
 
             // Owner1 adds a validator - should succeed
-            let public_key = FixedBytes::<32>::from([0x44; 32]);
+            let public_key = FixedBytes::<32>::repeat_byte(0x44);
             validator_config.add_validator(
                 owner1,
                 IValidatorConfig::addValidatorCall {
@@ -497,7 +497,7 @@ mod tests {
                 owner2,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator2,
-                    publicKey: FixedBytes::<32>::from([0x66; 32]),
+                    publicKey: FixedBytes::<32>::repeat_byte(0x66),
                     inboundAddress: "192.168.1.2:8000".to_string(),
                     active: true,
                     outboundAddress: "192.168.1.2:9000".to_string(),
@@ -523,13 +523,13 @@ mod tests {
     fn test_validator_lifecycle() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let owner = Address::from([0x01; 20]);
+            let owner = Address::repeat_byte(0x01);
 
             let mut validator_config = ValidatorConfig::new();
             validator_config.initialize(owner)?;
 
-            let validator1 = Address::from([0x11; 20]);
-            let public_key1 = FixedBytes::<32>::from([0x21; 32]);
+            let validator1 = Address::repeat_byte(0x11);
+            let public_key1 = FixedBytes::<32>::repeat_byte(0x21);
             let inbound1 = "192.168.1.1:8000".to_string();
             let outbound1 = "192.168.1.1:9000".to_string();
             validator_config.add_validator(
@@ -548,7 +548,7 @@ mod tests {
                 owner,
                 IValidatorConfig::addValidatorCall {
                     newValidatorAddress: validator1,
-                    publicKey: FixedBytes::<32>::from([0x22; 32]),
+                    publicKey: FixedBytes::<32>::repeat_byte(0x22),
                     inboundAddress: "192.168.1.1:8000".to_string(),
                     active: true,
                     outboundAddress: "192.168.1.1:9000".to_string(),
@@ -561,8 +561,8 @@ mod tests {
             );
 
             // Add 4 more unique validators
-            let validator2 = Address::from([0x12; 20]);
-            let public_key2 = FixedBytes::<32>::from([0x22; 32]);
+            let validator2 = Address::repeat_byte(0x12);
+            let public_key2 = FixedBytes::<32>::repeat_byte(0x22);
             validator_config.add_validator(
                 owner,
                 IValidatorConfig::addValidatorCall {
@@ -574,8 +574,8 @@ mod tests {
                 },
             )?;
 
-            let validator3 = Address::from([0x13; 20]);
-            let public_key3 = FixedBytes::<32>::from([0x23; 32]);
+            let validator3 = Address::repeat_byte(0x13);
+            let public_key3 = FixedBytes::<32>::repeat_byte(0x23);
             validator_config.add_validator(
                 owner,
                 IValidatorConfig::addValidatorCall {
@@ -587,8 +587,8 @@ mod tests {
                 },
             )?;
 
-            let validator4 = Address::from([0x14; 20]);
-            let public_key4 = FixedBytes::<32>::from([0x24; 32]);
+            let validator4 = Address::repeat_byte(0x14);
+            let public_key4 = FixedBytes::<32>::repeat_byte(0x24);
             validator_config.add_validator(
                 owner,
                 IValidatorConfig::addValidatorCall {
@@ -600,8 +600,8 @@ mod tests {
                 },
             )?;
 
-            let validator5 = Address::from([0x15; 20]);
-            let public_key5 = FixedBytes::<32>::from([0x25; 32]);
+            let validator5 = Address::repeat_byte(0x15);
+            let public_key5 = FixedBytes::<32>::repeat_byte(0x25);
             validator_config.add_validator(
                 owner,
                 IValidatorConfig::addValidatorCall {
@@ -649,7 +649,7 @@ mod tests {
             assert!(validators[4].active);
 
             // Validator1 updates from long to short address (tests update_string slot clearing)
-            let public_key1_new = FixedBytes::<32>::from([0x31; 32]);
+            let public_key1_new = FixedBytes::<32>::repeat_byte(0x31);
             let short_inbound1 = "10.0.0.1:8000".to_string();
             let short_outbound1 = "10.0.0.1:9000".to_string();
             validator_config.update_validator(
@@ -663,7 +663,7 @@ mod tests {
             )?;
 
             // Validator2 rotates to new address, keeps IP and publicKey
-            let validator2_new = Address::from([0x22; 20]);
+            let validator2_new = Address::repeat_byte(0x22);
             validator_config.update_validator(
                 validator2,
                 IValidatorConfig::updateValidatorCall {
@@ -675,7 +675,7 @@ mod tests {
             )?;
 
             // Validator3 rotates to new address with long host (tests delete_string on old slot)
-            let validator3_new = Address::from([0x23; 20]);
+            let validator3_new = Address::repeat_byte(0x23);
             let long_inbound3 = "192.169.1.3:8000".to_string();
             let long_outbound3 = "192.168.1.3:9000".to_string();
             validator_config.update_validator(
@@ -759,7 +759,7 @@ mod tests {
             validator_config.initialize(owner)?;
 
             // Owner adds a validator
-            let public_key = FixedBytes::<32>::from([0x21; 32]);
+            let public_key = FixedBytes::<32>::repeat_byte(0x21);
             validator_config.add_validator(
                 owner,
                 IValidatorConfig::addValidatorCall {
@@ -776,7 +776,7 @@ mod tests {
                 owner,
                 IValidatorConfig::updateValidatorCall {
                     newValidatorAddress: validator,
-                    publicKey: FixedBytes::<32>::from([0x22; 32]),
+                    publicKey: FixedBytes::<32>::repeat_byte(0x22),
                     inboundAddress: "10.0.0.1:8000".to_string(),
                     outboundAddress: "10.0.0.1:9000".to_string(),
                 },
@@ -805,7 +805,7 @@ mod tests {
             // Add validator with long inbound address that uses multiple slots
             let long_inbound = "192.168.1.1:8000".to_string();
             let long_outbound = "192.168.1.1:9000".to_string();
-            let public_key = FixedBytes::<32>::from([0x21; 32]);
+            let public_key = FixedBytes::<32>::repeat_byte(0x21);
 
             validator_config.add_validator(
                 owner,
@@ -947,7 +947,7 @@ mod tests {
             let mut validator_config = ValidatorConfig::new();
             validator_config.initialize(owner)?;
 
-            let original_public_key = FixedBytes::<32>::from([0x44; 32]);
+            let original_public_key = FixedBytes::<32>::repeat_byte(0x44);
             validator_config.add_validator(
                 owner,
                 IValidatorConfig::addValidatorCall {
@@ -998,8 +998,8 @@ mod tests {
             let mut validator_config = ValidatorConfig::new();
             validator_config.initialize(owner)?;
 
-            let public_key1 = FixedBytes::<32>::from([0x11; 32]);
-            let public_key2 = FixedBytes::<32>::from([0x22; 32]);
+            let public_key1 = FixedBytes::<32>::repeat_byte(0x11);
+            let public_key2 = FixedBytes::<32>::repeat_byte(0x22);
 
             // Add validators
             validator_config.add_validator(

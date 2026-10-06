@@ -70,6 +70,7 @@ impl NonceManager {
 
 #[cfg(test)]
 mod tests {
+
     use crate::{
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
@@ -84,7 +85,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mgr = NonceManager::new();
 
-            let account = address!("0x1111111111111111111111111111111111111111");
+            let account = Address::repeat_byte(0x11);
             let nonce = mgr.get_nonce(INonce::getNonceCall {
                 account,
                 nonceKey: U256::from(5),
@@ -101,7 +102,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mgr = NonceManager::new();
 
-            let account = address!("0x1111111111111111111111111111111111111111");
+            let account = Address::repeat_byte(0x11);
             let result = mgr.get_nonce(INonce::getNonceCall {
                 account,
                 nonceKey: U256::ZERO,
@@ -121,7 +122,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut mgr = NonceManager::new();
 
-            let account = address!("0x1111111111111111111111111111111111111111");
+            let account = Address::repeat_byte(0x11);
             let nonce_key = U256::from(5);
 
             let new_nonce = mgr.increment_nonce(account, nonce_key)?;
@@ -153,8 +154,8 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut mgr = NonceManager::new();
 
-            let account1 = address!("0x1111111111111111111111111111111111111111");
-            let account2 = address!("0x2222222222222222222222222222222222222222");
+            let account1 = Address::repeat_byte(0x11);
+            let account2 = Address::repeat_byte(0x22);
             let nonce_key = U256::from(5);
 
             for _ in 0..10 {

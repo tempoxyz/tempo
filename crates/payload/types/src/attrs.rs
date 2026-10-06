@@ -12,7 +12,13 @@ use tempo_primitives::TempoConsensusContext;
 ///
 /// It also carries DKG data to be included in the block's extra_data field.
 #[derive(
-    derive_more::Debug, Clone, Serialize, Deserialize, derive_more::Deref, derive_more::DerefMut,
+    derive_more::Debug,
+    Clone,
+    Default,
+    Serialize,
+    Deserialize,
+    derive_more::Deref,
+    derive_more::DerefMut,
 )]
 #[serde(rename_all = "camelCase")]
 pub struct TempoPayloadAttributes {
@@ -47,12 +53,6 @@ pub struct TempoPayloadAttributes {
     proposer_public_key: Option<B256>,
     /// Consensus view for this block
     consensus_context: Option<TempoConsensusContext>,
-}
-
-impl Default for TempoPayloadAttributes {
-    fn default() -> Self {
-        Self::from(EthPayloadAttributes::default())
-    }
 }
 
 impl TempoPayloadAttributes {
@@ -90,6 +90,12 @@ impl TempoPayloadAttributes {
     /// Returns the extra data to be included in the block header.
     pub fn extra_data(&self) -> &Bytes {
         &self.extra_data
+    }
+
+    /// Sets the extra data to be included in the block header.
+    pub fn with_extra_data(mut self, extra_data: Bytes) -> Self {
+        self.extra_data = extra_data;
+        self
     }
 
     /// Returns the proposer's public key.
