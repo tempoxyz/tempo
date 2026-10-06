@@ -17,3 +17,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+
+[[bench]]
+name = "lifecycle"
+harness = false

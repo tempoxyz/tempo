@@ -89,6 +89,13 @@ const MAX_KEYCHAIN_SELECTOR_RULES_PER_SCOPE: u8 = 64;
 /// Maximum number of recipients per selector rule.
 const MAX_KEYCHAIN_RECIPIENTS_PER_SELECTOR: u8 = 64;
 
+type NonceSnapshotEnvironment<EvmConfig> =
+    fn(
+        &EvmConfig,
+        &TempoHeader,
+        tempo_expiring_nonces::ExpiringNonceState,
+    ) -> Result<EvmEnv<TempoHardfork, TempoBlockEnv>, String>;
+
 /// Validator for Tempo transactions.
 #[derive(Debug)]
 pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
@@ -110,6 +117,8 @@ pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
     cached_evm_env: RwLock<EvmEnv<TempoHardfork, TempoBlockEnv>>,
     /// Verified post-block snapshots shared with execution and payload building.
     expiring_nonce_cache: Option<tempo_evm::ExpiringNonceCache>,
+    /// Optional direct environment construction for configurations with nonce snapshots.
+    nonce_snapshot_environment: Option<NonceSnapshotEnvironment<EvmConfig>>,
     /// Tip hash and cache of state reads shared across validation calls, replaced on each
     /// `on_new_head_block`.
     cached_state: RwLock<(B256, Arc<StateCache>)>,
@@ -164,6 +173,7 @@ where
             address_filter: AddressFilter::default(),
             cached_evm_env: parking_lot::RwLock::new(evm_env),
             expiring_nonce_cache: None,
+            nonce_snapshot_environment: None,
             cached_state: RwLock::new((latest_header.hash(), Arc::new(StateCache::default()))),
             active_hardfork,
         }
@@ -175,6 +185,15 @@ where
         cache: Option<tempo_evm::ExpiringNonceCache>,
     ) -> Self {
         self.expiring_nonce_cache = cache;
+        self
+    }
+
+    /// Supplies direct pool environment construction from a committed nonce snapshot.
+    pub fn with_nonce_snapshot_environment(
+        mut self,
+        build: NonceSnapshotEnvironment<EvmConfig>,
+    ) -> Self {
+        self.nonce_snapshot_environment = Some(build);
         self
     }
 
@@ -819,39 +838,65 @@ where
             block_hash = %new_tip_block.hash(), block_number = new_tip_block.header().inner.number)
         .entered();
         let _timer = Timer::start("pool_head");
-        self.inner.on_new_head_block(new_tip_block);
+        {
+            let _inner_timer = Timer::start("pool_inner_head");
+            self.inner.on_new_head_block(new_tip_block);
+        }
 
-        // Cache the EVM environment for the new tip block.
+        // Look up the post-tip state before constructing an execution environment:
+        // execution would load and expire a parent snapshot that admission discards.
         let env_timer = Timer::start("pool_head_environment");
-        let mut evm_env = self
-            .inner
-            .evm_config()
-            .evm_env(new_tip_block.header())
-            .expect("invalid block in on_new_head_block");
-        drop(env_timer);
-        if let Some(state) = self
+        let snapshot = self
             .expiring_nonce_cache
             .as_ref()
-            .filter(|_| evm_env.block_env.expiring_nonces.is_some())
-            .and_then(|cache| cache.cached_state_at(new_tip_block.hash()))
+            .and_then(|cache| cache.cached_state_at(new_tip_block.hash()));
+        diagnostics::event(
+            if snapshot.is_some() {
+                "pool_head_snapshot_hit"
+            } else {
+                "pool_head_snapshot_miss"
+            },
+            1,
+        );
+        let evm_env = if let (Some(state), Some(build)) =
+            (snapshot.as_ref(), self.nonce_snapshot_environment)
         {
-            diagnostics::event("pool_head_snapshot_hit", 1);
-            let _timer = Timer::start("pool_parent_snapshot_drop");
-            evm_env.block_env.expiring_nonces = Some(state);
-        } else {
-            diagnostics::event("pool_head_snapshot_miss", 1);
-            let _timer = Timer::start("pool_tip_replay");
-            apply_tip_nonces(
-                &mut evm_env,
+            diagnostics::event("pool_head_direct_environment", 1);
+            build(
+                self.inner.evm_config(),
                 new_tip_block.header(),
-                &new_tip_block.body().transactions,
-            );
-        }
+                state.clone(),
+            )
+            .expect("invalid nonce snapshot in on_new_head_block")
+        } else {
+            let mut env = self
+                .inner
+                .evm_config()
+                .evm_env(new_tip_block.header())
+                .expect("invalid block in on_new_head_block");
+            if let Some(state) = snapshot.filter(|_| env.block_env.expiring_nonces.is_some()) {
+                let _timer = Timer::start("pool_parent_snapshot_drop");
+                env.block_env.expiring_nonces = Some(state);
+            } else {
+                let _timer = Timer::start("pool_tip_replay");
+                apply_tip_nonces(
+                    &mut env,
+                    new_tip_block.header(),
+                    &new_tip_block.body().transactions,
+                );
+            }
+            env
+        };
+        drop(env_timer);
         self.active_hardfork
             .store(evm_env.cfg_env.spec.variant_index(), Ordering::Relaxed);
         let replace_timer = Timer::start("pool_environment_replace");
-        *self.cached_evm_env.write() = evm_env;
+        let previous_env = std::mem::replace(&mut *self.cached_evm_env.write(), evm_env);
         drop(replace_timer);
+        {
+            let _drop_timer = Timer::start("pool_old_environment_drop");
+            drop(previous_env);
+        }
 
         // State changed, drop all cached reads and anchor the new cache to this tip.
         *self.cached_state.write() = (new_tip_block.hash(), Arc::new(StateCache::default()));
@@ -902,6 +947,12 @@ fn apply_tip_nonces(
     let Some(state) = env.block_env.expiring_nonces.as_mut() else {
         return;
     };
+    // A pool-specific config may already return the committed tip snapshot.
+    // Generic execution configurations still require replaying the tip below.
+    if header.expiring_nonce_root == Some(state.root()) {
+        return;
+    }
+
     let spec = env.cfg_env.spec;
     state
         .advance(header.inner.timestamp)

@@ -88,6 +88,11 @@ impl core::fmt::Display for NonceError {
 impl std::error::Error for NonceError {}
 
 impl ExpiringNonceState {
+    /// Block timestamp at which this snapshot's expiry rules were applied.
+    pub fn timestamp(&self) -> u64 {
+        self.timestamp
+    }
+
     /// Number of live IDs.
     pub fn len(&self) -> usize {
         self.seen.len()
@@ -108,16 +113,51 @@ impl ExpiringNonceState {
         if timestamp < self.timestamp {
             return Err(NonceError::TimestampRegression);
         }
-        while let Some(expiry) = self.buckets.get_min().map(|(expiry, _)| *expiry) {
-            if expiry > timestamp {
-                break;
+        if self
+            .buckets
+            .get_max()
+            .is_some_and(|(expiry, _)| *expiry <= timestamp)
+        {
+            // After a gap covering the entire window, detach the persistent
+            // collections instead of cloning paths just to delete every key.
+            let _clear_timer = Timer::start("expire_all");
+            expired = self.seen.len();
+            buckets = self.buckets.len();
+            self.seen.clear();
+            self.buckets.clear();
+            diagnostics::event("full_expiry_reset", 1);
+        } else {
+            let expiring: usize = self
+                .buckets
+                .iter()
+                .take_while(|(expiry, _)| **expiry <= timestamp)
+                .map(|(_, bucket)| bucket.ids.len())
+                .sum();
+            // If most IDs expire together, rebuild the small surviving index.
+            // This avoids copying shared HAMT paths for IDs we immediately delete.
+            let rebuild = expiring > live_before - live_before / 4;
+            while let Some(expiry) = self.buckets.get_min().map(|(expiry, _)| *expiry) {
+                if expiry > timestamp {
+                    break;
+                }
+                let bucket = self.buckets.remove(&expiry).expect("bucket exists");
+                let _bucket_timer = Timer::start("expire_bucket");
+                expired += bucket.ids.len();
+                buckets += 1;
+                if !rebuild {
+                    for id in bucket.ids {
+                        self.seen.remove(&id);
+                    }
+                }
             }
-            let bucket = self.buckets.remove(&expiry).expect("bucket exists");
-            let _bucket_timer = Timer::start("expire_bucket");
-            expired += bucket.ids.len();
-            buckets += 1;
-            for id in bucket.ids {
-                self.seen.remove(&id);
+            if rebuild {
+                let _rebuild_timer = Timer::start("expiry_index_rebuild");
+                self.seen = self
+                    .buckets
+                    .iter()
+                    .flat_map(|(expiry, bucket)| bucket.ids.iter().map(move |id| (*id, *expiry)))
+                    .collect();
+                diagnostics::event("expiry_index_rebuild", 1);
             }
         }
         self.timestamp = timestamp;
@@ -282,6 +322,49 @@ mod tests {
         );
         assert!(parent.check(B256::repeat_byte(2), 130, 300, 10).is_ok());
         assert_ne!(child.root(), root);
+    }
+
+    #[test]
+    fn expiry_bursts_preserve_survivors_commitment_and_parent() {
+        for expired in [10, 90, 100] {
+            let mut parent = ExpiringNonceState::default();
+            parent.advance(100).unwrap();
+            for id in 0..100 {
+                parent
+                    .insert(
+                        B256::repeat_byte(id),
+                        if id < expired { 110 } else { 120 },
+                        300,
+                        100,
+                    )
+                    .unwrap();
+            }
+            let parent_root = parent.root();
+            let mut child = parent.clone();
+            child.advance(110).unwrap();
+            let mut reconstructed = ExpiringNonceState::default();
+            reconstructed.advance(110).unwrap();
+            for id in 0..100 {
+                if id < expired {
+                    assert!(child.check(B256::repeat_byte(id), 130, 300, 100).is_ok());
+                } else {
+                    assert_eq!(
+                        child.check(B256::repeat_byte(id), 130, 300, 100),
+                        Err(NonceError::Replay)
+                    );
+                    reconstructed
+                        .insert(B256::repeat_byte(id), 120, 300, 100)
+                        .unwrap();
+                }
+                assert_eq!(
+                    parent.check(B256::repeat_byte(id), 130, 300, 100),
+                    Err(NonceError::Replay)
+                );
+            }
+            assert_eq!(child, reconstructed);
+            assert_eq!(child.root(), reconstructed.root());
+            assert_eq!(parent.root(), parent_root);
+        }
     }
 
     #[test]

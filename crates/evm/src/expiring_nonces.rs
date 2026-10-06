@@ -82,19 +82,26 @@ impl ExpiringNonceCache {
     pub(crate) fn remember(&self, state: &ExpiringNonceState, block_hash: Option<B256>) {
         let _timer = Timer::start("cache_remember");
         let root = state.root();
-        let mut snapshots = self.lock("cache_remember_lock_wait", "cache_remember_lock_hold");
-        if snapshots
-            .iter()
-            .any(|(key, hash, _)| *key == root && *hash == block_hash)
-        {
-            diagnostics::event("cache_remember_duplicate", 1);
-            return;
-        }
-        snapshots.push_back((root, block_hash, state.clone()));
-        if snapshots.len() > 16 {
+        let evicted = {
+            let mut snapshots = self.lock("cache_remember_lock_wait", "cache_remember_lock_hold");
+            if snapshots
+                .iter()
+                .any(|(key, hash, _)| *key == root && *hash == block_hash)
+            {
+                diagnostics::event("cache_remember_duplicate", 1);
+                return;
+            }
+            snapshots.push_back((root, block_hash, state.clone()));
+            if snapshots.len() > 16 {
+                snapshots.pop_front()
+            } else {
+                None
+            }
+        };
+        if let Some(evicted) = evicted {
             diagnostics::event("cache_eviction", 1);
             let _drop_timer = Timer::start("cache_snapshot_drop");
-            drop(snapshots.pop_front());
+            drop(evicted);
         }
     }
 
@@ -145,12 +152,12 @@ impl ExpiringNonceCache {
             .header
             .expiring_nonce_root
             .ok_or("missing parent expiring nonce commitment")?;
-        if let Some((_, _, state)) = self
+        let cached = self
             .lock("cache_root_lock_wait", "cache_root_lock_hold")
             .iter()
             .find(|(key, _, _)| *key == root)
-        {
-            let mut state = state.clone();
+            .map(|(_, _, state)| state.clone());
+        if let Some(mut state) = cached {
             // Equal roots may occur in empty blocks with different timestamps.
             // Reconstruct if a cached timestamp belongs to a later block.
             if state.advance(timestamp).is_ok() && state.root() == root {

@@ -790,6 +790,7 @@ where
 
         // this store is effectively a noop
         let blob_store = InMemoryBlobStore::default();
+        let evm_config = evm_config.for_pool_validation();
         let expiring_nonce_cache = evm_config.expiring_nonce_cache.clone();
         let validator =
             TransactionValidationTaskExecutor::eth_builder(ctx.provider().clone(), evm_config)
@@ -834,6 +835,11 @@ where
                 amm_liquidity_cache.clone(),
             )
             .with_expiring_nonce_cache(expiring_nonce_cache.clone())
+            .with_nonce_snapshot_environment(|config, header, state| {
+                config
+                    .pool_evm_env_from_nonce_snapshot(header, state)
+                    .map_err(|error| error.to_string())
+            })
             .with_disable_fee_amm_check(disable_fee_amm_check)
             .with_address_filter(address_filter.clone())
         });

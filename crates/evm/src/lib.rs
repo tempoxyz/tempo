@@ -11,7 +11,7 @@ pub use action_replay::{
     ExpiringNonceReplay, StorageActionReplay, StorageActionReplayError, StorageActionReplayOutcome,
     StorageActionReplayState,
 };
-use alloy_consensus::BlockHeader as _;
+use alloy_consensus::{BlockHeader as _, Sealable as _};
 pub use assemble::TempoBlockAssembler;
 pub use expiring_nonces::ExpiringNonceCache;
 pub use pool::{TempoPoolValidationEvm, TempoPoolValidationResult};
@@ -73,6 +73,9 @@ pub struct TempoEvmConfig {
 
     /// Enables expiring nonce state outside the EVM trie.
     pub expiring_nonce_cache: Option<ExpiringNonceCache>,
+
+    /// Pool admission uses post-tip state, including the inner validator's limits lookup.
+    pool_validation: bool,
 }
 
 impl FeeTokenResolver for TempoEvmConfig {
@@ -100,6 +103,7 @@ impl TempoEvmConfig {
             inner,
             block_assembler: TempoBlockAssembler::new(chain_spec),
             expiring_nonce_cache: None,
+            pool_validation: false,
         }
     }
 
@@ -132,6 +136,80 @@ impl TempoEvmConfig {
                 Ok(state)
             })
             .transpose()
+    }
+
+    /// Configures header environments for pool admission against post-block state.
+    /// Pass only this configuration to the pool; block execution uses parent state.
+    pub fn for_pool_validation(mut self) -> Self {
+        self.pool_validation = true;
+        self
+    }
+
+    /// Constructs pool admission state directly from a verified post-block snapshot.
+    /// Unlike execution, pool admission needs the tip's state, not its parent's.
+    pub fn pool_evm_env_from_nonce_snapshot(
+        &self,
+        header: &TempoHeader,
+        state: tempo_expiring_nonces::ExpiringNonceState,
+    ) -> Result<EvmEnvFor<Self>, TempoEvmError> {
+        if self.expiring_nonce_cache.is_none()
+            || state.timestamp() != header.timestamp()
+            || header.expiring_nonce_root != Some(state.root())
+        {
+            return Err(TempoEvmError::InvalidEvmConfig(
+                "pool nonce snapshot does not match header".into(),
+            ));
+        }
+        Ok(self.header_env(header, Some(state)))
+    }
+
+    fn header_env(
+        &self,
+        header: &TempoHeader,
+        expiring_nonces: Option<tempo_expiring_nonces::ExpiringNonceState>,
+    ) -> EvmEnvFor<Self> {
+        let EvmEnv { cfg_env, block_env } = EvmEnv::for_eth_block(
+            header,
+            self.chain_spec(),
+            self.chain_spec().chain_id(),
+            self.chain_spec()
+                .blob_params_at_timestamp(header.timestamp()),
+        );
+
+        let spec = self.chain_spec().tempo_hardfork_at(header.timestamp());
+
+        // Apply TIP-1000 gas params for T1 hardfork.
+        //
+        // TIP-1016 (EIP-8037 state gas split) is gated by `cfg_env.enable_amsterdam_eip8037`
+        // and is independent of the T4 hardfork. The flag is currently left at its default
+        // (`false`) so TIP-1016 is disabled even on T4; flipping it on enables the regular/
+        // state gas split everywhere it is checked downstream.
+        //
+        // TODO(TIP-1016): this is the place where we previously did
+        // `cfg_env.enable_amsterdam_eip8037 = spec.is_t4();`. When TIP-1016 is ready to
+        // ship, re-enable it here (or wire it through chain spec / cfg defaults) so the
+        // state gas split activates on the appropriate hardfork.
+        let amsterdam_eip8037_enabled = cfg_env.enable_amsterdam_eip8037;
+        let mut cfg_env = cfg_env.with_spec_and_gas_params(
+            spec,
+            tempo_gas_params_with_amsterdam(spec, amsterdam_eip8037_enabled),
+        );
+        cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
+
+        EvmEnv {
+            cfg_env,
+            block_env: TempoBlockEnv {
+                inner: block_env,
+                timestamp_millis_part: header.timestamp_millis_part,
+                epoch_length: self
+                    .chain_spec()
+                    .info
+                    .epoch_length()
+                    .unwrap_or(NonZeroU64::MIN),
+                proposer_public_key: header.consensus_context.map(|ctx| ctx.proposer),
+                expiring_nonces,
+            },
+        }
     }
 
     /// Uses the provided sender recovery cache.
@@ -211,54 +289,22 @@ impl ConfigureEvm for TempoEvmConfig {
                 "expiring nonce backend does not match header".into(),
             ));
         }
-        let EvmEnv { cfg_env, block_env } = EvmEnv::for_eth_block(
-            header,
-            self.chain_spec(),
-            self.chain_spec().chain_id(),
-            self.chain_spec()
-                .blob_params_at_timestamp(header.timestamp()),
-        );
-
-        let spec = self.chain_spec().tempo_hardfork_at(header.timestamp());
-
-        // Apply TIP-1000 gas params for T1 hardfork.
-        //
-        // TIP-1016 (EIP-8037 state gas split) is gated by `cfg_env.enable_amsterdam_eip8037`
-        // and is independent of the T4 hardfork. The flag is currently left at its default
-        // (`false`) so TIP-1016 is disabled even on T4; flipping it on enables the regular/
-        // state gas split everywhere it is checked downstream.
-        //
-        // TODO(TIP-1016): this is the place where we previously did
-        // `cfg_env.enable_amsterdam_eip8037 = spec.is_t4();`. When TIP-1016 is ready to
-        // ship, re-enable it here (or wire it through chain spec / cfg defaults) so the
-        // state gas split activates on the appropriate hardfork.
-        let amsterdam_eip8037_enabled = cfg_env.enable_amsterdam_eip8037;
-        let mut cfg_env = cfg_env.with_spec_and_gas_params(
-            spec,
-            tempo_gas_params_with_amsterdam(spec, amsterdam_eip8037_enabled),
-        );
-        cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
-
-        Ok(EvmEnv {
-            cfg_env,
-            block_env: TempoBlockEnv {
-                inner: block_env,
-                timestamp_millis_part: header.timestamp_millis_part,
-                epoch_length: self
-                    .chain_spec()
-                    .info
-                    .epoch_length()
-                    .unwrap_or(NonZeroU64::MIN),
-                proposer_public_key: header.consensus_context.map(|ctx| ctx.proposer),
-                expiring_nonces: if header.number() == 0 {
-                    self.expiring_nonce_cache
-                        .as_ref()
-                        .map(|_| Default::default())
-                } else {
-                    self.expiring_nonce_state(header.parent_hash(), header.timestamp())?
-                },
-            },
-        })
+        if self.pool_validation {
+            if let Some(cache) = &self.expiring_nonce_cache {
+                let state = cache
+                    .state_at(header.hash_slow(), self.chain_spec())
+                    .map_err(TempoEvmError::InvalidEvmConfig)?;
+                return Ok(self.header_env(header, Some(state)));
+            }
+        }
+        let state = if header.number() == 0 {
+            self.expiring_nonce_cache
+                .as_ref()
+                .map(|_| Default::default())
+        } else {
+            self.expiring_nonce_state(header.parent_hash(), header.timestamp())?
+        };
+        Ok(self.header_env(header, state))
     }
 
     fn next_evm_env(
@@ -395,6 +441,52 @@ mod tests {
             .chain_spec()
             .tempo_fork_activation(TempoHardfork::Genesis);
         assert_eq!(activation, reth_chainspec::ForkCondition::Timestamp(0));
+    }
+
+    #[test]
+    fn pool_snapshot_environment_avoids_parent_history_and_checks_header() {
+        let config = TempoEvmConfig::new(test_chainspec()).with_expiring_nonce_source(|_| {
+            panic!("post-tip pool snapshots must not load parent history")
+        });
+        let mut state = tempo_expiring_nonces::ExpiringNonceState::default();
+        state.advance(1000).unwrap();
+        state.insert(B256::repeat_byte(1), 1010, 300, 100).unwrap();
+        let mut header = TempoHeader {
+            inner: alloy_consensus::Header {
+                number: 1,
+                timestamp: 1000,
+                gas_limit: 30_000_000,
+                ..Default::default()
+            },
+            expiring_nonce_root: Some(state.root()),
+            ..Default::default()
+        };
+        let env = config
+            .pool_evm_env_from_nonce_snapshot(&header, state.clone())
+            .unwrap();
+        assert_eq!(env.block_env.expiring_nonces.as_ref(), Some(&state));
+        assert_eq!(env.block_env.inner.timestamp, U256::from(1000));
+        config
+            .expiring_nonce_cache
+            .as_ref()
+            .unwrap()
+            .remember(&state, Some(header.hash_slow()));
+        let pool_config = config.clone().for_pool_validation();
+        let limits_env = pool_config.evm_env(&header).unwrap();
+        assert_eq!(limits_env.block_env.expiring_nonces.as_ref(), Some(&state));
+        header.inner.timestamp = 1001;
+        assert!(
+            config
+                .pool_evm_env_from_nonce_snapshot(&header, state.clone())
+                .is_err()
+        );
+        header.inner.timestamp = 1000;
+        header.expiring_nonce_root = Some(B256::ZERO);
+        assert!(
+            config
+                .pool_evm_env_from_nonce_snapshot(&header, state)
+                .is_err()
+        );
     }
 
     #[test]
