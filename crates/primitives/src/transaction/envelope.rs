@@ -112,6 +112,24 @@ impl TempoTxEnvelope {
         }
     }
 
+    /// Returns the first timestamp at which one of an AA transaction's ZK signatures (its own
+    /// or its key authorization's) is no longer valid, if it has any.
+    pub fn zk_signature_expiry(&self) -> Option<u64> {
+        self.zk_signatures()
+            .map(|signature| signature.valid_until.saturating_add(1))
+            .min()
+    }
+
+    /// Returns an AA transaction's ZK signatures: its own, then its key authorization's.
+    pub fn zk_signatures(&self) -> impl Iterator<Item = &super::ZkSignature> {
+        let tx = self.as_aa();
+        let own = tx.and_then(|tx| tx.signature().as_zk());
+        let key_authorization = tx
+            .and_then(|tx| tx.tx().key_authorization.as_ref())
+            .and_then(|auth| auth.signature.as_zk());
+        own.into_iter().chain(key_authorization)
+    }
+
     /// Returns an AA transaction's `valid_after` timestamp, if set.
     ///
     /// Other transaction types do not carry this bound.

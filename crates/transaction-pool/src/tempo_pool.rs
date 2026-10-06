@@ -38,6 +38,7 @@ use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
     error::Result as TempoPrecompileResult,
+    key_publisher::{KEY_PUBLISHER_ADDRESS, is_key_active_at, key_valid_until_slot},
     storage::{Handler, StorageActions},
     tip20::TIP20Token,
     tip403_registry::{REJECT_ALL_POLICY_ID, TIP403Registry},
@@ -176,6 +177,7 @@ where
             || !updates.whitelist_removals.is_empty()
             || !updates.fee_balance_changes.is_empty()
             || !updates.spending_limit_spends.is_empty()
+            || !updates.issuer_key_changes.is_empty()
         {
             self.client().latest().ok()
         } else {
@@ -242,6 +244,7 @@ where
         let mut spending_limit_count = 0;
         let mut spending_limit_spend_count = 0;
         let mut key_authorization_witness_count = 0;
+        let mut issuer_key_count = 0;
         let mut liquidity_count = 0;
         let mut user_token_count = 0;
         let mut blacklisted_count = 0;
@@ -353,6 +356,22 @@ where
             {
                 to_remove.push(*tx.hash());
                 key_authorization_witness_count += 1;
+                continue;
+            }
+
+            // Check 2d: TIP-1132 issuer key changes. Evict ZK-signed transactions whose issuer
+            // key is no longer active for its publisher.
+            if !updates.issuer_key_changes.is_empty()
+                && let Some(ref provider) = state_provider
+                && tx.transaction.inner().zk_signatures().any(|signature| {
+                    updates
+                        .issuer_key_changes
+                        .contains(&(signature.publisher_id, signature.issuer))
+                        && !issuer_key_active(provider, signature, tip_timestamp)
+                })
+            {
+                to_remove.push(*tx.hash());
+                issuer_key_count += 1;
                 continue;
             }
 
@@ -530,6 +549,7 @@ where
             spending_limit_count,
             spending_limit_spend_count,
             key_authorization_witness_count,
+            issuer_key_count,
             liquidity_count,
             user_token_count,
             blacklisted_count,
@@ -1343,6 +1363,21 @@ where
 
     fn cleanup_blobs(&self) {
         self.protocol_pool.cleanup_blobs()
+    }
+}
+
+/// Returns whether a ZK signature's issuer key is active at `timestamp` in `provider`'s state.
+///
+/// Read errors keep the transaction; validation rejects it later if the key is inactive.
+fn issuer_key_active(
+    provider: &impl StateProvider,
+    signature: &tempo_primitives::transaction::ZkSignature,
+    timestamp: u64,
+) -> bool {
+    let slot = key_valid_until_slot(signature.publisher_id, signature.issuer, signature.key_hash);
+    match provider.storage(KEY_PUBLISHER_ADDRESS, B256::from(slot)) {
+        Ok(value) => is_key_active_at(value.unwrap_or_default().as_limbs()[0], timestamp),
+        Err(_) => true,
     }
 }
 
@@ -2990,5 +3025,66 @@ mod tests {
             10,
             TempoHardfork::T3,
         ));
+    }
+
+    #[tokio::test]
+    async fn evicts_zk_signed_transactions_when_issuer_key_becomes_inactive() {
+        use tempo_precompiles::key_publisher::{
+            ACTIVE, KEY_PUBLISHER_ADDRESS, key_valid_until_slot,
+        };
+        use tempo_primitives::transaction::{TempoSignature, ZkProof, ZkSignature};
+
+        let publisher_id = B256::repeat_byte(0x11);
+        let key_hash = B256::with_last_byte(9);
+        let (revoked_issuer, listed_issuer) = (B256::with_last_byte(2), B256::with_last_byte(3));
+        let zk = |issuer| {
+            TempoSignature::from(ZkSignature::new(
+                1,
+                publisher_id,
+                issuer,
+                key_hash,
+                B256::with_last_byte(4),
+                0,
+                500,
+                ZkProof::ZERO,
+                PrimitiveSignature::default(),
+            ))
+        };
+        let sender = Address::random();
+        let revoked = crate::test_utils::TxBuilder::aa(sender)
+            .nonce(0)
+            .build_with_signature(zk(revoked_issuer));
+        let listed = crate::test_utils::TxBuilder::aa(sender)
+            .nonce(1)
+            .build_with_signature(zk(listed_issuer));
+
+        // ZK signatures expire after `valid_until`.
+        assert!(!listed.is_expired_by(500));
+        assert!(listed.is_expired_by(501));
+
+        let provider = create_provider_with_tip();
+        provider.add_account(sender, ExtendedAccount::new(0, U256::MAX));
+        provider.add_account(
+            KEY_PUBLISHER_ADDRESS,
+            ExtendedAccount::new(0, U256::ZERO).extend_storage([(
+                key_valid_until_slot(publisher_id, listed_issuer, key_hash).into(),
+                U256::from(ACTIVE),
+            )]),
+        );
+        let pool = create_test_pool(provider);
+        add_validated(&pool, revoked.clone());
+        add_validated(&pool, listed.clone());
+
+        let mut updates = crate::maintain::TempoPoolUpdates::new();
+        updates
+            .issuer_key_changes
+            .insert((publisher_id, revoked_issuer));
+        updates
+            .issuer_key_changes
+            .insert((publisher_id, listed_issuer));
+
+        let evicted = pool.evict_invalidated_transactions(&updates);
+        assert_eq!(tx_hashes(&evicted), vec![*revoked.hash()]);
+        assert!(pool.get(listed.hash()).is_some());
     }
 }
