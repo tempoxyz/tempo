@@ -20,5 +20,8 @@
     "poseidon-lite": "0.3.0",
     "snarkjs": "0.7.6",
     "typescript": "5.9.3"
+  },
+  "overrides": {
+    "underscore": "1.13.8"
   }
 }
