@@ -241,6 +241,10 @@ jobs:
           version: v0.15.0
       - name: Build tempo
         run: cargo build --bin tempo
+      - uses: tempoxyz/gh-actions/vendor/astral-sh/setup-uv@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        with:
+          version: "0.12.16"
+          enable-cache: false
       - name: Run CLI tests
         run: ./scripts/test-cli.sh
 

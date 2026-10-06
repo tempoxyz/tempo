@@ -11,7 +11,7 @@ dump_log() { echo "--- output ---"; cat "$1"; echo "---"; }
 run_ok() {
     local label="$1"; shift
     echo "--- Test: $label"
-    OUT=$("$@" 2>&1) || { fail "$label exited with non-zero status"; return; }
+    OUT=$("$@" 2>&1) || { fail "$label exited with non-zero status"; printf '%s\n' "$OUT"; return; }
     echo "PASS"
 }
 
@@ -28,6 +28,8 @@ run_ok "tempo node --help" "$TEMPO" node --help
 if ! grep -A 2 -- '--consensus.message-backlog' <<<"$OUT" | grep -q 'Deprecated:'; then
     fail "message-backlog help must mark the flag as deprecated"
 fi
+run_ok "tempo download Moderato snapshot with and without --chain" \
+    uv run --no-project --script "$REPO_ROOT/scripts/test-cli-download.py" "$TEMPO"
 
 # --- node --follow: verify it stays alive for 15s with no crashes ---
 echo "--- Test: tempo node --follow (no crash)"
