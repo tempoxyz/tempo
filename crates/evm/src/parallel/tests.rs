@@ -4040,7 +4040,7 @@ fn fee_rebase_patches_spill_and_wait_for_late_dependencies() {
                     panic_on_storage: false,
                     storage_error: (case == "late_provider_error").then_some(address(900)),
                 };
-                let mut expected_slots = HashMap::default();
+                let mut expected_slots: HashMap<_, _> = HashMap::default();
 
                 for index in 0..patch_count {
                     let mut fee_env = env.clone();
