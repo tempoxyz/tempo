@@ -109,7 +109,8 @@ impl PhaseMeasurements {
                 .unwrap_or_default()
         });
         let env = ENV_STATS.with(|stats| std::mem::take(&mut *stats.borrow_mut()));
-        tracing::info!(target: "tempo_phase_measure", env_count = env.count,
+        tracing::info!(target: "tempo_phase_measure", thread_id = ?std::thread::current().id(),
+            thread_name = std::thread::current().name().unwrap_or("unknown"), env_count = env.count,
             env_samples = env.samples, env_ticks = env.ticks, env_dropped = env.dropped,
             attempted = self.attempted,
             executed = self.executed, committed = self.committed,
