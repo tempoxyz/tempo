@@ -1,10 +1,14 @@
 """Fake-input and temporary Git tests; root selects supervisor/lifecycle on PYTHONPATH."""
 import copy
+import base64
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -24,7 +28,7 @@ def packages():
 def setup_fixture():
     build = {'binary': {'path': '/tools/txgen-tempo'}, 'bench_binary': {'path': '/tools/bench'}}
     spec, state_path = Path('/source/contrib/bench/txgen/presets/public-mix.yml'), '/results/report.setup.json'
-    raw = {'chain_id': 1337, 'rpc_url': c.sup.RPC, 'exit_code': 0, 'setup_state_path': state_path,
+    raw = {'chain_id': 1337, 'rpc_url': c.sup.RPC, 'exit_code': 0, 'setup_state_path': state_path, 'cwd': '/source',
         'setup_argv': ['/tools/txgen-tempo', 'generate', '-s', str(spec), '-n', 0, '--seed', 99,
                        '--rpc', c.sup.RPC, '--setup-state-out', state_path],
         'sender_argv': ['/tools/bench', 'send', '--rpc-url', 'http://127.0.0.1:8545,http://127.0.0.1:8645',
@@ -98,6 +102,82 @@ class FakeNode:
 
 
 class ContextTests(unittest.TestCase):
+    def test_setup_human_report_only_exempts_exact_zero_failure_counter(self):
+        raw, state, spec, build = setup_fixture()
+        raw['stderr'] += f'\n  Failed:          {0:>10}\n'
+        c.setup_confirmation(raw, state, spec, build)
+        for counter in (f'  Failed:          {1:>10}', 'Failed: 0', '  Failed:                   0 ignored'):
+            changed = copy.deepcopy(raw); changed['stderr'] += counter + '\n'
+            with self.subTest(counter=counter), self.assertRaises(ValueError):
+                c.setup_confirmation(changed, state, spec, build)
+
+    def test_setup_relative_state_path_is_bound_to_recorded_cwd(self):
+        raw, state, spec, build = setup_fixture()
+        raw['cwd'] = '/results'; raw['setup_argv'][-1] = 'report.setup.json'
+        self.assertEqual(c.setup_confirmation(raw, state, spec, build)['kind'], 'empty_stock_public_mix_setup')
+        raw['cwd'] = '/different'
+        with self.assertRaisesRegex(ValueError, 'output path differs'): c.setup_confirmation(raw, state, spec, build)
+        raw['cwd'] = 'relative'
+        with self.assertRaisesRegex(ValueError, 'path/cwd missing'): c.setup_confirmation(raw, state, spec, build)
+
+    def test_setup_base64_preserves_ansi_and_unicode_with_strict_json(self):
+        stdout = '\x1b[32mINFO\x1b[0m completed\n'
+        stderr = 'elapsed=1.5µs\n'
+        raw = {name + '_base64': base64.b64encode(value.encode()).decode()
+               for name, value in [('stdout', stdout), ('stderr', stderr)]}
+        self.assertEqual(c.decode_setup_evidence(json.loads(json.dumps(raw))),
+                         {'stdout': stdout, 'stderr': stderr})
+
+    def test_setup_base64_rejects_ambiguous_malformed_and_oversized_streams(self):
+        raw = {'stdout_base64': '', 'stderr_base64': ''}
+        for delta in ({'stdout': ''}, {'stdout_base64': '!'},
+                      {'stdout_base64': 'A' * (2 * 1024**2 + 1)},
+                      {'stdout_base64': base64.b64encode(b'x' * (1024**2 + 1)).decode()},
+                      {'stdout_base64': '/w=='}):
+            with self.subTest(delta_size=len(str(delta))), self.assertRaises(ValueError):
+                c.decode_setup_evidence(raw | delta)
+
+    def test_node_binary_has_separate_streamed_input_bound(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'tempo'; data = b'\x7fELF' + b'x' * 28; path.write_bytes(data)
+            with self.assertRaises(ValueError): c.file_binding(path, 16)
+            with patch.object(c, 'NODE_ELF_MAX_BYTES', 32):
+                self.assertEqual(c.node_elf_binding(path), {'path': str(path), 'bytes': 32,
+                    'sha256': hashlib.sha256(data).hexdigest()})
+            with patch.object(c, 'NODE_ELF_MAX_BYTES', 31), self.assertRaisesRegex(ValueError, 'size 32 exceeds 31'):
+                c.node_elf_binding(path)
+
+    def test_node_binary_rejects_changed_size_or_mtime(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'tempo'; path.write_bytes(b'\x7fELF')
+            original = path.stat()
+            for size, mtime in [(5, original.st_mtime_ns), (4, original.st_mtime_ns + 1)]:
+                changed = SimpleNamespace(st_size=size, st_mtime_ns=mtime)
+                with patch.object(c.os, 'fstat', side_effect=[original, changed]):
+                    with self.assertRaisesRegex(ValueError, 'changed while hashing'): c.node_elf_binding(path)
+
+    def test_node_binary_rejects_symlink_fifo_and_unapproved_proc_path(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'tempo'; path.write_bytes(b'\x7fELF')
+            link = Path(folder) / 'link'; link.symlink_to(path)
+            with self.assertRaises(OSError): c.node_elf_binding(link)
+            fifo = Path(folder) / 'fifo'; os.mkfifo(fifo)
+            with self.assertRaisesRegex(ValueError, 'must be regular'): c.node_elf_binding(fifo)
+            with self.assertRaises(ValueError): c.node_elf_binding(path, proc_exe=True)
+
+    def test_node_proc_helper_matches_streamed_hash_and_applies_same_bound(self):
+        path = f'/proc/{os.getpid()}/exe'
+        expected = c.node_elf_binding(path, proc_exe=True)
+        run = subprocess.run([sys.executable, '-c', c.READ_HELPER, path, '0', 'exe'],
+                             check=True, capture_output=True, text=True, timeout=10)
+        actual = json.loads(run.stdout)
+        self.assertEqual(actual, {**expected, 'path': os.readlink(path)})
+        source = c.READ_HELPER.replace(f'cap={c.NODE_ELF_MAX_BYTES}', 'cap=1')
+        self.assertNotEqual(source, c.READ_HELPER)
+        run = subprocess.run([sys.executable, '-c', source, path, '0', 'exe'],
+                             capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(run.returncode, 0)
+
     def checkout_fixture(self, folder):
         checkout = Path(folder) / 'checkout'; checkout.mkdir()
         self.git(checkout, 'init', '--quiet')

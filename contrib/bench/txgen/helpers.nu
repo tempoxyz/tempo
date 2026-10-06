@@ -914,11 +914,14 @@ def txgen-run-preset-pipeline [
         {
             chain_id: $chain_id
             rpc_url: $generate_rpc_url
+            cwd: ($env.PWD | path expand)
             setup_argv: ($txgen_setup_cmd | append $workload_extra_args | append $setup_state_args)
             sender_argv: ($bench_send_base_cmd | append ["--drain-timeout" 0])
             exit_code: $setup_result.exit_code
-            stdout: $setup_result.stdout
-            stderr: $setup_result.stderr
+            # Nu's JSON serializer can emit literal ANSI control bytes. Preserve
+            # complete setup streams as base64 for strict JSON readers.
+            stdout_base64: ($setup_result.stdout | encode base64)
+            stderr_base64: ($setup_result.stderr | encode base64)
         } | to json | save $setup_evidence
         let config = $"($output)/config.json"
         let prepare_cmd = (txgen-shell-join ["python3" "benchmarks/parallel-execution/producer_context.py" "prepare"

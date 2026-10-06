@@ -5,6 +5,7 @@ This verifier does not install tools, start nodes, submit transactions, claim
 measurement exclusivity, or run the producer. Root/workflow owns those actions.
 """
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -28,6 +29,9 @@ URL = 'https://github.com/tempoxyz/txgen'
 INSTALL = ['cargo', 'install', '--git', URL, '--locked', '--rev', TXGEN, '--force', 'txgen-tempo', 'bench-cli']
 ENV_KEYS = ('RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', 'RUSTC_WRAPPER', 'RUSTC_WORKSPACE_WRAPPER', 'CARGO_BUILD_TARGET')
 UNSUPPORTED_CARGO_SECTIONS = ('build', 'profile', 'target', 'env', 'unstable')
+# Profiling Tempo includes debug information. This bounds streamed input only;
+# txgen/wc and retained metadata keep their smaller existing limits.
+NODE_ELF_MAX_BYTES = 4 * 1024**3
 SPEC_FILES = ('contrib/bench/txgen/presets/public-mix.yml', 'contrib/bench/txgen/presets/mpp.yml',
               'contrib/bench/txgen/tip20.abi.json', 'contrib/bench/txgen/tip20-channel-reserve.abi.json')
 NODE_FLAGS = {'--execution.threads': '8', '--execution.batch-size': '128', '--execution.capture-window': '128',
@@ -36,7 +40,7 @@ NODE_FLAGS = {'--execution.threads': '8', '--execution.batch-size': '128', '--ex
               '--builder.gaslimit': '1000000000000'}
 PRIVATE_FILES = {f'/var/lib/schelk/{r}.json' for r in 'ab'} | {
     f'/reth-bench-{r}/tempo_e2e_100000mb/.bench-meta/{name}.json' for r in 'ab' for name in ('marker', 'genesis')}
-READ_HELPER = """import hashlib,json,os,re,sys
+READ_HELPER = """import hashlib,json,os,re,stat,sys
 p=sys.argv[1]; n=int(sys.argv[2]); mode=sys.argv[3]
 assert re.fullmatch(r'/proc/[1-9][0-9]*/(stat|status|cmdline|cgroup|limits|exe)',p) or p in %r
 assert '/environ' not in p
@@ -44,16 +48,20 @@ if mode in ('exe','hash'):
  assert (mode=='exe' and p.endswith('/exe')) or (mode=='hash' and not p.startswith('/proc/'))
  target=os.readlink(p) if mode=='exe' else p; h=hashlib.sha256(); total=0
  with open(p,'rb') as s:
+  before=os.fstat(s.fileno()); cap=%d if mode=='exe' else 16777216
+  assert stat.S_ISREG(before.st_mode) and before.st_size<=cap
   while True:
    b=s.read(1048576)
    if not b: break
-   total+=len(b); assert total<=(536870912 if mode=='exe' else 16777216); h.update(b)
+   total+=len(b); assert total<=cap; h.update(b)
+  after=os.fstat(s.fileno())
+  assert total==before.st_size==after.st_size and before.st_mtime_ns==after.st_mtime_ns
  print(json.dumps({'path':target,'sha256':h.hexdigest(),'bytes':total}))
 else:
  with open(p,'rb') as s: b=s.read(n+1)
  assert len(b)<=n
  sys.stdout.buffer.write(b)
-""" % sorted(PRIVATE_FILES)
+""" % (sorted(PRIVATE_FILES), NODE_ELF_MAX_BYTES)
 
 
 def require(ok, message):
@@ -80,6 +88,28 @@ def verified(item, cap=16 * 1024**2):
     return Path(item['path'])
 
 
+def node_elf_binding(path, *, proc_exe=False):
+    path = Path(path)
+    require(path.is_absolute(), 'Node ELF path must be absolute')
+    if proc_exe:
+        require(re.fullmatch(r'/proc/[1-9][0-9]*/exe', str(path)), 'Node proc ELF path')
+    flags = os.O_RDONLY | os.O_NONBLOCK | (0 if proc_exe else os.O_NOFOLLOW)
+    with os.fdopen(os.open(path, flags), 'rb') as stream:
+        before = os.fstat(stream.fileno())
+        require(stat.S_ISREG(before.st_mode), 'Node ELF must be regular')
+        require(before.st_size <= NODE_ELF_MAX_BYTES,
+                f'Node ELF size {before.st_size} exceeds {NODE_ELF_MAX_BYTES} byte limit')
+        size = 0; digest = hashlib.sha256()
+        while block := stream.read(1024 * 1024):
+            size += len(block)
+            require(size <= NODE_ELF_MAX_BYTES, 'Node ELF grew beyond input bound')
+            digest.update(block)
+        after = os.fstat(stream.fileno())
+        require(size == before.st_size == after.st_size and before.st_mtime_ns == after.st_mtime_ns,
+                'Node ELF changed while hashing')
+    return {'path': str(path), 'sha256': digest.hexdigest(), 'bytes': size}
+
+
 def command(system, argv, timeout=15):
     result = system.command(argv, timeout)
     require(result['code'] == 0, 'Command failed: ' + str(argv[:3]))
@@ -101,11 +131,8 @@ class System(CommandSystem):
     def executable(self, pid):
         path = Path(f'/proc/{pid}/exe')
         try:
-            target = str(path.readlink()); size = 0; digest = hashlib.sha256()
-            with path.open('rb') as stream:
-                while block := stream.read(1024 * 1024):
-                    size += len(block); require(size <= 512 * 1024**2, 'Live ELF cap'); digest.update(block)
-            return {'path': target, 'sha256': digest.hexdigest(), 'bytes': size}
+            target = str(path.readlink())
+            return {**node_elf_binding(path, proc_exe=True), 'path': target}
         except PermissionError:
             return json.loads(command(self, ['sudo', '-n', 'python3', '-c', READ_HELPER, str(path), '0', 'exe'], 30))
 
@@ -417,19 +444,36 @@ def node_identity(role, node, context, lifecycle, system):
             'cgroup': group, 'constraints': constraints, 'status': selected, 'limits': limits}
 
 
+def decode_setup_evidence(raw):
+    raw = dict(raw)
+    for name in ('stdout', 'stderr'):
+        require(name not in raw, 'Ambiguous setup stream encoding')
+        encoded = raw.pop(name + '_base64')
+        require(isinstance(encoded, str) and len(encoded) <= 2 * 1024**2, 'Encoded setup stream cap')
+        data = base64.b64decode(encoded, validate=True)
+        require(len(data) <= 1024 * 1024, 'Decoded setup stream cap')
+        raw[name] = data.decode('utf-8', errors='strict')
+    return raw
+
+
 def setup_confirmation(raw, state, spec, build):
     require(state == {'version': 1, 'chain_id': 1337, 'transactions': {}}, 'Public setup state is not empty')
     require(raw['chain_id'] == 1337 and raw['rpc_url'] == sup.RPC and raw['exit_code'] == 0, 'Setup route failed')
     argv = raw['setup_argv']
-    require(argv == [build['binary']['path'], 'generate', '-s', str(spec), '-n', 0, '--seed', 99,
-                     '--rpc', sup.RPC, '--setup-state-out', raw['setup_state_path']], 'Setup generator argv differs')
+    require(argv[:-1] == [build['binary']['path'], 'generate', '-s', str(spec), '-n', 0, '--seed', 99,
+                          '--rpc', sup.RPC, '--setup-state-out'], 'Setup generator argv differs')
+    require(isinstance(argv[-1], str) and argv[-1] and Path(raw['cwd']).is_absolute(), 'Setup path/cwd missing')
+    require((Path(raw['cwd']) / argv[-1]).resolve() == Path(raw['setup_state_path']), 'Setup state output path differs')
     sender = raw['sender_argv']
     require([str(x) for x in sender] == [build['bench_binary']['path'], 'send', '--rpc-url',
             'http://127.0.0.1:8545,http://127.0.0.1:8645', '--tps', '50000', '--max-concurrent', '100',
             '--retries', '0', '--scrape-interval-ms', '200', '--drain-timeout', '0'], 'Setup sender control differs')
     text = re.sub(r'\x1b\[[0-9;]*m', '', raw['stdout'] + '\n' + raw['stderr'])
     require(len(text.encode()) <= 1024 * 1024, 'Setup log cap')
-    require(not re.search(r'(?i)\b(error|failed|panic|panicked|warn)\b(?![=])', text), 'Setup diagnostics require review')
+    # Stock8ca's human report prints this exact zero counter on stderr. Keep
+    # nonzero counters and every other failure/warning in the diagnostic gate.
+    diagnostics = '\n'.join(line for line in text.splitlines() if line != f'  Failed:          {0:>10}')
+    require(not re.search(r'(?i)\b(error|failed|panic|panicked|warn)\b(?![=])', diagnostics), 'Setup diagnostics require review')
     lines = text.splitlines()
     completion = [line for line in lines if 'Bench send completed; starting post-processing' in line]
     require(len(completion) == 1 and completion[0].endswith('Bench send completed; starting post-processing sent=0 success=0 failed=0'),
@@ -495,7 +539,9 @@ def prepare(args, system):
     verified(build['binary'], 512 * 1024**2); verified(build['bench_binary'], 512 * 1024**2)
     node_build = sup.read_json(Path(context['node_build_manifest']))
     node_build_identity(node_build, context)
-    require(file_binding(context['binary'], 512 * 1024**2)['sha256'] == context['binary_sha256'], 'Node binary changed')
+    node_binary = node_elf_binding(context['binary'])
+    require(node_binary['sha256'] == context['binary_sha256'], 'Node binary changed')
+    save(folder / 'node-binary.json', {**node_binary, 'input_limit_bytes': NODE_ELF_MAX_BYTES})
     spec = args.spec.resolve(); require(spec == repository / SPEC_FILES[0], 'Require exact static public-mix path')
     spec_files = []
     for relative in SPEC_FILES:
@@ -511,7 +557,8 @@ def prepare(args, system):
     bundle = save(folder / 'spec-bundle.json', {'schema_version': 1, 'status': 'verified', 'preset': 'public-mix', 'source_commit': PRESET,
         'gas_weights': sup.CONTROLS['gas_weights'], 'entry': spec_files[0], 'dependencies': spec_files[1:],
         'environment': {k: v for k, v in environment.items() if k.startswith('TXGEN_')}})
-    setup_state = args.setup_state.resolve(); raw_setup = sup.read_json(args.setup_evidence.resolve())
+    setup_state = args.setup_state.resolve(); raw_setup = decode_setup_evidence(sup.read_json(args.setup_evidence.resolve()))
+    require(raw_setup['cwd'] == str(repository), 'Setup command working directory differs')
     raw_setup['setup_state_path'] = str(setup_state)
     setup_info = setup_confirmation(raw_setup, sup.read_json(setup_state), spec, build)
     receipt = save(folder / 'empty-setup-evidence.json', {**setup_info, 'pipeline_evidence': file_binding(args.setup_evidence.resolve())})
