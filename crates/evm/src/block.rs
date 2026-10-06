@@ -646,6 +646,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         output: Self::TransactionResultWithState,
     ) -> Result<GasOutput, BlockExecutionError> {
         let measure_start = self.phase_measurements.sample();
+        reth_evm_ethereum::commit_measure::select(measure_start.is_some());
         let TempoTxResult {
             inner,
             tx_type: _,
@@ -684,6 +685,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         self.replay_state.commit_tx_changes();
         self.phase_measurements
             .commit(measure_start, block_gas_used);
+        reth_evm_ethereum::commit_measure::select(false);
 
         Ok(gas_output)
     }
