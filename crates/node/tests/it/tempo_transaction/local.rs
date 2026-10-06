@@ -732,32 +732,39 @@ async fn test_create_receipts_with_non_protocol_nonces() -> eyre::Result<()> {
     }
 
     let protocol_nonce = localnet.provider.get_transaction_count(sender).await?;
+    let valid_before = nonzero_timestamp(localnet.current_block_timestamp().await? + 20);
     let mut deployments = Vec::new();
     let nested_init_code = Bytes::from_static(&[
         0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0xf0, 0x50, 0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20,
         0x60, 0x00, 0xf3,
     ]);
-    for lane_nonce in 2..4 {
+    for (nonce_key, nonce) in [
+        (U256::from(7), 2),
+        (U256::from(7), 3),
+        (U256::from(8), 0),
+        (TEMPO_EXPIRING_NONCE_KEY, 44),
+        (TEMPO_EXPIRING_NONCE_KEY, 45),
+    ] {
         let mut calls = vec![Call {
             to: TxKind::Create,
             value: U256::ZERO,
             input: nested_init_code.clone(),
         }];
-        if lane_nonce == 3 {
+        if nonce_key == U256::from(7) && nonce == 3 {
             calls.push(Call {
                 to: Address::random().into(),
                 value: U256::ZERO,
                 input: Bytes::new(),
             });
         }
-        let mut tx = create_basic_aa_tx(localnet.chain_id, lane_nonce, calls, 2_000_000);
-        tx.nonce_key = U256::from(7);
+        let mut tx = create_basic_aa_tx(localnet.chain_id, nonce, calls, 2_000_000);
+        tx.nonce_key = nonce_key;
+        if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+            tx.valid_before = Some(valid_before);
+        }
         let signature = sign_aa_tx_secp256k1(&tx, &signer)?;
         let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
-        deployments.push((
-            *envelope.tx_hash(),
-            sender.create(protocol_nonce + lane_nonce - 2),
-        ));
+        deployments.push(*envelope.tx_hash());
         localnet
             .setup
             .node
@@ -766,13 +773,20 @@ async fn test_create_receipts_with_non_protocol_nonces() -> eyre::Result<()> {
             .await?;
     }
     localnet.setup.node.advance_block().await?;
+    let mut expected_addresses = (0..deployments.len())
+        .map(|index| sender.create(protocol_nonce + index as u64))
+        .collect::<Vec<_>>();
+    let mut deployed_addresses = Vec::new();
     let mut deployment_block = None;
-    for (tx_hash, deployed_address) in deployments {
+    for tx_hash in deployments {
         let receipt: serde_json::Value = localnet
             .provider
             .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
             .await?;
         assert_eq!(receipt["status"].as_str(), Some("0x1"));
+        let deployed_address =
+            serde_json::from_value::<Address>(receipt["contractAddress"].clone())?;
+        deployed_addresses.push(deployed_address);
         let expected_address = serde_json::to_value(deployed_address)?;
         assert_eq!(receipt.get("contractAddress"), Some(&expected_address));
         if let Some(block_hash) = &deployment_block {
@@ -801,6 +815,13 @@ async fn test_create_receipts_with_non_protocol_nonces() -> eyre::Result<()> {
             Some(&expected_address)
         );
     }
+    deployed_addresses.sort_unstable();
+    expected_addresses.sort_unstable();
+    assert_eq!(deployed_addresses, expected_addresses);
+    assert_eq!(
+        localnet.provider.get_transaction_count(sender).await?,
+        protocol_nonce + deployed_addresses.len() as u64,
+    );
 
     let protocol_nonce = localnet.provider.get_transaction_count(sender).await?;
     let mut tx = create_basic_aa_tx(
