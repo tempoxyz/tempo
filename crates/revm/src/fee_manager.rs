@@ -16,9 +16,9 @@ use tempo_contracts::precompiles::{
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     error::Result as TempoResult,
-    storage::{Handler, StorageActions, StorageCtx},
+    storage::{Handler, StorageAction, StorageActions, StorageCtx},
     tip_fee_manager::TipFeeManager,
-    tip20::TIP20Error,
+    tip20::{TIP20Error, TIP20Token},
 };
 
 use tempo_primitives::transaction::calc_gas_balance_spending;
@@ -313,10 +313,19 @@ where
 
     let mut richest_token = DEFAULT_FEE_TOKEN;
     let mut highest_balance = U256::ZERO;
-    // Record skipped candidates' balance reads for replay.
+    // Replay depends on affordability, not the exact balance.
     for &token in candidates {
-        let balance = state.get_token_balance(token, fee_payer, spec, actions.clone())?;
-        if balance >= max_fee {
+        let balance = actions
+            .unrecorded(|| state.get_token_balance(token, fee_payer, spec, actions.clone()))?;
+        let sufficient = balance >= max_fee;
+        actions.record(StorageAction::FeeTokenBalanceCheck(
+            token,
+            TIP20Token::from_address_unchecked(token).balances[fee_payer].slot(),
+            balance,
+            max_fee,
+            sufficient,
+        ));
+        if sufficient {
             return Ok(token);
         }
         if balance > highest_balance {

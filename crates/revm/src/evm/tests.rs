@@ -4834,3 +4834,44 @@ fn test_fee_fallback_unfunded_simulation_with_balance_checks_disabled() -> eyre:
     assert!(result.tx_gas_used() > 0);
     assert_fee_fallback_balances(&mut evm, payer, tokens, [0, 0])
 }
+
+#[test]
+fn test_fee_fallback_records_affordability_instead_of_exact_balances() -> eyre::Result<()> {
+    use tempo_precompiles::storage::StorageAction;
+
+    for (balances, selected) in [([2_000_000, 3_000_000], 0), ([999_999, 2_000_000], 1)] {
+        let (mut evm, tx, tokens) = create_fee_fallback_evm(balances, selected)?;
+        let payer = tx.inner.caller;
+        let actions = StorageActions::enabled();
+        evm = evm.with_actions(actions.clone());
+        let result = evm.transact(tx)?;
+        assert!(result.result.is_success());
+        let recorded = actions.take().unwrap();
+        let checks: Vec<_> = recorded
+            .iter()
+            .filter_map(|action| match action {
+                StorageAction::FeeTokenBalanceCheck(token, slot, balance, required, sufficient) => {
+                    Some((*token, *slot, *balance, *required, *sufficient))
+                }
+                _ => None,
+            })
+            .collect();
+        let expected: Vec<_> = (0..=selected)
+            .map(|index| {
+                (
+                    tokens[index],
+                    TIP20Token::from_address_unchecked(tokens[index]).balances[payer].slot(),
+                    U256::from(balances[index]),
+                    U256::from(1_000_000),
+                    index == selected,
+                )
+            })
+            .collect();
+        assert_eq!(checks, expected);
+        assert!(!recorded.iter().any(|action| matches!(action,
+            StorageAction::Sload(token, slot, _) if tokens.contains(token)
+                && *slot == TIP20Token::from_address_unchecked(*token).balances[payer].slot()
+        )));
+    }
+    Ok(())
+}
