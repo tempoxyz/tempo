@@ -95,7 +95,7 @@ impl ExpiringNonceCache {
             let mut state = state.clone();
             // Equal roots may occur in empty blocks with different timestamps.
             // Reconstruct if a cached timestamp belongs to a later block.
-            if state.advance(timestamp).is_ok() {
+            if state.advance(timestamp).is_ok() && state.root() == root {
                 return Ok(state);
             }
         }
@@ -288,6 +288,24 @@ mod tests {
                 .state_at(second.header.hash_slow(), &tempo_chainspec::spec::DEV)
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn cached_commitment_cannot_retain_expired_entries() {
+        let genesis = Block::default();
+        let mut state = ExpiringNonceState::default();
+        let first = child(&genesis, &mut state, 100, vec![transaction(1, 120)]);
+        let live_state = state.clone();
+        let mut expired = child(&first, &mut state, 120, vec![]);
+        expired.header.expiring_nonce_root = first.header.expiring_nonce_root;
+        let cache = source(&[genesis, first.clone(), expired.clone()]);
+        cache.remember(&live_state, Some(first.header.hash_slow()));
+        assert!(
+            cache
+                .state_at(expired.header.hash_slow(), &tempo_chainspec::spec::DEV)
+                .unwrap_err()
+                .contains("commitment mismatch")
         );
     }
 }
