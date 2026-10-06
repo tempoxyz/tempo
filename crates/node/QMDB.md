@@ -55,5 +55,6 @@ This small-state, single-node serial workload is not a production or saturation 
 - QMDB and the canonical state database are separate stores, not one atomic transaction.
   Startup reconciliation handles a QMDB-ahead crash; comprehensive fault-injection testing
   remains necessary.
-- The SDK pins the prototype's coherent Commonware revision separately from Tempo's
-  consensus dependencies. Upgrading that storage API is a separate task.
+- The SDK uses the same published Commonware 2026.9 release as Tempo's consensus
+  dependencies. Nonempty chain-specific account extensions are rejected rather than
+  silently omitted from the fixed-width commitment.
