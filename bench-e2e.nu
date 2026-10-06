@@ -1096,6 +1096,17 @@ def build-valscope-static-reports [
     }
 }
 
+def e2e-persistence-snapshot [results_dir: string, phase: string, boundary: string] {
+    let result = (try {
+        (^python3 benchmarks/parallel-execution/persistence_metrics.py
+            --phase $phase --boundary $boundary
+            --output $"($results_dir)/persistence-metrics-($phase)-($boundary).json") | complete
+    } catch { |e| { exit_code: 1, stdout: "", stderr: $e.msg } })
+    print $result.stdout
+    if $result.exit_code != 0 { print $result.stderr }
+    $result.exit_code
+}
+
 # Opt-in only: the helper refuses live nodes/workloads/compilers and retains failures.
 def e2e-disposal-clock [config: string, phase: string, boundary: string] {
     let result = (try {
@@ -1330,6 +1341,10 @@ def run-local-e2e-phase [run: record, ctx: record] {
         | append (if $ctx.runner_metrics_url != "" { [$"runner:($ctx.runner_metrics_url)"] } else { [] })
     let submit_rpc_url = [$a_rpc $b_rpc] | str join ","
 
+    if $phase_exit == 0 and $ctx.persistence_metrics {
+        $phase_exit = (e2e-persistence-snapshot $ctx.results_dir $phase "pre")
+    }
+
     if $phase_exit == 0 {
         let phase_started_ms = ((date now | into int) / 1_000_000 | into int)
         let initial_db_size_bytes = (e2e-db-size-bytes $ctx.a.datadir)
@@ -1394,6 +1409,9 @@ def run-local-e2e-phase [run: record, ctx: record] {
         let scheduler_exit = if $ctx.scheduler_trace {
             wait-for-scheduler-trace $phase $scheduler_output $sender_exit
         } else { 0 }
+        let persistence_metrics_exit = if $ctx.persistence_metrics {
+            e2e-persistence-snapshot $ctx.results_dir $phase "post"
+        } else { 0 }
         if $sender_exit == 0 and $phase_clickhouse_url != "" {
             let report = (open $"($ctx.results_dir)/report-($phase).json")
             let report_benchmark_id = ($report | get --optional benchmark_id | default "")
@@ -1408,7 +1426,9 @@ def run-local-e2e-phase [run: record, ctx: record] {
             started_ms: $phase_started_ms
             finished_ms: $phase_finished_ms
         } | to json | save -f $"($ctx.results_dir)/phase-range-($phase).json"
-        $phase_exit = if $sender_exit != 0 { $sender_exit } else { $scheduler_exit }
+        $phase_exit = if $sender_exit != 0 { $sender_exit } else if $scheduler_exit != 0 {
+            $scheduler_exit
+        } else { $persistence_metrics_exit }
     } else {
         print $"Skipping local e2e sender for ($phase) because readiness checks failed"
     }
@@ -1670,6 +1690,7 @@ def "main e2e" [
     --run-pairs: int = 3                                # Number of baseline/feature run pairs
     --run-side: string = "comparison"                   # Phases to run: comparison, feature, or baseline
     --sequential-peer                                  # Verify generated blocks with sequential peer B; feature-only
+    --persistence-metrics                             # Bounded persistence counters before/after each pipeline
     --disposal-clock-calibration                       # Fixed 25k same-binary stage timer diagnostic
     --producer-isolation                              # Generate signed output into wc; never submit the measured workload
     --pipeline-pressure                               # Fixed loaded pipeline diagnostic; requires instrumented txgen
@@ -2152,6 +2173,7 @@ def "main e2e" [
         baseline_args: $baseline_args
         feature_args: $feature_args
         sequential_peer: $sequential_peer
+        persistence_metrics: $persistence_metrics
         disposal_clock: $disposal_clock_calibration
         disposal_clock_config: $disposal_clock_config
         producer_isolation: $producer_isolation

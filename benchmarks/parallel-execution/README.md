@@ -102,6 +102,15 @@ seconds respectively. These separate process clocks must not be added together.
 The result establishes substantial downstream waiting in this instrumented run,
 not a CPU cause, an execution improvement or sustained 50k capacity.
 
+The `persistence-metrics` profiling choice retains two small JSON snapshots per
+phase from the existing node metrics endpoints, before and after the txgen
+pipeline. Each response is bounded to 8 MiB and each retained snapshot to 256 KiB;
+no background sampler or full metric dump is retained. Performance results stay
+in artifacts and Slack is disabled; tracing follows the OTLP input. The interval
+includes setup and drainage. Use
+histogram sum/count differences to compare completed persistence work; backend
+wall timers overlap, and last-value gauges do not cover every cycle.
+
 ## Correctness
 
 Run unit and real-node oracles with the repository's pinned toolchain:
