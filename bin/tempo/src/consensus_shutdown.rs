@@ -390,6 +390,12 @@ mod tests {
             }
         }
 
+        // Commonware syncs the entire storage filesystem before polling its
+        // root task. This test only exercises task teardown, so keep that sync
+        // away from unrelated build and test writes on the shared CI disk.
+        #[cfg(target_os = "linux")]
+        let storage = tempfile::tempdir_in("/dev/shm").unwrap();
+        #[cfg(not(target_os = "linux"))]
         let storage = tempfile::tempdir().unwrap();
         let cfg = commonware_runtime::tokio::Config::default()
             .with_worker_threads(1)
