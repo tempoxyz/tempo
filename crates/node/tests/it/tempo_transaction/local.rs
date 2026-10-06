@@ -699,12 +699,10 @@ async fn test_create_receipts_with_non_protocol_nonces() -> eyre::Result<()> {
         let tx_hash = *envelope.tx_hash();
         let receipt = localnet.submit_tx(envelope.encoded_2718(), tx_hash).await?;
 
-        let expected_address = if nonce_key.is_zero() {
-            serde_json::to_value(deployed_address)?
-        } else {
+        if !nonce_key.is_zero() {
             assert_ne!(nonce, protocol_nonce);
-            serde_json::Value::Null
-        };
+        }
+        let expected_address = serde_json::to_value(deployed_address)?;
         assert_eq!(receipt.get("contractAddress"), Some(&expected_address));
         assert_eq!(
             localnet

@@ -7,6 +7,8 @@ pub mod operator;
 pub mod simulate;
 pub mod token;
 
+mod receipt;
+
 pub use admin::{TempoAdminApi, TempoAdminApiServer};
 use alloy_primitives::B256;
 use alloy_rpc_types_eth::{Log, ReceiptWithBloom};
@@ -50,9 +52,8 @@ use reth_rpc::{DynRpcConverter, eth::EthApi};
 use reth_rpc_eth_api::{
     EthApiTypes, RpcConverter, RpcNodeCore, RpcNodeCoreExt,
     helpers::{
-        Call, EthApiSpec, EthBlocks, EthCall, EthFees, EthState, EthSubscriptions, EthTransactions,
-        LoadBlock, LoadFee, LoadPendingBlock, LoadReceipt, LoadState, LoadTransaction,
-        SpawnBlocking, Trace,
+        Call, EthApiSpec, EthCall, EthFees, EthState, EthSubscriptions, EthTransactions, LoadBlock,
+        LoadFee, LoadPendingBlock, LoadState, LoadTransaction, SpawnBlocking, Trace,
         bal::GetBlockAccessList,
         estimate::EstimateCall,
         pending_block::{BuildPendingEnv, PendingEnvBuilder},
@@ -455,8 +456,6 @@ where
 impl<N> EstimateCall for TempoEthApi<N> where N: TempoEthApiBounds {}
 impl<N> EthSubscriptions for TempoEthApi<N> where N: TempoEthApiBounds {}
 impl<N> LoadBlock for TempoEthApi<N> where N: TempoEthApiBounds {}
-impl<N> LoadReceipt for TempoEthApi<N> where N: TempoEthApiBounds {}
-impl<N> EthBlocks for TempoEthApi<N> where N: TempoEthApiBounds {}
 impl<N> LoadTransaction for TempoEthApi<N> where N: TempoEthApiBounds {}
 
 impl<N> EthTransactions for TempoEthApi<N>
@@ -483,9 +482,6 @@ where
 }
 
 /// Converter for Tempo receipts.
-///
-/// CREATE receipts using nonzero nonce keys omit the contract address because their transaction
-/// nonce is not the protocol nonce used by execution, and receipts do not contain that nonce.
 #[derive(Debug, Clone)]
 #[expect(clippy::type_complexity)]
 pub struct TempoReceiptConverter<ChainSpec = TempoChainSpec> {
@@ -558,10 +554,6 @@ where
                         .fee_payer(tx.signer())
                         .map_err(|_| EthApiError::InvalidTransactionSignature)?,
                 };
-
-                if tx.nonce_key().is_some_and(|nonce_key| !nonce_key.is_zero()) {
-                    receipt.inner.contract_address = None;
-                }
 
                 if receipt.effective_gas_price == 0 || receipt.gas_used == 0 {
                     return Ok(receipt);
