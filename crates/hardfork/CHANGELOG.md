@@ -1,6 +1,6 @@
 # Changelog
 
-## `tempo-hardfork@1.12.0`
+## `tempo-hardfork@1.16.0`
 
 ### Minor Changes
 
