@@ -14130,6 +14130,7 @@ dependencies = [
  "reth-storage-api",
  "revm",
  "schnellru",
+ "serde_json",
  "sha2 0.10.9",
  "tempo-chainspec",
  "tempo-contracts",
@@ -14307,6 +14308,7 @@ dependencies = [
  "tempo-revm",
  "tempo-state-bloat",
  "tempo-validator-config",
+ "tempo-zk",
  "tokio",
 ]
 

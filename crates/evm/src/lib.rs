@@ -86,6 +86,17 @@ impl FeeTokenResolver for TempoEvmConfig {
     }
 }
 
+/// Sets the ZK signature verifying keys a development chain's genesis supplies, for schemes
+/// without a protocol key. Every node of the chain must use the same genesis.
+pub fn set_zk_verifying_keys(chain_spec: &TempoChainSpec) -> Result<(), tempo_zk::GenesisKeyError> {
+    tempo_zk::set_genesis_keys(
+        chain_spec
+            .info
+            .zk_verifying_keys()
+            .map(|(scheme, key)| (scheme, key.as_ref())),
+    )
+}
+
 impl TempoEvmConfig {
     /// Create a new [`TempoEvmConfig`] with the given chain spec and EVM factory.
     pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
