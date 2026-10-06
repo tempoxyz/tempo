@@ -662,7 +662,7 @@ def build-e2e-consensus-args [node_dir: string, trusted_peers: string, port: int
 
     let execution_p2p_port = $port + 1
     let metrics_port = $port + 2
-    let authrpc_port = $port + 3
+    let authrpc_port = $port + 10003
     let discv5_port = $port + 4
 
     [
