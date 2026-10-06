@@ -1,9 +1,9 @@
-// Runs a development Groth16 setup: one random contribution and a fixed beacon over a Powers of
-// Tau transcript. The key is for tests only; TIP-1133 defines the production ceremony.
+// Runs a development Groth16 setup: a fixed beacon over a Powers of Tau transcript, so anyone can
+// rebuild the same key. Its trapdoor is public, so the key is for tests only; TIP-1133 defines the
+// production ceremony.
 //
 // Usage: node scripts/setup.ts <r1cs> <ptau> <out-dir>
 
-import * as crypto from 'node:crypto'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as snarkjs from 'snarkjs'
@@ -20,28 +20,19 @@ const logger = {
 
 fs.mkdirSync(out, { recursive: true })
 const initial = path.join(out, 'oidc_rs256_0000.zkey')
-const contributed = path.join(out, 'oidc_rs256_0001.zkey')
 const final = path.join(out, 'oidc_rs256.zkey')
 
 await snarkjs.zKey.newZKey(r1cs, ptau, initial, logger)
-await snarkjs.zKey.contribute(
-  initial,
-  contributed,
-  'development',
-  crypto.randomBytes(64).toString('hex'),
-  logger,
-)
-fs.rmSync(initial)
 // A fixed beacon, standing in for the announced randomness of a real ceremony.
 await snarkjs.zKey.beacon(
-  contributed,
+  initial,
   final,
   'development beacon',
   '0000000000000000000000000000000000000000000000000000000000001133',
   10,
   logger,
 )
-fs.rmSync(contributed)
+fs.rmSync(initial)
 
 const verificationKey = await snarkjs.zKey.exportVerificationKey(final, logger)
 fs.writeFileSync(path.join(out, 'verification_key.json'), JSON.stringify(verificationKey, null, 2))
