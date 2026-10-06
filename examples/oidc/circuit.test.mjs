@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fixture } from './witness.mjs';
 
@@ -10,7 +10,8 @@ test('TIP-1133 circuit accepts signed fixtures and rejects adversarial inputs in
   const build = createRequire(import.meta.url)(path.resolve(artifacts, 'oidc_js/witness_calculator.js'));
   const calculator = await build(await readFile(path.resolve(artifacts, 'oidc_js/oidc.wasm')));
   const valid = await fixture();
-  await calculator.calculateWTNSBin(valid.input, true);
+  const validWitness = await calculator.calculateWTNSBin(valid.input, true);
+  if (process.env.OIDC_WITNESS_PATH) await writeFile(process.env.OIDC_WITNESS_PATH, validWitness);
   for (const options of [
     { issuer: 'accounts.example.invalid' },
     { issuer: `https://${'i'.repeat(128)}`, audience: 'a'.repeat(128), subject: 's'.repeat(64) },
