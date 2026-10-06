@@ -57,9 +57,15 @@ async function pay(install) {
   const raw = ethers.concat(['0x76',ethers.encodeRlp([...fields,signature])]);
   const hash = await provider.send('eth_sendRawTransaction',[raw]);
   status.textContent = `Submitted ${hash}; waiting for receipt…`;
-  const receipt = await provider.waitForTransaction(hash,1,120000);
-  if (receipt.status !== 1) throw new Error('Transaction reverted');
-  status.textContent = `Mined ${hash} in block ${receipt.blockNumber}; ${install ? 'proof authorized the device key' : 'device-key payment required no new proof'}.`;
+  const deadline = Date.now()+120000;
+  let receipt;
+  while (Date.now() < deadline && !receipt) {
+    receipt = await provider.send('eth_getTransactionReceipt',[hash]);
+    if (!receipt) await new Promise(resolve => setTimeout(resolve,1000));
+  }
+  if (!receipt) throw new Error(`Receipt timeout: ${hash}`);
+  if (BigInt(receipt.status) !== 1n) throw new Error('Transaction reverted');
+  status.textContent = `Mined ${hash} in block ${Number(BigInt(receipt.blockNumber))}; ${install ? 'proof authorized the device key' : 'device-key payment required no new proof'}.`;
   document.querySelector('#pay').disabled = true;
   document.querySelector('#again').disabled = false;
 }

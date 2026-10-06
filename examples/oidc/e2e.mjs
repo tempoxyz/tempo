@@ -35,10 +35,17 @@ async function receipt(transaction, label) {
 }
 async function tempoReceipt(raw, label) {
   const hash = await provider.send('eth_sendRawTransaction',[raw]);
-  const result = await provider.waitForTransaction(hash,1,120000);
-  assert.equal(result.status,1,label);
-  console.log(JSON.stringify({ label,hash,block:result.blockNumber,status:result.status }));
-  return result;
+  const deadline = Date.now()+120000;
+  while (Date.now() < deadline) {
+    const result = await provider.send('eth_getTransactionReceipt',[hash]);
+    if (result) {
+      assert.equal(BigInt(result.status),1n,label);
+      console.log(JSON.stringify({ label,hash,block:Number(BigInt(result.blockNumber)),status:1 }));
+      return result;
+    }
+    await new Promise(resolve => setTimeout(resolve,1000));
+  }
+  throw new Error(`Receipt timeout for ${label}: ${hash}`);
 }
 await receipt(await publisher.createPublisher(salt,owner,[[hex32(input.issuer),[hex32(input.key_hash)]]]), 'publish RSA issuer key');
 assert.equal(await publisher.isKeyActive(publisherId,hex32(input.issuer),hex32(input.key_hash)), true);
