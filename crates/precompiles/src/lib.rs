@@ -15,6 +15,8 @@ pub(crate) mod ip_validation;
 pub mod account_keychain;
 pub mod address_registry;
 pub mod current_committee;
+pub mod native_call;
+pub mod native_earn;
 pub mod nonce;
 pub mod receive_policy_guard;
 pub mod signature_verifier;
@@ -37,6 +39,8 @@ use crate::{
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
     current_committee::CurrentCommittee,
+    native_call::{NativeCallExt, NativeCallLimits},
+    native_earn::{NativeEarnExecution, NativeEarnRegistrar, NativeEarnSettlementExecution},
     nonce::NonceManager,
     receive_policy_guard::ReceivePolicyGuard,
     signature_verifier::SignatureVerifier,
@@ -50,7 +54,7 @@ use crate::{
     tip403_registry::TIP403Registry,
     validator_config::ValidatorConfig,
     validator_config_v2::ValidatorConfigV2,
-    zone_factory::ZoneFactory,
+    zone_factory::{ZoneFactory, portal::execution::NativePortalExecution},
     zone_verifier::ZoneVerifier,
 };
 use std::{cell::RefCell, rc::Rc};
@@ -59,7 +63,11 @@ use tempo_primitives::{TempoAddressExt, TempoBlockExt};
 
 #[cfg(test)]
 use alloy::sol_types::SolInterface;
-use alloy::{primitives::Address, sol, sol_types::SolError};
+use alloy::{
+    primitives::Address,
+    sol,
+    sol_types::{SolCall, SolError},
+};
 #[cfg(test)]
 use evm2::precompiles::PrecompileHalt;
 use evm2::{
@@ -69,14 +77,17 @@ use evm2::{
     precompiles::{MovePrecompileError, PrecompileError, PrecompileId, PrecompileResult},
 };
 
-pub use tempo_contracts::precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS,
-    DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS,
-    SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS,
-    SYSTEM_PRECOMPILES, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
-    TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
-    VALIDATOR_CONFIG_V2_ADDRESS, ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS,
-    ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
+pub use tempo_contracts::{
+    earn::NATIVE_EARN_REGISTRY_ADDRESS,
+    precompiles::{
+        ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS,
+        DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
+        RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS,
+        STORAGE_CREDITS_ADDRESS, SYSTEM_PRECOMPILES, TIP_FEE_MANAGER_ADDRESS,
+        TIP20_CHANNEL_RESERVE_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+        VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, ZONE_FACTORY_ADDRESS,
+        ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
+    },
 };
 
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
@@ -198,6 +209,67 @@ impl<T: EvmTypesHost> TempoPrecompiles<T> {
                 .any(|(candidate, activation)| candidate == address && self.spec >= *activation)
     }
 
+    fn is_native_portal_deposit(&self, message: &Message<T>) -> bool {
+        use tempo_contracts::precompiles::zone_portal::ZonePortal;
+
+        self.spec.is_t15()
+            && message.kind == MessageKind::Call
+            && message.destination == message.code_address
+            && message.code_address.zone_portal_id().is_some()
+            && (message
+                .input
+                .starts_with(&ZonePortal::depositCall::SELECTOR)
+                || message
+                    .input
+                    .starts_with(&ZonePortal::depositEncryptedCall::SELECTOR))
+    }
+
+    fn is_native_portal_settlement(&self, message: &Message<T>) -> bool {
+        use tempo_contracts::precompiles::zone_portal::ZonePortal;
+
+        self.spec.is_t15()
+            && message.kind == MessageKind::Call
+            && message.destination == message.code_address
+            && message.code_address.zone_portal_id().is_some()
+            && (message
+                .input
+                .starts_with(&ZonePortal::submitBatch_0Call::SELECTOR)
+                || message
+                    .input
+                    .starts_with(&ZonePortal::submitBatch_1Call::SELECTOR))
+    }
+
+    fn is_native_portal_withdrawal(&self, message: &Message<T>) -> bool {
+        use tempo_contracts::precompiles::zone_portal::ZonePortal;
+
+        self.spec.is_t15()
+            && message.kind == MessageKind::Call
+            && message.destination == message.code_address
+            && message.code_address.zone_portal_id().is_some()
+            && message
+                .input
+                .starts_with(&ZonePortal::processWithdrawalsCall::SELECTOR)
+    }
+
+    fn is_native_earn_payment(&self, message: &Message<T>) -> bool {
+        self.spec.is_t16()
+            && message.kind == MessageKind::Call
+            && message.destination == message.code_address
+            && message.code.original_byte_slice()
+                == tempo_contracts::earn::NATIVE_EARN_DISPATCHER_V1_RUNTIME
+            && tempo_contracts::earn::earn_payment_kind(&message.input).is_some()
+    }
+
+    fn is_native_earn_settlement(&self, message: &Message<T>) -> bool {
+        self.spec.is_t16()
+            && message.kind == MessageKind::Call
+            && message.depth == 0
+            && message.destination == message.code_address
+            && message.code.original_byte_slice()
+                == tempo_contracts::earn::NATIVE_EARN_DISPATCHER_V1_RUNTIME
+            && tempo_contracts::earn::earn_settlement_input(&message.input)
+    }
+
     fn call_tempo(&self, address: Address, calldata: &[u8], caller: Address) -> PrecompileResult {
         if address.is_tip20() {
             TIP20Token::from_address(address)
@@ -235,6 +307,8 @@ impl<T: EvmTypesHost> TempoPrecompiles<T> {
             ZoneFactory::new().call(calldata, caller)
         } else if address == ZONE_VERIFIER_ADDRESS {
             ZoneVerifier::new().call(calldata, caller)
+        } else if address == NATIVE_EARN_REGISTRY_ADDRESS {
+            NativeEarnRegistrar::new().call(calldata, caller)
         } else {
             unreachable!("Tempo precompile address checked before dispatch")
         }
@@ -244,6 +318,7 @@ impl<T: EvmTypesHost> TempoPrecompiles<T> {
 impl<T> PrecompileProvider<T> for TempoPrecompiles<T>
 where
     T: EvmTypes<BlockEnvExt = TempoBlockExt>,
+    T::EvmExt: NativeCallExt,
 {
     fn move_precompiles(
         &mut self,
@@ -264,12 +339,99 @@ where
         self.base.contains(address) || self.contains_tempo(address)
     }
 
+    fn contains_message(&self, message: &Message<T>) -> bool {
+        self.is_native_portal_deposit(message)
+            || self.is_native_portal_settlement(message)
+            || self.is_native_portal_withdrawal(message)
+            || self.is_native_earn_payment(message)
+            || self.is_native_earn_settlement(message)
+            || self.contains(&message.code_address)
+    }
+
     fn execute(
-        &mut self,
+        &self,
         evm: &mut Evm<'_, T>,
         message: &Message<T>,
         gas: &mut GasTracker,
     ) -> Option<PrecompileResult> {
+        if self.is_native_earn_settlement(message) {
+            let budget = evm.ext().native_call_context().budget(8, 32_000_000);
+            return Some(
+                NativeEarnSettlementExecution {
+                    spec: self.spec,
+                    actions: self.actions.clone(),
+                    non_creditable_slots: self.non_creditable_slots.clone(),
+                    budget: &budget,
+                }
+                .execute(evm, message, gas),
+            );
+        }
+        if self.is_native_earn_payment(message) {
+            let budget = evm.ext().native_call_context().budget(8, 16_000_000);
+            return Some(
+                NativeEarnExecution {
+                    spec: self.spec,
+                    actions: self.actions.clone(),
+                    non_creditable_slots: self.non_creditable_slots.clone(),
+                    budget: &budget,
+                }
+                .execute(evm, message, gas),
+            );
+        }
+        if self.is_native_portal_deposit(message) {
+            let budget = evm.ext().native_call_context().budget(8, 16_000_000);
+            return Some(
+                NativePortalExecution {
+                    spec: self.spec,
+                    actions: self.actions.clone(),
+                    non_creditable_slots: self.non_creditable_slots.clone(),
+                    budget: &budget,
+                    dependency_limits: NativeCallLimits {
+                        execution_gas: 1_000_000,
+                        state_gas: 1_000_000,
+                        input_bytes: 256,
+                        output_bytes: 256,
+                    },
+                }
+                .deposit(evm, message, gas),
+            );
+        }
+        if self.is_native_portal_settlement(message) {
+            let budget = evm.ext().native_call_context().budget(8, 16_000_000);
+            return Some(
+                NativePortalExecution {
+                    spec: self.spec,
+                    actions: self.actions.clone(),
+                    non_creditable_slots: self.non_creditable_slots.clone(),
+                    budget: &budget,
+                    dependency_limits: NativeCallLimits {
+                        execution_gas: 8_000_000,
+                        state_gas: 2_000_000,
+                        input_bytes: 65_536,
+                        output_bytes: 1_024,
+                    },
+                }
+                .submit_batch(evm, message, gas),
+            );
+        }
+        if self.is_native_portal_withdrawal(message) {
+            let budget = evm.ext().native_call_context().budget(8, 16_000_000);
+            return Some(
+                NativePortalExecution {
+                    spec: self.spec,
+                    actions: self.actions.clone(),
+                    non_creditable_slots: self.non_creditable_slots.clone(),
+                    budget: &budget,
+                    dependency_limits: NativeCallLimits {
+                        execution_gas: 12_000_000,
+                        state_gas: 4_000_000,
+                        input_bytes: 65_536,
+                        output_bytes: 1_024,
+                    },
+                }
+                .process_withdrawals(evm, message, gas),
+            );
+        }
         if let Some(result) = self.base.execute(evm, message, gas) {
             return Some(result);
         }
@@ -335,7 +497,7 @@ mod tests {
         type ConfigSelector = BaseEvmConfigSelector;
         type SpecId = SpecId;
         type Tx = ();
-        type EvmExt = ();
+        type EvmExt = crate::native_call::NativeCallContext;
         type MessageExt = ();
         type MessageResultExt = ();
         type TxEnvExt = ();
@@ -409,7 +571,7 @@ mod tests {
         code_address: Address,
         caller: Address,
     ) -> (PrecompileResult, GasTracker) {
-        let mut precompiles = test_tempo_precompiles(spec);
+        let precompiles = test_tempo_precompiles(spec);
         let message = Message::<TestTypes> {
             kind,
             gas_limit: 1_000_000,
@@ -981,6 +1143,93 @@ mod tests {
             !precompiles.contains(&zone_factory::portal_address(1)),
             "ZonePortal storage handles must not be registered as precompiles"
         );
+    }
+
+    #[test]
+    fn test_native_portal_deposit_selector_activates_at_t15() {
+        use tempo_contracts::precompiles::zone_portal::ZonePortal;
+
+        let portal = zone_factory::portal_address(1);
+        let mut message = Message::<TestTypes> {
+            kind: MessageKind::Call,
+            destination: portal,
+            code_address: portal,
+            input: ZonePortal::depositCall::SELECTOR.to_vec().into(),
+            ..Default::default()
+        };
+        let before = test_tempo_precompiles(TempoHardfork::T14);
+        let after = test_tempo_precompiles(TempoHardfork::T15);
+        assert!(!before.contains_message(&message));
+        assert!(after.contains_message(&message));
+        message.input = ZonePortal::depositEncryptedCall::SELECTOR.to_vec().into();
+        assert!(after.contains_message(&message));
+        message.input = ZonePortal::claimRefundCall::SELECTOR.to_vec().into();
+        assert!(!after.contains_message(&message));
+        message.kind = MessageKind::DelegateCall;
+        message.input = ZonePortal::depositCall::SELECTOR.to_vec().into();
+        assert!(!after.contains_message(&message));
+    }
+
+    #[test]
+    fn native_earn_requires_t16_exact_runtime_and_payment_selector() {
+        let vault = Address::with_last_byte(0x91);
+        let mut message = Message::<TestTypes> {
+            kind: MessageKind::Call,
+            destination: vault,
+            code_address: vault,
+            input: vec![0x37, 0xa4, 0xe8, 0x34].into(),
+            code: Bytecode::new_legacy(
+                tempo_contracts::earn::NATIVE_EARN_DISPATCHER_V1_RUNTIME
+                    .to_vec()
+                    .into(),
+            ),
+            ..Default::default()
+        };
+        assert!(!test_tempo_precompiles(TempoHardfork::T15).contains_message(&message));
+        let active = test_tempo_precompiles(TempoHardfork::T16);
+        assert!(active.contains_message(&message));
+        message.code = Bytecode::new_legacy(vec![0x00].into());
+        assert!(!active.contains_message(&message));
+        message.code = Bytecode::new_legacy(
+            tempo_contracts::earn::NATIVE_EARN_DISPATCHER_V1_RUNTIME
+                .to_vec()
+                .into(),
+        );
+        message.input = vec![0xde, 0xad, 0xbe, 0xef].into();
+        assert!(!active.contains_message(&message));
+        message.input = vec![0x37, 0xa4, 0xe8, 0x34].into();
+        message.kind = MessageKind::DelegateCall;
+        assert!(!active.contains_message(&message));
+    }
+
+    #[test]
+    fn native_earn_settlement_requires_t16_top_level_dispatcher() {
+        let forwarder = Address::with_last_byte(0x9b);
+        let mut input = vec![0xbf, 0x8d, 0x3f, 0x22];
+        input.extend_from_slice(&alloy::primitives::U256::from(64).to_be_bytes::<32>());
+        input.extend_from_slice(&[0u8; 32]);
+        input.extend_from_slice(&alloy::primitives::U256::ONE.to_be_bytes::<32>());
+        input.extend_from_slice(&[0x11; 32]);
+        let mut message = Message::<TestTypes> {
+            kind: MessageKind::Call,
+            destination: forwarder,
+            code_address: forwarder,
+            input: input.into(),
+            code: Bytecode::new_legacy(
+                tempo_contracts::earn::NATIVE_EARN_DISPATCHER_V1_RUNTIME
+                    .to_vec()
+                    .into(),
+            ),
+            ..Default::default()
+        };
+        assert!(!test_tempo_precompiles(TempoHardfork::T15).contains_message(&message));
+        let active = test_tempo_precompiles(TempoHardfork::T16);
+        assert!(active.contains_message(&message));
+        message.depth = 1;
+        assert!(!active.contains_message(&message));
+        message.depth = 0;
+        message.code = Bytecode::new_legacy(vec![0x00].into());
+        assert!(!active.contains_message(&message));
     }
 
     #[test]

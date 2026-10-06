@@ -42,6 +42,7 @@ jobs:
     outputs:
       should_run: ${{ contains(fromJSON(steps.filter.outputs.changes), 'specs') }}
       foundry_smoke: ${{ contains(fromJSON(steps.filter.outputs.changes), 'foundry_smoke') }}
+      evm2_only: ${{ steps.engine.outputs.evm2_only }}
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
@@ -50,6 +51,14 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Detect EVM2-only execution
+        id: engine
+        run: |
+          if test -d crates/revm; then
+            echo "evm2_only=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "evm2_only=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: tempoxyz/gh-actions/actions/changed-paths@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
         id: filter
         with:
@@ -70,6 +79,8 @@ jobs:
               - 'crates/primitives/**'
               - 'crates/revm/**'
               - 'scripts/foundry-patch.sh'
+              - 'scripts/native-payments/**'
+              - 'docs/evidence/evm2-t16-native-**'
               - '.github/workflows/specs.yml'
             foundry_smoke:
               - 'Cargo.lock'
@@ -81,6 +92,7 @@ jobs:
   foundry-resolver-smoke:
     name: Foundry Resolver Smoke
     needs: check-specs-changes
+    if: needs.check-specs-changes.outputs.evm2_only != 'true'
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -120,6 +132,28 @@ jobs:
         env:
           RUSTC_WRAPPER: ""
         run: tempo/scripts/foundry-patch.sh "$GITHUB_WORKSPACE/tempo" "$GITHUB_WORKSPACE/foundry"
+
+  native-evidence:
+    name: Check EVM2 devnet evidence
+    needs: check-specs-changes
+    if: needs.check-specs-changes.outputs.should_run == 'true' && needs.check-specs-changes.outputs.evm2_only == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Verify native Earn and Zone devnet artifacts
+        run: |
+          python3 scripts/native-payments/check-t16-combined-capacity.py
+          python3 scripts/native-payments/check-t16-combined-sustained.py
+          python3 scripts/native-payments/check-t16-veda-settlement.py
 
   check-precompiles:
     name: Check precompiles changes
@@ -254,7 +288,7 @@ jobs:
   foundry-build:
     name: Build patched Forge
     needs: [check-specs-changes, check-precompiles]
-    if: github.repository == 'tempoxyz/tempo' && needs.check-specs-changes.outputs.should_run == 'true'
+    if: github.repository == 'tempoxyz/tempo' && needs.check-specs-changes.outputs.should_run == 'true' && needs.check-specs-changes.outputs.evm2_only != 'true'
     runs-on: depot-ubuntu-latest-8
     timeout-minutes: 60
     permissions:
@@ -390,6 +424,7 @@ jobs:
     needs:
       - check-specs-changes
       - foundry-resolver-smoke
+      - native-evidence
       - check-precompiles
       - build
       - abi-alignment-check
@@ -404,7 +439,7 @@ jobs:
       - name: Decide whether the needed jobs succeeded or failed
         uses: tempoxyz/gh-actions/actions/check-needs@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
         with:
-          allowed-skips: check-precompiles,build,abi-alignment-check,lint,foundry-build,foundry-test
+          allowed-skips: foundry-resolver-smoke,native-evidence,check-precompiles,build,abi-alignment-check,lint,foundry-build,foundry-test
           jobs: ${{ toJSON(needs) }}
 
   precompiles-coverage:

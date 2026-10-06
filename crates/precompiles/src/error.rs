@@ -27,7 +27,7 @@ use tempo_contracts::{
         NonceError, ReceivePolicyGuardError, RolesAuthError, SignatureVerifierError,
         StablecoinDEXError, StorageCreditsError, TIP20ChannelReserveError, TIP20FactoryError,
         TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector, ValidatorConfigError,
-        ValidatorConfigV2Error, ZoneFactoryError,
+        ValidatorConfigV2Error, ZoneFactoryError, zone_portal::ZonePortalError,
     },
 };
 
@@ -116,6 +116,10 @@ pub enum TempoPrecompileError {
     #[error("ZoneFactory error: {0:?}")]
     ZoneFactoryError(ZoneFactoryError),
 
+    /// Error from native ZonePortal execution.
+    #[error("ZonePortal error: {0:?}")]
+    ZonePortalError(ZonePortalError),
+
     /// Gas limit exceeded during precompile execution.
     #[error("Gas limit exceeded")]
     OutOfGas,
@@ -172,6 +176,7 @@ impl From<TempoPrecompileError> for HandlerError {
             | TempoPrecompileError::StorageCreditsError(_)
             | TempoPrecompileError::CurrentCommitteeError(_)
             | TempoPrecompileError::ZoneFactoryError(_)
+            | TempoPrecompileError::ZonePortalError(_)
             | TempoPrecompileError::OutOfGas
             | TempoPrecompileError::StaticCallNotAllowed
             | TempoPrecompileError::UnknownFunctionSelector(_)) => Self::external(error),
@@ -204,6 +209,7 @@ impl TempoPrecompileError {
             Self::StorageCreditsError(e) => e.selector(),
             Self::CurrentCommitteeError(e) => e.selector(),
             Self::ZoneFactoryError(e) => e.selector(),
+            Self::ZonePortalError(e) => e.selector(),
             Self::UnknownFunctionSelector(selector) => *selector,
             Self::Panic(_) | Self::StorageDeltaUnderflow(_) => Panic::SELECTOR,
             Self::OutOfGas | Self::Database(_) | Self::StaticCallNotAllowed | Self::Fatal(_) => {
@@ -241,6 +247,7 @@ impl TempoPrecompileError {
             | Self::StorageCreditsError(_)
             | Self::CurrentCommitteeError(_)
             | Self::ZoneFactoryError(_)
+            | Self::ZonePortalError(_)
             | Self::UnknownFunctionSelector(_) => false,
         }
     }
@@ -300,6 +307,7 @@ impl TempoPrecompileError {
             Self::StorageCreditsError(e) => e.abi_encode().into(),
             Self::CurrentCommitteeError(e) => e.abi_encode().into(),
             Self::ZoneFactoryError(e) => e.abi_encode().into(),
+            Self::ZonePortalError(e) => e.abi_encode().into(),
             Self::OutOfGas => {
                 return Err(PrecompileHalt::OutOfGas.into());
             }
@@ -363,6 +371,8 @@ pub type TempoPrecompileErrorRegistry = HashMap<
 pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     let mut registry: TempoPrecompileErrorRegistry = HashMap::new();
 
+    // Existing decoders take precedence for shared ABI selectors.
+    add_errors_to_registry(&mut registry, TempoPrecompileError::ZonePortalError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::StablecoinDEX);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20Factory);
@@ -595,4 +605,26 @@ mod tests {
             other => panic!("Expected TIP20 error, got {other:?}"),
         }
     }
+}
+#[test]
+fn portal_error_preserves_arguments_and_revert_encoding() {
+    let error = ZonePortalError::EncryptionKeyExpired(
+        tempo_contracts::precompiles::zone_portal::ZonePortal::EncryptionKeyExpired {
+            keyIndex: U256::from(7),
+            activationBlock: 123,
+            supersededAtBlock: 456,
+        },
+    );
+    let encoded = error.abi_encode();
+    let native = TempoPrecompileError::from(error.clone());
+    assert_eq!(native.selector(), error.selector());
+    assert!(!native.is_system_error());
+    assert_eq!(
+        decode_error(&encoded).unwrap().error,
+        TempoPrecompileError::ZonePortalError(error),
+    );
+    assert!(matches!(
+        native.into_precompile_result(),
+        Err(PrecompileError::Revert(bytes)) if bytes.as_ref() == encoded,
+    ));
 }

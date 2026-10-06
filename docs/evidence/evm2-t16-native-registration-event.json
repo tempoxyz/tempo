@@ -1,0 +1,64 @@
+{
+  "sourceRevision": "c82e6f74148b79972bb5c2ea5919ca046e1e0748",
+  "binarySha256": "55009b21d8fe970e9330b1b972e6b5e5df9d302677ca4c377fc41110e98dd89b",
+  "genesisHash": "0x03df7ae1df1c861973b6fdced2e5d05e73b9c6d58bf09c26349e4d2193e9f993",
+  "activationBlock": {
+    "number": "0x1",
+    "hash": "0xf61c6460c307206ed8bf8f48bb99f06f29c1ad6dae9c124fe1a4d5a221e77622"
+  },
+  "transactions": {
+    "deploy": {
+      "transactionHash": "0x99fff07b2272e47129291df068806217e7becd75b2d9837d5957ac84b990ffa3",
+      "blockNumber": "0x26",
+      "blockHash": "0xb4d722b2be9f09a8d262be2c377dd9f04e94b82d7c5c016cee436f1b7a886ad4",
+      "status": "0x1",
+      "gasUsed": "0xc9cf27",
+      "blockGasUsed": "0xc9cf27",
+      "onlyTransaction": true
+    },
+    "bind": {
+      "transactionHash": "0x6d912520affbb40cc43a0fe449c96083c262a0c9a5d3abd590b5937a18b1d785",
+      "blockNumber": "0x54",
+      "blockHash": "0xf7f1edad3cb9928190ec14dde6fcf692f55aa71bec5c5e0a5c6749f3d1063c07",
+      "status": "0x1",
+      "gasUsed": "0x443ec",
+      "blockGasUsed": "0x443ec",
+      "onlyTransaction": true
+    },
+    "approve": {
+      "transactionHash": "0xeaf62b30a2527a9d49d4192212cb8b1bf4065c5d2745abece40f73278e882b91",
+      "blockNumber": "0x5e",
+      "blockHash": "0x65f46fb20ab8c4b39eb2c9ed22115c9937b382ee87f54fc864c3f00766dcc93f",
+      "status": "0x1",
+      "gasUsed": "0x43d9e",
+      "blockGasUsed": "0x43d9e",
+      "onlyTransaction": true
+    },
+    "deposit": {
+      "transactionHash": "0x92c7bfe4b0e950f24ffcb3431a5fabd975f2cd86b0e305115da22330c7c40996",
+      "blockNumber": "0x6e",
+      "blockHash": "0x175c9e6c609ffcff8c76b9f2980d26a72f62643d3b641436520415c1f72e0392",
+      "status": "0x1",
+      "gasUsed": "0x1ad674",
+      "blockGasUsed": "0x1ad674",
+      "onlyTransaction": true
+    }
+  },
+  "shareSupply": 1000000,
+  "vaultAssets": 1000000,
+  "vaultCode": "0x6080806040526004361015609c575b503615605c577f360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc54803b156058575f8091368280378136915af43d5f803e156054573d5ff35b3d5ffd5b5f80fd5b7f360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc54803b156058575f8091368280378136915af43d5f803e156054573d5ff35b5f3560e01c6371d5766f03600e57346058575f36600319011260585780600160209252f3fea2646970667358221220f4e83e9e9b395a43b7b2332ed3c03d0dd40ac14d42b99edd52725d809d7297f264736f6c63430008240033",
+  "registrationLog": {
+    "address": "0x5aea000000000000000000000000000000000000",
+    "topics": [
+      "0xe941985d5446028e43c141fc9de757ef0be628464c52a67b2e875d981f2c5d4b",
+      "0x000000000000000000000000dc17c27ae8be831af07cc38c02930007060020f4",
+      "0x00000000000000000000000020c0000000000000000000000000000000000000",
+      "0x00000000000000000000000020c0000000000000000000008add4f9444dc5350"
+    ],
+    "data": "0x000000000000000000000000b8eebbf3c9b44ffb0b010d57916044eaf82de1e4000000000000000000000000e7f1725e7734ce288f8367e1bb143e90bb3f051236bd7daa8ad8bb33f8543f344751692299c52284ec076c507b13cc9574c9e858"
+  },
+  "depositLane": {
+    "matching": 16,
+    "total": 31
+  }
+}
