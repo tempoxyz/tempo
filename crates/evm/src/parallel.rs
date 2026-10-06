@@ -872,7 +872,10 @@ impl<E: DBErrorMarker> SpeculativeResult<E> {
             &[(ReadKey, ReadValue)],
         ) -> Result<Option<(usize, ReadValue)>, E>,
     ) -> Result<bool, E> {
-        let mut patches = Vec::new();
+        // Keep common fee rebases inline; larger read sets retain an unbounded spill.
+        let mut patches = [None; 2];
+        let mut patch_count = 0;
+        let mut spilled_patches = Vec::new();
         let mut native_patch = None;
         let mut remaining = self.reads.as_slice();
         while let Some((offset, actual)) = first_difference(remaining)? {
@@ -971,14 +974,25 @@ impl<E: DBErrorMarker> SpeculativeResult<E> {
                     true,
                 ));
             };
-            patches.push((*address, *slot, new, present));
+            let patch = (*address, *slot, new, present);
+            if let Some(entry) = patches.get_mut(patch_count) {
+                *entry = Some(patch);
+                patch_count += 1;
+            } else {
+                spilled_patches.push(patch);
+            }
         }
         // All dependency and arithmetic checks precede mutations. Preserve every
         // other account field, storage slot, receipt, log and gas value.
-        self.fees_rebased = !patches.is_empty();
+        self.fees_rebased = patch_count != 0;
         self.native_rebased = native_patch.is_some();
         if let Ok(result) = &mut self.result {
-            for (address, slot, original, present) in patches.into_iter().chain(native_patch) {
+            for (address, slot, original, present) in patches
+                .into_iter()
+                .flatten()
+                .chain(spilled_patches)
+                .chain(native_patch)
+            {
                 let storage = result
                     .state
                     .get_mut(&address)

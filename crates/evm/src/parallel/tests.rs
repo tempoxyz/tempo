@@ -4003,3 +4003,122 @@ fn state_cache_validation_preserves_fee_rebasing_and_overflow_checks() {
         }
     }
 }
+
+#[test]
+fn fee_rebase_patches_spill_and_wait_for_late_dependencies() {
+    use tempo_precompiles::TIP_FEE_MANAGER_ADDRESS;
+
+    for spec in [TempoHardfork::T8, TempoHardfork::T14] {
+        let mut parent = funded_tip20_db(2);
+        for &(address, activation) in tempo_precompiles::SYSTEM_PRECOMPILES {
+            if spec >= activation {
+                contract(&mut parent, address, &[0xef]);
+            }
+        }
+        let (_, mut env) = test_evm_with_basefee(TestDB::default(), 0).finish();
+        env.cfg_env = revm::context::CfgEnv::new_with_spec_and_gas_params(
+            spec,
+            tempo_revm::gas_params::tempo_gas_params(spec),
+        );
+        let mut tx = transaction(0, address(900), 0, &[]);
+        tx.inner.gas_price = 1;
+
+        // Cover the inline boundary and several spill entries using real fee
+        // operations for distinct beneficiaries, combined into one read set.
+        for patch_count in [2, 5] {
+            for case in ["rebase", "late_conflict", "late_provider_error"] {
+                let mut candidate = PrewarmingExecutor::new(parent.clone(), env.clone())
+                    .execute(tx.clone(), None)
+                    .unwrap()
+                    .into_candidate::<LocalDatabaseError>(&tx)
+                    .unwrap();
+                candidate.reads.clear();
+                candidate.fee_updates.clear();
+                let mut current = LocalDatabase {
+                    inner: parent.clone(),
+                    _thread_bound: Default::default(),
+                    panic_on_storage: false,
+                    storage_error: (case == "late_provider_error").then_some(address(900)),
+                };
+                let mut expected_slots = HashMap::default();
+
+                for index in 0..patch_count {
+                    let mut fee_env = env.clone();
+                    fee_env.block_env.inner.beneficiary = address(100 + index);
+                    let captured = PrewarmingExecutor::new(parent.clone(), fee_env)
+                        .execute(tx.clone(), None)
+                        .unwrap();
+                    let update = captured
+                        .fee_updates
+                        .into_iter()
+                        .find(|update| {
+                            update.address == TIP_FEE_MANAGER_ADDRESS
+                                && update.apply(U256::MAX).is_none()
+                        })
+                        .expect("positive fee accumulator");
+                    let mut storage =
+                        captured.result.state[&update.address].storage[&update.slot].clone();
+                    candidate
+                        .result
+                        .as_mut()
+                        .unwrap()
+                        .state
+                        .get_mut(&update.address)
+                        .unwrap()
+                        .storage
+                        .insert(update.slot, storage.clone());
+                    candidate.reads.push((
+                        ReadKey::Storage(update.address, update.slot),
+                        ReadValue::Storage(storage.original_value),
+                    ));
+                    let new = storage.original_value + U256::from(index + 1);
+                    current
+                        .inner
+                        .insert_account_storage(update.address, update.slot, new)
+                        .unwrap();
+                    storage.original_value = new;
+                    storage.present_value = update.apply(new).unwrap();
+                    assert!(expected_slots.insert(update.slot, storage).is_none());
+                    candidate.fee_updates.push(update);
+                }
+
+                candidate.reads.push((
+                    ReadKey::Storage(address(900), U256::ONE),
+                    ReadValue::Storage(U256::ZERO),
+                ));
+                if case == "late_conflict" {
+                    current
+                        .inner
+                        .insert_account_storage(address(900), U256::ONE, U256::ONE)
+                        .unwrap();
+                }
+                let original = candidate.result.as_ref().unwrap().clone();
+                let result = candidate.validate(&mut current);
+                if case == "rebase" {
+                    assert!(matches!(result, Ok(true)), "{spec:?}, {patch_count}");
+                    let mut expected = original;
+                    expected
+                        .state
+                        .get_mut(&TIP_FEE_MANAGER_ADDRESS)
+                        .unwrap()
+                        .storage
+                        .extend(expected_slots);
+                    assert_eq!(candidate.result.as_ref().unwrap(), &expected);
+                    assert!(candidate.fees_rebased);
+                    assert!(candidate.conflict.is_none());
+                } else {
+                    if case == "late_conflict" {
+                        assert!(matches!(result, Ok(false)));
+                        assert!(matches!(candidate.conflict, Some(ConflictKind::Storage)));
+                    } else {
+                        assert!(matches!(result, Err(LocalDatabaseError)));
+                        assert!(candidate.conflict.is_none());
+                    }
+                    assert_eq!(candidate.result.as_ref().unwrap(), &original);
+                    assert!(!candidate.fees_rebased);
+                }
+                assert!(!candidate.native_rebased);
+            }
+        }
+    }
+}
