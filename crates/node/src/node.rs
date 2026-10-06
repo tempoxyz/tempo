@@ -1,6 +1,7 @@
 use crate::{
     TempoPayloadTypes,
     engine::TempoEngineValidator,
+    executed_state::{ExecutedState, TempoEngineTreeValidatorBuilder},
     gossip::GossipProtocol,
     rpc::{
         TempoAdminApi, TempoAdminApiServer, TempoEthApi, TempoEthApiBuilder, TempoEthExt,
@@ -23,8 +24,8 @@ use reth_node_builder::{
         NetworkBuilder, PayloadBuilderBuilder, PoolBuilder, spawn_maintenance_tasks,
     },
     rpc::{
-        BasicEngineValidatorBuilder, EngineValidatorAddOn, NoopEngineApiBuilder,
-        PayloadValidatorBuilder, RethRpcAddOns, RpcAddOns, RpcHandle, RpcHooks,
+        EngineValidatorAddOn, NoopEngineApiBuilder, PayloadValidatorBuilder, RethRpcAddOns,
+        RpcAddOns, RpcHandle, RpcHooks,
     },
 };
 use reth_primitives_traits::SealedHeader;
@@ -42,7 +43,7 @@ use reth_transaction_pool::{
     blobstore::InMemoryBlobStore, error::InvalidPoolTransactionError,
 };
 use std::sync::Arc;
-use tempo_chainspec::{TempoConsensusSpec, spec::TempoChainSpec};
+use tempo_chainspec::{TempoConsensusSpec, hardfork::TempoHardfork, spec::TempoChainSpec};
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_payload_builder::{
     DEFAULT_BUILD_TIME_MULTIPLIER, TempoPayloadBuilder, TempoPayloadBuilderConfig,
@@ -54,6 +55,7 @@ use tempo_transaction_pool::{
     amm::AmmLiquidityCache,
     ordering::TempoTipOrdering,
     transaction::TempoPooledTransaction,
+    tt_2d_pool::DEFAULT_MAX_TXS_PER_LANE,
     validator::{
         DEFAULT_AA_VALID_AFTER_MAX_SECS, DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
         TempoTransactionValidator,
@@ -73,6 +75,11 @@ pub struct TempoNodeArgs {
     /// Maximum number of authorizations allowed in an AA transaction.
     #[arg(long = "txpool.max-tempo-authorizations", default_value_t = DEFAULT_MAX_TEMPO_AUTHORIZATIONS)]
     pub max_tempo_authorizations: usize,
+
+    /// Maximum pending and queued transactions per regular 2D nonce lane (sender, nonce key).
+    /// The current on-chain nonce is admitted even at capacity to allow gap filling.
+    #[arg(long = "txpool.max-txs-per-lane", default_value_t = DEFAULT_MAX_TXS_PER_LANE)]
+    pub max_txs_per_lane: usize,
 
     /// Comma-separated addresses or a file containing comma/newline-separated addresses used for
     /// transaction sender and direct call target checks.
@@ -116,6 +123,15 @@ pub struct TempoNodeArgs {
         default_value_t = DEFAULT_BUILD_TIME_MULTIPLIER
     )]
     pub builder_build_time_multiplier: f64,
+
+    /// Replay canonical blocks under the latest compiled hardfork, or an explicit HARDFORK.
+    #[arg(
+        long = "shadow-replay",
+        visible_alias = "shadow-replay.hardfork",
+        value_name = "HARDFORK",
+        num_args = 0..=1
+    )]
+    pub shadow_replay: Option<Option<TempoHardfork>>,
 }
 
 impl Default for TempoNodeArgs {
@@ -123,6 +139,7 @@ impl Default for TempoNodeArgs {
         Self {
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
             txpool_filter: None,
             builder_state_provider_metrics: false,
             builder_disable_prewarming: false,
@@ -130,6 +147,7 @@ impl Default for TempoNodeArgs {
             builder_parallel: false,
             engine_disable_execution_cache_sharing_with_builder: false,
             builder_build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
+            shadow_replay: None,
         }
     }
 }
@@ -140,6 +158,7 @@ impl TempoNodeArgs {
         TempoPoolBuilder {
             aa_valid_after_max_secs: self.aa_valid_after_max_secs,
             max_tempo_authorizations: self.max_tempo_authorizations,
+            max_txs_per_lane: self.max_txs_per_lane,
             address_filter: self.txpool_filter.clone().unwrap_or_default(),
             ..Default::default()
         }
@@ -227,6 +246,8 @@ pub struct TempoNode {
     validator_key: Option<B256>,
     /// Network builder with optional `tempo/1` support.
     network_builder: TempoNetworkBuilder,
+    /// Filled with the engine's in-memory overlay when the node launches.
+    executed_state: ExecutedState,
 }
 
 impl TempoNode {
@@ -237,7 +258,16 @@ impl TempoNode {
             payload_builder_builder: args.payload_builder_builder(),
             validator_key,
             network_builder: TempoNetworkBuilder::default(),
+            executed_state: ExecutedState::default(),
         }
+    }
+
+    /// Returns the handle that reads the state of blocks executed by this
+    /// node's engine, including blocks on forks.
+    ///
+    /// The handle works after the node is launched.
+    pub fn executed_state(&self) -> ExecutedState {
+        self.executed_state.clone()
     }
 
     /// Announces `tempo/1` for finalization certificate gossip on every session.
@@ -316,7 +346,7 @@ impl TempoNode {
         self
     }
 
-    /// Sets the validator key for filtering subblock transactions.
+    /// Sets the validator key returned by the admin RPC API.
     pub fn with_validator_key(mut self, validator_key: Option<B256>) -> Self {
         self.validator_key = validator_key;
         self
@@ -338,7 +368,7 @@ pub struct TempoAddOns<N: FullNodeTypes<Types = TempoNode>> {
         TempoEthApiBuilder<NodeAdapter<N>>,
         TempoEngineValidatorBuilder,
         NoopEngineApiBuilder,
-        BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>,
+        TempoEngineTreeValidatorBuilder,
         Identity,
     >,
     validator_key: Option<B256>,
@@ -349,13 +379,15 @@ where
     N: FullNodeTypes<Types = TempoNode>,
 {
     /// Creates a new instance from the inner `RpcAddOns`.
-    pub fn new(validator_key: Option<B256>) -> Self {
+    ///
+    /// `executed_state` is filled when reth launches the engine.
+    pub fn new(validator_key: Option<B256>, executed_state: ExecutedState) -> Self {
         Self {
             inner: RpcAddOns::new(
-                TempoEthApiBuilder::new(validator_key),
+                TempoEthApiBuilder::default(),
                 TempoEngineValidatorBuilder,
                 NoopEngineApiBuilder::default(),
-                BasicEngineValidatorBuilder::default(),
+                TempoEngineTreeValidatorBuilder::new(executed_state),
                 Identity::default(),
                 Default::default(),
             ),
@@ -426,7 +458,7 @@ impl<N> EngineValidatorAddOn<NodeAdapter<N>> for TempoAddOns<N>
 where
     N: FullNodeTypes<Types = TempoNode>,
 {
-    type ValidatorBuilder = BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>;
+    type ValidatorBuilder = TempoEngineTreeValidatorBuilder;
 
     fn engine_validator_builder(&self) -> Self::ValidatorBuilder {
         self.inner.engine_validator_builder()
@@ -457,7 +489,7 @@ where
     }
 
     fn add_ons(&self) -> Self::AddOns {
-        TempoAddOns::new(self.validator_key)
+        TempoAddOns::new(self.validator_key, self.executed_state.clone())
     }
 }
 
@@ -507,7 +539,6 @@ impl PayloadAttributesBuilder<TempoPayloadAttributes, TempoHeader>
             timestamp_millis_part,
             Default::default(),
             None,
-            Vec::new,
         )
     }
 }
@@ -577,6 +608,8 @@ pub struct TempoPoolBuilder {
     pub aa_valid_after_max_secs: u64,
     /// Maximum number of authorizations allowed in an AA transaction.
     pub max_tempo_authorizations: usize,
+    /// Maximum pending and queued transactions per regular 2D nonce lane.
+    pub max_txs_per_lane: usize,
     /// Whether to skip the FeeAMM liquidity check during pool admission.
     pub disable_fee_amm_check: bool,
     /// Addresses checked against transaction senders and direct call targets.
@@ -588,6 +621,12 @@ pub struct TempoPoolBuilder {
 }
 
 impl TempoPoolBuilder {
+    /// Sets the maximum number of transactions per regular 2D nonce lane.
+    pub const fn with_max_txs_per_lane(mut self, max: usize) -> Self {
+        self.max_txs_per_lane = max;
+        self
+    }
+
     /// Sets the maximum allowed `valid_after` offset for AA txs.
     pub const fn with_aa_tx_valid_after_max_secs(mut self, secs: u64) -> Self {
         self.aa_valid_after_max_secs = secs;
@@ -686,6 +725,7 @@ impl core::fmt::Debug for TempoPoolBuilder {
         f.debug_struct("TempoPoolBuilder")
             .field("aa_valid_after_max_secs", &self.aa_valid_after_max_secs)
             .field("max_tempo_authorizations", &self.max_tempo_authorizations)
+            .field("max_txs_per_lane", &self.max_txs_per_lane)
             .field("disable_fee_amm_check", &self.disable_fee_amm_check)
             .field("address_filter", &self.address_filter)
             .field(
@@ -705,6 +745,7 @@ impl Default for TempoPoolBuilder {
         Self {
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+            max_txs_per_lane: DEFAULT_MAX_TXS_PER_LANE,
             disable_fee_amm_check: false,
             address_filter: AddressFilter::default(),
             additional_stateless_validation: None,
@@ -748,6 +789,7 @@ where
             pending_limit: pool_config.pending_limit,
             queued_limit: pool_config.queued_limit,
             max_txs_per_sender: pool_config.max_account_slots,
+            max_txs_per_lane: self.max_txs_per_lane,
         };
         let aa_2d_pool = AA2dPool::new(aa_2d_config);
         let amm_liquidity_cache = AmmLiquidityCache::new(ctx.provider())?;
@@ -755,6 +797,7 @@ where
         let Self {
             aa_valid_after_max_secs,
             max_tempo_authorizations,
+            max_txs_per_lane: _,
             disable_fee_amm_check,
             address_filter,
             additional_stateless_validation,
@@ -888,6 +931,30 @@ mod tests {
         AddressFilter, TempoNode, TempoNodeArgs, TempoPayloadBuilderBuilder, TempoPoolBuilder,
     };
     use alloy_primitives::Address;
+
+    #[test]
+    fn lane_limit_cli_reaches_pool_builder() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Args {
+            #[command(flatten)]
+            node: TempoNodeArgs,
+        }
+        let defaults = Args::try_parse_from(["tempo"]).unwrap();
+        assert_eq!(
+            defaults.node.max_txs_per_lane,
+            super::DEFAULT_MAX_TXS_PER_LANE
+        );
+        let args = Args::try_parse_from(["tempo", "--txpool.max-txs-per-lane", "64"]).unwrap();
+        assert_eq!(args.node.pool_builder().max_txs_per_lane, 64);
+        assert_eq!(
+            args.node
+                .pool_builder()
+                .with_max_txs_per_lane(32)
+                .max_txs_per_lane,
+            32
+        );
+    }
 
     #[test]
     fn tempo_node_maps_pool_builder() {

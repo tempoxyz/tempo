@@ -1,0 +1,36 @@
+# The benchmark helper repeats this setup step once for every user.
+setup:
+  steps:
+  - id: prepare_user
+    bindings:
+      user:
+        account:
+          pool: users
+          select:
+            index: 0
+    tx:
+      type: tempo
+      from:
+        pool: users
+        select:
+          index: 0
+      sponsor:
+        pool: fee_payers
+        select:
+          index: 0
+      gas_limit: 20000000
+      fee_token: '0x20c0000000000000000000000000000000000000'
+      calls:
+      - to: '0x20c0000000000000000000000000000000000000'
+        abi: ERC20
+        function: mint
+        args:
+        - var: user.address
+        - '1000000000000000000000000'
+      - to: '0x403c000000000000000000000000000000000000'
+        abi: PolicyRegistry
+        function: modifyPolicyWhitelist
+        args:
+        - 2
+        - var: user.address
+        - true

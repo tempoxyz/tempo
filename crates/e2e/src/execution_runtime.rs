@@ -27,10 +27,7 @@ use futures::{StreamExt, future::BoxFuture};
 use reth_chainspec::EthChainSpec;
 use reth_db::mdbx::DatabaseEnv;
 use reth_ethereum::{
-    evm::{
-        primitives::EvmEnv,
-        revm::db::{CacheDB, EmptyDB},
-    },
+    evm::{primitives::EvmEnv, revm::db::InMemoryDB},
     network::{
         Peers as _,
         api::{NetworkEventListenerProvider, PeerKind, PeersInfo, events::NetworkEvent},
@@ -45,7 +42,7 @@ use reth_node_core::{
 };
 use reth_rpc_builder::RpcModuleSelection;
 use tempfile::TempDir;
-use tempo_chainspec::TempoChainSpec;
+use tempo_chainspec::{TempoChainSpec, TempoHardfork};
 use tempo_consensus::feed::FeedStateHandle;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{
@@ -73,6 +70,7 @@ pub const TEST_MNEMONIC: &str = "test test test test test test test test test te
 
 #[derive(Default, Debug)]
 pub struct Builder {
+    t12_time: Option<u64>,
     epoch_length: Option<u64>,
     initial_dkg_outcome: Option<OnchainDkgOutcome>,
     validators: Option<ordered::Map<PublicKey, ConsensusNodeConfig>>,
@@ -81,10 +79,15 @@ pub struct Builder {
 impl Builder {
     pub fn new() -> Self {
         Self {
+            t12_time: None,
             epoch_length: None,
             initial_dkg_outcome: None,
             validators: None,
         }
+    }
+
+    pub fn with_t12_time(self, t12_time: Option<u64>) -> Self {
+        Self { t12_time, ..self }
     }
 
     pub fn with_epoch_length(self, epoch_length: u64) -> Self {
@@ -110,6 +113,7 @@ impl Builder {
 
     pub fn launch(self) -> eyre::Result<ExecutionRuntime> {
         let Self {
+            t12_time,
             epoch_length,
             initial_dkg_outcome,
             validators,
@@ -136,7 +140,25 @@ impl Builder {
             .insert_value("epochLength".to_string(), epoch_length)
             .unwrap();
 
-        genesis.extra_data = initial_dkg_outcome.encode().to_vec().into();
+        if let Some(t12_time) = t12_time {
+            genesis
+                .config
+                .extra_fields
+                .insert_value("t12Time".to_string(), t12_time)
+                .unwrap();
+
+            // Later forks would bypass the T12 transition being tested.
+            for &fork in TempoHardfork::VARIANTS {
+                if fork > TempoHardfork::T12 {
+                    genesis
+                        .config
+                        .extra_fields
+                        .remove(&format!("{}Time", fork.name().to_lowercase()));
+                }
+            }
+        }
+
+        genesis.extra_data = initial_dkg_outcome.encode().into();
 
         // Just remove whatever is already written into chainspec.
         genesis.alloc.remove(&VALIDATOR_CONFIG_V2_ADDRESS);
@@ -185,7 +207,6 @@ impl Builder {
                                             fee_recipient,
                                         )
                                         .encode()
-                                        .to_vec()
                                         .into(),
                                     },
                                 )
@@ -231,7 +252,7 @@ impl Builder {
 pub struct ExecutionNodeConfig {
     /// Network secret key for the node's identity.
     pub secret_key: B256,
-    /// Validator public key for filtering subblock transactions.
+    /// Validator public key exposed through the admin RPC API.
     pub validator_key: Option<B256>,
     /// Feed state handle for consensus RPC (if validator).
     pub feed_state: Option<FeedStateHandle>,
@@ -368,7 +389,7 @@ impl ExecutionRuntime {
                                     egress.to_string(),
                                     fee_recipient,
                                     sign_add_validator_args(
-                                        EthChainSpec::chain(&chain_spec).id(),
+                                        chain_spec.chain_id(),
                                         &private_key,
                                         address,
                                         ingress,
@@ -376,7 +397,6 @@ impl ExecutionRuntime {
                                         fee_recipient,
                                     )
                                     .encode()
-                                    .to_vec()
                                     .into(),
                                 )
                                 .send()
@@ -457,14 +477,13 @@ impl ExecutionRuntime {
                                     ingress.to_string(),
                                     egress.to_string(),
                                     sign_rotate_validator_args(
-                                        EthChainSpec::chain(&chain_spec).id(),
+                                        chain_spec.chain_id(),
                                         &private_key,
                                         address,
                                         ingress,
                                         egress,
                                     )
                                     .encode()
-                                    .to_vec()
                                     .into(),
                                 )
                                 .send()
@@ -781,6 +800,8 @@ pub struct ExecutionNode {
     /// The consensus layer takes this when it starts. It carries receivers, so
     /// only one consensus instance can own it.
     pub gossip: Option<tempo_node::gossip::TransportHandle>,
+    /// Reads the state of blocks that this node's engine has executed.
+    pub executed_state: tempo_node::ExecutedState,
 }
 
 impl ExecutionNode {
@@ -936,6 +957,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
         Some(protocol) => tempo_node.with_finalization_cert_gossip(protocol),
         None => tempo_node,
     };
+    let executed_state = tempo_node.executed_state();
 
     let node_handle = if let Some(rocksdb) = rocksdb {
         NodeBuilder::new(node_config)
@@ -967,6 +989,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
         runtime,
         exit_fut: node_handle.node_exit_future,
         gossip: gossip_transport,
+        executed_state,
     })
 }
 
@@ -1089,8 +1112,8 @@ pub fn address(index: u32) -> Address {
     secret_key_to_address(MnemonicBuilder::from_phrase_nth(TEST_MNEMONIC, index).credential())
 }
 
-fn setup_tempo_evm(chain_id: u64) -> TempoEvm<CacheDB<EmptyDB>> {
-    let db = CacheDB::default();
+fn setup_tempo_evm(chain_id: u64) -> TempoEvm<InMemoryDB> {
+    let db = InMemoryDB::default();
     // revm sets timestamp to 1 by default, override it to 0 for genesis initializations
     let mut env = EvmEnv::default().with_timestamp(U256::ZERO);
     env.cfg_env.chain_id = chain_id;

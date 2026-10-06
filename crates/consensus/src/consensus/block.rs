@@ -128,20 +128,30 @@ impl Block {
     where
         T: Into<SealedOrRecoveredBlock<tempo_primitives::Block>>,
     {
+        Self::from_execution_block_unchecked_with_encoded_cache(
+            execution_block,
+            EncodedBlock::default(),
+        )
+    }
+
+    /// Wraps a trusted execution block and its encoded bytes without validating body or header
+    /// commitments. Network and archive reads must use the validating constructor instead.
+    pub(crate) fn from_execution_block_unchecked_with_encoded_cache<T>(
+        execution_block: T,
+        execution_block_encoded: EncodedBlock,
+    ) -> Self
+    where
+        T: Into<SealedOrRecoveredBlock<tempo_primitives::Block>>,
+    {
         Self {
             execution_block: execution_block.into(),
-            execution_block_encoded: EncodedBlock::default(),
+            execution_block_encoded,
         }
     }
 
     /// Consumes the block and returns the wrapped execution block handle.
     pub(crate) fn into_execution_block(self) -> SealedOrRecoveredBlock<tempo_primitives::Block> {
         self.execution_block
-    }
-
-    /// Returns the (eth) hash of the wrapped block.
-    pub(crate) fn block_hash(&self) -> B256 {
-        self.execution_block.hash()
     }
 
     /// Returns the hash of the wrapped block as a commonware [`Digest`].

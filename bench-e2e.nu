@@ -17,6 +17,7 @@ const E2E_B_CPUS = "8-15,24-31"
 const E2E_A_MEMORY = "60G"
 const E2E_B_MEMORY = "60G"
 const E2E_GAS_LIMIT = "1000000000000"
+const E2E_GENERAL_GAS_LIMIT = "1500000000"
 const E2E_RUNNER_METRICS_URL = "http://127.0.0.1:9100/metrics"
 const E2E_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
 const TRACY_SAMPLING_HZ = 18999
@@ -29,6 +30,7 @@ const E2E_LOCAL_RETH_ARGS = [
     "--trusted-only"
     "--tempo.bootnodes-endpoint" "none"
     "--consensus.no-legacy-archive"
+    "--consensus.verification-mode" "deferred"
     "--engine.share-execution-cache-with-payload-builder"
     "--builder.enable-prewarming"
     "--rpc.max-connections" "10000"
@@ -1056,6 +1058,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let a_rpc = "http://127.0.0.1:8545"
     let b_rpc = "http://127.0.0.1:8645"
     let a_base_args = (build-base-args $genesis $ctx.a.datadir $a_log_dir "0.0.0.0" 8545 9001)
+        | append ["--log.file.format" "json"]
         | append (build-e2e-consensus-args $ctx.a.node_dir $ctx.trusted_peers $ctx.a.consensus_port $ctx.a.ip)
         | append $local_reth_args
         | append (log-filter-args $ctx.loud)
@@ -1064,6 +1067,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
         | append (benchmark-otlp-args $ctx.tracing_otlp)
     let b_base_args = (build-base-args $genesis $ctx.b.datadir $b_log_dir "0.0.0.0" 8645 9101)
+        | append ["--log.file.format" "json"]
         | append (build-e2e-consensus-args $ctx.b.node_dir $ctx.trusted_peers $ctx.b.consensus_port $ctx.b.ip)
         | append $local_reth_args
         | append (log-filter-args $ctx.loud)
@@ -1331,6 +1335,7 @@ def e2e-generate-summary [results_dir: string] {
         SLACK_BENCH_CHANNEL: ""
     } {
         ^node .github/scripts/bench-e2e-classify.js $results_dir
+        ^node .github/scripts/bench-log-summary.js $results_dir e2e summary.md
     }
 }
 
@@ -1341,7 +1346,7 @@ def "main summarize" [
 }
 
 def "main render-txgen-spec" [
-    --preset: string = ""                              # Txgen preset name or scenario expression
+    --preset: string = "default"                       # Txgen preset name or scenario expression
     --out-dir: string = ""                             # Directory for rendered scenario specs
 ] {
     let spec = (txgen-resolve-bench-spec $preset $out_dir)
@@ -1352,7 +1357,7 @@ def "main render-txgen-spec" [
 def "main e2e" [
     --baseline: string                                  # Baseline git SHA/ref
     --feature: string                                   # Feature git SHA/ref
-    --preset: string = ""                               # Txgen preset name
+    --preset: string = "default"                        # Txgen preset name
     --preset-path: string = ""                          # Pre-rendered txgen preset path
     --tps: int = 50000                                  # Target TPS
     --duration: int = 90                                # Duration in seconds
@@ -1362,7 +1367,7 @@ def "main e2e" [
     --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 0, 1, 10, or 100
     --token-count: int = 4                         # Number of TIP20 tokens to use in txgen presets
     --gas-limit: string = $E2E_GAS_LIMIT                # Builder gas limit
-    --general-gas-limit: string = $E2E_GAS_LIMIT        # General (non-payment) gas limit override
+    --general-gas-limit: string = $E2E_GENERAL_GAS_LIMIT # General (non-payment) gas limit override
     --force-bloat                                      # Regenerate and promote both local e2e snapshots
     --init-only                                         # Refresh snapshots and exit without running benchmark phases
     --profile: string = $DEFAULT_PROFILE                # Cargo build profile

@@ -3,7 +3,7 @@ use super::{
     tt_signed::AASigned,
     unique_tx_identifier_from_signable,
 };
-use crate::{TempoAddressExt, TempoTransaction, subblock::PartialValidatorKey};
+use crate::{TempoAddressExt, TempoTransaction};
 use alloy_consensus::{
     EthereumTxEnvelope, SignableTransaction, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702,
     TxLegacy, TxType, TypedTransaction,
@@ -119,6 +119,18 @@ impl TempoTxEnvelope {
         match self {
             Self::AA(tx) => tx.tx().valid_after.map(NonZeroU64::get),
             _ => None,
+        }
+    }
+
+    /// Returns whether `timestamp` falls within the transaction's validity window.
+    ///
+    /// For AA transactions, `valid_after` is inclusive and `valid_before` is exclusive.
+    /// Missing bounds are unrestricted. Other transaction types always return `true`.
+    /// This only checks time bounds, not other transaction validity rules.
+    pub fn is_valid_at(&self, timestamp: u64) -> bool {
+        match self {
+            Self::AA(tx) => tx.tx().is_valid_at(timestamp),
+            _ => true,
         }
     }
 
@@ -299,10 +311,10 @@ impl TempoTxEnvelope {
         }
     }
 
-    /// Returns the proposer of the subblock if this is a subblock transaction.
-    pub fn subblock_proposer(&self) -> Option<PartialValidatorKey> {
-        let Self::AA(tx) = &self else { return None };
-        tx.tx().subblock_proposer()
+    /// Returns whether this transaction uses the reserved subblock nonce prefix.
+    pub fn has_sub_block_nonce_key_prefix(&self) -> bool {
+        self.as_aa()
+            .is_some_and(|tx| tx.tx().has_sub_block_nonce_key_prefix())
     }
 
     /// Returns the [`AASigned`] transaction if this is a Tempo transaction.
@@ -315,12 +327,17 @@ impl TempoTxEnvelope {
 
     /// Returns the nonce key of this transaction if it's an [`AASigned`] transaction.
     pub fn nonce_key(&self) -> Option<U256> {
-        self.as_aa().map(|tx| tx.tx().nonce_key)
+        self.nonce_key_ref().copied()
+    }
+
+    /// Returns a reference to the nonce key if this is an [`AASigned`] transaction.
+    pub fn nonce_key_ref(&self) -> Option<&U256> {
+        self.as_aa().map(|tx| &tx.tx().nonce_key)
     }
 
     /// Returns true if this is a Tempo transaction
     pub fn is_aa(&self) -> bool {
-        matches!(self, Self::AA(_))
+        self.is_fee_token()
     }
 
     /// Returns iterator over the calls in the transaction.
@@ -740,6 +757,11 @@ mod tests {
             .into_signed(Signature::test_signature().into()),
         );
 
+        assert!(!envelope.is_valid_at(49));
+        assert!(envelope.is_valid_at(50));
+        assert!(envelope.is_valid_at(99));
+        assert!(!envelope.is_valid_at(100));
+
         assert_eq!(
             envelope.ensure_valid_before(100),
             Err(InvalidValidBefore {
@@ -762,6 +784,9 @@ mod tests {
             TxLegacy::default(),
             Signature::test_signature(),
         ));
+
+        assert!(envelope.is_valid_at(0));
+        assert!(envelope.is_valid_at(u64::MAX));
 
         assert_eq!(envelope.ensure_valid_before(100), Ok(()));
         assert_eq!(envelope.ensure_valid_after(100), Ok(()));
@@ -1103,7 +1128,7 @@ mod tests {
     fn test_payment_v2_eip7702_rejects_authorization_list() {
         let calldata = ITIP20::transferCall {
             to: Address::random(),
-            amount: U256::from(1),
+            amount: U256::ONE,
         }
         .abi_encode();
         let tx = TxEip7702 {
@@ -1111,7 +1136,7 @@ mod tests {
             input: Bytes::from(calldata),
             authorization_list: vec![SignedAuthorization::new_unchecked(
                 alloy_eips::eip7702::Authorization {
-                    chain_id: U256::from(1),
+                    chain_id: U256::ONE,
                     address: Address::random(),
                     nonce: 0,
                 },
@@ -1136,7 +1161,7 @@ mod tests {
     fn aa_with_key_authorization(limits: Option<Vec<TokenLimit>>) -> TempoTxEnvelope {
         let calldata = ITIP20::transferCall {
             to: Address::random(),
-            amount: U256::from(1),
+            amount: U256::ONE,
         }
         .abi_encode();
         let tx = TempoTransaction {
@@ -1193,7 +1218,7 @@ mod tests {
     fn test_payment_v2_aa_rejects_tempo_authorization_list() {
         let calldata = ITIP20::transferCall {
             to: Address::random(),
-            amount: U256::from(1),
+            amount: U256::ONE,
         }
         .abi_encode();
         let tx = TempoTransaction {
@@ -1205,7 +1230,7 @@ mod tests {
             }],
             tempo_authorization_list: vec![TempoSignedAuthorization::new_unchecked(
                 alloy_eips::eip7702::Authorization {
-                    chain_id: U256::from(1),
+                    chain_id: U256::ONE,
                     address: Address::random(),
                     nonce: 0,
                 },
@@ -1228,7 +1253,7 @@ mod tests {
     fn test_payment_v2_rejects_access_list() {
         let calldata: Bytes = ITIP20::transferCall {
             to: Address::random(),
-            amount: U256::from(1),
+            amount: U256::ONE,
         }
         .abi_encode()
         .into();
@@ -1297,7 +1322,7 @@ mod tests {
         // Invalid: non-zero value
         let tx = TxLegacy {
             chain_id: Some(chain_id),
-            value: U256::from(1),
+            value: U256::ONE,
             ..Default::default()
         };
         let envelope = TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, TEMPO_SYSTEM_TX_SIGNATURE));
@@ -1336,8 +1361,8 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, TxKind::Call(Address::ZERO));
 
-        // subblock_proposer() returns None for non-subblock tx
-        assert!(system_tx.subblock_proposer().is_none());
+        // System transactions do not use the reserved subblock nonce prefix
+        assert!(!system_tx.has_sub_block_nonce_key_prefix());
 
         // AA-specific methods
         let aa_envelope = create_aa_envelope(Call {

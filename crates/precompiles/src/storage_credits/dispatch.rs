@@ -1,7 +1,7 @@
 //! ABI dispatch for the storage credits precompile.
 
 use crate::{
-    Precompile, charge_input_cost, dispatch, mutate_void, storage_credits::StorageCredits, view,
+    Precompile, charge_input_cost, dispatch, mutate, storage_credits::StorageCredits, view,
 };
 use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
@@ -20,10 +20,10 @@ impl Precompile for StorageCredits {
                     balanceOf(call) => view(call, |c| self.balance_of(c.account)),
                     modeOf(call) => view(call, |c| self.mode_of(c.account).map(Into::into)),
                     budgetOf(call) => view(call, |c| self.budget_of(c.account)),
-                    setMode(call) => mutate_void(call, msg_sender, |sender, c| {
+                    setMode(call) => mutate(call, msg_sender, |sender, c| {
                         self.set_mode(sender, c.newMode)
                     }),
-                    setBudget(call) => mutate_void(call, msg_sender, |sender, c| {
+                    setBudget(call) => mutate(call, msg_sender, |sender, c| {
                         self.set_budget(sender, c.credits)
                     })
                 }
@@ -40,6 +40,7 @@ mod tests {
         test_util::{assert_full_coverage, check_selector_coverage},
     };
     use alloy::sol_types::{SolCall, SolInterface};
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         IStorageCredits, IStorageCredits::IStorageCreditsCalls, StorageCreditsError,
     };
@@ -122,26 +123,31 @@ mod tests {
     #[test]
     fn test_storage_credits_set_mode_rejects_reserved_mode() -> eyre::Result<()> {
         let caller = Address::repeat_byte(0x33);
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut calldata = IStorageCredits::setModeCall {
+            newMode: IStorageCredits::Mode::Refund,
+        }
+        .abi_encode();
+        *calldata
+            .last_mut()
+            .expect("setMode ABI calldata must contain the enum word") = 3;
 
-        StorageCtx::enter(&mut storage, || {
-            let mut storage_credits_precompile = StorageCredits::new();
-            let mut calldata = IStorageCredits::setModeCall {
-                newMode: IStorageCredits::Mode::Refund,
-            }
-            .abi_encode();
-            *calldata
-                .last_mut()
-                .expect("setMode ABI calldata must contain the enum word") = 3;
+        for spec in [TempoHardfork::T10, TempoHardfork::T11] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let output = StorageCredits::new().call(&calldata, caller)?;
+                assert!(output.is_revert());
+                if spec.is_t11() {
+                    assert!(output.bytes.is_empty());
+                } else {
+                    assert_eq!(
+                        &output.bytes[..4],
+                        StorageCreditsError::invalid_mode().selector().as_slice()
+                    );
+                }
+                Ok(())
+            })?;
+        }
 
-            let output = storage_credits_precompile.call(&calldata, caller)?;
-            assert!(output.is_revert());
-            assert_eq!(
-                &output.bytes[..4],
-                StorageCreditsError::invalid_mode().selector().as_slice()
-            );
-
-            Ok(())
-        })
+        Ok(())
     }
 }

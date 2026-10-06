@@ -4,12 +4,13 @@ use crate::{
     evm::TempoEvm, gas_params::tempo_gas_params, signature_gas::P256_VERIFY_GAS,
     tx::TempoBatchCallEnv,
 };
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
 use proptest::prelude::*;
+use reth_evm::EvmError;
 use revm::{
     Context, Journal, MainContext,
     context::CfgEnv,
-    database::{CacheDB, EmptyDB},
+    database::InMemoryDB,
     handler::Handler,
     interpreter::{
         InstructionResult, InterpreterResult, gas::COLD_ACCOUNT_ACCESS_COST,
@@ -29,17 +30,17 @@ use tempo_primitives::transaction::{
     tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
 };
 
-fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
-    let db = CacheDB::new(EmptyDB::default());
+fn create_test_journal() -> Journal<InMemoryDB> {
+    let db = InMemoryDB::default();
     Journal::new(db)
 }
 
 type TestHandlerEvmResult<T> =
-    Result<T, EVMError<<CacheDB<EmptyDB> as revm::Database>::Error, TempoInvalidTransaction>>;
+    Result<T, EVMError<<InMemoryDB as revm::Database>::Error, TempoInvalidTransaction>>;
 
 struct TestHandlerEvm {
-    evm: TempoEvm<CacheDB<EmptyDB>, ()>,
-    handler: TempoEvmHandler<CacheDB<EmptyDB>, ()>,
+    evm: TempoEvm<InMemoryDB, ()>,
+    handler: TempoEvmHandler<InMemoryDB, ()>,
 }
 
 impl TestHandlerEvm {
@@ -77,7 +78,7 @@ impl TestHandlerEvm {
         configure(&mut cfg);
 
         let ctx = Context::mainnet()
-            .with_db(CacheDB::new(EmptyDB::default()))
+            .with_db(InMemoryDB::default())
             .with_block(TempoBlockEnv::default())
             .with_cfg(cfg)
             .with_tx(tx_env)
@@ -114,7 +115,7 @@ impl TestHandlerEvm {
 
     fn with_fee_manager<F>(self, fee_manager: F) -> Self
     where
-        F: ProtocolFeeManager<CacheDB<EmptyDB>> + 'static,
+        F: ProtocolFeeManager<InMemoryDB> + 'static,
     {
         let Self { evm, handler } = self;
         Self {
@@ -265,7 +266,7 @@ fn test_paused_fee_token_rejected() {
         StorageCtx::enter_ctx(&mut test.evm.inner.ctx, StorageActions::disabled(), || {
             let mut token = TIP20Setup::create("Paused USD", "PUSD", admin)
                 .with_issuer(admin)
-                .with_role(admin, *tempo_precompiles::tip20::PAUSE_ROLE)
+                .with_role(admin, tempo_precompiles::tip20::PAUSE_ROLE)
                 .with_mint(fee_payer, fee)
                 .apply()?;
             token.pause(admin, tempo_precompiles::tip20::ITIP20::pauseCall {})?;
@@ -395,6 +396,27 @@ fn test_collect_fee_pre_tx_insufficient_liquidity_falls_back_when_pair_lookup_fa
 }
 
 #[test]
+fn test_reserved_subblock_nonce_rejected() {
+    for spec in [TempoHardfork::T3, TempoHardfork::T4, TempoHardfork::T11] {
+        let mut test = TestHandlerEvm::aa(
+            spec,
+            TempoBatchCallEnv {
+                nonce_key: U256::from(tempo_primitives::subblock::TEMPO_SUBBLOCK_NONCE_KEY_PREFIX)
+                    << 248,
+                ..Default::default()
+            },
+            |_| {},
+        );
+        assert!(matches!(
+            test.validate_env(),
+            Err(EVMError::Transaction(
+                TempoInvalidTransaction::SubblockTransactionsDisabled
+            ))
+        ));
+    }
+}
+
+#[test]
 fn test_self_sponsored_fee_payer_rejected_post_t2() {
     let caller = Address::random();
     let invalid_token = Address::random();
@@ -419,7 +441,7 @@ fn test_self_sponsored_fee_payer_not_rejected_pre_t4() {
     let caller = Address::random();
     let invalid_token = Address::random();
 
-    let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::default();
+    let handler: TempoEvmHandler<InMemoryDB, ()> = TempoEvmHandler::default();
     let mut cfg = CfgEnv::<TempoHardfork>::default();
     cfg.spec = TempoHardfork::T1C;
 
@@ -433,9 +455,9 @@ fn test_self_sponsored_fee_payer_not_rejected_pre_t4() {
         ..Default::default()
     };
 
-    let mut evm: TempoEvm<CacheDB<EmptyDB>, ()> = TempoEvm::new(
+    let mut evm: TempoEvm<InMemoryDB, ()> = TempoEvm::new(
         Context::mainnet()
-            .with_db(CacheDB::new(EmptyDB::default()))
+            .with_db(InMemoryDB::default())
             .with_block(TempoBlockEnv::default())
             .with_cfg(cfg)
             .with_tx(tx_env),
@@ -471,7 +493,7 @@ fn test_get_token_balance() -> eyre::Result<()> {
 fn test_get_fee_token() -> eyre::Result<()> {
     let journal = create_test_journal();
     let mut ctx: TempoContext<_> = Context::mainnet()
-        .with_db(CacheDB::new(EmptyDB::default()))
+        .with_db(InMemoryDB::default())
         .with_block(TempoBlockEnv::default())
         .with_cfg(Default::default())
         .with_tx(TempoTxEnv::default())
@@ -546,7 +568,7 @@ fn test_aa_gas_single_call_vs_normal_tx() {
     use crate::TempoBatchCallEnv;
     use alloy_primitives::{Bytes, TxKind};
     use revm::interpreter::gas::calculate_initial_tx_gas;
-    use tempo_primitives::transaction::{Call, TempoSignature};
+    use tempo_primitives::transaction::Call;
     let gas_params = GasParams::default();
 
     // Test that AA tx with secp256k1 and single call matches normal tx + per-call overhead
@@ -561,9 +583,7 @@ fn test_aa_gas_single_call_vs_normal_tx() {
     };
 
     let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            alloy_primitives::Signature::test_signature(),
-        )), // dummy secp256k1 sig
+        signature: Signature::test_signature().into(), // dummy secp256k1 sig
         aa_calls: vec![call],
         key_authorization: None,
         signature_hash: B256::ZERO,
@@ -603,7 +623,7 @@ fn test_aa_gas_multiple_calls_overhead() {
     use crate::TempoBatchCallEnv;
     use alloy_primitives::{Bytes, TxKind};
     use revm::interpreter::gas::calculate_initial_tx_gas;
-    use tempo_primitives::transaction::{Call, TempoSignature};
+    use tempo_primitives::transaction::Call;
 
     let calldata = Bytes::from(vec![1, 2, 3]); // 3 non-zero bytes
 
@@ -626,9 +646,7 @@ fn test_aa_gas_multiple_calls_overhead() {
     ];
 
     let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            alloy_primitives::Signature::test_signature(),
-        )),
+        signature: Signature::test_signature().into(),
         aa_calls: calls,
         key_authorization: None,
         signature_hash: B256::ZERO,
@@ -709,7 +727,7 @@ fn test_aa_gas_create_call() {
     use crate::TempoBatchCallEnv;
     use alloy_primitives::{Bytes, TxKind};
     use revm::interpreter::gas::calculate_initial_tx_gas;
-    use tempo_primitives::transaction::{Call, TempoSignature};
+    use tempo_primitives::transaction::Call;
 
     let spec = SpecId::CANCUN; // Post-Shanghai
     let initcode = Bytes::from(vec![0x60, 0x80]); // 2 bytes
@@ -721,9 +739,7 @@ fn test_aa_gas_create_call() {
     };
 
     let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            alloy_primitives::Signature::test_signature(),
-        )),
+        signature: Signature::test_signature().into(),
         aa_calls: vec![call],
         key_authorization: None,
         signature_hash: B256::ZERO,
@@ -752,7 +768,7 @@ fn test_aa_gas_create_call() {
 fn test_aa_gas_value_transfer() {
     use crate::TempoBatchCallEnv;
     use alloy_primitives::{Bytes, TxKind};
-    use tempo_primitives::transaction::{Call, TempoSignature};
+    use tempo_primitives::transaction::Call;
 
     let calldata = Bytes::from(vec![1]);
 
@@ -763,9 +779,7 @@ fn test_aa_gas_value_transfer() {
     };
 
     let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            alloy_primitives::Signature::test_signature(),
-        )),
+        signature: Signature::test_signature().into(),
         aa_calls: vec![call],
         key_authorization: None,
         signature_hash: B256::ZERO,
@@ -790,7 +804,7 @@ fn test_aa_gas_access_list() {
     use crate::TempoBatchCallEnv;
     use alloy_primitives::{Bytes, TxKind};
     use revm::interpreter::gas::calculate_initial_tx_gas;
-    use tempo_primitives::transaction::{Call, TempoSignature};
+    use tempo_primitives::transaction::Call;
 
     let spec = SpecId::CANCUN;
     let calldata = Bytes::from(vec![]);
@@ -802,9 +816,7 @@ fn test_aa_gas_access_list() {
     };
 
     let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            alloy_primitives::Signature::test_signature(),
-        )),
+        signature: Signature::test_signature().into(),
         aa_calls: vec![call],
         key_authorization: None,
         signature_hash: B256::ZERO,
@@ -882,7 +894,7 @@ fn test_aa_gas_floor_gas_prague() {
     use crate::TempoBatchCallEnv;
     use alloy_primitives::{Bytes, TxKind};
     use revm::interpreter::gas::calculate_initial_tx_gas;
-    use tempo_primitives::transaction::{Call, TempoSignature};
+    use tempo_primitives::transaction::Call;
 
     let spec = SpecId::PRAGUE;
     let calldata = Bytes::from(vec![1, 2, 3, 4, 5]); // 5 non-zero bytes
@@ -894,9 +906,7 @@ fn test_aa_gas_floor_gas_prague() {
     };
 
     let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            alloy_primitives::Signature::test_signature(),
-        )),
+        signature: Signature::test_signature().into(),
         aa_calls: vec![call],
         key_authorization: None,
         signature_hash: B256::ZERO,
@@ -929,7 +939,7 @@ fn test_zero_value_transfer() -> eyre::Result<()> {
 
     // Create a test context with a transaction that has a non-zero value
     let ctx = Context::mainnet()
-        .with_db(CacheDB::new(EmptyDB::default()))
+        .with_db(InMemoryDB::default())
         .with_block(Default::default())
         .with_cfg(Default::default())
         .with_tx(TempoTxEnv::default());
@@ -1353,7 +1363,7 @@ fn test_key_authorization_gas_in_batch() {
     use alloy_primitives::{Bytes, TxKind};
     use revm::interpreter::gas::calculate_initial_tx_gas;
     use tempo_primitives::transaction::{
-        Call, KeyAuthorization, SignatureType, SignedKeyAuthorization, TempoSignature, TokenLimit,
+        Call, KeyAuthorization, SignatureType, SignedKeyAuthorization, TokenLimit,
     };
 
     let calldata = Bytes::from(vec![1, 2, 3]);
@@ -1384,9 +1394,7 @@ fn test_key_authorization_gas_in_batch() {
             ));
 
     let aa_env_with_key_auth = TempoBatchCallEnv {
-        signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            alloy_primitives::Signature::test_signature(),
-        )),
+        signature: Signature::test_signature().into(),
         aa_calls: vec![call.clone()],
         key_authorization: Some(key_auth),
         signature_hash: B256::ZERO,
@@ -1394,9 +1402,7 @@ fn test_key_authorization_gas_in_batch() {
     };
 
     let aa_env_without_key_auth = TempoBatchCallEnv {
-        signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            alloy_primitives::Signature::test_signature(),
-        )),
+        signature: Signature::test_signature().into(),
         aa_calls: vec![call],
         key_authorization: None,
         signature_hash: B256::ZERO,
@@ -1466,12 +1472,12 @@ fn test_2d_nonce_gas_in_intrinsic_gas() {
         let gas_params = tempo_gas_params(spec);
 
         let make_evm = |nonce: u64, nonce_key: U256| {
-            let journal = Journal::new(CacheDB::new(EmptyDB::default()));
+            let journal = Journal::new(InMemoryDB::default());
             let mut cfg = CfgEnv::<TempoHardfork>::default();
             cfg.spec = spec;
             cfg.gas_params = gas_params.clone();
             let ctx = Context::mainnet()
-                .with_db(CacheDB::new(EmptyDB::default()))
+                .with_db(InMemoryDB::default())
                 .with_block(TempoBlockEnv::default())
                 .with_cfg(cfg)
                 .with_tx(TempoTxEnv {
@@ -1495,7 +1501,7 @@ fn test_2d_nonce_gas_in_intrinsic_gas() {
             TempoEvm::<_, ()>::new(ctx, ())
         };
 
-        let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+        let handler: TempoEvmHandler<InMemoryDB, ()> = TempoEvmHandler::new();
 
         // Case 1: Protocol nonce (nonce_key == 0, nonce > 0) - no additional gas
         {
@@ -1582,12 +1588,12 @@ fn test_2d_nonce_gas_limit_validation() {
         };
 
         for (gas_limit, nonce, should_succeed) in cases {
-            let journal = Journal::new(CacheDB::new(EmptyDB::default()));
+            let journal = Journal::new(InMemoryDB::default());
             let mut cfg = CfgEnv::<TempoHardfork>::default();
             cfg.spec = spec;
             cfg.gas_params = gas_params.clone();
             let ctx = Context::mainnet()
-                .with_db(CacheDB::new(EmptyDB::default()))
+                .with_db(InMemoryDB::default())
                 .with_block(TempoBlockEnv::default())
                 .with_cfg(cfg)
                 .with_tx(TempoTxEnv {
@@ -1610,7 +1616,7 @@ fn test_2d_nonce_gas_limit_validation() {
                 .with_new_journal(journal);
 
             let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
-            let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+            let handler: TempoEvmHandler<InMemoryDB, ()> = TempoEvmHandler::new();
             let result = handler.validate_initial_tx_gas(&mut evm);
 
             if should_succeed {
@@ -1794,14 +1800,14 @@ fn test_t3_scope_validation_returns_call_not_allowed_revert_data() {
     };
 
     let ctx = Context::mainnet()
-        .with_db(CacheDB::new(EmptyDB::default()))
+        .with_db(InMemoryDB::default())
         .with_block(TempoBlockEnv::default())
         .with_cfg(cfg)
         .with_tx(tx_env.clone())
         .with_new_journal(create_test_journal());
 
     let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
-    let mut handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+    let mut handler: TempoEvmHandler<InMemoryDB, ()> = TempoEvmHandler::new();
 
     StorageCtx::enter_ctx(&mut evm.inner.ctx, StorageActions::disabled(), || {
         let mut keychain = AccountKeychain::new();
@@ -1894,14 +1900,14 @@ fn test_t3_scope_validation_empty_calls_returns_custom_error() {
     };
 
     let ctx = Context::mainnet()
-        .with_db(CacheDB::new(EmptyDB::default()))
+        .with_db(InMemoryDB::default())
         .with_block(TempoBlockEnv::default())
         .with_cfg(cfg)
         .with_tx(tx_env)
         .with_new_journal(create_test_journal());
 
     let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
-    let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+    let handler: TempoEvmHandler<InMemoryDB, ()> = TempoEvmHandler::new();
     let mut remaining_gas = 100_000;
 
     let err = handler
@@ -1922,7 +1928,6 @@ fn test_refund_cap_removed_on_t7() {
     use revm::{
         Context, Journal,
         context::CfgEnv,
-        database::{CacheDB, EmptyDB},
         handler::FrameResult,
         interpreter::{CallOutcome, Gas, InstructionResult, InterpreterResult},
     };
@@ -1936,13 +1941,13 @@ fn test_refund_cap_removed_on_t7() {
         let mut cfg = CfgEnv::<TempoHardfork>::default();
         cfg.spec = spec;
         let ctx = Context::mainnet()
-            .with_db(CacheDB::new(EmptyDB::default()))
+            .with_db(InMemoryDB::default())
             .with_block(TempoBlockEnv::default())
             .with_cfg(cfg)
             .with_tx(TempoTxEnv::default())
-            .with_new_journal(Journal::new(CacheDB::new(EmptyDB::default())));
+            .with_new_journal(Journal::new(InMemoryDB::default()));
         let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
-        let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+        let handler: TempoEvmHandler<InMemoryDB, ()> = TempoEvmHandler::new();
 
         let mut gas = Gas::new(SPENT);
         gas.set_spent(SPENT);
@@ -1977,7 +1982,6 @@ fn test_multicall_gas_refund_accounting() {
     use revm::{
         Context, Journal,
         context::CfgEnv,
-        database::{CacheDB, EmptyDB},
         handler::FrameResult,
         interpreter::{CallOutcome, Gas, InstructionResult, InterpreterResult},
     };
@@ -1990,10 +1994,10 @@ fn test_multicall_gas_refund_accounting() {
     const REFUND: (i64, i64) = (100, 50);
 
     // Create minimal EVM context
-    let db = CacheDB::new(EmptyDB::default());
+    let db = InMemoryDB::default();
     let journal = Journal::new(db);
     let ctx = Context::mainnet()
-        .with_db(CacheDB::new(EmptyDB::default()))
+        .with_db(InMemoryDB::default())
         .with_block(TempoBlockEnv::default())
         .with_cfg(CfgEnv::default())
         .with_tx(TempoTxEnv {
@@ -2006,7 +2010,7 @@ fn test_multicall_gas_refund_accounting() {
         .with_new_journal(journal);
 
     let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
-    let mut handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+    let mut handler: TempoEvmHandler<InMemoryDB, ()> = TempoEvmHandler::new();
 
     // Create mock calls
     let calls = vec![
@@ -2077,9 +2081,7 @@ fn arb_opt_timestamp() -> impl Strategy<Value = Option<u64>> {
 /// P256, WebAuthn), not on cryptographic validity. Signature verification happens
 /// separately during `recover_signer()` before transactions enter the pool.
 fn secp256k1_sig() -> TempoSignature {
-    TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-        alloy_primitives::Signature::test_signature(),
-    ))
+    Signature::test_signature().into()
 }
 
 /// Helper to create a TempoBatchCallEnv with specified calls.
@@ -2503,7 +2505,7 @@ fn test_t1_2d_nonce_key_charges_250k_gas() {
     use revm::{context_interface::cfg::GasId, handler::Handler};
 
     // Deterministic test addresses
-    const TEST_TARGET: Address = Address::new([0xAA; 20]);
+    const TEST_TARGET: Address = Address::repeat_byte(0xAA);
     const TEST_NONCE_KEY: U256 = U256::from_limbs([42, 0, 0, 0]);
     const SPEC: TempoHardfork = TempoHardfork::T1;
     const NEW_NONCE_KEY_GAS: u64 = SPEC.gas_new_nonce_key();
@@ -2523,9 +2525,9 @@ fn test_t1_2d_nonce_key_charges_250k_gas() {
 
     // Helper to create EVM context for testing
     let make_evm = |cfg: CfgEnv<TempoHardfork>, nonce: u64, nonce_key: U256| {
-        let journal = Journal::new(CacheDB::new(EmptyDB::default()));
+        let journal = Journal::new(InMemoryDB::default());
         let ctx = Context::mainnet()
-            .with_db(CacheDB::new(EmptyDB::default()))
+            .with_db(InMemoryDB::default())
             .with_block(TempoBlockEnv::default())
             .with_cfg(cfg)
             .with_tx(TempoTxEnv {
@@ -2551,7 +2553,7 @@ fn test_t1_2d_nonce_key_charges_250k_gas() {
 
     // Case 1: nonce == 0 with 2D nonce key -> should include new_account_cost
     let mut evm_nonce_zero = make_evm(cfg.clone(), 0, TEST_NONCE_KEY);
-    let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+    let handler: TempoEvmHandler<InMemoryDB, ()> = TempoEvmHandler::new();
     let gas_nonce_zero = handler
         .validate_initial_tx_gas(&mut evm_nonce_zero)
         .unwrap();
@@ -2607,7 +2609,7 @@ fn test_t1_existing_2d_nonce_key_charges_5k_gas() {
     use revm::handler::Handler;
 
     const BASE_INTRINSIC_GAS: u64 = 21_000;
-    const TEST_TARGET: Address = Address::new([0xBB; 20]);
+    const TEST_TARGET: Address = Address::repeat_byte(0xBB);
     const TEST_NONCE_KEY: U256 = U256::from_limbs([99, 0, 0, 0]);
     const SPEC: TempoHardfork = TempoHardfork::T1;
     const EXISTING_NONCE_KEY_GAS: u64 = SPEC.gas_existing_nonce_key();
@@ -2617,9 +2619,9 @@ fn test_t1_existing_2d_nonce_key_charges_5k_gas() {
     cfg.gas_params = tempo_gas_params(TempoHardfork::T1);
 
     let make_evm = |cfg: CfgEnv<TempoHardfork>, nonce: u64, nonce_key: U256| {
-        let journal = Journal::new(CacheDB::new(EmptyDB::default()));
+        let journal = Journal::new(InMemoryDB::default());
         let ctx = Context::mainnet()
-            .with_db(CacheDB::new(EmptyDB::default()))
+            .with_db(InMemoryDB::default())
             .with_block(TempoBlockEnv::default())
             .with_cfg(cfg)
             .with_tx(TempoTxEnv {
@@ -2643,7 +2645,7 @@ fn test_t1_existing_2d_nonce_key_charges_5k_gas() {
         TempoEvm::<_, ()>::new(ctx, ())
     };
 
-    let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+    let handler: TempoEvmHandler<InMemoryDB, ()> = TempoEvmHandler::new();
 
     // Case 1: Existing 2D nonce key (nonce > 0) should charge EXISTING_NONCE_KEY_GAS
     let mut evm_existing_key = make_evm(cfg.clone(), 5, TEST_NONCE_KEY);
@@ -2679,6 +2681,8 @@ mod keychain {
     use super::*;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
+    use revm::database::InMemoryDB;
+
     use tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS;
     use tempo_primitives::transaction::{
         KeychainSignature, KeychainVersion, SignatureType,
@@ -2718,10 +2722,7 @@ mod keychain {
         spec: TempoHardfork,
         signature: Option<TempoSignature>,
         seed_key: bool,
-    ) -> (
-        TempoEvm<CacheDB<EmptyDB>, ()>,
-        TempoEvmHandler<CacheDB<EmptyDB>, ()>,
-    ) {
+    ) -> (TempoEvm<InMemoryDB, ()>, TempoEvmHandler<InMemoryDB, ()>) {
         let sig = signature
             .unwrap_or_else(|| TempoSignature::Keychain(KeychainSignature::new(user, test_sig())));
         let mut cfg = CfgEnv::<TempoHardfork>::default();
@@ -2751,7 +2752,7 @@ mod keychain {
         };
 
         let ctx = Context::mainnet()
-            .with_db(CacheDB::new(EmptyDB::default()))
+            .with_db(InMemoryDB::default())
             .with_block(TempoBlockEnv::default())
             .with_cfg(cfg)
             .with_tx(tx)
@@ -3473,6 +3474,50 @@ mod keychain {
     }
 
     #[test]
+    fn test_v1_keychain_cross_account_replay_pre_t1c() {
+        let (access_key_signer, access_key) = generate_keypair();
+        let signature_hash = B256::ZERO;
+        let inner_signature = PrimitiveSignature::Secp256k1(
+            access_key_signer
+                .sign_hash_sync(&signature_hash)
+                .expect("access key signs transaction hash"),
+        );
+
+        for user in [Address::repeat_byte(0x11), Address::repeat_byte(0x22)] {
+            let signature =
+                TempoSignature::Keychain(KeychainSignature::new_v1(user, inner_signature.clone()));
+            let (mut evm, h) = make_evm(
+                user,
+                access_key,
+                None,
+                TempoHardfork::T1B,
+                Some(signature),
+                true,
+            );
+
+            // Exercise actual V1 key recovery instead of the estimation-only override.
+            evm.tx
+                .tempo_tx_env
+                .as_mut()
+                .expect("keychain transaction environment")
+                .override_key_id = None;
+
+            let env_result = h.validate_env(&mut evm);
+            assert!(
+                env_result.is_ok(),
+                "V1 replay should pass pre-T1C stateless validation for {user}: {env_result:?}"
+            );
+
+            let state_result =
+                h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
+            assert!(
+                state_result.is_ok(),
+                "V1 replay should use the shared authorized key for {user}: {state_result:?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_keychain_version_rejection() {
         let caller = Address::random();
 
@@ -3704,9 +3749,7 @@ fn test_state_gas_aa_create_tx_populates_initial_state_gas() {
     };
 
     let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            alloy_primitives::Signature::test_signature(),
-        )),
+        signature: Signature::test_signature().into(),
         aa_calls: vec![call],
         key_authorization: None,
         signature_hash: B256::ZERO,
@@ -3742,9 +3785,7 @@ fn test_state_gas_aa_call_tx_zero_initial_state_gas() {
     };
 
     let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            alloy_primitives::Signature::test_signature(),
-        )),
+        signature: Signature::test_signature().into(),
         aa_calls: vec![call],
         key_authorization: None,
         signature_hash: B256::ZERO,
@@ -3848,125 +3889,6 @@ fn test_state_gas_tx_gas_limit_above_cap_rejected_pre_t4() {
     );
 }
 
-/// TIP-1016 regression: subblock fee-payment halt must not exceed the gas cap.
-#[test]
-fn test_subblock_fee_payment_halt_clamps_to_gas_cap_t4() {
-    const CAP: u64 = 30_000_000;
-    const TX_GAS_LIMIT: u64 = 60_000_000;
-
-    let aa_env = TempoBatchCallEnv {
-        subblock_transaction: true,
-        ..Default::default()
-    };
-    let tx_env = TempoTxEnv {
-        inner: revm::context::TxEnv {
-            gas_limit: TX_GAS_LIMIT,
-            kind: TxKind::Call(Address::random()),
-            ..Default::default()
-        },
-        tempo_tx_env: Some(Box::new(aa_env)),
-        ..Default::default()
-    };
-
-    let mut test = TestHandlerEvm::with_cfg(TempoHardfork::T4, tx_env, |cfg| {
-        cfg.tx_gas_limit_cap = Some(CAP);
-        cfg.enable_amsterdam_eip8037 = true;
-        cfg.gas_params =
-            crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
-    });
-
-    // Sanity: T4 must actually have the cap-skip enabled so tx_gas_limit > cap is legal.
-    assert!(
-        test.cfg().enable_amsterdam_eip8037,
-        "T4 must enable enable_amsterdam_eip8037 for this regression to apply"
-    );
-
-    let err = EVMError::Transaction(TempoInvalidTransaction::EthInvalidTransaction(
-        InvalidTransaction::LackOfFundForMaxFee {
-            fee: Box::new(U256::ZERO),
-            balance: Box::new(U256::ZERO),
-        },
-    ));
-
-    let result = test
-        .handler
-        .catch_error(&mut test.evm, err)
-        .expect("subblock fee-payment failure must be converted to a halt, not a hard error");
-
-    match result {
-        ExecutionResult::Halt { reason, gas, .. } => {
-            assert!(
-                matches!(reason, TempoHaltReason::SubblockTxFeePayment),
-                "expected SubblockTxFeePayment halt, got {reason:?}"
-            );
-            assert_eq!(
-                gas.total_gas_spent(),
-                CAP,
-                "regular gas charged on subblock fee-payment halt must be clamped to \
-                     tx_gas_limit_cap (got {} for tx.gas_limit={} cap={})",
-                gas.total_gas_spent(),
-                TX_GAS_LIMIT,
-                CAP,
-            );
-            assert_eq!(
-                gas.state_gas_spent_final(),
-                0,
-                "halt reports zero state gas"
-            );
-        }
-        other => panic!("expected ExecutionResult::Halt, got {other:?}"),
-    }
-}
-
-#[test]
-fn test_subblock_paused_fee_token_halts_as_fee_payment_failure() {
-    let aa_env = TempoBatchCallEnv {
-        subblock_transaction: true,
-        ..Default::default()
-    };
-    let tx_env = TempoTxEnv {
-        inner: revm::context::TxEnv {
-            gas_limit: 100_000,
-            kind: TxKind::Call(Address::random()),
-            ..Default::default()
-        },
-        tempo_tx_env: Some(Box::new(aa_env)),
-        ..Default::default()
-    };
-
-    let mut test = TestHandlerEvm::with_cfg(TempoHardfork::T4, tx_env, |cfg| {
-        cfg.tx_gas_limit_cap = Some(30_000_000);
-        cfg.enable_amsterdam_eip8037 = true;
-        cfg.gas_params =
-            crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
-    });
-
-    let err = EVMError::Transaction(TempoInvalidTransaction::FeeTokenPaused {
-        address: PATH_USD_ADDRESS,
-    });
-
-    let result = test
-        .handler
-        .catch_error(&mut test.evm, err)
-        .expect("subblock paused fee-token failure must be converted to a halt");
-
-    match result {
-        ExecutionResult::Halt { reason, gas, .. } => {
-            assert!(
-                matches!(reason, TempoHaltReason::SubblockTxFeePayment),
-                "expected SubblockTxFeePayment halt, got {reason:?}"
-            );
-            assert_eq!(gas.total_gas_spent(), 100_000);
-            assert_eq!(
-                gas.state_gas_spent_final(),
-                0,
-                "halt reports zero state gas"
-            );
-        }
-        other => panic!("expected ExecutionResult::Halt, got {other:?}"),
-    }
-}
-
 /// TIP-1016: Pre-T4 behavior unchanged - initial_state_gas is still populated
 /// by upstream revm for CREATE txs (it's a property of gas_params, not gating).
 /// But enable_amsterdam_eip8037=false means the reservoir won't be used.
@@ -3983,7 +3905,7 @@ fn test_state_gas_backward_compat_t1_no_state_gas_enabled() {
 
     let calldata = Bytes::from(vec![1, 2, 3]);
 
-    let journal = Journal::new(CacheDB::new(EmptyDB::default()));
+    let journal = Journal::new(InMemoryDB::default());
     let tx_env = TempoTxEnv {
         inner: revm::context::TxEnv {
             gas_limit: 1_000_000,
@@ -3995,13 +3917,13 @@ fn test_state_gas_backward_compat_t1_no_state_gas_enabled() {
     };
 
     let ctx = Context::mainnet()
-        .with_db(CacheDB::new(EmptyDB::default()))
+        .with_db(InMemoryDB::default())
         .with_block(TempoBlockEnv::default())
         .with_cfg(cfg)
         .with_tx(tx_env)
         .with_new_journal(journal);
     let mut evm = TempoEvm::<_, ()>::new(ctx, ());
-    let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+    let handler: TempoEvmHandler<InMemoryDB, ()> = TempoEvmHandler::new();
 
     let init_gas = handler.validate_initial_tx_gas(&mut evm).unwrap();
 
@@ -4031,9 +3953,7 @@ fn test_state_gas_aa_mixed_batch_create_and_call() {
     ];
 
     let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            alloy_primitives::Signature::test_signature(),
-        )),
+        signature: Signature::test_signature().into(),
         aa_calls: calls,
         key_authorization: None,
         signature_hash: B256::ZERO,
@@ -4077,9 +3997,7 @@ fn test_state_gas_aa_multiple_create_calls() {
     ];
 
     let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            alloy_primitives::Signature::test_signature(),
-        )),
+        signature: Signature::test_signature().into(),
         aa_calls: calls,
         key_authorization: None,
         signature_hash: B256::ZERO,
@@ -4162,9 +4080,7 @@ fn test_state_gas_aa_auth_list_nonce_zero() {
     let gas_params = crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
 
     let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            alloy_primitives::Signature::test_signature(),
-        )),
+        signature: Signature::test_signature().into(),
         aa_calls: vec![Call {
             to: TxKind::Call(Address::random()),
             value: U256::ZERO,
@@ -4177,9 +4093,7 @@ fn test_state_gas_aa_auth_list_nonce_zero() {
                     address: Address::random(),
                     nonce: 0,
                 },
-                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-                    alloy_primitives::Signature::test_signature(),
-                )),
+                Signature::test_signature().into(),
             ),
         )],
         ..Default::default()
@@ -4206,9 +4120,7 @@ fn test_state_gas_aa_auth_list_nonce_zero() {
 #[test]
 fn test_state_gas_aa_nonce_zero_new_account() {
     let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            alloy_primitives::Signature::test_signature(),
-        )),
+        signature: Signature::test_signature().into(),
         aa_calls: vec![Call {
             to: TxKind::Call(Address::random()),
             value: U256::ZERO,
@@ -4242,9 +4154,7 @@ fn test_state_gas_auth_list_zero_on_t1() {
     );
 
     let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            alloy_primitives::Signature::test_signature(),
-        )),
+        signature: Signature::test_signature().into(),
         aa_calls: vec![Call {
             to: TxKind::Call(Address::random()),
             value: U256::ZERO,
@@ -4257,9 +4167,7 @@ fn test_state_gas_auth_list_zero_on_t1() {
                     address: Address::random(),
                     nonce: 0,
                 },
-                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-                    alloy_primitives::Signature::test_signature(),
-                )),
+                Signature::test_signature().into(),
             ),
         )],
         ..Default::default()
@@ -4333,9 +4241,7 @@ fn test_state_gas_aa_create_total_gas_includes_state_gas() {
     };
 
     let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            alloy_primitives::Signature::test_signature(),
-        )),
+        signature: Signature::test_signature().into(),
         aa_calls: vec![call],
         key_authorization: None,
         signature_hash: B256::ZERO,
@@ -4365,9 +4271,7 @@ fn test_state_gas_aa_auth_nonce_zero_total_gas_includes_state_gas() {
     let gas_params = tempo_gas_params(TempoHardfork::T4);
 
     let aa_env = TempoBatchCallEnv {
-        signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            alloy_primitives::Signature::test_signature(),
-        )),
+        signature: Signature::test_signature().into(),
         aa_calls: vec![Call {
             to: TxKind::Call(Address::random()),
             value: U256::ZERO,
@@ -4380,9 +4284,7 @@ fn test_state_gas_aa_auth_nonce_zero_total_gas_includes_state_gas() {
                     address: Address::random(),
                     nonce: 0,
                 },
-                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-                    alloy_primitives::Signature::test_signature(),
-                )),
+                Signature::test_signature().into(),
             ),
         )],
         ..Default::default()

@@ -6,11 +6,10 @@
 mod attrs;
 mod budget;
 
-use alloy_primitives::{B256, Bytes};
+use alloy_primitives::Bytes;
 pub use attrs::TempoPayloadAttributes;
 pub use budget::{
-    MarshalPersistEstimator, ValidationLatencyEstimate, ValidationLatencyEstimator,
-    ValidationLatencyWorkload, marshal_persist_estimate, observe_marshal_persist,
+    ValidationLatencyEstimate, ValidationLatencyEstimator, ValidationLatencyWorkload,
 };
 use std::{
     sync::{Arc, OnceLock},
@@ -108,7 +107,6 @@ impl TempoBuiltPayload {
         TempoExecutionData {
             block,
             block_access_list: None,
-            validator_set: None,
         }
     }
 }
@@ -145,8 +143,6 @@ pub struct TempoExecutionData {
     pub block: SealedOrRecoveredBlock<Block>,
     /// RLP-encoded EIP-7928 block access list, when supplied with the payload.
     pub block_access_list: Option<Bytes>,
-    /// Validator set active at the time this block was built.
-    pub validator_set: Option<Vec<B256>>,
 }
 
 /// Serde helper for preserving the legacy plain block JSON shape.
@@ -260,7 +256,6 @@ impl PayloadTypes for TempoPayloadTypes {
         TempoExecutionData {
             block: block.into(),
             block_access_list: bal,
-            validator_set: None,
         }
     }
 }
@@ -335,8 +330,7 @@ mod tests {
                     "transactionsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
                 }
             },
-            "block_access_list": null,
-            "validator_set": null
+            "block_access_list": null
         });
 
         let execution_data: TempoExecutionData = serde_json::from_value(fixture.clone()).unwrap();

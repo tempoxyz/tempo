@@ -1,0 +1,43 @@
+name: Zone verifier PCRs
+
+permissions: {}
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/precompiles/src/zone_verifier/pcrs.json"
+      - ".github/scripts/verify-zone-verifier-pcrs.sh"
+      - ".github/workflows/zone-verifier-pcrs.yml"
+  pull_request:
+    paths:
+      - "crates/precompiles/src/zone_verifier/pcrs.json"
+      - ".github/scripts/verify-zone-verifier-pcrs.sh"
+      - ".github/workflows/zone-verifier-pcrs.yml"
+  merge_group:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Verify PCRs against their prover images
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/verify-zone-verifier-pcrs.sh

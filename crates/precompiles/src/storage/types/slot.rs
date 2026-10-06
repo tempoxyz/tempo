@@ -343,7 +343,7 @@ mod tests {
 
             // Address
             let test_addr = Address::random();
-            let mut addr_slot = Slot::<Address>::new(U256::from(1), address);
+            let mut addr_slot = Slot::<Address>::new(U256::ONE, address);
             addr_slot.write(test_addr)?;
             assert_eq!(addr_slot.read()?, test_addr);
 
@@ -528,7 +528,7 @@ mod tests {
         let (mut storage, address) = setup_storage();
         StorageCtx::enter(&mut storage, || {
             // U256: default, roundtrip, overwrite, delete
-            let mut u256_slot = Slot::<U256>::new(U256::from(1), address);
+            let mut u256_slot = Slot::<U256>::new(U256::ONE, address);
             assert_eq!(u256_slot.t_read()?, U256::ZERO);
 
             let num1 = U256::random();

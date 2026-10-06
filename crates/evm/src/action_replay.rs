@@ -12,7 +12,7 @@ use alloy_primitives::{
 use reth_evm::block::InternalBlockExecutionError;
 use reth_revm::{
     Database as _, Inspector, State,
-    context::result::ExecutionResult,
+    context::result::{ExecutionResult, HaltReason},
     state::{Account, EvmState, EvmStorageSlot, TransactionId},
 };
 use tempo_precompiles::{
@@ -21,7 +21,7 @@ use tempo_precompiles::{
     storage::StorageAction,
     tip_fee_manager::amm::{Pool, compute_amount_out},
 };
-use tempo_revm::{TempoHaltReason, evm::TempoContext};
+use tempo_revm::evm::TempoContext;
 
 impl<'a, DB, I> TempoBlockExecutor<'a, &'a mut State<DB>, I>
 where
@@ -71,6 +71,7 @@ where
 
         let result = TempoTxResult::new_precomputed(
             recovered.tx(),
+            tx_env.execution_context,
             result,
             state,
             next_section,
@@ -301,7 +302,7 @@ pub struct StorageActionReplayOutcome {
 #[derive(Debug)]
 pub struct StorageActionReplay {
     /// Precomputed transaction execution result that can be reused if actions are applied without conflicts.
-    pub result: ExecutionResult<TempoHaltReason>,
+    pub result: ExecutionResult<HaltReason>,
     /// Actions to replay in order to get to the state after the transaction execution.
     pub actions: Vec<StorageAction>,
     /// Semantic replay data for expiring nonce transactions.
@@ -584,7 +585,7 @@ impl ExpiringNonceReplayState {
 mod tests {
     use super::*;
     use revm::{
-        database::{CacheDB, EmptyDB},
+        database::{EmptyDB, InMemoryDB},
         state::AccountInfo,
     };
 
@@ -618,7 +619,7 @@ mod tests {
     fn recorded_sload_uses_recorded_value_when_slot_is_not_cached() {
         let address = Address::repeat_byte(0x42);
         let slot = U256::from(7);
-        let mut cache_db = CacheDB::new(EmptyDB::default());
+        let mut cache_db = InMemoryDB::default();
         cache_db.insert_account_info(
             address,
             AccountInfo {
@@ -652,7 +653,7 @@ mod tests {
     fn current_sload_uses_recorded_value_when_slot_is_not_cached() {
         let address = Address::repeat_byte(0x42);
         let slot = U256::from(7);
-        let mut cache_db = CacheDB::new(EmptyDB::default());
+        let mut cache_db = InMemoryDB::default();
         cache_db.insert_account_info(
             address,
             AccountInfo {

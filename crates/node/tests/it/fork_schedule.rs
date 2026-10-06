@@ -3,18 +3,16 @@ use alloy::providers::{Provider, ProviderBuilder};
 use reth_chainspec::Hardfork;
 use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderExt};
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_node::rpc::fork_schedule::ForkSchedule;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_fork_schedule() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new().build_http_only().await?;
-    let provider = ProviderBuilder::new().connect_http(setup.http_url);
+    let provider = ProviderBuilder::new_with_network::<TempoNetwork>().connect_http(setup.http_url);
 
-    let schedule: ForkSchedule = provider
-        .raw_request("tempo_forkSchedule".into(), ())
-        .await?;
+    let schedule = provider.get_fork_schedule().await?;
+    assert_eq!(schedule.next_activation(), None);
 
     // Every TempoHardfork variant except Genesis must appear.
     let names: Vec<&str> = schedule.schedule.iter().map(|f| f.name.as_str()).collect();
@@ -72,6 +70,10 @@ async fn test_is_hardfork_active() -> eyre::Result<()> {
     let provider = ProviderBuilder::new_with_network::<TempoNetwork>().connect_http(setup.http_url);
 
     // Devnet activates all forks at t=0, so every known hardfork should be active.
+    assert_eq!(
+        provider.get_active_hardfork().await?,
+        *TempoHardfork::VARIANTS.last().unwrap()
+    );
     for fork in TempoHardfork::VARIANTS {
         assert!(
             provider.is_hardfork_active(*fork).await?,
