@@ -65,6 +65,19 @@ empty timer on the runner before and after each phase, retains the controls as
 artifacts, and disables Slack and performance-series publication. The calibration
 is a clock-floor diagnostic, not a bound on total instrumentation overhead.
 
+The `producer-isolation` choice measures stock txgen output with two signing
+workers, a 60-second duration, and normal live gas calibration. It requires the
+fixed public-mix/T14/100 GiB controls and txgen `8ca73369`; the setup pipeline
+runs normally, then signed workload output goes directly to `wc` and is discarded.
+No workload transactions are submitted and no performance series or Slack result
+is published. The 50k TPS input is a control label, not a measured submission rate.
+
+This mode records build, process and host identity, stops after a 180-second
+pipeline deadline, and restores owned node scopes, machine settings and snapshots
+through an independent finalizer. A result requires successful cleanup and a
+successful terminal workflow. Its rate bracket includes consumer drainage;
+55k output headroom does not establish node acceptance or chain capacity.
+
 ## Correctness
 
 Run unit and real-node oracles with the repository's pinned toolchain:
@@ -194,7 +207,11 @@ Manual E2E `no-slack=false` means on-win: at least one significant improvement
 and no significant regression. Neutral, losing and mixed results are suppressed.
 A successful notification step does not prove delivery; inspect its explicit send
 or skip result. A builder-only win is not a TPS win. No overall gain was established
-by the retained candidate's [main comparison](https://github.com/tempoxyz/tempo/actions/runs/37168821638).
+by the gas-weighted [25k offered-load comparison](https://github.com/tempoxyz/tempo/actions/runs/37372666298):
+accepted TPS was 15,711 versus 15,114, with validator gas throughput down 4.78%.
+The [50k offered-load comparison](https://github.com/tempoxyz/tempo/actions/runs/37377727492)
+also rejected 31,785 submissions because the pool was full; it does not establish
+50k capacity. Both comparisons suppressed Slack.
 
 Separate offered TPS, actual submissions, RPC outcomes and accepted-chain TPS.
 Audit six phase launches, source/build hashes, paired metrics, sender accounting,
@@ -209,6 +226,13 @@ passes and binds source hashes/header roots. It retains compressed digest ledger
 with a 20-minute deadline per pass and a 50,000-block limit. These are correctness
 runs, not performance measurements. Mainnet sparsity must be reported separately
 from dense generated coverage.
+
+The [SDK refresh replay](https://github.com/tempoxyz/tempo/actions/runs/37391570753)
+compares the same source with zero versus eight workers on 500 sparse T11 testnet
+blocks. All 500 computed roots and 6,948 full live receipt comparisons per arm
+agree; 1,058 speculative results were reused. Four transient startup `SYNCING`
+events occurred before warmup and were reviewed separately from the 3,500 valid
+warmup/measured submissions. This is correctness coverage, not a throughput result.
 
 ## Profiling and cloud diagnostics
 

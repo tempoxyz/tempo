@@ -190,6 +190,7 @@ def validate-schelk-state [a_state_path: string, b_state_path: string] {
 }
 
 def bench-restore-at [state_path: string, mount_point: string, datadir: string] {
+    producer-quiesce-if-enabled
     if (has-schelk) {
         run-bench-schelk "restore" $state_path $mount_point
     } else {
@@ -585,9 +586,12 @@ def derive-tracing-otlp [tracing_otlp: string] {
     $tracing_otlp
 }
 
-def systemd-scope-command [unit: string, cpus: string, memory: string, script: string] {
+def systemd-scope-command [unit: string, cpus: string, memory: string, script: string, --description: string = ""] {
     let can_scope = (^uname | str trim) == "Linux" and ((which systemd-run | length) > 0) and ($cpus != "" or $memory != "")
     if not $can_scope {
+        if $description != "" {
+            error make { msg: "producer diagnostic requires a real owned systemd scope; refusing unscoped validator launch" }
+        }
         return ["bash" "-lc" $script]
     }
 
@@ -612,6 +616,8 @@ def systemd-scope-command [unit: string, cpus: string, memory: string, script: s
         "--collect"
         "--same-dir"
         "--unit" $unit
+        ...(if $description != "" { ["--slice=system.slice"] } else { [] })
+        ...(if $description != "" { ["--description" $description] } else { [] })
         ...$telemetry_env
         ...$memory_args
         "bash"
@@ -641,6 +647,8 @@ def start-e2e-local-node [
     results_dir: string,
     cpus: string,
     memory: string,
+    --unit: string = "",
+    --description: string = "",
 ] {
     let profile_label = $"($phase)-($role)"
     let full_samply_args = if $samply {
@@ -651,7 +659,8 @@ def start-e2e-local-node [
     let node_cmd_str = ($node_cmd | str join " ")
     let script = $"($env_prefix)($otel_attrs)($tracy_env_prefix)($node_cmd_str) 2>&1"
     let unit_phase = ($phase | str replace -a "_" "-" | str replace -a "." "-")
-    let runner = (systemd-scope-command $"tempo-e2e-($role)-($unit_phase)" $cpus $memory $script)
+    let scope = if $unit != "" { $unit } else { $"tempo-e2e-($role)-($unit_phase)" }
+    let runner = (systemd-scope-command $scope $cpus $memory $script --description $description)
     print $"Starting local e2e validator ($role) for ($phase): ($runner | str join ' ')"
     job spawn {
         run-external ($runner | first) ...($runner | skip 1)
@@ -703,6 +712,10 @@ def build-e2e-consensus-args [node_dir: string, trusted_peers: string, port: int
 }
 
 def stop-e2e-processes-gracefully [] {
+    if ($env.TEMPO_PRODUCER_LIFECYCLE_CONFIG? | default "") != "" {
+        producer-quiesce-if-enabled
+        return
+    }
     let pids = (find-tempo-pids)
     if ($pids | length) > 0 {
         print $"Stopping tempo processes: ($pids | str join ', ')"
@@ -828,9 +841,45 @@ def stop-local-e2e-systemd-scopes [] {
 }
 
 def cleanup-local-e2e-processes [] {
+    if ($env.TEMPO_PRODUCER_LIFECYCLE_CONFIG? | default "") != "" {
+        producer-quiesce-if-enabled
+        return
+    }
     stop-local-e2e-systemd-scopes
     stop-e2e-processes-gracefully
     stop-tracy-capture
+}
+
+def producer-quiesce-if-enabled [] {
+    let config = ($env.TEMPO_PRODUCER_LIFECYCLE_CONFIG? | default "")
+    if $config == "" { return }
+    let stopped = (^sudo -n python3 benchmarks/parallel-execution/producer_lifecycle.py quiesce --config $config | complete)
+    if $stopped.exit_code != 0 {
+        error make { msg: $"Producer diagnostic could not prove validator exit: ($stopped.stdout) ($stopped.stderr)" }
+    }
+}
+
+# Retain exact argument identity without persisting the secret-derived endpoint.
+# The producer context adapter applies the same normalization to live node argv.
+def producer-bound-node-args [args: list<string>] {
+    mut bound = []
+    mut endpoint_next = false
+    for arg in $args {
+        if $endpoint_next {
+            $bound = ($bound | append $"sha256:($arg | hash sha256)")
+            $endpoint_next = false
+        } else if $arg == "--tracing-otlp" {
+            $bound = ($bound | append $arg)
+            $endpoint_next = true
+        } else if ($arg | str starts-with "--tracing-otlp=") {
+            let value = ($arg | str replace --regex '^--tracing-otlp=' '')
+            $bound = ($bound | append $"--tracing-otlp=sha256:($value | hash sha256)")
+        } else {
+            $bound = ($bound | append $arg)
+        }
+    }
+    if $endpoint_next { error make { msg: "producer telemetry flag is missing its value" } }
+    $bound
 }
 
 def chown-to-current-user [path: string] {
@@ -1142,6 +1191,44 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let b_args = if $ctx.sequential_peer {
         dedup-args $b_args ["--execution.threads" "0"]
     } else { $b_args }
+    let producer_context = if $ctx.producer_isolation {
+        let folder = ($"($ctx.results_dir)/producer-isolation" | path expand)
+        mkdir $folder
+        let path = $"($folder)/node-context.json"
+        {
+            mode: "producer-isolation"
+            phase: $phase
+            workflow_sha: (e2e-worktree-sha ($env.PWD | path expand))
+            source_ref: $run.ref
+            binary: ($run.tempo | path expand)
+            binary_sha256: (e2e-binary-sha256 $run.tempo)
+            node_build_manifest: ($"($ctx.results_dir)/build-manifest.json" | path expand)
+            txgen_build_manifest: ($ctx.producer_build | path expand)
+            lifecycle_config: ($env.TEMPO_PRODUCER_LIFECYCLE_CONFIG | path expand)
+            measurement_exclusivity_evidence: {
+                path: ($env.TEMPO_PRODUCER_EXCLUSIVITY_EVIDENCE | path expand)
+                sha256: (e2e-binary-sha256 $env.TEMPO_PRODUCER_EXCLUSIVITY_EVIDENCE)
+            }
+            captured_realtime_ns: (date now | into int)
+            genesis: ($genesis | path expand)
+            tracing_otlp_enabled: ($ctx.tracing_otlp != "")
+            a: {
+                rpc_url: $a_rpc, args: (producer-bound-node-args $a_args), log_dir: ($a_log_dir | path expand)
+                datadir: $ctx.a.datadir, cpus: $ctx.a.cpus, memory: $ctx.a.memory
+                snapshot_state: $ctx.a.state_path
+                snapshot_marker: $"($ctx.a.datadir)/($BENCH_META_SUBDIR)/marker.json"
+                scope: ($ctx.producer_lifecycle.node_units | get 0)
+            }
+            b: {
+                rpc_url: $b_rpc, args: (producer-bound-node-args $b_args), log_dir: ($b_log_dir | path expand)
+                datadir: $ctx.b.datadir, cpus: $ctx.b.cpus, memory: $ctx.b.memory
+                snapshot_state: $ctx.b.state_path
+                snapshot_marker: $"($ctx.b.datadir)/($BENCH_META_SUBDIR)/marker.json"
+                scope: ($ctx.producer_lifecycle.node_units | get 1)
+            }
+        } | to json | save $path
+        $path
+    } else { "" }
     let differential_config = $"($ctx.results_dir)/differential-config-($phase).json"
     if $ctx.sequential_peer {
         {
@@ -1187,8 +1274,10 @@ def run-local-e2e-phase [run: record, ctx: record] {
     mark-schelk-dirty-at $ctx.a.state_path
     mark-schelk-dirty-at $ctx.b.state_path
 
-    start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory
-    start-e2e-local-node b $phase $run.tempo $b_args $env_prefix $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory
+    let producer_units = if $ctx.producer_isolation { $ctx.producer_lifecycle.node_units } else { ["" ""] }
+    let producer_description = if $ctx.producer_isolation { $ctx.producer_lifecycle.unit_description } else { "" }
+    start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory --unit ($producer_units | get 0) --description $producer_description
+    start-e2e-local-node b $phase $run.tempo $b_args $env_prefix $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory --unit ($producer_units | get 1) --description $producer_description
 
     sleep 2sec
     let rpc_timeout = if $ctx.bloat > 0 { 600 } else { 300 }
@@ -1290,6 +1379,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 --initial-db-size-bytes $initial_db_size_bytes
                 --victoriametrics-url $ctx.victoriametrics_url
                 --clickhouse-url $phase_clickhouse_url
+                --producer-context $producer_context
                 --skip-funding=($ctx.bloat > 0))
             if not $bench_result.ok {
                 $bench_result.exit_code
@@ -1373,7 +1463,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     chown-to-current-user $b_log_dir
     if ($a_log_dir | path exists) { cp -r $a_log_dir $"($ctx.results_dir)/logs-($phase)-a" }
     if ($b_log_dir | path exists) { cp -r $b_log_dir $"($ctx.results_dir)/logs-($phase)-b" }
-    restore-system-tuning $tuning_state
+    if not $ctx.producer_isolation { restore-system-tuning $tuning_state }
 
     if $phase_exit != 0 {
         return $phase_exit
@@ -1496,6 +1586,53 @@ def "main render-txgen-spec" [
     print $spec.spec_path
 }
 
+# Independent workflow finalizer. It runs outside the control scope even when
+# the e2e command was interrupted before reaching its ordinary teardown.
+def "main producer-cleanup" [--lifecycle: string] {
+    let stopped = (^sudo -n python3 benchmarks/parallel-execution/producer_lifecycle.py restore --config $lifecycle | complete)
+    print $stopped.stdout
+    if $stopped.exit_code != 0 {
+        print $stopped.stderr
+        exit $stopped.exit_code
+    }
+    if not (has-schelk) { error make { msg: "producer cleanup requires Schelk" } }
+    # restore has closed the run to new launches and verified every owned scope
+    # empty. quiesce is a running-control guard, so it is no longer used here.
+    $env.TEMPO_PRODUCER_LIFECYCLE_CONFIG = ""
+    let location = ($lifecycle | path dirname | path join "results-location.json")
+    mut failures = []
+    if ($location | path exists) {
+        let results = (open $location).results_dir
+        for role in [a b] {
+            let source = $"($LOCALNET_DIR)/logs-e2e-local-feature-1-($role)"
+            let destination = $"($results)/logs-feature-1-($role)"
+            if ($source | path exists) and not ($destination | path exists) {
+                let copied = (try {
+                    chown-to-current-user $source
+                    cp -r $source $destination
+                    true
+                } catch { false })
+                if not $copied { $failures = ($failures | append $"log copy failed for ($role)") }
+            }
+        }
+    }
+    mut snapshots = []
+    for node in [
+        { role: a, state: $E2E_A_STATE_PATH, mount: $E2E_A_MOUNT }
+        { role: b, state: $E2E_B_STATE_PATH, mount: $E2E_B_MOUNT }
+    ] {
+        let restored = (try {
+            bench-restore-at $node.state $node.mount $"($node.mount)/tempo_e2e_100000mb"
+            true
+        } catch { false })
+        $snapshots = ($snapshots | append { role: $node.role, restored: $restored })
+        if not $restored { $failures = ($failures | append $"snapshot restore failed for ($node.role)") }
+    }
+    { at: (date now), snapshots: $snapshots, failures: $failures, complete: ($failures | is-empty) }
+        | to json | save ($lifecycle | path dirname | path join "cleanup.json")
+    if not ($failures | is-empty) { error make { msg: ($failures | str join "; ") } }
+}
+
 # Run the e2e sequence on one runner.
 def "main e2e" [
     --baseline: string                                  # Baseline git SHA/ref
@@ -1534,6 +1671,9 @@ def "main e2e" [
     --run-side: string = "comparison"                   # Phases to run: comparison, feature, or baseline
     --sequential-peer                                  # Verify generated blocks with sequential peer B; feature-only
     --disposal-clock-calibration                       # Fixed 25k same-binary stage timer diagnostic
+    --producer-isolation                              # Generate signed output into wc; never submit the measured workload
+    --producer-build: string = ""                     # Bound stock txgen build manifest for the producer diagnostic
+    --producer-lifecycle: string = ""                 # Persisted workflow cleanup configuration, outside snapshots
     --run-type: string = ""                             # Run type label (dispatch, nightly, release)
     --baseline-args: string = ""                        # Additional node args for baseline phases
     --feature-args: string = ""                         # Additional node args for feature phases
@@ -1552,6 +1692,31 @@ def "main e2e" [
     --valscope-dir: string = "../valscope"               # Path to the ValScope checkout
     --skip-summary                                       # Leave summary generation to a later workflow step
 ] {
+    if $producer_isolation {
+        if $profile != "profiling" or not $no_default_features or $run_side != "feature" or $run_pairs != 1 or $duration != 60 or $tps != 50000 or $accounts != 1000 or $max_concurrent_requests != 100 or $bloat != 100 or $token_count != 4 {
+            error make { msg: "producer isolation requires profiling/feature-only/50k-label/60s/one-phase/1000-account/100-RPC/100GiB/4-token controls" }
+        }
+        if $baseline != $feature or $preset != "public-mix" or $baseline_hardfork != "T14" or $feature_hardfork != "T14" or $gas_limit != "1000000000000" or $general_gas_limit != "1500000000" {
+            error make { msg: "producer isolation requires identical node source and fixed public-mix/T14/gas controls" }
+        }
+        if $samply or $scheduler_trace or $tracy != "off" or $sequential_peer or $disposal_clock_calibration or $valscope_static_report or $clickhouse_url != "" or $victoriametrics_url != "" or $baseline_env != "" or $feature_env != "" or $bench_env != "" or $bench_args != "" or not $tune or $init_only or $force_bloat or not $skip_summary {
+            error make { msg: "producer isolation cannot combine profilers, runtime overrides, snapshot promotion or performance publication" }
+        }
+        let expected = ["--execution.threads" "8" "--execution.batch-size" "128" "--execution.capture-window" "128" "--engine.prewarming-threads" "16" "--engine.account-worker-count" "32" "--engine.storage-worker-count" "32" "--log.file.filter=debug"]
+        if (parse-cli-args $baseline_args) != $expected or (parse-cli-args $feature_args) != $expected {
+            error make { msg: "producer isolation requires the fixed node arguments with stage diagnostics disabled" }
+        }
+        if $producer_build == "" or not ($producer_build | path exists) or $producer_lifecycle == "" or not ($producer_lifecycle | path exists) or ($env.TEMPO_PRODUCER_EXCLUSIVITY_EVIDENCE? | default "") == "" {
+            error make { msg: "producer isolation requires an existing stock txgen build manifest" }
+        }
+        if not (has-schelk) {
+            error make { msg: "producer isolation requires the official Schelk runner" }
+        }
+        $env.TEMPO_PRODUCER_LIFECYCLE_CONFIG = ($producer_lifecycle | path expand)
+        producer-quiesce-if-enabled
+    } else if $producer_build != "" or $producer_lifecycle != "" or ($env.TEMPO_PRODUCER_LIFECYCLE_CONFIG? | default "") != "" {
+        error make { msg: "producer build and lifecycle configuration require --producer-isolation" }
+    }
     if $disposal_clock_calibration {
         if $profile != "profiling" or not $no_default_features or $run_side != "comparison" or $run_pairs != 3 or $duration != 90 or $tps != 25000 or $accounts != 1000 or $max_concurrent_requests != 100 or $bloat != 100 or $token_count != 4 {
             error make { msg: "disposal calibration requires the frozen profiling/25k/90s/3-pair/1000-account/100-RPC/100GiB/4-token controls" }
@@ -1678,8 +1843,8 @@ def "main e2e" [
     let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
     let general_gas_limit_args = if $general_gas_limit != "" { ["--general-gas-limit" $general_gas_limit] } else { [] }
     let tracing_otlp = (derive-tracing-otlp $tracing_otlp)
-    if $disposal_clock_calibration and $tracing_otlp == "" {
-        error make { msg: "disposal calibration requires the original node OTLP endpoint" }
+    if ($disposal_clock_calibration or $producer_isolation) and $tracing_otlp == "" {
+        error make { msg: "diagnostic requires the original node OTLP endpoint" }
     }
     if $tracing_otlp != "" {
         $env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT = $tracing_otlp
@@ -1692,6 +1857,9 @@ def "main e2e" [
     bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
 
     let snapshots_ready = (e2e-snapshots-ready $a_db $b_db)
+    if $producer_isolation and not $snapshots_ready {
+        error make { msg: "producer diagnostic requires existing 100GiB snapshots; refusing rebuild or promotion" }
+    }
     let should_init_snapshots = $force_bloat or (not $snapshots_ready)
     if (not $snapshots_ready) and (not $force_bloat) {
         print $"Local e2e snapshot ($bloat) is missing required files; initializing it once."
@@ -1788,6 +1956,10 @@ def "main e2e" [
 
     let results_dir = $"($BENCH_RESULTS_DIR)/($timestamp)"
     mkdir $results_dir
+    if $producer_isolation {
+        { results_dir: ($results_dir | path expand) }
+            | to json | save ($producer_lifecycle | path dirname | path join "results-location.json")
+    }
     print $"BENCH_RESULTS_DIR=($results_dir)"
     cp $preset_path $"($results_dir)/txgen-spec.yml"
 
@@ -1948,6 +2120,9 @@ def "main e2e" [
         sequential_peer: $sequential_peer
         disposal_clock: $disposal_clock_calibration
         disposal_clock_config: $disposal_clock_config
+        producer_isolation: $producer_isolation
+        producer_build: $producer_build
+        producer_lifecycle: (if $producer_isolation { open $producer_lifecycle } else { null })
         bench_args: $bench_args
         baseline_env: $baseline_env
         feature_env: $feature_env

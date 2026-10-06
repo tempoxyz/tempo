@@ -741,8 +741,12 @@ def txgen-run-preset-pipeline [
     --tip20-token-count: int = 0
     --bloat-token-count: int = 4
     --initial-db-size-bytes: int = 0
+    --producer-context: string = ""                    # Opt-in producer diagnostic context; timed output goes only to wc
     --skip-funding                                   # Skip faucet funding (accounts already funded at genesis via state bloat)
 ] {
+    if $producer_context != "" and ($duration != 60 or $tps != 50000 or $accounts != 1000 or $max_concurrent_requests != 100 or $bench_args != "" or $bench_env != "" or $clickhouse_url != "" or $victoriametrics_url != "") {
+        error make { msg: "producer diagnostic requires the fixed workload controls and no sender publication" }
+    }
     let chain_id = (txgen-fetch-chain-id $generate_rpc_url)
     $env.TXGEN_ACCOUNTS = ($accounts | into string)
     mut spec_path = ($preset_path | path expand)
@@ -902,6 +906,37 @@ def txgen-run-preset-pipeline [
 
     if $setup_result.exit_code != 0 {
         return { ok: false, exit_code: $setup_result.exit_code, report_path: $report_path }
+    }
+
+    if $producer_context != "" {
+        let output = ($producer_context | path dirname)
+        let setup_evidence = $"($output)/setup-confirmation.json"
+        {
+            chain_id: $chain_id
+            rpc_url: $generate_rpc_url
+            setup_argv: ($txgen_setup_cmd | append $workload_extra_args | append $setup_state_args)
+            sender_argv: ($bench_send_base_cmd | append ["--drain-timeout" 0])
+            exit_code: $setup_result.exit_code
+            stdout: $setup_result.stdout
+            stderr: $setup_result.stderr
+        } | to json | save $setup_evidence
+        let config = $"($output)/config.json"
+        let prepare_cmd = (txgen-shell-join ["python3" "benchmarks/parallel-execution/producer_context.py" "prepare"
+            "--context" $producer_context "--spec" $spec_path "--setup-state" $setup_state_path
+            "--setup-evidence" $setup_evidence "--output" $config])
+        let supervisor_cmd = (txgen-shell-join ["python3" "benchmarks/parallel-execution/producer_supervisor.py"
+            "--config" $config "--output-dir" $"($output)/attempt"])
+        # Match the ordinary pipeline's descriptor-limit operation. Context and
+        # supervisor observe their actual inherited limits after the same wrapper.
+        let producer_pipeline = $"set -euo pipefail; ulimit -Sn unlimited; ($prepare_cmd); exec ($supervisor_cmd)"
+        print "  Measuring signed generator output into wc for 60 seconds; generated transactions are discarded."
+        let measured = (bash -lc $producer_pipeline | complete)
+        if $measured.stdout != "" { print $measured.stdout }
+        if $measured.stderr != "" { print $measured.stderr }
+        { exit_code: $measured.exit_code, observed_realtime_ns: (date now | into int),
+          limit_operation: "bash: ulimit -Sn unlimited", result: $"($output)/attempt/result.json" }
+            | to json | save $"($output)/supervisor-exit.json"
+        return { ok: ($measured.exit_code == 0), exit_code: $measured.exit_code, report_path: $"($output)/attempt/result.json", diagnostic: "producer-isolation" }
     }
 
     if $is_vault or $preset_name == "zones" {

@@ -82,6 +82,7 @@ on:
         options:
           - "off"
           - disposal-clock
+          - producer-isolation
           - samply
           - samply-low-rate
           - samply-buffered
@@ -403,6 +404,7 @@ jobs:
       BENCH_SAMPLY_BUILD_MANIFEST: ""
       BENCH_SCHED_TRACE: ${{ inputs.profiling == 'kernel-scheduling' }}
       BENCH_DISPOSAL_CLOCK: ${{ inputs.profiling == 'disposal-clock' }}
+      BENCH_PRODUCER_ISOLATION: ${{ inputs.profiling == 'producer-isolation' }}
       BENCH_TRACY: ${{ inputs.tracy != '' && inputs.tracy || ((inputs.profiling == 'tracy' || inputs.profiling == 'both') && 'tracy' || ((inputs.profiling == 'off' || inputs.profiling == 'samply') && 'off' || 'off')) }}
       BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds || '10' }}
       BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset }}
@@ -419,7 +421,7 @@ jobs:
       BENCH_RUN_TYPE: ${{ inputs.run-type || 'dispatch' }}
       BENCH_FORCE_BLOAT: ${{ inputs.force-bloat || 'false' }}
       BENCH_NO_CACHE: ${{ inputs.no-cache || 'false' }}
-      BENCH_NO_SLACK: ${{ (inputs.sequential-peer || inputs.profiling == 'samply-low-rate' || inputs.profiling == 'samply-buffered' || inputs.profiling == 'samply-scheduling' || inputs.profiling == 'kernel-scheduling' || inputs.profiling == 'disposal-clock') && 'true' || inputs.no-slack }}
+      BENCH_NO_SLACK: ${{ (inputs.sequential-peer || inputs.profiling == 'samply-low-rate' || inputs.profiling == 'samply-buffered' || inputs.profiling == 'samply-scheduling' || inputs.profiling == 'kernel-scheduling' || inputs.profiling == 'disposal-clock' || inputs.profiling == 'producer-isolation') && 'true' || inputs.no-slack }}
       # The reusable input defaults to always. Direct manual dispatch has no slack
       # input and uses win-only notifications, without adding a 26th UI input.
       BENCH_SLACK: ${{ inputs.slack || 'on-win' }}
@@ -429,17 +431,17 @@ jobs:
       BENCH_BASELINE_ENV: ${{ inputs.baseline-env }}
       BENCH_FEATURE_ENV: ${{ inputs.feature-env }}
       BENCH_RUN_PAIRS: ${{ inputs.run-pairs || '3' }}
-      BENCH_RUN_SIDE: ${{ inputs.run-side || 'comparison' }}
+      BENCH_RUN_SIDE: ${{ inputs.profiling == 'producer-isolation' && 'feature' || inputs.run-side || 'comparison' }}
       BENCH_SEQUENTIAL_PEER: ${{ inputs.sequential-peer == true }}
       BENCH_CLICKHOUSE_RUN: ${{ inputs.clickhouse-run || 'feature-1' }}
       BENCHMARK_ID: bench-e2e-${{ github.run_id }}
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}
       BENCH_PR_HEAD_SHA: ${{ inputs.pr-head-sha }}
       BENCH_PR_HEAD_REF: ${{ inputs.pr-head-ref }}
-      CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
-      CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
-      CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
-      BENCH_VICTORIAMETRICS_URL: ${{ (inputs.metrics == true || inputs.metrics == 'true' || inputs.valscope == true || inputs.valscope == 'true') && secrets.BENCH_VICTORIAMETRICS_URL || '' }}
+      CLICKHOUSE_URL: ${{ inputs.profiling != 'producer-isolation' && secrets.CLICKHOUSE_URL || '' }}
+      CLICKHOUSE_USER: ${{ inputs.profiling != 'producer-isolation' && secrets.CLICKHOUSE_USER || '' }}
+      CLICKHOUSE_PASSWORD: ${{ inputs.profiling != 'producer-isolation' && secrets.CLICKHOUSE_PASSWORD || '' }}
+      BENCH_VICTORIAMETRICS_URL: ${{ inputs.profiling != 'producer-isolation' && (inputs.metrics == true || inputs.metrics == 'true' || inputs.valscope == true || inputs.valscope == 'true') && secrets.BENCH_VICTORIAMETRICS_URL || '' }}
       VICTORIAMETRICS_URL: ${{ secrets.VICTORIAMETRICS_URL }}
       VICTORIALOGS_URL: ${{ secrets.VICTORIALOGS_URL }}
       VALSCOPE_REPORTS_BASE_URL: ${{ vars.VALSCOPE_REPORTS_BASE_URL }}
@@ -448,6 +450,40 @@ jobs:
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+
+      - name: Validate producer diagnostic controls
+        if: env.BENCH_PRODUCER_ISOLATION == 'true'
+        run: |
+          python3 - <<'PY'
+          import os, shlex
+          expected = {
+              'PRESET': 'public-mix', 'DURATION': '60', 'BLOAT': '100',
+              'TPS': '50000', 'ACCOUNTS': '1000', 'MAX_CONCURRENT_REQUESTS': '100',
+              'TOKEN_COUNT': '4', 'RUN_PAIRS': '1', 'RUN_SIDE': 'feature',
+              'BASELINE_HARDFORK': 'T14', 'FEATURE_HARDFORK': 'T14',
+              'TXGEN_REF': '8ca73369c4b42ffffaf40066bbde8673141049c1',
+              'GAS_LIMIT': '1000000000000', 'GENERAL_GAS_LIMIT': '1500000000',
+              'OTLP': 'true', 'NO_SLACK': 'true', 'VALSCOPE': 'false',
+              'METRICS': 'false', 'SAMPLY': 'false', 'TRACY': 'off',
+              'SCHED_TRACE': 'false', 'DISPOSAL_CLOCK': 'false',
+              'SEQUENTIAL_PEER': 'false', 'SKIP_STATE_ROOT': 'false',
+              'FORCE_BLOAT': 'false',
+          }
+          for suffix, value in expected.items():
+              if os.environ.get('BENCH_' + suffix) != value:
+                  raise SystemExit('Producer diagnostic requires BENCH_' + suffix + '=' + value)
+          for suffix in ('PR', 'COMMENT_ID', 'BASELINE_ENV', 'FEATURE_ENV', 'BENCH_ENV',
+                         'BENCH_ARGS', 'BASELINE_FEATURES', 'FEATURE_FEATURES'):
+              if os.environ.get('BENCH_' + suffix):
+                  raise SystemExit('Producer diagnostic forbids BENCH_' + suffix)
+          node = ['--execution.threads', '8', '--execution.batch-size', '128',
+                  '--execution.capture-window', '128', '--engine.prewarming-threads', '16',
+                  '--engine.account-worker-count', '32', '--engine.storage-worker-count', '32',
+                  '--log.file.filter=debug']
+          for side in ('BASELINE', 'FEATURE'):
+              if shlex.split(os.environ['BENCH_' + side + '_ARGS']) != node:
+                  raise SystemExit('Producer diagnostic node arguments differ from fixed controls')
+          PY
 
       - name: Reset workspace directory
         run: |
@@ -795,12 +831,141 @@ jobs:
 
           TXGEN_GIT_URL="https://github.com/tempoxyz/txgen"
           install_args=(--git "$TXGEN_GIT_URL" --locked)
-          if [ -n "$BENCH_TXGEN_REF" ]; then
+          if [ "$BENCH_PRODUCER_ISOLATION" = "true" ]; then
+            install_args+=(--rev "8ca73369c4b42ffffaf40066bbde8673141049c1" --force)
+          elif [ -n "$BENCH_TXGEN_REF" ]; then
             TXGEN_REV="$(git ls-remote "$TXGEN_GIT_URL" "$BENCH_TXGEN_REF" "refs/heads/$BENCH_TXGEN_REF" "refs/tags/$BENCH_TXGEN_REF" | awk 'BEGIN { rev = "" } /\^\{\}$/ { rev = $1; exit } rev == "" { rev = $1 } END { if (rev != "") print rev }')"
             install_args+=(--rev "${TXGEN_REV:-$BENCH_TXGEN_REF}")
           fi
 
-          cargo install "${install_args[@]}" txgen-tempo bench-cli
+          if [ "$BENCH_PRODUCER_ISOLATION" = "true" ]; then
+            export PRODUCER_BUILD="$GITHUB_WORKSPACE/bench-results/producer-build"
+            export PRODUCER_CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+            # Keep this producer install independent of compiler wrappers and
+            # host flag overrides; subsequent node-build steps retain their env.
+            export RUSTC_WRAPPER="" RUSTC_WORKSPACE_WRAPPER="" RUSTFLAGS="" CARGO_ENCODED_RUSTFLAGS=""
+            mkdir -p "$PRODUCER_BUILD"
+            python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess, tomllib
+          out = pathlib.Path(os.environ['PRODUCER_BUILD'])
+          cargo_home = pathlib.Path(os.environ['PRODUCER_CARGO_HOME']).resolve()
+          unsupported_env = sorted(name for name, value in os.environ.items() if value and
+              (name in ('RUSTC', 'RUSTDOC') or name.startswith(('CARGO_PROFILE_', 'CARGO_TARGET_')) or
+               (name.startswith('CARGO_BUILD_') and name != 'CARGO_BUILD_TARGET')))
+          (out / 'unsupported-environment-names.json').write_text(json.dumps(unsupported_env) + '\n')
+          if unsupported_env:
+              raise SystemExit('Unsupported producer compiler environment names; see retained names only')
+          starts = [pathlib.Path.cwd().resolve()]
+          candidates = list((cargo_home / 'git/checkouts').glob('txgen-*/*'))
+          if len(candidates) > 128:
+              raise SystemExit('Too many txgen source candidates')
+          for candidate in candidates:
+              if (candidate / '.git').exists():
+                  head = subprocess.check_output(['git', '-C', str(candidate), 'rev-parse', 'HEAD'], text=True, timeout=10).strip()
+                  if head == '8ca73369c4b42ffffaf40066bbde8673141049c1': starts.append(candidate.resolve())
+          searched = set(cargo_home / name for name in ('config', 'config.toml'))
+          for start in starts:
+              for parent in (start, *start.parents):
+                  searched.update(parent / '.cargo' / name for name in ('config', 'config.toml'))
+          rows = []
+          for path in sorted(searched):
+              row = {'path': str(path), 'exists': path.exists()}
+              if row['exists']:
+                  raw = path.read_bytes()
+                  if len(raw) > 1024 * 1024: raise SystemExit('Cargo configuration exceeds evidence bound')
+                  value = tomllib.loads(raw.decode())
+                  row.update(sha256=hashlib.sha256(raw).hexdigest(), unsupported_sections=[
+                      name for name in ('build', 'profile', 'target', 'env', 'unstable') if value.get(name)])
+              rows.append(row)
+          (out / 'cargo-config-before.json').write_text(json.dumps({'schema_version': 1,
+              'cwd': str(pathlib.Path.cwd().resolve()), 'cargo_home': str(cargo_home), 'searched': rows}, indent=2) + '\n')
+          if any(row.get('unsupported_sections') for row in rows):
+              raise SystemExit('Unsupported Cargo build/profile/target/env/unstable configuration')
+          PY
+            cargo --version > "$PRODUCER_BUILD/cargo-version.txt"
+            rustc -vV > "$PRODUCER_BUILD/rustc-version.txt"
+            date +%s%N > "$PRODUCER_BUILD/install-start-ns.txt"
+            set +e
+            cargo install "${install_args[@]}" txgen-tempo bench-cli 2>&1 | tee "$PRODUCER_BUILD/install.log"
+            install_pipeline_status=("${PIPESTATUS[@]}")
+            install_status=${install_pipeline_status[0]}
+            set -e
+            date +%s%N > "$PRODUCER_BUILD/install-finish-ns.txt"
+            printf '%s\n' "$install_status" > "$PRODUCER_BUILD/install-exit.txt"
+            [ "$install_status" -eq 0 ] || exit "$install_status"
+            [ "${install_pipeline_status[1]}" -eq 0 ] || exit "${install_pipeline_status[1]}"
+            export PRODUCER_CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+            python3 - <<'PY'
+          import hashlib, json, os, pathlib, shutil, subprocess, tomllib
+          out = pathlib.Path(os.environ['PRODUCER_BUILD'])
+          cargo_home = pathlib.Path(os.environ['PRODUCER_CARGO_HOME']).resolve()
+          commit = '8ca73369c4b42ffffaf40066bbde8673141049c1'
+          def git(path, *args):
+              return subprocess.check_output(['git', '-C', str(path), *args], timeout=10, text=True).strip()
+          roots = list((cargo_home / 'git/checkouts').glob('txgen-*/*'))
+          if len(roots) > 128:
+              raise SystemExit('Too many txgen source candidates')
+          matching = [p.resolve() for p in roots if (p / '.git').exists() and git(p, 'rev-parse', 'HEAD') == commit]
+          if len(matching) != 1 or git(matching[0], 'status', '--porcelain', '--untracked-files=all'):
+              raise SystemExit('Expected one clean matching Cargo git checkout for stock txgen')
+          source = matching[0]
+          def binding(path):
+              path = path.resolve()
+              if not path.is_file() or path.stat().st_size > 16 * 1024 * 1024:
+                  raise SystemExit('Missing or oversized install evidence: ' + str(path))
+              return {'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+          searched = set()
+          for start in (pathlib.Path.cwd().resolve(), source):
+              for parent in (start, *start.parents):
+                  searched.update(parent / '.cargo' / name for name in ('config', 'config.toml'))
+          searched.update(cargo_home / name for name in ('config', 'config.toml'))
+          before = json.loads((out / 'cargo-config-before.json').read_text())
+          before_rows = {row['path']: row for row in before['searched']}
+          searched.update(pathlib.Path(path) for path in before_rows)
+          configuration = []
+          for path in sorted(searched):
+              item = {'path': str(path), 'exists': path.exists()}
+              if item['exists']:
+                  item['sha256'] = binding(path)['sha256']
+                  value = tomllib.loads(path.read_text())
+                  item['unsupported_sections'] = [name for name in
+                      ('build', 'profile', 'target', 'env', 'unstable') if value.get(name)]
+                  if item['unsupported_sections']:
+                      raise SystemExit('Unsupported Cargo configuration after install')
+              if str(path) in before_rows:
+                  if item != before_rows[str(path)]: raise SystemExit('Cargo configuration changed during install')
+              elif item['exists']:
+                  raise SystemExit('Newly discovered source configuration was not checked before install')
+              configuration.append(item)
+          config = out / 'cargo-config-evidence.json'
+          config.write_text(json.dumps({'schema_version': 1, 'cwd': str(pathlib.Path.cwd().resolve()),
+              'cargo_home': str(cargo_home), 'source_checkout': str(source), 'searched': configuration,
+              'before': binding(out / 'cargo-config-before.json'), 'unsupported_environment_names': []}, indent=2) + '\n')
+          shutil.copyfile(cargo_home / '.crates2.json', out / 'crates2.json')
+          record = {'schema_version': 1, 'status': 'completed',
+              'argv': ['cargo', 'install', '--git', 'https://github.com/tempoxyz/txgen', '--locked',
+                       '--rev', commit, '--force', 'txgen-tempo', 'bench-cli'],
+              'exit_code': 0, 'log_complete': True,
+              'started_realtime_ns': int((out / 'install-start-ns.txt').read_text()),
+              'finished_realtime_ns': int((out / 'install-finish-ns.txt').read_text()),
+              'source_checkout': str(source), 'log': binding(out / 'install.log'),
+              'install_metadata': binding(out / 'crates2.json'),
+              'cargo_version': binding(out / 'cargo-version.txt'), 'rustc_version': binding(out / 'rustc-version.txt'),
+              'cargo_config_evidence': binding(config),
+              'unsupported_environment_names': [],
+              'effective_environment': {name: os.environ.get(name, '') for name in
+                  ('RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', 'RUSTC_WRAPPER', 'RUSTC_WORKSPACE_WRAPPER', 'CARGO_BUILD_TARGET')}}
+          (out / 'install-record.json').write_text(json.dumps(record, indent=2) + '\n')
+          (out / 'source-checkout.txt').write_text(str(source) + '\n')
+          PY
+            python3 benchmarks/parallel-execution/producer_context.py build \
+              --source-checkout "$(cat "$PRODUCER_BUILD/source-checkout.txt")" \
+              --txgen-bin "$CARGO_BIN_DIR/txgen-tempo" --bench-bin "$CARGO_BIN_DIR/bench" \
+              --install-record "$PRODUCER_BUILD/install-record.json" --output "$PRODUCER_BUILD/build-manifest.json"
+            printf 'BENCH_PRODUCER_BUILD=%s\n' "$PRODUCER_BUILD/build-manifest.json" >> "$GITHUB_ENV"
+          else
+            cargo install "${install_args[@]}" txgen-tempo bench-cli
+          fi
           echo "TXGEN_TEMPO_BIN=$CARGO_BIN_DIR/txgen-tempo" >> "$GITHUB_ENV"
           echo "TXGEN_BENCH_BIN=$CARGO_BIN_DIR/bench" >> "$GITHUB_ENV"
           command -v txgen-tempo
@@ -1034,6 +1199,124 @@ jobs:
             const s = require('./.github/scripts/bench-update-status.js');
             await s({github, context, status: 'Running benchmark...'});
 
+      - name: Prepare producer lifecycle ownership
+        id: producer-ownership
+        if: env.BENCH_PRODUCER_ISOLATION == 'true'
+        run: |
+          export PRODUCER_STATE="$GITHUB_WORKSPACE/bench-results/producer-control-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir "$PRODUCER_STATE"
+          python3 - <<'PY'
+          import json, os, pathlib, secrets
+          directory = pathlib.Path(os.environ['PRODUCER_STATE']).resolve()
+          token = secrets.token_hex(16)
+          config = {'schema_version': 1, 'run_token': token, 'state_dir': str(directory),
+              'control_unit': 'tempo-producer-' + token + '-control.scope',
+              'node_units': ['tempo-producer-' + token + '-' + role + '.scope' for role in ('a', 'b')],
+              'unit_description': 'tempo-producer:' + token}
+          with (directory / 'config.json').open('x') as target:
+              json.dump(config, target, indent=2)
+              target.write('\n')
+          PY
+          printf 'BENCH_PRODUCER_LIFECYCLE=%s\n' "$PRODUCER_STATE/config.json" >> "$GITHUB_ENV"
+          printf 'TEMPO_PRODUCER_EXCLUSIVITY_EVIDENCE=%s\n' "$PRODUCER_STATE/exclusivity.json" >> "$GITHUB_ENV"
+          printf 'state=%s\n' "$PRODUCER_STATE" >> "$GITHUB_OUTPUT"
+          # Read only: refuse an already-busy runner; never kill by process name.
+          sudo -n python3 - "$PRODUCER_STATE/runner-preflight.json" <<'PY'
+          import json, os, pathlib, subprocess, sys, time
+          rows = []
+          for proc in pathlib.Path('/proc').iterdir():
+              if not proc.name.isdecimal():
+                  continue
+              try:
+                  executable = os.readlink(proc / 'exe')
+              except FileNotFoundError:
+                  continue
+              if pathlib.Path(executable.removesuffix(' (deleted)')).name in ('tempo', 'txgen-tempo', 'bench'):
+                  rows.append({'pid': int(proc.name), 'executable': executable})
+          record = {'captured_realtime_ns': time.time_ns(), 'matching_processes': rows,
+              'scope': 'One runner-local executable-name preflight; no process killing or assertion about arbitrary unrelated software.',
+              'boot_id': pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+              'tools': {name: subprocess.check_output([name, '--version'], timeout=5, text=True)
+                        for name in ('systemd-run', 'setpriv')}}
+          pathlib.Path(sys.argv[1]).write_text(json.dumps(record, indent=2) + '\n')
+          if rows:
+              raise SystemExit('Existing Tempo/txgen/bench process prevents producer diagnostic')
+          PY
+          sudo -n chown "$(id -u):$(id -g)" "$PRODUCER_STATE/runner-preflight.json"
+
+      - name: Refresh producer Actions read token
+        id: producer-github-sts
+        if: env.BENCH_PRODUCER_ISOLATION == 'true'
+        uses: tempoxyz/gh-actions/actions/github-sts@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        with:
+          policy: bench-e2e
+
+      - name: Verify producer task measurement exclusivity
+        id: producer-exclusivity
+        if: env.BENCH_PRODUCER_ISOLATION == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          # This existing app policy grants actions:read; reusable callers keep
+          # their original GITHUB_TOKEN permissions.
+          github-token: ${{ steps.producer-github-sts.outputs.token }}
+          script: |
+            const fs = require('fs'), path = require('path'), crypto = require('crypto');
+            const config = JSON.parse(fs.readFileSync(process.env.BENCH_PRODUCER_LIFECYCLE, 'utf8'));
+            const current = (await github.rest.actions.getWorkflowRun({...context.repo, run_id: context.runId})).data;
+            if (typeof current.head_branch !== 'string' || !current.head_branch) throw new Error('Current task branch is unbound');
+            const raw = {current, pages: [], jobs: []};
+            const active = new Map();
+            const statuses = ['in_progress', 'queued', 'waiting', 'pending', 'requested'];
+            const counts = {};
+            for (const status of statuses) {
+              let complete = false, count = 0;
+              for (let page = 1; page <= 5; page++) {
+                const response = (await github.rest.actions.listWorkflowRunsForRepo({
+                  ...context.repo, status, per_page: 100, page,
+                })).data;
+                raw.pages.push({status, page, response});
+                count += response.workflow_runs.length;
+                for (const run of response.workflow_runs) {
+                  const workflow = run.path.split('@')[0];
+                  if (run.id !== context.runId && run.head_branch === current.head_branch &&
+                      /^\.github\/workflows\/bench[^/]*\.ya?ml$/.test(workflow)) active.set(run.id, run);
+                }
+                if (response.workflow_runs.length < 100) { complete = true; break; }
+              }
+              if (!complete) throw new Error('Bounded Actions snapshot pagination incomplete: ' + status);
+              counts[status] = count;
+            }
+            let jobsComplete = false;
+            for (let page = 1; page <= 5; page++) {
+              const response = (await github.rest.actions.listJobsForWorkflowRun({
+                ...context.repo, run_id: context.runId, filter: 'latest', per_page: 100, page,
+              })).data;
+              raw.jobs.push({page, response});
+              if (response.jobs.length < 100) { jobsComplete = true; break; }
+            }
+            if (!jobsComplete) throw new Error('Bounded Actions jobs snapshot pagination incomplete');
+            const jobs = raw.jobs.flatMap(p => p.response.jobs).filter(
+              job => job.status === 'in_progress' && job.runner_name === process.env.RUNNER_NAME);
+            if (jobs.length !== 1) throw new Error('Cannot bind unique current job and runner');
+            const directory = path.dirname(process.env.BENCH_PRODUCER_LIFECYCLE);
+            const bytes = Buffer.from(JSON.stringify(raw, null, 2) + '\n');
+            if (bytes.length > 16 * 1024 * 1024) throw new Error('Actions snapshot exceeds evidence cap');
+            const rawPath = path.join(directory, 'actions-snapshot.json');
+            fs.writeFileSync(rawPath, bytes, {flag: 'wx'});
+            const proof = {status: 'workflow_attested', workflow_sha: process.env.GITHUB_SHA,
+              run_id: String(context.runId), github_run_attempt: process.env.GITHUB_RUN_ATTEMPT,
+              run_token: config.run_token, runner_name: process.env.RUNNER_NAME,
+              job_id: jobs[0].id, job_name: jobs[0].name, runner_id: jobs[0].runner_id,
+              runner_group_id: jobs[0].runner_group_id, runner_group_name: jobs[0].runner_group_name,
+              captured_realtime_ns: Date.now() * 1000000, head_branch: current.head_branch,
+              pagination_complete: true, counts, overlapping_runs: [...active.values()].map(
+                run => ({id: run.id, path: run.path, status: run.status, head_sha: run.head_sha})),
+              other_owned_measurement_active: active.size !== 0,
+              scope: 'Bounded paginated Actions observation of active benchmark workflows on this task branch; root separately serializes owned dispatches. API pages are not an atomic snapshot and do not certify unrelated other-host jobs or future launches.',
+              actions_snapshot: {path: rawPath, sha256: crypto.createHash('sha256').update(bytes).digest('hex')}};
+            fs.writeFileSync(process.env.TEMPO_PRODUCER_EXCLUSIVITY_EVIDENCE, JSON.stringify(proof, null, 2) + '\n', {flag: 'wx'});
+            if (active.size) throw new Error('Another active benchmark on this task branch prevents diagnostic');
+
       - name: Run e2e benchmark
         id: bench
         env:
@@ -1084,6 +1367,15 @@ jobs:
             # Preserve CI's nonincremental setting for both node and clock builds.
             export CARGO_INCREMENTAL=0
           fi
+          if [ "$BENCH_PRODUCER_ISOLATION" = "true" ]; then
+            if [ "$BASELINE_REF" != "$FEATURE_REF" ]; then
+              echo "::error::producer-isolation requires one identical node source"
+              exit 1
+            fi
+            CLICKHOUSE_URL=""
+            unset CLICKHOUSE_USER CLICKHOUSE_PASSWORD
+            BENCH_VICTORIAMETRICS_URL=""
+          fi
           if ! [[ "$BENCH_TOKEN_COUNT" =~ ^[1-9][0-9]*$ ]]; then
             echo "::error::token-count must be a positive integer"
             exit 1
@@ -1118,6 +1410,9 @@ jobs:
           [ "$BENCH_NO_CACHE" = "true" ] && cmd+=(--no-cache)
           [ "$BENCH_SEQUENTIAL_PEER" = "true" ] && cmd+=(--sequential-peer)
           [ "$BENCH_DISPOSAL_CLOCK" = "true" ] && cmd+=(--disposal-clock-calibration)
+          if [ "$BENCH_PRODUCER_ISOLATION" = "true" ]; then
+            cmd+=(--producer-isolation --producer-build "$BENCH_PRODUCER_BUILD" --producer-lifecycle "$BENCH_PRODUCER_LIFECYCLE")
+          fi
           [ "$BENCH_SAMPLY" = "true" ] && cmd+=(--samply)
           [ -n "$BENCH_SAMPLY_ARGS" ] && cmd+=(--samply-args="$BENCH_SAMPLY_ARGS")
           [ "$BENCH_SCHED_TRACE" = "true" ] && cmd+=(--scheduler-trace)
@@ -1214,7 +1509,7 @@ jobs:
           DEREK_BENCH_COMMAND=""
           # The bot parser cannot reproduce custom Samply options or disposal
           # clock controls. Omit unsupported shortcuts from tempo.nu summaries.
-          if [ "$BENCH_DISPOSAL_CLOCK" != "true" ] && [ -z "$BENCH_SAMPLY_ARGS" ]; then
+          if [ "$BENCH_DISPOSAL_CLOCK" != "true" ] && [ "$BENCH_PRODUCER_ISOLATION" != "true" ] && [ -z "$BENCH_SAMPLY_ARGS" ]; then
             for arg in "${derek_cmd[@]}"; do
               if [ -n "$DEREK_BENCH_COMMAND" ]; then
                 DEREK_BENCH_COMMAND+=" "
@@ -1257,7 +1552,118 @@ jobs:
           export DEREK_BENCH_COMMAND
           echo "DEREK_BENCH_COMMAND=$DEREK_BENCH_COMMAND" >> "$GITHUB_ENV"
 
-          "${cmd[@]}"
+          if [ "$BENCH_PRODUCER_ISOLATION" = "true" ]; then
+            # Advisory ownership for cooperating diagnostics on this runner. The
+            # independently captured Actions evidence has the narrower stated scope.
+            exec 200>"$RUNNER_TEMP/tempo-producer-isolation.lock"
+            flock -n 200 || { echo '::error::Another producer diagnostic holds the runner lock'; exit 1; }
+            # Keep this lock from prestate capture through the entire control
+            # invocation. No Nu snapshot/tuning mutation precedes capture.
+            sudo -n python3 benchmarks/parallel-execution/producer_lifecycle.py capture \
+              --config "$BENCH_PRODUCER_LIFECYCLE"
+            mapfile -t ownership < <(python3 - "$BENCH_PRODUCER_LIFECYCLE" <<'PY'
+          import json, sys
+          config = json.load(open(sys.argv[1]))
+          print(config['control_unit'])
+          print(config['unit_description'])
+          PY
+            )
+            [ "${#ownership[@]}" -eq 2 ]
+            # No PAM transition: setpriv restores the runner UID/GID/groups.
+            # Runtime evidence records actual inherited constraints after this route.
+            # Preserve secrets as environment; never serialize them into argv.
+            sudo -n --preserve-env env PATH="$PATH" systemd-run --scope --slice=system.slice \
+              --quiet --collect --same-dir --unit "${ownership[0]}" --description "${ownership[1]}" \
+              setpriv --reuid "$(id -u)" --regid "$(id -g)" --init-groups "${cmd[@]}"
+          else
+            "${cmd[@]}"
+          fi
+
+      - name: Restore producer host and snapshots
+        id: producer-cleanup
+        if: ${{ always() && env.BENCH_PRODUCER_ISOLATION == 'true' && steps.producer-ownership.outcome == 'success' }}
+        timeout-minutes: 10
+        run: |
+          # This step is outside the control scope and must run on cancellation.
+          # Settings restoration and proven empty scopes gate every snapshot restore.
+          capture_state="$(sudo -n python3 - "$BENCH_PRODUCER_LIFECYCLE" <<'PY'
+          import os, pathlib, sys
+          prestate = pathlib.Path(sys.argv[1]).parent / 'prestate.json'
+          try:
+              os.stat(prestate)
+          except FileNotFoundError:
+              print('absent')
+          else:
+              print('captured')
+          PY
+          )"
+          if [ "$capture_state" = absent ]; then
+            # No capture means the guarded Nu control command was never launched.
+            # The outer result still fails unless a complete measurement exists.
+            exit 0
+          fi
+          nu bench-e2e.nu producer-cleanup --lifecycle "$BENCH_PRODUCER_LIFECYCLE"
+
+      - name: Qualify producer diagnostic completion
+        if: ${{ always() && env.BENCH_PRODUCER_ISOLATION == 'true' && steps.producer-ownership.outcome != 'skipped' }}
+        env:
+          PRODUCER_BENCH_OUTCOME: ${{ steps.bench.outcome }}
+          PRODUCER_CLEANUP_OUTCOME: ${{ steps.producer-cleanup.outcome }}
+          PRODUCER_CANCELLED: ${{ job.status == 'cancelled' }}
+        run: |
+          if [ -n "${BENCH_PRODUCER_LIFECYCLE:-}" ]; then
+            # Change only known regular artifacts, with no recursive traversal
+            # or symlink following, so failed root-owned journals can be uploaded.
+            sudo -n python3 - "$BENCH_PRODUCER_LIFECYCLE" "$(id -u)" "$(id -g)" <<'PY'
+          import os, pathlib, stat, sys
+          directory = pathlib.Path(sys.argv[1]).parent
+          for name in ('config.json', 'lock', 'prestate.json', 'journal.json', 'runner-preflight.json',
+                       'actions-snapshot.json', 'exclusivity.json', 'results-location.json', 'cleanup.json'):
+              try:
+                  fd = os.open(directory / name, os.O_RDONLY | os.O_NOFOLLOW)
+              except FileNotFoundError:
+                  continue
+              try:
+                  if not stat.S_ISREG(os.fstat(fd).st_mode):
+                      raise SystemExit('Unexpected lifecycle artifact type')
+                  os.fchown(fd, int(sys.argv[2]), int(sys.argv[3]))
+              finally:
+                  os.close(fd)
+          PY
+          fi
+          python3 - <<'PY'
+          import json, os, pathlib, time
+          directory = pathlib.Path(os.environ['BENCH_PRODUCER_LIFECYCLE']).parent
+          errors = []
+          for name in ('PRODUCER_BENCH_OUTCOME', 'PRODUCER_CLEANUP_OUTCOME'):
+              if os.environ.get(name) != 'success': errors.append(name + ' was not success')
+          if os.environ.get('PRODUCER_CANCELLED') != 'false': errors.append('outer workflow cancelled')
+          try:
+              journal = json.loads((directory / 'journal.json').read_text())
+              cleanup = json.loads((directory / 'cleanup.json').read_text())
+              location = json.loads((directory / 'results-location.json').read_text())
+              results = pathlib.Path(location['results_dir']) / 'producer-isolation'
+              exit_record = json.loads((results / 'supervisor-exit.json').read_text())
+              result = json.loads((results / 'attempt/result.json').read_text())
+              if journal.get('status') != 'restored' or cleanup.get('complete') is not True:
+                  errors.append('host/snapshot cleanup was not verified')
+              if exit_record.get('exit_code') != 0:
+                  errors.append('helper did not exit zero')
+              if result.get('status') != 'valid_output_measurement' or result.get('cleanup_complete') is not True or result.get('test_limits') is not False:
+                  errors.append('helper result does not qualify')
+          except Exception as error:
+              errors.append(type(error).__name__ + ': ' + str(error))
+          verdict = {'status': 'invalid' if errors else 'qualified_diagnostic', 'errors': errors,
+              'captured_realtime_ns': time.time_ns(), 'accepted_chain_capacity_claim': False,
+              'performance_series_publication': False, 'slack_publication': False,
+              'requires_terminal_workflow_success': True}
+          if not errors:
+              verdict['decision'] = result['decision']
+              verdict['accounting'] = result['accounting']
+          (directory / 'outer-result.json').write_text(json.dumps(verdict, indent=2) + '\n')
+          if errors: raise SystemExit('Producer diagnostic failed outer lifecycle qualification')
+          print(json.dumps(verdict, indent=2))
+          PY
 
       - name: Verify buffered recorder after benchmark
         if: ${{ always() && steps.samply-buffered.outputs.binary != '' }}
@@ -1294,7 +1700,7 @@ jobs:
 
       - name: Generate e2e summary
         id: results-dir
-        if: success()
+        if: success() && env.BENCH_PRODUCER_ISOLATION != 'true'
         run: |
           RESULTS_DIR=$(find bench-results -mindepth 1 -maxdepth 1 -type d | sort | tail -1)
           if [ -z "$RESULTS_DIR" ]; then
@@ -1320,7 +1726,7 @@ jobs:
           fi
 
       - name: Upload results
-        if: ${{ always() && (!cancelled() || env.BENCH_DISPOSAL_CLOCK == 'true') }}
+        if: ${{ always() && (!cancelled() || env.BENCH_DISPOSAL_CLOCK == 'true' || env.BENCH_PRODUCER_ISOLATION == 'true') }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: tempo-bench-results
@@ -1337,7 +1743,7 @@ jobs:
           policy: bench-e2e
 
       - name: Post results to PR
-        if: success()
+        if: success() && env.BENCH_PRODUCER_ISOLATION != 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
