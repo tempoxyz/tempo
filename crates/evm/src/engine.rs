@@ -266,7 +266,6 @@ mod tests {
         )));
         let payload = TempoExecutionData {
             block: block.into(),
-            block_access_list: None,
         };
         let (iter, recover) = config
             .tx_iterator_for_payload(&payload)
