@@ -83,6 +83,7 @@ on:
           - "off"
           - disposal-clock
           - producer-isolation
+          - pipeline-pressure
           - samply
           - samply-low-rate
           - samply-buffered
@@ -405,6 +406,8 @@ jobs:
       BENCH_SCHED_TRACE: ${{ inputs.profiling == 'kernel-scheduling' }}
       BENCH_DISPOSAL_CLOCK: ${{ inputs.profiling == 'disposal-clock' }}
       BENCH_PRODUCER_ISOLATION: ${{ inputs.profiling == 'producer-isolation' }}
+      BENCH_PIPELINE_PRESSURE: ${{ inputs.profiling == 'pipeline-pressure' }}
+      BENCH_OWNED_DIAGNOSTIC: ${{ inputs.profiling == 'producer-isolation' || inputs.profiling == 'pipeline-pressure' }}
       BENCH_TRACY: ${{ inputs.tracy != '' && inputs.tracy || ((inputs.profiling == 'tracy' || inputs.profiling == 'both') && 'tracy' || ((inputs.profiling == 'off' || inputs.profiling == 'samply') && 'off' || 'off')) }}
       BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds || '10' }}
       BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset }}
@@ -421,27 +424,27 @@ jobs:
       BENCH_RUN_TYPE: ${{ inputs.run-type || 'dispatch' }}
       BENCH_FORCE_BLOAT: ${{ inputs.force-bloat || 'false' }}
       BENCH_NO_CACHE: ${{ inputs.no-cache || 'false' }}
-      BENCH_NO_SLACK: ${{ (inputs.sequential-peer || inputs.profiling == 'samply-low-rate' || inputs.profiling == 'samply-buffered' || inputs.profiling == 'samply-scheduling' || inputs.profiling == 'kernel-scheduling' || inputs.profiling == 'disposal-clock' || inputs.profiling == 'producer-isolation') && 'true' || inputs.no-slack }}
+      BENCH_NO_SLACK: ${{ (inputs.sequential-peer || inputs.profiling == 'samply-low-rate' || inputs.profiling == 'samply-buffered' || inputs.profiling == 'samply-scheduling' || inputs.profiling == 'kernel-scheduling' || inputs.profiling == 'disposal-clock' || inputs.profiling == 'producer-isolation' || inputs.profiling == 'pipeline-pressure') && 'true' || inputs.no-slack }}
       # The reusable input defaults to always. Direct manual dispatch has no slack
       # input and uses win-only notifications, without adding a 26th UI input.
       BENCH_SLACK: ${{ inputs.slack || 'on-win' }}
       BENCH_METRICS: ${{ inputs.metrics == true || inputs.metrics == 'true' }}
       BENCH_BENCH_ARGS: ${{ inputs.bench-args }}
-      BENCH_BENCH_ENV: ${{ inputs.bench-env }}
+      BENCH_BENCH_ENV: ${{ inputs.profiling == 'pipeline-pressure' && 'TXGEN_PIPELINE_PRESSURE=1 TXGEN_PIPELINE_PRESSURE_LABEL=feature-1' || inputs.bench-env }}
       BENCH_BASELINE_ENV: ${{ inputs.baseline-env }}
       BENCH_FEATURE_ENV: ${{ inputs.feature-env }}
       BENCH_RUN_PAIRS: ${{ inputs.run-pairs || '3' }}
-      BENCH_RUN_SIDE: ${{ inputs.profiling == 'producer-isolation' && 'feature' || inputs.run-side || 'comparison' }}
+      BENCH_RUN_SIDE: ${{ (inputs.profiling == 'producer-isolation' || inputs.profiling == 'pipeline-pressure') && 'feature' || inputs.run-side || 'comparison' }}
       BENCH_SEQUENTIAL_PEER: ${{ inputs.sequential-peer == true }}
       BENCH_CLICKHOUSE_RUN: ${{ inputs.clickhouse-run || 'feature-1' }}
       BENCHMARK_ID: bench-e2e-${{ github.run_id }}
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}
       BENCH_PR_HEAD_SHA: ${{ inputs.pr-head-sha }}
       BENCH_PR_HEAD_REF: ${{ inputs.pr-head-ref }}
-      CLICKHOUSE_URL: ${{ inputs.profiling != 'producer-isolation' && secrets.CLICKHOUSE_URL || '' }}
-      CLICKHOUSE_USER: ${{ inputs.profiling != 'producer-isolation' && secrets.CLICKHOUSE_USER || '' }}
-      CLICKHOUSE_PASSWORD: ${{ inputs.profiling != 'producer-isolation' && secrets.CLICKHOUSE_PASSWORD || '' }}
-      BENCH_VICTORIAMETRICS_URL: ${{ inputs.profiling != 'producer-isolation' && (inputs.metrics == true || inputs.metrics == 'true' || inputs.valscope == true || inputs.valscope == 'true') && secrets.BENCH_VICTORIAMETRICS_URL || '' }}
+      CLICKHOUSE_URL: ${{ inputs.profiling != 'producer-isolation' && inputs.profiling != 'pipeline-pressure' && secrets.CLICKHOUSE_URL || '' }}
+      CLICKHOUSE_USER: ${{ inputs.profiling != 'producer-isolation' && inputs.profiling != 'pipeline-pressure' && secrets.CLICKHOUSE_USER || '' }}
+      CLICKHOUSE_PASSWORD: ${{ inputs.profiling != 'producer-isolation' && inputs.profiling != 'pipeline-pressure' && secrets.CLICKHOUSE_PASSWORD || '' }}
+      BENCH_VICTORIAMETRICS_URL: ${{ inputs.profiling != 'producer-isolation' && inputs.profiling != 'pipeline-pressure' && (inputs.metrics == true || inputs.metrics == 'true' || inputs.valscope == true || inputs.valscope == 'true') && secrets.BENCH_VICTORIAMETRICS_URL || '' }}
       VICTORIAMETRICS_URL: ${{ secrets.VICTORIAMETRICS_URL }}
       VICTORIALOGS_URL: ${{ secrets.VICTORIALOGS_URL }}
       VALSCOPE_REPORTS_BASE_URL: ${{ vars.VALSCOPE_REPORTS_BASE_URL }}
@@ -451,28 +454,30 @@ jobs:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
 
-      - name: Validate producer diagnostic controls
-        if: env.BENCH_PRODUCER_ISOLATION == 'true'
+      - name: Validate owned diagnostic controls
+        if: env.BENCH_OWNED_DIAGNOSTIC == 'true'
         run: |
           python3 - <<'PY'
           import os, shlex
+          pressure = os.environ['BENCH_PIPELINE_PRESSURE'] == 'true'
           expected = {
-              'PRESET': 'public-mix', 'DURATION': '60', 'BLOAT': '100',
+              'PRESET': 'public-mix', 'DURATION': '90' if pressure else '60', 'BLOAT': '100',
               'TPS': '50000', 'ACCOUNTS': '1000', 'MAX_CONCURRENT_REQUESTS': '100',
               'TOKEN_COUNT': '4', 'RUN_PAIRS': '1', 'RUN_SIDE': 'feature',
               'BASELINE_HARDFORK': 'T14', 'FEATURE_HARDFORK': 'T14',
-              'TXGEN_REF': '8ca73369c4b42ffffaf40066bbde8673141049c1',
+              'TXGEN_REF': 'ed489fdf5e0bb9a416400f419fdcbb12a8b2f07c' if pressure else '8ca73369c4b42ffffaf40066bbde8673141049c1',
               'GAS_LIMIT': '1000000000000', 'GENERAL_GAS_LIMIT': '1500000000',
               'OTLP': 'true', 'NO_SLACK': 'true', 'VALSCOPE': 'false',
               'METRICS': 'false', 'SAMPLY': 'false', 'TRACY': 'off',
               'SCHED_TRACE': 'false', 'DISPOSAL_CLOCK': 'false',
               'SEQUENTIAL_PEER': 'false', 'SKIP_STATE_ROOT': 'false',
               'FORCE_BLOAT': 'false',
+              'BENCH_ENV': 'TXGEN_PIPELINE_PRESSURE=1 TXGEN_PIPELINE_PRESSURE_LABEL=feature-1' if pressure else '',
           }
           for suffix, value in expected.items():
               if os.environ.get('BENCH_' + suffix) != value:
                   raise SystemExit('Producer diagnostic requires BENCH_' + suffix + '=' + value)
-          for suffix in ('PR', 'COMMENT_ID', 'BASELINE_ENV', 'FEATURE_ENV', 'BENCH_ENV',
+          for suffix in ('PR', 'COMMENT_ID', 'BASELINE_ENV', 'FEATURE_ENV',
                          'BENCH_ARGS', 'BASELINE_FEATURES', 'FEATURE_FEATURES'):
               if os.environ.get('BENCH_' + suffix):
                   raise SystemExit('Producer diagnostic forbids BENCH_' + suffix)
@@ -831,14 +836,14 @@ jobs:
 
           TXGEN_GIT_URL="https://github.com/tempoxyz/txgen"
           install_args=(--git "$TXGEN_GIT_URL" --locked)
-          if [ "$BENCH_PRODUCER_ISOLATION" = "true" ]; then
-            install_args+=(--rev "8ca73369c4b42ffffaf40066bbde8673141049c1" --force)
+          if [ "$BENCH_OWNED_DIAGNOSTIC" = "true" ]; then
+            install_args+=(--rev "$BENCH_TXGEN_REF" --force)
           elif [ -n "$BENCH_TXGEN_REF" ]; then
             TXGEN_REV="$(git ls-remote "$TXGEN_GIT_URL" "$BENCH_TXGEN_REF" "refs/heads/$BENCH_TXGEN_REF" "refs/tags/$BENCH_TXGEN_REF" | awk 'BEGIN { rev = "" } /\^\{\}$/ { rev = $1; exit } rev == "" { rev = $1 } END { if (rev != "") print rev }')"
             install_args+=(--rev "${TXGEN_REV:-$BENCH_TXGEN_REF}")
           fi
 
-          if [ "$BENCH_PRODUCER_ISOLATION" = "true" ]; then
+          if [ "$BENCH_OWNED_DIAGNOSTIC" = "true" ]; then
             export PRODUCER_BUILD="$GITHUB_WORKSPACE/bench-results/producer-build"
             export PRODUCER_CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
             # Keep this producer install independent of compiler wrappers and
@@ -862,7 +867,7 @@ jobs:
           for candidate in candidates:
               if (candidate / '.git').exists():
                   head = subprocess.check_output(['git', '-C', str(candidate), 'rev-parse', 'HEAD'], text=True, timeout=10).strip()
-                  if head == '8ca73369c4b42ffffaf40066bbde8673141049c1': starts.append(candidate.resolve())
+                  if head == os.environ['BENCH_TXGEN_REF']: starts.append(candidate.resolve())
           searched = set(cargo_home / name for name in ('config', 'config.toml'))
           for start in starts:
               for parent in (start, *start.parents):
@@ -901,7 +906,7 @@ jobs:
           import producer_context
           out = pathlib.Path(os.environ['PRODUCER_BUILD'])
           cargo_home = pathlib.Path(os.environ['PRODUCER_CARGO_HOME']).resolve()
-          commit = '8ca73369c4b42ffffaf40066bbde8673141049c1'
+          commit = os.environ['BENCH_TXGEN_REF']
           system = producer_context.System()
           def git(path, *args):
               return producer_context.command(system, ['git', '-C', str(path), *args], 10).strip()
@@ -976,7 +981,7 @@ jobs:
           (out / 'install-record.json').write_text(json.dumps(record, indent=2) + '\n')
           (out / 'source-checkout.txt').write_text(str(source) + '\n')
           PY
-            python3 benchmarks/parallel-execution/producer_context.py build \
+            python3 benchmarks/parallel-execution/producer_context.py build --source-revision "$BENCH_TXGEN_REF" \
               --source-checkout "$(cat "$PRODUCER_BUILD/source-checkout.txt")" \
               --txgen-bin "$CARGO_BIN_DIR/txgen-tempo" --bench-bin "$CARGO_BIN_DIR/bench" \
               --install-record "$PRODUCER_BUILD/install-record.json" --output "$PRODUCER_BUILD/build-manifest.json"
@@ -1219,7 +1224,7 @@ jobs:
 
       - name: Prepare producer lifecycle ownership
         id: producer-ownership
-        if: env.BENCH_PRODUCER_ISOLATION == 'true'
+        if: env.BENCH_OWNED_DIAGNOSTIC == 'true'
         run: |
           export PRODUCER_STATE="$GITHUB_WORKSPACE/bench-results/producer-control-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           mkdir "$PRODUCER_STATE"
@@ -1254,6 +1259,8 @@ jobs:
           record = {'captured_realtime_ns': time.time_ns(), 'matching_processes': rows,
               'scope': 'One runner-local executable-name preflight; no process killing or assertion about arbitrary unrelated software.',
               'boot_id': pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+              'cpu_topology': json.loads(subprocess.check_output(['lscpu', '--json'], timeout=5, text=True)),
+              'launcher_affinity': sorted(os.sched_getaffinity(0)),
               'tools': {name: subprocess.check_output([name, '--version'], timeout=5, text=True)
                         for name in ('systemd-run', 'setpriv')}}
           pathlib.Path(sys.argv[1]).write_text(json.dumps(record, indent=2) + '\n')
@@ -1264,14 +1271,14 @@ jobs:
 
       - name: Refresh producer Actions read token
         id: producer-github-sts
-        if: env.BENCH_PRODUCER_ISOLATION == 'true'
+        if: env.BENCH_OWNED_DIAGNOSTIC == 'true'
         uses: tempoxyz/gh-actions/actions/github-sts@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
           policy: bench-e2e
 
       - name: Verify producer task measurement exclusivity
         id: producer-exclusivity
-        if: env.BENCH_PRODUCER_ISOLATION == 'true'
+        if: env.BENCH_OWNED_DIAGNOSTIC == 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           # This existing app policy grants actions:read; reusable callers keep
@@ -1385,7 +1392,7 @@ jobs:
             # Preserve CI's nonincremental setting for both node and clock builds.
             export CARGO_INCREMENTAL=0
           fi
-          if [ "$BENCH_PRODUCER_ISOLATION" = "true" ]; then
+          if [ "$BENCH_OWNED_DIAGNOSTIC" = "true" ]; then
             if [ "$BASELINE_REF" != "$FEATURE_REF" ]; then
               echo "::error::producer-isolation requires one identical node source"
               exit 1
@@ -1430,6 +1437,9 @@ jobs:
           [ "$BENCH_DISPOSAL_CLOCK" = "true" ] && cmd+=(--disposal-clock-calibration)
           if [ "$BENCH_PRODUCER_ISOLATION" = "true" ]; then
             cmd+=(--producer-isolation --producer-build "$BENCH_PRODUCER_BUILD" --producer-lifecycle "$BENCH_PRODUCER_LIFECYCLE")
+          fi
+          if [ "$BENCH_PIPELINE_PRESSURE" = "true" ]; then
+            cmd+=(--pipeline-pressure --producer-build "$BENCH_PRODUCER_BUILD" --producer-lifecycle "$BENCH_PRODUCER_LIFECYCLE")
           fi
           [ "$BENCH_SAMPLY" = "true" ] && cmd+=(--samply)
           [ -n "$BENCH_SAMPLY_ARGS" ] && cmd+=(--samply-args="$BENCH_SAMPLY_ARGS")
@@ -1527,7 +1537,7 @@ jobs:
           DEREK_BENCH_COMMAND=""
           # The bot parser cannot reproduce custom Samply options or disposal
           # clock controls. Omit unsupported shortcuts from tempo.nu summaries.
-          if [ "$BENCH_DISPOSAL_CLOCK" != "true" ] && [ "$BENCH_PRODUCER_ISOLATION" != "true" ] && [ -z "$BENCH_SAMPLY_ARGS" ]; then
+          if [ "$BENCH_DISPOSAL_CLOCK" != "true" ] && [ "$BENCH_OWNED_DIAGNOSTIC" != "true" ] && [ -z "$BENCH_SAMPLY_ARGS" ]; then
             for arg in "${derek_cmd[@]}"; do
               if [ -n "$DEREK_BENCH_COMMAND" ]; then
                 DEREK_BENCH_COMMAND+=" "
@@ -1570,7 +1580,7 @@ jobs:
           export DEREK_BENCH_COMMAND
           echo "DEREK_BENCH_COMMAND=$DEREK_BENCH_COMMAND" >> "$GITHUB_ENV"
 
-          if [ "$BENCH_PRODUCER_ISOLATION" = "true" ]; then
+          if [ "$BENCH_OWNED_DIAGNOSTIC" = "true" ]; then
             # Advisory ownership for cooperating diagnostics on this runner. The
             # independently captured Actions evidence has the narrower stated scope.
             exec 200>"$RUNNER_TEMP/tempo-producer-isolation.lock"
@@ -1590,16 +1600,21 @@ jobs:
             # No PAM transition: setpriv restores the runner UID/GID/groups.
             # Runtime evidence records actual inherited constraints after this route.
             # Preserve secrets as environment; never serialize them into argv.
-            sudo -n --preserve-env env PATH="$PATH" systemd-run --scope --slice=system.slice \
+            control_cmd=(sudo -n --preserve-env env PATH="$PATH" systemd-run --scope --slice=system.slice \
               --quiet --collect --same-dir --unit "${ownership[0]}" --description "${ownership[1]}" \
-              setpriv --reuid "$(id -u)" --regid "$(id -g)" --init-groups "${cmd[@]}"
+              setpriv --reuid "$(id -u)" --regid "$(id -g)" --init-groups "${cmd[@]}")
+            if [ "$BENCH_PIPELINE_PRESSURE" = "true" ]; then
+              timeout --signal=TERM --kill-after=30s 900s "${control_cmd[@]}"
+            else
+              "${control_cmd[@]}"
+            fi
           else
             "${cmd[@]}"
           fi
 
       - name: Restore producer host and snapshots
         id: producer-cleanup
-        if: ${{ always() && env.BENCH_PRODUCER_ISOLATION == 'true' && steps.producer-ownership.outcome == 'success' }}
+        if: ${{ always() && env.BENCH_OWNED_DIAGNOSTIC == 'true' && steps.producer-ownership.outcome == 'success' }}
         timeout-minutes: 10
         run: |
           # This step is outside the control scope and must run on cancellation.
@@ -1622,8 +1637,8 @@ jobs:
           fi
           nu bench-e2e.nu producer-cleanup --lifecycle "$BENCH_PRODUCER_LIFECYCLE"
 
-      - name: Qualify producer diagnostic completion
-        if: ${{ always() && env.BENCH_PRODUCER_ISOLATION == 'true' && steps.producer-ownership.outcome != 'skipped' }}
+      - name: Qualify diagnostic cleanup
+        if: ${{ always() && env.BENCH_OWNED_DIAGNOSTIC == 'true' && steps.producer-ownership.outcome != 'skipped' }}
         env:
           PRODUCER_BENCH_OUTCOME: ${{ steps.bench.outcome }}
           PRODUCER_CLEANUP_OUTCOME: ${{ steps.producer-cleanup.outcome }}
@@ -1652,6 +1667,7 @@ jobs:
           python3 - <<'PY'
           import json, os, pathlib, time
           directory = pathlib.Path(os.environ['BENCH_PRODUCER_LIFECYCLE']).parent
+          pressure = os.environ['BENCH_PIPELINE_PRESSURE'] == 'true'
           errors = []
           for name in ('PRODUCER_BENCH_OUTCOME', 'PRODUCER_CLEANUP_OUTCOME'):
               if os.environ.get(name) != 'success': errors.append(name + ' was not success')
@@ -1661,21 +1677,28 @@ jobs:
               cleanup = json.loads((directory / 'cleanup.json').read_text())
               location = json.loads((directory / 'results-location.json').read_text())
               results = pathlib.Path(location['results_dir']) / 'producer-isolation'
-              exit_record = json.loads((results / 'supervisor-exit.json').read_text())
-              result = json.loads((results / 'attempt/result.json').read_text())
               if journal.get('status') != 'restored' or cleanup.get('complete') is not True:
                   errors.append('host/snapshot cleanup was not verified')
-              if exit_record.get('exit_code') != 0:
-                  errors.append('helper did not exit zero')
-              if result.get('status') != 'valid_output_measurement' or result.get('cleanup_complete') is not True or result.get('test_limits') is not False:
-                  errors.append('helper result does not qualify')
+              if pressure:
+                  # Raw stage records require independent review, even after a
+                  # successful pipeline, report and cleanup.
+                  report = pathlib.Path(location['results_dir']) / 'report-feature-1.json'
+                  if not report.is_file() or report.stat().st_size == 0:
+                      errors.append('pipeline report missing')
+              else:
+                  exit_record = json.loads((results / 'supervisor-exit.json').read_text())
+                  result = json.loads((results / 'attempt/result.json').read_text())
+                  if exit_record.get('exit_code') != 0:
+                      errors.append('helper did not exit zero')
+                  if result.get('status') != 'valid_output_measurement' or result.get('cleanup_complete') is not True or result.get('test_limits') is not False:
+                      errors.append('helper result does not qualify')
           except Exception as error:
               errors.append(type(error).__name__ + ': ' + str(error))
-          verdict = {'status': 'invalid' if errors else 'qualified_diagnostic', 'errors': errors,
+          verdict = {'status': 'invalid' if errors else ('cleanup_verified_requires_stage_audit' if pressure else 'qualified_diagnostic'), 'errors': errors,
               'captured_realtime_ns': time.time_ns(), 'accepted_chain_capacity_claim': False,
               'performance_series_publication': False, 'slack_publication': False,
               'requires_terminal_workflow_success': True}
-          if not errors:
+          if not errors and not pressure:
               verdict['decision'] = result['decision']
               verdict['accounting'] = result['accounting']
           (directory / 'outer-result.json').write_text(json.dumps(verdict, indent=2) + '\n')
@@ -1718,7 +1741,7 @@ jobs:
 
       - name: Generate e2e summary
         id: results-dir
-        if: success() && env.BENCH_PRODUCER_ISOLATION != 'true'
+        if: success() && env.BENCH_OWNED_DIAGNOSTIC != 'true'
         run: |
           RESULTS_DIR=$(find bench-results -mindepth 1 -maxdepth 1 -type d | sort | tail -1)
           if [ -z "$RESULTS_DIR" ]; then
@@ -1744,7 +1767,7 @@ jobs:
           fi
 
       - name: Upload results
-        if: ${{ always() && (!cancelled() || env.BENCH_DISPOSAL_CLOCK == 'true' || env.BENCH_PRODUCER_ISOLATION == 'true') }}
+        if: ${{ always() && (!cancelled() || env.BENCH_DISPOSAL_CLOCK == 'true' || env.BENCH_OWNED_DIAGNOSTIC == 'true') }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: tempo-bench-results
@@ -1761,7 +1784,7 @@ jobs:
           policy: bench-e2e
 
       - name: Post results to PR
-        if: success() && env.BENCH_PRODUCER_ISOLATION != 'true'
+        if: success() && env.BENCH_OWNED_DIAGNOSTIC != 'true'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}

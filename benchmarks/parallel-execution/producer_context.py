@@ -24,6 +24,7 @@ import producer_lifecycle as lifecycle_module
 from producer_lifecycle import System as CommandSystem, validate_config as validate_lifecycle
 
 TXGEN = sup.TXGEN_COMMIT
+PRESSURE_TXGEN = 'ed489fdf5e0bb9a416400f419fdcbb12a8b2f07c'
 PRESET = sup.PRESET_COMMIT
 URL = 'https://github.com/tempoxyz/txgen'
 INSTALL = ['cargo', 'install', '--git', URL, '--locked', '--rev', TXGEN, '--force', 'txgen-tempo', 'bench-cli']
@@ -188,14 +189,14 @@ def elf_info(path, system):
     return item, identifiers[0]
 
 
-def installed_packages(metadata, target, rustc):
+def installed_packages(metadata, target, rustc, source_commit=TXGEN):
     require(isinstance(metadata.get('installs'), dict), 'Cargo install metadata schema')
     result = {}
     for package, binary in (('txgen-tempo', 'txgen-tempo'), ('bench-cli', 'bench')):
         matches = [(key, value) for key, value in metadata['installs'].items() if key.startswith(package + ' ')]
         require(len(matches) == 1, 'Ambiguous installed package')
         key, value = matches[0]
-        require('git+' + URL + '?rev=' + TXGEN + '#' + TXGEN in key, 'Installed package source changed')
+        require('git+' + URL + '?rev=' + source_commit + '#' + source_commit in key, 'Installed package source changed')
         require(value.get('bins') == [binary] and value.get('profile') == 'release' and value.get('features') == []
                 and value.get('all_features') is False and value.get('no_default_features') is False,
                 'Installed package build controls changed')
@@ -282,10 +283,11 @@ def verify_clean_checkout(checkout, system, observation=None):
     return evidence
 
 
-def install_record(record, checkout, now):
+def install_record(record, checkout, now, source_commit=TXGEN):
     require(record.get('schema_version') == 1 and record.get('status') == 'completed' and record.get('exit_code') == 0,
             'Install did not complete successfully')
-    require(record.get('argv') == INSTALL and record.get('log_complete') is True, 'Require exact forced pinned install and complete log')
+    expected = [source_commit if arg == TXGEN else arg for arg in INSTALL]
+    require(record.get('argv') == expected and record.get('log_complete') is True, 'Require exact forced pinned install and complete log')
     start, end = record['started_realtime_ns'], record['finished_realtime_ns']
     require(type(start) is int and type(end) is int and 0 < start < end <= now, 'Invalid install clock bracket')
     require(record.get('source_checkout') == str(checkout), 'Install checkout binding differs')
@@ -294,13 +296,15 @@ def install_record(record, checkout, now):
 
 
 def build(args, system):
+    source_commit = getattr(args, 'source_revision', TXGEN)
+    require(source_commit in (TXGEN, PRESSURE_TXGEN), 'Unsupported diagnostic source revision')
     output = args.output.resolve(); require(output.parent.is_dir() and not output.exists(), 'New build manifest required')
     record_path = args.install_record.resolve(); record = sup.read_json(record_path)
     checkout = args.source_checkout.resolve()
-    install_record(record, checkout, time.time_ns())
-    require(command(system, ['git', '-C', str(checkout), 'rev-parse', 'HEAD']).strip() == TXGEN, 'Wrong producer checkout')
+    install_record(record, checkout, time.time_ns(), source_commit)
+    require(command(system, ['git', '-C', str(checkout), 'rev-parse', 'HEAD']).strip() == source_commit, 'Wrong producer checkout')
     checkout_status = verify_clean_checkout(checkout, system)
-    lock = pinned_file(checkout, TXGEN, 'Cargo.lock', system)
+    lock = pinned_file(checkout, source_commit, 'Cargo.lock', system)
     log = verified(record['log']); require(log.stat().st_size > 0, 'Missing complete install log')
     cargo_path = verified(record['cargo_version']); rustc_path = verified(record['rustc_version'])
     cargo = cargo_path.read_text().strip(); rustc_verbose = rustc_path.read_text().strip()
@@ -310,7 +314,7 @@ def build(args, system):
     require(all(env[key] == '' for key in ENV_KEYS if key != 'CARGO_BUILD_TARGET')
             and env['CARGO_BUILD_TARGET'] in ('', host[0]), 'Require unwrapped native default release compiler controls')
     target = env['CARGO_BUILD_TARGET'] or host[0]
-    installed = installed_packages(sup.read_json(verified(record['install_metadata'])), target, rustc_verbose)
+    installed = installed_packages(sup.read_json(verified(record['install_metadata'])), target, rustc_verbose, source_commit)
     config_evidence = verified(record['cargo_config_evidence'])
     cargo_configuration(sup.read_json(config_evidence), checkout)
     producer, build_id = elf_info(args.txgen_bin, system)
@@ -318,7 +322,7 @@ def build(args, system):
     require(Path(producer['path']).name == 'txgen-tempo' and Path(bench['path']).name == 'bench', 'Wrong installed bin names')
     # Input records are workflow build attestations, supplemented by exact local
     # source/lock/package/ELF checks; they are not an independent compiler proof.
-    value = {'schema_version': 1, 'status': 'verified', 'source_commit': TXGEN, 'source_clean': True,
+    value = {'schema_version': 1, 'status': 'verified', 'source_commit': source_commit, 'source_clean': True,
         'checkout_status': checkout_status,
         'binary': producer, 'bench_binary': bench, 'cargo_lock': file_binding(lock), 'build_evidence': record['log'],
         'install_record': file_binding(record_path), 'install_metadata': record['install_metadata'], 'installed_packages': installed,
@@ -686,6 +690,7 @@ def prepare(args, system):
 def main():
     parser = argparse.ArgumentParser(description=__doc__); commands = parser.add_subparsers(dest='action', required=True)
     install = commands.add_parser('build')
+    install.add_argument('--source-revision', choices=(TXGEN, PRESSURE_TXGEN), default=TXGEN)
     for key in ('source-checkout', 'txgen-bin', 'bench-bin', 'install-record', 'output'): install.add_argument('--' + key, type=Path, required=True)
     current = commands.add_parser('prepare')
     for key in ('context', 'spec', 'setup-state', 'setup-evidence', 'output'): current.add_argument('--' + key, type=Path, required=True)

@@ -78,6 +78,21 @@ through an independent finalizer. A result requires successful cleanup and a
 successful terminal workflow. Its rate bracket includes consumer drainage;
 55k output headroom does not establish node acceptance or chain capacity.
 
+The [stock producer diagnostic](https://github.com/tempoxyz/tempo/actions/runs/37400947468)
+generated and counted 7,090,293 signed transactions with two signing workers:
+116.5k–118.2k output transactions/s across the timing bounds. Both nodes were live
+for calibration, but received no workload transactions. This establishes average
+producer headroom in isolation, not delivery under load or accepted-chain TPS.
+
+The `pipeline-pressure` choice runs one loaded 90-second feature phase at 50k
+requested TPS using the pinned, opt-in instrumented txgen revision. It records
+generator calibration, signing-result waits and output writes, plus sender input,
+queue gates and RPC counters. Timers include scheduling and instrumentation cost;
+they are not CPU time or independent gate occupancy. Setup records are separate.
+It shares owned-scope cleanup with producer isolation, has a 15-minute control
+deadline, and publishes no performance series or Slack result. Raw records and
+sender failures require review after terminal workflow success.
+
 ## Correctness
 
 Run unit and real-node oracles with the repository's pinned toolchain:

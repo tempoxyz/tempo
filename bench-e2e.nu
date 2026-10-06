@@ -1274,8 +1274,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
     mark-schelk-dirty-at $ctx.a.state_path
     mark-schelk-dirty-at $ctx.b.state_path
 
-    let producer_units = if $ctx.producer_isolation { $ctx.producer_lifecycle.node_units } else { ["" ""] }
-    let producer_description = if $ctx.producer_isolation { $ctx.producer_lifecycle.unit_description } else { "" }
+    let producer_units = if $ctx.owned_diagnostic { $ctx.producer_lifecycle.node_units } else { ["" ""] }
+    let producer_description = if $ctx.owned_diagnostic { $ctx.producer_lifecycle.unit_description } else { "" }
     start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory --unit ($producer_units | get 0) --description $producer_description
     start-e2e-local-node b $phase $run.tempo $b_args $env_prefix $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory --unit ($producer_units | get 1) --description $producer_description
 
@@ -1463,7 +1463,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     chown-to-current-user $b_log_dir
     if ($a_log_dir | path exists) { cp -r $a_log_dir $"($ctx.results_dir)/logs-($phase)-a" }
     if ($b_log_dir | path exists) { cp -r $b_log_dir $"($ctx.results_dir)/logs-($phase)-b" }
-    if not $ctx.producer_isolation { restore-system-tuning $tuning_state }
+    if not $ctx.owned_diagnostic { restore-system-tuning $tuning_state }
 
     if $phase_exit != 0 {
         return $phase_exit
@@ -1672,6 +1672,7 @@ def "main e2e" [
     --sequential-peer                                  # Verify generated blocks with sequential peer B; feature-only
     --disposal-clock-calibration                       # Fixed 25k same-binary stage timer diagnostic
     --producer-isolation                              # Generate signed output into wc; never submit the measured workload
+    --pipeline-pressure                               # Fixed loaded pipeline diagnostic; requires instrumented txgen
     --producer-build: string = ""                     # Bound stock txgen build manifest for the producer diagnostic
     --producer-lifecycle: string = ""                 # Persisted workflow cleanup configuration, outside snapshots
     --run-type: string = ""                             # Run type label (dispatch, nightly, release)
@@ -1692,6 +1693,34 @@ def "main e2e" [
     --valscope-dir: string = "../valscope"               # Path to the ValScope checkout
     --skip-summary                                       # Leave summary generation to a later workflow step
 ] {
+    let owned_diagnostic = $producer_isolation or $pipeline_pressure
+    if $pipeline_pressure {
+        if $producer_isolation or $profile != "profiling" or not $no_default_features or $run_side != "feature" or $run_pairs != 1 or $duration != 90 or $tps != 50000 or $accounts != 1000 or $max_concurrent_requests != 100 or $bloat != 100 or $token_count != 4 {
+            error make { msg: "pipeline pressure requires profiling/feature-only/50k/90s/one-phase/1000-account/100-RPC/100GiB/4-token controls" }
+        }
+        if $baseline != $feature or $preset != "public-mix" or $baseline_hardfork != "T14" or $feature_hardfork != "T14" or $gas_limit != "1000000000000" or $general_gas_limit != "1500000000" {
+            error make { msg: "pipeline pressure requires identical node source and fixed public-mix/T14/gas controls" }
+        }
+        if $samply or $scheduler_trace or $tracy != "off" or $sequential_peer or $disposal_clock_calibration or $valscope_static_report or $clickhouse_url != "" or $victoriametrics_url != "" or $baseline_env != "" or $feature_env != "" or $bench_args != "" or not $tune or $init_only or $force_bloat or not $skip_summary {
+            error make { msg: "pipeline pressure cannot combine profilers, runtime overrides, snapshot promotion or performance publication" }
+        }
+        if $bench_env != "TXGEN_PIPELINE_PRESSURE=1 TXGEN_PIPELINE_PRESSURE_LABEL=feature-1" {
+            error make { msg: "pipeline pressure requires the exact diagnostic environment" }
+        }
+        let expected = ["--execution.threads" "8" "--execution.batch-size" "128" "--execution.capture-window" "128" "--engine.prewarming-threads" "16" "--engine.account-worker-count" "32" "--engine.storage-worker-count" "32" "--log.file.filter=debug"]
+        if (parse-cli-args $baseline_args) != $expected or (parse-cli-args $feature_args) != $expected {
+            error make { msg: "pipeline pressure requires fixed node arguments without stage timers" }
+        }
+        if $producer_build == "" or not ($producer_build | path exists) or $producer_lifecycle == "" or not ($producer_lifecycle | path exists) or ($env.TEMPO_PRODUCER_EXCLUSIVITY_EVIDENCE? | default "") == "" or not (has-schelk) {
+            error make { msg: "pipeline pressure requires workflow build, ownership and exclusivity evidence on the Schelk runner" }
+        }
+        let build = open $producer_build
+        if $build.status != "verified" or $build.source_commit != "ed489fdf5e0bb9a416400f419fdcbb12a8b2f07c" {
+            error make { msg: "pipeline pressure requires the pinned instrumented txgen build" }
+        }
+        $env.TEMPO_PRODUCER_LIFECYCLE_CONFIG = ($producer_lifecycle | path expand)
+        producer-quiesce-if-enabled
+    }
     if $producer_isolation {
         if $profile != "profiling" or not $no_default_features or $run_side != "feature" or $run_pairs != 1 or $duration != 60 or $tps != 50000 or $accounts != 1000 or $max_concurrent_requests != 100 or $bloat != 100 or $token_count != 4 {
             error make { msg: "producer isolation requires profiling/feature-only/50k-label/60s/one-phase/1000-account/100-RPC/100GiB/4-token controls" }
@@ -1714,8 +1743,8 @@ def "main e2e" [
         }
         $env.TEMPO_PRODUCER_LIFECYCLE_CONFIG = ($producer_lifecycle | path expand)
         producer-quiesce-if-enabled
-    } else if $producer_build != "" or $producer_lifecycle != "" or ($env.TEMPO_PRODUCER_LIFECYCLE_CONFIG? | default "") != "" {
-        error make { msg: "producer build and lifecycle configuration require --producer-isolation" }
+    } else if not $pipeline_pressure and ($producer_build != "" or $producer_lifecycle != "" or ($env.TEMPO_PRODUCER_LIFECYCLE_CONFIG? | default "") != "") {
+        error make { msg: "producer build and lifecycle configuration require an owned diagnostic mode" }
     }
     if $disposal_clock_calibration {
         if $profile != "profiling" or not $no_default_features or $run_side != "comparison" or $run_pairs != 3 or $duration != 90 or $tps != 25000 or $accounts != 1000 or $max_concurrent_requests != 100 or $bloat != 100 or $token_count != 4 {
@@ -1843,7 +1872,7 @@ def "main e2e" [
     let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
     let general_gas_limit_args = if $general_gas_limit != "" { ["--general-gas-limit" $general_gas_limit] } else { [] }
     let tracing_otlp = (derive-tracing-otlp $tracing_otlp)
-    if ($disposal_clock_calibration or $producer_isolation) and $tracing_otlp == "" {
+    if ($disposal_clock_calibration or $owned_diagnostic) and $tracing_otlp == "" {
         error make { msg: "diagnostic requires the original node OTLP endpoint" }
     }
     if $tracing_otlp != "" {
@@ -1857,7 +1886,7 @@ def "main e2e" [
     bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
 
     let snapshots_ready = (e2e-snapshots-ready $a_db $b_db)
-    if $producer_isolation and not $snapshots_ready {
+    if $owned_diagnostic and not $snapshots_ready {
         error make { msg: "producer diagnostic requires existing 100GiB snapshots; refusing rebuild or promotion" }
     }
     let should_init_snapshots = $force_bloat or (not $snapshots_ready)
@@ -1956,7 +1985,7 @@ def "main e2e" [
 
     let results_dir = $"($BENCH_RESULTS_DIR)/($timestamp)"
     mkdir $results_dir
-    if $producer_isolation {
+    if $owned_diagnostic {
         { results_dir: ($results_dir | path expand) }
             | to json | save ($producer_lifecycle | path dirname | path join "results-location.json")
     }
@@ -2121,8 +2150,9 @@ def "main e2e" [
         disposal_clock: $disposal_clock_calibration
         disposal_clock_config: $disposal_clock_config
         producer_isolation: $producer_isolation
+        owned_diagnostic: $owned_diagnostic
         producer_build: $producer_build
-        producer_lifecycle: (if $producer_isolation { open $producer_lifecycle } else { null })
+        producer_lifecycle: (if $owned_diagnostic { open $producer_lifecycle } else { null })
         bench_args: $bench_args
         baseline_env: $baseline_env
         feature_env: $feature_env

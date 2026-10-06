@@ -102,6 +102,35 @@ class FakeNode:
 
 
 class ContextTests(unittest.TestCase):
+    def test_pressure_build_does_not_accept_stock_install_metadata(self):
+        instrumented = packages()
+        instrumented['installs'] = {
+            key.replace(c.TXGEN, c.PRESSURE_TXGEN): value
+            for key, value in instrumented['installs'].items()
+        }
+        self.assertEqual(len(c.installed_packages(instrumented, 'x86_64-unknown-linux-gnu',
+                                                 RUSTC, c.PRESSURE_TXGEN)), 2)
+        with self.assertRaises(ValueError):
+            c.installed_packages(packages(), 'x86_64-unknown-linux-gnu', RUSTC, c.PRESSURE_TXGEN)
+        with self.assertRaises(ValueError):
+            c.installed_packages(instrumented, 'x86_64-unknown-linux-gnu', RUSTC)
+
+    def test_pressure_install_record_requires_its_own_forced_revision(self):
+        source = Path('/source/txgen')
+        item = {'schema_version': 1, 'status': 'completed',
+                'argv': [c.PRESSURE_TXGEN if x == c.TXGEN else x for x in c.INSTALL],
+                'exit_code': 0, 'log_complete': True, 'started_realtime_ns': 10,
+                'finished_realtime_ns': 20, 'source_checkout': str(source),
+                'unsupported_environment_names': []}
+        self.assertEqual(c.install_record(item, source, 30, c.PRESSURE_TXGEN), item)
+        with self.assertRaises(ValueError): c.install_record(item, source, 30)
+        with self.assertRaises(ValueError):
+            c.install_record({**item, 'argv': c.INSTALL}, source, 30, c.PRESSURE_TXGEN)
+
+    def test_unknown_build_revision_refused_before_filesystem_or_commands(self):
+        with self.assertRaisesRegex(ValueError, 'Unsupported diagnostic source revision'):
+            c.build(SimpleNamespace(source_revision='f' * 40), object())
+
     def test_node_argv_matches_real_bash_process_substitution_only(self):
         code = 'import json,sys; print(json.dumps(sys.argv[1:]))'
         script = 'exec "$1" -c "$2" node --consensus.secret ' + c.LOCAL_SECRET_PROCESS_SUBSTITUTION
