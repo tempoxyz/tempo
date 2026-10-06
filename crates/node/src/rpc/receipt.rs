@@ -9,16 +9,15 @@ use reth_revm::{
     Inspector,
     interpreter::{CreateInputs, CreateOutcome, interpreter_types::InterpreterTypes},
 };
-use reth_rpc::RpcConvert;
 use reth_rpc_eth_api::{
-    EthApiTypes, RpcNodeCoreExt,
+    EthApiTypes, RpcConvert,
     helpers::{EthBlocks, LoadReceipt, Trace},
     transaction::ConvertReceiptInput,
 };
 use reth_rpc_eth_types::EthApiError;
 use std::sync::Arc;
 use tempo_alloy::rpc::TempoTransactionReceipt;
-use tempo_primitives::{TempoBlock, TempoReceipt, TempoTxEnvelope};
+use tempo_primitives::{Block, TempoReceipt, TempoTxEnvelope};
 
 impl<N> LoadReceipt for TempoEthApi<N>
 where
@@ -30,7 +29,7 @@ where
         meta: TransactionMeta,
         receipt: TempoReceipt,
         all_receipts: Option<Arc<Vec<TempoReceipt>>>,
-        block: Option<Arc<RecoveredBlock<TempoBlock>>>,
+        block: Option<Arc<RecoveredBlock<Block>>>,
     ) -> Result<TempoTransactionReceipt, Self::Error> {
         let recover_address = is_aa_create(&tx);
         let tx_hash = meta.tx_hash;
