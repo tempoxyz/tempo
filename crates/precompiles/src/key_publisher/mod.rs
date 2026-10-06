@@ -32,6 +32,11 @@ pub struct KeyPublisher {
 }
 
 impl KeyPublisher {
+    /// Initializes the precompile account marker so its storage survives transaction finalization.
+    pub fn initialize(&mut self) -> Result<()> {
+        self.__initialize()
+    }
+
     pub fn compute_publisher_id(creator: Address, salt: B256) -> B256 {
         keccak256((creator, salt).abi_encode())
     }
@@ -76,7 +81,7 @@ impl KeyPublisher {
             Self::validate_keys(entry.issuer, &entry.keyHashes)?;
         }
         if self.storage.account_code(self.address)?.1.is_empty() {
-            self.__initialize()?;
+            self.initialize()?;
         }
         self.owners[publisher_id].write(call.owner)?;
         self.emit_event(IKeyPublisher::PublisherCreated {
