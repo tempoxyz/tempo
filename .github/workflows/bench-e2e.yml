@@ -146,11 +146,11 @@ on:
         type: string
         required: true
         default: "3"
-      clickhouse-run:
-        description: Benchmark phase that may use the direct ClickHouse reporter.
-        type: string
+      artifacts-only:
+        description: Keep reports/profiles in GitHub artifacts; OTLP remains a separate control.
+        type: boolean
         required: false
-        default: "feature-1"
+        default: false
   workflow_call:
     inputs:
       pr:
@@ -287,6 +287,11 @@ on:
         type: string
         required: false
         default: "true"
+      artifacts-only:
+        description: Keep reports/profiles in GitHub artifacts; OTLP remains a separate control.
+        type: boolean
+        required: false
+        default: false
       slack:
         description: Slack policy (always or on-win); no-slack still overrides.
         type: string
@@ -412,7 +417,9 @@ jobs:
       BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds || '10' }}
       BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset }}
       BENCH_OTLP: ${{ inputs.otlp != false && inputs.otlp != 'false' }}
-      BENCH_VALSCOPE: ${{ inputs.valscope == true || inputs.valscope == 'true' }}
+      # Results/profile publication only; OTLP remains controlled by its own input.
+      BENCH_ARTIFACTS_ONLY: ${{ inputs.artifacts-only == true }}
+      BENCH_VALSCOPE: ${{ inputs.artifacts-only != true && (inputs.valscope == true || inputs.valscope == 'true') }}
       BENCH_FEATURES: ${{ (inputs.otlp != false && inputs.otlp != 'false') && 'jemalloc,asm-keccak,keccak-cache-global,otlp' || 'jemalloc,asm-keccak,keccak-cache-global' }}
       BENCH_BASELINE_FEATURES: ${{ inputs.baseline-features }}
       BENCH_FEATURE_FEATURES: ${{ inputs.feature-features }}
@@ -424,11 +431,11 @@ jobs:
       BENCH_RUN_TYPE: ${{ inputs.run-type || 'dispatch' }}
       BENCH_FORCE_BLOAT: ${{ inputs.force-bloat || 'false' }}
       BENCH_NO_CACHE: ${{ inputs.no-cache || 'false' }}
-      BENCH_NO_SLACK: ${{ (inputs.sequential-peer || inputs.profiling == 'samply-low-rate' || inputs.profiling == 'samply-buffered' || inputs.profiling == 'samply-scheduling' || inputs.profiling == 'kernel-scheduling' || inputs.profiling == 'disposal-clock' || inputs.profiling == 'producer-isolation' || inputs.profiling == 'pipeline-pressure') && 'true' || inputs.no-slack }}
+      BENCH_NO_SLACK: ${{ (inputs.artifacts-only == true || inputs.sequential-peer || inputs.profiling == 'samply-low-rate' || inputs.profiling == 'samply-buffered' || inputs.profiling == 'samply-scheduling' || inputs.profiling == 'kernel-scheduling' || inputs.profiling == 'disposal-clock' || inputs.profiling == 'producer-isolation' || inputs.profiling == 'pipeline-pressure') && 'true' || inputs.no-slack }}
       # The reusable input defaults to always. Direct manual dispatch has no slack
       # input and uses win-only notifications, without adding a 26th UI input.
       BENCH_SLACK: ${{ inputs.slack || 'on-win' }}
-      BENCH_METRICS: ${{ inputs.metrics == true || inputs.metrics == 'true' }}
+      BENCH_METRICS: ${{ inputs.artifacts-only != true && (inputs.metrics == true || inputs.metrics == 'true') }}
       BENCH_BENCH_ARGS: ${{ inputs.bench-args }}
       BENCH_BENCH_ENV: ${{ inputs.profiling == 'pipeline-pressure' && 'TXGEN_PIPELINE_PRESSURE=1 TXGEN_PIPELINE_PRESSURE_LABEL=feature-1' || inputs.bench-env }}
       BENCH_BASELINE_ENV: ${{ inputs.baseline-env }}
@@ -441,15 +448,15 @@ jobs:
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}
       BENCH_PR_HEAD_SHA: ${{ inputs.pr-head-sha }}
       BENCH_PR_HEAD_REF: ${{ inputs.pr-head-ref }}
-      CLICKHOUSE_URL: ${{ inputs.profiling != 'producer-isolation' && inputs.profiling != 'pipeline-pressure' && secrets.CLICKHOUSE_URL || '' }}
-      CLICKHOUSE_USER: ${{ inputs.profiling != 'producer-isolation' && inputs.profiling != 'pipeline-pressure' && secrets.CLICKHOUSE_USER || '' }}
-      CLICKHOUSE_PASSWORD: ${{ inputs.profiling != 'producer-isolation' && inputs.profiling != 'pipeline-pressure' && secrets.CLICKHOUSE_PASSWORD || '' }}
-      BENCH_VICTORIAMETRICS_URL: ${{ inputs.profiling != 'producer-isolation' && inputs.profiling != 'pipeline-pressure' && (inputs.metrics == true || inputs.metrics == 'true' || inputs.valscope == true || inputs.valscope == 'true') && secrets.BENCH_VICTORIAMETRICS_URL || '' }}
-      VICTORIAMETRICS_URL: ${{ secrets.VICTORIAMETRICS_URL }}
-      VICTORIALOGS_URL: ${{ secrets.VICTORIALOGS_URL }}
+      CLICKHOUSE_URL: ${{ inputs.artifacts-only != true && inputs.profiling != 'producer-isolation' && inputs.profiling != 'pipeline-pressure' && secrets.CLICKHOUSE_URL || '' }}
+      CLICKHOUSE_USER: ${{ inputs.artifacts-only != true && inputs.profiling != 'producer-isolation' && inputs.profiling != 'pipeline-pressure' && secrets.CLICKHOUSE_USER || '' }}
+      CLICKHOUSE_PASSWORD: ${{ inputs.artifacts-only != true && inputs.profiling != 'producer-isolation' && inputs.profiling != 'pipeline-pressure' && secrets.CLICKHOUSE_PASSWORD || '' }}
+      BENCH_VICTORIAMETRICS_URL: ${{ inputs.artifacts-only != true && inputs.profiling != 'producer-isolation' && inputs.profiling != 'pipeline-pressure' && (inputs.metrics == true || inputs.metrics == 'true' || inputs.valscope == true || inputs.valscope == 'true') && secrets.BENCH_VICTORIAMETRICS_URL || '' }}
+      VICTORIAMETRICS_URL: ${{ inputs.artifacts-only != true && secrets.VICTORIAMETRICS_URL || '' }}
+      VICTORIALOGS_URL: ${{ inputs.artifacts-only != true && secrets.VICTORIALOGS_URL || '' }}
       VALSCOPE_REPORTS_BASE_URL: ${{ vars.VALSCOPE_REPORTS_BASE_URL }}
-      SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
-      SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
+      SLACK_BENCH_BOT_TOKEN: ${{ inputs.artifacts-only != true && secrets.SLACK_BENCH_BOT_TOKEN || '' }}
+      SLACK_BENCH_CHANNEL: ${{ inputs.artifacts-only != true && secrets.SLACK_BENCH_CHANNEL || '' }}
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
@@ -1433,6 +1440,7 @@ jobs:
           [ -n "$BENCH_TXGEN_SPEC_PATH" ] && cmd+=(--preset-path "$BENCH_TXGEN_SPEC_PATH")
           [ "$BENCH_FORCE_BLOAT" = "true" ] && cmd+=(--force-bloat)
           [ "$BENCH_NO_CACHE" = "true" ] && cmd+=(--no-cache)
+          [ "$BENCH_ARTIFACTS_ONLY" = "true" ] && cmd+=(--artifacts-only)
           [ "$BENCH_SEQUENTIAL_PEER" = "true" ] && cmd+=(--sequential-peer)
           [ "$BENCH_DISPOSAL_CLOCK" = "true" ] && cmd+=(--disposal-clock-calibration)
           if [ "$BENCH_PRODUCER_ISOLATION" = "true" ]; then
@@ -1535,9 +1543,9 @@ jobs:
           [ -n "$BENCH_BASELINE_ENV" ] && derek_cmd+=(baseline-env="$BENCH_BASELINE_ENV")
           [ -n "$BENCH_FEATURE_ENV" ] && derek_cmd+=(feature-env="$BENCH_FEATURE_ENV")
           DEREK_BENCH_COMMAND=""
-          # The bot parser cannot reproduce custom Samply options or disposal
-          # clock controls. Omit unsupported shortcuts from tempo.nu summaries.
-          if [ "$BENCH_DISPOSAL_CLOCK" != "true" ] && [ "$BENCH_OWNED_DIAGNOSTIC" != "true" ] && [ -z "$BENCH_SAMPLY_ARGS" ]; then
+          # The bot parser cannot reproduce artifacts-only, custom Samply options
+          # or disposal clock controls. Omit unsupported shortcuts from summaries.
+          if [ "$BENCH_ARTIFACTS_ONLY" != "true" ] && [ "$BENCH_DISPOSAL_CLOCK" != "true" ] && [ "$BENCH_OWNED_DIAGNOSTIC" != "true" ] && [ -z "$BENCH_SAMPLY_ARGS" ]; then
             for arg in "${derek_cmd[@]}"; do
               if [ -n "$DEREK_BENCH_COMMAND" ]; then
                 DEREK_BENCH_COMMAND+=" "

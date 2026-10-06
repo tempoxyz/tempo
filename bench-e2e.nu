@@ -1689,10 +1689,15 @@ def "main e2e" [
     --tune                                              # Apply system tuning
     --loud                                              # Show node debug logs
     --no-cache                                           # Skip binary cache
+    --artifacts-only                                     # Keep reports/profiles local; OTLP remains independent
     --valscope-static-report                             # Generate static ValScope reports under the results directory
     --valscope-dir: string = "../valscope"               # Path to the ValScope checkout
     --skip-summary                                       # Leave summary generation to a later workflow step
 ] {
+    # Override destinations even when supplied explicitly; OTLP is a separate control.
+    let clickhouse_url = if $artifacts_only { "" } else { $clickhouse_url }
+    let victoriametrics_url = if $artifacts_only { "" } else { $victoriametrics_url }
+    let valscope_static_report = if $artifacts_only { false } else { $valscope_static_report }
     let owned_diagnostic = $producer_isolation or $pipeline_pressure
     if $pipeline_pressure {
         if $producer_isolation or $profile != "profiling" or not $no_default_features or $run_side != "feature" or $run_pairs != 1 or $duration != 90 or $tps != 50000 or $accounts != 1000 or $max_concurrent_requests != 100 or $bloat != 100 or $token_count != 4 {
@@ -2222,7 +2227,7 @@ def "main e2e" [
         }
     }
 
-    if $e2e_exit == 0 and $samply {
+    if $e2e_exit == 0 and $samply and not $artifacts_only {
         print "\nUploading local e2e samply profiles to Firefox Profiler..."
         for run in $runs {
             for role in ["a" "b"] {
@@ -2235,7 +2240,7 @@ def "main e2e" [
             }
         }
     }
-    if $e2e_exit == 0 and $tracy != "off" {
+    if $e2e_exit == 0 and $tracy != "off" and not $artifacts_only {
         print "\nUploading local e2e tracy profiles to R2..."
         for run in $runs {
             let profile = $"($results_dir)/tracy-profile-($run.phase).tracy"
