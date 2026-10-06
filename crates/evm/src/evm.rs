@@ -80,12 +80,93 @@ struct ExecutionStageTimings {
     ordinary_calls: u64,
     ordinary_errors: u64,
     ordinary: Duration,
+    ordinary_breakdown: [[OrdinaryTiming; 6]; 4],
     commit_calls: u64,
     commit: Duration,
     prewarmed_reuse_disposal_calls: u64,
     prewarmed_reuse_disposal: Duration,
     prewarmed_fallback_disposal_calls: u64,
     prewarmed_fallback_disposal: Duration,
+}
+
+// Classification is diagnostic only. A selector bucket does not attest ABI
+// validity or execution success. Unvalidated includes absent candidates and
+// candidates rejected by configuration/identity guards before read validation.
+#[derive(Clone, Copy, Debug, Default)]
+enum OrdinaryReason {
+    #[default]
+    Unvalidated,
+    ReadConflict,
+    ValidationError,
+    SpeculativeError,
+}
+
+impl OrdinaryReason {
+    const ALL: [Self; 4] = [
+        Self::Unvalidated,
+        Self::ReadConflict,
+        Self::ValidationError,
+        Self::SpeculativeError,
+    ];
+}
+
+#[derive(Clone, Copy, Debug)]
+enum OrdinaryShape {
+    Tip20TransferSelector,
+    Tip20MintSelector,
+    OtherSingleCall,
+    Create,
+    MultipleCalls,
+    NoCalls,
+}
+
+impl OrdinaryShape {
+    const ALL: [Self; 6] = [
+        Self::Tip20TransferSelector,
+        Self::Tip20MintSelector,
+        Self::OtherSingleCall,
+        Self::Create,
+        Self::MultipleCalls,
+        Self::NoCalls,
+    ];
+
+    fn classify(tx: &TempoTxEnv) -> Self {
+        use alloy_sol_types::SolCall;
+        use tempo_precompiles::tip20::ITIP20;
+        use tempo_primitives::TempoAddressExt;
+
+        let mut calls = tx.calls();
+        let Some((kind, input)) = calls.next() else {
+            return Self::NoCalls;
+        };
+        if calls.next().is_some() {
+            return Self::MultipleCalls;
+        }
+        let TxKind::Call(target) = kind else {
+            return Self::Create;
+        };
+        if target.is_tip20() {
+            let selector = input.get(..4);
+            if selector == Some(ITIP20::transferCall::SELECTOR.as_slice())
+                || selector == Some(ITIP20::transferWithMemoCall::SELECTOR.as_slice())
+            {
+                return Self::Tip20TransferSelector;
+            }
+            if selector == Some(ITIP20::mintCall::SELECTOR.as_slice())
+                || selector == Some(ITIP20::mintWithMemoCall::SELECTOR.as_slice())
+            {
+                return Self::Tip20MintSelector;
+            }
+        }
+        Self::OtherSingleCall
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct OrdinaryTiming {
+    calls: u64,
+    errors: u64,
+    elapsed: Duration,
 }
 
 /// Opt-in disposal timing at the existing partial-move boundary. A local
@@ -521,6 +602,22 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             prewarmed_fallback_disposal_seconds = timings.prewarmed_fallback_disposal.as_secs_f64(),
             "Ordered execution stage timings"
         );
+        for reason in OrdinaryReason::ALL {
+            for shape in OrdinaryShape::ALL {
+                let bucket = &timings.ordinary_breakdown[reason as usize][shape as usize];
+                if bucket.calls != 0 {
+                    tracing::debug!(target: "tempo::execution",
+                        phase = "before_block_finalization",
+                        ?reason,
+                        ?shape,
+                        calls = bucket.calls,
+                        errors = bucket.errors,
+                        elapsed_seconds = bucket.elapsed.as_secs_f64(),
+                        "Ordered ordinary execution breakdown"
+                    );
+                }
+            }
+        }
     }
 
     /// Consumes this EVM wrapper and returns the inner [`tempo_revm::TempoEvm`].
@@ -831,6 +928,7 @@ where
             self.backoff_remaining -= 1;
             self.execution_stats.backoff += 1;
         }
+        let mut ordinary_reason = OrdinaryReason::Unvalidated;
         if !self.inspect
             && self.standard_configuration
             // Changing the context does not rebuild instructions or precompiles.
@@ -861,6 +959,7 @@ where
             && candidate.env.block_env == self.inner.ctx.block
         {
             if candidate.result.is_err() {
+                ordinary_reason = OrdinaryReason::SpeculativeError;
                 self.execution_stats.retries += 1;
             } else {
                 let started = self
@@ -881,6 +980,10 @@ where
                     timings.validation_errors += u64::from(valid.is_err());
                     timings.validation += elapsed;
                 }
+                ordinary_reason = match &valid {
+                    Ok(_) => OrdinaryReason::ReadConflict,
+                    Err(_) => OrdinaryReason::ValidationError,
+                };
                 if valid.unwrap_or(false) {
                     self.execution_stats.reused += 1;
                     if prewarmed && let Some(executor) = &self.speculative {
@@ -964,6 +1067,12 @@ where
         } else if self.inspect {
             self.inner.inspect_tx(tx)
         } else {
+            // Classify before the existing clock and only when diagnostics are
+            // enabled. Every completed ordinary call contributes to one bucket.
+            let shape = self
+                .execution_stage_timings
+                .as_ref()
+                .map(|_| OrdinaryShape::classify(&tx));
             let started = self
                 .execution_stage_timings
                 .as_ref()
@@ -975,6 +1084,11 @@ where
                 timings.ordinary_calls += 1;
                 timings.ordinary_errors += u64::from(result.is_err());
                 timings.ordinary += elapsed;
+                let bucket = &mut timings.ordinary_breakdown[ordinary_reason as usize]
+                    [shape.unwrap() as usize];
+                bucket.calls += 1;
+                bucket.errors += u64::from(result.is_err());
+                bucket.elapsed += elapsed;
             }
             if self.inner.body_was_reused() {
                 self.execution_stats.bodies_reused += 1;
@@ -1373,6 +1487,117 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_stage_shapes_use_actual_calls_and_selector_labels() {
+        use tempo_precompiles::tip20::ITIP20;
+        use tempo_primitives::transaction::Call;
+        use tempo_revm::TempoBatchCallEnv;
+
+        let mut tx = TempoTxEnv::default();
+        tx.inner.kind = TxKind::Call(PATH_USD_ADDRESS);
+        for (selector, expected) in [
+            (
+                ITIP20::transferCall::SELECTOR,
+                OrdinaryShape::Tip20TransferSelector,
+            ),
+            (
+                ITIP20::transferWithMemoCall::SELECTOR,
+                OrdinaryShape::Tip20TransferSelector,
+            ),
+            (ITIP20::mintCall::SELECTOR, OrdinaryShape::Tip20MintSelector),
+            (
+                ITIP20::mintWithMemoCall::SELECTOR,
+                OrdinaryShape::Tip20MintSelector,
+            ),
+        ] {
+            // Deliberately incomplete ABI: labels only describe selector shape.
+            tx.inner.data = Bytes::copy_from_slice(&selector);
+            assert_eq!(OrdinaryShape::classify(&tx) as usize, expected as usize);
+            tx.inner.kind = TxKind::Call(Address::ZERO);
+            assert!(matches!(
+                OrdinaryShape::classify(&tx),
+                OrdinaryShape::OtherSingleCall
+            ));
+            tx.inner.kind = TxKind::Call(PATH_USD_ADDRESS);
+        }
+        tx.inner.data = Bytes::from_static(&[1, 2, 3]);
+        assert!(matches!(
+            OrdinaryShape::classify(&tx),
+            OrdinaryShape::OtherSingleCall
+        ));
+        tx.inner.kind = TxKind::Create;
+        assert!(matches!(
+            OrdinaryShape::classify(&tx),
+            OrdinaryShape::Create
+        ));
+        tx.tempo_tx_env = Some(Box::new(TempoBatchCallEnv::default()));
+        assert!(matches!(
+            OrdinaryShape::classify(&tx),
+            OrdinaryShape::NoCalls
+        ));
+        let call = Call {
+            to: TxKind::Call(PATH_USD_ADDRESS),
+            value: U256::ZERO,
+            input: Bytes::copy_from_slice(&ITIP20::transferCall::SELECTOR),
+        };
+        tx.tempo_tx_env
+            .as_mut()
+            .unwrap()
+            .aa_calls
+            .push(call.clone());
+        assert!(matches!(
+            OrdinaryShape::classify(&tx),
+            OrdinaryShape::Tip20TransferSelector
+        ));
+        tx.tempo_tx_env.as_mut().unwrap().aa_calls.push(call);
+        assert!(matches!(
+            OrdinaryShape::classify(&tx),
+            OrdinaryShape::MultipleCalls
+        ));
+    }
+
+    #[test]
+    fn ordinary_stage_records_speculative_errors_without_changing_fallback() {
+        let env = test_evm_with_basefee(EmptyDB::default(), 0).finish().1;
+        let tx = TempoTxEnv {
+            inner: TxEnv {
+                caller: Address::with_last_byte(201),
+                kind: TxKind::Call(Address::with_last_byte(202)),
+                nonce: 1,
+                gas_limit: 1_000_000,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut expected = TempoEvm::new(InMemoryDB::default(), env.clone());
+        let reference = expected.transact_raw(tx.clone()).unwrap_err().to_string();
+        for enabled in [false, true] {
+            let mut actual = TempoEvm::new(InMemoryDB::default(), env.clone());
+            actual.set_speculative_executor(Some(
+                SpeculativeExecutor::new(1, 1)
+                    .unwrap()
+                    .with_stage_diagnostics(enabled),
+            ));
+            actual.prepare_transactions([(tx.clone(), env.block_env.beneficiary)]);
+            assert_eq!(
+                actual.transact_raw(tx.clone()).unwrap_err().to_string(),
+                reference
+            );
+            assert_eq!(actual.execution_stats.retries, 1);
+            if enabled {
+                let timings = actual.execution_stage_timings.as_ref().unwrap();
+                let bucket = &timings.ordinary_breakdown[OrdinaryReason::SpeculativeError as usize]
+                    [OrdinaryShape::OtherSingleCall as usize];
+                assert_eq!((bucket.calls, bucket.errors), (1, 1));
+                assert_eq!(bucket.elapsed, timings.ordinary);
+                assert_eq!((timings.ordinary_calls, timings.ordinary_errors), (1, 1));
+                assert_eq!(timings.validation_calls, 0);
+            } else {
+                assert!(actual.execution_stage_timings.is_none());
+            }
+        }
+    }
+
+    #[test]
     fn execution_stage_diagnostics_preserve_reuse_fallback_and_reset() {
         use revm::{database::CacheDB, database_interface::EmptyDBTyped};
         #[derive(Debug, thiserror::Error)]
@@ -1392,7 +1617,14 @@ mod tests {
             ..Default::default()
         };
         for enabled in [false, true] {
-            for case in ["reuse", "conflict", "provider_error"] {
+            for case in [
+                "reuse",
+                "conflict",
+                "provider_error",
+                "missing",
+                "identity_mismatch",
+                "configuration_guard",
+            ] {
                 let mut expected = TempoEvm::new(parent.clone(), env.clone());
                 let mut actual = TempoEvm::new(parent.clone(), env.clone());
                 actual.set_speculative_executor(Some(
@@ -1400,10 +1632,19 @@ mod tests {
                         .unwrap()
                         .with_stage_diagnostics(enabled),
                 ));
-                let candidate = PrewarmingExecutor::new(parent.clone(), env.clone())
-                    .execute(tx.clone(), None)
-                    .unwrap();
-                actual.set_preexecuted_transaction(candidate);
+                if case != "missing" {
+                    let mut predicted_tx = tx.clone();
+                    if case == "identity_mismatch" {
+                        predicted_tx.inner.gas_limit -= 1;
+                    }
+                    let candidate = PrewarmingExecutor::new(parent.clone(), env.clone())
+                        .execute(predicted_tx, None)
+                        .unwrap();
+                    actual.set_preexecuted_transaction(candidate);
+                }
+                if case == "configuration_guard" {
+                    actual.standard_configuration = false;
+                }
                 if case == "conflict" {
                     for evm in [&mut actual, &mut expected] {
                         evm.db_mut().insert_account_info(
@@ -1442,7 +1683,8 @@ mod tests {
                 );
                 if enabled {
                     let timings = actual.execution_stage_timings.as_ref().unwrap();
-                    assert_eq!(timings.validation_calls, 1);
+                    let validated = matches!(case, "reuse" | "conflict" | "provider_error");
+                    assert_eq!(timings.validation_calls, u64::from(validated));
                     assert_eq!(timings.validation_conflicts, u64::from(case == "conflict"));
                     assert_eq!(
                         timings.validation_errors,
@@ -1457,7 +1699,47 @@ mod tests {
                     );
                     assert_eq!(
                         timings.prewarmed_fallback_disposal_calls,
-                        u64::from(case != "reuse")
+                        u64::from(matches!(case, "conflict" | "provider_error"))
+                    );
+                    let reason = match case {
+                        "conflict" => OrdinaryReason::ReadConflict,
+                        "provider_error" => OrdinaryReason::ValidationError,
+                        _ => OrdinaryReason::Unvalidated,
+                    };
+                    let buckets = &timings.ordinary_breakdown;
+                    let unvalidated = &buckets[OrdinaryReason::Unvalidated as usize]
+                        [OrdinaryShape::OtherSingleCall as usize];
+                    assert_eq!(unvalidated.errors, 1);
+                    assert_eq!(unvalidated.calls, if validated { 1 } else { 2 });
+                    if case != "reuse" && validated {
+                        let fallback =
+                            &buckets[reason as usize][OrdinaryShape::OtherSingleCall as usize];
+                        assert_eq!(fallback.calls, 1);
+                        assert_eq!(fallback.errors, 0);
+                    }
+                    assert_eq!(
+                        buckets
+                            .iter()
+                            .flatten()
+                            .map(|bucket| bucket.calls)
+                            .sum::<u64>(),
+                        timings.ordinary_calls
+                    );
+                    assert_eq!(
+                        buckets
+                            .iter()
+                            .flatten()
+                            .map(|bucket| bucket.errors)
+                            .sum::<u64>(),
+                        timings.ordinary_errors
+                    );
+                    assert_eq!(
+                        buckets
+                            .iter()
+                            .flatten()
+                            .map(|bucket| bucket.elapsed)
+                            .sum::<Duration>(),
+                        timings.ordinary
                     );
                     let inspected = actual.with_inspector(NoOpInspector {});
                     assert_eq!(
@@ -1466,7 +1748,7 @@ mod tests {
                             .as_ref()
                             .unwrap()
                             .validation_calls,
-                        1
+                        u64::from(validated)
                     );
                     actual = inspected;
                 } else {
@@ -1480,6 +1762,15 @@ mod tests {
                 let timings = actual.execution_stage_timings.as_ref().unwrap();
                 assert_eq!(timings.validation_calls, 0);
                 assert_eq!(timings.ordinary_calls, 0);
+                assert!(
+                    timings
+                        .ordinary_breakdown
+                        .iter()
+                        .flatten()
+                        .all(|bucket| bucket.calls == 0
+                            && bucket.errors == 0
+                            && bucket.elapsed == Duration::ZERO)
+                );
                 assert_eq!(timings.commit_calls, 0);
                 assert_eq!(timings.prewarmed_reuse_disposal_calls, 0);
                 assert_eq!(timings.prewarmed_reuse_disposal, Duration::ZERO);
