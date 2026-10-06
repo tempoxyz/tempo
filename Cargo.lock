@@ -13853,6 +13853,7 @@ dependencies = [
  "alloy-eips",
  "alloy-evm",
  "alloy-hardforks",
+ "alloy-primitives",
  "paste",
  "serde",
  "serde_json",

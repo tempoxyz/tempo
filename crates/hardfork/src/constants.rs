@@ -3,6 +3,10 @@
 //! Gas-accounting constants are grouped under [`gas`].
 //! Hardfork activation schedules live in [`mainnet`] and [`moderato`].
 
+use alloy_primitives::{Address, address};
+
+pub const PATH_USD_ADDRESS: Address = address!("0x20C0000000000000000000000000000000000000");
+
 pub mod gas {
     //! Gas-accounting constants shared with `spec.rs`.
 

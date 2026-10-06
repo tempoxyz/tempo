@@ -20,6 +20,7 @@ workspace = true
 alloy-eips.workspace = true
 alloy-evm = { workspace = true, optional = true }
 alloy-hardforks.workspace = true
+alloy-primitives.workspace = true
 paste.workspace = true
 serde = { workspace = true, optional = true }
 
@@ -30,6 +31,7 @@ serde_json.workspace = true
 default = ["std", "serde"]
 std = [
     "alloy-eips/std",
+    "alloy-primitives/std",
     "alloy-evm?/std",
     "serde?/std",
     "serde_json/std",
