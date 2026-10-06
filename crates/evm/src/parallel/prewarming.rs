@@ -1,6 +1,7 @@
 //! Recorded execution on a worker-owned provider, reusable by the ordered executor.
 
 use super::*;
+use reth_revm::context::result::{ExecutionResult, Output};
 use std::time::Instant;
 
 /// Advisory values from the builder's accepted prefix. Workers may read across
@@ -242,8 +243,40 @@ pub struct PreexecutedTransaction {
 }
 
 impl PreexecutedTransaction {
-    pub(crate) fn prewarming_result(&self) -> ResultAndState<TempoHaltReason> {
-        self.result.clone()
+    /// Projects the private Engine prewarm return value for the pinned SDK's
+    /// proof-target consumer. It consumes only state; canonical execution keeps
+    /// this candidate's complete result, including every log and output byte.
+    pub(crate) fn prewarming_hint_result(&self) -> ResultAndState<TempoHaltReason> {
+        let result = match &self.result.result {
+            ExecutionResult::Success {
+                reason,
+                gas,
+                output,
+                ..
+            } => ExecutionResult::Success {
+                reason: *reason,
+                gas: *gas,
+                logs: Vec::new(),
+                output: match output {
+                    Output::Call(_) => Output::Call(Default::default()),
+                    Output::Create(_, address) => Output::Create(Default::default(), *address),
+                },
+            },
+            ExecutionResult::Revert { gas, .. } => ExecutionResult::Revert {
+                gas: *gas,
+                logs: Vec::new(),
+                output: Default::default(),
+            },
+            ExecutionResult::Halt { reason, gas, .. } => ExecutionResult::Halt {
+                reason: reason.clone(),
+                gas: *gas,
+                logs: Vec::new(),
+            },
+        };
+        ResultAndState {
+            result,
+            state: self.result.state.clone(),
+        }
     }
 
     pub(crate) fn into_candidate<E>(self, tx: &TempoTxEnv) -> Option<SpeculativeResult<E>> {
@@ -261,6 +294,10 @@ impl PreexecutedTransaction {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "prewarming_hint_tests.rs"]
+mod hint_tests;
 
 /// Reuses an EVM on one prewarming worker. The provider stays on its owning
 /// thread; no writes are committed and no validation checks are disabled.

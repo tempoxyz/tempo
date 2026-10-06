@@ -804,7 +804,7 @@ where
                         // In pinned Reth this return value supplies proof
                         // prefetch targets only. It is never committed. Keep
                         // the strict result separate from the shared read cache.
-                        let hint = candidate.prewarming_result();
+                        let hint = candidate.prewarming_hint_result();
                         session.publish(candidate);
                         return Ok(hint);
                     }

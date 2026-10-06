@@ -126,10 +126,7 @@ fn custom_precompile_warming_invalidates_preexecuted_results_after_prior_reuse()
     let address = Address::with_last_byte(102);
     let (db, env, tx) = journal_guard_fixture(balance_code(address));
     let mut worker = PrewarmingExecutor::new(db.clone(), env.clone());
-    let cold = worker
-        .execute(tx.clone(), None)
-        .unwrap()
-        .prewarming_result();
+    let cold = worker.execute(tx.clone(), None).unwrap().result;
     let mut sequential = TempoEvm::new(db.clone(), env.clone());
     warm_balance_address(sequential.ctx_mut(), address);
     let expected = sequential.transact_raw(tx.clone()).unwrap();
@@ -169,7 +166,7 @@ fn custom_legacy_access_list_preserves_sload_gas_and_full_result() {
     assert_eq!(tx.inner.tx_type, 0);
     let mut worker = PrewarmingExecutor::new(db.clone(), env.clone());
     let candidate = worker.execute(tx.clone(), None).unwrap();
-    let cold_gas = candidate.prewarming_result().result.tx_gas_used();
+    let cold_gas = candidate.result.result.tx_gas_used();
     let mut sequential = TempoEvm::new(db.clone(), env.clone());
     let mut parallel = TempoEvm::new(db, env);
     parallel.set_speculative_executor(Some(SpeculativeExecutor::new(1, 1).unwrap()));
@@ -217,7 +214,7 @@ fn disabling_inspection_rechecks_persistent_journal_warming() {
     let cold_gas = worker
         .execute(tx.clone(), None)
         .unwrap()
-        .prewarming_result()
+        .result
         .result
         .tx_gas_used();
     let mut sequential =
@@ -268,7 +265,7 @@ fn check_changed_code_representation(inline: bool, cached: bool) {
         let candidate = PrewarmingExecutor::new(db.clone(), env.clone())
             .execute(tx.clone(), None)
             .unwrap();
-        let old_result = candidate.prewarming_result();
+        let old_result = candidate.result.clone();
         install(&mut db, after.clone());
         let expected = TempoEvm::new(db.clone(), env.clone())
             .transact_raw(tx.clone())
@@ -521,7 +518,7 @@ fn indexed_storage_errors_require_authoritative_execution_even_with_unchanged_id
                 .execute(tx.clone(), None)
                 .unwrap();
             // Address storage succeeds; the indexed method has its own error.
-            assert!(candidate.prewarming_result().result.is_success());
+            assert!(candidate.result.result.is_success());
             actual.set_preexecuted_transaction(candidate);
         } else {
             actual.prepare_transactions([(tx.clone(), Address::ZERO)]);
