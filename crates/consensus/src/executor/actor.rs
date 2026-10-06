@@ -2474,12 +2474,9 @@ async fn deliver_block(
     execution_node: &impl ExecutionLayer,
     block: Arc<Block>,
 ) -> eyre::Result<PayloadStatusEnum> {
-    let (block, block_access_list) = Arc::unwrap_or_clone(block).into_parts();
+    let block = Arc::unwrap_or_clone(block).into_execution_block();
     let payload_status = execution_node
-        .new_payload(TempoExecutionData {
-            block,
-            block_access_list,
-        })
+        .new_payload(TempoExecutionData { block })
         .await
         .wrap_err("failed sending new-payload request to execution layer")?;
     if payload_status.is_valid() {
@@ -2588,11 +2585,9 @@ async fn run_payload_job(
             }
             // The application received the block and may propose it; hand
             // the body to the actor loop for a later build on this proposal.
-            let (execution_block, block_access_list, _) =
-                retained.into_consensus_execution_payload();
+            let (execution_block, _) = retained.into_consensus_execution_payload();
             Some(Arc::new(Block::from_execution_block_unchecked(
                 execution_block,
-                block_access_list,
             )))
         }
         Some(Err(error)) => {

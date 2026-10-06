@@ -228,11 +228,9 @@ impl Inner {
         let payload_build_elapsed = payload_build_start.elapsed();
         let payload_validation_work_elapsed = payload.validation_work_duration();
         let validation_latency_elapsed = payload.validation_latency_duration();
-        let (block, block_access_list, execution_block_encoded) =
-            payload.into_consensus_execution_payload();
+        let (block, execution_block_encoded) = payload.into_consensus_execution_payload();
         let proposal = Block::from_execution_block_unchecked_with_encoded_cache(
             block,
-            block_access_list,
             execution_block_encoded,
         );
         let proposal_elapsed = propose_start.elapsed();
