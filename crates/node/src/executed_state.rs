@@ -111,6 +111,11 @@ impl TempoEngineTreeValidatorBuilder {
         self.qmdb = qmdb;
         self
     }
+
+    #[cfg(feature = "qmdb")]
+    pub(crate) fn qmdb_enabled(&self) -> bool {
+        self.qmdb.is_some()
+    }
 }
 
 impl<Node> EngineValidatorBuilder<Node> for TempoEngineTreeValidatorBuilder

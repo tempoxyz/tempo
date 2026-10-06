@@ -373,6 +373,8 @@ impl NodeTypes for TempoNode {
 
 #[derive(Debug)]
 pub struct TempoAddOns<N: FullNodeTypes<Types = TempoNode>> {
+    #[cfg(feature = "qmdb")]
+    qmdb: bool,
     #[allow(clippy::type_complexity)]
     inner: RpcAddOns<
         NodeAdapter<N>,
@@ -404,6 +406,8 @@ where
         builder: TempoEngineTreeValidatorBuilder,
     ) -> Self {
         Self {
+            #[cfg(feature = "qmdb")]
+            qmdb: builder.qmdb_enabled(),
             inner: RpcAddOns::new(
                 TempoEthApiBuilder::default(),
                 TempoEngineValidatorBuilder,
@@ -437,6 +441,12 @@ where
                 let reth_node_builder::rpc::RpcModuleContainer {
                     modules, registry, ..
                 } = container;
+
+                #[cfg(feature = "qmdb")]
+                if self.qmdb {
+                    // MPT proofs cannot authenticate an experimental QMDB header root.
+                    modules.remove_method_from_configured("eth_getProof");
+                }
 
                 let eth_api = registry.eth_api().clone();
                 let token = TempoToken::new(eth_api.clone());

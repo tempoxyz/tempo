@@ -92,7 +92,7 @@ impl QmdbStrategy {
                                 hash: recovered.hash(),
                                 parent_hash: recovered.parent_hash(),
                             },
-                            block.hashed_state().as_ref().clone(),
+                            HashedPostState::from(block.hashed_state().as_ref().clone()),
                         )
                     })
                     .collect::<Vec<_>>();
@@ -111,8 +111,8 @@ impl QmdbStrategy {
                     && let Some(head) = head
                     && head.root != block.recovered_block().state_root()
                 {
-                    return Err(ProviderError::other(eyre::eyre!(
-                        "QMDB persistence root differs from the executed block"
+                    return Err(ProviderError::other(std::io::Error::other(
+                        "QMDB persistence root differs from the executed block",
                     )));
                 }
                 Ok(())
