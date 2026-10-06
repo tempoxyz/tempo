@@ -38,7 +38,7 @@ pub fn poseidon7(inputs: &[Fr; 7]) -> Fr {
     state = mix(&state, &P);
 
     let partial = (HALF + 1) * T;
-    for (round, sparse) in S.chunks_exact(2 * T - 1).enumerate() {
+    for (round, sparse) in S.as_chunks::<{ 2 * T - 1 }>().0.iter().enumerate() {
         state[0] = pow5(state[0]) + C[partial + round];
         let mut first = Fr::ZERO;
         for (s, x) in sparse[..T].iter().zip(&state) {
