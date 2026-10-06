@@ -114,6 +114,7 @@ impl ExecutableTxParts<Recovered<TempoTxEnv>, TempoTxEnvelope> for RecoveredInBl
     type Recovered = Self;
 
     fn into_parts(self) -> (Recovered<TempoTxEnv>, Self::Recovered) {
+        let measure_env = crate::phase_measure::env_start();
         let signer = *self.signer();
         // Populate the original envelope's lazy hash before cloning it into the EVM transaction
         // environment so both copies carry the cached value.
@@ -121,6 +122,7 @@ impl ExecutableTxParts<Recovered<TempoTxEnv>, TempoTxEnvelope> for RecoveredInBl
         let recovered = Recovered::new_unchecked(self.tx().clone(), signer);
         let mut tx_env = TempoTxEnv::from(recovered);
         tx_env.set_expiring_nonce_idx(self.expiring_nonce_idx);
+        crate::phase_measure::env_end(measure_env);
         (Recovered::new_unchecked(tx_env, signer), self)
     }
 }

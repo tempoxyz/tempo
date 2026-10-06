@@ -1,6 +1,8 @@
 use crate::{
     SYSTEM_CALL_GAS_LIMIT, StorageActionReplayState, TempoBlockExecutionCtx, TempoEvm,
-    TempoEvmTypes, transaction::ExecutionContext,
+    TempoEvmTypes,
+    phase_measure::{PhaseMeasurements, Stamp},
+    transaction::ExecutionContext,
 };
 use alloy_consensus::{Transaction, transaction::TxHashRef};
 use alloy_eip7928::{BlockAccessIndex, BlockAccessList};
@@ -205,6 +207,7 @@ pub struct TempoBlockExecutor<'a> {
     non_payment_gas_left: u64,
     /// Incentive-section gas from real transactions; simulations are exempt.
     incentive_gas_used: u64,
+    phase_measurements: PhaseMeasurements,
     block_gas_used: u64,
 }
 
@@ -219,6 +222,7 @@ impl<'a> TempoBlockExecutor<'a> {
             t13_active_at_genesis: chain_spec
                 .is_t13_active_at_timestamp(chain_spec.genesis().timestamp),
             incentive_gas_used: 0,
+            phase_measurements: PhaseMeasurements::default(),
             block_gas_used: 0,
             non_payment_gas_left: ctx.general_gas_limit,
             non_shared_gas_left: block_gas_limit.saturating_sub(ctx.shared_gas_limit),
@@ -582,6 +586,8 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         &mut self,
         tx: impl ExecutorTx<Self>,
     ) -> Result<Self::TransactionResultWithState, BlockExecutionError> {
+        self.phase_measurements.attempted += 1;
+        let measure_start = self.phase_measurements.sample();
         let (mut tx_env, recovered) = tx.into_parts();
         // Remove any prewarming-specific context that was added to the tx env.
         tx_env.inner_mut().set_expiring_nonce_idx(None);
@@ -591,9 +597,11 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let tx_hash = *original.tx_hash();
         let tx_type = original.tx_type();
         let is_payment = self.is_payment(original);
+        let measure_prepared = measure_start.map(|_| Stamp::read());
         let inner = self
             .inner
             .execute_transaction_without_commit((tx_env, recovered))?;
+        let measure_executed = measure_start.map(|_| Stamp::read());
 
         // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
         // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.
@@ -611,6 +619,17 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         };
         // Snapshot the per-tx validator-credited fee set by the handler's `reimburse_caller`
         let validator_fee = inner.result().result.ext.validator_fee;
+        self.phase_measurements.execution(
+            measure_start.map(|start| {
+                [
+                    start,
+                    measure_prepared.unwrap(),
+                    measure_executed.unwrap(),
+                    Stamp::read(),
+                ]
+            }),
+            block_gas_used,
+        );
         Ok(TempoTxResult {
             inner,
             tx_type,
@@ -626,6 +645,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         &mut self,
         output: Self::TransactionResultWithState,
     ) -> Result<GasOutput, BlockExecutionError> {
+        let measure_start = self.phase_measurements.sample();
         let TempoTxResult {
             inner,
             tx_type: _,
@@ -662,6 +682,8 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         }
 
         self.replay_state.commit_tx_changes();
+        self.phase_measurements
+            .commit(measure_start, block_gas_used);
 
         Ok(gas_output)
     }
@@ -670,6 +692,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         mut self,
     ) -> Result<(BlockExecutionOutput<TempoReceipt>, Option<BlockAccessList>), BlockExecutionError>
     {
+        let measure_finish = Stamp::read();
         // T4 sets the shared gas limit to zero, so any gas spilled into the
         // incentive section exceeds the available block capacity.
         if self.evm().config_spec_id().is_t4() && self.incentive_gas_used > 0 {
@@ -694,6 +717,8 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         if use_regular_gas {
             output.result.gas_used = block_gas_used;
         }
+        self.phase_measurements
+            .finish(measure_finish, output.result.gas_used);
         Ok((output, block_access_list))
     }
 
