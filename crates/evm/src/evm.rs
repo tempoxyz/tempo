@@ -1050,7 +1050,7 @@ mod tests {
         DatabaseCommit, DatabaseRef,
         bytecode::opcode,
         context::{BlockEnv, CfgEnv, JournalTr, TxEnv, result::HaltReason},
-        database::{EmptyDB, in_memory_db::CacheDB},
+        database::{EmptyDB, InMemoryDB},
         state::{AccountInfo, Bytecode, EvmState},
     };
     use std::{assert_matches, collections::BTreeMap};
@@ -1184,7 +1184,7 @@ mod tests {
         Bytecode::new_legacy(code.into())
     }
 
-    fn initialize_zone_factory(db: &mut CacheDB<EmptyDB>, owner: Address) {
+    fn initialize_zone_factory(db: &mut InMemoryDB, owner: Address) {
         let code = Bytecode::new_legacy([0xef].into());
         db.insert_account_info(
             ZONE_FACTORY_ADDRESS,
@@ -1571,7 +1571,7 @@ mod tests {
 
     #[test]
     fn test_transact_raw_system_tx_failed() {
-        let mut cache_db = CacheDB::new(EmptyDB::default());
+        let mut cache_db = InMemoryDB::default();
         // Deploy a contract that always reverts: PUSH1 0x00 PUSH1 0x00 REVERT (0x60006000fd)
         let revert_code = Bytes::from_static(&[0x60, 0x00, 0x60, 0x00, 0xfd]);
         let contract_addr = Address::repeat_byte(0xaa);
@@ -1634,7 +1634,7 @@ mod tests {
         let logic_runtime = Bytecode::new_legacy(Bytes::from_static(&[
             0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3,
         ]));
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         db.insert_account_info(
             ZONE_PORTAL_IMPL_ADDRESS,
             AccountInfo {
@@ -1710,7 +1710,7 @@ mod tests {
         let admin = Address::repeat_byte(0x22);
         let sequencer = Address::repeat_byte(0x33);
         let portal_runtime = Bytecode::new_legacy(tempo_contracts::zones::ZONE_PORTAL_RUNTIME);
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         db.insert_account_info(
             ZONE_PORTAL_IMPL_ADDRESS,
             AccountInfo {
@@ -1974,7 +1974,7 @@ mod tests {
         let admin = Address::repeat_byte(0x22);
         let sequencer = Address::repeat_byte(0x33);
         let gateway = Address::repeat_byte(0x44);
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         for (address, runtime) in [
             (ZONE_PORTAL_IMPL_ADDRESS, ZONE_PORTAL_RUNTIME),
             (ZONE_MESSENGER_ADDRESS, ZONE_MESSENGER_RUNTIME),
@@ -2074,7 +2074,7 @@ mod tests {
         let sequencer = Address::repeat_byte(0x33);
         let mut env = evm_env_with_spec(TempoHardfork::T10);
         env.block_env.basefee = 0;
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         initialize_zone_factory(&mut db, owner);
         let mut evm = TempoEvm::new(db, env);
 
@@ -2374,7 +2374,7 @@ mod tests {
             let amm_liquidity = U256::from(amm_liquidity_reserve);
 
             let mut evm = TempoEvm::new(
-                CacheDB::new(EmptyDB::default()),
+                InMemoryDB::default(),
                 EvmEnv {
                     block_env: TempoBlockEnv {
                         inner: BlockEnv {
@@ -2524,7 +2524,7 @@ mod tests {
                 ]),
             };
 
-            let run_transfer = |evm: &mut TempoEvm<CacheDB<EmptyDB>>,
+            let run_transfer = |evm: &mut TempoEvm<InMemoryDB>,
                                 caller: Address,
                                 to: Address,
                                 amount: U256,

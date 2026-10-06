@@ -133,10 +133,7 @@ fn set_zone_factory_genesis_owner(genesis: &mut Genesis, owner: Address) -> eyre
         .storage
         .as_mut()
         .ok_or_eyre("DEV ZoneFactory is missing storage")?;
-    storage.insert(
-        B256::ZERO,
-        B256::from(initial_zone_factory_config(owner).to_be_bytes()),
-    );
+    storage.insert(B256::ZERO, B256::from(initial_zone_factory_config(owner)));
     Ok(())
 }
 
@@ -532,7 +529,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         } else {
             None
         };
-        let chain_id = builder.config().chain.chain().id();
+        let chain_id = builder.config().chain.chain_id();
 
         #[cfg(feature = "custom-pcrs")]
         if let Some(policy) = args.custom_pcrs.clone() {
@@ -859,7 +856,7 @@ mod tests {
             code: Some(Bytes::from_static(&[0xef])),
             storage: Some(BTreeMap::from([(
                 B256::ZERO,
-                B256::from(initial_zone_factory_config(owner).to_be_bytes()),
+                B256::from(initial_zone_factory_config(owner)),
             )])),
             ..Default::default()
         };

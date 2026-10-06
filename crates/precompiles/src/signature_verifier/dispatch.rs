@@ -190,7 +190,7 @@ mod tests {
             let calldata = ISignatureVerifier::verifyCall {
                 signer: signer.address(),
                 hash,
-                signature: sig.as_bytes().to_vec().into(),
+                signature: sig.as_bytes().into(),
             }
             .abi_encode();
 
@@ -212,7 +212,7 @@ mod tests {
             let calldata = ISignatureVerifier::verifyCall {
                 signer: Address::random(),
                 hash,
-                signature: sig.as_bytes().to_vec().into(),
+                signature: sig.as_bytes().into(),
             }
             .abi_encode();
 
@@ -439,7 +439,7 @@ mod tests {
             let calldata = ISignatureVerifier::verifyKeychainCall {
                 account: signer.address(),
                 hash,
-                signature: sig.as_bytes().to_vec().into(),
+                signature: sig.as_bytes().into(),
             }
             .abi_encode();
 

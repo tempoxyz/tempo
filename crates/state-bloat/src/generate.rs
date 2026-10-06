@@ -268,7 +268,7 @@ fn derive_address_fast(seed: &[u8; 32], index: u64) -> Address {
     buf[32..].copy_from_slice(&index.to_be_bytes());
     let hash = keccak256(buf);
     // Take last 20 bytes of hash as address
-    Address::from_slice(&hash[12..])
+    Address::from_word(hash)
 }
 
 /// Derive the parent key for BIP44 Ethereum path: m/44'/60'/0'/0

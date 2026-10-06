@@ -16,11 +16,8 @@ use common::{
     hardfork_bench_cases, txgen_signers,
 };
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
-use reth_revm::DatabaseCommit;
-use revm::{
-    context::JournalTr,
-    database::{CacheDB, EmptyDB},
-};
+use reth_revm::{DatabaseCommit, db::InMemoryDB};
+use revm::context::JournalTr;
 use std::{hint::black_box, sync::Arc};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
 use tempo_contracts::precompiles::{IStablecoinDEX, ITIP20, tip20_factory::createTokenCall};
@@ -58,9 +55,9 @@ fn seed_dex_cache_db(
     participants: &[Address],
     block_timestamp: u64,
     hardfork: TempoHardfork,
-) -> CacheDB<EmptyDB> {
+) -> InMemoryDB {
     let mut evm = TempoEvmFactory::default().create_evm(
-        CacheDB::new(EmptyDB::default()),
+        InMemoryDB::default(),
         common::bench_env(hardfork, block_timestamp),
     );
     let admin = participants

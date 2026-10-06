@@ -857,7 +857,7 @@ impl<'a> arbitrary::Arbitrary<'a> for TempoTransaction {
         }
 
         // Filter out CREATEs from non-first positions and ensure only one CREATE (if any)
-        let first_is_create = calls.first().map(|c| c.to.is_create()).unwrap_or(false);
+        let first_is_create = calls.first().is_some_and(|c| c.to.is_create());
         if first_is_create {
             // Keep the first CREATE, remove all other CREATEs
             for call in calls.iter_mut().skip(1) {

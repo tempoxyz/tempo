@@ -981,7 +981,7 @@ mod tests {
         let signer = PrivateKey::from_seed(0);
         let metadata = vec![create_subblock_metadata(&signer)];
         let input = create_system_tx_input(metadata, 1);
-        let system_tx = create_system_tx(chainspec.chain().id(), input);
+        let system_tx = create_system_tx(chainspec.chain_id(), input);
 
         let result = executor.validate_system_tx(&system_tx);
         assert!(
@@ -1042,7 +1042,7 @@ mod tests {
         let signer = PrivateKey::from_seed(0);
         let metadata = vec![create_subblock_metadata(&signer)];
         let input = create_system_tx_input(metadata, 1);
-        let system_tx = create_system_tx(chainspec.chain().id(), input);
+        let system_tx = create_system_tx(chainspec.chain_id(), input);
 
         let result = executor.validate_system_tx(&system_tx);
         assert!(result.is_err());
@@ -1061,7 +1061,7 @@ mod tests {
         let mut input = BytesMut::new();
         input.extend_from_slice(&[0xff, 0xff, 0xff]); // Invalid RLP
         input.extend_from_slice(&U256::from(1u64).to_be_bytes::<32>());
-        let system_tx = create_system_tx(chainspec.chain().id(), input.freeze().into());
+        let system_tx = create_system_tx(chainspec.chain_id(), input.freeze().into());
 
         let result = executor.validate_system_tx(&system_tx);
         assert!(result.is_err());
@@ -1080,7 +1080,7 @@ mod tests {
         // Create system tx with non-zero `to` address
         let system_tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
             TxLegacy {
-                chain_id: Some(chainspec.chain().id()),
+                chain_id: Some(chainspec.chain_id()),
                 nonce: 0,
                 gas_price: 0,
                 gas_limit: 0,
@@ -1111,7 +1111,7 @@ mod tests {
         let signer = PrivateKey::from_seed(0);
         let metadata = vec![create_subblock_metadata(&signer)];
         let input = create_system_tx_input(metadata, 1);
-        let system_tx = create_system_tx(chainspec.chain().id(), input);
+        let system_tx = create_system_tx(chainspec.chain_id(), input);
 
         let result = executor.validate_system_tx(&system_tx);
         assert!(result.is_err());
