@@ -3,7 +3,7 @@ use crate::{
     Precompile, expect_precompile_revert,
     storage::{PrecompileStorageProvider, StorageCtx, hashmap::HashMapStorageProvider},
 };
-use alloy::sol_types::{SolCall, SolEvent, SolInterface};
+use alloy::sol_types::{SolCall, SolEvent};
 
 fn field(value: u64) -> B256 {
     U256::from(value).into()

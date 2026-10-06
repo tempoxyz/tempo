@@ -27,8 +27,8 @@ cast call 0x1132000000000000000000000000000000000000 \
   0x000000000000000000000000000000000000000000000000000000000000002a \
   --rpc-url http://127.0.0.1:8545
 
-cargo test -p tempo-precompiles key_publisher --lib
-cargo test -p tempo-precompiles key_publisher --lib --features experimental-oidc
+cargo test -p tempo-precompiles key_publisher --lib --features test-utils
+cargo test -p tempo-precompiles key_publisher --lib --features experimental-oidc,test-utils
 ```
 
 Do not use real funds or identities. Keep RPC private. A public provider sign-in
