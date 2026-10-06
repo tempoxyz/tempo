@@ -116,6 +116,12 @@ where
 #[test_case(TempoHardfork::T8 ; "t8_with_packed_order_layout")]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_stablecoin_dex_order_gas_snapshots(hardfork: TempoHardfork) -> eyre::Result<()> {
+    // Tokio's test macro pins its body on the test thread's stack. Keep the
+    // state for this long sequence of contract calls on the heap instead.
+    Box::pin(run_stablecoin_dex_order_gas_snapshots(hardfork)).await
+}
+
+async fn run_stablecoin_dex_order_gas_snapshots(hardfork: TempoHardfork) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new()
