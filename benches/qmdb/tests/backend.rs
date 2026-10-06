@@ -83,6 +83,7 @@ async fn qmdb_builds_validates_persists_and_restarts() -> eyre::Result<()> {
                 .body()
                 .transactions
                 .iter()
+                .cloned()
                 .filter(|tx| tx.gas_limit() > 0)
                 .count(),
             1
@@ -172,6 +173,7 @@ async fn bench_mpt_vs_qmdb() -> eyre::Result<()> {
                     .body()
                     .transactions
                     .iter()
+                    .cloned()
                     .filter(|tx| tx.gas_limit() > 0)
                     .count(),
                 transactions as usize
