@@ -33,9 +33,44 @@ cargo test -p tempo-precompiles --lib --features test-utils,holder-first-balance
 cargo test -p tempo-revm --lib --features tempo-precompiles/test-utils,tempo-precompiles/holder-first-balances
 ```
 
-The benchmark compares full state-root construction and incremental updates for
+The serial benchmark compares full state-root construction and incremental updates for
 mass payouts and repeated transfers among a small holder set. It includes holder
 EOAs, token accounts and the additional inert storage accounts, and uses Reth's
 trie implementation with in-memory cursors. It does not measure database I/O,
 disk footprint, proof sizes or end-to-end block execution. Account creation and
 code-deposit gas must also be evaluated before selecting a production design.
+
+## Bare-metal results (October 6, 2026)
+
+Measured on boxctl plan `f4-metal-small` in `FRA2`, with Rust 1.99.0, release
+optimization, LTO disabled, 10 samples, 1-second warmup and a 2-second measurement
+target. Values below are Criterion's central time estimates, rounded to
+milliseconds. The small-holder workload modifies 16 balances; the payout workload
+modifies 4,096 balances (one payer and 4,095 existing recipients). Every holder
+already has a nonce-bearing EOA; the holder-first variant adds an inert companion
+account. All holders own every token in the fixture.
+
+| Holders | Tokens per holder | Root workload | Token-first (ms) | Holder-first (ms) |
+| --- | --- | --- | --- | --- |
+| 10,000 | 1 | Full rebuild | 8.817 | 21.523 |
+| 10,000 | 1 | 16-balance update | 0.227 | 0.245 |
+| 10,000 | 1 | 4,096-balance payout | 4.021 | 19.307 |
+| 10,000 | 4 | Full rebuild | 17.723 | 34.263 |
+| 10,000 | 4 | 16-balance update | 0.229 | 0.296 |
+| 10,000 | 4 | 4,096-balance payout | 4.026 | 29.129 |
+| 100,000 | 1 | Full rebuild | 107.180 | 259.150 |
+| 100,000 | 1 | 16-balance update | 0.275 | 0.329 |
+| 100,000 | 1 | 4,096-balance payout | 17.271 | 49.751 |
+
+For 100,000 holders and one token, a payout changes 18 cached account-trie branch
+entries and 3,325 storage-trie branch entries in the token-first variant, versus
+4,162 account-trie branch entries and no storage-trie branch entries in the
+holder-first variant. These are retained branch-cache entries, not all trie nodes
+or database byte counts. Incremental roots were checked against full rebuilds
+before timing every workload.
+
+This companion-account design is slower in the measured serial, in-memory root
+path despite shrinking individual storage tries. These results do not establish
+performance for parallel root calculation, disk-backed state, protocol-isolated
+storage directly on holders, or first-time recipients. No block-throughput or
+production performance improvement is claimed.
