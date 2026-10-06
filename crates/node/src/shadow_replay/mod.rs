@@ -508,7 +508,7 @@ fn take_updates(updates: &Mutex<Vec<EvmState>>) -> TransitionState {
     let states = std::mem::take(&mut *updates.lock());
     let mut block = BlockState::new();
     for state in states {
-        block.commit_pending(&state, None);
+        block.commit_pending(&state);
     }
     block.into_transitions()
 }
@@ -530,7 +530,7 @@ fn transition_pending(state: &PendingState) -> TransitionState {
 #[cfg(test)]
 fn transition(state: EvmState) -> TransitionState {
     let mut block = BlockState::new();
-    block.commit_pending(&state, None);
+    block.commit_pending(&state);
     block.into_transitions()
 }
 
