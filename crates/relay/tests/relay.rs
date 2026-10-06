@@ -126,6 +126,120 @@ fn decode(value: Value) -> AASigned {
 }
 
 #[tokio::test]
+async fn native_grant_preserves_outer_signature_and_authorization() {
+    let fixture: Value = serde_json::from_str(include_str!("multisig-fixtures.json")).unwrap();
+    let original: Bytes = serde_json::from_value(fixture["nativeGrantSigned"].clone()).unwrap();
+    let original_fields = tempo_relay::wire::Rlp::decode(&original[1..]).unwrap();
+    let original_fields = original_fields.list().unwrap();
+    let backend = Arc::new(RecordingBackend::default());
+    let relay = Relay::new(backend).with_sponsor(sponsor()).unwrap();
+    let result = relay
+        .handle(Request::new(
+            "eth_signRawTransaction",
+            vec![json!(original)],
+        ))
+        .await
+        .unwrap();
+    let sponsored: Bytes = serde_json::from_value(result).unwrap();
+    assert_eq!(sponsored[0], 0x76);
+    let fields = tempo_relay::wire::Rlp::decode(&sponsored[1..]).unwrap();
+    let fields = fields.list().unwrap();
+    assert_eq!(fields[13], original_fields[13]);
+    assert_eq!(fields[14], original_fields[14]);
+    assert_eq!(&fields[..10], &original_fields[..10]);
+    assert_eq!(fields[12], original_fields[12]);
+    assert_eq!(fields[10].bytes().unwrap(), TOKEN.as_slice());
+    let sender: Address = serde_json::from_value(fixture["account"].clone()).unwrap();
+    let mut payload = fields[..14].to_vec();
+    payload[11] = tempo_relay::wire::Rlp::Bytes(sender.to_vec());
+    let hash = alloy_primitives::keccak256(
+        [&[0x78][..], &tempo_relay::wire::Rlp::List(payload).encode()].concat(),
+    );
+    let signature = fields[11].list().unwrap();
+    let signature = alloy_primitives::Signature::new(
+        U256::from_be_slice(signature[1].bytes().unwrap()),
+        U256::from_be_slice(signature[2].bytes().unwrap()),
+        signature[0].integer().unwrap() != 0,
+    );
+    assert_eq!(
+        signature.recover_address_from_prehash(&hash).unwrap(),
+        payer().address()
+    );
+}
+
+#[tokio::test]
+async fn native_grant_rejects_spoofed_sender_and_missing_quorum() {
+    let fixture: Value = serde_json::from_str(include_str!("multisig-fixtures.json")).unwrap();
+    let original: Bytes = serde_json::from_value(fixture["nativeGrantSigned"].clone()).unwrap();
+    let backend = Arc::new(RecordingBackend::default());
+    let relay = Relay::new(backend.clone()).with_sponsor(sponsor()).unwrap();
+    let mut fields = tempo_relay::wire::Rlp::decode(&original[1..])
+        .unwrap()
+        .list()
+        .unwrap()
+        .to_vec();
+    fields[11] = tempo_relay::wire::Rlp::Bytes(sender().address().to_vec());
+    let spoofed =
+        Bytes::from([&[0x78][..], &tempo_relay::wire::Rlp::List(fields).encode()].concat());
+    let error = relay
+        .handle(Request::new("eth_sendRawTransaction", vec![json!(spoofed)]))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.message,
+        "Fee-payer service sender differs from recovered signer"
+    );
+    let mut fields = tempo_relay::wire::Rlp::decode(&original[1..])
+        .unwrap()
+        .list()
+        .unwrap()
+        .to_vec();
+    let mut grant = tempo_relay::wire::Envelope::decode(&fields[13].encode(), false).unwrap();
+    grant.witness.approvals.truncate(1);
+    fields[13] = tempo_relay::wire::Rlp::decode(&grant.serialize(Some(&grant.witness))).unwrap();
+    let partial =
+        Bytes::from([&[0x78][..], &tempo_relay::wire::Rlp::List(fields).encode()].concat());
+    let error = relay
+        .handle(Request::new("eth_sendRawTransaction", vec![json!(partial)]))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.message,
+        "Multisig grant quorum is required before sponsorship"
+    );
+    assert!(backend.requests.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn native_grant_policy_and_recording_failure_never_broadcast() {
+    let fixture: Value = serde_json::from_str(include_str!("multisig-fixtures.json")).unwrap();
+    for (configured, expected) in [
+        (
+            sponsor().with_policy(Arc::new(RejectPolicy)),
+            "Spend limit exceeded.",
+        ),
+        (
+            sponsor().with_observer(Arc::new(BrokenRecorder)),
+            "Recording unavailable",
+        ),
+    ] {
+        let backend = Arc::new(RecordingBackend::default());
+        let relay = Relay::new(backend.clone())
+            .with_sponsor(configured)
+            .unwrap();
+        let error = relay
+            .handle(Request::new(
+                "eth_sendRawTransaction",
+                vec![fixture["nativeGrantSigned"].clone()],
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(error.message, expected);
+        assert!(backend.requests.lock().unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
 async fn canonical_and_alloy_service_encodings_preserve_the_sender_signature() {
     let backend = Arc::new(RecordingBackend::default());
     let relay = Relay::new(backend.clone()).with_sponsor(sponsor()).unwrap();

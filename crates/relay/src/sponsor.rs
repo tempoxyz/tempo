@@ -376,8 +376,14 @@ impl Sponsor {
         }
         let (canonical, expected_sender) = normalize_service_encoding(&raw)?;
         let mut remaining = canonical.as_slice();
-        let signed = AASigned::decode_2718(&mut remaining)
-            .map_err(|_| RpcError::invalid("Invalid or unsupported Tempo transaction signature"))?;
+        let signed = match AASigned::decode_2718(&mut remaining) {
+            Ok(signed) => signed,
+            Err(_) => {
+                return self
+                    .handle_native_grant(request, next, &canonical, expected_sender)
+                    .await;
+            }
+        };
         if !remaining.is_empty() {
             return Err(RpcError::invalid("Trailing transaction data"));
         }
@@ -544,6 +550,131 @@ impl Sponsor {
         self.record(method, envelope.witness.account, hash, &bytes)
             .await?;
         Ok(bytes)
+    }
+
+    async fn handle_native_grant(
+        &self,
+        mut request: Request,
+        next: Next<'_>,
+        canonical: &[u8],
+        expected_sender: Option<Address>,
+    ) -> Result<Value, RpcError> {
+        let invalid = || RpcError::invalid("Invalid or unsupported Tempo transaction signature");
+        let mut fields = crate::wire::Rlp::decode(&canonical[1..])?.list()?.to_vec();
+        if fields.len() != 15 {
+            return Err(invalid());
+        }
+        let outer_signature = fields.pop().ok_or_else(invalid)?;
+        let authorization = fields.pop().ok_or_else(invalid)?;
+        if !authorization.list()?.get(1).is_some_and(|signature| {
+            signature
+                .bytes()
+                .is_ok_and(|bytes| bytes.first() == Some(&5))
+        }) {
+            return Err(invalid());
+        }
+        let grant = crate::wire::Envelope::decode(&authorization.encode(), false)?;
+        if grant.chain_id()? != self.chain_id {
+            return Err(RpcError::invalid("Sponsor grant chain ID mismatch"));
+        }
+        let digest = grant.witness.digest(grant.payload_hash());
+        if grant
+            .witness
+            .select(digest, &grant.witness.approvals)?
+            .weight
+            < grant.witness.config.threshold
+        {
+            return Err(RpcError::invalid(
+                "Multisig grant quorum is required before sponsorship",
+            ));
+        }
+        let mut supported = fields.clone();
+        supported.push(outer_signature.clone());
+        let encoded = [&[0x76][..], &crate::wire::Rlp::List(supported).encode()].concat();
+        let mut remaining = encoded.as_slice();
+        let signed = AASigned::decode_2718(&mut remaining).map_err(|_| invalid())?;
+        if !remaining.is_empty() {
+            return Err(invalid());
+        }
+        if !signed.tx().has_fee_payer_signature_marker() {
+            return if request.method == "eth_signRawTransaction" {
+                Err(RpcError::invalid(
+                    "Transaction must request fee-payer sponsorship",
+                ))
+            } else {
+                next.run(request).await
+            };
+        }
+        let mut signing_fields = fields.clone();
+        signing_fields[10] = crate::wire::Rlp::Bytes(Vec::new());
+        signing_fields[11] = crate::wire::Rlp::Bytes(vec![0]);
+        signing_fields.push(authorization.clone());
+        let sender_hash = alloy_primitives::keccak256(
+            [
+                &[0x76][..],
+                &crate::wire::Rlp::List(signing_fields).encode(),
+            ]
+            .concat(),
+        );
+        let sender = signed
+            .signature()
+            .recover_signer(&sender_hash)
+            .map_err(|_| RpcError::invalid("Invalid sender signature"))?;
+        if expected_sender.is_some_and(|expected| sender != expected) {
+            return Err(RpcError::invalid(
+                "Fee-payer service sender differs from recovered signer",
+            ));
+        }
+        let mut transaction = signed.tx().clone();
+        transaction.validate().map_err(RpcError::invalid)?;
+        if transaction.chain_id != self.chain_id
+            || transaction.gas_limit > self.max_gas
+            || transaction.max_fee_per_gas > self.max_fee_per_gas
+        {
+            return Err(RpcError::invalid(
+                "Transaction exceeds sponsor chain or fee limits",
+            ));
+        }
+        transaction.fee_token = Some(self.fee_token);
+        let mut prepared = json!(TempoTransactionRequest::from(transaction));
+        prepared["from"] = json!(sender);
+        prepared["feePayerSignature"] = Value::Null;
+        prepared["keyAuthorization"] = crate::wire::rpc_authorization(&authorization)?;
+        self.approve_raw(&prepared).await?;
+        fields[10] = crate::wire::Rlp::Bytes(self.fee_token.to_vec());
+        fields[11] = crate::wire::Rlp::Bytes(sender.to_vec());
+        fields.push(authorization);
+        let hash = alloy_primitives::keccak256(
+            [
+                &[0x78][..],
+                &crate::wire::Rlp::List(fields.clone()).encode(),
+            ]
+            .concat(),
+        );
+        let signature = self.signer.sign_hash(hash).await?;
+        if signature.recover_address_from_prehash(&hash).ok() != Some(self.signer.address()) {
+            return Err(RpcError::new(
+                -32603,
+                "Fee payer returned an invalid signature",
+            ));
+        }
+        let mut encoded_signature = Vec::new();
+        Header {
+            list: true,
+            payload_length: signature.rlp_rs_len() + signature.v().length(),
+        }
+        .encode(&mut encoded_signature);
+        signature.write_rlp_vrs(&mut encoded_signature, signature.v());
+        fields[11] = crate::wire::Rlp::decode(&encoded_signature)?;
+        fields.push(outer_signature);
+        let bytes = Bytes::from([&[0x76][..], &crate::wire::Rlp::List(fields).encode()].concat());
+        self.record(&request.method, sender, hash, &bytes).await?;
+        request.params[0] = json!(bytes);
+        if request.method == "eth_signRawTransaction" {
+            Ok(request.params[0].clone())
+        } else {
+            next.run(request).await
+        }
     }
 }
 

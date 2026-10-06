@@ -594,7 +594,7 @@ impl Envelope {
     }
 }
 
-fn rpc_authorization(value: &Rlp) -> Result<Value, RpcError> {
+pub(crate) fn rpc_authorization(value: &Rlp) -> Result<Value, RpcError> {
     let fields = value.list()?;
     if fields.len() != 2 {
         return Err(RpcError::invalid("Invalid attached key authorization"));

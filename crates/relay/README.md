@@ -23,7 +23,11 @@ are limited to 30 million gas and a maximum fee per gas of 100 billion.
 These per-transaction limits are not a production spending budget.
 
 Use the relay as the sponsorship endpoint for Alloy's
-`TempoProviderBuilderExt::sponsor`, or viem's `withRelay(http(node), http(relay))`.
+`TempoProviderBuilderExt::sponsor`. A viem client can use one plain
+`http(relay)` transport with `feePayer: true`; `withRelay` is only needed to
+split node and relay endpoints. Set `feePayer: false` to opt out of the
+development relay's default sponsorship, including when the sender is the
+development sponsor itself.
 `TempoRelayProviderExt` adds typed fill, sign-only, configuration, operation,
 and approval calls to Alloy providers.
 
@@ -120,19 +124,31 @@ public test-key fixtures with ox; it contains no production credentials.
 | Previews | Deployless liquidity/preference snapshot, fee rounding, transfer/allowance diffs, virtual targets and opt-in reverts |
 | Routing and clients | Explicit chain routing, external-sponsor allowlist, typed Alloy capabilities and viem/ox HTTP flow |
 
-Current Tempo consensus does **not** implement native multisig type `0x05`, its
+This PR's consensus types do **not** implement native multisig type `0x05`, its
 factory, or the native multisig precompile. The relay codec deliberately does
 not add unsupported variants to consensus types. Native execution acceptance
-must run against a protocol-capable downstream; tests currently simulate that
-node and verify the relay/client wire contract, not live native execution.
-The PR remains draft until that live acceptance gate and a real Postgres
-multi-instance/crash test have passed. This is development software, not a
+must run against a protocol-capable downstream; the default unit tests simulate
+that node and verify the relay/client wire contract.
+Live acceptance passes against `joshie/configurable-t14-devnet-checkpoint`
+at `baf38b399d6fe59eb69864f34ad9e266b3eb2aff`, using its dev genesis with
+`multisigRecoveryFactory` set to `0x7171717171717171717171717171717171717171`
+and T14 active from genesis. It covers a sponsored two-owner transfer, pending
+and completed restarts, eight concurrent approvals, a two-owner access-key
+grant and subsequent sponsored access-key transfer, configuration rotation,
+and execution under the new threshold. These are real node executions, not
+the simulated downstream used by the default unit tests.
+The real Postgres multi-instance CAS and accepted-submission recovery test
+also passes against a disposable loopback database. The PR remains draft
+for review; these checks do not establish production readiness.
+This is development software, not a
 production sponsorship service: authentication, shared spend budgets, network
 policy and production custody must be supplied by an embedding. `FeePayer`
 allows remote custody but does not itself implement a Horcrux transport.
-Automatic `tempo node --dev` startup is compile-checked here; the live sponsorship
-check uses the rebuilt sidecar against a released Tempo v1.13.2 dev node, not a
-locally rebuilt node binary. Verify the automatic startup surface before merging.
+Automatic `tempo node --dev` startup is live-tested with a locally rebuilt node:
+the relay enables HTTP RPC, creates its SQLite store in the data directory,
+and sponsors plain-HTTP viem transactions. The native-account check uses the
+standalone relay against the separate configurable-accounts node branch;
+that branch's protocol changes are not included in this relay PR.
 
 The embedded preflight bytecode and error catalog derive from viem; its MIT
 license is retained in `VIEM-LICENSE`. The bytecode is the constant in
@@ -167,6 +183,28 @@ Set `TEMPO_RPC_URL` and `TEMPO_RELAY_URL` to override the local endpoints.
 These checks submit transactions only to a loopback node with chain ID 1337.
 The viem check uses a non-expiring nonce key for its first transaction so a
 fresh dev chain at genesis timestamp zero can bootstrap before testing fills.
+
+To verify the automatically started relay, build and start the relay-enabled
+node with `cargo run -p tempo -- node --dev`, then run
+`npm --prefix crates/relay/tests/interop run node-live`. The test uses a
+non-expiring nonce for the first block and checks sponsor identity, receipt
+hashes, and sender balances without `withRelay`.
+
+For native acceptance, build the configurable-accounts checkpoint node, copy
+its `crates/chainspec/src/genesis/dev.json`, set the recovery factory above,
+and start it with `node --dev --chain /path/to/genesis.json --http`. Build the
+standalone relay from this PR and run:
+
+```sh
+TEMPO_RELAY_BINARY=/absolute/path/to/tempo-relay \
+  npm --prefix crates/relay/tests/interop run native-live
+```
+
+The test starts and restarts its own sidecar and temporary SQLite store; do
+not start another relay on that port. Both live tests require Node 24 and the
+pinned interop dependencies. Use the endpoint environment variables above
+to select different loopback ports. Fresh timestamp-zero genesis cannot
+estimate viem's default expiring nonce until the first block exists.
 
 To run the pinned reference test, check out the specified commit of
 `wevm/viem`, make the interop `node_modules` available from that checkout, then

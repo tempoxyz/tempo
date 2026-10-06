@@ -4,7 +4,9 @@
   "type": "module",
   "scripts": {
     "test": "node relay.mjs",
-    "reference": "tsx reference.mjs"
+    "reference": "tsx reference.mjs",
+    "node-live": "node node-live.mjs",
+    "native-live": "node native-live.mjs"
   },
   "dependencies": {
     "viem": "2.56.8",

@@ -1,4 +1,5 @@
 import { privateKeyToAccount } from 'viem/accounts'
+import { Account } from 'viem/tempo'
 import { MultisigConfig, MultisigOperation, TxEnvelopeTempo, KeyAuthorization, SignatureEnvelope } from 'ox/tempo'
 
 const owners = [1, 2].map(i => privateKeyToAccount(`0x${i.toString(16).padStart(2, '0').repeat(32)}`))
@@ -28,11 +29,17 @@ const sponsoredSigned = sponsoredApprovals.map(approval => TxEnvelopeTempo.seria
   format: 'feePayer', sender: account,
   signature: { type: 'multisig', account, config, signatures: [SignatureEnvelope.from(approval)] },
 }))
+const finalAuthorization = KeyAuthorization.serialize({ ...authorization, signature: { type: 'multisig', account, config, signatures: authorizationApprovals.map(SignatureEnvelope.from) } })
+const nativeGrantTransaction = TxEnvelopeTempo.from({ ...sponsoredTransaction, maxFeePerGas: 100_000_000n, keyAuthorization: KeyAuthorization.deserialize(finalAuthorization), nonceKey: 2n })
+const accessKey = Account.fromSecp256k1(`0x${'01'.repeat(32)}`, { access: account })
+const nativeGrantSignature = await accessKey.sign({ hash: TxEnvelopeTempo.getSignPayload(nativeGrantTransaction) })
+const nativeGrantSigned = TxEnvelopeTempo.serialize(nativeGrantTransaction, { format: 'feePayer', sender: account, signature: SignatureEnvelope.from(nativeGrantSignature) })
 console.log(JSON.stringify({ config: MultisigConfig.toRpc(config), account, commitment: MultisigConfig.getCommitment(config),
   unsigned, hash, approvals, signed,
   final: TxEnvelopeTempo.serialize(transaction, { signature: { type: 'multisig', account, config, signatures: approvals.map(SignatureEnvelope.from) } }),
   unsignedAuthorization, authorizationHash, authorizationApprovals, signedAuthorization,
   rpcAuthorization: signedAuthorization.map(value => KeyAuthorization.toRpc(KeyAuthorization.deserialize(value))),
   sponsoredHash, sponsoredSigned,
-  finalAuthorization: KeyAuthorization.serialize({ ...authorization, signature: { type: 'multisig', account, config, signatures: authorizationApprovals.map(SignatureEnvelope.from) } }),
+  finalAuthorization,
+  nativeGrantSigned,
 }, null, 2))
