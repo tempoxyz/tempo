@@ -396,6 +396,11 @@ where
     fn tip1060_storage_credit_minting_enabled(&self) -> bool {
         self.tip1060_storage_credit_minting_enabled
     }
+
+    #[inline]
+    fn tip1016_state_gas_enabled(&self) -> bool {
+        self.version.feature(evm2::EvmFeatures::EIP8037)
+    }
 }
 
 impl<T> PrecompileStorageProvider for EvmPrecompileStorageProvider<'_, '_, '_, T>
@@ -1876,6 +1881,20 @@ mod tests {
             provider.sload(STORAGE_CREDITS_ADDRESS, StorageCredits::slot(owner))?,
             U256::ONE
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_tip1016_tip1060_precompile_creation_uses_reservoir_once() -> eyre::Result<()> {
+        let owner = Address::repeat_byte(0x34);
+        let key = U256::from(1);
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T16);
+        let mut provider = evm.provider_with_gas_limit(100_000, 245_000);
+        provider.sstore(owner, key, U256::ONE)?;
+        assert_eq!(provider.sload(owner, key)?, U256::ONE);
+        assert_eq!(provider.state_gas_used(), 245_000);
+        assert_eq!(provider.reservoir(), 0);
+        assert!(provider.gas_used() < 100_000);
         Ok(())
     }
 

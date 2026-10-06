@@ -451,9 +451,15 @@ fn settle_storage_credit_refunds(
         }
         Ok::<_, TempoPrecompileError>(settled)
     })?;
-    result
-        .gas
-        .record_refund(settled.saturating_mul(STORAGE_CREDIT_VALUE as i64));
+    if host.version().feature(EvmFeatures::EIP8037) {
+        result
+            .gas
+            .refill_reservoir((settled as u64).saturating_mul(STORAGE_CREDIT_VALUE));
+    } else {
+        result
+            .gas
+            .record_refund(settled.saturating_mul(STORAGE_CREDIT_VALUE as i64));
+    }
     Ok(())
 }
 
