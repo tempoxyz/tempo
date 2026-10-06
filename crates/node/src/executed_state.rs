@@ -115,7 +115,10 @@ impl TempoEngineTreeValidatorBuilder {
 
 impl<Node> EngineValidatorBuilder<Node> for TempoEngineTreeValidatorBuilder
 where
-    Node: FullNodeComponents<Types = TempoNode>,
+    Node: FullNodeComponents<
+            Types = TempoNode,
+            Evm: reth_evm::ConfigureEngineEvm<tempo_payload_types::TempoExecutionData>,
+        >,
     BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>: EngineValidatorBuilder<
             Node,
             EngineValidator = reth_engine_tree::tree::BasicEngineValidator<
