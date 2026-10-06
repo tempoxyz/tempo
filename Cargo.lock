@@ -13817,7 +13817,9 @@ version = "1.16.0"
 dependencies = [
  "alloy-primitives",
  "imbl",
+ "metrics",
  "proptest",
+ "tracing",
 ]
 
 [[package]]
@@ -14145,6 +14147,7 @@ dependencies = [
  "tempo-chainspec",
  "tempo-contracts",
  "tempo-evm",
+ "tempo-expiring-nonces",
  "tempo-precompiles",
  "tempo-primitives",
  "test-case",
@@ -14250,6 +14253,7 @@ dependencies = [
  "tempo-chainspec",
  "tempo-contracts",
  "tempo-evm",
+ "tempo-expiring-nonces",
  "tempo-precompiles",
  "tempo-primitives",
  "tempo-revm",

@@ -16,6 +16,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+tempo-expiring-nonces.workspace = true
 tempo-precompiles.workspace = true
 tempo-primitives = { workspace = true, features = ["reth", "evm"] }
 tempo-contracts.workspace = true

@@ -1101,6 +1101,9 @@ where
 
             let block_timestamp = block.timestamp().saturating_to::<u64>();
             if let Some(state) = &block.expiring_nonces {
+                tempo_expiring_nonces::diagnostics::check_site(
+                    tempo_expiring_nonces::diagnostics::CheckSite::Handler,
+                );
                 state
                     .check_at(
                         block_timestamp,

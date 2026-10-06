@@ -814,22 +814,33 @@ where
     }
 
     fn on_new_head_block(&self, new_tip_block: &SealedBlock<Self::Block>) {
+        use tempo_expiring_nonces::diagnostics::{self, Timer};
+        let _span = tracing::info_span!(target: "tempo::expiring_nonces", "nonce_pool_head",
+            block_hash = %new_tip_block.hash(), block_number = new_tip_block.header().inner.number)
+        .entered();
+        let _timer = Timer::start("pool_head");
         self.inner.on_new_head_block(new_tip_block);
 
         // Cache the EVM environment for the new tip block.
+        let env_timer = Timer::start("pool_head_environment");
         let mut evm_env = self
             .inner
             .evm_config()
             .evm_env(new_tip_block.header())
             .expect("invalid block in on_new_head_block");
+        drop(env_timer);
         if let Some(state) = self
             .expiring_nonce_cache
             .as_ref()
             .filter(|_| evm_env.block_env.expiring_nonces.is_some())
             .and_then(|cache| cache.cached_state_at(new_tip_block.hash()))
         {
+            diagnostics::event("pool_head_snapshot_hit", 1);
+            let _timer = Timer::start("pool_parent_snapshot_drop");
             evm_env.block_env.expiring_nonces = Some(state);
         } else {
+            diagnostics::event("pool_head_snapshot_miss", 1);
+            let _timer = Timer::start("pool_tip_replay");
             apply_tip_nonces(
                 &mut evm_env,
                 new_tip_block.header(),
@@ -838,7 +849,9 @@ where
         }
         self.active_hardfork
             .store(evm_env.cfg_env.spec.variant_index(), Ordering::Relaxed);
+        let replace_timer = Timer::start("pool_environment_replace");
         *self.cached_evm_env.write() = evm_env;
+        drop(replace_timer);
 
         // State changed, drop all cached reads and anchor the new cache to this tip.
         *self.cached_state.write() = (new_tip_block.hash(), Arc::new(StateCache::default()));

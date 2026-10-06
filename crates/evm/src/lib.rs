@@ -118,6 +118,8 @@ impl TempoEvmConfig {
         parent_hash: alloy_primitives::B256,
         timestamp: u64,
     ) -> Result<Option<tempo_expiring_nonces::ExpiringNonceState>, TempoEvmError> {
+        let _timer = tempo_expiring_nonces::diagnostics::Timer::start("environment_nonce_state");
+        let _span = tracing::info_span!(target: "tempo::expiring_nonces", "nonce_environment", %parent_hash, block_timestamp = timestamp).entered();
         self.expiring_nonce_cache
             .as_ref()
             .map(|cache| {

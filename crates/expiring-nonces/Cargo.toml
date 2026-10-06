@@ -12,6 +12,8 @@ workspace = true
 [dependencies]
 alloy-primitives.workspace = true
 imbl = "7.0.2"
+metrics.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

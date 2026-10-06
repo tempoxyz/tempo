@@ -268,6 +268,9 @@ where
                 invalid(tempo_revm::TempoInvalidTransaction::ExpiringNonceMissingValidBefore)
             })?,
         };
+        tempo_expiring_nonces::diagnostics::check_site(
+            tempo_expiring_nonces::diagnostics::CheckSite::Executor,
+        );
         state
             .check(
                 nonce.hash,

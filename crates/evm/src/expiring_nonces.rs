@@ -7,20 +7,44 @@ use alloy_consensus::{
 use alloy_primitives::B256;
 use std::{
     collections::VecDeque,
-    sync::{Arc, Mutex},
+    ops::{Deref, DerefMut},
+    sync::{Arc, Mutex, MutexGuard},
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_expiring_nonces::{ExpiringNonceState, MAX_EXPIRY_SECS};
+use tempo_expiring_nonces::{
+    ExpiringNonceState, MAX_EXPIRY_SECS,
+    diagnostics::{self, Sample, Timer},
+};
 use tempo_primitives::Block;
 
 type BlockSource = dyn Fn(B256) -> Result<Option<Block>, String> + Send + Sync;
+type Snapshots = VecDeque<(B256, Option<B256>, ExpiringNonceState)>;
+
+struct SnapshotGuard<'a> {
+    // Release the mutex before publishing the hold-time measurement.
+    inner: MutexGuard<'a, Snapshots>,
+    _timer: Timer,
+}
+
+impl Deref for SnapshotGuard<'_> {
+    type Target = Snapshots;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl DerefMut for SnapshotGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
 
 /// A small cache of immutable snapshots, shared by validation and payload building.
 /// Eviction is safe: a cache miss reconstructs from the requested branch's blocks.
 #[derive(Clone)]
 pub struct ExpiringNonceCache {
     source: Arc<BlockSource>,
-    snapshots: Arc<Mutex<VecDeque<(B256, Option<B256>, ExpiringNonceState)>>>,
+    snapshots: Arc<Mutex<Snapshots>>,
 }
 
 impl core::fmt::Debug for ExpiringNonceCache {
@@ -30,6 +54,21 @@ impl core::fmt::Debug for ExpiringNonceCache {
 }
 
 impl ExpiringNonceCache {
+    fn lock(&self, wait: &'static str, hold: &'static str) -> SnapshotGuard<'_> {
+        let timer = Timer::start(wait);
+        let inner = self.snapshots.lock().expect("nonce cache poisoned");
+        drop(timer);
+        SnapshotGuard {
+            inner,
+            _timer: Timer::start(hold),
+        }
+    }
+
+    fn read_block(&self, hash: B256) -> Result<Option<Block>, String> {
+        let _timer = Timer::start("block_source_read");
+        (self.source)(hash)
+    }
+
     /// Creates an empty cache backed by a branch-aware block lookup.
     pub fn new(
         source: impl Fn(B256) -> Result<Option<Block>, String> + Send + Sync + 'static,
@@ -41,28 +80,41 @@ impl ExpiringNonceCache {
     }
 
     pub(crate) fn remember(&self, state: &ExpiringNonceState, block_hash: Option<B256>) {
+        let _timer = Timer::start("cache_remember");
         let root = state.root();
-        let mut snapshots = self.snapshots.lock().expect("nonce cache poisoned");
+        let mut snapshots = self.lock("cache_remember_lock_wait", "cache_remember_lock_hold");
         if snapshots
             .iter()
             .any(|(key, hash, _)| *key == root && *hash == block_hash)
         {
+            diagnostics::event("cache_remember_duplicate", 1);
             return;
         }
         snapshots.push_back((root, block_hash, state.clone()));
         if snapshots.len() > 16 {
-            snapshots.pop_front();
+            diagnostics::event("cache_eviction", 1);
+            let _drop_timer = Timer::start("cache_snapshot_drop");
+            drop(snapshots.pop_front());
         }
     }
 
     /// Clones an already verified snapshot without reading or replaying block bodies.
     pub fn cached_state_at(&self, hash: B256) -> Option<ExpiringNonceState> {
-        self.snapshots
-            .lock()
-            .expect("nonce cache poisoned")
+        let _timer = Timer::start("cache_hash_lookup");
+        let state = self
+            .lock("cache_hash_lock_wait", "cache_hash_lock_hold")
             .iter()
             .find(|(_, block_hash, _)| *block_hash == Some(hash))
-            .map(|(_, _, state)| state.clone())
+            .map(|(_, _, state)| state.clone());
+        diagnostics::event(
+            if state.is_some() {
+                "cache_hash_hit"
+            } else {
+                "cache_hash_miss"
+            },
+            1,
+        );
+        state
     }
 
     /// Loads the state of exactly `hash`, never the canonical tip as a substitute.
@@ -71,16 +123,20 @@ impl ExpiringNonceCache {
         hash: B256,
         chainspec: &TempoChainSpec,
     ) -> Result<ExpiringNonceState, String> {
+        let _span = tracing::info_span!(target: "tempo::expiring_nonces", "nonce_state_at", block_hash = %hash).entered();
+        let _timer = Timer::start("cache_state_at");
         if let Some(state) = self.cached_state_at(hash) {
             return Ok(state);
         }
-        let mut block =
-            (self.source)(hash)?.ok_or_else(|| format!("missing nonce history block {hash}"))?;
+        let mut block = self
+            .read_block(hash)?
+            .ok_or_else(|| format!("missing nonce history block {hash}"))?;
         if block.header.hash_slow() != hash {
             return Err("nonce history block hash mismatch".into());
         }
         let timestamp = block.header.timestamp();
         if block.header.number() == 0 {
+            diagnostics::event("cache_genesis", 1);
             let mut state = ExpiringNonceState::default();
             state.advance(timestamp).map_err(|e| e.to_string())?;
             return Ok(state);
@@ -90,9 +146,7 @@ impl ExpiringNonceCache {
             .expiring_nonce_root
             .ok_or("missing parent expiring nonce commitment")?;
         if let Some((_, _, state)) = self
-            .snapshots
-            .lock()
-            .expect("nonce cache poisoned")
+            .lock("cache_root_lock_wait", "cache_root_lock_hold")
             .iter()
             .find(|(key, _, _)| *key == root)
         {
@@ -100,9 +154,15 @@ impl ExpiringNonceCache {
             // Equal roots may occur in empty blocks with different timestamps.
             // Reconstruct if a cached timestamp belongs to a later block.
             if state.advance(timestamp).is_ok() && state.root() == root {
+                diagnostics::event("cache_root_hit", 1);
                 return Ok(state);
             }
         }
+        diagnostics::event("cache_reconstruction", 1);
+        let _reconstruction_timer = Timer::start("history_reconstruction");
+        let scan_timer = Timer::start("history_scan");
+        let mut scanned_transactions = 0;
+        let mut recovered_signatures = 0;
         let mut history = Vec::new();
         loop {
             let parent_hash = block.header.parent_hash();
@@ -114,6 +174,7 @@ impl ExpiringNonceCache {
             let spec = chainspec.tempo_hardfork_at(block_time);
             let mut nonces = Vec::new();
             for tx in &block.body.transactions {
+                scanned_transactions += 1;
                 if !spec.is_t1() || !tx.is_expiring_nonce() {
                     continue;
                 }
@@ -127,6 +188,8 @@ impl ExpiringNonceCache {
                     continue;
                 }
                 let id = if spec.is_t1b() {
+                    recovered_signatures += 1;
+                    let _timer = Timer::sampled(Sample::RecoverSigner);
                     signed.expiring_nonce_hash(tx.recover_signer().map_err(|e| e.to_string())?)
                 } else {
                     *tx.tx_hash()
@@ -134,7 +197,8 @@ impl ExpiringNonceCache {
                 nonces.push((id, expiry));
             }
             history.push(nonces);
-            block = (self.source)(parent_hash)?
+            block = self
+                .read_block(parent_hash)?
                 .ok_or_else(|| format!("missing nonce history block {parent_hash}"))?;
             if block.header.hash_slow() != parent_hash
                 || block.header.number().checked_add(1) != Some(number)
@@ -143,6 +207,13 @@ impl ExpiringNonceCache {
                 return Err("invalid nonce history ancestry".into());
             }
         }
+        drop(scan_timer);
+        diagnostics::event("history_signatures_recovered", recovered_signatures);
+        diagnostics::items("history_blocks", history.len());
+        diagnostics::items("history_transactions", scanned_transactions);
+        tracing::info!(target: "tempo::expiring_nonces", timestamp, blocks = history.len(),
+            scanned_transactions, recovered_signatures, "Reconstructing expiring nonce state");
+        let insert_timer = Timer::start("history_insert");
         let mut state = ExpiringNonceState::default();
         state.advance(timestamp).map_err(|e| e.to_string())?;
         for nonces in history.into_iter().rev() {
@@ -152,6 +223,7 @@ impl ExpiringNonceCache {
                     .map_err(|e| e.to_string())?;
             }
         }
+        drop(insert_timer);
         if state.root() != root {
             return Err("reconstructed expiring nonce commitment mismatch".into());
         }
