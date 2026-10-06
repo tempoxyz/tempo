@@ -1,10 +1,9 @@
 import { createHmac, createPublicKey, verify } from 'node:crypto';
-import { buildPoseidon } from 'circomlibjs';
+import * as poseidonImplementation from 'poseidon-lite';
 import { ethers } from 'ethers';
 
 export const SCALAR_FIELD = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 export const MESSAGE_TAG = 1n << 64n;
-const poseidonReady = buildPoseidon();
 
 function requireCondition(condition, message) {
   if (!condition) throw new Error(message);
@@ -24,8 +23,7 @@ export function be32(value) {
 
 export async function poseidon(values) {
   requireCondition(values.length >= 1 && values.length <= 16, 'Invalid Poseidon arity');
-  const implementation = await poseidonReady;
-  return implementation.F.toObject(implementation(values.map(field)));
+  return poseidonImplementation[`poseidon${values.length}`](values.map(field));
 }
 
 export async function hashBytes(input, maxLength) {

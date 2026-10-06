@@ -1,7 +1,7 @@
 # Experimental OIDC tooling
 
 This example implements TIP-1133's offchain hashing and token preflight, not its
-proof circuit. It cannot produce a Groth16 proof or authorize an onchain account.
+proof circuit. It cannot produce a proof or authorize an onchain account.
 The node continues to reject signature type `0x06`. Do not use real identities,
 funds, or production secrets with this experimental example.
 
@@ -43,8 +43,9 @@ hashing bounds, identity separation, private witness padding, key rotation
 plans, and malformed/replayed/expired token rejection. Circuit cross-language
 vectors and end-to-end login remain acceptance criteria in `docs/oidc-devnet.md`.
 
-The pinned circomlibjs dependency carries transitive low-severity npm advisories
-for ethers v5/elliptic. This example does not use that signing implementation or
-open network connections; RS256 checks use Node crypto and calldata uses ethers
-v6. The lockfile overrides WebSocket dependencies to 8.21.0. These tests do not
-constitute a security audit or approval to use the helpers in production.
+Poseidon uses the dependency-free `poseidon-lite` implementation, checked against
+32 frozen circomlibjs 0.1.7 vectors covering every supported arity and the native
+verifier's boundary vectors. It uses JavaScript BigInt and is not constant-time
+or audited: keep these helpers out of multi-tenant production services until
+reviewed. RS256 checks use Node crypto and calldata uses ethers v6. These tests
+do not constitute a security audit or approval for production use.

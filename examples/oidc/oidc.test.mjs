@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign } from 'node:crypto';
 import test from 'node:test';
+import poseidonVectors from './poseidon-vectors.json' with { type: 'json' };
 import { SCALAR_FIELD, MESSAGE_TAG, addressSeed, be32, field, hashBytes, issuerHash, messageNonce, messagePublicInput, poseidon, publicInput, signatureNonce, stableSalt, tokenWitness, zkAddress } from './oidc.mjs';
 
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -16,6 +17,14 @@ function signedToken(payload, signingKey = privateKey) {
 
 test('circomlib Poseidon reference vector', async () => {
   assert.equal(await poseidon([1n, 2n]), 7853200120776062878684798364095072458815029376092732009249414926327459813530n);
+});
+
+test('all supported arities match frozen circomlibjs 0.1.7 vectors', async () => {
+  for (const [index, [ascending, zero]] of poseidonVectors.entries()) {
+    const arity = index + 1;
+    assert.equal(await poseidon(Array.from({ length: arity }, (_, position) => BigInt(position + 1))), BigInt(ascending));
+    assert.equal(await poseidon(Array(arity).fill(0n)), BigInt(zero));
+  }
 });
 
 test('shared seven-input vectors match the native verifier in PR 8137', async () => {
