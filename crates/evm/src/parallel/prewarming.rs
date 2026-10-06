@@ -327,7 +327,7 @@ impl PreexecutedTransaction {
 
 #[cfg(test)]
 #[path = "prewarming_hint_tests.rs"]
-mod hint_tests;
+pub(super) mod hint_tests;
 
 /// Reuses an EVM on one prewarming worker. The provider stays on its owning
 /// thread; no writes are committed and no validation checks are disabled.

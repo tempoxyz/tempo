@@ -28,13 +28,13 @@ type TestDB = CacheDB<EmptyDB>;
 type TargetKey = (B256, Option<usize>);
 
 #[derive(Debug, PartialEq, Eq)]
-struct ProofTargets {
+pub(in crate::parallel) struct ProofTargets {
     accounts: Vec<TargetKey>,
     storage: BTreeMap<B256, Vec<TargetKey>>,
     storage_count: usize,
 }
 
-fn proof_targets(state: EvmState) -> ProofTargets {
+pub(in crate::parallel) fn proof_targets(state: EvmState) -> ProofTargets {
     let (targets, storage_count) = MultiProofTargetsV2::from_state(state);
     let mut accounts = targets
         .account_targets

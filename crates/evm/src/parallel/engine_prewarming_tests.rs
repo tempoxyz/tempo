@@ -4,7 +4,7 @@ use super::*;
 use crate::{
     TempoBlockEnv, TempoBlockExecutionCtx, TempoEvmConfig,
     evm::{TempoEvm, TempoEvmFactory},
-    parallel::SpeculativeExecutor,
+    parallel::{SpeculativeExecutor, prewarming::hint_tests::proof_targets},
 };
 use alloy_consensus::{Signed, TxLegacy};
 use alloy_evm::{
@@ -186,12 +186,20 @@ fn capture_diagnostics_classify_strict_outcomes_and_short_circuit_guards() {
                     evm.ctx_mut().journaled_state.warm_access_list(access_list);
                 }
             }
-            assert_eq!(
-                worker.transact_raw(transaction.clone()).unwrap(),
-                legacy.transact_raw(transaction.clone()).unwrap(),
-                "{outcome}"
-            );
-            assert_eq!(session.take(&transaction).is_some(), outcome == "success");
+            let actual = worker.transact_raw(transaction.clone()).unwrap();
+            let expected = legacy.transact_raw(transaction.clone()).unwrap();
+            let captured = session.take(&transaction);
+            assert_eq!(captured.is_some(), outcome == "success");
+            if let Some(captured) = captured {
+                assert_eq!(
+                    proof_targets(actual.state),
+                    proof_targets(expected.state.clone()),
+                    "{outcome}"
+                );
+                assert_eq!(captured.result, expected, "{outcome}");
+            } else {
+                assert_eq!(actual, expected, "{outcome}");
+            }
             if let Some(diagnostics) = &session.diagnostics {
                 let counts = diagnostics.snapshot();
                 let count = |event: CaptureEvent| counts.0[event as usize];
@@ -379,11 +387,22 @@ fn warming_beyond_capture_window_does_not_create_strict_candidates() {
     let (factory, session) = factory_with_diagnostics(&env, &transactions, true);
     let mut worker = factory.create_evm(db.clone(), relaxed(&env));
     let mut legacy = TempoEvm::new(db.clone(), relaxed(&env));
-    for transaction in &transactions[127..512] {
-        assert_eq!(
-            worker.transact_raw(transaction.clone()).unwrap(),
-            legacy.transact_raw(transaction.clone()).unwrap()
-        );
+    for (offset, transaction) in transactions[127..512].iter().enumerate() {
+        let actual = worker.transact_raw(transaction.clone()).unwrap();
+        let expected = legacy.transact_raw(transaction.clone()).unwrap();
+        if offset == 0 {
+            assert_eq!(
+                proof_targets(actual.state),
+                proof_targets(expected.state.clone())
+            );
+            // Inspect without taking: advancing the cursor here would admit
+            // later inputs and consume the candidate needed by the ordered loop.
+            let retained = session.retained.lock().unwrap();
+            assert_eq!(retained.results.len(), 1);
+            assert_eq!(retained.results.get(&127).unwrap().0.result, expected);
+        } else {
+            assert_eq!(actual, expected);
+        }
     }
     let counts = session.diagnostics.as_ref().unwrap().snapshot();
     let count = |event: CaptureEvent| counts.0[event as usize];
