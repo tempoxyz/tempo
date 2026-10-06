@@ -108,6 +108,8 @@ pub struct TempoTransactionValidator<Client, EvmConfig = TempoEvmConfig> {
     address_filter: AddressFilter,
     /// Cached EVM environment from the latest tip block, updated on each `on_new_head_block`.
     cached_evm_env: RwLock<EvmEnv<TempoHardfork, TempoBlockEnv>>,
+    /// Verified post-block snapshots shared with execution and payload building.
+    expiring_nonce_cache: Option<tempo_evm::ExpiringNonceCache>,
     /// Tip hash and cache of state reads shared across validation calls, replaced on each
     /// `on_new_head_block`.
     cached_state: RwLock<(B256, Arc<StateCache>)>,
@@ -161,9 +163,19 @@ where
             minimum_fee_cap: u128::from(TEMPO_T7_BASE_FEE_FLOOR),
             address_filter: AddressFilter::default(),
             cached_evm_env: parking_lot::RwLock::new(evm_env),
+            expiring_nonce_cache: None,
             cached_state: RwLock::new((latest_header.hash(), Arc::new(StateCache::default()))),
             active_hardfork,
         }
+    }
+
+    /// Reuses committed nonce snapshots when updating pool admission at a new head.
+    pub fn with_expiring_nonce_cache(
+        mut self,
+        cache: Option<tempo_evm::ExpiringNonceCache>,
+    ) -> Self {
+        self.expiring_nonce_cache = cache;
+        self
     }
 
     /// Configures whether to skip the FeeAMM liquidity check during pool admission.
@@ -810,11 +822,20 @@ where
             .evm_config()
             .evm_env(new_tip_block.header())
             .expect("invalid block in on_new_head_block");
-        apply_tip_nonces(
-            &mut evm_env,
-            new_tip_block.header(),
-            &new_tip_block.body().transactions,
-        );
+        if let Some(state) = self
+            .expiring_nonce_cache
+            .as_ref()
+            .filter(|_| evm_env.block_env.expiring_nonces.is_some())
+            .and_then(|cache| cache.cached_state_at(new_tip_block.hash()))
+        {
+            evm_env.block_env.expiring_nonces = Some(state);
+        } else {
+            apply_tip_nonces(
+                &mut evm_env,
+                new_tip_block.header(),
+                &new_tip_block.body().transactions,
+            );
+        }
         self.active_hardfork
             .store(evm_env.cfg_env.spec.variant_index(), Ordering::Relaxed);
         *self.cached_evm_env.write() = evm_env;

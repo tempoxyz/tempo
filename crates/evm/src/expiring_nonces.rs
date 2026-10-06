@@ -55,20 +55,24 @@ impl ExpiringNonceCache {
         }
     }
 
+    /// Clones an already verified snapshot without reading or replaying block bodies.
+    pub fn cached_state_at(&self, hash: B256) -> Option<ExpiringNonceState> {
+        self.snapshots
+            .lock()
+            .expect("nonce cache poisoned")
+            .iter()
+            .find(|(_, block_hash, _)| *block_hash == Some(hash))
+            .map(|(_, _, state)| state.clone())
+    }
+
     /// Loads the state of exactly `hash`, never the canonical tip as a substitute.
     pub(crate) fn state_at(
         &self,
         hash: B256,
         chainspec: &TempoChainSpec,
     ) -> Result<ExpiringNonceState, String> {
-        if let Some((_, _, state)) = self
-            .snapshots
-            .lock()
-            .expect("nonce cache poisoned")
-            .iter()
-            .find(|(_, block_hash, _)| *block_hash == Some(hash))
-        {
-            return Ok(state.clone());
+        if let Some(state) = self.cached_state_at(hash) {
+            return Ok(state);
         }
         let mut block =
             (self.source)(hash)?.ok_or_else(|| format!("missing nonce history block {hash}"))?;
