@@ -153,7 +153,9 @@ where
                 reth_engine_tree::tree::payload_processor::prewarm::TransactionPrewarmPolicy::new(
                     window,
                     window,
-                    std::time::Duration::from_micros(100),
+                    // Canonical progress does not send a completion wake when
+                    // the admitted prewarm workers have already finished.
+                    std::time::Duration::from_micros(25),
                 )
             });
 
