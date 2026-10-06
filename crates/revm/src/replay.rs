@@ -16,9 +16,11 @@ use revm::{
     handler::FrameResult,
     state::{AccountInfo, Bytecode},
 };
-use tempo_precompiles::storage::access::StorageAccesses;
 pub use tempo_precompiles::storage::access::{
     is_recording as is_recording_body, record_database_time,
+};
+use tempo_precompiles::{
+    storage::access::StorageAccesses, storage_credits::NonCreditableSlotPolicy,
 };
 
 /// A database value observed during speculative execution.
@@ -450,6 +452,7 @@ pub struct BodyCache {
     reads: Option<Vec<(ReadKey, ReadValue)>>,
     before_error_context: Option<String>,
     after_error_context: Option<String>,
+    non_creditable_policy: NonCreditableSlotPolicy,
 }
 
 fn has_indexed_accounts(journal: &JournalInner<JournalEntry>) -> bool {
@@ -465,13 +468,14 @@ impl BodyCache {
         (gas, after_gas): (GasTracker, GasTracker),
         accesses: StorageAccesses,
         result: FrameResult,
-        before_error_context: Option<String>,
-        after_error_context: Option<String>,
+        (before_error_context, after_error_context): (Option<String>, Option<String>),
+        (before_policy, after_policy): (NonCreditableSlotPolicy, NonCreditableSlotPolicy),
     ) -> Option<Self> {
         // The recording databases currently observe address-based storage only.
         // An indexed provider can return a different error, even for an unchanged
         // ID, so these bodies must execute against the authoritative database.
-        if accesses.unsupported
+        if before_policy != after_policy
+            || accesses.unsupported
             || has_indexed_accounts(&before)
             || has_indexed_accounts(&after)
             || before.depth != after.depth
@@ -498,6 +502,7 @@ impl BodyCache {
             reads: None,
             before_error_context,
             after_error_context,
+            non_creditable_policy: before_policy,
         })
     }
 
@@ -510,10 +515,12 @@ impl BodyCache {
         self,
         context: &mut crate::evm::TempoContext<DB>,
         gas: &mut GasTracker,
+        non_creditable_policy: NonCreditableSlotPolicy,
     ) -> Option<FrameResult> {
         let journal = &mut context.journaled_state;
         let fresh = &journal.inner;
-        if has_indexed_accounts(fresh)
+        if self.non_creditable_policy != non_creditable_policy
+            || has_indexed_accounts(fresh)
             || self.gas != *gas
             || self.before_error_context != context.local.precompile_error_message
             || self.before.cfg != fresh.cfg
@@ -629,6 +636,181 @@ pub(crate) struct BodyReplay {
     pub captured: Option<BodyCache>,
     pub candidate: Option<BodyCache>,
     pub reused: bool,
+}
+
+#[cfg(test)]
+mod body_policy_tests {
+    use super::*;
+    use alloy_primitives::Bytes;
+    use revm::{
+        Context, MainContext,
+        context::{CfgEnv, JournalTr},
+        database::{CacheDB, EmptyDB},
+        interpreter::{CallOutcome, Gas, InstructionResult, InterpreterResult},
+    };
+    use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_precompiles::{
+        STORAGE_CREDITS_ADDRESS,
+        storage_credits::{NonCreditableSlots, StorageCredits},
+    };
+
+    struct BodyFixture {
+        context: crate::evm::TempoContext<CacheDB<EmptyDB>>,
+        after: JournalInner<JournalEntry>,
+        gas: GasTracker,
+        after_gas: GasTracker,
+        result: CallOutcome,
+        key: U256,
+    }
+
+    impl BodyFixture {
+        fn capture(
+            &self,
+            before_policy: NonCreditableSlotPolicy,
+            after_policy: NonCreditableSlotPolicy,
+        ) -> Option<BodyCache> {
+            let mut accesses = StorageAccesses::default();
+            accesses.slots.insert((STORAGE_CREDITS_ADDRESS, self.key));
+            let mut cache = BodyCache::capture(
+                self.context.journaled_state.inner.clone(),
+                self.after.clone(),
+                (self.gas, self.after_gas),
+                accesses,
+                FrameResult::Call(self.result.clone()),
+                (None, None),
+                (before_policy, after_policy),
+            )?;
+            // The mutation is served by a preloaded journal slot, so there are
+            // no database observations inside this body.
+            cache.set_database_reads(Vec::new());
+            Some(cache)
+        }
+    }
+
+    fn fixture() -> BodyFixture {
+        let key = StorageCredits::slot(Address::with_last_byte(41));
+        let mut db = CacheDB::new(EmptyDB::default());
+        db.insert_account_info(STORAGE_CREDITS_ADDRESS, AccountInfo::default());
+        db.insert_account_storage(STORAGE_CREDITS_ADDRESS, key, U256::from(7))
+            .unwrap();
+        let mut context: crate::evm::TempoContext<_> = Context::mainnet()
+            .with_db(db)
+            .with_block(Default::default())
+            .with_cfg(CfgEnv::new_with_spec_and_gas_params(
+                TempoHardfork::T14,
+                crate::gas_params::tempo_gas_params(TempoHardfork::T14),
+            ))
+            .with_tx(Default::default());
+        context
+            .journaled_state
+            .load_account(STORAGE_CREDITS_ADDRESS)
+            .unwrap();
+        context
+            .journaled_state
+            .sload(STORAGE_CREDITS_ADDRESS, key)
+            .unwrap();
+        let before = context.journaled_state.inner.clone();
+        context
+            .journaled_state
+            .sstore(STORAGE_CREDITS_ADDRESS, key, U256::from(6))
+            .unwrap();
+        let after = context.journaled_state.inner.clone();
+        assert_ne!(before.state, after.state);
+        assert_ne!(before.journal, after.journal);
+        context.journaled_state.inner = before;
+
+        let gas = GasTracker::new(100_000, 90_000, 20_000);
+        let mut after_gas = gas;
+        assert!(after_gas.record_regular_cost(1_234));
+        assert!(after_gas.record_state_cost(1_000));
+        after_gas.record_refund(17);
+        let mut result_gas = Gas::new(100_000);
+        *result_gas.tracker_mut() = after_gas;
+        let result = CallOutcome::new(
+            InterpreterResult::new(
+                InstructionResult::Return,
+                Bytes::from_static(&[0x12, 0x34]),
+                result_gas,
+            ),
+            0..2,
+        );
+        BodyFixture {
+            context,
+            after,
+            gas,
+            after_gas,
+            result,
+            key,
+        }
+    }
+
+    fn policy(payer: u8, token: u8, key: Option<u8>) -> NonCreditableSlotPolicy {
+        let mut slots = NonCreditableSlots::empty();
+        let mut fee_token = tempo_precompiles::PATH_USD_ADDRESS;
+        fee_token.as_mut_slice()[19] = token;
+        slots.initialize(
+            Address::with_last_byte(payer),
+            fee_token,
+            key.map(Address::with_last_byte),
+        );
+        slots.policy()
+    }
+
+    #[test]
+    fn matching_policy_applies_cached_storage_journal_and_gas() {
+        // Exercise the cache boundary directly; this does not enable T14
+        // recording in the transaction handler.
+        let mut fixture = fixture();
+        let policy = policy(1, 2, Some(3));
+        let cache = fixture.capture(policy, policy).unwrap();
+        let result = cache
+            .try_apply(&mut fixture.context, &mut fixture.gas, policy)
+            .expect("matching policy and journal must permit this body");
+        let FrameResult::Call(result) = result else {
+            panic!("cached call became a create result")
+        };
+        assert_eq!(result, fixture.result);
+        assert_eq!(fixture.context.journaled_state.inner, fixture.after);
+        assert_eq!(fixture.gas, fixture.after_gas);
+    }
+
+    #[test]
+    fn changed_policy_rejects_before_mutating_journal_or_gas() {
+        let recorded = policy(1, 2, Some(3));
+        for fresh in [
+            policy(4, 2, Some(3)),
+            policy(1, 4, Some(3)),
+            policy(1, 2, Some(4)),
+            policy(1, 2, None),
+        ] {
+            let mut fixture = fixture();
+            let before = fixture.context.journaled_state.inner.clone();
+            let gas = fixture.gas;
+            let cache = fixture.capture(recorded, recorded).unwrap();
+            assert!(
+                cache
+                    .try_apply(&mut fixture.context, &mut fixture.gas, fresh)
+                    .is_none()
+            );
+            assert_eq!(fixture.context.journaled_state.inner, before);
+            assert_eq!(fixture.gas, gas);
+            assert!(fixture.context.local.precompile_error_message.is_none());
+        }
+    }
+
+    #[test]
+    fn changing_policy_during_body_refuses_capture() {
+        let fixture = fixture();
+        let before = policy(1, 2, Some(3));
+        for after in [
+            policy(4, 2, Some(3)),
+            policy(1, 4, Some(3)),
+            policy(1, 2, Some(4)),
+            policy(1, 2, None),
+        ] {
+            assert!(fixture.capture(before, after).is_none());
+        }
+    }
 }
 
 #[cfg(test)]

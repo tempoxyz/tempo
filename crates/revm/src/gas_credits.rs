@@ -19,7 +19,7 @@ use revm::{
 use tempo_chainspec::constants::gas::STORAGE_CREDIT_VALUE;
 use tempo_precompiles::{
     STORAGE_CREDITS_ADDRESS,
-    storage::{FromWord, SstoreTransitionFlags, StorageAction},
+    storage::{FromWord, SstoreTransitionFlags, StorageAction, access},
     storage_credits::{StorageCreditsBackend, TransientState, sstore_storage_credits},
 };
 
@@ -117,6 +117,7 @@ impl<DB: Database> StorageCreditsBackend for StorageCreditsContext<'_, DB> {
         key: U256,
         skip_cold_load: bool,
     ) -> Result<StateLoad<U256>, Self::Error> {
+        access::storage(address, key);
         self.context
             .load_account_info_skip_cold_load(address, false, false)?;
         Ok(self
@@ -132,6 +133,7 @@ impl<DB: Database> StorageCreditsBackend for StorageCreditsContext<'_, DB> {
         value: U256,
         skip_cold_load: bool,
     ) -> Result<SstoreTransitionFlags, Self::Error> {
+        access::storage(address, key);
         Ok(self
             .context
             .sstore_skip_cold_load(address, key, value, skip_cold_load)?
@@ -172,4 +174,163 @@ pub(crate) fn sstore<DB: Database>(
         // gas/refunds for cold, update, and residual costs. T7 gas table ensures no double-charge.
         sstore_default_gas_accounting(context, owner, state_load)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::B256;
+    use revm::{
+        Context, MainContext,
+        context::CfgEnv,
+        state::{Account, AccountInfo, Bytecode, EvmStorageSlot},
+    };
+    use std::convert::Infallible;
+    use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_precompiles::storage_credits::StorageCredits;
+
+    /// A cached journal access must not fall through to a database recorder.
+    #[derive(Debug)]
+    struct NoDatabaseReads;
+
+    impl revm::Database for NoDatabaseReads {
+        type Error = Infallible;
+
+        fn basic(&mut self, _address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+            panic!("credit account must already be in the journal")
+        }
+
+        fn code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
+            panic!("credit access must not load code")
+        }
+
+        fn storage(&mut self, _address: Address, _key: U256) -> Result<U256, Self::Error> {
+            panic!("credit slot must already be in the journal")
+        }
+
+        fn block_hash(&mut self, _number: u64) -> Result<B256, Self::Error> {
+            panic!("credit access must not load a block hash")
+        }
+    }
+
+    fn preloaded_credit_context(cold: bool) -> (TempoContext<NoDatabaseReads>, U256) {
+        let mut context: TempoContext<NoDatabaseReads> = Context::mainnet()
+            .with_db(NoDatabaseReads)
+            .with_block(Default::default())
+            .with_cfg(CfgEnv::new_with_spec_and_gas_params(
+                TempoHardfork::T14,
+                crate::gas_params::tempo_gas_params(TempoHardfork::T14),
+            ))
+            .with_tx(Default::default());
+        let key = StorageCredits::slot(Address::with_last_byte(41));
+        let transaction_id = context.journaled_state.transaction_id;
+        let mut slot = EvmStorageSlot::new(U256::from(7), transaction_id);
+        if cold {
+            slot.mark_cold();
+        }
+        let mut account = Account::default();
+        account.transaction_id = transaction_id;
+        account.storage.insert(key, slot);
+        context
+            .journaled_state
+            .state
+            .insert(STORAGE_CREDITS_ADDRESS, account);
+        (context, key)
+    }
+
+    #[test]
+    fn opcode_credit_accesses_record_preloaded_slots_without_database_reads() {
+        for cold in [false, true] {
+            let (mut context, key) = preloaded_credit_context(cold);
+            let mut gas = GasTracker::new(1_000_000, 1_000_000, 0);
+            let mut backend = StorageCreditsContext {
+                context: &mut context,
+                gas_tracker: &mut gas,
+            };
+            let (loaded, reads) =
+                access::record(|| backend.sload(STORAGE_CREDITS_ADDRESS, key, false));
+            let loaded = loaded.unwrap();
+            assert_eq!(loaded.data, U256::from(7));
+            assert_eq!(loaded.is_cold, cold);
+            assert_eq!(reads.slots.len(), 1);
+            assert!(reads.slots.contains(&(STORAGE_CREDITS_ADDRESS, key)));
+
+            // Use a separate scope: the preceding load must not mask a missing
+            // SSTORE dependency, even though it has made this slot warm.
+            let (stored, writes) = access::record(|| {
+                backend.sstore(STORAGE_CREDITS_ADDRESS, key, U256::from(6), false)
+            });
+            assert!(stored.is_ok());
+            assert_eq!(writes.slots.len(), 1);
+            assert!(writes.slots.contains(&(STORAGE_CREDITS_ADDRESS, key)));
+            assert_eq!(
+                context.journaled_state.state[&STORAGE_CREDITS_ADDRESS].storage[&key].present_value,
+                U256::from(6)
+            );
+        }
+    }
+
+    #[test]
+    fn opcode_credit_accesses_record_cold_load_failures() {
+        let (mut context, key) = preloaded_credit_context(true);
+        let (mut reference, _) = preloaded_credit_context(true);
+        let mut reference_gas = GasTracker::new(1_000_000, 1_000_000, 0);
+        let mut unrecorded = StorageCreditsContext {
+            context: &mut reference,
+            gas_tracker: &mut reference_gas,
+        };
+        assert_eq!(
+            unrecorded
+                .sload(STORAGE_CREDITS_ADDRESS, key, true)
+                .unwrap_err(),
+            InstructionResult::OutOfGas
+        );
+        assert_eq!(
+            unrecorded
+                .sstore(STORAGE_CREDITS_ADDRESS, key, U256::from(6), true)
+                .unwrap_err(),
+            InstructionResult::OutOfGas
+        );
+        let mut gas = GasTracker::new(1_000_000, 1_000_000, 0);
+        let mut backend = StorageCreditsContext {
+            context: &mut context,
+            gas_tracker: &mut gas,
+        };
+        let (loaded, reads) = access::record(|| backend.sload(STORAGE_CREDITS_ADDRESS, key, true));
+        assert_eq!(loaded.unwrap_err(), InstructionResult::OutOfGas);
+        assert!(reads.slots.contains(&(STORAGE_CREDITS_ADDRESS, key)));
+
+        let (stored, writes) =
+            access::record(|| backend.sstore(STORAGE_CREDITS_ADDRESS, key, U256::from(6), true));
+        assert_eq!(stored.unwrap_err(), InstructionResult::OutOfGas);
+        assert!(writes.slots.contains(&(STORAGE_CREDITS_ADDRESS, key)));
+        // A failed SSTORE can still touch the account. Recording must preserve
+        // that existing behavior, including its journal entry and cold slot.
+        assert_eq!(
+            context.journaled_state.inner,
+            reference.journaled_state.inner
+        );
+        assert_eq!(gas, reference_gas);
+    }
+
+    #[test]
+    fn opcode_credit_store_dependency_survives_checkpoint_revert() {
+        let (mut context, key) = preloaded_credit_context(false);
+        let before = context.journaled_state.inner.clone();
+        let mut gas = GasTracker::new(1_000_000, 1_000_000, 0);
+        let (stored, accesses) = access::record(|| {
+            let checkpoint = context.journaled_state.checkpoint();
+            let result = StorageCreditsContext {
+                context: &mut context,
+                gas_tracker: &mut gas,
+            }
+            .sstore(STORAGE_CREDITS_ADDRESS, key, U256::from(6), false);
+            context.journaled_state.checkpoint_revert(checkpoint);
+            result
+        });
+        assert!(stored.is_ok());
+        assert!(accesses.slots.contains(&(STORAGE_CREDITS_ADDRESS, key)));
+        assert_eq!(context.journaled_state.inner.state, before.state);
+        assert_eq!(context.journaled_state.inner.journal, before.journal);
+    }
 }

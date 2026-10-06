@@ -257,6 +257,19 @@ impl StorageCredits {
     }
 }
 
+/// Transaction identities and effective fee-bookkeeping slots that cannot mint credits.
+///
+/// Equality ignores lazy cache population when the resolved slots are unchanged, but preserves
+/// cached slots left by reinitialization without a preceding clear.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NonCreditableSlotPolicy {
+    fee_payer: Address,
+    fee_token: Address,
+    keychain_fee_key: Option<Address>,
+    fee_balance_slot: Option<U256>,
+    keychain_limit_slot: Option<U256>,
+}
+
 /// Container for slots which are not eligible for storage credits mints.
 ///
 /// There are 2 storage slots that are special in terms of TIP-1060 accounting:
@@ -280,6 +293,36 @@ impl NonCreditableSlots {
     #[inline]
     pub fn empty() -> Self {
         Self::default()
+    }
+
+    /// Snapshots identities and effective slots without populating lazy slot caches.
+    #[inline]
+    pub fn policy(&self) -> NonCreditableSlotPolicy {
+        let fee_balance_slot = (!self.fee_token.is_zero()).then(|| {
+            self.fee_balance_slot.get().copied().unwrap_or_else(|| {
+                TIP20Token::from_address_unchecked(self.fee_token).balances[self.fee_payer].slot()
+            })
+        });
+        let keychain_limit_slot = if self.fee_token.is_zero() {
+            None
+        } else {
+            self.keychain_fee_key.map(|key_id| {
+                self.keychain_limit_slot.get().copied().unwrap_or_else(|| {
+                    let keychain = AccountKeychain::new();
+                    let limit_key = AccountKeychain::spending_limit_key(self.fee_payer, key_id);
+                    keychain.spending_limits[limit_key][self.fee_token]
+                        .remaining
+                        .slot()
+                })
+            })
+        };
+        NonCreditableSlotPolicy {
+            fee_payer: self.fee_payer,
+            fee_token: self.fee_token,
+            keychain_fee_key: self.keychain_fee_key,
+            fee_balance_slot,
+            keychain_limit_slot,
+        }
     }
 
     pub fn initialize(
@@ -470,5 +513,176 @@ mod tests {
         slots.clear();
 
         assert!(!slots.is_non_creditable_slot(fee_token, fee_balance_slot));
+    }
+
+    #[test]
+    fn non_creditable_policy_compares_all_identities() {
+        let fee_payer = Address::repeat_byte(0x30);
+        let fee_token = crate::PATH_USD_ADDRESS;
+        let key_id = Address::repeat_byte(0x31);
+        let policy = |payer, token, key| {
+            let mut slots = NonCreditableSlots::empty();
+            slots.initialize(payer, token, key);
+            slots.policy()
+        };
+        let expected = policy(fee_payer, fee_token, Some(key_id));
+        assert_eq!(expected, policy(fee_payer, fee_token, Some(key_id)));
+        for changed in [
+            policy(Address::repeat_byte(0x32), fee_token, Some(key_id)),
+            policy(
+                fee_payer,
+                alloy::primitives::address!("20c0000000000000000000000000000000000001"),
+                Some(key_id),
+            ),
+            policy(fee_payer, fee_token, Some(Address::repeat_byte(0x34))),
+            policy(fee_payer, fee_token, None),
+        ] {
+            assert_ne!(expected, changed);
+        }
+        assert_ne!(
+            policy(fee_payer, fee_token, None),
+            policy(fee_payer, fee_token, Some(Address::ZERO))
+        );
+    }
+
+    #[test]
+    fn non_creditable_policy_ignores_lazy_caches_and_clear_resets_it() {
+        let fee_payer = Address::repeat_byte(0x40);
+        let fee_token = crate::PATH_USD_ADDRESS;
+        let key_id = Address::repeat_byte(0x41);
+        let mut slots = NonCreditableSlots::empty();
+        let empty = slots.policy();
+        slots.initialize(fee_payer, fee_token, Some(key_id));
+        let initialized = slots.policy();
+        assert_ne!(initialized, empty);
+        assert!(slots.fee_balance_slot.get().is_none());
+        assert!(slots.keychain_limit_slot.get().is_none());
+
+        let fee_balance_slot =
+            TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
+        assert!(slots.is_non_creditable_slot(fee_token, fee_balance_slot));
+        assert!(slots.fee_balance_slot.get().is_some());
+        assert!(slots.keychain_limit_slot.get().is_none());
+        assert_eq!(slots.policy(), initialized);
+
+        let keychain = AccountKeychain::new();
+        let limit_key = AccountKeychain::spending_limit_key(fee_payer, key_id);
+        let remaining_slot = keychain.spending_limits[limit_key][fee_token]
+            .remaining
+            .slot();
+        assert!(slots.is_non_creditable_slot(ACCOUNT_KEYCHAIN_ADDRESS, remaining_slot));
+        assert!(slots.keychain_limit_slot.get().is_some());
+        assert_eq!(slots.policy(), initialized);
+
+        slots.clear();
+        assert_eq!(slots.policy(), empty);
+        assert_ne!(slots.policy(), initialized);
+        assert!(slots.fee_balance_slot.get().is_none());
+        assert!(slots.keychain_limit_slot.get().is_none());
+        assert!(!slots.is_non_creditable_slot(fee_token, fee_balance_slot));
+        assert!(!slots.is_non_creditable_slot(ACCOUNT_KEYCHAIN_ADDRESS, remaining_slot));
+    }
+
+    #[test]
+    fn non_creditable_policy_preserves_stale_fee_balance_slot() {
+        let old_payer = Address::repeat_byte(0x50);
+        let new_payer = Address::repeat_byte(0x51);
+        let fee_token = crate::PATH_USD_ADDRESS;
+        let token = TIP20Token::from_address_unchecked(fee_token);
+        let old_slot = token.balances[old_payer].slot();
+        let new_slot = token.balances[new_payer].slot();
+        assert_ne!(old_slot, new_slot);
+
+        let mut stale = NonCreditableSlots::empty();
+        stale.initialize(old_payer, fee_token, None);
+        assert!(stale.is_non_creditable_slot(fee_token, old_slot));
+        stale.initialize(new_payer, fee_token, None);
+        let mut fresh = NonCreditableSlots::empty();
+        fresh.initialize(new_payer, fee_token, None);
+
+        let stale_policy = stale.policy();
+        let fresh_policy = fresh.policy();
+        assert_ne!(stale_policy, fresh_policy);
+        assert_eq!(stale_policy.fee_balance_slot, Some(old_slot));
+        assert_eq!(fresh_policy.fee_balance_slot, Some(new_slot));
+        assert!(fresh.fee_balance_slot.get().is_none());
+        assert!(stale.is_non_creditable_slot(fee_token, old_slot));
+        assert!(!stale.is_non_creditable_slot(fee_token, new_slot));
+        assert!(!fresh.is_non_creditable_slot(fee_token, old_slot));
+        assert!(fresh.is_non_creditable_slot(fee_token, new_slot));
+        assert_eq!(stale.policy(), stale_policy);
+        assert_eq!(fresh.policy(), fresh_policy);
+    }
+
+    #[test]
+    fn non_creditable_policy_preserves_stale_keychain_limit_slot() {
+        let fee_payer = Address::repeat_byte(0x60);
+        let fee_token = crate::PATH_USD_ADDRESS;
+        let old_key = Address::repeat_byte(0x61);
+        let new_key = Address::repeat_byte(0x62);
+        let keychain = AccountKeychain::new();
+        let limit_slot = |key_id| {
+            let limit_key = AccountKeychain::spending_limit_key(fee_payer, key_id);
+            keychain.spending_limits[limit_key][fee_token]
+                .remaining
+                .slot()
+        };
+        let old_slot = limit_slot(old_key);
+        let new_slot = limit_slot(new_key);
+        assert_ne!(old_slot, new_slot);
+
+        let mut stale = NonCreditableSlots::empty();
+        stale.initialize(fee_payer, fee_token, Some(old_key));
+        assert!(stale.is_non_creditable_slot(ACCOUNT_KEYCHAIN_ADDRESS, old_slot));
+        stale.initialize(fee_payer, fee_token, Some(new_key));
+        let mut fresh = NonCreditableSlots::empty();
+        fresh.initialize(fee_payer, fee_token, Some(new_key));
+
+        let stale_policy = stale.policy();
+        let fresh_policy = fresh.policy();
+        assert_ne!(stale_policy, fresh_policy);
+        assert_eq!(stale_policy.fee_balance_slot, fresh_policy.fee_balance_slot);
+        assert_eq!(stale_policy.keychain_limit_slot, Some(old_slot));
+        assert_eq!(fresh_policy.keychain_limit_slot, Some(new_slot));
+        assert!(fresh.keychain_limit_slot.get().is_none());
+        assert!(stale.is_non_creditable_slot(ACCOUNT_KEYCHAIN_ADDRESS, old_slot));
+        assert!(!stale.is_non_creditable_slot(ACCOUNT_KEYCHAIN_ADDRESS, new_slot));
+        assert!(!fresh.is_non_creditable_slot(ACCOUNT_KEYCHAIN_ADDRESS, old_slot));
+        assert!(fresh.is_non_creditable_slot(ACCOUNT_KEYCHAIN_ADDRESS, new_slot));
+        assert_eq!(stale.policy(), stale_policy);
+        assert_eq!(fresh.policy(), fresh_policy);
+    }
+
+    #[test]
+    fn non_creditable_policy_ignores_inactive_cached_slots() {
+        let fee_payer = Address::repeat_byte(0x70);
+        let fee_token = crate::PATH_USD_ADDRESS;
+        let key_id = Address::repeat_byte(0x71);
+        let mut stale = NonCreditableSlots::empty();
+        stale.initialize(fee_payer, fee_token, Some(key_id));
+        let balance_slot = stale.fee_balance_slot();
+        let limit_slot = stale.keychain_limit_slot().unwrap();
+
+        stale.initialize(fee_payer, fee_token, None);
+        let mut fresh = NonCreditableSlots::empty();
+        fresh.initialize(fee_payer, fee_token, None);
+        assert_eq!(stale.policy(), fresh.policy());
+        assert_eq!(stale.policy().keychain_limit_slot, None);
+        assert!(!stale.is_non_creditable_slot(ACCOUNT_KEYCHAIN_ADDRESS, limit_slot));
+        assert!(!fresh.is_non_creditable_slot(ACCOUNT_KEYCHAIN_ADDRESS, limit_slot));
+
+        stale.initialize(fee_payer, Address::ZERO, Some(key_id));
+        fresh.initialize(fee_payer, Address::ZERO, Some(key_id));
+        assert_eq!(stale.policy(), fresh.policy());
+        assert_eq!(stale.policy().fee_balance_slot, None);
+        assert_eq!(stale.policy().keychain_limit_slot, None);
+        for owner in [fee_token, Address::ZERO, ACCOUNT_KEYCHAIN_ADDRESS] {
+            for slot in [balance_slot, limit_slot] {
+                assert!(!stale.is_non_creditable_slot(owner, slot));
+                assert!(!fresh.is_non_creditable_slot(owner, slot));
+            }
+        }
+        assert!(fresh.fee_balance_slot.get().is_none());
+        assert!(fresh.keychain_limit_slot.get().is_none());
     }
 }

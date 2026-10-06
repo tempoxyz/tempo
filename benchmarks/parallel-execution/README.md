@@ -38,8 +38,9 @@ automatic generic slices shorter than five transactions execute directly.
 Engine captures reuse complete results after validation. A conflicting T14
 capture executes the whole transaction again. The generic scheduler's call-body
 cache is limited to pre-T7 execution and is not carried by Engine captures;
-modern storage-credit accounting needs additional recording before that cache
-can safely skip a body after fresh validation and fee processing.
+storage-credit dependencies and effective fee-policy snapshots are recorded, but
+modern body reuse still needs dedicated differential coverage and Engine retention
+accounting before enablement.
 
 Engine and builder each limit retained result payload estimates to 32 MiB.
 These are not allocator/RSS limits: accepted-prefix hints, provider caches,

@@ -845,11 +845,12 @@ where
             return Ok(Some(oog));
         }
 
-        if let Some(candidate) = evm.body_replay.candidate.take()
-            && let Some(result) = candidate.try_apply(&mut evm.ctx, gas)
-        {
-            evm.body_replay.reused = true;
-            return Ok(Some(result));
+        if let Some(candidate) = evm.body_replay.candidate.take() {
+            let policy = evm.non_creditable_slots.borrow().policy();
+            if let Some(result) = candidate.try_apply(&mut evm.ctx, gas, policy) {
+                evm.body_replay.reused = true;
+                return Ok(Some(result));
+            }
         }
 
         // Plain fee-free transactions have no pre-execution storage to rebase.
@@ -860,7 +861,12 @@ where
             && (evm.tx().inner.gas_price != 0 || evm.tx().tempo_tx_env.is_some())
             && evm.tx().calls().all(|(kind, _)| kind.is_call());
         let before_gas = *gas;
-        let before = recording.then(|| evm.ctx.journaled_state.inner.clone());
+        let before = recording.then(|| {
+            (
+                evm.ctx.journaled_state.inner.clone(),
+                evm.non_creditable_slots.borrow().policy(),
+            )
+        });
         let before_error_context = recording
             .then(|| evm.ctx.local.precompile_error_message.clone())
             .flatten();
@@ -872,7 +878,7 @@ where
                 self.execute_single_call(evm, gas)
             }
         };
-        if let Some(before) = before {
+        if let Some((before, before_policy)) = before {
             let start = std::time::Instant::now();
             let (result, accesses) = tempo_precompiles::storage::access::record(execute);
             let worth_reusing = start.elapsed().saturating_sub(accesses.database_time)
@@ -889,8 +895,11 @@ where
                             (before_gas, *gas),
                             accesses,
                             result.clone(),
-                            before_error_context,
-                            evm.ctx.local.precompile_error_message.clone(),
+                            (
+                                before_error_context,
+                                evm.ctx.local.precompile_error_message.clone(),
+                            ),
+                            (before_policy, evm.non_creditable_slots.borrow().policy()),
                         )
                     });
             result.map(Some)
