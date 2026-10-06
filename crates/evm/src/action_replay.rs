@@ -620,52 +620,50 @@ mod tests {
         let token = Address::repeat_byte(0x42);
         let slot = U256::from(7);
         let chainspec = test_chainspec();
-        for commit_reads in [false, true] {
-            for (observed, current, sufficient, succeeds) in [
-                (100, 80, true, true),
-                (100, 120, true, true),
-                (100, 50, true, true),
-                (100, 49, true, false),
-                (20, 49, false, true),
-                (20, 0, false, true),
-                (20, 50, false, false),
-            ] {
-                let mut db = state_with_storage(token, slot, U256::from(current));
-                let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
-                let mut actions = vec![StorageAction::FeeTokenBalanceCheck(
+        for (observed, current, sufficient, succeeds) in [
+            (100, 80, true, true),
+            (100, 120, true, true),
+            (100, 50, true, true),
+            (100, 49, true, false),
+            (20, 49, false, true),
+            (20, 0, false, true),
+            (20, 50, false, false),
+        ] {
+            let mut db = state_with_storage(token, slot, U256::from(current));
+            let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+            let mut actions = vec![StorageAction::FeeTokenBalanceCheck(
+                token,
+                slot,
+                U256::from(observed),
+                U256::from(50),
+                sufficient,
+            )];
+            if sufficient {
+                actions.push(StorageAction::Sdec(
                     token,
                     slot,
                     U256::from(observed),
-                    U256::from(50),
-                    sufficient,
-                )];
+                    U256::from(10),
+                ));
+            }
+            let result = executor.replay_actions(actions, None);
+            if succeeds {
+                let state = result.unwrap();
                 if sufficient {
-                    actions.push(StorageAction::Sdec(
-                        token,
-                        slot,
-                        U256::from(observed),
-                        U256::from(10),
-                    ));
-                }
-                let result = executor.replay_actions(Address::ZERO, actions, commit_reads, None);
-                if succeeds {
-                    let state = result.unwrap();
-                    if sufficient || commit_reads {
-                        let value = &state[&token].storage[&slot];
-                        assert_eq!(value.original_value(), U256::from(current));
-                        assert_eq!(
-                            value.present_value(),
-                            U256::from(current - if sufficient { 10 } else { 0 })
-                        );
-                    } else {
-                        assert!(!state.contains_key(&token));
-                    }
-                } else {
+                    let value = &state[&token].storage[&slot];
+                    assert_eq!(value.original_value(), U256::from(current));
                     assert_eq!(
-                        StorageActionReplayError::from_block_execution_error(&result.unwrap_err()),
-                        Some(StorageActionReplayError::ActionConflict)
+                        value.present_value(),
+                        U256::from(current - if sufficient { 10 } else { 0 })
                     );
+                } else {
+                    assert!(!state.contains_key(&token));
                 }
+            } else {
+                assert_eq!(
+                    StorageActionReplayError::from_block_execution_error(&result.unwrap_err()),
+                    Some(StorageActionReplayError::ActionConflict)
+                );
             }
         }
     }
@@ -680,7 +678,6 @@ mod tests {
         let chainspec = test_chainspec();
         let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
         let result = executor.replay_actions(
-            Address::ZERO,
             [
                 StorageAction::FeeTokenBalanceCheck(
                     token,
@@ -691,7 +688,6 @@ mod tests {
                 ),
                 StorageAction::Sload(token, slot, U256::from(100)),
             ],
-            false,
             None,
         );
         assert_eq!(
