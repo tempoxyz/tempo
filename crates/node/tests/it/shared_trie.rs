@@ -1,4 +1,4 @@
-use crate::utils::TestNodeBuilder;
+use crate::utils::{ForkSchedule, TestNodeBuilder};
 use alloy::{
     eips::{
         eip7002::WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS,
@@ -8,7 +8,9 @@ use alloy::{
     providers::{Provider, ProviderBuilder},
 };
 use alloy_trie::{Nibbles, TrieAccount, proof::verify_proof};
+use eyre::WrapErr as _;
 use std::time::Duration;
+use tempo_chainspec::hardfork::TempoHardfork;
 
 #[test_case::test_case(0, false; "sequential_sync_root")]
 #[test_case::test_case(0, true; "sequential_shared_root")]
@@ -18,6 +20,27 @@ use std::time::Duration;
 async fn post_block_state_is_included_in_header_root(
     execution_threads: usize,
     share_sparse_trie: bool,
+) -> eyre::Result<()> {
+    // TIP-1119 removes these Ethereum system calls at T13. Keep checking
+    // actual post-block writes before activation, and prove their absence
+    // at activation and on the fork used by the execution benchmarks.
+    for (hardfork, expected) in [
+        (TempoHardfork::T12, 3),
+        (TempoHardfork::T13, 0),
+        (TempoHardfork::T14, 0),
+    ] {
+        assert_post_block_state(execution_threads, share_sparse_trie, hardfork, expected)
+            .await
+            .wrap_err_with(|| format!("post-block storage proof at {hardfork}"))?;
+    }
+    Ok(())
+}
+
+async fn assert_post_block_state(
+    execution_threads: usize,
+    share_sparse_trie: bool,
+    hardfork: TempoHardfork,
+    expected: u64,
 ) -> eyre::Result<()> {
     let addresses = [
         WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS,
@@ -33,6 +56,7 @@ async fn post_block_state_is_included_in_header_root(
     }
     let setup = TestNodeBuilder::new()
         .with_genesis(serde_json::to_string(&genesis)?)
+        .with_schedule(ForkSchedule::DevnetAt(hardfork))
         .with_execution_threads(execution_threads)
         .with_shared_sparse_trie(share_sparse_trie)
         .with_proof_window(64)
@@ -55,7 +79,7 @@ async fn post_block_state_is_included_in_header_root(
             .get_proof(address, vec![B256::ZERO])
             .block_id(3.into())
             .await?;
-        assert_eq!(proof.storage_proof[0].value, U256::from(3));
+        assert_eq!(proof.storage_proof[0].value, U256::from(expected));
         let account = TrieAccount {
             nonce: proof.nonce,
             balance: proof.balance,
@@ -73,7 +97,7 @@ async fn post_block_state_is_included_in_header_root(
         verify_proof(
             proof.storage_hash,
             Nibbles::unpack(keccak256(B256::ZERO)),
-            Some(alloy_rlp::encode(U256::from(3))),
+            (expected != 0).then(|| alloy_rlp::encode(U256::from(expected))),
             &proof.storage_proof[0].proof,
         )?;
     }
