@@ -152,7 +152,9 @@ where
                 let window = executor.capture_window().transactions();
                 reth_engine_tree::tree::payload_processor::prewarm::TransactionPrewarmPolicy::new(
                     window,
-                    window,
+                    // Bound queued and running jobs separately from result
+                    // lookahead so workers start closer to canonical progress.
+                    window.min(32),
                     std::time::Duration::from_micros(100),
                 )
             });
