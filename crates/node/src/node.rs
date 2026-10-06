@@ -393,10 +393,16 @@ where
     ///
     /// `executed_state` is filled when reth launches the engine.
     pub fn new(validator_key: Option<B256>, executed_state: ExecutedState) -> Self {
-        Self::with_validator_builder(validator_key, TempoEngineTreeValidatorBuilder::new(executed_state))
+        Self::with_validator_builder(
+            validator_key,
+            TempoEngineTreeValidatorBuilder::new(executed_state),
+        )
     }
 
-    fn with_validator_builder(validator_key: Option<B256>, builder: TempoEngineTreeValidatorBuilder) -> Self {
+    fn with_validator_builder(
+        validator_key: Option<B256>,
+        builder: TempoEngineTreeValidatorBuilder,
+    ) -> Self {
         Self {
             inner: RpcAddOns::new(
                 TempoEthApiBuilder::default(),

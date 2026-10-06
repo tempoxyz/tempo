@@ -12,7 +12,9 @@ use reth_engine_tree::{
 };
 use reth_evm::ConfigureEvm;
 use reth_primitives_traits::{AlloyBlockHeader, RecoveredBlock};
-use reth_provider::{BlockExecutionOutput, BlockNumReader, HeaderProvider, ProviderError, ProviderResult};
+use reth_provider::{
+    BlockExecutionOutput, BlockNumReader, HeaderProvider, ProviderError, ProviderResult,
+};
 use reth_qmdb::{QmdbBlock, QmdbConfig, QmdbState, genesis_hashed_state};
 use reth_revm::state::EvmState;
 use reth_trie_common::{HashedPostState, updates::TrieUpdates};
@@ -59,7 +61,9 @@ impl QmdbStateLoader {
             )?;
         }
         state.reconcile_canonical(provider)?;
-        self.state.set(state.clone()).map_err(|_| eyre::eyre!("QMDB was initialized concurrently"))?;
+        self.state
+            .set(state.clone())
+            .map_err(|_| eyre::eyre!("QMDB was initialized concurrently"))?;
         Ok(state)
     }
 }
@@ -76,47 +80,72 @@ impl QmdbStrategy {
 
     pub fn persistence_hooks(&self) -> (SaveBlocksHook<TempoPrimitives>, RemoveBlocksHook) {
         let save_state = self.state.clone();
-        let save = Arc::new(move |blocks: &[reth_chain_state::ExecutedBlock<TempoPrimitives>]| {
-            let mutations = blocks.iter().map(|block| {
-                let recovered = block.recovered_block();
-                (
-                    QmdbBlock {
-                        number: recovered.number(),
-                        hash: recovered.hash(),
-                        parent_hash: recovered.parent_hash(),
-                    },
-                    block.hashed_state().as_ref().clone(),
-                )
-            }).collect::<Vec<_>>();
-            if let Some((first, _)) = mutations.first()
-                && let Some(head) = save_state.head().map_err(ProviderError::other)?
-                && head.hash != first.parent_hash
-            {
-                save_state.rewind_to_block(first.number.saturating_sub(1)).map_err(ProviderError::other)?;
-            }
-            let head = save_state.commit_blocks(mutations).map_err(ProviderError::other)?;
-            if let Some(block) = blocks.last()
-                && let Some(head) = head
-                && head.root != block.recovered_block().state_root()
-            {
-                return Err(ProviderError::other(eyre::eyre!("QMDB persistence root differs from the executed block")));
-            }
-            Ok(())
-        });
+        let save = Arc::new(
+            move |blocks: &[reth_chain_state::ExecutedBlock<TempoPrimitives>]| {
+                let mutations = blocks
+                    .iter()
+                    .map(|block| {
+                        let recovered = block.recovered_block();
+                        (
+                            QmdbBlock {
+                                number: recovered.number(),
+                                hash: recovered.hash(),
+                                parent_hash: recovered.parent_hash(),
+                            },
+                            block.hashed_state().as_ref().clone(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                if let Some((first, _)) = mutations.first()
+                    && let Some(head) = save_state.head().map_err(ProviderError::other)?
+                    && head.hash != first.parent_hash
+                {
+                    save_state
+                        .rewind_to_block(first.number.saturating_sub(1))
+                        .map_err(ProviderError::other)?;
+                }
+                let head = save_state
+                    .commit_blocks(mutations)
+                    .map_err(ProviderError::other)?;
+                if let Some(block) = blocks.last()
+                    && let Some(head) = head
+                    && head.root != block.recovered_block().state_root()
+                {
+                    return Err(ProviderError::other(eyre::eyre!(
+                        "QMDB persistence root differs from the executed block"
+                    )));
+                }
+                Ok(())
+            },
+        );
         let remove_state = self.state.clone();
         let remove = Arc::new(move |number| {
-            remove_state.rewind_to_block(number).map(|_| ()).map_err(ProviderError::other)
+            remove_state
+                .rewind_to_block(number)
+                .map(|_| ())
+                .map_err(ProviderError::other)
         });
         (save, remove)
     }
 }
 
-impl<P, Evm: ConfigureEvm<Primitives = TempoPrimitives>> StateRootStrategy<TempoPrimitives, P, Evm> for QmdbStrategy {
-    fn prepare(&self, _ctx: StateRootJobContext<'_, TempoPrimitives, P, Evm>) -> ProviderResult<PreparedStateRootJob<TempoPrimitives>> {
-        Ok(PreparedStateRootJob::new(Box::new(QmdbJob(self.state.clone())), None))
+impl<P, Evm: ConfigureEvm<Primitives = TempoPrimitives>> StateRootStrategy<TempoPrimitives, P, Evm>
+    for QmdbStrategy
+{
+    fn prepare(
+        &self,
+        _ctx: StateRootJobContext<'_, TempoPrimitives, P, Evm>,
+    ) -> ProviderResult<PreparedStateRootJob<TempoPrimitives>> {
+        Ok(PreparedStateRootJob::new(
+            Box::new(QmdbJob(self.state.clone())),
+            None,
+        ))
     }
 
-    fn prepare_payload_builder(&self, ctx: PayloadStateRootJobContext<'_, TempoPrimitives, P>) -> ProviderResult<Option<PayloadStateRootHandle>> {
+    fn prepare_payload_builder(
+        &self,
+        ctx: PayloadStateRootJobContext<'_, TempoPrimitives, P>,
+    ) -> ProviderResult<Option<PayloadStateRootHandle>> {
         let parent_hash = ctx.parent_hash();
         let number = ctx.parent_header().number() + 1;
         let state = self.state.clone();
@@ -124,48 +153,83 @@ impl<P, Evm: ConfigureEvm<Primitives = TempoPrimitives>> StateRootStrategy<Tempo
         let (updates_tx, updates_rx) = mpsc::channel();
         let (root_tx, root_rx) = mpsc::channel();
         let (hashed_tx, hashed_rx) = mpsc::channel();
-        std::thread::Builder::new().name("qmdb-payload-root".into()).spawn(move || {
-            let mut hashed_state = HashedPostState::default();
-            while let Ok(update) = updates_rx.recv() {
-                match update {
-                    RootUpdate::State(update) => hashed_state.extend(update),
-                    RootUpdate::Finished => {
-                        let hashed_state = Arc::new(hashed_state);
-                        let result = state.preview(parent_hash, hashed_state.as_ref().clone())
-                            .map(|commit| StateRootComputeOutcome {
-                                state_root: commit.root,
-                                trie_updates: Arc::new(TrieUpdates::default()),
-                                hashed_state: hashed_state.clone(),
-                            })
-                            .map_err(|error| ProviderError::other(error).into());
-                        let _ = hashed_tx.send(hashed_state);
-                        let _ = root_tx.send(result);
-                        break;
+        std::thread::Builder::new()
+            .name("qmdb-payload-root".into())
+            .spawn(move || {
+                let mut hashed_state = HashedPostState::default();
+                while let Ok(update) = updates_rx.recv() {
+                    match update {
+                        RootUpdate::State(update) => hashed_state.extend(update),
+                        RootUpdate::Finished => {
+                            let hashed_state = Arc::new(hashed_state);
+                            let result = state
+                                .preview(parent_hash, hashed_state.as_ref().clone())
+                                .map(|commit| StateRootComputeOutcome {
+                                    state_root: commit.root,
+                                    trie_updates: Arc::new(TrieUpdates::default()),
+                                    hashed_state: hashed_state.clone(),
+                                })
+                                .map_err(|error| ProviderError::other(error).into());
+                            let _ = hashed_tx.send(hashed_state);
+                            let _ = root_tx.send(result);
+                            break;
+                        }
                     }
                 }
-            }
-        }).map_err(ProviderError::other)?;
+            })
+            .map_err(ProviderError::other)?;
         let hook = StateRootUpdateStream::new(Arc::new(QmdbSink(updates_tx))).into_state_hook();
-        Ok(Some(PayloadStateRootHandle::new("qmdb", Some(hook), root_rx, Some(hashed_rx))
-            .with_on_payload_built(move |hash, root| {
-                if let Err(error) = remembered_state.remember(QmdbBlock { number, hash, parent_hash }, root) {
-                    tracing::error!(%error, "failed to retain QMDB payload state");
-                }
-            })))
+        Ok(Some(
+            PayloadStateRootHandle::new("qmdb", Some(hook), root_rx, Some(hashed_rx))
+                .with_on_payload_built(move |hash, root| {
+                    if let Err(error) = remembered_state.remember(
+                        QmdbBlock {
+                            number,
+                            hash,
+                            parent_hash,
+                        },
+                        root,
+                    ) {
+                        tracing::error!(%error, "failed to retain QMDB payload state");
+                    }
+                }),
+        ))
     }
 }
 
 struct QmdbJob(QmdbState);
 
 impl StateRootJob<TempoPrimitives> for QmdbJob {
-    fn name(&self) -> &'static str { "qmdb" }
+    fn name(&self) -> &'static str {
+        "qmdb"
+    }
 
-    fn finish(&mut self, block: &RecoveredBlock<tempo_primitives::Block>, _output: Arc<BlockExecutionOutput<tempo_primitives::TempoReceipt>>, hashed_state: &LazyHashedPostState) -> ProviderResult<StateRootJobOutcome> {
-        let commit = self.0.preview(block.parent_hash(), hashed_state.get().as_ref().clone()).map_err(ProviderError::other)?;
+    fn finish(
+        &mut self,
+        block: &RecoveredBlock<tempo_primitives::Block>,
+        _output: Arc<BlockExecutionOutput<tempo_primitives::TempoReceipt>>,
+        hashed_state: &LazyHashedPostState,
+    ) -> ProviderResult<StateRootJobOutcome> {
+        let commit = self
+            .0
+            .preview(block.parent_hash(), hashed_state.get().as_ref().clone())
+            .map_err(ProviderError::other)?;
         if commit.root == block.state_root() {
-            self.0.remember(QmdbBlock { number: block.number(), hash: block.hash(), parent_hash: block.parent_hash() }, commit.root).map_err(ProviderError::other)?;
+            self.0
+                .remember(
+                    QmdbBlock {
+                        number: block.number(),
+                        hash: block.hash(),
+                        parent_hash: block.parent_hash(),
+                    },
+                    commit.root,
+                )
+                .map_err(ProviderError::other)?;
         }
-        Ok(StateRootJobOutcome::new(commit.root, Arc::new(TrieUpdates::default())))
+        Ok(StateRootJobOutcome::new(
+            commit.root,
+            Arc::new(TrieUpdates::default()),
+        ))
     }
 }
 

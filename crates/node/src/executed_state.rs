@@ -132,19 +132,25 @@ where
         self.executed_state.set(overlay_manager.clone());
         #[cfg(feature = "qmdb")]
         let state = if let Some(loader) = &self.qmdb {
-            tree_config = tree_config.with_persistence_threshold(0).with_memory_block_buffer_target(0);
+            tree_config = tree_config
+                .with_persistence_threshold(0)
+                .with_memory_block_buffer_target(0)
+                .with_share_sparse_trie_with_payload_builder(true);
             Some(loader.open(ctx.config, ctx.node.provider())?)
         } else {
             None
         };
-        let validator = self.inner
+        let validator = self
+            .inner
             .build_tree_validator(ctx, tree_config, overlay_manager)
             .await?;
         #[cfg(feature = "qmdb")]
         let validator = if let Some(state) = state {
             let strategy = crate::qmdb::QmdbStrategy::new(state);
             let (save, remove) = strategy.persistence_hooks();
-            validator.with_state_root_strategy(Arc::new(strategy)).with_persistence_hooks(Some(save), Some(remove))
+            validator
+                .with_state_root_strategy(Arc::new(strategy))
+                .with_persistence_hooks(Some(save), Some(remove))
         } else {
             validator
         };

@@ -762,7 +762,9 @@ where
 
         let builder_finish_start = Instant::now();
 
-        let on_payload_built = state_root_handle.as_mut().and_then(|handle| handle.take_on_payload_built());
+        let on_payload_built = state_root_handle
+            .as_mut()
+            .and_then(|handle| handle.take_on_payload_built());
 
         // Drop the roots task handle to trigger finalization
         drop(roots_tx);
