@@ -1326,7 +1326,7 @@ async fn test_key_authorization_witness_mines_without_burning_and_allows_reuse()
     );
     tx.key_authorization = Some(key_auth);
     let sig = sign_aa_tx_secp256k1(&tx, &root_signer)?;
-    submit_and_mine_aa_tx(&mut setup, tx, sig).await?;
+    setup.node.mine_signed([tx.into_signed(sig)]).await?;
 
     let keychain = IAccountKeychainInstance::new(ACCOUNT_KEYCHAIN_ADDRESS, &provider);
     assert!(
@@ -1353,7 +1353,10 @@ async fn test_key_authorization_witness_mines_without_burning_and_allows_reuse()
     );
     replay_tx.key_authorization = Some(replay_auth);
     let replay_sig = sign_aa_tx_secp256k1(&replay_tx, &root_signer)?;
-    submit_and_mine_aa_tx(&mut setup, replay_tx, replay_sig).await?;
+    setup
+        .node
+        .mine_signed([replay_tx.into_signed(replay_sig)])
+        .await?;
 
     Ok(())
 }
@@ -1421,7 +1424,10 @@ async fn test_key_authorization_witness_burn_evicts_pending_replay() -> eyre::Re
     );
     burn_tx.nonce_key = U256::ONE;
     let burn_sig = sign_aa_tx_secp256k1(&burn_tx, &root_signer)?;
-    submit_and_mine_aa_tx(&mut setup, burn_tx, burn_sig).await?;
+    setup
+        .node
+        .mine_signed([burn_tx.into_signed(burn_sig)])
+        .await?;
 
     let keychain = IAccountKeychainInstance::new(ACCOUNT_KEYCHAIN_ADDRESS, &provider);
     assert!(
@@ -1461,7 +1467,7 @@ async fn test_t6_authorize_admin_key_abi_e2e() -> eyre::Result<()> {
     );
 
     let sig = sign_aa_tx_secp256k1(&tx, &root_signer)?;
-    submit_and_mine_aa_tx(&mut setup, tx, sig).await?;
+    setup.node.mine_signed([tx.into_signed(sig)]).await?;
 
     let keychain = IAccountKeychainInstance::new(ACCOUNT_KEYCHAIN_ADDRESS, &provider);
     assert!(
@@ -1503,7 +1509,7 @@ async fn test_t6_inline_admin_key_authorization_e2e() -> eyre::Result<()> {
     tx.key_authorization = Some(admin_auth);
 
     let sig = sign_aa_tx_secp256k1(&tx, &root_signer)?;
-    submit_and_mine_aa_tx(&mut setup, tx, sig).await?;
+    setup.node.mine_signed([tx.into_signed(sig)]).await?;
 
     let keychain = IAccountKeychainInstance::new(ACCOUNT_KEYCHAIN_ADDRESS, &provider);
     assert!(
@@ -1538,7 +1544,10 @@ async fn test_t6_admin_key_authorizes_child_admin_key_e2e() -> eyre::Result<()> 
         2_000_000,
     );
     let root_sig = sign_aa_tx_secp256k1(&root_tx, &root_signer)?;
-    submit_and_mine_aa_tx(&mut setup, root_tx, root_sig).await?;
+    setup
+        .node
+        .mine_signed([root_tx.into_signed(root_sig)])
+        .await?;
 
     let admin_signed_auth =
         create_admin_key_authorization(&admin_signer, root_addr, child_admin_key, chain_id)?;
@@ -1550,7 +1559,10 @@ async fn test_t6_admin_key_authorizes_child_admin_key_e2e() -> eyre::Result<()> 
     );
     admin_tx.key_authorization = Some(admin_signed_auth);
     let admin_sig = sign_aa_tx_with_secp256k1_access_key(&admin_tx, &admin_signer, root_addr)?;
-    submit_and_mine_aa_tx(&mut setup, admin_tx, admin_sig).await?;
+    setup
+        .node
+        .mine_signed([admin_tx.into_signed(admin_sig)])
+        .await?;
 
     let keychain = IAccountKeychainInstance::new(ACCOUNT_KEYCHAIN_ADDRESS, &provider);
     assert!(
@@ -1677,7 +1689,10 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
     auth_tx.key_authorization = Some(key_auth);
 
     let root_sig = sign_aa_tx_secp256k1(&auth_tx, &root_signer)?;
-    submit_and_mine_aa_tx(&mut setup, auth_tx, root_sig).await?;
+    setup
+        .node
+        .mine_signed([auth_tx.into_signed(root_sig)])
+        .await?;
     nonce += 1;
 
     println!("Access key authorized");
@@ -1771,7 +1786,10 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
     revoke_tx.nonce_key = U256::ONE; // Use a different nonce key so it's independent
 
     let revoke_sig = sign_aa_tx_secp256k1(&revoke_tx, &root_signer)?;
-    submit_and_mine_aa_tx(&mut setup, revoke_tx, revoke_sig).await?;
+    setup
+        .node
+        .mine_signed([revoke_tx.into_signed(revoke_sig)])
+        .await?;
 
     // Verify the key is actually revoked by querying the keychain
     use tempo_contracts::precompiles::account_keychain::IAccountKeychain::IAccountKeychainInstance;
@@ -2032,7 +2050,10 @@ async fn test_aa_keychain_spending_limit_toctou_dos() -> eyre::Result<()> {
     auth_tx.key_authorization = Some(key_auth);
 
     let root_sig = sign_aa_tx_secp256k1(&auth_tx, &root_signer)?;
-    submit_and_mine_aa_tx(&mut setup, auth_tx, root_sig).await?;
+    setup
+        .node
+        .mine_signed([auth_tx.into_signed(root_sig)])
+        .await?;
     nonce += 1;
 
     println!("Access key authorized with spending limit: {initial_spending_limit}");
@@ -2125,7 +2146,10 @@ async fn test_aa_keychain_spending_limit_toctou_dos() -> eyre::Result<()> {
     update_tx.nonce_key = U256::ONE; // Use a different nonce key so it's independent
 
     let update_sig = sign_aa_tx_secp256k1(&update_tx, &root_signer)?;
-    submit_and_mine_aa_tx(&mut setup, update_tx, update_sig).await?;
+    setup
+        .node
+        .mine_signed([update_tx.into_signed(update_sig)])
+        .await?;
 
     println!("Spending limit reduced to 0");
 
@@ -2319,7 +2343,10 @@ async fn test_v2_keychain_blocks_cross_account_replay() -> eyre::Result<()> {
     );
     let alice_sig =
         sign_aa_tx_with_secp256k1_access_key(&alice_tx, &secp_access_signer, alice_addr)?;
-    submit_and_mine_aa_tx(&mut setup, alice_tx, alice_sig.clone()).await?;
+    setup
+        .node
+        .mine_signed([alice_tx.into_signed(alice_sig.clone())])
+        .await?;
     nonce_alice += 1;
 
     // Extract Alice's inner sig, re-wrap claiming Bob's address.
@@ -2355,7 +2382,10 @@ async fn test_v2_keychain_blocks_cross_account_replay() -> eyre::Result<()> {
         &pub_y,
         alice_addr,
     )?;
-    submit_and_mine_aa_tx(&mut setup, alice_tx, alice_sig.clone()).await?;
+    setup
+        .node
+        .mine_signed([alice_tx.into_signed(alice_sig.clone())])
+        .await?;
 
     // Same replay: extract inner sig, re-wrap for Bob, pool rejects
     let bob_tx = create_basic_aa_tx(
@@ -2415,7 +2445,10 @@ async fn test_aa_keychain_v2_signature() -> eyre::Result<()> {
     auth_tx.key_authorization = Some(key_auth);
 
     let root_sig = sign_aa_tx_secp256k1(&auth_tx, &root_signer)?;
-    submit_and_mine_aa_tx(&mut setup, auth_tx, root_sig).await?;
+    setup
+        .node
+        .mine_signed([auth_tx.into_signed(root_sig)])
+        .await?;
     nonce += 1;
     println!("✓ Access key authorized");
 
@@ -2445,7 +2478,9 @@ async fn test_aa_keychain_v2_signature() -> eyre::Result<()> {
     assert!(!v2_sig.is_legacy_keychain());
     assert!(v2_sig.is_keychain());
 
-    submit_and_mine_aa_tx(&mut setup, transfer_tx, v2_sig)
+    setup
+        .node
+        .mine_signed([transfer_tx.into_signed(v2_sig)])
         .await
         .wrap_err("V2 keychain transfer must succeed")?;
     println!("✓ V2 keychain signature accepted and transfer succeeded");
