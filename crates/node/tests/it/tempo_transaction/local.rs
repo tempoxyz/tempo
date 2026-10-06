@@ -8,7 +8,7 @@ use crate::utils::{ForkSchedule, SingleNodeSetup, TestNodeBuilder};
 use alloy::{
     consensus::{BlockHeader, Transaction},
     network::{EthereumWallet, ReceiptResponse},
-    primitives::{Address, B256, Bytes, Signature, U256},
+    primitives::{Address, B256, Bytes, Signature, TxKind, U256},
     providers::{Provider, ProviderBuilder},
     signers::{SignerSync, local::PrivateKeySigner},
     sol_types::SolCall,
@@ -36,13 +36,13 @@ use tempo_precompiles::{
 use tempo_primitives::{
     TempoTransaction, TempoTxEnvelope,
     transaction::{
-        KeyAuthorization, SignedKeyAuthorization,
+        KeyAuthorization, SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY,
         tempo_transaction::Call,
         tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature, WebAuthnSignature},
     },
 };
 
-use super::helpers::*;
+use super::{helpers::*, types::TestEnv};
 
 fn test_secp256k1_access_key_signature() -> TempoSignature {
     Signature::test_signature().into()
@@ -650,6 +650,85 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
         "scenario 3 new_pending",
     )
     .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_create_receipts_with_non_protocol_nonces() -> eyre::Result<()> {
+    let mut localnet = Localnet::with_schedule(ForkSchedule::DevnetAt(TempoHardfork::T12)).await?;
+    let signer = PrivateKeySigner::random();
+    let sender = signer.address();
+    localnet.fund_account(sender).await?;
+    let init_code =
+        Bytes::from_static(&[0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3]);
+    let mut expected_code = [0u8; 32];
+    expected_code[31] = 0x2a;
+
+    for (nonce_key, nonce) in [
+        (U256::ZERO, 0),
+        (U256::from(7), 0),
+        (U256::from(7), 1),
+        (TEMPO_EXPIRING_NONCE_KEY, 0),
+        (TEMPO_EXPIRING_NONCE_KEY, 42),
+        (U256::ZERO, 5),
+    ] {
+        let protocol_nonce = localnet.provider.get_transaction_count(sender).await?;
+        let deployed_address = sender.create(protocol_nonce);
+        let valid_before = if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+            Some(nonzero_timestamp(
+                localnet.current_block_timestamp().await? + 20,
+            ))
+        } else {
+            None
+        };
+        let mut tx = create_basic_aa_tx(
+            localnet.chain_id,
+            nonce,
+            vec![Call {
+                to: TxKind::Create,
+                value: U256::ZERO,
+                input: init_code.clone(),
+            }],
+            2_000_000,
+        );
+        tx.nonce_key = nonce_key;
+        tx.valid_before = valid_before;
+        let signature = sign_aa_tx_secp256k1(&tx, &signer)?;
+        let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+        let tx_hash = *envelope.tx_hash();
+        let receipt = localnet.submit_tx(envelope.encoded_2718(), tx_hash).await?;
+
+        let expected_address = if nonce_key.is_zero() {
+            serde_json::to_value(deployed_address)?
+        } else {
+            assert_ne!(nonce, protocol_nonce);
+            serde_json::Value::Null
+        };
+        assert_eq!(receipt["contractAddress"], expected_address);
+        assert_eq!(
+            localnet
+                .provider
+                .get_code_at(deployed_address)
+                .await?
+                .as_ref(),
+            &expected_code,
+        );
+        assert_eq!(
+            localnet.provider.get_transaction_count(sender).await?,
+            protocol_nonce + 1,
+        );
+
+        let block_receipts: Vec<serde_json::Value> = localnet
+            .provider
+            .raw_request("eth_getBlockReceipts".into(), [&receipt["blockHash"]])
+            .await?;
+        let block_receipt = block_receipts
+            .iter()
+            .find(|block_receipt| block_receipt["transactionHash"] == receipt["transactionHash"])
+            .expect("deployment receipt must be present in block receipts");
+        assert_eq!(block_receipt["contractAddress"], expected_address);
+    }
 
     Ok(())
 }

@@ -483,6 +483,9 @@ where
 }
 
 /// Converter for Tempo receipts.
+///
+/// CREATE receipts using nonzero nonce keys omit the contract address because their transaction
+/// nonce is not the protocol nonce used by execution, and receipts do not contain that nonce.
 #[derive(Debug, Clone)]
 #[expect(clippy::type_complexity)]
 pub struct TempoReceiptConverter<ChainSpec = TempoChainSpec> {
@@ -555,6 +558,10 @@ where
                         .fee_payer(tx.signer())
                         .map_err(|_| EthApiError::InvalidTransactionSignature)?,
                 };
+
+                if tx.nonce_key().is_some_and(|nonce_key| !nonce_key.is_zero()) {
+                    receipt.inner.contract_address = None;
+                }
 
                 if receipt.effective_gas_price == 0 || receipt.gas_used == 0 {
                     return Ok(receipt);
