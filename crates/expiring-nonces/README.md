@@ -101,7 +101,10 @@ was unavailable in `us-west1-a`. This retry disables both ValScope and OTLP and
 uses the four regions that provisioned successfully, with two validators each.
 Both benchmark arms use the same topology.
 
-The multiregion result is a small observed gain, with mixed results across pairs:
+**This multiregion comparison is invalid for performance conclusions.** The job
+completed, but fee-starved benchmark accounts dominated RPC rejections. The
+reported +3.9% TPS difference below is withdrawn as performance evidence; these
+numbers are retained only to identify the contaminated run:
 
 | Metric | Baseline | Feature | Observed change |
 | --- | ---: | ---: | ---: |
@@ -117,10 +120,34 @@ Per-pair TPS was 5,279→5,804, 5,513→5,871, and 5,593→5,343. The third pair
 reverses direction. This workflow provides no confidence interval or significance
 test, so +3.9% is not a conclusive speedup. Block latency percentiles aggregate
 per-run percentiles rather than pooling all blocks; builder/validator latency
-percentiles derive from scrape-interval averages. Both sides had high sender
-failure counters; these are distinct from EVM reverts, of which neither side
-recorded any. The available summary does not establish the cause of failed sends
-or the remaining throughput limit.
+percentiles derive from scrape-interval averages. An audit of all six `txgen.out` files found:
+
+| Logged RPC rejection | Baseline, all three phases | Feature, all three phases |
+| --- | ---: | ---: |
+| Insufficient funds for gas | 12,521,514 | 12,458,688 |
+| Txpool full | 16,839 | 14,902 |
+
+These count complete phase logs, including warmup and drain, rather than exactly
+the reported measurement counters. Insufficient funds account for over 99.8% of
+logged submission errors in each arm. Within the wall-clock measurement windows,
+the corresponding insufficient-funds counts are 12,426,185 and 12,372,061.
+Example errors are `have 27380 want 30000` on baseline and
+`have 28459 want 30000` on feature. Pooled RPC acceptance starts around 98% for
+the first 20 seconds and falls to 11% for seconds 40–169 on both arms.
+
+At the pinned txgen commit, `success / sent` measures RPC submission acceptance,
+not inclusion or execution success. `failed` also counts later expiry/revert or
+observation failures for already accepted transactions, so it is not the
+complement of `success`. Neither arm recorded EVM reverts.
+
+The workflow reused the shared 100,000 MiB snapshot and skipped rebuilding it.
+It explicitly accepted a cached genesis-hash mismatch for regenesis. The cache
+identity contains the bloat size and image format, but not the sender account
+count or funding; requesting 1,000 senders therefore does not verify that all
+1,000 have sufficient fee balances. The logs do not establish the cached object's
+original creation date. A valid comparison requires correcting sender funding,
+checking it before measurement, and rejecting runs contaminated by
+insufficient-funds errors.
 
 Feature block intervals in the measured windows never exceeded 1.112 seconds.
 The long gaps from the single-runner scenario did not recur in these feature
