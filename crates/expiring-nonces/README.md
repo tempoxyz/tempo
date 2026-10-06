@@ -93,12 +93,45 @@ It uses 8 GCP validators across `us-east4`, `europe-west4`,
 `asia-southeast1`, and `asia-east1`, targeting 50,000 TPS with 5,000 concurrent
 requests. Txgen is pinned to `8ca73369c4b42ffffaf40066bbde8673141049c1`.
 The multiregion harness uses a 20-second expiry window, compared with 10 seconds
-in the single-runner scenario. Its results are pending. Earlier dispatches failed
+in the single-runner scenario. All six benchmark phases and the workflow completed
+successfully. Earlier dispatches failed
 before sending transactions: ValScope required OTLP, GCP exhausted capacity in
 every `us-central1` zone, and the requested `c4d-standard-48-lssd` machine type
 was unavailable in `us-west1-a`. This retry disables both ValScope and OTLP and
 uses the four regions that provisioned successfully, with two validators each.
 Both benchmark arms use the same topology.
+
+The multiregion result is a small observed gain, with mixed results across pairs:
+
+| Metric | Baseline | Feature | Observed change |
+| --- | ---: | ---: | ---: |
+| Included TPS, mean across runs | 5,461.7 | 5,672.7 | +3.9% |
+| Mean block time, ms | 624.1 | 618.1 | −1.0% |
+| Reported block time p50, ms | 621 | 623 | +0.3% |
+| Reported block time p99, ms | 808 | 799 | −1.1% |
+| Builder throughput, Mgas/s | 564.7 | 574.2 | +1.7% |
+| Validator throughput, Mgas/s | 2,383.8 | 2,437.0 | +2.2% |
+| Sender success rate | 19.24% | 19.92% | +0.68 percentage points |
+
+Per-pair TPS was 5,279→5,804, 5,513→5,871, and 5,593→5,343. The third pair
+reverses direction. This workflow provides no confidence interval or significance
+test, so +3.9% is not a conclusive speedup. Block latency percentiles aggregate
+per-run percentiles rather than pooling all blocks; builder/validator latency
+percentiles derive from scrape-interval averages. Both sides had high sender
+failure counters; these are distinct from EVM reverts, of which neither side
+recorded any. The available summary does not establish the cause of failed sends
+or the remaining throughput limit.
+
+Feature block intervals in the measured windows never exceeded 1.112 seconds.
+The long gaps from the single-runner scenario did not recur in these feature
+windows, but the different topology and workload prevent attributing that change
+to the nonce fixes. Feature-1's wrapper phase lasted 576 seconds, while its
+measured block window was approximately 178 seconds like the other phases;
+wrapper elapsed time includes work outside transaction measurement.
+
+The [published artifact](https://github.com/tempoxyz/tempo/actions/runs/37537005393/artifacts/11449672591)
+contains the comparison, six phase reports, actual validator distribution, and
+raw metrics. `comparison.json` records exit code zero and the requested commits.
 
 ### Node measurements before the overhead fixes
 
