@@ -14,6 +14,7 @@ use alloy_consensus::BlockHeader as _;
 pub use assemble::TempoBlockAssembler;
 pub use pool::{TempoPoolValidationEvm, TempoPoolValidationResult};
 mod block;
+mod phase_measure;
 pub use block::{TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
 mod context;
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};

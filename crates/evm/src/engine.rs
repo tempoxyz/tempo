@@ -123,7 +123,10 @@ impl ExecutableTxParts<TempoTxEnv, TempoTxEnvelope> for RecoveredInBlock {
     type Recovered = Self;
 
     fn into_parts(self) -> (TempoTxEnv, Self::Recovered) {
-        (self.to_tx_env(), self)
+        let measure_env = crate::phase_measure::env_start();
+        let tx_env = self.to_tx_env();
+        crate::phase_measure::env_end(measure_env);
+        (tx_env, self)
     }
 }
 

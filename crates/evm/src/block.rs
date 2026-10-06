@@ -1,4 +1,8 @@
-use crate::{StorageActionReplayState, TempoBlockExecutionCtx, evm::TempoEvm};
+use crate::{
+    StorageActionReplayState, TempoBlockExecutionCtx,
+    evm::TempoEvm,
+    phase_measure::{PhaseMeasurements, Stamp},
+};
 use alloy_consensus::{Transaction, transaction::TxHashRef};
 use alloy_evm::{
     Database, Evm, RecoveredTx,
@@ -189,6 +193,7 @@ pub struct TempoBlockExecutor<'a, DB: Database, I> {
     non_payment_gas_left: u64,
     /// Incentive-section gas from real transactions; simulations are exempt.
     incentive_gas_used: u64,
+    phase_measurements: PhaseMeasurements,
 }
 
 impl<'a, DB, I> TempoBlockExecutor<'a, DB, I>
@@ -203,6 +208,7 @@ where
     ) -> Self {
         Self {
             incentive_gas_used: 0,
+            phase_measurements: PhaseMeasurements::default(),
             non_payment_gas_left: ctx.general_gas_limit,
             non_shared_gas_left: evm.block().gas_limit.saturating_sub(ctx.shared_gas_limit),
             extra_data: ctx.inner.extra_data.clone(),
@@ -559,6 +565,8 @@ where
         &mut self,
         tx: impl ExecutableTx<Self>,
     ) -> Result<Self::Result, BlockExecutionError> {
+        self.phase_measurements.attempted += 1;
+        let measure_start = self.phase_measurements.sample();
         let (mut tx_env, recovered) = tx.into_parts();
         let execution_context = tx_env.execution_context;
         // Remove any prewarming-specific context that was added to the tx env.
@@ -567,9 +575,11 @@ where
         }
         let next_section = self.validate_tx_pre_execution(recovered.tx())?;
 
+        let measure_prepared = measure_start.map(|_| Stamp::read());
         let inner = self
             .inner
             .execute_transaction_without_commit((tx_env, &recovered))?;
+        let measure_executed = measure_start.map(|_| Stamp::read());
 
         // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
         // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.
@@ -587,6 +597,17 @@ where
         };
         // Snapshot the per-tx validator-credited fee set by the handler's `reimburse_caller`
         let validator_fee = self.evm().validator_fee();
+        self.phase_measurements.execution(
+            measure_start.map(|start| {
+                [
+                    start,
+                    measure_prepared.unwrap(),
+                    measure_executed.unwrap(),
+                    Stamp::read(),
+                ]
+            }),
+            block_gas_used,
+        );
         Ok(TempoTxResult {
             inner,
             execution_context,
@@ -598,6 +619,7 @@ where
     }
 
     fn commit_transaction(&mut self, output: Self::Result) -> GasOutput {
+        let measure_start = self.phase_measurements.sample();
         let TempoTxResult {
             inner,
             execution_context,
@@ -632,6 +654,8 @@ where
         }
 
         self.replay_state.commit_tx_changes();
+        self.phase_measurements
+            .commit(measure_start, block_gas_used);
 
         gas_output
     }
@@ -639,6 +663,7 @@ where
     fn finish(
         mut self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
+        let measure_finish = Stamp::read();
         // T4 sets the shared gas limit to zero, so any gas spilled into the
         // incentive section exceeds the available block capacity.
         if self.evm().cfg.spec.is_t4() && self.incentive_gas_used > 0 {
@@ -664,6 +689,8 @@ where
             result.gas_used = regular_gas_used;
         }
 
+        self.phase_measurements
+            .finish(measure_finish, result.gas_used);
         Ok((evm, result))
     }
 
