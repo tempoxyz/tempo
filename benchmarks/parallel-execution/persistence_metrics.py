@@ -22,7 +22,8 @@ PREFIX = "reth_storage_providers_database_"
 STAGES = (
     "save_blocks_total", "save_blocks_mdbx", "save_blocks_sf", "save_blocks_rocksdb",
     "save_blocks_insert_block", "save_blocks_write_state", "save_blocks_write_hashed_state",
-    "save_blocks_write_trie_updates", "save_blocks_update_history_indices",
+    "save_blocks_write_trie_updates", "save_blocks_merge_hashed_state",
+    "save_blocks_merge_trie_updates", "save_blocks_update_history_indices",
     "save_blocks_update_pipeline_stages", "save_blocks_batch_size",
     "save_blocks_commit_mdbx", "save_blocks_commit_sf", "save_blocks_commit_rocksdb",
 )
