@@ -1,0 +1,5 @@
+; Saturation can hide an overflow or an underflow in balances, fees, credits, or fills.
+(result-detail full
+  (language rust
+    (where "crates/precompiles/src/**/*.rs" "crates/evm/src/**/*.rs" "crates/transaction-pool/src/**/*.rs"
+      (call :callee (name/regex "^saturating_(add|sub|mul)$")))))
