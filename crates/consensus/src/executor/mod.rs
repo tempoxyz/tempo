@@ -181,7 +181,7 @@ impl ExecutionLayer for Arc<TempoFullNode> {
         Ok(self
             .provider
             .find_sealed_or_recovered_block(digest.0, BlockSource::Any)?
-            .map(|block| Block::from_execution_block_unchecked(block)))
+            .map(Block::from_execution_block_unchecked))
     }
 
     fn new_payload(
