@@ -59,6 +59,25 @@ pub trait StorageCreditsBackend {
         }
     }
 
+    /// Charges the credit-backed creation cost in the state-gas dimension
+    /// after TIP-1016; older forks keep it in execution gas.
+    #[inline]
+    fn charge_credit_creation(&mut self) -> Result<(), Self::Error> {
+        if self.tip1016_state_gas_enabled() {
+            self.gas_tracker()
+                .spend_state(STORAGE_CREDIT_VALUE)
+                .map_err(|_| Self::Error::out_of_gas())
+        } else {
+            self.charge_gas(STORAGE_CREDIT_VALUE)
+        }
+    }
+
+    /// Whether TIP-1016's state-gas reservoir is active for this execution.
+    #[inline]
+    fn tip1016_state_gas_enabled(&self) -> bool {
+        false
+    }
+
     /// SLOAD `address[key]`, optionally skipping the cold load.
     fn sload(
         &mut self,
@@ -182,12 +201,12 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
             }
             CreditMode::Direct | CreditMode::Preserve => {
                 // Direct without spendable credits, or Preserve, pays the creditable portion as gas.
-                backend.charge_gas(STORAGE_CREDIT_VALUE)?;
+                backend.charge_credit_creation()?;
             }
             CreditMode::Refund => {
                 // Charge the 245k creditable portion upfront and record a pending refund-eligible
                 // creation, settled at end-of-transaction.
-                backend.charge_gas(STORAGE_CREDIT_VALUE)?;
+                backend.charge_credit_creation()?;
                 transient_state.pending_refunds = transient_state.pending_refunds.saturating_add(1);
                 store_credit_state(backend, account_slot, transient_state)?;
             }

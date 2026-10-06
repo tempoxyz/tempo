@@ -61,6 +61,16 @@ pub(crate) enum BlockSection {
     System { seen_subblocks_signatures: bool },
 }
 
+/// TIP-1016 counts execution gas after refunds against block lanes, while
+/// receipts still charge execution plus state gas after refunds.
+pub(crate) fn tip1016_block_gas(result: &TxResult<TempoEvmTypes>) -> u64 {
+    result
+        .total_gas_spent
+        .saturating_sub(result.state_gas_spent)
+        .saturating_sub(result.refunded)
+        .max(result.floor_gas)
+}
+
 /// Builder for [`TempoReceipt`].
 #[derive(Debug, Clone, Copy, Default)]
 #[non_exhaustive]
@@ -951,10 +961,10 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
             || (native_earn_candidate
                 && self.evm().ext().native_call_context.verified_earn_payment());
 
-        // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
-        // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.
+        // TIP-1016 charges state gas to the sender but counts only post-refund
+        // execution gas against the block lane, subject to the calldata floor.
         let block_gas_used = if self.evm().version().feature(evm2::EvmFeatures::EIP8037) {
-            inner.result().result.execution_gas_spent()
+            tip1016_block_gas(&inner.result().result)
         } else {
             inner.result().result.tx_gas_used()
         };
@@ -1042,7 +1052,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         // TIP-1016 enabled: block header `gas_used` = block_regular_gas_used.
         // State gas is charged to users (in receipts) but exempted from block
         // capacity. block_regular_gas_used is accumulated per-tx as
-        // max(total_spent - state_spent, floor) and is independent of refunds.
+        // max(total_spent - state_spent - refunded, floor).
         //
         // TIP-1016 disabled: use the standard gas_used from the inner executor which equals
         // cumulative_tx_gas_used (total_spent - refunded), matching the original
@@ -2675,7 +2685,7 @@ mod tests {
         }
     }
 
-    /// TIP-1016 (T4+): block header `gas_used` = `block_regular_gas_used`.
+    /// TIP-1016: block header `gas_used` is post-refund execution gas.
     /// Receipts track `tx_gas_used` (what the user pays, including state gas).
     /// The difference between receipts total and header gas_used is the state gas
     /// exempted from block capacity.
@@ -2693,10 +2703,10 @@ mod tests {
 
         // Simulate: tx with total=300k, refund=30k, state=40k
         // tx_gas_used = max(300k - 30k, floor) = 270k  (receipt gas)
-        // block_regular_gas_used = max(300k - 40k, floor) = 260k  (capacity gas)
+        // block execution gas = max(300k - 40k - 30k, floor) = 230k.
         // block_state_gas_used = 40k
         let tx_gas_used = 270_000u64;
-        let regular_gas = 260_000u64;
+        let regular_gas = 230_000u64;
         let state_gas = 40_000u64;
 
         executor
@@ -2738,6 +2748,25 @@ mod tests {
         // Receipt tracks total gas (what user pays, including state gas)
         let last_cumulative = result.receipts.last().unwrap().cumulative_gas_used;
         assert_eq!(last_cumulative, tx_gas_used);
+    }
+
+    #[test]
+    fn test_tip1016_block_gas_applies_execution_refund_then_floor() {
+        let result = TxResult::<TempoEvmTypes> {
+            total_gas_spent: 300_000,
+            state_gas_spent: 40_000,
+            refunded: 30_000,
+            floor_gas: 21_000,
+            ..Default::default()
+        };
+        assert_eq!(tip1016_block_gas(&result), 230_000);
+        assert_eq!(result.tx_gas_used(), 270_000);
+
+        let floor_bound = TxResult::<TempoEvmTypes> {
+            refunded: 250_000,
+            ..result
+        };
+        assert_eq!(tip1016_block_gas(&floor_bound), 21_000);
     }
 
     #[test]
