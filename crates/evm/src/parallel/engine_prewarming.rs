@@ -75,6 +75,17 @@ capture_events! {
     TakeMissing => "take_missing",
     TakePoisoned => "take_poisoned",
     Evicted => "evicted",
+    PublishLateUnobserved => "publish_late_unobserved",
+    PublishLateClockInvalid => "publish_late_clock_invalid",
+    PublishLateUnder1us => "publish_late_under_1us",
+    PublishLate1To2us => "publish_late_1_to_2us",
+    PublishLate2To5us => "publish_late_2_to_5us",
+    PublishLate5To10us => "publish_late_5_to_10us",
+    PublishLate10To20us => "publish_late_10_to_20us",
+    PublishLate20To50us => "publish_late_20_to_50us",
+    PublishLate50To100us => "publish_late_50_to_100us",
+    PublishLate100To250us => "publish_late_100_to_250us",
+    PublishLateAtLeast250us => "publish_late_at_least_250us",
 }
 
 static NEXT_DIAGNOSTIC_SESSION: AtomicU64 = AtomicU64::new(1);
@@ -84,14 +95,21 @@ struct CaptureDiagnostics {
     session_id: u64,
     payload_hash: B256,
     counters: [CaptureCounter; COUNTER_COUNT],
+    started_at: Instant,
+    // One timestamp per immutable transaction index, capped by MAX_TRANSACTIONS
+    // (512 KiB). Zero means no observed first take; nonzero values are nanoseconds
+    // since started_at plus one. Never consulted by scheduling or validation.
+    take_started: Box<[AtomicU64]>,
 }
 
 impl CaptureDiagnostics {
-    fn new(payload_hash: B256) -> Self {
+    fn new(payload_hash: B256, transactions: usize) -> Self {
         Self {
             session_id: NEXT_DIAGNOSTIC_SESSION.fetch_add(1, Ordering::Relaxed),
             payload_hash,
             counters: std::array::from_fn(|_| CaptureCounter::default()),
+            started_at: Instant::now(),
+            take_started: (0..transactions).map(|_| AtomicU64::new(0)).collect(),
         }
     }
 
@@ -105,6 +123,49 @@ impl CaptureDiagnostics {
         CaptureSnapshot(std::array::from_fn(|index| {
             self.counters[index].0.load(Ordering::Relaxed)
         }))
+    }
+
+    fn timestamp(&self, at: Instant) -> Option<u64> {
+        u64::try_from(at.checked_duration_since(self.started_at)?.as_nanos())
+            .ok()?
+            .checked_add(1)
+    }
+
+    fn observe_take(&self, index: usize, at: Instant) {
+        if let Some(started) = self.take_started.get(index) {
+            started.store(self.timestamp(at).unwrap_or(0), Ordering::Release);
+        }
+    }
+
+    fn observe_stale_publication(&self, index: usize, clock: impl FnOnce() -> Instant) {
+        let started = self
+            .take_started
+            .get(index)
+            .map_or(0, |value| value.load(Ordering::Acquire));
+        let event = if started == 0 {
+            // Includes publication between cursor advance and timestamp storage,
+            // and indices skipped by a non-consecutive consumer. Do not invent a
+            // zero-duration sample or infer a timestamp from another transaction.
+            CaptureEvent::PublishLateUnobserved
+        } else if let Some(elapsed) = self
+            .timestamp(clock())
+            .and_then(|at| at.checked_sub(started))
+        {
+            match elapsed {
+                0..1_000 => CaptureEvent::PublishLateUnder1us,
+                1_000..2_000 => CaptureEvent::PublishLate1To2us,
+                2_000..5_000 => CaptureEvent::PublishLate2To5us,
+                5_000..10_000 => CaptureEvent::PublishLate5To10us,
+                10_000..20_000 => CaptureEvent::PublishLate10To20us,
+                20_000..50_000 => CaptureEvent::PublishLate20To50us,
+                50_000..100_000 => CaptureEvent::PublishLate50To100us,
+                100_000..250_000 => CaptureEvent::PublishLate100To250us,
+                _ => CaptureEvent::PublishLateAtLeast250us,
+            }
+        } else {
+            CaptureEvent::PublishLateClockInvalid
+        };
+        self.add(event, 1);
     }
 }
 
@@ -182,6 +243,9 @@ impl EnginePrewarmingCache {
             }
         }
         let session = valid.then(|| {
+            let diagnostics = self
+                .capture_diagnostics
+                .then(|| Box::new(CaptureDiagnostics::new(payload_hash, indices.len())));
             Arc::new(EnginePrewarmingSession {
                 env,
                 window: self.window,
@@ -189,9 +253,7 @@ impl EnginePrewarmingCache {
                 next: AtomicUsize::new(0),
                 retained: Mutex::default(),
                 prefix: PrewarmingState::default(),
-                diagnostics: self
-                    .capture_diagnostics
-                    .then(|| Box::new(CaptureDiagnostics::new(payload_hash))),
+                diagnostics,
             })
         });
         *self.current.lock().ok()? = session.clone();
@@ -343,6 +405,15 @@ impl EnginePrewarmingSession {
         let next = self.next.load(Ordering::Acquire);
         if index < next {
             self.capture_event(stale);
+            if let Some(diagnostics) = &self.diagnostics {
+                // This is attempted publication, before or after the existing
+                // retention checks. It is not proof of a recoverable candidate,
+                // and does not measure CPU time or alter this fallback decision.
+                // Load the published timestamp before reading the clock. Reading
+                // the clock first could race a newer take timestamp and fabricate
+                // a negative interval despite a valid monotonic clock.
+                diagnostics.observe_stale_publication(index, Instant::now);
+            }
             false
         } else if index >= next.saturating_add(self.window.transactions()) {
             self.capture_event(future);
@@ -481,6 +552,13 @@ impl EnginePrewarmingSession {
             .next
             .fetch_max(index.saturating_add(1), Ordering::AcqRel);
         let waiting = Instant::now();
+        if index >= previous
+            && let Some(diagnostics) = &self.diagnostics
+        {
+            // Reuse the existing clock read. Repeated takes must not overwrite
+            // the first timestamp; canonical progress and locking stay unchanged.
+            diagnostics.observe_take(index, waiting);
+        }
         // Poisoning still declines reuse. Drop the poisoned guard before returning
         // timings, preserving the original lock().ok()? behavior.
         let retained = self.retained.lock();
@@ -986,6 +1064,117 @@ mod tests {
             count(CaptureEvent::Published),
             count(CaptureEvent::TakeFound) + count(CaptureEvent::Evicted)
         );
+    }
+
+    #[test]
+    fn publication_arrival_buckets_preserve_boundaries_and_unknowns() {
+        let diagnostics = CaptureDiagnostics::new(B256::ZERO, 1);
+        let origin = diagnostics.started_at;
+        diagnostics.observe_stale_publication(0, || origin);
+        diagnostics.observe_stale_publication(1, || origin);
+        assert_eq!(
+            diagnostics.snapshot().0[CaptureEvent::PublishLateUnobserved as usize],
+            2
+        );
+        // Zero elapsed is a valid sample, distinct from an absent timestamp.
+        diagnostics.observe_take(0, origin);
+        for (nanos, event) in [
+            (0, CaptureEvent::PublishLateUnder1us),
+            (999, CaptureEvent::PublishLateUnder1us),
+            (1_000, CaptureEvent::PublishLate1To2us),
+            (1_999, CaptureEvent::PublishLate1To2us),
+            (2_000, CaptureEvent::PublishLate2To5us),
+            (4_999, CaptureEvent::PublishLate2To5us),
+            (5_000, CaptureEvent::PublishLate5To10us),
+            (9_999, CaptureEvent::PublishLate5To10us),
+            (10_000, CaptureEvent::PublishLate10To20us),
+            (19_999, CaptureEvent::PublishLate10To20us),
+            (20_000, CaptureEvent::PublishLate20To50us),
+            (49_999, CaptureEvent::PublishLate20To50us),
+            (50_000, CaptureEvent::PublishLate50To100us),
+            (99_999, CaptureEvent::PublishLate50To100us),
+            (100_000, CaptureEvent::PublishLate100To250us),
+            (249_999, CaptureEvent::PublishLate100To250us),
+            (250_000, CaptureEvent::PublishLateAtLeast250us),
+            (1_000_000, CaptureEvent::PublishLateAtLeast250us),
+        ] {
+            let before = diagnostics.snapshot().0;
+            diagnostics.observe_stale_publication(0, || origin + Duration::from_nanos(nanos));
+            let after = diagnostics.snapshot().0;
+            for index in 0..COUNTER_COUNT {
+                assert_eq!(
+                    after[index] - before[index],
+                    u64::from(index == event as usize)
+                );
+            }
+        }
+        diagnostics.observe_take(0, origin + Duration::from_nanos(1));
+        diagnostics.observe_stale_publication(0, || origin);
+        assert_eq!(
+            diagnostics.snapshot().0[CaptureEvent::PublishLateClockInvalid as usize],
+            1
+        );
+    }
+
+    #[test]
+    fn publication_arrival_is_session_scoped_and_concurrent() {
+        let diagnostics = CaptureDiagnostics::new(B256::ZERO, 2);
+        let separate = CaptureDiagnostics::new(B256::ZERO, 2);
+        let at = diagnostics.started_at;
+        diagnostics.observe_take(1, at);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    for _ in 0..100 {
+                        diagnostics.observe_stale_publication(1, || at + Duration::from_nanos(500));
+                    }
+                });
+            }
+        });
+        assert_eq!(diagnostics.snapshot().0.iter().sum::<u64>(), 800);
+        assert_eq!(
+            diagnostics.snapshot().0[CaptureEvent::PublishLateUnder1us as usize],
+            800
+        );
+        assert_eq!(separate.snapshot().0.iter().sum::<u64>(), 0);
+        assert_eq!(separate.take_started[1].load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn publication_arrival_keeps_first_take_and_unchanged_stale_fallback() {
+        for enabled in [false, true] {
+            let cache = EnginePrewarmingCache::new(enabled);
+            let session = cache.begin(env(), [hash(0), hash(1)]).unwrap();
+            assert_eq!(session.diagnostics.is_some(), enabled);
+            assert!(session.take(&tx(0)).is_none());
+            let first = session
+                .diagnostics
+                .as_ref()
+                .map(|d| d.take_started[0].load(Ordering::Acquire));
+            assert!(session.take(&tx(0)).is_none());
+            if let Some(diagnostics) = &session.diagnostics {
+                assert_ne!(first, Some(0));
+                assert_eq!(
+                    Some(diagnostics.take_started[0].load(Ordering::Acquire)),
+                    first
+                );
+            }
+            assert!(!session.publish(candidate(0)));
+            assert!(session.publish(candidate(1)));
+            assert!(session.take(&tx(1)).is_some());
+            if enabled {
+                let count = counts(&session);
+                assert_eq!(count(CaptureEvent::PublishStaleBefore), 1);
+                assert_eq!(count(CaptureEvent::Published), 1);
+                assert_eq!(count(CaptureEvent::TakeFound), 1);
+                assert_eq!(count(CaptureEvent::TakeMissing), 2);
+                let snapshot = session.diagnostics.as_ref().unwrap().snapshot();
+                let late = &snapshot.0[CaptureEvent::PublishLateUnobserved as usize..];
+                assert_eq!(late.iter().sum::<u64>(), 1);
+                assert_eq!(count(CaptureEvent::PublishLateClockInvalid), 0);
+                assert_eq!(count(CaptureEvent::PublishLateUnobserved), 0);
+            }
+        }
     }
 
     #[test]
