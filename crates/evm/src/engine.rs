@@ -35,6 +35,10 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
     ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
         let block = payload.block.clone();
         let sender_recovery_cache = self.inner.sender_recovery_cache.clone();
+
+        // TIP-1131: verify the block's ZK signatures in parallel, batching proofs, before
+        // execution. The handler still runs every check and finds these results cached.
+        preverify_zk_signatures(&block.body().transactions);
         let mut transactions = Vec::with_capacity(block.body().transactions.len());
         let mut expiring_nonce_idx = 0;
 
@@ -55,6 +59,29 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
                 sender_recovery_cache.as_ref(),
             )
         }))
+    }
+}
+
+/// Verifies the access key signatures and proofs of every ZK signature in `transactions`.
+fn preverify_zk_signatures(transactions: &[TempoTxEnvelope]) {
+    let items: Vec<_> = transactions
+        .iter()
+        .filter_map(TempoTxEnvelope::as_aa)
+        .flat_map(|tx| {
+            let signature = tx
+                .signature()
+                .as_zk()
+                .map(|signature| (signature, tx.signature_hash()));
+            let key_authorization = tx.tx().key_authorization.as_ref().and_then(|auth| {
+                auth.signature
+                    .as_zk()
+                    .map(|signature| (signature, auth.signature_hash()))
+            });
+            signature.into_iter().chain(key_authorization)
+        })
+        .collect();
+    if !items.is_empty() {
+        tempo_revm::zk::preverify(&items);
     }
 }
 
@@ -142,6 +169,78 @@ mod tests {
     use tempo_primitives::{
         BlockBody, SubBlockMetadata, TempoHeader, transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
     };
+
+    #[test]
+    fn preverifies_zk_signatures_before_execution() {
+        use alloy_signer::SignerSync;
+        use alloy_signer_local::PrivateKeySigner;
+        use tempo_primitives::transaction::{
+            PrimitiveSignature, TempoSignature, TempoTransaction, ZkProof, ZkSignature,
+            tempo_transaction::Call,
+        };
+        use tempo_zk::{SignatureStatement, test_utils::install_test_verifying_key};
+
+        let trapdoor = install_test_verifying_key(1);
+        let access_key = PrivateKeySigner::random();
+        let tx = TempoTransaction {
+            chain_id: 1,
+            gas_limit: 100_000,
+            calls: vec![Call {
+                to: TxKind::Call(Address::repeat_byte(1)),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            ..Default::default()
+        };
+        let d = tx.signature_hash();
+        let statement = SignatureStatement {
+            scheme: 1,
+            issuer: B256::with_last_byte(2),
+            key_hash: B256::with_last_byte(3),
+            address_seed: B256::with_last_byte(4),
+            access_key_id: access_key.address(),
+            valid_until: 2_000,
+            issued_at: 1_000,
+        };
+        let proof = trapdoor.prove(&statement.public_input().unwrap(), 1);
+        let mut signature = ZkSignature::new(
+            1,
+            B256::repeat_byte(0x11),
+            statement.issuer,
+            statement.key_hash,
+            statement.address_seed,
+            statement.issued_at,
+            statement.valid_until,
+            ZkProof::from(proof),
+            PrimitiveSignature::default(),
+        );
+        signature.access_key_signature = PrimitiveSignature::Secp256k1(
+            access_key
+                .sign_hash_sync(&signature.signing_hash(&d))
+                .unwrap(),
+        );
+        let mut broken = signature.clone();
+        broken.proof.0[5] ^= 1;
+
+        let transactions = vec![
+            create_legacy_tx(),
+            TempoTxEnvelope::AA(tx.clone().into_signed(TempoSignature::from(signature))),
+            TempoTxEnvelope::AA(
+                TempoTransaction { nonce: 1, ..tx }.into_signed(TempoSignature::from(broken)),
+            ),
+        ];
+        preverify_zk_signatures(&transactions);
+
+        let cached = |tx: &TempoTxEnvelope| {
+            let tx = tx.as_aa().unwrap();
+            tx.signature()
+                .as_zk()
+                .unwrap()
+                .cached_verification(&tx.signature_hash())
+        };
+        assert_eq!(cached(&transactions[1]), Some(Some(access_key.address())));
+        assert_eq!(cached(&transactions[2]), Some(None));
+    }
 
     fn create_legacy_tx() -> TempoTxEnvelope {
         let tx = TxLegacy {

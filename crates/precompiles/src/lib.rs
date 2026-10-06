@@ -15,6 +15,7 @@ pub(crate) mod ip_validation;
 pub mod account_keychain;
 pub mod address_registry;
 pub mod current_committee;
+pub mod key_publisher;
 pub mod nonce;
 pub mod receive_policy_guard;
 pub mod signature_verifier;
@@ -37,6 +38,7 @@ use crate::{
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
     current_committee::CurrentCommittee,
+    key_publisher::KeyPublisher,
     nonce::NonceManager,
     receive_policy_guard::ReceivePolicyGuard,
     signature_verifier::SignatureVerifier,
@@ -70,12 +72,12 @@ use revm::{
 
 pub use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS,
-    DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS,
-    SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS,
-    SYSTEM_PRECOMPILES, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
-    TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
-    VALIDATOR_CONFIG_V2_ADDRESS, ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS,
-    ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
+    DEFAULT_FEE_TOKEN, KEY_PUBLISHER_ADDRESS, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
+    RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS,
+    STORAGE_CREDITS_ADDRESS, SYSTEM_PRECOMPILES, TIP_FEE_MANAGER_ADDRESS,
+    TIP20_CHANNEL_RESERVE_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, ZONE_FACTORY_ADDRESS,
+    ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
 };
 
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
@@ -257,6 +259,8 @@ pub fn extend_tempo_precompiles(
             Some(ZoneFactory::create_precompile(&env))
         } else if *address == ZONE_VERIFIER_ADDRESS && env.cfg.spec.is_t13() {
             Some(ZoneVerifier::create_precompile(&env))
+        } else if *address == KEY_PUBLISHER_ADDRESS && env.cfg.spec.is_t14() {
+            Some(KeyPublisher::create_precompile(&env))
         } else {
             None
         }
@@ -360,6 +364,13 @@ impl ZoneVerifier {
     /// Creates the EVM precompile for this type.
     pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
         tempo_precompile!("ZoneVerifier", env: env, |input| { Self::new() })
+    }
+}
+
+impl KeyPublisher {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("KeyPublisher", env: env, |input| { Self::new() })
     }
 }
 

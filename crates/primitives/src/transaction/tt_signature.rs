@@ -1,7 +1,11 @@
-use super::tempo_transaction::{
-    MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH, SignatureType,
+use super::{
+    tempo_transaction::{
+        MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH,
+        SignatureType,
+    },
+    zk_signature::{SIGNATURE_TYPE_ZK, ZkSignature},
 };
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec::Vec};
 use alloy_primitives::{Address, B256, Bytes, Signature, U256, keccak256, uint};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
@@ -573,6 +577,10 @@ pub enum TempoSignature {
     /// IMP: The inner signature MUST NOT be another Keychain (validated at runtime)
     /// Note: Recursion is prevented by KeychainSignature's custom Arbitrary impl
     Keychain(KeychainSignature),
+
+    /// ZK signature (TIP-1131): a proof of an issuer-attested identity plus an access key
+    /// signature. Format: `0x06 || rlp([...])`. Boxed to keep other signatures small.
+    Zk(Box<ZkSignature>),
 }
 
 impl TempoSignature {
@@ -584,6 +592,13 @@ impl TempoSignature {
     pub fn from_bytes(data: &[u8]) -> Result<Self, &'static str> {
         if data.is_empty() {
             return Err("Signature data is empty");
+        }
+
+        if data.len() > 1
+            && data.len() != SECP256K1_SIGNATURE_LENGTH
+            && data[0] == SIGNATURE_TYPE_ZK
+        {
+            return ZkSignature::from_bytes(data).map(Self::from);
         }
 
         // Check if this is a Keychain signature (type identifier 0x03 or 0x04)
@@ -632,6 +647,7 @@ impl TempoSignature {
     pub fn to_bytes(&self) -> Bytes {
         match self {
             Self::Primitive(primitive_sig) => primitive_sig.to_bytes(),
+            Self::Zk(zk_sig) => zk_sig.to_bytes(),
             Self::Keychain(_) => {
                 let mut bytes = Vec::with_capacity(self.encoded_length());
                 self.encode_bytes_into(&mut bytes);
@@ -655,6 +671,7 @@ impl TempoSignature {
                 out.put_slice(keychain_sig.user_address.as_slice());
                 keychain_sig.signature.encode_bytes_into(out);
             }
+            Self::Zk(zk_sig) => zk_sig.encode_bytes_into(out),
         }
     }
 
@@ -667,14 +684,16 @@ impl TempoSignature {
         match self {
             Self::Primitive(primitive_sig) => primitive_sig.encoded_length(),
             Self::Keychain(keychain_sig) => 1 + 20 + keychain_sig.signature.encoded_length(),
+            Self::Zk(zk_sig) => zk_sig.encoded_length(),
         }
     }
 
-    /// Get signature type
+    /// Get signature type. For keychain and ZK signatures, this is the access key's type.
     pub fn signature_type(&self) -> SignatureType {
         match self {
             Self::Primitive(primitive_sig) => primitive_sig.signature_type(),
             Self::Keychain(keychain_sig) => keychain_sig.signature.signature_type(),
+            Self::Zk(zk_sig) => zk_sig.access_key_signature.signature_type(),
         }
     }
 
@@ -683,6 +702,7 @@ impl TempoSignature {
         match self {
             Self::Primitive(primitive_sig) => primitive_sig.size(),
             Self::Keychain(keychain_sig) => 1 + 20 + keychain_sig.signature.size(),
+            Self::Zk(zk_sig) => zk_sig.size(),
         }
     }
 
@@ -693,6 +713,9 @@ impl TempoSignature {
     /// - P256: Verifies P256 signature then derives address from public key
     /// - WebAuthn: Parses WebAuthn data, verifies P256 signature, derives address
     /// - Keychain: Validates inner signature and returns user_address
+    /// - ZK: Returns the address the signature names, WITHOUT verifying it. The handler checks
+    ///   its times, issuer key, access key signature, and proof (TIP-1131), because the issuer
+    ///   key check needs state and must run before any curve operation.
     ///
     /// For Keychain signatures, this performs full validation of the inner signature.
     /// The access key address is cached in the KeychainSignature for later use.
@@ -713,6 +736,22 @@ impl TempoSignature {
                 // Return the user_address - the root account this transaction is for
                 Ok(keychain_sig.user_address)
             }
+            Self::Zk(zk_sig) => zk_sig
+                .address()
+                .ok_or_else(alloy_consensus::crypto::RecoveryError::new),
+        }
+    }
+
+    /// Check if this is a ZK signature
+    pub fn is_zk(&self) -> bool {
+        matches!(self, Self::Zk(_))
+    }
+
+    /// Get the ZK signature if this is a ZK signature
+    pub fn as_zk(&self) -> Option<&ZkSignature> {
+        match self {
+            Self::Zk(zk_sig) => Some(zk_sig),
+            _ => None,
         }
     }
 
@@ -789,6 +828,12 @@ impl alloy_rlp::Decodable for TempoSignature {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let bytes = alloy_rlp::Header::decode_bytes(buf, false)?;
         Self::from_bytes(bytes).map_err(alloy_rlp::Error::Custom)
+    }
+}
+
+impl From<ZkSignature> for TempoSignature {
+    fn from(signature: ZkSignature) -> Self {
+        Self::Zk(Box::new(signature))
     }
 }
 

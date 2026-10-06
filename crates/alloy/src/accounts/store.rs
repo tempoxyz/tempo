@@ -1847,7 +1847,10 @@ impl TryFrom<AccountsRpcKeyAuthorization> for SignedKeyAuthorization {
             is_admin: false,
             account: None,
         };
-        Ok(Self::new(authorization, value.signature.try_into()?))
+        Ok(Self::new(
+            authorization,
+            PrimitiveSignature::try_from(value.signature)?,
+        ))
     }
 }
 
@@ -1988,7 +1991,10 @@ impl TryFrom<PersistedSignedKeyAuthorization> for SignedKeyAuthorization {
             is_admin,
             account,
         };
-        Ok(Self::new(authorization, signature.try_into()?))
+        Ok(Self::new(
+            authorization,
+            PrimitiveSignature::try_from(signature)?,
+        ))
     }
 }
 
@@ -2606,7 +2612,11 @@ fn writable_access_key(
             is_admin: authorization.is_admin,
             account: authorization.account,
             key_type: "secp256k1",
-            signature: writable_signature(&authorization.signature)?,
+            signature: writable_signature(authorization.signature.as_primitive().ok_or(
+                TempoAccountsError::InvalidAuthorization(
+                    "ZK-signed key authorizations cannot be stored",
+                ),
+            )?)?,
         },
     })
 }
@@ -3629,7 +3639,8 @@ mod tests {
                 .as_slice()
             )
         );
-        let PrimitiveSignature::WebAuthn(signature) = &authorization.signature else {
+        let Some(PrimitiveSignature::WebAuthn(signature)) = authorization.signature.as_primitive()
+        else {
             panic!("expected WebAuthn root signature")
         };
         assert_eq!(signature.webauthn_data.as_ref(), webauthn_data);

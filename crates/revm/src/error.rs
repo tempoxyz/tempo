@@ -241,6 +241,10 @@ pub enum TempoInvalidTransaction {
     /// This wraps validation errors from the shared validate_calls function.
     #[error("{0}")]
     CallsValidation(&'static str),
+
+    /// A TIP-1131 ZK signature was rejected.
+    #[error(transparent)]
+    ZkSignature(#[from] crate::zk::ZkSignatureError),
 }
 
 impl TempoInvalidTransaction {
@@ -323,6 +327,8 @@ impl TempoInvalidTransaction {
             | Self::CollectFeePreTx(_)
             | Self::NonceManagerError(_)
             | Self::V2KeychainBeforeActivation => false,
+
+            Self::ZkSignature(err) => err.is_bad_transaction(),
         }
     }
 }

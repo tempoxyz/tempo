@@ -39,6 +39,7 @@ members = [
   "crates/transaction-pool",
   "crates/revm",
   "crates/state-bloat",
+  "crates/zk",
   "xtask",
 ]
 
@@ -128,6 +129,9 @@ incremental = false
 [workspace.dependencies]
 tempo-state-bloat = { path = "crates/state-bloat" }
 aws-lc-rs = { version = "1.17.0", default-features = false, features = ["alloc", "non-fips", "ring-sig-verify"] }
+ark-bn254 = { version = "0.6.0", default-features = false, features = ["curve"] }
+ark-ec = { version = "0.6.0", default-features = false }
+ark-ff = { version = "0.6.0", default-features = false }
 tempo-alloy = { path = "crates/alloy" }
 tempo-node = { path = "crates/node" }
 tempo-nitro-attestation = { path = "crates/nitro-attestation", default-features = false }
@@ -151,6 +155,7 @@ tempo-contracts = { path = "crates/contracts", default-features = false, feature
 tempo-telemetry-util = { path = "crates/telemetry-util", default-features = false }
 tempo-transaction-pool = { path = "crates/transaction-pool", default-features = false }
 tempo-validator-config = { path = "crates/validator-config", default-features = false }
+tempo-zk = { path = "crates/zk" }
 
 reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "42fa3c5" }
 reth-chainspec = { git = "https://github.com/paradigmxyz/reth", rev = "42fa3c5", default-features = false }

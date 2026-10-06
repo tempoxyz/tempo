@@ -2,6 +2,7 @@ pub mod account_keychain;
 pub mod address_registry;
 pub mod common_errors;
 pub mod current_committee;
+pub mod key_publisher;
 pub mod nonce;
 pub mod receive_policy_guard;
 pub mod signature_verifier;
@@ -21,6 +22,7 @@ pub use account_keychain::*;
 pub use address_registry::*;
 pub use common_errors::*;
 pub use current_committee::*;
+pub use key_publisher::*;
 pub use nonce::*;
 pub use receive_policy_guard::*;
 pub use signature_verifier::*;
@@ -62,6 +64,7 @@ pub const RECEIVE_POLICY_GUARD_ADDRESS: Address =
 pub const STORAGE_CREDITS_ADDRESS: Address = address!("0x1060000000000000000000000000000000000000");
 pub const CURRENT_COMMITTEE_ADDRESS: Address =
     address!("0xC077E00000000000000000000000000000000000");
+pub const KEY_PUBLISHER_ADDRESS: Address = address!("0x1132000000000000000000000000000000000000");
 
 /// Fixed system precompile addresses and corresponding activation hardfork
 pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[
@@ -81,4 +84,5 @@ pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[
     (CURRENT_COMMITTEE_ADDRESS, TempoHardfork::T8),
     (ZONE_FACTORY_ADDRESS, TempoHardfork::T10),
     (ZONE_VERIFIER_ADDRESS, TempoHardfork::T13),
+    (KEY_PUBLISHER_ADDRESS, TempoHardfork::T14),
 ];

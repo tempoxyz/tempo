@@ -25,9 +25,9 @@ use reth_revm::{
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
-    InitialZoneFactoryAccount, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
-    STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
-    initial_zone_factory_state, t13_zone_factory_state,
+    InitialZoneFactoryAccount, KEY_PUBLISHER_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS,
+    SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
+    VALIDATOR_CONFIG_V2_ADDRESS, initial_zone_factory_state, t13_zone_factory_state,
 };
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tempo_revm::{ExecutionContext, evm::TempoContext};
@@ -535,6 +535,9 @@ where
         }
         if self.inner.spec.is_t10_active_at_timestamp(timestamp) {
             self.deploy_zone_factory_at_boundary()?;
+        }
+        if self.inner.spec.is_t14_active_at_timestamp(timestamp) {
+            self.deploy_precompile_at_boundary(KEY_PUBLISHER_ADDRESS, &[])?;
         }
         // Chains starting at T13 supply their runtime code in genesis. Preserve those
         // allocations (including locally compiled contracts on test chains). Chains
