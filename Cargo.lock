@@ -13507,6 +13507,7 @@ dependencies = [
  "tempo-state-bloat",
  "tempo-telemetry-util",
  "tempo-validator-config",
+ "tempo-zk",
  "tokio",
  "tokio-util",
  "tracing",
