@@ -2,7 +2,7 @@
 //!
 //! [TIP-1131]: https://docs.tempo.xyz/protocol/tips/tip-1131
 
-use crate::groth16::{PreparedVerifyingKey, VERIFYING_KEY_LENGTH, VerifyingKey};
+use crate::groth16::{PointError, PreparedVerifyingKey, VERIFYING_KEY_LENGTH, VerifyingKey};
 use std::sync::OnceLock;
 
 /// Scheme `0x01`: OIDC ID tokens signed with RS256 ([TIP-1133]).
@@ -30,6 +30,14 @@ pub struct Scheme {
     pub message_form: bool,
     verifying_key: Option<&'static [u8; VERIFYING_KEY_LENGTH]>,
     prepared: OnceLock<Option<PreparedVerifyingKey>>,
+    genesis_key: OnceLock<GenesisKey>,
+}
+
+/// A verifying key from a development chain's genesis.
+#[derive(Debug)]
+struct GenesisKey {
+    encoded: [u8; VERIFYING_KEY_LENGTH],
+    prepared: PreparedVerifyingKey,
 }
 
 static OIDC_RS256_V1: Scheme = Scheme {
@@ -39,6 +47,7 @@ static OIDC_RS256_V1: Scheme = Scheme {
     message_form: true,
     verifying_key: VK_OIDC_RS256_V1,
     prepared: OnceLock::new(),
+    genesis_key: OnceLock::new(),
 };
 
 /// Returns the scheme with the given byte, if one is defined.
@@ -49,13 +58,33 @@ pub fn scheme(id: u8) -> Option<&'static Scheme> {
     }
 }
 
+/// Sets verifying keys a development chain's genesis supplies, by scheme byte, for schemes
+/// without a protocol key. Setting the same key again is a no-op.
+pub fn set_genesis_keys<'a>(
+    keys: impl IntoIterator<Item = (u8, &'a [u8])>,
+) -> Result<(), GenesisKeyError> {
+    for (id, key) in keys {
+        scheme(id)
+            .ok_or(GenesisKeyError::UnknownScheme(id))?
+            .set_genesis_key(key)?;
+    }
+    Ok(())
+}
+
 impl Scheme {
     /// Returns the scheme's prepared verifying key, or `None` while it has none.
+    ///
+    /// The protocol key takes precedence over a key set from genesis.
     pub fn verifying_key(&'static self) -> Option<&'static PreparedVerifyingKey> {
         #[cfg(feature = "test-utils")]
         if let Some(key) = crate::test_utils::verifying_key_override(self.id) {
             return Some(key);
         }
+        self.protocol_key()
+            .or_else(|| self.genesis_key.get().map(|key| &key.prepared))
+    }
+
+    fn protocol_key(&'static self) -> Option<&'static PreparedVerifyingKey> {
         self.prepared
             .get_or_init(|| {
                 let bytes = self.verifying_key?;
@@ -64,11 +93,69 @@ impl Scheme {
             })
             .as_ref()
     }
+
+    /// Sets the verifying key a development chain's genesis supplies. Fails if the scheme has a
+    /// protocol key or a different genesis key.
+    pub fn set_genesis_key(&'static self, encoded: &[u8]) -> Result<(), GenesisKeyError> {
+        if self.verifying_key.is_some() {
+            return Err(GenesisKeyError::ProtocolKey(self.id));
+        }
+        let encoded: [u8; VERIFYING_KEY_LENGTH] =
+            encoded.try_into().map_err(|_| GenesisKeyError::Length {
+                scheme: self.id,
+                length: encoded.len(),
+            })?;
+        if self.genesis_key.get().is_none() {
+            let prepared = VerifyingKey::decode(&encoded)
+                .map_err(|error| GenesisKeyError::Invalid {
+                    scheme: self.id,
+                    error,
+                })?
+                .prepare();
+            // A concurrent caller may win the race; the comparison below decides either way.
+            let _ = self.genesis_key.set(GenesisKey { encoded, prepared });
+        }
+        match self.genesis_key.get() {
+            Some(key) if key.encoded == encoded => Ok(()),
+            _ => Err(GenesisKeyError::Conflict(self.id)),
+        }
+    }
+}
+
+/// Why a genesis verifying key was rejected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum GenesisKeyError {
+    /// No scheme uses this byte.
+    #[error("unknown ZK signature scheme {0}")]
+    UnknownScheme(u8),
+    /// The scheme has a protocol verifying key, which genesis cannot replace.
+    #[error("ZK signature scheme {0} has a protocol verifying key")]
+    ProtocolKey(u8),
+    /// The key is not 576 bytes.
+    #[error("verifying key for ZK signature scheme {scheme} is {length} bytes, expected 576")]
+    Length {
+        /// The scheme byte.
+        scheme: u8,
+        /// The key's length.
+        length: usize,
+    },
+    /// A point of the key is invalid.
+    #[error("verifying key for ZK signature scheme {scheme} is invalid: {error}")]
+    Invalid {
+        /// The scheme byte.
+        scheme: u8,
+        /// Why the point was rejected.
+        error: PointError,
+    },
+    /// The scheme already has a different genesis key.
+    #[error("ZK signature scheme {0} already has a different genesis verifying key")]
+    Conflict(u8),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::TestTrapdoor;
 
     #[test]
     fn oidc_scheme_parameters() {
@@ -78,5 +165,66 @@ mod tests {
         assert!(scheme.message_form);
         assert!(super::scheme(0x00).is_none());
         assert!(super::scheme(0x02).is_none());
+    }
+
+    const fn test_scheme(verifying_key: Option<&'static [u8; VERIFYING_KEY_LENGTH]>) -> Scheme {
+        Scheme {
+            id: 0xfe,
+            namespace: 0xfe,
+            max_window: 600,
+            message_form: false,
+            verifying_key,
+            prepared: OnceLock::new(),
+            genesis_key: OnceLock::new(),
+        }
+    }
+
+    #[test]
+    fn genesis_key_fills_a_scheme_without_a_protocol_key() {
+        static SCHEME: Scheme = test_scheme(None);
+        let key = TestTrapdoor::new(1).verifying_key().encode();
+        assert!(SCHEME.verifying_key().is_none());
+
+        SCHEME.set_genesis_key(&key).unwrap();
+        assert!(SCHEME.verifying_key().is_some());
+        // Setting the same key again is a no-op; a different one conflicts.
+        SCHEME.set_genesis_key(&key).unwrap();
+        let other = TestTrapdoor::new(2).verifying_key().encode();
+        assert_eq!(
+            SCHEME.set_genesis_key(&other),
+            Err(GenesisKeyError::Conflict(0xfe))
+        );
+    }
+
+    #[test]
+    fn genesis_key_never_replaces_a_protocol_key() {
+        static PROTOCOL_KEY: [u8; VERIFYING_KEY_LENGTH] = [0; VERIFYING_KEY_LENGTH];
+        static SCHEME: Scheme = test_scheme(Some(&PROTOCOL_KEY));
+        let key = TestTrapdoor::new(1).verifying_key().encode();
+        assert_eq!(
+            SCHEME.set_genesis_key(&key),
+            Err(GenesisKeyError::ProtocolKey(0xfe))
+        );
+    }
+
+    #[test]
+    fn genesis_key_must_be_valid() {
+        static SCHEME: Scheme = test_scheme(None);
+        assert_eq!(
+            SCHEME.set_genesis_key(&[0; 10]),
+            Err(GenesisKeyError::Length {
+                scheme: 0xfe,
+                length: 10
+            })
+        );
+        assert!(matches!(
+            SCHEME.set_genesis_key(&[0; VERIFYING_KEY_LENGTH]),
+            Err(GenesisKeyError::Invalid { scheme: 0xfe, .. })
+        ));
+        assert!(SCHEME.verifying_key().is_none());
+        assert_eq!(
+            set_genesis_keys([(0x02, &[0u8; VERIFYING_KEY_LENGTH][..])]),
+            Err(GenesisKeyError::UnknownScheme(0x02))
+        );
     }
 }

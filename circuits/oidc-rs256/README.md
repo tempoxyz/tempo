@@ -27,13 +27,13 @@ The compiled circuit has 801,008 constraints, so a `2^20` Powers of Tau transcri
 
 ## Development keys
 
-`setup:dev` runs a Groth16 setup with one random contribution and a fixed beacon. Its keys are for tests only; TIP-1133 defines the production ceremony.
+`setup:dev` runs a Groth16 setup with one random contribution and a fixed beacon. Its keys are for tests only; TIP-1133 defines the production ceremony. The `dev` chainspec (`crates/chainspec/src/genesis/dev.json`) carries the current development verifying key in `zkVerifyingKeys`, so a `--chain dev` node accepts proofs made with the matching proving key.
 
 ```sh
 curl -o build/ppot_0080_20.ptau \
   https://pse-trusted-setup-ppot.s3.eu-central-1.amazonaws.com/pot28_0080/ppot_0080_20.ptau
 npm run setup:dev   # build/dev/oidc_rs256.zkey and verification_key.json
-npm run vectors     # proves a test token in both forms for crates/zk/tests/oidc_rs256.rs
+npm run vectors     # proves a test token in both forms for the tempo-zk and tempo-revm tests
 ```
 
 ## Implementation choices

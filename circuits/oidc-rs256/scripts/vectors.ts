@@ -21,7 +21,8 @@ const aud = '1234567890-abcdefghijklmnopqrstuvwxyz012345.apps.googleusercontent.
 const sub = '110169484474386276334'
 const iat = 1_760_000_000
 const salt = 0x1d2f3a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60n
-const accessKeyId = 0x6e4b2c1f0a9d8e7c6b5a4f3e2d1c0b0a99887766n
+// Address of the first account of the test mnemonic, so tests can sign with the access key.
+const accessKeyId = 0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266n
 const validUntil = BigInt(iat + 540)
 const digest = BigInt(`0x${crypto.createHash('sha256').update('tempo dev message').digest('hex')}`)
 

@@ -81,6 +81,30 @@ fn verifies_circuit_proofs() {
     }
 }
 
+#[test]
+fn genesis_key_enables_the_scheme() {
+    let vectors: Value = serde_json::from_str(VECTORS).unwrap();
+    let scheme = tempo_zk::scheme(SCHEME_OIDC_RS256_V1).unwrap();
+    // The scheme has no protocol key until the ceremony completes.
+    assert!(scheme.verifying_key().is_none());
+
+    let key = bytes(&vectors["verifyingKey"]);
+    tempo_zk::set_genesis_keys([(SCHEME_OIDC_RS256_V1, key.as_slice())]).unwrap();
+    let message = &vectors["message"];
+    let statement = MessageStatement {
+        scheme: SCHEME_OIDC_RS256_V1,
+        issuer: word(&message["issuer"]),
+        key_hash: word(&message["keyHash"]),
+        address_seed: word(&message["addressSeed"]),
+        digest: word(&message["digest"]),
+        issued_at: message["issuedAt"].as_u64().unwrap(),
+    };
+    assert!(scheme.verifying_key().unwrap().verify(
+        &proof(&message["proof"]),
+        &statement.public_input().unwrap()
+    ));
+}
+
 fn bytes(value: &Value) -> Vec<u8> {
     hex::decode(value.as_str().unwrap()).unwrap()
 }
