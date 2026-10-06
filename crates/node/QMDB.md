@@ -22,6 +22,9 @@ it refuses a canonical database that is ahead of QMDB or has conflicting hashes/
 
 ## Validation and benchmark
 
+The [October 6, 2026 benchmark results](../../benches/qmdb/RESULTS.md) record the
+tested revisions, hardware, per-round measurements and interpretation.
+
 ```sh
 cargo test -p tempo-qmdb-bench --test backend qmdb_builds_validates_persists_and_restarts
 CARGO_PROFILE_RELEASE_LTO=false QMDB_BENCH_BLOCKS=100 QMDB_BENCH_TXS=16 QMDB_BENCH_ROUNDS=3 \
