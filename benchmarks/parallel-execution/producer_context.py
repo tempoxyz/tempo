@@ -32,6 +32,7 @@ UNSUPPORTED_CARGO_SECTIONS = ('build', 'profile', 'target', 'env', 'unstable')
 # Profiling Tempo includes debug information. This bounds streamed input only;
 # txgen/wc and retained metadata keep their smaller existing limits.
 NODE_ELF_MAX_BYTES = 4 * 1024**3
+GENESIS_MAX_BYTES = 16 * 1024**2
 SPEC_FILES = ('contrib/bench/txgen/presets/public-mix.yml', 'contrib/bench/txgen/presets/mpp.yml',
               'contrib/bench/txgen/tip20.abi.json', 'contrib/bench/txgen/tip20-channel-reserve.abi.json')
 NODE_FLAGS = {'--execution.threads': '8', '--execution.batch-size': '128', '--execution.capture-window': '128',
@@ -108,6 +109,26 @@ def node_elf_binding(path, *, proc_exe=False):
         require(size == before.st_size == after.st_size and before.st_mtime_ns == after.st_mtime_ns,
                 'Node ELF changed while hashing')
     return {'path': str(path), 'sha256': digest.hexdigest(), 'bytes': size}
+
+
+def read_genesis(path):
+    # Genesis includes allocation data; retain only its controls and file hash.
+    # Match the existing genesis-file hashing bound, not the 2 MiB manifest bound.
+    path = Path(path)
+    require(path.is_file() and not path.is_symlink(), 'Genesis must be a regular file')
+    size = path.stat().st_size
+    require(size <= GENESIS_MAX_BYTES, f'Genesis size {size} exceeds {GENESIS_MAX_BYTES} byte limit')
+    with path.open('rb') as stream: raw = stream.read(GENESIS_MAX_BYTES + 1)
+    require(len(raw) <= GENESIS_MAX_BYTES, 'Genesis input grew beyond bound')
+    def unique(pairs):
+        value = {}
+        for key, item in pairs:
+            require(key not in value, 'Duplicate genesis JSON key')
+            value[key] = item
+        return value
+    value = json.loads(raw, object_pairs_hook=unique)
+    require(isinstance(value, dict), 'Genesis must be an object')
+    return value, {'path': str(path), 'sha256': hashlib.sha256(raw).hexdigest(), 'bytes': len(raw)}
 
 
 def command(system, argv, timeout=15):
@@ -568,7 +589,9 @@ def prepare(args, system):
     require(lifecycle['node_units'] == [context[r]['scope'] for r in 'ab'], 'Node lifecycle scopes differ')
     own_group = unified_cgroup(system.bytes('/proc/self/cgroup', 16384).decode())
     require(own_group == '/system.slice/' + lifecycle['control_unit'], 'Context not in declared control scope')
-    genesis_path = Path(context['genesis']); genesis = sup.read_json(genesis_path)
+    genesis_path = Path(context['genesis']); genesis, genesis_input = read_genesis(genesis_path)
+    save(folder / 'genesis-controls.json', {'input': genesis_input, 'input_limit_bytes': GENESIS_MAX_BYTES,
+        'config': genesis.get('config'), 'gasLimit': genesis.get('gasLimit')})
     require(genesis['config']['chainId'] == 1337 and genesis['config']['t14Time'] == 0 and
             genesis['config']['generalGasLimit'] == 1500000000 and int(genesis['gasLimit'], 16) == 1000000000000,
             'Synthesized T14 genesis controls differ')

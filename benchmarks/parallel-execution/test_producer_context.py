@@ -102,6 +102,26 @@ class FakeNode:
 
 
 class ContextTests(unittest.TestCase):
+    def test_genesis_allocation_has_separate_bound_without_relaxing_manifests(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'genesis.json'
+            value = {'config': {'chainId': 1337}, 'alloc': {'fixture': '0' * (2 * 1024**2)}}
+            raw = json.dumps(value).encode(); path.write_bytes(raw)
+            with self.assertRaises(c.sup.Invalid): c.sup.read_json(path)
+            actual, binding = c.read_genesis(path)
+            self.assertEqual(actual, value)
+            self.assertEqual(binding, {'path': str(path), 'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()})
+
+    def test_genesis_rejects_oversize_duplicate_keys_and_symlink(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'genesis.json'; path.write_text('{"config":{}}')
+            with patch.object(c, 'GENESIS_MAX_BYTES', 4), self.assertRaisesRegex(ValueError, 'exceeds'):
+                c.read_genesis(path)
+            path.write_text('{"config":{"chainId":1,"chainId":1337}}')
+            with self.assertRaisesRegex(ValueError, 'Duplicate genesis'): c.read_genesis(path)
+            link = Path(folder) / 'link'; link.symlink_to(path)
+            with self.assertRaises(ValueError): c.read_genesis(link)
+
     def test_setup_human_report_only_exempts_exact_zero_failure_counter(self):
         raw, state, spec, build = setup_fixture()
         raw['stderr'] += f'\n  Failed:          {0:>10}\n'
