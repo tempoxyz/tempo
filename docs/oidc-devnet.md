@@ -1,8 +1,8 @@
 # Experimental OIDC signer development
 
-This branch implements the TIP-1132 key publisher as the first dependency of
+This branch implements the TIP-1132 key publisher and offchain OIDC helpers as dependencies of
 [TIP-1130](https://github.com/tempoxyz/tempo/pull/8127). It is not a working OIDC
-wallet: TIP-1131 signatures and the TIP-1133 circuit, witness generator, prover,
+wallet: TIP-1131 signatures and the TIP-1133 circuit, circuit witness generator, prover,
 and verifying key remain unimplemented. No provider token or ZK proof is accepted.
 
 The native publisher is available only when compiling with `experimental-oidc`
@@ -30,6 +30,28 @@ cast call 0x1132000000000000000000000000000000000000 \
 cargo test -p tempo-precompiles key_publisher --lib --features test-utils
 cargo test -p tempo-precompiles key_publisher --lib --features experimental-oidc,test-utils
 ```
+
+Run the receipt-checked live smoke test against an experimental node with the
+standard funded development account:
+
+```bash
+bash scripts/oidc-devnet-smoke.sh http://127.0.0.1:8545
+```
+
+It checks publisher creation, rotation and the 3,600-second grace deadline,
+revocation, owner transfer, rejection of malformed keys and unauthorized calls,
+and an ordinary TIP-20 payment. Every state-changing call checks its mined
+receipt. The script only accepts loopback URLs and verifies chain ID 1337 before
+sending transactions with the publicly known development key. It does not test
+OIDC authorization, and it never uses the Centaur wallet.
+
+`examples/oidc` supplies circomlib Poseidon hashing, nonce and address derivation,
+HMAC salt derivation, local RS256 token preflight, and a JWKS-to-`setKeys`
+transaction planner. Its tests use synthetic provider-signed tokens and shared
+seven-input vectors from the native verifier in
+[PR #8137](https://github.com/tempoxyz/tempo/pull/8137). Offchain preflight does
+not prove the relation; the circuit must independently enforce every constraint.
+Neither that PR nor this one currently supplies the TIP-1133 circuit or its key.
 
 Do not use real funds or identities. Keep RPC private. A public provider sign-in
 demo also needs a separately registered OAuth client and a Relay API; no
