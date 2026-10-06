@@ -64,7 +64,7 @@ pub(crate) trait ExecutionLayer: Clone + Send + Sync + 'static {
             if response.is_valid() {
                 return Ok(true);
             }
-            if response.payload_status.is_syncing() {
+            if response.is_syncing() {
                 return Ok(false);
             }
             Err(eyre::Report::msg(response.payload_status))

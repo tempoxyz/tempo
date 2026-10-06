@@ -16,6 +16,7 @@
 
 use std::{collections::VecDeque, time::Duration};
 
+use alloy_consensus::BlockHeader as _;
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_consensus::{
     Heightable as _,
@@ -202,12 +203,7 @@ where
 
     #[instrument(skip_all, err(level = Level::WARN))]
     async fn try_advance_floor(&mut self) -> eyre::Result<()> {
-        let finalized_height = Height::new(
-            self.execution_provider
-                .finalized_header()?
-                .num_hash()
-                .number,
-        );
+        let finalized_height = Height::new(self.execution_provider.finalized_header()?.number());
         let epoch_length = self
             .epoch_strategy
             .containing(finalized_height)
@@ -331,15 +327,8 @@ async fn submit_forkchoice_update<TContext: Pacer, E: ExecutionEngine + ?Sized>(
     execution_engine: &E,
     tip: &Target,
 ) -> eyre::Result<()> {
-    let hash = tip.digest.0;
-    let forkchoice = ForkchoiceState {
-        head_block_hash: hash,
-        safe_block_hash: hash,
-        finalized_block_hash: hash,
-    };
-
     let response = execution_engine
-        .fork_choice_updated(forkchoice, None)
+        .fork_choice_updated(ForkchoiceState::same_hash(tip.digest.0), None)
         .pace(context, Duration::from_millis(20))
         .await
         .wrap_err("failed to update forkchoice state")?;

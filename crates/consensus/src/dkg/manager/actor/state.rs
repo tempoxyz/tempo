@@ -4,7 +4,7 @@ use std::{
 };
 
 use alloy_consensus::{BlockHeader as _, Sealable as _};
-use commonware_codec::{EncodeSize, RangeCfg, Read, ReadExt, Write};
+use commonware_codec::{EncodeSize, Read, ReadExt, ReadRangeExt, Write};
 use commonware_consensus::{
     Block as _, CertifiableBlock as _, Heightable as _,
     types::{Epoch, Height},
@@ -709,10 +709,10 @@ impl Read for State {
         let seed = ReadExt::read(buf)?;
         let output = Read::read_cfg(buf, &(*cfg, ModeVersion::v0()))?;
         let share = ReadExt::read(buf)?;
-        let players = Read::read_cfg(buf, &(RangeCfg::from(1..=(u16::MAX as usize)), ()))?;
+        let players = ReadRangeExt::read_range(buf, 1..=(u16::MAX as usize))?;
 
         // Until the next state migration, the unused syncers field must still be read to remain backwards compatible.
-        ordered::Set::<PublicKey>::read_cfg(buf, &(RangeCfg::from(0..=(u16::MAX as usize)), ()))?;
+        ordered::Set::<PublicKey>::read_range(buf, 0..=(u16::MAX as usize))?;
 
         let is_full_dkg = ReadExt::read(buf)?;
 
@@ -1292,7 +1292,7 @@ mod tests {
     fn assert_roundtrip(original: &ShareState) {
         use commonware_codec::Encode as _;
         let encoded = original.encode();
-        let decoded = ShareState::read_cfg(&mut encoded.as_ref(), &()).unwrap();
+        let decoded = ShareState::read(&mut encoded.as_ref()).unwrap();
         assert_eq!(original, &decoded);
     }
 

@@ -613,21 +613,12 @@ mod tests {
     use std::{io::Write as _, process::Command, thread, time::Duration};
 
     use clap::Parser as _;
-    use commonware_codec::Encode as _;
 
-    use super::{Args, PositiveDuration, VerificationMode};
+    use super::{Args, PositiveDuration, SigningKey, VerificationMode};
 
     const SIGNING_KEY_HEX: &str =
         "0x7848b5d711bc9883996317a3f9c90269d56771005d540a19184939c9e8d0db2a";
     const PASSPHRASE: &str = "correct horse battery staple";
-
-    fn raw_private_key_bytes() -> Vec<u8> {
-        tempo_consensus_config::SigningKey::try_from_hex(SIGNING_KEY_HEX)
-            .unwrap()
-            .into_inner()
-            .encode()
-            .to_vec()
-    }
 
     #[derive(Debug, clap::Parser)]
     struct TestCli {
@@ -820,18 +811,6 @@ mod tests {
         );
     }
 
-    fn encrypt(plaintext: &[u8], passphrase: &str) -> Vec<u8> {
-        let mut ct = Vec::new();
-        let mut w = age::Encryptor::with_user_passphrase(
-            tempo_consensus_config::SigningKeyPassphrase::from(passphrase),
-        )
-        .wrap_output(&mut ct)
-        .unwrap();
-        w.write_all(plaintext).unwrap();
-        w.finish().unwrap();
-        ct
-    }
-
     fn mkfifo(path: &std::path::Path) {
         let status = Command::new("mkfifo")
             .arg("-m")
@@ -846,7 +825,10 @@ mod tests {
     async fn encrypted_signing_key_via_fifo_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let key_file = dir.path().join("signing-key.age");
-        std::fs::write(&key_file, encrypt(&raw_private_key_bytes(), PASSPHRASE)).unwrap();
+        SigningKey::try_from_hex(SIGNING_KEY_HEX)
+            .unwrap()
+            .write_to_file_encrypted(&key_file, PASSPHRASE.into())
+            .unwrap();
 
         let fifo = dir.path().join("passphrase.fifo");
         mkfifo(&fifo);
@@ -876,7 +858,7 @@ mod tests {
             .expect("signing key must be Some when --consensus.signing-key is set");
         writer.join().unwrap();
 
-        let expected = tempo_consensus_config::SigningKey::try_from_hex(SIGNING_KEY_HEX).unwrap();
+        let expected = SigningKey::try_from_hex(SIGNING_KEY_HEX).unwrap();
         assert_eq!(key.public_key(), expected.public_key());
     }
 
@@ -885,7 +867,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let key_file = dir.path().join("signing-key.age");
         let secret_file = dir.path().join("passphrase.txt");
-        std::fs::write(&key_file, encrypt(&raw_private_key_bytes(), PASSPHRASE)).unwrap();
+        SigningKey::try_from_hex(SIGNING_KEY_HEX)
+            .unwrap()
+            .write_to_file_encrypted(&key_file, PASSPHRASE.into())
+            .unwrap();
         std::fs::write(&secret_file, format!("{PASSPHRASE}\n")).unwrap();
 
         let cli = parse(&[
@@ -902,7 +887,7 @@ mod tests {
             .expect("signing key must load")
             .expect("signing key must be Some when --consensus.signing-key is set");
 
-        let expected = tempo_consensus_config::SigningKey::try_from_hex(SIGNING_KEY_HEX).unwrap();
+        let expected = SigningKey::try_from_hex(SIGNING_KEY_HEX).unwrap();
         assert_eq!(key.public_key(), expected.public_key());
     }
 
@@ -910,7 +895,10 @@ mod tests {
     async fn encrypted_signing_key_concurrent_calls_share_fifo_read() {
         let dir = tempfile::tempdir().unwrap();
         let key_file = dir.path().join("signing-key.age");
-        std::fs::write(&key_file, encrypt(&raw_private_key_bytes(), PASSPHRASE)).unwrap();
+        SigningKey::try_from_hex(SIGNING_KEY_HEX)
+            .unwrap()
+            .write_to_file_encrypted(&key_file, PASSPHRASE.into())
+            .unwrap();
 
         let fifo = dir.path().join("passphrase.fifo");
         mkfifo(&fifo);
@@ -948,7 +936,7 @@ mod tests {
             .expect("second signing key must load")
             .expect("second signing key must be Some");
 
-        let expected = tempo_consensus_config::SigningKey::try_from_hex(SIGNING_KEY_HEX).unwrap();
+        let expected = SigningKey::try_from_hex(SIGNING_KEY_HEX).unwrap();
         assert_eq!(key_a.public_key(), expected.public_key());
         assert_eq!(key_b.public_key(), expected.public_key());
     }
@@ -957,7 +945,10 @@ mod tests {
     async fn encrypted_signing_key_wrong_passphrase_fails() {
         let dir = tempfile::tempdir().unwrap();
         let key_file = dir.path().join("signing-key.age");
-        std::fs::write(&key_file, encrypt(&raw_private_key_bytes(), PASSPHRASE)).unwrap();
+        SigningKey::try_from_hex(SIGNING_KEY_HEX)
+            .unwrap()
+            .write_to_file_encrypted(&key_file, PASSPHRASE.into())
+            .unwrap();
 
         let fifo = dir.path().join("passphrase.fifo");
         mkfifo(&fifo);

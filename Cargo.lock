@@ -13592,7 +13592,6 @@ dependencies = [
 name = "tempo-consensus"
 version = "1.16.0"
 dependencies = [
- "age",
  "alloy-consensus",
  "alloy-primitives",
  "alloy-provider",
