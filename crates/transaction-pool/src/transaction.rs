@@ -1777,4 +1777,20 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn fee_balance_cache_uses_physical_storage_address() {
+        let sender = Address::repeat_byte(0x81);
+        let transaction = TxBuilder::aa(sender).build();
+        let token = TIP20Token::from_address_unchecked(transaction.effective_fee_token());
+        let balance = &token.balances[sender];
+        assert_eq!(
+            transaction.fee_balance_slot(),
+            Some((balance.address(), balance.slot()))
+        );
+        assert_eq!(
+            transaction.fee_balance_slot(),
+            Some((balance.address(), balance.slot()))
+        );
+    }
 }

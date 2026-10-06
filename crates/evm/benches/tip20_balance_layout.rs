@@ -106,13 +106,24 @@ fn balance_layout(c: &mut Criterion) {
             } else {
                 "token_first"
             };
-            let state = fixture(holder_count, token_count, holder_first).into_sorted();
+            let base_state = fixture(holder_count, token_count, holder_first);
+            let state = base_state.clone().into_sorted();
             let (_, base_nodes) = StateRoot::new(
                 NoopTrieCursorFactory::default(),
                 HashedPostStateCursorFactory::new(NoopHashedCursorFactory::default(), &state),
             )
             .root_with_updates()
             .expect("fixture root");
+            let storage_nodes = base_nodes
+                .storage_tries
+                .values()
+                .map(|updates| updates.storage_nodes.len())
+                .sum::<usize>();
+            eprintln!(
+                "layout={label} holders={holder_count} tokens={token_count} accounts={} account_branches={} storage_branches={storage_nodes}",
+                base_state.accounts.len(),
+                base_nodes.account_nodes.len()
+            );
             let base_nodes = base_nodes.into_sorted();
             let id = format!("{label}/{holder_count}_holders/{token_count}_tokens");
             group.bench_with_input(
@@ -137,7 +148,42 @@ fn balance_layout(c: &mut Criterion) {
             for (workload, changed_holders) in [("small_holder_set", 16), ("mass_payout", 4_096)] {
                 let delta = updates(holder_count, changed_holders, holder_first);
                 let prefix_sets = delta.construct_prefix_sets().freeze();
+                let mut updated_state = base_state.clone();
+                updated_state.extend_ref(&delta);
+                let updated_state = updated_state.into_sorted();
+                let expected_root = StateRoot::new(
+                    NoopTrieCursorFactory::default(),
+                    HashedPostStateCursorFactory::new(
+                        NoopHashedCursorFactory::default(),
+                        &updated_state,
+                    ),
+                )
+                .root()
+                .expect("rebuilt updated root");
                 let delta = delta.into_sorted();
+                let (incremental_root, changed_nodes) = StateRoot::new(
+                    InMemoryTrieCursorFactory::new(NoopTrieCursorFactory::default(), &base_nodes),
+                    HashedPostStateCursorFactory::new(
+                        HashedPostStateCursorFactory::new(
+                            NoopHashedCursorFactory::default(),
+                            &state,
+                        ),
+                        &delta,
+                    ),
+                )
+                .with_prefix_sets(prefix_sets.clone())
+                .root_with_updates()
+                .expect("incremental root");
+                assert_eq!(incremental_root, expected_root);
+                let changed_storage_nodes = changed_nodes
+                    .storage_tries
+                    .values()
+                    .map(|updates| updates.storage_nodes.len())
+                    .sum::<usize>();
+                eprintln!(
+                    "layout={label} holders={holder_count} tokens={token_count} workload={workload} changed_account_branches={} changed_storage_branches={changed_storage_nodes}",
+                    changed_nodes.account_nodes.len()
+                );
                 group.bench_function(BenchmarkId::new(workload, &id), |bench| {
                     bench.iter(|| {
                         let trie_cursors = InMemoryTrieCursorFactory::new(
