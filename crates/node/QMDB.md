@@ -24,7 +24,7 @@ it refuses a canonical database that is ahead of QMDB or has conflicting hashes/
 
 ```sh
 cargo test -p tempo-qmdb-bench --test backend qmdb_builds_validates_persists_and_restarts
-QMDB_BENCH_BLOCKS=100 QMDB_BENCH_TXS=16 \
+CARGO_PROFILE_RELEASE_LTO=false QMDB_BENCH_BLOCKS=100 QMDB_BENCH_TXS=16 QMDB_BENCH_ROUNDS=3 \
   cargo test -p tempo-qmdb-bench --release --test backend bench_mpt_vs_qmdb -- --ignored --nocapture
 ```
 
@@ -32,7 +32,11 @@ The benchmark uses the same node harness and persistence settings for MPT and QM
 It signs transactions outside the measured interval, then measures pool submission,
 payload construction, engine validation, canonical import and durable persistence.
 Each block transfers PathUSD to fresh recipients; every included receipt must succeed.
-Ten warmup blocks are excluded. Output includes mean, p50, p95 and observed throughput.
+Ten warmup blocks are excluded per backend per round; three rounds alternate backend order.
+Output includes mean, p50, p95 and observed throughput for submission/build/import, and
+separately for the interval through durable persistence. The latter includes the harness's
+20 ms condition-polling interval, so small durability differences are not root-only evidence.
+Pool-head synchronization and receipt-success checks occur outside the timed interval.
 This small-state, single-node serial workload is not a production or saturation TPS claim.
 
 ## Remaining prototype limits

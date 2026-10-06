@@ -136,76 +136,98 @@ async fn bench_mpt_vs_qmdb() -> eyre::Result<()> {
         .unwrap_or_else(|_| "16".into())
         .parse::<u64>()?;
     eyre::ensure!(blocks > 0 && (1..=16).contains(&transactions));
-    for backend in [StateRootBackend::Mpt, StateRootBackend::Qmdb] {
-        let mut node = node(backend).await?;
-        let chain_id = node.inner.chain_spec().chain_id();
-        let mut sender = Wallet::default().with_chain_id(chain_id).account(0);
-        let mut samples = Vec::new();
-        for index in 0..blocks + 10 {
-            let mut signed = Vec::new();
-            for transaction_index in 0..transactions {
-                let recipient = Address::from_word(
-                    U256::from(10_000 + index * transactions + transaction_index).into(),
-                );
-                let data = ITIP20::transferCall {
-                    to: recipient,
-                    amount: U256::from(1),
+    let rounds = std::env::var("QMDB_BENCH_ROUNDS")
+        .unwrap_or_else(|_| "3".into())
+        .parse::<u64>()?;
+    eyre::ensure!(rounds > 0);
+    for round in 0..rounds {
+        let backends = if round % 2 == 0 {
+            [StateRootBackend::Mpt, StateRootBackend::Qmdb]
+        } else {
+            [StateRootBackend::Qmdb, StateRootBackend::Mpt]
+        };
+        for backend in backends {
+            let mut node = node(backend).await?;
+            let chain_id = node.inner.chain_spec().chain_id();
+            let mut sender = Wallet::default().with_chain_id(chain_id).account(0);
+            let mut samples = Vec::new();
+            let mut processing_samples = Vec::new();
+            for index in 0..blocks + 10 {
+                let mut signed = Vec::new();
+                for transaction_index in 0..transactions {
+                    let recipient = Address::from_word(
+                        U256::from(10_000 + index * transactions + transaction_index).into(),
+                    );
+                    let data = ITIP20::transferCall {
+                        to: recipient,
+                        amount: U256::from(1),
+                    }
+                    .abi_encode();
+                    let transaction = with_t1_fees(
+                        TransactionRequest::default()
+                            .to(PATH_USD_ADDRESS)
+                            .input(data.into())
+                            .gas_limit(300_000),
+                    );
+                    signed.push(sender.sign_tx_bytes(transaction).await);
                 }
-                .abi_encode();
-                let transaction = with_t1_fees(
-                    TransactionRequest::default()
-                        .to(PATH_USD_ADDRESS)
-                        .input(data.into())
-                        .gas_limit(300_000),
+                let start = Instant::now();
+                let mut hashes = Vec::new();
+                for transaction in signed {
+                    hashes.push(node.rpc.inject_tx(transaction).await?);
+                }
+                node.wait_for_pooled(hashes).await?;
+                let payload = node.advance_block().await?;
+                let processing_ms = start.elapsed().as_secs_f64() * 1000.0;
+                assert_eq!(
+                    payload
+                        .block()
+                        .body()
+                        .transactions
+                        .iter()
+                        .cloned()
+                        .filter(|tx| tx.gas_limit() > 0)
+                        .count(),
+                    transactions as usize
                 );
-                signed.push(sender.sign_tx_bytes(transaction).await);
+                node.wait_for_persisted_block(index + 1).await?;
+                if index >= 10 {
+                    samples.push(start.elapsed().as_secs_f64() * 1000.0);
+                    processing_samples.push(processing_ms);
+                }
+                let receipts = node
+                    .inner
+                    .provider
+                    .receipts_by_block(payload.block().hash().into())?
+                    .expect("persisted block receipts");
+                assert!(
+                    receipts.iter().all(|receipt| receipt.status()),
+                    "all transfers must succeed"
+                );
+                node.wait_for_pool_head(payload.block().hash()).await?;
             }
-            let start = Instant::now();
-            let mut hashes = Vec::new();
-            for transaction in signed {
-                hashes.push(node.rpc.inject_tx(transaction).await?);
-            }
-            node.wait_for_pooled(hashes).await?;
-            let payload = node.advance_block_synced().await?;
-            assert_eq!(
-                payload
-                    .block()
-                    .body()
-                    .transactions
-                    .iter()
-                    .cloned()
-                    .filter(|tx| tx.gas_limit() > 0)
-                    .count(),
-                transactions as usize
+            let total = samples.iter().sum::<f64>();
+            samples.sort_by(f64::total_cmp);
+            let processing_total = processing_samples.iter().sum::<f64>();
+            processing_samples.sort_by(f64::total_cmp);
+            println!(
+                "QMDB_BENCH {}",
+                serde_json::json!({
+                    "backend": format!("{backend:?}"), "blocks": blocks, "transactions_per_block": transactions,
+                    "round": round + 1, "debug_assertions": cfg!(debug_assertions),
+                    "workload": "TIP20 transfers to fresh recipients",
+                    "warmup_blocks": 10, "mean_ms": total / blocks as f64,
+                    "p50_ms": samples[samples.len() / 2],
+                    "p95_ms": samples[(samples.len() * 95 / 100).min(samples.len() - 1)],
+                    "transactions_per_second": (blocks * transactions) as f64 * 1000.0 / total,
+                    "processing_mean_ms": processing_total / blocks as f64,
+                    "processing_p50_ms": processing_samples[processing_samples.len() / 2],
+                    "processing_p95_ms": processing_samples[(processing_samples.len() * 95 / 100).min(processing_samples.len() - 1)],
+                    "processing_transactions_per_second": (blocks * transactions) as f64 * 1000.0 / processing_total,
+                })
             );
-            node.wait_for_persisted_block(index + 1).await?;
-            if index >= 10 {
-                samples.push(start.elapsed().as_secs_f64() * 1000.0);
-            }
-            let receipts = node
-                .inner
-                .provider
-                .receipts_by_block(payload.block().hash().into())?
-                .expect("persisted block receipts");
-            assert!(
-                receipts.iter().all(|receipt| receipt.status()),
-                "all transfers must succeed"
-            );
+            node.stop().await?;
         }
-        let total = samples.iter().sum::<f64>();
-        samples.sort_by(f64::total_cmp);
-        println!(
-            "QMDB_BENCH {}",
-            serde_json::json!({
-                "backend": format!("{backend:?}"), "blocks": blocks, "transactions_per_block": transactions,
-                "workload": "TIP20 transfers to fresh recipients",
-                "warmup_blocks": 10, "mean_ms": total / blocks as f64,
-                "p50_ms": samples[samples.len() / 2],
-                "p95_ms": samples[(samples.len() * 95 / 100).min(samples.len() - 1)],
-                "transactions_per_second": (blocks * transactions) as f64 * 1000.0 / total,
-            })
-        );
-        node.stop().await?;
     }
     Ok(())
 }
