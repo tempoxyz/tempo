@@ -13,6 +13,7 @@ publish = false
 [workspace]
 exclude = ["crates/nitro-attestation/fuzz"]
 members = [
+  "benches/qmdb",
   "bin/tempo",
   "bin/tempo-sidecar",
   "crates/alloy",

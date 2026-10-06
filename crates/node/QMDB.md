@@ -23,9 +23,9 @@ it refuses a canonical database that is ahead of QMDB or has conflicting hashes/
 ## Validation and benchmark
 
 ```sh
-cargo test -p tempo-node --features qmdb --test qmdb qmdb_builds_validates_persists_and_restarts
+cargo test -p tempo-qmdb-bench --test backend qmdb_builds_validates_persists_and_restarts
 QMDB_BENCH_BLOCKS=100 QMDB_BENCH_TXS=16 \
-  cargo test -p tempo-node --release --features qmdb --test qmdb bench_mpt_vs_qmdb -- --ignored --nocapture
+  cargo test -p tempo-qmdb-bench --release --test backend bench_mpt_vs_qmdb -- --ignored --nocapture
 ```
 
 The benchmark uses the same node harness and persistence settings for MPT and QMDB.

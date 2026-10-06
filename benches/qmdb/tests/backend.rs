@@ -1,7 +1,5 @@
 //! Real Tempo block production and a same-machine backend comparison.
 
-#![cfg(feature = "qmdb")]
-
 use std::{sync::Arc, time::Instant};
 
 use alloy::{consensus::TxReceipt as _, sol_types::SolCall as _};
@@ -25,7 +23,9 @@ fn with_t1_fees(tx: TransactionRequest) -> TransactionRequest {
 async fn node(
     backend: StateRootBackend,
 ) -> eyre::Result<reth_e2e_test_utils::NodeHelperType<TempoNode>> {
-    let genesis = serde_json::from_str(include_str!("assets/test-genesis.json"))?;
+    let genesis = serde_json::from_str(include_str!(
+        "../../../crates/node/tests/assets/test-genesis.json"
+    ))?;
     let chain = Arc::new(TempoChainSpec::from_genesis(genesis));
     let (node, _) = TempoNode::test_setup(1, chain)
         .with_dev_mode(true)
