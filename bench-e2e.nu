@@ -641,7 +641,7 @@ def start-e2e-local-node [
     }
 }
 
-def build-e2e-consensus-args [node_dir: string, trusted_peers: string, port: int, consensus_ip: string] {
+def build-e2e-consensus-args [node_dir: string, trusted_peers: string, port: int, consensus_ip: string, authrpc_port: int] {
     let addr = ($node_dir | path basename)
     let inferred_ip = if ($addr | str contains ":") {
         $addr | split row ":" | get 0
@@ -662,7 +662,6 @@ def build-e2e-consensus-args [node_dir: string, trusted_peers: string, port: int
 
     let execution_p2p_port = $port + 1
     let metrics_port = $port + 2
-    let authrpc_port = $port + 10003
     let discv5_port = $port + 4
 
     [
@@ -1055,20 +1054,20 @@ def run-local-e2e-phase [run: record, ctx: record] {
     if ("report.json" | path exists) { rm report.json }
     let tuning_state = if $ctx.tune { apply-system-tuning } else { { tuned: false } }
 
-    let a_rpc = "http://127.0.0.1:8545"
-    let b_rpc = "http://127.0.0.1:8645"
-    let a_base_args = (build-base-args $genesis $ctx.a.datadir $a_log_dir "0.0.0.0" 8545 19001)
+    let a_rpc = $"http://127.0.0.1:($ctx.a.http_port)"
+    let b_rpc = $"http://127.0.0.1:($ctx.b.http_port)"
+    let a_base_args = (build-base-args $genesis $ctx.a.datadir $a_log_dir "0.0.0.0" $ctx.a.http_port $ctx.a.metrics_port)
         | append ["--log.file.format" "json"]
-        | append (build-e2e-consensus-args $ctx.a.node_dir $ctx.trusted_peers $ctx.a.consensus_port $ctx.a.ip)
+        | append (build-e2e-consensus-args $ctx.a.node_dir $ctx.trusted_peers $ctx.a.consensus_port $ctx.a.ip $ctx.a.authrpc_port)
         | append $local_reth_args
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
         | append (if $ctx.samply { ["--log.samply"] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
         | append (benchmark-otlp-args $ctx.tracing_otlp)
-    let b_base_args = (build-base-args $genesis $ctx.b.datadir $b_log_dir "0.0.0.0" 8645 19101)
+    let b_base_args = (build-base-args $genesis $ctx.b.datadir $b_log_dir "0.0.0.0" $ctx.b.http_port $ctx.b.metrics_port)
         | append ["--log.file.format" "json"]
-        | append (build-e2e-consensus-args $ctx.b.node_dir $ctx.trusted_peers $ctx.b.consensus_port $ctx.b.ip)
+        | append (build-e2e-consensus-args $ctx.b.node_dir $ctx.trusted_peers $ctx.b.consensus_port $ctx.b.ip $ctx.b.authrpc_port)
         | append $local_reth_args
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
@@ -1138,7 +1137,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     } else {
         ""
     }
-    let metrics_urls = ["a:http://127.0.0.1:19001/metrics" "b:http://127.0.0.1:19101/metrics"]
+    let metrics_urls = [$"a:http://127.0.0.1:($ctx.a.metrics_port)/metrics" $"b:http://127.0.0.1:($ctx.b.metrics_port)/metrics"]
         | append (if $ctx.runner_metrics_url != "" { [$"runner:($ctx.runner_metrics_url)"] } else { [] })
     let submit_rpc_url = [$a_rpc $b_rpc] | str join ","
 
@@ -1684,6 +1683,9 @@ def "main e2e" [
     }
     let txgen = txgen-resolve-binaries
     let samply_args_list = if $samply_args == "" { [] } else { $samply_args | split row " " }
+    let listener_ports = (^python3 contrib/bench/select-e2e-ports.py | from json)
+    print $"Using e2e listener ports: ($listener_ports | to json --raw)"
+    $listener_ports | save -f $"($results_dir)/listener-ports.json"
     let ctx = {
         genesis: $genesis_path
         trusted_peers: $trusted_peers
@@ -1694,6 +1696,9 @@ def "main e2e" [
             node_dir: $a_identity
             ip: $a_ip
             consensus_port: $a_consensus_port
+            http_port: $listener_ports.a.http_port
+            metrics_port: $listener_ports.a.metrics_port
+            authrpc_port: $listener_ports.a.authrpc_port
             cpus: $E2E_A_CPUS
             memory: $E2E_A_MEMORY
         }
@@ -1704,6 +1709,9 @@ def "main e2e" [
             node_dir: $b_identity
             ip: $b_ip
             consensus_port: $b_consensus_port
+            http_port: $listener_ports.b.http_port
+            metrics_port: $listener_ports.b.metrics_port
+            authrpc_port: $listener_ports.b.authrpc_port
             cpus: $E2E_B_CPUS
             memory: $E2E_B_MEMORY
         }
