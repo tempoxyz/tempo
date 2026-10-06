@@ -304,10 +304,12 @@ def --env txgen-configure-keychain-env [accounts: int, token_count: int] {
     $env.TXGEN_KEY_AUTHORIZATION_GAS_LIMIT = (txgen-key-authorization-gas-limit $token_count)
 }
 
-# 2D-nonce specs mint deeper FeeAMM liquidity, matching the removed
-# tip20_2d_nonces preset. `nonce_key:` only appears in 2D-nonce specs.
+# Inline authorizations charge for new key storage on every transaction and can
+# exhaust ordinary FeeAMM liquidity during generation. Use the deeper pool from
+# the 2D-nonce workload for these authorizations too.
 def --env txgen-configure-fee-amm-env [spec_path: string] {
-    let amount = if (txgen-spec-effective-text $spec_path) =~ '(?m)^\s*nonce_key:\s*$' {
+    let spec = (txgen-spec-effective-text $spec_path)
+    let amount = if $spec =~ '(?m)^\s*nonce_key:\s*$' or $spec =~ '(?m)^\s*mode:\s*key_authorization\s*$' {
         $TXGEN_HELPER_FEE_AMM_2D_LIQUIDITY_AMOUNT
     } else {
         $TXGEN_HELPER_FEE_AMM_LIQUIDITY_AMOUNT
