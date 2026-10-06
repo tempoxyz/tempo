@@ -15,8 +15,6 @@ mod max_gas_limit;
 mod operator;
 mod payment_lane;
 mod pool;
-#[cfg(feature = "qmdb")]
-mod qmdb_engine;
 mod simulate;
 mod stablecoin_dex;
 mod storage_credits;

@@ -1,5 +1,7 @@
 //! Real Tempo block production and a same-machine backend comparison.
 
+#![cfg(feature = "qmdb")]
+
 use std::{sync::Arc, time::Instant};
 
 use alloy::{consensus::TxReceipt as _, sol_types::SolCall as _};
@@ -15,10 +17,15 @@ use tempo_contracts::precompiles::ITIP20;
 use tempo_node::{TempoNode, node::TempoNodeArgs, qmdb::StateRootBackend};
 use tempo_precompiles::PATH_USD_ADDRESS;
 
-use crate::utils::with_t1_fees;
+fn with_t1_fees(tx: TransactionRequest) -> TransactionRequest {
+    let fee = tempo_chainspec::spec::TEMPO_T1_BASE_FEE as u128;
+    tx.max_fee_per_gas(fee).max_priority_fee_per_gas(fee)
+}
 
-async fn node(backend: StateRootBackend) -> eyre::Result<crate::utils::LocalTestNode> {
-    let genesis = serde_json::from_str(include_str!("../assets/test-genesis.json"))?;
+async fn node(
+    backend: StateRootBackend,
+) -> eyre::Result<reth_e2e_test_utils::NodeHelperType<TempoNode>> {
+    let genesis = serde_json::from_str(include_str!("assets/test-genesis.json"))?;
     let chain = Arc::new(TempoChainSpec::from_genesis(genesis));
     let (node, _) = TempoNode::test_setup(1, chain)
         .with_dev_mode(true)
