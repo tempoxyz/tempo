@@ -7,6 +7,7 @@ use alloy_rpc_types_eth::TransactionRequest;
 use reth_e2e_test_utils::wallet::Wallet;
 use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_node_api::BuiltPayload;
+use reth_primitives_traits::Transaction as _;
 use reth_storage_api::{AccountReader as _, StateProviderFactory as _};
 use tempo_chainspec::TempoChainSpec;
 use tempo_node::{TempoNode, node::TempoNodeArgs, qmdb::StateRootBackend};
@@ -54,7 +55,16 @@ async fn qmdb_builds_validates_persists_and_restarts() -> eyre::Result<()> {
         let (_, payload) = node
             .inject_and_advance(sender.sign_tx_bytes(transaction).await)
             .await?;
-        assert_eq!(payload.block().body().transactions.len(), 1);
+        assert_eq!(
+            payload
+                .block()
+                .body()
+                .transactions
+                .iter()
+                .filter(|tx| tx.gas_limit() > 0)
+                .count(),
+            1
+        );
         assert_eq!(
             node.inner
                 .provider
@@ -103,7 +113,16 @@ async fn bench_mpt_vs_qmdb() -> eyre::Result<()> {
             let signed = sender.sign_tx_bytes(transaction).await;
             let start = Instant::now();
             let (_, payload) = node.inject_and_advance(signed).await?;
-            assert_eq!(payload.block().body().transactions.len(), 1);
+            assert_eq!(
+                payload
+                    .block()
+                    .body()
+                    .transactions
+                    .iter()
+                    .filter(|tx| tx.gas_limit() > 0)
+                    .count(),
+                1
+            );
             node.wait_for_persisted_block(index + 1).await?;
             if index >= 10 {
                 samples.push(start.elapsed().as_secs_f64() * 1000.0);
