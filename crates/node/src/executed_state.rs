@@ -141,10 +141,12 @@ where
     async fn build_tree_validator(
         self,
         ctx: &AddOnsContext<'_, Node>,
-        mut tree_config: TreeConfig,
+        tree_config: TreeConfig,
         overlay_manager: OverlayManager<PrimitivesTy<Node::Types>>,
     ) -> eyre::Result<Self::EngineValidator> {
         self.executed_state.set(overlay_manager.clone());
+        #[cfg(feature = "qmdb")]
+        let mut tree_config = tree_config;
         #[cfg(feature = "qmdb")]
         let state = if let Some(loader) = &self.qmdb {
             tree_config = tree_config

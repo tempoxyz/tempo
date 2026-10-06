@@ -22,7 +22,7 @@ use tempo_precompiles::PATH_USD_ADDRESS;
 const BENCHMARK_TOKEN: Address = address!("0x20c0000000000000000000000000000000000001");
 
 fn with_t1_fees(tx: TransactionRequest) -> TransactionRequest {
-    let fee = tempo_chainspec::spec::TEMPO_T1_BASE_FEE as u128;
+    let fee = u128::from(tempo_chainspec::spec::TEMPO_T1_BASE_FEE);
     tx.max_fee_per_gas(fee).max_priority_fee_per_gas(fee)
 }
 
@@ -86,8 +86,7 @@ async fn qmdb_builds_validates_persists_and_restarts() -> eyre::Result<()> {
                 .body()
                 .transactions
                 .iter()
-                .cloned()
-                .filter(|tx| tx.gas_limit() > 0)
+                .filter(|&tx| tx.gas_limit() > 0)
                 .count(),
             1
         );
@@ -176,6 +175,24 @@ async fn bench_mpt_vs_qmdb() -> eyre::Result<()> {
                     );
                 }
             }
+            let probe = ITIP20::transferCall {
+                to: Address::from_word(U256::from(10_000).into()),
+                amount: U256::from(1),
+            }
+            .abi_encode();
+            for gas in [300_000, 1_000_000, 5_000_000] {
+                let request = with_t1_fees(
+                    TransactionRequest::default()
+                        .from(sender.address())
+                        .to(BENCHMARK_TOKEN)
+                        .input(probe.clone().into())
+                        .gas_limit(gas),
+                );
+                println!(
+                    "QMDB_BENCH_TRANSFER_PROBE gas={gas} result={:?}",
+                    node.rpc_provider().call(request).await
+                );
+            }
             let mut samples = Vec::new();
             let mut processing_samples = Vec::new();
             for index in 0..blocks + 10 {
@@ -193,7 +210,7 @@ async fn bench_mpt_vs_qmdb() -> eyre::Result<()> {
                         TransactionRequest::default()
                             .to(BENCHMARK_TOKEN)
                             .input(data.into())
-                            .gas_limit(300_000),
+                            .gas_limit(5_000_000),
                     );
                     signed.push(sender.sign_tx_bytes(transaction).await);
                 }
@@ -211,8 +228,7 @@ async fn bench_mpt_vs_qmdb() -> eyre::Result<()> {
                         .body()
                         .transactions
                         .iter()
-                        .cloned()
-                        .filter(|tx| tx.gas_limit() > 0)
+                        .filter(|&tx| tx.gas_limit() > 0)
                         .count(),
                     transactions as usize
                 );
@@ -228,7 +244,7 @@ async fn bench_mpt_vs_qmdb() -> eyre::Result<()> {
                     .expect("persisted block receipts");
                 assert!(
                     receipts.iter().all(|receipt| receipt.status()),
-                    "all transfers must succeed"
+                    "all transfers must succeed; receipts: {receipts:?}"
                 );
                 node.wait_for_pool_head(payload.block().hash()).await?;
             }
