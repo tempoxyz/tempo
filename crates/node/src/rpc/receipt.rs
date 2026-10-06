@@ -10,8 +10,8 @@ use reth_revm::{
     interpreter::{CreateInputs, CreateOutcome, interpreter_types::InterpreterTypes},
 };
 use reth_rpc_eth_api::{
-    EthApiTypes, RpcConvert,
-    helpers::{EthBlocks, LoadReceipt, Trace, block::BlockReceiptsResult},
+    EthApiTypes, RpcConvert, RpcNodeCoreExt,
+    helpers::{Call, EthBlocks, LoadReceipt, Trace, block::BlockReceiptsResult},
     transaction::ConvertReceiptInput,
 };
 use reth_rpc_eth_types::EthApiError;
@@ -34,26 +34,48 @@ where
         let recover_address = is_aa_create(&tx);
         let tx_hash = meta.tx_hash;
         let block_hash = meta.block_hash;
+        let tx_index = meta.index as usize;
+        let replay = if recover_address {
+            Some(
+                self.cache()
+                    .get_recovered_block_and_maybe_bal(block_hash)
+                    .await?
+                    .ok_or(EthApiError::HeaderNotFound(block_hash.into()))?,
+            )
+        } else {
+            None
+        };
         let mut receipt = self
             .inner
             .build_transaction_receipt(tx, meta, receipt, all_receipts, block)
             .await?;
 
-        if recover_address {
+        if let Some((block, bal)) = replay {
             receipt.inner.contract_address = self
-                .spawn_trace_transaction_in_block_with_inspector(
-                    tx_hash,
-                    CreateReceiptInspector::default(),
-                    |_, inspector, result, _| {
-                        Ok(result
-                            .result
-                            .is_success()
-                            .then_some(inspector.address)
-                            .flatten())
-                    },
-                )
-                .await?
-                .ok_or(EthApiError::HeaderNotFound(block_hash.into()))?;
+                .spawn_with_state_at_block(block.parent_hash(), move |this, mut db| {
+                    let tx = block
+                        .transactions_recovered()
+                        .nth(tx_index)
+                        .ok_or(EthApiError::InternalEthError)?;
+                    if *tx.tx_hash() != tx_hash {
+                        return Err(EthApiError::InternalEthError.into());
+                    }
+                    let mut inspector = CreateReceiptInspector::default();
+                    let (result, _) = this.inspect_transaction_in_block(
+                        &block,
+                        &mut db,
+                        &mut inspector,
+                        tx_index,
+                        tx,
+                        bal.as_deref(),
+                    )?;
+                    Ok(result
+                        .result
+                        .is_success()
+                        .then_some(inspector.address)
+                        .flatten())
+                })
+                .await?;
         }
 
         Ok(receipt)
@@ -71,7 +93,11 @@ where
         let Some((block, receipts)) = self.load_block_and_receipts(block_id).await? else {
             return Ok(None);
         };
-        let recover_addresses = block.transactions_recovered().any(|tx| is_aa_create(&tx));
+        let last_create = block
+            .transactions_recovered()
+            .enumerate()
+            .filter_map(|(index, tx)| is_aa_create(&tx).then_some(index as u64))
+            .last();
         let block_hash = block.hash();
         let mut gas_used = 0;
         let mut next_log_index = 0;
@@ -106,11 +132,12 @@ where
             .converter()
             .convert_receipts_with_block(inputs, block.sealed_block())?;
 
-        if recover_addresses {
+        if let Some(last_create) = last_create {
             let addresses = self
-                .trace_block_inspector(
+                .trace_block_until_with_inspector(
                     block_id,
                     Some(block),
+                    Some(last_create),
                     CreateReceiptInspector::default,
                     |_, mut context| {
                         let recover_address = is_aa_create(&context.tx);
