@@ -2,6 +2,13 @@
 
 set -euo pipefail
 
+for dependency in cast jq od tr awk; do
+  command -v "$dependency" > /dev/null || {
+    printf 'Missing required command: %s\n' "$dependency" >&2
+    exit 1
+  }
+done
+
 RPC_URL="${1:-http://127.0.0.1:8545}"
 PUBLISHER=0x1132000000000000000000000000000000000000
 TOKEN=0x20c0000000000000000000000000000000000000

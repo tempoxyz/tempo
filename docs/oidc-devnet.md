@@ -15,6 +15,18 @@ cargo build --release -p tempo --bin tempo --features experimental-oidc
 ./target/release/tempo node --dev --http --http.addr 127.0.0.1 --http.port 8545
 ```
 
+For the debug devnet build, nightly's new trait solver can spend an excessive
+amount of time compiling consensus. The tested build uses the CI-pinned nightly
+and its coherence-only solver fallback, without changing protocol code:
+
+```bash
+RUSTFLAGS=-Znext-solver=coherence CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0 \
+  cargo +nightly-2026-10-02 build --locked -p tempo --bin tempo \
+  --no-default-features --features experimental-oidc
+./target/debug/tempo node --dev --dev.block-time 1s \
+  --http --http.addr 127.0.0.1 --http.port 8545 --http.api eth,net,web3
+```
+
 The publisher address is `0x1132000000000000000000000000000000000000`.
 Use `IKeyPublisher` from `tempo-contracts` for typed calls. Its owner, active-list,
 and expiry mappings occupy Solidity-compatible slots 0, 1, and 2. Dropped keys
@@ -39,6 +51,8 @@ standard funded development account:
 bash scripts/oidc-devnet-smoke.sh http://127.0.0.1:8545
 ```
 
+The script requires Foundry's `cast`, `jq`, and ordinary POSIX shell utilities.
+
 It checks publisher creation, rotation and the 3,600-second grace deadline,
 revocation, owner transfer, rejection of malformed keys and unauthorized calls,
 and an ordinary TIP-20 payment. Every state-changing call checks its mined
@@ -46,7 +60,7 @@ receipt. The script only accepts loopback URLs and verifies chain ID 1337 before
 sending transactions with the publicly known development key. It does not test
 OIDC authorization, and it never uses the Centaur wallet.
 
-`examples/oidc` supplies circomlib Poseidon hashing, nonce and address derivation,
+`examples/oidc` supplies circomlib-compatible Poseidon hashing, nonce and address derivation,
 HMAC salt derivation, local RS256 token preflight, and a JWKS-to-`setKeys`
 transaction planner. Its tests use synthetic provider-signed tokens and shared
 seven-input vectors from the native verifier in

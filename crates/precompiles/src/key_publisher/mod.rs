@@ -75,6 +75,9 @@ impl KeyPublisher {
         for entry in &call.initialKeys {
             Self::validate_keys(entry.issuer, &entry.keyHashes)?;
         }
+        if self.storage.account_code(self.address)?.1.is_empty() {
+            self.__initialize()?;
+        }
         self.owners[publisher_id].write(call.owner)?;
         self.emit_event(IKeyPublisher::PublisherCreated {
             publisherId: publisher_id,

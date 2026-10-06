@@ -31,6 +31,14 @@ fn publisher_id_and_solidity_storage_layout() -> eyre::Result<()> {
         let mut publisher = KeyPublisher::new();
         let publisher_id = create(&mut publisher, owner, vec![field(2), field(3)])?;
         assert_eq!(
+            publisher
+                .storage
+                .account_code(KEY_PUBLISHER_ADDRESS)?
+                .1
+                .original_bytes(),
+            alloy::primitives::Bytes::from_static(&[0xef])
+        );
+        assert_eq!(
             publisher_id,
             KeyPublisher::compute_publisher_id(owner, field(42))
         );
