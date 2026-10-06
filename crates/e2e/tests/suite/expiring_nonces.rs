@@ -35,6 +35,51 @@ fn expiring_nonce_replay_is_rejected_after_execution_node_restart() {
                     .await?
                     .unwrap();
                 let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+                // txgen samples gas with eth_simulateV1. Its block time can be
+                // earlier than Reth's default pending timestamp (parent + 12s).
+                let simulation: serde_json::Value = provider
+                    .client()
+                    .request(
+                        "eth_simulateV1",
+                        (
+                            serde_json::json!({
+                                "blockStateCalls": [{
+                                    "blockOverrides": { "time": latest.header.timestamp() + 1 },
+                                    "calls": [{
+                                        "from": signer.address(),
+                                        "to": Address::with_last_byte(4),
+                                        "nonceKey": U256::MAX,
+                                        "validBefore": latest.header.timestamp() + 10,
+                                        "gas": "0xf4240"
+                                    }]
+                                }],
+                                "validation": false
+                            }),
+                            latest.header.hash,
+                        ),
+                    )
+                    .await?;
+                assert_eq!(simulation[0]["calls"][0]["status"], "0x1");
+                // eth_call applies overrides directly to an existing environment.
+                // Its expiry window must also use the overridden timestamp.
+                let _: Bytes = provider
+                    .client()
+                    .request(
+                        "eth_call",
+                        (
+                            serde_json::json!({
+                                "from": signer.address(),
+                                "to": Address::with_last_byte(4),
+                                "nonceKey": U256::MAX,
+                                "validBefore": latest.header.timestamp() + 310,
+                                "gas": "0xf4240"
+                            }),
+                            latest.header.hash,
+                            serde_json::json!({}),
+                            serde_json::json!({ "time": latest.header.timestamp() + 10 }),
+                        ),
+                    )
+                    .await?;
                 let tx = TempoTransaction {
                     chain_id: provider.get_chain_id().await?,
                     nonce_key: U256::MAX,

@@ -44,8 +44,14 @@ impl reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv<tempo_primitives:
         parent: &crate::SealedHeader<tempo_primitives::TempoHeader>,
         block_overrides: Option<&alloy_rpc_types_eth::BlockOverrides>,
     ) -> Self {
+        let mut inner = NextBlockEnvAttributes::build_pending_env(parent, block_overrides);
+        // Reth applies RPC block overrides after creating the EVM environment.
+        // Replay protection must expire entries at the simulated time as well.
+        if let Some(timestamp) = block_overrides.and_then(|overrides| overrides.time) {
+            inner.timestamp = timestamp;
+        }
         Self {
-            inner: NextBlockEnvAttributes::build_pending_env(parent, block_overrides),
+            inner,
             general_gas_limit: parent.general_gas_limit,
             shared_gas_limit: parent.shared_gas_limit,
             timestamp_millis_part: parent.timestamp_millis_part,
@@ -87,5 +93,22 @@ mod tests {
         assert_eq!(pending_env.general_gas_limit, general_gas_limit);
         assert_eq!(pending_env.shared_gas_limit, shared_gas_limit);
         assert_eq!(pending_env.timestamp_millis_part, timestamp_millis_part);
+    }
+
+    #[test]
+    fn pending_nonce_state_uses_the_simulation_timestamp() {
+        let parent = SealedHeader::seal_slow(TempoHeader {
+            inner: alloy_consensus::Header {
+                timestamp: 1000,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let overrides = alloy_rpc_types_eth::BlockOverrides {
+            time: Some(1001),
+            ..Default::default()
+        };
+        let attributes = TempoNextBlockEnvAttributes::build_pending_env(&parent, Some(&overrides));
+        assert_eq!(attributes.timestamp, 1001);
     }
 }

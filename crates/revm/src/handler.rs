@@ -1102,7 +1102,8 @@ where
             let block_timestamp = block.timestamp().saturating_to::<u64>();
             if let Some(state) = &block.expiring_nonces {
                 state
-                    .check(
+                    .check_at(
+                        block_timestamp,
                         replay_hash,
                         valid_before,
                         max_expiry_secs,

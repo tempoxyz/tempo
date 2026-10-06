@@ -569,6 +569,13 @@ where
         if self.expiring_nonce_cache.is_some() && self.inner.evm.block.expiring_nonces.is_none() {
             return Err(BlockValidationError::msg("missing external expiring nonce state").into());
         }
+        // RPC simulations can override block time after constructing the environment.
+        let timestamp = self.inner.evm.block.timestamp.saturating_to::<u64>();
+        if let Some(state) = &mut self.inner.evm.block.expiring_nonces {
+            state
+                .advance(timestamp)
+                .map_err(|err| BlockValidationError::msg(err.to_string()))?;
+        }
         if self
             .inner
             .ctx

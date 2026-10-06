@@ -138,6 +138,24 @@ impl ExpiringNonceState {
         Ok(())
     }
 
+    /// Validates against an RPC timestamp override without modifying the snapshot.
+    /// Normal execution uses the snapshot's timestamp and needs no extra copy.
+    pub fn check_at(
+        &self,
+        timestamp: u64,
+        id: B256,
+        expiry: u64,
+        max_expiry: u64,
+        capacity: usize,
+    ) -> Result<(), NonceError> {
+        if timestamp == self.timestamp {
+            return self.check(id, expiry, max_expiry, capacity);
+        }
+        let mut state = self.clone();
+        state.advance(timestamp)?;
+        state.check(id, expiry, max_expiry, capacity)
+    }
+
     /// Records an included transaction, including transactions whose EVM calls reverted.
     pub fn insert(
         &mut self,
@@ -226,6 +244,23 @@ mod tests {
         );
         assert!(parent.check(B256::repeat_byte(2), 130, 300, 10).is_ok());
         assert_ne!(child.root(), root);
+    }
+
+    #[test]
+    fn simulation_time_overrides_expire_a_private_snapshot() {
+        let mut state = ExpiringNonceState::default();
+        state.advance(100).unwrap();
+        state.insert(B256::ZERO, 110, 300, 1).unwrap();
+        let before = state.clone();
+        assert_eq!(
+            state.check_at(110, B256::repeat_byte(1), 410, 300, 1),
+            Ok(())
+        );
+        assert_eq!(state, before);
+        assert_eq!(
+            state.check(B256::ZERO, 120, 300, 1),
+            Err(NonceError::Replay)
+        );
     }
 
     #[test]
