@@ -47,6 +47,15 @@ on:
           - "10000"
           - "25000"
           - "50000"
+      correctness-preset:
+        description: "Workload for generated sequential-peer correctness validation only"
+        required: false
+        default: "default"
+        type: choice
+        options:
+          - "default"
+          - "tip20:recipient=existing,auth=keychain,fee-token=any_tip20"
+          - "tip20:recipient=existing,auth=key_authorization,fee-token=any_tip20"
       capture-window:
         description: "Engine capture window for generated sequential-peer correctness validation only"
         required: false
@@ -198,7 +207,7 @@ jobs:
       feature: ${{ inputs.ref || github.sha }}
       baseline-hardfork: T14
       feature-hardfork: T14
-      preset: default
+      preset: ${{ inputs.correctness-preset || 'default' }}
       duration: "90"
       bloat: "100"
       tps: ${{ inputs.correctness-tps || '50000' }}

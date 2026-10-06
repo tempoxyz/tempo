@@ -130,6 +130,11 @@ Shared changes such as State commit optimization need separate ordinary-State
 oracles. This mode has no performance classification or Slack notification.
 Archived receipt digests support the live check; they are not full receipt bodies.
 
+Set `correctness-preset` to
+`tip20:recipient=existing,auth=keychain,fee-token=any_tip20` for transfers signed by
+authorized access keys, or use `auth=key_authorization` for inline authorization.
+Both use the pinned stock txgen revision and the same live equivalence checks.
+
 For example, [boxed-result validation](https://github.com/tempoxyz/tempo/actions/runs/37164999238)
 checks 187 blocks and 1,579,481 transactions using eight versus zero workers.
 This establishes workload-specific correctness, not a comparison against main.
