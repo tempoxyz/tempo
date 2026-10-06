@@ -17,6 +17,7 @@ import re
 import sys
 import time
 import urllib.request
+from collections import Counter
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -184,6 +185,7 @@ def receipts(rpc, block):
                 and quantity(receipt.get("transactionIndex"), "receipt index") == index,
                 f"receipt identity mismatch at {block['number']}:{index}")
         require(receipt.get("status") in ("0x0", "0x1"), "missing receipt status")
+        quantity(receipt.get("type"), "receipt type")
         require(isinstance(receipt.get("logs"), list), "missing receipt logs")
         require(isinstance(receipt.get("logsBloom"), str)
                 and re.fullmatch(r"0x[0-9a-f]{512}", receipt["logsBloom"]), "missing receipt bloom")
@@ -331,6 +333,7 @@ def verify(config, report, rpcs=None, logs=None, finality_timeout=60, dense_tran
     require(quantity(anchor[0]["number"], "anchor height") == start - 1, "wrong canonical anchor height")
     parent = anchor[0]["hash"]
     verified = []
+    receipt_types = Counter()
     for number in range(start, end + 1):
         blocks = [header(rpc("eth_getBlockByNumber", [hex(number), False])) for rpc in rpcs]
         block = blocks[0]
@@ -346,9 +349,12 @@ def verify(config, report, rpcs=None, logs=None, finality_timeout=60, dense_tran
                     f"generated report disagrees with canonical block {number}")
         a_receipts, b_receipts = (receipts(rpc, block) for rpc in rpcs)
         require(a_receipts == b_receipts, f"full receipt mismatch at {number}")
+        block_receipt_types = Counter(receipt["type"] for receipt in a_receipts)
+        receipt_types.update(block_receipt_types)
         receipt_digest = hashlib.sha256(json.dumps(a_receipts, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         verified.append({key: value for key, value in block.items() if key != "transactions"} |
-                        {"tx_count": len(block["transactions"]), "receipt_json_sha256": receipt_digest})
+                        {"tx_count": len(block["transactions"]), "receipt_json_sha256": receipt_digest,
+                         "receipt_types": dict(sorted(block_receipt_types.items()))})
         parent = block["hash"]
     # Detect any finality regression or canonical replacement during receipt reads.
     wait_finalized(rpcs, end, 0)
@@ -411,6 +417,7 @@ def verify(config, report, rpcs=None, logs=None, finality_timeout=60, dense_tran
             "shared_changes": "not independently checked against unmodified main; State commit has separate oracle tests",
             "config": config, "from_block": start, "to_block": end, "parent_anchor": anchor[0]["hash"],
             "verified_transactions": sum(block["tx_count"] for block in verified),
+            "receipt_types": dict(sorted(receipt_types.items())),
             "capture_window": capture_window, "capture_window_explicit": explicit_window,
             "dense_transactions": dense_transactions, "minimum_dense_blocks": min_dense_blocks,
             "dense_blocks_by_producer": producers, "parallel_reused": reuse,

@@ -72,7 +72,7 @@ class GeneratedTests(unittest.TestCase):
                      "transactions": txs}
             blocks[number] = block
             receipt_blocks[number] = [{"transactionHash": tx, "transactionIndex": hex(index),
-                "blockHash": block["hash"], "blockNumber": block["number"], "status": "0x1",
+                "blockHash": block["hash"], "blockNumber": block["number"], "status": "0x1", "type": "0x76",
                 "logs": [], "logsBloom": "0x" + "00" * 256, "gasUsed": hex(21),
                 "cumulativeGasUsed": hex(21 * (index + 1)), "feeToken": "0x" + "11" * 20}
                 for index, tx in enumerate(txs)]
@@ -195,11 +195,34 @@ class GeneratedTests(unittest.TestCase):
 
     def test_receipt_full_object_and_identity_mismatches(self):
         for field, value in (("feeToken", "0x" + "22" * 20), ("status", "0x0"),
-                             ("transactionHash", digest(999)), ("blockHash", digest(999))):
+                             ("transactionHash", digest(999)), ("blockHash", digest(999)), ("type", "0x2")):
             with self.subTest(field=field):
                 self.setUp()
                 self.rpcs[1].receipt_blocks[3][0][field] = value
                 with self.assertRaisesRegex(verify.VerificationError, "receipt.*mismatch"):
+                    self.run_check()
+
+    def test_receipt_types_cover_only_verified_interval_once(self):
+        for rpc in self.rpcs:
+            # Block 1 is setup: it must not contribute to observed workload coverage.
+            rpc.receipt_blocks[1][0]["type"] = "0x4"
+            rpc.receipt_blocks[2][0]["type"] = "0x0"
+            rpc.receipt_blocks[3][0]["type"] = "0x2"
+            rpc.receipt_blocks[5][0]["type"] = "0x2"
+        result = self.run_check()
+        self.assertEqual(result["receipt_types"], {"0x0": 1, "0x2": 2, "0x76": 21})
+        self.assertEqual(sum(result["receipt_types"].values()), result["verified_transactions"])
+        for block in result["blocks"]:
+            self.assertEqual(sum(block["receipt_types"].values()), block["tx_count"])
+        self.assertEqual(result["blocks"][1]["receipt_types"], {"0x2": 1, "0x76": 5})
+
+    def test_missing_or_malformed_receipt_type_fails_even_when_peers_agree(self):
+        for value in (None, "0x076", 118, "", "0X76"):
+            with self.subTest(value=value):
+                self.setUp()
+                for rpc in self.rpcs:
+                    rpc.receipt_blocks[3][0]["type"] = value
+                with self.assertRaisesRegex(verify.VerificationError, "invalid RPC receipt type"):
                     self.run_check()
 
     def test_reorg_during_verification_fails(self):
