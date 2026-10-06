@@ -365,12 +365,12 @@ mod tests {
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::ZonePortalCapability;
 
-    const OWNER: Address = address!("0x0000000000000000000000000000000000000011");
-    const ADMIN: Address = address!("0x0000000000000000000000000000000000000022");
-    const SEQUENCER_A: Address = address!("0x0000000000000000000000000000000000000033");
-    const SEQUENCER_B: Address = address!("0x0000000000000000000000000000000000000044");
-    const ALLOWED_ACCOUNT: Address = address!("0x0000000000000000000000000000000000000055");
-    const ZONE_GATEWAY: Address = address!("0x0000000000000000000000000000000000000066");
+    const OWNER: Address = Address::with_last_byte(0x11);
+    const ADMIN: Address = Address::with_last_byte(0x22);
+    const SEQUENCER_A: Address = Address::with_last_byte(0x33);
+    const SEQUENCER_B: Address = Address::with_last_byte(0x44);
+    const ALLOWED_ACCOUNT: Address = Address::with_last_byte(0x55);
+    const ZONE_GATEWAY: Address = Address::with_last_byte(0x66);
     const CREATION_BLOCK: u64 = 42;
 
     fn create_params(initial_token: Address) -> IZoneFactory::CreateZoneParams {

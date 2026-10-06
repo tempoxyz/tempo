@@ -16,10 +16,7 @@ impl reth_primitives_traits::InMemorySize for TempoTxEnvelope {
 mod codec {
     use crate::{
         TempoSignature, TempoTransaction,
-        transaction::{
-            envelope::{TEMPO_SYSTEM_TX_SIGNATURE, TempoTxEnvelope, TempoTxType},
-            tt_signed::AASigned,
-        },
+        transaction::envelope::{TEMPO_SYSTEM_TX_SIGNATURE, TempoTxEnvelope, TempoTxType},
     };
 
     use alloy_consensus::{TxEip1559, TxEip2930, TxEip7702, TxLegacy};
@@ -78,7 +75,7 @@ mod codec {
                     let aa_sig = TempoSignature::from_bytes(&sig_bytes)
                         .map_err(|e| panic!("Failed to decode AA signature: {e}"))
                         .unwrap();
-                    let tx = AASigned::new_unhashed(tx, aa_sig);
+                    let tx = tx.into_signed(aa_sig);
                     (Self::AA(tx), buf)
                 }
             }
@@ -210,7 +207,7 @@ mod codec {
                 tx in arb_tempo_tx(),
                 signature in arb::<TempoSignature>(),
             ) {
-                let signed = AASigned::new_unhashed(tx, signature);
+                let signed = tx.into_signed(signature);
                 let mut expected = vec![0xaa, 0xbb];
                 signed.tx().to_compact(&mut expected);
                 signed.signature().to_bytes().to_compact(&mut expected);

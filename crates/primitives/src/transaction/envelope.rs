@@ -337,7 +337,7 @@ impl TempoTxEnvelope {
 
     /// Returns true if this is a Tempo transaction
     pub fn is_aa(&self) -> bool {
-        matches!(self, Self::AA(_))
+        self.is_fee_token()
     }
 
     /// Returns iterator over the calls in the transaction.
@@ -1128,7 +1128,7 @@ mod tests {
     fn test_payment_v2_eip7702_rejects_authorization_list() {
         let calldata = ITIP20::transferCall {
             to: Address::random(),
-            amount: U256::from(1),
+            amount: U256::ONE,
         }
         .abi_encode();
         let tx = TxEip7702 {
@@ -1136,7 +1136,7 @@ mod tests {
             input: Bytes::from(calldata),
             authorization_list: vec![SignedAuthorization::new_unchecked(
                 alloy_eips::eip7702::Authorization {
-                    chain_id: U256::from(1),
+                    chain_id: U256::ONE,
                     address: Address::random(),
                     nonce: 0,
                 },
@@ -1161,7 +1161,7 @@ mod tests {
     fn aa_with_key_authorization(limits: Option<Vec<TokenLimit>>) -> TempoTxEnvelope {
         let calldata = ITIP20::transferCall {
             to: Address::random(),
-            amount: U256::from(1),
+            amount: U256::ONE,
         }
         .abi_encode();
         let tx = TempoTransaction {
@@ -1218,7 +1218,7 @@ mod tests {
     fn test_payment_v2_aa_rejects_tempo_authorization_list() {
         let calldata = ITIP20::transferCall {
             to: Address::random(),
-            amount: U256::from(1),
+            amount: U256::ONE,
         }
         .abi_encode();
         let tx = TempoTransaction {
@@ -1230,7 +1230,7 @@ mod tests {
             }],
             tempo_authorization_list: vec![TempoSignedAuthorization::new_unchecked(
                 alloy_eips::eip7702::Authorization {
-                    chain_id: U256::from(1),
+                    chain_id: U256::ONE,
                     address: Address::random(),
                     nonce: 0,
                 },
@@ -1253,7 +1253,7 @@ mod tests {
     fn test_payment_v2_rejects_access_list() {
         let calldata: Bytes = ITIP20::transferCall {
             to: Address::random(),
-            amount: U256::from(1),
+            amount: U256::ONE,
         }
         .abi_encode()
         .into();
@@ -1322,7 +1322,7 @@ mod tests {
         // Invalid: non-zero value
         let tx = TxLegacy {
             chain_id: Some(chain_id),
-            value: U256::from(1),
+            value: U256::ONE,
             ..Default::default()
         };
         let envelope = TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, TEMPO_SYSTEM_TX_SIGNATURE));

@@ -47,6 +47,8 @@ const CACHE_CAPACITY: u64 = 60 * 60 * 6; // 21600
 const HEADER_RPC_BATCH_SIZE: usize = 128;
 /// Maximum number of block headers to serve in a `GetBlockHeaders` response.
 const MAX_HEADERS_SERVE: usize = 1024;
+/// Maximum number of block bodies to serve in a `GetBlockBodies` response.
+const MAX_BODIES_SERVE: usize = 1024;
 /// Soft cap on the total encoded body size in a `GetBlockBodies` response.
 const SOFT_BODY_RESPONSE_SIZE_LIMIT: usize = 1024 * 1024; // 1 MiB
 /// Maximum number of header and body requests handled at once. Further requests wait in the
@@ -611,30 +613,34 @@ async fn fetch_and_cache_headers(
     cache: &mut BlockCache,
     numbers: &[u64],
 ) -> HashMap<u64, TempoHeader> {
-    let missing_numbers: Vec<u64> = numbers
-        .iter()
-        .copied()
-        .filter(|number| cache.get_by_number(*number).is_none())
-        .collect();
+    let mut headers = HashMap::with_capacity(numbers.len());
+    let mut missing_numbers = Vec::new();
+    for &number in numbers {
+        match cache.get_by_number(number) {
+            Some(block) => {
+                headers.insert(number, block.header.clone());
+            }
+            None => missing_numbers.push(number),
+        }
+    }
 
-    let mut fetched = HashMap::with_capacity(missing_numbers.len());
     for chunk in missing_numbers.chunks(HEADER_RPC_BATCH_SIZE) {
         match fetch_and_cache_header_batch(provider, cache, chunk).await {
-            Ok(headers) => {
-                fetched.extend(headers.into_iter().map(|header| (header.number(), header)));
+            Ok(fetched) => {
+                headers.extend(fetched.into_iter().map(|header| (header.number(), header)));
             }
             Err(_) => {
                 for &number in chunk {
                     if let Ok(header) =
                         fetch_and_cache_header_by_number(provider, cache, number).await
                     {
-                        fetched.insert(number, header);
+                        headers.insert(number, header);
                     }
                 }
             }
         }
     }
-    fetched
+    headers
 }
 
 async fn resolve_start_block_number(
@@ -694,15 +700,11 @@ async fn resolve_headers(
     };
 
     let requested_numbers = requested_header_numbers(start_num, request);
-    let mut fetched = fetch_and_cache_headers(provider, cache, &requested_numbers).await;
+    let mut available = fetch_and_cache_headers(provider, cache, &requested_numbers).await;
 
     let mut headers = Vec::with_capacity(requested_numbers.len());
     for number in requested_numbers {
-        let Some(header) = fetched.remove(&number).or_else(|| {
-            cache
-                .get_by_number(number)
-                .map(|block| block.header.clone())
-        }) else {
+        let Some(header) = available.remove(&number) else {
             break;
         };
         headers.push(header);
@@ -747,7 +749,7 @@ async fn resolve_bodies(
     let mut bodies = Vec::new();
     let mut total_bytes = 0usize;
 
-    for &hash in hashes {
+    for &hash in hashes.iter().take(MAX_BODIES_SERVE) {
         let body = match cache
             .get_by_hash(&hash)
             .and_then(|block| block.body.clone())
@@ -917,6 +919,25 @@ mod tests {
         let bodies = resolve_bodies(&provider, &mut cache, &[first_hash, second_hash]).await;
         assert_eq!(bodies.len(), 1);
         assert!(bodies[0].length() > SOFT_BODY_RESPONSE_SIZE_LIMIT);
+    }
+
+    #[tokio::test]
+    async fn resolve_bodies_caps_number_of_bodies() {
+        let provider = moderato_provider();
+        let count = MAX_BODIES_SERVE as u64 + 10;
+        let mut cache = BlockCache::new(count);
+        let hashes = (1..=count).map(numbered_hash).collect::<Vec<_>>();
+        for (number, hash) in (1..=count).zip(&hashes) {
+            cache.insert_block(
+                number,
+                *hash,
+                TempoHeader::default(),
+                tempo_primitives::BlockBody::default(),
+            );
+        }
+
+        let bodies = resolve_bodies(&provider, &mut cache, &hashes).await;
+        assert_eq!(bodies.len(), MAX_BODIES_SERVE);
     }
 
     #[tokio::test]

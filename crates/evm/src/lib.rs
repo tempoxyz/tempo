@@ -25,6 +25,8 @@ use rayon as _;
 mod error;
 pub use error::TempoEvmError;
 pub mod evm;
+#[cfg(feature = "genesis")]
+pub mod genesis;
 use core::num::NonZeroU64;
 use std::{borrow::Cow, sync::Arc};
 
@@ -166,7 +168,7 @@ impl ConfigureEvm for TempoEvmConfig {
         let EvmEnv { cfg_env, block_env } = EvmEnv::for_eth_block(
             header,
             self.chain_spec(),
-            self.chain_spec().chain().id(),
+            self.chain_spec().chain_id(),
             self.chain_spec()
                 .blob_params_at_timestamp(header.timestamp()),
         );
@@ -224,7 +226,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 .next_block_base_fee(parent, attributes.timestamp)
                 .unwrap_or_default(),
             self.chain_spec(),
-            self.chain_spec().chain().id(),
+            self.chain_spec().chain_id(),
             self.chain_spec()
                 .blob_params_at_timestamp(attributes.timestamp),
         );
@@ -519,7 +521,7 @@ mod tests {
 
         let system_tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
             TxLegacy {
-                chain_id: Some(reth_chainspec::EthChainSpec::chain(&*chainspec).id()),
+                chain_id: Some(chainspec.chain_id()),
                 nonce: 0,
                 gas_price: 0,
                 gas_limit: 0,

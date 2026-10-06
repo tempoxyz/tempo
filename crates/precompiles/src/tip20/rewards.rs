@@ -43,7 +43,7 @@ impl TIP20Token {
         self.check_not_paused()?;
         let token_address = self.address;
 
-        if call.amount == U256::ZERO {
+        if call.amount.is_zero() {
             return Err(TIP20Error::invalid_amount().into());
         }
 
@@ -96,8 +96,8 @@ impl TIP20Token {
             .checked_sub(info.reward_per_token)
             .ok_or(TempoPrecompileError::under_overflow())?;
 
-        if reward_per_token_delta != U256::ZERO {
-            if cached_delegate != Address::ZERO {
+        if !reward_per_token_delta.is_zero() {
+            if !cached_delegate.is_zero() {
                 let holder_balance = self.get_balance(holder)?;
                 let reward = holder_balance
                     .checked_mul(reward_per_token_delta)
@@ -151,7 +151,7 @@ impl TIP20Token {
             return Err(TIP20Error::invalid_recipient().into());
         }
 
-        if call.recipient != Address::ZERO {
+        if !call.recipient.is_zero() {
             self.ensure_transfer_authorized(msg_sender, call.recipient)?;
         }
 
@@ -159,8 +159,8 @@ impl TIP20Token {
 
         let holder_balance = self.get_balance(msg_sender)?;
 
-        if from_delegate != Address::ZERO {
-            if call.recipient == Address::ZERO {
+        if !from_delegate.is_zero() {
+            if call.recipient.is_zero() {
                 let opted_in_supply = U256::from(self.get_opted_in_supply()?)
                     .checked_sub(holder_balance)
                     .ok_or(TempoPrecompileError::under_overflow())?;
@@ -170,7 +170,7 @@ impl TIP20Token {
                         .map_err(|_| TempoPrecompileError::under_overflow())?,
                 )?;
             }
-        } else if call.recipient != Address::ZERO {
+        } else if !call.recipient.is_zero() {
             let opted_in_supply = U256::from(self.get_opted_in_supply()?)
                 .checked_add(holder_balance)
                 .ok_or(TempoPrecompileError::under_overflow())?;
@@ -229,7 +229,7 @@ impl TIP20Token {
                 .ok_or(TempoPrecompileError::under_overflow())?;
             self.set_balance(msg_sender, recipient_balance)?;
 
-            if reward_recipient != Address::ZERO {
+            if !reward_recipient.is_zero() {
                 let opted_in_supply = U256::from(self.get_opted_in_supply()?)
                     .checked_add(max_amount)
                     .ok_or(TempoPrecompileError::under_overflow())?;
@@ -569,7 +569,7 @@ mod tests {
                 admin,
                 ITIP20::mintCall {
                     to: admin,
-                    amount: U256::from(1),
+                    amount: U256::ONE,
                 },
             )?;
             let result =

@@ -4,19 +4,17 @@
 //! which spins up an in-process node with direct pool/block access, plus tests
 //! that require pool introspection or controlled block mining.
 
-use crate::utils::{ForkSchedule, SingleNodeSetup, TEST_MNEMONIC, TestNodeBuilder};
+use crate::utils::{ForkSchedule, SingleNodeSetup, TestNodeBuilder};
 use alloy::{
     consensus::{BlockHeader, Transaction},
     network::{EthereumWallet, ReceiptResponse},
     primitives::{Address, B256, Bytes, Signature, U256},
     providers::{Provider, ProviderBuilder},
-    signers::{
-        SignerSync,
-        local::{MnemonicBuilder, PrivateKeySigner},
-    },
+    signers::{SignerSync, local::PrivateKeySigner},
     sol_types::SolCall,
 };
 use alloy_eips::Encodable2718;
+use reth_e2e_test_utils::wallet::test_signer;
 use reth_ethereum::network::{NetworkSyncUpdater, SyncState};
 use reth_node_api::BuiltPayload;
 use reth_primitives_traits::transaction::TxHashRef;
@@ -41,14 +39,13 @@ use tempo_primitives::{
         KeyAuthorization, SignedKeyAuthorization,
         tempo_transaction::Call,
         tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature, WebAuthnSignature},
-        tt_signed::AASigned,
     },
 };
 
 use super::helpers::*;
 
 fn test_secp256k1_access_key_signature() -> TempoSignature {
-    TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()))
+    Signature::test_signature().into()
 }
 
 fn create_admin_key_authorization(
@@ -86,7 +83,7 @@ pub(crate) struct Localnet {
     pub setup: SingleNodeSetup,
     pub provider: alloy::providers::RootProvider,
     pub chain_id: u64,
-    pub funder_signer: alloy::signers::local::LocalSigner<alloy::signers::k256::ecdsa::SigningKey>,
+    pub funder_signer: PrivateKeySigner,
     pub funder_addr: Address,
 }
 
@@ -103,7 +100,7 @@ impl Localnet {
             .await?;
         let provider = alloy::providers::RootProvider::new_http(setup.node.rpc_url());
         let chain_id = provider.get_chain_id().await?;
-        let funder_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+        let funder_signer = test_signer(0);
         let funder_addr = funder_signer.address();
         Ok(Self {
             setup,
@@ -176,8 +173,7 @@ impl super::types::TestEnv for Localnet {
         encoded: Vec<u8>,
         tx_hash: B256,
     ) -> eyre::Result<serde_json::Value> {
-        self.setup.node.rpc.inject_tx(encoded.into()).await?;
-        self.setup.node.advance_block().await?;
+        self.setup.node.inject_and_advance(encoded.into()).await?;
 
         let raw: Option<serde_json::Value> = self
             .provider
@@ -215,13 +211,11 @@ impl super::types::TestEnv for Localnet {
 
             let signature = sign_aa_tx_secp256k1(&tx, signer)?;
             let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
-            let tx_hash = *envelope.tx_hash();
-            self.setup
+            let (tx_hash, _) = self
+                .setup
                 .node
-                .rpc
-                .inject_tx(envelope.encoded_2718().into())
+                .inject_and_advance(envelope.encoded_2718().into())
                 .await?;
-            self.setup.node.advance_block().await?;
             wait_until_pool_not_contains(
                 &self.setup.node.inner.pool,
                 &tx_hash,
@@ -240,9 +234,7 @@ impl super::types::TestEnv for Localnet {
     }
 
     async fn current_block_timestamp(&mut self) -> eyre::Result<u64> {
-        for _ in 0..3 {
-            self.setup.node.advance_block().await?;
-        }
+        self.setup.node.advance_blocks(3).await?;
         let block = self
             .provider
             .get_block_by_number(Default::default())
@@ -258,22 +250,10 @@ impl super::types::TestEnv for Localnet {
     ) -> eyre::Result<serde_json::Value> {
         self.setup.node.rpc.inject_tx(encoded.into()).await?;
 
-        // Try multiple blocks — the tx may not be pending in the first block
-        // if pool maintenance hasn't processed the previous block yet.
-        for _ in 0..3 {
-            self.setup.node.advance_block().await?;
-
-            let raw: Option<serde_json::Value> = self
-                .provider
-                .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
-                .await?;
-            if let Some(receipt) = raw {
-                return Ok(receipt);
-            }
-        }
-        Err(eyre::eyre!(
-            "Transaction receipt not found for {tx_hash} after 3 blocks"
-        ))
+        // The tx may not be pending in the first block if pool maintenance hasn't processed the
+        // previous block yet.
+        let receipt = self.setup.node.advance_until_receipt(tx_hash).await?;
+        Ok(serde_json::to_value(receipt)?)
     }
 
     async fn submit_tx_sync(
@@ -281,55 +261,19 @@ impl super::types::TestEnv for Localnet {
         encoded: Vec<u8>,
         tx_hash: B256,
     ) -> eyre::Result<serde_json::Value> {
-        let sync_provider: alloy::providers::RootProvider =
-            alloy::providers::RootProvider::new_http(self.setup.node.rpc_url());
-        let encoded_for_sync = encoded;
-        let mut sync_handle = tokio::spawn(async move {
-            sync_provider
-                .raw_request::<_, serde_json::Value>(
-                    "eth_sendRawTransactionSync".into(),
-                    [encoded_for_sync],
-                )
-                .await
-        });
+        let sync = self
+            .provider
+            .raw_request::<_, serde_json::Value>("eth_sendRawTransactionSync".into(), [encoded]);
+        self.setup
+            .node
+            .advance_while(sync)
+            .await?
+            .map_err(|err| eyre::eyre!("Sync request failed: {err}"))?;
 
-        tokio::time::timeout(std::time::Duration::from_secs(30), async {
-            loop {
-                tokio::select! {
-                    res = &mut sync_handle => {
-                        let res = res.map_err(|err| eyre::eyre!("Sync task failed: {err}"))?;
-                        let _raw_result = res.map_err(|err| eyre::eyre!("Sync request failed: {err}"))?;
-                        break;
-                    }
-                    _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {
-                        self.setup
-                            .node
-                            .advance_block()
-                            .await
-                            .map_err(|err| eyre::eyre!("Advance block failed: {err}"))?;
-                    }
-                }
-            }
-            // Poll for receipt after sync completes (may not be immediately queryable)
-            for _ in 0..10 {
-                let raw: Option<serde_json::Value> = self
-                    .provider
-                    .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
-                    .await?;
-                if let Some(receipt) = raw {
-                    let status = receipt["status"]
-                        .as_str()
-                        .ok_or_else(|| eyre::eyre!("Receipt missing status field for {tx_hash}"))?;
-                    assert_eq!(status, "0x1", "Receipt status mismatch for {tx_hash}");
-                    return Ok(receipt);
-                }
-                self.setup.node.advance_block().await
-                    .map_err(|err| eyre::eyre!("Advance block failed: {err}"))?;
-            }
-            Err(eyre::eyre!("Transaction receipt not found for {tx_hash} after sync"))
-        })
-        .await
-        .map_err(|_| eyre::eyre!("eth_sendRawTransactionSync timed out"))?
+        // The receipt may not be queryable as soon as the sync request completes.
+        let receipt = self.setup.node.advance_until_receipt(tx_hash).await?;
+        assert!(receipt.status(), "Receipt status mismatch for {tx_hash}");
+        Ok(serde_json::to_value(receipt)?)
     }
 }
 
@@ -922,8 +866,6 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     // Setup test node with direct access
     let setup = TestNodeBuilder::new().build_with_node_access().await?;
 
-    let http_url = setup.node.rpc_url();
-
     // Generate the correct P256 key pair for WebAuthn
     let correct_signing_key = SigningKey::random(&mut OsRng);
     let correct_verifying_key = correct_signing_key.verifying_key();
@@ -947,13 +889,11 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
         alloy::primitives::B256::from_slice(wrong_encoded_point.y().unwrap().as_ref());
 
     // Use TEST_MNEMONIC account for provider wallet
-    let funder_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let funder_signer = test_signer(0);
 
     // Create provider with funder's wallet
     let funder_wallet = EthereumWallet::from(funder_signer.clone());
-    let provider = ProviderBuilder::new()
-        .wallet(funder_wallet)
-        .connect_http(http_url.clone());
+    let provider = setup.node.rpc_provider_with_wallet(funder_wallet);
 
     println!("\n=== Testing WebAuthn Negative Cases ===\n");
 
@@ -1030,7 +970,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     println!("✓ Signature recovery correctly failed with wrong public key");
 
     // Also verify pool rejects the transaction
-    let signed_tx1 = AASigned::new_unhashed(tx1, aa_signature1);
+    let signed_tx1 = tx1.into_signed(aa_signature1);
     let envelope1: TempoTxEnvelope = signed_tx1.into();
     let mut encoded1 = Vec::new();
     envelope1.encode_2718(&mut encoded1);
@@ -1092,7 +1032,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     );
     println!("✓ Signature recovery correctly failed with wrong private key");
 
-    let signed_tx2 = AASigned::new_unhashed(tx2, aa_signature2);
+    let signed_tx2 = tx2.into_signed(aa_signature2);
     let envelope2: TempoTxEnvelope = signed_tx2.into();
     let mut encoded2 = Vec::new();
     envelope2.encode_2718(&mut encoded2);
@@ -1115,7 +1055,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     let mut authenticator_data3 = vec![0u8; 37];
     authenticator_data3[32] = 0x01; // UP flag set
 
-    let wrong_challenge = B256::from([0xFF; 32]); // Different hash
+    let wrong_challenge = B256::repeat_byte(0xFF); // Different hash
     let wrong_challenge_b64url = URL_SAFE_NO_PAD.encode(wrong_challenge.as_slice());
     let client_data_json3 = format!(
         r#"{{"type":"webauthn.get","challenge":"{wrong_challenge_b64url}","origin":"https://example.com","crossOrigin":false}}"#
@@ -1154,7 +1094,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     );
     println!("✓ Signature recovery correctly failed with wrong challenge");
 
-    let signed_tx3 = AASigned::new_unhashed(tx3, aa_signature3);
+    let signed_tx3 = tx3.into_signed(aa_signature3);
     let envelope3: TempoTxEnvelope = signed_tx3.into();
     let mut encoded3 = Vec::new();
     envelope3.encode_2718(&mut encoded3);
@@ -1215,7 +1155,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     );
     println!("✓ Signature recovery correctly failed with wrong authenticator data");
 
-    let signed_tx4 = AASigned::new_unhashed(tx4, aa_signature4);
+    let signed_tx4 = tx4.into_signed(aa_signature4);
     let envelope4: TempoTxEnvelope = signed_tx4.into();
     let mut encoded4 = Vec::new();
     envelope4.encode_2718(&mut encoded4);
@@ -1239,7 +1179,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     let mut bad_auth_data = vec![0u8; 37];
     bad_auth_data[32] = 0x01;
 
-    let wrong_challenge = B256::from([0xAA; 32]);
+    let wrong_challenge = B256::repeat_byte(0xAA);
     let wrong_challenge_b64 = URL_SAFE_NO_PAD.encode(wrong_challenge.as_slice());
     let bad_client_data = format!(
         r#"{{"type":"webauthn.get","challenge":"{wrong_challenge_b64}","origin":"https://example.com","crossOrigin":false}}"#
@@ -1269,7 +1209,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
             pub_key_y: correct_pub_key_y,
         }));
 
-    let signed_bad_tx = AASigned::new_unhashed(bad_tx, bad_tempo_signature);
+    let signed_bad_tx = bad_tx.into_signed(bad_tempo_signature);
     let bad_envelope: TempoTxEnvelope = signed_bad_tx.into();
     let mut encoded_bad = Vec::new();
     bad_envelope.encode_2718(&mut encoded_bad);
@@ -1294,9 +1234,7 @@ async fn test_propagate_2d_transactions() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Create wallet from mnemonic
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
+    let wallet = test_signer(0);
 
     let mut setup = crate::utils::TestNodeBuilder::new()
         .with_node_count(2)
@@ -1313,8 +1251,7 @@ async fn test_propagate_2d_transactions() -> eyre::Result<()> {
     let mut tx_listener1 = node1.inner.pool.pending_transactions_listener();
     let mut tx_listener2 = node2.inner.pool.pending_transactions_listener();
 
-    let provider1 =
-        ProviderBuilder::new_with_network::<TempoNetwork>().connect_http(node1.rpc_url());
+    let provider1 = node1.rpc_provider_for::<TempoNetwork>();
     let chain_id = provider1.get_chain_id().await?;
 
     let tx = TempoTransaction {
@@ -1334,10 +1271,7 @@ async fn test_propagate_2d_transactions() -> eyre::Result<()> {
 
     let sig_hash = tx.signature_hash();
     let signature = wallet.sign_hash_sync(&sig_hash)?;
-    let signed_tx = AASigned::new_unhashed(
-        tx,
-        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
-    );
+    let signed_tx = tx.into_signed(signature.into());
     let envelope: TempoTxEnvelope = signed_tx.into();
     let encoded = envelope.encoded_2718();
 
@@ -1365,8 +1299,7 @@ async fn test_propagate_2d_transactions() -> eyre::Result<()> {
     assert_eq!(pending_hash2, *envelope.tx_hash());
 
     // check we can fetch it from the second peer now
-    let provider2 =
-        ProviderBuilder::new_with_network::<TempoNetwork>().connect_http(node2.rpc_url());
+    let provider2 = node2.rpc_provider_for::<TempoNetwork>();
     let _rpc_tx = provider2
         .get_transaction_by_hash(pending_hash2)
         .await
@@ -1381,11 +1314,11 @@ async fn test_key_authorization_witness_mines_without_burning_and_allows_reuse()
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_signer = test_signer(0);
     let root_addr = root_signer.address();
-    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-        .wallet(root_signer.clone())
-        .connect_http(setup.node.rpc_url());
+    let provider = setup
+        .node
+        .rpc_provider_with_wallet_for::<TempoNetwork, _>(root_signer.clone());
     let chain_id = provider.get_chain_id().await?;
     let witness = B256::with_last_byte(0x53);
 
@@ -1446,17 +1379,15 @@ async fn test_key_authorization_witness_burn_evicts_pending_replay() -> eyre::Re
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_signer = test_signer(0);
     let root_addr = root_signer.address();
-    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-        .wallet(root_signer.clone())
-        .connect_http(setup.node.rpc_url());
+    let provider = setup
+        .node
+        .rpc_provider_with_wallet_for::<TempoNetwork, _>(root_signer.clone());
     let chain_id = provider.get_chain_id().await?;
     let witness = B256::with_last_byte(0x54);
 
-    for _ in 0..2 {
-        setup.node.advance_block().await?;
-    }
+    setup.node.advance_blocks(2).await?;
     let current_timestamp = provider
         .get_block_by_number(Default::default())
         .await?
@@ -1504,7 +1435,7 @@ async fn test_key_authorization_witness_burn_evicts_pending_replay() -> eyre::Re
         }],
         2_000_000,
     );
-    burn_tx.nonce_key = U256::from(1);
+    burn_tx.nonce_key = U256::ONE;
     let burn_sig = sign_aa_tx_secp256k1(&burn_tx, &root_signer)?;
     submit_and_mine_aa_tx(&mut setup, burn_tx, burn_sig).await?;
 
@@ -1532,11 +1463,11 @@ async fn test_t6_authorize_admin_key_abi_e2e() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_signer = test_signer(0);
     let root_addr = root_signer.address();
-    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-        .wallet(root_signer.clone())
-        .connect_http(setup.node.rpc_url());
+    let provider = setup
+        .node
+        .rpc_provider_with_wallet_for::<TempoNetwork, _>(root_signer.clone());
     let chain_id = provider.get_chain_id().await?;
 
     let admin_signer = PrivateKeySigner::random();
@@ -1574,11 +1505,11 @@ async fn test_t6_inline_admin_key_authorization_e2e() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_signer = test_signer(0);
     let root_addr = root_signer.address();
-    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-        .wallet(root_signer.clone())
-        .connect_http(setup.node.rpc_url());
+    let provider = setup
+        .node
+        .rpc_provider_with_wallet_for::<TempoNetwork, _>(root_signer.clone());
     let chain_id = provider.get_chain_id().await?;
 
     let admin_key = PrivateKeySigner::random().address();
@@ -1609,11 +1540,11 @@ async fn test_t6_admin_key_authorizes_child_admin_key_e2e() -> eyre::Result<()> 
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_signer = test_signer(0);
     let root_addr = root_signer.address();
-    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-        .wallet(root_signer.clone())
-        .connect_http(setup.node.rpc_url());
+    let provider = setup
+        .node
+        .rpc_provider_with_wallet_for::<TempoNetwork, _>(root_signer.clone());
     let chain_id = provider.get_chain_id().await?;
 
     let admin_signer = PrivateKeySigner::random();
@@ -1659,15 +1590,11 @@ async fn test_t6_admin_key_authorization_cross_account_replay_rejected_e2e() -> 
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let alice_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let alice_signer = test_signer(0);
     let alice_addr = alice_signer.address();
-    let bob_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
+    let bob_signer = test_signer(1);
     let bob_addr = bob_signer.address();
-    let provider = ProviderBuilder::new()
-        .wallet(alice_signer.clone())
-        .connect_http(setup.node.rpc_url());
+    let provider = setup.node.rpc_provider_with_wallet(alice_signer.clone());
     let chain_id = provider.get_chain_id().await?;
 
     fund_address_with(
@@ -1722,12 +1649,12 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
 
-    let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_signer = test_signer(0);
     let root_addr = root_signer.address();
 
-    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-        .wallet(root_signer.clone())
-        .connect_http(setup.node.rpc_url());
+    let provider = setup
+        .node
+        .rpc_provider_with_wallet_for::<TempoNetwork, _>(root_signer.clone());
     let chain_id = provider.get_chain_id().await?;
 
     // Generate an access key for the attack
@@ -1782,9 +1709,7 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
     println!("\n=== STEP 2: Submit transaction with future valid_after using access key ===");
 
     // Advance a couple blocks to get a fresh timestamp
-    for _ in 0..2 {
-        setup.node.advance_block().await?;
-    }
+    setup.node.advance_blocks(2).await?;
 
     let block = provider
         .get_block_by_number(Default::default())
@@ -1864,7 +1789,7 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
         2_000_000,
     );
     revoke_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
-    revoke_tx.nonce_key = U256::from(1); // Use a different nonce key so it's independent
+    revoke_tx.nonce_key = U256::ONE; // Use a different nonce key so it's independent
 
     let revoke_sig = sign_aa_tx_secp256k1(&revoke_tx, &root_signer)?;
     submit_and_mine_aa_tx(&mut setup, revoke_tx, revoke_sig).await?;
@@ -2015,9 +1940,7 @@ async fn test_aa_expiring_nonce_replay_protection() -> eyre::Result<()> {
     let recipient = Address::random();
 
     // Advance a few blocks to get a meaningful timestamp
-    for _ in 0..3 {
-        setup.node.advance_block().await?;
-    }
+    setup.node.advance_blocks(3).await?;
 
     // Get current block timestamp
     let block = provider
@@ -2039,8 +1962,10 @@ async fn test_aa_expiring_nonce_replay_protection() -> eyre::Result<()> {
     println!("First submission - tx hash: {tx_hash}");
 
     // First submission should succeed
-    setup.node.rpc.inject_tx(encoded.clone().into()).await?;
-    setup.node.advance_block().await?;
+    setup
+        .node
+        .inject_and_advance(encoded.clone().into())
+        .await?;
 
     assert_receipt_status(&provider, tx_hash, true).await?;
     println!("✓ First submission succeeded");
@@ -2078,12 +2003,12 @@ async fn test_aa_keychain_spending_limit_toctou_dos() -> eyre::Result<()> {
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
 
-    let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_signer = test_signer(0);
     let root_addr = root_signer.address();
 
-    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-        .wallet(root_signer.clone())
-        .connect_http(setup.node.rpc_url());
+    let provider = setup
+        .node
+        .rpc_provider_with_wallet_for::<TempoNetwork, _>(root_signer.clone());
     let chain_id = provider.get_chain_id().await?;
 
     // Generate an access key for the attack
@@ -2144,9 +2069,7 @@ async fn test_aa_keychain_spending_limit_toctou_dos() -> eyre::Result<()> {
     println!("\n=== STEP 2: Submit transaction with future valid_after using access key ===");
 
     // Advance a couple blocks to get a fresh timestamp
-    for _ in 0..2 {
-        setup.node.advance_block().await?;
-    }
+    setup.node.advance_blocks(2).await?;
 
     let block = provider
         .get_block_by_number(Default::default())
@@ -2225,7 +2148,7 @@ async fn test_aa_keychain_spending_limit_toctou_dos() -> eyre::Result<()> {
         2_000_000,
     );
     update_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
-    update_tx.nonce_key = U256::from(1); // Use a different nonce key so it's independent
+    update_tx.nonce_key = U256::ONE; // Use a different nonce key so it's independent
 
     let update_sig = sign_aa_tx_secp256k1(&update_tx, &root_signer)?;
     submit_and_mine_aa_tx(&mut setup, update_tx, update_sig).await?;
@@ -2331,7 +2254,7 @@ async fn test_v1_keychain_in_auth_list_rejected_post_t1c() -> eyre::Result<()> {
     tx.tempo_authorization_list = vec![auth_signed];
 
     let outer_sig = sign_aa_tx_secp256k1(&tx, &sender_signer)?;
-    let envelope: TempoTxEnvelope = AASigned::new_unhashed(tx, outer_sig).into();
+    let envelope: TempoTxEnvelope = tx.into_signed(outer_sig).into();
 
     setup
         .node
@@ -2352,17 +2275,11 @@ async fn test_v2_keychain_blocks_cross_account_replay() -> eyre::Result<()> {
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
 
-    let alice_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
+    let alice_signer = test_signer(0);
     let alice_addr = alice_signer.address();
-    let bob_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
+    let bob_signer = test_signer(1);
     let bob_addr = bob_signer.address();
-    let provider = ProviderBuilder::new()
-        .wallet(alice_signer.clone())
-        .connect_http(setup.node.rpc_url());
+    let provider = setup.node.rpc_provider_with_wallet(alice_signer.clone());
     let chain_id = provider.get_chain_id().await?;
 
     // Shared access keys, same key authorized on both accounts
@@ -2386,11 +2303,7 @@ async fn test_v2_keychain_blocks_cross_account_replay() -> eyre::Result<()> {
     .await?;
     nonce_alice += 1;
 
-    let secp_mock = || {
-        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            alloy_primitives::Signature::test_signature(),
-        ))
-    };
+    let secp_mock = || TempoSignature::from(Signature::test_signature());
     let p256_mock = || create_mock_p256_sig(pub_x, pub_y);
 
     // Authorize both keys on Alice and Bob
@@ -2451,7 +2364,7 @@ async fn test_v2_keychain_blocks_cross_account_replay() -> eyre::Result<()> {
     );
     let inner = alice_sig.as_keychain().unwrap().signature.clone();
     let replay_sig = TempoSignature::Keychain(KeychainSignature::new(bob_addr, inner));
-    let replay_tx: TempoTxEnvelope = AASigned::new_unhashed(bob_tx, replay_sig).into();
+    let replay_tx: TempoTxEnvelope = bob_tx.into_signed(replay_sig).into();
     setup
         .node
         .rpc
@@ -2484,7 +2397,7 @@ async fn test_v2_keychain_blocks_cross_account_replay() -> eyre::Result<()> {
     );
     let inner = alice_sig.as_keychain().unwrap().signature.clone();
     let replay_sig = TempoSignature::Keychain(KeychainSignature::new(bob_addr, inner));
-    let replay_env: TempoTxEnvelope = AASigned::new_unhashed(bob_tx, replay_sig).into();
+    let replay_env: TempoTxEnvelope = bob_tx.into_signed(replay_sig).into();
     setup
         .node
         .rpc
@@ -2502,11 +2415,11 @@ async fn test_aa_keychain_v2_signature() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_signer = test_signer(0);
     let root_addr = root_signer.address();
-    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-        .wallet(root_signer.clone())
-        .connect_http(setup.node.rpc_url());
+    let provider = setup
+        .node
+        .rpc_provider_with_wallet_for::<TempoNetwork, _>(root_signer.clone());
     let chain_id = provider.get_chain_id().await?;
 
     let (access_key_signing, pub_x, pub_y, access_key_addr) = generate_p256_access_key();
@@ -2586,7 +2499,7 @@ async fn test_aa_keychain_v2_signature() -> eyre::Result<()> {
 
     assert!(v1_sig.is_legacy_keychain());
 
-    let signed_v1 = AASigned::new_unhashed(v1_tx, v1_sig);
+    let signed_v1 = v1_tx.into_signed(v1_sig);
     let envelope_v1: TempoTxEnvelope = signed_v1.into();
     let inject_result = setup
         .node
