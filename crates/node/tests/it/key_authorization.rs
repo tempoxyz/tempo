@@ -1,20 +1,17 @@
-use crate::utils::{TEST_MNEMONIC, TestNodeBuilder};
+use crate::utils::TestNodeBuilder;
 use alloy::{
     primitives::{Address, Bytes, U256},
-    providers::{Provider, ProviderBuilder},
-    signers::{SignerSync, local::MnemonicBuilder},
+    providers::Provider,
+    signers::SignerSync,
 };
 use alloy_eips::Encodable2718;
 use alloy_primitives::TxKind;
+use reth_e2e_test_utils::wallet::test_signer;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIP20};
 use tempo_primitives::{
     TempoTransaction, TempoTxEnvelope,
-    transaction::{
-        KeyAuthorization,
-        tempo_transaction::Call,
-        tt_signature::{PrimitiveSignature, TempoSignature},
-    },
+    transaction::{KeyAuthorization, tempo_transaction::Call, tt_signature::PrimitiveSignature},
 };
 
 /// Build a CREATE+KeyAuthorization tx with configurable priority fee.
@@ -57,11 +54,7 @@ fn build_create_key_auth_tx(
     };
 
     let tx_sig = signer.sign_hash_sync(&tx.signature_hash())?;
-    let envelope: TempoTxEnvelope = tx
-        .into_signed(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            tx_sig,
-        )))
-        .into();
+    let envelope: TempoTxEnvelope = tx.into_signed(tx_sig.into()).into();
 
     Ok(envelope.encoded_2718())
 }
@@ -76,9 +69,9 @@ async fn test_post_t1b_keyauth_oog_fixed() -> eyre::Result<()> {
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
 
-    let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let signer = test_signer(0);
     let signer_addr = signer.address();
-    let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
+    let provider = setup.node.rpc_provider();
 
     let chain_id = provider.get_chain_id().await?;
     let nonce = provider.get_transaction_count(signer_addr).await?;

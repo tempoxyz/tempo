@@ -45,7 +45,7 @@ for (const [workflow, prefix] of [
         const summary = { addHeading() { return this; }, addTable() { return this; }, async write() {} };
         await vm.runInNewContext(`(async () => {${script}\n})()`, {
           process: { env: { PR_NUMBER: number, BRANCH_NAME: branch } },
-          context: { sha: 'a'.repeat(40), repo: { owner: 'tempoxyz', repo: 'tempo' } },
+          context: { payload: {}, sha: 'a'.repeat(40), repo: { owner: 'tempoxyz', repo: 'tempo' } },
           core: { setOutput: (key, value) => { outputs[key] = value; }, summary },
           github: { rest: { pulls: { get: async () => {
             lookups++;
@@ -70,6 +70,36 @@ for (const [workflow, prefix] of [
       `  group: ${prefix}-` + "${{ inputs.pr_number && format('pr-{0}', inputs.pr_number) || format('run-{0}', github.run_id) }}",
       "  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' && inputs.pr_number != '' }}",
     ].join('\n'));
+  });
+}
+
+for (const event of ['pull_request', 'merge_group', 'fork']) {
+  test(`docker.yml resolves the ${event} event without a source input`, async () => {
+    const build = fs.readFileSync(path.join(__dirname, '../workflows/docker.yml'), 'utf8');
+    const step = build.split('      - name: Resolve build source\n')[1].split('\n      - name: ')[0];
+    const script = step.split('          script: |\n')[1].split('\n')
+      .map(line => line.replace(/^ {12}/, '')).join('\n');
+    const head = 'b'.repeat(40);
+    const merge = 'a'.repeat(40);
+    const payload = event === 'merge_group' ? { merge_group: { head_sha: merge } } : {
+      pull_request: { head: { sha: head, repo: { full_name: event === 'fork' ? 'fork/tempo' : 'tempoxyz/tempo' } } },
+    };
+    const outputs = {};
+    const summary = { addHeading() { return this; }, addTable() { return this; }, async write() {} };
+    const result = vm.runInNewContext(`(async () => {${script}\n})()`, {
+      process: { env: { PR_NUMBER: '', BRANCH_NAME: 'feature' } },
+      context: { payload, sha: merge, repo: { owner: 'tempoxyz', repo: 'tempo' } },
+      core: { setOutput: (key, value) => { outputs[key] = value; }, summary },
+    });
+    if (event === 'fork') {
+      await assert.rejects(result, /not forks/);
+    } else {
+      await result;
+      const expected = event === 'pull_request' ? head : merge;
+      assert.equal(outputs.sha, expected);
+      assert.equal(outputs.short_sha, expected.slice(0, 7));
+      assert.equal(outputs.revision_label, event === 'pull_request' ? `org.opencontainers.image.revision=${head}` : '');
+    }
   });
 }
 

@@ -27,10 +27,7 @@ use futures::{StreamExt, future::BoxFuture};
 use reth_chainspec::EthChainSpec;
 use reth_db::mdbx::DatabaseEnv;
 use reth_ethereum::{
-    evm::{
-        primitives::EvmEnv,
-        revm::db::{CacheDB, EmptyDB},
-    },
+    evm::{primitives::EvmEnv, revm::db::InMemoryDB},
     network::{
         Peers as _,
         api::{NetworkEventListenerProvider, PeerKind, PeersInfo, events::NetworkEvent},
@@ -392,7 +389,7 @@ impl ExecutionRuntime {
                                     egress.to_string(),
                                     fee_recipient,
                                     sign_add_validator_args(
-                                        EthChainSpec::chain(&chain_spec).id(),
+                                        chain_spec.chain_id(),
                                         &private_key,
                                         address,
                                         ingress,
@@ -480,7 +477,7 @@ impl ExecutionRuntime {
                                     ingress.to_string(),
                                     egress.to_string(),
                                     sign_rotate_validator_args(
-                                        EthChainSpec::chain(&chain_spec).id(),
+                                        chain_spec.chain_id(),
                                         &private_key,
                                         address,
                                         ingress,
@@ -803,6 +800,8 @@ pub struct ExecutionNode {
     /// The consensus layer takes this when it starts. It carries receivers, so
     /// only one consensus instance can own it.
     pub gossip: Option<tempo_node::gossip::TransportHandle>,
+    /// Reads the state of blocks that this node's engine has executed.
+    pub executed_state: tempo_node::ExecutedState,
 }
 
 impl ExecutionNode {
@@ -958,6 +957,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
         Some(protocol) => tempo_node.with_finalization_cert_gossip(protocol),
         None => tempo_node,
     };
+    let executed_state = tempo_node.executed_state();
 
     let database = tempo_node::storage::TempoDatabase::new(
         database,
@@ -994,6 +994,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
         runtime,
         exit_fut: node_handle.node_exit_future,
         gossip: gossip_transport,
+        executed_state,
     })
 }
 
@@ -1116,8 +1117,8 @@ pub fn address(index: u32) -> Address {
     secret_key_to_address(MnemonicBuilder::from_phrase_nth(TEST_MNEMONIC, index).credential())
 }
 
-fn setup_tempo_evm(chain_id: u64) -> TempoEvm<CacheDB<EmptyDB>> {
-    let db = CacheDB::default();
+fn setup_tempo_evm(chain_id: u64) -> TempoEvm<InMemoryDB> {
+    let db = InMemoryDB::default();
     // revm sets timestamp to 1 by default, override it to 0 for genesis initializations
     let mut env = EvmEnv::default().with_timestamp(U256::ZERO);
     env.cfg_env.chain_id = chain_id;

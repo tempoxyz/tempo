@@ -230,13 +230,13 @@ mod tests {
         let address = Address::repeat_byte(0x42);
         let key = U256::from(7);
 
-        actions.record(StorageAction::Sload(address, key, U256::from(1)));
+        actions.record(StorageAction::Sload(address, key, U256::ONE));
 
         actions.unrecorded(|| {
             actions.record(StorageAction::Sstore(
                 address,
                 key,
-                U256::from(1),
+                U256::ONE,
                 U256::from(2),
             ));
 
@@ -261,16 +261,16 @@ mod tests {
         actions.record(StorageAction::Sstore(
             address,
             key,
-            U256::from(1),
+            U256::ONE,
             U256::from(8),
         ));
 
         assert_eq!(
             actions.take(),
             Some(vec![
-                StorageAction::Sload(address, key, U256::from(1)),
+                StorageAction::Sload(address, key, U256::ONE),
                 StorageAction::FeeAmmSwap(key, U256::from(3), U256::from(4)),
-                StorageAction::Sstore(address, key, U256::from(1), U256::from(8)),
+                StorageAction::Sstore(address, key, U256::ONE, U256::from(8)),
             ])
         );
     }
@@ -282,13 +282,13 @@ mod tests {
         let key = U256::from(7);
 
         actions.unrecorded(|| {
-            actions.record(StorageAction::Sload(address, key, U256::from(1)));
+            actions.record(StorageAction::Sload(address, key, U256::ONE));
 
             actions.recorded(|| {
                 actions.record(StorageAction::Sstore(
                     address,
                     key,
-                    U256::from(1),
+                    U256::ONE,
                     U256::from(2),
                 ));
 
@@ -315,16 +315,16 @@ mod tests {
         actions.record(StorageAction::Sstore(
             address,
             key,
-            U256::from(1),
+            U256::ONE,
             U256::from(8),
         ));
 
         assert_eq!(
             actions.take(),
             Some(vec![
-                StorageAction::Sstore(address, key, U256::from(1), U256::from(2)),
+                StorageAction::Sstore(address, key, U256::ONE, U256::from(2)),
                 StorageAction::Sdec(address, key, U256::from(5), U256::from(6)),
-                StorageAction::Sstore(address, key, U256::from(1), U256::from(8)),
+                StorageAction::Sstore(address, key, U256::ONE, U256::from(8)),
             ])
         );
     }

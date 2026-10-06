@@ -263,7 +263,7 @@ impl AASigned {
         // Parse signature
         let signature = TempoSignature::from_bytes(sig_bytes).map_err(alloy_rlp::Error::Custom)?;
 
-        Ok(Self::new_unhashed(tx, signature))
+        Ok(tx.into_signed(signature))
     }
 }
 
@@ -445,7 +445,7 @@ impl<'a> arbitrary::Arbitrary<'a> for AASigned {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
         let tx = TempoTransaction::arbitrary(u)?;
         let signature = TempoSignature::arbitrary(u)?;
-        Ok(Self::new_unhashed(tx, signature))
+        Ok(tx.into_signed(signature))
     }
 }
 
@@ -498,10 +498,7 @@ mod serde_impl {
 
     #[cfg(test)]
     mod tests {
-        use crate::transaction::{
-            tempo_transaction::{Call, TempoTransaction},
-            tt_signature::{PrimitiveSignature, TempoSignature},
-        };
+        use crate::transaction::tempo_transaction::{Call, TempoTransaction};
         use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
 
         #[test]
@@ -524,11 +521,7 @@ mod serde_impl {
             };
 
             // Create a secp256k1 signature
-            let signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-                Signature::test_signature(),
-            ));
-
-            let aa_signed = super::super::AASigned::new_unhashed(tx, signature);
+            let aa_signed = tx.into_signed(Signature::test_signature().into());
 
             // Serialize to JSON
             let json = serde_json::to_string_pretty(&aa_signed).unwrap();
@@ -555,7 +548,6 @@ pub(crate) mod tests {
     use crate::transaction::{
         tempo_transaction::Call,
         tt_authorization::tests::{generate_secp256k1_keypair, sign_hash},
-        tt_signature::PrimitiveSignature,
     };
     use alloy_consensus::transaction::SignerRecoverable;
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
@@ -581,8 +573,8 @@ pub(crate) mod tests {
         let signer = PrivateKeySigner::from_bytes(&B256::with_last_byte(1)).unwrap();
         let signature = sign_hash(&signer, &tx.signature_hash());
         (
-            AASigned::new_unhashed(tx.clone(), signature.clone()),
-            AASigned::new_unhashed(tx, signature),
+            tx.clone().into_signed(signature.clone()),
+            tx.into_signed(signature),
         )
     }
 
@@ -666,8 +658,7 @@ pub(crate) mod tests {
     #[test]
     fn test_hash_and_transaction_trait() {
         let tx = make_tx();
-        let sig =
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let sig = TempoSignature::from(Signature::test_signature());
 
         // new_unhashed: hash not computed yet
         let signed = AASigned::new_unhashed(tx.clone(), sig.clone());
@@ -701,9 +692,7 @@ pub(crate) mod tests {
         use alloy_eips::eip2718::Encodable2718;
 
         let tx = make_tx();
-        let sig =
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
-        let signed = AASigned::new_unhashed(tx, sig);
+        let signed = tx.into_signed(Signature::test_signature().into());
 
         // Encode
         let mut buf = Vec::new();
@@ -783,15 +772,14 @@ pub(crate) mod tests {
             }
         };
 
-        let sig =
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let sig = TempoSignature::from(Signature::test_signature());
 
         // Two txs identical except for fee_payer_signature
-        let tx1 = make_sponsored_tx(Signature::new(U256::from(1), U256::from(2), false));
+        let tx1 = make_sponsored_tx(Signature::new(U256::ONE, U256::from(2), false));
         let tx2 = make_sponsored_tx(Signature::new(U256::from(3), U256::from(4), true));
 
-        let signed1 = AASigned::new_unhashed(tx1, sig.clone());
-        let signed2 = AASigned::new_unhashed(tx2, sig);
+        let signed1 = tx1.into_signed(sig.clone());
+        let signed2 = tx2.into_signed(sig);
 
         // tx_hash MUST differ (fee_payer_signature is part of the envelope)
         assert_ne!(signed1.hash(), signed2.hash(), "tx hashes must differ");
@@ -824,10 +812,9 @@ pub(crate) mod tests {
         };
         let mut discriminated_tx = tx.clone();
         discriminated_tx.nonce = 1;
-        let sig =
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
-        let signed = AASigned::new_unhashed(tx, sig.clone());
-        let discriminated = AASigned::new_unhashed(discriminated_tx, sig);
+        let sig = TempoSignature::from(Signature::test_signature());
+        let signed = tx.into_signed(sig.clone());
+        let discriminated = discriminated_tx.into_signed(sig);
 
         assert_ne!(signed.signature_hash(), discriminated.signature_hash());
         assert_ne!(signed.hash(), discriminated.hash());
@@ -852,9 +839,7 @@ pub(crate) mod tests {
             }],
             ..Default::default()
         };
-        let sig =
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
-        let signed = AASigned::new_unhashed(tx, sig);
+        let signed = tx.into_signed(Signature::test_signature().into());
 
         let sender_a = Address::repeat_byte(0x01);
         let sender_b = Address::repeat_byte(0x02);
@@ -869,9 +854,7 @@ pub(crate) mod tests {
     #[test]
     fn test_expiring_nonce_hash_deterministic() {
         let tx = make_tx();
-        let sig =
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
-        let signed = AASigned::new_unhashed(tx, sig);
+        let signed = tx.into_signed(Signature::test_signature().into());
         let sender = Address::repeat_byte(0xAB);
 
         let h1 = signed.expiring_nonce_hash(sender);
@@ -886,14 +869,12 @@ pub(crate) mod tests {
         let tx = make_tx();
 
         // Create signed transaction with placeholder sig to get sig_hash
-        let placeholder =
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
-        let temp_signed = AASigned::new_unhashed(tx.clone(), placeholder);
+        let temp_signed = tx.clone().into_signed(Signature::test_signature().into());
         let sig_hash = temp_signed.signature_hash();
 
         // Sign the correct hash
         let signature = sign_hash(&signing_key, &sig_hash);
-        let signed = AASigned::new_unhashed(tx.clone(), signature);
+        let signed = tx.clone().into_signed(signature);
 
         // Recovery should succeed with correct address
         let recovered = signed.recover_signer().unwrap();
@@ -905,7 +886,7 @@ pub(crate) mod tests {
 
         // Wrong signature yields wrong address
         let wrong_sig = sign_hash(&signing_key, &B256::random());
-        let bad_signed = AASigned::new_unhashed(tx, wrong_sig);
+        let bad_signed = tx.into_signed(wrong_sig);
         let bad_recovered = bad_signed.recover_signer().unwrap();
         assert_ne!(bad_recovered, expected_address);
     }
@@ -917,13 +898,11 @@ pub(crate) mod tests {
         let mut tx = make_tx();
         tx.nonce_key = U256::MAX;
 
-        let placeholder =
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
-        let temp_signed = AASigned::new_unhashed(tx.clone(), placeholder);
+        let temp_signed = tx.clone().into_signed(Signature::test_signature().into());
         let sig_hash = temp_signed.signature_hash();
 
         let signature = sign_hash(&signing_key, &sig_hash);
-        let signed = AASigned::new_unhashed(tx, signature);
+        let signed = tx.into_signed(signature);
 
         let (recovered, expiring_nonce_hash) =
             signed.recover_signer_with_expiring_nonce_hash().unwrap();
@@ -941,13 +920,11 @@ pub(crate) mod tests {
 
         let tx = make_tx();
 
-        let placeholder =
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
-        let temp_signed = AASigned::new_unhashed(tx.clone(), placeholder);
+        let temp_signed = tx.clone().into_signed(Signature::test_signature().into());
         let sig_hash = temp_signed.signature_hash();
 
         let signature = sign_hash(&signing_key, &sig_hash);
-        let signed = AASigned::new_unhashed(tx, signature);
+        let signed = tx.into_signed(signature);
 
         let (recovered, expiring_nonce_hash) =
             signed.recover_signer_with_expiring_nonce_hash().unwrap();
@@ -961,7 +938,7 @@ pub(crate) mod tests {
             tx in arb_tempo_tx(),
             signature in arb::<TempoSignature>(),
         ) {
-            let signed = AASigned::new_unhashed(tx, signature);
+            let signed = tx.into_signed(signature);
             let mut encoded = vec![0; signed.eip2718_encoded_length()];
             let mut remaining = encoded.as_mut_slice();
             signed.eip2718_encode(&mut remaining);

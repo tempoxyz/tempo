@@ -74,9 +74,12 @@ use super::ingress::{Content, Message};
 const REPLAY_BUFFER: NonZeroUsize = NZUsize!(8 * 1024 * 1024); // 8MB
 const WRITE_BUFFER: NonZeroUsize = NZUsize!(1024 * 1024); // 1MB
 
-pub(crate) struct Actor<TContext, TBlocker> {
+pub(crate) struct Actor<TContext, TBlocker>
+where
+    TContext: Rng + Spawner + commonware_runtime::Metrics + Clock,
+{
     active_epochs: BTreeMap<Epoch, Handle<()>>,
-    config: super::Config<TBlocker>,
+    config: super::Config<TContext, TBlocker>,
     context: ContextCell<TContext>,
     mailbox: mpsc::UnboundedReceiver<Message>,
     metrics: Metrics,
@@ -97,7 +100,7 @@ where
         + Network,
 {
     pub(super) fn new(
-        config: super::Config<TBlocker>,
+        config: super::Config<TContext, TBlocker>,
         context: TContext,
         mailbox: mpsc::UnboundedReceiver<Message>,
     ) -> Self {
@@ -378,6 +381,12 @@ where
         });
 
         let engine_ctx = self.context.child("simplex").with_attribute("epoch", epoch);
+        let vote = vote_mux.register(epoch.get()).await.unwrap();
+        let certificate = certificates_mux.register(epoch.get()).await.unwrap();
+        let resolver = resolver_mux.register(epoch.get()).await.unwrap();
+
+        info!(mode = %self.config.verification_mode, "starting simplex engine");
+
         let engine = simplex::Engine::new(
             engine_ctx,
             simplex::Config {
@@ -414,16 +423,11 @@ where
                 forward: commonware_consensus::simplex::config::ForwardPolicy::Disabled,
                 track_historical_votes: true,
             },
-        );
-
-        let vote = vote_mux.register(epoch.get()).await.unwrap();
-        let certificate = certificates_mux.register(epoch.get()).await.unwrap();
-        let resolver = resolver_mux.register(epoch.get()).await.unwrap();
+        )
+        .start(vote, certificate, resolver);
 
         assert!(
-            self.active_epochs
-                .insert(epoch, engine.start(vote, certificate, resolver))
-                .is_none(),
+            self.active_epochs.insert(epoch, engine).is_none(),
             "there must be no other active engine running: this was ensured at \
             the beginning of this method",
         );

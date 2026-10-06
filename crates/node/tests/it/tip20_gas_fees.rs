@@ -1,12 +1,13 @@
 use alloy::{
     primitives::{Address, U256},
     providers::{Provider, ProviderBuilder},
-    signers::local::{MnemonicBuilder, PrivateKeySigner},
+    signers::local::PrivateKeySigner,
     sol_types::SolEvent,
 };
 use alloy_network::{ReceiptResponse, TransactionBuilder};
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::TransactionRequest;
+use reth_e2e_test_utils::wallet::test_signer;
 use std::env;
 use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_contracts::precompiles::{IFeeManager, ITIP20};
@@ -26,7 +27,7 @@ async fn test_fee_in_stable() -> eyre::Result<()> {
     };
     let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
@@ -53,14 +54,14 @@ async fn test_fee_in_stable() -> eyre::Result<()> {
     let balance_after = fee_token.balanceOf(caller).call().await?;
 
     let cost = calc_gas_balance_spending(receipt.gas_used, receipt.effective_gas_price());
-    assert_eq!(balance_after, initial_balance - U256::from(cost));
+    assert_eq!(balance_after, initial_balance - cost);
 
     assert!(receipt.status());
     assert_eq!(receipt.logs().len(), 1);
     let transfer = ITIP20::Transfer::decode_log(&receipt.logs()[0].inner)?;
     assert_eq!(transfer.from, caller);
     assert_eq!(transfer.to, TIP_FEE_MANAGER_ADDRESS);
-    assert_eq!(transfer.amount, U256::from(cost));
+    assert_eq!(transfer.amount, cost);
     assert_eq!(receipt.fee_token, Some(fee_token_address));
 
     Ok(())
@@ -73,7 +74,7 @@ async fn test_default_fee_token() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let caller = wallet.address();
     let provider = ProviderBuilder::new()
         .wallet(wallet)
@@ -120,14 +121,14 @@ async fn test_default_fee_token() -> eyre::Result<()> {
     // Assert that the fee token balance has decreased by gas spent
     let balance_after = path_usd.balanceOf(new_address).call().await?;
     let cost = calc_gas_balance_spending(receipt.gas_used, receipt.effective_gas_price());
-    assert_eq!(balance_after, initial_balance - U256::from(cost));
+    assert_eq!(balance_after, initial_balance - cost);
 
     assert!(receipt.status());
     assert_eq!(receipt.logs().len(), 1);
     let transfer = ITIP20::Transfer::decode_log(&receipt.logs()[0].inner)?;
     assert_eq!(transfer.from, new_address);
     assert_eq!(transfer.to, TIP_FEE_MANAGER_ADDRESS);
-    assert_eq!(transfer.amount, U256::from(cost));
+    assert_eq!(transfer.amount, cost);
     assert_eq!(receipt.fee_token, Some(PATH_USD_ADDRESS));
 
     Ok(())
@@ -144,7 +145,7 @@ async fn test_fee_transfer_logs() -> eyre::Result<()> {
     };
     let (http_url, _local_node) = crate::utils::setup_test_node(source).await?;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
@@ -173,14 +174,14 @@ async fn test_fee_transfer_logs() -> eyre::Result<()> {
     let balance_after = fee_token.balanceOf(caller).call().await?;
 
     let cost = calc_gas_balance_spending(receipt.gas_used, receipt.effective_gas_price());
-    assert_eq!(balance_after, initial_balance - U256::from(cost));
+    assert_eq!(balance_after, initial_balance - cost);
 
     assert!(!receipt.status());
     assert_eq!(receipt.logs().len(), 1);
     let transfer = ITIP20::Transfer::decode_log(&receipt.logs()[0].inner)?;
     assert_eq!(transfer.from, caller);
     assert_eq!(transfer.to, TIP_FEE_MANAGER_ADDRESS);
-    assert_eq!(transfer.amount, U256::from(cost));
+    assert_eq!(transfer.amount, cost);
     assert_eq!(receipt.fee_token, Some(fee_token_address));
 
     Ok(())
