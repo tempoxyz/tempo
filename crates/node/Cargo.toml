@@ -18,7 +18,7 @@ workspace = true
 [dependencies]
 # qmdb
 reth-qmdb = { workspace = true, optional = true }
-reth-engine-tree = { workspace = true, optional = true }
+reth-engine-tree.workspace = true
 reth-chain-state = { workspace = true, optional = true }
 reth-trie-common = { workspace = true, optional = true }
 reth-trie-parallel = { workspace = true, optional = true }
@@ -125,7 +125,7 @@ vergen-git2.workspace = true
 
 [features]
 default = []
-qmdb = ["dep:reth-qmdb", "dep:reth-engine-tree", "dep:reth-chain-state", "dep:reth-trie-common", "dep:reth-trie-parallel", "dep:tracing"]
+qmdb = ["dep:reth-qmdb", "dep:reth-chain-state", "dep:reth-trie-common", "dep:reth-trie-parallel", "dep:tracing"]
 
 asm-keccak = [
 	"alloy/asm-keccak",

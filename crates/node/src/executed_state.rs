@@ -116,7 +116,14 @@ impl TempoEngineTreeValidatorBuilder {
 impl<Node> EngineValidatorBuilder<Node> for TempoEngineTreeValidatorBuilder
 where
     Node: FullNodeComponents<Types = TempoNode>,
-    BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>: EngineValidatorBuilder<Node>,
+    BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>: EngineValidatorBuilder<
+            Node,
+            EngineValidator = reth_engine_tree::tree::BasicEngineValidator<
+                Node::Provider,
+                Node::Evm,
+                crate::engine::TempoEngineValidator,
+            >,
+        >,
 {
     type EngineValidator =
         <BasicEngineValidatorBuilder<TempoEngineValidatorBuilder> as EngineValidatorBuilder<
