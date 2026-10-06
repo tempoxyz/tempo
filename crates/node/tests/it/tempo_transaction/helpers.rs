@@ -14,17 +14,15 @@ use alloy::{
     sol_types::SolCall,
     transports::{RpcError, TransportErrorKind},
 };
-use alloy_eips::Encodable2718;
 use alloy_primitives::TxKind;
 use core::num::NonZeroU64;
 use eyre::WrapErr;
-use reth_primitives_traits::transaction::TxHashRef;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
 use tempo_node::rpc::TempoTransactionRequest;
 use tempo_precompiles::tip20::ITIP20::{self, transferCall};
 use tempo_primitives::{
-    SignatureType, TempoTransaction, TempoTxEnvelope,
+    SignatureType, TempoTransaction,
     transaction::{
         CallScope, KeyAuthorization, SelectorRule, SignedKeyAuthorization,
         TEMPO_EXPIRING_NONCE_KEY, TokenLimit,
@@ -210,13 +208,12 @@ pub(super) async fn fund_address_with(
 
     // Sign and mine the funding transaction
     let signature = funder_signer.sign_hash_sync(&funding_tx.signature_hash())?;
-    let funding_envelope: TempoTxEnvelope = funding_tx.into_signed(signature.into()).into();
-    let expected_hash = *funding_envelope.tx_hash();
+    let funding_tx = funding_tx.into_signed(signature.into());
+    let expected_hash = *funding_tx.hash();
     let mined = setup
         .node
-        .mine([funding_envelope.encoded_2718().into()])
-        .await?
-        .ensure_success()
+        .mine_signed([funding_tx])
+        .await
         .wrap_err_with(|| format!("funding {recipient} failed, funder may be out of tokens"))?;
     assert_eq!(
         mined.receipts[0].transaction_hash, expected_hash,
@@ -478,22 +475,6 @@ fn create_key_authorization_inner(
     Ok(key_auth.into_signed(PrimitiveSignature::Secp256k1(root_auth_signature)))
 }
 
-/// Mines the AA transaction signed with `signature` alone in the next block, failing if it is not
-/// included or reverts.
-pub(super) async fn submit_and_mine_aa_tx(
-    setup: &mut SingleNodeSetup,
-    tx: TempoTransaction,
-    signature: TempoSignature,
-) -> eyre::Result<()> {
-    let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
-    setup
-        .node
-        .mine([envelope.encoded_2718().into()])
-        .await?
-        .ensure_success()?;
-    Ok(())
-}
-
 /// Authorize an access key on an account: creates the key authorization, wraps it
 /// in a tx signed by the root key, submits and mines it.
 pub(super) async fn authorize_access_key(
@@ -521,7 +502,7 @@ pub(super) async fn authorize_access_key(
     );
     tx.key_authorization = Some(auth);
     let sig = sign_aa_tx_secp256k1(&tx, root_signer)?;
-    submit_and_mine_aa_tx(setup, tx, sig).await?;
+    setup.node.mine_signed([tx.into_signed(sig)]).await?;
     Ok(())
 }
 
