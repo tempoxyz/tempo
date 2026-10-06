@@ -11,11 +11,7 @@ use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIP20};
 use tempo_primitives::{
     TempoTransaction, TempoTxEnvelope,
-    transaction::{
-        KeyAuthorization,
-        tempo_transaction::Call,
-        tt_signature::{PrimitiveSignature, TempoSignature},
-    },
+    transaction::{KeyAuthorization, tempo_transaction::Call, tt_signature::PrimitiveSignature},
 };
 
 /// Build a CREATE+KeyAuthorization tx with configurable priority fee.
@@ -58,11 +54,7 @@ fn build_create_key_auth_tx(
     };
 
     let tx_sig = signer.sign_hash_sync(&tx.signature_hash())?;
-    let envelope: TempoTxEnvelope = tx
-        .into_signed(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            tx_sig,
-        )))
-        .into();
+    let envelope: TempoTxEnvelope = tx.into_signed(tx_sig.into()).into();
 
     Ok(envelope.encoded_2718())
 }
