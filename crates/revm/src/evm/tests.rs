@@ -14,7 +14,7 @@ use revm::{
     bytecode::opcode,
     context::{
         CfgEnv, ContextTr, TxEnv,
-        result::{ExecutionResult, HaltReason},
+        result::{EVMError, ExecutionResult, HaltReason},
     },
     database::InMemoryDB,
     handler::system_call::SystemCallEvm,
@@ -23,14 +23,23 @@ use revm::{
 };
 use sha2::{Digest, Sha256};
 use tempo_chainspec::{constants::gas::STORAGE_CREDIT_VALUE, hardfork::TempoHardfork};
-use tempo_contracts::precompiles::IStorageCredits::{self, Mode};
+use tempo_contracts::precompiles::{
+    IFeeManager,
+    IStorageCredits::{self, Mode},
+    OUSD_ADDRESS,
+};
 use tempo_precompiles::{
     AuthorizedKey, DelegateCallNotAllowed, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
     STORAGE_CREDITS_ADDRESS,
+    error::TempoPrecompileError,
     nonce::NonceManager,
-    storage::{FromWord, Handler, StorageCtx, evm::EvmPrecompileStorageProvider},
+    storage::{
+        ContractStorage, FromWord, Handler, StorageActions, StorageCtx,
+        evm::EvmPrecompileStorageProvider,
+    },
     storage_credits::{CreditMode, StorageCredits},
     test_util::TIP20Setup,
+    tip_fee_manager::TipFeeManager,
     tip20::{ITIP20, TIP20Token},
 };
 use tempo_primitives::{
@@ -4579,4 +4588,249 @@ fn test_aa_tx_transfer_calls_format_no_extra_250k() -> eyre::Result<()> {
     );
 
     Ok(())
+}
+
+fn create_fee_fallback_evm(
+    balances: [u64; 2],
+    validator_token_index: usize,
+) -> eyre::Result<(TempoEvm<InMemoryDB, ()>, TempoTxEnv, [Address; 2])> {
+    let payer = Address::random();
+    let validator = Address::random();
+    let mut evm = create_funded_evm_at_spec_with_timestamp(payer, 1_000, TempoHardfork::T13);
+    evm.ctx.block.beneficiary = validator;
+    let tokens = StorageCtx::enter_ctx(&mut evm.ctx, StorageActions::disabled(), || {
+        let first = TIP20Setup::path_usd(payer)
+            .with_issuer(payer)
+            .with_role(payer, tempo_precompiles::tip20::PAUSE_ROLE)
+            .with_mint(payer, U256::from(balances[0]))
+            .apply()?;
+        TIP20Token::from_address(OUSD_ADDRESS)?.initialize(
+            tempo_contracts::precompiles::TIP20_FACTORY_ADDRESS,
+            "OpenUSD",
+            "OUSD",
+            "USD",
+            PATH_USD_ADDRESS,
+            payer,
+        )?;
+        let second = TIP20Setup::config(OUSD_ADDRESS)
+            .with_admin(payer)
+            .with_issuer(payer)
+            .with_mint(payer, U256::from(balances[1]))
+            .apply()?;
+        let tokens = [first.address(), second.address()];
+        assert_eq!(tokens.as_slice(), TempoHardfork::T13.fallback_fee_tokens());
+        TipFeeManager::new().set_validator_token(
+            validator,
+            IFeeManager::setValidatorTokenCall {
+                token: tokens[validator_token_index],
+            },
+            payer,
+        )?;
+        Ok::<_, TempoPrecompileError>(tokens)
+    })?;
+    let tx = TempoTxEnv {
+        inner: TxEnv {
+            caller: payer,
+            kind: IDENTITY_PRECOMPILE.into(),
+            gas_limit: 1_000_000,
+            // One TIP-20 base unit per gas.
+            gas_price: 1_000_000_000_000,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    Ok((evm, tx, tokens))
+}
+
+fn assert_fee_fallback_balances(
+    evm: &mut TempoEvm<InMemoryDB, ()>,
+    payer: Address,
+    tokens: [Address; 2],
+    expected: [u64; 2],
+) -> eyre::Result<()> {
+    StorageCtx::enter_ctx(&mut evm.ctx, StorageActions::disabled(), || {
+        for (token, expected) in tokens.into_iter().zip(expected) {
+            let balance = TIP20Token::from_address(token)?
+                .balance_of(ITIP20::balanceOfCall { account: payer })?;
+            assert_eq!(balance, U256::from(expected));
+        }
+        Ok::<_, TempoPrecompileError>(())
+    })?;
+    Ok(())
+}
+
+#[test]
+fn test_fee_fallback_first_funded_token_pays() -> eyre::Result<()> {
+    let (mut evm, tx, tokens) = create_fee_fallback_evm([2_000_000, 3_000_000], 0)?;
+    let payer = tx.inner.caller;
+    let result = evm.transact_commit(tx)?;
+    assert!(result.is_success());
+    assert!(result.tx_gas_used() > 0);
+    assert_fee_fallback_balances(
+        &mut evm,
+        payer,
+        tokens,
+        [2_000_000 - result.tx_gas_used(), 3_000_000],
+    )
+}
+
+#[test]
+fn test_fee_fallback_skips_underfunded_token() -> eyre::Result<()> {
+    let (mut evm, tx, tokens) = create_fee_fallback_evm([999_999, 2_000_000], 1)?;
+    let payer = tx.inner.caller;
+    let result = evm.transact_commit(tx)?;
+    assert!(result.is_success());
+    assert!(result.tx_gas_used() > 0);
+    assert_fee_fallback_balances(
+        &mut evm,
+        payer,
+        tokens,
+        [999_999, 2_000_000 - result.tx_gas_used()],
+    )
+}
+
+#[test]
+fn test_fee_fallback_exact_balance_is_enough() -> eyre::Result<()> {
+    let (mut evm, tx, tokens) = create_fee_fallback_evm([1_000_000, 2_000_000], 0)?;
+    let payer = tx.inner.caller;
+    let result = evm.transact_commit(tx)?;
+    assert!(result.is_success());
+    assert!(result.tx_gas_used() > 0 && result.tx_gas_used() < 1_000_000);
+    assert_fee_fallback_balances(
+        &mut evm,
+        payer,
+        tokens,
+        [1_000_000 - result.tx_gas_used(), 2_000_000],
+    )
+}
+
+#[test]
+fn test_fee_fallback_does_not_combine_balances() -> eyre::Result<()> {
+    let (mut evm, tx, _) = create_fee_fallback_evm([600_000, 700_000], 1)?;
+    assert!(matches!(evm.transact_commit(tx),
+        Err(EVMError::Transaction(TempoInvalidTransaction::EthInvalidTransaction(
+            InvalidTransaction::LackOfFundForMaxFee { fee, balance }
+        ))) if *fee == U256::from(1_000_000) && *balance == U256::from(700_000)
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_fee_fallback_does_not_replace_explicit_token() -> eyre::Result<()> {
+    let (mut evm, mut tx, tokens) = create_fee_fallback_evm([999_999, 2_000_000], 1)?;
+    tx.fee_token = Some(tokens[0]);
+    assert!(matches!(evm.transact_commit(tx),
+        Err(EVMError::Transaction(TempoInvalidTransaction::EthInvalidTransaction(
+            InvalidTransaction::LackOfFundForMaxFee { fee, balance }
+        ))) if *fee == U256::from(1_000_000) && *balance == U256::from(999_999)
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_fee_fallback_does_not_replace_preferred_token() -> eyre::Result<()> {
+    let (mut evm, tx, tokens) = create_fee_fallback_evm([999_999, 2_000_000], 1)?;
+    StorageCtx::enter_ctx(&mut evm.ctx, StorageActions::disabled(), || {
+        TipFeeManager::new().set_user_token(
+            tx.inner.caller,
+            IFeeManager::setUserTokenCall { token: tokens[0] },
+        )
+    })?;
+    assert!(matches!(evm.transact_commit(tx),
+        Err(EVMError::Transaction(TempoInvalidTransaction::EthInvalidTransaction(
+            InvalidTransaction::LackOfFundForMaxFee { fee, balance }
+        ))) if *fee == U256::from(1_000_000) && *balance == U256::from(999_999)
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_fee_fallback_does_not_replace_inferred_token() -> eyre::Result<()> {
+    let (mut evm, mut tx, tokens) = create_fee_fallback_evm([999_999, 2_000_000], 1)?;
+    tx.inner.kind = tokens[0].into();
+    tx.inner.data = ITIP20::transferCall {
+        to: Address::random(),
+        amount: U256::ZERO,
+    }
+    .abi_encode()
+    .into();
+    assert!(matches!(evm.transact_commit(tx),
+        Err(EVMError::Transaction(TempoInvalidTransaction::EthInvalidTransaction(
+            InvalidTransaction::LackOfFundForMaxFee { fee, balance }
+        ))) if *fee == U256::from(1_000_000) && *balance == U256::from(999_999)
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_fee_fallback_does_not_skip_funded_paused_token() -> eyre::Result<()> {
+    let (mut evm, tx, tokens) = create_fee_fallback_evm([2_000_000, 3_000_000], 0)?;
+    StorageCtx::enter_ctx(&mut evm.ctx, StorageActions::disabled(), || {
+        TIP20Token::from_address(tokens[0])?.pause(tx.inner.caller, ITIP20::pauseCall {})
+    })?;
+    assert!(matches!(evm.transact_commit(tx),
+        Err(EVMError::Transaction(TempoInvalidTransaction::FeeTokenPaused { address })) if address == tokens[0]
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_fee_fallback_charges_reverted_transaction() -> eyre::Result<()> {
+    let (mut evm, mut tx, tokens) = create_fee_fallback_evm([999_999, 2_000_000], 1)?;
+    let payer = tx.inner.caller;
+    let contract = Address::random();
+    evm.ctx.db_mut().insert_account_info(
+        contract,
+        AccountInfo {
+            code: Some(Bytecode::new_raw(bytes!("5f5ffd"))),
+            ..Default::default()
+        },
+    );
+    tx.inner.kind = contract.into();
+    let result = evm.transact_commit(tx)?;
+    assert!(matches!(result, ExecutionResult::Revert { .. }));
+    assert!(result.tx_gas_used() > 0);
+    assert_fee_fallback_balances(
+        &mut evm,
+        payer,
+        tokens,
+        [999_999, 2_000_000 - result.tx_gas_used()],
+    )
+}
+
+#[test]
+fn test_fee_fallback_zero_fee_uses_path_usd() -> eyre::Result<()> {
+    let (mut evm, mut tx, tokens) = create_fee_fallback_evm([999_999, 2_000_000], 1)?;
+    let payer = tx.inner.caller;
+    tx.inner.gas_price = 0;
+    let result = evm.transact_commit(tx)?;
+    assert!(result.is_success());
+    assert_fee_fallback_balances(&mut evm, payer, tokens, [999_999, 2_000_000])
+}
+
+#[test]
+fn test_fee_fallback_before_t13_remains_path_usd_only() -> eyre::Result<()> {
+    let (evm, tx, _) = create_fee_fallback_evm([999_999, 2_000_000], 0)?;
+    let mut ctx = evm.inner.ctx;
+    ctx.cfg.spec = TempoHardfork::T12;
+    ctx.cfg.gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T12, false);
+    let mut evm = TempoEvm::new(ctx, ());
+    assert!(matches!(evm.transact_commit(tx),
+        Err(EVMError::Transaction(TempoInvalidTransaction::EthInvalidTransaction(
+            InvalidTransaction::LackOfFundForMaxFee { fee, balance }
+        ))) if *fee == U256::from(1_000_000) && *balance == U256::from(999_999)
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_fee_fallback_unfunded_simulation_with_balance_checks_disabled() -> eyre::Result<()> {
+    let (mut evm, tx, tokens) = create_fee_fallback_evm([0, 0], 0)?;
+    let payer = tx.inner.caller;
+    evm.ctx.cfg.disable_balance_check = true;
+    evm.ctx.cfg.disable_fee_charge = true;
+    let result = evm.transact_commit(tx)?;
+    assert!(result.is_success());
+    assert!(result.tx_gas_used() > 0);
+    assert_fee_fallback_balances(&mut evm, payer, tokens, [0, 0])
 }

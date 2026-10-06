@@ -252,8 +252,8 @@ tempo_hardfork!(
 impl TempoHardfork {
     /// Returns the ordered fallback fee tokens activated by this hardfork.
     pub const fn fallback_fee_tokens(&self) -> &'static [alloy_primitives::Address] {
-        if self.is_t14() {
-            &[constants::PATH_USD_ADDRESS]
+        if self.is_t13() {
+            &[constants::PATH_USD_ADDRESS, constants::OUSD_ADDRESS]
         } else {
             &[]
         }

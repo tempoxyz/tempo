@@ -38,7 +38,7 @@ pub use zone_verifier::*;
 
 use alloy_primitives::{Address, address};
 use tempo_hardfork::TempoHardfork;
-pub use tempo_hardfork::constants::PATH_USD_ADDRESS;
+pub use tempo_hardfork::constants::{OUSD_ADDRESS, PATH_USD_ADDRESS};
 
 pub const TIP_FEE_MANAGER_ADDRESS: Address = address!("0xfeec000000000000000000000000000000000000");
 pub const DEFAULT_FEE_TOKEN: Address = PATH_USD_ADDRESS;
