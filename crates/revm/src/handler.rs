@@ -682,10 +682,9 @@ where
                     .tx()
                     .tempo_tx_env
                     .as_ref()
-                    .map(|aa| aa.nonce_key.is_zero())
-                    .unwrap_or(true);
+                    .is_none_or(|aa| aa.nonce_key.is_zero());
 
-                if uses_protocol_nonce && calls.first().map(|c| c.to.is_create()).unwrap_or(false) {
+                if uses_protocol_nonce && calls.first().is_some_and(|c| c.to.is_create()) {
                     let caller = evm.ctx().tx().caller();
                     if let Ok(mut caller_acc) =
                         evm.ctx().journal_mut().load_account_with_code_mut(caller)
@@ -945,8 +944,7 @@ where
             .tx
             .tempo_tx_env
             .as_ref()
-            .map(|aa_env| !aa_env.tempo_authorization_list.is_empty())
-            .unwrap_or(false);
+            .is_some_and(|aa_env| !aa_env.tempo_authorization_list.is_empty());
 
         let refunded_accounts = if has_aa_auth_list {
             let tempo_tx_env = ctx.tx.tempo_tx_env.as_ref().unwrap();

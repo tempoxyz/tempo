@@ -1774,7 +1774,7 @@ mod tests {
     fn pool_size_includes_aa_2d_transaction_counts_and_bytes() {
         let pool = create_test_pool(create_provider_with_tip());
         let tx = crate::test_utils::TxBuilder::aa(Address::random())
-            .nonce_key(U256::from(1))
+            .nonce_key(U256::ONE)
             .build();
         let tx_size = reth_primitives_traits::InMemorySize::size(&tx);
 
@@ -1799,16 +1799,16 @@ mod tests {
         let protocol_queued = crate::test_utils::TxBuilder::aa(sender).nonce(2).build();
         // 2D lane (nonce_key = 1): same shape, lives only in the AA 2D pool.
         let aa_2d_pending = crate::test_utils::TxBuilder::aa(sender)
-            .nonce_key(U256::from(1))
+            .nonce_key(U256::ONE)
             .nonce(0)
             .build();
         let aa_2d_queued = crate::test_utils::TxBuilder::aa(sender)
-            .nonce_key(U256::from(1))
+            .nonce_key(U256::ONE)
             .nonce(2)
             .build();
         // Another sender's queued 2D transaction must not leak into `sender`'s results.
         let other_aa_2d_queued = crate::test_utils::TxBuilder::aa(other)
-            .nonce_key(U256::from(1))
+            .nonce_key(U256::ONE)
             .nonce(2)
             .build();
 
@@ -1995,7 +1995,7 @@ mod tests {
             sender,
             key_id,
             fee_token,
-            pooled.fee_token_cost() - U256::from(1_u64),
+            pooled.fee_token_cost() - U256::ONE,
         );
         let pool = create_test_pool(provider);
         add_validated(&pool, pooled.clone());
@@ -2063,7 +2063,7 @@ mod tests {
             },
         );
 
-        let initial_balance = pooled.fee_token_cost() + U256::from(1_u64);
+        let initial_balance = pooled.fee_token_cost() + U256::ONE;
         set_fee_token_balance(&provider, PATH_USD_ADDRESS, fee_payer, initial_balance);
 
         let inner =
@@ -2107,7 +2107,7 @@ mod tests {
             &provider,
             PATH_USD_ADDRESS,
             fee_payer,
-            pooled.fee_token_cost() - U256::from(1_u64),
+            pooled.fee_token_cost() - U256::ONE,
         );
 
         let mut updates = crate::maintain::TempoPoolUpdates::new();
@@ -2910,7 +2910,7 @@ mod tests {
         assert!(exceeds_spending_limit(
             &mut provider.latest().unwrap(),
             &subject,
-            alloy_primitives::U256::from(1),
+            U256::ONE,
             0,
             TempoHardfork::default(),
         ));
@@ -2946,7 +2946,7 @@ mod tests {
         assert!(!exceeds_spending_limit(
             &mut provider.latest().unwrap(),
             &subject,
-            alloy_primitives::U256::from(1),
+            U256::ONE,
             0,
             TempoHardfork::default(),
         ));

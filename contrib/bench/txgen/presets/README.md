@@ -13,6 +13,15 @@ Existing localnet databases with unknown or different bloat fail; use
 `nu tempo.nu bench --force` to rebuild them. Comparison snapshot rebuilds
 regenerate the bloat file for the requested size.
 
+All txgen bench presets and scenarios interpret mix weights as target gas shares
+by default (`public-mix`: transfer 80%, mint 5%, MPP 15%), in both local and
+e2e runners. The harness confirms setup, reuses the setup bindings,
+and invokes txgen with `--gas-weighted-mix`. Txgen simulates one workload item
+per kind at startup and every 10 seconds; a sampling failure aborts the run.
+Actual included shares are recorded in the report's `block_composition` and
+copied to `summary.json` under `per_run[].block_composition` (the report's
+measured block window, before any additional summary-only warmup trimming).
+
 For the previous transfer-only default, explicitly select
 `tip20:recipient=existing,fee-token=any_tip20` (local) or
 `tip20_existing_recipients` (both runners). `public`/`tip20` and `mix` remain

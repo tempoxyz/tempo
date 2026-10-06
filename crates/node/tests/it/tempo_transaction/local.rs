@@ -39,14 +39,13 @@ use tempo_primitives::{
         KeyAuthorization, SignedKeyAuthorization,
         tempo_transaction::Call,
         tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature, WebAuthnSignature},
-        tt_signed::AASigned,
     },
 };
 
 use super::helpers::*;
 
 fn test_secp256k1_access_key_signature() -> TempoSignature {
-    TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()))
+    Signature::test_signature().into()
 }
 
 fn create_admin_key_authorization(
@@ -84,7 +83,7 @@ pub(crate) struct Localnet {
     pub setup: SingleNodeSetup,
     pub provider: alloy::providers::RootProvider,
     pub chain_id: u64,
-    pub funder_signer: alloy::signers::local::LocalSigner<alloy::signers::k256::ecdsa::SigningKey>,
+    pub funder_signer: PrivateKeySigner,
     pub funder_addr: Address,
 }
 
@@ -971,7 +970,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     println!("✓ Signature recovery correctly failed with wrong public key");
 
     // Also verify pool rejects the transaction
-    let signed_tx1 = AASigned::new_unhashed(tx1, aa_signature1);
+    let signed_tx1 = tx1.into_signed(aa_signature1);
     let envelope1: TempoTxEnvelope = signed_tx1.into();
     let mut encoded1 = Vec::new();
     envelope1.encode_2718(&mut encoded1);
@@ -1033,7 +1032,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     );
     println!("✓ Signature recovery correctly failed with wrong private key");
 
-    let signed_tx2 = AASigned::new_unhashed(tx2, aa_signature2);
+    let signed_tx2 = tx2.into_signed(aa_signature2);
     let envelope2: TempoTxEnvelope = signed_tx2.into();
     let mut encoded2 = Vec::new();
     envelope2.encode_2718(&mut encoded2);
@@ -1056,7 +1055,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     let mut authenticator_data3 = vec![0u8; 37];
     authenticator_data3[32] = 0x01; // UP flag set
 
-    let wrong_challenge = B256::from([0xFF; 32]); // Different hash
+    let wrong_challenge = B256::repeat_byte(0xFF); // Different hash
     let wrong_challenge_b64url = URL_SAFE_NO_PAD.encode(wrong_challenge.as_slice());
     let client_data_json3 = format!(
         r#"{{"type":"webauthn.get","challenge":"{wrong_challenge_b64url}","origin":"https://example.com","crossOrigin":false}}"#
@@ -1095,7 +1094,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     );
     println!("✓ Signature recovery correctly failed with wrong challenge");
 
-    let signed_tx3 = AASigned::new_unhashed(tx3, aa_signature3);
+    let signed_tx3 = tx3.into_signed(aa_signature3);
     let envelope3: TempoTxEnvelope = signed_tx3.into();
     let mut encoded3 = Vec::new();
     envelope3.encode_2718(&mut encoded3);
@@ -1156,7 +1155,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     );
     println!("✓ Signature recovery correctly failed with wrong authenticator data");
 
-    let signed_tx4 = AASigned::new_unhashed(tx4, aa_signature4);
+    let signed_tx4 = tx4.into_signed(aa_signature4);
     let envelope4: TempoTxEnvelope = signed_tx4.into();
     let mut encoded4 = Vec::new();
     envelope4.encode_2718(&mut encoded4);
@@ -1180,7 +1179,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     let mut bad_auth_data = vec![0u8; 37];
     bad_auth_data[32] = 0x01;
 
-    let wrong_challenge = B256::from([0xAA; 32]);
+    let wrong_challenge = B256::repeat_byte(0xAA);
     let wrong_challenge_b64 = URL_SAFE_NO_PAD.encode(wrong_challenge.as_slice());
     let bad_client_data = format!(
         r#"{{"type":"webauthn.get","challenge":"{wrong_challenge_b64}","origin":"https://example.com","crossOrigin":false}}"#
@@ -1210,7 +1209,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
             pub_key_y: correct_pub_key_y,
         }));
 
-    let signed_bad_tx = AASigned::new_unhashed(bad_tx, bad_tempo_signature);
+    let signed_bad_tx = bad_tx.into_signed(bad_tempo_signature);
     let bad_envelope: TempoTxEnvelope = signed_bad_tx.into();
     let mut encoded_bad = Vec::new();
     bad_envelope.encode_2718(&mut encoded_bad);
@@ -1272,10 +1271,7 @@ async fn test_propagate_2d_transactions() -> eyre::Result<()> {
 
     let sig_hash = tx.signature_hash();
     let signature = wallet.sign_hash_sync(&sig_hash)?;
-    let signed_tx = AASigned::new_unhashed(
-        tx,
-        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
-    );
+    let signed_tx = tx.into_signed(signature.into());
     let envelope: TempoTxEnvelope = signed_tx.into();
     let encoded = envelope.encoded_2718();
 
@@ -1439,7 +1435,7 @@ async fn test_key_authorization_witness_burn_evicts_pending_replay() -> eyre::Re
         }],
         2_000_000,
     );
-    burn_tx.nonce_key = U256::from(1);
+    burn_tx.nonce_key = U256::ONE;
     let burn_sig = sign_aa_tx_secp256k1(&burn_tx, &root_signer)?;
     submit_and_mine_aa_tx(&mut setup, burn_tx, burn_sig).await?;
 
@@ -1793,7 +1789,7 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
         2_000_000,
     );
     revoke_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
-    revoke_tx.nonce_key = U256::from(1); // Use a different nonce key so it's independent
+    revoke_tx.nonce_key = U256::ONE; // Use a different nonce key so it's independent
 
     let revoke_sig = sign_aa_tx_secp256k1(&revoke_tx, &root_signer)?;
     submit_and_mine_aa_tx(&mut setup, revoke_tx, revoke_sig).await?;
@@ -2152,7 +2148,7 @@ async fn test_aa_keychain_spending_limit_toctou_dos() -> eyre::Result<()> {
         2_000_000,
     );
     update_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
-    update_tx.nonce_key = U256::from(1); // Use a different nonce key so it's independent
+    update_tx.nonce_key = U256::ONE; // Use a different nonce key so it's independent
 
     let update_sig = sign_aa_tx_secp256k1(&update_tx, &root_signer)?;
     submit_and_mine_aa_tx(&mut setup, update_tx, update_sig).await?;
@@ -2258,7 +2254,7 @@ async fn test_v1_keychain_in_auth_list_rejected_post_t1c() -> eyre::Result<()> {
     tx.tempo_authorization_list = vec![auth_signed];
 
     let outer_sig = sign_aa_tx_secp256k1(&tx, &sender_signer)?;
-    let envelope: TempoTxEnvelope = AASigned::new_unhashed(tx, outer_sig).into();
+    let envelope: TempoTxEnvelope = tx.into_signed(outer_sig).into();
 
     setup
         .node
@@ -2307,11 +2303,7 @@ async fn test_v2_keychain_blocks_cross_account_replay() -> eyre::Result<()> {
     .await?;
     nonce_alice += 1;
 
-    let secp_mock = || {
-        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            alloy_primitives::Signature::test_signature(),
-        ))
-    };
+    let secp_mock = || TempoSignature::from(Signature::test_signature());
     let p256_mock = || create_mock_p256_sig(pub_x, pub_y);
 
     // Authorize both keys on Alice and Bob
@@ -2372,7 +2364,7 @@ async fn test_v2_keychain_blocks_cross_account_replay() -> eyre::Result<()> {
     );
     let inner = alice_sig.as_keychain().unwrap().signature.clone();
     let replay_sig = TempoSignature::Keychain(KeychainSignature::new(bob_addr, inner));
-    let replay_tx: TempoTxEnvelope = AASigned::new_unhashed(bob_tx, replay_sig).into();
+    let replay_tx: TempoTxEnvelope = bob_tx.into_signed(replay_sig).into();
     setup
         .node
         .rpc
@@ -2405,7 +2397,7 @@ async fn test_v2_keychain_blocks_cross_account_replay() -> eyre::Result<()> {
     );
     let inner = alice_sig.as_keychain().unwrap().signature.clone();
     let replay_sig = TempoSignature::Keychain(KeychainSignature::new(bob_addr, inner));
-    let replay_env: TempoTxEnvelope = AASigned::new_unhashed(bob_tx, replay_sig).into();
+    let replay_env: TempoTxEnvelope = bob_tx.into_signed(replay_sig).into();
     setup
         .node
         .rpc
@@ -2507,7 +2499,7 @@ async fn test_aa_keychain_v2_signature() -> eyre::Result<()> {
 
     assert!(v1_sig.is_legacy_keychain());
 
-    let signed_v1 = AASigned::new_unhashed(v1_tx, v1_sig);
+    let signed_v1 = v1_tx.into_signed(v1_sig);
     let envelope_v1: TempoTxEnvelope = signed_v1.into();
     let inject_result = setup
         .node

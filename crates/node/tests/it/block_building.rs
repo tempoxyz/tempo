@@ -534,7 +534,7 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
     let attack_tx = sign_tx(
         &mut user,
         ITIP20::new(PATH_USD_ADDRESS, user_provider.clone())
-            .transfer(Address::random(), U256::from(1))
+            .transfer(Address::random(), U256::ONE)
             .into_transaction_request(),
     )
     .await;

@@ -840,7 +840,7 @@ impl TIP20Token {
         // 5. Increment nonce
         self.permit_nonces[call.owner].write(
             nonce
-                .checked_add(U256::from(1))
+                .checked_add(U256::ONE)
                 .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
 
@@ -1355,7 +1355,7 @@ impl TIP20Token {
             self.decrement_balance(from, amount)?;
         }
 
-        if to.target != Address::ZERO {
+        if !to.target.is_zero() {
             self.increment_balance(to.target, amount)?;
         }
 
@@ -1463,7 +1463,7 @@ impl TIP20Token {
         let from_reward_recipient = self.update_rewards(from)?;
 
         // If user is opted into rewards, decrease opted-in supply
-        if from_reward_recipient != Address::ZERO {
+        if !from_reward_recipient.is_zero() {
             let opted_in_supply = U256::from(self.get_opted_in_supply()?)
                 .checked_sub(amount)
                 .ok_or(TempoPrecompileError::under_overflow())?;
@@ -1509,7 +1509,7 @@ impl TIP20Token {
         let to_reward_recipient = self.update_rewards(to)?;
 
         // If user is opted into rewards, increase opted-in supply by refund amount
-        if to_reward_recipient != Address::ZERO {
+        if !to_reward_recipient.is_zero() {
             let opted_in_supply = U256::from(self.get_opted_in_supply()?)
                 .checked_add(refund)
                 .ok_or(TempoPrecompileError::under_overflow())?;
@@ -1727,6 +1727,7 @@ mod recipient_tests {
 
 #[cfg(test)]
 pub(crate) mod tests {
+
     use super::*;
     use crate::{
         PATH_USD_ADDRESS, Precompile,
@@ -1741,9 +1742,7 @@ pub(crate) mod tests {
         tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID},
     };
     use alloy::{
-        primitives::{
-            Address, Bytes, FixedBytes, IntoLogData, TxKind, U256, address, hex, keccak256,
-        },
+        primitives::{Address, Bytes, FixedBytes, IntoLogData, TxKind, U256, address, keccak256},
         sol_types::{SolCall, SolError, SolEvent},
     };
     use alloy_evm::{Evm, EvmEnv};
@@ -1754,7 +1753,7 @@ pub(crate) mod tests {
     use revm::{
         DatabaseCommit,
         context::{CfgEnv, TxEnv, result::ExecutionResult},
-        database::{CacheDB, EmptyDB},
+        database::InMemoryDB,
         state::{AccountInfo, Bytecode},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -3023,8 +3022,7 @@ pub(crate) mod tests {
 
             // Try to set a TIP20 address that hasn't been deployed yet
             // This has the correct TIP20 address pattern but hasn't been created
-            let undeployed_token_address =
-                Address::from(hex!("20C0000000000000000000000000000000000999"));
+            let undeployed_token_address = address!("20C0000000000000000000000000000000000999");
             let result = token.set_next_quote_token(
                 admin,
                 ITIP20::setNextQuoteTokenCall {
@@ -3934,7 +3932,7 @@ pub(crate) mod tests {
     }
 
     struct BurnAtFixture {
-        evm: TempoEvm<CacheDB<EmptyDB>>,
+        evm: TempoEvm<InMemoryDB>,
         holder: Address,
         key: PrivateKeySigner,
         token: Address,
@@ -3947,7 +3945,7 @@ pub(crate) mod tests {
             let mut cfg = CfgEnv::default();
             cfg.set_spec_and_mainnet_gas_params(TempoHardfork::T12);
             let mut evm = TempoEvm::new(
-                CacheDB::new(EmptyDB::default()),
+                InMemoryDB::default(),
                 EvmEnv {
                     cfg_env: cfg,
                     block_env: TempoBlockEnv::default(),
@@ -4084,7 +4082,7 @@ pub(crate) mod tests {
                 ITIP20::BurnAt::SIGNATURE_HASH,
                 MULTICALL3_ADDRESS.into_word(),
                 fixture.holder.into_word(),
-                B256::from(amount.to_be_bytes::<32>()),
+                B256::from(amount),
             ]
         );
         assert!(logs[1].data.data.is_empty());
@@ -4552,7 +4550,7 @@ pub(crate) mod tests {
                 Address::random(),
                 ITIP20::approveCall {
                     spender,
-                    amount: U256::from(1),
+                    amount: U256::ONE,
                 },
             )?;
 
@@ -5163,7 +5161,7 @@ pub(crate) mod tests {
 
                 // Verify nonce was incremented
                 let nonce = token.nonces(ITIP20::noncesCall { owner })?;
-                assert_eq!(nonce, U256::from(1));
+                assert_eq!(nonce, U256::ONE);
 
                 Ok(())
             })
@@ -5455,7 +5453,7 @@ pub(crate) mod tests {
                     spender,
                     token.address,
                     U256::ZERO,
-                    U256::from(1),
+                    U256::ONE,
                     U256::MAX,
                 );
                 token.permit(call)?;

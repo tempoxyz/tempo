@@ -123,7 +123,7 @@ mod tests {
         tip403_registry::{ITIP403Registry, TIP403Registry},
     };
     use alloy::{
-        primitives::{Bytes, U256, address},
+        primitives::{B256, Bytes, U256, address},
         sol_types::{SolCall, SolError, SolInterface, SolValue},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -546,7 +546,7 @@ mod tests {
                 .with_mint(sender, initial_balance)
                 .apply()?;
 
-            let memo = alloy::primitives::B256::from([1u8; 32]);
+            let memo = B256::repeat_byte(1u8);
             let transfer_call = ITIP20::transferWithMemoCall {
                 to: recipient,
                 amount: transfer_amount,

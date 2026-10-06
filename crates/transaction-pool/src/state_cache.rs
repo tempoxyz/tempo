@@ -149,7 +149,7 @@ mod tests {
         fn basic_ref(&self, _address: Address) -> Result<Option<AccountInfo>, Self::Error> {
             self.reads.fetch_add(1, Ordering::Relaxed);
             Ok(Some(AccountInfo {
-                balance: U256::from(1),
+                balance: U256::ONE,
                 ..Default::default()
             }))
         }

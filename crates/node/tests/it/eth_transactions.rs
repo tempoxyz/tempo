@@ -10,7 +10,7 @@ use alloy_network::TransactionResponse;
 use reth_e2e_test_utils::{receipt::PendingTransactionExt, wallet::test_signer};
 use reth_primitives_traits::SignerRecoverable;
 use reth_rpc_eth_api::helpers::{EthTransactions, LoadState};
-use reth_transaction_pool::{TransactionOrigin, TransactionPool, pool::AddedTransactionState};
+use reth_transaction_pool::{TransactionOrigin, TransactionPool};
 use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_precompiles::DEFAULT_FEE_TOKEN;
@@ -118,7 +118,7 @@ async fn test_next_available_nonce_for_2d_key_includes_pending_txs() -> eyre::Re
         .pool
         .add_consensus_transaction(envelope.try_into_recovered()?, TransactionOrigin::Local)
         .await?;
-    assert!(matches!(outcome.state, AddedTransactionState::Pending));
+    assert!(outcome.state.is_pending());
 
     assert_eq!(
         eth_api
