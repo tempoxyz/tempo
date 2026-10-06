@@ -19,8 +19,7 @@ SHA-256 primitives come from `@zk-email/circuits` 6.3.4; Poseidon uses circomlib
 
 ```bash
 npm ci --ignore-scripts
-mkdir -p build
-npx --no-install circom2 circuits/oidc.circom --r1cs --wasm --sym -l node_modules -o build
+node compile.mjs build
 OIDC_ARTIFACTS=build npm test
 ```
 

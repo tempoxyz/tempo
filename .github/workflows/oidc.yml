@@ -41,9 +41,7 @@ jobs:
           node-version: 24
       - run: npm ci --ignore-scripts
       - name: Compile the full RSA circuit
-        run: |
-          mkdir -p build
-          npx --no-install circom2 circuits/oidc.circom --r1cs --wasm --sym -l node_modules -o build
+        run: node compile.mjs build
       - name: Test compiled circuit and relay
         run: npm test
         env:
