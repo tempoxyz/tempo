@@ -896,19 +896,37 @@ jobs:
             [ "${install_pipeline_status[1]}" -eq 0 ] || exit "${install_pipeline_status[1]}"
             export PRODUCER_CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
             python3 - <<'PY'
-          import hashlib, json, os, pathlib, shutil, subprocess, tomllib
+          import hashlib, json, os, pathlib, shutil, sys, tomllib
+          sys.path.insert(0, str(pathlib.Path.cwd() / 'benchmarks/parallel-execution'))
+          import producer_context
           out = pathlib.Path(os.environ['PRODUCER_BUILD'])
           cargo_home = pathlib.Path(os.environ['PRODUCER_CARGO_HOME']).resolve()
           commit = '8ca73369c4b42ffffaf40066bbde8673141049c1'
+          system = producer_context.System()
           def git(path, *args):
-              return subprocess.check_output(['git', '-C', str(path), *args], timeout=10, text=True).strip()
+              return producer_context.command(system, ['git', '-C', str(path), *args], 10).strip()
           roots = list((cargo_home / 'git/checkouts').glob('txgen-*/*'))
-          if len(roots) > 128:
-              raise SystemExit('Too many txgen source candidates')
-          matching = [p.resolve() for p in roots if (p / '.git').exists() and git(p, 'rev-parse', 'HEAD') == commit]
-          if len(matching) != 1 or git(matching[0], 'status', '--porcelain', '--untracked-files=all'):
-              raise SystemExit('Expected one clean matching Cargo git checkout for stock txgen')
-          source = matching[0]
+          discovery = {'schema_version': 1, 'status': 'checking', 'expected_commit': commit,
+              'candidate_count': len(roots), 'candidate_limit': 128, 'candidates': [], 'matching_count': None}
+          try:
+              if len(roots) > 128:
+                  raise SystemExit('Too many txgen source candidates')
+              matching = []
+              for candidate in sorted(roots):
+                  row = {'path': str(candidate), 'has_git': (candidate / '.git').exists()}
+                  discovery['candidates'].append(row)
+                  if row['has_git']:
+                      row['head'] = git(candidate, 'rev-parse', 'HEAD')
+                      if row['head'] == commit: matching.append(candidate.resolve())
+              discovery['matching_count'] = len(matching)
+              if len(matching) != 1:
+                  raise SystemExit('Expected exactly one matching Cargo git checkout; see checkout-discovery.json')
+              source = matching[0]
+              discovery['selected_checkout'] = {}
+              producer_context.verify_clean_checkout(source, system, discovery['selected_checkout'])
+              discovery['status'] = 'verified'
+          finally:
+              (out / 'checkout-discovery.json').write_text(json.dumps(discovery, indent=2) + '\n')
           def binding(path):
               path = path.resolve()
               if not path.is_file() or path.stat().st_size > 16 * 1024 * 1024:

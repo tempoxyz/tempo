@@ -13,6 +13,7 @@ import platform
 import re
 import resource
 import shutil
+import stat
 import time
 import tomllib
 import urllib.request
@@ -206,6 +207,32 @@ def pinned_file(checkout, revision, relative, system):
     return path
 
 
+def verify_clean_checkout(checkout, system, observation=None):
+    """Permit only Cargo's empty, untracked checkout-completion sentinel.
+
+    Keep bounded Git evidence even on refusal when a caller supplies observation.
+    NUL-delimited porcelain avoids filename quoting or whitespace ambiguity.
+    """
+    evidence = observation if observation is not None else {}
+    evidence.update(checkout=str(checkout), status='checking')
+    argv = ['git', '-C', str(checkout), 'status', '--porcelain', '-z', '--untracked-files=all']
+    result = system.command(argv, 15)
+    evidence['git_status'] = {'argv': argv, **result}
+    require(result['code'] == 0, 'Producer checkout status failed')
+    status = result['stdout']
+    require(status in ('', '?? .cargo-ok\0'), 'Producer source is dirty beyond Cargo checkout sentinel')
+    sentinel = None
+    if status:
+        metadata = (Path(checkout) / '.cargo-ok').lstat()
+        sentinel = {'path': str(Path(checkout) / '.cargo-ok'), 'mode': metadata.st_mode,
+                    'bytes': metadata.st_size}
+        evidence['cargo_sentinel'] = sentinel
+        require(stat.S_ISREG(metadata.st_mode) and metadata.st_size == 0,
+                'Cargo checkout sentinel must be a regular empty file')
+    evidence.update(status='verified', cargo_sentinel=sentinel)
+    return evidence
+
+
 def install_record(record, checkout, now):
     require(record.get('schema_version') == 1 and record.get('status') == 'completed' and record.get('exit_code') == 0,
             'Install did not complete successfully')
@@ -223,7 +250,7 @@ def build(args, system):
     checkout = args.source_checkout.resolve()
     install_record(record, checkout, time.time_ns())
     require(command(system, ['git', '-C', str(checkout), 'rev-parse', 'HEAD']).strip() == TXGEN, 'Wrong producer checkout')
-    require(command(system, ['git', '-C', str(checkout), 'status', '--porcelain']).strip() == '', 'Producer source is dirty')
+    checkout_status = verify_clean_checkout(checkout, system)
     lock = pinned_file(checkout, TXGEN, 'Cargo.lock', system)
     log = verified(record['log']); require(log.stat().st_size > 0, 'Missing complete install log')
     cargo_path = verified(record['cargo_version']); rustc_path = verified(record['rustc_version'])
@@ -243,6 +270,7 @@ def build(args, system):
     # Input records are workflow build attestations, supplemented by exact local
     # source/lock/package/ELF checks; they are not an independent compiler proof.
     value = {'schema_version': 1, 'status': 'verified', 'source_commit': TXGEN, 'source_clean': True,
+        'checkout_status': checkout_status,
         'binary': producer, 'bench_binary': bench, 'cargo_lock': file_binding(lock), 'build_evidence': record['log'],
         'install_record': file_binding(record_path), 'install_metadata': record['install_metadata'], 'installed_packages': installed,
         'build': {'profile': 'release', 'features': 'default', 'cargo': cargo, 'rustc': rustc_verbose,

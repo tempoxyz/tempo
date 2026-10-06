@@ -1,8 +1,9 @@
-"""Fake-input tests only; root runs with the selected supervisor/lifecycle on PYTHONPATH."""
+"""Fake-input and temporary Git tests; root selects supervisor/lifecycle on PYTHONPATH."""
 import copy
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -97,6 +98,75 @@ class FakeNode:
 
 
 class ContextTests(unittest.TestCase):
+    def checkout_fixture(self, folder):
+        checkout = Path(folder) / 'checkout'; checkout.mkdir()
+        self.git(checkout, 'init', '--quiet')
+        (checkout / 'tracked').write_text('original\n')
+        self.git(checkout, 'add', 'tracked')
+        self.git(checkout, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                 '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', 'commit', '--quiet', '-m', 'fixture')
+        return checkout
+
+    def git(self, checkout, *args):
+        return subprocess.run(['git', '-C', str(checkout), *args], check=True, capture_output=True,
+                              text=True, timeout=10).stdout
+
+    def test_checkout_accepts_clean_real_git(self):
+        with tempfile.TemporaryDirectory() as folder:
+            result = c.verify_clean_checkout(self.checkout_fixture(folder), c.System())
+            self.assertEqual(result['status'], 'verified')
+            self.assertEqual(result['git_status']['stdout'], '')
+            self.assertIsNone(result['cargo_sentinel'])
+
+    def test_checkout_accepts_only_empty_regular_untracked_cargo_sentinel(self):
+        with tempfile.TemporaryDirectory() as folder:
+            checkout = self.checkout_fixture(folder); (checkout / '.cargo-ok').touch()
+            result = c.verify_clean_checkout(checkout, c.System())
+            self.assertEqual(result['status'], 'verified')
+            self.assertEqual(result['git_status']['stdout'], '?? .cargo-ok\0')
+            self.assertEqual(result['cargo_sentinel']['bytes'], 0)
+
+    def test_checkout_rejects_tracked_modification_with_sentinel(self):
+        with tempfile.TemporaryDirectory() as folder:
+            checkout = self.checkout_fixture(folder); (checkout / '.cargo-ok').touch()
+            (checkout / 'tracked').write_text('modified\n')
+            for staged in (False, True):
+                if staged: self.git(checkout, 'add', 'tracked')
+                with self.subTest(staged=staged), self.assertRaises(ValueError):
+                    c.verify_clean_checkout(checkout, c.System())
+
+    def test_checkout_rejects_extra_untracked_and_retains_failure_status(self):
+        with tempfile.TemporaryDirectory() as folder:
+            checkout = self.checkout_fixture(folder); (checkout / '.cargo-ok').touch()
+            (checkout / 'extra').write_text('unexpected\n'); observation = {}
+            with self.assertRaises(ValueError): c.verify_clean_checkout(checkout, c.System(), observation)
+            self.assertNotEqual(observation['status'], 'verified')
+            self.assertIn('?? extra\0', observation['git_status']['stdout'])
+
+    def test_checkout_rejects_symlink_cargo_sentinel(self):
+        with tempfile.TemporaryDirectory() as folder:
+            checkout = self.checkout_fixture(folder); target = Path(folder) / 'empty-target'; target.touch()
+            (checkout / '.cargo-ok').symlink_to(target)
+            with self.assertRaisesRegex(ValueError, 'regular empty file'):
+                c.verify_clean_checkout(checkout, c.System())
+
+    def test_checkout_rejects_nonempty_cargo_sentinel(self):
+        with tempfile.TemporaryDirectory() as folder:
+            checkout = self.checkout_fixture(folder); (checkout / '.cargo-ok').write_bytes(b'not Cargo\n')
+            with self.assertRaisesRegex(ValueError, 'regular empty file'):
+                c.verify_clean_checkout(checkout, c.System())
+
+    def test_checkout_does_not_exempt_tracked_sentinel_modification(self):
+        with tempfile.TemporaryDirectory() as folder:
+            checkout = self.checkout_fixture(folder); (checkout / '.cargo-ok').touch()
+            self.git(checkout, 'add', '.cargo-ok')
+            with self.assertRaises(ValueError): c.verify_clean_checkout(checkout, c.System())
+
+    def test_checkout_rejects_sentinel_like_filename_with_newline(self):
+        with tempfile.TemporaryDirectory() as folder:
+            checkout = self.checkout_fixture(folder); (checkout / '.cargo-ok\n').touch()
+            with self.assertRaises(ValueError): c.verify_clean_checkout(checkout, c.System())
+
     def test_governors_record_actual_values_and_observation_bracket(self):
         paths = [f'/sys/devices/system/cpu/cpu{i}/cpufreq/scaling_governor' for i in (0, 8)]
         class Fake:
