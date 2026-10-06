@@ -15,6 +15,24 @@ run_ok() {
     echo "PASS"
 }
 
+check_snapshot_download() (
+    local fixture="$REPO_ROOT/scripts/fixtures/cli-download"
+    local snapshot_dir
+    snapshot_dir=$(mktemp -d) || return
+    trap 'rm -rf "$snapshot_dir"' EXIT
+    cp "$fixture/manifest.json" "$snapshot_dir/manifest.json" || return
+    for archive in state consensus; do
+        base64 --decode "$fixture/$archive.tar.zst.base64" >"$snapshot_dir/$archive.tar.zst" || return
+    done
+    timeout 60 "$TEMPO" download \
+        --manifest-url "file://$snapshot_dir/manifest.json" \
+        --datadir "$snapshot_dir/datadir" --archive -y \
+        --log.file.directory "$snapshot_dir/logs" "$@" || return
+    cmp <(printf 'execution snapshot fixture\n') "$snapshot_dir/datadir/db/cli-smoke-test.txt" || return
+    cmp <(printf 'consensus snapshot fixture\n') "$snapshot_dir/datadir/consensus/partition/cli-smoke-test.txt" || return
+    test -f "$snapshot_dir/datadir/reth.toml"
+)
+
 TEMPO="${1:-$REPO_ROOT/target/debug/tempo}"
 if [[ ! -x "$TEMPO" ]]; then
     echo "Building tempo..."
@@ -28,8 +46,8 @@ run_ok "tempo node --help" "$TEMPO" node --help
 if ! grep -A 2 -- '--consensus.message-backlog' <<<"$OUT" | grep -q 'Deprecated:'; then
     fail "message-backlog help must mark the flag as deprecated"
 fi
-run_ok "tempo download Moderato snapshot with and without --chain" \
-    uv run --no-project --script "$REPO_ROOT/scripts/test-cli-download.py" "$TEMPO"
+run_ok "tempo download Moderato snapshot --chain moderato" check_snapshot_download --chain moderato
+run_ok "tempo download Moderato snapshot without --chain" check_snapshot_download
 
 # --- node --follow: verify it stays alive for 15s with no crashes ---
 echo "--- Test: tempo node --follow (no crash)"

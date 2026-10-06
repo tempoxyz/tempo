@@ -1,0 +1,42 @@
+{
+  "block": 0,
+  "chain_id": 42431,
+  "storage_version": 2,
+  "timestamp": 0,
+  "components": {
+    "state": {
+      "file": "state.tar.zst",
+      "size": 112,
+      "decompressed_size": 27,
+      "blake3": "43a66c65e66471467e2068b05cd7614536e5e85302dec22035bd76effa141719",
+      "output_files": [
+        {
+          "path": "db/cli-smoke-test.txt",
+          "size": 27,
+          "blake3": "cc28f21c7017c81a8885b6c49dd3195da8528321c8d57d5390715b60f0eab4c4"
+        }
+      ]
+    }
+  },
+  "consensus": {
+    "execution_finalized_height": 0,
+    "execution_finalized_digest": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "tip_finalization_height": 0,
+    "tip_finalization_digest": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "anchor_finalization_height": 0,
+    "anchor_finalization_digest": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "consensus_archive": {
+      "file": "consensus.tar.zst",
+      "size": 115,
+      "decompressed_size": 27,
+      "blake3": "ab9c0845931f5cc960d28a637bee51d0a92461662d66733688d2926f408c8dce",
+      "output_files": [
+        {
+          "path": "partition/cli-smoke-test.txt",
+          "size": 27,
+          "blake3": "d136cb9e3380122827ca8ff73859edd8054eea2381453c786376153fcbe69227"
+        }
+      ]
+    }
+  }
+}
