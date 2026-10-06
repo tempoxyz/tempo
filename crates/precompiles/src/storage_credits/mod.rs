@@ -304,7 +304,8 @@ impl NonCreditableSlots {
             return false;
         }
 
-        if owner == self.fee_token && self.fee_balance_slot() == slot {
+        let token = TIP20Token::from_address_unchecked(self.fee_token);
+        if owner == token.balances[self.fee_payer].address() && self.fee_balance_slot() == slot {
             return true;
         }
 
@@ -430,10 +431,10 @@ mod tests {
         let mut slots = NonCreditableSlots::empty();
         slots.initialize(fee_payer, fee_token, None);
 
-        let fee_balance_slot =
-            TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
-        assert!(slots.is_non_creditable_slot(fee_token, fee_balance_slot));
-        assert!(!slots.is_non_creditable_slot(fee_token, fee_balance_slot + U256::ONE));
+        let token = TIP20Token::from_address_unchecked(fee_token);
+        let balance = &token.balances[fee_payer];
+        assert!(slots.is_non_creditable_slot(balance.address(), balance.slot()));
+        assert!(!slots.is_non_creditable_slot(balance.address(), balance.slot() + U256::ONE));
     }
 
     #[test]
@@ -463,12 +464,12 @@ mod tests {
         let mut slots = NonCreditableSlots::empty();
         slots.initialize(fee_payer, fee_token, Some(key_id));
 
-        let fee_balance_slot =
-            TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
-        assert!(slots.is_non_creditable_slot(fee_token, fee_balance_slot));
+        let token = TIP20Token::from_address_unchecked(fee_token);
+        let balance = &token.balances[fee_payer];
+        assert!(slots.is_non_creditable_slot(balance.address(), balance.slot()));
 
         slots.clear();
 
-        assert!(!slots.is_non_creditable_slot(fee_token, fee_balance_slot));
+        assert!(!slots.is_non_creditable_slot(balance.address(), balance.slot()));
     }
 }

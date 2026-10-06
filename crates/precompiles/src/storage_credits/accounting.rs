@@ -221,16 +221,19 @@ mod tests {
     fn non_creditable_slot_is_not_persistent_or_direct_spendable_credit() -> eyre::Result<()> {
         let owner = PATH_USD_ADDRESS;
         let fee_payer = Address::repeat_byte(0x22);
-        let no_credit_slot = TIP20Token::from_address_unchecked(owner).balances[fee_payer].slot();
+        let token = TIP20Token::from_address_unchecked(owner);
+        let balance = &token.balances[fee_payer];
+        let no_credit_slot = balance.slot();
+        let storage_owner = balance.address();
         let fresh_slot = U256::from(0x33);
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
-        storage.sstore(owner, no_credit_slot, U256::ONE)?;
+        storage.sstore(storage_owner, no_credit_slot, U256::ONE)?;
         storage.set_spec(TempoHardfork::T7);
 
         let mut non_creditable_slots = NonCreditableSlots::empty();
         non_creditable_slots.initialize(fee_payer, owner, None);
         storage.set_non_creditable_slots(non_creditable_slots);
-        storage.sstore(owner, no_credit_slot, U256::ZERO)?;
+        storage.sstore(storage_owner, no_credit_slot, U256::ZERO)?;
 
         StorageCtx::enter(&mut storage, || {
             let mut credits = StorageCredits::new();
@@ -258,12 +261,15 @@ mod tests {
     fn non_creditable_slot_recreation_is_accounted_as_normal_creation() -> eyre::Result<()> {
         let owner = PATH_USD_ADDRESS;
         let fee_payer = Address::repeat_byte(0x55);
-        let no_credit_slot = TIP20Token::from_address_unchecked(owner).balances[fee_payer].slot();
+        let token = TIP20Token::from_address_unchecked(owner);
+        let balance = &token.balances[fee_payer];
+        let no_credit_slot = balance.slot();
+        let storage_owner = balance.address();
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
-        storage.sstore(owner, no_credit_slot, U256::ONE)?;
+        storage.sstore(storage_owner, no_credit_slot, U256::ONE)?;
         storage.sstore(
             STORAGE_CREDITS_ADDRESS,
-            StorageCredits::slot(owner),
+            StorageCredits::slot(storage_owner),
             U256::ONE,
         )?;
         storage.set_spec(TempoHardfork::T7);
@@ -271,13 +277,13 @@ mod tests {
         let mut non_creditable_slots = NonCreditableSlots::empty();
         non_creditable_slots.initialize(fee_payer, owner, None);
         storage.set_non_creditable_slots(non_creditable_slots);
-        storage.sstore(owner, no_credit_slot, U256::ZERO)?;
-        storage.sstore(owner, no_credit_slot, U256::ONE)?;
+        storage.sstore(storage_owner, no_credit_slot, U256::ZERO)?;
+        storage.sstore(storage_owner, no_credit_slot, U256::ONE)?;
 
         StorageCtx::enter(&mut storage, || {
             let credits = StorageCredits::new();
-            let state = credits.credit_state_of(owner)?;
-            assert_eq!(credits.balance_of(owner)?, 1);
+            let state = credits.credit_state_of(storage_owner)?;
+            assert_eq!(credits.balance_of(storage_owner)?, 1);
             assert_eq!(state.pending_refunds, 1);
             Ok::<_, TempoPrecompileError>(())
         })?;

@@ -2445,12 +2445,12 @@ where
     JOURNAL: JournalTr,
 {
     // Address has already been validated as having TIP20 prefix
-    journal.load_account(token)?;
-    let balance_slot = TIP20Token::from_address(token)
-        .expect("TIP20 prefix already validated")
-        .balances[sender]
-        .slot();
-    let balance = journal.sload(token, balance_slot)?.data;
+    let token = TIP20Token::from_address(token).expect("TIP20 prefix already validated");
+    let balance_slot = &token.balances[sender];
+    journal.load_account(balance_slot.address())?;
+    let balance = journal
+        .sload(balance_slot.address(), balance_slot.slot())?
+        .data;
 
     Ok(balance)
 }

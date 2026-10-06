@@ -1564,22 +1564,30 @@ mod tests {
             uint!(0x5553440000000000000000000000000000000000000000000000000000000006_U256);
         let transfer_policy_id_packed =
             uint!(0x0000000000000000000000010000000000000000000000000000000000000000_U256);
-        let balance_slot = TIP20Token::from_address(fee_token)
-            .expect("fee token must be a valid TIP20 token")
-            .balances[account]
-            .slot();
+        let token =
+            TIP20Token::from_address(fee_token).expect("fee token must be a valid TIP20 token");
+        let balance_slot = &token.balances[account];
 
-        provider.add_account(
-            fee_token,
-            ExtendedAccount::new(0, U256::ZERO).extend_storage([
-                (tip20_slots::CURRENCY.into(), usd_currency_value),
-                (
-                    tip20_slots::TRANSFER_POLICY_ID.into(),
-                    transfer_policy_id_packed,
-                ),
-                (balance_slot.into(), balance),
-            ]),
-        );
+        let token_account = ExtendedAccount::new(0, U256::ZERO).extend_storage([
+            (tip20_slots::CURRENCY.into(), usd_currency_value),
+            (
+                tip20_slots::TRANSFER_POLICY_ID.into(),
+                transfer_policy_id_packed,
+            ),
+        ]);
+        if balance_slot.address() == fee_token {
+            provider.add_account(
+                fee_token,
+                token_account.extend_storage([(balance_slot.slot().into(), balance)]),
+            );
+        } else {
+            provider.add_account(fee_token, token_account);
+            provider.add_account(
+                balance_slot.address(),
+                ExtendedAccount::new(0, U256::ZERO)
+                    .extend_storage([(balance_slot.slot().into(), balance)]),
+            );
+        }
     }
 
     fn set_transfer_policy(

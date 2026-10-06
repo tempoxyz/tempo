@@ -477,10 +477,15 @@ fn test_get_token_balance() -> eyre::Result<()> {
     let expected_balance = U256::random();
 
     // Set up initial balance
-    let balance_slot = TIP20Token::from_address(token)?.balances[account].slot();
-    journal.load_account(token)?;
+    let token_contract = TIP20Token::from_address(token)?;
+    let balance_slot = &token_contract.balances[account];
+    journal.load_account(balance_slot.address())?;
     journal
-        .sstore(token, balance_slot, expected_balance)
+        .sstore(
+            balance_slot.address(),
+            balance_slot.slot(),
+            expected_balance,
+        )
         .unwrap();
 
     let balance = get_token_balance(&mut journal, token, account)?;
