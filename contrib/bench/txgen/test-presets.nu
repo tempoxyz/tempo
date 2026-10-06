@@ -30,4 +30,15 @@ assert equal (txgen-workload-metadata-args $default.scenario_id $default.spec_pa
 for preset in [tip20 tip20_existing_recipients mix dex mpp neobank-deposit neobank-swap neobank-withdraw zones vault-deposit vault-withdraw] {
     assert equal (txgen-workload-metadata-args $preset "") ["-m" "workload_mix_weighting=gas"]
 }
-print "Preset alias, transfer compatibility, state-bloat setup, and workload metadata checks passed"
+# Inline authorization fees must fit the full generated workload, including gas
+# sampling. Keep ordinary transfers on their existing liquidity fixture.
+for case in [
+    {preset: "tip20:recipient=existing,fee-token=any_tip20", amount: 10000000000}
+    {preset: "tip20:recipient=existing,auth=key_authorization,fee-token=any_tip20", amount: 10000000000000}
+    {preset: "tip20:recipient=existing,nonce=2d,fee-token=any_tip20", amount: 10000000000000}
+] {
+    let spec = (txgen-resolve-bench-spec $case.preset)
+    txgen-configure-fee-amm-env $spec.spec_path
+    assert equal ($env.TXGEN_FEE_AMM_LIQUIDITY_AMOUNT | into int) $case.amount
+}
+print "Preset alias, transfer compatibility, state-bloat setup, workload metadata, and FeeAMM liquidity checks passed"
