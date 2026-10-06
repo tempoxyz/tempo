@@ -65,6 +65,7 @@ serde = [
 	"alloy-eips/serde",
 	"alloy-primitives/serde",
 	"p256/serde",
+	"parking_lot/serde",
 	"reth-storage-api?/serde",
 	"tempo-chainspec/serde",
 	"tempo-contracts/serde",
