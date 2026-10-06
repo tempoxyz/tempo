@@ -170,7 +170,7 @@ async fn get_block(
         .provider
         .find_sealed_or_recovered_block(digest.0, BlockSource::Any)
         .map_err(eyre::Report::new)?
-        .map(|block| Block::from_execution_block_unchecked(block, None));
+        .map(|block| Block::from_execution_block_unchecked(block));
     response
         .send(block)
         .map_err(|_| eyre::eyre!("receiver went away"))

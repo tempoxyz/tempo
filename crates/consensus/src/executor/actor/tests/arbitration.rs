@@ -67,7 +67,7 @@ fn build_supersedes_queued_verification_while_another_request_executes() {
                 .is_some(),
         );
         let payload = build.await.expect("the superseding build should complete");
-        let (block, _) = payload.into_execution_payload();
+        let block = payload.into_execution_payload();
         assert_eq!(Digest(block.hash()), proposal_digest);
         assert_eq!(
             h.execution.new_payloads(),
@@ -156,7 +156,7 @@ fn same_round_verification_does_not_supersede_a_queued_build() {
         let payload = build
             .await
             .expect("the first same-round request should win");
-        let (block, _) = payload.into_execution_payload();
+        let block = payload.into_execution_payload();
         assert_eq!(Digest(block.hash()), proposal.digest());
         assert!(
             h.execution

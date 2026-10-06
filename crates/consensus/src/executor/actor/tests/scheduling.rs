@@ -83,7 +83,7 @@ fn slow_marshal_fetch_does_not_block_building() {
             }
         };
 
-        let (block, _) = payload.into_execution_payload();
+        let block = payload.into_execution_payload();
         assert_eq!(block.hash(), proposal_digest.0);
         assert!(
             h.execution.fcus().contains(&(GENESIS, GENESIS, true)),
@@ -141,7 +141,7 @@ fn payload_resolution_does_not_occupy_the_execution_task_slot() {
             .expect("verification should complete");
         assert!(verdict.is_some());
         let payload = build.await.expect("build should complete");
-        let (block, _) = payload.into_execution_payload();
+        let block = payload.into_execution_payload();
         assert_eq!(block.hash(), proposal_digest.0);
     });
 }
@@ -202,7 +202,7 @@ fn multiple_payload_jobs_can_complete_out_of_order() {
             panic!("second payload was not delivered ahead of the first");
         };
         let second = second.expect("second build should complete");
-        let (block, _) = second.into_execution_payload();
+        let block = second.into_execution_payload();
         assert_eq!(block.hash(), second_digest.0);
         assert!(
             first
@@ -222,7 +222,7 @@ fn multiple_payload_jobs_can_complete_out_of_order() {
             panic!("first payload was not delivered after it resolved");
         };
         let first = first.expect("first build should complete");
-        let (block, _) = first.into_execution_payload();
+        let block = first.into_execution_payload();
         assert_eq!(block.hash(), first_digest.0);
         assert!(h.execution.canceled_payload_jobs().is_empty());
     });

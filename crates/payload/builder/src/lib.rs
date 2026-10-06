@@ -1258,7 +1258,6 @@ where
 
         let payload = TempoBuiltPayload::new(
             eth_payload,
-            None,
             Some(executed_block),
             validation_work_duration,
             validation_latency_duration,
@@ -1528,7 +1527,6 @@ mod tests {
         let eth = EthBuiltPayload::new(Arc::new(block), U256::ZERO, None, None);
         TempoBuiltPayload::new(
             eth,
-            None,
             None,
             Duration::ZERO,
             Duration::ZERO,

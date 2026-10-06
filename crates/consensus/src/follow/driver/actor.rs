@@ -251,7 +251,7 @@ where
             Err(error) => return Err(Report::new(error)),
         };
 
-        let consensus_block = Block::from_execution_block_unchecked(certified.block, None);
+        let consensus_block = Block::from_execution_block_unchecked(certified.block);
 
         let round = finalization.round();
         self.latest_verified_round = self.latest_verified_round.max(round);

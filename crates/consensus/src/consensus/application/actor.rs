@@ -18,7 +18,7 @@ use std::{
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{B256, Bytes};
 use commonware_actor::mailbox;
-use commonware_codec::{Encode as _, EncodeSize as _, ReadExt as _};
+use commonware_codec::{Encode as _, ReadExt as _};
 use commonware_consensus::{
     Heightable as _,
     marshal::core::DigestFallback,
@@ -481,24 +481,6 @@ impl Inner<Init> {
         // next epoch.
         if parent_epoch_info.last() == parent.height() && parent_epoch_info.epoch() == round.epoch()
         {
-            // If the header has a block access list hash but the block itself doesn't
-            // it likely means that the block was fetched from reth database and we need to
-            // additionally fetch the BAL from commonware.
-            let parent = if parent.block().header().block_access_list_hash().is_some()
-                && parent.block_access_list().is_none()
-            {
-                let round = Round::new(round.epoch(), parent_view);
-                (*self
-                    .marshal
-                    .subscribe_by_digest(parent_digest, DigestFallback::FetchByRound { round })
-                    .await
-                    .map_err(|_| {
-                        eyre!("syncer dropped channel before the parent block was sent")
-                    })?)
-                .clone()
-            } else {
-                parent
-            };
             if !self.marshal.verified(round, parent.clone()).await {
                 bail!("marshal rejected re-proposed boundary block");
             }
@@ -624,19 +606,11 @@ impl Inner<Init> {
         let payload_validation_work_elapsed = payload.validation_work_duration();
         let validation_latency_elapsed = payload.validation_latency_duration();
         let execution_block_rlp_size_estimate_bytes = payload.execution_block_size_estimate();
-        let (block, block_access_list, execution_block_encoded) =
-            payload.into_consensus_execution_payload();
-        let block_access_list_size_bytes = block_access_list
-            .as_ref()
-            .map_or(0, |block_access_list| block_access_list.encode_size());
-        let proposal = Block::try_from_execution_block_with_encoded_cache(
-            block,
-            block_access_list,
-            execution_block_encoded,
-        )
-        .wrap_err("payload builder produced an invalid block")?;
-        let block_size_estimate_bytes =
-            execution_block_rlp_size_estimate_bytes + block_access_list_size_bytes;
+        let (block, execution_block_encoded) = payload.into_consensus_execution_payload();
+        let proposal =
+            Block::try_from_execution_block_with_encoded_cache(block, execution_block_encoded)
+                .wrap_err("payload builder produced an invalid block")?;
+        let block_size_estimate_bytes = execution_block_rlp_size_estimate_bytes;
         let validator_marshal_persist = marshal_persist.estimate(block_size_estimate_bytes);
         let proposal_elapsed = propose_start.elapsed();
         // Pace proposal return from the original propose start. Validators still
@@ -995,7 +969,7 @@ async fn subscribe(
         .wrap_err_with(|| format!("failed querying execution layer for parent block `{digest}`"))?
     {
         // EL database reads do not include commonware sidecars.
-        Block::from_execution_block_unchecked(block, None)
+        Block::from_execution_block_unchecked(block)
     } else {
         (*marshal
             .subscribe_by_digest(digest, DigestFallback::FetchByRound { round })

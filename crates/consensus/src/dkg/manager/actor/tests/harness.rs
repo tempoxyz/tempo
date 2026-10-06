@@ -642,13 +642,10 @@ pub(super) fn header(height: Height) -> TempoHeader {
 }
 
 pub(super) fn block(header: TempoHeader) -> Block {
-    Block::from_execution_block_unchecked(
-        SealedBlock::seal_slow(tempo_primitives::Block {
-            header,
-            body: BlockBody::default(),
-        }),
-        None,
-    )
+    Block::from_execution_block_unchecked(SealedBlock::seal_slow(tempo_primitives::Block {
+        header,
+        body: BlockBody::default(),
+    }))
 }
 
 pub(super) fn outcome_header(height: Height, state: &State) -> TempoHeader {

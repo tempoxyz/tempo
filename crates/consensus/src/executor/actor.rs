@@ -1375,12 +1375,12 @@ async fn validate_block(
 ) -> eyre::Result<Option<Duration>> {
     use alloy_rpc_types_engine::PayloadStatusEnum;
 
-    let (block, block_access_list) = Arc::unwrap_or_clone(block).into_parts();
+    let block = Arc::unwrap_or_clone(block).into_execution_block();
     let validation_start = Instant::now();
     let payload_status = execution_node
         .new_payload(TempoExecutionData {
             block,
-            block_access_list,
+            block_access_list: None,
             validator_set,
         })
         .await
@@ -1457,11 +1457,9 @@ async fn run_payload_job(
             }
             // The application received the block and may propose it; hand
             // the body to the actor loop for the notarized tree.
-            let (execution_block, block_access_list, _) =
-                retained.into_consensus_execution_payload();
+            let (execution_block, _) = retained.into_consensus_execution_payload();
             Some(Arc::new(Block::from_execution_block_unchecked(
                 execution_block,
-                block_access_list,
             )))
         }
         Some(Err(error)) => {
@@ -1660,11 +1658,11 @@ async fn forward_finalized(
 
     let consensus_context = block.header().consensus_context;
 
-    let (execution_block, block_access_list) = (*block).clone().into_parts();
+    let execution_block = (*block).clone().into_execution_block();
     let payload_status = execution_node
         .new_payload(TempoExecutionData {
             block: execution_block,
-            block_access_list,
+            block_access_list: None,
             // can be omitted for finalized blocks
             validator_set: None,
         })
@@ -1722,11 +1720,11 @@ async fn forward_notarized(
     validator_set: Option<Vec<B256>>,
 ) -> eyre::Result<LocalState> {
     if let NextToForward::Block(block) = step {
-        let (block, block_access_list) = Arc::unwrap_or_clone(block).into_parts();
+        let block = Arc::unwrap_or_clone(block).into_execution_block();
         let payload_status = execution_node
             .new_payload(TempoExecutionData {
                 block,
-                block_access_list,
+                block_access_list: None,
                 validator_set,
             })
             .await

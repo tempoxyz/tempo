@@ -68,7 +68,7 @@ fn pending_payload_job_is_delivered() {
         h.execution
             .deliver_payload(payload_id, built_payload(&proposal));
         let payload = build.await.expect("payload should be delivered");
-        let (block, _) = payload.into_execution_payload();
+        let block = payload.into_execution_payload();
         assert_eq!(Digest(block.hash()), digest);
         assert!(h.execution.pending_payload_jobs().is_empty());
         assert!(h.execution.canceled_payload_jobs().is_empty());
@@ -148,7 +148,7 @@ fn build_is_deferred_while_its_parent_converges_just_in_time() {
             .expect("finalized block should be acknowledged");
 
         let payload = rx.await.expect("payload should be delivered");
-        let (block, _) = payload.into_execution_payload();
+        let block = payload.into_execution_payload();
         assert_eq!(Digest(block.hash()), proposal.digest());
         assert!(
             h.execution.fcus().contains(&(d1, d1, true)),

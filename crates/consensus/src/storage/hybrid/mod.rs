@@ -180,9 +180,8 @@ where
             return Ok(None);
         }
         match self.block_by_number(height) {
-            Ok(maybe_block) => Ok(maybe_block.map(|block| {
-                Block::from_execution_block_unchecked(SealedBlock::seal_slow(block), None)
-            })),
+            Ok(maybe_block) => Ok(maybe_block
+                .map(|block| Block::from_execution_block_unchecked(SealedBlock::seal_slow(block)))),
             Err(err @ ProviderError::BlockExpired { .. }) => {
                 info!(error = %eyre::Report::new(err), "cannot find block");
                 Ok(None)
@@ -198,7 +197,7 @@ where
         // [`Blocks::get`] on [`Hybrid`].
         match self.find_sealed_or_recovered_block(hash, BlockSource::Canonical) {
             Ok(maybe_block) => {
-                Ok(maybe_block.map(|block| Block::from_execution_block_unchecked(block, None)))
+                Ok(maybe_block.map(|block| Block::from_execution_block_unchecked(block)))
             }
             Err(err @ ProviderError::BlockExpired { .. }) => {
                 info!(error = %eyre::Report::new(err), "cannot find block");

@@ -40,8 +40,6 @@ pub struct TempoPayloadTypes;
 pub struct TempoBuiltPayload {
     /// The inner built payload.
     inner: EthBuiltPayload<TempoPrimitives>,
-    /// RLP-encoded EIP-7928 block access list, when generated for this payload.
-    block_access_list: Option<Bytes>,
     /// The executed block data, used to skip re-execution in the engine tree.
     executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
     /// Replayable builder work for this payload.
@@ -61,7 +59,6 @@ impl TempoBuiltPayload {
     /// Creates a new [`TempoBuiltPayload`].
     pub fn new(
         inner: EthBuiltPayload<TempoPrimitives>,
-        block_access_list: Option<Bytes>,
         executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
         validation_work_duration: Duration,
         validation_latency_duration: Duration,
@@ -70,7 +67,6 @@ impl TempoBuiltPayload {
     ) -> Self {
         Self {
             inner,
-            block_access_list,
             executed_block,
             validation_work_duration,
             validation_latency_duration,
@@ -79,25 +75,16 @@ impl TempoBuiltPayload {
         }
     }
 
-    /// Converts the built payload into owned execution payload parts.
-    pub fn into_execution_payload(self) -> (SealedBlock<Block>, Option<Bytes>) {
-        (
-            Arc::unwrap_or_clone(self.inner.block_arc().clone()).into_sealed_block(),
-            self.block_access_list,
-        )
+    /// Converts the built payload into an owned execution block.
+    pub fn into_execution_payload(self) -> SealedBlock<Block> {
+        Arc::unwrap_or_clone(self.inner.block_arc().clone()).into_sealed_block()
     }
 
     /// Converts the built payload into consensus block parts without cloning the execution block.
-    pub fn into_consensus_execution_payload(
-        self,
-    ) -> (SealedOrRecoveredBlock<Block>, Option<Bytes>, EncodedBlock) {
+    pub fn into_consensus_execution_payload(self) -> (SealedOrRecoveredBlock<Block>, EncodedBlock) {
         let execution_block = SealedOrRecoveredBlock::recovered_arc(self.inner.block_arc().clone());
 
-        (
-            execution_block,
-            self.block_access_list,
-            self.execution_block_encoded,
-        )
+        (execution_block, self.execution_block_encoded)
     }
 
     /// Returns the approximate execution block RLP size estimate.
@@ -117,10 +104,10 @@ impl TempoBuiltPayload {
 
     /// Converts the built payload into [`TempoExecutionData`].
     pub fn into_execution_data(self) -> TempoExecutionData {
-        let (block, block_access_list, _) = self.into_consensus_execution_payload();
+        let (block, _) = self.into_consensus_execution_payload();
         TempoExecutionData {
             block,
-            block_access_list,
+            block_access_list: None,
             validator_set: None,
         }
     }
@@ -146,7 +133,7 @@ impl BuiltPayload for TempoBuiltPayload {
     }
 
     fn block_access_list(&self) -> Option<&Bytes> {
-        self.block_access_list.as_ref()
+        None
     }
 }
 

@@ -38,26 +38,23 @@ fn round(view: u64) -> Round {
 /// The consensus context claims a parent from view `view - 1` (blocks
 /// must carry a context; consensus rejects them otherwise).
 fn block(view: u64, height: u64, parent: Digest) -> Block {
-    Block::from_execution_block_unchecked(
-        SealedBlock::seal_slow(TempoBlock {
-            header: TempoHeader {
-                inner: alloy_consensus::Header {
-                    number: height,
-                    parent_hash: parent.0,
-                    ..Default::default()
-                },
-                consensus_context: Some(TempoConsensusContext {
-                    epoch: 0,
-                    view,
-                    parent_view: view - 1,
-                    proposer: tempo_primitives::ed25519::PublicKey::from_seed(42),
-                }),
+    Block::from_execution_block_unchecked(SealedBlock::seal_slow(TempoBlock {
+        header: TempoHeader {
+            inner: alloy_consensus::Header {
+                number: height,
+                parent_hash: parent.0,
                 ..Default::default()
             },
-            body: Default::default(),
-        }),
-        None,
-    )
+            consensus_context: Some(TempoConsensusContext {
+                epoch: 0,
+                view,
+                parent_view: view - 1,
+                proposer: tempo_primitives::ed25519::PublicKey::from_seed(42),
+            }),
+            ..Default::default()
+        },
+        body: Default::default(),
+    }))
 }
 
 /// Reports `block` as the notarized parent of a consensus context — as

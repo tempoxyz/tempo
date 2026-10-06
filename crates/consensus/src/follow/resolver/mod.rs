@@ -288,7 +288,7 @@ async fn resolve_finalized<U: Upstream>(upstream: &U, height: Height) -> Option<
 
     // Upstream finalization responses carry persisted EL blocks only; no p2p BAL
     // is available when reconstructing this consensus block.
-    let consensus_block = Block::from_execution_block_unchecked(certified_block.block, None);
+    let consensus_block = Block::from_execution_block_unchecked(certified_block.block);
     Some((finalization, consensus_block).encode())
 }
 
@@ -328,7 +328,7 @@ where
     fn get_block(&self, digest: Digest) -> impl Future<Output = Option<Block>> + Send + 'static {
         let client = self.clone();
         async move {
-            Block::try_from_execution_block(client.get_full_block(digest.0).await, None)
+            Block::try_from_execution_block(client.get_full_block(digest.0).await)
                 .inspect_err(|error| warn!(%error, %digest, "devp2p block failed validation"))
                 .ok()
         }
@@ -343,7 +343,7 @@ where
     fn block_by_hash(&self, digest: Digest) -> eyre::Result<Option<Block>> {
         self.find_sealed_or_recovered_block(digest.0, BlockSource::Any)
             .map_err(eyre::Report::new)
-            .map(|block| block.map(|block| Block::from_execution_block_unchecked(block, None)))
+            .map(|block| block.map(|block| Block::from_execution_block_unchecked(block)))
     }
 }
 
