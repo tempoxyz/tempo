@@ -23,10 +23,10 @@ use tempo_contracts::{
     TempoHardfork,
     precompiles::{
         AccountKeychainError, AddrRegistryError, CurrentCommitteeError, FeeManagerError,
-        NonceError, ReceivePolicyGuardError, RolesAuthError, SignatureVerifierError,
-        StablecoinDEXError, StorageCreditsError, TIP20ChannelReserveError, TIP20FactoryError,
-        TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector, ValidatorConfigError,
-        ValidatorConfigV2Error, ZoneFactoryError,
+        KeyPublisherError, NonceError, ReceivePolicyGuardError, RolesAuthError,
+        SignatureVerifierError, StablecoinDEXError, StorageCreditsError, TIP20ChannelReserveError,
+        TIP20FactoryError, TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector,
+        ValidatorConfigError, ValidatorConfigV2Error, ZoneFactoryError,
     },
 };
 
@@ -111,6 +111,10 @@ pub enum TempoPrecompileError {
     #[error("Current committee error: {0:?}")]
     CurrentCommitteeError(CurrentCommitteeError),
 
+    /// Error from the TIP-1132 Key Publisher precompile
+    #[error("Key publisher error: {0:?}")]
+    KeyPublisherError(KeyPublisherError),
+
     /// Error from the TIP-1091 ZoneFactory precompile
     #[error("ZoneFactory error: {0:?}")]
     ZoneFactoryError(ZoneFactoryError),
@@ -183,6 +187,7 @@ impl TempoPrecompileError {
             Self::ReceivePolicyGuardError(e) => e.selector(),
             Self::StorageCreditsError(e) => e.selector(),
             Self::CurrentCommitteeError(e) => e.selector(),
+            Self::KeyPublisherError(e) => e.selector(),
             Self::ZoneFactoryError(e) => e.selector(),
             Self::UnknownFunctionSelector(selector) => *selector,
             Self::Panic(_) | Self::StorageDeltaUnderflow(_) => Panic::SELECTOR,
@@ -217,6 +222,7 @@ impl TempoPrecompileError {
             | Self::ReceivePolicyGuardError(_)
             | Self::StorageCreditsError(_)
             | Self::CurrentCommitteeError(_)
+            | Self::KeyPublisherError(_)
             | Self::ZoneFactoryError(_)
             | Self::UnknownFunctionSelector(_) => false,
         }
@@ -280,6 +286,7 @@ impl TempoPrecompileError {
             Self::ReceivePolicyGuardError(e) => e.abi_encode().into(),
             Self::StorageCreditsError(e) => e.abi_encode().into(),
             Self::CurrentCommitteeError(e) => e.abi_encode().into(),
+            Self::KeyPublisherError(e) => e.abi_encode().into(),
             Self::ZoneFactoryError(e) => e.abi_encode().into(),
             Self::OutOfGas => {
                 return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, reservoir));
@@ -364,6 +371,7 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     add_errors_to_registry(&mut registry, TempoPrecompileError::ReceivePolicyGuardError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::StorageCreditsError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::CurrentCommitteeError);
+    add_errors_to_registry(&mut registry, TempoPrecompileError::KeyPublisherError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::ZoneFactoryError);
 
     registry

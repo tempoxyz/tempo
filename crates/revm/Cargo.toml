@@ -20,6 +20,7 @@ tempo-precompiles.workspace = true
 tempo-primitives = { workspace = true, features = ["reth", "evm"] }
 tempo-contracts.workspace = true
 tempo-chainspec.workspace = true
+tempo-zk.workspace = true
 
 reth-evm.workspace = true
 reth-storage-api = { workspace = true, optional = true }
@@ -35,8 +36,12 @@ auto_impl.workspace = true
 derive_more.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
+parking_lot.workspace = true
+rayon.workspace = true
+schnellru.workspace = true
 
 [dev-dependencies]
+tempo-zk = { workspace = true, features = ["test-utils"] }
 eyre.workspace = true
 alloy-primitives = { workspace = true, features = ["rand"] }
 alloy-eips.workspace = true
