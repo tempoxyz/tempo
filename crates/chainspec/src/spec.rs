@@ -164,7 +164,7 @@ pub static PRESTO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
 ///
 /// `cargo x generate-genesis -o dev.json --accounts 10 --no-dkg-in-genesis
 /// --zk-verifying-key 1=<verifyingKey>`, with the development key of the OIDC RS256 v1 circuit
-/// from `crates/zk/testdata/oidc_rs256_v1_dev.json`. Anyone who knows its setup secrets can
+/// from `crates/zk/testdata/oidc_rs256_v1_dev.json`. Its setup is deterministic, so anyone can
 /// forge OIDC signatures on this chain.
 pub static DEV: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
     let genesis: Genesis = serde_json::from_str(include_str!("./genesis/dev.json"))

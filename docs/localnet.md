@@ -74,8 +74,8 @@ Point compatibility tests at the intended network or a forked environment with i
 
 The `dev` chainspec also sets a development verifying key for OIDC signers ([TIP-1131](../tips/tip-1131.md)
 ZK signatures, scheme `0x01`), so the network accepts proofs from the
-[reference circuit](../circuits/oidc-rs256/README.md)'s development key. No ceremony stands behind that key,
-so treat OIDC accounts on this network as test-only.
+[reference circuit](../circuits/oidc-rs256/README.md)'s development key. Its setup is deterministic and public,
+so anyone can forge proofs for it: treat OIDC accounts on this network as test-only.
 
 ## Fund a test account
 
