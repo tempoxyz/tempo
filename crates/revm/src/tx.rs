@@ -55,6 +55,9 @@ pub struct TempoBatchCallEnv {
     /// When provided in eth_call/eth_estimateGas, enables spending limits simulation
     /// This is not used in actual transaction execution - the key_id is recovered from the signature.
     pub override_key_id: Option<Address>,
+
+    /// Expected bucket entry for this expiring transaction, used only for prewarming.
+    pub expiring_nonce_idx: Option<usize>,
 }
 
 /// Identifies the kind of execution represented by a transaction environment.
@@ -377,7 +380,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 tx_hash: *aa_signed.hash(),
                 // override_key_id is only used for gas estimation, not actual execution
                 override_key_id: None,
-                // can only be derived when given an entire block
+                expiring_nonce_idx: None,
             })),
         }
     }

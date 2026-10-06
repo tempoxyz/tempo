@@ -47,7 +47,8 @@ use tempo_precompiles::{
     expiring_nonce::ExpiringNonceManager,
     nonce::{INonce::getNonceCall, NonceManager},
     storage::{
-        PrecompileStorageProvider, StorageActions, StorageCtx, evm::EvmPrecompileStorageProvider,
+        Handler as _, PrecompileStorageProvider, StorageActions, StorageCtx,
+        evm::EvmPrecompileStorageProvider,
     },
     tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
     tip20_channel_reserve::TIP20ChannelReserve,
@@ -1090,6 +1091,17 @@ where
                 actions.clone(),
                 || {
                     let mut nonce_manager = ExpiringNonceManager::new();
+
+                    // Speculative executions share the parent state, whose current-block
+                    // bucket count is zero. Warm the entry sequential execution will use.
+                    if let Some(index) = tempo_tx_env.expiring_nonce_idx {
+                        nonce_manager
+                            .bucket
+                            .at_owned(&block.number().saturating_to::<u64>())
+                            .at_owned(&(index as u64))
+                            .read()
+                            .map_err(|err| EVMError::Custom(err.to_string()))?;
+                    }
 
                     nonce_manager
                     .check_and_mark_expiring_nonce(replay_hash, valid_before)
