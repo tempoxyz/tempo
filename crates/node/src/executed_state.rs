@@ -90,6 +90,8 @@ impl ExecutedState {
 pub struct TempoEngineTreeValidatorBuilder {
     inner: BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>,
     executed_state: ExecutedState,
+    #[cfg(feature = "qmdb")]
+    qmdb: Option<crate::qmdb::QmdbStateLoader>,
 }
 
 impl TempoEngineTreeValidatorBuilder {
@@ -99,7 +101,15 @@ impl TempoEngineTreeValidatorBuilder {
         Self {
             inner: BasicEngineValidatorBuilder::default(),
             executed_state,
+            #[cfg(feature = "qmdb")]
+            qmdb: None,
         }
+    }
+
+    #[cfg(feature = "qmdb")]
+    pub fn with_qmdb(mut self, qmdb: Option<crate::qmdb::QmdbStateLoader>) -> Self {
+        self.qmdb = qmdb;
+        self
     }
 }
 
@@ -116,12 +126,28 @@ where
     async fn build_tree_validator(
         self,
         ctx: &AddOnsContext<'_, Node>,
-        tree_config: TreeConfig,
+        mut tree_config: TreeConfig,
         overlay_manager: OverlayManager<PrimitivesTy<Node::Types>>,
     ) -> eyre::Result<Self::EngineValidator> {
         self.executed_state.set(overlay_manager.clone());
-        self.inner
+        #[cfg(feature = "qmdb")]
+        let state = if let Some(loader) = &self.qmdb {
+            tree_config = tree_config.with_persistence_threshold(0).with_memory_block_buffer_target(0);
+            Some(loader.open(ctx.config, ctx.node.provider())?)
+        } else {
+            None
+        };
+        let validator = self.inner
             .build_tree_validator(ctx, tree_config, overlay_manager)
-            .await
+            .await?;
+        #[cfg(feature = "qmdb")]
+        let validator = if let Some(state) = state {
+            let strategy = crate::qmdb::QmdbStrategy::new(state);
+            let (save, remove) = strategy.persistence_hooks();
+            validator.with_state_root_strategy(Arc::new(strategy)).with_persistence_hooks(Some(save), Some(remove))
+        } else {
+            validator
+        };
+        Ok(validator)
     }
 }

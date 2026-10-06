@@ -43,6 +43,9 @@ pub use tempo_primitives as primitives;
 
 mod version;
 
+#[cfg(feature = "qmdb")]
+pub mod qmdb;
+
 type TempoFullNodeTypes = RethFullAdapter<DatabaseEnv, TempoNode>;
 type TempoNodeAdapter = NodeAdapter<TempoFullNodeTypes>;
 
