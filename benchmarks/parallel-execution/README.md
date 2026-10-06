@@ -134,6 +134,9 @@ Set `correctness-preset` to
 `tip20:recipient=existing,auth=keychain,fee-token=any_tip20` for transfers signed by
 authorized access keys, or use `auth=key_authorization` for inline authorization.
 Both use the pinned stock txgen revision and the same live equivalence checks.
+Keychain setup and workload share one generator stream, with setup confirmed by
+the sender before measurement; its single transfer workload uses transaction
+weighting because stock txgen cannot save access-key setup bindings.
 
 For example, [boxed-result validation](https://github.com/tempoxyz/tempo/actions/runs/37164999238)
 checks 187 blocks and 1,579,481 transactions using eight versus zero workers.
