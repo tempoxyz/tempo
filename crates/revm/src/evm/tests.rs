@@ -3432,6 +3432,53 @@ fn test_expiring_nonce_does_not_settle_storage_credits() -> eyre::Result<()> {
     Ok(())
 }
 
+/// Slot hints must only prefetch storage, without changing execution results.
+#[test]
+fn test_expiring_nonce_prewarming_loads_distinct_bucket_entries() -> eyre::Result<()> {
+    use tempo_precompiles::{
+        EXPIRING_NONCE_PRECOMPILE_ADDRESS, expiring_nonce::ExpiringNonceManager,
+    };
+    use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
+
+    let key = P256KeyPair::random();
+    let signed = key.sign_tx(
+        TxBuilder::new()
+            .call_identity(&[])
+            .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
+            .valid_before(Some(1030))
+            .gas_limit(500_000)
+            .build(),
+    )?;
+    let env = TempoTxEnv::from_recovered_tx(&signed, key.address);
+    let manager = ExpiringNonceManager::new();
+    let mut baseline_evm = create_funded_evm_t7_with_timestamp(key.address, 1000);
+    let baseline = baseline_evm.transact(env.clone())?;
+    assert!(baseline.result.is_success());
+
+    // Independent workers see the same empty parent bucket. The hint must load
+    // each eventual slot without changing nonce bookkeeping or transaction gas.
+    for index in [1, 7, 4096] {
+        let mut evm = create_funded_evm_t7_with_timestamp(key.address, 1000);
+        let mut hinted = env.clone();
+        hinted.tempo_tx_env.as_mut().unwrap().expiring_nonce_idx = Some(index);
+        let mut result = evm.transact(hinted)?;
+        assert_eq!(result.result, baseline.result);
+        let slot = manager.bucket[0][index as u64].slot();
+        let storage = &mut result
+            .state
+            .get_mut(&EXPIRING_NONCE_PRECOMPILE_ADDRESS)
+            .unwrap()
+            .storage;
+        let warmed = storage
+            .remove(&slot)
+            .expect("hinted bucket slot was loaded");
+        assert_eq!(warmed.present_value, U256::ZERO);
+        assert!(!warmed.is_changed());
+        assert_eq!(result.state, baseline.state);
+    }
+    Ok(())
+}
+
 /// TIP-1106: expiring nonces become opaque discriminators at T12.
 #[test]
 fn test_expiring_nonce_discriminator_activation() -> eyre::Result<()> {
