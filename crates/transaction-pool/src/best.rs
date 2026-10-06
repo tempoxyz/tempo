@@ -191,16 +191,6 @@ where
         }
     }
 
-    /// Observes a committed native storage write without detaching transaction state.
-    pub fn on_storage_change(&mut self, change: StorageChange) {
-        let Ok(()) = DecreasedBalancesSink(&mut self.decreased_balances).storage(change);
-    }
-    /// Refreshes tracked balances from native storage reads.
-    pub fn on_storage_read(&mut self, address: Address, key: U256, value: U256) {
-        let Ok(()) =
-            DecreasedBalancesSink(&mut self.decreased_balances).storage_read(address, key, value);
-    }
-
     /// Processes a new transaction execution result and collects any relevant
     /// state changes that might affect other transactions validity.
     pub fn on_new_result<R: BlockTransactionResult<TempoEvmTypes>>(&mut self, result: &R) {

@@ -16,8 +16,8 @@ use evm2::{
 use reth_chainspec::{EthChainSpec as _, EthereumHardforks as _};
 use reth_evm::{
     BlockExecutionError, BlockExecutionOutput, BlockExecutor, BlockTransactionResult,
-    BlockValidationError, CommitChanges, ExecutorTx, GasOutput, ReceiptBuilder, ReceiptBuilderCtx,
-    RecoveredTx, execute::map_database_error,
+    BlockValidationError, ExecutorTx, GasOutput, ReceiptBuilder, ReceiptBuilderCtx, RecoveredTx,
+    execute::{map_database_error, map_handler_error},
 };
 use reth_evm_ethereum::{EthBlockExecutor, EthTransactionResultWithState};
 use reth_execution_types::EvmState;
@@ -241,121 +241,6 @@ impl<'a> TempoBlockExecutor<'a> {
         }
     }
 
-    fn record_transaction_commit(
-        &mut self,
-        execution_context: ExecutionContext,
-        next_section: BlockSection,
-        is_payment: bool,
-        block_gas_used: u64,
-    ) {
-        self.block_gas_used = self.block_gas_used.saturating_add(block_gas_used);
-
-        self.section = next_section;
-
-        match self.section {
-            BlockSection::StartOfBlock => {
-                // no gas spending for start-of-block system transactions
-            }
-            BlockSection::NonShared => {
-                self.non_shared_gas_left -= block_gas_used;
-                if !is_payment {
-                    self.non_payment_gas_left -= block_gas_used;
-                }
-            }
-            BlockSection::GasIncentive => {
-                if matches!(execution_context, ExecutionContext::Transaction { .. }) {
-                    self.incentive_gas_used += block_gas_used;
-                }
-            }
-            BlockSection::System { .. } => {
-                // no gas spending for end-of-block system transactions
-            }
-        }
-
-        self.replay_state.commit_tx_changes();
-    }
-
-    /// Executes in place while streaming native changes to an observer before transaction buffers are cleared.
-    pub fn execute_transaction_with_state_sink(
-        &mut self,
-        transaction: impl ExecutorTx<Self>,
-        sink: &mut dyn evm2::evm::StateChangeSink<Error = core::convert::Infallible>,
-        f: impl FnOnce(&TxResult<TempoEvmTypes>),
-    ) -> Result<GasOutput, BlockExecutionError> {
-        self.execute_transaction_in_place(transaction, Some(sink), |result| {
-            f(result);
-            CommitChanges::Yes
-        })
-        .map(Option::unwrap_or_default)
-    }
-
-    fn execute_transaction_in_place(
-        &mut self,
-        transaction: impl ExecutorTx<Self>,
-        sink: Option<&mut dyn evm2::evm::StateChangeSink<Error = core::convert::Infallible>>,
-        commit: impl FnOnce(&TxResult<TempoEvmTypes>) -> CommitChanges,
-    ) -> Result<Option<GasOutput>, BlockExecutionError> {
-        let (mut tx_env, recovered) = transaction.into_parts();
-        tx_env.inner_mut().set_expiring_nonce_idx(None);
-        let execution_context = tx_env.inner().execution_context();
-        let original = recovered.tx();
-        let section = self.validate_tx_pre_execution(original)?;
-        let tx_hash = *original.tx_hash();
-        let is_payment = self.is_payment(original);
-        let use_regular_gas = self.evm().version().feature(evm2::EvmFeatures::EIP8037);
-        let current_section = self.section;
-        let non_shared_gas_left = self.non_shared_gas_left;
-        let non_payment_gas_left = self.non_payment_gas_left;
-        let mut validation_error = None;
-        let mut accepted = None;
-        let output = self
-            .inner
-            .execute_transaction_with_commit_condition_and_state_sink(
-                (tx_env, recovered),
-                sink,
-                |result| {
-                    let block_gas_used = if use_regular_gas {
-                        result.execution_gas_spent()
-                    } else {
-                        result.tx_gas_used()
-                    };
-                    let next_section = match section.map(Ok).unwrap_or_else(|| {
-                        Self::validate_tx_in_section(
-                            current_section,
-                            non_shared_gas_left,
-                            non_payment_gas_left,
-                            tx_hash,
-                            is_payment,
-                            block_gas_used,
-                        )
-                    }) {
-                        Ok(section) => section,
-                        Err(error) => {
-                            validation_error = Some(error);
-                            return CommitChanges::No;
-                        }
-                    };
-                    let decision = commit(result);
-                    if decision.should_commit() {
-                        accepted = Some((next_section, block_gas_used));
-                    }
-                    decision
-                },
-            )?;
-        if let Some(error) = validation_error {
-            return Err(error.into());
-        }
-        if let Some((next_section, block_gas_used)) = accepted {
-            self.record_transaction_commit(
-                execution_context,
-                next_section,
-                is_payment,
-                block_gas_used,
-            );
-        }
-        Ok(output)
-    }
-
     /// Deploys `0xEF` marker bytecode and initializes storage at a precompile address.
     ///
     /// This also dispatches the state change to the system caller's state hook so that the
@@ -494,20 +379,21 @@ impl<'a> TempoBlockExecutor<'a> {
         .abi_encode()
         .into();
 
-        let _ = self.inner.execute_system_call_with_validation(
-            SystemTx::new(CURRENT_COMMITTEE_ADDRESS, calldata)
-                .with_caller(Address::ZERO)
-                .with_gas_limit(SYSTEM_CALL_GAS_LIMIT),
-            |result| {
-                if result.status {
-                    Ok(())
-                } else {
-                    Err(BlockValidationError::msg(
-                        "current committee system call failed",
-                    ))
-                }
-            },
-        )?;
+        let result = self
+            .evm_mut()
+            .system_call(
+                SystemTx::new(CURRENT_COMMITTEE_ADDRESS, calldata)
+                    .with_caller(Address::ZERO)
+                    .with_gas_limit(SYSTEM_CALL_GAS_LIMIT),
+            )
+            .map_err(map_handler_error)?
+            .detach();
+
+        if !result.result.status {
+            return Err(BlockValidationError::msg("current committee system call failed").into());
+        }
+
+        self.inner.commit_pending_state(&result.pending_state);
         Ok(())
     }
 
@@ -624,28 +510,10 @@ impl<'a> TempoBlockExecutor<'a> {
         is_payment: bool,
         gas_used: u64,
     ) -> Result<BlockSection, BlockValidationError> {
-        Self::validate_tx_in_section(
-            self.section,
-            self.non_shared_gas_left,
-            self.non_payment_gas_left,
-            tx_hash,
-            is_payment,
-            gas_used,
-        )
-    }
-
-    fn validate_tx_in_section(
-        section: BlockSection,
-        non_shared_gas_left: u64,
-        non_payment_gas_left: u64,
-        tx_hash: B256,
-        is_payment: bool,
-        gas_used: u64,
-    ) -> Result<BlockSection, BlockValidationError> {
-        match section {
+        match self.section {
             BlockSection::StartOfBlock | BlockSection::NonShared => {
-                if gas_used > non_shared_gas_left
-                    || (!is_payment && gas_used > non_payment_gas_left)
+                if gas_used > self.non_shared_gas_left
+                    || (!is_payment && gas_used > self.non_payment_gas_left)
                 {
                     // Historical blocks can use the gas incentive section after
                     // exhausting the non-shared or general gas budget.
@@ -737,14 +605,6 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         self.inner.receipts()
     }
 
-    fn execute_transaction_with_commit_condition(
-        &mut self,
-        transaction: impl ExecutorTx<Self>,
-        commit: impl FnOnce(&TxResult<TempoEvmTypes>) -> CommitChanges,
-    ) -> Result<Option<GasOutput>, BlockExecutionError> {
-        self.execute_transaction_in_place(transaction, None, commit)
-    }
-
     fn execute_transaction_without_commit(
         &mut self,
         tx: impl ExecutorTx<Self>,
@@ -804,7 +664,31 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         } = output;
 
         let gas_output = self.inner.commit_transaction(inner)?;
-        self.record_transaction_commit(execution_context, next_section, is_payment, block_gas_used);
+        self.block_gas_used = self.block_gas_used.saturating_add(block_gas_used);
+
+        self.section = next_section;
+
+        match self.section {
+            BlockSection::StartOfBlock => {
+                // no gas spending for start-of-block system transactions
+            }
+            BlockSection::NonShared => {
+                self.non_shared_gas_left -= block_gas_used;
+                if !is_payment {
+                    self.non_payment_gas_left -= block_gas_used;
+                }
+            }
+            BlockSection::GasIncentive => {
+                if matches!(execution_context, ExecutionContext::Transaction { .. }) {
+                    self.incentive_gas_used += block_gas_used;
+                }
+            }
+            BlockSection::System { .. } => {
+                // no gas spending for end-of-block system transactions
+            }
+        }
+
+        self.replay_state.commit_tx_changes();
 
         Ok(gas_output)
     }
@@ -1641,131 +1525,6 @@ mod tests {
             .with_spec(TempoHardfork::T5)
             .build(&mut db, &chainspec);
         assert!(!t5_executor.is_payment(&tx));
-    }
-
-    #[test]
-    fn test_in_place_matches_detached_with_hook_and_observer() {
-        struct Observer {
-            writes: usize,
-            reads: usize,
-        }
-        impl evm2::evm::StateChangeSink for Observer {
-            type Error = core::convert::Infallible;
-            fn storage(&mut self, _: evm2::evm::StorageChange) -> Result<(), Self::Error> {
-                self.writes += 1;
-                Ok(())
-            }
-            fn storage_read(&mut self, _: Address, _: U256, _: U256) -> Result<(), Self::Error> {
-                self.reads += 1;
-                Ok(())
-            }
-        }
-        let chainspec = test_chainspec();
-        let mut db = InMemoryDB::default();
-        db.insert_account_info(
-            &Address::ZERO,
-            AccountInfo::empty()
-                .with_nonce(1)
-                .with_code(Bytecode::new_raw(alloy_primitives::bytes!(
-                    "600160005560005400"
-                ))),
-        );
-        let tx = Recovered::new_unchecked(
-            create_system_tx(chainspec.chain().id(), create_system_tx_input(vec![], 1)),
-            Address::ZERO,
-        );
-        let mut direct = TestExecutorBuilder::default()
-            .with_spec(TempoHardfork::T3)
-            .build(db.clone(), &chainspec);
-        let mut detached = TestExecutorBuilder::default()
-            .with_spec(TempoHardfork::T3)
-            .build(db, &chainspec);
-        direct.enable_block_access_list_builder();
-        detached.enable_block_access_list_builder();
-        let hooks = Arc::new(Mutex::new(Vec::new()));
-        direct.set_state_hook({
-            let hooks = hooks.clone();
-            move |updates| hooks.lock().unwrap().push(updates)
-        });
-        let mut observer = Observer {
-            writes: 0,
-            reads: 0,
-        };
-        let mut observed = None;
-        let gas = direct
-            .execute_transaction_with_state_sink(tx.clone(), &mut observer, |result| {
-                observed = Some((result.tx_gas_used(), result.ext.validator_fee))
-            })
-            .unwrap();
-        let output = detached.execute_transaction_without_commit(tx).unwrap();
-        assert_eq!(
-            observed,
-            Some((output.result().tx_gas_used(), output.validator_fee()))
-        );
-        assert_eq!(gas, detached.commit_transaction(output).unwrap());
-        assert_eq!(direct.section, detached.section);
-        assert_eq!(direct.block_gas_used, detached.block_gas_used);
-        assert!(
-            observer.writes > 0,
-            "builder observer must see storage writes"
-        );
-        assert_eq!(hooks.lock().unwrap().len(), 1);
-        let (direct, direct_bal) = direct.finish_with_block_access_list().unwrap();
-        let (detached, detached_bal) = detached.finish_with_block_access_list().unwrap();
-        assert_eq!(direct, detached);
-        assert_eq!(direct_bal, detached_bal);
-    }
-
-    #[test]
-    fn test_in_place_rejected_commit_discards_writes_and_hook() {
-        let chainspec = test_chainspec();
-        let mut db = InMemoryDB::default();
-        db.insert_account_info(
-            &Address::ZERO,
-            AccountInfo::empty()
-                .with_nonce(1)
-                .with_code(Bytecode::new_raw(alloy_primitives::bytes!("600160005500"))),
-        );
-        let tx = Recovered::new_unchecked(
-            create_system_tx(chainspec.chain().id(), create_system_tx_input(vec![], 1)),
-            Address::ZERO,
-        );
-        let mut executor = TestExecutorBuilder::default()
-            .with_spec(TempoHardfork::T3)
-            .build(db, &chainspec);
-        let hooks = Arc::new(Mutex::new(Vec::new()));
-        executor.set_state_hook({
-            let hooks = hooks.clone();
-            move |updates| hooks.lock().unwrap().push(updates)
-        });
-        assert!(
-            executor
-                .execute_transaction_with_commit_condition(tx.clone(), |_| CommitChanges::No)
-                .unwrap()
-                .is_none()
-        );
-        assert!(executor.receipts().is_empty());
-        assert!(hooks.lock().unwrap().is_empty());
-        assert_eq!(executor.section, BlockSection::StartOfBlock);
-        assert_eq!(
-            executor
-                .evm_mut()
-                .state_mut()
-                .storage_slot_untracked(&Address::ZERO, &U256::ZERO)
-                .unwrap(),
-            U256::ZERO
-        );
-        executor.execute_transaction(tx).unwrap();
-        assert_eq!(executor.receipts().len(), 1);
-        assert_eq!(hooks.lock().unwrap().len(), 1);
-        assert_eq!(
-            executor
-                .evm_mut()
-                .state_mut()
-                .storage_slot_untracked(&Address::ZERO, &U256::ZERO)
-                .unwrap(),
-            U256::from(1)
-        );
     }
 
     #[test]
