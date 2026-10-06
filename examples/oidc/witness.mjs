@@ -8,7 +8,7 @@ export function limbs(bytes) {
   return Array.from({ length: 17 }, () => { const limb = value & ((1n << 121n)-1n); value >>= 121n; return limb.toString(); });
 }
 
-export function positions(payload) {
+export function positions(payload, allowMissing = false) {
   const source = payload.toString('utf8');
   const found = new Map();
   let depth = 0;
@@ -44,16 +44,19 @@ export function positions(payload) {
     }
   }
   return ['iss','aud','sub','nonce','iat','exp'].map(key => {
-    if (!found.has(key)) throw new Error(`Missing circuit member: ${key}`);
+    if (!found.has(key)) {
+      if (allowMissing) return [0, key === 'nonce' ? 43 : 1];
+      throw new Error(`Missing circuit member: ${key}`);
+    }
     return found.get(key);
   });
 }
 
-export function circuitInput(witness) {
+export function circuitInput(witness, allowMissing = false) {
   const input = witness.signedInput.subarray(0, witness.signedInputLength);
   const period = input.indexOf(46);
   const payload = Buffer.from(input.subarray(period+1).toString(), 'base64url');
-  const members = positions(payload);
+  const members = positions(payload, allowMissing);
   return {
     signed_input: [...witness.signedInput], signed_input_len: witness.signedInputLength, period, payload_len: payload.length,
     modulus: limbs(witness.modulus), signature: limbs(witness.signature),
@@ -81,14 +84,14 @@ export async function fixture({ message = false, payloadTransform = value => val
   const modulus = Buffer.from(jwk.n, 'base64url');
   const issuerValue = await issuerHash(claims.iss);
   const keyHash = await hashBytes(modulus, 256);
-  const seed = await addressSeed(claims.sub, claims.aud, salt);
+  const seed = await addressSeed(claims.sub ?? subject, claims.aud ?? audience, salt);
   const padded = Buffer.alloc(1024); signed.copy(padded);
   const statement = await publicInput({ issuer: issuerValue, keyHash, addressSeed: seed, commitA: accessKeyId, commitB: validUntil, issuedAt: claims.iat });
   const witness = { signedInput: padded, signedInputLength: signed.length, modulus, signature, salt, blinding, accessKeyId, validUntil, issuedAt: claims.iat, issuer: issuerValue, keyHash, addressSeed: seed, publicInput: statement };
   if (!message && payloadTransform.toString() === (value => value).toString()) {
     await tokenWitness({ token, jwk, salt, blinding, accessKeyId, validUntil, now, expectedIssuer: issuer, expectedAudience: audience });
   }
-  return { input: circuitInput(witness), token, jwk };
+  return { input: circuitInput(witness, true), token, jwk };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
