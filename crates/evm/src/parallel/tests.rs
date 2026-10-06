@@ -1134,8 +1134,45 @@ fn fee_rebasing_replays_intermediate_and_accumulator_overflow() {
     }
 }
 
-#[test]
-fn generated_existing_recipient_balances_match_across_forks_and_windows() {
+// Partition the worker/window and execution-mode matrix by fork so nextest can
+// schedule and report each fork independently.
+mod generated_existing_recipient_balances_match_across_forks_and_windows {
+    use super::*;
+
+    macro_rules! test_forks {
+        ($($name:ident => $spec:ident),+ $(,)?) => {
+            $(
+                #[test]
+                fn $name() {
+                    generated_existing_recipient_balances_match_at_spec(TempoHardfork::$spec);
+                }
+            )+
+        };
+    }
+
+    test_forks! {
+        t0 => T0,
+        t1 => T1,
+        t1a => T1A,
+        t1b => T1B,
+        t1c => T1C,
+        t2 => T2,
+        t3 => T3,
+        t4 => T4,
+        t5 => T5,
+        t6 => T6,
+        t7 => T7,
+        t8 => T8,
+        t9 => T9,
+        t10 => T10,
+        t11 => T11,
+        t12 => T12,
+        t13 => T13,
+        t14 => T14,
+    }
+}
+
+fn generated_existing_recipient_balances_match_at_spec(spec: TempoHardfork) {
     use alloy_evm::FromRecoveredTx;
     use alloy_sol_types::SolCall;
     use tempo_precompiles::{PATH_USD_ADDRESS, tip20::ITIP20};
@@ -1194,44 +1231,42 @@ fn generated_existing_recipient_balances_match_across_forks_and_windows() {
             tx
         })
         .collect::<Vec<_>>();
-    for spec in FEE_SPECS.into_iter().chain(CURRENT_SPECS) {
-        let mut reference = TempoEvm::new(
-            db.clone(),
-            EvmEnv {
-                cfg_env: revm::context::CfgEnv::new_with_spec_and_gas_params(
-                    spec,
-                    tempo_revm::gas_params::tempo_gas_params(spec),
-                ),
-                block_env: TempoBlockEnv {
-                    inner: revm::context::BlockEnv {
-                        gas_limit: 500_000_000,
-                        basefee: 0,
-                        ..Default::default()
-                    },
+    let mut reference = TempoEvm::new(
+        db.clone(),
+        EvmEnv {
+            cfg_env: revm::context::CfgEnv::new_with_spec_and_gas_params(
+                spec,
+                tempo_revm::gas_params::tempo_gas_params(spec),
+            ),
+            block_env: TempoBlockEnv {
+                inner: revm::context::BlockEnv {
+                    gas_limit: 500_000_000,
+                    basefee: 0,
                     ..Default::default()
                 },
+                ..Default::default()
             },
-        );
-        let mut successes = 0;
-        let mut reverts = 0;
-        for tx in &transactions {
-            let result = reference.transact_raw(tx.clone()).unwrap();
-            if result.result.is_success() {
-                successes += 1;
-            } else {
-                assert!(matches!(
-                    result.result,
-                    revm::context::result::ExecutionResult::Revert { .. }
-                ));
-                reverts += 1;
-            }
-            reference.db_mut().commit(result.state);
+        },
+    );
+    let mut successes = 0;
+    let mut reverts = 0;
+    for tx in &transactions {
+        let result = reference.transact_raw(tx.clone()).unwrap();
+        if result.result.is_success() {
+            successes += 1;
+        } else {
+            assert!(matches!(
+                result.result,
+                revm::context::result::ExecutionResult::Revert { .. }
+            ));
+            reverts += 1;
         }
-        assert_eq!((successes, reverts), (109, 19), "{spec:?}");
-        for workers in [1, 4] {
-            for window in [8, 32, 128] {
-                differential_at_spec(db.clone(), &transactions, workers, window, spec);
-            }
+        reference.db_mut().commit(result.state);
+    }
+    assert_eq!((successes, reverts), (109, 19), "{spec:?}");
+    for workers in [1, 4] {
+        for window in [8, 32, 128] {
+            differential_at_spec(db.clone(), &transactions, workers, window, spec);
         }
     }
 }
