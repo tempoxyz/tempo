@@ -93,6 +93,14 @@ It shares owned-scope cleanup with producer isolation, has a 15-minute control
 deadline, and publishes no performance series or Slack result. Raw records and
 sender failures require review after terminal workflow success.
 
+The [loaded pipeline diagnostic](https://github.com/tempoxyz/tempo/actions/runs/37404487170)
+submitted 1,459,977 transactions and recorded 8,898 pool-full rejections. Generator
+encoding/write time was 70.96 seconds, with 0.22 seconds in gas calibration; sender
+completion waits labeled pending-limit and RPC-permit totaled 37.55 and 27.20
+seconds respectively. These separate process clocks must not be added together.
+The result establishes substantial downstream waiting in this instrumented run,
+not a CPU cause, an execution improvement or sustained 50k capacity.
+
 ## Correctness
 
 Run unit and real-node oracles with the repository's pinned toolchain:
