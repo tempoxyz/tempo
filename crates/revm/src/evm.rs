@@ -75,11 +75,13 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     pub fn new(ctx: TempoContext<DB>, inspector: I) -> Self {
         let non_creditable_slots = Rc::new(RefCell::new(NonCreditableSlots::empty()));
         let actions = StorageActions::disabled();
-        let precompiles = tempo_precompiles::tempo_precompiles(
+        let precompiles = tempo_precompiles::PrecompileEnv::new(
             &ctx.cfg,
             actions.clone(),
             non_creditable_slots.clone(),
-        );
+        )
+        .with_standard_journal(&ctx.journaled_state)
+        .into_precompiles();
 
         Self::new_inner(
             Evm {
@@ -234,11 +236,13 @@ impl<DB: Database, I> TempoEvm<DB, I> {
 
     /// Consumes self and returns a new Evm type with given storage actions.
     pub fn with_actions(mut self, actions: StorageActions) -> Self {
-        self.inner.precompiles = tempo_precompiles::tempo_precompiles(
+        self.inner.precompiles = tempo_precompiles::PrecompileEnv::new(
             &self.inner.ctx.cfg,
             actions.clone(),
             self.non_creditable_slots.clone(),
-        );
+        )
+        .with_standard_journal(&self.inner.ctx.journaled_state)
+        .into_precompiles();
         self.actions = actions;
         self
     }

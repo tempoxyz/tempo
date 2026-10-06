@@ -36,6 +36,8 @@ pub struct EvmPrecompileStorageProvider<'a> {
     actions: StorageActions,
     /// Avoid per-access recorder lookups outside speculative transactions.
     native_recording: bool,
+    /// Only standard revm journals permit bypassing the mutable SLOAD hook.
+    standard_journal_warm_reads: bool,
 }
 
 impl<'a> EvmPrecompileStorageProvider<'a> {
@@ -63,6 +65,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             checkpoint_stack: Vec::new(),
             actions: StorageActions::disabled(),
             native_recording: super::native_increment::is_recording(),
+            standard_journal_warm_reads: false,
         }
     }
 
@@ -100,6 +103,13 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
     /// Sets the storage actions for this provider.
     pub fn with_actions(mut self, actions: StorageActions) -> Self {
         self.actions = actions;
+        self
+    }
+
+    /// Propagates the precompile environment's explicit standard-journal opt-in.
+    /// Generic EVM internals must retain the journal's mutable SLOAD hook.
+    pub(crate) fn with_standard_journal_warm_reads(mut self, enabled: bool) -> Self {
+        self.standard_journal_warm_reads = enabled;
         self
     }
 
@@ -144,9 +154,26 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         skip_cold_load: bool,
     ) -> Result<StateLoad<U256>, TempoPrecompileError> {
         super::access::storage(address, key);
-        let mut account = self.internals.load_account_mut(address)?;
-        let val = account.sload(key, skip_cold_load)?;
-        let result = StateLoad::new(val.present_value, val.is_cold);
+        let warm_value = if self.standard_journal_warm_reads {
+            // Loading the account performs the journal's account warming first.
+            // A slot already warm in that transaction needs no journal entry or
+            // original-value update, so avoid allocating a boxed account handle.
+            // Cold slots (including reverted and previous-transaction slots)
+            // still use the journal's full load and skip-cold behavior below.
+            let account = self.internals.load_account(address)?;
+            account.storage.get(&key).and_then(|slot| {
+                (!slot.is_cold_transaction_id(account.transaction_id)).then_some(slot.present_value)
+            })
+        } else {
+            None
+        };
+        let result = if let Some(value) = warm_value {
+            StateLoad::new(value, false)
+        } else {
+            let mut account = self.internals.load_account_mut(address)?;
+            let val = account.sload(key, skip_cold_load)?;
+            StateLoad::new(val.present_value, val.is_cold)
+        };
         if self.native_recording {
             super::native_increment::loaded(address, key, &result);
         }
@@ -790,6 +817,10 @@ pub fn deduct_gas(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "evm_warm_load_tests.rs"]
+mod warm_load_tests;
 
 #[cfg(test)]
 mod tests {

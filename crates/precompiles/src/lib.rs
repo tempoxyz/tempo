@@ -162,6 +162,7 @@ pub struct PrecompileEnv {
     cfg: CfgEnv<TempoHardfork>,
     actions: StorageActions,
     non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+    standard_journal_warm_reads: bool,
 }
 
 impl PrecompileEnv {
@@ -174,7 +175,34 @@ impl PrecompileEnv {
             cfg: cfg.clone(),
             actions,
             non_creditable_slots,
+            standard_journal_warm_reads: false,
         }
+    }
+
+    /// Enables warm-slot reads for execution with revm's standard journal.
+    ///
+    /// Precompiles created from this environment must only run with the standard
+    /// `Journal<DB>` used here. Custom `JournalTr` or `JournaledAccountTr`
+    /// implementations may attach effects or errors to SLOAD; their callers must
+    /// keep the default environment so those hooks always execute.
+    pub fn with_standard_journal<DB: revm::Database>(
+        mut self,
+        _journal: &revm::context::Journal<DB>,
+    ) -> Self {
+        self.standard_journal_warm_reads = true;
+        self
+    }
+
+    /// Builds the full Tempo precompile set using this execution environment.
+    pub fn into_precompiles(self) -> PrecompilesMap {
+        let spec = if self.cfg.spec.is_t1c() {
+            self.cfg.spec.into()
+        } else {
+            SpecId::PRAGUE
+        };
+        let mut precompiles = PrecompilesMap::from_static(EthPrecompiles::new(spec).precompiles);
+        extend_tempo_precompiles_with_env(&mut precompiles, self);
+        precompiles
     }
 }
 
@@ -196,14 +224,7 @@ pub fn tempo_precompiles(
     actions: StorageActions,
     non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
 ) -> PrecompilesMap {
-    let spec = if cfg.spec.is_t1c() {
-        cfg.spec.into()
-    } else {
-        SpecId::PRAGUE
-    };
-    let mut precompiles = PrecompilesMap::from_static(EthPrecompiles::new(spec).precompiles);
-    extend_tempo_precompiles(&mut precompiles, cfg, actions, non_creditable_slots);
-    precompiles
+    PrecompileEnv::new(cfg, actions, non_creditable_slots).into_precompiles()
 }
 
 /// Registers Tempo-specific precompiles into an existing [`PrecompilesMap`] by installing a
@@ -221,7 +242,10 @@ pub fn extend_tempo_precompiles(
     non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
 ) {
     let env = PrecompileEnv::new(cfg, actions, non_creditable_slots);
+    extend_tempo_precompiles_with_env(precompiles, env);
+}
 
+fn extend_tempo_precompiles_with_env(precompiles: &mut PrecompilesMap, env: PrecompileEnv) {
     precompiles.set_precompile_lookup(move |address: &Address| {
         if address.is_tip20() {
             Some(TIP20Token::create_precompile(*address, &env))
@@ -286,6 +310,7 @@ macro_rules! tempo_precompile {
         let gas_params = env.cfg.gas_params.clone();
         let actions = env.actions.clone();
         let non_creditable_slots = env.non_creditable_slots.clone();
+        let standard_journal_warm_reads = env.standard_journal_warm_reads;
         DynPrecompile::new_stateful(PrecompileId::Custom($id.into()), move |$input| {
             if !$input.is_direct_call() {
                 return Ok(PrecompileOutput::revert(
@@ -303,6 +328,7 @@ macro_rules! tempo_precompile {
                 $input.is_static,
                 gas_params.clone(),
             )
+            .with_standard_journal_warm_reads(standard_journal_warm_reads)
             .with_actions(actions.clone())
             .with_non_creditable_slots(non_creditable_slots.clone());
             crate::storage::StorageCtx::enter(&mut storage, || {
