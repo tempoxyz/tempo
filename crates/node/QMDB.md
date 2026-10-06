@@ -31,7 +31,8 @@ CARGO_PROFILE_RELEASE_LTO=false QMDB_BENCH_BLOCKS=100 QMDB_BENCH_TXS=16 QMDB_BEN
 The benchmark uses the same node harness and persistence settings for MPT and QMDB.
 It signs transactions outside the measured interval, then measures pool submission,
 payload construction, engine validation, canonical import and durable persistence.
-Each block transfers PathUSD to fresh recipients; every included receipt must succeed.
+Each block transfers the genesis-funded default fee token to fresh recipients; every included
+receipt must succeed. Sender token balances are checked before each run.
 Ten warmup blocks are excluded per backend per round; three rounds alternate backend order.
 Output includes mean, p50, p95 and observed throughput for submission/build/import, and
 separately for the interval through durable persistence. The latter includes the harness's

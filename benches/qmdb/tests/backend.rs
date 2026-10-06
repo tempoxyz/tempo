@@ -16,7 +16,7 @@ use reth_storage_api::{AccountReader as _, ReceiptProvider as _, StateProviderFa
 use tempo_chainspec::TempoChainSpec;
 use tempo_contracts::precompiles::ITIP20;
 use tempo_node::{TempoNode, node::TempoNodeArgs, qmdb::StateRootBackend};
-use tempo_precompiles::PATH_USD_ADDRESS;
+use tempo_precompiles::{DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS};
 
 fn with_t1_fees(tx: TransactionRequest) -> TransactionRequest {
     let fee = tempo_chainspec::spec::TEMPO_T1_BASE_FEE as u128;
@@ -150,6 +150,29 @@ async fn bench_mpt_vs_qmdb() -> eyre::Result<()> {
             let mut node = node(backend).await?;
             let chain_id = node.inner.chain_spec().chain_id();
             let mut sender = Wallet::default().with_chain_id(chain_id).account(0);
+            for token in [PATH_USD_ADDRESS, DEFAULT_FEE_TOKEN] {
+                let data = ITIP20::balanceOfCall {
+                    account: sender.address(),
+                }
+                .abi_encode();
+                let balance = node
+                    .rpc_provider()
+                    .call(TransactionRequest::default().to(token).input(data.into()))
+                    .await?;
+                println!(
+                    "QMDB_BENCH_BALANCE {}",
+                    serde_json::json!({
+                        "backend": format!("{backend:?}"), "token": format!("{token}"),
+                        "balance": U256::from_be_slice(&balance).to_string(),
+                    })
+                );
+                if token == DEFAULT_FEE_TOKEN {
+                    eyre::ensure!(
+                        U256::from_be_slice(&balance) > U256::from((blocks + 10) * transactions),
+                        "benchmark sender must have funded transfer tokens"
+                    );
+                }
+            }
             let mut samples = Vec::new();
             let mut processing_samples = Vec::new();
             for index in 0..blocks + 10 {
@@ -165,7 +188,7 @@ async fn bench_mpt_vs_qmdb() -> eyre::Result<()> {
                     .abi_encode();
                     let transaction = with_t1_fees(
                         TransactionRequest::default()
-                            .to(PATH_USD_ADDRESS)
+                            .to(DEFAULT_FEE_TOKEN)
                             .input(data.into())
                             .gas_limit(300_000),
                     );
@@ -215,7 +238,7 @@ async fn bench_mpt_vs_qmdb() -> eyre::Result<()> {
                 serde_json::json!({
                     "backend": format!("{backend:?}"), "blocks": blocks, "transactions_per_block": transactions,
                     "round": round + 1, "debug_assertions": cfg!(debug_assertions),
-                    "workload": "TIP20 transfers to fresh recipients",
+                    "workload": "TIP20 transfers to fresh recipients", "token": format!("{DEFAULT_FEE_TOKEN}"),
                     "warmup_blocks": 10, "mean_ms": total / blocks as f64,
                     "p50_ms": samples[samples.len() / 2],
                     "p95_ms": samples[(samples.len() * 95 / 100).min(samples.len() - 1)],
