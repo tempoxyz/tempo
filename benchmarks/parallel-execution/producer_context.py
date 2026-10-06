@@ -33,6 +33,7 @@ UNSUPPORTED_CARGO_SECTIONS = ('build', 'profile', 'target', 'env', 'unstable')
 # txgen/wc and retained metadata keep their smaller existing limits.
 NODE_ELF_MAX_BYTES = 4 * 1024**3
 GENESIS_MAX_BYTES = 16 * 1024**2
+LOCAL_SECRET_PROCESS_SUBSTITUTION = "<(printf '%s\\n' 'tempo-localnet-signing-key-secret')"
 SPEC_FILES = ('contrib/bench/txgen/presets/public-mix.yml', 'contrib/bench/txgen/presets/mpp.yml',
               'contrib/bench/txgen/tip20.abi.json', 'contrib/bench/txgen/tip20-channel-reserve.abi.json')
 NODE_FLAGS = {'--execution.threads': '8', '--execution.batch-size': '128', '--execution.capture-window': '128',
@@ -416,6 +417,26 @@ def governor_observation(system):
             'scope': 'One context_prepare observation; no atomic, continuous, performance-governor or unchanged-throughout-run claim.'}
 
 
+def node_argv_matches(argv, expected):
+    if len(argv) != len(expected) + 1 or argv[1:2] != ['node']:
+        return False
+    actual = argv[1:].copy()
+    # The pinned launcher expands this one fixed public localnet expression.
+    # Match its descriptor argument, not shell source text; this does not attest
+    # the descriptor's contents. Other arguments still compare byte for byte.
+    secret = [i for i, arg in enumerate(expected) if arg.split('=')[0] == '--consensus.secret']
+    if secret:
+        require(len(secret) == 1, 'Duplicate consensus secret option')
+        index = secret[0]
+        require(expected[index] == '--consensus.secret' and index + 1 < len(expected)
+                and expected[index + 1] == LOCAL_SECRET_PROCESS_SUBSTITUTION,
+                'Unrecognized consensus secret launch expression')
+        if not re.fullmatch(r'/dev/fd/[0-9]+', actual[index + 1]):
+            return False
+        actual[index + 1] = expected[index + 1]
+    return actual == expected
+
+
 def node_identity(role, node, context, lifecycle, system):
     unit = lifecycle['node_units']['ab'.index(role)]
     require(node['scope'] == unit and node['datadir'] == f'/reth-bench-{role}/tempo_e2e_100000mb', 'Node scope/datadir changed')
@@ -437,7 +458,7 @@ def node_identity(role, node, context, lifecycle, system):
         except FileNotFoundError: continue
         if len(argv) == 1 + len(node['args']) and argv[1:2] == ['node']:
             normalized = telemetry_argv(argv)
-            if normalized[1:] == node['args']: matches.append((pid, normalized))
+            if node_argv_matches(normalized, node['args']): matches.append((pid, normalized))
     require(len(matches) == 1, 'Require one exact live node argv inside its owned scope')
     pid, argv = matches[0]; before = process_stat(system.bytes(f'/proc/{pid}/stat', 16384).decode())
     exe = system.executable(pid)
@@ -462,6 +483,7 @@ def node_identity(role, node, context, lifecycle, system):
     constraints = cgroup_constraints(group, system)
     require(constraints[0]['values']['memory.max'] == str(60 * 1024**3), 'Node MemoryMax is not enforced')
     return {'pid': pid, **before, 'argv': argv, 'exe': exe, 'scope': properties,
+            'argv_match_rule': 'Exact telemetry-normalized args, except the pinned localnet secret shell expression expands to a recorded /dev/fd descriptor; descriptor contents are not observed.',
             'cgroup': group, 'constraints': constraints, 'status': selected, 'limits': limits}
 
 

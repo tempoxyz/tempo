@@ -102,6 +102,35 @@ class FakeNode:
 
 
 class ContextTests(unittest.TestCase):
+    def test_node_argv_matches_real_bash_process_substitution_only(self):
+        code = 'import json,sys; print(json.dumps(sys.argv[1:]))'
+        script = 'exec "$1" -c "$2" node --consensus.secret ' + c.LOCAL_SECRET_PROCESS_SUBSTITUTION
+        run = subprocess.run(['bash', '-c', script, 'fixture', sys.executable, code],
+                             check=True, capture_output=True, text=True, timeout=10)
+        live = ['tempo', *json.loads(run.stdout)]
+        expected = ['node', '--consensus.secret', c.LOCAL_SECRET_PROCESS_SUBSTITUTION]
+        self.assertTrue(c.node_argv_matches(live, expected))
+        for value in ('/tmp/secret', '/dev/fd/not-a-number', c.LOCAL_SECRET_PROCESS_SUBSTITUTION):
+            self.assertFalse(c.node_argv_matches(live[:-1] + [value], expected))
+        with self.assertRaises(ValueError): c.node_argv_matches(live, expected[:-1] + ['<(other command)'])
+
+    def test_node_secret_expansion_does_not_exempt_other_args_or_duplicates(self):
+        expected = ['node', '--consensus.secret', c.LOCAL_SECRET_PROCESS_SUBSTITUTION, '--execution.threads', '8']
+        actual = ['tempo', 'node', '--consensus.secret', '/dev/fd/63', '--execution.threads', '8']
+        self.assertTrue(c.node_argv_matches(actual, expected))
+        self.assertFalse(c.node_argv_matches(actual[:-1] + ['0'], expected))
+        with self.assertRaises(ValueError):
+            c.node_argv_matches(actual + ['--consensus.secret', '/dev/fd/62'],
+                                expected + ['--consensus.secret', c.LOCAL_SECRET_PROCESS_SUBSTITUTION])
+
+    def test_node_identity_accepts_bound_descriptor_and_retains_actual_argv(self):
+        node = FakeNode()
+        node.node['args'] += ['--consensus.secret', c.LOCAL_SECRET_PROCESS_SUBSTITUTION]
+        node.argv += ['--consensus.secret', '/dev/fd/63']
+        node.reads['/proc/400/cmdline'] = ('\0'.join(node.argv) + '\0').encode()
+        result = node.inspect()
+        self.assertEqual(result['argv'][-1], '/dev/fd/63')
+
     def test_genesis_allocation_has_separate_bound_without_relaxing_manifests(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / 'genesis.json'
