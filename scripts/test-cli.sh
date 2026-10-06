@@ -15,25 +15,9 @@ run_ok() {
     echo "PASS"
 }
 
-check_snapshot_download() (
-    local chain_id="$1"; shift
-    local fixture="$REPO_ROOT/scripts/fixtures/cli-download"
-    local snapshot_dir
-    snapshot_dir=$(mktemp -d) || return
-    trap 'rm -rf "$snapshot_dir"' EXIT
-    sed "s/\"chain_id\": 42431/\"chain_id\": $chain_id/" \
-        "$fixture/manifest.json" >"$snapshot_dir/manifest.json" || return
-    for archive in state consensus; do
-        base64 --decode "$fixture/$archive.tar.zst.base64" >"$snapshot_dir/$archive.tar.zst" || return
-    done
-    timeout 60 "$TEMPO" download \
-        --manifest-url "file://$snapshot_dir/manifest.json" \
-        --datadir "$snapshot_dir/datadir" --archive -y \
-        --log.file.directory "$snapshot_dir/logs" "$@" || return
-    cmp <(printf 'execution snapshot fixture\n') "$snapshot_dir/datadir/db/cli-smoke-test.txt" || return
-    cmp <(printf 'consensus snapshot fixture\n') "$snapshot_dir/datadir/consensus/partition/cli-smoke-test.txt" || return
-    test -f "$snapshot_dir/datadir/reth.toml"
-)
+check_snapshot_download() {
+    node "$REPO_ROOT/scripts/test-cli-download.mjs" "$TEMPO" "$@"
+}
 
 TEMPO="${1:-$REPO_ROOT/target/debug/tempo}"
 if [[ ! -x "$TEMPO" ]]; then
@@ -42,16 +26,25 @@ if [[ ! -x "$TEMPO" ]]; then
 fi
 echo "Testing: $TEMPO"
 
+run_ok "snapshot HTTPS proxy protocol tests" node --test "$REPO_ROOT/scripts/cli-download-proxy.test.mjs"
 run_ok "tempo --version" "$TEMPO" --version
 run_ok "tempo --help" "$TEMPO" --help
 run_ok "tempo node --help" "$TEMPO" node --help
 if ! grep -A 2 -- '--consensus.message-backlog' <<<"$OUT" | grep -q 'Deprecated:'; then
     fail "message-backlog help must mark the flag as deprecated"
 fi
-run_ok "tempo download testnet snapshot (42431) --chain testnet" check_snapshot_download 42431 --chain testnet
-run_ok "tempo download testnet snapshot (42431) without --chain" check_snapshot_download 42431
-run_ok "tempo download mainnet snapshot (4217) --chain mainnet" check_snapshot_download 4217 --chain mainnet
-run_ok "tempo download mainnet snapshot (4217) without --chain" check_snapshot_download 4217
+run_ok "tempo download testnet snapshot (42431) via discovery" check_snapshot_download 42431 --chain testnet
+run_ok "tempo download mainnet snapshot (4217) via discovery" check_snapshot_download 4217 --chain mainnet
+run_ok "tempo download default-chain snapshot (4217) via discovery" check_snapshot_download 4217
+for chain in testnet mainnet; do
+    CHAIN_ID=42431
+    if [[ "$chain" == mainnet ]]; then CHAIN_ID=4217; fi
+    MANIFEST_URL="https://snapshots.tempoxyz.dev/$CHAIN_ID/manifest.json"
+    run_ok "tempo download $chain snapshot ($CHAIN_ID) with explicit source and chain" \
+        check_snapshot_download "$CHAIN_ID" --manifest-url "$MANIFEST_URL" --chain "$chain"
+    run_ok "tempo download $chain snapshot ($CHAIN_ID) with explicit source, without --chain" \
+        check_snapshot_download "$CHAIN_ID" --manifest-url "$MANIFEST_URL"
+done
 
 # --- node --follow: verify it stays alive for 15s with no crashes ---
 echo "--- Test: tempo node --follow (no crash)"
