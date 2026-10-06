@@ -157,7 +157,8 @@ echo "Snapshot block: $SNAPSHOT_BLOCK"
 # ============================================================================
 
 echo "Installing txgen-tempo and bench-cli..."
-cargo install --git "https://github.com/tempoxyz/txgen" --locked txgen-tempo bench-cli
+cargo install --git "https://github.com/tempoxyz/txgen" \
+  --rev 8ca73369c4b42ffffaf40066bbde8673141049c1 --locked txgen-tempo bench-cli
 command -v "$TXGEN_TEMPO_BIN"
 command -v "$TXGEN_BENCH_BIN"
 
