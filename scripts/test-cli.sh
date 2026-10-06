@@ -16,11 +16,13 @@ run_ok() {
 }
 
 check_snapshot_download() (
+    local chain_id="$1"; shift
     local fixture="$REPO_ROOT/scripts/fixtures/cli-download"
     local snapshot_dir
     snapshot_dir=$(mktemp -d) || return
     trap 'rm -rf "$snapshot_dir"' EXIT
-    cp "$fixture/manifest.json" "$snapshot_dir/manifest.json" || return
+    sed "s/\"chain_id\": 42431/\"chain_id\": $chain_id/" \
+        "$fixture/manifest.json" >"$snapshot_dir/manifest.json" || return
     for archive in state consensus; do
         base64 --decode "$fixture/$archive.tar.zst.base64" >"$snapshot_dir/$archive.tar.zst" || return
     done
@@ -46,8 +48,10 @@ run_ok "tempo node --help" "$TEMPO" node --help
 if ! grep -A 2 -- '--consensus.message-backlog' <<<"$OUT" | grep -q 'Deprecated:'; then
     fail "message-backlog help must mark the flag as deprecated"
 fi
-run_ok "tempo download Moderato snapshot --chain moderato" check_snapshot_download --chain moderato
-run_ok "tempo download Moderato snapshot without --chain" check_snapshot_download
+run_ok "tempo download testnet snapshot (42431) --chain testnet" check_snapshot_download 42431 --chain testnet
+run_ok "tempo download testnet snapshot (42431) without --chain" check_snapshot_download 42431
+run_ok "tempo download mainnet snapshot (4217) --chain mainnet" check_snapshot_download 4217 --chain mainnet
+run_ok "tempo download mainnet snapshot (4217) without --chain" check_snapshot_download 4217
 
 # --- node --follow: verify it stays alive for 15s with no crashes ---
 echo "--- Test: tempo node --follow (no crash)"
