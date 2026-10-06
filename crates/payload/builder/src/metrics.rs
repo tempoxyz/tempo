@@ -120,6 +120,15 @@ impl BlockBuildStopReason {
 }
 
 impl TempoPayloadBuilderMetrics {
+    /// Reasons for the existing `invalid_tx` skips, excluding nonce-too-low skips.
+    pub(crate) fn inc_invalid_tx_reason(&self, reason: crate::invalid_tx::InvalidTxReason) {
+        metrics::counter!(
+            "tempo_payload_builder_invalid_transaction_reasons_total",
+            "reason" => reason.as_str()
+        )
+        .increment(1);
+    }
+
     /// Records speculative work separately from transactions actually included.
     pub(crate) fn record_speculative_execution(&self, stats: tempo_evm::parallel::ExecutionStats) {
         metrics::counter!("tempo_payload_builder_speculated_transactions_total")

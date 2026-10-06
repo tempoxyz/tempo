@@ -5,6 +5,7 @@
 
 mod budget;
 mod encode;
+mod invalid_tx;
 mod metrics;
 mod prewarming;
 
@@ -21,6 +22,7 @@ use crate::{
         EncodedBlockTransactionList, EncodedBlockTransactionsBuilder, ExecutionBlockEncoder,
         block_transaction_length,
     },
+    invalid_tx::{ErrorSample, InvalidTxReason, InvalidTxSamples},
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
     prewarming::{
         BestTransactionsPrewarming, PrewarmedTransaction, PrewarmingExecutionContext,
@@ -529,6 +531,7 @@ where
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
         let mut skipped_oversized_block = false;
         let mut invalid_pool_transaction_execution_attempts = 0u64;
+        let mut invalid_tx_samples = InvalidTxSamples::default();
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
         let mut prewarming_result_waits = PrewarmingResultWaits::default();
         let mut prefix_writes = 0u64;
@@ -757,6 +760,35 @@ where
                                 ),
                             );
                             self.metrics.inc_pool_tx_skipped("invalid_tx");
+                            let reason = InvalidTxReason::classify(error.as_ref());
+                            self.metrics.inc_invalid_tx_reason(reason);
+                            if tracing::enabled!(target: "payload_builder", Level::DEBUG)
+                                && invalid_tx_samples.take(reason)
+                            {
+                                // Execution already materialized this pooled environment.
+                                // Borrow it only for a sampled error; never format the tx.
+                                let aa = tx.transaction.tx_env().tempo_tx_env.as_deref();
+                                let nonce_mode = match aa {
+                                    None => "ethereum",
+                                    Some(aa) if aa.nonce_key.is_zero() => "protocol",
+                                    Some(aa) if aa.nonce_key == U256::MAX => "expiring",
+                                    Some(_) => "two_dimensional",
+                                };
+                                let sample = ErrorSample::new(error.as_ref());
+                                debug!(
+                                    target: "payload_builder",
+                                    reason = reason.as_str(),
+                                    error = %sample.message,
+                                    error_truncated = sample.truncated,
+                                    tx_hash = %tx.hash(),
+                                    parent_hash = %parent_header.hash(),
+                                    block_timestamp = attributes.timestamp,
+                                    nonce_mode,
+                                    valid_after = ?aa.and_then(|aa| aa.valid_after),
+                                    valid_before = ?aa.and_then(|aa| aa.valid_before),
+                                    "Ordered invalid transaction sample"
+                                );
+                            }
                         }
                         continue;
                     }
