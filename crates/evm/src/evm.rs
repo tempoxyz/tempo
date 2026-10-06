@@ -1374,7 +1374,7 @@ mod tests {
 
     #[test]
     fn execution_stage_diagnostics_preserve_reuse_fallback_and_reset() {
-        use revm::database_interface::EmptyDBTyped;
+        use revm::{database::CacheDB, database_interface::EmptyDBTyped};
         #[derive(Debug, thiserror::Error)]
         #[error("validation provider error")]
         struct ProviderError;
