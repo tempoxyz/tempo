@@ -2,13 +2,15 @@
 
 use std::{sync::Arc, time::Instant};
 
-use alloy::{consensus::TxReceipt as _, sol_types::SolCall as _};
+use alloy::{
+    consensus::{Transaction as _, TxReceipt as _},
+    sol_types::SolCall as _,
+};
 use alloy_primitives::{Address, U256};
 use alloy_rpc_types_eth::TransactionRequest;
 use reth_e2e_test_utils::{E2ETestSetupExt, wallet::Wallet};
 use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_node_api::BuiltPayload;
-use reth_primitives_traits::Transaction as _;
 use reth_storage_api::{AccountReader as _, ReceiptProvider as _, StateProviderFactory as _};
 use tempo_chainspec::TempoChainSpec;
 use tempo_contracts::precompiles::ITIP20;
