@@ -90,6 +90,9 @@ use tempo_node::{
 use tokio::sync::oneshot;
 use tracing::{debug, info, info_span, warn, warn_span};
 
+#[cfg(not(feature = "oidc-devnet"))]
+use tempo_zk as _;
+
 #[cfg(all(feature = "localnet", unix))]
 use nix as _;
 
@@ -97,6 +100,18 @@ const DEFAULT_DEV_ZONE_FACTORY_OWNER: Address =
     alloy_primitives::address!("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
 
 fn apply_tempo_cli_overrides(cli: &mut TempoCli) -> eyre::Result<()> {
+    #[cfg(feature = "oidc-devnet")]
+    if let Some(path) = std::env::var_os("TEMPO_OIDC_DEVNET_VK") {
+        let Commands::Node(node_cmd) = &cli.command else {
+            eyre::bail!("OIDC devnet keys may only be configured for node commands");
+        };
+        tempo_zk::install_devnet_key(
+            node_cmd.chain.genesis().config.chain_id,
+            &std::fs::read(path).wrap_err("failed to read OIDC devnet key")?,
+        )
+        .map_err(eyre::Error::msg)?;
+        warn!("Using an unaudited OIDC devnet key on chain 1337; not for real identities or funds");
+    }
     if let Commands::Node(node_cmd) = &mut cli.command
         && node_cmd
             .ext

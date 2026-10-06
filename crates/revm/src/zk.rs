@@ -92,9 +92,10 @@ impl ZkSignatureError {
 pub fn check_scheme_and_time(
     signature: &ZkSignature,
     timestamp: u64,
+    chain_id: u64,
 ) -> Result<&'static Scheme, ZkSignatureError> {
     let scheme = tempo_zk::scheme(signature.scheme)
-        .filter(|scheme| scheme.verifying_key().is_some())
+        .filter(|scheme| scheme.verifying_key_on(chain_id).is_some())
         .ok_or(ZkSignatureError::UnknownScheme(signature.scheme))?;
     if signature.issued_at > timestamp.saturating_add(MAX_FUTURE_SKEW) {
         return Err(ZkSignatureError::IssuedInFuture {

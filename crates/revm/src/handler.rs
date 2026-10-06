@@ -1890,6 +1890,7 @@ where
                 *cfg.spec(),
                 evm.ctx_ref().block().timestamp().saturating_to(),
                 tx.caller(),
+                cfg.chain_id(),
             )?;
 
             if let Some(key_auth) = &aa_env.key_authorization {
@@ -2572,6 +2573,7 @@ fn validate_zk_signatures(
     spec: tempo_chainspec::hardfork::TempoHardfork,
     timestamp: u64,
     caller: Address,
+    chain_id: u64,
 ) -> Result<(), TempoInvalidTransaction> {
     // Authorization list entries are recovered without state, so they can never carry one.
     if aa_env
@@ -2599,7 +2601,7 @@ fn validate_zk_signatures(
         return Err(ZkSignatureError::NotActive.into());
     }
     for signature in signatures {
-        zk::check_scheme_and_time(signature, timestamp)?;
+        zk::check_scheme_and_time(signature, timestamp, chain_id)?;
     }
 
     // A ZK-signed key authorization is signed by the root account, which must be the sender.

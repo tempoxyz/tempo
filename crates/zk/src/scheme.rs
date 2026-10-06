@@ -41,6 +41,24 @@ static OIDC_RS256_V1: Scheme = Scheme {
     prepared: OnceLock::new(),
 };
 
+#[cfg(feature = "oidc-devnet")]
+static DEVNET_KEY: OnceLock<PreparedVerifyingKey> = OnceLock::new();
+
+/// Installs a locally generated key only for private chain 1337. This is not a ceremony key.
+#[cfg(feature = "oidc-devnet")]
+pub fn install_devnet_key(chain_id: u64, bytes: &[u8]) -> Result<(), &'static str> {
+    if chain_id != 1337 {
+        return Err("OIDC devnet keys are restricted to chain 1337");
+    }
+    let bytes = bytes
+        .try_into()
+        .map_err(|_| "invalid OIDC devnet key length")?;
+    let key = VerifyingKey::decode(bytes).map_err(|_| "invalid OIDC devnet key points")?;
+    DEVNET_KEY
+        .set(key.prepare())
+        .map_err(|_| "OIDC devnet key already installed")
+}
+
 /// Returns the scheme with the given byte, if one is defined.
 pub fn scheme(id: u8) -> Option<&'static Scheme> {
     match id {
@@ -56,6 +74,12 @@ impl Scheme {
         if let Some(key) = crate::test_utils::verifying_key_override(self.id) {
             return Some(key);
         }
+        #[cfg(feature = "oidc-devnet")]
+        if self.id == SCHEME_OIDC_RS256_V1
+            && let Some(key) = DEVNET_KEY.get()
+        {
+            return Some(key);
+        }
         self.prepared
             .get_or_init(|| {
                 let bytes = self.verifying_key?;
@@ -63,6 +87,16 @@ impl Scheme {
                 Some(key.prepare())
             })
             .as_ref()
+    }
+
+    /// Returns a verifying key for this chain, rejecting locally generated keys elsewhere.
+    pub fn verifying_key_on(&'static self, chain_id: u64) -> Option<&'static PreparedVerifyingKey> {
+        #[cfg(feature = "oidc-devnet")]
+        if DEVNET_KEY.get().is_some() && chain_id != 1337 {
+            return None;
+        }
+        let _ = chain_id;
+        self.verifying_key()
     }
 }
 

@@ -16,6 +16,9 @@ pub mod poseidon;
 mod scheme;
 pub use scheme::{NAMESPACE_OIDC, SCHEME_OIDC_RS256_V1, Scheme, scheme};
 
+#[cfg(feature = "oidc-devnet")]
+pub use scheme::install_devnet_key;
+
 mod statement;
 pub use statement::{MESSAGE_TAG, MessageStatement, SignatureStatement};
 

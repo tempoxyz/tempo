@@ -29,6 +29,7 @@ criterion.workspace = true
 
 [features]
 test-utils = []
+oidc-devnet = []
 
 [[bench]]
 name = "verify"

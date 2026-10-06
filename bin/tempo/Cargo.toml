@@ -78,6 +78,7 @@ tempo-alloy = { workspace = true, features = ["reth"] }
 tempo-contracts.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }
 tempo-dkg-onchain-artifacts.workspace = true
+tempo-zk.workspace = true
 reth-cli-commands.workspace = true
 reth-discv5.workspace = true
 reth-network-api.workspace = true
@@ -133,6 +134,7 @@ required-features = ["localnet"]
 default = ["asm-keccak", "jemalloc", "otlp", "keccak-cache-global"]
 
 localnet = ["dep:nix"]
+oidc-devnet = ["tempo-zk/oidc-devnet"]
 
 asm-keccak = [
 	"alloy/asm-keccak",
