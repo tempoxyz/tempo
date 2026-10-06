@@ -893,7 +893,7 @@ fn only_block_commits_publish_engine_prefix_after_misses_and_discarded_results()
         }
         // A capture is a proof hint only. It cannot make the next nonce valid.
         worker.transact_raw(transactions[1].clone()).unwrap();
-        assert!(!session.retained.lock().unwrap().results.contains_key(&1));
+        assert!(!session.retained.contains(1));
         let discarded = actual
             .execute_transaction_without_commit(&recovered[0])
             .unwrap();
@@ -902,20 +902,13 @@ fn only_block_commits_publish_engine_prefix_after_misses_and_discarded_results()
         // Executing an output without committing it must not publish its nonce
         // or storage either, even when that output came from a reusable capture.
         worker.transact_raw(transactions[1].clone()).unwrap();
-        assert!(!session.retained.lock().unwrap().results.contains_key(&1));
+        assert!(!session.retained.contains(1));
         for (index, tx) in recovered.iter().enumerate() {
             if index > 0 {
                 // A fresh parent-owned provider must see the shared session hints.
                 worker = factory.create_evm(db.clone(), relaxed(&env));
                 worker.transact_raw(transactions[index].clone()).unwrap();
-                assert!(
-                    session
-                        .retained
-                        .lock()
-                        .unwrap()
-                        .results
-                        .contains_key(&index)
-                );
+                assert!(session.retained.contains(index));
             }
             let expected = canonical.execute_transaction_without_commit(tx).unwrap();
             let output = actual.execute_transaction_without_commit(tx).unwrap();
@@ -995,7 +988,7 @@ fn engine_prefix_publication_honors_execution_guards() {
         let mut worker = factory.create_evm(db.clone(), relaxed(&env));
         worker.transact_raw(transactions[1].clone()).unwrap();
         assert!(
-            !session.retained.lock().unwrap().results.contains_key(&1),
+            !session.retained.contains(1),
             "{excluded} must not publish the committed sender nonce"
         );
     }
@@ -1126,28 +1119,14 @@ fn committed_engine_prefix_preserves_parent_relative_expiring_offsets() {
                     hint.is_err(),
                     "strict and relaxed workers must reject the full ring"
                 );
-                assert!(
-                    !session
-                        .retained
-                        .lock()
-                        .unwrap()
-                        .results
-                        .contains_key(&index)
-                );
+                assert!(!session.retained.contains(index));
                 let expected = expected.unwrap_err();
                 let error = actual.execute_transaction_without_commit(tx).unwrap_err();
                 assert_eq!(error.to_string(), expected.to_string());
                 break;
             }
             assert!(hint.unwrap().result.is_success());
-            assert!(
-                session
-                    .retained
-                    .lock()
-                    .unwrap()
-                    .results
-                    .contains_key(&index)
-            );
+            assert!(session.retained.contains(index));
             let expected = expected.unwrap();
             let output = actual.execute_transaction_without_commit(tx).unwrap();
             assert_eq!(output.result(), expected.result());
@@ -1254,7 +1233,7 @@ fn delayed_engine_nonce_outputs_preserve_keyed_hints_and_reject_expiring_replay(
                 prewarm.tempo_tx_env.as_mut().unwrap().expiring_nonce_idx = Some(0);
             }
             assert!(worker.transact_raw(prewarm).unwrap().result.is_success());
-            assert!(session.retained.lock().unwrap().results.contains_key(&0));
+            assert!(session.retained.contains(0));
             let expected = canonical
                 .execute_transaction_without_commit(&first)
                 .unwrap();
@@ -1286,7 +1265,7 @@ fn delayed_engine_nonce_outputs_preserve_keyed_hints_and_reject_expiring_replay(
                 prewarm.tempo_tx_env.as_mut().unwrap().expiring_nonce_idx = Some(1);
             }
             assert!(worker.transact_raw(prewarm).unwrap().result.is_success());
-            assert!(session.retained.lock().unwrap().results.contains_key(&1));
+            assert!(session.retained.contains(1));
             if committed_expiring {
                 let expected = canonical
                     .execute_transaction_without_commit(&next)

@@ -6,12 +6,11 @@
 use super::{EngineCaptureWindow, Env, PreexecutedTransaction, PrewarmingState, ReadValue};
 use alloy_primitives::{B256, map::HashMap};
 use std::{
-    collections::BTreeMap,
     fmt,
     mem::size_of,
     sync::{
         Arc, Mutex, TryLockError,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -31,7 +30,11 @@ macro_rules! capture_events {
         #[derive(Clone, Copy)]
         pub(crate) enum CaptureEvent { $($variant,)+ Count }
         const COUNTER_COUNT: usize = CaptureEvent::Count as usize;
-        const COUNTER_NAMES: [&str; COUNTER_COUNT] = [$($name,)+];
+        const COUNTER_NAMES: [&str; COUNTER_COUNT] = {
+            let mut names = [""; COUNTER_COUNT];
+            $(names[CaptureEvent::$variant as usize] = $name;)+
+            names
+        };
     };
 }
 
@@ -65,7 +68,9 @@ capture_events! {
     PublishStaleAfter => "publish_stale_after_lock",
     PublishFutureAfter => "publish_future_after_lock",
     PublishDuplicate => "publish_duplicate",
+    // Retained for diagnostic compatibility; the ring enforces count structurally.
     PublishCountLimit => "publish_count_limit",
+    PublishSlotOccupied => "publish_slot_occupied",
     PublishOverflow => "publish_aggregate_overflow",
     PublishByteLimit => "publish_byte_limit",
     Published => "published",
@@ -159,9 +164,13 @@ impl EnginePrewarmingCache {
     /// Removes the lookup session for a payload that will not capture results.
     /// Existing worker handles remain isolated from future sessions.
     pub(crate) fn clear(&self) {
-        if let Ok(mut current) = self.current.lock() {
-            *current = None;
-        }
+        let retired = self
+            .current
+            .lock()
+            .ok()
+            .and_then(|mut current| current.take());
+        // A last session owner can free retained candidates; release lookup first.
+        drop(retired);
     }
 
     /// Starts a new session. Invalid input clears the current session so that
@@ -187,14 +196,18 @@ impl EnginePrewarmingCache {
                 window: self.window,
                 indices,
                 next: AtomicUsize::new(0),
-                retained: Mutex::default(),
+                retained: Retained::new(self.window.transactions()),
                 prefix: PrewarmingState::default(),
                 diagnostics: self
                     .capture_diagnostics
                     .then(|| Box::new(CaptureDiagnostics::new(payload_hash))),
             })
         });
-        *self.current.lock().ok()? = session.clone();
+        let retired = {
+            let mut current = self.current.lock().ok()?;
+            std::mem::replace(&mut *current, session.clone())
+        };
+        drop(retired);
         session
     }
 
@@ -227,37 +240,146 @@ pub(crate) struct EnginePrewarmingSession {
     window: EngineCaptureWindow,
     indices: HashMap<B256, usize>,
     next: AtomicUsize,
-    retained: Mutex<Retained>,
+    retained: Retained,
     prefix: PrewarmingState,
     diagnostics: Option<Box<CaptureDiagnostics>>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Retained {
-    results: BTreeMap<usize, (Box<PreexecutedTransaction>, usize)>,
-    estimated_bytes: usize,
+    slots: Box<[Mutex<Option<RetainedEntry>>]>,
+    // Only canonical consumers acquire this gate. Workers never wait on it.
+    drained: Mutex<usize>,
+    estimated_bytes: AtomicUsize,
+    poisoned: AtomicBool,
+}
+
+#[derive(Debug)]
+struct RetainedEntry {
+    index: usize,
+    candidate: Box<PreexecutedTransaction>,
+    bytes: usize,
 }
 
 impl Retained {
-    fn take_through(
-        &mut self,
-        index: usize,
-        previous: usize,
-        is_system_tx: bool,
-    ) -> Option<Box<PreexecutedTransaction>> {
-        let mut result = None;
-        while self
-            .results
-            .first_key_value()
-            .is_some_and(|(&key, _)| key <= index)
-        {
-            let (key, (candidate, bytes)) = self.results.pop_first()?;
-            self.estimated_bytes -= bytes;
-            if key == index && index >= previous && !is_system_tx {
-                result = Some(candidate);
+    fn new(window: usize) -> Self {
+        Self {
+            slots: (0..window).map(|_| Mutex::default()).collect(),
+            drained: Mutex::new(0),
+            estimated_bytes: AtomicUsize::new(0),
+            poisoned: AtomicBool::new(false),
+        }
+    }
+
+    fn slot(&self, index: usize) -> &Mutex<Option<RetainedEntry>> {
+        &self.slots[index % self.slots.len()]
+    }
+
+    fn reserve(&self, bytes: usize) -> Result<ByteReservation<'_>, CaptureEvent> {
+        let mut current = self.estimated_bytes.load(Ordering::Relaxed);
+        loop {
+            let total = current
+                .checked_add(bytes)
+                .ok_or(CaptureEvent::PublishOverflow)?;
+            if total > MAX_ESTIMATED_BYTES {
+                return Err(CaptureEvent::PublishByteLimit);
+            }
+            match self.estimated_bytes.compare_exchange_weak(
+                current,
+                total,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    return Ok(ByteReservation {
+                        budget: &self.estimated_bytes,
+                        bytes,
+                    });
+                }
+                Err(updated) => current = updated,
             }
         }
-        result
+    }
+
+    #[cfg(test)]
+    fn contains(&self, index: usize) -> bool {
+        self.slot(index)
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|entry| entry.index == index)
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.slots
+            .iter()
+            .filter(|slot| slot.lock().unwrap().is_some())
+            .count()
+    }
+}
+
+impl Drop for Retained {
+    fn drop(&mut self) {
+        // Exclusive session destruction needs no locks, including for poisoned slots.
+        for slot in &mut self.slots {
+            let entry = slot
+                .get_mut()
+                .unwrap_or_else(|error| error.into_inner())
+                .take();
+            if let Some(entry) = entry {
+                self.estimated_bytes
+                    .fetch_sub(entry.bytes, Ordering::Relaxed);
+                drop(entry);
+            }
+        }
+    }
+}
+
+/// Borrowed rollback ownership; installed entries carry the explicit charge instead.
+struct ByteReservation<'a> {
+    budget: &'a AtomicUsize,
+    bytes: usize,
+}
+
+impl ByteReservation<'_> {
+    fn commit(mut self) {
+        self.bytes = 0;
+    }
+}
+
+impl Drop for ByteReservation<'_> {
+    fn drop(&mut self) {
+        if self.bytes != 0 {
+            self.budget.fetch_sub(self.bytes, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Poison any retention critical section session-wide before its guard unlocks.
+struct PoisonOnUnwind<'a>(&'a AtomicBool);
+
+impl Drop for PoisonOnUnwind<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+}
+
+/// Declared before consumer guards so both refunds and payload destruction occur
+/// after all retention locks are released, including while unwinding a sweep.
+struct Retired<'a> {
+    budget: &'a AtomicUsize,
+    result: Option<RetainedEntry>,
+    evicted: Vec<RetainedEntry>,
+}
+
+impl Drop for Retired<'_> {
+    fn drop(&mut self) {
+        for entry in self.result.iter().chain(&self.evicted) {
+            self.budget.fetch_sub(entry.bytes, Ordering::Relaxed);
+        }
     }
 }
 
@@ -413,18 +535,39 @@ impl EnginePrewarmingSession {
         };
         // Allocate before taking the lock so publication only moves a pointer.
         let candidate = Box::new(candidate);
-        let mut retained = match self.retained.try_lock() {
-            Ok(retained) => retained,
+        self.publish_prepared(index, candidate, bytes)
+    }
+
+    fn publish_prepared(
+        &self,
+        index: usize,
+        candidate: Box<PreexecutedTransaction>,
+        bytes: usize,
+    ) -> bool {
+        // Declare ownership before the slot guard: rejection/unwind must release
+        // the lock before refunding a reservation or destroying the candidate.
+        let reservation;
+        if self.retained.poisoned.load(Ordering::Acquire) {
+            self.capture_event(CaptureEvent::PublishPoisoned);
+            return false;
+        }
+        let mut slot = match self.retained.slot(index).try_lock() {
+            Ok(slot) => slot,
             Err(TryLockError::WouldBlock) => {
                 self.capture_event(CaptureEvent::PublishContended);
                 return false;
             }
             Err(TryLockError::Poisoned(poisoned)) => {
                 drop(poisoned);
+                self.retained.poisoned.store(true, Ordering::Release);
                 self.capture_event(CaptureEvent::PublishPoisoned);
                 return false;
             }
         };
+        let _poison_on_unwind = PoisonOnUnwind(&self.retained.poisoned);
+        if self.retained.poisoned.load(Ordering::Acquire) {
+            return self.publish_rejected(CaptureEvent::PublishPoisoned);
+        }
         if !self.in_window(
             index,
             CaptureEvent::PublishStaleAfter,
@@ -432,31 +575,37 @@ impl EnginePrewarmingSession {
         ) {
             return false;
         }
-        if retained.results.contains_key(&index) {
-            drop(retained);
-            self.capture_event(CaptureEvent::PublishDuplicate);
-            return false;
+        if let Some(entry) = slot.as_ref() {
+            // next advances before canonical consumption. Even an older tag may
+            // still be the result that an in-progress canonical take will use.
+            return self.publish_rejected(if entry.index == index {
+                CaptureEvent::PublishDuplicate
+            } else {
+                CaptureEvent::PublishSlotOccupied
+            });
         }
-        if retained.results.len() >= self.window.transactions() {
-            drop(retained);
-            self.capture_event(CaptureEvent::PublishCountLimit);
-            return false;
-        }
-        let Some(total) = retained.estimated_bytes.checked_add(bytes) else {
-            drop(retained);
-            self.capture_event(CaptureEvent::PublishOverflow);
-            return false;
+        reservation = match self.retained.reserve(bytes) {
+            Ok(charge) => charge,
+            Err(reason) => return self.publish_rejected(reason),
         };
-        if total > MAX_ESTIMATED_BYTES {
-            drop(retained);
-            self.capture_event(CaptureEvent::PublishByteLimit);
-            return false;
-        }
-        retained.results.insert(index, (candidate, bytes));
-        retained.estimated_bytes = total;
-        drop(retained);
+        // No allocation, callback, fallible operation or panicking assertion may
+        // be inserted between installation and disarming rollback ownership.
+        // The slot was checked empty while holding this same guard, so assignment
+        // cannot run an old candidate's destructor. The entry now owns the charge.
+        *slot = Some(RetainedEntry {
+            index,
+            candidate,
+            bytes,
+        });
+        reservation.commit();
+        drop(slot);
         self.capture_event(CaptureEvent::Published);
         true
+    }
+
+    fn publish_rejected(&self, reason: CaptureEvent) -> bool {
+        self.capture_event(reason);
+        false
     }
 
     /// Advances even on a miss. Call for every canonical transaction, including
@@ -466,7 +615,11 @@ impl EnginePrewarmingSession {
         self.take_timed(tx).0
     }
 
-    /// The same ordered take, with serial-consumer lock acquisition/hold wall time.
+    /// The same ordered take, timing consumer-gate acquisition and its held wall
+    /// interval. The latter includes any nested slot-lock waits and retirement
+    /// bookkeeping, counted once; it is not a sum of lock-hold intervals. Payload
+    /// destruction/refunds happen afterward. These timings differ from the old
+    /// completed-map mutex timings; end-to-end Engine time remains the comparison.
     /// Unindexed transactions acquire no lock and return no timing sample.
     pub(crate) fn take_timed(
         &self,
@@ -480,25 +633,91 @@ impl EnginePrewarmingSession {
         let previous = self
             .next
             .fetch_max(index.saturating_add(1), Ordering::AcqRel);
-        let waiting = Instant::now();
-        // Poisoning still declines reuse. Drop the poisoned guard before returning
-        // timings, preserving the original lock().ok()? behavior.
-        let retained = self.retained.lock();
-        let acquired = Instant::now();
-        let (result, evicted, poisoned) = match retained {
-            Ok(mut retained) => {
-                let before = self.diagnostics.as_ref().map(|_| retained.results.len());
-                let result = retained.take_through(index, previous, tx.is_system_tx);
-                let evicted = before
-                    .map(|before| before - retained.results.len() - usize::from(result.is_some()));
-                (result, evicted, false)
-            }
-            Err(poisoned) => {
-                drop(poisoned);
-                (None, None, true)
-            }
+        self.take_after_advance(index, previous, tx.is_system_tx)
+    }
+
+    fn take_after_advance(
+        &self,
+        index: usize,
+        previous: usize,
+        is_system_tx: bool,
+    ) -> (Option<PreexecutedTransaction>, Option<(Duration, Duration)>) {
+        let mut retired = Retired {
+            budget: &self.retained.estimated_bytes,
+            result: None,
+            evicted: Vec::new(),
         };
+        let waiting = Instant::now();
+        let gate = self.retained.drained.lock();
+        let acquired = Instant::now();
+        let mut poisoned = self.retained.poisoned.load(Ordering::Acquire);
+        match gate {
+            Ok(mut drained) => {
+                let _poison_on_unwind = PoisonOnUnwind(&self.retained.poisoned);
+                let end = index.saturating_add(1);
+                if !poisoned && end > *drained {
+                    // At most W distinct residues, even for a large canonical
+                    // jump. Normal ordered consumption visits exactly one slot.
+                    let start = (*drained).max(end.saturating_sub(self.retained.slots.len()));
+                    let single_slot = end - start == 1;
+                    if !single_slot {
+                        // Reserve before detaching anything. An allocation failure
+                        // cannot destroy a detached candidate under the gate.
+                        // Ordinary one-slot consumption remains allocation-free.
+                        retired.evicted.reserve_exact(end - start);
+                    }
+                    for position in start..end {
+                        let entry = match self.retained.slot(position).lock() {
+                            Ok(mut slot) => {
+                                let _poison_on_unwind = PoisonOnUnwind(&self.retained.poisoned);
+                                if slot.as_ref().is_some_and(|entry| entry.index <= index) {
+                                    slot.take()
+                                } else {
+                                    None
+                                }
+                            }
+                            Err(error) => {
+                                drop(error);
+                                self.retained.poisoned.store(true, Ordering::Release);
+                                poisoned = true;
+                                break;
+                            }
+                        };
+                        // The slot guard is already gone. The retirement owner
+                        // predates the consumer guard, including on Vec unwind.
+                        if let Some(entry) = entry {
+                            if single_slot || entry.index == index {
+                                retired.result = Some(entry);
+                            } else {
+                                retired.evicted.push(entry);
+                            }
+                        }
+                    }
+                    if !poisoned {
+                        *drained = end;
+                    }
+                }
+            }
+            Err(error) => {
+                drop(error);
+                self.retained.poisoned.store(true, Ordering::Release);
+                poisoned = true;
+            }
+        }
         let held = acquired.elapsed();
+        poisoned |= self.retained.poisoned.load(Ordering::Acquire);
+        let result = if !poisoned
+            && index >= previous
+            && !is_system_tx
+            && retired
+                .result
+                .as_ref()
+                .is_some_and(|entry| entry.index == index)
+        {
+            retired.result.take()
+        } else {
+            None
+        };
         self.capture_event(if result.is_some() {
             CaptureEvent::TakeFound
         } else {
@@ -507,11 +726,20 @@ impl EnginePrewarmingSession {
         if poisoned {
             self.capture_event(CaptureEvent::TakePoisoned);
         }
-        if let (Some(diagnostics), Some(evicted)) = (&self.diagnostics, evicted) {
-            diagnostics.add(CaptureEvent::Evicted, evicted as u64);
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.add(
+                CaptureEvent::Evicted,
+                (retired.evicted.len() + usize::from(retired.result.is_some())) as u64,
+            );
         }
-        // Move the payload and release its allocation after leaving the lock.
-        let result = result.map(|candidate| *candidate);
+        // Every guard is gone before refunding charges or destroying allocations.
+        let result = result.map(|entry| {
+            self.retained
+                .estimated_bytes
+                .fetch_sub(entry.bytes, Ordering::Relaxed);
+            *entry.candidate
+        });
+        drop(retired);
         (result, Some((acquired.duration_since(waiting), held)))
     }
 }
@@ -523,11 +751,14 @@ impl Drop for EnginePrewarmingSession {
         }
         // Exclusive access: all session Arc owners are gone. Do not acquire a
         // mutex merely to report final retained totals, including poisoned data.
-        let retained = self
-            .retained
-            .get_mut()
-            .unwrap_or_else(|error| error.into_inner());
-        let (count, bytes) = (retained.results.len(), retained.estimated_bytes);
+        let mut count = 0;
+        let mut bytes = 0;
+        for slot in &mut self.retained.slots {
+            if let Some(entry) = slot.get_mut().unwrap_or_else(|error| error.into_inner()) {
+                count += 1;
+                bytes += entry.bytes;
+            }
+        }
         if let Some(diagnostics) = &self.diagnostics {
             // This can be delayed until cache replacement/shutdown. Process exit
             // may omit the final retained session; it is not worker-finish time.
@@ -752,14 +983,15 @@ mod tests {
     use alloy_evm::Evm;
     use alloy_primitives::{Address, Bytes, TxKind};
     use revm::{context::TxEnv, database::EmptyDB};
+    use std::collections::BTreeMap;
 
     const LOOKAHEAD: usize = EngineCaptureWindow::Transactions128.transactions();
 
-    fn hash(index: usize) -> B256 {
+    pub(super) fn hash(index: usize) -> B256 {
         B256::from(alloy_primitives::U256::from(index).to_be_bytes::<32>())
     }
 
-    fn tx(index: usize) -> TempoTxEnv {
+    pub(super) fn tx(index: usize) -> TempoTxEnv {
         TempoTxEnv {
             inner: TxEnv {
                 caller: Address::with_last_byte(201),
@@ -774,25 +1006,27 @@ mod tests {
         }
     }
 
-    fn env() -> Env {
+    pub(super) fn env() -> Env {
         crate::test_utils::test_evm_with_basefee(EmptyDB::default(), 0)
             .finish()
             .1
     }
 
-    fn candidate(index: usize) -> PreexecutedTransaction {
+    pub(super) fn candidate(index: usize) -> PreexecutedTransaction {
         PrewarmingExecutor::new(EmptyDB::default(), env())
             .execute(tx(index), None)
             .unwrap()
     }
 
-    fn diagnostic_session(count: usize) -> Arc<EnginePrewarmingSession> {
+    pub(super) fn diagnostic_session(count: usize) -> Arc<EnginePrewarmingSession> {
         EnginePrewarmingCache::new(true)
             .begin_payload(env(), hash(9999), (0..count).map(hash))
             .unwrap()
     }
 
-    fn counts(session: &EnginePrewarmingSession) -> impl Fn(CaptureEvent) -> u64 + use<> {
+    pub(super) fn counts(
+        session: &EnginePrewarmingSession,
+    ) -> impl Fn(CaptureEvent) -> u64 + use<> {
         let snapshot = session.diagnostics.as_ref().unwrap().snapshot();
         move |event| snapshot.0[event as usize]
     }
@@ -819,14 +1053,13 @@ mod tests {
             assert!(!session.can_capture(&tx(0)));
             assert!(session.can_capture(&tx(limit)));
             assert!(!session.publish(candidate(limit)));
-            assert_eq!(counts(&session)(CaptureEvent::PublishCountLimit), 1);
+            assert_eq!(counts(&session)(CaptureEvent::PublishSlotOccupied), 1);
+            assert_eq!(counts(&session)(CaptureEvent::PublishCountLimit), 0);
             assert!(session.take(&tx(limit - 1)).is_some());
             assert!(session.publish(candidate(limit)));
             assert!(session.take(&tx(limit)).is_some());
-            let retained = session.retained.lock().unwrap();
-            assert!(retained.results.is_empty());
-            assert_eq!(retained.estimated_bytes, 0);
-            drop(retained);
+            assert_eq!(session.retained.len(), 0);
+            assert_eq!(session.retained.estimated_bytes.load(Ordering::Relaxed), 0);
 
             let session = cache.begin(env(), [hash(0), hash(1)]).unwrap();
             for index in 0..2 {
@@ -952,7 +1185,7 @@ mod tests {
         oversized.tx.inner.data = Bytes::from(vec![0; MAX_ESTIMATED_BYTES]);
         assert!(!session.publish(oversized));
         {
-            let _guard = session.retained.lock().unwrap();
+            let _guard = session.retained.slot(0).lock().unwrap();
             assert!(!session.publish(candidate(0)));
         }
         assert!(session.publish(candidate(0)));
@@ -997,7 +1230,8 @@ mod tests {
         // Model the existing gap between take's cursor advance and lock acquisition.
         session.next.store(1, Ordering::Release);
         assert!(!session.publish(candidate(128)));
-        assert_eq!(counts(&session)(CaptureEvent::PublishCountLimit), 1);
+        assert_eq!(counts(&session)(CaptureEvent::PublishSlotOccupied), 1);
+        assert_eq!(counts(&session)(CaptureEvent::PublishCountLimit), 0);
         assert!(session.take(&tx(128)).is_none());
         assert_eq!(counts(&session)(CaptureEvent::Evicted), LOOKAHEAD as u64);
 
@@ -1086,7 +1320,8 @@ mod tests {
         assert!(session.publish(candidate(0)));
         let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _worker = session.worker_entry().unwrap();
-            let _retained = session.retained.lock().unwrap();
+            let _retained = session.retained.slot(0).lock().unwrap();
+            let _poison_on_unwind = PoisonOnUnwind(&session.retained.poisoned);
             panic!("diagnostic fixture");
         }));
         assert!(panic.is_err());
@@ -1166,7 +1401,7 @@ mod tests {
         assert!(session.publish(candidate(LOOKAHEAD)));
         assert!(session.take(&tx(LOOKAHEAD)).is_some());
         assert!(!session.can_capture(&tx(LOOKAHEAD - 1)));
-        assert_eq!(session.retained.lock().unwrap().estimated_bytes, 0);
+        assert_eq!(session.retained.estimated_bytes.load(Ordering::Relaxed), 0);
     }
 
     #[test]
@@ -1174,7 +1409,7 @@ mod tests {
         let session = EnginePrewarmingCache::default()
             .begin(env(), (0..=LOOKAHEAD).map(hash))
             .unwrap();
-        let guard = session.retained.lock().unwrap();
+        let guard = session.retained.slot(0).lock().unwrap();
         assert!(!session.publish(candidate(0)));
         drop(guard);
         for index in 0..LOOKAHEAD {
@@ -1182,11 +1417,10 @@ mod tests {
         }
         assert!(!session.publish(candidate(0)));
         assert!(!session.publish(candidate(LOOKAHEAD)));
-        assert_eq!(session.retained.lock().unwrap().results.len(), LOOKAHEAD);
+        assert_eq!(session.retained.len(), LOOKAHEAD);
         assert!(session.take(&tx(LOOKAHEAD - 1)).is_some());
-        let retained = session.retained.lock().unwrap();
-        assert!(retained.results.is_empty());
-        assert_eq!(retained.estimated_bytes, 0);
+        assert_eq!(session.retained.len(), 0);
+        assert_eq!(session.retained.estimated_bytes.load(Ordering::Relaxed), 0);
     }
 
     #[test]
@@ -1213,7 +1447,7 @@ mod tests {
             assert_eq!(session.publish(large), index == 0);
         }
         assert!(session.take(&tx(0)).is_some());
-        assert_eq!(session.retained.lock().unwrap().estimated_bytes, 0);
+        assert_eq!(session.retained.estimated_bytes.load(Ordering::Relaxed), 0);
         assert!(session.publish(candidate(1)));
         assert!(ByteBudget(0).add(usize::MAX).is_none());
         assert!(ByteBudget(1).add(usize::MAX).is_none());
@@ -1270,3 +1504,7 @@ mod tests {
 #[cfg(test)]
 #[path = "engine_prewarming_tests.rs"]
 mod capture_tests;
+
+#[cfg(test)]
+#[path = "engine_slot_tests.rs"]
+mod slot_tests;
