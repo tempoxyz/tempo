@@ -1,0 +1,42 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { generateKeyPairSync, sign } from 'node:crypto';
+import { once } from 'node:events';
+import { createRelay } from './relay.mjs';
+
+test('relay binds verified provider tokens to one-use same-origin challenges', async t => {
+  let now = 1700000000;
+  const port = 19834;
+  const origin = `http://127.0.0.1:${port}`;
+  const { publicKey,privateKey } = generateKeyPairSync('rsa',{modulusLength:2048});
+  const jwk = publicKey.export({format:'jwk'}); jwk.kid = 'test'; jwk.alg = 'RS256';
+  const mockProof = {protocol:'groth16',curve:'bn128',pi_a:['1','2','1'],pi_b:[['1','2'],['3','4'],['1','0']],pi_c:['1','2','1']};
+  let calls = 0;
+  const server = createRelay({clientId:'test-client',publisherId:`0x${'01'.repeat(32)}`,saltSecret:Buffer.alloc(32,9),port,issuer:'https://accounts.example.invalid',keys:async()=>({keys:[jwk]}),clock:()=>now,prover:async input => { calls++; assert.equal(input.commit_a,'1'); return mockProof; }});
+  server.listen(port,'127.0.0.1'); await once(server,'listening');
+  t.after(()=>new Promise(resolve=>server.close(resolve)));
+  const post = (endpoint,body,headers={}) => fetch(`${origin}${endpoint}`,{method:'POST',headers:{Origin:origin,'Content-Type':'application/json',...headers},body:JSON.stringify(body)});
+  assert.equal((await fetch(`${origin}/config`)).status,200);
+  assert.equal((await post('/challenge',{accessKey:'0x0000000000000000000000000000000000000001'},{Origin:'https://evil.invalid'})).status,403);
+  const challenge = await (await post('/challenge',{accessKey:'0x0000000000000000000000000000000000000001'})).json();
+  const payload = {iss:'https://accounts.example.invalid',aud:'test-client',sub:'test-user',iat:now,exp:now+3600,nonce:challenge.nonce};
+  const jwt = claims => {
+    const header = Buffer.from(JSON.stringify({alg:'RS256',kid:'test'})).toString('base64url');
+    const message = `${header}.${Buffer.from(JSON.stringify(claims)).toString('base64url')}`;
+    return `${message}.${sign('RSA-SHA256',Buffer.from(message),privateKey).toString('base64url')}`;
+  };
+  assert.equal((await post('/prove',{id:challenge.id,token:jwt({...payload,aud:'wrong'})})).status,400);
+  assert.equal(calls,0);
+  const success = await post('/prove',{id:challenge.id,token:jwt(payload)});
+  assert.equal(success.status,200);
+  const result = await success.json();
+  assert.equal(result.proof.length,514);
+  assert.match(result.account,/^0x[\da-fA-F]{40}$/);
+  assert.equal('salt' in result,false);
+  assert.equal(calls,1);
+  assert.equal((await post('/prove',{id:challenge.id,token:jwt(payload)})).status,400);
+  const next = await (await post('/challenge',{accessKey:'0x0000000000000000000000000000000000000001'})).json();
+  now += 541;
+  assert.equal((await post('/prove',{id:next.id,token:jwt(payload)})).status,400);
+  assert.equal((await post('/rpc',{jsonrpc:'2.0',id:1,method:'admin_peers',params:[]})).status,400);
+});

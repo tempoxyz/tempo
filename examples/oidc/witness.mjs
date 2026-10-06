@@ -1,7 +1,7 @@
 import { generateKeyPairSync, sign } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
-import { tokenWitness, signatureNonce, MESSAGE_TAG, field, be32, hashBytes, issuerHash, addressSeed, publicInput, messageNonce } from './oidc.mjs';
+import { tokenWitness, signatureNonce, MESSAGE_TAG, be32, hashBytes, issuerHash, addressSeed, publicInput, messageNonce } from './oidc.mjs';
 
 export function limbs(bytes) {
   let value = BigInt(`0x${Buffer.from(bytes).toString('hex')}`);
@@ -67,7 +67,7 @@ export function circuitInput(witness, allowMissing = false) {
   };
 }
 
-export async function fixture({ message = false, payloadTransform = value => value, issuer = 'https://accounts.example.invalid', audience = 'tempo-oidc-devnet', subject = 'synthetic-user', now = Math.floor(Date.now()/1000), accessKeyId = 0x70997970c51812dc3a010c7d01b50e0d17dc79c8n } = {}) {
+export async function fixture({ message = false, payloadTransform, issuer = 'https://accounts.example.invalid', audience = 'tempo-oidc-devnet', subject = 'synthetic-user', now = Math.floor(Date.now()/1000), accessKeyId = 0x70997970c51812dc3a010c7d01b50e0d17dc79c8n } = {}) {
   const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048, publicExponent: 65537 });
   const jwk = publicKey.export({ format: 'jwk' });
   jwk.alg = 'RS256'; jwk.kid = 'synthetic-devnet'; jwk.use = 'sig';
@@ -75,7 +75,7 @@ export async function fixture({ message = false, payloadTransform = value => val
   const blinding = 456n;
   const validUntil = message ? MESSAGE_TAG : BigInt(now+540);
   const nonce = message ? await messageNonce(`0x${be32(accessKeyId).toString('hex')}`, blinding) : await signatureNonce(accessKeyId, validUntil, blinding);
-  const payload = payloadTransform(JSON.stringify({ iss: issuer, aud: audience, sub: subject, nonce, iat: now, exp: now+3600 }));
+  const payload = (payloadTransform ?? (value => value))(JSON.stringify({ iss: issuer, aud: audience, sub: subject, nonce, iat: now, exp: now+3600 }));
   const header = Buffer.from(JSON.stringify({ alg: 'RS256', kid: jwk.kid })).toString('base64url');
   const signed = Buffer.from(`${header}.${Buffer.from(payload).toString('base64url')}`);
   const signature = sign('RSA-SHA256', signed, privateKey);
@@ -88,7 +88,7 @@ export async function fixture({ message = false, payloadTransform = value => val
   const padded = Buffer.alloc(1024); signed.copy(padded);
   const statement = await publicInput({ issuer: issuerValue, keyHash, addressSeed: seed, commitA: accessKeyId, commitB: validUntil, issuedAt: claims.iat });
   const witness = { signedInput: padded, signedInputLength: signed.length, modulus, signature, salt, blinding, accessKeyId, validUntil, issuedAt: claims.iat, issuer: issuerValue, keyHash, addressSeed: seed, publicInput: statement };
-  if (!message && payloadTransform.toString() === (value => value).toString()) {
+  if (!message && !payloadTransform) {
     await tokenWitness({ token, jwk, salt, blinding, accessKeyId, validUntil, now, expectedIssuer: issuer, expectedAudience: audience });
   }
   return { input: circuitInput(witness, true), token, jwk };

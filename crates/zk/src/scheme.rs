@@ -113,4 +113,29 @@ mod tests {
         assert!(super::scheme(0x00).is_none());
         assert!(super::scheme(0x02).is_none());
     }
+
+    #[cfg(feature = "oidc-devnet")]
+    #[test]
+    fn devnet_key_loader_rejects_other_chains_and_invalid_keys() {
+        assert_eq!(
+            install_devnet_key(1, &[]),
+            Err("OIDC devnet keys are restricted to chain 1337")
+        );
+        assert_eq!(
+            install_devnet_key(4217, &[]),
+            Err("OIDC devnet keys are restricted to chain 1337")
+        );
+        assert_eq!(
+            install_devnet_key(42431, &[]),
+            Err("OIDC devnet keys are restricted to chain 1337")
+        );
+        assert_eq!(
+            install_devnet_key(1337, &[]),
+            Err("invalid OIDC devnet key length")
+        );
+        assert_eq!(
+            install_devnet_key(1337, &[0; VERIFYING_KEY_LENGTH]),
+            Err("invalid OIDC devnet key points")
+        );
+    }
 }

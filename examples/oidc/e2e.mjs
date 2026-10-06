@@ -65,6 +65,7 @@ await rejected(firstRaw,'replay of proof-authorized transaction');
 const thirdFields = transactionFields({ calls:[payment], nonce:2 });
 const changed = { ...input, commit_b:(BigInt(input.commit_b)-1n).toString() };
 await rejected(signedTransaction(thirdFields,zkSignature({ input:changed,publisherId,proof,digest:transactionDigest(thirdFields),wallet:device })), 'proof nonce/expiry rebinding');
+await rejected(signedTransaction(thirdFields,zkSignature({ input:{...input,commit_b:'1'},publisherId,proof,digest:transactionDigest(thirdFields),wallet:device })), 'expired OIDC signature');
 const wrongProof = structuredClone(proof); wrongProof.pi_c[0] = '1';
 await rejected(signedTransaction(thirdFields,zkSignature({ input,publisherId,proof:wrongProof,digest:transactionDigest(thirdFields),wallet:device })), 'invalid proof');
 const keychain = new ethers.Interface(['function revokeKey(address keyId)']);

@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tempo OIDC private devnet</title>
+<h1>Tempo OIDC private devnet</h1>
+<p>Unaudited experiment. No real funds. Device keys stay in this browser tab.</p>
+<button id="begin">Create device key and sign in with Google</button>
+<div id="google"></div>
+<pre id="status">Loading configuration…</pre>
+<label>Recipient <input id="recipient" placeholder="0x…"></label>
+<label>Amount (base units) <input id="amount" value="1000" type="number" min="1"></label>
+<button id="pay" disabled>Install key and pay</button>
+<button id="again" disabled>Pay with device key, no proof</button>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script type="module" src="/browser.mjs"></script>
+</html>
