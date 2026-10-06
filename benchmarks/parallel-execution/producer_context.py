@@ -322,6 +322,24 @@ def cgroup_constraints(path, system):
     raise ValueError('Cgroup ancestor depth cap')
 
 
+def governor_observation(system):
+    before_monotonic_ns, before_realtime_ns = time.monotonic_ns(), time.time_ns()
+    paths = system.glob(lifecycle_module.GOVERNORS)
+    require(len(paths) <= lifecycle_module.MAX_GOVERNORS and len(paths) == len(set(paths)),
+            'CPU governor inventory bound')
+    rows = []
+    for path in paths:
+        require(re.fullmatch(r'/sys/devices/system/cpu/cpu[0-9]+/cpufreq/scaling_governor', path),
+                'Unexpected CPU governor path')
+        value = system.bytes(path, 128).decode('utf-8', errors='strict').strip()
+        require(re.fullmatch(r'[a-zA-Z0-9_-]+', value), 'Malformed CPU governor value')
+        rows.append({'path': path, 'value': value})
+    return {'status': 'observed' if rows else 'not_exposed', 'governors': rows,
+            'before_monotonic_ns': before_monotonic_ns, 'after_monotonic_ns': time.monotonic_ns(),
+            'before_realtime_ns': before_realtime_ns, 'after_realtime_ns': time.time_ns(),
+            'scope': 'One context_prepare observation; no atomic, continuous, performance-governor or unchanged-throughout-run claim.'}
+
+
 def node_identity(role, node, context, lifecycle, system):
     unit = lifecycle['node_units']['ab'.index(role)]
     require(node['scope'] == unit and node['datadir'] == f'/reth-bench-{role}/tempo_e2e_100000mb', 'Node scope/datadir changed')
@@ -516,6 +534,7 @@ def prepare(args, system):
         'self_limits': system.bytes('/proc/self/limits', 32768).decode(), 'cgroup': own_group,
         'constraints': cgroup_constraints(own_group, system), 'boot_id': system.bytes('/proc/sys/kernel/random/boot_id', 128).decode().strip(),
         'cpu_topology': json.loads(command(system, ['lscpu', '--json'])), 'meminfo': system.bytes('/proc/meminfo', 32768).decode(),
+        'cpu_governors': governor_observation(system),
         'runner_name': os.environ.get('RUNNER_NAME', ''), 'clock_monotonic_ns': time.monotonic_ns(), 'clock_realtime_ns': time.time_ns(),
         'scope': 'Observed control-process identity, affinity, limits and cgroup ancestry; no unchanged-placement or producer-NOFILE equivalence claim.'}
     host_evidence = save(folder / 'host.json', host)

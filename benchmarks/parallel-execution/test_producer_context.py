@@ -97,6 +97,49 @@ class FakeNode:
 
 
 class ContextTests(unittest.TestCase):
+    def test_governors_record_actual_values_and_observation_bracket(self):
+        paths = [f'/sys/devices/system/cpu/cpu{i}/cpufreq/scaling_governor' for i in (0, 8)]
+        class Fake:
+            def glob(self, pattern):
+                if pattern != c.lifecycle_module.GOVERNORS: raise AssertionError(pattern)
+                return paths
+            def bytes(self, path, cap):
+                if cap != 128: raise AssertionError(cap)
+                return {paths[0]: b'performance\n', paths[1]: b'powersave\n'}[path]
+        with patch.object(c.time, 'monotonic_ns', side_effect=[100, 150]), patch.object(c.time, 'time_ns', side_effect=[1000, 1050]):
+            result = c.governor_observation(Fake())
+        self.assertEqual(result['status'], 'observed')
+        self.assertEqual(result['governors'], [{'path': paths[0], 'value': 'performance'}, {'path': paths[1], 'value': 'powersave'}])
+        self.assertEqual([result['before_monotonic_ns'], result['after_monotonic_ns']], [100, 150])
+        self.assertEqual([result['before_realtime_ns'], result['after_realtime_ns']], [1000, 1050])
+
+    def test_governors_not_exposed_is_explicit(self):
+        class Fake:
+            def glob(self, _): return []
+            def bytes(self, *_): raise AssertionError('No files to read')
+        result = c.governor_observation(Fake())
+        self.assertEqual(result['status'], 'not_exposed')
+        self.assertEqual(result['governors'], [])
+
+    def test_governor_enumeration_and_read_errors_are_not_absence(self):
+        class Fake:
+            def glob(self, _): return ['/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor']
+            def bytes(self, *_): raise PermissionError('denied')
+        with self.assertRaises(PermissionError): c.governor_observation(Fake())
+        with patch.object(Fake, 'glob', side_effect=OSError('enumeration failed')):
+            with self.assertRaises(OSError): c.governor_observation(Fake())
+
+    def test_governor_inventory_and_value_bounds(self):
+        path = '/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor'
+        class Fake:
+            def glob(self, _): return [path]
+            def bytes(self, *_): return b'performance\n'
+        for paths in ([path, path], ['/proc/self/environ'], [path] * (c.lifecycle_module.MAX_GOVERNORS + 1)):
+            with patch.object(Fake, 'glob', return_value=paths), self.assertRaises(ValueError):
+                c.governor_observation(Fake())
+        with patch.object(Fake, 'bytes', return_value=b'not a governor\n'), self.assertRaises(ValueError):
+            c.governor_observation(Fake())
+
     def test_install_requires_forced_exact_revision_complete_log_and_clock(self):
         source = Path('/source/txgen')
         item = {'schema_version':1, 'status':'completed', 'argv':list(c.INSTALL), 'exit_code':0,
