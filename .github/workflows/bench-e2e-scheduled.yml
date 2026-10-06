@@ -38,6 +38,15 @@ on:
         required: false
         default: false
         type: boolean
+      correctness-tps:
+        description: "Offered TPS for generated sequential-peer correctness validation only"
+        required: false
+        default: "50000"
+        type: choice
+        options:
+          - "10000"
+          - "25000"
+          - "50000"
       capture-window:
         description: "Engine capture window for generated sequential-peer correctness validation only"
         required: false
@@ -192,7 +201,7 @@ jobs:
       preset: default
       duration: "90"
       bloat: "100"
-      tps: "50000"
+      tps: ${{ inputs.correctness-tps || '50000' }}
       accounts: "1000"
       max-concurrent-requests: "100"
       token-count: "4"
