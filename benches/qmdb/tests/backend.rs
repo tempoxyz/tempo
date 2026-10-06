@@ -4,6 +4,7 @@ use std::{sync::Arc, time::Instant};
 
 use alloy::{
     consensus::{Transaction as _, TxReceipt as _},
+    providers::Provider as _,
     sol_types::SolCall as _,
 };
 use alloy_primitives::{Address, U256};
@@ -55,6 +56,13 @@ async fn node(
 #[tokio::test(flavor = "multi_thread")]
 async fn qmdb_builds_validates_persists_and_restarts() -> eyre::Result<()> {
     let mut node = node(StateRootBackend::Qmdb).await?;
+    let observer = self::node(StateRootBackend::Qmdb).await?;
+    let proof_error = node
+        .rpc_provider()
+        .get_proof(Address::ZERO, vec![])
+        .await
+        .unwrap_err();
+    assert_eq!(proof_error.as_error_resp().unwrap().code, -32601);
     let chain_id = node.inner.chain_spec().chain_id();
     let mut sender = Wallet::default().with_chain_id(chain_id).account(0);
     let address = sender.address();
@@ -67,6 +75,8 @@ async fn qmdb_builds_validates_persists_and_restarts() -> eyre::Result<()> {
         let (_, payload) = node
             .inject_and_advance(sender.sign_tx_bytes(transaction).await)
             .await?;
+        // This node has no producer execution cache and independently validates each root.
+        observer.submit_payload(payload.clone()).await?;
         assert_eq!(
             payload
                 .block()
@@ -87,6 +97,17 @@ async fn qmdb_builds_validates_persists_and_restarts() -> eyre::Result<()> {
             nonce + 1
         );
     }
+    assert_eq!(
+        observer
+            .inner
+            .provider
+            .latest()?
+            .basic_account(&address)?
+            .unwrap()
+            .nonce,
+        0
+    );
+    observer.stop().await?;
     node.wait_for_persisted_block(3).await?;
     let mut node = node.restart().await?;
     assert_eq!(
