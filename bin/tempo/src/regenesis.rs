@@ -15,7 +15,7 @@ use std::{
 use alloy_genesis::{Genesis, GenesisAccount};
 use alloy_primitives::{Address, B256, U256, keccak256};
 use clap::Parser;
-use eyre::{ensure, eyre};
+use eyre::{OptionExt, ensure, eyre};
 use reth_chainspec::EthChainSpec;
 use reth_cli_commands::common::{CliNodeTypes, EnvironmentArgs};
 use reth_codecs::Compact;
@@ -128,9 +128,9 @@ where
         let tx = provider_rw.tx_ref();
         let (stored_genesis_hash, stored_block_number) = {
             let mut cursor = tx.cursor_read::<tables::HeaderNumbers>()?;
-            let entry = cursor.first()?.ok_or_else(|| {
-                eyre!("regenesis requires exactly one HeaderNumbers entry, found none")
-            })?;
+            let entry = cursor
+                .first()?
+                .ok_or_eyre("regenesis requires exactly one HeaderNumbers entry, found none")?;
             ensure!(
                 cursor.next()?.is_none(),
                 "regenesis requires exactly one HeaderNumbers entry, found more than one"

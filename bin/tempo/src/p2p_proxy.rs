@@ -8,7 +8,7 @@ use alloy::{
 };
 use alloy_rlp::Encodable;
 use clap::Parser;
-use eyre::{Context, Result};
+use eyre::{Context, OptionExt, Result};
 use futures::StreamExt;
 use reth_chainspec::Head;
 use reth_cli_util::get_secret_key;
@@ -107,7 +107,7 @@ impl P2pProxyArgs {
             .get_block_by_number(Default::default())
             .await
             .context("failed to fetch latest block")?
-            .ok_or_else(|| eyre::eyre!("latest block not found"))?;
+            .ok_or_eyre("latest block not found")?;
         let head = Head {
             number: latest_block.header.number(),
             hash: latest_block.header.hash(),

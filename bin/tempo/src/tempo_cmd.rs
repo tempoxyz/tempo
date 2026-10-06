@@ -27,7 +27,7 @@ use commonware_cryptography::{
 };
 use commonware_math::algebra::Random as _;
 use commonware_utils::ordered;
-use eyre::{OptionExt as _, Report, WrapErr as _, bail, eyre};
+use eyre::{OptionExt as _, Report, WrapErr as _, bail, ensure, eyre};
 use reth_chainspec::EthChainSpec;
 use reth_cli_runner::CliRunner;
 use reth_ethereum_cli::ExtendedCommand;
@@ -496,9 +496,10 @@ impl ValidatorTransactionArgs {
             let mut input = String::new();
             std::io::stdin().read_line(&mut input)?;
 
-            if !matches!(input.trim(), "y" | "Y" | "yes" | "YES") {
-                bail!("transaction cancelled by user");
-            }
+            ensure!(
+                matches!(input.trim(), "y" | "Y" | "yes" | "YES"),
+                "transaction cancelled by user"
+            );
         }
 
         let wallet = self
@@ -1420,9 +1421,10 @@ impl Info {
         let chain = match self.chain {
             Some(chain) => {
                 let spec_chain_id = chain.chain_id();
-                if spec_chain_id != chain_id {
-                    bail!("--chain spec has chain id {spec_chain_id} but RPC returned {chain_id}");
-                }
+                ensure!(
+                    spec_chain_id == chain_id,
+                    "--chain spec has chain id {spec_chain_id} but RPC returned {chain_id}"
+                );
                 chain
             }
             None => tempo_chainspec::spec::chainspec_from_chain_id(chain_id)

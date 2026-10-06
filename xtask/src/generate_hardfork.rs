@@ -1,6 +1,6 @@
 use std::{fs, path::Path};
 
-use eyre::{Context as _, ensure};
+use eyre::{Context as _, OptionExt, ensure};
 use serde::Serialize;
 
 const HARDFORK_SOURCE: &str = "crates/hardfork/src/lib.rs";
@@ -155,12 +155,12 @@ fn validate_name(hardfork: &str) -> eyre::Result<()> {
 fn parse_variants(source: &str) -> eyre::Result<Vec<String>> {
     let enum_start = source
         .find("TempoHardfork {")
-        .ok_or_else(|| eyre::eyre!("could not find TempoHardfork definition"))?
+        .ok_or_eyre("could not find TempoHardfork definition")?
         + "TempoHardfork {".len();
     let enum_end = source[enum_start..]
         .find("\n    }\n);")
         .map(|offset| enum_start + offset)
-        .ok_or_else(|| eyre::eyre!("could not find end of TempoHardfork definition"))?;
+        .ok_or_eyre("could not find end of TempoHardfork definition")?;
 
     let variants = source[enum_start..enum_end]
         .lines()
@@ -306,7 +306,7 @@ fn append_bench_hardfork(
             let end = values_start
                 + output[values_start..]
                     .find(']')
-                    .ok_or_else(|| eyre::eyre!("unterminated benchmark usage range"))?;
+                    .ok_or_eyre("unterminated benchmark usage range")?;
             output.replace_range(values_start..end, &usage_values);
             search_from = values_start + usage_values.len();
             replacements += 1;

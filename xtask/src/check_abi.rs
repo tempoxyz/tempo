@@ -6,7 +6,7 @@ use std::{
 };
 
 use alloy_json_abi::JsonAbi;
-use eyre::{Context, bail, eyre};
+use eyre::{Context, OptionExt, bail, ensure, eyre};
 use itertools::Itertools;
 use tempo_precompiles::test_util::abi_conformance::{AbiSurface, DiffEntries, load_foundry_abi};
 
@@ -75,13 +75,12 @@ impl CheckAbi {
         };
         let artifacts_dir = tempo_std_root.join("out");
 
-        if !artifacts_dir.exists() {
-            bail!(
-                "tempo-std artifacts not found at {}. Run `forge build` in {} first.",
-                artifacts_dir.display(),
-                tempo_std_root.display(),
-            );
-        }
+        ensure!(
+            artifacts_dir.exists(),
+            "tempo-std artifacts not found at {}. Run `forge build` in {} first.",
+            artifacts_dir.display(),
+            tempo_std_root.display(),
+        );
 
         let specs_by_name: HashMap<&str, &InterfaceSpec> = INTERFACE_SPECS
             .iter()
@@ -227,12 +226,11 @@ fn find_workspace_root() -> eyre::Result<PathBuf> {
         .output()
         .context("failed to run cargo metadata")?;
 
-    if !output.status.success() {
-        bail!(
-            "cargo metadata failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
+    ensure!(
+        output.status.success(),
+        "cargo metadata failed: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
 
     let metadata: serde_json::Value =
         serde_json::from_slice(&output.stdout).context("failed to parse cargo metadata")?;
@@ -240,7 +238,7 @@ fn find_workspace_root() -> eyre::Result<PathBuf> {
     let root = metadata
         .get("workspace_root")
         .and_then(|value| value.as_str())
-        .ok_or_else(|| eyre!("missing workspace_root in cargo metadata"))?;
+        .ok_or_eyre("missing workspace_root in cargo metadata")?;
 
     Ok(PathBuf::from(root))
 }

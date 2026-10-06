@@ -9,7 +9,7 @@ use alloy::{
     signers::local::PrivateKeySigner,
 };
 use clap::Parser;
-use eyre::{Context, Result, bail, eyre};
+use eyre::{Context, Result, ensure, eyre};
 use reth_cli_util::{parse_duration_from_secs_or_ms, parsers::format_duration_as_secs_or_ms};
 use tempo_alloy::{TempoNetwork, fillers::FeeTokenFiller};
 use tempo_contracts::precompiles::{IStablecoinDEX, ITIP20, ITIPFeeAMM};
@@ -230,9 +230,10 @@ async fn bootstrap(bare: bool, block_time: Duration) -> Result<()> {
         wait_for_receipt(pending, block_time).await?;
 
         let pool = fee_amm.getPool(token, PATH_USD_ADDRESS).call().await?;
-        if fee_pool_needs_repair(pool.reserveValidatorToken) {
-            bail!("fee liquidity for {token} remains below the minimum reserve");
-        }
+        ensure!(
+            !fee_pool_needs_repair(pool.reserveValidatorToken),
+            "fee liquidity for {token} remains below the minimum reserve"
+        );
     }
 
     if !missing_orders.is_empty() {
@@ -281,21 +282,21 @@ async fn wait_for_receipt(
         .get_receipt()
         .await
         .wrap_err_with(|| format!("failed waiting for bootstrap transaction {hash}"))?;
-    if !receipt.status() {
-        bail!("bootstrap transaction {hash} failed");
-    }
+    ensure!(receipt.status(), "bootstrap transaction {hash} failed");
     Ok(())
 }
 
 async fn health() -> Result<()> {
-    if !Path::new(READY_FILE).is_file() {
-        bail!("localnet bootstrap is not complete");
-    }
+    ensure!(
+        Path::new(READY_FILE).is_file(),
+        "localnet bootstrap is not complete"
+    );
     let provider =
         ProviderBuilder::new_with_network::<TempoNetwork>().connect_http(RPC_URL.parse()?);
-    if provider.get_chain_id().await? != 1337 {
-        bail!("unexpected localnet chain ID");
-    }
+    ensure!(
+        provider.get_chain_id().await? == 1337,
+        "unexpected localnet chain ID"
+    );
     Ok(())
 }
 
