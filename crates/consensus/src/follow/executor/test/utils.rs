@@ -52,7 +52,7 @@ pub(super) fn make_block_at_round(height: u64, parent_hash: B256, round: Round) 
         body: BlockBody::default(),
     };
     Block::try_from_execution_block(SealedBlock::seal_slow(inner))
-        .expect("test block should not contain BAL side data")
+        .expect("test block should be valid")
 }
 
 #[derive(Clone, Default)]

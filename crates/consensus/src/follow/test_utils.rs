@@ -71,7 +71,7 @@ fn make_block_with_parent(
     };
 
     Block::try_from_execution_block(SealedBlock::seal_slow(inner))
-        .expect("test block should not contain BAL side data")
+        .expect("test block should be valid")
 }
 
 pub(crate) fn make_finalization(

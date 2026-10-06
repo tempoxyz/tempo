@@ -90,7 +90,7 @@ mod tests {
                 },
                 body: BlockBody::default(),
             }))
-            .expect("test block should not contain BAL side data");
+            .expect("test block should be valid");
 
             let _ = mailbox.report(Update::Tip(
                 Round::new(Epoch::zero(), View::new(1)),

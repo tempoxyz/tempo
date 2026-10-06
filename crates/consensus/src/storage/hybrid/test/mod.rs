@@ -16,7 +16,7 @@ use commonware_runtime::{Runner as _, Spawner, deterministic};
 use commonware_utils::NZU64;
 
 use super::*;
-use crate::storage::PRUNABLE_ITEMS_PER_SECTION;
+use crate::{consensus::block::Error as BlockError, storage::PRUNABLE_ITEMS_PER_SECTION};
 use utils::{StubProvider, fresh_prunable_with_section_size, make_block, make_chain};
 
 /// Force every height into its own section so the prunable archive's
@@ -45,12 +45,14 @@ fn execution_fallback_rejects_bal() {
 
     let error = validate_execution_block(block.into())
         .expect_err("a stored BAL block is unsupported, not a miss");
-    assert!(matches!(
-        error
-            .as_other()
-            .and_then(|error| error.downcast_ref::<reth_consensus::ConsensusError>()),
-        Some(reth_consensus::ConsensusError::BlockAccessListHashUnexpected)
-    ));
+    let error = error
+        .as_other()
+        .and_then(|error| error.downcast_ref::<BlockError>())
+        .expect("stored block should fail consensus block validation");
+    assert_eq!(
+        error.to_string(),
+        reth_consensus::ConsensusError::BlockAccessListHashUnexpected.to_string()
+    );
 }
 
 #[test]

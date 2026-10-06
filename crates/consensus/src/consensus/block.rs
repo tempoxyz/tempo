@@ -44,14 +44,14 @@ pub(crate) struct Block {
 
 impl Block {
     /// Creates a block after validating its body and rejecting BAL header commitments.
-    pub(crate) fn try_from_execution_block<T>(execution_block: T) -> Result<Self, ConsensusError>
+    pub(crate) fn try_from_execution_block<T>(execution_block: T) -> Result<Self, Error>
     where
         T: Into<SealedOrRecoveredBlock<tempo_primitives::Block>>,
     {
         let execution_block = execution_block.into();
         validate_body_against_header(execution_block.body(), execution_block.header())?;
         if execution_block.block_access_list_hash().is_some() {
-            return Err(ConsensusError::BlockAccessListHashUnexpected);
+            return Err(ConsensusError::BlockAccessListHashUnexpected.into());
         }
 
         Ok(Self::from_execution_block_unchecked(execution_block))
@@ -61,7 +61,7 @@ impl Block {
     pub(crate) fn try_from_execution_block_with_encoded_cache<T>(
         execution_block: T,
         execution_block_encoded: EncodedBlock,
-    ) -> Result<Self, ConsensusError>
+    ) -> Result<Self, Error>
     where
         T: Into<SealedOrRecoveredBlock<tempo_primitives::Block>>,
     {
@@ -181,12 +181,7 @@ impl Read for Block {
 
         let execution_block_encoded = EncodedBlock::new(bytes.into());
         Self::try_from_execution_block_with_encoded_cache(inner, execution_block_encoded).map_err(
-            |error| {
-                commonware_codec::Error::Wrapped(
-                    "validating execution block body against header",
-                    error.into(),
-                )
-            },
+            |error| commonware_codec::Error::Wrapped("validating execution block", error.into()),
         )
     }
 }
@@ -261,6 +256,11 @@ impl commonware_consensus::CertifiableBlock for Block {
 pub(crate) fn round_from_context(context: TempoConsensusContext) -> Round {
     Round::new(Epoch::new(context.epoch), View::new(context.view))
 }
+
+/// Error returned when validating an execution-layer consensus block.
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub(crate) struct Error(#[from] ConsensusError);
 
 #[cfg(test)]
 mod tests {
@@ -337,7 +337,7 @@ mod tests {
             },
         });
         let expected = Block::try_from_execution_block(execution_block.clone())
-            .expect("block has no BAL side data");
+            .expect("test block should be valid");
         let mut block_bytes = Vec::new();
         alloy_rlp::Encodable::encode(&execution_block, &mut block_bytes);
 
@@ -378,10 +378,7 @@ mod tests {
         assert!(
             matches!(
                 err,
-                commonware_codec::Error::Wrapped(
-                    "validating execution block body against header",
-                    _
-                )
+                commonware_codec::Error::Wrapped("validating execution block", _)
             ),
             "unexpected error: {err:?}"
         );
@@ -405,7 +402,10 @@ mod tests {
 
         let err = Block::try_from_execution_block(execution_block).unwrap_err();
 
-        assert!(matches!(err, ConsensusError::BodyWithdrawalsRootDiff(_)));
+        assert!(matches!(
+            err,
+            Error(ConsensusError::BodyWithdrawalsRootDiff(_))
+        ));
     }
 
     #[test]
@@ -419,16 +419,12 @@ mod tests {
 
         let err = Block::read_cfg(&mut encoded.as_ref(), &()).unwrap_err();
 
-        let commonware_codec::Error::Wrapped(
-            "validating execution block body against header",
-            error,
-        ) = err
-        else {
+        let commonware_codec::Error::Wrapped("validating execution block", error) = err else {
             panic!("unexpected error: {err:?}");
         };
         assert!(matches!(
-            error.downcast_ref::<ConsensusError>(),
-            Some(ConsensusError::BlockAccessListHashUnexpected)
+            error.downcast_ref::<Error>(),
+            Some(Error(ConsensusError::BlockAccessListHashUnexpected))
         ));
     }
 
@@ -437,7 +433,10 @@ mod tests {
         let execution_block = execution_block_with_block_access_list_hash(B256::ZERO);
         let err = Block::try_from_execution_block(execution_block).unwrap_err();
 
-        assert!(matches!(err, ConsensusError::BlockAccessListHashUnexpected));
+        assert!(matches!(
+            err,
+            Error(ConsensusError::BlockAccessListHashUnexpected)
+        ));
     }
 
     #[test]
