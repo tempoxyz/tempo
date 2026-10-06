@@ -5,8 +5,8 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use reth_primitives_traits::Account;
 use reth_trie::{
     HashedPostState, HashedStorage, StateRoot,
-    hashed_cursor::{noop::NoopHashedCursorFactory, post_state::HashedPostStateCursorFactory},
-    trie_cursor::{in_memory::InMemoryTrieCursorFactory, noop::NoopTrieCursorFactory},
+    hashed_cursor::{HashedPostStateCursorFactory, noop::NoopHashedCursorFactory},
+    trie_cursor::{InMemoryTrieCursorFactory, noop::NoopTrieCursorFactory},
 };
 use std::hint::black_box;
 use tempo_precompiles::{
