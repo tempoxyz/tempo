@@ -25,7 +25,6 @@ tempo-precompiles.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }
 tempo-revm.workspace = true
 
-commonware-cryptography.workspace = true
 commonware-codec.workspace = true
 
 reth-consensus.workspace = true
@@ -46,6 +45,9 @@ alloy-rlp.workspace = true
 alloy-sol-types.workspace = true
 alloy-rpc-types-eth = { workspace = true, optional = true }
 
+alloy-genesis = { workspace = true, features = ["std"], optional = true }
+eyre = { workspace = true, optional = true }
+
 derive_more.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -57,7 +59,7 @@ alloy-primitives = { workspace = true, features = ["asm-keccak", "keccak-cache-g
 alloy-signer-local = { workspace = true, features = ["mnemonic"] }
 alloy-signer.workspace = true
 alloy-sol-types.workspace = true
-commonware-consensus.workspace = true
+commonware-cryptography.workspace = true
 commonware-math.workspace = true
 commonware-utils.workspace = true
 criterion.workspace = true
@@ -76,8 +78,10 @@ tikv-jemallocator = "0.6.1"
 
 [features]
 default = ["rpc", "engine"]
-rpc = ["dep:alloy-rpc-types-eth", "dep:reth-rpc-eth-api", "tempo-revm/rpc", "tempo-primitives/serde", "tempo-primitives/reth-codec"]
+rpc = ["dep:alloy-rpc-types-eth", "dep:reth-rpc-eth-api", "tempo-primitives/serde", "tempo-primitives/reth-codec"]
 engine = ["dep:tempo-payload-types", "dep:rayon"]
+# Shared genesis state initialization helpers for genesis generators.
+genesis = ["dep:alloy-genesis", "dep:eyre"]
 
 [[bench]]
 name = "tip20_execution"

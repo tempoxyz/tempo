@@ -147,7 +147,7 @@ build_tempo() {
 
   echo "Building $label tempo ($ref) with features: $build_features"
   cd "$src_dir"
-  RUSTFLAGS="-C target-cpu=native" \
+  RUSTFLAGS="-C target-cpu=native -C force-frame-pointers=yes" \
     cargo build --profile profiling --bin tempo --no-default-features --features "$build_features"
   cd -
 }
@@ -258,6 +258,7 @@ run_single() {
     --chain "$CHAIN_NAME"
     --datadir "$DATADIR"
     --log.file.directory "$output_dir/tempo-logs"
+    --log.file.format json
     --http
     --http.port 8545
     --http.api all

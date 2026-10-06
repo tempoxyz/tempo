@@ -20,9 +20,10 @@ tempo-alloy = { workspace = true, features = ["reth"] }
 tempo-evm = { workspace = true, features = ["rpc", "engine"] }
 tempo-transaction-pool.workspace = true
 tempo-chainspec = { workspace = true, features = ["reth"] }
+tempo-contracts.workspace = true
 tempo-payload-builder.workspace = true
 tempo-payload-types.workspace = true
-tempo-precompiles.workspace = true
+tempo-precompiles = { workspace = true, features = ["serde"] }
 tempo-primitives = { workspace = true, features = ["default"] }
 tempo-revm.workspace = true
 
@@ -38,6 +39,7 @@ reth-metrics.workspace = true
 reth-node-metrics.workspace = true
 reth-tracing.workspace = true
 reth-provider.workspace = true
+reth-revm.workspace = true
 reth-transaction-pool.workspace = true
 reth-evm.workspace = true
 reth-network-api.workspace = true
@@ -49,10 +51,12 @@ reth-node-api.workspace = true
 reth-rpc-eth-types.workspace = true
 reth-node-ethereum.workspace = true
 reth-storage-api.workspace = true
+reth-storage-overlay.workspace = true
 
 alloy-serde.workspace = true
 alloy-evm.workspace = true
 alloy-eips.workspace = true
+alloy-rlp.workspace = true
 alloy-rpc-types-admin.workspace = true
 alloy-rpc-types-eth.workspace = true
 alloy.workspace = true
@@ -71,6 +75,8 @@ jiff = { workspace = true, features = ["std"] }
 jsonrpsee.workspace = true
 reqwest.workspace = true
 metrics.workspace = true
+parking_lot.workspace = true
+schnellru.workspace = true
 sysinfo.workspace = true
 url.workspace = true
 serde.workspace = true
@@ -86,10 +92,8 @@ tempo-precompiles.workspace = true
 alloy-rpc-types-engine.workspace = true
 reth-ethereum = { workspace = true, features = ["node", "test-utils", "pool"] }
 reth-e2e-test-utils.workspace = true
-reth-node-core.workspace = true
 reth-node-metrics.workspace = true
 serde_json.workspace = true
-tempo-contracts.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
 alloy = { workspace = true, features = [
 	"full",

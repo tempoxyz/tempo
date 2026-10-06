@@ -13,9 +13,8 @@ use url::Url;
 
 pub(crate) const DEFAULT_DOWNLOAD_URL: &str = "https://snapshots.tempoxyz.dev/4217";
 const SNAPSHOT_API_URL: &str = "https://snapshots.tempoxyz.dev/api/snapshots";
-const MAINNET_TESTNET_EPOCH_LENGTH_BLOCKS: u64 = 21_600;
-const MINIMAL_PEER_SYNC_FINALIZED_BLOCKS: u64 = 3 * MAINNET_TESTNET_EPOCH_LENGTH_BLOCKS;
-const MINIMAL_PEER_SYNC_RETENTION_BLOCKS: u64 = MINIMAL_PEER_SYNC_FINALIZED_BLOCKS + 64;
+const MINIMAL_PEER_SYNC_RETENTION_BLOCKS: u64 =
+    tempo_consensus::MINIMAL_PEER_SYNC_FINALIZED_BLOCKS + 64;
 
 /// CLI arguments for telemetry configuration.
 #[derive(Debug, Clone, clap::Args)]
@@ -198,6 +197,9 @@ fn init_txpool_defaults() {
 
 fn init_engine_defaults() {
     DefaultEngineValues::default()
+        // Selected by sweeping persistence thresholds with the public-mix txgen preset over 600s.
+        .with_persistence_threshold(25)
+        .with_num_state_masking_blocks(10)
         // In Commonware consensus, it might happen that a head is notarized (causing it to become a canonical tip for reth),
         // and immediately nullified (allowing to build a payload on top of its parent). In that case reth might be asked to
         // build a payload on top an ancestor of canonical tip, which is not possible without this flag.

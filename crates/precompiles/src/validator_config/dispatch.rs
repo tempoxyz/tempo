@@ -1,9 +1,7 @@
 //! ABI dispatch for the [`ValidatorConfig`] (V1) precompile.
 
 use super::ValidatorConfig;
-use crate::{
-    Precompile, charge_input_cost, dispatch, error::TempoPrecompileError, mutate_void, view,
-};
+use crate::{Precompile, charge_input_cost, dispatch, error::TempoPrecompileError, mutate, view};
 use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::IValidatorConfig;
@@ -30,16 +28,16 @@ impl Precompile for ValidatorConfig {
                     validatorCount(call) => view(call, |_| self.validator_count()),
 
                     // Mutate functions
-                    addValidator(call) => mutate_void(call, msg_sender, |s, c| self.add_validator(s, c)),
-                    updateValidator(call) => mutate_void(call, msg_sender, |s, c| self.update_validator(s, c)),
-                    changeValidatorStatus(call) => mutate_void(call, msg_sender, |s, c| self.change_validator_status(s, c)),
+                    addValidator(call) => mutate(call, msg_sender, |sender, c| self.add_validator(sender, c)),
+                    updateValidator(call) => mutate(call, msg_sender, |sender, c| self.update_validator(sender, c)),
+                    changeValidatorStatus(call) => mutate(call, msg_sender, |sender, c| self.change_validator_status(sender, c)),
                     #[schedule(since = T1)]
-                    changeValidatorStatusByIndex(call) => mutate_void(call, msg_sender, |s, c| {
-                        self.change_validator_status_by_index(s, c)
+                    changeValidatorStatusByIndex(call) => mutate(call, msg_sender, |sender, c| {
+                        self.change_validator_status_by_index(sender, c)
                     }),
-                    changeOwner(call) => mutate_void(call, msg_sender, |s, c| self.change_owner(s, c)),
-                    setNextFullDkgCeremony(call) => mutate_void(call, msg_sender, |s, c| {
-                        self.set_next_full_dkg_ceremony(s, c)
+                    changeOwner(call) => mutate(call, msg_sender, |sender, c| self.change_owner(sender, c)),
+                    setNextFullDkgCeremony(call) => mutate(call, msg_sender, |sender, c| {
+                        self.set_next_full_dkg_ceremony(sender, c)
                     })
                 }
             }
@@ -139,7 +137,7 @@ mod tests {
             validator_config.initialize(owner)?;
 
             // Add validator via dispatch
-            let public_key = FixedBytes::<32>::from([0x42; 32]);
+            let public_key = FixedBytes::<32>::repeat_byte(0x42);
             let add_call = IValidatorConfig::addValidatorCall {
                 newValidatorAddress: validator_addr,
                 publicKey: public_key,
@@ -180,7 +178,7 @@ mod tests {
             validator_config.initialize(owner)?;
 
             // Try to add validator as non-owner
-            let public_key = FixedBytes::<32>::from([0x42; 32]);
+            let public_key = FixedBytes::<32>::repeat_byte(0x42);
             let add_call = IValidatorConfig::addValidatorCall {
                 newValidatorAddress: validator_addr,
                 publicKey: public_key,
@@ -223,7 +221,7 @@ mod tests {
 
         let owner = Address::random();
         let validator = Address::random();
-        let public_key = FixedBytes::<32>::from([0x42; 32]);
+        let public_key = FixedBytes::<32>::repeat_byte(0x42);
 
         // T0: changeValidatorStatusByIndex returns UnknownFunctionSelector
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);

@@ -1,0 +1,60 @@
+[
+  {
+    "type": "constructor",
+    "stateMutability": "nonpayable",
+    "inputs": [
+      {
+        "name": "arg0",
+        "type": "address"
+      },
+      {
+        "name": "arg1",
+        "type": "address"
+      },
+      {
+        "name": "arg2",
+        "type": "address"
+      },
+      {
+        "name": "arg3",
+        "type": "uint96"
+      },
+      {
+        "name": "arg4",
+        "type": "address"
+      },
+      {
+        "name": "arg5",
+        "type": "uint16"
+      },
+      {
+        "name": "arg6",
+        "type": "uint16"
+      },
+      {
+        "name": "arg7",
+        "type": "uint24"
+      },
+      {
+        "name": "arg8",
+        "type": "uint16"
+      },
+      {
+        "name": "arg9",
+        "type": "uint16"
+      }
+    ]
+  },
+  {
+    "type": "function",
+    "name": "setAuthority",
+    "stateMutability": "nonpayable",
+    "inputs": [
+      {
+        "name": "arg0",
+        "type": "address"
+      }
+    ],
+    "outputs": []
+  }
+]

@@ -34,6 +34,7 @@ tempo-chainspec = { workspace = true, features = ["default"] }
 tempo-evm.workspace = true
 tempo-faucet.workspace = true
 tempo-telemetry-util.workspace = true
+tempo-state-bloat.workspace = true
 
 alloy = { workspace = true, default-features = false, features = [
 	"network",
@@ -87,7 +88,6 @@ rustls.workspace = true
 reth-codecs.workspace = true
 reth-db.workspace = true
 reth-db-api.workspace = true
-reth-etl.workspace = true
 reth-ethereum = { workspace = true, features = ["full", "cli", "network"] }
 reth-ethereum-cli.workspace = true
 reth-metrics.workspace = true
@@ -112,7 +112,7 @@ tokio.workspace = true
 tokio-util = { workspace = true, features = ["io"] }
 tracing.workspace = true
 tempfile.workspace = true
-opentelemetry-otlp = { version = "0.31", default-features = false, optional = true }
+opentelemetry-otlp = { version = "0.32", default-features = false, optional = true }
 pyroscope = { workspace = true, optional = true }
 pyroscope_pprofrs = { workspace = true, optional = true }
 tracy-client = { workspace = true, optional = true }
@@ -223,3 +223,5 @@ min-trace-logs = [
 	"tempo-node/min-trace-logs",
 ]
 trie-debug = ["tempo-node/trie-debug"]
+# Devnet-only: accept zone verifier PCRs via `--zone-verifier.custom-pcrs`.
+custom-pcrs = ["tempo-precompiles/custom-pcrs"]

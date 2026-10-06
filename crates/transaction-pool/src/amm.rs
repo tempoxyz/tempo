@@ -69,22 +69,25 @@ impl AmmLiquidityCache {
     {
         let mut missing_in_cache = Vec::new();
         let hardfork;
+        let generation;
 
         // Hot path: decide each `(user, validator)` pair entirely from the primitive cache.
         {
             let inner = self.inner.read();
             hardfork = inner.hardfork;
+            generation = inner.generation;
+
+            // Validators always accept fees in their own token, and this is the common case, so
+            // answer it before doing any swap math.
+            if inner.unique_tokens.contains(&user_token) {
+                return Ok(true);
+            }
 
             let calc_swap = |input| compute_amount_out(input).map_err(ProviderError::other);
             let out1 = calc_swap(fee)?;
             let out2 = hardfork.is_t5().then(|| calc_swap(out1)).transpose()?;
 
             for &validator_token in &inner.unique_tokens {
-                // Validators always accept fees in their own token.
-                if validator_token == user_token {
-                    return Ok(true);
-                }
-
                 let direct = inner
                     .pool_cache
                     .get(&(user_token, validator_token))
@@ -124,8 +127,7 @@ impl AmmLiquidityCache {
             return Ok(false);
         }
 
-        // Slow path: ask the planner. Unconditionally warm all its reported `data.pools`.
-        // This might race other fetches but we're OK with it.
+        // Slow path: ask the planner and warm the cache with the pools it reports.
         state_provider
             .with_read_only_storage_ctx(
                 hardfork,
@@ -137,14 +139,19 @@ impl AmmLiquidityCache {
                             manager.plan_fee_route(user_token, validator_token, fee)?;
                         if !pools.is_empty() || intermediate.is_some() {
                             let mut inner = self.inner.write();
-                            for &(pair, reserve) in &pools {
-                                let id = manager.pool_id(pair.0, pair.1);
-                                let slot = manager.pools[id].base_slot();
-                                inner.pool_cache.insert(pair, U256::from(reserve));
-                                inner.slot_to_pool.insert(slot, pair);
-                            }
-                            if let Some(hop) = intermediate {
-                                inner.quote_token_cache.insert(user_token, hop);
+                            // The state read here can be older than the cache: skip caching if
+                            // newer state was applied since the lookup started, and never
+                            // overwrite cached entries, which `on_new_state` keeps current.
+                            if inner.generation == generation {
+                                for &(pair, reserve) in &pools {
+                                    let id = manager.pool_id(pair.0, pair.1);
+                                    let slot = manager.pools[id].base_slot();
+                                    inner.pool_cache.entry(pair).or_insert(U256::from(reserve));
+                                    inner.slot_to_pool.insert(slot, pair);
+                                }
+                                if let Some(hop) = intermediate {
+                                    inner.quote_token_cache.entry(user_token).or_insert(hop);
+                                }
                             }
                         }
                         // If there is enough liquidity, short circuit and return `true`
@@ -162,7 +169,12 @@ impl AmmLiquidityCache {
     /// Clears all cached state. Used on reorg to invalidate stale entries
     /// from orphaned blocks.
     pub fn clear(&self) {
-        *self.inner.write() = AmmLiquidityCacheInner::default();
+        let mut inner = self.inner.write();
+        let generation = inner.generation + 1;
+        *inner = AmmLiquidityCacheInner {
+            generation,
+            ..Default::default()
+        };
     }
 
     /// Clears all cached state and repopulates from the current canonical chain.
@@ -189,6 +201,7 @@ impl AmmLiquidityCache {
     /// tokens whose `quoteToken` storage slot was written.
     pub fn on_new_state(&self, execution_outcome: &ExecutionOutcome<TempoReceipt>) {
         let mut inner = self.inner.write();
+        inner.generation += 1;
 
         // Process FeeManager slot changes: update pool reserves and validator preferences.
         if let Some(storage) = execution_outcome
@@ -342,6 +355,10 @@ struct AmmLiquidityCacheInner {
 
     /// Reverse index for mapping validator preference slot to validator address.
     slot_to_validator: U256Map<Address>,
+
+    /// Bumped whenever canonical state is applied or the cache is cleared, so a slow-path lookup
+    /// can tell that the state it read may be older than the cache.
+    generation: u64,
 }
 
 impl AmmLiquidityCache {
@@ -419,7 +436,7 @@ mod tests {
     fn test_has_enough_liquidity_user_token_matches_validator_token() {
         let cache = AmmLiquidityCache {
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
-                unique_tokens: vec![address!("1111111111111111111111111111111111111111")],
+                unique_tokens: vec![Address::repeat_byte(0x11)],
                 ..Default::default()
             })),
         };
@@ -427,7 +444,7 @@ mod tests {
         let provider = create_mock_provider();
         let state = provider.latest().unwrap();
 
-        let user_token = address!("1111111111111111111111111111111111111111");
+        let user_token = Address::repeat_byte(0x11);
         let result = cache.has_enough_liquidity(user_token, U256::from(100), &state);
 
         assert!(result.is_ok());
@@ -438,9 +455,39 @@ mod tests {
     }
 
     #[test]
+    fn test_has_enough_liquidity_overflow_only_rejected_when_swap_needed() {
+        let user_token = Address::repeat_byte(0x11);
+        let other_token = Address::repeat_byte(0x22);
+        let provider = create_mock_provider();
+        let state = provider.latest().unwrap();
+
+        for hardfork in [TempoHardfork::T4, TempoHardfork::T5] {
+            for validator_token in [user_token, other_token] {
+                let cache = AmmLiquidityCache {
+                    inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
+                        hardfork,
+                        unique_tokens: vec![validator_token],
+                        ..Default::default()
+                    })),
+                };
+
+                let result = cache.has_enough_liquidity(user_token, U256::MAX, &state);
+                if validator_token == user_token {
+                    assert!(result.unwrap(), "same-token fees need no swap arithmetic");
+                } else {
+                    assert!(
+                        result.is_err(),
+                        "swap arithmetic must still reject overflow"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn test_has_enough_liquidity_cached_pool_sufficient() {
-        let user_token = address!("2222222222222222222222222222222222222222");
-        let validator_token = address!("3333333333333333333333333333333333333333");
+        let user_token = Address::repeat_byte(0x22);
+        let validator_token = Address::repeat_byte(0x33);
 
         let cache = AmmLiquidityCache {
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
@@ -467,8 +514,8 @@ mod tests {
 
     #[test]
     fn test_has_enough_liquidity_cached_pool_insufficient() {
-        let user_token = address!("2222222222222222222222222222222222222222");
-        let validator_token = address!("3333333333333333333333333333333333333333");
+        let user_token = Address::repeat_byte(0x22);
+        let validator_token = Address::repeat_byte(0x33);
 
         let cache = AmmLiquidityCache {
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
@@ -502,7 +549,7 @@ mod tests {
         let provider = create_mock_provider();
         let state = provider.latest().unwrap();
 
-        let user_token = address!("1111111111111111111111111111111111111111");
+        let user_token = Address::repeat_byte(0x11);
         let result = cache.has_enough_liquidity(user_token, U256::from(1000), &state);
         assert!(result.is_ok());
         assert!(
@@ -513,9 +560,9 @@ mod tests {
 
     #[test]
     fn test_has_enough_liquidity_two_hop_cached() {
-        let user = address!("1111111111111111111111111111111111111111");
-        let hop = address!("2222222222222222222222222222222222222222");
-        let validator = address!("3333333333333333333333333333333333333333");
+        let user = Address::repeat_byte(0x11);
+        let hop = Address::repeat_byte(0x22);
+        let validator = Address::repeat_byte(0x33);
 
         let cache = AmmLiquidityCache {
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
@@ -552,8 +599,8 @@ mod tests {
 
     #[test]
     fn test_has_enough_liquidity_cache_miss_insufficient() {
-        let user_token = address!("2222222222222222222222222222222222222222");
-        let validator_token = address!("3333333333333333333333333333333333333333");
+        let user_token = Address::repeat_byte(0x22);
+        let validator_token = Address::repeat_byte(0x33);
 
         let cache = AmmLiquidityCache {
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
@@ -585,6 +632,43 @@ mod tests {
         assert!(
             !inner.slot_to_pool.is_empty(),
             "slot_to_pool reverse index should be populated for the check pool",
+        );
+    }
+
+    #[test]
+    fn test_has_enough_liquidity_slow_path_keeps_cached_reserves() {
+        // TIP-20 addresses, so the T5 planner can look up the user token's quote token.
+        let user_token = address!("20C0000000000000000000000000000000000001");
+        let validator_token = address!("20C0000000000000000000000000000000000002");
+
+        // The direct reserve is cached but too low and the quote token isn't cached, so the
+        // lookup falls through to the slow path, where the provider returns zero reserves.
+        let cache = AmmLiquidityCache {
+            inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
+                hardfork: TempoHardfork::T5,
+                unique_tokens: vec![validator_token],
+                pool_cache: {
+                    let mut m = HashMap::default();
+                    m.insert((user_token, validator_token), U256::ONE);
+                    m
+                },
+                ..Default::default()
+            })),
+        };
+
+        let provider = create_mock_provider();
+        let state = provider.latest().unwrap();
+
+        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &state);
+        assert!(!result.unwrap());
+        assert_eq!(
+            cache
+                .inner
+                .read()
+                .pool_cache
+                .get(&(user_token, validator_token)),
+            Some(&U256::ONE),
+            "slow path must not overwrite a cached reserve",
         );
     }
 
@@ -677,13 +761,13 @@ mod tests {
         let mut inner = AmmLiquidityCacheInner::default();
 
         for i in 0..LAST_SEEN_WINDOW {
-            let token = Address::new([i as u8; 20]);
+            let token = Address::repeat_byte(i as u8);
             inner.last_seen_tokens.push_back(token);
         }
 
         assert_eq!(inner.last_seen_tokens.len(), LAST_SEEN_WINDOW);
 
-        let new_token = Address::new([0xFF; 20]);
+        let new_token = Address::repeat_byte(0xFF);
         inner.last_seen_tokens.push_back(new_token);
         if inner.last_seen_tokens.len() > LAST_SEEN_WINDOW {
             inner.last_seen_tokens.pop_front();
@@ -691,7 +775,10 @@ mod tests {
 
         assert_eq!(inner.last_seen_tokens.len(), LAST_SEEN_WINDOW);
         assert_eq!(inner.last_seen_tokens.back(), Some(&new_token));
-        assert_eq!(inner.last_seen_tokens.front(), Some(&Address::new([1; 20])));
+        assert_eq!(
+            inner.last_seen_tokens.front(),
+            Some(&Address::repeat_byte(1))
+        );
     }
 
     #[test]
@@ -699,13 +786,13 @@ mod tests {
         let mut inner = AmmLiquidityCacheInner::default();
 
         for i in 0..LAST_SEEN_WINDOW {
-            let validator = Address::new([i as u8; 20]);
+            let validator = Address::repeat_byte(i as u8);
             inner.last_seen_validators.push_back(validator);
         }
 
         assert_eq!(inner.last_seen_validators.len(), LAST_SEEN_WINDOW);
 
-        let new_validator = Address::new([0xFF; 20]);
+        let new_validator = Address::repeat_byte(0xFF);
         inner.last_seen_validators.push_back(new_validator);
         if inner.last_seen_validators.len() > LAST_SEEN_WINDOW {
             inner.last_seen_validators.pop_front();
@@ -715,7 +802,7 @@ mod tests {
         assert_eq!(inner.last_seen_validators.back(), Some(&new_validator));
         assert_eq!(
             inner.last_seen_validators.front(),
-            Some(&Address::new([1; 20]))
+            Some(&Address::repeat_byte(1))
         );
 
         inner.unique_validators = inner
@@ -731,8 +818,8 @@ mod tests {
     fn test_unique_tokens_deduplication() {
         let mut inner = AmmLiquidityCacheInner::default();
 
-        let token_a = address!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
-        let token_b = address!("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
+        let token_a = Address::repeat_byte(0xaa);
+        let token_b = Address::repeat_byte(0xbb);
 
         inner.last_seen_tokens.push_back(token_a);
         inner.last_seen_tokens.push_back(token_b);
@@ -754,8 +841,8 @@ mod tests {
     fn test_cache_insert_and_lookup() {
         let mut inner = AmmLiquidityCacheInner::default();
 
-        let user_token = address!("1111111111111111111111111111111111111111");
-        let validator_token = address!("2222222222222222222222222222222222222222");
+        let user_token = Address::repeat_byte(0x11);
+        let validator_token = Address::repeat_byte(0x22);
         let reserve = U256::from(5000);
 
         inner
@@ -772,8 +859,8 @@ mod tests {
     fn test_slot_to_pool_mapping() {
         let mut inner = AmmLiquidityCacheInner::default();
 
-        let user_token = address!("1111111111111111111111111111111111111111");
-        let validator_token = address!("2222222222222222222222222222222222222222");
+        let user_token = Address::repeat_byte(0x11);
+        let validator_token = Address::repeat_byte(0x22);
         let slot = U256::from(12345);
 
         inner
@@ -790,8 +877,8 @@ mod tests {
     fn test_validator_preferences_mapping() {
         let mut inner = AmmLiquidityCacheInner::default();
 
-        let validator = address!("3333333333333333333333333333333333333333");
-        let fee_token = address!("4444444444444444444444444444444444444444");
+        let validator = Address::repeat_byte(0x33);
+        let fee_token = Address::repeat_byte(0x44);
 
         inner.validator_preferences.insert(validator, fee_token);
 
@@ -805,7 +892,7 @@ mod tests {
     fn test_slot_to_validator_mapping() {
         let mut inner = AmmLiquidityCacheInner::default();
 
-        let validator = address!("3333333333333333333333333333333333333333");
+        let validator = Address::repeat_byte(0x33);
         let slot = U256::from(67890);
 
         inner.slot_to_validator.insert(slot, validator);
@@ -833,7 +920,7 @@ mod tests {
                 },
                 slot_to_pool: {
                     let mut m = U256Map::default();
-                    m.insert(U256::from(1), (user_token, validator_token));
+                    m.insert(U256::ONE, (user_token, validator_token));
                     m
                 },
                 last_seen_tokens: VecDeque::from(vec![validator_token]),
@@ -995,7 +1082,7 @@ mod tests {
 
     #[test]
     fn test_is_active_validator() {
-        let active = address!("1111111111111111111111111111111111111111");
+        let active = Address::repeat_byte(0x11);
         let inactive = address!("DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF");
 
         let cases = [
@@ -1017,8 +1104,8 @@ mod tests {
 
     #[test]
     fn test_track_tokens() {
-        let token_a = address!("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
-        let token_b = address!("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
+        let token_a = Address::repeat_byte(0xaa);
+        let token_b = Address::repeat_byte(0xbb);
 
         // Empty slice is a no-op
         let cache = AmmLiquidityCache::with_unique_tokens(vec![]);

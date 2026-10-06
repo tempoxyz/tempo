@@ -13,7 +13,10 @@ use alloy_evm::{
 use alloy_primitives::{Address, Bytes, TxKind};
 use reth_revm::{
     InspectSystemCallEvm, MainContext,
-    context::{CfgEnv, result::ExecutionResult},
+    context::{
+        CfgEnv,
+        result::{ExecutionResult, HaltReason},
+    },
 };
 use std::{
     cell::RefCell,
@@ -23,8 +26,8 @@ use std::{
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{storage::StorageAction, storage_credits::NonCreditableSlots};
 use tempo_revm::{
-    ProtocolFeeManager, TempoHaltReason, TempoInvalidTransaction, TempoTxEnv, ValidationContext,
-    evm::TempoContext, handler::TempoEvmHandler,
+    ProtocolFeeManager, TempoInvalidTransaction, TempoTxEnv, ValidationContext, evm::TempoContext,
+    handler::TempoEvmHandler,
 };
 
 use crate::{TempoBlockEnv, TempoPoolValidationEvm, TempoPoolValidationResult};
@@ -39,7 +42,7 @@ impl EvmFactory for TempoEvmFactory {
     type Context<DB: Database> = TempoContext<DB>;
     type Tx = TempoTxEnv;
     type Error<DBError: DBErrorMarker> = EVMError<DBError, TempoInvalidTransaction>;
-    type HaltReason = TempoHaltReason;
+    type HaltReason = HaltReason;
     type Spec = TempoHardfork;
     type BlockEnv = TempoBlockEnv;
     type Precompiles = PrecompilesMap;
@@ -203,6 +206,9 @@ where
         self.inner.skip_valid_after_check = true;
         self.inner.skip_liquidity_check = true;
         self.ctx_mut().cfg.disable_nonce_check = true;
+        // Pool admission enforces the T7 fee floor. The dynamic block base fee
+        // is checked during block selection/execution, once queued transactions can pay it.
+        self.ctx_mut().cfg.disable_base_fee = true;
     }
 
     fn validate_pool_transaction(
@@ -215,6 +221,7 @@ where
         // key authorisation) while keeping loaded accounts and storage warm for the
         // rest of the batch.
         self.ctx_mut().journal_mut().discard_tx();
+        self.inner.clear();
         (result, tx)
     }
 }
@@ -251,7 +258,7 @@ where
     type DB = DB;
     type Tx = TempoTxEnv;
     type Error = EVMError<DB::Error, TempoInvalidTransaction>;
-    type HaltReason = TempoHaltReason;
+    type HaltReason = HaltReason;
     type Spec = TempoHardfork;
     type BlockEnv = TempoBlockEnv;
     type Precompiles = PrecompilesMap;
@@ -354,7 +361,7 @@ mod tests {
         DatabaseCommit, DatabaseRef,
         bytecode::opcode,
         context::{BlockEnv, CfgEnv, JournalTr, TxEnv, result::HaltReason},
-        database::{EmptyDB, in_memory_db::CacheDB},
+        database::{EmptyDB, InMemoryDB},
         state::{AccountInfo, Bytecode, EvmState},
     };
     use std::{assert_matches, collections::BTreeMap};
@@ -488,7 +495,7 @@ mod tests {
         Bytecode::new_legacy(code.into())
     }
 
-    fn initialize_zone_factory(db: &mut CacheDB<EmptyDB>, owner: Address) {
+    fn initialize_zone_factory(db: &mut InMemoryDB, owner: Address) {
         let code = Bytecode::new_legacy([0xef].into());
         db.insert_account_info(
             ZONE_FACTORY_ADDRESS,
@@ -498,7 +505,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let factory_config = U256::from(1) | (U256::from_be_slice(owner.as_slice()) << u32::BITS);
+        let factory_config = U256::ONE | (U256::from_be_slice(owner.as_slice()) << u32::BITS);
         db.insert_account_storage(ZONE_FACTORY_ADDRESS, U256::ZERO, factory_config)
             .unwrap();
     }
@@ -602,7 +609,7 @@ mod tests {
 
     #[test]
     fn test_transact_raw_system_tx_failed() {
-        let mut cache_db = CacheDB::new(EmptyDB::default());
+        let mut cache_db = InMemoryDB::default();
         // Deploy a contract that always reverts: PUSH1 0x00 PUSH1 0x00 REVERT (0x60006000fd)
         let revert_code = Bytes::from_static(&[0x60, 0x00, 0x60, 0x00, 0xfd]);
         let contract_addr = Address::repeat_byte(0xaa);
@@ -665,7 +672,7 @@ mod tests {
         let logic_runtime = Bytecode::new_legacy(Bytes::from_static(&[
             0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3,
         ]));
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         db.insert_account_info(
             ZONE_PORTAL_IMPL_ADDRESS,
             AccountInfo {
@@ -741,7 +748,7 @@ mod tests {
         let admin = Address::repeat_byte(0x22);
         let sequencer = Address::repeat_byte(0x33);
         let portal_runtime = Bytecode::new_legacy(tempo_contracts::zones::ZONE_PORTAL_RUNTIME);
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         db.insert_account_info(
             ZONE_PORTAL_IMPL_ADDRESS,
             AccountInfo {
@@ -1005,7 +1012,7 @@ mod tests {
         let admin = Address::repeat_byte(0x22);
         let sequencer = Address::repeat_byte(0x33);
         let gateway = Address::repeat_byte(0x44);
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         for (address, runtime) in [
             (ZONE_PORTAL_IMPL_ADDRESS, ZONE_PORTAL_RUNTIME),
             (ZONE_MESSENGER_ADDRESS, ZONE_MESSENGER_RUNTIME),
@@ -1105,7 +1112,7 @@ mod tests {
         let sequencer = Address::repeat_byte(0x33);
         let mut env = evm_env_with_spec(TempoHardfork::T10);
         env.block_env.basefee = 0;
-        let mut db = CacheDB::new(EmptyDB::default());
+        let mut db = InMemoryDB::default();
         initialize_zone_factory(&mut db, owner);
         let mut evm = TempoEvm::new(db, env);
 
@@ -1147,7 +1154,7 @@ mod tests {
         assert_matches!(
             result.result,
             ExecutionResult::Halt {
-                reason: TempoHaltReason::Ethereum(HaltReason::OutOfGas(_)),
+                reason: HaltReason::OutOfGas(_),
                 ..
             }
         );
@@ -1405,7 +1412,7 @@ mod tests {
             let amm_liquidity = U256::from(amm_liquidity_reserve);
 
             let mut evm = TempoEvm::new(
-                CacheDB::new(EmptyDB::default()),
+                InMemoryDB::default(),
                 EvmEnv {
                     block_env: TempoBlockEnv {
                         inner: BlockEnv {
@@ -1555,7 +1562,7 @@ mod tests {
                 ]),
             };
 
-            let run_transfer = |evm: &mut TempoEvm<CacheDB<EmptyDB>>,
+            let run_transfer = |evm: &mut TempoEvm<InMemoryDB>,
                                 caller: Address,
                                 to: Address,
                                 amount: U256,

@@ -25,7 +25,7 @@ fn test_mixed_slot_allocation() {
 
     StorageCtx::enter(&mut storage, || {
         // Set all fields
-        mixed.field_a.write(U256::from(1)).unwrap();
+        mixed.field_a.write(U256::ONE).unwrap();
         mixed.field_b.write(U256::from(2)).unwrap();
         mixed.field_c.write(U256::from(3)).unwrap();
         mixed.field_d.write(U256::from(4)).unwrap();
@@ -34,7 +34,7 @@ fn test_mixed_slot_allocation() {
         mixed.field_e[addr_at].write(U256::from(5)).unwrap();
 
         // Verify values
-        assert_eq!(mixed.field_a.read().unwrap(), U256::from(1));
+        assert_eq!(mixed.field_a.read().unwrap(), U256::ONE);
         assert_eq!(mixed.field_b.read().unwrap(), U256::from(2));
         assert_eq!(mixed.field_c.read().unwrap(), U256::from(3));
         assert_eq!(mixed.field_d.read().unwrap(), U256::from(4));
@@ -138,7 +138,7 @@ fn test_base_slots() {
         assert_eq!(layout.field_g.slot(), U256::from(51));
 
         // Verify slots module
-        assert_eq!(slots::FIELD_A, U256::from(0));
+        assert_eq!(slots::FIELD_A, U256::ZERO);
         assert_eq!(slots::FIELD_B, U256::from(100));
         assert_eq!(slots::FIELD_C, U256::from(101));
         assert_eq!(slots::FIELD_D, U256::from(200));
@@ -189,7 +189,7 @@ fn test_base_slot_with_regular_slot() {
         assert_eq!(layout.field_e.slot(), U256::from(102));
 
         // Verify slots module
-        assert_eq!(slots::FIELD_A, U256::from(0));
+        assert_eq!(slots::FIELD_A, U256::ZERO);
         assert_eq!(slots::FIELD_B, U256::from(100));
         assert_eq!(slots::FIELD_C, U256::from(101));
         assert_eq!(slots::FIELD_D, U256::from(50));

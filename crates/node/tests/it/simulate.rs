@@ -1,8 +1,9 @@
 use alloy::{
-    primitives::{Address, U256},
+    hex,
+    primitives::{Address, U256, address},
     providers::{Provider, ProviderBuilder},
-    signers::local::MnemonicBuilder,
 };
+use reth_e2e_test_utils::wallet::test_signer;
 use serde_json::json;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_node::rpc::simulate::TempoSimulateV1Response;
@@ -16,7 +17,7 @@ async fn test_tempo_simulate_v1() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
@@ -42,7 +43,7 @@ async fn test_tempo_simulate_v1() -> eyre::Result<()> {
             "calls": [{
                 "from": format!("{caller:#x}"),
                 "to": format!("{token_addr:#x}"),
-                "input": format!("0x{}", alloy::hex::encode(&calldata)),
+                "input": hex::encode_prefixed(&calldata),
             }]
         }],
         "traceTransfers": true,
@@ -63,13 +64,20 @@ async fn test_tempo_simulate_v1() -> eyre::Result<()> {
     assert_eq!(meta.symbol, "TEST");
     assert_eq!(meta.currency, "USD");
 
-    // Construct a call that does not target TIP20
+    // Construct calls that target a non-TIP20 address and an undeployed TIP20 address
+    let undeployed_tip20 = address!("0x20C000000000000000000000ffffffffffffffff");
     let payload = json!({
         "blockStateCalls": [{
-            "calls": [{
-                "from": format!("{:#x}", Address::ZERO),
-                "to": format!("{:#x}", Address::random()),
-            }]
+            "calls": [
+                {
+                    "from": format!("{:#x}", Address::ZERO),
+                    "to": format!("{:#x}", Address::random()),
+                },
+                {
+                    "from": format!("{:#x}", Address::ZERO),
+                    "to": format!("{undeployed_tip20:#x}"),
+                },
+            ]
         }],
     });
 
@@ -79,8 +87,57 @@ async fn test_tempo_simulate_v1() -> eyre::Result<()> {
 
     assert!(
         response.token_metadata.is_empty(),
-        "expected empty token metadata for non-TIP-20 simulation"
+        "expected empty token metadata for non-TIP-20 and undeployed TIP-20 targets"
     );
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_simulate_block_gas_override_exceeds_general_limit() -> eyre::Result<()> {
+    let mut genesis: serde_json::Value =
+        serde_json::from_str(include_str!("../assets/test-genesis.json"))?;
+    genesis["config"]["generalGasLimit"] = json!(100_000);
+    let setup = TestNodeBuilder::new()
+        .with_genesis(serde_json::to_string(&genesis)?)
+        .with_gas_limit("0xf4240") // 1,000,000
+        .build_http_only()
+        .await?;
+    let provider = ProviderBuilder::new().connect_http(setup.http_url.clone());
+    let target = Address::repeat_byte(0x42);
+    // An infinite loop consumes the call's full gas allowance.
+    let payload = json!({
+        "blockStateCalls": [{
+            "blockOverrides": { "gasLimit": "0x1e8480" },
+            "stateOverrides": { format!("{target:#x}"): { "code": "0x5b600056" } },
+            "calls": [{
+                "from": format!("{:#x}", Address::ZERO),
+                "to": format!("{target:#x}"),
+                "gas": "0x16e360"
+            }]
+        }],
+        "validation": false
+    });
+    for method in ["eth_simulateV1", "tempo_simulateV1"] {
+        for trace_transfers in [false, true] {
+            let mut payload = payload.clone();
+            payload["traceTransfers"] = json!(trace_transfers);
+            let response: serde_json::Value =
+                provider.raw_request(method.into(), (payload,)).await?;
+            let blocks = if method == "tempo_simulateV1" {
+                &response["blocks"]
+            } else {
+                &response
+            };
+            let gas_used = U256::from_str_radix(
+                blocks[0]["gasUsed"]
+                    .as_str()
+                    .expect("simulated block gas used")
+                    .trim_start_matches("0x"),
+                16,
+            )?;
+            assert!(gas_used > U256::from(1_000_000), "{method}: {response}");
+        }
+    }
     Ok(())
 }
