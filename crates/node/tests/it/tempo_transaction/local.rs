@@ -731,6 +731,130 @@ async fn test_create_receipts_with_non_protocol_nonces() -> eyre::Result<()> {
         );
     }
 
+    let protocol_nonce = localnet.provider.get_transaction_count(sender).await?;
+    let mut deployments = Vec::new();
+    let nested_init_code = Bytes::from_static(&[
+        0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0xf0, 0x50, 0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20,
+        0x60, 0x00, 0xf3,
+    ]);
+    for lane_nonce in 2..4 {
+        let mut calls = vec![Call {
+            to: TxKind::Create,
+            value: U256::ZERO,
+            input: nested_init_code.clone(),
+        }];
+        if lane_nonce == 3 {
+            calls.push(Call {
+                to: Address::random().into(),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            });
+        }
+        let mut tx = create_basic_aa_tx(localnet.chain_id, lane_nonce, calls, 2_000_000);
+        tx.nonce_key = U256::from(7);
+        let signature = sign_aa_tx_secp256k1(&tx, &signer)?;
+        let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+        deployments.push((
+            *envelope.tx_hash(),
+            sender.create(protocol_nonce + lane_nonce - 2),
+        ));
+        localnet
+            .setup
+            .node
+            .rpc
+            .inject_tx(envelope.encoded_2718().into())
+            .await?;
+    }
+    localnet.setup.node.advance_block().await?;
+    let mut deployment_block = None;
+    for (tx_hash, deployed_address) in deployments {
+        let receipt: serde_json::Value = localnet
+            .provider
+            .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
+            .await?;
+        assert_eq!(receipt["status"].as_str(), Some("0x1"));
+        let expected_address = serde_json::to_value(deployed_address)?;
+        assert_eq!(receipt.get("contractAddress"), Some(&expected_address));
+        if let Some(block_hash) = &deployment_block {
+            assert_eq!(&receipt["blockHash"], block_hash);
+        } else {
+            deployment_block = Some(receipt["blockHash"].clone());
+        }
+        assert_eq!(
+            localnet
+                .provider
+                .get_code_at(deployed_address)
+                .await?
+                .as_ref(),
+            &expected_code
+        );
+        let block_receipts: Vec<serde_json::Value> = localnet
+            .provider
+            .raw_request("eth_getBlockReceipts".into(), [&receipt["blockHash"]])
+            .await?;
+        let block_receipt = block_receipts
+            .iter()
+            .find(|block_receipt| block_receipt["transactionHash"] == receipt["transactionHash"])
+            .expect("deployment receipt must be present in block receipts");
+        assert_eq!(
+            block_receipt.get("contractAddress"),
+            Some(&expected_address)
+        );
+    }
+
+    let protocol_nonce = localnet.provider.get_transaction_count(sender).await?;
+    let mut tx = create_basic_aa_tx(
+        localnet.chain_id,
+        43,
+        vec![
+            Call {
+                to: TxKind::Create,
+                value: U256::ZERO,
+                input: init_code,
+            },
+            create_transfer_call(DEFAULT_FEE_TOKEN, Address::random(), U256::MAX),
+        ],
+        2_000_000,
+    );
+    tx.nonce_key = TEMPO_EXPIRING_NONCE_KEY;
+    tx.valid_before = Some(nonzero_timestamp(
+        localnet.current_block_timestamp().await? + 20,
+    ));
+    let signature = sign_aa_tx_secp256k1(&tx, &signer)?;
+    let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+    let tx_hash = *envelope.tx_hash();
+    localnet
+        .submit_tx_unchecked(envelope.encoded_2718(), tx_hash)
+        .await?;
+    let receipt: serde_json::Value = localnet
+        .provider
+        .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
+        .await?;
+    assert_eq!(receipt["status"].as_str(), Some("0x0"));
+    assert_eq!(
+        receipt.get("contractAddress"),
+        Some(&serde_json::Value::Null)
+    );
+    assert!(
+        localnet
+            .provider
+            .get_code_at(sender.create(protocol_nonce))
+            .await?
+            .is_empty()
+    );
+    let block_receipts: Vec<serde_json::Value> = localnet
+        .provider
+        .raw_request("eth_getBlockReceipts".into(), [&receipt["blockHash"]])
+        .await?;
+    let block_receipt = block_receipts
+        .iter()
+        .find(|block_receipt| block_receipt["transactionHash"] == receipt["transactionHash"])
+        .expect("failed deployment receipt must be present in block receipts");
+    assert_eq!(
+        block_receipt.get("contractAddress"),
+        Some(&serde_json::Value::Null)
+    );
+
     Ok(())
 }
 

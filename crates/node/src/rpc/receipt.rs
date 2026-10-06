@@ -11,7 +11,7 @@ use reth_revm::{
 };
 use reth_rpc_eth_api::{
     EthApiTypes, RpcConvert,
-    helpers::{EthBlocks, LoadReceipt, Trace},
+    helpers::{EthBlocks, LoadReceipt, Trace, block::BlockReceiptsResult},
     transaction::ConvertReceiptInput,
 };
 use reth_rpc_eth_types::EthApiError;
@@ -67,7 +67,7 @@ where
     async fn block_receipts(
         &self,
         block_id: BlockId,
-    ) -> Result<Option<Vec<TempoTransactionReceipt>>, Self::Error> {
+    ) -> BlockReceiptsResult<Self::NetworkTypes, Self::Error> {
         let Some((block, receipts)) = self.load_block_and_receipts(block_id).await? else {
             return Ok(None);
         };
