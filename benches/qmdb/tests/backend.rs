@@ -7,7 +7,7 @@ use alloy::{
     providers::Provider as _,
     sol_types::SolCall as _,
 };
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, U256, address};
 use alloy_rpc_types_eth::TransactionRequest;
 use reth_e2e_test_utils::{E2ETestSetupExt, wallet::Wallet};
 use reth_ethereum::chainspec::EthChainSpec as _;
@@ -16,7 +16,10 @@ use reth_storage_api::{AccountReader as _, ReceiptProvider as _, StateProviderFa
 use tempo_chainspec::TempoChainSpec;
 use tempo_contracts::precompiles::ITIP20;
 use tempo_node::{TempoNode, node::TempoNodeArgs, qmdb::StateRootBackend};
-use tempo_precompiles::{DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS};
+use tempo_precompiles::PATH_USD_ADDRESS;
+
+// AlphaUSD is funded for the development wallets in test-genesis.json.
+const BENCHMARK_TOKEN: Address = address!("0x20c0000000000000000000000000000000000001");
 
 fn with_t1_fees(tx: TransactionRequest) -> TransactionRequest {
     let fee = tempo_chainspec::spec::TEMPO_T1_BASE_FEE as u128;
@@ -150,7 +153,7 @@ async fn bench_mpt_vs_qmdb() -> eyre::Result<()> {
             let mut node = node(backend).await?;
             let chain_id = node.inner.chain_spec().chain_id();
             let mut sender = Wallet::default().with_chain_id(chain_id).account(0);
-            for token in [PATH_USD_ADDRESS, DEFAULT_FEE_TOKEN] {
+            for token in [PATH_USD_ADDRESS, BENCHMARK_TOKEN] {
                 let data = ITIP20::balanceOfCall {
                     account: sender.address(),
                 }
@@ -166,7 +169,7 @@ async fn bench_mpt_vs_qmdb() -> eyre::Result<()> {
                         "balance": U256::from_be_slice(&balance).to_string(),
                     })
                 );
-                if token == DEFAULT_FEE_TOKEN {
+                if token == BENCHMARK_TOKEN {
                     eyre::ensure!(
                         U256::from_be_slice(&balance) > U256::from((blocks + 10) * transactions),
                         "benchmark sender must have funded transfer tokens"
@@ -188,7 +191,7 @@ async fn bench_mpt_vs_qmdb() -> eyre::Result<()> {
                     .abi_encode();
                     let transaction = with_t1_fees(
                         TransactionRequest::default()
-                            .to(DEFAULT_FEE_TOKEN)
+                            .to(BENCHMARK_TOKEN)
                             .input(data.into())
                             .gas_limit(300_000),
                     );
@@ -238,7 +241,7 @@ async fn bench_mpt_vs_qmdb() -> eyre::Result<()> {
                 serde_json::json!({
                     "backend": format!("{backend:?}"), "blocks": blocks, "transactions_per_block": transactions,
                     "round": round + 1, "debug_assertions": cfg!(debug_assertions),
-                    "workload": "TIP20 transfers to fresh recipients", "token": format!("{DEFAULT_FEE_TOKEN}"),
+                    "workload": "TIP20 transfers to fresh recipients", "token": format!("{BENCHMARK_TOKEN}"),
                     "warmup_blocks": 10, "mean_ms": total / blocks as f64,
                     "p50_ms": samples[samples.len() / 2],
                     "p95_ms": samples[(samples.len() * 95 / 100).min(samples.len() - 1)],
