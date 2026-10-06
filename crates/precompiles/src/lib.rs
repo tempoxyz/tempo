@@ -15,6 +15,7 @@ pub(crate) mod ip_validation;
 pub mod account_keychain;
 pub mod address_registry;
 pub mod current_committee;
+pub mod key_publisher;
 pub mod nonce;
 pub mod receive_policy_guard;
 pub mod signature_verifier;
@@ -257,6 +258,11 @@ pub fn extend_tempo_precompiles(
             Some(ZoneFactory::create_precompile(&env))
         } else if *address == ZONE_VERIFIER_ADDRESS && env.cfg.spec.is_t13() {
             Some(ZoneVerifier::create_precompile(&env))
+        } else if cfg!(feature = "experimental-oidc")
+            && env.cfg.chain_id == 1337
+            && *address == key_publisher::KEY_PUBLISHER_ADDRESS
+        {
+            Some(key_publisher::KeyPublisher::create_precompile(&env))
         } else {
             None
         }
@@ -430,6 +436,12 @@ impl StorageCredits {
     /// Creates the EVM precompile for this type.
     pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
         tempo_precompile!("StorageCredits", env: env, |input| { Self::new() })
+    }
+}
+
+impl key_publisher::KeyPublisher {
+    pub fn create_precompile(env: &PrecompileEnv) -> DynPrecompile {
+        tempo_precompile!("KeyPublisher", env: env, |input| { Self::new() })
     }
 }
 
