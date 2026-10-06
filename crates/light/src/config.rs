@@ -48,7 +48,7 @@ pub struct Limits {
     pub max_transition_search: u64,
     pub account_cache: NonZeroU32,
     pub slot_cache: NonZeroU32,
-    pub proofs: crate::proof::ProofLimits,
+    pub proofs: tempo_state_proof::ProofLimits,
 }
 
 #[cfg(feature = "client")]

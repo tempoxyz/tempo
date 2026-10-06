@@ -41,6 +41,7 @@ members = [
   "crates/transaction-pool",
   "crates/revm",
   "crates/state-bloat",
+  "crates/state-proof",
   "xtask",
 ]
 
@@ -141,6 +142,7 @@ tempo-e2e = { path = "crates/e2e" }
 tempo-faucet = { path = "crates/faucet", default-features = false }
 tempo-finality = { path = "crates/finality" }
 tempo-light = { path = "crates/light" }
+tempo-state-proof = { path = "crates/state-proof", default-features = false }
 alloy-trie = { version = "0.9.8", default-features = false }
 tempo-evm = { path = "crates/evm", default-features = false }
 tempo-eyre = { path = "crates/eyre", default-features = false }

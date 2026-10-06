@@ -13906,13 +13906,13 @@ dependencies = [
  "rand 0.10.2",
  "rand_core 0.10.1",
  "reqwest 0.13.3",
- "schnellru",
  "serde",
  "serde_json",
  "tempfile",
  "tempo-dkg-onchain-artifacts",
  "tempo-finality",
  "tempo-primitives",
+ "tempo-state-proof",
  "thiserror 2.0.18",
  "tokio",
  "url",
@@ -14251,6 +14251,20 @@ dependencies = [
  "tempo-primitives",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "tempo-state-proof"
+version = "1.14.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-rlp",
+ "alloy-rpc-types-eth",
+ "alloy-trie",
+ "schnellru",
+ "serde",
+ "tempo-state-proof",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

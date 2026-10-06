@@ -1,9 +1,9 @@
 //! Native TIP-20 targets and local decoding. No EVM calls or RPC scalar fallbacks.
 
-use crate::proof::{ProofTargets, StorageReadKey};
 use alloy_primitives::Address;
 use serde::{Deserialize, Serialize};
 use tempo_primitives::{is_tip20_prefix, tip20};
+use tempo_state_proof::{ProofTargets, StorageReadKey};
 #[cfg(any(feature = "client", test))]
 use {
     alloy_consensus::constants::KECCAK_EMPTY,

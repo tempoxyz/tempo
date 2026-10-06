@@ -6,6 +6,7 @@ only. All processes/listeners are local and are stopped on exit. Output contains
 logs and measurements, not production keys. This is not the complete security/load acceptance suite.
 """
 import argparse
+import concurrent.futures
 import json
 import os
 import pathlib
@@ -21,6 +22,7 @@ KEY = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 OWNER = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
 HOLDER = "0x000000000000000000000000000000000000cafe"
 TOKEN = "0x20c0000000000000000000000000000000000001"
+PATH_USD = "0x20c0000000000000000000000000000000000000"
 VALIDATORS = "0xcccccccc00000000000000000000000000000001"
 EPOCH_LENGTH = 100
 
@@ -67,6 +69,10 @@ class Proxy(ThreadingHTTPServer):
         self.upstream = upstream
         self.mode = "honest"
         self.changed = 0
+        self.account_only = 0
+        self.proof_started = threading.Event()
+        self.proof_release = threading.Event()
+        self.slow_hash = None
         self.counts = {}
         self.bytes = {}
         self.gate = threading.BoundedSemaphore(8)
@@ -100,14 +106,28 @@ class Handler(BaseHTTPRequestHandler):
                 return
             request = json.loads(self.rfile.read(size))
             method = request["method"]
-            if method in ("eth_getProof", "eth_getMultiProof"):
+            is_proof = method in ("eth_getProof", "eth_getMultiProof")
+            grouped = []
+            if is_proof:
                 selector = request["params"][-1]
                 assert isinstance(selector, dict) and "blockHash" in selector and selector.get("requireCanonical") is True
+                grouped = request["params"][0] if method == "eth_getMultiProof" else [(request["params"][0], request["params"][1])]
+            has_slots = any(slots for _, slots in grouped)
+            account_only = bool(grouped) and not has_slots
+            if account_only:
+                self.server.account_only += 1
             body = json.dumps(request).encode()
             with urllib.request.urlopen(urllib.request.Request(self.server.upstream, body, {"Content-Type": "application/json"}), timeout=10) as upstream:
                 response = json.load(upstream)
             self.server.counts[method] = self.server.counts.get(method, 0) + 1
-            if self.server.mode == "scalar" and method in ("eth_getProof", "eth_getMultiProof") and "result" in response:
+            if (self.server.mode == "slow" and has_slots
+                    and "result" in response
+                    and self.server.slow_hash is None):
+                # Hold one genuine, already generated, hash-pinned proof while new blocks arrive.
+                self.server.slow_hash = selector["blockHash"]
+                self.server.proof_started.set()
+                self.server.proof_release.wait(timeout=10)
+            if self.server.mode == "scalar" and is_proof and "result" in response:
                 proofs = response["result"] if isinstance(response["result"], list) else [response["result"]]
                 for proof in proofs:
                     if proof["storageProof"]:
@@ -158,6 +178,7 @@ def main():
     processes = []
     logs = []
     proxy = None
+    secondary_proxy = None
     try:
         def spawn(name, options):
             log = (work / f"{name}.log").open("w")
@@ -175,8 +196,10 @@ def main():
             wait_for(lambda url=url: int(rpc(url, "eth_blockNumber"), 16) > 2)
         proxy = Proxy(("127.0.0.1", args.base_port + 50), urls[0])
         threading.Thread(target=proxy.serve_forever, daemon=True).start()
+        secondary_proxy = Proxy(("127.0.0.1", args.base_port + 52), urls[1])
+        threading.Thread(target=secondary_proxy.serve_forever, daemon=True).start()
         api = f"http://127.0.0.1:{args.base_port + 51}"
-        light_options = ["--chain", str(genesis_dir / "genesis.json"), "--light", "--light.datadir", str(work / "light"), "--light.listen", f"127.0.0.1:{args.base_port + 51}", "--light.upstream", f"http://127.0.0.1:{args.base_port + 50}", "--light.upstream", urls[1], "--light.poll-interval-ms", "100"]
+        light_options = ["--chain", str(genesis_dir / "genesis.json"), "--light", "--light.datadir", str(work / "light"), "--light.listen", f"127.0.0.1:{args.base_port + 51}", "--light.upstream", f"http://127.0.0.1:{args.base_port + 50}", "--light.upstream", f"http://127.0.0.1:{args.base_port + 52}", "--light.poll-interval-ms", "100", "--light.request-timeout-ms", "10000"]
         started = time.monotonic()
         light = spawn("light", light_options)
         wait_for(lambda: rpc(api, "light_status")["durable"])
@@ -191,19 +214,50 @@ def main():
             assert [int(value, 16) for value in result["values"]] == expected
             return result
 
-        def send(address, signature, *arguments):
+        def send(address, signature, *arguments, check=True):
             receipt = json.loads(cast("send", address, signature, *arguments, "--private-key", KEY, "--rpc-url", urls[0], "--gas-limit", "1000000", "--json"))
             assert int(receipt["status"], 16) == 1, receipt
             height = int(receipt["blockNumber"], 16)
             wait_for(lambda: (rpc(api, "light_status")["head"] or {}).get("height", -1) >= height)
-            return compare()
+            return compare() if check else height
 
         operations = {"initial": compare()}
+        # Even when AlphaUSD's storage root is unchanged, a fresh global root requires full
+        # proofs for missing reads, without a speculative account-only round trip.
+        proofs_before = proxy.counts.get("eth_getMultiProof", 0)
+        operations["unchangedTokenRoot"] = send(PATH_USD, "transfer(address,uint256)", HOLDER, 19)
+        assert proxy.counts.get("eth_getMultiProof", 0) > proofs_before
+        assert proxy.account_only == secondary_proxy.account_only == 0
         send(TOKEN, "grantRole(bytes32,address)", cast("keccak", "ISSUER_ROLE"), OWNER)
         operations["mint"] = send(TOKEN, "mint(address,uint256)", HOLDER, 1000)
         operations["transfer"] = send(TOKEN, "transfer(address,uint256)", HOLDER, 123)
         operations["approve"] = send(TOKEN, "approve(address,uint256)", HOLDER, 456)
         operations["burn"] = send(TOKEN, "burn(uint256)", 17)
+
+        # A held real proof must finish at its original block, even after a real mint changes the
+        # token root and head publication advances. The subsequent read must see the new value.
+        slow_request = dict(kind="balance", token=TOKEN, holder="0x000000000000000000000000000000000000a010")
+        proxy.mode = "slow"
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as reader:
+                pending = reader.submit(rpc, api, "light_readVerified", [[slow_request]])
+                assert proxy.proof_started.wait(timeout=10), "no real proof reached the hold point"
+                try:
+                    mint_height = send(TOKEN, "mint(address,uint256)", slow_request["holder"], 999, check=False)
+                    assert rpc(api, "light_status")["head"]["hash"] != proxy.slow_hash
+                finally:
+                    proxy.proof_release.set()
+                retained = pending.result(timeout=15)
+            assert retained["block"]["hash"] == proxy.slow_hash
+            assert int(retained["values"][0], 16) == 0
+        finally:
+            proxy.proof_release.set()
+            proxy.mode = "honest"
+        updated = rpc(api, "light_readVerified", [[slow_request]])
+        assert int(updated["values"][0], 16) == 999
+        assert updated["block"]["height"] >= mint_height
+        operations["retainedReadDuringMint"] = retained
+        operations["subsequentReadAfterMint"] = updated
 
         # Stop before a genuine full-DKG key change, then authenticate catch-up from disk.
         head = rpc(api, "light_status")["head"]
@@ -231,9 +285,17 @@ def main():
         assert rpc(api, "light_status")["integrityFailures"] > failures
         # Losing the honest provider must produce an explicit error, never a forged value or zero.
         stop(processes[1])
+        # Force another global-root change, leaving AlphaUSD untouched. Corrupt the full proof
+        # for a mixed previously-read/new-slot batch: neither a new account mapping nor a partial
+        # result may be published.
+        send(PATH_USD, "transfer(address,uint256)", HOLDER, 1, check=False)
+        entries_before = rpc(api, "light_status")["accountCacheEntries"]
         zero["holder"] = "0x000000000000000000000000000000000000a002"
-        failure = rpc(api, "light_readVerified", [[zero]], allow_error=True)
+        failure = rpc(api, "light_readVerified", [[requests[0], zero]], allow_error=True)
         assert "error" in failure and failure["error"]["code"] == -32010, failure
+        assert "result" not in failure
+        assert proxy.account_only == secondary_proxy.account_only == 0
+        assert rpc(api, "light_status")["accountCacheEntries"] == entries_before
         proxy.mode = "honest"
         missing = dict(kind="balance", token="0x20c0999999999999999999999999999999999999", holder=HOLDER)
         assert "error" in rpc(api, "light_readVerified", [[missing]], allow_error=True)
@@ -244,7 +306,7 @@ def main():
             start = time.monotonic()
             rpc(api, "light_readVerified", [requests])
             latencies.append((time.monotonic() - start) * 1000)
-        report = dict(platform=platform.platform(), transport="loopback HTTP", validators=4, targetBlockMillis=200, epochLength=EPOCH_LENGTH, startupSeconds=startup_seconds, restartAcrossRotationSeconds=catchup_seconds, readBatchSize=len(requests), readSamples=100, readLatencyMillis=dict(p50=statistics.median(latencies), p95=sorted(latencies)[94], max=max(latencies)), proxyRequestCounts=proxy.counts, proxyResponseBytes=proxy.bytes, operations=operations, finalStatus=rpc(api, "light_status"))
+        report = dict(platform=platform.platform(), transport="loopback HTTP", validators=4, targetBlockMillis=200, epochLength=EPOCH_LENGTH, startupSeconds=startup_seconds, restartAcrossRotationSeconds=catchup_seconds, readBatchSize=len(requests), readSamples=100, readLatencyMillis=dict(p50=statistics.median(latencies), p95=sorted(latencies)[94], max=max(latencies)), proxyRequestCounts=proxy.counts, proxyResponseBytes=proxy.bytes, accountOnlyRequests=proxy.account_only, operations=operations, finalStatus=rpc(api, "light_status"))
         (work / "report.json").write_text(json.dumps(report, indent=2) + "\n")
         # Public conformance capture pinned to the exact returned block (not a production anchor).
         selected = compare()
@@ -262,13 +324,14 @@ def main():
         stop(light)
         assert {path.name for path in (work / "light").iterdir()} == {"lock", "checkpoint.json"}, "light mode created unexpected execution/archive files"
         print(json.dumps({key: value for key, value in report.items() if key != "operations"}, indent=2))
-        print(f"PASS: real operations, exact-block reference, key rotation, restart, malicious-proof failover; evidence and logs in {work}")
+        print(f"PASS: real operations, direct proofs without account-only probes, retained slow snapshot, atomic failed batch, exact-block reference, key rotation, restart, malicious-proof failover; evidence and logs in {work}")
     finally:
         for process in reversed(processes):
             stop(process)
-        if proxy:
-            proxy.shutdown()
-            proxy.server_close()
+        for server in (proxy, secondary_proxy):
+            if server:
+                server.shutdown()
+                server.server_close()
         for log in logs:
             log.close()
 

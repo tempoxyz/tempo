@@ -7,8 +7,8 @@ transaction pool, signing, validator participation, state sync, or execution dat
 
 **Status:** the native library, independent daemon startup, HTTP transport, durable checkpoints,
 and minimal local API are implemented. Production acceptance is still incomplete: subscription
-transport, expanded fault/crash/pruning/load tests, cross-head account-only cache scheduling, and
-representative client/RPC-server performance measurements remain outstanding.
+transport, expanded fault/crash/pruning/load tests, and representative client/RPC-server performance
+measurements remain outstanding.
 
 ## Start the daemon
 
@@ -105,9 +105,11 @@ default. Disable default features for provider-independent verification only.
   caches are pruned. Its clone owns an independent scheme cache for staged publication.
 - `Snapshot` retains one immutable complete header/certificate. New heads never restart an
   in-flight read. Proofs are requested with `{blockHash, requireCanonical: true}`, never `latest`.
-- `proof::verify_multi_proof` uses Alloy's MPT verifier with Zones PR #1426 completeness checks.
-  Every requested account and slot must occur exactly once; omitted, duplicate, unexpected,
-  substituted, truncated and forged evidence fails. Verified batches have private construction.
+- `tempo-state-proof` shares exact-target MPT verification and the synchronous authenticated cache
+  with Zones. Callers use `tempo_state_proof::verify_multi_proof` directly. Every requested account and slot must
+  occur exactly once; omitted, duplicate, unexpected, substituted, truncated and forged evidence fails.
+  Present empty accounts are distinguished from absence, and empty-trie markers cannot hide suffix
+  nodes. Verified evidence cannot be publicly forged or deserialized.
 - `token::ReadRequest` derives native V1 slots locally: supply 8, balances 9, allowances 10, with
   padded address keys and nested allowance mappings. Generated precompile layout constants are
   compile-time checked against the shared helpers in `tempo-primitives::tip20`. Prefix plus
@@ -116,6 +118,21 @@ default. Disable default features for provider-independent verification only.
 - `VerifiedCache` holds `(state_root, account)` mappings and raw slots keyed by
   `(account, slot, authenticated storage_root)`. Batch snapshot binding and conflicts are checked
   before mutation. Token validity/decoding succeeds before client cache publication.
+
+### Library API migration
+
+The shared extraction is a **source-breaking migration** of the low-level cache/error APIs, not a
+compatibility facade. `Client::read`, `status`, `Snapshot::verify`, and the verified-evidence accessors
+keep their interfaces; canonical keys, limits and evidence are re-exported from `tempo-state-proof`.
+
+Low-level callers must construct `VerifiedCache` with `CacheLimits` (`CacheLimits::new` for single-batch, non-retaining use), handle its
+fallible, eagerly reserving constructor, and replace `commit(snapshot, batch)` with
+`publish(&[(snapshot.header().state_root(), &batch)], &RetentionDelta::default())`.
+`get(state_root, key)` now returns authenticated account metadata together with the raw word;
+`peek_account(AccountKey)` is non-touching metadata access, and `stats()` replaces `entry_counts()`.
+Proof/cache errors use the shared typed variants rather than the former light-specific variants.
+Keep root selection bound to an authenticated snapshot and complete application acceptance before
+publication; passing an upstream's claimed root to these root-based APIs does not authenticate it.
 
 Certificates authenticate the canonical complete `TempoHeader`, not an RPC-supplied root summary.
 Verification checks canonical hash, signed payload, response epoch/view/digest, height-to-epoch
@@ -152,19 +169,36 @@ harness configures 128 blocks; choose a production window from cadence/deadline/
 
 Identical in-flight reads share one owned job. Distinct reads have bounded, non-queuing admission;
 blocking proof workers retain admission permits after asynchronous deadline expiry until they
-finish. Typed batches group accounts and deduplicate slots. The daemon also caps inbound API
-handlers/connections at 64, request bodies at 64 KiB and responses at 256 KiB.
+finish. Typed batches derive ordered storage keys once before admission and deduplicate missing proof
+targets after cache lookup. The daemon also caps inbound API handlers/connections at 64, request bodies
+at 64 KiB and responses at 256 KiB.
 
 Defaults cap upstream response bytes at 8 MiB per provider proof attempt, read batches at 128,
 proof accounts at 64, slots at 1024, aggregate nodes at 65536, nodes at 4096 bytes and aggregate
-proof bytes at 8 MiB. Head certificates are at most 16 KiB and extra data at most 1 MiB. These are
-provisional safety ceilings, **not measured production budgets**.
+proof bytes at 8 MiB per verification stage. A read has one proof stage for all missing slots,
+sharing one operation deadline and admission permit across failover; each configured provider
+can be attempted once. Head certificates are at most 16 KiB and extra data at most 1 MiB.
+These are provisional safety ceilings, **not measured production budgets**.
 
-The cache supports account-only proofs for unchanged-root reuse across heads. The current client
-scheduler refetches missing slots at new roots instead of scheduling that optimization. Cache
-loss/eviction never invalidates retained snapshots or already verified operation-owned batches.
-Caches are disposable, independently bounded by entries, and are not persisted as an archive.
-Subscription-driven discovery, adaptive provider health and broader batching are follow-up work.
+Reads capture authenticated cache hits at the selected root and request full account/storage proofs
+for all missing slots directly. Active payment tokens commonly change their whole storage root,
+even when the requested holder's balance is untouched; speculative account-only proofs would then
+add a sequential RPC round. There is no strategy option or account-only probe.
+Cached words remain reusable whenever their account/storage root is already authenticated at the
+selected global root, including authentication established by an earlier read.
+
+New evidence lives in one operation-owned verified batch; successful native decoding and all cache
+conflict checks precede atomic publication. All-warm reads copy authenticated raw values under the
+lock and decode outside it without building or republishing batch maps. A proof or decoding failure
+publishes neither a partial result nor new account mappings. Independent account-mapping eviction
+does not invalidate retained raw slots, but reads need authenticated account evidence at their root
+before those slots can be used again.
+
+Provider failover never weakens selectors, accepts unverified values or substitutes another snapshot.
+Integrity failures remain counted, and a later availability failure does not hide earlier integrity
+evidence. Cache loss/eviction never invalidates retained snapshots or operation-owned batches. Caches are
+disposable, independently bounded by entries, and are not persisted as an archive. Subscription
+discovery, adaptive provider health and broader batching are follow-up work.
 
 ## Durable checkpoints and recovery
 
@@ -215,8 +249,9 @@ cargo +nightly fmt
 ```
 
 Generated real certificates/MPTs cover inclusion, complete absence, wrong targets/scalars/roots,
-truncation/limits, key rotation, conflicts, retained snapshots and account-only cross-root cache
-reuse. Checkpoint tests cover exclusive locking, verified restart, interrupted temporary writes,
+truncation/limits, key rotation, conflicts, retained snapshots, staged account-only reuse, changed-root
+misses, partial cached/proved batch composition, account-mapping eviction, and atomic cross-root
+merge rejection. Checkpoint tests cover exclusive locking, verified restart, interrupted temporary writes,
 corruption, unknown format, changed network/layout and explicit publication failure. CLI/API tests
 cover credential-free light selection, incompatible flags, endpoint redaction, loopback and method
 restrictions. These unit tests alone do not satisfy real-devnet acceptance.
@@ -240,8 +275,13 @@ python3 scripts/light-client-devnet.py --tempo-bin target/debug/tempo \
 It creates four actual validators from a locally configured genesis, executes mint/transfer/approve/
 burn transactions, compares reads with full-node calls at the exact reported block, schedules a
 full-DKG signing-key rotation while the daemon is offline, restarts from disk, and runs a malicious
-scalar-changing proof proxy. It checks verified failover, explicit failure without the honest
-provider, missing-token/method rejection and absence of execution files in the light directory.
+scalar-changing proof proxy. It also changes another token to require fresh full proofs despite an
+unchanged token storage root, asserts that neither proxy receives account-only probes, and holds
+a genuine proof while a real mint advances the head. The held read must return its original
+block/zero value; the next read must see the minted balance at the new root. A mixed cached/new-slot
+batch with a corrupted full proof must publish neither partial values nor a new account
+mapping. It checks verified failover, explicit failure without the honest provider, missing-token/
+method rejection and absence of execution files in the light directory.
 It emits logs, a public evidence capture and a small loopback latency report. A successful run's
 header/key-transition/native storage evidence is shipped as `fixtures/devnet-tip20-v1.json` and
 consumed independently by the conformance test; limited smoke measurements are recorded in

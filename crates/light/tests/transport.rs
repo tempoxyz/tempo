@@ -11,9 +11,9 @@ use std::sync::{
 use tempo_light::{
     HeadTracker,
     config::Limits,
-    proof::ProofLimits,
     transport::{Error, Upstreams},
 };
+use tempo_state_proof::ProofLimits;
 
 #[tokio::test]
 async fn standard_fallback_is_hash_pinned_verified_and_remembers_capability() {

@@ -1,10 +1,10 @@
 //! Checkpoint-backed, latest-only native TIP-20 client over untrusted HTTP upstreams.
 
 use crate::{
-    HeadTracker, Snapshot, VerifiedCache,
+    HeadTracker, Snapshot,
     checkpoint::{Checkpoint, Store, Transition},
     config::{Limits, Network},
-    head, proof,
+    head,
     token::{self, ReadRequest},
     transport::{self, Upstreams},
 };
@@ -19,6 +19,10 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
     time::{SystemTime, UNIX_EPOCH},
+};
+use tempo_state_proof::{
+    CacheError, CacheLimits, ProofError, ProofTargets, RetentionDelta, StorageReadKey,
+    VerifiedBatch, VerifiedCache,
 };
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, watch};
 use url::Url;
@@ -124,7 +128,8 @@ impl Client {
                 None,
             ),
         };
-        let cache = VerifiedCache::new(limits.account_cache, limits.slot_cache);
+        let cache = VerifiedCache::new(CacheLimits::new(limits.account_cache, limits.slot_cache))
+            .map_err(|_| Error::Configuration("invalid authenticated cache capacities"))?;
         let permits = Arc::new(Semaphore::new(limits.read_concurrency));
         Ok(Self(Arc::new(Inner {
             network,
@@ -309,8 +314,14 @@ impl Client {
         if requests.is_empty() || requests.len() > self.0.limits.max_reads {
             return Err(Arc::new(Error::RequestLimit));
         }
-        let targets = token::targets(&requests).map_err(|error| Arc::new(Error::Token(error)))?;
-        if targets.len() > self.0.limits.proofs.max_accounts {
+        let token_error = |error| Arc::new(Error::Token(error));
+        let keys = requests
+            .iter()
+            .map(|request| request.key())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(token_error)?;
+        if token::targets(&requests).map_err(token_error)?.len() > self.0.limits.proofs.max_accounts
+        {
             return Err(Arc::new(Error::RequestLimit));
         }
         let snapshot = {
@@ -331,7 +342,7 @@ impl Client {
         {
             return Err(Arc::new(Error::UnsupportedLayout));
         }
-        let key = (snapshot.evidence().digest, requests.clone());
+        let key = (snapshot.evidence().digest, requests);
         let mut in_flight = self.0.in_flight.lock().await;
         let mut rx = if let Some(rx) = in_flight.get(&key) {
             rx.clone()
@@ -347,7 +358,7 @@ impl Client {
             in_flight.insert(key.clone(), rx.clone());
             let client = self.clone();
             tokio::spawn(async move {
-                let work = client.read_inner(snapshot, requests, permit.clone());
+                let work = client.read_inner(snapshot, keys, permit.clone());
                 let result = tokio::time::timeout(client.0.limits.read_timeout, work)
                     .await
                     .unwrap_or(Err(Error::Deadline));
@@ -369,84 +380,107 @@ impl Client {
     async fn read_inner(
         &self,
         snapshot: Snapshot,
-        requests: Vec<ReadRequest>,
+        keys: Vec<StorageReadKey>,
         permit: Arc<OwnedSemaphorePermit>,
     ) -> Result<VerifiedReads, Error> {
-        let mut values = vec![None; requests.len()];
-        let mut targets = proof::ProofTargets::new();
-        {
+        let root = snapshot.header().state_root();
+        let mut reads = keys.into_iter().map(|key| (key, None)).collect::<Vec<_>>();
+        let missing = {
             let mut cache = self.0.cache.lock().await;
-            for (index, request) in requests.iter().enumerate() {
-                let key = request.key()?;
-                if let (Some(account), Some(word)) = (
-                    cache.account(&snapshot, key.account),
-                    cache.get(&snapshot, key),
-                ) {
-                    values[index] = Some(token::decode(key, account.as_ref(), word)?);
-                } else {
+            let mut targets = ProofTargets::new();
+            // Keep the all-warm path allocation-light: no batch maps, normalization or publication.
+            // Copies live only in this immutable-snapshot operation, not another shared authority.
+            for (key, hit) in &mut reads {
+                *hit = cache
+                    .get(root, *key)
+                    .map(|(account, word)| (*account, word));
+                if hit.is_none() {
                     targets.entry(key.account).or_default().insert(key.slot);
                 }
             }
-        }
-        if !targets.is_empty() {
-            let mut last = Error::NoHead;
-            let mut integrity = None;
-            let mut batch = None;
-            for provider in 0..self.0.upstreams.count() {
-                let responses = match self
-                    .0
-                    .upstreams
-                    .proofs(provider, snapshot.evidence().digest, &targets)
-                    .await
-                {
-                    Ok(responses) => responses,
-                    Err(error) => {
-                        last = error.into();
-                        continue;
+            targets
+        };
+        // Active tokens commonly change storage roots every block. Request all missing slots
+        // directly rather than speculating on an account-only proof followed by another RPC.
+        let batch = if missing.is_empty() {
+            VerifiedBatch::empty(root)
+        } else {
+            self.fetch_verified(&snapshot, &missing, &permit).await?
+        };
+        // Decode only owned evidence, outside the cache lock, before publishing any new mappings.
+        let values = reads
+            .into_iter()
+            .map(|(key, hit)| {
+                let (account, word) = match &hit {
+                    Some((account, word)) => (account.as_ref(), *word),
+                    None => {
+                        let account = batch.accounts().get(&key.account).ok_or(Error::Worker)?;
+                        (account.account(), batch.word(key).ok_or(Error::Worker)?)
                     }
                 };
-                let selected = snapshot.clone();
-                let selected_targets = targets.clone();
-                let limits = self.0.limits.proofs;
-                let cpu_permit = permit.clone();
-                let verified = tokio::task::spawn_blocking(move || {
-                    let _permit = cpu_permit;
-                    selected.verify(&selected_targets, &responses, limits)
-                })
+                token::decode(key, account, word).map_err(Error::from)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if !batch.accounts().is_empty() {
+            self.0
+                .cache
+                .lock()
                 .await
-                .map_err(|_| Error::Worker)?;
-                match verified {
-                    Ok(verified) => {
-                        batch = Some(verified);
-                        break;
-                    }
-                    Err(error) => {
-                        self.0.integrity_failures.fetch_add(1, Ordering::Relaxed);
-                        integrity = Some(Error::Proof(error));
-                    }
-                }
-            }
-            let batch = batch.ok_or_else(|| integrity.unwrap_or(last))?;
-            // Decode the operation-owned batch, not a shared cache that another read may prune.
-            // Captured cache hits were already authenticated at this immutable snapshot.
-            for (index, request) in requests.iter().enumerate() {
-                if values[index].is_some() {
-                    continue;
-                }
-                let key = request.key()?;
-                let account = batch.accounts().get(&key.account).ok_or(Error::Worker)?;
-                let word = account.slots().get(&key.slot).ok_or(Error::Worker)?;
-                values[index] = Some(token::decode(key, account.account(), *word)?);
-            }
-            self.0.cache.lock().await.commit(&snapshot, &batch)?;
+                .publish(&[(root, &batch)], &RetentionDelta::default())?;
         }
         Ok(VerifiedReads {
             block: (&snapshot).into(),
-            values: values
-                .into_iter()
-                .map(|value| value.ok_or(Error::Worker))
-                .collect::<Result<_, _>>()?,
+            values,
         })
+    }
+
+    // Provider failover retains the operation's original snapshot, deadline and admission permit.
+    async fn fetch_verified(
+        &self,
+        snapshot: &Snapshot,
+        targets: &ProofTargets,
+        permit: &Arc<OwnedSemaphorePermit>,
+    ) -> Result<VerifiedBatch, Error> {
+        let mut last = Error::NoHead;
+        let mut integrity = None;
+        for provider in 0..self.0.upstreams.count() {
+            let responses = match self
+                .0
+                .upstreams
+                .proofs(provider, snapshot.evidence().digest, targets)
+                .await
+            {
+                Ok(responses) => responses,
+                Err(error) => {
+                    let error = Error::from(error);
+                    if matches!(error.kind(), FailureKind::Integrity) {
+                        self.0.integrity_failures.fetch_add(1, Ordering::Relaxed);
+                        integrity = Some(error);
+                    } else {
+                        last = error;
+                    }
+                    continue;
+                }
+            };
+            let selected = snapshot.clone();
+            let selected_targets = targets.clone();
+            let limits = self.0.limits.proofs;
+            let cpu_permit = permit.clone();
+            let verified = tokio::task::spawn_blocking(move || {
+                let _permit = cpu_permit;
+                selected.verify(&selected_targets, &responses, limits)
+            })
+            .await
+            .map_err(|_| Error::Worker)?;
+            match verified {
+                Ok(verified) => return Ok(verified),
+                Err(error) => {
+                    self.0.integrity_failures.fetch_add(1, Ordering::Relaxed);
+                    integrity = Some(Error::Proof(error));
+                }
+            }
+        }
+        Err(integrity.unwrap_or(last))
     }
 
     pub async fn status(&self) -> Status {
@@ -467,7 +501,8 @@ impl Client {
         let durable = head.is_some() && !state.persistence_paused;
         let last_failure = state.failure;
         drop(state);
-        let (account_cache_entries, slot_cache_entries) = self.0.cache.lock().await.entry_counts();
+        let stats = self.0.cache.lock().await.stats();
+        let (account_cache_entries, slot_cache_entries) = (stats.accounts, stats.words);
         Status {
             head,
             head_age_millis: age,
@@ -492,9 +527,9 @@ pub enum Error {
     #[error(transparent)]
     Head(#[from] head::Error),
     #[error(transparent)]
-    Proof(#[from] proof::Error),
+    Proof(#[from] ProofError),
     #[error(transparent)]
-    Cache(#[from] crate::cache::Error),
+    Cache(#[from] CacheError),
     #[error(transparent)]
     Token(#[from] token::Error),
     #[error("no authenticated finalized head is available")]
@@ -525,7 +560,7 @@ impl Error {
             }
             Self::Head(_)
             | Self::Proof(_)
-            | Self::Cache(_)
+            | Self::Cache(CacheError::Composition(_))
             | Self::Transport(
                 transport::Error::MalformedResponse(_) | transport::Error::ResponseSize(_),
             ) => FailureKind::Integrity,

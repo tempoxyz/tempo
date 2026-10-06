@@ -14,11 +14,8 @@ pub mod token;
 #[cfg(feature = "client")]
 pub mod transport;
 
-pub mod cache;
 pub mod head;
-pub mod proof;
 
-pub use cache::VerifiedCache;
 pub use head::{HeadTracker, Snapshot};
 
 pub use tempo_finality::{CertifiedHeader, FinalizationVerifier, NetworkIdentity};

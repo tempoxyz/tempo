@@ -10,7 +10,7 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_finality::{CertifiedHeader, FinalizationVerifier, NetworkIdentity};
 use tempo_primitives::TempoHeader;
 
-use crate::proof::{self, ProofLimits, ProofTargets, VerifiedBatch};
+use tempo_state_proof::{ProofError, ProofLimits, ProofTargets, VerifiedBatch, verify_multi_proof};
 
 /// Immutable authenticated snapshot. Holding this value keeps an in-flight read tied to its
 /// actual block even when public progress advances. It does not promise global freshness.
@@ -32,8 +32,8 @@ impl Snapshot {
         targets: &ProofTargets,
         responses: &[alloy_rpc_types_eth::EIP1186AccountProofResponse],
         limits: ProofLimits,
-    ) -> Result<VerifiedBatch, proof::Error> {
-        proof::verify_multi_proof(self.header().state_root(), targets, responses, limits)
+    ) -> Result<VerifiedBatch, ProofError> {
+        verify_multi_proof(self.header().state_root(), targets, responses, limits)
     }
 }
 

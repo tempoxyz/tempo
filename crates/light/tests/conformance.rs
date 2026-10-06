@@ -5,10 +5,8 @@ use std::num::NonZeroU64;
 use alloy_primitives::{B256, hex};
 use rand::{SeedableRng as _, rngs::StdRng};
 use tempo_finality::NetworkIdentity;
-use tempo_light::{
-    CertifiedHeader, HeadTracker,
-    proof::{ProofLimits, ProofTargets},
-};
+use tempo_light::{CertifiedHeader, HeadTracker};
+use tempo_state_proof::{ProofLimits, ProofTargets};
 
 #[cfg(feature = "client")]
 #[test]

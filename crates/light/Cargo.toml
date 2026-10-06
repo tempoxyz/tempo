@@ -27,19 +27,20 @@ url = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
-alloy-rlp.workspace = true
 alloy-rpc-types-eth.workspace = true
 alloy-trie = { workspace = true, features = ["std"] }
 commonware-codec.workspace = true
 commonware-consensus.workspace = true
 tempo-dkg-onchain-artifacts = { workspace = true, features = ["commonware-consensus"] }
 rand_core.workspace = true
-schnellru.workspace = true
+tempo-state-proof = { workspace = true, features = ["cache"] }
 tempo-finality.workspace = true
 tempo-primitives = { workspace = true, features = ["std", "serde"] }
 thiserror.workspace = true
 
 [dev-dependencies]
+tempo-state-proof = { workspace = true, features = ["test-utils"] }
+alloy-rlp.workspace = true
 reqwest = { workspace = true, features = ["json", "rustls"] }
 tempfile.workspace = true
 tempo-finality = { workspace = true, features = ["test-utils"] }

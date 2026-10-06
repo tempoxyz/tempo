@@ -1,0 +1,32 @@
+[package]
+name = "tempo-state-proof"
+description = "Exact-target Ethereum state proofs and a bounded authenticated raw-state cache"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["cache"]
+std = ["alloy-primitives/std", "alloy-trie/std", "alloy-rlp/std", "alloy-rpc-types-eth/std", "thiserror/std", "serde?/std"]
+cache = ["std", "dep:schnellru"]
+serde = ["dep:serde", "alloy-primitives/serde"]
+test-utils = []
+
+[dependencies]
+alloy-primitives.workspace = true
+alloy-trie = { workspace = true, features = ["ethereum"] }
+alloy-rlp.workspace = true
+# Workspace RPC defaults enable std; keep the verifier no_std/alloc-compatible.
+alloy-rpc-types-eth = { version = "2.5.0", default-features = false, features = ["serde"] }
+thiserror = { version = "2.0.18", default-features = false }
+schnellru = { workspace = true, optional = true }
+serde = { workspace = true, features = ["alloc", "derive"], optional = true }
+
+[dev-dependencies]
+tempo-state-proof = { path = ".", features = ["test-utils"] }

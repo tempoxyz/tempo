@@ -1,6 +1,6 @@
 //! Trust-neutral HTTP evidence transport. No unverified read or `latest` storage fallback.
 
-use crate::{config::Limits, proof::ProofTargets};
+use crate::config::Limits;
 use alloy_primitives::B256;
 use alloy_rpc_types_eth::EIP1186AccountProofResponse;
 use futures::{StreamExt as _, TryStreamExt as _};
@@ -8,6 +8,7 @@ use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tempo_finality::CertifiedHeader;
+use tempo_state_proof::ProofTargets;
 use url::Url;
 
 struct Endpoint {
