@@ -53,7 +53,9 @@ async function postToSlack(token, channel, blocks, text, core, threadTs) {
     body: JSON.stringify(payload),
   });
   const data = await resp.json();
-  if (!data.ok) {
+  if (data.ok === true) {
+    core.info(`Slack notification accepted (channel ${channel}, timestamp ${data.ts || 'not provided'})`);
+  } else {
     core.warning(`Slack API error (channel ${channel}): ${JSON.stringify(data)}`);
   }
   return data;
@@ -322,15 +324,15 @@ async function success({ core, context }) {
 
   // Match reth-bench: post to the public channel only for significant improvements.
   if (channel && shouldNotifyImprovement(changes, slackMode)) {
-    await postToSlack(token, channel, blocks, text, core);
-    postedToChannel = true;
+    const response = await postToSlack(token, channel, blocks, text, core);
+    postedToChannel = response.ok === true;
   } else if (channel) {
     core.info('No significant improvement, skipping public channel notification');
   }
 
   if (slackMode === 'on-win') {
     if (!postedToChannel) {
-      core.info('on-win mode: no improvement without regressions, skipping all notifications');
+      core.info('on-win mode: no channel notification delivered, skipping DMs');
     }
     return;
   }
@@ -568,26 +570,26 @@ async function replaySuccess({ core, context }) {
 
   async function sendWithThread(channel) {
     const res = await postToSlack(token, channel, slackBlocks, text, core);
-    if (res.ok && res.ts && threadBlocks.length > 0) {
+    if (res.ok === true && res.ts && threadBlocks.length > 0) {
       for (const threadBlock of threadBlocks) {
         await postToSlack(token, channel, [threadBlock], 'Replay wait time breakdown', core, res.ts);
       }
     }
+    return res.ok === true;
   }
 
   const slackMode = process.env.BENCH_SLACK || 'always';
   const channel = process.env.SLACK_BENCH_CHANNEL;
   let postedToChannel = false;
   if (channel && shouldNotifyImprovement(summary.changes || {}, slackMode)) {
-    await sendWithThread(channel);
-    postedToChannel = true;
+    postedToChannel = await sendWithThread(channel);
   } else if (channel) {
     core.info('No significant replay improvement, skipping public channel notification');
   }
 
   if (slackMode === 'on-win') {
     if (!postedToChannel) {
-      core.info('on-win mode: no replay improvement without regressions, skipping all notifications');
+      core.info('on-win mode: no replay channel notification delivered, skipping DMs');
     }
     return;
   }
