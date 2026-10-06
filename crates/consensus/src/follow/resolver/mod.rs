@@ -24,7 +24,7 @@ use eyre::Report;
 use parking_lot::Mutex;
 use prometheus_client::metrics::counter::Counter;
 use reth_ethereum::provider::db::DatabaseEnv;
-use reth_network_p2p::{BlockAccessListsClient, BlockClient, FullBlockClient};
+use reth_network_p2p::{BlockClient, FullBlockClient};
 use reth_node_builder::NodeTypesWithDBAdapter;
 use reth_primitives_traits::NodePrimitives;
 use reth_provider::{
@@ -322,30 +322,15 @@ impl BlockNetwork for NoopBlockNetwork {
 
 impl<C> BlockNetwork for FullBlockClient<C>
 where
-    C: BlockClient<Block = TempoBlock> + BlockAccessListsClient + Send + Sync + 'static,
+    C: BlockClient<Block = TempoBlock> + Send + Sync + 'static,
     C::Header: alloy_consensus::BlockHeader + alloy_primitives::Sealable,
 {
     fn get_block(&self, digest: Digest) -> impl Future<Output = Option<Block>> + Send + 'static {
         let client = self.clone();
         async move {
-            #[cfg(not(feature = "bal"))]
-            return Block::try_from_execution_block(client.get_full_block(digest.0).await, None)
+            Block::try_from_execution_block(client.get_full_block(digest.0).await, None)
                 .inspect_err(|error| warn!(%error, %digest, "devp2p block failed validation"))
-                .ok();
-
-            #[cfg(feature = "bal")]
-            let (block, block_access_list) = client
-                .get_full_block_with_access_lists(digest.0)
-                .await
-                .split();
-
-            #[cfg(feature = "bal")]
-            Block::try_from_execution_block(
-                block,
-                block_access_list.map(|block_access_list| block_access_list.into_raw()),
-            )
-            .inspect_err(|error| warn!(%error, %digest, "devp2p block failed validation"))
-            .ok()
+                .ok()
         }
     }
 }

@@ -276,7 +276,7 @@ impl TempoNode {
                     .with_pre_cache_state(false),
             )
             .network(network_builder)
-            .consensus(TempoConsensusBuilder::default())
+            .consensus(TempoConsensusBuilder)
     }
 
     pub fn provider_factory_builder() -> ProviderFactoryBuilder<Self> {
@@ -533,21 +533,9 @@ where
 }
 
 /// Builder for [`TempoConsensus`].
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
-pub struct TempoConsensusBuilder {
-    /// Whether to allow BAL hashes before Amsterdam activation.
-    pub allow_bal_hashes: bool,
-}
-
-#[allow(clippy::derivable_impls)]
-impl Default for TempoConsensusBuilder {
-    fn default() -> Self {
-        Self {
-            allow_bal_hashes: cfg!(feature = "bal"),
-        }
-    }
-}
+pub struct TempoConsensusBuilder;
 
 impl<Node> ConsensusBuilder<Node> for TempoConsensusBuilder
 where
@@ -558,10 +546,7 @@ where
     type Consensus = TempoConsensus<<Node::Types as NodeTypes>::ChainSpec>;
 
     async fn build_consensus(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Consensus> {
-        Ok(TempoConsensus::new_with_bal_hashes(
-            ctx.chain_spec(),
-            self.allow_bal_hashes,
-        ))
+        Ok(TempoConsensus::new(ctx.chain_spec()))
     }
 }
 
