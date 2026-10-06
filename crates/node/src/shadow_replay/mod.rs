@@ -27,7 +27,7 @@ use alloy::{consensus::BlockHeader as _, sol_types::SolEvent as _};
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::{encode_list, list_length};
 use analysis::Report;
-use evm2::evm::{AccountInfo, Cache, PendingState, StateChangeSource, TxResultExt};
+use evm2::evm::{AccountInfo, Cache, PendingState, TxResultExt};
 use fees::{FeeWrites, RecordingFeeManager};
 use metrics::{Counter, Gauge, Histogram};
 use parking_lot::Mutex;
@@ -37,7 +37,7 @@ use reth_evm::{
     BlockExecutor as _, BlockExecutorFactory as _, ConfigureEvm as _,
     database::StateProviderDatabase,
 };
-use reth_execution_types::{BlockState, EvmState, StateChange, StateChanges};
+use reth_execution_types::{BlockState, EvmState};
 use reth_primitives_traits::RecoveredBlock;
 use reth_provider::{
     CanonStateSubscriptions, ChainSpecProvider, StateProvider, StateProviderFactory,
@@ -456,27 +456,21 @@ fn save_pre_block_info(
     state: &EvmState,
 ) -> Vec<SavedPreBlockInfo> {
     state
-        .iter()
-        .filter_map(|change| {
-            let StateChange::Account {
-                address,
-                original: Some(original),
-                current: Some(current),
-                created: false,
-                ..
-            } = change
-            else {
+        .changed_accounts()
+        .filter_map(|(change, _)| {
+            let (Some(original), Some(current)) = (change.original, change.current) else {
                 return None;
             };
-            if !pre_block.transitions.contains_key(address) {
+            let address = change.address;
+            if change.created || !pre_block.transitions.contains_key(&address) {
                 return None;
             }
             cache
                 .accounts
-                .get(address)
+                .get(&address)
                 .and_then(Option::as_ref)
                 .map(|candidate| SavedPreBlockInfo {
-                    address: *address,
+                    address,
                     candidate: candidate.clone(),
                     control_before: original.clone(),
                     control_after: current.clone(),
@@ -514,7 +508,7 @@ fn take_updates(updates: &Mutex<Vec<EvmState>>) -> TransitionState {
     let states = std::mem::take(&mut *updates.lock());
     let mut block = BlockState::new();
     for state in states {
-        block.commit(&StateChanges(&state));
+        block.commit_pending(&state, None);
     }
     block.into_transitions()
 }
@@ -524,11 +518,7 @@ fn pending_state(result: &TempoTxResult) -> EvmState {
 }
 
 fn pending_to_evm_state(state: &PendingState) -> EvmState {
-    let mut changes = EvmState::default();
-    state
-        .visit(&mut BlockState::new().transaction_sink(Some(&mut changes)))
-        .expect("infallible state conversion");
-    changes
+    state.clone()
 }
 
 fn transition_pending(state: &PendingState) -> TransitionState {
@@ -540,7 +530,7 @@ fn transition_pending(state: &PendingState) -> TransitionState {
 #[cfg(test)]
 fn transition(state: EvmState) -> TransitionState {
     let mut block = BlockState::new();
-    block.commit(&StateChanges(&state));
+    block.commit_pending(&state, None);
     block.into_transitions()
 }
 
@@ -733,7 +723,7 @@ mod tests {
                 selfdestructed,
             });
         }
-        updates
+        reth_execution_types::EvmState::from_source(&reth_execution_types::StateChanges(&updates))
     }
 
     use super::*;

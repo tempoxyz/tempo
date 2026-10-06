@@ -1812,18 +1812,15 @@ mod tests {
         let calls = hook_calls.lock().unwrap();
         assert_eq!(calls.len(), 1, "state hook should be called exactly once");
         assert!(
-            calls[0].iter().any(|change| matches!(change, reth_execution_types::StateChange::Account { address, .. } if *address == addr)),
+            calls[0]
+                .changed_accounts()
+                .any(|(change, _)| change.address == addr),
             "state hook should contain the deployed address"
         );
         assert_eq!(
             calls[0]
-                .iter()
-                .find_map(|change| match change {
-                    reth_execution_types::StateChange::Account {
-                        address, original, ..
-                    } if *address == addr => Some(original.clone()),
-                    _ => None,
-                })
+                .changed_accounts()
+                .find_map(|(change, _)| (change.address == addr).then(|| change.original.cloned()))
                 .unwrap(),
             Default::default(),
             "state hook account should preserve original_info"
@@ -1858,13 +1855,8 @@ mod tests {
         assert_eq!(calls.len(), 1, "state hook should be called exactly once");
         assert_eq!(
             calls[0]
-                .iter()
-                .find_map(|change| match change {
-                    reth_execution_types::StateChange::Account {
-                        address, original, ..
-                    } if *address == addr => Some(original.clone()),
-                    _ => None,
-                })
+                .changed_accounts()
+                .find_map(|(change, _)| (change.address == addr).then(|| change.original.cloned()))
                 .unwrap(),
             Some(original_info),
             "state hook account should preserve existing original_info"
@@ -2078,18 +2070,26 @@ mod tests {
             3,
             "T10 installation and T13 replacement must each dispatch an update"
         );
-        assert!(calls[0].iter().any(|change| matches!(change, reth_execution_types::StateChange::Account { address, .. } if *address == ZONE_FACTORY_ADDRESS)));
+        assert!(
+            calls[0]
+                .changed_accounts()
+                .any(|(change, _)| change.address == ZONE_FACTORY_ADDRESS)
+        );
         for address in [
             ZONE_PORTAL_IMPL_ADDRESS,
             ZONE_VERIFIER_ADDRESS,
             ZONE_MESSENGER_ADDRESS,
         ] {
             assert!(
-                calls[1].iter().any(|change| matches!(change, reth_execution_types::StateChange::Account { address: changed_address, .. } if *changed_address == address)),
+                calls[1]
+                    .changed_accounts()
+                    .any(|(change, _)| change.address == address),
                 "shared runtime must be installed in the runtime state hook"
             );
             assert!(
-                calls[2].iter().any(|change| matches!(change, reth_execution_types::StateChange::Account { address: changed_address, .. } if *changed_address == address)),
+                calls[2]
+                    .changed_accounts()
+                    .any(|(change, _)| change.address == address),
                 "T13 runtime must be installed in the runtime state hook"
             );
         }
