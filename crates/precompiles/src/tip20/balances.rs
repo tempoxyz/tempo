@@ -115,7 +115,7 @@ impl BalanceSlot {
             let initialized = storage.with_account_info(self.address(), |info| {
                 if info.code_hash == code.hash_slow() {
                     Ok(true)
-                } else if info.is_empty_code_hash() && info.nonce == 0 {
+                } else if info.is_empty() {
                     Ok(false)
                 } else {
                     Err(TempoPrecompileError::Fatal(
