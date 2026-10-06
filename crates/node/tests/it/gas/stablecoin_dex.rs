@@ -118,13 +118,29 @@ where
 async fn test_stablecoin_dex_order_gas_snapshots(hardfork: TempoHardfork) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
+    // Finish startup before entering the large lifecycle future's poll frame.
     let setup = TestNodeBuilder::new()
         .with_genesis(make_genesis_at(hardfork))
         .with_instant_mining()
         .build_http_only()
         .await?;
-    let http_url = setup.http_url;
+    boxed_stablecoin_dex_order_gas_snapshots(hardfork, setup.http_url.clone()).await
+}
 
+// Construct the large future in a separate frame so its temporary does not
+// reserve stack space in the test's poll frame while the node starts.
+#[inline(never)]
+fn boxed_stablecoin_dex_order_gas_snapshots(
+    hardfork: TempoHardfork,
+    http_url: url::Url,
+) -> std::pin::Pin<Box<impl std::future::Future<Output = eyre::Result<()>>>> {
+    Box::pin(run_stablecoin_dex_order_gas_snapshots(hardfork, http_url))
+}
+
+async fn run_stablecoin_dex_order_gas_snapshots(
+    hardfork: TempoHardfork,
+    http_url: url::Url,
+) -> eyre::Result<()> {
     let signers = (0..=USER_COUNT as u32).map(test_signer).collect::<Vec<_>>();
     let providers = signers
         .iter()

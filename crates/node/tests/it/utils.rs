@@ -532,7 +532,9 @@ impl TestNodeBuilder {
 
     /// Build a single node with direct access (NodeHelperType)
     pub(crate) async fn build_with_node_access(self) -> eyre::Result<SingleNodeSetup> {
-        Ok(self.build_with_node_access_inner(false).await?.0)
+        // Both launch paths contribute to the future's size, even with workers
+        // disabled. Keep that state off the stack of nested integration tests.
+        Ok(Box::pin(self.build_with_node_access_inner(false)).await?.0)
     }
 
     /// Retain the temporary database separately for explicit node teardown.
@@ -542,7 +544,7 @@ impl TestNodeBuilder {
     pub(crate) async fn build_with_node_access_and_database(
         self,
     ) -> eyre::Result<(SingleNodeSetup, reth_e2e_test_utils::TmpDB)> {
-        let (setup, database) = self.build_with_node_access_inner(true).await?;
+        let (setup, database) = Box::pin(self.build_with_node_access_inner(true)).await?;
         Ok((
             setup,
             database.expect("explicit node launch retains its database"),
@@ -663,6 +665,15 @@ impl TestNodeBuilder {
 
     /// Build HTTP-only setup with a custom RPC module selection.
     pub(crate) async fn build_http_only_with_api(
+        self,
+        http_api: RpcModuleSelection,
+    ) -> eyre::Result<HttpOnlySetup> {
+        // Keep the default and explicitly configured launch state out of the
+        // enclosing test future, just as for direct node access above.
+        Box::pin(self.build_http_only_inner(http_api)).await
+    }
+
+    async fn build_http_only_inner(
         self,
         http_api: RpcModuleSelection,
     ) -> eyre::Result<HttpOnlySetup> {
