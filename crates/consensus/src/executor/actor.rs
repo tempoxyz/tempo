@@ -2476,10 +2476,7 @@ async fn deliver_block(
 ) -> eyre::Result<PayloadStatusEnum> {
     let block = Arc::unwrap_or_clone(block).into_execution_block();
     let payload_status = execution_node
-        .new_payload(TempoExecutionData {
-            block,
-            block_access_list: None,
-        })
+        .new_payload(TempoExecutionData { block })
         .await
         .wrap_err("failed sending new-payload request to execution layer")?;
     if payload_status.is_valid() {

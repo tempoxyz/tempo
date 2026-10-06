@@ -308,10 +308,7 @@ async fn submit_new_payload<TContext: Pacer, E: ExecutionEngine + ?Sized>(
 ) -> eyre::Result<()> {
     let block = block.into_execution_block();
     let payload_status = execution_engine
-        .new_payload(TempoExecutionData {
-            block,
-            block_access_list: None,
-        })
+        .new_payload(TempoExecutionData { block })
         .pace(context, Duration::from_millis(20))
         .await
         .wrap_err("failed sending finalized payload")?;

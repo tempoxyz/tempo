@@ -104,10 +104,7 @@ impl TempoBuiltPayload {
     /// Converts the built payload into [`TempoExecutionData`].
     pub fn into_execution_data(self) -> TempoExecutionData {
         let (block, _) = self.into_consensus_execution_payload();
-        TempoExecutionData {
-            block,
-            block_access_list: None,
-        }
+        TempoExecutionData { block }
     }
 }
 
@@ -129,10 +126,6 @@ impl BuiltPayload for TempoBuiltPayload {
     fn requests(&self) -> Option<Requests> {
         self.inner.requests()
     }
-
-    fn block_access_list(&self) -> Option<&Bytes> {
-        None
-    }
 }
 
 /// Execution data for Tempo node. Simply wraps a sealed block.
@@ -141,8 +134,6 @@ pub struct TempoExecutionData {
     /// The built block.
     #[serde(with = "serde_sealed_or_recovered_block")]
     pub block: SealedOrRecoveredBlock<Block>,
-    /// RLP-encoded EIP-7928 block access list, when supplied with the payload.
-    pub block_access_list: Option<Bytes>,
 }
 
 /// Serde helper for preserving the legacy plain block JSON shape.
@@ -237,7 +228,7 @@ impl ExecutionPayload for TempoExecutionData {
     }
 
     fn block_access_list(&self) -> Option<&Bytes> {
-        self.block_access_list.as_ref()
+        None
     }
 }
 
@@ -252,10 +243,9 @@ impl PayloadTypes for TempoPayloadTypes {
     type BuiltPayload = TempoBuiltPayload;
     type PayloadAttributes = TempoPayloadAttributes;
 
-    fn block_to_payload(block: SealedBlock<Block>, bal: Option<Bytes>) -> Self::ExecutionData {
+    fn block_to_payload(block: SealedBlock<Block>, _bal: Option<Bytes>) -> Self::ExecutionData {
         TempoExecutionData {
             block: block.into(),
-            block_access_list: bal,
         }
     }
 }
@@ -329,13 +319,22 @@ mod tests {
                     "timestampMillisPart": "0x0",
                     "transactionsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
                 }
-            },
-            "block_access_list": null
+            }
         });
 
         let execution_data: TempoExecutionData = serde_json::from_value(fixture.clone()).unwrap();
         let roundtripped = serde_json::to_value(execution_data).unwrap();
 
         assert_eq!(roundtripped, fixture);
+    }
+
+    #[test]
+    fn execution_data_does_not_carry_block_access_lists() {
+        let block = SealedBlock::seal_slow(Block::default());
+        let payload = TempoPayloadTypes::block_to_payload(block, Some(Bytes::from_static(&[0xc0])));
+
+        assert!(payload.block_access_list().is_none());
+        let json = serde_json::to_value(payload).unwrap();
+        assert!(json.get("block_access_list").is_none());
     }
 }

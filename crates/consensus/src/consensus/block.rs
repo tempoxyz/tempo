@@ -26,47 +26,6 @@ use tracing::warn;
 use crate::consensus::Digest;
 use tempo_evm::consensus::validate_body_against_header;
 
-/// Error returned when an unsupported BAL commitment is present in the header.
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
-pub(crate) enum BlockAccessListError {
-    /// The header commits to a BAL, but no BAL bytes were provided.
-    #[error("block access list hash {expected} is present but block access list is missing")]
-    Missing { expected: B256 },
-}
-
-impl BlockAccessListError {
-    fn codec_error(self) -> commonware_codec::Error {
-        match self {
-            Self::Missing { .. } => {
-                commonware_codec::Error::Invalid("block access list", "missing for header hash")
-            }
-        }
-    }
-}
-
-/// Error returned when an execution block or its consensus sidecars are invalid.
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum Error {
-    /// The execution block body does not match the commitments in its header.
-    #[error("execution block body does not match its header")]
-    Body(#[from] ConsensusError),
-    /// The BAL sidecar does not match the commitment in the execution block header.
-    #[error("block access list does not match its header commitment")]
-    BlockAccessList(#[from] BlockAccessListError),
-}
-
-impl Error {
-    fn codec_error(self) -> commonware_codec::Error {
-        match self {
-            Self::Body(error) => commonware_codec::Error::Wrapped(
-                "validating execution block body against header",
-                error.into(),
-            ),
-            Self::BlockAccessList(error) => error.codec_error(),
-        }
-    }
-}
-
 /// Consensus block shared through commonware.
 ///
 /// This wraps the execution-layer block Tempo commits to, plus any consensus sidecars that are not
@@ -75,32 +34,25 @@ impl Error {
 ///
 /// The shared encoded-byte cache lets payload building, proposal broadcast, and commonware
 /// `EncodeSize` reuse the same execution-block RLP bytes once any path has encoded them.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, derive_more::PartialEq, derive_more::Eq)]
 pub(crate) struct Block {
     /// The execution-layer block, either sealed-only or fully recovered when built locally.
     execution_block: SealedOrRecoveredBlock<tempo_primitives::Block>,
     /// Cached execution-layer RLP bytes when already encoded by the caller or a payload clone.
+    #[eq(skip)]
     execution_block_encoded: EncodedBlock,
 }
 
-impl PartialEq for Block {
-    fn eq(&self, other: &Self) -> bool {
-        self.execution_block == other.execution_block
-    }
-}
-
-impl Eq for Block {}
-
 impl Block {
     /// Creates a block after validating its body and rejecting BAL header commitments.
-    pub(crate) fn try_from_execution_block<T>(execution_block: T) -> Result<Self, Error>
+    pub(crate) fn try_from_execution_block<T>(execution_block: T) -> Result<Self, ConsensusError>
     where
         T: Into<SealedOrRecoveredBlock<tempo_primitives::Block>>,
     {
         let execution_block = execution_block.into();
         validate_body_against_header(execution_block.body(), execution_block.header())?;
-        if let Some(expected) = execution_block.block_access_list_hash() {
-            return Err(BlockAccessListError::Missing { expected }.into());
+        if execution_block.block_access_list_hash().is_some() {
+            return Err(ConsensusError::BlockAccessListHashUnexpected);
         }
 
         Ok(Self::from_execution_block_unchecked(execution_block))
@@ -110,7 +62,7 @@ impl Block {
     pub(crate) fn try_from_execution_block_with_encoded_cache<T>(
         execution_block: T,
         execution_block_encoded: EncodedBlock,
-    ) -> Result<Self, Error>
+    ) -> Result<Self, ConsensusError>
     where
         T: Into<SealedOrRecoveredBlock<tempo_primitives::Block>>,
     {
@@ -230,8 +182,14 @@ impl Read for Block {
         })?;
 
         let execution_block_encoded = EncodedBlock::new(bytes.into());
-        Self::try_from_execution_block_with_encoded_cache(inner, execution_block_encoded)
-            .map_err(|err| err.codec_error())
+        Self::try_from_execution_block_with_encoded_cache(inner, execution_block_encoded).map_err(
+            |error| {
+                commonware_codec::Error::Wrapped(
+                    "validating execution block body against header",
+                    error.into(),
+                )
+            },
+        )
     }
 }
 
@@ -310,7 +268,7 @@ pub(crate) fn round_from_context(context: TempoConsensusContext) -> Round {
 mod tests {
     use alloy_consensus::{BlockBody, EMPTY_ROOT_HASH};
     use alloy_primitives::{B256, bytes, keccak256};
-    use commonware_codec::{Encode, Read as _, Write as _};
+    use commonware_codec::Encode;
     use reth_node_core::primitives::SealedBlock;
     use tempo_primitives::{Block as TempoBlock, TempoHeader};
 
@@ -449,7 +407,7 @@ mod tests {
 
         let err = Block::try_from_execution_block(execution_block).unwrap_err();
 
-        assert!(matches!(err, Error::Body(_)));
+        assert!(matches!(err, ConsensusError::BodyWithdrawalsRootDiff(_)));
     }
 
     #[test]
@@ -463,9 +421,16 @@ mod tests {
 
         let err = Block::read_cfg(&mut encoded.as_ref(), &()).unwrap_err();
 
+        let commonware_codec::Error::Wrapped(
+            "validating execution block body against header",
+            error,
+        ) = err
+        else {
+            panic!("unexpected error: {err:?}");
+        };
         assert!(matches!(
-            err,
-            commonware_codec::Error::Invalid("block access list", "missing for header hash")
+            error.downcast_ref::<ConsensusError>(),
+            Some(ConsensusError::BlockAccessListHashUnexpected)
         ));
     }
 
@@ -474,11 +439,32 @@ mod tests {
         let execution_block = execution_block_with_block_access_list_hash(B256::ZERO);
         let err = Block::try_from_execution_block(execution_block).unwrap_err();
 
-        assert!(matches!(
-            err,
-            Error::BlockAccessList(BlockAccessListError::Missing {
-                expected: B256::ZERO,
-            })
-        ));
+        assert!(matches!(err, ConsensusError::BlockAccessListHashUnexpected));
+    }
+
+    #[test]
+    fn equality_ignores_encoded_cache() {
+        let execution_block = SealedBlock::seal_slow(TempoBlock::default());
+        let uncached = Block::from_execution_block_unchecked(execution_block.clone());
+        let cached = Block::from_execution_block_unchecked(execution_block);
+
+        assert_eq!(uncached, cached);
+        cached.encode();
+        assert!(uncached.execution_block_encoded.get().is_none());
+        assert!(cached.execution_block_encoded.get().is_some());
+        assert_eq!(uncached, cached);
+        assert!(!uncached.ne(&cached));
+
+        let different = Block::from_execution_block_unchecked(SealedBlock::seal_slow(TempoBlock {
+            header: TempoHeader {
+                inner: alloy_consensus::Header {
+                    number: 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        }));
+        assert_ne!(uncached, different);
     }
 }

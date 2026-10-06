@@ -13617,6 +13617,7 @@ dependencies = [
  "commonware-runtime",
  "commonware-storage",
  "commonware-utils",
+ "derive_more",
  "eyre",
  "futures",
  "governor",

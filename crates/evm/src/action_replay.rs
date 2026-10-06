@@ -37,7 +37,7 @@ where
         replay: StorageActionReplay,
         result_closure: impl FnOnce(&TempoTxResult),
     ) -> Result<(), BlockExecutionError> {
-        let (_, recovered) = tx.into_parts();
+        let (tx_env, recovered) = tx.into_parts();
 
         let StorageActionReplay {
             result,
