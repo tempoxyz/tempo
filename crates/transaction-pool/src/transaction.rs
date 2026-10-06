@@ -191,8 +191,7 @@ impl TempoPooledTransaction {
         self.inner
             .transaction
             .as_aa()
-            .map(|tx| !tx.tx().nonce_key.is_zero())
-            .unwrap_or(false)
+            .is_some_and(|tx| !tx.tx().nonce_key.is_zero())
     }
 
     /// Returns true if this is an expiring nonce transaction.
@@ -864,14 +863,10 @@ impl PoolTransaction for TempoPooledTransaction {
     }
 
     fn requires_nonce_check(&self) -> bool {
-        self.inner
-            .transaction()
-            .as_aa()
-            .map(|tx| {
-                // for AA transaction with a custom nonce key we can skip the nonce validation
-                tx.tx().nonce_key.is_zero()
-            })
-            .unwrap_or(true)
+        self.inner.transaction().as_aa().is_none_or(|tx| {
+            // for AA transaction with a custom nonce key we can skip the nonce validation
+            tx.tx().nonce_key.is_zero()
+        })
     }
 
     fn requires_nonce_bound_check(&self) -> bool {

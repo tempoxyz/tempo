@@ -83,7 +83,7 @@ pub(crate) struct Localnet {
     pub setup: SingleNodeSetup,
     pub provider: alloy::providers::RootProvider,
     pub chain_id: u64,
-    pub funder_signer: alloy::signers::local::LocalSigner<alloy::signers::k256::ecdsa::SigningKey>,
+    pub funder_signer: PrivateKeySigner,
     pub funder_addr: Address,
 }
 

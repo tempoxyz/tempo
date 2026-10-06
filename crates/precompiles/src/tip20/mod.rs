@@ -1750,7 +1750,7 @@ pub(crate) mod tests {
     use revm::{
         DatabaseCommit,
         context::{CfgEnv, TxEnv, result::ExecutionResult},
-        database::{CacheDB, EmptyDB},
+        database::InMemoryDB,
         state::{AccountInfo, Bytecode},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -3904,7 +3904,7 @@ pub(crate) mod tests {
     }
 
     struct BurnAtFixture {
-        evm: TempoEvm<CacheDB<EmptyDB>>,
+        evm: TempoEvm<InMemoryDB>,
         holder: Address,
         key: PrivateKeySigner,
         token: Address,
@@ -3917,7 +3917,7 @@ pub(crate) mod tests {
             let mut cfg = CfgEnv::default();
             cfg.set_spec_and_mainnet_gas_params(TempoHardfork::T12);
             let mut evm = TempoEvm::new(
-                CacheDB::new(EmptyDB::default()),
+                InMemoryDB::default(),
                 EvmEnv {
                     cfg_env: cfg,
                     block_env: TempoBlockEnv::default(),
@@ -4054,7 +4054,7 @@ pub(crate) mod tests {
                 ITIP20::BurnAt::SIGNATURE_HASH,
                 MULTICALL3_ADDRESS.into_word(),
                 fixture.holder.into_word(),
-                B256::from(amount.to_be_bytes::<32>()),
+                B256::from(amount),
             ]
         );
         assert!(logs[1].data.data.is_empty());

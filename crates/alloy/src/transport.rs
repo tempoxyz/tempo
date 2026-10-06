@@ -635,7 +635,7 @@ mod tests {
         let envelope = TempoTxEnvelope::AA(tx.into_signed(user_sig.into()));
         let mut encoded = Vec::new();
         envelope.encode_2718(&mut encoded);
-        format!("0x{}", hex::encode(encoded))
+        hex::encode_prefixed(encoded)
     }
 
     fn signed_tempo_aa_raw_tx_with_nonce(fee_payer_signed: bool, nonce: u64) -> String {
