@@ -14320,6 +14320,7 @@ dependencies = [
  "ark-ff 0.6.0",
  "codspeed-criterion-compat",
  "rayon",
+ "serde_json",
  "thiserror 2.0.18",
 ]
 
