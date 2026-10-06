@@ -82,8 +82,8 @@ def check_config(config):
         require(int(threads) > 0 if role == "a" else int(threads) == 0,
                 f"{role}: expected parallel A and sequential B")
         window = option(args, "--execution.capture-window")
-        require(window is None or window in ("128", "256", "512"),
-                f"{role}: capture window must be 128, 256 or 512")
+        require(window is None or window in ("32", "64", "128", "256", "512"),
+                f"{role}: capture window must be 32, 64, 128, 256 or 512")
         windows.append(int(window) if window is not None else 128)
         explicit_window |= window is not None
         require(option(args, "--log.file.format") == "json", f"{role}: JSON file logs required")

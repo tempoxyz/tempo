@@ -44,6 +44,8 @@ on:
         default: "128"
         type: choice
         options:
+          - "32"
+          - "64"
           - "128"
           - "256"
           - "512"

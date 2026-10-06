@@ -67,6 +67,10 @@ type Outcome<E> = Result<ResultAndState<TempoHaltReason>, EVMError<E, TempoInval
 /// Bounded Engine capture distance and completed-result count, independent of generic batches.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum EngineCaptureWindow {
+    /// Use a 32-transaction capture window.
+    Transactions32,
+    /// Use a 64-transaction capture window.
+    Transactions64,
     /// Retain the default 128-transaction capture window.
     #[default]
     Transactions128,
@@ -80,6 +84,8 @@ impl EngineCaptureWindow {
     /// Maximum forward distance and number of retained candidates.
     pub const fn transactions(self) -> usize {
         match self {
+            Self::Transactions32 => 32,
+            Self::Transactions64 => 64,
             Self::Transactions128 => 128,
             Self::Transactions256 => 256,
             Self::Transactions512 => 512,
@@ -98,10 +104,12 @@ impl std::str::FromStr for EngineCaptureWindow {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
+            "32" => Ok(Self::Transactions32),
+            "64" => Ok(Self::Transactions64),
             "128" => Ok(Self::Transactions128),
             "256" => Ok(Self::Transactions256),
             "512" => Ok(Self::Transactions512),
-            _ => Err("Engine capture window must be 128, 256, or 512"),
+            _ => Err("Engine capture window must be 32, 64, 128, 256, or 512"),
         }
     }
 }

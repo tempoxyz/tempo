@@ -303,6 +303,8 @@ fn selected_window_reaches_only_marked_engine_sessions() {
             .is_none()
     );
     for window in [
+        EngineCaptureWindow::Transactions32,
+        EngineCaptureWindow::Transactions64,
         EngineCaptureWindow::Transactions128,
         EngineCaptureWindow::Transactions256,
         EngineCaptureWindow::Transactions512,
@@ -335,8 +337,11 @@ fn selected_window_reaches_only_marked_engine_sessions() {
 }
 
 #[test]
-fn selected_windows_reuse_strict_results_beyond_the_default_boundary() {
+fn selected_windows_reuse_strict_results_across_window_boundaries() {
     for window in [
+        EngineCaptureWindow::Transactions32,
+        EngineCaptureWindow::Transactions64,
+        EngineCaptureWindow::Transactions128,
         EngineCaptureWindow::Transactions256,
         EngineCaptureWindow::Transactions512,
     ] {
@@ -367,6 +372,47 @@ fn selected_windows_reuse_strict_results_beyond_the_default_boundary() {
             root(&db),
             "strict capture cannot commit parent state"
         );
+    }
+}
+
+#[test]
+fn deferred_boundary_input_captures_after_ordered_progress() {
+    for window in [
+        EngineCaptureWindow::Transactions32,
+        EngineCaptureWindow::Transactions64,
+    ] {
+        let db = contract(&[0x60, 1, 0x60, 0, 0x35, 0x55, 0]);
+        let env = env(TempoHardfork::T0);
+        let limit = window.transactions();
+        let transactions = (0..=limit as u64).map(tx).collect::<Vec<_>>();
+        let (factory, session) = factory_with_window(&env, &transactions, true, window);
+        let mut worker = factory.create_evm(db.clone(), relaxed(&env));
+        let mut canonical = TempoEvm::new(db.clone(), env.clone());
+        let mut actual = ordered(&factory, db.clone(), env);
+
+        // The SDK must hold this input before calling the worker. Calling it now
+        // would perform only relaxed warming, with no later automatic recapture.
+        assert!(!session.can_capture(&transactions[limit]));
+        worker.transact_raw(transactions[0].clone()).unwrap();
+        for (index, transaction) in transactions.iter().enumerate() {
+            let expected = canonical.transact_raw(transaction.clone()).unwrap();
+            let result = actual.transact_raw(transaction.clone()).unwrap();
+            assert_eq!(result, expected);
+            canonical.db_mut().commit(expected.state);
+            actual.db_mut().commit(result.state);
+            if index == 0 {
+                assert!(session.can_capture(&transactions[limit]));
+                worker.transact_raw(transactions[limit].clone()).unwrap();
+            }
+        }
+        assert_eq!(actual.execution_stats().reused, 2);
+        assert_eq!(actual.execution_stats().conflicts, 0);
+        assert_eq!(root(actual.db()), root(canonical.db()));
+        assert_eq!(root(worker.db()), root(&db));
+        let counts = session.diagnostics.as_ref().unwrap().snapshot();
+        assert_eq!(counts.0[CaptureEvent::StrictAttempts as usize], 2);
+        assert_eq!(counts.0[CaptureEvent::Published as usize], 2);
+        assert_eq!(counts.0[CaptureEvent::AdmissionFuture as usize], 1);
     }
 }
 
@@ -414,8 +460,11 @@ fn warming_beyond_capture_window_does_not_create_strict_candidates() {
 }
 
 #[test]
-fn enlarged_window_changed_reads_replay_against_the_ordered_prefix() {
+fn selected_window_changed_reads_replay_against_the_ordered_prefix() {
     for window in [
+        EngineCaptureWindow::Transactions32,
+        EngineCaptureWindow::Transactions64,
+        EngineCaptureWindow::Transactions128,
         EngineCaptureWindow::Transactions256,
         EngineCaptureWindow::Transactions512,
     ] {
@@ -444,7 +493,7 @@ fn enlarged_window_changed_reads_replay_against_the_ordered_prefix() {
 }
 
 #[test]
-fn enlarged_window_validation_does_not_hide_provider_failure() {
+fn selected_window_validation_does_not_hide_provider_failure() {
     #[derive(Debug, thiserror::Error)]
     #[error("capture window test provider failure")]
     struct Unavailable;
@@ -467,6 +516,9 @@ fn enlarged_window_validation_does_not_hide_provider_failure() {
         }
     }
     for window in [
+        EngineCaptureWindow::Transactions32,
+        EngineCaptureWindow::Transactions64,
+        EngineCaptureWindow::Transactions128,
         EngineCaptureWindow::Transactions256,
         EngineCaptureWindow::Transactions512,
     ] {

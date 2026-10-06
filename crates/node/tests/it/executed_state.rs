@@ -143,6 +143,8 @@ enum PaidBlockWorkload {
 #[test_case::test_case(4, 128, 16, 8, PaidBlockWorkload::Transfers, EngineCaptureWindow::Transactions128, false, None, false; "parallel_builder_repeated_senders_and_recipients")]
 #[test_case::test_case(4, 64, 64, 1, PaidBlockWorkload::ReserveOpens, EngineCaptureWindow::Transactions128, false, None, false; "parallel_builder_native_reserve_opens")]
 #[test_case::test_case(4, 520, 64, 8, PaidBlockWorkload::Transfers, EngineCaptureWindow::Transactions128, false, None, false; "window128_paid_aa_beyond_boundary")]
+#[test_case::test_case(4, 72, 16, 8, PaidBlockWorkload::Transfers, EngineCaptureWindow::Transactions32, false, None, false; "window32_paid_aa_beyond_boundary")]
+#[test_case::test_case(4, 136, 16, 8, PaidBlockWorkload::Transfers, EngineCaptureWindow::Transactions64, false, None, false; "window64_paid_aa_beyond_boundary")]
 #[test_case::test_case(4, 520, 64, 8, PaidBlockWorkload::Transfers, EngineCaptureWindow::Transactions512, false, None, false; "window512_paid_aa_beyond_boundary")]
 #[test_case::test_case(4, 128, 16, 8, PaidBlockWorkload::Transfers, EngineCaptureWindow::Transactions128, true, None, false; "stage_diagnostics_paid_aa")]
 #[test_case::test_case(4, 256, 16, 16, PaidBlockWorkload::Transfers, EngineCaptureWindow::Transactions128, false, Some(SignatureType::Secp256k1), false; "signed_secp256k1_keychain")]

@@ -44,6 +44,8 @@ capture_events! {
     AdmissionUnindexed => "admission_unindexed",
     AdmissionStale => "admission_stale",
     AdmissionFuture => "admission_future",
+    Future32To63 => "future_32_63",
+    Future64To127 => "future_64_127",
     Future128To255 => "future_128_255",
     Future256To511 => "future_256_511",
     Future512To1023 => "future_512_1023",
@@ -371,7 +373,10 @@ impl EnginePrewarmingSession {
         if index >= next.saturating_add(self.window.transactions()) {
             self.capture_event(CaptureEvent::AdmissionFuture);
             self.capture_event(match index - next {
-                0..256 => CaptureEvent::Future128To255,
+                // Every supported window admits distances below 32.
+                0..64 => CaptureEvent::Future32To63,
+                64..128 => CaptureEvent::Future64To127,
+                128..256 => CaptureEvent::Future128To255,
                 256..512 => CaptureEvent::Future256To511,
                 512..1024 => CaptureEvent::Future512To1023,
                 _ => CaptureEvent::Future1024Plus,
@@ -801,6 +806,8 @@ mod tests {
     fn selected_windows_enforce_admission_count_and_byte_limits() {
         assert_eq!(EnginePrewarmingCache::default().window.transactions(), 128);
         for window in [
+            EngineCaptureWindow::Transactions32,
+            EngineCaptureWindow::Transactions64,
             EngineCaptureWindow::Transactions128,
             EngineCaptureWindow::Transactions256,
             EngineCaptureWindow::Transactions512,
@@ -856,41 +863,49 @@ mod tests {
     }
 
     #[test]
-    fn enlarged_windows_keep_absolute_future_distance_buckets() {
+    fn selected_windows_keep_absolute_future_distance_buckets() {
         for (window, expected) in [
-            (EngineCaptureWindow::Transactions256, [0, 2, 2, 2]),
-            (EngineCaptureWindow::Transactions512, [0, 0, 2, 2]),
+            (EngineCaptureWindow::Transactions32, [2, 2, 2, 2, 2, 2]),
+            (EngineCaptureWindow::Transactions64, [0, 2, 2, 2, 2, 2]),
+            (EngineCaptureWindow::Transactions128, [0, 0, 2, 2, 2, 2]),
+            (EngineCaptureWindow::Transactions256, [0, 0, 0, 2, 2, 2]),
+            (EngineCaptureWindow::Transactions512, [0, 0, 0, 0, 2, 2]),
         ] {
-            let session = EnginePrewarmingCache::new(true)
-                .with_window(window)
-                .begin(env(), (0..2048).map(hash))
-                .unwrap();
-            for index in [128, 255, 256, 511, 512, 1023, 1024, 2047] {
+            for cursor in [0, 17] {
+                let session = EnginePrewarmingCache::new(true)
+                    .with_window(window)
+                    .begin(env(), (0..2065).map(hash))
+                    .unwrap();
+                session.next.store(cursor, Ordering::Release);
+                for distance in [32, 63, 64, 127, 128, 255, 256, 511, 512, 1023, 1024, 2047] {
+                    assert_eq!(
+                        session.can_capture(&tx(cursor + distance)),
+                        distance < window.transactions()
+                    );
+                }
+                let count = counts(&session);
+                for (bucket, expected) in [
+                    CaptureEvent::Future32To63,
+                    CaptureEvent::Future64To127,
+                    CaptureEvent::Future128To255,
+                    CaptureEvent::Future256To511,
+                    CaptureEvent::Future512To1023,
+                    CaptureEvent::Future1024Plus,
+                ]
+                .into_iter()
+                .zip(expected)
+                {
+                    assert_eq!(count(bucket), expected);
+                }
                 assert_eq!(
-                    session.can_capture(&tx(index)),
-                    index < window.transactions()
+                    count(CaptureEvent::AdmissionFuture),
+                    expected.iter().sum::<u64>()
+                );
+                assert_eq!(
+                    count(CaptureEvent::AdmissionInWindow),
+                    12 - expected.iter().sum::<u64>()
                 );
             }
-            let count = counts(&session);
-            for (bucket, expected) in [
-                CaptureEvent::Future128To255,
-                CaptureEvent::Future256To511,
-                CaptureEvent::Future512To1023,
-                CaptureEvent::Future1024Plus,
-            ]
-            .into_iter()
-            .zip(expected)
-            {
-                assert_eq!(count(bucket), expected);
-            }
-            assert_eq!(
-                count(CaptureEvent::AdmissionFuture),
-                expected.iter().sum::<u64>()
-            );
-            assert_eq!(
-                count(CaptureEvent::AdmissionInWindow),
-                8 - expected.iter().sum::<u64>()
-            );
         }
     }
 
@@ -922,6 +937,8 @@ mod tests {
         assert_eq!(count(CaptureEvent::AdmissionInWindow), 2);
         assert_eq!(count(CaptureEvent::AdmissionStale), 1);
         assert_eq!(count(CaptureEvent::AdmissionFuture), 8);
+        assert_eq!(count(CaptureEvent::Future32To63), 0);
+        assert_eq!(count(CaptureEvent::Future64To127), 0);
         for bucket in [
             CaptureEvent::Future128To255,
             CaptureEvent::Future256To511,

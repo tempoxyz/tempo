@@ -22,7 +22,7 @@ The previous detailed diary is archived locally as
 | `--execution.threads 0` | Disable speculation; positive values set the regular speculative pool size. |
 | `--execution.batch-size 128` | Generic batch size and speculative builder admission window; builder admission is capped at 128. |
 | `--engine.prewarming-threads 16` | Existing Engine and builder prewarming worker count. |
-| `--execution.capture-window 128` | Engine lead, in-flight and retained-result count bounds; choices are 128, 256 and 512. Independent of builder batch size. |
+| `--execution.capture-window 128` | Engine lead, in-flight and retained-result count bounds; choices are 32, 64, 128, 256 and 512. Independent of builder batch size. |
 | `--execution.capture-diagnostics` | Optional Engine admission/publication/consumption counters; defaults off. |
 | `--execution.stage-diagnostics` | Optional ordered validation, ordinary execution, commit and consumed-candidate disposal wall timers; defaults off. |
 

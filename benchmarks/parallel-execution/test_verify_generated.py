@@ -123,18 +123,21 @@ class GeneratedTests(unittest.TestCase):
         # An explicit default still requires blocks larger than that window.
         with self.assertRaisesRegex(verify.VerificationError, ">= 129 transactions"):
             self.run_check()
-        for other in (None, "128", "256"):
-            with self.subTest(other=other):
-                self.setUp()
-                self.config["a"]["args"].append("--execution.capture-window=512")
-                if other is not None:
-                    self.config["b"]["args"].extend(["--execution.capture-window", other])
-                with self.assertRaisesRegex(verify.VerificationError, "capture windows must match"):
-                    verify.check_config(self.config)
+        for window in ("32", "64", "128", "256", "512"):
+            for other in (None, "32", "64", "128", "256", "512"):
+                if window == (other or "128"):
+                    continue
+                with self.subTest(window=window, other=other):
+                    self.setUp()
+                    self.config["a"]["args"].append(f"--execution.capture-window={window}")
+                    if other is not None:
+                        self.config["b"]["args"].extend(["--execution.capture-window", other])
+                    with self.assertRaisesRegex(verify.VerificationError, "capture windows must match"):
+                        verify.check_config(self.config)
 
     def test_invalid_missing_and_duplicate_capture_window_fail_closed(self):
         for role in ("a", "b"):
-            for value in ("", "0", "127", "129", "255", "513", "abc", "-128"):
+            for value in ("", "0", "31", "33", "63", "65", "127", "129", "255", "513", "abc", "-128"):
                 for spelling in (["--execution.capture-window", value],
                                  ["--execution.capture-window=" + value]):
                     with self.subTest(role=role, spelling=spelling):
@@ -150,7 +153,7 @@ class GeneratedTests(unittest.TestCase):
                 verify.check_config(config)
 
     def test_explicit_capture_window_requires_larger_blocks_in_both_roles(self):
-        for window in (128, 256, 512):
+        for window in (32, 64, 128, 256, 512):
             with self.subTest(window=window):
                 self.setUp()
                 self.config["a"]["args"].extend(["--execution.capture-window", str(window)])

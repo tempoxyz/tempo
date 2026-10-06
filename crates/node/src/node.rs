@@ -83,7 +83,7 @@ pub struct TempoNodeArgs {
     /// Record ordered validation, fallback and commit wall times when speculation is enabled.
     #[arg(long = "execution.stage-diagnostics", default_value_t = false)]
     pub execution_stage_diagnostics: bool,
-    /// Engine capture distance and retained-result count (128, 256, or 512).
+    /// Engine capture distance and retained-result count (32, 64, 128, 256, or 512).
     #[arg(long = "execution.capture-window", default_value_t = tempo_evm::parallel::EngineCaptureWindow::default())]
     pub execution_capture_window: tempo_evm::parallel::EngineCaptureWindow,
 
@@ -1054,7 +1054,7 @@ mod tests {
                 .transactions(),
             128
         );
-        for value in ["128", "256", "512"] {
+        for value in ["32", "64", "128", "256", "512"] {
             let args = Args::try_parse_from([
                 "tempo",
                 "--execution.capture-window",
@@ -1070,7 +1070,9 @@ mod tests {
             assert_eq!(node.executor_builder.batch_size, 17);
             assert!(!node.executor_builder.capture_diagnostics);
         }
-        for invalid in ["0", "1", "127", "129", "255", "257", "513", "1024", "-1"] {
+        for invalid in [
+            "0", "1", "31", "33", "63", "65", "127", "129", "255", "257", "513", "1024", "-1",
+        ] {
             assert!(
                 Args::try_parse_from(["tempo", "--execution.capture-window", invalid]).is_err()
             );

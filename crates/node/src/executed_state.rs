@@ -7,6 +7,7 @@ use eyre::{OptionExt as _, WrapErr as _};
 use reth_chainspec::EthChainSpec as _;
 use reth_engine_tree::tree::{
     TxPoolPrewarmSource, TxPoolPrewarmTransaction, TxPoolPrewarmTransactions,
+    payload_processor::prewarm::TransactionPrewarmPolicy,
 };
 use reth_node_api::{AddOnsContext, FullNodeComponents, PrimitivesTy, TreeConfig};
 use reth_node_builder::{
@@ -145,17 +146,10 @@ where
             .resolve_datadir(ctx.config.chain.chain());
         let invalid_block_hook = ctx.create_invalid_block_hook(&data_dir).await?;
         let txpool_prewarming = tree_config.txpool_prewarming();
-        let transaction_prewarm_policy = (!tree_config.disable_prewarming())
-            .then(|| ctx.node.evm_config().speculative_executor.as_ref())
-            .flatten()
-            .and_then(|executor| {
-                let window = executor.capture_window().transactions();
-                reth_engine_tree::tree::payload_processor::prewarm::TransactionPrewarmPolicy::new(
-                    window,
-                    window,
-                    std::time::Duration::from_micros(100),
-                )
-            });
+        let transaction_prewarm_policy = engine_transaction_prewarm_policy(
+            tree_config.disable_prewarming(),
+            ctx.node.evm_config().speculative_executor.as_ref(),
+        );
 
         // Give only the Engine a marked clone. RPC, builder, and invalid-block
         // hooks retain the original configuration from AddOnsContext.
@@ -182,6 +176,21 @@ where
         }
         Ok(validator)
     }
+}
+
+fn engine_transaction_prewarm_policy(
+    prewarming_disabled: bool,
+    executor: Option<&tempo_evm::parallel::SpeculativeExecutor>,
+) -> Option<TransactionPrewarmPolicy> {
+    (!prewarming_disabled)
+        .then_some(executor)
+        .flatten()
+        .and_then(|executor| {
+            let window = executor.capture_window().transactions();
+            // Keep SDK admission aligned with capture: future inputs wait before Rayon dispatch
+            // rather than being warmed once outside the strict-capture window.
+            TransactionPrewarmPolicy::new(window, window, std::time::Duration::from_micros(100))
+        })
 }
 
 /// Mirrors Reth's private pool adapter, preserving its parent and fee filters.
@@ -215,5 +224,34 @@ where
             sender: transaction.sender(),
             transaction: transaction.transaction.clone_into_consensus(),
         })))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::engine_transaction_prewarm_policy;
+    use std::time::Duration;
+    use tempo_evm::parallel::{EngineCaptureWindow, SpeculativeExecutor};
+
+    #[test]
+    fn selected_capture_window_bounds_sdk_lookahead_and_in_flight_jobs() {
+        assert!(engine_transaction_prewarm_policy(false, None).is_none());
+        assert!(engine_transaction_prewarm_policy(true, None).is_none());
+        for window in [
+            EngineCaptureWindow::Transactions32,
+            EngineCaptureWindow::Transactions64,
+            EngineCaptureWindow::Transactions128,
+            EngineCaptureWindow::Transactions256,
+            EngineCaptureWindow::Transactions512,
+        ] {
+            let executor = SpeculativeExecutor::new(1, 17)
+                .unwrap()
+                .with_capture_window(window);
+            let policy = engine_transaction_prewarm_policy(false, Some(&executor)).unwrap();
+            assert_eq!(policy.lookahead(), window.transactions());
+            assert_eq!(policy.max_in_flight(), window.transactions());
+            assert_eq!(policy.poll_interval(), Duration::from_micros(100));
+            assert!(engine_transaction_prewarm_policy(true, Some(&executor)).is_none());
+        }
     }
 }
