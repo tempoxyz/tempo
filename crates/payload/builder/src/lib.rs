@@ -3,6 +3,8 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+use reth_evm::OnStateHook;
+
 mod budget;
 mod encode;
 mod metrics;
@@ -41,7 +43,7 @@ use reth_engine_tree::tree::{
 use reth_errors::ConsensusError;
 use reth_evm::{
     BlockExecutionError, BlockExecutor, BlockExecutorFactory, BlockValidationError, ConfigureEvm,
-    Database, NextBlockEnvAttributes, OnStateHook, database::StateProviderDatabase,
+    Database, NextBlockEnvAttributes, database::StateProviderDatabase,
     execute::BlockAssemblerInput,
 };
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
@@ -90,6 +92,31 @@ enum PayloadTransactions {
     Sequential(StateAwareBestTransactions<Box<dyn BestTransactions<Item = BestTransaction>>>),
     Prewarming(StateAwareBestTransactions<BestTransactionsPrewarming>),
     Parallel(BestTransactionsPrewarming),
+}
+
+impl evm2::evm::StateChangeSink for PayloadTransactions {
+    type Error = core::convert::Infallible;
+    fn storage(&mut self, change: evm2::evm::StorageChange) -> Result<(), Self::Error> {
+        match self {
+            Self::Sequential(txs) => txs.on_storage_change(change),
+            Self::Prewarming(txs) => txs.on_storage_change(change),
+            Self::Parallel(_) => {}
+        }
+        Ok(())
+    }
+    fn storage_read(
+        &mut self,
+        address: Address,
+        key: U256,
+        value: U256,
+    ) -> Result<(), Self::Error> {
+        match self {
+            Self::Sequential(txs) => txs.on_storage_read(address, key, value),
+            Self::Prewarming(txs) => txs.on_storage_read(address, key, value),
+            Self::Parallel(_) => {}
+        }
+        Ok(())
+    }
 }
 
 impl PayloadTransactions {
@@ -604,19 +631,19 @@ where
                 .then(|| format!("{:?}", tx.transaction))
                 .unwrap_or_default();
 
-            let mut result_closure = |result: &TempoTxResult| {
-                cumulative_gas_used += result.block_gas_used();
-                cumulative_state_gas_used += result.state_gas_used();
+            let use_regular_gas = executor.evm().version().feature(evm2::EvmFeatures::EIP8037);
+            let mut result_closure = |result: &evm2::TxResult<tempo_evm::TempoEvmTypes>| {
+                let block_gas_used = if use_regular_gas {
+                    result.execution_gas_spent()
+                } else {
+                    result.tx_gas_used()
+                };
+                cumulative_gas_used += block_gas_used;
+                cumulative_state_gas_used += result.state_gas_spent();
                 if !is_payment {
-                    non_payment_gas_used += result.block_gas_used();
+                    non_payment_gas_used += block_gas_used;
                 }
-
-                // Score payload value by the validator-credited fee amount that the
-                // FeeManager precompile actually wrote during this transaction.
-                total_fees += result.validator_fee();
-
-                // Notify transactions iterator about the new state.
-                best_txs.on_new_result(result);
+                total_fees += result.ext.validator_fee;
             };
 
             let execution_result = if let Some(replay) = pool_tx.replay.take() {
@@ -624,16 +651,20 @@ where
                 executor.execute_transaction_with_actions(
                     tx.transaction.executable(),
                     *replay,
-                    result_closure,
+                    |result| {
+                        result_closure(result.result());
+                        best_txs.on_new_result(result);
+                    },
                 )
             } else {
                 executor.invalidate_expiring_nonce_cache();
                 executor
-                    .execute_transaction_without_commit(tx.transaction.executable())
-                    .and_then(|result| {
-                        result_closure(&result);
-                        executor.commit_transaction(result).map(|_| ())
-                    })
+                    .execute_transaction_with_state_sink(
+                        tx.transaction.executable(),
+                        &mut best_txs,
+                        result_closure,
+                    )
+                    .map(|_| ())
             };
 
             if let Err(err) = execution_result {

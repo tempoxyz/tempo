@@ -27,7 +27,7 @@ use alloy::{consensus::BlockHeader as _, sol_types::SolEvent as _};
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::{encode_list, list_length};
 use analysis::Report;
-use evm2::evm::{Cache, PendingState, StateChangeSource, TxResultExt};
+use evm2::evm::{AccountInfo, Cache, PendingState, StateChangeSource, TxResultExt};
 use fees::{FeeWrites, RecordingFeeManager};
 use metrics::{Counter, Gauge, Histogram};
 use parking_lot::Mutex;
@@ -37,17 +37,14 @@ use reth_evm::{
     BlockExecutor as _, BlockExecutorFactory as _, ConfigureEvm as _,
     database::StateProviderDatabase,
 };
-use reth_execution_types::TransactionChanges;
+use reth_execution_types::{BlockState, EvmState, StateChange, StateChanges};
 use reth_primitives_traits::RecoveredBlock;
 use reth_provider::{
     CanonStateSubscriptions, ChainSpecProvider, StateProvider, StateProviderFactory,
 };
-use reth_revm::{
-    db::{CacheState, TransitionState},
-    state::{AccountInfo, EvmState},
-};
+use reth_revm::db::TransitionState;
 use reth_tracing::tracing::{debug, error, info, info_span, warn};
-use std::{borrow::Cow, sync::Arc, time::Instant};
+use std::{sync::Arc, time::Instant};
 use tempo_chainspec::{
     hardfork::TempoHardfork,
     spec::{TempoChainSpec, TempoHardforks as _},
@@ -460,22 +457,29 @@ fn save_pre_block_info(
 ) -> Vec<SavedPreBlockInfo> {
     state
         .iter()
-        .filter(|(address, account)| {
-            account.is_touched()
-                && !account.is_created()
-                && !account.is_selfdestructed()
-                && pre_block.transitions.contains_key(*address)
-        })
-        .filter_map(|(&address, account)| {
+        .filter_map(|change| {
+            let StateChange::Account {
+                address,
+                original: Some(original),
+                current: Some(current),
+                created: false,
+                ..
+            } = change
+            else {
+                return None;
+            };
+            if !pre_block.transitions.contains_key(address) {
+                return None;
+            }
             cache
                 .accounts
-                .get(&address)
+                .get(address)
                 .and_then(Option::as_ref)
                 .map(|candidate| SavedPreBlockInfo {
-                    address,
+                    address: *address,
                     candidate: candidate.clone(),
-                    control_before: account.original_info(),
-                    control_after: account.info.clone(),
+                    control_before: original.clone(),
+                    control_after: current.clone(),
                 })
         })
         .collect()
@@ -508,32 +512,11 @@ fn restore_pre_block_info(cache: &mut Cache, saved: Vec<SavedPreBlockInfo>) {
 
 fn take_updates(updates: &Mutex<Vec<EvmState>>) -> TransitionState {
     let states = std::mem::take(&mut *updates.lock());
-    let mut merged = TransitionState::default();
+    let mut block = BlockState::new();
     for state in states {
-        for (address, account) in transition(state).transitions {
-            merged.add_transition(
-                address,
-                account.map_storage(|storage| {
-                    Some(Cow::Owned(
-                        storage
-                            .into_iter()
-                            .map(|(key, slot)| {
-                                (
-                                    key,
-                                    reth_revm::state::EvmStorageSlot::new_changed(
-                                        slot.previous_or_original_value,
-                                        slot.present_value,
-                                        reth_revm::state::TransactionId::ZERO,
-                                    ),
-                                )
-                            })
-                            .collect(),
-                    ))
-                }),
-            );
-        }
+        block.commit(&StateChanges(&state));
     }
-    merged
+    block.into_transitions()
 }
 
 fn pending_state(result: &TempoTxResult) -> EvmState {
@@ -541,38 +524,24 @@ fn pending_state(result: &TempoTxResult) -> EvmState {
 }
 
 fn pending_to_evm_state(state: &PendingState) -> EvmState {
-    let mut changes = TransactionChanges::default();
+    let mut changes = EvmState::default();
     state
-        .visit(&mut changes)
+        .visit(&mut BlockState::new().transaction_sink(Some(&mut changes)))
         .expect("infallible state conversion");
-    changes.state
+    changes
 }
 
 fn transition_pending(state: &PendingState) -> TransitionState {
-    transition(pending_to_evm_state(state))
+    let mut block = BlockState::new();
+    block.commit(state);
+    block.into_transitions()
 }
 
+#[cfg(test)]
 fn transition(state: EvmState) -> TransitionState {
-    let mut cache = CacheState::new();
-    for (&address, account) in &state {
-        if account.is_loaded_as_not_existing() {
-            cache.insert_not_existing(address);
-        } else {
-            cache.insert_account_with_storage(
-                address,
-                account.original_info(),
-                account
-                    .storage
-                    .iter()
-                    .map(|(&slot, value)| (slot, value.original_value))
-                    .collect(),
-            );
-        }
-    }
-    let transitions = cache.apply_evm_state(state, |_, _| {});
-    let mut evidence = TransitionState::default();
-    evidence.add_transitions(transitions);
-    evidence
+    let mut block = BlockState::new();
+    block.commit(&StateChanges(&state));
+    block.into_transitions()
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -735,6 +704,38 @@ fn shadow_spec(canonical: &TempoChainSpec, hardfork: TempoHardfork) -> TempoChai
 
 #[cfg(test)]
 mod tests {
+
+    fn native_fixture(state: reth_revm::state::EvmState) -> reth_execution_types::EvmState {
+        use reth_execution_types::{StateChange, native_account};
+        let mut updates = Vec::new();
+        for (address, a) in state.into_iter().filter(|(_, a)| a.is_touched()) {
+            let created = a.is_created();
+            let selfdestructed = a.is_selfdestructed();
+            if created || selfdestructed {
+                updates.push(StateChange::StorageWipe(address));
+            }
+            for (&key, slot) in &a.storage {
+                if slot.is_changed() {
+                    updates.push(StateChange::Storage(evm2::evm::StorageChange {
+                        address,
+                        key,
+                        original: slot.original_value,
+                        current: slot.present_value,
+                    }));
+                }
+            }
+            updates.push(StateChange::Account {
+                address,
+                original: (!a.is_loaded_as_not_existing())
+                    .then(|| native_account(&a.original_info())),
+                current: (!selfdestructed).then(|| native_account(&a.info)),
+                created,
+                selfdestructed,
+            });
+        }
+        updates
+    }
+
     use super::*;
     use alloy_primitives::{Address, U256};
     use evm2::{bytecode::Bytecode, evm::InMemoryDB};
@@ -829,9 +830,9 @@ mod tests {
             EvmStorageSlot::new_changed(U256::ZERO, U256::from(42), TransactionId::ZERO),
         );
         control.mark_touch();
-        let state = EvmState::from_iter([(ZONE_PORTAL_IMPL_ADDRESS, control)]);
+        let state = reth_revm::state::EvmState::from_iter([(ZONE_PORTAL_IMPL_ADDRESS, control)]);
         let db = executor.evm_mut().overlay_db_mut();
-        let saved = save_pre_block_info(&db.cache, &pre_block, &state);
+        let saved = save_pre_block_info(&db.cache, &pre_block, &native_fixture(state));
         let old_code = Bytecode::new_raw(ZONE_PORTAL_RUNTIME);
         let original = evm2::evm::AccountInfo::default().with_code(old_code);
         let current = evm2::evm::AccountInfo {
@@ -890,7 +891,7 @@ mod tests {
         let mut destroyed = Account::from(original.clone());
         destroyed.mark_touch();
         destroyed.mark_selfdestruct();
-        let state = EvmState::from_iter([
+        let state = reth_revm::state::EvmState::from_iter([
             (address, account),
             (created_address, created),
             (destroyed_address, destroyed),
@@ -906,7 +907,7 @@ mod tests {
         db.insert_account(destroyed_address, original);
         db.commit(state.clone());
 
-        assert_eq!(transition(state), drain_revm(&mut db));
+        assert_eq!(transition(native_fixture(state)), drain_revm(&mut db));
     }
 
     fn drain_revm<DB>(db: &mut State<DB>) -> TransitionState {

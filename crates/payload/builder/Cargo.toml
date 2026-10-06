@@ -16,6 +16,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+evm2.workspace = true
 tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-evm.workspace = true
 tempo-precompiles.workspace = true

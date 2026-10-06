@@ -196,7 +196,7 @@ impl BestTransactionsPrewarming {
             tx_env.set_expiring_nonce_idx(expiring_nonce_offset);
             let tx_env = Recovered::new_unchecked(tx_env, tx.transaction.sender());
 
-            let result = match evm.transact(&tx_env).map(|executed| executed.detach()) {
+            let result = match evm.transact(&tx_env).map(|executed| executed.discard()) {
                 Ok(executed) => executed,
                 Err(err) => {
                     // Discard actions recorded by the failed transaction before reusing this worker.
@@ -238,8 +238,8 @@ impl BestTransactionsPrewarming {
             );
 
             Some(Box::new(StorageActionReplay {
-                validator_fee: result.result.ext.validator_fee,
-                result: result.result,
+                validator_fee: result.ext.validator_fee,
+                result,
                 actions,
                 expiring_nonce,
             }))

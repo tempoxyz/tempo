@@ -144,10 +144,10 @@ mod tests {
         ExecutionError,
         bytecode::Bytecode,
         env::TxEnvExt,
-        evm::{AccountInfo, InMemoryDB, StateChangeSource, precompile::NoPrecompiles},
+        evm::{AccountInfo, InMemoryDB, precompile::NoPrecompiles},
         interpreter::MessageExt,
     };
-    use reth_execution_types::{BlockState, TransactionChanges, native_account};
+    use reth_execution_types::{BlockState, native_account};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_precompiles::{STORAGE_CREDITS_ADDRESS, storage_credits::StorageCredits};
     use tempo_primitives::TempoTxEnvelope;
@@ -222,10 +222,8 @@ mod tests {
 
         // Check the persisted block output: correct slot values alone do not guarantee that
         // the storage-owning precompile retains its account metadata across this conversion.
-        let mut changes = TransactionChanges::default();
-        result.pending_state.visit(&mut changes).unwrap();
         let mut block = BlockState::new();
-        block.commit(&changes);
+        block.commit(&result.pending_state);
         let bundle = block.into_bundle();
         assert_eq!(
             bundle.storage(&STORAGE_CREDITS_ADDRESS, credit_slot),
