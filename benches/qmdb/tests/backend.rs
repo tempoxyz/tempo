@@ -103,8 +103,7 @@ async fn qmdb_builds_validates_persists_and_restarts() -> eyre::Result<()> {
             .provider
             .latest()?
             .basic_account(&address)?
-            .unwrap()
-            .nonce,
+            .map_or(0, |account| account.nonce),
         0
     );
     observer.stop().await?;
