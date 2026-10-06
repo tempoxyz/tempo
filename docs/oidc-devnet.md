@@ -3,7 +3,8 @@
 This branch implements the TIP-1132 key publisher and offchain OIDC helpers as dependencies of
 [TIP-1130](https://github.com/tempoxyz/tempo/pull/8127). It is not a working OIDC
 wallet: TIP-1131 signatures and the TIP-1133 circuit, circuit witness generator, prover,
-and verifying key remain unimplemented. No provider token or ZK proof is accepted.
+and verifying key remain unimplemented. The node accepts neither provider tokens
+nor ZK proofs.
 
 The native publisher is available only when compiling with `experimental-oidc`
 and running chain ID `1337`. Default builds and other chain IDs do not register
