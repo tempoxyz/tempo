@@ -24,6 +24,7 @@ struct BlockedTransfer {
     receiver: Address,
     receipt: Bytes,
     gas_used: u64,
+    blocked_at: u64,
 }
 
 async fn create_token<P>(provider: P, admin: Address, salt: B256) -> eyre::Result<Address>
@@ -121,6 +122,7 @@ async fn create_blocked_transfer<P: Provider + Clone>(
         receiver,
         receipt: receipt_bytes,
         gas_used: receipt.gas_used,
+        blocked_at: decoded_receipt.blockedAt,
     })
 }
 
@@ -173,8 +175,25 @@ fn transfer_blocked(
 async fn test_receive_policy_guard_gas_snapshots() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
+    // Claims embed blockedAt in their calldata. A zero timestamp byte costs
+    // 12 gas less, so wall-clock timestamps make these snapshots intermittent.
+    let gas = receive_policy_guard_gas(0x0101_0101).await?;
+    let zero_byte_gas = receive_policy_guard_gas(0x0101_0001).await?;
+    assert_eq!(gas.len(), zero_byte_gas.len());
+    for (name, used) in gas.iter() {
+        let timestamp_gas = if name.starts_with("claim_") { 12 } else { 0 };
+        assert_eq!(zero_byte_gas[name] + timestamp_gas, *used, "{name}");
+    }
+
+    print_gas_snapshot("ReceivePolicyGuard gas snapshot", &gas);
+    insta::assert_yaml_snapshot!(gas);
+    Ok(())
+}
+
+async fn receive_policy_guard_gas(timestamp_start: u64) -> eyre::Result<GasSnapshot> {
     let setup = TestNodeBuilder::new()
         .with_instant_mining()
+        .with_timestamp_start(timestamp_start)
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
@@ -295,6 +314,11 @@ async fn test_receive_policy_guard_gas_snapshots() -> eyre::Result<()> {
         "transfer_blocked_third_party_recovery",
         third_party_blocked.gas_used,
     );
+    for blocked in [&originator_blocked, &receiver_blocked, &third_party_blocked] {
+        // The low byte stays nonzero throughout the fixture. The two runs
+        // differ only in the fixed zero/nonzero byte above it.
+        assert!((timestamp_start..timestamp_start + 0xff).contains(&blocked.blocked_at));
+    }
     gas.record(
         "transfer_allowed_third_party_receive_policy",
         create_allowed_transfer(
@@ -337,9 +361,5 @@ async fn test_receive_policy_guard_gas_snapshots() -> eyre::Result<()> {
         claim_blocked(&recovery_guard, destination.address(), &third_party_blocked).await?,
     );
 
-    print_gas_snapshot("ReceivePolicyGuard gas snapshot", &gas);
-
-    insta::assert_yaml_snapshot!(gas);
-
-    Ok(())
+    Ok(gas)
 }

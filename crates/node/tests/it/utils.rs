@@ -436,6 +436,7 @@ pub(crate) struct TestNodeBuilder {
     custom_gas_limit: Option<String>,
     node_count: usize,
     block_time: Option<Duration>,
+    timestamp_start: Option<u64>,
     external_rpc: Option<Url>,
     dynamic_validator: Option<Arc<std::sync::Mutex<Address>>>,
     schedule: ForkSchedule,
@@ -453,6 +454,7 @@ impl TestNodeBuilder {
             custom_gas_limit: None,
             node_count: 1,
             block_time: Some(Duration::from_millis(100)),
+            timestamp_start: None,
             external_rpc: None,
             dynamic_validator: None,
             schedule: ForkSchedule::Devnet,
@@ -500,6 +502,13 @@ impl TestNodeBuilder {
     /// Mine HTTP-only test blocks as soon as transactions arrive, without an interval timer.
     pub(crate) fn with_instant_mining(mut self) -> Self {
         self.block_time = None;
+        self
+    }
+
+    /// Give local HTTP test blocks deterministic timestamps, increasing by one second.
+    /// Use with a genesis that activates the tested forks at timestamp zero.
+    pub(crate) fn with_timestamp_start(mut self, timestamp: u64) -> Self {
+        self.timestamp_start = Some(timestamp);
         self
     }
 
@@ -687,6 +696,7 @@ impl TestNodeBuilder {
         let chain_spec = self.build_chain_spec()?;
         let static_validator = chain_spec.inner.genesis.coinbase;
         let dynamic_validator = self.dynamic_validator.clone();
+        let next_timestamp = self.timestamp_start.map(std::sync::atomic::AtomicU64::new);
 
         let map_attributes = move |mut attributes: tempo_payload_types::TempoPayloadAttributes| {
             let validator = dynamic_validator
@@ -694,6 +704,9 @@ impl TestNodeBuilder {
                 .map(|v| *v.lock().unwrap())
                 .unwrap_or(static_validator);
             attributes.suggested_fee_recipient = validator;
+            if let Some(timestamp) = &next_timestamp {
+                attributes.timestamp = timestamp.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
             attributes
         };
         let configure = move |mut config: NodeConfig<TempoChainSpec>| {
