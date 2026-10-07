@@ -15,7 +15,9 @@ use revm::database::{AccountStatus, BundleAccount, BundleState};
 use std::time::Duration;
 use tempo_primitives::{
     account::encode_config_commitment,
-    transaction::{MultisigConfig, MultisigOwner, MultisigSignature, multisig_digest},
+    transaction::{
+        AASigned, MultisigConfig, MultisigOwner, MultisigSignature, TempoSignature, multisig_digest,
+    },
 };
 use tempo_revm::{gas_params::tempo_gas_params, native_multisig::NativeMultisigError};
 
