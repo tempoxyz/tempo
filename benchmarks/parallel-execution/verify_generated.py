@@ -124,6 +124,12 @@ def check_config(config):
     require(Path(config["a"]["log_dir"]).resolve() != Path(config["b"]["log_dir"]).resolve(),
             "peer log directories must differ")
     require(windows[0] == windows[1], "peer capture windows must match (default: 128)")
+    for flag in ("--engine.prewarming-threads", "--engine.account-worker-count",
+                 "--engine.storage-worker-count"):
+        counts = [option(config[role]["args"], flag) for role in ("a", "b")]
+        require(all(count is None or count.isdecimal() and int(count) > 0 for count in counts),
+                f"{flag}: explicit worker counts must be positive integers")
+        require(counts[0] == counts[1], f"{flag}: peer worker settings must match")
     if txpool_enabled(config):
         require(option(config["a"]["args"], "--engine.slow-block-threshold") == "0",
                 "a: txpool correctness requires per-block cache hit diagnostics")

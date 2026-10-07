@@ -280,6 +280,24 @@ class GeneratedTests(unittest.TestCase):
             with self.assertRaisesRegex(verify.VerificationError, "missing value|duplicate"):
                 verify.check_config(config)
 
+    def test_worker_pool_controls_match_independent_reference(self):
+        for flag in ("--engine.prewarming-threads", "--engine.account-worker-count",
+                     "--engine.storage-worker-count"):
+            with self.subTest(flag=flag):
+                config = copy.deepcopy(self.config)
+                config["a"]["args"].extend([flag, "16"])
+                with self.assertRaisesRegex(verify.VerificationError, "settings must match"):
+                    verify.check_config(config)
+                config["b"]["args"].append(flag + "=16")
+                verify.check_config(config)
+                config["b"]["args"][-1] = flag + "=32"
+                with self.assertRaisesRegex(verify.VerificationError, "settings must match"):
+                    verify.check_config(config)
+                config["a"]["args"][-1] = "0"
+                config["b"]["args"][-1] = flag + "=0"
+                with self.assertRaisesRegex(verify.VerificationError, "positive integers"):
+                    verify.check_config(config)
+
     def test_explicit_capture_window_requires_larger_blocks_in_both_roles(self):
         for window in (128, 256, 512):
             with self.subTest(window=window):

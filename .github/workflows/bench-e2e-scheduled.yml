@@ -79,6 +79,26 @@ on:
           - "8"
           - "16"
           - "32"
+      account-proof-workers:
+        description: "Account proof workers per node for generated correctness validation; auto keeps node defaults"
+        required: false
+        default: "auto"
+        type: choice
+        options:
+          - "auto"
+          - "16"
+          - "32"
+          - "64"
+      storage-proof-workers:
+        description: "Storage proof workers per node for generated correctness validation; auto keeps node defaults"
+        required: false
+        default: "auto"
+        type: choice
+        options:
+          - "auto"
+          - "16"
+          - "32"
+          - "64"
       state-provider-metrics:
         description: "Enable Engine provider diagnostics for generated sequential-peer correctness validation only"
         required: false
@@ -234,7 +254,15 @@ jobs:
       max-concurrent-requests: "100"
       token-count: "4"
       txgen-ref: 8ca73369c4b42ffffaf40066bbde8673141049c1
-      feature-args: --execution.threads 8 --execution.batch-size 128 --engine.prewarming-threads ${{ inputs.prewarming-threads || '16' }} --execution.capture-window ${{ inputs.capture-window || '128' }} ${{ inputs.state-provider-metrics && '--engine.state-provider-metrics' || '' }} ${{ inputs.proof-prefetch && '--execution.proof-prefetch' || '' }} ${{ inputs.txpool-prewarming && '--engine.txpool-prewarming --engine.slow-block-threshold 0' || '' }}
+      feature-args: >-
+        --execution.threads 8 --execution.batch-size 128
+        --engine.prewarming-threads ${{ inputs.prewarming-threads || '16' }}
+        --execution.capture-window ${{ inputs.capture-window || '128' }}
+        ${{ inputs.account-proof-workers && inputs.account-proof-workers != 'auto' && format('--engine.account-worker-count {0}', inputs.account-proof-workers) || '' }}
+        ${{ inputs.storage-proof-workers && inputs.storage-proof-workers != 'auto' && format('--engine.storage-worker-count {0}', inputs.storage-proof-workers) || '' }}
+        ${{ inputs.state-provider-metrics && '--engine.state-provider-metrics' || '' }}
+        ${{ inputs.proof-prefetch && '--execution.proof-prefetch' || '' }}
+        ${{ inputs.txpool-prewarming && '--engine.txpool-prewarming --engine.slow-block-threshold 0' || '' }}
       run-side: feature
       run-pairs: "1"
       sequential-peer: true

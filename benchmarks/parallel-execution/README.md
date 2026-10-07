@@ -173,6 +173,9 @@ selected window, with positive included builder reuse and exact Engine reuse.
 Set `prewarming-threads` to `8`, `16` (default), or `32` to validate the worker
 count used by a throughput comparison. Both peers use that prewarming count;
 peer B still disables speculative execution with `--execution.threads 0`.
+Set `account-proof-workers` and `storage-proof-workers` to `16`, `32`, or `64`
+to match a throughput comparison. Their default, `auto`, keeps the node defaults.
+The correctness gate rejects mismatched explicit worker settings between peers.
 Set `txpool-prewarming=true` to exercise the txpool cache on peer A. Peer B
 disables that cache in both its arguments and environment. This correctness mode
 enables per-block cache diagnostics and requires positive snapshot reads during
