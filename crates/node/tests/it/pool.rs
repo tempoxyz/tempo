@@ -25,6 +25,245 @@ use tempo_primitives::{
 };
 
 #[tokio::test(flavor = "multi_thread")]
+async fn test_fallback_balance_updates_revalidate_only_relevant_crossings() -> eyre::Result<()> {
+    use alloy::{network::ReceiptResponse, primitives::Bytes, sol_types::SolCall};
+    use std::{sync::Arc, time::Duration};
+    use tempo_contracts::precompiles::{ITIP20, ITIPFeeAMM, OUSD_ADDRESS};
+    use tempo_precompiles::{
+        TIP_FEE_MANAGER_ADDRESS,
+        tip20::{TIP20Token, slots},
+    };
+
+    let payer = PrivateKeySigner::random();
+    let funder = test_signer(0);
+    let price = TEMPO_T1_BASE_FEE as u128;
+    let fee = calc_gas_balance_spending(1_000_000, price);
+    let slot =
+        TIP20Token::from_address_unchecked(DEFAULT_FEE_TOKEN).balances[payer.address()].slot();
+    let mut genesis: serde_json::Value = serde_json::from_str(&crate::utils::make_genesis_at(
+        tempo_chainspec::hardfork::TempoHardfork::T13,
+    ))?;
+    let beneficiary: Address = serde_json::from_value(genesis["coinbase"].clone())?;
+    let validator_slot = TipFeeManager::new().validator_tokens[beneficiary].slot();
+    genesis["alloc"][format!("{TIP_FEE_MANAGER_ADDRESS:#x}")]["storage"]
+        [format!("{validator_slot:#066x}")] = format!(
+        "{:#066x}",
+        U256::from_be_slice(DEFAULT_FEE_TOKEN.as_slice())
+    )
+    .into();
+    let mut ousd = genesis["alloc"][format!("{DEFAULT_FEE_TOKEN:#x}")].clone();
+    ousd["storage"][format!("{:#066x}", U256::from(slots::QUOTE_TOKEN))] = format!(
+        "{:#066x}",
+        U256::from_be_slice(DEFAULT_FEE_TOKEN.as_slice())
+    )
+    .into();
+    ousd["storage"][format!("{slot:#066x}")] = format!("{:#066x}", fee * U256::from(4)).into();
+    genesis["alloc"][format!("{OUSD_ADDRESS:#x}")] = ousd;
+    let mut setup = crate::utils::TestNodeBuilder::new()
+        .with_genesis(serde_json::to_string(&genesis)?)
+        .build_with_node_access()
+        .await?;
+    let chain_id = setup.node.inner.chain_spec().chain_id();
+    let signed_tx = |signer: &PrivateKeySigner,
+                     nonce: u64,
+                     gas_limit: u64,
+                     fee_token: Option<Address>,
+                     to: Address,
+                     input: Bytes|
+     -> eyre::Result<_> {
+        let tx = TempoTransaction {
+            chain_id,
+            nonce,
+            max_priority_fee_per_gas: 0,
+            max_fee_per_gas: price,
+            gas_limit,
+            fee_token,
+            calls: vec![Call {
+                to: to.into(),
+                value: U256::ZERO,
+                input,
+            }],
+            ..Default::default()
+        };
+        let signature = signer.sign_hash_sync(&tx.signature_hash())?;
+        let envelope: TempoTxEnvelope = tx.into_signed(signature.into()).into();
+        Ok(envelope.try_into_recovered()?)
+    };
+    // Supply a real OUSD -> pathUSD route; pool AMM validation stays enabled.
+    let mint = signed_tx(
+        &funder,
+        0,
+        10_000_000,
+        Some(DEFAULT_FEE_TOKEN),
+        TIP_FEE_MANAGER_ADDRESS,
+        ITIPFeeAMM::mintCall {
+            userToken: OUSD_ADDRESS,
+            validatorToken: DEFAULT_FEE_TOKEN,
+            amountValidatorToken: U256::from(1_000_000),
+            to: funder.address(),
+        }
+        .abi_encode()
+        .into(),
+    )?;
+    let mint_hash = *mint.tx_hash();
+    setup
+        .node
+        .inner
+        .pool
+        .add_consensus_transaction(mint, TransactionOrigin::Local)
+        .await?;
+    setup.node.advance_block_synced().await?;
+    assert!(
+        setup
+            .node
+            .rpc
+            .transaction_receipt(mint_hash)
+            .await?
+            .expect("liquidity setup must be included")
+            .status()
+    );
+
+    // The missing nonces keep this transaction queued throughout the balance changes.
+    let queued = signed_tx(
+        &payer,
+        100,
+        1_000_000,
+        None,
+        Address::repeat_byte(0x71),
+        Bytes::new(),
+    )?;
+    let hash = *queued.tx_hash();
+    setup
+        .node
+        .inner
+        .pool
+        .add_consensus_transaction(queued, TransactionOrigin::Local)
+        .await?;
+    assert_eq!(
+        setup
+            .node
+            .inner
+            .pool
+            .get(&hash)
+            .unwrap()
+            .transaction
+            .fee_balance_slot(),
+        Some((OUSD_ADDRESS, slot))
+    );
+
+    let mut funder_nonce = 1;
+    let mut payer_nonce = 0;
+    for (credit, token, amount, selected, refresh) in [
+        (false, OUSD_ADDRESS, fee, OUSD_ADDRESS, false), // Debit leaves enough for the fee.
+        (
+            true,
+            DEFAULT_FEE_TOKEN,
+            fee - U256::ONE,
+            OUSD_ADDRESS,
+            false,
+        ),
+        (true, DEFAULT_FEE_TOKEN, U256::ONE, DEFAULT_FEE_TOKEN, true),
+        (
+            false,
+            OUSD_ADDRESS,
+            fee * U256::from(2),
+            DEFAULT_FEE_TOKEN,
+            false,
+        ), // Later token becomes insufficient.
+        (
+            true,
+            OUSD_ADDRESS,
+            fee * U256::from(3),
+            DEFAULT_FEE_TOKEN,
+            false,
+        ), // Later token becomes sufficient.
+        (true, DEFAULT_FEE_TOKEN, fee, DEFAULT_FEE_TOKEN, false),
+        (
+            false,
+            DEFAULT_FEE_TOKEN,
+            fee + U256::ONE,
+            OUSD_ADDRESS,
+            true,
+        ),
+    ] {
+        let previous = setup.node.inner.pool.get(&hash).unwrap();
+        let (signer, nonce, recipient, payment_token) = if credit {
+            let nonce = funder_nonce;
+            funder_nonce += 1;
+            (&funder, nonce, payer.address(), DEFAULT_FEE_TOKEN)
+        } else {
+            let nonce = payer_nonce;
+            payer_nonce += 1;
+            (&payer, nonce, funder.address(), token)
+        };
+        let transfer = signed_tx(
+            signer,
+            nonce,
+            if credit { 2_000_000 } else { 500_000 },
+            Some(payment_token),
+            token,
+            ITIP20::transferCall {
+                to: recipient,
+                amount,
+            }
+            .abi_encode()
+            .into(),
+        )?;
+        let transfer_hash = *transfer.tx_hash();
+        setup
+            .node
+            .inner
+            .pool
+            .add_consensus_transaction(transfer, TransactionOrigin::Local)
+            .await?;
+        setup.node.advance_block_synced().await?;
+        assert!(
+            setup
+                .node
+                .rpc
+                .transaction_receipt(transfer_hash)
+                .await?
+                .expect("balance-changing transaction must be included")
+                .status()
+        );
+        setup
+            .node
+            .wait_for_pool(|pool| !pool.contains(&transfer_hash))
+            .await?;
+        if refresh {
+            setup
+                .node
+                .wait_for_pool(|pool| {
+                    pool.get(&hash).is_some_and(|current| {
+                        !Arc::ptr_eq(&previous, &current)
+                            && current.transaction.fee_balance_slot() == Some((selected, slot))
+                    })
+                })
+                .await?;
+        } else {
+            // Observe the asynchronous canonical maintenance task before asserting no reinsertion.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert!(
+                Arc::ptr_eq(&previous, &setup.node.inner.pool.get(&hash).unwrap()),
+                "irrelevant balance update must leave the transaction untouched"
+            );
+        }
+        assert_eq!(
+            setup
+                .node
+                .inner
+                .pool
+                .get(&hash)
+                .unwrap()
+                .transaction
+                .fee_balance_slot(),
+            Some((selected, slot))
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn submit_pending_tx() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
     let node = crate::utils::TestNodeBuilder::new()

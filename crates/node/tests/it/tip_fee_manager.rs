@@ -24,6 +24,103 @@ use tempo_primitives::{
 };
 
 #[tokio::test(flavor = "multi_thread")]
+async fn test_tip1115_estimate_and_pay_with_ousd_fallback() -> eyre::Result<()> {
+    use tempo_contracts::precompiles::OUSD_ADDRESS;
+    use tempo_precompiles::tip20::slots;
+
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        let mut genesis: serde_json::Value = serde_json::from_str(&crate::utils::make_genesis_at(
+            tempo_chainspec::hardfork::TempoHardfork::T13,
+        ))?;
+        // Give OUSD the existing test token's funded accounts and roles.
+        let mut ousd = genesis["alloc"][format!("{PATH_USD_ADDRESS:#x}")].clone();
+        ousd["storage"][format!("{:#066x}", U256::from(slots::QUOTE_TOKEN))] =
+            format!("{:#066x}", U256::from_be_slice(PATH_USD_ADDRESS.as_slice())).into();
+        genesis["alloc"][format!("{OUSD_ADDRESS:#x}")] = ousd;
+        let setup = TestNodeBuilder::new()
+            .with_genesis(serde_json::to_string(&genesis)?)
+            .build_http_only()
+            .await?;
+        let provider = ProviderBuilder::new()
+            .wallet(test_signer(0))
+            .connect_http(setup.http_url.clone());
+        ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, &provider)
+            .mint(
+                OUSD_ADDRESS,
+                PATH_USD_ADDRESS,
+                U256::from(1_000_000),
+                provider.default_signer_address(),
+            )
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        let signer = PrivateKeySigner::random();
+        let payer = signer.address();
+        let balance = U256::from(20_000);
+        ITIP20::new(OUSD_ADDRESS, &provider)
+            .transfer(payer, balance)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        assert!(
+            IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &provider)
+                .userTokens(payer)
+                .call()
+                .await?
+                .is_zero()
+        );
+        assert_eq!(
+            ITIP20::new(PATH_USD_ADDRESS, &provider)
+                .balanceOf(payer)
+                .call()
+                .await?,
+            U256::ZERO
+        );
+
+        let provider = ProviderBuilder::new()
+            .wallet(signer)
+            .connect_http(setup.http_url);
+        let request = TransactionRequest::default()
+            .from(payer)
+            .to(Address::repeat_byte(0x71))
+            .max_fee_per_gas(20_000_000_000)
+            .max_priority_fee_per_gas(0);
+        // The payer can afford 1M gas, but not estimation's initial block gas limit.
+        let gas = provider.estimate_gas(request.clone()).await?;
+        assert!(gas > 0 && gas <= 1_000_000);
+        let hash = provider
+            .send_transaction(request.gas_limit(gas))
+            .await?
+            .watch()
+            .await?;
+        let receipt = provider
+            .raw_request::<_, TempoTransactionReceipt>("eth_getTransactionReceipt".into(), (hash,))
+            .await?;
+        assert!(receipt.status());
+        assert_eq!(receipt.fee_token, Some(OUSD_ADDRESS));
+        assert_eq!(receipt.fee_payer, payer);
+        let remaining = ITIP20::new(OUSD_ADDRESS, &provider)
+            .balanceOf(payer)
+            .call()
+            .await?;
+        let actual_fee = calc_gas_balance_spending(receipt.gas_used, receipt.effective_gas_price());
+        assert_eq!(remaining, balance - actual_fee);
+        assert_eq!(
+            ITIP20::new(PATH_USD_ADDRESS, &provider)
+                .balanceOf(payer)
+                .call()
+                .await?,
+            U256::ZERO
+        );
+        Ok::<_, eyre::Report>(())
+    })
+    .await??;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn test_set_user_token() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
