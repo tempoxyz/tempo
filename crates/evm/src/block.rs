@@ -214,6 +214,10 @@ impl<'a> TempoBlockExecutor<'a> {
         ctx: TempoBlockExecutionCtx<'a>,
         chain_spec: &'a TempoChainSpec,
     ) -> Self {
+        tempo_precompiles::execution_measure::begin_node_block(
+            evm.block().number.saturating_to::<u64>(),
+        );
+
         let block_gas_limit = evm.block().gas_limit.saturating_to::<u64>();
         Self {
             t13_active_at_genesis: chain_spec
@@ -582,6 +586,10 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         &mut self,
         tx: impl ExecutorTx<Self>,
     ) -> Result<Self::TransactionResultWithState, BlockExecutionError> {
+        let _measurement = tempo_precompiles::execution_measure::area(
+            tempo_precompiles::execution_measure::Area::Execution,
+        );
+
         let (mut tx_env, recovered) = tx.into_parts();
         // Remove any prewarming-specific context that was added to the tx env.
         tx_env.inner_mut().set_expiring_nonce_idx(None);
@@ -626,6 +634,10 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         &mut self,
         output: Self::TransactionResultWithState,
     ) -> Result<GasOutput, BlockExecutionError> {
+        let _measurement = tempo_precompiles::execution_measure::area(
+            tempo_precompiles::execution_measure::Area::Commit,
+        );
+
         let TempoTxResult {
             inner,
             tx_type: _,
@@ -694,6 +706,11 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         if use_regular_gas {
             output.result.gas_used = block_gas_used;
         }
+        tempo_precompiles::execution_measure::report_node_block(
+            "native",
+            output.result.gas_used,
+            output.result.receipts.len(),
+        );
         Ok((output, block_access_list))
     }
 

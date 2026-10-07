@@ -317,6 +317,9 @@ impl TempoPooledTransaction {
     /// This uses the cached value prepared by [`Self::tx_env`] when available,
     /// and computes it on-demand otherwise.
     pub fn clone_tx_env(&self) -> TempoTxEnv {
+        let _measurement = tempo_precompiles::execution_measure::area(
+            tempo_precompiles::execution_measure::Area::CachedEnv,
+        );
         self.tx_env().clone()
     }
 

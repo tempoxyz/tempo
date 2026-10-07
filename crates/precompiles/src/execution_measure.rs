@@ -22,6 +22,7 @@ pub enum Area {
     FeeResolve,
     NonceApply,
     Settlement,
+    CachedEnv,
 }
 #[derive(Clone, Copy)]
 pub enum Op {
@@ -37,7 +38,7 @@ pub enum Op {
     SlotLoad,
     SlotStore,
 }
-const AREAS: [&str; 15] = [
+const AREAS: [&str; 16] = [
     "other",
     "fee_pre",
     "fee_post",
@@ -53,6 +54,7 @@ const AREAS: [&str; 15] = [
     "fee_resolve",
     "nonce_apply",
     "settlement",
+    "cached_env",
 ];
 const OPS: [&str; 11] = [
     "phase",
@@ -76,10 +78,11 @@ struct Cell {
 }
 struct Stats {
     mode: u8,
+    sample_offset: u64,
     area: Area,
-    cells: [[Cell; 11]; 15],
+    cells: [[Cell; 11]; 16],
 }
-thread_local! { static STATS: RefCell<Stats> = const { RefCell::new(Stats { mode: 0, area: Area::Other, cells: [[Cell { calls: 0, samples: 0, ticks: 0, dropped: 0 }; 11]; 15] }) }; }
+thread_local! { static STATS: RefCell<Stats> = const { RefCell::new(Stats { mode: 0, sample_offset: 0, area: Area::Other, cells: [[Cell { calls: 0, samples: 0, ticks: 0, dropped: 0 }; 11]; 16] }) }; }
 #[derive(Clone, Copy)]
 struct Stamp {
     ticks: u64,
@@ -173,6 +176,7 @@ fn guard(op: Op, area: Option<Area>) -> Guard {
             .flatten();
         let a = s.area as usize;
         let mode = s.mode;
+        let sample_offset = s.sample_offset;
         let cell = &mut s.cells[a][op as usize];
         let sample = if mode == 0 {
             false
@@ -182,6 +186,7 @@ fn guard(op: Op, area: Option<Area>) -> Guard {
             let salt = (a * OPS.len() + op as usize + 1) as u64;
             let mut n = cell
                 .calls
+                .wrapping_add(sample_offset)
                 .wrapping_add(salt.wrapping_mul(0xd6e8feb86659fd93))
                 .wrapping_mul(0x9e3779b97f4a7c15);
             n = (n ^ (n >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
@@ -210,8 +215,9 @@ pub fn reset(mode: u8) {
     STATS.with(|s| {
         *s.borrow_mut() = Stats {
             mode,
+            sample_offset: 0,
             area: Area::Other,
-            cells: [[Cell::default(); 11]; 15],
+            cells: [[Cell::default(); 11]; 16],
         }
     });
 }
@@ -248,3 +254,84 @@ pub fn dump() {
 pub fn timestamp() -> u64 {
     Stamp::read().ticks
 }
+
+/// Initializes counters once per real block; environment parsing never occurs per transaction.
+#[allow(clippy::disallowed_methods)] // Measurement clock, once per block, outside consensus logic.
+pub fn begin_node_block(number: u64) {
+    if !cfg!(feature = "execution-measure") {
+        return;
+    }
+    static MODE: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    let mode = *MODE.get_or_init(|| {
+        std::env::var("NODE_MEASURE_MODE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0)
+    });
+    if mode != 0 {
+        reset(mode);
+        NODE_SEQUENCE.with(|sequence| {
+            let next = sequence.get().wrapping_add(1);
+            sequence.set(next);
+            STATS.with(|stats| {
+                stats.borrow_mut().sample_offset = next.wrapping_mul(0x9e3779b97f4a7c15)
+            });
+        });
+        NODE_STARTED.with(|started| {
+            *started.borrow_mut() = Some((number, std::time::Instant::now(), Stamp::read()))
+        });
+    }
+}
+/// Writes one aggregate record after block execution, with no per-transaction log writes.
+pub fn report_node_block(backend: &str, gas: u64, accepted: usize) {
+    if !cfg!(feature = "execution-measure") || std::env::var_os("NODE_MEASURE_MODE").is_none() {
+        return;
+    }
+    use std::fmt::Write;
+    let end = Stamp::read();
+    let (number, nanos, ticks) = NODE_STARTED.with(|started| {
+        started
+            .borrow_mut()
+            .take()
+            .map_or((0, 0, 0), |(number, wall, start)| {
+                (
+                    number,
+                    wall.elapsed().as_nanos(),
+                    end.ticks.saturating_sub(start.ticks),
+                )
+            })
+    });
+    static TIMER_PAIR: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    let timer_pair = TIMER_PAIR.get_or_init(|| {
+        (0..4096)
+            .filter_map(|_| {
+                let a = Stamp::read();
+                let b = Stamp::read();
+                (a.cpu == b.cpu).then_some(b.ticks.saturating_sub(a.ticks))
+            })
+            .min()
+            .unwrap_or(0)
+    });
+    let mut row = format!(
+        "NODE_MEASURE backend={backend} number={number} timer_pair_ticks={timer_pair} gas={gas} accepted={accepted} nanos={nanos} ticks={ticks}"
+    );
+    STATS.with(|stats| {
+        let stats = stats.borrow();
+        for (a, cells) in stats.cells.iter().enumerate() {
+            for (o, c) in cells.iter().enumerate() {
+                if c.calls != 0 {
+                    write!(
+                        &mut row,
+                        " {}.{}={},{},{},{}",
+                        AREAS[a], OPS[o], c.calls, c.samples, c.ticks, c.dropped
+                    )
+                    .unwrap();
+                }
+            }
+        }
+    });
+    eprintln!("{row}");
+}
+
+thread_local! { static NODE_SEQUENCE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) }; }
+thread_local! { static NODE_STARTED: RefCell<Option<(u64, std::time::Instant, Stamp)>> = const { RefCell::new(None) }; }
