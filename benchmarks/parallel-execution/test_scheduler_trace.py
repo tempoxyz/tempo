@@ -118,6 +118,16 @@ class SchedulerTraceTests(unittest.TestCase):
         self.assertNotIn("--hide-call-graph", commands[1])
         self.assertIn("-D", commands[2])
 
+    def test_preflight_creates_report_directory_and_exposes_failure(self):
+        output = self.root / "new-results" / "faults-preflight.json"
+        stderr = io.StringIO()
+        with patch.object(sys, "argv", [trace.SELF, "preflight", "--kind", "faults", "--output", str(output)]), \
+             patch.object(trace, "privileged", return_value={"ok": False, "error": "unsupported recorder"}), \
+             contextlib.redirect_stderr(stderr):
+            self.assertEqual(trace.main(), 1)
+        self.assertEqual(json.loads(output.read_text())["error"], "unsupported recorder")
+        self.assertIn("unsupported recorder", stderr.getvalue())
+
     def test_budget_counts_tracepoint_and_dummy_rings_per_cpu(self):
         for count in (1, 32, 192, 4096):
             budget = trace.ring_budget(list(range(count)), 4096)

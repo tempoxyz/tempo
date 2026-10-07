@@ -464,6 +464,9 @@ def main():
             result = {"ok": False}
             try: result.update(privileged(["_probe", "--kind", args.kind], 15))
             except (TraceError, OSError, subprocess.SubprocessError) as error: result["error"] = str(error)
+            Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+            if not result["ok"]:
+                print(result.get("error", "preflight failed"), file=sys.stderr)
             save(args.output, result); return 0 if result["ok"] else 1
         if args.mode == "_probe": print(json.dumps(probe(args.kind))); return 0
         if args.mode == "_snapshot": print(json.dumps(snapshot(args.binary, {"a": args.datadir_a, "b": args.datadir_b}))); return 0
