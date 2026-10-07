@@ -91,6 +91,12 @@ ran three pairs at 25k offered TPS: 12,063 baseline versus 12,803 candidate TPS
 does not establish a throughput gain. The candidate remains unmerged; workload
 composition passed, but neither the confidence result nor sender qualification did.
 
+The [borrowed gas-table comparison](https://github.com/tempoxyz/tempo/actions/runs/37585692342)
+ran three pairs at 25k offered TPS: 15,880 baseline versus 14,995 candidate TPS
+(−5.6%, statistically neutral). Median block time regressed 4.9%, with zero sender
+failures and all workload-composition checks passing. The candidate remains unmerged;
+the isolated reference-count improvement did not produce a whole-node gain.
+
 The official workflow's `disposal-clock` profiling choice runs a fixed 25k
 same-binary comparison with stage timers disabled and enabled. It calibrates the
 empty timer on the runner before and after each phase, retains the controls as
