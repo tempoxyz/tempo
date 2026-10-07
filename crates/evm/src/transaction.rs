@@ -576,6 +576,10 @@ impl From<Recovered<TempoTxEnvelope>> for TempoTxEnv {
 
 impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
     fn from_recovered_tx(tx: Recovered<TempoTxEnvelope>) -> Self {
+        let _measurement = tempo_precompiles::execution_measure::area(
+            tempo_precompiles::execution_measure::Area::TxEnv,
+        );
+
         tx.into()
     }
 }

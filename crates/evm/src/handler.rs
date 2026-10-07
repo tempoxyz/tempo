@@ -311,6 +311,10 @@ fn intrinsic_gas(
     host: &Evm<'_, TempoEvmTypes>,
     aa: &TempoAaTx,
 ) -> Result<(u64, u64, u64), TempoInvalidTransaction> {
+    let _measurement = tempo_precompiles::execution_measure::area(
+        tempo_precompiles::execution_measure::Area::Intrinsic,
+    );
+
     let signed = aa.inner();
     let tx = signed.tx();
     let spec = host.config_spec_id();
@@ -1093,6 +1097,10 @@ fn apply_nonce(
     envelope: &TempoTxEnv,
     aa: &TempoAaTx,
 ) -> HandlerResult<u64> {
+    let _measurement = tempo_precompiles::execution_measure::area(
+        tempo_precompiles::execution_measure::Area::NonceApply,
+    );
+
     let caller = aa.signer();
     let tx = aa.inner().tx();
     let spec = host.config_spec_id();
@@ -1350,6 +1358,9 @@ fn prepare_aa(
     let _measurement = tempo_precompiles::execution_measure::area(
         tempo_precompiles::execution_measure::Area::Prepare,
     );
+    let validation_measurement = tempo_precompiles::execution_measure::area(
+        tempo_precompiles::execution_measure::Area::EnvValidation,
+    );
     let caller = request.tx.signer();
     let signed = request.tx.inner();
     let tx = signed.tx();
@@ -1436,6 +1447,7 @@ fn prepare_aa(
         timestamp,
     )?;
 
+    drop(validation_measurement);
     // Route to the AA gas calculation and validation path.
     let (mut intrinsic, mut initial_state_gas, floor_gas) =
         intrinsic_gas(request.host, request.tx.inner())?;

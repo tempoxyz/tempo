@@ -12,6 +12,12 @@ pub enum Area {
     Commit,
     Calls,
     Prepare,
+    TxEnv,
+    EnvValidation,
+    Intrinsic,
+    FeeResolve,
+    NonceApply,
+    Settlement,
 }
 #[derive(Clone, Copy)]
 pub enum Op {
@@ -27,7 +33,7 @@ pub enum Op {
     SlotLoad,
     SlotStore,
 }
-const AREAS: [&str; 9] = [
+const AREAS: [&str; 15] = [
     "other",
     "fee_pre",
     "fee_post",
@@ -37,6 +43,12 @@ const AREAS: [&str; 9] = [
     "commit",
     "calls",
     "prepare",
+    "tx_env",
+    "env_validation",
+    "intrinsic",
+    "fee_resolve",
+    "nonce_apply",
+    "settlement",
 ];
 const OPS: [&str; 11] = [
     "phase",
@@ -61,9 +73,9 @@ struct Cell {
 struct Stats {
     mode: u8,
     area: Area,
-    cells: [[Cell; 11]; 9],
+    cells: [[Cell; 11]; 15],
 }
-thread_local! { static STATS: RefCell<Stats> = const { RefCell::new(Stats { mode: 0, area: Area::Other, cells: [[Cell { calls: 0, samples: 0, ticks: 0, dropped: 0 }; 11]; 9] }) }; }
+thread_local! { static STATS: RefCell<Stats> = const { RefCell::new(Stats { mode: 0, area: Area::Other, cells: [[Cell { calls: 0, samples: 0, ticks: 0, dropped: 0 }; 11]; 15] }) }; }
 #[derive(Clone, Copy)]
 struct Stamp {
     ticks: u64,
@@ -178,7 +190,7 @@ pub fn reset(mode: u8) {
         *s.borrow_mut() = Stats {
             mode,
             area: Area::Other,
-            cells: [[Cell::default(); 11]; 9],
+            cells: [[Cell::default(); 11]; 15],
         }
     });
 }

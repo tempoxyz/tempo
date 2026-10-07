@@ -238,6 +238,10 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
         envelope: &TempoTxEnv,
         mut gas: GasSettlement<TempoEvmTypes>,
     ) -> HandlerResult<TxResult<TempoEvmTypes>> {
+        let _measurement = tempo_precompiles::execution_measure::area(
+            tempo_precompiles::execution_measure::Area::Settlement,
+        );
+
         settle_storage_credit_refunds(host, &mut gas.result)?;
         let gas_price = u128::try_from(gas.gas_price)
             .map_err(|_| HandlerError::Fatal("effective gas price does not fit u128".into()))?;
@@ -286,6 +290,10 @@ impl TempoHandlerHooks {
         host: &mut Evm<'_, TempoEvmTypes>,
         envelope: &TempoTxEnv,
     ) -> HandlerResult<TempoFeeContext> {
+        let _measurement = tempo_precompiles::execution_measure::area(
+            tempo_precompiles::execution_measure::Area::FeeResolve,
+        );
+
         host.ext_mut().resolved_fee_token = None;
         host.ext_mut().key_expiry = None;
         host.ext().non_creditable_slots.borrow_mut().clear();

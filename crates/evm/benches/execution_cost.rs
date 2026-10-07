@@ -13,11 +13,10 @@ use alloy_signer_local::PrivateKeySigner;
 use alloy_sol_types::SolCall;
 use common::{
     DEFAULT_ACCOUNT_COUNT, DEFAULT_BLOCK_TIMESTAMP, bench_evm, execute_txs, fixture_from_seeded_db,
-    hardfork_bench_cases, seeded_db, sign_precompile_call, txgen_signers,
+    seeded_db, sign_precompile_call, txgen_signers,
 };
-use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use evm2::evm::InMemoryDB;
-use std::{collections::BTreeSet, fs, hint::black_box, num::NonZeroU64, path::Path, sync::Arc};
+use std::{collections::BTreeSet, fs, num::NonZeroU64, path::Path, sync::Arc};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
 use tempo_contracts::precompiles::ITIP20;
 use tempo_evm::TempoEvmConfig;
@@ -454,91 +453,15 @@ fn workload() -> Workload {
     }
 }
 
-fn tip20_execution(c: &mut Criterion) {
-    let workload = workload();
-    let hardfork_cases = hardfork_bench_cases();
-    let config = TempoEvmConfig::new(Arc::new(TempoChainSpec::moderato()));
-
-    for &(label, hardfork) in &hardfork_cases {
-        let fixture = fixture_from_seeded_db(seed_in_memory_cache_db(
-            &workload.participants,
-            workload.block_timestamp,
-            None,
-            hardfork,
-        ));
-        execute_txs(
-            &config,
-            fixture.state_db(),
-            &workload.transactions,
-            workload.block_timestamp,
-            hardfork,
-        );
-
-        let mut group = c.benchmark_group(format!("{label}/tip20_execution"));
-        group.throughput(Throughput::Elements(workload.transactions.len() as u64));
-        group.bench_function("txgen_tip20_pure_execution", |b| {
-            b.iter_batched(
-                || fixture.state_db(),
-                |db| {
-                    let stats = execute_txs(
-                        &config,
-                        db,
-                        &workload.transactions,
-                        workload.block_timestamp,
-                        hardfork,
-                    );
-                    black_box(stats.gas_used);
-                },
-                BatchSize::SmallInput,
-            )
-        });
-        group.finish();
-    }
-
-    let reward_workloads = reward_bench_workloads();
-    for &(label, hardfork) in &hardfork_cases {
-        for reward_workload in &reward_workloads {
-            let fixture = fixture_from_seeded_db(seed_in_memory_cache_db(
-                &reward_workload.participants,
-                DEFAULT_BLOCK_TIMESTAMP,
-                Some((&reward_workload.delegates, reward_workload.kind)),
-                hardfork,
-            ));
-            execute_txs(
-                &config,
-                fixture.state_db(),
-                &reward_workload.transactions,
-                DEFAULT_BLOCK_TIMESTAMP,
-                hardfork,
-            );
-
-            let mut group = c.benchmark_group(format!("{label}/tip20_rewards"));
-            group.throughput(Throughput::Elements(
-                reward_workload.transactions.len() as u64
-            ));
-            group.bench_function(reward_workload.name, |b| {
-                b.iter_batched(
-                    || fixture.state_db(),
-                    |db| {
-                        let stats = execute_txs(
-                            &config,
-                            db,
-                            &reward_workload.transactions,
-                            DEFAULT_BLOCK_TIMESTAMP,
-                            hardfork,
-                        );
-                        black_box(stats.gas_used);
-                    },
-                    BatchSize::SmallInput,
-                )
-            });
-            group.finish();
-        }
-    }
-}
-
 fn main() {
     let workload = generated_workload();
+    let warm = std::env::var("MEASURE_TX_CACHE").unwrap_or_else(|_| "cold".to_string()) == "warm";
+    if warm {
+        for tx in &workload.transactions {
+            tx.inner().unique_tx_identifier(tx.signer());
+        }
+    }
+    println!("tx_cache={}", if warm { "warm" } else { "cold" });
     let hardfork = TempoHardfork::T14;
     let fixture = fixture_from_seeded_db(seed_in_memory_cache_db(
         &workload.participants,
@@ -566,10 +489,11 @@ fn main() {
         cfg!(feature = "execution-measure")
     );
     for _ in 0..2 {
+        let txs = workload.transactions.clone();
         execute_txs(
             &config,
             fixture.state_db(),
-            &workload.transactions,
+            &txs,
             workload.block_timestamp,
             hardfork,
         );
@@ -579,27 +503,21 @@ fn main() {
         .unwrap_or_else(|_| "32".to_string())
         .parse::<usize>()
         .unwrap();
-    perf_control("enable");
     for round in 0..rounds {
+        let txs = workload.transactions.clone();
         let db = fixture.state_db();
+        perf_control("enable");
         let started = std::time::Instant::now();
         let ticks = tempo_precompiles::execution_measure::timestamp();
-        let stats = execute_txs(
-            &config,
-            db,
-            &workload.transactions,
-            workload.block_timestamp,
-            hardfork,
-        );
+        let stats = execute_txs(&config, db, &txs, workload.block_timestamp, hardfork);
         let elapsed_ticks = tempo_precompiles::execution_measure::timestamp().saturating_sub(ticks);
+        let nanos = started.elapsed().as_nanos();
+        perf_control("disable");
         println!(
-            "round={round} nanos={} gas={} txs={} ticks={elapsed_ticks}",
-            started.elapsed().as_nanos(),
-            stats.gas_used,
-            stats.txs
+            "round={round} nanos={nanos} gas={} txs={} ticks={elapsed_ticks}",
+            stats.gas_used, stats.txs
         );
     }
-    perf_control("disable");
     tempo_precompiles::execution_measure::dump();
 }
 
