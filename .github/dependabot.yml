@@ -46,3 +46,21 @@ updates:
     open-pull-requests-limit: 1
     cooldown:
       default-days: 7
+  - package-ecosystem: "cargo"
+    directory: "/zones"
+    allow:
+      - dependency-type: "all"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "A-dependencies"
+    commit-message:
+      prefix: "chore(deps)"
+    open-pull-requests-limit: 1
+    groups:
+      zones-cargo-weekly:
+        applies-to: "version-updates"
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    cooldown:
+      default-days: 7

@@ -1,0 +1,61 @@
+# Adapted from Zones d48214a6110b33e9be6d35dfd4e3729541a2378a.
+name: Zones Storage Layout
+
+on:
+  merge_group:
+  pull_request:
+    paths:
+      - "zones/crates/contracts/src/runtime/tempo/ZonePortal.sol"
+      - "zones/crates/contracts/src/runtime/interfaces/IZone.sol"
+      - "zones/crates/contracts/foundry.toml"
+      - "zones/crates/contracts/storage-layouts/ZonePortal.json"
+      - ".github/workflows/zones-storage-layout.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  zone-portal:
+    permissions:
+      contents: read
+      id-token: write
+    name: ZonePortal layout unchanged
+    runs-on: ubuntu-latest
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install Foundry
+        uses: tempoxyz/gh-actions/actions/setup-foundry@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        with:
+          version: nightly-fc14f674bd853bc817c308a5202faa5be8df05e7
+
+      - name: Check storage layout
+        working-directory: zones/crates/contracts
+        run: |
+          set -o pipefail
+          normalizer='
+            def strip_ast_id: gsub("(?<prefix>t_(?:struct|enum|contract|userDefinedValueType)\\([^)]*\\))[0-9]+"; "\(.prefix)");
+            del(.. | .astId?)
+            | walk(if type == "string" then strip_ast_id else . end)
+            | .types |= (to_entries | map(.key |= strip_ast_id)
+              | if (map(.key) | unique | length) == length then from_entries
+                else error("type-key collision while stripping AST IDs") end)
+          '
+          expected_layout="$RUNNER_TEMP/ZonePortal.expected.json"
+          generated_layout="$RUNNER_TEMP/ZonePortal.generated.json"
+
+          jq --sort-keys "$normalizer" storage-layouts/ZonePortal.json > "$expected_layout"
+          forge inspect ZonePortal storage-layout --json \
+            | jq --sort-keys "$normalizer" > "$generated_layout"
+
+          diff --unified \
+            --label storage-layouts/ZonePortal.json \
+            --label generated/ZonePortal.json \
+            "$expected_layout" "$generated_layout"

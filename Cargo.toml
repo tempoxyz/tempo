@@ -11,7 +11,8 @@ keywords = ["blockchain", "ethereum", "evm", "payments", "tempo"]
 publish = false
 
 [workspace]
-exclude = ["crates/nitro-attestation/fuzz"]
+# Zones retains its own workspace and dependency pins while open PRs migrate.
+exclude = ["crates/nitro-attestation/fuzz", "zones"]
 members = [
   "bin/tempo",
   "bin/tempo-sidecar",

@@ -1,0 +1,105 @@
+# Adapted from Zones d48214a6110b33e9be6d35dfd4e3729541a2378a.
+name: Zones Build binaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        default: "maxperf"
+        description: "Build profile"
+        type: choice
+        options:
+          - "release"
+          - "maxperf"
+          - "profiling"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+
+defaults:
+  run:
+    working-directory: zones
+
+jobs:
+  build:
+    name: build tempo-zone
+    runs-on: depot-ubuntu-latest-16
+    timeout-minutes: 60
+    env:
+      RUSTC_WRAPPER: sccache
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@2962c8c5f061492c1e3c1b44cd8a6e15e6bd2d95 # 2026-09-29T00-56-32Z-2962c8c5
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: "false"
+      - name: Install Rust toolchain
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@2962c8c5f061492c1e3c1b44cd8a6e15e6bd2d95 # 2026-09-29T00-56-32Z-2962c8c5
+        with:
+          toolchain: stable
+      - name: Install mold linker
+        env:
+          MOLD_VERSION: "2.42.0"
+          MOLD_SHA256_X86_64: f5ed2f6e31d1ada4f07fe766fe0de7a73104d1c5cdc59086fcecc16a43720b6d
+          MOLD_SHA256_AARCH64: 3c9a0a3624aac8a2007569ae50c33b3129a0f0ae8bcc974aeee2f8939d295190
+        run: |
+          set -euo pipefail
+          # mold publishes no checksums, signatures or attestations, so the release tarball digests
+          # are pinned here and change together with MOLD_VERSION (test.yml keeps this block in
+          # step with the copy in .github/workflows/rust-build-binaries.yml).
+          ARCH="$(uname -m)"
+          case "$ARCH" in
+            x86_64)  EXPECTED="$MOLD_SHA256_X86_64" ;;
+            aarch64) EXPECTED="$MOLD_SHA256_AARCH64" ;;
+            *) echo "::error::mold: unsupported architecture $ARCH"; exit 1 ;;
+          esac
+          ASSET="mold-${MOLD_VERSION}-${ARCH}-linux.tar.gz"
+          TMP="${RUNNER_TEMP:?}/mold"
+          mkdir -p "$TMP"
+          curl -fsSL --retry 3 -o "$TMP/$ASSET" "https://github.com/rui314/mold/releases/download/v${MOLD_VERSION}/${ASSET}"
+          echo "$EXPECTED  $TMP/$ASSET" | sha256sum -c
+          SUDO=""
+          [ "$(id -u)" = 0 ] || SUDO=sudo
+          $SUDO tar -C /usr/local --strip-components=1 --no-overwrite-dir -xzf "$TMP/$ASSET"
+          # Make mold the default linker, as rui314/setup-mold did.
+          if [ "$(realpath /usr/bin/ld)" != /usr/local/bin/mold ]; then
+            $SUDO ln -sf /usr/local/bin/mold "$(realpath /usr/bin/ld)"
+          fi
+          mold --version
+      - name: Enable sccache
+        uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@2962c8c5f061492c1e3c1b44cd8a6e15e6bd2d95 # 2026-09-29T00-56-32Z-2962c8c5
+      - name: Build
+        env:
+          BINARY: tempo-zone
+          PROFILE: ${{ inputs.profile || 'maxperf' }}
+        run: cargo build --locked --bin "$BINARY" --profile "$PROFILE"
+      - name: Resolve artifact path
+        id: artifact
+        env:
+          TEMPLATE: zones/target/{profile}/{binary}
+          BINARY: tempo-zone
+          PROFILE: ${{ inputs.profile || 'maxperf' }}
+        run: |
+          path="${TEMPLATE//\{profile\}/$PROFILE}"
+          path="${path//\{binary\}/$BINARY}"
+          echo "path=$path" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        id: binary-upload
+        with:
+          if-no-files-found: error
+          name: tempo-zone
+          path: ${{ steps.artifact.outputs.path }}
+          retention-days: 90

@@ -1,0 +1,213 @@
+# Adapted from Zones d48214a6110b33e9be6d35dfd4e3729541a2378a.
+name: Zones Lint
+
+permissions: {}
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "zones/**"
+      - ".github/workflows/zones-*.yml"
+      - ".gitmodules"
+  pull_request:
+    paths:
+      - "zones/**"
+      - ".github/workflows/zones-*.yml"
+      - ".gitmodules"
+  merge_group:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+
+defaults:
+  run:
+    working-directory: zones
+
+jobs:
+  clippy:
+    name: clippy
+    runs-on: depot-ubuntu-latest-4
+    timeout-minutes: 30
+    env:
+      RUSTC_WRAPPER: sccache
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@2962c8c5f061492c1e3c1b44cd8a6e15e6bd2d95 # 2026-09-29T00-56-32Z-2962c8c5
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: "false"
+      - name: Install Rust toolchain
+        env:
+          RUST_TOOLCHAIN: nightly-2026-08-21
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy
+          rustup default "$RUST_TOOLCHAIN"
+      - name: Install mold linker
+        env:
+          MOLD_VERSION: "2.42.0"
+          MOLD_SHA256_X86_64: f5ed2f6e31d1ada4f07fe766fe0de7a73104d1c5cdc59086fcecc16a43720b6d
+          MOLD_SHA256_AARCH64: 3c9a0a3624aac8a2007569ae50c33b3129a0f0ae8bcc974aeee2f8939d295190
+        run: |
+          set -euo pipefail
+          # mold publishes no checksums, signatures or attestations, so the release tarball digests
+          # are pinned here and change together with MOLD_VERSION (test.yml keeps this block in
+          # step with the copy in .github/workflows/rust-build-binaries.yml).
+          ARCH="$(uname -m)"
+          case "$ARCH" in
+            x86_64)  EXPECTED="$MOLD_SHA256_X86_64" ;;
+            aarch64) EXPECTED="$MOLD_SHA256_AARCH64" ;;
+            *) echo "::error::mold: unsupported architecture $ARCH"; exit 1 ;;
+          esac
+          ASSET="mold-${MOLD_VERSION}-${ARCH}-linux.tar.gz"
+          TMP="${RUNNER_TEMP:?}/mold"
+          mkdir -p "$TMP"
+          curl -fsSL --retry 3 -o "$TMP/$ASSET" "https://github.com/rui314/mold/releases/download/v${MOLD_VERSION}/${ASSET}"
+          echo "$EXPECTED  $TMP/$ASSET" | sha256sum -c
+          SUDO=""
+          [ "$(id -u)" = 0 ] || SUDO=sudo
+          $SUDO tar -C /usr/local --strip-components=1 --no-overwrite-dir -xzf "$TMP/$ASSET"
+          # Make mold the default linker, as rui314/setup-mold did.
+          if [ "$(realpath /usr/bin/ld)" != /usr/local/bin/mold ]; then
+            $SUDO ln -sf /usr/local/bin/mold "$(realpath /usr/bin/ld)"
+          fi
+          mold --version
+      - name: Enable sccache
+        uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@2962c8c5f061492c1e3c1b44cd8a6e15e6bd2d95 # 2026-09-29T00-56-32Z-2962c8c5
+      - name: Run clippy
+        run: |
+          # CLIPPY_FLAGS is a space-separated flag list that must word-split.
+          # shellcheck disable=SC2086
+          cargo clippy $CLIPPY_FLAGS
+        env:
+          CLIPPY_FLAGS: --all-targets --all-features --locked
+          RUSTFLAGS: -D warnings
+
+  fmt:
+    name: fmt
+    runs-on: depot-ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@2962c8c5f061492c1e3c1b44cd8a6e15e6bd2d95 # 2026-09-29T00-56-32Z-2962c8c5
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        env:
+          RUST_TOOLCHAIN: nightly-2026-08-21
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt
+          rustup default "$RUST_TOOLCHAIN"
+      - name: Run fmt
+        run: |
+          # FMT_FLAGS is a space-separated flag list that must word-split.
+          # shellcheck disable=SC2086
+          cargo fmt $FMT_FLAGS
+        env:
+          FMT_FLAGS: --all --check
+
+  typos:
+    name: typos
+    runs-on: depot-ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@2962c8c5f061492c1e3c1b44cd8a6e15e6bd2d95 # 2026-09-29T00-56-32Z-2962c8c5
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # typos publishes no build provenance, but its releases are immutable and GitHub attests
+      # every asset, so `gh release verify-asset` proves the tarball is the one attached to the
+      # release. Same target, annotations and exit status as the crate-ci/typos action.
+      - name: Install typos
+        env:
+          TYPOS_VERSION: v1.49.0
+          GH_TOKEN: ${{ github.token }}
+        run: | # zizmor: ignore[github-env] INSTALL_DIR is created under RUNNER_TEMP, not derived from user input.
+          set -euo pipefail
+          case "$(uname -m)" in
+            x86_64|aarch64) ARCH="$(uname -m)" ;;
+            *) echo "::error::typos: unsupported architecture $(uname -m)"; exit 1 ;;
+          esac
+          ASSET="typos-${TYPOS_VERSION}-${ARCH}-unknown-linux-musl.tar.gz"
+          INSTALL_DIR="${RUNNER_TEMP:?}/typos-bin"
+          mkdir -p "$INSTALL_DIR"
+          curl -fsSL --retry 3 -o "$INSTALL_DIR/$ASSET" "https://github.com/crate-ci/typos/releases/download/${TYPOS_VERSION}/${ASSET}"
+          gh release verify-asset "$TYPOS_VERSION" "$INSTALL_DIR/$ASSET" --repo crate-ci/typos
+          tar -xzf "$INSTALL_DIR/$ASSET" -C "$INSTALL_DIR" ./typos
+          echo "$INSTALL_DIR" >> "$GITHUB_PATH"
+      - name: Check for typos
+        run: |
+          set -euo pipefail
+          typos . --format json \
+            | jq --raw-output 'select(.type == "typo") | "::warning file=\(.path | ltrimstr("./") | "zones/" + .),line=\(.line_num),col=\(.byte_offset + 1)::\"\(.typo)\" should be \"" + ((.corrections // []) | join("\" or \"")) + "\"."' \
+            || true
+          typos .
+
+  deny:
+    name: cargo deny check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@2962c8c5f061492c1e3c1b44cd8a6e15e6bd2d95 # 2026-09-29T00-56-32Z-2962c8c5
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        env:
+          RUST_TOOLCHAIN: stable
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+      - uses: tempoxyz/gh-actions/vendor/EmbarkStudios/cargo-deny-action@2962c8c5f061492c1e3c1b44cd8a6e15e6bd2d95 # 2026-09-29T00-56-32Z-2962c8c5
+        with:
+          rust-version: stable
+          command: check all
+          arguments: --all-features
+          manifest-path: zones/Cargo.toml
+          command-arguments: --config zones/deny.toml
+
+  lint-success:
+    name: zones lint success
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    if: always()
+    needs:
+      - clippy
+      - fmt
+      - typos
+      - deny
+    timeout-minutes: 30
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@2962c8c5f061492c1e3c1b44cd8a6e15e6bd2d95 # 2026-09-29T00-56-32Z-2962c8c5
+
+      - name: Decide whether the needed jobs succeeded or failed
+        uses: tempoxyz/gh-actions/actions/check-needs@2962c8c5f061492c1e3c1b44cd8a6e15e6bd2d95 # 2026-09-29T00-56-32Z-2962c8c5
+        with:
+          jobs: ${{ toJSON(needs) }}

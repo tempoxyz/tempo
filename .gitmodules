@@ -7,3 +7,9 @@
 [submodule "tips/verify/lib/solady"]
 	path = tips/verify/lib/solady
 	url = https://github.com/vectorized/solady
+[submodule "zones/crates/contracts/lib/tempo-std"]
+	path = zones/crates/contracts/lib/tempo-std
+	url = https://github.com/tempoxyz/tempo-std
+[submodule "zones/crates/contracts/lib/forge-std"]
+	path = zones/crates/contracts/lib/forge-std
+	url = https://github.com/foundry-rs/forge-std

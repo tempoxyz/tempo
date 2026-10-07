@@ -4,3 +4,6 @@ docs/
 localnet/
 scripts/
 target/
+
+# Zones builds use zones/ as their own Docker context.
+zones/

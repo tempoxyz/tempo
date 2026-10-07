@@ -35,6 +35,9 @@ You can get started today by [deploying a Zone](#getting-started) on Tempo testn
 
 ## Getting Started
 
+In the Tempo repository, run the commands below from `zones/`. See
+[MIGRATION.md](MIGRATION.md) for setup and transferring existing Zones PRs.
+
 Prerequisites: [Rust](https://rustup.rs/), [Foundry](https://book.getfoundry.sh/getting-started/installation), [`just`](https://github.com/casey/just#packages), [`jq`](https://jqlang.github.io/jq/download/)
 
 ### Local Development with Anvil

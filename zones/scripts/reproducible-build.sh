@@ -12,7 +12,7 @@
 #   $OUT_DIR/tempo-zone
 set -euo pipefail
 
-cd "$(git rev-parse --show-toplevel)"
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 VERSION="${VERSION:-dev}"
 OUT_DIR="${OUT_DIR:-./out}"

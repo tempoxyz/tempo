@@ -17,3 +17,6 @@ default_*_*.profraw
 .idea/
 .vscode/
 *.swp
+
+# Zones builds use zones/ as their own Docker context.
+zones/

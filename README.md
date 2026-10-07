@@ -25,6 +25,12 @@ Tempo nodes use published [network identities](#network-identities) to verify co
 
 You can get started today by integrating with the [Tempo testnet](https://docs.tempo.xyz/quickstart/integrate-tempo), [building on Tempo](https://docs.tempo.xyz/guide/use-accounts), [running a Tempo node](https://docs.tempo.xyz/guide/node), reading the [Tempo protocol specs](https://docs.tempo.xyz/protocol) or by [building with Tempo SDKs](https://docs.tempo.xyz/sdk).
 
+## Zones
+
+[Zones](zones/README.md) lives in `zones/` as a separate Cargo workspace.
+Run Zones commands from that directory. See the [migration guide](zones/MIGRATION.md)
+for setup and transferring open PRs from `tempoxyz/zones`.
+
 ## What makes Tempo different
 
 - [TIP‑20 token standard](https://docs.tempo.xyz/protocol/tip20/overview) (enshrined ERC‑20 extensions)
