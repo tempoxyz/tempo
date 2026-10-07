@@ -4,6 +4,7 @@ on:
 permissions:
   contents: read
   actions: read
+  id-token: write
 jobs:
   measure:
     runs-on: [self-hosted, Linux, X64, bare-metal-dual-schelk]
