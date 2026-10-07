@@ -1882,11 +1882,9 @@ where
             if tempo_primitives::subblock::has_sub_block_nonce_key_prefix(&aa_env.nonce_key) {
                 return Err(TempoInvalidTransaction::SubblockTransactionsDisabled.into());
             }
-            if aa_env
-                .tempo_authorization_list
-                .iter()
-                .any(|auth| auth.signature().primitive_signature_type().is_none())
-            {
+            if aa_env.tempo_authorization_list.iter().any(|auth| {
+                auth.signature().primitive_signature_type().is_none() && !auth.signature().is_zk()
+            }) {
                 return Err(TempoInvalidTransaction::NativeMultisig(
                     NativeMultisigError::InvalidSignatureContext,
                 )
