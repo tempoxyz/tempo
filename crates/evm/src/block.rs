@@ -201,6 +201,10 @@ where
         ctx: TempoBlockExecutionCtx<'a>,
         chain_spec: &'a TempoChainSpec,
     ) -> Self {
+        tempo_precompiles::execution_measure::begin_node_block(
+            evm.block().number.saturating_to::<u64>(),
+        );
+
         Self {
             incentive_gas_used: 0,
             non_payment_gas_left: ctx.general_gas_limit,
@@ -559,6 +563,10 @@ where
         &mut self,
         tx: impl ExecutableTx<Self>,
     ) -> Result<Self::Result, BlockExecutionError> {
+        let _measurement = tempo_precompiles::execution_measure::area(
+            tempo_precompiles::execution_measure::Area::Execution,
+        );
+
         let (mut tx_env, recovered) = tx.into_parts();
         let execution_context = tx_env.execution_context;
         // Remove any prewarming-specific context that was added to the tx env.
@@ -598,6 +606,10 @@ where
     }
 
     fn commit_transaction(&mut self, output: Self::Result) -> GasOutput {
+        let _measurement = tempo_precompiles::execution_measure::area(
+            tempo_precompiles::execution_measure::Area::Commit,
+        );
+
         let TempoTxResult {
             inner,
             execution_context,
@@ -664,6 +676,11 @@ where
             result.gas_used = regular_gas_used;
         }
 
+        tempo_precompiles::execution_measure::report_node_block(
+            "revm",
+            result.gas_used,
+            result.receipts.len(),
+        );
         Ok((evm, result))
     }
 
