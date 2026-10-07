@@ -1,23 +1,14 @@
-name: Contracts
+name: Zones Contracts
 
 on:
   push:
-    branches: [main, dr/validium]
+    branches: [main, dr/validium, feat/integrate-zones-history]
     paths:
-      - "crates/contracts/src/**"
-      - "crates/contracts/test/**"
-      - "crates/contracts/foundry.*"
-      - "crates/**"
-      - ".github/workflows/contracts.yml"
+      - "crates/zones/contracts/**"
+      - ".github/workflows/zones-contracts.yml"
+      - ".gitmodules"
   merge_group:
   pull_request:
-    branches: [main, dr/validium]
-    paths:
-      - "crates/contracts/src/**"
-      - "crates/contracts/test/**"
-      - "crates/contracts/foundry.*"
-      - "crates/**"
-      - ".github/workflows/contracts.yml"
 
 permissions:
   contents: read
@@ -38,15 +29,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
 
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           submodules: recursive
           persist-credentials: false
 
       - name: Install Foundry
-        uses: tempoxyz/gh-actions/actions/setup-foundry@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        uses: tempoxyz/gh-actions/actions/setup-foundry@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
           version: nightly-fc14f674bd853bc817c308a5202faa5be8df05e7
 
@@ -57,24 +48,24 @@ jobs:
         id: solidity-key
         run: |
           echo "forge-sha=$(forge --version | sed -n 's/^Commit SHA: //p')" >> "$GITHUB_OUTPUT"
-          echo "contracts-tree=$(git rev-parse HEAD:crates/contracts)" >> "$GITHUB_OUTPUT"
+          echo "contracts-tree=$(git rev-parse HEAD:crates/zones/contracts)" >> "$GITHUB_OUTPUT"
 
       - name: Restore Solidity artifacts
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
-            crates/contracts/cache
-            crates/contracts/out
-          key: forge-${{ runner.os }}-${{ steps.solidity-key.outputs.forge-sha }}-${{ steps.solidity-key.outputs.contracts-tree }}
+            crates/zones/contracts/cache
+            crates/zones/contracts/out
+          key: zones-forge-${{ runner.os }}-${{ steps.solidity-key.outputs.forge-sha }}-${{ steps.solidity-key.outputs.contracts-tree }}
 
       - name: Run Forge build
-        working-directory: crates/contracts
+        working-directory: crates/zones/contracts
         run: forge build --skip test
 
       # Exclude all test helpers too: their imports would pull the runtimes back in. Protocol-
       # installed runtimes have a separate 64 KiB budget in PortalRuntime.t.sol.
       - name: Check sizes of normally deployed contracts
-        working-directory: crates/contracts
+        working-directory: crates/zones/contracts
         run: |
           forge build --sizes --skip 'test/**' \
             src/runtime/tempo/ZonePortal.sol \
@@ -89,20 +80,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
 
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           submodules: recursive
           persist-credentials: false
 
       - name: Install Foundry
-        uses: tempoxyz/gh-actions/actions/setup-foundry@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        uses: tempoxyz/gh-actions/actions/setup-foundry@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
           version: nightly-fc14f674bd853bc817c308a5202faa5be8df05e7
 
       - name: Run Forge fmt check
-        working-directory: crates/contracts
+        working-directory: crates/zones/contracts
         run: forge fmt --check src/runtime test
 
   test:
@@ -117,15 +108,15 @@ jobs:
       MIN_BRANCHES: "60"
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
 
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           submodules: recursive
           persist-credentials: false
 
       - name: Checkout tempo
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: tempoxyz/tempo
           ref: ${{ env.TEMPO_FOUNDRY_REF }}
@@ -133,7 +124,7 @@ jobs:
           persist-credentials: false
 
       - name: Checkout foundry
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: foundry-rs/foundry
           ref: ${{ env.FOUNDRY_REF }}
@@ -153,25 +144,21 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: foundry/target/release/forge
-          key: tempo-forge-v1-${{ runner.os }}-${{ steps.foundry-ref.outputs.sha }}-${{ env.TEMPO_FOUNDRY_REF }}
+          key: zones-tempo-forge-v1-${{ runner.os }}-${{ steps.foundry-ref.outputs.sha }}-${{ env.TEMPO_FOUNDRY_REF }}
 
-      - name: Setup Rust
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         if: steps.forge-cache.outputs.cache-hit != 'true'
-        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
-        with:
-          toolchain: stable
-      - name: Setup mold
+      - uses: tempoxyz/gh-actions/actions/setup-mold@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         if: steps.forge-cache.outputs.cache-hit != 'true'
-        uses: tempoxyz/gh-actions/actions/setup-mold@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
-      - name: Setup sccache
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         if: steps.forge-cache.outputs.cache-hit != 'true'
-        uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
         with:
           version: v0.15.0
-      - uses: tempoxyz/gh-actions/vendor/Swatinem/rust-cache@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+      - uses: tempoxyz/gh-actions/vendor/Swatinem/rust-cache@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         if: steps.forge-cache.outputs.cache-hit != 'true'
         with:
           workspaces: foundry
+          key: zones-contracts-foundry
 
       - name: Patch foundry to use pinned Tempo crates
         if: steps.forge-cache.outputs.cache-hit != 'true'
@@ -187,18 +174,18 @@ jobs:
 
       - name: Resolve contracts cache key
         id: contracts-key
-        run: echo "tree=$(git rev-parse HEAD:crates/contracts)" >> "$GITHUB_OUTPUT"
+        run: echo "tree=$(git rev-parse HEAD:crates/zones/contracts)" >> "$GITHUB_OUTPUT"
 
       - name: Restore Tempo Forge Solidity artifacts
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
-            crates/contracts/cache
-            crates/contracts/out
-          key: tempo-forge-specs-v1-${{ runner.os }}-${{ steps.foundry-ref.outputs.sha }}-${{ env.TEMPO_FOUNDRY_REF }}-${{ steps.contracts-key.outputs.tree }}
+            crates/zones/contracts/cache
+            crates/zones/contracts/out
+          key: zones-tempo-forge-specs-v1-${{ runner.os }}-${{ steps.foundry-ref.outputs.sha }}-${{ env.TEMPO_FOUNDRY_REF }}-${{ steps.contracts-key.outputs.tree }}
 
       - name: Build and check deployment sizes with Tempo-capable Forge
-        working-directory: crates/contracts
+        working-directory: crates/zones/contracts
         run: |
           "$GITHUB_WORKSPACE/foundry/target/release/forge" build --skip test
           # Protocol-installed runtimes are excluded here and have a separate 64 KiB budget in
@@ -209,19 +196,19 @@ jobs:
             src/runtime/tempo/Verifier.sol
 
       - name: Run Forge tests (zone specs)
-        working-directory: crates/contracts
+        working-directory: crates/zones/contracts
         run: |
           "$GITHUB_WORKSPACE/foundry/target/release/forge" test -vvv --match-path "test/**"
 
       - name: Run symbolic (symex) property tests
-        working-directory: crates/contracts
+        working-directory: crates/zones/contracts
         run: |
           "$GITHUB_WORKSPACE/foundry/target/release/forge" test \
             --symbolic --match-test "check_" \
             --symbolic-solver z3 --symbolic-timeout 180 -vvv
 
       - name: Forge coverage (zone specs)
-        working-directory: crates/contracts
+        working-directory: crates/zones/contracts
         run: |
           set -o pipefail
           "$GITHUB_WORKSPACE/foundry/target/release/forge" coverage \
@@ -234,7 +221,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Coverage gate (production src)
-        working-directory: crates/contracts
+        working-directory: crates/zones/contracts
         run: |
           python3 - <<'PY'
           import os, re, sys
@@ -265,6 +252,51 @@ jobs:
           print("Coverage gate passed.")
           PY
 
+  storage-layout:
+    permissions:
+      contents: read
+      id-token: write
+    name: ZonePortal layout unchanged
+    runs-on: ubuntu-latest
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install Foundry
+        uses: tempoxyz/gh-actions/actions/setup-foundry@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        with:
+          version: nightly-fc14f674bd853bc817c308a5202faa5be8df05e7
+
+      - name: Check storage layout
+        working-directory: crates/zones/contracts
+        run: |
+          set -o pipefail
+          normalizer='
+            def strip_ast_id: gsub("(?<prefix>t_(?:struct|enum|contract|userDefinedValueType)\\([^)]*\\))[0-9]+"; "\(.prefix)");
+            del(.. | .astId?)
+            | walk(if type == "string" then strip_ast_id else . end)
+            | .types |= (to_entries | map(.key |= strip_ast_id)
+              | if (map(.key) | unique | length) == length then from_entries
+                else error("type-key collision while stripping AST IDs") end)
+          '
+          expected_layout="$RUNNER_TEMP/ZonePortal.expected.json"
+          generated_layout="$RUNNER_TEMP/ZonePortal.generated.json"
+
+          jq --sort-keys "$normalizer" storage-layouts/ZonePortal.json > "$expected_layout"
+          forge inspect ZonePortal storage-layout --json \
+            | jq --sort-keys "$normalizer" > "$generated_layout"
+
+          diff --unified \
+            --label storage-layouts/ZonePortal.json \
+            --label generated/ZonePortal.json \
+            "$expected_layout" "$generated_layout"
+
   contracts-success:
     permissions:
       contents: read
@@ -276,12 +308,13 @@ jobs:
       - build
       - lint
       - test
+      - storage-layout
     timeout-minutes: 5
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
 
       - name: Decide whether the needed jobs succeeded or failed
-        uses: tempoxyz/gh-actions/actions/check-needs@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        uses: tempoxyz/gh-actions/actions/check-needs@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
           jobs: ${{ toJSON(needs) }}

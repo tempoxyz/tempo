@@ -1,4 +1,4 @@
-name: Reproducible Build
+name: Zones Reproducible Build
 
 # Builds and hashes the byte-deterministic `tempo-zone` binary via the shared
 # reusable workflow in tempoxyz/gh-actions.
@@ -6,7 +6,7 @@ name: Reproducible Build
 permissions: {}
 
 concurrency:
-  group: reproducible-build-${{ github.ref }}-${{ github.event_name }}
+  group: zones-reproducible-build-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: ${{ github.event_name == 'push' }}
 
 on:
