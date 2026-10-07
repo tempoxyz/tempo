@@ -8,7 +8,6 @@ use alloy::{
     providers::Provider,
     signers::local::PrivateKeySigner,
 };
-use futures::FutureExt;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_node::rpc::TempoTransactionRequest;
 use tempo_primitives::{SignatureType, transaction::SignedKeyAuthorization};
@@ -98,67 +97,66 @@ pub(crate) trait TestEnv: Sized {
     // Matrix runners (default implementations)
     // -----------------------------------------------------------------------
 
-    // Erase each runner's future before composing the full transaction matrix.
     async fn run_raw_send_matrix(&mut self) -> eyre::Result<()> {
-        super::runners::run_raw_send_matrix(self).boxed_local().await
+        super::runners::run_raw_send_matrix(self).await
     }
 
     async fn run_send_matrix(&mut self) -> eyre::Result<()> {
-        super::runners::run_send_matrix(self).boxed_local().await
+        super::runners::run_send_matrix(self).await
     }
 
     async fn run_fill_transaction_matrix(&mut self) -> eyre::Result<()> {
-        super::runners::run_fill_transaction_matrix(self).boxed_local().await
+        super::runners::run_fill_transaction_matrix(self).await
     }
 
     async fn run_fill_sign_send_matrix(&mut self) -> eyre::Result<()> {
-        super::runners::run_fill_sign_send_matrix(self).boxed_local().await
+        super::runners::run_fill_sign_send_matrix(self).await
     }
 
     async fn run_estimate_gas_matrix(
         &mut self,
     ) -> eyre::Result<std::collections::BTreeMap<String, u64>> {
-        super::runners::run_estimate_gas_matrix(self).boxed_local().await
+        super::runners::run_estimate_gas_matrix(self).await
     }
 
     async fn run_fee_payer_cosign_scenario(&mut self) -> eyre::Result<()> {
-        super::runners::run_fee_payer_cosign_scenario(self).boxed_local().await
+        super::runners::run_fee_payer_cosign_scenario(self).await
     }
 
     async fn run_authorization_list_scenario(&mut self) -> eyre::Result<()> {
-        super::runners::run_authorization_list_scenario(self).boxed_local().await
+        super::runners::run_authorization_list_scenario(self).await
     }
 
     async fn run_keychain_auth_list_skipped_scenario(&mut self) -> eyre::Result<()> {
-        super::runners::run_keychain_auth_list_skipped_scenario(self).boxed_local().await
+        super::runners::run_keychain_auth_list_skipped_scenario(self).await
     }
 
     async fn run_keychain_expiry_scenario(&mut self) -> eyre::Result<()> {
-        super::runners::run_keychain_expiry_scenario(self).boxed_local().await
+        super::runners::run_keychain_expiry_scenario(self).await
     }
 
     async fn run_fee_payer_negative_scenario(&mut self) -> eyre::Result<()> {
-        super::runners::run_fee_payer_negative_scenario(self).boxed_local().await
+        super::runners::run_fee_payer_negative_scenario(self).await
     }
 
     async fn run_create_contract_address_scenario(&mut self) -> eyre::Result<()> {
-        super::runners::run_create_contract_address_scenario(self).boxed_local().await
+        super::runners::run_create_contract_address_scenario(self).await
     }
 
     async fn run_gas_fee_boundary_scenario(&mut self) -> eyre::Result<()> {
-        super::runners::run_gas_fee_boundary_scenario(self).boxed_local().await
+        super::runners::run_gas_fee_boundary_scenario(self).await
     }
 
     async fn run_nonce_rejection_scenario(&mut self) -> eyre::Result<()> {
-        super::runners::run_nonce_rejection_scenario(self).boxed_local().await
+        super::runners::run_nonce_rejection_scenario(self).await
     }
 
     async fn run_send_negative_scenario(&mut self) -> eyre::Result<()> {
-        super::runners::run_send_negative_scenario(self).boxed_local().await
+        super::runners::run_send_negative_scenario(self).await
     }
 
     async fn run_fill_transaction_error_decoding_scenario(&mut self) -> eyre::Result<()> {
-        super::runners::run_fill_transaction_error_decoding_scenario(self).boxed_local().await
+        super::runners::run_fill_transaction_error_decoding_scenario(self).await
     }
 }
 
