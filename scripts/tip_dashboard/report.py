@@ -300,12 +300,19 @@ def scan(s, github=False):
             if label == 'implements':
                 gate = a.get('gate', '')
                 fork = re.search(r'\bis_(t\d+[a-z]?)\(', gate, re.I)
-                declared_fork = canonical_fork(fork.group(1)) if fork else None
-                actual = re.findall(r'\bis_(t\d+[a-z]?)\s*\(', expression, re.I)
+                scheduled = re.fullmatch(r'schedule\(since=(T\d+[A-Z]?)\)', gate)
+                declared_fork = canonical_fork((scheduled or fork).group(1)) if scheduled or fork else None
+                # Dispatch macros use an attribute rather than an is_tN() predicate.
+                # Accept only the exact adjacent since-only attribute. Additional
+                # conditions, comments and string examples must remain unresolved.
+                attribute = re.fullmatch(r'#\[\s*schedule\s*\(\s*since\s*=\s*(T\d+[A-Z]?)\s*\)\s*\]', adjacent)
+                actual = ([attribute.group(1)] if attribute else
+                          re.findall(r'\bis_(t\d+[a-z]?)\s*\(', expression, re.I))
                 actual_forks = sorted(set(canonical_fork(f) for f in actual))
                 entry.update(gate=gate, declared_fork=declared_fork, fork=actual_forks[0] if len(actual_forks) == 1 else None)
                 compact = re.sub(r'\s+', '', expression.split('//', 1)[0])
-                if gate != 'always' and (not declared_fork or gate not in compact or declared_fork != entry['fork']):
+                matches_source = bool(attribute) if scheduled else gate in compact
+                if gate != 'always' and (not declared_fork or not matches_source or declared_fork != entry['fork']):
                     req['warnings'].append(warning('gate_mismatch', f'{path}:{i+1}: declared gate is not established by adjacent source expression.'))
                 if not gate or (gate == 'always' and actual_forks):
                     req['warnings'].append(warning('invalid_gate', f'{path}:{i+1}: missing or invalid activation gate.'))

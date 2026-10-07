@@ -34,7 +34,7 @@ const {pathToFileURL} = require('node:url');
     fs.mkdirSync(out,{recursive:true});
     await page.screenshot({path:path.join(out,'real-dashboard-desktop.png'),fullPage:true});
     await page.locator('#scope').selectOption('all');
-    const linked = real.tips.find(t=>/1088/.test(t.id) && t.requirements.some(r=>r.implementations.length)) || real.tips.find(t=>t.requirements.some(r=>r.implementations.length));
+    const linked = real.tips.find(t=>t.id === 'TIP-1006' && t.requirements.some(r=>r.implementations.length)) || real.tips.find(t=>t.requirements.some(r=>r.implementations.length));
     assert.ok(linked,'report must contain implementation evidence');
     await page.locator('#search').fill(linked.id);
     const card = page.locator('#results > section > details').filter({has:page.locator(':scope > summary',{hasText:linked.id+' —'})}).first();

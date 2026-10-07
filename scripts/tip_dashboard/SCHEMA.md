@@ -9,20 +9,21 @@ All reports and evidence envelopes have `schema_version: 1`. `report.json` is th
 Stable labels:
 
 ```markdown
-<!-- @requirement TIP-1088:R1 from=T12 kind=activation cases=activation_fragmented_bid_t11,activation_fragmented_bid_t12,activation_fragmented_bid_t13 -->
+<!-- @requirement TIP-1006:R21 from=T12 kind=activation cases=selectors_t11,selectors_t12,selectors_t13 -->
 The normative statement follows.
 ```
 
 An existing table ID can retain its name, with a label inside that table row. IDs are namespaced, such as `TIP-1098:ZV1`. A requirement has named, unique required cases. Use distinct case names for each required fork boundary: passing one fork must not satisfy a different fork obligation. Use `from=T12 until=T13 superseded_by=TIP-1234:E2` to express an inclusive start, exclusive end and replacement. Supersession requires a unique replacement and an explicit end fork; invalid scope is unknown. Omitted start scope is unknown, not an assertion about historical forks. Earlier requirements remain in the inventory.
 
 ```rust
-// @implements TIP-1088:R1 gate=self.storage.spec().is_t12()
-if self.storage.spec().is_t12() { /* existing implementation */ }
-// @asserts TIP-1088:R1 case=activation_fragmented_bid_t12 test=stablecoin_dex::tests::spec_dashboard_dex_t12 fork=T12
-spec_evidence!("TIP-1088:R1", "activation_fragmented_bid_t12", "stablecoin_dex::tests::spec_dashboard_dex_t12", "T12", condition);
+// @implements TIP-1006:R21 gate=schedule(since=T12)
+#[schedule(since = T12)]
+burnAt(call) => mutate(call, msg_sender, |sender, c| self.burn_at(sender, c)),
+// @asserts TIP-1006:R21 case=selectors_t12 test=tip20::tests::spec_dashboard_burn_at_activation_t12 fork=T12
+spec_evidence!("TIP-1006:R21", "selectors_t12", "tip20::tests::spec_dashboard_burn_at_activation_t12", "T12", assert!(condition));
 ```
 
-Consecutive implementation labels can share one expression. The scanner records the adjacent expression, compares recognised `is_tN()` predicates with the declared gate, and leaves unsupported guards unresolved. `gate=always` declares an unconditional expression; review must inspect its enclosing control flow. A matching comment is only a link. Review must inspect real code, helper dependencies, assertion meaning and actual fork setup.
+Consecutive implementation labels can share one expression. The scanner records the adjacent expression, compares recognised `is_tN()` predicates or exact `#[schedule(since = TN)]` dispatch attributes with the declared gate, and leaves unsupported guards unresolved. Attributes with additional conditions remain unresolved. `gate=always` declares an unconditional expression; review must inspect its enclosing control flow. A matching comment is only a link. Review must inspect real code, helper dependencies, assertion meaning and actual fork setup.
 
 A snapshot contains all tracked files and nonignored source files in `WORKTREE`, or the selected Git tree for a revision. Source identity binds SHA, relevant dirty state, Git modes, paths, content and submodule pins. Outputs, build/cache directories and symlink targets are excluded from scanning; modified submodules invalidate execution verification. A dirty report displays the base commit plus its source digest and omits misleading immutable source links.
 
@@ -39,7 +40,7 @@ Implementation status is `missing`, `linked` or `reviewed`. Reviewed source can 
 An assertion helper checks its condition and only then emits:
 
 ```text
-TIP_EVIDENCE {"requirement":"TIP-1088:R1","case":"activation_fragmented_bid_t12","test":"stablecoin_dex::tests::spec_dashboard_dex_t12","fork":"T12"}
+TIP_EVIDENCE {"requirement":"TIP-1006:R21","case":"selectors_t12","test":"tip20::tests::spec_dashboard_burn_at_activation_t12","fork":"T12"}
 ```
 
 The external collector owns test outcome. An envelope contains:

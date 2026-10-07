@@ -100,6 +100,30 @@ assert_eq!(after, true);
         self.assertEqual(r['assertion_coverage']['linked'], 0)
         self.assertEqual(len(r['missing_assertions']), 3)
 
+    def test_dispatch_schedule_attribute_links_the_actual_activation(self):
+        p = self.repo / 'src/lib.rs'
+        p.write_text(p.read_text().replace('gate=spec.is_t12()\nif spec.is_t12() { execute(); }',
+                                          'gate=schedule(since=T12)\n#[schedule(since = T12)]\nBurnCall => mutate(call),'))
+        r = self.req(self.build(evidence=self.envelope()))
+        self.assertEqual(r['implementations'][0]['fork'], 'T12')
+        self.assertEqual(r['verification_status'], 'verified')
+        self.assertEqual(r['warnings'], [])
+
+    def test_dispatch_schedule_wrong_or_unsupported_attribute_never_verifies(self):
+        for expression in ['#[schedule(since = T13)]', '#[schedule(since = T12, until = T13)]',
+                           '// #[schedule(since = T12)]', 'let text = "#[schedule(since = T12)]";',
+                           'schedule(since=T12);', '#[unrelated(since = T12)]']:
+            with self.subTest(expression=expression):
+                self.write('src/lib.rs', '// @implements TIP-1116:R1 gate=schedule(since=T12)\n' + expression + '\nBurnCall => mutate(call),\n')
+                self.review()
+                r = self.req()
+                self.assertIn('gate_mismatch', [w['code'] for w in r['warnings']])
+                self.assertEqual(r['implementation_status'], 'linked')
+
+    def test_dispatch_schedule_cannot_be_labelled_always(self):
+        self.write('src/lib.rs', '// @implements TIP-1116:R1 gate=always\n#[schedule(since = T12)]\nBurnCall => mutate(call),\n')
+        self.assertIn('invalid_gate', [w['code'] for w in self.req()['warnings']])
+
     def test_annotations_are_never_review_or_execution(self):
         r = self.req()
         self.assertEqual(r['implementation_status'], 'linked')

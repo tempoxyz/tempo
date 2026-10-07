@@ -95,7 +95,7 @@
     }
     function coverage(parent, value) {
       const c = obj(value), row = node('div', undefined, 'counts');
-      for (const [key, label] of [['total', 'Invariants'], ['linked', 'Linked'], ['reviewed', 'Reviewed'], ['verified', 'Verified']]) row.append(node('span', `${label}: ${count(c[key])}`));
+      for (const [key, label] of [['total', 'Requirements'], ['linked', 'Linked'], ['reviewed', 'Reviewed'], ['verified', 'Verified']]) row.append(node('span', `${label}: ${count(c[key])}`));
       parent.append(row);
     }
     function sourceList(parent, title, items, assertion) {
@@ -140,7 +140,7 @@
       const guards = [...new Set(arr(tip.requirements).flatMap(r => arr(obj(r).implementations).map(i => obj(i).gate)).filter(g => typeof g === 'string' && g))];
       s.append(node('span', `Scheduled ${fork(tip)} · Actual guards: ${guards.join(', ') || 'None recorded'}`, 'summary-line'));
       d.append(s);
-      d.append(node('p', `Inventory: ${str(obj(tip.inventory).status)}. Assertion counts are unique declared cases; reviewed counts do not imply human review. Missing links counts inventoried invariants without implementation links.`, 'muted'));
+      d.append(node('p', `Inventory: ${str(obj(tip.inventory).status)}. Assertion counts are unique declared cases; reviewed counts do not imply human review. Missing links counts inventoried requirements without implementation links.`, 'muted'));
       d.append(link(obj(tip.spec).url, `Specification: ${str(obj(tip.spec).path)}`));
       d.append(node('h4', 'Inventory review'));
       d.append(evidenceValue(obj(tip.inventory).review || obj(tip.inventory).reviews || 'No review recorded'));
@@ -150,7 +150,7 @@
         box.append(link(pr.url, `PR ${str(pr.number, '?')} · ${str(pr.state)}${pr.is_draft === true ? ' · Draft' : ''}`));
         d.append(box);
       }
-      if (!arr(tip.requirements).length) d.append(node('p', 'No invariant inventory recorded.'));
+      if (!arr(tip.requirements).length) d.append(node('p', 'No requirement inventory recorded.'));
       for (const r of arr(tip.requirements)) d.append(requirement(r));
       const provenance = node('details'); provenance.append(node('summary', 'Provenance'), evidenceValue({scheduled_fork_source: tip.scheduled_fork_source, implementation_prs: tip.implementation_prs})); d.append(provenance);
       return d;

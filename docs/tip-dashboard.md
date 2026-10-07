@@ -26,19 +26,18 @@ Keep `protocolVersion` as the single scheduled-fork field. Missing, `TBD` or unr
 Place a stable ID before each normative requirement, preserving existing IDs:
 
 ```markdown
-<!-- @requirement TIP-1088:R1 from=T12 kind=activation cases=activation_fragmented_bid_t11,activation_fragmented_bid_t12,activation_fragmented_bid_t13 -->
+<!-- @requirement TIP-1006:R21 from=T12 kind=activation cases=selectors_t11,selectors_t12,selectors_t13 -->
 The normative activation rule follows.
 ```
 
 Link the real guard and the actual assertion:
 
 ```rust
-// @implements TIP-1088:R1 gate=self.storage.spec().is_t12()
-if self.storage.spec().is_t12() {
-    // Existing implementation.
-}
-// @asserts TIP-1088:R1 case=activation_fragmented_bid_t12 test=stablecoin_dex::tests::spec_dashboard_dex_t12 fork=T12
-spec_evidence!("TIP-1088:R1", "activation_fragmented_bid_t12", "stablecoin_dex::tests::spec_dashboard_dex_t12", "T12", actual == expected);
+// @implements TIP-1006:R21 gate=schedule(since=T12)
+#[schedule(since = T12)]
+burnAt(call) => mutate(call, msg_sender, |sender, c| self.burn_at(sender, c)),
+// @asserts TIP-1006:R21 case=selectors_t12 test=tip20::tests::spec_dashboard_burn_at_activation_t12 fork=T12
+spec_evidence!("TIP-1006:R21", "selectors_t12", "tip20::tests::spec_dashboard_burn_at_activation_t12", "T12", assert_eq!(actual, expected));
 ```
 
 Cases are distinct obligations; use separate names when both sides of a fork boundary must execute. Use `from=T12 until=T13 superseded_by=TIP-1234:E2` for replaced rules (`until` is exclusive). `gate=always` links an unconditional helper; review must inspect its callers and enclosing guards. Comments establish links, not semantic correctness.
@@ -52,7 +51,7 @@ python3 scripts/tip_dashboard/report.py --output output/tip-dashboard --evidence
 
 The pilot builds `tempo-precompiles` with its existing `test-utils` feature and runs each explicitly ignored `spec_dashboard` test separately. Its test-only macro asserts before emitting a marker; there are no production hooks or per-assertion files. Markers join the outcome of that same test attempt. An early return, skipped test, later failure, wrong fork or stale source cannot produce verified coverage. Build/collection failures remain unavailable evidence.
 
-TIP-1088 is the T12 showcase. Its inventory includes declared gaps for transient writes/refunds, all write-path traversal, ABI shapes and flip-error outcomes. Finite passing examples do not prove parity for every input. Other TIPs remain visible from their real schedule metadata even before labelling. Missing protocol implementation is a finding, not scope to change protocol behaviour.
+TIP-1006 (`burnAt`) is the T12 showcase. Its inventory covers activation, roles, validation, state changes, events, access-key limits and all seven invariants. Finite passing cases are execution evidence, not proof over every reachable state. Zone rejection, mixed transfer-and-burn spending, disabled-limit/non-origin accounting and issuer policy review remain explicit gaps; see [the source review](../tips/verification/tip-1006-review.md). Earlier TIP-1088 spec IDs are retained for stability; its demo instrumentation has been removed. Other TIPs remain visible from their real schedule metadata even before labelling. Missing protocol implementation is a finding, not scope to change protocol behaviour.
 
 The matching Foundry helper is `tips/verify/test/helpers/SpecEvidence.sol`. A Foundry outcome collector is not included; the Rust collector does not claim Foundry execution.
 

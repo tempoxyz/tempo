@@ -61,8 +61,6 @@ pub(crate) enum Fill {
 /// passes a mutating `settle` that fills orders and returns the next one, while
 /// the quote passes a read-only `settle` that only advances the cursor, so both
 /// price a trade identically.
-// @implements TIP-1088:R3 gate=always
-// @implements TIP-1088:R11 gate=always
 pub(crate) fn walk_resting_orders(
     mut order: Order,
     mut amount: u128,
@@ -335,8 +333,6 @@ impl TickLevelHandler {
     /// Reads only the live linked-list slot at T12 while preserving the legacy layout below T12.
     #[inline]
     pub(crate) fn read(&self) -> Result<TickLevel> {
-        // @implements TIP-1088:R6 gate=StorageCtx.spec().is_t12()
-        // @implements TIP-1088:R8 gate=StorageCtx.spec().is_t12()
         if StorageCtx.spec().is_t12() {
             Ok(TickLevel {
                 links: self.links.read()?,
@@ -350,8 +346,6 @@ impl TickLevelHandler {
     /// Writes only the live linked-list slot at T12 while preserving the legacy layout below T12.
     #[inline]
     pub(crate) fn write(&mut self, level: TickLevel) -> Result<()> {
-        // @implements TIP-1088:R6 gate=StorageCtx.spec().is_t12()
-        // @implements TIP-1088:R8 gate=StorageCtx.spec().is_t12()
         if StorageCtx.spec().is_t12() {
             self.links.write(level.links)
         } else {
@@ -362,8 +356,6 @@ impl TickLevelHandler {
     /// Deletes only the live linked-list slot at T12 while preserving the stale aggregate.
     #[inline]
     pub(crate) fn delete(&mut self) -> Result<()> {
-        // @implements TIP-1088:R6 gate=StorageCtx.spec().is_t12()
-        // @implements TIP-1088:R8 gate=StorageCtx.spec().is_t12()
         if StorageCtx.spec().is_t12() {
             self.links.delete()
         } else {

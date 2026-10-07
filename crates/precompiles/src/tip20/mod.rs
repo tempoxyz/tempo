@@ -258,6 +258,8 @@ impl TIP20Token {
     }
 
     /// Returns the `BURN_AT_ROLE` constant (TIP-1006).
+    // @implements TIP-1006:R8 gate=always
+    // @implements TIP-1006:R22 gate=always
     pub fn burn_at_role() -> B256 {
         BURN_AT_ROLE
     }
@@ -684,6 +686,20 @@ impl TIP20Token {
     ///
     /// Requires `BURN_AT_ROLE` and an unpaused token. When `from` is the transaction origin,
     /// the burn consumes the access key's spending limit even if a bridge is the caller.
+    // @implements TIP-1006:R1 gate=always
+    // @implements TIP-1006:R2 gate=always
+    // @implements TIP-1006:R4 gate=always
+    // @implements TIP-1006:R5 gate=always
+    // @implements TIP-1006:R9 gate=always
+    // @implements TIP-1006:R10 gate=always
+    // @implements TIP-1006:R11 gate=always
+    // @implements TIP-1006:R12 gate=always
+    // @implements TIP-1006:R13 gate=always
+    // @implements TIP-1006:R15 gate=always
+    // @implements TIP-1006:R16 gate=always
+    // @implements TIP-1006:R17 gate=always
+    // @implements TIP-1006:R18 gate=always
+    // @implements TIP-1006:R20 gate=always
     pub fn burn_at(&mut self, msg_sender: Address, call: ITIP20::burnAtCall) -> Result<()> {
         self.check_not_paused()?;
         self.check_role(msg_sender, BURN_AT_ROLE)?;
@@ -706,6 +722,8 @@ impl TIP20Token {
     }
 
     /// Rejects pooled custody balances whose destruction would leave outstanding claims unbacked.
+    // @implements TIP-1006:R3 gate=always
+    // @implements TIP-1006:R14 gate=always
     fn check_burn_address(&self, from: Address) -> Result<()> {
         let hardfork = self.storage.spec();
         if PROTECTED
@@ -1316,6 +1334,8 @@ impl TIP20Token {
     ///
     /// # Errors
     /// - `SpendingLimitExceeded` — access key spending limit exceeded
+    // @implements TIP-1006:R7 gate=always
+    // @implements TIP-1006:R20 gate=always
     pub fn check_and_update_spending_limit(&mut self, from: Address, amount: U256) -> Result<()> {
         AccountKeychain::new().authorize_transfer(from, self.address, amount)
     }
@@ -1324,6 +1344,7 @@ impl TIP20Token {
     ///
     /// For virtual recipients the event address is the virtual alias; the balance update always
     /// targets `to.target` (the resolved master).
+    // @implements TIP-1006:R6 gate=always
     pub fn _transfer(&mut self, from: Address, to: &Recipient, amount: U256) -> Result<()> {
         let from_balance = if !self.storage.spec().is_t8() {
             let from_balance = self.get_balance(from)?;
@@ -3525,6 +3546,1360 @@ pub(crate) mod tests {
             let supply_cap = token.supply_cap()?;
             assert_eq!(supply_cap, U256::from(u128::MAX));
 
+            Ok(())
+        })
+    }
+
+    // Evidence output follows the assertion; no file writes or protocol instrumentation.
+    macro_rules! spec_evidence {
+        ($rid:literal, $case:literal, $test:literal, $fork:literal, $assertion:expr) => {{
+            let _: () = $assertion;
+            println!(
+                "{}",
+                concat!(
+                    "TIP_EVIDENCE {\"requirement\":\"",
+                    $rid,
+                    "\",\"case\":\"",
+                    $case,
+                    "\",\"test\":\"",
+                    $test,
+                    "\",\"fork\":\"",
+                    $fork,
+                    "\"}"
+                )
+            );
+        }};
+    }
+
+    #[test]
+    #[ignore = "explicit TIP dashboard evidence run"]
+    fn spec_dashboard_burn_at_requires_its_own_role_and_respects_pause() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+        let admin = Address::random();
+        let burner = Address::random();
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut token = TIP20Setup::create("Token", "TKN", admin)
+                .with_issuer(admin)
+                .with_role(burner, BURN_BLOCKED_ROLE)
+                .with_role(admin, PAUSE_ROLE)
+                .with_role(admin, UNPAUSE_ROLE)
+                .with_mint(admin, U256::from(10))
+                .apply()?;
+            let call = ITIP20::burnAtCall {
+                from: admin,
+                amount: U256::ZERO,
+            };
+            // Neither the issuer nor the blocked-burn role grants arbitrary burning authority.
+            for caller in [admin, burner] {
+                // @asserts TIP-1006:R12 case=reject_other_roles_t12 test=tip20::tests::spec_dashboard_burn_at_requires_its_own_role_and_respects_pause fork=T12
+                spec_evidence!(
+                    "TIP-1006:R12",
+                    "reject_other_roles_t12",
+                    "tip20::tests::spec_dashboard_burn_at_requires_its_own_role_and_respects_pause",
+                    "T12",
+                    assert_eq!(
+                        token.burn_at(caller, call.clone()),
+                        Err(RolesAuthError::unauthorized().into())
+                    )
+                );
+            }
+            // @asserts TIP-1006:R8 case=default_role_admin_t12 test=tip20::tests::spec_dashboard_burn_at_requires_its_own_role_and_respects_pause fork=T12
+            spec_evidence!(
+                "TIP-1006:R8",
+                "default_role_admin_t12",
+                "tip20::tests::spec_dashboard_burn_at_requires_its_own_role_and_respects_pause",
+                "T12",
+                assert_eq!(
+                    token.get_role_admin(IRolesAuth::getRoleAdminCall { role: BURN_AT_ROLE })?,
+                    DEFAULT_ADMIN_ROLE
+                )
+            );
+            token.grant_role(
+                admin,
+                IRolesAuth::grantRoleCall {
+                    role: BURN_AT_ROLE,
+                    account: burner,
+                },
+            )?;
+            token.burn_at(burner, call.clone())?;
+            token.pause(admin, ITIP20::pauseCall {})?;
+            // @asserts TIP-1006:R11 case=paused_error_t12 test=tip20::tests::spec_dashboard_burn_at_requires_its_own_role_and_respects_pause fork=T12
+            spec_evidence!(
+                "TIP-1006:R11",
+                "paused_error_t12",
+                "tip20::tests::spec_dashboard_burn_at_requires_its_own_role_and_respects_pause",
+                "T12",
+                assert_eq!(
+                    token.burn_at(burner, call.clone()),
+                    Err(TIP20Error::contract_paused().into())
+                )
+            );
+            token.unpause(admin, ITIP20::unpauseCall {})?;
+            token.revoke_role(
+                admin,
+                IRolesAuth::revokeRoleCall {
+                    role: BURN_AT_ROLE,
+                    account: burner,
+                },
+            )?;
+            // @asserts TIP-1006:R2 case=revoked_role_error_t12 test=tip20::tests::spec_dashboard_burn_at_requires_its_own_role_and_respects_pause fork=T12
+            spec_evidence!(
+                "TIP-1006:R2",
+                "revoked_role_error_t12",
+                "tip20::tests::spec_dashboard_burn_at_requires_its_own_role_and_respects_pause",
+                "T12",
+                assert_eq!(
+                    token.burn_at(burner, call),
+                    Err(RolesAuthError::unauthorized().into())
+                )
+            );
+            // @asserts TIP-1006:R4 case=rejected_burns_balance_t12 test=tip20::tests::spec_dashboard_burn_at_requires_its_own_role_and_respects_pause fork=T12
+            spec_evidence!(
+                "TIP-1006:R4",
+                "rejected_burns_balance_t12",
+                "tip20::tests::spec_dashboard_burn_at_requires_its_own_role_and_respects_pause",
+                "T12",
+                assert_eq!(token.get_balance(admin)?, U256::from(10))
+            );
+            // @asserts TIP-1006:R17 case=rejected_burns_supply_t12 test=tip20::tests::spec_dashboard_burn_at_requires_its_own_role_and_respects_pause fork=T12
+            spec_evidence!(
+                "TIP-1006:R17",
+                "rejected_burns_supply_t12",
+                "tip20::tests::spec_dashboard_burn_at_requires_its_own_role_and_respects_pause",
+                "T12",
+                assert_eq!(token.total_supply()?, U256::from(10))
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    #[ignore = "explicit TIP dashboard evidence run"]
+    fn spec_dashboard_burn_at_ignores_policy_and_emits_caller_and_holder() -> eyre::Result<()> {
+        let admin = Address::random();
+        let holder = Address::random();
+        let burner = Address::random();
+        for policy in [ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let mut token = TIP20Setup::create("Token", "TKN", admin)
+                    .with_issuer(admin)
+                    .with_role(burner, BURN_AT_ROLE)
+                    .with_mint(holder, U256::from(100))
+                    .apply()?;
+                token.change_transfer_policy_id(
+                    admin,
+                    ITIP20::changeTransferPolicyIdCall {
+                        newPolicyId: policy,
+                    },
+                )?;
+                for amount in [U256::ZERO, U256::from(100)] {
+                    token.clear_emitted_events();
+                    token.burn_at(
+                        burner,
+                        ITIP20::burnAtCall {
+                            from: holder,
+                            amount,
+                        },
+                    )?;
+                    // @asserts TIP-1006:R16 case=policy_independent_balance_t12 test=tip20::tests::spec_dashboard_burn_at_ignores_policy_and_emits_caller_and_holder fork=T12
+                    spec_evidence!(
+                        "TIP-1006:R16",
+                        "policy_independent_balance_t12",
+                        "tip20::tests::spec_dashboard_burn_at_ignores_policy_and_emits_caller_and_holder",
+                        "T12",
+                        assert_eq!(token.get_balance(holder)?, U256::from(100) - amount)
+                    );
+                    // @asserts TIP-1006:R1 case=policy_independent_supply_t12 test=tip20::tests::spec_dashboard_burn_at_ignores_policy_and_emits_caller_and_holder fork=T12
+                    spec_evidence!(
+                        "TIP-1006:R1",
+                        "policy_independent_supply_t12",
+                        "tip20::tests::spec_dashboard_burn_at_ignores_policy_and_emits_caller_and_holder",
+                        "T12",
+                        assert_eq!(token.total_supply()?, U256::from(100) - amount)
+                    );
+                    // @asserts TIP-1006:R18 case=burn_event_pair_t12 test=tip20::tests::spec_dashboard_burn_at_ignores_policy_and_emits_caller_and_holder fork=T12
+                    spec_evidence!(
+                        "TIP-1006:R18",
+                        "burn_event_pair_t12",
+                        "tip20::tests::spec_dashboard_burn_at_ignores_policy_and_emits_caller_and_holder",
+                        "T12",
+                        token.assert_emitted_events(vec![
+                            TIP20Event::transfer(holder, Address::ZERO, amount),
+                            TIP20Event::burn_at(burner, holder, amount),
+                        ])
+                    );
+                }
+                // @asserts TIP-1006:R15 case=insufficient_balance_error_t12 test=tip20::tests::spec_dashboard_burn_at_ignores_policy_and_emits_caller_and_holder fork=T12
+                spec_evidence!(
+                    "TIP-1006:R15",
+                    "insufficient_balance_error_t12",
+                    "tip20::tests::spec_dashboard_burn_at_ignores_policy_and_emits_caller_and_holder",
+                    "T12",
+                    assert_eq!(
+                        token.burn_at(
+                            burner,
+                            ITIP20::burnAtCall {
+                                from: holder,
+                                amount: U256::ONE
+                            }
+                        ),
+                        Err(
+                            TIP20Error::insufficient_balance(U256::ZERO, U256::ONE, token.address)
+                                .into()
+                        ),
+                    )
+                );
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "explicit TIP dashboard evidence run"]
+    fn spec_dashboard_burn_at_and_burn_blocked_share_protected_addresses() -> eyre::Result<()> {
+        let admin = Address::random();
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut token = TIP20Setup::create("Token", "TKN", admin)
+                .with_role(admin, BURN_AT_ROLE)
+                .with_role(admin, BURN_BLOCKED_ROLE)
+                .apply()?;
+            token.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: REJECT_ALL_POLICY_ID,
+                },
+            )?;
+            for from in [
+                token.address,
+                TIP_FEE_MANAGER_ADDRESS,
+                STABLECOIN_DEX_ADDRESS,
+                TIP20_CHANNEL_RESERVE_ADDRESS,
+                RECEIVE_POLICY_GUARD_ADDRESS,
+                // Protect the entire reserved prefix, including undeployed portals and the zero suffix.
+                address!("5AD0000000000000000000000000000000000000"),
+                address!("5AD0000000000000000000000000000000000001"),
+                address!("5AD000000000000000000000ffffffffffffffff"),
+            ] {
+                for amount in [U256::ZERO, U256::ONE] {
+                    // @asserts TIP-1006:R14 case=protected_burn_at_error_t12 test=tip20::tests::spec_dashboard_burn_at_and_burn_blocked_share_protected_addresses fork=T12
+                    spec_evidence!(
+                        "TIP-1006:R14",
+                        "protected_burn_at_error_t12",
+                        "tip20::tests::spec_dashboard_burn_at_and_burn_blocked_share_protected_addresses",
+                        "T12",
+                        assert_eq!(
+                            token.burn_at(admin, ITIP20::burnAtCall { from, amount }),
+                            Err(TIP20Error::protected_address().into())
+                        )
+                    );
+                    // @asserts TIP-1006:R3 case=shared_burn_blocked_protection_t12 test=tip20::tests::spec_dashboard_burn_at_and_burn_blocked_share_protected_addresses fork=T12
+                    spec_evidence!(
+                        "TIP-1006:R3",
+                        "shared_burn_blocked_protection_t12",
+                        "tip20::tests::spec_dashboard_burn_at_and_burn_blocked_share_protected_addresses",
+                        "T12",
+                        assert_eq!(
+                            token.burn_blocked(admin, from, amount, true),
+                            Err(TIP20Error::protected_address().into())
+                        )
+                    );
+                }
+            }
+            // Adjacent prefixes are ordinary balances, not protected protocol custody.
+            token.burn_at(
+                admin,
+                ITIP20::burnAtCall {
+                    from: address!("5AD0000000000000000000010000000000000001"),
+                    amount: U256::ZERO,
+                },
+            )?;
+            Ok(())
+        })
+    }
+
+    #[test]
+    #[ignore = "explicit TIP dashboard evidence run"]
+    fn spec_dashboard_burn_at_preserves_settled_rewards() -> eyre::Result<()> {
+        let admin = Address::random();
+        let holder = Address::random();
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut token = TIP20Setup::create("Token", "TKN", admin)
+                .with_issuer(admin)
+                .with_role(admin, BURN_AT_ROLE)
+                .with_mint(holder, U256::from(100))
+                .apply()?;
+            // Seed reward state settled before T8, including the balance backing the claim.
+            token.set_balance(token.address, U256::from(20))?;
+            token.set_total_supply(U256::from(120))?;
+            token.global_reward_per_token.write(U256::from(3))?;
+            token.opted_in_supply.write(100)?;
+            token.user_reward_info[holder].write(UserRewardInfo {
+                reward_recipient: holder,
+                reward_per_token: U256::from(2),
+                reward_balance: U256::from(20),
+            })?;
+            token.burn_at(
+                admin,
+                ITIP20::burnAtCall {
+                    from: holder,
+                    amount: U256::from(100),
+                },
+            )?;
+            let rewards = token.get_user_reward_info(holder)?;
+            // @asserts TIP-1006:R17 case=balance_supply_rewards_t12 test=tip20::tests::spec_dashboard_burn_at_preserves_settled_rewards fork=T12
+            spec_evidence!(
+                "TIP-1006:R17",
+                "balance_supply_rewards_t12",
+                "tip20::tests::spec_dashboard_burn_at_preserves_settled_rewards",
+                "T12",
+                assert!(
+                    token.get_balance(holder)? == U256::ZERO
+                        && token.total_supply()? == U256::from(20)
+                        && token.get_balance(token.address)? == U256::from(20)
+                        && rewards.reward_recipient == holder
+                        && rewards.reward_per_token == U256::from(2)
+                        && rewards.reward_balance == U256::from(20)
+                        && token.get_global_reward_per_token()? == U256::from(3)
+                        && token.get_opted_in_supply()? == 100
+                )
+            );
+
+            // @asserts TIP-1006:R6 case=reward_recipient_unchanged_t12 test=tip20::tests::spec_dashboard_burn_at_preserves_settled_rewards fork=T12
+            spec_evidence!(
+                "TIP-1006:R6",
+                "reward_recipient_unchanged_t12",
+                "tip20::tests::spec_dashboard_burn_at_preserves_settled_rewards",
+                "T12",
+                assert_eq!(rewards.reward_recipient, holder)
+            );
+            // @asserts TIP-1006:R6 case=reward_index_unchanged_t12 test=tip20::tests::spec_dashboard_burn_at_preserves_settled_rewards fork=T12
+            spec_evidence!(
+                "TIP-1006:R6",
+                "reward_index_unchanged_t12",
+                "tip20::tests::spec_dashboard_burn_at_preserves_settled_rewards",
+                "T12",
+                assert_eq!(rewards.reward_per_token, U256::from(2))
+            );
+            // @asserts TIP-1006:R6 case=settled_reward_unchanged_t12 test=tip20::tests::spec_dashboard_burn_at_preserves_settled_rewards fork=T12
+            spec_evidence!(
+                "TIP-1006:R6",
+                "settled_reward_unchanged_t12",
+                "tip20::tests::spec_dashboard_burn_at_preserves_settled_rewards",
+                "T12",
+                assert_eq!(rewards.reward_balance, U256::from(20))
+            );
+            // @asserts TIP-1006:R6 case=global_reward_index_unchanged_t12 test=tip20::tests::spec_dashboard_burn_at_preserves_settled_rewards fork=T12
+            spec_evidence!(
+                "TIP-1006:R6",
+                "global_reward_index_unchanged_t12",
+                "tip20::tests::spec_dashboard_burn_at_preserves_settled_rewards",
+                "T12",
+                assert_eq!(token.get_global_reward_per_token()?, U256::from(3))
+            );
+            // @asserts TIP-1006:R6 case=opted_in_supply_unchanged_t12 test=tip20::tests::spec_dashboard_burn_at_preserves_settled_rewards fork=T12
+            spec_evidence!(
+                "TIP-1006:R6",
+                "opted_in_supply_unchanged_t12",
+                "tip20::tests::spec_dashboard_burn_at_preserves_settled_rewards",
+                "T12",
+                assert_eq!(token.get_opted_in_supply()?, 100)
+            );
+            // @asserts TIP-1006:R6 case=reward_custody_unchanged_t12 test=tip20::tests::spec_dashboard_burn_at_preserves_settled_rewards fork=T12
+            spec_evidence!(
+                "TIP-1006:R6",
+                "reward_custody_unchanged_t12",
+                "tip20::tests::spec_dashboard_burn_at_preserves_settled_rewards",
+                "T12",
+                assert_eq!(token.get_balance(token.address)?, U256::from(20))
+            );
+            // @asserts TIP-1006:R6 case=settled_reward_claimable_t12 test=tip20::tests::spec_dashboard_burn_at_preserves_settled_rewards fork=T12
+            spec_evidence!(
+                "TIP-1006:R6",
+                "settled_reward_claimable_t12",
+                "tip20::tests::spec_dashboard_burn_at_preserves_settled_rewards",
+                "T12",
+                assert_eq!(token.claim_rewards(holder)?, U256::from(20))
+            );
+            // @asserts TIP-1006:R6 case=claimed_reward_balance_t12 test=tip20::tests::spec_dashboard_burn_at_preserves_settled_rewards fork=T12
+            spec_evidence!(
+                "TIP-1006:R6",
+                "claimed_reward_balance_t12",
+                "tip20::tests::spec_dashboard_burn_at_preserves_settled_rewards",
+                "T12",
+                assert_eq!(token.get_balance(holder)?, U256::from(20))
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    #[ignore = "explicit TIP dashboard evidence run"]
+    fn spec_dashboard_burn_at_charges_the_holder_access_key_and_resets_periodic_limits()
+    -> eyre::Result<()> {
+        let admin = Address::random();
+        let holder = Address::random();
+        let bridge = Address::random();
+        let key = Address::random();
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+        storage.set_timestamp(U256::from(1000));
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut token = TIP20Setup::create("Token", "TKN", admin)
+                .with_issuer(admin)
+                .with_role(bridge, BURN_AT_ROLE)
+                .with_mint(holder, U256::from(300))
+                .with_mint(bridge, U256::from(200))
+                .apply()?;
+            let mut keychain = authorize_burn_key(holder, key, token.address, 60)?;
+            keychain.clear_emitted_events();
+            token.burn_at(
+                bridge,
+                ITIP20::burnAtCall {
+                    from: holder,
+                    amount: U256::from(100),
+                },
+            )?;
+            // @asserts TIP-1006:R20 case=holder_spend_event_t12 test=tip20::tests::spec_dashboard_burn_at_charges_the_holder_access_key_and_resets_periodic_limits fork=T12
+            spec_evidence!(
+                "TIP-1006:R20",
+                "holder_spend_event_t12",
+                "tip20::tests::spec_dashboard_burn_at_charges_the_holder_access_key_and_resets_periodic_limits",
+                "T12",
+                keychain.assert_emitted_events(vec![AccountKeychainEvent::access_key_spend(
+                    holder,
+                    key,
+                    token.address,
+                    U256::from(100),
+                    U256::ZERO,
+                )])
+            );
+            // @asserts TIP-1006:R7 case=exhausted_limit_error_t12 test=tip20::tests::spec_dashboard_burn_at_charges_the_holder_access_key_and_resets_periodic_limits fork=T12
+            spec_evidence!(
+                "TIP-1006:R7",
+                "exhausted_limit_error_t12",
+                "tip20::tests::spec_dashboard_burn_at_charges_the_holder_access_key_and_resets_periodic_limits",
+                "T12",
+                assert_eq!(
+                    token.burn_at(
+                        bridge,
+                        ITIP20::burnAtCall {
+                            from: holder,
+                            amount: U256::ONE
+                        }
+                    ),
+                    Err(AccountKeychainError::spending_limit_exceeded().into())
+                )
+            );
+            // Burning a different account must not charge the transaction origin's exhausted limit.
+            token.burn_at(
+                bridge,
+                ITIP20::burnAtCall {
+                    from: bridge,
+                    amount: U256::from(200),
+                },
+            )?;
+            StorageCtx.set_timestamp(U256::from(1060));
+            token.burn_at(
+                bridge,
+                ITIP20::burnAtCall {
+                    from: holder,
+                    amount: U256::from(40),
+                },
+            )?;
+            // @asserts TIP-1006:R20 case=periodic_limit_reset_t12 test=tip20::tests::spec_dashboard_burn_at_charges_the_holder_access_key_and_resets_periodic_limits fork=T12
+            spec_evidence!(
+                "TIP-1006:R20",
+                "periodic_limit_reset_t12",
+                "tip20::tests::spec_dashboard_burn_at_charges_the_holder_access_key_and_resets_periodic_limits",
+                "T12",
+                assert_eq!(
+                    keychain.get_remaining_limit(IAccountKeychain::getRemainingLimitCall {
+                        account: holder,
+                        keyId: key,
+                        token: token.address
+                    })?,
+                    U256::from(60)
+                )
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    #[ignore = "explicit TIP dashboard evidence run"]
+    fn spec_dashboard_burn_at_bridge_success_charges_access_key_and_emits_events()
+    -> eyre::Result<()> {
+        let mut fixture = BurnAtFixture::new(40)?;
+        let amount = U256::from(20);
+        let result = fixture.transact(vec![fixture.burn_call(amount)])?;
+        // @asserts TIP-1006:R10 case=bridge_success_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_success_charges_access_key_and_emits_events fork=T12
+        spec_evidence!(
+            "TIP-1006:R10",
+            "bridge_success_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_success_charges_access_key_and_emits_events",
+            "T12",
+            assert!(result.is_success(), "{result:?}")
+        );
+        let logs: Vec<_> = result
+            .logs()
+            .iter()
+            .filter(|log| log.address == fixture.token)
+            .collect();
+        // @asserts TIP-1006:R18 case=bridge_event_count_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_success_charges_access_key_and_emits_events fork=T12
+        spec_evidence!(
+            "TIP-1006:R18",
+            "bridge_event_count_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_success_charges_access_key_and_emits_events",
+            "T12",
+            assert_eq!(logs.len(), 2)
+        );
+        let transfer = ITIP20::Transfer::decode_log(logs[0])?;
+        // @asserts TIP-1006:R18 case=transfer_source_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_success_charges_access_key_and_emits_events fork=T12
+        spec_evidence!(
+            "TIP-1006:R18",
+            "transfer_source_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_success_charges_access_key_and_emits_events",
+            "T12",
+            assert_eq!(transfer.data.from, fixture.holder)
+        );
+        // @asserts TIP-1006:R18 case=transfer_destination_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_success_charges_access_key_and_emits_events fork=T12
+        spec_evidence!(
+            "TIP-1006:R18",
+            "transfer_destination_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_success_charges_access_key_and_emits_events",
+            "T12",
+            assert_eq!(transfer.data.to, Address::ZERO)
+        );
+        // @asserts TIP-1006:R5 case=transfer_amount_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_success_charges_access_key_and_emits_events fork=T12
+        spec_evidence!(
+            "TIP-1006:R5",
+            "transfer_amount_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_success_charges_access_key_and_emits_events",
+            "T12",
+            assert_eq!(transfer.data.amount, amount)
+        );
+        // @asserts TIP-1006:R9 case=indexed_burn_event_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_success_charges_access_key_and_emits_events fork=T12
+        spec_evidence!(
+            "TIP-1006:R9",
+            "indexed_burn_event_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_success_charges_access_key_and_emits_events",
+            "T12",
+            assert_eq!(
+                logs[1].topics(),
+                &[
+                    ITIP20::BurnAt::SIGNATURE_HASH,
+                    MULTICALL3_ADDRESS.into_word(),
+                    fixture.holder.into_word(),
+                    B256::from(amount),
+                ]
+            )
+        );
+        // @asserts TIP-1006:R9 case=burn_event_data_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_success_charges_access_key_and_emits_events fork=T12
+        spec_evidence!(
+            "TIP-1006:R9",
+            "burn_event_data_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_success_charges_access_key_and_emits_events",
+            "T12",
+            assert!(logs[1].data.data.is_empty())
+        );
+        let spends: Vec<_> = result
+            .logs()
+            .iter()
+            .filter(|log| log.address == crate::ACCOUNT_KEYCHAIN_ADDRESS)
+            .filter_map(|log| IAccountKeychain::AccessKeySpend::decode_log(log).ok())
+            .filter(|log| log.data.token == fixture.token)
+            .collect();
+        // @asserts TIP-1006:R20 case=spend_event_count_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_success_charges_access_key_and_emits_events fork=T12
+        spec_evidence!(
+            "TIP-1006:R20",
+            "spend_event_count_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_success_charges_access_key_and_emits_events",
+            "T12",
+            assert_eq!(spends.len(), 1)
+        );
+        // @asserts TIP-1006:R20 case=spend_event_amount_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_success_charges_access_key_and_emits_events fork=T12
+        spec_evidence!(
+            "TIP-1006:R20",
+            "spend_event_amount_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_success_charges_access_key_and_emits_events",
+            "T12",
+            assert_eq!(spends[0].data.amount, amount)
+        );
+        StorageCtx::enter_ctx(
+            fixture.evm.ctx_mut(),
+            StorageActions::disabled(),
+            || -> eyre::Result<()> {
+                let token = TIP20Token::from_address(fixture.token)?;
+                // @asserts TIP-1006:R20 case=bridge_success_charges_access_key_and_emits_events_committed_state_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_success_charges_access_key_and_emits_events fork=T12
+                spec_evidence!(
+                    "TIP-1006:R20",
+                    "bridge_success_charges_access_key_and_emits_events_committed_state_t12",
+                    "tip20::tests::spec_dashboard_burn_at_bridge_success_charges_access_key_and_emits_events",
+                    "T12",
+                    assert_eq!(
+                        (
+                            token.get_balance(fixture.holder)?,
+                            token.total_supply()?,
+                            AccountKeychain::new().get_remaining_limit(
+                                IAccountKeychain::getRemainingLimitCall {
+                                    account: fixture.holder,
+                                    keyId: fixture.key.address(),
+                                    token: fixture.token
+                                }
+                            )?
+                        ),
+                        (U256::from(20), U256::from(20), U256::from(80))
+                    )
+                );
+                Ok(())
+            },
+        )
+    }
+
+    #[test]
+    #[ignore = "explicit TIP dashboard evidence run"]
+    fn spec_dashboard_burn_at_bridge_insufficient_balance_reverts_transaction() -> eyre::Result<()>
+    {
+        let mut fixture = BurnAtFixture::new(40)?;
+        let result = fixture.transact(vec![fixture.burn_call(U256::from(50))])?;
+        // @asserts TIP-1006:R15 case=insufficient_balance_transaction_revert_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_insufficient_balance_reverts_transaction fork=T12
+        spec_evidence!(
+            "TIP-1006:R15",
+            "insufficient_balance_transaction_revert_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_insufficient_balance_reverts_transaction",
+            "T12",
+            assert!(
+                matches!(result, ExecutionResult::Revert { .. }),
+                "{result:?}"
+            )
+        );
+        // @asserts TIP-1006:R20 case=revert_logs_empty_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_insufficient_balance_reverts_transaction fork=T12
+        spec_evidence!(
+            "TIP-1006:R20",
+            "revert_logs_empty_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_insufficient_balance_reverts_transaction",
+            "T12",
+            assert!(result.logs().is_empty())
+        );
+        StorageCtx::enter_ctx(
+            fixture.evm.ctx_mut(),
+            StorageActions::disabled(),
+            || -> eyre::Result<()> {
+                let token = TIP20Token::from_address(fixture.token)?;
+                // @asserts TIP-1006:R20 case=bridge_insufficient_balance_reverts_transaction_committed_state_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_insufficient_balance_reverts_transaction fork=T12
+                spec_evidence!(
+                    "TIP-1006:R20",
+                    "bridge_insufficient_balance_reverts_transaction_committed_state_t12",
+                    "tip20::tests::spec_dashboard_burn_at_bridge_insufficient_balance_reverts_transaction",
+                    "T12",
+                    assert_eq!(
+                        (
+                            token.get_balance(fixture.holder)?,
+                            token.total_supply()?,
+                            AccountKeychain::new().get_remaining_limit(
+                                IAccountKeychain::getRemainingLimitCall {
+                                    account: fixture.holder,
+                                    keyId: fixture.key.address(),
+                                    token: fixture.token
+                                }
+                            )?
+                        ),
+                        (U256::from(40), U256::from(40), U256::from(100))
+                    )
+                );
+                Ok(())
+            },
+        )
+    }
+
+    #[test]
+    #[ignore = "explicit TIP dashboard evidence run"]
+    fn spec_dashboard_burn_at_bridge_caught_failure_restores_access_key_limit() -> eyre::Result<()>
+    {
+        let mut fixture = BurnAtFixture::new(40)?;
+        let result = fixture.transact(vec![Multicall3::Call3 {
+            allowFailure: true,
+            ..fixture.burn_call(U256::from(50))
+        }])?;
+        // @asserts TIP-1006:R20 case=caught_failure_outer_success_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_caught_failure_restores_access_key_limit fork=T12
+        spec_evidence!(
+            "TIP-1006:R20",
+            "caught_failure_outer_success_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_caught_failure_restores_access_key_limit",
+            "T12",
+            assert!(result.is_success(), "{result:?}")
+        );
+        let calls = Multicall3::aggregate3Call::abi_decode_returns(result.output().unwrap())?;
+        // @asserts TIP-1006:R20 case=caught_failure_result_count_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_caught_failure_restores_access_key_limit fork=T12
+        spec_evidence!(
+            "TIP-1006:R20",
+            "caught_failure_result_count_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_caught_failure_restores_access_key_limit",
+            "T12",
+            assert_eq!(calls.len(), 1)
+        );
+        // @asserts TIP-1006:R20 case=caught_failure_inner_failure_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_caught_failure_restores_access_key_limit fork=T12
+        spec_evidence!(
+            "TIP-1006:R20",
+            "caught_failure_inner_failure_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_caught_failure_restores_access_key_limit",
+            "T12",
+            assert!(!calls[0].success)
+        );
+        // @asserts TIP-1006:R15 case=caught_balance_error_data_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_caught_failure_restores_access_key_limit fork=T12
+        spec_evidence!(
+            "TIP-1006:R15",
+            "caught_balance_error_data_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_caught_failure_restores_access_key_limit",
+            "T12",
+            assert_eq!(
+                calls[0].returnData.as_ref(),
+                ITIP20::InsufficientBalance {
+                    available: U256::from(40),
+                    required: U256::from(50),
+                    token: fixture.token,
+                }
+                .abi_encode()
+            )
+        );
+        // @asserts TIP-1006:R20 case=caught_failure_token_logs_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_caught_failure_restores_access_key_limit fork=T12
+        spec_evidence!(
+            "TIP-1006:R20",
+            "caught_failure_token_logs_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_caught_failure_restores_access_key_limit",
+            "T12",
+            assert!(result.logs().iter().all(|log| log.address != fixture.token))
+        );
+        // @asserts TIP-1006:R20 case=caught_failure_spend_logs_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_caught_failure_restores_access_key_limit fork=T12
+        spec_evidence!(
+            "TIP-1006:R20",
+            "caught_failure_spend_logs_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_caught_failure_restores_access_key_limit",
+            "T12",
+            assert!(
+                result
+                    .logs()
+                    .iter()
+                    .filter_map(|log| IAccountKeychain::AccessKeySpend::decode_log(log).ok())
+                    .all(|log| log.data.token != fixture.token)
+            )
+        );
+        StorageCtx::enter_ctx(
+            fixture.evm.ctx_mut(),
+            StorageActions::disabled(),
+            || -> eyre::Result<()> {
+                let token = TIP20Token::from_address(fixture.token)?;
+                // @asserts TIP-1006:R20 case=bridge_caught_failure_restores_access_key_limit_committed_state_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_caught_failure_restores_access_key_limit fork=T12
+                spec_evidence!(
+                    "TIP-1006:R20",
+                    "bridge_caught_failure_restores_access_key_limit_committed_state_t12",
+                    "tip20::tests::spec_dashboard_burn_at_bridge_caught_failure_restores_access_key_limit",
+                    "T12",
+                    assert_eq!(
+                        (
+                            token.get_balance(fixture.holder)?,
+                            token.total_supply()?,
+                            AccountKeychain::new().get_remaining_limit(
+                                IAccountKeychain::getRemainingLimitCall {
+                                    account: fixture.holder,
+                                    keyId: fixture.key.address(),
+                                    token: fixture.token
+                                }
+                            )?
+                        ),
+                        (U256::from(40), U256::from(40), U256::from(100))
+                    )
+                );
+                Ok(())
+            },
+        )
+    }
+
+    #[test]
+    #[ignore = "explicit TIP dashboard evidence run"]
+    fn spec_dashboard_burn_at_bridge_enclosing_revert_restores_burn_and_access_key_limit()
+    -> eyre::Result<()> {
+        let mut fixture = BurnAtFixture::new(40)?;
+        let result = fixture.transact(vec![
+            fixture.burn_call(U256::from(20)),
+            fixture.burn_call(U256::MAX),
+        ])?;
+        // @asserts TIP-1006:R20 case=enclosing_revert_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_enclosing_revert_restores_burn_and_access_key_limit fork=T12
+        spec_evidence!(
+            "TIP-1006:R20",
+            "enclosing_revert_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_enclosing_revert_restores_burn_and_access_key_limit",
+            "T12",
+            assert!(
+                matches!(result, ExecutionResult::Revert { .. }),
+                "{result:?}"
+            )
+        );
+        // @asserts TIP-1006:R20 case=enclosing_revert_logs_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_enclosing_revert_restores_burn_and_access_key_limit fork=T12
+        spec_evidence!(
+            "TIP-1006:R20",
+            "enclosing_revert_logs_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_enclosing_revert_restores_burn_and_access_key_limit",
+            "T12",
+            assert!(result.logs().is_empty())
+        );
+        StorageCtx::enter_ctx(
+            fixture.evm.ctx_mut(),
+            StorageActions::disabled(),
+            || -> eyre::Result<()> {
+                let token = TIP20Token::from_address(fixture.token)?;
+                // @asserts TIP-1006:R20 case=bridge_enclosing_revert_restores_burn_and_access_key_limit_committed_state_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_enclosing_revert_restores_burn_and_access_key_limit fork=T12
+                spec_evidence!(
+                    "TIP-1006:R20",
+                    "bridge_enclosing_revert_restores_burn_and_access_key_limit_committed_state_t12",
+                    "tip20::tests::spec_dashboard_burn_at_bridge_enclosing_revert_restores_burn_and_access_key_limit",
+                    "T12",
+                    assert_eq!(
+                        (
+                            token.get_balance(fixture.holder)?,
+                            token.total_supply()?,
+                            AccountKeychain::new().get_remaining_limit(
+                                IAccountKeychain::getRemainingLimitCall {
+                                    account: fixture.holder,
+                                    keyId: fixture.key.address(),
+                                    token: fixture.token
+                                }
+                            )?
+                        ),
+                        (U256::from(40), U256::from(40), U256::from(100))
+                    )
+                );
+                Ok(())
+            },
+        )
+    }
+
+    #[test]
+    #[ignore = "explicit TIP dashboard evidence run"]
+    fn spec_dashboard_burn_at_bridge_rejects_spending_limit_with_sufficient_balance()
+    -> eyre::Result<()> {
+        let mut fixture = BurnAtFixture::new(200)?;
+        let setup = fixture.transact(vec![fixture.burn_call(U256::from(20))])?;
+        // @asserts TIP-1006:R7 case=limit_setup_success_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_rejects_spending_limit_with_sufficient_balance fork=T12
+        spec_evidence!(
+            "TIP-1006:R7",
+            "limit_setup_success_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_rejects_spending_limit_with_sufficient_balance",
+            "T12",
+            assert!(setup.is_success(), "{setup:?}")
+        );
+        fixture.assert_state(180, 80)?;
+
+        let result = fixture.transact(vec![Multicall3::Call3 {
+            allowFailure: true,
+            ..fixture.burn_call(U256::from(81))
+        }])?;
+        // @asserts TIP-1006:R7 case=limit_outer_success_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_rejects_spending_limit_with_sufficient_balance fork=T12
+        spec_evidence!(
+            "TIP-1006:R7",
+            "limit_outer_success_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_rejects_spending_limit_with_sufficient_balance",
+            "T12",
+            assert!(result.is_success(), "{result:?}")
+        );
+        let calls = Multicall3::aggregate3Call::abi_decode_returns(result.output().unwrap())?;
+        // @asserts TIP-1006:R7 case=limit_result_count_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_rejects_spending_limit_with_sufficient_balance fork=T12
+        spec_evidence!(
+            "TIP-1006:R7",
+            "limit_result_count_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_rejects_spending_limit_with_sufficient_balance",
+            "T12",
+            assert_eq!(calls.len(), 1)
+        );
+        // @asserts TIP-1006:R7 case=limit_inner_failure_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_rejects_spending_limit_with_sufficient_balance fork=T12
+        spec_evidence!(
+            "TIP-1006:R7",
+            "limit_inner_failure_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_rejects_spending_limit_with_sufficient_balance",
+            "T12",
+            assert!(!calls[0].success)
+        );
+        // @asserts TIP-1006:R7 case=limit_error_data_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_rejects_spending_limit_with_sufficient_balance fork=T12
+        spec_evidence!(
+            "TIP-1006:R7",
+            "limit_error_data_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_rejects_spending_limit_with_sufficient_balance",
+            "T12",
+            assert_eq!(
+                calls[0].returnData.as_ref(),
+                IAccountKeychain::SpendingLimitExceeded::SELECTOR
+            )
+        );
+        // @asserts TIP-1006:R7 case=limit_token_logs_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_rejects_spending_limit_with_sufficient_balance fork=T12
+        spec_evidence!(
+            "TIP-1006:R7",
+            "limit_token_logs_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_rejects_spending_limit_with_sufficient_balance",
+            "T12",
+            assert!(result.logs().iter().all(|log| log.address != fixture.token))
+        );
+        // @asserts TIP-1006:R7 case=limit_spend_logs_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_rejects_spending_limit_with_sufficient_balance fork=T12
+        spec_evidence!(
+            "TIP-1006:R7",
+            "limit_spend_logs_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_rejects_spending_limit_with_sufficient_balance",
+            "T12",
+            assert!(
+                result
+                    .logs()
+                    .iter()
+                    .filter_map(|log| IAccountKeychain::AccessKeySpend::decode_log(log).ok())
+                    .all(|log| log.data.token != fixture.token)
+            )
+        );
+        StorageCtx::enter_ctx(
+            fixture.evm.ctx_mut(),
+            StorageActions::disabled(),
+            || -> eyre::Result<()> {
+                let token = TIP20Token::from_address(fixture.token)?;
+                // @asserts TIP-1006:R20 case=bridge_rejects_spending_limit_with_sufficient_balance_committed_state_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_rejects_spending_limit_with_sufficient_balance fork=T12
+                spec_evidence!(
+                    "TIP-1006:R20",
+                    "bridge_rejects_spending_limit_with_sufficient_balance_committed_state_t12",
+                    "tip20::tests::spec_dashboard_burn_at_bridge_rejects_spending_limit_with_sufficient_balance",
+                    "T12",
+                    assert_eq!(
+                        (
+                            token.get_balance(fixture.holder)?,
+                            token.total_supply()?,
+                            AccountKeychain::new().get_remaining_limit(
+                                IAccountKeychain::getRemainingLimitCall {
+                                    account: fixture.holder,
+                                    keyId: fixture.key.address(),
+                                    token: fixture.token
+                                }
+                            )?
+                        ),
+                        (U256::from(180), U256::from(180), U256::from(80))
+                    )
+                );
+                Ok(())
+            },
+        )
+    }
+
+    #[test]
+    #[ignore = "explicit TIP dashboard evidence run"]
+    fn spec_dashboard_burn_at_bridge_zero_amount_emits_events_without_charging_limit()
+    -> eyre::Result<()> {
+        let mut fixture = BurnAtFixture::new(40)?;
+        let result = fixture.transact(vec![fixture.burn_call(U256::ZERO)])?;
+        // @asserts TIP-1006:R13 case=zero_success_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_zero_amount_emits_events_without_charging_limit fork=T12
+        spec_evidence!(
+            "TIP-1006:R13",
+            "zero_success_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_zero_amount_emits_events_without_charging_limit",
+            "T12",
+            assert!(result.is_success(), "{result:?}")
+        );
+        let logs: Vec<_> = result
+            .logs()
+            .iter()
+            .filter(|log| log.address == fixture.token)
+            .collect();
+        // @asserts TIP-1006:R13 case=zero_event_count_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_zero_amount_emits_events_without_charging_limit fork=T12
+        spec_evidence!(
+            "TIP-1006:R13",
+            "zero_event_count_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_zero_amount_emits_events_without_charging_limit",
+            "T12",
+            assert_eq!(logs.len(), 2)
+        );
+        let transfer = ITIP20::Transfer::decode_log(logs[0])?;
+        // @asserts TIP-1006:R13 case=zero_transfer_source_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_zero_amount_emits_events_without_charging_limit fork=T12
+        spec_evidence!(
+            "TIP-1006:R13",
+            "zero_transfer_source_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_zero_amount_emits_events_without_charging_limit",
+            "T12",
+            assert_eq!(transfer.data.from, fixture.holder)
+        );
+        // @asserts TIP-1006:R13 case=zero_transfer_destination_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_zero_amount_emits_events_without_charging_limit fork=T12
+        spec_evidence!(
+            "TIP-1006:R13",
+            "zero_transfer_destination_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_zero_amount_emits_events_without_charging_limit",
+            "T12",
+            assert_eq!(transfer.data.to, Address::ZERO)
+        );
+        // @asserts TIP-1006:R13 case=zero_transfer_amount_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_zero_amount_emits_events_without_charging_limit fork=T12
+        spec_evidence!(
+            "TIP-1006:R13",
+            "zero_transfer_amount_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_zero_amount_emits_events_without_charging_limit",
+            "T12",
+            assert_eq!(transfer.data.amount, U256::ZERO)
+        );
+        let burn = ITIP20::BurnAt::decode_log(logs[1])?;
+        // @asserts TIP-1006:R13 case=zero_burn_caller_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_zero_amount_emits_events_without_charging_limit fork=T12
+        spec_evidence!(
+            "TIP-1006:R13",
+            "zero_burn_caller_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_zero_amount_emits_events_without_charging_limit",
+            "T12",
+            assert_eq!(burn.data.burner, MULTICALL3_ADDRESS)
+        );
+        // @asserts TIP-1006:R13 case=zero_burn_source_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_zero_amount_emits_events_without_charging_limit fork=T12
+        spec_evidence!(
+            "TIP-1006:R13",
+            "zero_burn_source_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_zero_amount_emits_events_without_charging_limit",
+            "T12",
+            assert_eq!(burn.data.from, fixture.holder)
+        );
+        // @asserts TIP-1006:R13 case=zero_burn_amount_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_zero_amount_emits_events_without_charging_limit fork=T12
+        spec_evidence!(
+            "TIP-1006:R13",
+            "zero_burn_amount_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_zero_amount_emits_events_without_charging_limit",
+            "T12",
+            assert_eq!(burn.data.amount, U256::ZERO)
+        );
+        let spends: Vec<_> = result
+            .logs()
+            .iter()
+            .filter(|log| log.address == crate::ACCOUNT_KEYCHAIN_ADDRESS)
+            .filter_map(|log| IAccountKeychain::AccessKeySpend::decode_log(log).ok())
+            .filter(|log| log.data.token == fixture.token)
+            .collect();
+        // @asserts TIP-1006:R13 case=zero_spend_event_count_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_zero_amount_emits_events_without_charging_limit fork=T12
+        spec_evidence!(
+            "TIP-1006:R13",
+            "zero_spend_event_count_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_zero_amount_emits_events_without_charging_limit",
+            "T12",
+            assert_eq!(spends.len(), 1)
+        );
+        // @asserts TIP-1006:R13 case=zero_spend_amount_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_zero_amount_emits_events_without_charging_limit fork=T12
+        spec_evidence!(
+            "TIP-1006:R13",
+            "zero_spend_amount_t12",
+            "tip20::tests::spec_dashboard_burn_at_bridge_zero_amount_emits_events_without_charging_limit",
+            "T12",
+            assert_eq!(spends[0].data.amount, U256::ZERO)
+        );
+        StorageCtx::enter_ctx(
+            fixture.evm.ctx_mut(),
+            StorageActions::disabled(),
+            || -> eyre::Result<()> {
+                let token = TIP20Token::from_address(fixture.token)?;
+                // @asserts TIP-1006:R20 case=bridge_zero_amount_emits_events_without_charging_limit_committed_state_t12 test=tip20::tests::spec_dashboard_burn_at_bridge_zero_amount_emits_events_without_charging_limit fork=T12
+                spec_evidence!(
+                    "TIP-1006:R20",
+                    "bridge_zero_amount_emits_events_without_charging_limit_committed_state_t12",
+                    "tip20::tests::spec_dashboard_burn_at_bridge_zero_amount_emits_events_without_charging_limit",
+                    "T12",
+                    assert_eq!(
+                        (
+                            token.get_balance(fixture.holder)?,
+                            token.total_supply()?,
+                            AccountKeychain::new().get_remaining_limit(
+                                IAccountKeychain::getRemainingLimitCall {
+                                    account: fixture.holder,
+                                    keyId: fixture.key.address(),
+                                    token: fixture.token
+                                }
+                            )?
+                        ),
+                        (U256::from(40), U256::from(40), U256::from(100))
+                    )
+                );
+                Ok(())
+            },
+        )
+    }
+    #[test]
+    #[ignore = "explicit TIP dashboard evidence run"]
+    fn spec_dashboard_burn_at_activation_t11() -> eyre::Result<()> {
+        let admin = Address::repeat_byte(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut token = TIP20Setup::create("Token", "TKN", admin)
+                .with_issuer(admin)
+                .with_role(admin, BURN_AT_ROLE)
+                .with_mint(admin, U256::from(10))
+                .clear_events()
+                .apply()?;
+            let role = token.call(&ITIP20::BURN_AT_ROLECall {}.abi_encode(), admin)?;
+            let burn = token.call(
+                &ITIP20::burnAtCall {
+                    from: admin,
+                    amount: U256::ONE,
+                }
+                .abi_encode(),
+                admin,
+            )?;
+            // @asserts TIP-1006:R21 case=selectors_t11 test=tip20::tests::spec_dashboard_burn_at_activation_t11 fork=T11
+            spec_evidence!(
+                "TIP-1006:R21",
+                "selectors_t11",
+                "tip20::tests::spec_dashboard_burn_at_activation_t11",
+                "T11",
+                assert!(
+                    role.is_revert()
+                        && burn.is_revert()
+                        && UnknownFunctionSelector::abi_decode(&role.bytes).is_ok()
+                        && UnknownFunctionSelector::abi_decode(&burn.bytes).is_ok()
+                        && token.get_balance(admin)? == U256::from(10)
+                        && token.total_supply()? == U256::from(10)
+                        && token.emitted_events().is_empty()
+                )
+            );
+            Ok(())
+        })
+    }
+    #[test]
+    #[ignore = "explicit TIP dashboard evidence run"]
+    fn spec_dashboard_burn_at_activation_t12() -> eyre::Result<()> {
+        let admin = Address::repeat_byte(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut token = TIP20Setup::create("Token", "TKN", admin)
+                .with_issuer(admin)
+                .with_role(admin, BURN_AT_ROLE)
+                .with_mint(admin, U256::from(10))
+                .clear_events()
+                .apply()?;
+            let role = token.call(&ITIP20::BURN_AT_ROLECall {}.abi_encode(), admin)?;
+            let burn = token.call(
+                &ITIP20::burnAtCall {
+                    from: admin,
+                    amount: U256::ONE,
+                }
+                .abi_encode(),
+                admin,
+            )?;
+            // @asserts TIP-1006:R21 case=selectors_t12 test=tip20::tests::spec_dashboard_burn_at_activation_t12 fork=T12
+            spec_evidence!(
+                "TIP-1006:R21",
+                "selectors_t12",
+                "tip20::tests::spec_dashboard_burn_at_activation_t12",
+                "T12",
+                assert!(
+                    role.is_success()
+                        && burn.is_success()
+                        && ITIP20::BURN_AT_ROLECall::abi_decode_returns(&role.bytes)?
+                            == keccak256("BURN_AT_ROLE")
+                        && token.get_balance(admin)? == U256::from(9)
+                )
+            );
+            // @asserts TIP-1006:R22 case=interface_t12 test=tip20::tests::spec_dashboard_burn_at_activation_t12 fork=T12
+            spec_evidence!(
+                "TIP-1006:R22",
+                "interface_t12",
+                "tip20::tests::spec_dashboard_burn_at_activation_t12",
+                "T12",
+                assert_eq!(
+                    ITIP20::BURN_AT_ROLECall::abi_decode_returns(&role.bytes)?,
+                    BURN_AT_ROLE
+                )
+            );
+            // @asserts TIP-1006:R8 case=role_hash_t12 test=tip20::tests::spec_dashboard_burn_at_activation_t12 fork=T12
+            spec_evidence!(
+                "TIP-1006:R8",
+                "role_hash_t12",
+                "tip20::tests::spec_dashboard_burn_at_activation_t12",
+                "T12",
+                assert_eq!(
+                    ITIP20::BURN_AT_ROLECall::abi_decode_returns(&role.bytes)?,
+                    keccak256("BURN_AT_ROLE")
+                )
+            );
+            Ok(())
+        })
+    }
+    #[test]
+    #[ignore = "explicit TIP dashboard evidence run"]
+    fn spec_dashboard_burn_at_activation_t13() -> eyre::Result<()> {
+        let admin = Address::repeat_byte(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut token = TIP20Setup::create("Token", "TKN", admin)
+                .with_issuer(admin)
+                .with_role(admin, BURN_AT_ROLE)
+                .with_mint(admin, U256::from(10))
+                .clear_events()
+                .apply()?;
+            let role = token.call(&ITIP20::BURN_AT_ROLECall {}.abi_encode(), admin)?;
+            let burn = token.call(
+                &ITIP20::burnAtCall {
+                    from: admin,
+                    amount: U256::ONE,
+                }
+                .abi_encode(),
+                admin,
+            )?;
+            // @asserts TIP-1006:R21 case=selectors_t13 test=tip20::tests::spec_dashboard_burn_at_activation_t13 fork=T13
+            spec_evidence!(
+                "TIP-1006:R21",
+                "selectors_t13",
+                "tip20::tests::spec_dashboard_burn_at_activation_t13",
+                "T13",
+                assert!(
+                    role.is_success()
+                        && burn.is_success()
+                        && ITIP20::BURN_AT_ROLECall::abi_decode_returns(&role.bytes)?
+                            == keccak256("BURN_AT_ROLE")
+                        && token.get_balance(admin)? == U256::from(9)
+                )
+            );
+            // @asserts TIP-1006:R22 case=interface_t13 test=tip20::tests::spec_dashboard_burn_at_activation_t13 fork=T13
+            spec_evidence!(
+                "TIP-1006:R22",
+                "interface_t13",
+                "tip20::tests::spec_dashboard_burn_at_activation_t13",
+                "T13",
+                assert_eq!(
+                    ITIP20::BURN_AT_ROLECall::abi_decode_returns(&role.bytes)?,
+                    BURN_AT_ROLE
+                )
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    #[ignore = "explicit TIP dashboard evidence run"]
+    fn spec_dashboard_burn_at_sequence() -> eyre::Result<()> {
+        let admin = Address::repeat_byte(1);
+        let holder = Address::repeat_byte(2);
+        let other = Address::repeat_byte(3);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut token = TIP20Setup::create("Token", "TKN", admin)
+                .with_issuer(admin)
+                .with_role(admin, BURN_AT_ROLE)
+                .with_role(admin, PAUSE_ROLE)
+                .with_mint(holder, U256::from(100))
+                .with_mint(other, U256::from(60))
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, U256::from(10))
+                .clear_events()
+                .apply()?;
+            let mut burned = U256::ZERO;
+            let mut expected_events = Vec::new();
+            for (from, value) in [(holder, 10), (other, 20), (holder, 30), (other, 0)] {
+                let amount = U256::from(value);
+                token.burn_at(admin, ITIP20::burnAtCall { from, amount })?;
+                burned += amount;
+                expected_events.push(TIP20Event::transfer(from, Address::ZERO, amount));
+                expected_events.push(TIP20Event::burn_at(admin, from, amount));
+                // @asserts TIP-1006:R1 case=cumulative_supply_t12 test=tip20::tests::spec_dashboard_burn_at_sequence fork=T12
+                spec_evidence!(
+                    "TIP-1006:R1",
+                    "cumulative_supply_t12",
+                    "tip20::tests::spec_dashboard_burn_at_sequence",
+                    "T12",
+                    assert_eq!(
+                        (
+                            token.total_supply()?,
+                            token.get_balance(holder)?
+                                + token.get_balance(other)?
+                                + token.get_balance(TIP_FEE_MANAGER_ADDRESS)?,
+                            token.get_balance(Address::ZERO)?
+                        ),
+                        (
+                            U256::from(170) - burned,
+                            U256::from(170) - burned,
+                            U256::ZERO
+                        )
+                    )
+                );
+            }
+            // @asserts TIP-1006:R5 case=cumulative_events_t12 test=tip20::tests::spec_dashboard_burn_at_sequence fork=T12
+            spec_evidence!(
+                "TIP-1006:R5",
+                "cumulative_events_t12",
+                "tip20::tests::spec_dashboard_burn_at_sequence",
+                "T12",
+                assert_eq!(
+                    (
+                        token.emitted_events().clone(),
+                        token.get_balance(holder)?,
+                        token.get_balance(other)?,
+                        token.total_supply()?
+                    ),
+                    (
+                        expected_events
+                            .iter()
+                            .map(|e| e.clone().into_log_data())
+                            .collect::<Vec<_>>(),
+                        U256::from(60),
+                        U256::from(40),
+                        U256::from(110)
+                    )
+                )
+            );
+            let events = token.emitted_events().clone();
+            let denied = token.burn_at(
+                other,
+                ITIP20::burnAtCall {
+                    from: holder,
+                    amount: U256::from(10),
+                },
+            );
+            // @asserts TIP-1006:R2 case=unauthorized_no_effect_t12 test=tip20::tests::spec_dashboard_burn_at_sequence fork=T12
+            spec_evidence!(
+                "TIP-1006:R2",
+                "unauthorized_no_effect_t12",
+                "tip20::tests::spec_dashboard_burn_at_sequence",
+                "T12",
+                assert!(
+                    denied == Err(RolesAuthError::unauthorized().into())
+                        && token.get_balance(holder)? == U256::from(60)
+                        && token.total_supply()? == U256::from(110)
+                        && *token.emitted_events() == events
+                )
+            );
+            let protected = token.burn_at(
+                admin,
+                ITIP20::burnAtCall {
+                    from: TIP_FEE_MANAGER_ADDRESS,
+                    amount: U256::from(10),
+                },
+            );
+            // @asserts TIP-1006:R3 case=protected_no_effect_t12 test=tip20::tests::spec_dashboard_burn_at_sequence fork=T12
+            spec_evidence!(
+                "TIP-1006:R3",
+                "protected_no_effect_t12",
+                "tip20::tests::spec_dashboard_burn_at_sequence",
+                "T12",
+                assert!(
+                    protected == Err(TIP20Error::protected_address().into())
+                        && token.get_balance(TIP_FEE_MANAGER_ADDRESS)? == U256::from(10)
+                        && token.total_supply()? == U256::from(110)
+                        && *token.emitted_events() == events
+                )
+            );
+            token.pause(admin, ITIP20::pauseCall {})?;
+            let events = token.emitted_events().clone();
+            let paused = token.burn_at(
+                admin,
+                ITIP20::burnAtCall {
+                    from: holder,
+                    amount: U256::from(10),
+                },
+            );
+            // @asserts TIP-1006:R4 case=paused_no_effect_t12 test=tip20::tests::spec_dashboard_burn_at_sequence fork=T12
+            spec_evidence!(
+                "TIP-1006:R4",
+                "paused_no_effect_t12",
+                "tip20::tests::spec_dashboard_burn_at_sequence",
+                "T12",
+                assert!(
+                    paused == Err(TIP20Error::contract_paused().into())
+                        && token.get_balance(holder)? == U256::from(60)
+                        && token.total_supply()? == U256::from(110)
+                        && *token.emitted_events() == events
+                )
+            );
             Ok(())
         })
     }
