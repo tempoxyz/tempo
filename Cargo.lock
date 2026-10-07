@@ -14314,7 +14314,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-zk"
-version = "1.14.0"
+version = "1.16.0"
 dependencies = [
  "alloy-primitives",
  "ark-bn254",
