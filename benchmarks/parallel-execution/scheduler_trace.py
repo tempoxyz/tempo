@@ -174,12 +174,33 @@ def checked_output(argv, timeout=8):
     return result
 
 
+def perf_candidates():
+    # Ubuntu's wrapper can exist while its exact kernel package is absent.
+    # Use an installed tool from the same kernel series; the probe below still
+    # checks its options and the running kernel's actual tracepoint schemas.
+    series = ".".join(os.uname().release.split(".")[:2])
+    installed = sorted(Path("/usr/lib/linux-tools").glob(series + ".*/perf"), reverse=True)
+    return list(dict.fromkeys(p for p in [shutil.which("perf"), *map(str, installed)] if p))
+
+
 def probe():
     result = {"ok": False, "kernel": list(os.uname()), "events": {}, "perf_help": {},
               "scope": "Read-only preflight; does not open perf events or prove recording permission"}
     try:
-        perf = shutil.which("perf")
-        require(perf, "perf unavailable in sudo execution context")
+        attempts = result["perf_selection"] = []
+        perf = None
+        for candidate in perf_candidates():
+            try:
+                response = checked_output([candidate, "version"])
+                attempts.append({"path": candidate, "returncode": response.returncode,
+                                 "version": (response.stdout + response.stderr).decode(errors="replace")})
+            except (OSError, subprocess.SubprocessError) as error:
+                attempts.append({"path": candidate, "error": str(error)})
+                continue
+            if response.returncode == 0:
+                perf = candidate
+                break
+        require(perf, "no working installed perf; see perf_selection")
         result.update(perf_path=perf, perf_entry_sha256=sha256(perf))
         for key, argv in (("perf_version", [perf, "version"]),
                           ("perf_build_options", [perf, "version", "--build-options"])):

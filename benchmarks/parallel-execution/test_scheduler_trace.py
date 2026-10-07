@@ -235,6 +235,26 @@ class SchedulerTraceTests(unittest.TestCase):
         self.assertIn("perf_build_options", result)
         self.assertIn("missing --all-cpus", result["error"])
 
+    def test_probe_uses_installed_perf_when_kernel_wrapper_is_broken(self):
+        def fake(argv, **_):
+            if argv[0] == "/broken/perf":
+                return subprocess.CompletedProcess(argv, 1, b"kernel tool missing\n", b"")
+            text = "perf version fixture\n" if "version" in argv else "no supported flags\n"
+            return subprocess.CompletedProcess(argv, 0, text.encode(), b"")
+        with patch.object(trace, "perf_candidates", return_value=["/broken/perf", str(self.binary)]), patch.object(trace, "checked_output", side_effect=fake):
+            result = trace.probe()
+        self.assertEqual(result["perf_path"], str(self.binary))
+        self.assertEqual([row["returncode"] for row in result["perf_selection"]], [1, 0])
+        self.assertIn("missing --all-cpus", result["error"])
+        self.assertFalse(result["ok"])  # A working binary does not bypass the option/schema gates.
+
+    def test_probe_retains_failed_perf_candidates(self):
+        with patch.object(trace, "perf_candidates", return_value=["/missing/perf"]), patch.object(trace, "checked_output", side_effect=FileNotFoundError("missing tool")):
+            result = trace.probe()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["perf_selection"], [{"path": "/missing/perf", "error": "missing tool"}])
+        self.assertIn("no working installed perf", result["error"])
+
     def test_preflight_failure_preserves_manifest(self):
         output = self.root / "preflight.json"
         with patch.object(sys, "argv", ["scheduler_trace", "preflight", "--output", str(output)]), patch.object(trace, "privileged", side_effect=trace.TraceError("missing tracefs")):
