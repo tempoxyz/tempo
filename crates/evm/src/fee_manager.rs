@@ -145,6 +145,9 @@ impl ProtocolFeeManager for TempoFeeManager {
         beneficiary: Address,
         skip_liquidity_check: bool,
     ) -> TempoResult<Address> {
+        let _measurement = tempo_precompiles::execution_measure::area(
+            tempo_precompiles::execution_measure::Area::FeePre,
+        );
         ctx.enter(|| {
             TipFeeManager::new().collect_fee_pre_tx(
                 fee_payer,
@@ -165,6 +168,9 @@ impl ProtocolFeeManager for TempoFeeManager {
         fee_token: Address,
         beneficiary: Address,
     ) -> TempoResult<U256> {
+        let _measurement = tempo_precompiles::execution_measure::area(
+            tempo_precompiles::execution_measure::Area::FeePost,
+        );
         ctx.enter(|| {
             TipFeeManager::new().collect_fee_post_tx(
                 fee_payer,

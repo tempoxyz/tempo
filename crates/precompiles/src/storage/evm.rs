@@ -145,7 +145,15 @@ where
         key: U256,
         skip_cold_load: bool,
     ) -> Result<SLoad, TempoPrecompileError> {
-        self.evm.state_mut().account(&address)?.warm();
+        let _measurement =
+            crate::execution_measure::operation(crate::execution_measure::Op::LoadJournal);
+        {
+            let _m =
+                crate::execution_measure::operation(crate::execution_measure::Op::AccountAccess);
+            self.evm.state_mut().account(&address)?.warm();
+        }
+        let _slot_measurement =
+            crate::execution_measure::operation(crate::execution_measure::Op::SlotLoad);
         let mut slot = self
             .evm
             .state_mut()
@@ -168,8 +176,16 @@ where
         value: U256,
         skip_cold_load: bool,
     ) -> Result<SStore, TempoPrecompileError> {
+        let _measurement =
+            crate::execution_measure::operation(crate::execution_measure::Op::StoreJournal);
         self.ensure_not_static()?;
-        self.evm.state_mut().account(&address)?.warm();
+        {
+            let _m =
+                crate::execution_measure::operation(crate::execution_measure::Op::AccountAccess);
+            self.evm.state_mut().account(&address)?.warm();
+        }
+        let _slot_measurement =
+            crate::execution_measure::operation(crate::execution_measure::Op::SlotStore);
         let mut slot = self
             .evm
             .state_mut()
@@ -194,6 +210,8 @@ where
         key: U256,
         record: bool,
     ) -> Result<U256, TempoPrecompileError> {
+        let _measurement =
+            crate::execution_measure::operation(crate::execution_measure::Op::LoadTotal);
         let additional_cost = u64::from(
             self.version
                 .gas_params
@@ -239,6 +257,8 @@ where
         value: U256,
         action: impl FnOnce(&SStore) -> StorageAction,
     ) -> Result<(), TempoPrecompileError> {
+        let _measurement =
+            crate::execution_measure::operation(crate::execution_measure::Op::StoreTotal);
         // T12+: EIP-2200 sentry. SSTORE fails if the frame only has the call stipend remaining.
         if self.spec.is_t12()
             && self.gas_tracker.remaining() <= u64::from(self.gas_params().get(GasId::CallStipend))

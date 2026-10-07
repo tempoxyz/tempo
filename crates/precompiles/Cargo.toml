@@ -60,6 +60,7 @@ x509-cert = { version = "=0.2.5", features = ["builder"] }
 tempo-alloy.workspace = true
 
 [features]
+execution-measure = []
 default = ["rpc"]
 test-utils = [
     "alloy/getrandom",

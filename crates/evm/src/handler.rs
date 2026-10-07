@@ -1244,6 +1244,9 @@ fn execute_batch(
     calls: &[tempo_primitives::transaction::Call],
     burn_create_nonce_on_failure: bool,
 ) -> HandlerResult<evm2::interpreter::MessageResult<TempoEvmTypes>> {
+    let _measurement = tempo_precompiles::execution_measure::area(
+        tempo_precompiles::execution_measure::Area::Calls,
+    );
     // Create checkpoint for atomic execution - captures state before any calls
     let checkpoint = host.state().checkpoint();
     let features = host.version().features;
@@ -1344,6 +1347,9 @@ struct PreparedAa {
 fn prepare_aa(
     request: &mut TxRequest<'_, '_, TempoEvmTypes, TempoAaTx>,
 ) -> HandlerResult<PreparedAa> {
+    let _measurement = tempo_precompiles::execution_measure::area(
+        tempo_precompiles::execution_measure::Area::Prepare,
+    );
     let caller = request.tx.signer();
     let signed = request.tx.inner();
     let tx = signed.tx();

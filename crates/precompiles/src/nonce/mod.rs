@@ -125,6 +125,7 @@ impl NonceManager {
         expiring_nonce_hash: B256,
         valid_before: u64,
     ) -> Result<()> {
+        let _measurement = crate::execution_measure::area(crate::execution_measure::Area::Nonce);
         let now: u64 = self.storage.timestamp().saturating_to();
         let spec = self.storage.spec();
         let max_expiry_secs = spec.expiring_nonce_max_expiry_secs();

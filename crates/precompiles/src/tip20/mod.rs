@@ -846,6 +846,7 @@ impl TIP20Token {
     /// - `SpendingLimitExceeded` — access key spending limit exceeded
     /// - `InsufficientBalance` — sender balance lower than transfer amount
     pub fn transfer(&mut self, msg_sender: Address, call: ITIP20::transferCall) -> Result<bool> {
+        let _measurement = crate::execution_measure::area(crate::execution_measure::Area::Transfer);
         trace!(%msg_sender, ?call, "transferring TIP20");
         let Some(to) =
             self.validate_transfer(None, msg_sender, call.to, call.amount, B256::ZERO)?
