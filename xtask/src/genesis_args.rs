@@ -577,9 +577,9 @@ fn insert_zone_state_at_genesis(
                 account.address,
                 GenesisAccount {
                     code: Some(account.code),
-                    storage: account.storage.map(|(slot, value)| {
-                        BTreeMap::from([(B256::from(slot.to_be_bytes()), value.into())])
-                    }),
+                    storage: account
+                        .storage
+                        .map(|(slot, value)| BTreeMap::from([(B256::from(slot), value.into())])),
                     ..Default::default()
                 },
             );

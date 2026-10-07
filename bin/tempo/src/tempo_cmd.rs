@@ -1254,7 +1254,7 @@ impl ValidatorInfo {
 
         let chain = match self.chain {
             Some(chain) => {
-                let spec_chain_id = chain.chain().id();
+                let spec_chain_id = chain.chain_id();
                 if spec_chain_id != chain_id {
                     eprintln!(
                         "warning: --chain spec has chain id {spec_chain_id} but RPC returned {chain_id}"
@@ -1419,7 +1419,7 @@ impl Info {
 
         let chain = match self.chain {
             Some(chain) => {
-                let spec_chain_id = chain.chain().id();
+                let spec_chain_id = chain.chain_id();
                 if spec_chain_id != chain_id {
                     bail!("--chain spec has chain id {spec_chain_id} but RPC returned {chain_id}");
                 }
@@ -2096,7 +2096,7 @@ mod tests {
 
         // Serve the chain id request, then fail the next request so the command stops early.
         let asserter = Asserter::new();
-        asserter.push_success(&tempo_chainspec::spec::PRESTO.chain().id());
+        asserter.push_success(&tempo_chainspec::spec::PRESTO.chain_id());
         asserter.push_failure_msg("mocked: stop after chain id");
 
         let mut requested_url = None;

@@ -108,13 +108,13 @@ impl Identity {
     }
 }
 
-fn evm_at(spec: TempoHardfork, identity: &Identity) -> TempoEvm<CacheDB<EmptyDB>, ()> {
+fn evm_at(spec: TempoHardfork, identity: &Identity) -> TempoEvm<InMemoryDB, ()> {
     let mut evm = create_funded_evm_at_spec_with_timestamp(identity.address(), NOW, spec);
     list_key(&mut evm, identity.publisher_id, ACTIVE);
     evm
 }
 
-fn list_key(evm: &mut TempoEvm<CacheDB<EmptyDB>, ()>, publisher_id: B256, valid_until: u64) {
+fn list_key(evm: &mut TempoEvm<InMemoryDB, ()>, publisher_id: B256, valid_until: u64) {
     evm.ctx
         .db_mut()
         .insert_account_storage(
