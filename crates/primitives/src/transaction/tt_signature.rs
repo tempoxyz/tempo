@@ -46,7 +46,7 @@ pub fn normalize_p256_s(s_bytes: &[u8]) -> Result<B256, &'static str> {
         return Err("P256 s value out of range");
     }
     let normalized_s = if s > P256N_HALF { P256_ORDER - s } else { s };
-    Ok(B256::from(normalized_s.to_be_bytes::<32>()))
+    Ok(B256::from(normalized_s))
 }
 
 /// Signature type identifiers
@@ -1136,7 +1136,7 @@ mod tests {
         #[test]
         fn p256_address_matches_hash_and_truncate(x in any::<[u8; 32]>(), y in any::<[u8; 32]>()) {
             let hash = keccak256([x, y].concat());
-            prop_assert_eq!(derive_p256_address(&B256::from(x), &B256::from(y)), Address::from_slice(&hash[12..]));
+            prop_assert_eq!(derive_p256_address(&B256::from(x), &B256::from(y)), Address::from_word(hash));
         }
 
         #[test]
@@ -1718,7 +1718,7 @@ mod tests {
             alloy_primitives::U256::from_be_slice(&s_bytes),
             false,
         );
-        let secp256k1_sig = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(sig));
+        let secp256k1_sig = TempoSignature::from(sig);
 
         let json = serde_json::to_string(&secp256k1_sig).unwrap();
         let decoded: TempoSignature = serde_json::from_str(&json).unwrap();
@@ -1871,7 +1871,7 @@ mod tests {
         let p256_sig =
             TempoSignature::Primitive(PrimitiveSignature::P256(P256SignatureWithPreHash {
                 r,
-                s: B256::from(high_s.to_be_bytes::<32>()),
+                s: B256::from(high_s),
                 pub_key_x,
                 pub_key_y,
                 pre_hash: false,
@@ -2211,8 +2211,7 @@ mod tests {
 
     #[test]
     fn test_is_keychain_returns_false_for_primitive() {
-        let sig =
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let sig = TempoSignature::from(Signature::test_signature());
         assert!(!sig.is_keychain());
     }
 

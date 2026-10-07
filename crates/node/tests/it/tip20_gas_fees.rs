@@ -7,14 +7,14 @@ use alloy::{
 use alloy_network::{ReceiptResponse, TransactionBuilder};
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::TransactionRequest;
-use reth_e2e_test_utils::wallet::test_signer;
+use reth_e2e_test_utils::{receipt::PendingTransactionExt, wallet::test_signer};
 use std::env;
 use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_contracts::precompiles::{IFeeManager, ITIP20};
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
 use tempo_primitives::transaction::calc_gas_balance_spending;
 
-use crate::utils::TestNodeBuilder;
+use crate::utils::{PendingTransactionBuilderExt, TestNodeBuilder};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_fee_in_stable() -> eyre::Result<()> {
@@ -44,24 +44,24 @@ async fn test_fee_in_stable() -> eyre::Result<()> {
 
     let tx = TransactionRequest::default().from(caller).to(caller);
 
-    let pending_tx = provider.send_transaction(tx).await?;
-    let tx_hash = pending_tx.watch().await?;
     let receipt = provider
-        .raw_request::<_, TempoTransactionReceipt>("eth_getTransactionReceipt".into(), (tx_hash,))
+        .send_transaction(tx)
+        .await?
+        .into_tempo()
+        .successful_receipt()
         .await?;
 
     // Assert that the fee token balance has decreased by gas spent
     let balance_after = fee_token.balanceOf(caller).call().await?;
 
     let cost = calc_gas_balance_spending(receipt.gas_used, receipt.effective_gas_price());
-    assert_eq!(balance_after, initial_balance - U256::from(cost));
+    assert_eq!(balance_after, initial_balance - cost);
 
-    assert!(receipt.status());
     assert_eq!(receipt.logs().len(), 1);
     let transfer = ITIP20::Transfer::decode_log(&receipt.logs()[0].inner)?;
     assert_eq!(transfer.from, caller);
     assert_eq!(transfer.to, TIP_FEE_MANAGER_ADDRESS);
-    assert_eq!(transfer.amount, U256::from(cost));
+    assert_eq!(transfer.amount, cost);
     assert_eq!(receipt.fee_token, Some(fee_token_address));
 
     Ok(())
@@ -112,23 +112,23 @@ async fn test_default_fee_token() -> eyre::Result<()> {
     let initial_balance = path_usd.balanceOf(new_address).call().await?;
 
     let tx = TransactionRequest::default().from(new_address).to(caller);
-    let pending_tx = new_provider.send_transaction(tx).await?;
-    let tx_hash = pending_tx.watch().await?;
     let receipt = new_provider
-        .raw_request::<_, TempoTransactionReceipt>("eth_getTransactionReceipt".into(), (tx_hash,))
+        .send_transaction(tx)
+        .await?
+        .into_tempo()
+        .successful_receipt()
         .await?;
 
     // Assert that the fee token balance has decreased by gas spent
     let balance_after = path_usd.balanceOf(new_address).call().await?;
     let cost = calc_gas_balance_spending(receipt.gas_used, receipt.effective_gas_price());
-    assert_eq!(balance_after, initial_balance - U256::from(cost));
+    assert_eq!(balance_after, initial_balance - cost);
 
-    assert!(receipt.status());
     assert_eq!(receipt.logs().len(), 1);
     let transfer = ITIP20::Transfer::decode_log(&receipt.logs()[0].inner)?;
     assert_eq!(transfer.from, new_address);
     assert_eq!(transfer.to, TIP_FEE_MANAGER_ADDRESS);
-    assert_eq!(transfer.amount, U256::from(cost));
+    assert_eq!(transfer.amount, cost);
     assert_eq!(receipt.fee_token, Some(PATH_USD_ADDRESS));
 
     Ok(())
@@ -174,14 +174,14 @@ async fn test_fee_transfer_logs() -> eyre::Result<()> {
     let balance_after = fee_token.balanceOf(caller).call().await?;
 
     let cost = calc_gas_balance_spending(receipt.gas_used, receipt.effective_gas_price());
-    assert_eq!(balance_after, initial_balance - U256::from(cost));
+    assert_eq!(balance_after, initial_balance - cost);
 
     assert!(!receipt.status());
     assert_eq!(receipt.logs().len(), 1);
     let transfer = ITIP20::Transfer::decode_log(&receipt.logs()[0].inner)?;
     assert_eq!(transfer.from, caller);
     assert_eq!(transfer.to, TIP_FEE_MANAGER_ADDRESS);
-    assert_eq!(transfer.amount, U256::from(cost));
+    assert_eq!(transfer.amount, cost);
     assert_eq!(receipt.fee_token, Some(fee_token_address));
 
     Ok(())
