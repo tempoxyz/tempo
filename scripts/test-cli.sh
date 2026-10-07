@@ -22,6 +22,8 @@ if [[ ! -x "$TEMPO" ]]; then
 fi
 echo "Testing: $TEMPO"
 
+node "$REPO_ROOT/scripts/test-download-cli.mjs" "$TEMPO" || fail "download flag matrix"
+
 run_ok "tempo --version" "$TEMPO" --version
 run_ok "tempo --help" "$TEMPO" --help
 run_ok "tempo node --help" "$TEMPO" node --help
