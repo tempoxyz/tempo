@@ -900,13 +900,11 @@ mod tests {
             db.commit_source(&reth_execution_types::BundleSource(&output.state));
             let result = output.result;
             assert!(result.requests.is_empty());
-            assert!(
-                streamed
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .any(|state| state.contains_key(&HISTORY_STORAGE_ADDRESS))
-            );
+            assert!(streamed.lock().unwrap().iter().any(|state| {
+                state
+                    .changed_accounts()
+                    .any(|(change, _)| change.address == HISTORY_STORAGE_ADDRESS)
+            }));
 
             assert_eq!(
                 db.get_storage(&HISTORY_STORAGE_ADDRESS, &U256::ZERO)
