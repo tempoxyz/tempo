@@ -1793,10 +1793,11 @@ jobs:
           path: bench-results/
 
       # Benchmark runs can outlive GitHub App tokens' one-hour lifetime.
-      # Refresh even on failure/cancellation before making reporting API calls.
+      # Refresh for comment updates, including failure/cancellation. Manual runs
+      # without a comment only write the job summary and use Slack's own token.
       - name: Refresh GitHub token via STS
         id: github-sts-reporting
-        if: always() && steps.github-sts.outcome == 'success'
+        if: always() && steps.github-sts.outcome == 'success' && env.BENCH_COMMENT_ID
         timeout-minutes: 2
         uses: tempoxyz/gh-actions/actions/github-sts@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
@@ -1809,7 +1810,7 @@ jobs:
           BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
           BENCH_VALSCOPE_PUBLISHED_URL: ${{ steps.publish-valscope-static.outputs.url }}
         with:
-          github-token: ${{ steps.github-sts-reporting.outputs.token }}
+          github-token: ${{ steps.github-sts-reporting.outputs.token || github.token }}
           script: |
             const fs = require('fs');
             const resultsDir = process.env.BENCH_RESULTS_DIR;
