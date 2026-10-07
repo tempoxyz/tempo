@@ -709,22 +709,16 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let block_gas_used = self.block_gas_used;
         let use_regular_gas = self.evm().version().feature(evm2::EvmFeatures::EIP8037);
         let (mut output, block_access_list) = if self.evm().config_spec_id().is_t13() {
-            let reth_evm_ethereum::EthBlockExecutorParts {
-                mut evm,
-                block_state,
-                receipts,
-                cumulative_gas_used,
-                blob_gas_used,
-            } = self.inner.into_parts();
-            let block_access_list = evm.state_mut().take_bal_builder().map(Into::into);
+            let mut inner = self.inner;
+            let block_access_list = inner.evm.state_mut().take_bal_builder().map(Into::into);
             let result = reth_execution_types::BlockExecutionResult {
-                receipts,
+                receipts: inner.receipts,
                 requests: Default::default(),
-                gas_used: cumulative_gas_used,
-                blob_gas_used,
+                gas_used: inner.cumulative_gas_used,
+                blob_gas_used: inner.blob_gas_used,
             };
             (
-                BlockExecutionOutput::new(result, block_state.into_bundle()),
+                BlockExecutionOutput::new(result, inner.block_state.into_bundle()),
                 block_access_list,
             )
         } else {
