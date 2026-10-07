@@ -8,6 +8,7 @@ use alloy_consensus::transaction::Recovered;
 use alloy_primitives::B256;
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{BlockExecutorFactory, EvmEnv, EvmEnvFor, database::StateProviderDatabase};
+use reth_evm_ethereum::EvmFactory as _;
 use reth_storage_api::{EvmStateProviderBox, StateProvider as _, StateProviderFactory};
 use reth_tasks::{TaskExecutor, WorkerPool};
 use reth_transaction_pool::{
@@ -423,11 +424,7 @@ where
             evm.ext_mut().actions.enable();
             // Enabling replaces the disabled recorder, so reconnect native precompiles
             // to the same action buffer used by protocol nonce and fee operations.
-            evm.set_precompiles(tempo_precompiles::TempoPrecompiles::new(
-                evm.config_spec_id(),
-                evm.ext().actions.clone(),
-                evm.ext().non_creditable_slots.clone(),
-            ));
+            BlockExecutorFactory::evm_factory(&self.evm_config).configure_evm(&mut evm);
         }
 
         Some(evm)
@@ -758,6 +755,28 @@ mod tests {
             stop: Arc::default(),
             parallel,
         }
+    }
+
+    #[test]
+    fn parallel_prewarming_preserves_custom_precompiles_builder() {
+        static BUILDER_STATES: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
+        let factory = tempo_evm::TempoEvmFactory::new_with_precompiles(|env, ext| {
+            BUILDER_STATES.fetch_or(
+                if ext.actions.is_enabled() { 2 } else { 1 },
+                Ordering::Relaxed,
+            );
+            Box::new(tempo_precompiles::TempoPrecompiles::new(
+                env.spec,
+                ext.actions.clone(),
+                ext.non_creditable_slots.clone(),
+            ))
+        });
+        let mut context = prewarming_context(TaskExecutor::test(), true);
+        context.evm_config = context.evm_config.with_evm_factory(factory);
+        let evm = context.evm_for_ctx().expect("prewarming EVM");
+        assert!(evm.ext().actions.is_enabled());
+        assert_eq!(BUILDER_STATES.load(Ordering::Relaxed), 3);
     }
 
     fn wait_until(mut condition: impl FnMut() -> bool) {
