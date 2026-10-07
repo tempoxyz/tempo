@@ -581,6 +581,194 @@ fn canonical_miss_does_not_accept_late_capture() {
     assert_eq!(actual.execution_stats().reused, 0);
 }
 
+/// Advance ordered consumption inside a provider read, before the next strict
+/// read polls cancellation. No timing assumptions or background threads.
+struct ConsumeDuringStorage {
+    inner: TestDB,
+    session: Arc<EnginePrewarmingSession>,
+    transaction: TempoTxEnv,
+    after: Option<usize>,
+    storage_reads: usize,
+}
+
+impl Database for ConsumeDuringStorage {
+    type Error = <TestDB as Database>::Error;
+
+    fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+        self.inner.basic(address)
+    }
+
+    fn storage(&mut self, address: Address, slot: U256) -> Result<U256, Self::Error> {
+        self.storage_reads += 1;
+        if self.after == Some(self.storage_reads) {
+            self.after = None;
+            assert!(self.session.take(&self.transaction).is_none());
+        }
+        self.inner.storage(address, slot)
+    }
+
+    fn code_by_hash(&mut self, hash: B256) -> Result<Bytecode, Self::Error> {
+        self.inner.code_by_hash(hash)
+    }
+
+    fn block_hash(&mut self, number: u64) -> Result<B256, Self::Error> {
+        self.inner.block_hash(number)
+    }
+}
+
+#[test]
+fn stale_strict_execution_stops_without_relaxed_retry_and_worker_recovers() {
+    let env = env(TempoHardfork::T0);
+    // Write slot0, then read slot1. Cancellation discards a partially written
+    // strict journal; it must never contaminate the reused outer worker.
+    let code = &[0x60, 1, 0x60, 0, 0x55, 0x60, 1, 0x54, 0x00];
+    let mut db = contract(code);
+    db.insert_account_info(
+        address(901),
+        AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(code))),
+    );
+    let mut transactions = [tx(0), tx(1)];
+    transactions[1].inner.kind = TxKind::Call(address(901));
+    let (factory, session) = factory_with_diagnostics(&env, &transactions, true);
+    let mut worker = factory.create_evm(
+        ConsumeDuringStorage {
+            inner: db.clone(),
+            session: session.clone(),
+            transaction: transactions[0].clone(),
+            after: Some(1),
+            storage_reads: 0,
+        },
+        relaxed(&env),
+    );
+    let error = worker.transact_raw(transactions[0].clone()).unwrap_err();
+    assert_eq!(error.to_string(), "stale Engine prewarming");
+    assert_eq!(
+        worker.db().storage_reads,
+        1,
+        "no relaxed retry after cancellation"
+    );
+    assert_eq!(
+        root(&worker.db().inner),
+        root(&db),
+        "strict writes are discarded"
+    );
+    assert!(session.retained.lock().unwrap().results.is_empty());
+    let counters = session.diagnostics.as_ref().unwrap().snapshot();
+    assert_eq!(counters.0[CaptureEvent::StrictCancelled as usize], 1);
+    assert_eq!(counters.0[CaptureEvent::StrictFailed as usize], 0);
+
+    let expected = TempoEvm::new(db.clone(), env.clone())
+        .transact_raw(transactions[1].clone())
+        .unwrap();
+    assert_eq!(
+        worker.transact_raw(transactions[1].clone()).unwrap(),
+        expected
+    );
+    assert!(session.retained.lock().unwrap().results.contains_key(&1));
+    let mut actual = ordered(&factory, db.clone(), env.clone());
+    let mut sequential = TempoEvm::new(db, env);
+    for transaction in transactions {
+        let reference = sequential.transact_raw(transaction.clone()).unwrap();
+        let result = actual.transact_raw(transaction).unwrap();
+        assert_eq!(result, reference);
+        sequential.commit_state(reference.state);
+        actual.commit_state(result.state);
+        assert_eq!(root(actual.db()), root(sequential.db()));
+    }
+    assert_eq!(actual.execution_stats().reused, 1);
+}
+
+#[test]
+fn cancellation_inside_native_aa_reads_preserves_receipts_and_later_capture() {
+    let env = env(TempoHardfork::T14);
+    let db = nonce_prefix_parent(TempoHardfork::T14);
+    let recovered = [
+        nonce_prefix_transaction(U256::from(7), 0, 1, TempoSignature::default()),
+        nonce_prefix_transaction(U256::from(8), 0, 2, TempoSignature::default()),
+    ];
+    let transactions = recovered
+        .iter()
+        .map(|tx| TempoTxEnv::from_recovered_tx(tx.inner(), tx.signer()))
+        .collect::<Vec<_>>();
+    // Count the exact strict workload so the second cancellation happens within
+    // native precompile work, beyond initial nonce/fee validation.
+    let (probe_factory, probe_session) = factory(&env, &transactions);
+    let mut probe = probe_factory.create_evm(
+        ConsumeDuringStorage {
+            inner: db.clone(),
+            session: probe_session,
+            transaction: transactions[0].clone(),
+            after: None,
+            storage_reads: 0,
+        },
+        relaxed(&env),
+    );
+    assert!(
+        probe
+            .transact_raw(transactions[0].clone())
+            .unwrap()
+            .result
+            .is_success()
+    );
+    let total = probe.db().storage_reads;
+    assert!(total > 3);
+    for after in [1, total / 2, total - 1] {
+        let (factory, session) = factory_with_diagnostics(&env, &transactions, true);
+        let mut worker = factory.create_evm(
+            ConsumeDuringStorage {
+                inner: db.clone(),
+                session: session.clone(),
+                transaction: transactions[0].clone(),
+                after: Some(after),
+                storage_reads: 0,
+            },
+            relaxed(&env),
+        );
+        assert_eq!(
+            worker
+                .transact_raw(transactions[0].clone())
+                .unwrap_err()
+                .to_string(),
+            "stale Engine prewarming"
+        );
+        assert_eq!(
+            worker.db().storage_reads,
+            after,
+            "native cancellation must not retry"
+        );
+        assert_eq!(root(&worker.db().inner), root(&db));
+        assert!(session.retained.lock().unwrap().results.is_empty());
+        let expected = TempoEvm::new(db.clone(), env.clone())
+            .transact_raw(transactions[1].clone())
+            .unwrap();
+        assert_eq!(
+            worker.transact_raw(transactions[1].clone()).unwrap(),
+            expected
+        );
+        assert!(session.retained.lock().unwrap().results.contains_key(&1));
+
+        let config = TempoEvmConfig::new(crate::test_utils::test_chainspec())
+            .with_speculative_executor(SpeculativeExecutor::new(1, 128).unwrap());
+        let mut actual =
+            config.create_executor(factory.create_evm(db.clone(), env.clone()), block_context());
+        let mut sequential =
+            config.create_executor(TempoEvm::new(db.clone(), env.clone()), block_context());
+        for transaction in &recovered {
+            let reference = sequential
+                .execute_transaction_without_commit(transaction)
+                .unwrap();
+            let result = actual
+                .execute_transaction_without_commit(transaction)
+                .unwrap();
+            assert_eq!(result.result(), reference.result());
+            sequential.commit_transaction(reference);
+            actual.commit_transaction(result);
+            assert_eq!(actual.receipts(), sequential.receipts());
+            assert_eq!(root(actual.evm().db()), root(sequential.evm().db()));
+        }
+    }
+}
+
 #[test]
 fn unmarked_simulation_system_and_txpool_paths_do_not_capture() {
     for excluded in ["unmarked", "simulation", "system", "txpool"] {

@@ -34,9 +34,9 @@ use tempo_revm::{
 use crate::{
     TempoBlockEnv, TempoPoolValidationEvm, TempoPoolValidationResult,
     parallel::{
-        CaptureEvent, EnginePrewarmingCache, EnginePrewarmingSession, ExecutionStats,
-        PreexecutedTransaction, PrewarmingExecutor, PrewarmingState, SpeculativeBatch,
-        SpeculativeExecutor, SpeculativeResult,
+        CaptureEvent, EngineCaptureFailure, EnginePrewarmingCache, EnginePrewarmingSession,
+        ExecutionStats, PreexecutedTransaction, PrewarmingState, SpeculativeBatch,
+        SpeculativeExecutor, SpeculativeResult, capture_engine_transaction,
     },
 };
 
@@ -51,12 +51,10 @@ type EngineCapture<DB> = fn(
     &mut DB,
     EvmEnv<TempoHardfork, TempoBlockEnv>,
     PrewarmingState,
+    &EnginePrewarmingSession,
     TempoTxEnv,
     Option<usize>,
-) -> Result<
-    PreexecutedTransaction,
-    EVMError<<DB as reth_revm::Database>::Error, TempoInvalidTransaction>,
->;
+) -> Result<PreexecutedTransaction, EngineCaptureFailure>;
 
 /// Ordered Engine diagnostics, separate from deterministic execution counters.
 #[derive(Debug, Default)]
@@ -172,11 +170,7 @@ impl EvmFactory for TempoEvmFactory {
         let session = cache.session(&canonical);
         let mut evm = TempoEvm::new(db, input);
         if session.is_some() && capture {
-            evm.engine_capture = Some(|db, env, prefix, tx, offset| {
-                PrewarmingExecutor::new(db, env)
-                    .with_state(prefix)
-                    .execute(tx, offset)
-            });
+            evm.engine_capture = Some(capture_engine_transaction::<DB>);
         }
         evm.engine_session = session;
         evm
@@ -819,20 +813,31 @@ where
                         .tempo_tx_env
                         .as_mut()
                         .and_then(|aa| aa.expiring_nonce_idx.take());
-                    if let Ok(candidate) = capture(
+                    match capture(
                         &mut self.inner.ctx.journaled_state.database,
                         session.env().clone(),
                         session.prefix(),
+                        &session,
                         strict_tx,
                         offset,
                     ) {
-                        session.capture_event(CaptureEvent::StrictSucceeded);
-                        // In pinned Reth this return value supplies proof
-                        // prefetch targets only. It is never committed. Keep
-                        // the strict result separate from the shared read cache.
-                        let hint = candidate.prewarming_result();
-                        session.publish(candidate);
-                        return Ok(hint);
+                        Ok(candidate) => {
+                            session.capture_event(CaptureEvent::StrictSucceeded);
+                            // In pinned Reth this return value supplies proof
+                            // prefetch targets only. It is never committed. Keep
+                            // the strict result separate from the shared read cache.
+                            let hint = candidate.prewarming_result();
+                            session.publish(candidate);
+                            return Ok(hint);
+                        }
+                        Err(EngineCaptureFailure::Stale) => {
+                            session.capture_event(CaptureEvent::StrictCancelled);
+                            // Reth discards prewarming errors and their proof hints.
+                            // The canonical executor disarms this hook. Returning
+                            // here prevents a second, relaxed execution of stale work.
+                            return Err(EVMError::Custom("stale Engine prewarming".into()));
+                        }
+                        Err(EngineCaptureFailure::Execution) => {}
                     }
                     session.capture_event(CaptureEvent::StrictFailed);
                     // A strict failure must retain the legacy relaxed prewarm,
@@ -1080,7 +1085,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::test_utils::{test_evm, test_evm_with_basefee};
+    use crate::{
+        parallel::PrewarmingExecutor,
+        test_utils::{test_evm, test_evm_with_basefee},
+    };
     use alloy_primitives::{B256, U256, keccak256};
     use alloy_sol_types::{SolCall, SolError, SolValue};
     use indexmap::IndexMap;

@@ -53,6 +53,7 @@ capture_events! {
     StrictAttempts => "strict_attempts",
     StrictSucceeded => "strict_succeeded",
     StrictFailed => "strict_failed",
+    StrictCancelled => "strict_cancelled",
     PublishAttempts => "publish_attempts",
     PublishWrongEnv => "publish_wrong_env",
     PublishSystem => "publish_system",
@@ -332,11 +333,17 @@ impl EnginePrewarmingSession {
         self.prefix.record_engine_timed(state, is_expiring_nonce)
     }
 
-    fn index(&self, tx: &TempoTxEnv) -> Option<usize> {
+    pub(super) fn index(&self, tx: &TempoTxEnv) -> Option<usize> {
         let ExecutionContext::Transaction { tx_hash } = tx.execution_context else {
             return None;
         };
         self.indices.get(&tx_hash).copied()
+    }
+
+    /// Advisory cancellation only: ordered execution has already attempted to
+    /// consume this index, so a newly completed candidate cannot be reused.
+    pub(super) fn capture_is_stale(&self, index: usize) -> bool {
+        index < self.next.load(Ordering::Relaxed)
     }
 
     fn in_window(&self, index: usize, stale: CaptureEvent, future: CaptureEvent) -> bool {

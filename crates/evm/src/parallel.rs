@@ -49,9 +49,11 @@ use tempo_revm::{
 
 use reth_revm::context::result::HaltReason as TempoHaltReason;
 
+mod engine_cancellation;
 mod engine_prewarming;
 mod forwarding;
 mod native_rebase;
+pub(crate) use engine_cancellation::{EngineCaptureFailure, capture_engine_transaction};
 pub(crate) use engine_prewarming::{CaptureEvent, EnginePrewarmingCache, EnginePrewarmingSession};
 mod prewarming;
 #[cfg(test)]
