@@ -1779,27 +1779,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_tempo_evm_with_custom_precompiles() {
-        let ecrecover = Address::with_last_byte(1);
-        let env = evm_env_with_spec(TempoHardfork::T1);
-
-        let evm = TempoEvm::new(EmptyDB::default(), env.clone());
-        assert!(evm.precompiles().get(&PATH_USD_ADDRESS).is_some());
-        assert!(evm.precompiles().get(&ecrecover).is_some());
-
-        let evm = TempoEvm::new_with_precompiles(EmptyDB::default(), env, |ctx, _, _| {
-            tempo_precompiles::ethereum_precompiles(&ctx.cfg)
-        });
-        assert!(evm.precompiles().get(&PATH_USD_ADDRESS).is_none());
-        assert!(evm.precompiles().get(&ecrecover).is_some());
-
-        // Enabling action recording must rebuild the same custom set.
-        let evm = evm.with_actions();
-        assert!(evm.precompiles().get(&PATH_USD_ADDRESS).is_none());
-        assert!(evm.precompiles().get(&ecrecover).is_some());
-    }
-
     /// Test that TempoEvm respects the gas limit cap passed in via EvmEnv.
     /// Note: The 30M [TIP-1000] gas cap is set in ConfigureEvm::evm_env(), not here.
     /// This test verifies that TempoEvm::new() preserves the cap from the input.

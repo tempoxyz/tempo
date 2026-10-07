@@ -180,7 +180,8 @@ impl PrecompileEnv {
 
 /// Returns the full Tempo precompile set for the given EVM config.
 ///
-/// Extends [`ethereum_precompiles`] via [`extend_tempo_precompiles`].
+/// Pre-T1C hardforks use Prague built-in precompiles; T1C+ uses Osaka built-ins. Tempo-specific
+/// precompiles are then registered via [`extend_tempo_precompiles`].
 ///
 /// [`StorageActions`] records logical precompile storage operations (`SLOAD`, `SSTORE`, `SINC`,
 /// `SDEC`, and domain-specific actions such as `FeeAmmSwap`) for node/validator/builder
@@ -195,19 +196,14 @@ pub fn tempo_precompiles(
     actions: StorageActions,
     non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
 ) -> PrecompilesMap {
-    let mut precompiles = ethereum_precompiles(cfg);
-    extend_tempo_precompiles(&mut precompiles, cfg, actions, non_creditable_slots);
-    precompiles
-}
-
-/// Returns the Ethereum built-ins: Prague pre-T1C, the hardfork's own spec from T1C.
-pub fn ethereum_precompiles(cfg: &CfgEnv<TempoHardfork>) -> PrecompilesMap {
     let spec = if cfg.spec.is_t1c() {
         cfg.spec.into()
     } else {
         SpecId::PRAGUE
     };
-    PrecompilesMap::from_static(EthPrecompiles::new(spec).precompiles)
+    let mut precompiles = PrecompilesMap::from_static(EthPrecompiles::new(spec).precompiles);
+    extend_tempo_precompiles(&mut precompiles, cfg, actions, non_creditable_slots);
+    precompiles
 }
 
 /// Registers Tempo-specific precompiles into an existing [`PrecompilesMap`] by installing a
