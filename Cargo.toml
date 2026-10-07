@@ -169,7 +169,7 @@ reth-cli = { git = "https://github.com/paradigmxyz/reth", rev = "42fa3c5" }
 reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", rev = "42fa3c5" }
 reth-cli-runner = { git = "https://github.com/paradigmxyz/reth", rev = "42fa3c5" }
 reth-cli-util = { git = "https://github.com/paradigmxyz/reth", rev = "42fa3c5" }
-reth-codecs = { version = "0.8.1", default-features = false }
+reth-codecs = { version = "0.8.1", default-features = false, features = ["account-ext"] }
 reth-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "42fa3c5" }
 reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", rev = "42fa3c5" }
 reth-db = { git = "https://github.com/paradigmxyz/reth", rev = "42fa3c5" }
@@ -203,7 +203,7 @@ reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "42fa3
 reth-node-metrics = { git = "https://github.com/paradigmxyz/reth", rev = "42fa3c5" }
 reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "42fa3c5" }
 reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "42fa3c5" }
-reth-primitives-traits = { version = "0.8.1", default-features = false }
+reth-primitives-traits = { version = "0.8.1", default-features = false, features = ["account-ext"] }
 reth-config = { git = "https://github.com/paradigmxyz/reth", rev = "42fa3c5" }
 reth-downloaders = { git = "https://github.com/paradigmxyz/reth", rev = "42fa3c5" }
 reth-provider = { git = "https://github.com/paradigmxyz/reth", rev = "42fa3c5" }
@@ -231,7 +231,7 @@ reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "42fa3c5", feat
   "std",
   "optional-checks",
 ] }
-revm = { version = "43.0.3", features = ["optional_fee_charge"], default-features = false }
+revm = { version = "43.0.3", features = ["optional_fee_charge", "account-ext"], default-features = false }
 revm-inspectors = "0.44.0"
 
 alloy-json-abi = { version = "1.7.3", default-features = false }

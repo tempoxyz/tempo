@@ -1,4 +1,4 @@
-use crate::TempoEvmConfig;
+use crate::{TempoEvmConfig, error::TempoEvmError};
 use alloy_consensus::crypto::RecoveryError;
 use alloy_primitives::Address;
 use reth_evm::{
@@ -65,16 +65,18 @@ fn preverify_zk_signatures(transactions: &[TempoTxEnvelope]) {
         .iter()
         .filter_map(TempoTxEnvelope::as_aa)
         .flat_map(|tx| {
-            let signature = tx
-                .signature()
-                .as_zk()
-                .map(|signature| (signature, tx.signature_hash()));
-            let key_authorization = tx.tx().key_authorization.as_ref().and_then(|auth| {
-                auth.signature
-                    .as_zk()
-                    .map(|signature| (signature, auth.signature_hash()))
-            });
-            signature.into_iter().chain(key_authorization)
+            let mut signatures = tx.signature().zk_signatures(tx.signature_hash());
+            if let Some(authorization) = &tx.tx().key_authorization {
+                signatures.extend(
+                    authorization
+                        .signature
+                        .zk_signatures(authorization.signature_hash()),
+                );
+            }
+            if signatures.len() > tempo_primitives::transaction::MAX_ZK_SIGNATURES_PER_TX {
+                return Vec::new();
+            }
+            signatures
         })
         .collect();
     if !items.is_empty() {

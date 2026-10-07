@@ -1188,6 +1188,9 @@ mod tests {
                 .engine_disable_execution_cache_sharing_with_builder
         );
         assert!(!node_cmd.engine.share_execution_cache_with_payload_builder);
+        assert!(node_cmd.engine.bal_parallel_execution_disabled);
+        assert!(node_cmd.engine.bal_parallel_state_root_disabled);
+        assert!(node_cmd.engine.disable_bal_batch_io);
 
         let cli = TempoCli::try_parse_from([
             "tempo",

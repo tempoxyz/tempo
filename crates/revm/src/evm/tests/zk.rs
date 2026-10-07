@@ -6,15 +6,19 @@ use alloy_consensus::transaction::SignerRecoverable;
 use alloy_primitives::B256;
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
-use revm::context::result::EVMError;
+use revm::{
+    context::result::EVMError,
+    database::{CacheDB, EmptyDB},
+};
 use tempo_precompiles::key_publisher::{
     ACTIVE, IKeyPublisher, KEY_PUBLISHER_ADDRESS, compute_publisher_id, key_valid_until_slot,
 };
 use tempo_primitives::{
     AASigned,
     transaction::{
-        KeyAuthorizationSignature, SignedKeyAuthorization, ZK_NAMESPACE_OIDC,
-        ZK_SCHEME_OIDC_RS256_V1, ZkProof, ZkSignature, zk_address,
+        KeyAuthorizationSignature, MultisigConfig, MultisigOwner, MultisigSignature,
+        SignedKeyAuthorization, ZK_NAMESPACE_OIDC, ZK_SCHEME_OIDC_RS256_V1, ZkProof, ZkSignature,
+        multisig_digest, zk_address,
     },
 };
 use tempo_zk::{
@@ -140,6 +144,213 @@ fn zk_error<T: core::fmt::Debug, DB: core::fmt::Debug>(
 
 fn identity_call() -> TempoTransaction {
     TxBuilder::new().call_identity(&[1, 2, 3]).build()
+}
+
+fn oidc_owner_transaction(identities: &[&Identity]) -> (AASigned, TempoEvm<CacheDB<EmptyDB>, ()>) {
+    let factory = Address::repeat_byte(0x71);
+    let mut owners = identities
+        .iter()
+        .map(|identity| MultisigOwner {
+            owner: identity.address(),
+            weight: 1,
+        })
+        .collect::<Vec<_>>();
+    owners.sort_by_key(|owner| owner.owner);
+    let config = MultisigConfig {
+        salt: B256::ZERO,
+        version: 0,
+        threshold: identities.len() as u8,
+        owners,
+    };
+    let account = config.derive_account(factory).unwrap();
+    let mut transaction = identity_call();
+    transaction.gas_limit = 2_000_000;
+    let digest = multisig_digest(transaction.signature_hash(), account, 0);
+    let mut identities = identities.to_vec();
+    identities.sort_by_key(|identity| identity.address());
+    let approvals = identities
+        .iter()
+        .map(|identity| identity.sign(digest).into())
+        .collect();
+    let signature =
+        MultisigSignature::try_new_with_owner_signatures(account, config, approvals).unwrap();
+    let signed = transaction.into_signed(TempoSignature::Multisig(signature));
+    let mut evm = create_funded_evm_at_spec_with_timestamp(account, NOW, TempoHardfork::T14);
+    evm.ctx.block.multisig_recovery_factory = Some(factory);
+    for identity in identities {
+        list_key(&mut evm, identity.publisher_id, ACTIVE);
+    }
+    (signed, evm)
+}
+
+#[test]
+fn two_oidc_owners_authorize_configurable_account() -> eyre::Result<()> {
+    let first = Identity::new(B256::repeat_byte(0x61));
+    let second = Identity::new(B256::repeat_byte(0x62));
+    let (signed, mut evm) = oidc_owner_transaction(&[&first, &second]);
+    assert_eq!(
+        TempoSignature::from_bytes(&signed.signature().to_bytes()).unwrap(),
+        *signed.signature()
+    );
+    assert!(
+        signed
+            .signature()
+            .as_multisig()
+            .unwrap()
+            .verify_approvals(signed.signature_hash())
+            .is_err()
+    );
+    assert!(evm.transact(tx_env(&signed))?.result.is_success());
+    Ok(())
+}
+
+#[test]
+fn oidc_owner_publisher_revocation_is_checked() {
+    let identity = Identity::new(B256::repeat_byte(0x63));
+    let (signed, mut evm) = oidc_owner_transaction(&[&identity]);
+    let approvals = signed.signature().zk_signatures(signed.signature_hash());
+    crate::zk::verify(approvals[0].0, &approvals[0].1).unwrap();
+    list_key(&mut evm, identity.publisher_id, NOW - 1);
+    assert_eq!(
+        zk_error(evm.transact(tx_env(&signed))),
+        ZkSignatureError::KeyInactive
+    );
+}
+
+#[test]
+fn three_oidc_owners_exceed_transaction_proof_limit() {
+    let first = Identity::new(B256::repeat_byte(0x64));
+    let second = Identity::new(B256::repeat_byte(0x65));
+    let third = Identity::new(B256::repeat_byte(0x66));
+    let (signed, mut evm) = oidc_owner_transaction(&[&first, &second, &third]);
+    assert_eq!(
+        zk_error(evm.transact(tx_env(&signed))),
+        ZkSignatureError::TooManySignatures
+    );
+}
+
+#[test]
+fn oidc_owner_approval_is_bound_to_multisig_digest() {
+    let identity = Identity::new(B256::repeat_byte(0x67));
+    let (signed, mut evm) = oidc_owner_transaction(&[&identity]);
+    let signature = signed.signature().as_multisig().unwrap();
+    let wrong = identity.sign(signed.signature_hash());
+    let signature = MultisigSignature::try_new_with_owner_signatures(
+        signature.account(),
+        signature.config().clone(),
+        vec![wrong.into()],
+    )
+    .unwrap();
+    let signed = signed
+        .tx()
+        .clone()
+        .into_signed(TempoSignature::Multisig(signature));
+    assert_eq!(
+        zk_error(evm.transact(tx_env(&signed))),
+        ZkSignatureError::Invalid
+    );
+}
+
+#[test]
+fn mixed_primitive_and_oidc_owners_meet_weighted_quorum() -> eyre::Result<()> {
+    let identity = Identity::new(B256::repeat_byte(0x68));
+    let primitive = PrivateKeySigner::random();
+    let factory = Address::repeat_byte(0x71);
+    let mut owners = vec![
+        MultisigOwner {
+            owner: identity.address(),
+            weight: 2,
+        },
+        MultisigOwner {
+            owner: primitive.address(),
+            weight: 1,
+        },
+    ];
+    owners.sort_by_key(|owner| owner.owner);
+    let config = MultisigConfig {
+        salt: B256::ZERO,
+        version: 0,
+        threshold: 3,
+        owners,
+    };
+    let account = config.derive_account(factory).unwrap();
+    let mut transaction = identity_call();
+    transaction.gas_limit = 2_000_000;
+    let digest = multisig_digest(transaction.signature_hash(), account, 0);
+    let mut approvals = vec![
+        (identity.address(), identity.sign(digest).into()),
+        (
+            primitive.address(),
+            PrimitiveSignature::Secp256k1(primitive.sign_hash_sync(&digest)?).into(),
+        ),
+    ];
+    approvals.sort_by_key(|(address, _)| *address);
+    let signature = MultisigSignature::try_new_with_owner_signatures(
+        account,
+        config,
+        approvals
+            .into_iter()
+            .map(|(_, signature)| signature)
+            .collect(),
+    )
+    .unwrap();
+    let signed = transaction.into_signed(TempoSignature::Multisig(signature));
+    let mut evm = create_funded_evm_at_spec_with_timestamp(account, NOW, TempoHardfork::T14);
+    evm.ctx.block.multisig_recovery_factory = Some(factory);
+    list_key(&mut evm, identity.publisher_id, ACTIVE);
+    assert!(evm.transact(tx_env(&signed))?.result.is_success());
+    Ok(())
+}
+
+#[test]
+fn oidc_owner_expired_approval_is_rejected() {
+    let mut identity = Identity::new(B256::repeat_byte(0x69));
+    identity.valid_until = NOW - 1;
+    let (signed, mut evm) = oidc_owner_transaction(&[&identity]);
+    assert_eq!(
+        zk_error(evm.transact(tx_env(&signed))),
+        ZkSignatureError::Expired {
+            valid_until: NOW - 1,
+            timestamp: NOW
+        }
+    );
+}
+
+#[test]
+fn oidc_owner_proof_limit_includes_key_authorization() {
+    let first = Identity::new(B256::repeat_byte(0x6a));
+    let second = Identity::new(B256::repeat_byte(0x6b));
+    let (signed, mut evm) = oidc_owner_transaction(&[&first, &second]);
+    let multisig = signed.signature().as_multisig().unwrap();
+    let key = PrivateKeySigner::random();
+    let authorization = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key.address());
+    let digest = multisig_digest(authorization.signature_hash(), multisig.account(), 0);
+    let mut approvals = vec![
+        (first.address(), first.sign(digest).into()),
+        (second.address(), second.sign(digest).into()),
+    ];
+    approvals.sort_by_key(|(address, _)| *address);
+    let grant = MultisigSignature::try_new_with_owner_signatures(
+        multisig.account(),
+        multisig.config().clone(),
+        approvals
+            .into_iter()
+            .map(|(_, signature)| signature)
+            .collect(),
+    )
+    .unwrap();
+    let mut transaction = signed.tx().clone();
+    transaction.key_authorization = Some(SignedKeyAuthorization::new(
+        authorization,
+        AccountSignature::Multisig(grant),
+    ));
+    // The shape has four proofs, so it is rejected before the stale transaction approvals are
+    // verified. The two-proof limit is shared by the transaction and its inline grant.
+    let signed = transaction.into_signed(signed.signature().clone());
+    assert_eq!(
+        zk_error(evm.transact(tx_env(&signed))),
+        ZkSignatureError::TooManySignatures
+    );
 }
 
 #[test]

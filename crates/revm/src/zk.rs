@@ -33,6 +33,9 @@ static VERIFIED: LazyLock<Mutex<schnellru::LruMap<B256, Address>>> = LazyLock::n
 /// Why a ZK signature was rejected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum ZkSignatureError {
+    /// The transaction and its authorizations exceed the protocol's proof limit.
+    #[error("too many ZK signatures in one transaction")]
+    TooManySignatures,
     /// ZK signatures are not active at this block.
     #[error("ZK signatures are not active")]
     NotActive,

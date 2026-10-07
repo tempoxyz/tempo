@@ -1,6 +1,7 @@
 use super::SignatureType;
 use crate::transaction::{
-    PrimitiveSignature, SECP256K1_SIGNATURE_LENGTH, SIGNATURE_TYPE_ZK, ZkSignature,
+    AccountSignature, PrimitiveSignature, SECP256K1_SIGNATURE_LENGTH, SIGNATURE_TYPE_ZK,
+    ZK_VERIFY_GAS, ZkSignature,
 };
 use alloc::{boxed::Box, vec::Vec};
 use alloy_consensus::crypto::RecoveryError;
@@ -358,10 +359,7 @@ impl KeyAuthorization {
     }
 
     /// Convert the key authorization into a [`SignedKeyAuthorization`] with a signature.
-    pub fn into_signed(
-        self,
-        signature: impl Into<KeyAuthorizationSignature>,
-    ) -> SignedKeyAuthorization {
+    pub fn into_signed(self, signature: impl Into<AccountSignature>) -> SignedKeyAuthorization {
         SignedKeyAuthorization::new(self, signature)
     }
 
@@ -425,8 +423,8 @@ pub struct SignedKeyAuthorization {
     #[deref]
     pub authorization: KeyAuthorization,
 
-    /// Signature authorizing this key (signed by the root key, or a TIP-1131 ZK signature)
-    pub signature: KeyAuthorizationSignature,
+    /// Direct primitive or multisig signature authorizing this key.
+    pub signature: AccountSignature,
 
     /// Cached signer recovered from `signature`.
     ///
@@ -439,10 +437,7 @@ pub struct SignedKeyAuthorization {
 
 impl SignedKeyAuthorization {
     /// Create a signed key authorization with an empty signer cache.
-    pub fn new(
-        authorization: KeyAuthorization,
-        signature: impl Into<KeyAuthorizationSignature>,
-    ) -> Self {
+    pub fn new(authorization: KeyAuthorization, signature: impl Into<AccountSignature>) -> Self {
         Self {
             authorization,
             signature: signature.into(),
@@ -450,11 +445,11 @@ impl SignedKeyAuthorization {
         }
     }
 
-    /// Recover the signer of the [`KeyAuthorization`].
-    ///
-    /// For a ZK signature this returns the address it names without verifying it; see
-    /// [`KeyAuthorizationSignature::recover_signer`].
+    /// Cryptographically verifies a primitive signature; multisig requires stateful validation.
     pub fn recover_signer(&self) -> Result<Address, RecoveryError> {
+        if matches!(self.signature, AccountSignature::Multisig(_)) {
+            return Err(RecoveryError::new());
+        }
         if let Some(signer) = self.signer.get() {
             return Ok(*signer);
         }
@@ -465,6 +460,18 @@ impl SignedKeyAuthorization {
         self.cache_signer(signer);
 
         Ok(signer)
+    }
+
+    /// Recovers a primitive signer or returns the named multisig account.
+    ///
+    /// For multisig results, callers must verify the parent account, configuration and owner
+    /// quorum against state. Primitive results still require grant-authority checks.
+    pub fn recover_account(&self) -> Result<Address, RecoveryError> {
+        match &self.signature {
+            AccountSignature::Primitive(_) => self.recover_signer(),
+            AccountSignature::Multisig(signature) => Ok(signature.account()),
+            AccountSignature::Zk(signature) => signature.address().ok_or_else(RecoveryError::new),
+        }
     }
 
     #[cfg(feature = "std")]
@@ -515,6 +522,16 @@ pub enum KeyAuthorizationSignature {
 }
 
 impl KeyAuthorizationSignature {
+    /// Verification cost before state reads and calldata processing.
+    pub fn base_verification_gas(&self) -> u64 {
+        match self {
+            Self::Primitive(signature) => signature.base_verification_gas(),
+            Self::Zk(signature) => {
+                ZK_VERIFY_GAS + signature.access_key_signature.base_verification_gas()
+            }
+        }
+    }
+
     /// Parses a signature from its bytes.
     pub fn from_bytes(data: &[u8]) -> Result<Self, &'static str> {
         if data.len() > 1
@@ -603,6 +620,15 @@ impl From<PrimitiveSignature> for KeyAuthorizationSignature {
 impl From<ZkSignature> for KeyAuthorizationSignature {
     fn from(signature: ZkSignature) -> Self {
         Self::Zk(Box::new(signature))
+    }
+}
+
+impl From<KeyAuthorizationSignature> for AccountSignature {
+    fn from(signature: KeyAuthorizationSignature) -> Self {
+        match signature {
+            KeyAuthorizationSignature::Primitive(signature) => Self::Primitive(signature),
+            KeyAuthorizationSignature::Zk(signature) => Self::Zk(signature),
+        }
     }
 }
 
@@ -894,9 +920,11 @@ mod selector_hex_serde {
 mod tests {
     use super::*;
     use crate::transaction::{
+        KeychainSignature, MultisigConfig, MultisigOwner, MultisigSignature, PrimitiveSignature,
         TempoSignature,
         tt_authorization::tests::{generate_secp256k1_keypair, sign_hash},
     };
+    use alloy_primitives::Signature;
     use alloy_rlp::{Decodable, Encodable};
 
     fn nonzero(value: u64) -> NonZeroU64 {
@@ -921,6 +949,38 @@ mod tests {
             let mut remaining = encoded.as_slice();
             assert_eq!(KeyAuthorization::decode(&mut remaining).unwrap(), auth);
             assert!(remaining.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_multisig_delegate_key_type_roundtrip() {
+        let auth =
+            KeyAuthorization::unrestricted(1, SignatureType::Multisig, Address::repeat_byte(1));
+        let encoded = alloy_rlp::encode(&auth);
+        assert_eq!(
+            KeyAuthorization::decode(&mut encoded.as_slice()).unwrap(),
+            auth
+        );
+        assert_eq!(u8::from(auth.key_type), 3);
+        assert_eq!(
+            SignatureType::try_from(
+                tempo_contracts::precompiles::IAccountKeychain::SignatureType::Multisig
+            ),
+            Ok(auth.key_type)
+        );
+        let primitive_auth = KeyAuthorization {
+            key_type: SignatureType::Secp256k1,
+            ..auth.clone()
+        };
+        assert_ne!(auth.signature_hash(), primitive_auth.signature_hash());
+        #[cfg(feature = "serde")]
+        {
+            let json = serde_json::to_value(&auth).unwrap();
+            assert_eq!(json["keyType"], "multisig");
+            assert_eq!(
+                serde_json::from_value::<KeyAuthorization>(json).unwrap(),
+                auth
+            );
         }
     }
 
@@ -1073,6 +1133,90 @@ mod tests {
         let decoded =
             <KeyAuthorization as Decodable>::decode(&mut encoded.as_slice()).expect("decode auth");
         assert_eq!(decoded.witness(), Some(B256::ZERO));
+    }
+
+    #[test]
+    fn direct_authorization_signature_roles_and_legacy_wire_encoding() {
+        let auth = make_auth(None, None);
+        let primitive = PrimitiveSignature::Secp256k1(Signature::test_signature());
+        let signed = auth.clone().into_signed(primitive.clone());
+        #[derive(alloy_rlp::RlpEncodable)]
+        #[cfg_attr(feature = "serde", derive(serde::Serialize))]
+        struct WireAuthorization<S> {
+            #[cfg_attr(feature = "serde", serde(flatten))]
+            authorization: KeyAuthorization,
+            signature: S,
+        }
+        let legacy = WireAuthorization {
+            authorization: auth.clone(),
+            signature: primitive.clone(),
+        };
+        assert_eq!(alloy_rlp::encode(&signed), alloy_rlp::encode(&legacy));
+        #[cfg(feature = "serde")]
+        assert_eq!(
+            serde_json::to_value(&signed).unwrap(),
+            serde_json::to_value(&legacy).unwrap()
+        );
+        let account = Address::repeat_byte(0x11);
+        let config = MultisigConfig {
+            salt: B256::ZERO,
+            version: 0,
+            threshold: 1,
+            owners: vec![MultisigOwner {
+                owner: Address::repeat_byte(0x22),
+                weight: 1,
+            }],
+        };
+        let multisig =
+            MultisigSignature::try_new(account, config, vec![primitive.clone()]).unwrap();
+        let previous = WireAuthorization {
+            authorization: auth.clone(),
+            signature: TempoSignature::Multisig(multisig.clone()),
+        };
+        let signed = auth.clone().into_signed(multisig);
+        assert_eq!(signed.recover_account().unwrap(), account);
+        assert!(signed.recover_signer().is_err());
+        let encoded = alloy_rlp::encode(&signed);
+        assert_eq!(encoded, alloy_rlp::encode(&previous));
+        assert_eq!(
+            SignedKeyAuthorization::decode(&mut encoded.as_slice()).unwrap(),
+            signed
+        );
+        #[cfg(feature = "serde")]
+        assert_eq!(
+            serde_json::to_value(&signed).unwrap(),
+            serde_json::to_value(&previous).unwrap()
+        );
+        #[cfg(feature = "serde")]
+        assert_eq!(
+            serde_json::from_value::<SignedKeyAuthorization>(
+                serde_json::to_value(&signed).unwrap()
+            )
+            .unwrap(),
+            signed
+        );
+
+        for keychain in [
+            KeychainSignature::new_v1(account, primitive.clone()),
+            KeychainSignature::new(account, primitive),
+        ] {
+            let signature = TempoSignature::Keychain(keychain);
+            assert!(AccountSignature::try_from(signature.clone()).is_err());
+            // The typed grant cannot hold a keychain; exercise rejection at the wire boundary.
+            let invalid = WireAuthorization {
+                authorization: auth.clone(),
+                signature,
+            };
+            let encoded = alloy_rlp::encode(&invalid);
+            assert!(SignedKeyAuthorization::decode(&mut encoded.as_slice()).is_err());
+            #[cfg(feature = "serde")]
+            assert!(
+                serde_json::from_value::<SignedKeyAuthorization>(
+                    serde_json::to_value(invalid).unwrap()
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]
