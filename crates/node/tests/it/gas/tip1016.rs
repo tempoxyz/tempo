@@ -28,6 +28,7 @@ use alloy::{
     sol_types::SolCall,
 };
 use alloy_eips::{BlockId, Encodable2718, eip7702::Authorization};
+use reth_e2e_test_utils::wallet::test_signer;
 use reth_node_api::BuiltPayload;
 use reth_transaction_pool::TransactionPool;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
@@ -45,7 +46,7 @@ use tempo_primitives::{
     },
 };
 
-use super::helpers::{build_call_tx, build_create_tx, test_signer};
+use super::helpers::{build_call_tx, build_create_tx};
 use crate::{
     tempo_transaction::helpers::sign_aa_tx_with_secp256k1_access_key,
     utils::{ForkSchedule, SingleNodeSetup, TestNodeBuilder},
@@ -288,7 +289,7 @@ impl Tip1016Node {
             .with_schedule(ForkSchedule::DevnetAt(tempo_chainspec::TempoHardfork::T14))
             .build_with_node_access()
             .await?;
-        let signer = test_signer(0)?;
+        let signer = test_signer(0);
         let provider = ProviderBuilder::new()
             .connect_http(setup.node.rpc_url())
             .erased();
@@ -664,7 +665,7 @@ async fn test_tip1016_sstore_nonzero_to_nonzero_no_exemption() -> eyre::Result<(
 async fn test_tip1016_tip20_transfer_existing_no_storage_creation() -> eyre::Result<()> {
     let mut node = Tip1016Node::new().await?;
     let sender = node.address();
-    let receiver = test_signer(1)?.address();
+    let receiver = test_signer(1).address();
 
     // Mint to both so the receiver's balance slot already exists.
     node.mint(sender, 1_000_000).await?;
@@ -1581,7 +1582,7 @@ async fn test_tip1016_pool_accepts_total_gas_limit_above_block_limit() -> eyre::
         .build_with_node_access()
         .await?;
     let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
-    let signer = test_signer(0)?;
+    let signer = test_signer(0);
     let chain_id = provider.get_chain_id().await?;
     // Check admission both at startup and after a canonical head update.
     for nonce in 0..2 {
@@ -1621,7 +1622,7 @@ async fn test_tip1016_pool_enforces_execution_budget_with_small_blocks() -> eyre
         .build_with_node_access()
         .await?;
     let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
-    let signer = test_signer(0)?;
+    let signer = test_signer(0);
     let chain_id = provider.get_chain_id().await?;
     // Exercise startup and the policy refreshed by a canonical head update.
     for nonce in 0..2 {

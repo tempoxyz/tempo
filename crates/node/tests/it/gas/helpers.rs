@@ -1,8 +1,9 @@
 use std::{collections::BTreeMap, ops::Deref};
 
 use alloy::{
+    consensus::{SignableTransaction, TxEip1559, TxEnvelope},
     network::EthereumWallet,
-    primitives::{Address, B256, U256},
+    primitives::{Address, B256, Bytes, U256},
     providers::{Provider, ProviderBuilder, RootProvider},
     rpc::client::RpcClient,
     signers::{SignerSync, local::PrivateKeySigner},
@@ -10,7 +11,7 @@ use alloy::{
     transports::http::reqwest::Url,
 };
 use alloy_eips::eip2718::Encodable2718;
-use alloy_network::ReceiptResponse;
+use alloy_network::{ReceiptResponse, TxSignerSync};
 use reth_primitives_traits::transaction::TxHashRef;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::{constants::gas::TEMPO_T1_TX_GAS_LIMIT_CAP, spec::TEMPO_T1_BASE_FEE};
