@@ -59,7 +59,7 @@ fn current_committee_matches_boundary_dkg_outcome() {
                     .unwrap()
                     .unwrap_or_default()
             })
-            .map(|value| B256::from(value.to_be_bytes::<32>()))
+            .map(B256::from)
             .collect::<Vec<_>>();
         let expected_public_keys = outcome
             .players()
