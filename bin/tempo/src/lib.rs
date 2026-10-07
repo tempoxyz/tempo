@@ -924,6 +924,179 @@ mod tests {
         assert_eq!(node_cmd.chain.genesis(), original_chain.genesis());
     }
 
+    fn download_command() -> clap::Command {
+        init_defaults_once();
+        TempoCli::command().mut_subcommand("download", |_| snapshot_download::Args::command())
+    }
+
+    #[test]
+    fn download_optional_flag_matrix() {
+        // Parse through the same wrapped subcommand and both conversions used at startup.
+        // Parser coverage only; the runtime chain regression is tracked in PR #8151.
+        let command = download_command();
+        let sources: &[&[&str]] = &[
+            &[],
+            &["--manifest-url", "https://snap.example/manifest.json"],
+            &["--manifest-path", "/snapshot/manifest.json"],
+        ];
+        let chains: &[&[&str]] = &[&[], &["--chain", "mainnet"], &["--chain", "moderato"]];
+        let presets: &[&[&str]] = &[&[], &["--minimal"], &["--full"], &["--archive"]];
+        let resume_modes: &[&[&str]] = &[
+            &[],
+            &["--resumable"],
+            &["--resumable=true"],
+            &["--resumable=false"],
+        ];
+        let datadirs: &[&[&str]] = &[&[], &["--datadir", "/snapshot/data"]];
+        let tuning: &[&[&str]] = &[&[], &["-y", "--download-concurrency", "32"]];
+
+        // 576 combinations, including the Shopify wrapper invocation without --chain.
+        // Keep the expected inputs explicit: deriving them from Clap would hide removals.
+        for source in sources {
+            for chain in chains {
+                for preset in presets {
+                    for resume in resume_modes {
+                        for datadir in datadirs {
+                            for options in tuning {
+                                let mut argv = vec!["tempo", "download"];
+                                for flags in [source, chain, preset, resume, datadir, options] {
+                                    argv.extend_from_slice(flags);
+                                }
+                                let matches = command
+                                    .clone()
+                                    .try_get_matches_from(&argv)
+                                    .unwrap_or_else(|err| panic!("{argv:?}: {err}"));
+                                let cli = TempoCli::from_arg_matches(&matches)
+                                    .unwrap_or_else(|err| panic!("{argv:?}: {err}"));
+                                assert!(matches!(cli.command, Commands::Download(_)), "{argv:?}");
+                                let sub = matches.subcommand_matches("download").unwrap();
+                                snapshot_download::Args::from_arg_matches(sub)
+                                    .unwrap_or_else(|err| panic!("{argv:?}: {err}"));
+                                assert_eq!(
+                                    sub.get_one::<bool>("resumable"),
+                                    Some(&!resume.contains(&"--resumable=false")),
+                                    "{argv:?}"
+                                );
+                                assert_eq!(
+                                    sub.get_one::<usize>("download_concurrency"),
+                                    Some(&if options.is_empty() { 8 } else { 32 }),
+                                    "{argv:?}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn download_optional_controls_and_aliases() {
+        let command = download_command();
+        let cases: &[&[&str]] = &[
+            &["--non-interactive"],
+            &["--all"],
+            &["--list"],
+            &["--list-snapshots"],
+            &["--force"],
+            &["--prune-unlisted", "--minimal", "-y"],
+            &["--without-rocksdb", "--archive"],
+            &["--consensus.datadir", "/snapshot/consensus"],
+            &["--skip-consensus"],
+            &["--skip-consensus=false"],
+            &["--retry-backoff", "500ms"],
+            &["--print-plan-json", "--minimal"],
+            &[
+                "-u",
+                "https://snap.example/snapshot.tar.zst",
+                "--skip-consensus",
+            ],
+        ];
+        for flags in cases {
+            let mut argv = vec!["tempo", "download"];
+            argv.extend_from_slice(flags);
+            let matches = command
+                .clone()
+                .try_get_matches_from(&argv)
+                .unwrap_or_else(|err| panic!("{argv:?}: {err}"));
+            TempoCli::from_arg_matches(&matches).unwrap_or_else(|err| panic!("{argv:?}: {err}"));
+            snapshot_download::Args::from_arg_matches(
+                matches.subcommand_matches("download").unwrap(),
+            )
+            .unwrap_or_else(|err| panic!("{argv:?}: {err}"));
+        }
+    }
+
+    #[test]
+    fn download_required_values_and_dependencies() {
+        use clap::error::ErrorKind;
+
+        let command = download_command();
+        // These flags are optional, but their values are not. UnknownArgument must not
+        // satisfy this check: removing a supported flag is also a regression.
+        for flag in [
+            "--chain",
+            "--datadir",
+            "--manifest-url",
+            "--manifest-path",
+            "--url",
+            "--consensus.datadir",
+            "--download-concurrency",
+            "--retry-backoff",
+        ] {
+            let err = command
+                .clone()
+                .try_get_matches_from(["tempo", "download", flag])
+                .unwrap_err();
+            assert_eq!(err.kind(), ErrorKind::InvalidValue, "{flag}: {err}");
+        }
+
+        let err = command
+            .clone()
+            .try_get_matches_from(["tempo", "download", "--with-senders"])
+            .unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+        assert!(err.to_string().contains("--with-txs"));
+        command
+            .try_get_matches_from(["tempo", "download", "--with-senders", "--with-txs"])
+            .unwrap();
+    }
+
+    #[test]
+    fn download_conflicting_flag_matrix() {
+        use clap::error::ErrorKind;
+
+        let command = download_command();
+        let groups: &[&[&[&str]]] = &[
+            &[
+                &["--manifest-url", "https://snap.example/manifest.json"],
+                &["--manifest-path", "/snapshot/manifest.json"],
+                &["--url", "https://snap.example/snapshot.tar.zst"],
+            ],
+            &[&["--minimal"], &["--full"], &["--archive"]],
+            &[
+                &["--with-txs"],
+                &["--with-txs-since", "1"],
+                &["--with-txs-distance", "1"],
+            ],
+        ];
+        for group in groups {
+            for (i, first) in group.iter().enumerate() {
+                for second in &group[i + 1..] {
+                    // Verify both flag orders, so last-one-wins changes cannot slip through.
+                    for pair in [[first, second], [second, first]] {
+                        let mut argv = vec!["tempo", "download"];
+                        for flags in pair {
+                            argv.extend_from_slice(flags);
+                        }
+                        let err = command.clone().try_get_matches_from(&argv).unwrap_err();
+                        assert_eq!(err.kind(), ErrorKind::ArgumentConflict, "{argv:?}: {err}");
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn wrapped_download_matches_parse_for_tracing() {
         init_defaults_once();
