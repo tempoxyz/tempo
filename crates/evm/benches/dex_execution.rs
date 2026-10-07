@@ -134,10 +134,7 @@ fn sign_dex_calls(
     use alloy_signer::SignerSync;
     use common::{CHAIN_ID, DEFAULT_BLOCK_TIMESTAMP, TXGEN_FEE_PER_GAS};
     use std::num::NonZeroU64;
-    use tempo_primitives::{
-        AASigned, TempoSignature, TempoTransaction,
-        transaction::{PrimitiveSignature, TEMPO_EXPIRING_NONCE_KEY},
-    };
+    use tempo_primitives::{TempoTransaction, transaction::TEMPO_EXPIRING_NONCE_KEY};
 
     let tx = TempoTransaction {
         chain_id: CHAIN_ID,
@@ -158,10 +155,7 @@ fn sign_dex_calls(
     let signature = signer
         .sign_hash_sync(&tx.signature_hash())
         .expect("failed to sign generated DEX transaction");
-    let signed = AASigned::new_unhashed(
-        tx,
-        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
-    );
+    let signed = tx.into_signed(signature.into());
 
     TempoTxEnvelope::from(signed)
         .try_into_recovered()

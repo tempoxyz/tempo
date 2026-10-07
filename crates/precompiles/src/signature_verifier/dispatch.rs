@@ -182,13 +182,13 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         StorageCtx::enter(&mut storage, || {
             let signer = PrivateKeySigner::random();
-            let hash = B256::from([0xAA; 32]);
+            let hash = B256::repeat_byte(0xAA);
             let sig = signer.sign_hash_sync(&hash)?;
 
             let calldata = ISignatureVerifier::verifyCall {
                 signer: signer.address(),
                 hash,
-                signature: sig.as_bytes().to_vec().into(),
+                signature: sig.as_bytes().into(),
             }
             .abi_encode();
 
@@ -204,13 +204,13 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         StorageCtx::enter(&mut storage, || {
             let signer = PrivateKeySigner::random();
-            let hash = B256::from([0xBB; 32]);
+            let hash = B256::repeat_byte(0xBB);
             let sig = signer.sign_hash_sync(&hash)?;
 
             let calldata = ISignatureVerifier::verifyCall {
                 signer: Address::random(),
                 hash,
-                signature: sig.as_bytes().to_vec().into(),
+                signature: sig.as_bytes().into(),
             }
             .abi_encode();
 
@@ -245,7 +245,7 @@ mod tests {
                 None,
             )?;
 
-            let hash = B256::from([0x44; 32]);
+            let hash = B256::repeat_byte(0x44);
             let signature = keychain_signature(account, &access_key, hash)?;
 
             let ret = call_verify_keychain(account, hash, signature)?;
@@ -260,7 +260,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let account = Address::random();
             let access_key = PrivateKeySigner::random();
-            let hash = B256::from([0x55; 32]);
+            let hash = B256::repeat_byte(0x55);
             let signature = keychain_signature(account, &access_key, hash)?;
 
             let ret = call_verify_keychain(account, hash, signature)?;
@@ -275,7 +275,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let root = PrivateKeySigner::random();
             let account = root.address();
-            let hash = B256::from([0x56; 32]);
+            let hash = B256::repeat_byte(0x56);
             let signature = keychain_signature(account, &root, hash)?;
 
             let ret = call_verify_keychain(account, hash, signature)?;
@@ -311,7 +311,7 @@ mod tests {
                 None,
             )?;
 
-            let hash = B256::from([0x57; 32]);
+            let hash = B256::repeat_byte(0x57);
             let signature = keychain_signature(account, &access_key, hash)?;
 
             let ret = call_verify_keychain(Address::random(), hash, signature)?;
@@ -340,7 +340,7 @@ mod tests {
                 None,
             )?;
 
-            let hash = B256::from([0x66; 32]);
+            let hash = B256::repeat_byte(0x66);
             let signature = keychain_signature(account, &admin, hash)?;
 
             let ret = call_verify_keychain_admin(account, hash, signature)?;
@@ -355,7 +355,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let root = PrivateKeySigner::random();
             let account = root.address();
-            let hash = B256::from([0x67; 32]);
+            let hash = B256::repeat_byte(0x67);
             let signature = keychain_signature(account, &root, hash)?;
 
             let ret = call_verify_keychain_admin(account, hash, signature)?;
@@ -381,7 +381,7 @@ mod tests {
                 None,
             )?;
 
-            let hash = B256::from([0x68; 32]);
+            let hash = B256::repeat_byte(0x68);
             let signature = keychain_signature(account, &admin, hash)?;
 
             let ret = call_verify_keychain_admin(Address::random(), hash, signature)?;
@@ -417,7 +417,7 @@ mod tests {
                 None,
             )?;
 
-            let hash = B256::from([0x77; 32]);
+            let hash = B256::repeat_byte(0x77);
             let signature = keychain_signature(account, &access_key, hash)?;
 
             let ret = call_verify_keychain_admin(account, hash, signature)?;
@@ -431,13 +431,13 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         StorageCtx::enter(&mut storage, || {
             let signer = PrivateKeySigner::random();
-            let hash = B256::from([0x88; 32]);
+            let hash = B256::repeat_byte(0x88);
             let sig = signer.sign_hash_sync(&hash)?;
 
             let calldata = ISignatureVerifier::verifyKeychainCall {
                 account: signer.address(),
                 hash,
-                signature: sig.as_bytes().to_vec().into(),
+                signature: sig.as_bytes().into(),
             }
             .abi_encode();
 

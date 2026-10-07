@@ -54,6 +54,7 @@ commonware-runtime = { workspace = true, features = ["external"] }
 commonware-storage.workspace = true
 commonware-utils.workspace = true
 
+derive_more = { workspace = true, features = ["eq"] }
 eyre.workspace = true
 futures.workspace = true
 governor.workspace = true
@@ -101,4 +102,3 @@ tracing-subscriber.workspace = true
 
 [features]
 default = []
-bal = []

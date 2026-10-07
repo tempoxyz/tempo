@@ -310,7 +310,7 @@ fn write_shadow_chainspec(
 }
 
 fn storage_key(slot: U256) -> B256 {
-    B256::from(slot.to_be_bytes::<32>())
+    B256::from(slot)
 }
 
 fn parse_storage_word(value: &str) -> eyre::Result<U256> {

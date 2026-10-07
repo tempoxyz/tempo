@@ -22,6 +22,7 @@ pub(crate) struct TestExecutorBuilder {
     pub(crate) general_gas_limit: u64,
     pub(crate) shared_gas_limit: u64,
     pub(crate) parent_beacon_block_root: Option<B256>,
+    pub(crate) withdrawals: Option<alloy_eips::eip4895::Withdrawals>,
     /// Enables the Amsterdam EIP-8037 feature to gate TIP-1016 behavior in tests.
     pub(crate) amsterdam_eip8037_enabled: bool,
     pub(crate) spec: TempoHardfork,
@@ -39,6 +40,7 @@ impl Default for TestExecutorBuilder {
             general_gas_limit: 10_000_000,
             shared_gas_limit: 10_000_000,
             parent_beacon_block_root: None,
+            withdrawals: None,
             amsterdam_eip8037_enabled: false,
             spec: TempoHardfork::default(),
             extra_data: Bytes::new(),
@@ -70,6 +72,14 @@ impl TestExecutorBuilder {
 
     pub(crate) fn with_general_gas_limit(mut self, limit: u64) -> Self {
         self.general_gas_limit = limit;
+        self
+    }
+
+    pub(crate) fn with_withdrawals(
+        mut self,
+        withdrawals: alloy_eips::eip4895::Withdrawals,
+    ) -> Self {
+        self.withdrawals = Some(withdrawals);
         self
     }
 
@@ -125,7 +135,9 @@ impl TestExecutorBuilder {
                 parent_hash: self.parent_hash,
                 parent_beacon_block_root: self.parent_beacon_block_root,
                 ommers: &[],
-                withdrawals: None,
+                withdrawals: self
+                    .withdrawals
+                    .map(|withdrawals| std::borrow::Cow::Owned(withdrawals.to_vec())),
                 extra_data: self.extra_data,
                 tx_count_hint: None,
                 slot_number: None,

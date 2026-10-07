@@ -672,7 +672,7 @@ mod tests {
             let mut storage = EvmPrecompileStorageProvider::new_max_gas(&mut evm, spec);
             StorageCtx::enter(&mut storage, || {
                 crate::test_util::TIP20Setup::path_usd(sender)
-                    .with_mint(recipient, U256::from(1))
+                    .with_mint(recipient, U256::ONE)
                     .apply()
             })
             .expect("TIP20 setup should succeed");

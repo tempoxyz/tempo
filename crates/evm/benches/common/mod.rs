@@ -22,8 +22,8 @@ use tempo_evm::{
 };
 use tempo_precompiles::PATH_USD_ADDRESS;
 use tempo_primitives::{
-    AASigned, TempoBlockExt, TempoSignature, TempoTransaction, TempoTxEnvelope,
-    transaction::{Call, PrimitiveSignature, TEMPO_EXPIRING_NONCE_KEY},
+    TempoBlockExt, TempoTransaction, TempoTxEnvelope,
+    transaction::{Call, TEMPO_EXPIRING_NONCE_KEY},
 };
 
 pub(crate) const CHAIN_ID: u64 = 1337;
@@ -150,10 +150,7 @@ pub(crate) fn sign_precompile_call(
     let signature = signer
         .sign_hash_sync(&tx.signature_hash())
         .expect("failed to sign generated benchmark transaction");
-    let signed = AASigned::new_unhashed(
-        tx,
-        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
-    );
+    let signed = tx.into_signed(signature.into());
     TempoTxEnvelope::from(signed)
         .try_into_recovered()
         .expect("generated benchmark transaction should recover")

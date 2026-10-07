@@ -24,7 +24,7 @@ use crate::{
 #[cfg(test)]
 use alloy::primitives::Bytes;
 use alloy::{
-    primitives::{Address, B256, U256, address, hex_literal::hex},
+    primitives::{Address, B256, U256, address, fixed_bytes, hex_literal::hex},
     sol_types::SolError,
 };
 use evm2::PrecompileError;
@@ -33,7 +33,7 @@ use evm2::precompiles::PrecompileResult;
 #[cfg(any(test, feature = "test-utils"))]
 use tempo_contracts::precompiles::TIP20Error;
 use tempo_contracts::precompiles::{TIP20_FACTORY_ADDRESS, UnknownFunctionSelector};
-use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
+use tempo_primitives::{MasterId, TempoAddressExt};
 
 /// Returns the revert payload or panics with the unexpected EVM2 result.
 #[cfg(test)]
@@ -485,6 +485,6 @@ pub fn register_virtual_master(registry: &mut AddressRegistry) -> Result<(Master
             salt: VIRTUAL_SALT.into(),
         },
     )?;
-    let virtual_addr = Address::new_virtual(master_id, UserTag::new(hex!("010203040506")));
+    let virtual_addr = Address::new_virtual(master_id, fixed_bytes!("010203040506"));
     Ok((master_id, virtual_addr))
 }

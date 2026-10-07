@@ -616,7 +616,7 @@ mod tests {
     fn test_checkpoint_commit_and_revert() {
         let mut storage = t1c_storage();
         let addr = Address::ZERO;
-        let key = U256::from(1);
+        let key = U256::ONE;
 
         StorageCtx::enter(&mut storage, || {
             let mut ctx = StorageCtx;
@@ -631,7 +631,7 @@ mod tests {
             // drop reverts state
             {
                 let _guard = ctx.checkpoint();
-                ctx.sstore(addr, key, U256::from(1)).unwrap();
+                ctx.sstore(addr, key, U256::ONE).unwrap();
             }
             assert_eq!(ctx.sload(addr, key).unwrap(), U256::from(99));
         });
@@ -641,7 +641,7 @@ mod tests {
     fn test_nested_checkpoints_lifo() {
         let mut storage = t1c_storage();
         let addr = Address::ZERO;
-        let key = U256::from(1);
+        let key = U256::ONE;
 
         StorageCtx::enter(&mut storage, || {
             let mut ctx = StorageCtx;
@@ -688,7 +688,7 @@ mod tests {
     fn test_checkpoint_noop_pre_t1c() {
         let mut storage = HashMapStorageProvider::new(1); // default = T0
         let addr = Address::ZERO;
-        let key = U256::from(1);
+        let key = U256::ONE;
 
         StorageCtx::enter(&mut storage, || {
             let mut ctx = StorageCtx;

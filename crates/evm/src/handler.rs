@@ -1414,7 +1414,7 @@ fn prepare_aa(
         tx.gas_limit,
         request.host.block().gas_limit,
     )?;
-    if !(spec.is_t12() && tx.nonce_key == TEMPO_EXPIRING_NONCE_KEY) {
+    if !(spec.is_t1() && tx.nonce_key == TEMPO_EXPIRING_NONCE_KEY) {
         validate_nonce_not_overflow(tx.nonce)?;
     }
     for call in &tx.calls {

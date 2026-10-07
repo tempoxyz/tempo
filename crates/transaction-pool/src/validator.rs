@@ -382,25 +382,49 @@ where
             .collect()
     }
 
-    /// Returns the latest state provider and a state cache valid for the provider's tip.
+    /// Returns the current tip's state provider and matching read cache.
+    ///
+    /// Using one tip hash prevents a concurrent head update from pairing old state with a new cache.
     fn latest_state_provider_and_cache(
         &self,
     ) -> ProviderResult<(StateProviderBox, Arc<StateCache>)> {
-        let state_provider = self.inner.client().latest()?;
-        let latest_hash = self.inner.client().chain_info()?.best_hash;
-        Ok((state_provider, self.state_cache_for_tip(latest_hash)))
+        let tip = self.inner.client().chain_info()?.best_hash;
+        let tip_provider = self.inner.client().state_by_block_hash(tip);
+        self.provider_and_cache_for_tip(tip, tip_provider)
     }
 
-    /// Returns the shared cache if it matches `tip_hash`, otherwise an empty ephemeral cache.
-    ///
-    /// A mismatch can happen when `.latest()` observes state for a newer canonical tip before
-    /// `on_new_head_block` has refreshed the validator's cached state for that tip.
+    /// Returns the shared cache if its tip matches `tip_hash`, otherwise a fresh cache.
     fn state_cache_for_tip(&self, tip_hash: B256) -> Arc<StateCache> {
         let (cached_tip_hash, cached_state) = self.cached_state.read().clone();
         if cached_tip_hash == tip_hash {
             cached_state
         } else {
             Arc::new(StateCache::default())
+        }
+    }
+
+    /// Uses the tip's cache when its state provider is available.
+    ///
+    /// Falls back to `latest()` with a private cache because the fallback state's tip is unknown.
+    fn provider_and_cache_for_tip(
+        &self,
+        tip: B256,
+        tip_provider: ProviderResult<StateProviderBox>,
+    ) -> ProviderResult<(StateProviderBox, Arc<StateCache>)> {
+        match tip_provider {
+            Ok(provider) => Ok((provider, self.state_cache_for_tip(tip))),
+            Err(err) => {
+                tracing::debug!(
+                    target: "txpool",
+                    %err,
+                    %tip,
+                    "no state provider for tip, validating against latest state"
+                );
+                Ok((
+                    self.inner.client().latest()?,
+                    Arc::new(StateCache::default()),
+                ))
+            }
         }
     }
 
@@ -811,7 +835,8 @@ where
             .map(|account| Account {
                 nonce: account.nonce,
                 balance: account.balance,
-                bytecode_hash: (account.code_hash != KECCAK_EMPTY).then_some(account.code_hash),
+                bytecode_hash: (!account.code_hash.is_zero() && account.code_hash != KECCAK_EMPTY)
+                    .then_some(account.code_hash),
             }))
     }
 }
@@ -895,11 +920,8 @@ mod tests {
     use tempo_primitives::{
         Block, TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType,
         transaction::{
-            TempoTransaction,
-            envelope::TEMPO_SYSTEM_TX_SIGNATURE,
-            tempo_transaction::Call,
-            tt_signature::{PrimitiveSignature, TempoSignature},
-            tt_signed::AASigned,
+            TempoTransaction, envelope::TEMPO_SYSTEM_TX_SIGNATURE, tempo_transaction::Call,
+            tt_signature::PrimitiveSignature,
         },
     };
 
@@ -1009,8 +1031,7 @@ mod tests {
         valid_after: Option<u64>,
         valid_before: Option<u64>,
     ) -> TempoPooledTransaction {
-        let mut builder = TxBuilder::aa(Address::random())
-            .fee_token(address!("0000000000000000000000000000000000000002"));
+        let mut builder = TxBuilder::aa(Address::random()).fee_token(Address::with_last_byte(2));
         if let Some(va) = valid_after {
             builder = builder.valid_after(va);
         }
@@ -1099,7 +1120,7 @@ mod tests {
                 TxBuilder::eip1559(sender).nonce(nonce).build_eip1559(),
                 TxBuilder::aa(sender).nonce(nonce).build(),
                 TxBuilder::aa(sender)
-                    .nonce_key(U256::from(1))
+                    .nonce_key(U256::ONE)
                     .nonce(nonce)
                     .build(),
                 TxBuilder::aa(sender)
@@ -1185,6 +1206,19 @@ mod tests {
     }
 
     #[test]
+    fn latest_state_provider_uses_shared_cache_for_current_tip() {
+        let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
+        let validator = setup_validator(&tx, 1);
+        let latest_hash = validator.client().chain_info().unwrap().best_hash;
+        let shared_cache = Arc::new(StateCache::default());
+        *validator.cached_state.write() = (latest_hash, shared_cache.clone());
+
+        let (_, validation_cache) = validator.latest_state_provider_and_cache().unwrap();
+
+        assert!(Arc::ptr_eq(&validation_cache, &shared_cache));
+    }
+
+    #[test]
     fn latest_state_provider_uses_ephemeral_cache_when_tip_hash_mismatches_latest() {
         let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
         let validator = setup_validator(&tx, 1);
@@ -1202,15 +1236,51 @@ mod tests {
         assert!(!Arc::ptr_eq(&validation_cache, &shared_cache));
     }
 
+    /// A head update between provider and cache lookup must keep old state out of the new cache.
+    #[test]
+    fn provider_for_old_tip_never_uses_cache_retagged_to_new_tip() {
+        let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
+        let validator = setup_validator(&tx, 1);
+        let tip_x = validator.client().chain_info().unwrap().best_hash;
+        let tip_y = B256::repeat_byte(0x59);
+        assert_ne!(tip_x, tip_y);
+
+        let provider_x = validator.client().state_by_block_hash(tip_x);
+
+        let cache_y = Arc::new(StateCache::default());
+        *validator.cached_state.write() = (tip_y, cache_y.clone());
+
+        let (_, validation_cache) = validator
+            .provider_and_cache_for_tip(tip_x, provider_x)
+            .unwrap();
+
+        assert!(!Arc::ptr_eq(&validation_cache, &cache_y));
+        assert!(Arc::ptr_eq(&validator.cached_state.read().1, &cache_y));
+    }
+
+    #[test]
+    fn missing_tip_provider_falls_back_to_latest_with_ephemeral_cache() {
+        let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
+        let validator = setup_validator(&tx, 1);
+        let tip = validator.client().chain_info().unwrap().best_hash;
+        let shared_cache = Arc::new(StateCache::default());
+        *validator.cached_state.write() = (tip, shared_cache.clone());
+
+        // Fallback state must not use the shared cache, even when its tag matches `tip`.
+        let (provider, validation_cache) = validator
+            .provider_and_cache_for_tip(tip, Err(ProviderError::StateForHashNotFound(tip)))
+            .unwrap();
+
+        assert!(!Arc::ptr_eq(&validation_cache, &shared_cache));
+        provider.basic_account(&Address::ZERO).unwrap();
+    }
+
     #[tokio::test]
     async fn test_aa_authorization_list_authorities_tracked() {
         use alloy_eips::eip7702::Authorization;
         use alloy_signer::SignerSync;
         use alloy_signer_local::PrivateKeySigner;
-        use tempo_primitives::transaction::{
-            TempoSignedAuthorization,
-            tt_signature::{PrimitiveSignature, TempoSignature},
-        };
+        use tempo_primitives::transaction::TempoSignedAuthorization;
 
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1220,17 +1290,15 @@ mod tests {
         let authority_signer = PrivateKeySigner::random();
         let expected_authority = authority_signer.address();
         let authorization = Authorization {
-            chain_id: U256::from(1),
+            chain_id: U256::ONE,
             nonce: 0,
             address: Address::random(),
         };
         let signature = authority_signer
             .sign_hash_sync(&authorization.signature_hash())
             .expect("authorization signing should succeed");
-        let tempo_authorization = TempoSignedAuthorization::new_unchecked(
-            authorization,
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
-        );
+        let tempo_authorization =
+            TempoSignedAuthorization::new_unchecked(authorization, signature.into());
 
         let transaction = TxBuilder::aa(Address::random())
             .fee_token(PATH_USD_ADDRESS)
@@ -1259,7 +1327,7 @@ mod tests {
     #[tokio::test]
     async fn test_some_balance() {
         let transaction = TxBuilder::eip1559(Address::random())
-            .value(U256::from(1))
+            .value(U256::ONE)
             .build_eip1559();
         let validator = setup_validator(&transaction, 0);
 
@@ -1337,10 +1405,7 @@ mod tests {
             ..Default::default()
         };
 
-        let signed = AASigned::new_unhashed(
-            tx,
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
-        );
+        let signed = tx.into_signed(Signature::test_signature().into());
         let transaction = TempoPooledTransaction::new(
             TempoTxEnvelope::from(signed).try_into_recovered().unwrap(),
         );
@@ -1397,10 +1462,7 @@ mod tests {
                 .expect("fee payer signing should succeed"),
         );
 
-        let signed = AASigned::new_unhashed(
-            tx,
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
-        );
+        let signed = tx.into_signed(Signature::test_signature().into());
 
         let envelope: TempoTxEnvelope = signed.into();
         let transaction = TempoPooledTransaction::new(
@@ -1547,13 +1609,8 @@ mod tests {
     /// This is the fix for the audit finding about mempool DoS via gas calculation mismatch.
     #[tokio::test]
     async fn test_aa_intrinsic_gas_validation() {
-        use alloy_primitives::{Signature, TxKind, address};
-        use tempo_primitives::transaction::{
-            TempoTransaction,
-            tempo_transaction::Call,
-            tt_signature::{PrimitiveSignature, TempoSignature},
-            tt_signed::AASigned,
-        };
+        use alloy_primitives::{Signature, TxKind};
+        use tempo_primitives::transaction::{TempoTransaction, tempo_transaction::Call};
 
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1564,7 +1621,7 @@ mod tests {
         let create_aa_tx = |gas_limit: u64| {
             let calls: Vec<Call> = (0..10)
                 .map(|i| Call {
-                    to: TxKind::Call(Address::from([i as u8; 20])),
+                    to: TxKind::Call(Address::repeat_byte(i as u8)),
                     value: U256::ZERO,
                     input: alloy_primitives::Bytes::from(vec![0x00; 100]),
                 })
@@ -1578,16 +1635,11 @@ mod tests {
                 calls,
                 nonce_key: U256::ZERO,
                 nonce: 0,
-                fee_token: Some(address!("0000000000000000000000000000000000000002")),
+                fee_token: Some(Address::with_last_byte(2)),
                 ..Default::default()
             };
 
-            let signed = AASigned::new_unhashed(
-                tx,
-                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-                    Signature::test_signature(),
-                )),
-            );
+            let signed = tx.into_signed(Signature::test_signature().into());
             TempoPooledTransaction::new(TempoTxEnvelope::from(signed).try_into_recovered().unwrap())
         };
 
@@ -1640,12 +1692,7 @@ mod tests {
     #[tokio::test]
     async fn test_aa_create_tx_with_2d_nonce_intrinsic_gas() {
         use alloy_primitives::Signature;
-        use tempo_primitives::transaction::{
-            TempoTransaction,
-            tempo_transaction::Call as TxCall,
-            tt_signature::{PrimitiveSignature, TempoSignature},
-            tt_signed::AASigned,
-        };
+        use tempo_primitives::transaction::{TempoTransaction, tempo_transaction::Call as TxCall};
 
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1663,7 +1710,7 @@ mod tests {
             } else {
                 (0..10)
                     .map(|i| TxCall {
-                        to: TxKind::Call(Address::from([i as u8; 20])),
+                        to: TxKind::Call(Address::repeat_byte(i as u8)),
                         value: U256::ZERO,
                         input: alloy_primitives::Bytes::from(vec![0x00; 100]),
                     })
@@ -1685,16 +1732,11 @@ mod tests {
                 nonce_key,
                 nonce: 0,
                 valid_before,
-                fee_token: Some(address!("0000000000000000000000000000000000000002")),
+                fee_token: Some(Address::with_last_byte(2)),
                 ..Default::default()
             };
 
-            let signed = AASigned::new_unhashed(
-                tx,
-                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-                    Signature::test_signature(),
-                )),
-            );
+            let signed = tx.into_signed(Signature::test_signature().into());
             TempoPooledTransaction::new(TempoTxEnvelope::from(signed).try_into_recovered().unwrap())
         };
 
@@ -1786,13 +1828,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_expiring_nonce_intrinsic_gas_uses_lower_cost() {
-        use alloy_primitives::{Signature, TxKind, address};
-        use tempo_primitives::transaction::{
-            TempoTransaction,
-            tempo_transaction::Call,
-            tt_signature::{PrimitiveSignature, TempoSignature},
-            tt_signed::AASigned,
-        };
+        use alloy_primitives::{Signature, TxKind};
+        use tempo_primitives::transaction::{TempoTransaction, tempo_transaction::Call};
 
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1802,7 +1839,7 @@ mod tests {
         // Helper to create expiring nonce AA tx with given gas limit
         let create_expiring_nonce_tx = |gas_limit: u64| {
             let calls: Vec<Call> = vec![Call {
-                to: TxKind::Call(Address::from([1u8; 20])),
+                to: TxKind::Call(Address::repeat_byte(1u8)),
                 value: U256::ZERO,
                 input: alloy_primitives::Bytes::from(vec![0xd0, 0x9d, 0xe0, 0x8a]), // increment()
             }];
@@ -1816,16 +1853,11 @@ mod tests {
                 nonce_key: TEMPO_EXPIRING_NONCE_KEY, // Expiring nonce
                 nonce: 0,
                 valid_before: Some(core::num::NonZeroU64::new(current_time + 25).unwrap()), // Valid for 25 seconds
-                fee_token: Some(address!("0000000000000000000000000000000000000002")),
+                fee_token: Some(Address::with_last_byte(2)),
                 ..Default::default()
             };
 
-            let signed = AASigned::new_unhashed(
-                tx,
-                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-                    Signature::test_signature(),
-                )),
-            );
+            let signed = tx.into_signed(Signature::test_signature().into());
             TempoPooledTransaction::new(TempoTxEnvelope::from(signed).try_into_recovered().unwrap())
         };
 
@@ -1863,13 +1895,8 @@ mod tests {
     /// pass pool validation but fail at execution time.
     #[tokio::test]
     async fn test_existing_2d_nonce_key_intrinsic_gas() {
-        use alloy_primitives::{Signature, TxKind, address};
-        use tempo_primitives::transaction::{
-            TempoTransaction,
-            tempo_transaction::Call,
-            tt_signature::{PrimitiveSignature, TempoSignature},
-            tt_signed::AASigned,
-        };
+        use alloy_primitives::{Signature, TxKind};
+        use tempo_primitives::transaction::{TempoTransaction, tempo_transaction::Call};
 
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1879,7 +1906,7 @@ mod tests {
         // Helper to create AA tx with a specific nonce_key and nonce
         let create_aa_tx = |gas_limit: u64, nonce_key: U256, nonce: u64| {
             let calls: Vec<Call> = vec![Call {
-                to: TxKind::Call(Address::from([1u8; 20])),
+                to: TxKind::Call(Address::repeat_byte(1u8)),
                 value: U256::ZERO,
                 input: alloy_primitives::Bytes::from(vec![0xd0, 0x9d, 0xe0, 0x8a]), // increment()
             }];
@@ -1892,16 +1919,11 @@ mod tests {
                 calls,
                 nonce_key,
                 nonce,
-                fee_token: Some(address!("0000000000000000000000000000000000000002")),
+                fee_token: Some(Address::with_last_byte(2)),
                 ..Default::default()
             };
 
-            let signed = AASigned::new_unhashed(
-                tx,
-                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-                    Signature::test_signature(),
-                )),
-            );
+            let signed = tx.into_signed(Signature::test_signature().into());
             TempoPooledTransaction::new(TempoTxEnvelope::from(signed).try_into_recovered().unwrap())
         };
 
@@ -1931,7 +1953,7 @@ mod tests {
 
         // Test 2: 2D nonce (nonce_key != 0) with nonce > 0, same 50k gas.
         // This triggers the EXISTING_NONCE_KEY_GAS branch (+5k), but 50k is still enough.
-        let tx_2d_ok = create_aa_tx(50_000, U256::from(1), 5);
+        let tx_2d_ok = create_aa_tx(50_000, U256::ONE, 5);
         let validator = setup_validator(&tx_2d_ok, current_time);
         let outcome = validator
             .validate_transaction(TransactionOrigin::External, tx_2d_ok)
@@ -1956,7 +1978,7 @@ mod tests {
         // Test 3: 2D nonce (nonce_key != 0), nonce > 0, with gas that is sufficient for
         // base intrinsic gas but NOT sufficient when EXISTING_NONCE_KEY_GAS (5k) is added.
         // Use 22_000 gas: enough for base ~21k + calldata but not when +5k is charged.
-        let tx_2d_low = create_aa_tx(22_000, U256::from(1), 5);
+        let tx_2d_low = create_aa_tx(22_000, U256::ONE, 5);
         let validator = setup_validator(&tx_2d_low, current_time);
         let outcome = validator
             .validate_transaction(TransactionOrigin::External, tx_2d_low)
@@ -2011,7 +2033,7 @@ mod tests {
     #[tokio::test]
     async fn test_non_zero_value_in_eip1559_rejected() {
         let transaction = TxBuilder::eip1559(Address::random())
-            .value(U256::from(1))
+            .value(U256::ONE)
             .build_eip1559();
 
         let current_time = std::time::SystemTime::now()
@@ -2056,7 +2078,7 @@ mod tests {
             .await;
 
         assert!(
-            matches!(outcome, TransactionValidationOutcome::Valid { .. }),
+            outcome.is_valid(),
             "Zero-value tx should pass validation, got: {outcome:?}"
         );
     }
@@ -2179,7 +2201,7 @@ mod tests {
                 .validate_transaction(TransactionOrigin::External, transaction)
                 .await;
             assert!(
-                matches!(outcome, TransactionValidationOutcome::Valid { .. }),
+                outcome.is_valid(),
                 "zero fee cap should be admitted with a zero floor: {outcome:?}"
             );
         }
@@ -2209,7 +2231,7 @@ mod tests {
                     .validate_transaction(TransactionOrigin::External, transaction)
                     .await;
                 assert!(
-                    matches!(outcome, TransactionValidationOutcome::Valid { .. }),
+                    outcome.is_valid(),
                     "fee cap {fee} should be admitted below the tip base fee: {outcome:?}"
                 );
             }
@@ -2276,28 +2298,20 @@ mod tests {
         authorization_count: usize,
     ) -> TempoPooledTransaction {
         use alloy_eips::eip7702::Authorization;
-        use alloy_primitives::{Signature, TxKind, address};
+        use alloy_primitives::{Signature, TxKind};
         use tempo_primitives::transaction::{
-            TempoSignedAuthorization, TempoTransaction,
-            tempo_transaction::Call,
-            tt_signature::{PrimitiveSignature, TempoSignature},
-            tt_signed::AASigned,
+            TempoSignedAuthorization, TempoTransaction, tempo_transaction::Call,
         };
 
         // Create dummy authorizations
         let authorizations: Vec<TempoSignedAuthorization> = (0..authorization_count)
             .map(|i| {
                 let auth = Authorization {
-                    chain_id: U256::from(1),
+                    chain_id: U256::ONE,
                     nonce: i as u64,
-                    address: address!("0000000000000000000000000000000000000001"),
+                    address: Address::with_last_byte(1),
                 };
-                TempoSignedAuthorization::new_unchecked(
-                    auth,
-                    TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-                        Signature::test_signature(),
-                    )),
-                )
+                TempoSignedAuthorization::new_unchecked(auth, Signature::test_signature().into())
             })
             .collect();
 
@@ -2307,13 +2321,13 @@ mod tests {
             max_fee_per_gas: 20_000_000_000, // 20 gwei, above T1's minimum
             gas_limit: 1_000_000,
             calls: vec![Call {
-                to: TxKind::Call(address!("0000000000000000000000000000000000000001")),
+                to: TxKind::Call(Address::with_last_byte(1)),
                 value: U256::ZERO,
                 input: alloy_primitives::Bytes::new(),
             }],
             nonce_key: U256::ZERO,
             nonce: 0,
-            fee_token: Some(address!("0000000000000000000000000000000000000002")),
+            fee_token: Some(Address::with_last_byte(2)),
             fee_payer_signature: None,
             valid_after: None,
             valid_before: None,
@@ -2322,10 +2336,7 @@ mod tests {
             key_authorization: None,
         };
 
-        let signed_tx = AASigned::new_unhashed(
-            tx_aa,
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
-        );
+        let signed_tx = tx_aa.into_signed(Signature::test_signature().into());
         let envelope: TempoTxEnvelope = signed_tx.into();
         let recovered = envelope.try_into_recovered().unwrap();
         TempoPooledTransaction::new(recovered)
@@ -2395,7 +2406,7 @@ mod tests {
 
         // Create an AA transaction with no calls
         let transaction = TxBuilder::aa(Address::random())
-            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .fee_token(Address::with_last_byte(2))
             .calls(vec![]) // Empty calls
             .build();
         let validator = setup_validator(&transaction, current_time);
@@ -2445,7 +2456,7 @@ mod tests {
         ];
 
         let transaction = TxBuilder::aa(Address::random())
-            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .fee_token(Address::with_last_byte(2))
             .calls(calls)
             .build();
         let validator = setup_validator(&transaction, current_time);
@@ -2495,7 +2506,7 @@ mod tests {
         ];
 
         let transaction = TxBuilder::aa(Address::random())
-            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .fee_token(Address::with_last_byte(2))
             .calls(calls)
             .build();
         let validator = setup_validator(&transaction, current_time);
@@ -2548,7 +2559,7 @@ mod tests {
         ];
 
         let transaction = TxBuilder::aa(Address::random())
-            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .fee_token(Address::with_last_byte(2))
             .calls(calls)
             .gas_limit(TEMPO_T1_TX_GAS_LIMIT_CAP)
             .build();
@@ -2581,10 +2592,7 @@ mod tests {
     async fn test_aa_create_call_with_authorization_list_rejected() {
         use alloy_eips::eip7702::Authorization;
         use alloy_primitives::Signature;
-        use tempo_primitives::transaction::{
-            TempoSignedAuthorization,
-            tt_signature::{PrimitiveSignature, TempoSignature},
-        };
+        use tempo_primitives::transaction::TempoSignedAuthorization;
 
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -2600,17 +2608,15 @@ mod tests {
 
         // Create a single authorization entry
         let auth = Authorization {
-            chain_id: U256::from(1),
+            chain_id: U256::ONE,
             nonce: 0,
-            address: address!("0000000000000000000000000000000000000001"),
+            address: Address::with_last_byte(1),
         };
-        let authorization = TempoSignedAuthorization::new_unchecked(
-            auth,
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
-        );
+        let authorization =
+            TempoSignedAuthorization::new_unchecked(auth, Signature::test_signature().into());
 
         let transaction = TxBuilder::aa(Address::random())
-            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .fee_token(Address::with_last_byte(2))
             .calls(calls)
             .authorization_list(vec![authorization])
             .gas_limit(TEMPO_T1_TX_GAS_LIMIT_CAP)
@@ -2654,7 +2660,7 @@ mod tests {
             fee_token,
             ExtendedAccount::new(0, U256::ZERO).extend_storage([
                 (tip20_slots::CURRENCY.into(), usd_currency_value),
-                (tip20_slots::PAUSED.into(), U256::from(1)),
+                (tip20_slots::PAUSED.into(), U256::ONE),
             ]),
         );
 
@@ -2781,7 +2787,7 @@ mod tests {
             paused_validator_token,
             ExtendedAccount::new(0, U256::ZERO).extend_storage([
                 (tip20_slots::CURRENCY.into(), usd_currency_value),
-                (tip20_slots::PAUSED.into(), U256::from(1)),
+                (tip20_slots::PAUSED.into(), U256::ONE),
             ]),
         );
 
@@ -2835,7 +2841,7 @@ mod tests {
             .collect();
 
         let transaction = TxBuilder::aa(Address::random())
-            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .fee_token(Address::with_last_byte(2))
             .gas_limit(TEMPO_T1_TX_GAS_LIMIT_CAP)
             .calls(calls)
             .build();
@@ -2872,7 +2878,7 @@ mod tests {
             .collect();
 
         let transaction = TxBuilder::aa(Address::random())
-            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .fee_token(Address::with_last_byte(2))
             .gas_limit(TEMPO_T1_TX_GAS_LIMIT_CAP)
             .calls(calls)
             .build();
@@ -2910,7 +2916,7 @@ mod tests {
         }];
 
         let transaction = TxBuilder::aa(Address::random())
-            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .fee_token(Address::with_last_byte(2))
             .gas_limit(TEMPO_T1_TX_GAS_LIMIT_CAP)
             .calls(calls)
             .build();
@@ -2945,7 +2951,7 @@ mod tests {
         }];
 
         let transaction = TxBuilder::aa(Address::random())
-            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .fee_token(Address::with_last_byte(2))
             .gas_limit(TEMPO_T1_TX_GAS_LIMIT_CAP)
             .calls(calls)
             .build();
@@ -2957,7 +2963,7 @@ mod tests {
 
         match outcome {
             TransactionValidationOutcome::Invalid(_, ref err) => {
-                let is_oversized = matches!(err, InvalidPoolTransactionError::OversizedData { .. });
+                let is_oversized = err.is_oversized();
                 let is_call_input_too_large = matches!(
                     err.downcast_other_ref::<TempoPoolTransactionError>(),
                     Some(TempoPoolTransactionError::CallInputTooLarge { .. })
@@ -2988,7 +2994,7 @@ mod tests {
             .collect();
 
         let transaction = TxBuilder::aa(Address::random())
-            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .fee_token(Address::with_last_byte(2))
             .gas_limit(TEMPO_T1_TX_GAS_LIMIT_CAP)
             .access_list(AccessList(items))
             .build();
@@ -3026,7 +3032,7 @@ mod tests {
             .collect();
 
         let transaction = TxBuilder::aa(Address::random())
-            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .fee_token(Address::with_last_byte(2))
             .gas_limit(TEMPO_T1_TX_GAS_LIMIT_CAP)
             .access_list(AccessList(items))
             .build();
@@ -3069,7 +3075,7 @@ mod tests {
         }];
 
         let transaction = TxBuilder::aa(Address::random())
-            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .fee_token(Address::with_last_byte(2))
             .gas_limit(TEMPO_T1_TX_GAS_LIMIT_CAP)
             .access_list(AccessList(items))
             .build();
@@ -3107,7 +3113,7 @@ mod tests {
         }];
 
         let transaction = TxBuilder::aa(Address::random())
-            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .fee_token(Address::with_last_byte(2))
             .gas_limit(TEMPO_T1_TX_GAS_LIMIT_CAP)
             .access_list(AccessList(items))
             .build();
@@ -3156,7 +3162,7 @@ mod tests {
         );
 
         let transaction = TxBuilder::aa(Address::random())
-            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .fee_token(Address::with_last_byte(2))
             .gas_limit(TEMPO_T1_TX_GAS_LIMIT_CAP)
             .access_list(AccessList(items))
             .build();
@@ -3204,7 +3210,7 @@ mod tests {
         );
 
         let transaction = TxBuilder::aa(Address::random())
-            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .fee_token(Address::with_last_byte(2))
             .gas_limit(TEMPO_T1_TX_GAS_LIMIT_CAP)
             .access_list(AccessList(items))
             .build();
@@ -3271,17 +3277,9 @@ mod tests {
                 key_authorization,
                 ..Default::default()
             };
-            let unsigned = AASigned::new_unhashed(
-                tx.clone(),
-                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-                    Signature::test_signature(),
-                )),
-            );
+            let unsigned = tx.clone().into_signed(Signature::test_signature().into());
             let signature = root.sign_hash_sync(&unsigned.signature_hash()).unwrap();
-            let signed = AASigned::new_unhashed(
-                tx,
-                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
-            );
+            let signed = tx.into_signed(signature.into());
             TempoPooledTransaction::new(TempoTxEnvelope::from(signed).try_into_recovered().unwrap())
         };
 

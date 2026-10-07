@@ -519,6 +519,7 @@ impl StorableType for OrderMapping {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::{
         stablecoin_dex::{
@@ -531,15 +532,14 @@ mod tests {
         tip20::{ITIP20, TIP20Token},
         tip403_registry::{ITIP403Registry, TIP403Registry},
     };
-    use alloy::primitives::{address, b256};
+    use alloy::primitives::address;
     use proptest::prelude::*;
     use tempo_chainspec::hardfork::TempoHardfork;
 
-    const TEST_MAKER: Address = address!("0x1111111111111111111111111111111111111111");
-    const TEST_BASE: Address = address!("0x2222222222222222222222222222222222222222");
-    const TEST_QUOTE: Address = address!("0x3333333333333333333333333333333333333333");
-    const TEST_BOOK_KEY: B256 =
-        b256!("0x0000000000000000000000000000000000000000000000000000000000000001");
+    const TEST_MAKER: Address = Address::repeat_byte(0x11);
+    const TEST_BASE: Address = Address::repeat_byte(0x22);
+    const TEST_QUOTE: Address = Address::repeat_byte(0x33);
+    const TEST_BOOK_KEY: B256 = B256::with_last_byte(1);
 
     #[derive(Default)]
     struct DexTestSetup {
@@ -594,12 +594,8 @@ mod tests {
                 OrderVersion::V2 => "BASE_V2",
             };
             let salt = match version {
-                OrderVersion::Legacy | OrderVersion::V1 => {
-                    b256!("0x1111111111111111111111111111111111111111111111111111111111111111")
-                }
-                OrderVersion::V2 => {
-                    b256!("0x2222222222222222222222222222222222222222222222222222222222222222")
-                }
+                OrderVersion::Legacy | OrderVersion::V1 => B256::repeat_byte(0x11),
+                OrderVersion::V2 => B256::repeat_byte(0x22),
             };
             let base = TIP20Setup::create(name, name, self.admin)
                 .with_salt(salt)

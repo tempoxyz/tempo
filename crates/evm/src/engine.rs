@@ -24,10 +24,7 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         &self,
         payload: &'a TempoExecutionData,
     ) -> Result<ExecutionCtxFor<'a, Self>, Self::Error> {
-        let TempoExecutionData {
-            block,
-            block_access_list: _,
-        } = payload;
+        let TempoExecutionData { block } = payload;
         self.context_for_block(block)
     }
 
@@ -208,7 +205,7 @@ mod tests {
 
         let tx1 = create_legacy_tx();
         let tx2 = create_legacy_tx();
-        let system_tx = create_subblock_metadata_tx(chainspec.chain().id(), 1);
+        let system_tx = create_subblock_metadata_tx(chainspec.chain_id(), 1);
         let tx_hash = *tx1.tx_hash();
         let system_tx_hash = *system_tx.tx_hash();
 
@@ -216,7 +213,6 @@ mod tests {
 
         let payload = TempoExecutionData {
             block: block.into(),
-            block_access_list: None,
         };
 
         let result = evm_config.tx_iterator_for_payload(&payload);
@@ -249,11 +245,10 @@ mod tests {
         let chainspec = Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()));
         let evm_config = TempoEvmConfig::new(chainspec.clone());
 
-        let system_tx = create_subblock_metadata_tx(chainspec.chain().id(), 1);
+        let system_tx = create_subblock_metadata_tx(chainspec.chain_id(), 1);
         let block = create_test_block(vec![system_tx]);
         let payload = TempoExecutionData {
             block: block.into(),
-            block_access_list: None,
         };
 
         let result = evm_config.context_for_payload(&payload);
@@ -271,12 +266,11 @@ mod tests {
         let chainspec = Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()));
         let evm_config = TempoEvmConfig::new(chainspec.clone());
 
-        let system_tx = create_subblock_metadata_tx(chainspec.chain().id(), 1);
+        let system_tx = create_subblock_metadata_tx(chainspec.chain_id(), 1);
         let block = create_test_block(vec![system_tx]);
 
         let payload = TempoExecutionData {
             block: block.clone().into(),
-            block_access_list: None,
         };
 
         let result = evm_config.evm_env_for_payload(&payload);

@@ -31,7 +31,7 @@ pub use block::{TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
 pub use common::{TempoStateAccess, TempoTx};
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
 pub use error::TempoEvmError;
-pub use evm::{SYSTEM_CALL_GAS_LIMIT, TempoEvm, TempoEvmFactory};
+pub use evm::{PrecompilesBuilder, SYSTEM_CALL_GAS_LIMIT, TempoEvm, TempoEvmFactory};
 pub use fee_manager::{FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, TempoFeeManager};
 pub use handler::{
     TempoBlockEnv, TempoBlockExt, TempoConfig, TempoConfigSelector, TempoEvmExt, TempoEvmTypes,
@@ -57,7 +57,7 @@ use tempo_chainspec::{
     TempoChainSpec,
     hardfork::{TempoHardfork, TempoHardforks},
 };
-use tempo_precompiles::{TempoPrecompiles, error::Result as TempoResult, storage::StorageActions};
+use tempo_precompiles::{error::Result as TempoResult, storage::StorageActions};
 use tempo_primitives::{Block, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope};
 
 #[cfg(feature = "engine")]
@@ -110,6 +110,12 @@ impl TempoEvmConfig {
     }
 
     /// Returns the chain spec
+    /// Uses the supplied EVM factory for execution and custom precompile construction.
+    pub fn with_evm_factory(mut self, factory: TempoEvmFactory) -> Self {
+        self.evm_factory = factory;
+        self
+    }
+
     pub const fn chain_spec(&self) -> &Arc<TempoChainSpec> {
         &self.chain_spec
     }
@@ -172,11 +178,7 @@ impl BlockExecutorFactory for TempoEvmConfig {
         DB: DynDatabase + 'a,
     {
         let ext = self.evm_factory.evm_ext(TempoEvmExt::default());
-        let precompiles = TempoPrecompiles::new(
-            env.spec,
-            ext.actions.clone(),
-            ext.non_creditable_slots.clone(),
-        );
+        let precompiles = self.evm_factory.precompiles(&env, &ext);
         evm2::Evm::new_with_execution_config_and_ext(
             ExecutionConfig::for_spec_and_version(env.spec, env.version),
             env.spec,
@@ -536,7 +538,7 @@ mod tests {
 
         let system_tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
             TxLegacy {
-                chain_id: Some(reth_chainspec::EthChainSpec::chain(&*chainspec).id()),
+                chain_id: Some(chainspec.chain_id()),
                 nonce: 0,
                 gas_price: 0,
                 gas_limit: 0,

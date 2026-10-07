@@ -510,8 +510,13 @@ impl TIP20Token {
 
     // Token operations
 
+    /// Like [`Self::mint_with_role`], using [`AuthRole::mint_recipient`] authorization.
+    pub fn mint(&mut self, msg_sender: Address, call: ITIP20::mintCall) -> Result<()> {
+        self.mint_with_role(msg_sender, call, AuthRole::mint_recipient())
+    }
+
     /// Mints `amount` tokens to the resolved target `to` address:
-    /// - Enforces mint-recipient compliance via [`TIP403Registry`] and validates against supply cap
+    /// - Enforces `recipient_role` compliance via [`TIP403Registry`] and validates against supply cap
     /// - Resolves `to` via the [`AddressRegistry`]. If `to` is a virtual address, credits the
     ///   resolved master and emits a two-hop `Transfer` and `Mint(virtual, amount)` events
     ///
@@ -519,11 +524,16 @@ impl TIP20Token {
     /// - `Unauthorized` — caller does not hold the `ISSUER_ROLE` role
     /// - `ContractPaused` — (+T3) token is paused
     /// - `InvalidRecipient` — (+T3) recipient is zero or a TIP-20 prefix address
-    /// - `PolicyForbids` — TIP-403 policy rejects the mint recipient
+    /// - `PolicyForbids` — TIP-403 policy rejects the recipient for `recipient_role`
     /// - `SupplyCapExceeded` — minting would push total supply above the cap
-    pub fn mint(&mut self, msg_sender: Address, call: ITIP20::mintCall) -> Result<()> {
+    pub fn mint_with_role(
+        &mut self,
+        msg_sender: Address,
+        call: ITIP20::mintCall,
+        recipient_role: AuthRole,
+    ) -> Result<()> {
         let Some((total_supply, to)) =
-            self.validate_mint(msg_sender, call.to, call.amount, B256::ZERO)?
+            self.validate_mint(msg_sender, call.to, call.amount, B256::ZERO, recipient_role)?
         else {
             return Ok(());
         };
@@ -543,8 +553,13 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::mintWithMemoCall,
     ) -> Result<()> {
-        let Some((total_supply, to)) =
-            self.validate_mint(msg_sender, call.to, call.amount, call.memo)?
+        let Some((total_supply, to)) = self.validate_mint(
+            msg_sender,
+            call.to,
+            call.amount,
+            call.memo,
+            AuthRole::mint_recipient(),
+        )?
         else {
             return Ok(());
         };
@@ -825,7 +840,7 @@ impl TIP20Token {
         // 5. Increment nonce
         self.permit_nonces[call.owner].write(
             nonce
-                .checked_add(U256::from(1))
+                .checked_add(U256::ONE)
                 .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
 
@@ -1195,7 +1210,7 @@ impl TIP20Token {
         Ok(Some(to))
     }
 
-    /// Resolves `to`, checks the issuer role, and ensures TIP-403 mint-recipient authorization.
+    /// Resolves `to`, checks the issuer role, and ensures TIP-403 authorization for `recipient_role`.
     /// Additionally (+T3) checks pause state and validates the effective recipient; also
     /// (+T6) applies TIP-1028 address-level receive policies.
     ///
@@ -1207,6 +1222,7 @@ impl TIP20Token {
         to: Address,
         amount: U256,
         memo: B256,
+        recipient_role: AuthRole,
     ) -> Result<Option<(U256, Recipient)>> {
         let to = Recipient::resolve(to)?;
         self.check_role(msg_sender, ISSUER_ROLE)?;
@@ -1217,11 +1233,11 @@ impl TIP20Token {
             to.validate()?;
         }
 
-        // Check if the resolved target address is authorized to receive minted tokens
+        // Authorize the resolved target using the role selected by the mint operation.
         if !TIP403Registry::new().is_authorized_as(
             self.transfer_policy_id()?,
             to.target,
-            AuthRole::mint_recipient(),
+            recipient_role,
         )? {
             return Err(TIP20Error::policy_forbids().into());
         }
@@ -1339,7 +1355,7 @@ impl TIP20Token {
             self.decrement_balance(from, amount)?;
         }
 
-        if to.target != Address::ZERO {
+        if !to.target.is_zero() {
             self.increment_balance(to.target, amount)?;
         }
 
@@ -1447,7 +1463,7 @@ impl TIP20Token {
         let from_reward_recipient = self.update_rewards(from)?;
 
         // If user is opted into rewards, decrease opted-in supply
-        if from_reward_recipient != Address::ZERO {
+        if !from_reward_recipient.is_zero() {
             let opted_in_supply = U256::from(self.get_opted_in_supply()?)
                 .checked_sub(amount)
                 .ok_or(TempoPrecompileError::under_overflow())?;
@@ -1493,7 +1509,7 @@ impl TIP20Token {
         let to_reward_recipient = self.update_rewards(to)?;
 
         // If user is opted into rewards, increase opted-in supply by refund amount
-        if to_reward_recipient != Address::ZERO {
+        if !to_reward_recipient.is_zero() {
             let opted_in_supply = U256::from(self.get_opted_in_supply()?)
                 .checked_add(refund)
                 .ok_or(TempoPrecompileError::under_overflow())?;
@@ -1711,6 +1727,7 @@ mod recipient_tests {
 
 #[cfg(test)]
 pub(crate) mod tests {
+
     use super::*;
     use crate::{
         PATH_USD_ADDRESS, Precompile,
@@ -1725,7 +1742,7 @@ pub(crate) mod tests {
         tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID},
     };
     use alloy::{
-        primitives::{Address, FixedBytes, IntoLogData, U256, address, hex, keccak256},
+        primitives::{Address, FixedBytes, IntoLogData, U256, address, keccak256},
         sol_types::{SolCall, SolError},
     };
     use proptest::prelude::*;
@@ -1738,28 +1755,53 @@ pub(crate) mod tests {
 
     #[test]
     fn test_mint_increases_balance_and_supply() -> eyre::Result<()> {
-        let (mut storage, admin) = setup_storage();
         let addr = Address::random();
         let amount = U256::random() % U256::from(u128::MAX);
 
-        StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("Test", "TST", admin)
-                .with_issuer(admin)
-                .clear_events()
-                .apply()?;
+        for role in [AuthRole::MintRecipient, AuthRole::Recipient] {
+            let (mut storage, admin) = setup_storage();
+            StorageCtx::enter(&mut storage, || -> Result<()> {
+                let mut token = TIP20Setup::create("Test", "TST", admin)
+                    .with_issuer(admin)
+                    .apply()?;
+                let policy_id = TIP403Registry::new().create_compound_policy(
+                    admin,
+                    ITIP403Registry::createCompoundPolicyCall {
+                        senderPolicyId: REJECT_ALL_POLICY_ID,
+                        recipientPolicyId: ALLOW_ALL_POLICY_ID,
+                        mintRecipientPolicyId: REJECT_ALL_POLICY_ID,
+                    },
+                )?;
+                token.change_transfer_policy_id(
+                    admin,
+                    ITIP20::changeTransferPolicyIdCall {
+                        newPolicyId: policy_id,
+                    },
+                )?;
+                token.clear_emitted_events();
 
-            token.mint(admin, ITIP20::mintCall { to: addr, amount })?;
-
-            assert_eq!(token.get_balance(addr)?, amount);
-            assert_eq!(token.total_supply()?, amount);
-
-            token.assert_emitted_events(vec![
-                TIP20Event::transfer(Address::ZERO, addr, amount),
-                TIP20Event::mint(addr, amount),
-            ]);
-
-            Ok(())
-        })
+                let result =
+                    token.mint_with_role(admin, ITIP20::mintCall { to: addr, amount }, role);
+                let (balance, events) = if role == AuthRole::Recipient {
+                    result?;
+                    (
+                        amount,
+                        vec![
+                            TIP20Event::transfer(Address::ZERO, addr, amount),
+                            TIP20Event::mint(addr, amount),
+                        ],
+                    )
+                } else {
+                    assert_eq!(result, Err(TIP20Error::policy_forbids().into()));
+                    (U256::ZERO, vec![])
+                };
+                assert_eq!(token.get_balance(addr)?, balance);
+                assert_eq!(token.total_supply()?, balance);
+                token.assert_emitted_events(events);
+                Ok(())
+            })?;
+        }
+        Ok(())
     }
 
     #[test]
@@ -2962,8 +3004,7 @@ pub(crate) mod tests {
 
             // Try to set a TIP20 address that hasn't been deployed yet
             // This has the correct TIP20 address pattern but hasn't been created
-            let undeployed_token_address =
-                Address::from(hex!("20C0000000000000000000000000000000000999"));
+            let undeployed_token_address = address!("20C0000000000000000000000000000000000999");
             let result = token.set_next_quote_token(
                 admin,
                 ITIP20::setNextQuoteTokenCall {
@@ -4208,7 +4249,7 @@ pub(crate) mod tests {
                 Address::random(),
                 ITIP20::approveCall {
                     spender,
-                    amount: U256::from(1),
+                    amount: U256::ONE,
                 },
             )?;
 
@@ -4819,7 +4860,7 @@ pub(crate) mod tests {
 
                 // Verify nonce was incremented
                 let nonce = token.nonces(ITIP20::noncesCall { owner })?;
-                assert_eq!(nonce, U256::from(1));
+                assert_eq!(nonce, U256::ONE);
 
                 Ok(())
             })
@@ -5111,7 +5152,7 @@ pub(crate) mod tests {
                     spender,
                     token.address,
                     U256::ZERO,
-                    U256::from(1),
+                    U256::ONE,
                     U256::MAX,
                 );
                 token.permit(call)?;

@@ -13,7 +13,7 @@ use evm2::{
     bytecode::Bytecode,
     evm::{Bal, PendingState, SystemTx},
 };
-use reth_chainspec::EthChainSpec as _;
+use reth_chainspec::{EthChainSpec as _, EthereumHardforks as _};
 use reth_evm::{
     BlockExecutionError, BlockExecutionOutput, BlockExecutor, BlockTransactionResult,
     BlockValidationError, ExecutorTx, GasOutput, ReceiptBuilder, ReceiptBuilderCtx, RecoveredTx,
@@ -196,6 +196,7 @@ pub struct TempoBlockExecutor<'a> {
     pub(crate) inner: EthBlockExecutor<'a, TempoEvmTypes, TempoReceiptBuilder>,
 
     t13_active_at_genesis: bool,
+    prague_active: bool,
     section: BlockSection,
     extra_data: Bytes,
 
@@ -215,15 +216,26 @@ impl<'a> TempoBlockExecutor<'a> {
         chain_spec: &'a TempoChainSpec,
     ) -> Self {
         let block_gas_limit = evm.block().gas_limit.saturating_to::<u64>();
+        let prague_active =
+            chain_spec.is_prague_active_at_timestamp(evm.block().timestamp.saturating_to::<u64>());
+        let spec_id = reth_evm_ethereum::spec_id_by_timestamp_and_block_number(
+            chain_spec,
+            evm.block().timestamp.saturating_to::<u64>(),
+            evm.block().number.saturating_to::<u64>(),
+        );
+        let extra_data = ctx.inner.extra_data.clone();
+        let mut inner = EthBlockExecutor::new(evm, ctx.inner, chain_spec, TempoReceiptBuilder);
+        inner.set_spec_id(spec_id);
         Self {
             t13_active_at_genesis: chain_spec
                 .is_t13_active_at_timestamp(chain_spec.genesis().timestamp),
+            prague_active,
             incentive_gas_used: 0,
             block_gas_used: 0,
             non_payment_gas_left: ctx.general_gas_limit,
             non_shared_gas_left: block_gas_limit.saturating_sub(ctx.shared_gas_limit),
-            extra_data: ctx.inner.extra_data.clone(),
-            inner: EthBlockExecutor::new(evm, ctx.inner, chain_spec, TempoReceiptBuilder),
+            extra_data,
+            inner,
             section: BlockSection::StartOfBlock,
             replay_state: StorageActionReplayState::default(),
         }
@@ -539,7 +551,22 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
             return Err(BlockValidationError::msg("withdrawals are not permitted").into());
         }
 
-        self.inner.apply_pre_execution_changes()?;
+        if self.evm().config_spec_id().is_t13() {
+            if self.prague_active && !self.evm().block().number.is_zero() {
+                let parent_hash = self.inner.context().parent_hash;
+                let result = self
+                    .evm_mut()
+                    .system_call(SystemTx::new(
+                        alloy_eips::eip2935::HISTORY_STORAGE_ADDRESS,
+                        parent_hash.0.into(),
+                    ))
+                    .map_err(map_handler_error)?
+                    .detach();
+                self.inner.commit_pending_state(&result.pending_state);
+            }
+        } else {
+            self.inner.apply_pre_execution_changes()?;
+        }
 
         // Deploy 0xEF marker bytecode to precompiles at their activation hardforks.
         if self.evm().config_spec_id().is_t2() {
@@ -681,7 +708,28 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
 
         let block_gas_used = self.block_gas_used;
         let use_regular_gas = self.evm().version().feature(evm2::EvmFeatures::EIP8037);
-        let (mut output, block_access_list) = self.inner.finish_with_block_access_list()?;
+        let (mut output, block_access_list) = if self.evm().config_spec_id().is_t13() {
+            let reth_evm_ethereum::EthBlockExecutorParts {
+                mut evm,
+                block_state,
+                receipts,
+                cumulative_gas_used,
+                blob_gas_used,
+            } = self.inner.into_parts();
+            let block_access_list = evm.state_mut().take_bal_builder().map(Into::into);
+            let result = reth_execution_types::BlockExecutionResult {
+                receipts,
+                requests: Default::default(),
+                gas_used: cumulative_gas_used,
+                blob_gas_used,
+            };
+            (
+                BlockExecutionOutput::new(result, block_state.into_bundle()),
+                block_access_list,
+            )
+        } else {
+            self.inner.finish_with_block_access_list()?
+        };
 
         // TIP-1016 enabled: block header `gas_used` = block_regular_gas_used.
         // State gas is charged to users (in receipts) but exempted from block
@@ -695,6 +743,10 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
             output.result.gas_used = block_gas_used;
         }
         Ok((output, block_access_list))
+    }
+
+    fn into_state(self) -> reth_evm::BundleState {
+        self.inner.into_state()
     }
 
     fn evm_mut(&mut self) -> &mut Self::Evm {
@@ -759,7 +811,13 @@ mod tests {
     use super::*;
     use crate::test_utils::{TestExecutorBuilder, test_chainspec};
     use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
-    use alloy_primitives::{Bytes, Log, Signature, TxKind, address, bytes::BytesMut};
+    use alloy_eips::{
+        eip2935::{HISTORY_STORAGE_ADDRESS, HISTORY_STORAGE_CODE},
+        eip4788::BEACON_ROOTS_ADDRESS,
+        eip7002::WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS,
+        eip7251::CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS,
+    };
+    use alloy_primitives::{Bytes, Log, Signature, TxKind, address, bytes::BytesMut, keccak256};
     use alloy_rlp::Encodable;
     use commonware_codec::Encode as _;
     use commonware_cryptography::{
@@ -770,11 +828,16 @@ mod tests {
     use commonware_math::algebra::Random as _;
     use commonware_utils::{N3f1, TryFromIterator as _, ordered};
     use evm2::{
-        evm::{AccountInfo, InMemoryDB},
+        evm::{
+            AccountInfo,
+            BUILDER_DEPOSIT_REQUEST_ADDRESS as BUILDER_DEPOSIT_REQUEST_PREDEPLOY_ADDRESS,
+            BUILDER_EXIT_REQUEST_ADDRESS as BUILDER_EXIT_REQUEST_PREDEPLOY_ADDRESS,
+            DynDatabase as _, InMemoryDB,
+        },
         interpreter::Host as _,
     };
     use rand::SeedableRng as _;
-    use reth_chainspec::EthChainSpec;
+    use reth_chainspec::{EthChainSpec, EthereumHardfork, ForkCondition};
     use std::{
         iter::repeat_with,
         sync::{Arc, Mutex},
@@ -796,6 +859,409 @@ mod tests {
         subblock::{SubBlockVersion, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
         transaction::{Call, envelope::TEMPO_SYSTEM_TX_SIGNATURE},
     };
+
+    fn system_calls_chainspec() -> Arc<TempoChainSpec> {
+        let mut spec = TempoChainSpec::from_genesis(DEV.genesis().clone());
+        spec.inner
+            .hardforks
+            .insert(EthereumHardfork::Amsterdam, ForkCondition::Timestamp(0));
+        Arc::new(spec)
+    }
+
+    #[test]
+    fn test_system_calls_activation_selects_history_only() {
+        let chainspec = system_calls_chainspec();
+        let excluded = [
+            BEACON_ROOTS_ADDRESS,
+            WITHDRAWAL_REQUEST_PREDEPLOY_ADDRESS,
+            CONSOLIDATION_REQUEST_PREDEPLOY_ADDRESS,
+            BUILDER_DEPOSIT_REQUEST_PREDEPLOY_ADDRESS,
+            BUILDER_EXIT_REQUEST_PREDEPLOY_ADDRESS,
+        ];
+        for fork in [TempoHardfork::T12, TempoHardfork::T13] {
+            let mut db = InMemoryDB::default();
+            // Every excluded contract writes slot zero if called, then returns no requests.
+            let marker = Bytecode::new_raw(alloy_primitives::bytes!("600160005500"));
+            for address in excluded {
+                db.insert_account_info(&address, AccountInfo::default().with_code(marker.clone()));
+            }
+            db.insert_account_info(
+                &HISTORY_STORAGE_ADDRESS,
+                AccountInfo::default().with_code(Bytecode::new_raw(HISTORY_STORAGE_CODE.clone())),
+            );
+            let mut executor = TestExecutorBuilder {
+                parent_hash: B256::repeat_byte(0x42),
+                ..Default::default()
+            }
+            .with_epoch_length(5)
+            .with_spec(fork)
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+            let streamed = Arc::new(Mutex::new(Vec::new()));
+            let hook_states = streamed.clone();
+            executor.set_state_hook(move |state| hook_states.lock().unwrap().push(state));
+            executor.apply_pre_execution_changes().unwrap();
+            let output = executor.finish().unwrap();
+            db.commit_source(&reth_execution_types::BundleSource(&output.state));
+            let result = output.result;
+            assert!(result.requests.is_empty());
+            assert!(
+                streamed
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|state| state.contains_key(&HISTORY_STORAGE_ADDRESS))
+            );
+
+            assert_eq!(
+                db.get_storage(&HISTORY_STORAGE_ADDRESS, &U256::ZERO)
+                    .unwrap(),
+                U256::from_be_bytes([0x42; 32])
+            );
+            for address in excluded {
+                assert_eq!(
+                    db.get_storage(&address, &U256::ZERO).unwrap(),
+                    U256::from(u64::from(!fork.is_t13())),
+                    "{address} at {fork:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_system_calls_history_genesis_and_missing_code() {
+        let chainspec = system_calls_chainspec();
+        for block_number in [0, 1] {
+            for has_code in [false, true] {
+                let mut db = InMemoryDB::default();
+                if has_code {
+                    db.insert_account_info(
+                        &HISTORY_STORAGE_ADDRESS,
+                        AccountInfo::default()
+                            .with_code(Bytecode::new_raw(HISTORY_STORAGE_CODE.clone())),
+                    );
+                }
+                let mut executor = TestExecutorBuilder {
+                    parent_hash: B256::repeat_byte(0x42),
+                    ..Default::default()
+                }
+                .with_block_number(block_number)
+                .with_epoch_length(5)
+                .with_spec(TempoHardfork::T13)
+                .build(&mut db, &chainspec);
+
+                // No beacon root or builder code is required, even with Amsterdam active.
+                executor.apply_pre_execution_changes().unwrap();
+                let output = executor.finish().unwrap();
+                db.commit_source(&reth_execution_types::BundleSource(&output.state));
+                let result = output.result;
+                assert!(result.requests.is_empty());
+                assert_eq!(
+                    db.get_storage(&HISTORY_STORAGE_ADDRESS, &U256::ZERO)
+                        .unwrap(),
+                    if has_code && block_number > 0 {
+                        U256::from_be_bytes([0x42; 32])
+                    } else {
+                        U256::ZERO
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_system_calls_history_respects_prague_gate() {
+        let mut chainspec = (*system_calls_chainspec()).clone();
+        chainspec
+            .inner
+            .hardforks
+            .insert(EthereumHardfork::Prague, ForkCondition::Never);
+        let chainspec = Arc::new(chainspec);
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            &HISTORY_STORAGE_ADDRESS,
+            AccountInfo::default().with_code(Bytecode::new_raw(HISTORY_STORAGE_CODE.clone())),
+        );
+        let mut executor = TestExecutorBuilder {
+            parent_hash: B256::repeat_byte(0x42),
+            ..Default::default()
+        }
+        .with_epoch_length(5)
+        .with_spec(TempoHardfork::T13)
+        .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+        let output = executor.finish().unwrap();
+        db.commit_source(&reth_execution_types::BundleSource(&output.state));
+        assert_eq!(
+            db.get_storage(&HISTORY_STORAGE_ADDRESS, &U256::ZERO)
+                .unwrap(),
+            U256::ZERO
+        );
+    }
+
+    #[test]
+    fn test_system_calls_history_revert_and_halt_are_not_block_errors() {
+        let chainspec = system_calls_chainspec();
+        // Write slot zero, then revert or halt with an invalid opcode.
+        for code in [
+            alloy_primitives::bytes!("600160005560006000fd"),
+            alloy_primitives::bytes!("6001600055fe"),
+        ] {
+            let mut db = InMemoryDB::default();
+            db.insert_account_info(
+                &HISTORY_STORAGE_ADDRESS,
+                AccountInfo::default().with_code(Bytecode::new_raw(code)),
+            );
+            let mut executor = TestExecutorBuilder::default()
+                .with_epoch_length(5)
+                .with_spec(TempoHardfork::T13)
+                .build(&mut db, &chainspec);
+
+            executor.apply_pre_execution_changes().unwrap();
+            let output = executor.finish().unwrap();
+            db.commit_source(&reth_execution_types::BundleSource(&output.state));
+            let result = output.result;
+            assert!(result.receipts.is_empty());
+            assert!(result.requests.is_empty());
+            assert_eq!(result.gas_used, 0);
+            assert_eq!(
+                db.get_storage(&HISTORY_STORAGE_ADDRESS, &U256::ZERO)
+                    .unwrap(),
+                U256::ZERO
+            );
+        }
+    }
+
+    #[test]
+    fn test_system_calls_finish_preserves_receipts_and_gas() {
+        let chainspec = system_calls_chainspec();
+        for enabled in [false, true] {
+            let mut db = InMemoryDB::default();
+            let mut executor = TestExecutorBuilder::default()
+                .with_epoch_length(5)
+                .with_spec(TempoHardfork::T13)
+                .build(&mut db, &chainspec);
+
+            // Exercise detached gas accounting without constructing the unsupported
+            // combined TIP-1060/TIP-1016 execution gas schedule.
+            let mut version = *executor.evm().version();
+            version.features.set(evm2::EvmFeatures::EIP8037, enabled);
+            executor.evm_mut().set_execution_config(
+                evm2::ExecutionConfig::for_spec_and_version(TempoHardfork::T13, version),
+                TempoHardfork::T13,
+                crate::tempo_tx_registry(TempoHardfork::T13.into()),
+                evm2::evm::precompile::NoPrecompiles::default(),
+            );
+
+            let receipt = TempoReceipt {
+                tx_type: TempoTxType::Legacy,
+                success: true,
+                cumulative_gas_used: 30_000,
+                logs: vec![Log::default()],
+            };
+            let detached = EthTransactionResultWithState::new(
+                TxResultWithState {
+                    result: TxResult::<TempoEvmTypes> {
+                        status: true,
+                        total_gas_spent: 30_000,
+                        state_gas_spent: 10_000,
+                        logs: receipt.logs.clone(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                TempoTxType::Legacy,
+                123,
+            );
+            executor.inner.commit_transaction(detached).unwrap();
+            executor.block_gas_used = 20_000;
+            let output = executor.finish().unwrap();
+            db.commit_source(&reth_execution_types::BundleSource(&output.state));
+            let result = output.result;
+            assert_eq!(result.receipts, vec![receipt]);
+            assert_eq!(result.gas_used, if enabled { 20_000 } else { 30_000 });
+            assert_eq!(result.blob_gas_used, 123);
+            assert!(result.requests.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_system_calls_finish_preserves_committee_update() {
+        let chainspec = system_calls_chainspec();
+        let mut db = InMemoryDB::default();
+        let mut previous_keys = Vec::new();
+        for epoch in [1, 2] {
+            let outcome = create_dkg_outcome(epoch, 3);
+            let expected_keys = outcome
+                .players()
+                .iter()
+                .map(|key| B256::from_slice(key.as_ref()))
+                .collect::<Vec<_>>();
+            let mut executor = TestExecutorBuilder::default()
+                .with_block_number(epoch * 5 - 1)
+                .with_epoch_length(5)
+                .with_extra_data(outcome.encode().into())
+                .with_spec(TempoHardfork::T13)
+                .build(&mut db, &chainspec);
+
+            executor.apply_pre_execution_changes().unwrap();
+            let committee = read_current_committee(&mut executor);
+            assert_eq!(committee.epoch, epoch - 1);
+            assert_eq!(committee.publicKeys, previous_keys);
+
+            let output = executor.finish().unwrap();
+            db.commit_source(&reth_execution_types::BundleSource(&output.state));
+            let result = output.result;
+            assert!(result.receipts.is_empty());
+            assert!(result.requests.is_empty());
+            assert_eq!(result.gas_used, 0);
+            let mut reader = TestExecutorBuilder::default()
+                .with_block_number(epoch * 5)
+                .with_epoch_length(5)
+                .with_spec(TempoHardfork::T13)
+                .build(&mut db, &chainspec);
+            reader.apply_pre_execution_changes().unwrap();
+            let committee = read_current_committee(&mut reader);
+            assert_eq!(committee.epoch, outcome.epoch);
+            assert_eq!(committee.publicKeys, expected_keys);
+            let output = reader.finish().unwrap();
+            db.commit_source(&reth_execution_types::BundleSource(&output.state));
+            previous_keys = expected_keys;
+        }
+    }
+
+    #[test]
+    fn test_system_calls_disables_rewards_and_dao_only_after_activation() {
+        let mut chainspec = (*system_calls_chainspec()).clone();
+        chainspec
+            .inner
+            .hardforks
+            .insert(EthereumHardfork::Paris, ForkCondition::Never);
+        chainspec
+            .inner
+            .hardforks
+            .insert(EthereumHardfork::Amsterdam, ForkCondition::Never);
+        chainspec
+            .inner
+            .hardforks
+            .insert(EthereumHardfork::Dao, ForkCondition::Block(1));
+        let chainspec = Arc::new(chainspec);
+        let drained = address!("d4fe7bc31cedb7bfb8a345f31e668033056b2728");
+        for fork in [TempoHardfork::T12, TempoHardfork::T13] {
+            let mut db = InMemoryDB::default();
+            db.insert_account_info(
+                &drained,
+                AccountInfo {
+                    balance: U256::from(7),
+                    ..Default::default()
+                },
+            );
+            let executor = TestExecutorBuilder::default()
+                .with_epoch_length(5)
+                .with_spec(fork)
+                .build(&mut db, &chainspec);
+
+            let output = executor.finish().unwrap();
+            db.commit_source(&reth_execution_types::BundleSource(&output.state));
+            assert_eq!(
+                db.get_account(&drained)
+                    .unwrap()
+                    .unwrap_or_default()
+                    .balance,
+                U256::from(if !fork.is_t13() { 0 } else { 7 })
+            );
+            assert_eq!(
+                db.get_account(&Address::ZERO)
+                    .unwrap()
+                    .unwrap_or_default()
+                    .balance
+                    > U256::ZERO,
+                !fork.is_t13()
+            );
+        }
+    }
+
+    #[test]
+    fn test_system_calls_rejects_withdrawals_and_incentive_overflow() {
+        let chainspec = system_calls_chainspec();
+        let mut executor = TestExecutorBuilder::default()
+            .with_block_number(4)
+            .with_epoch_length(5)
+            .with_spec(TempoHardfork::T13)
+            .with_withdrawals(vec![alloy_eips::eip4895::Withdrawal::default()].into())
+            .build(InMemoryDB::default(), &chainspec);
+        assert_eq!(
+            executor
+                .apply_pre_execution_changes()
+                .unwrap_err()
+                .to_string(),
+            "withdrawals are not permitted"
+        );
+        let mut executor = TestExecutorBuilder::default()
+            .with_block_number(4)
+            .with_epoch_length(5)
+            .with_spec(TempoHardfork::T13)
+            .build(InMemoryDB::default(), &chainspec);
+        executor.incentive_gas_used = 1;
+        assert_eq!(
+            executor.finish().err().unwrap().to_string(),
+            "incentive gas limit exceeded"
+        );
+    }
+
+    #[test]
+    fn test_system_calls_skips_ethereum_deposit_parsing() {
+        let chainspec = system_calls_chainspec();
+        for fork in [TempoHardfork::T12, TempoHardfork::T13] {
+            let mut db = InMemoryDB::default();
+            let mut executor = TestExecutorBuilder::default()
+                .with_epoch_length(5)
+                .with_spec(fork)
+                .build(&mut db, &chainspec);
+
+            let receipt = TempoReceipt {
+                tx_type: TempoTxType::Legacy,
+                success: true,
+                cumulative_gas_used: 0,
+                logs: vec![Log::new_unchecked(
+                    chainspec.deposit_contract().unwrap().address,
+                    vec![keccak256("DepositEvent(bytes,bytes,bytes,bytes,bytes)")],
+                    Bytes::new(),
+                )],
+            };
+            executor
+                .inner
+                .commit_transaction(EthTransactionResultWithState::new(
+                    TxResultWithState {
+                        result: TxResult::<TempoEvmTypes> {
+                            status: true,
+                            logs: receipt.logs.clone(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    TempoTxType::Legacy,
+                    0,
+                ))
+                .unwrap();
+            if !fork.is_t13() {
+                assert!(matches!(
+                    executor.finish(),
+                    Err(BlockExecutionError::Validation(
+                        BlockValidationError::DepositRequestDecode(_)
+                    ))
+                ));
+            } else {
+                let output = executor.finish().unwrap();
+                db.commit_source(&reth_execution_types::BundleSource(&output.state));
+                let result = output.result;
+                assert!(result.requests.is_empty());
+                assert_eq!(result.receipts, vec![receipt]);
+            }
+        }
+    }
 
     fn create_legacy_tx() -> TempoTxEnvelope {
         let tx = TxLegacy {
@@ -903,7 +1369,7 @@ mod tests {
         let signer = PrivateKey::from_seed(0);
         let metadata = vec![create_subblock_metadata(&signer)];
         let input = create_system_tx_input(metadata, 1);
-        let system_tx = create_system_tx(chainspec.chain().id(), input);
+        let system_tx = create_system_tx(chainspec.chain_id(), input);
 
         let result = executor.validate_system_tx(&system_tx);
         assert!(
@@ -964,7 +1430,7 @@ mod tests {
         let signer = PrivateKey::from_seed(0);
         let metadata = vec![create_subblock_metadata(&signer)];
         let input = create_system_tx_input(metadata, 1);
-        let system_tx = create_system_tx(chainspec.chain().id(), input);
+        let system_tx = create_system_tx(chainspec.chain_id(), input);
 
         let result = executor.validate_system_tx(&system_tx);
         assert!(result.is_err());
@@ -983,7 +1449,7 @@ mod tests {
         let mut input = BytesMut::new();
         input.extend_from_slice(&[0xff, 0xff, 0xff]); // Invalid RLP
         input.extend_from_slice(&U256::from(1u64).to_be_bytes::<32>());
-        let system_tx = create_system_tx(chainspec.chain().id(), input.freeze().into());
+        let system_tx = create_system_tx(chainspec.chain_id(), input.freeze().into());
 
         let result = executor.validate_system_tx(&system_tx);
         assert!(result.is_err());
@@ -1002,7 +1468,7 @@ mod tests {
         // Create system tx with non-zero `to` address
         let system_tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
             TxLegacy {
-                chain_id: Some(chainspec.chain().id()),
+                chain_id: Some(chainspec.chain_id()),
                 nonce: 0,
                 gas_price: 0,
                 gas_limit: 0,
@@ -1032,7 +1498,7 @@ mod tests {
         let signer = PrivateKey::from_seed(0);
         let metadata = vec![create_subblock_metadata(&signer)];
         let input = create_system_tx_input(metadata, 1);
-        let system_tx = create_system_tx(chainspec.chain().id(), input);
+        let system_tx = create_system_tx(chainspec.chain_id(), input);
 
         let result = executor.validate_system_tx(&system_tx);
         assert!(result.is_err());
@@ -1307,20 +1773,20 @@ mod tests {
     #[test]
     fn test_current_committee_system_call_rejects_invalid_boundary_extra_data() {
         let chainspec = test_chainspec();
-        let mut db = InMemoryDB::default();
-        let mut executor = TestExecutorBuilder::default()
-            .with_block_number(4)
-            .with_epoch_length(5)
-            .with_extra_data(Bytes::from_static(&[0xff]))
-            .with_spec(TempoHardfork::T8)
-            .build(&mut db, &chainspec);
+        for fork in [TempoHardfork::T8, TempoHardfork::T13] {
+            let mut db = InMemoryDB::default();
+            let executor = TestExecutorBuilder::default()
+                .with_block_number(4)
+                .with_epoch_length(5)
+                .with_extra_data(Bytes::from_static(&[0xff]))
+                .with_spec(fork)
+                .build(&mut db, &chainspec);
 
-        let err = executor.apply_current_committee_system_call().unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("failed decoding boundary block extra data as DKG outcome"),
-            "unexpected error: {err}"
-        );
+            let err = executor.finish().err().unwrap();
+            insta::allow_duplicates! {
+                insta::assert_snapshot!(err.to_string(), @"failed decoding boundary block extra data as DKG outcome: Unexpected End-of-Buffer: Not enough bytes remaining to read data");
+            }
+        }
     }
 
     #[test]
@@ -2032,7 +2498,7 @@ mod tests {
             Bytes::from_static(&[0xef])
         );
         let expected_factory_config =
-            U256::from(1) | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
+            U256::ONE | (U256::from_be_slice(INITIAL_FACTORY_OWNER.as_slice()) << u32::BITS);
         assert_eq!(
             executor.evm().state().overlay_db().cache.storage[&ZONE_FACTORY_ADDRESS].slots
                 [&U256::ZERO],

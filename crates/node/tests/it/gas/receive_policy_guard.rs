@@ -6,6 +6,7 @@ use alloy::{
 };
 use alloy_rpc_types_eth::TransactionReceipt;
 use eyre::OptionExt;
+use reth_e2e_test_utils::wallet::test_signer;
 use tempo_contracts::precompiles::{
     IReceivePolicyGuard, IRolesAuth, ITIP20, ITIP20Factory, ITIP403Registry,
 };
@@ -16,7 +17,7 @@ use tempo_precompiles::{
     tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID},
 };
 
-use super::helpers::{GAS_LIMIT, GasSnapshot, print_gas_snapshot, test_signer};
+use super::helpers::{GAS_LIMIT, GasSnapshot, print_gas_snapshot};
 use crate::utils::TestNodeBuilder;
 
 struct BlockedTransfer {
@@ -189,7 +190,7 @@ async fn test_receive_policy_guard_gas_snapshots() -> eyre::Result<()> {
         allowed_third_party_receiver,
     ] = (0..8)
         .map(test_signer)
-        .collect::<eyre::Result<Vec<_>>>()?
+        .collect::<Vec<_>>()
         .try_into()
         .map_err(|_| eyre::eyre!("expected 8 test signers"))?;
 

@@ -263,7 +263,7 @@ impl FromConsensusHeader<TempoHeader> for TempoHeaderResponse {
 mod tests {
     use super::*;
     use alloy_consensus::Transaction;
-    use alloy_primitives::{TxKind, address};
+    use alloy_primitives::{Address, TxKind, address};
     use alloy_rpc_types_eth::TransactionRequest;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
@@ -275,7 +275,7 @@ mod tests {
 
     fn call_request(target: Address) -> TransactionRequest {
         TransactionRequest {
-            from: Some(address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")),
+            from: Some(Address::repeat_byte(0xaa)),
             to: Some(TxKind::Call(target)),
             nonce: Some(0),
             gas: Some(100_000),
@@ -449,17 +449,15 @@ mod tests {
     #[test]
     fn test_estimate_gas_when_calls_set() {
         let existing_call = Call {
-            to: TxKind::Call(address!("0x1111111111111111111111111111111111111111")),
-            value: U256::from(1),
+            to: TxKind::Call(Address::repeat_byte(0x11)),
+            value: U256::ONE,
             input: Bytes::from(vec![0xaa]),
         };
 
         let req = TempoTransactionRequest {
             inner: TransactionRequest {
-                to: Some(TxKind::Call(address!(
-                    "0x2222222222222222222222222222222222222222"
-                ))),
-                value: Some(U256::from(2)),
+                to: Some(TxKind::Call(Address::repeat_byte(0x22))),
+                value: Some(alloy_primitives::U256::from(2)),
                 input: alloy_rpc_types_eth::TransactionInput::new(Bytes::from(vec![0xbb])),
                 nonce: Some(0),
                 gas: Some(100_000),
@@ -489,7 +487,7 @@ mod tests {
 
     #[test]
     fn test_estimate_gas_key_hints_only_produce_aa_env() {
-        let target = address!("0x2222222222222222222222222222222222222222");
+        let target = Address::repeat_byte(0x22);
         let req = TempoTransactionRequest {
             inner: call_request(target),
             key_type: Some(SignatureType::WebAuthn),
@@ -522,7 +520,7 @@ mod tests {
     #[test]
     fn test_estimate_gas_fee_token_only_produces_aa_env() {
         let req = TempoTransactionRequest {
-            inner: call_request(address!("0x2222222222222222222222222222222222222222")),
+            inner: call_request(Address::repeat_byte(0x22)),
             fee_token: Some(address!("0x20c0000000000000000000000000000000000000")),
             ..Default::default()
         };
@@ -538,8 +536,8 @@ mod tests {
 
     #[test]
     fn test_try_into_tx_env_sets_channel_open_context_hash_for_rpc_simulation() {
-        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-        let target = address!("0x2222222222222222222222222222222222222222");
+        let sender = Address::repeat_byte(0xaa);
+        let target = Address::repeat_byte(0x22);
 
         let req = TempoTransactionRequest {
             inner: TransactionRequest {
@@ -576,7 +574,7 @@ mod tests {
     #[test]
     fn test_webauthn_size_clamped_to_max() {
         // Attempt to create a signature with u32::MAX size (would be ~4GB without fix)
-        let malicious_key_data = Bytes::from(0xFFFFFFFFu32.to_be_bytes().to_vec());
+        let malicious_key_data = Bytes::from(0xFFFFFFFFu32.to_be_bytes());
         let sig =
             create_mock_primitive_signature(&SignatureType::WebAuthn, Some(malicious_key_data));
 
@@ -627,8 +625,8 @@ mod tests {
     #[test]
     fn test_estimate_gas_fee_payer_signature_only_produces_aa_env() {
         let sponsor = PrivateKeySigner::random();
-        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-        let target = address!("0x2222222222222222222222222222222222222222");
+        let sender = Address::repeat_byte(0xaa);
+        let target = Address::repeat_byte(0x22);
 
         // Build a TempoTransaction so we can compute fee_payer_signature_hash
         let tx = TempoTransaction {
@@ -688,12 +686,12 @@ mod tests {
     fn test_aa_roundtrip_via_tx_env() {
         let calls = vec![
             Call {
-                to: address!("0x1111111111111111111111111111111111111111").into(),
+                to: Address::repeat_byte(0x11).into(),
                 value: U256::ZERO,
                 input: Bytes::from(vec![0xaa]),
             },
             Call {
-                to: address!("0x2222222222222222222222222222222222222222").into(),
+                to: Address::repeat_byte(0x22).into(),
                 value: U256::ZERO,
                 input: Bytes::from(vec![0xbb]),
             },
@@ -729,8 +727,8 @@ mod tests {
 
     #[test]
     fn test_estimate_gas_invalid_fee_payer_signature_keeps_unresolved_fee_payer() {
-        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-        let target = address!("0x2222222222222222222222222222222222222222");
+        let sender = Address::repeat_byte(0xaa);
+        let target = Address::repeat_byte(0x22);
 
         let req = TempoTransactionRequest {
             inner: TransactionRequest {
@@ -765,8 +763,8 @@ mod tests {
         let signer = PrivateKeySigner::random();
 
         let call = Call {
-            to: TxKind::Call(address!("0x1111111111111111111111111111111111111111")),
-            value: U256::from(1),
+            to: alloy_primitives::TxKind::Call(Address::repeat_byte(0x11)),
+            value: U256::ONE,
             input: Bytes::from(vec![0xaa]),
         };
 

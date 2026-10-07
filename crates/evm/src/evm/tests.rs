@@ -44,9 +44,7 @@ use crate::{TempoEvm, TempoInvalidTransaction, TempoTxEnv};
 const DEFAULT_BALANCE: u128 = 1_000_000_000_000_000_000;
 
 /// Identity precompile address (0x04)
-const IDENTITY_PRECOMPILE: Address = Address::new([
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04,
-]);
+const IDENTITY_PRECOMPILE: Address = Address::with_last_byte(4);
 
 pub(super) trait TestEvmExt {
     fn transact_commit(
@@ -391,7 +389,7 @@ impl P256KeyPair {
         delegate_address: Address,
     ) -> eyre::Result<TempoSignedAuthorization> {
         let auth = Authorization {
-            chain_id: U256::from(1),
+            chain_id: U256::ONE,
             address: delegate_address,
             nonce: 0,
         };
@@ -1035,7 +1033,7 @@ fn test_tempo_tx() -> eyre::Result<()> {
         .overlay_db_mut()
         .get_storage(&NONCE_PRECOMPILE_ADDRESS, &nonce_slot)
         .unwrap_or_default();
-    assert_eq!(stored_nonce, U256::from(1));
+    assert_eq!(stored_nonce, U256::ONE);
 
     // Test second 2D nonce transaction
     let tx_2d_2 = TxBuilder::new()
@@ -1133,7 +1131,7 @@ fn test_t3_key_authorization_accepts_empty_recipient_allowlist_as_unconstrained(
     let transfer_to = Address::repeat_byte(0xaa);
     let transfer_input = ITIP20::transferCall {
         to: transfer_to,
-        amount: U256::from(1_u64),
+        amount: U256::ONE,
     }
     .abi_encode();
 
@@ -2604,7 +2602,7 @@ fn test_tip1060_spec_transition_classes_credit_accounting_table() -> eyre::Resul
 /// recreation costs 245k) before the Direct phase runs, so the transaction reverts.
 #[test]
 fn test_tip1060_preserve_churn_attack() -> eyre::Result<()> {
-    use alloy_primitives::{Address, Bytes, TxKind, U256, hex};
+    use alloy_primitives::{Address, Bytes, TxKind, U256};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_precompiles::{STORAGE_CREDITS_ADDRESS, storage_credits::StorageCredits};
 
@@ -2612,17 +2610,14 @@ fn test_tip1060_preserve_churn_attack() -> eyre::Result<()> {
     //   constructor: SSTORE(0, 1)
     //   runtime: setMode(Preserve); 500x clear/restore slot0; setMode(Direct); 500x create
     // Selector 0x21175b4a = setMode(uint8); precompile = 0x1060...0000.
-    let init = Bytes::from(
-        hex!(
-            "60016000556100a660136000396100a66000f3\
+    let init = bytes!(
+        "60016000556100a660136000396100a66000f3\
                 60216000536017600153605b600253604a6003536001602353\
                 6000600060246000600073106000000000000000000000000000000000000\
                 05af1506101f45b60006000556002600055600190038061003e5750\
                 60216000536017600153605b600253604a6003536002602353\
                 6000600060246000600073106000000000000000000000000000000000000\
                 05af1506101f45b8061010001600190556001900380610091575000"
-        )
-        .to_vec(),
     );
 
     let caller = Address::repeat_byte(0x11);
@@ -3470,12 +3465,22 @@ fn test_expiring_nonce_discriminator_activation() -> eyre::Result<()> {
         ))
     };
 
-    let mut pre_activation =
-        create_funded_evm_at_spec_with_timestamp(caller, timestamp, TempoHardfork::T11);
-    assert!(
-        pre_activation.transact(&build_env(1)?).is_err(),
-        "T11 must reject a non-zero expiring nonce"
-    );
+    for nonce in [1, u64::MAX] {
+        let mut pre_activation =
+            create_funded_evm_at_spec_with_timestamp(caller, timestamp, TempoHardfork::T11);
+        let err = match pre_activation.transact(&build_env(nonce)?) {
+            Ok(_) => panic!("T11 must reject a non-zero expiring nonce"),
+            Err(err) => err,
+        };
+        let tempo_err = err
+            .external_ref::<TempoInvalidTransaction>()
+            .expect("Tempo validation error");
+        assert_eq!(
+            tempo_err,
+            &TempoInvalidTransaction::ExpiringNonceNonceNotZero
+        );
+        assert!(!tempo_err.is_bad_transaction());
+    }
 
     for nonce in [0, 1, u64::MAX] {
         let mut evm =

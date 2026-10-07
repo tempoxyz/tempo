@@ -1,4 +1,5 @@
-use crate::{ProtocolFeeManager, TempoEvmExt, TempoEvmTypes, TempoFeeManager};
+use crate::{ProtocolFeeManager, TempoEvmEnv, TempoEvmExt, TempoEvmTypes, TempoFeeManager};
+use evm2::evm::precompile::PrecompileProvider;
 use std::sync::Arc;
 
 /// Tempo's EVM is EVM2 with the Tempo type family.
@@ -7,21 +8,46 @@ pub type TempoEvm<'a> = evm2::Evm<'a, TempoEvmTypes>;
 /// Total gas Tempo system calls are allowed to use.
 pub const SYSTEM_CALL_GAS_LIMIT: u64 = 250_000_000;
 
+/// Builds precompiles using the EVM environment and shared Tempo accounting state.
+pub type PrecompilesBuilder =
+    fn(&TempoEvmEnv, &TempoEvmExt) -> Box<dyn PrecompileProvider<TempoEvmTypes>>;
+
 /// Configuration copied into each Tempo EVM instance.
 #[derive(Clone, Debug)]
 pub struct TempoEvmFactory {
     fee_manager: Arc<dyn ProtocolFeeManager>,
+    precompiles_builder: PrecompilesBuilder,
 }
 
 impl Default for TempoEvmFactory {
     fn default() -> Self {
-        Self {
-            fee_manager: Arc::new(TempoFeeManager::new()),
-        }
+        Self::new_with_precompiles(|env, ext| {
+            Box::new(tempo_precompiles::TempoPrecompiles::new(
+                env.spec,
+                ext.actions.clone(),
+                ext.non_creditable_slots.clone(),
+            ))
+        })
     }
 }
 
 impl TempoEvmFactory {
+    /// Creates a factory with precompiles built from its environment and shared accounting state.
+    pub fn new_with_precompiles(builder: PrecompilesBuilder) -> Self {
+        Self {
+            fee_manager: Arc::new(TempoFeeManager::new()),
+            precompiles_builder: builder,
+        }
+    }
+
+    pub(crate) fn precompiles(
+        &self,
+        env: &TempoEvmEnv,
+        ext: &TempoEvmExt,
+    ) -> Box<dyn PrecompileProvider<TempoEvmTypes>> {
+        (self.precompiles_builder)(env, ext)
+    }
+
     /// Uses a custom protocol fee implementation for subsequently created EVMs.
     pub fn with_fee_manager(mut self, fee_manager: impl ProtocolFeeManager + 'static) -> Self {
         self.fee_manager = Arc::new(fee_manager);
@@ -61,11 +87,8 @@ impl reth_evm_ethereum::EvmFactory for TempoEvmFactory {
         let spec = evm.config_spec_id();
         let mut ext = core::mem::take(evm.ext_mut());
         ext.fee_manager = self.fee_manager.clone();
-        let precompiles = tempo_precompiles::TempoPrecompiles::new(
-            spec,
-            ext.actions.clone(),
-            ext.non_creditable_slots.clone(),
-        );
+        let env = TempoEvmEnv::new_with_version(spec, *evm.block(), *evm.version());
+        let precompiles = self.precompiles(&env, &ext);
         *evm.ext_mut() = ext;
         evm.set_precompiles(precompiles);
     }
@@ -1820,5 +1843,36 @@ mod runtime_tests {
         assert_eq!(spends.len(), 1);
         assert_eq!(spends[0].data.amount, U256::ZERO);
         fixture.assert_state(40, 100)
+    }
+}
+
+#[cfg(test)]
+mod factory_tests {
+    use super::*;
+    use crate::{TempoBlockEnv, TempoEvmConfig, test_utils::test_chainspec};
+    use evm2::evm::{InMemoryDB, precompile::NoPrecompiles};
+    use reth_chainspec::EthChainSpec;
+    use reth_evm::BlockExecutorFactory;
+    use reth_evm_ethereum::EvmFactory;
+    use tempo_precompiles::PATH_USD_ADDRESS;
+
+    #[test]
+    fn custom_precompiles_survive_factory_configuration() {
+        let chainspec = test_chainspec();
+        let env = TempoEvmEnv::new(
+            Default::default(),
+            TempoBlockEnv::default(),
+            chainspec.chain_id(),
+        );
+        let default =
+            TempoEvmConfig::new(chainspec.clone()).evm_with_env(InMemoryDB::default(), env.clone());
+        assert!(default.precompiles().contains(&PATH_USD_ADDRESS));
+        let factory =
+            TempoEvmFactory::new_with_precompiles(|_, _| Box::new(NoPrecompiles::default()));
+        let config = TempoEvmConfig::new(chainspec).with_evm_factory(factory.clone());
+        let mut evm = config.evm_with_env(InMemoryDB::default(), env);
+        assert!(!evm.precompiles().contains(&PATH_USD_ADDRESS));
+        factory.configure_evm(&mut evm);
+        assert!(!evm.precompiles().contains(&PATH_USD_ADDRESS));
     }
 }

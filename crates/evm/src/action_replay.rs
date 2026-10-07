@@ -28,7 +28,6 @@ impl TempoBlockExecutor<'_> {
         tx: impl ExecutorTx<Self>,
         replay: StorageActionReplay,
         result_closure: impl FnOnce(&TempoTxResult),
-        commit_reads: bool,
     ) -> Result<(), BlockExecutionError> {
         let (tx_env, recovered) = tx.into_parts();
         let original = recovered.tx();
@@ -51,12 +50,7 @@ impl TempoBlockExecutor<'_> {
             .map_err(BlockExecutionError::from)?;
 
         let state = self
-            .replay_actions(
-                tx_env.inner().evm_tx().signer(),
-                actions.drain(..),
-                commit_reads,
-                expiring_nonce,
-            )
+            .replay_actions(actions.drain(..), expiring_nonce)
             .inspect_err(|_| {
                 self.replay_state.reset_tx_changes();
             })?;
@@ -98,9 +92,7 @@ impl TempoBlockExecutor<'_> {
 
     fn replay_actions(
         &mut self,
-        sender: Address,
         actions: impl IntoIterator<Item = StorageAction>,
-        commit_reads: bool,
         expiring_nonce: Option<ExpiringNonceReplay>,
     ) -> Result<PendingState, BlockExecutionError> {
         let block_timestamp = self.evm().block().timestamp.to::<u64>();
@@ -184,15 +176,10 @@ impl TempoBlockExecutor<'_> {
 
         let mut state = PendingState::default();
 
-        if commit_reads {
-            let original = db.get_account(&sender).map_err(map_database_error)?;
-            state.insert_account(sender, original.clone(), original);
-        }
-
         for (address, slots) in self.replay_state.tx_changes.iter() {
             let mut inserted_account = false;
             for (slot, change) in slots {
-                if !change.written && !commit_reads {
+                if !change.written {
                     continue;
                 }
 

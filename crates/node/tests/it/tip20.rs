@@ -1,11 +1,15 @@
 use alloy::{
     primitives::{Address, FixedBytes, U256},
     providers::{Provider, ProviderBuilder},
-    signers::local::MnemonicBuilder,
     sol_types::SolEvent,
     transports::http::reqwest::Url,
 };
+use eyre::WrapErr;
 use futures::future::try_join_all;
+use reth_e2e_test_utils::{
+    receipt::{PendingTransactionExt, await_successful_receipts},
+    wallet::test_signer,
+};
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::{IAddressRegistry, ITIP20, ITIP403Registry, TIP20Error};
 use tempo_precompiles::{
@@ -14,7 +18,7 @@ use tempo_precompiles::{
 };
 use tempo_primitives::TempoAddressExt;
 
-use crate::utils::{TestNodeBuilder, await_receipts, setup_test_token};
+use crate::utils::{TestNodeBuilder, setup_test_token};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip20_transfer() -> eyre::Result<()> {
@@ -23,7 +27,7 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let caller = wallet.address();
     let provider = ProviderBuilder::new()
         .wallet(wallet)
@@ -34,11 +38,7 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
     // NOTE: The tests-genesis.json pre allocates feeToken balances for gas fees
     let account_data: Vec<_> = (1..100)
         .map(|i| {
-            let signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-                .index(i as u32)
-                .unwrap()
-                .build()
-                .unwrap();
+            let signer = test_signer(i as u32);
             let account = signer.address();
             let balance = U256::from(rand_09::random::<u32>());
             (account, signer, balance)
@@ -153,7 +153,7 @@ async fn test_tip20_mint() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
@@ -233,7 +233,7 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let owner = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let owner = test_signer(0);
     let caller = owner.address();
     let provider = ProviderBuilder::new()
         .wallet(owner)
@@ -243,11 +243,7 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
     let token = setup_test_token(provider.clone(), caller).await?;
     let account_data: Vec<_> = (1..20)
         .map(|i| {
-            let signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-                .index(i as u32)
-                .unwrap()
-                .build()
-                .unwrap();
+            let signer = test_signer(i as u32);
             let balance = U256::from(rand_09::random::<u32>());
             (signer, balance)
         })
@@ -342,7 +338,7 @@ async fn test_tip20_transfer_with_memo() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
@@ -397,7 +393,7 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let admin = wallet.address();
     let provider = ProviderBuilder::new()
         .wallet(wallet)
@@ -434,15 +430,7 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
         .get_receipt()
         .await?;
 
-    let accounts: Vec<_> = (1..100)
-        .map(|i| {
-            MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-                .index(i)
-                .unwrap()
-                .build()
-                .unwrap()
-        })
-        .collect();
+    let accounts: Vec<_> = (1..100).map(test_signer).collect();
 
     let (allowed_accounts, blacklisted_accounts) = accounts.split_at(accounts.len() / 2);
 
@@ -523,7 +511,7 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let wallet = test_signer(0);
     let admin = wallet.address();
     let provider = ProviderBuilder::new()
         .wallet(wallet)
@@ -560,15 +548,7 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
         .get_receipt()
         .await?;
 
-    let accounts: Vec<_> = (1..100)
-        .map(|i| {
-            MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-                .index(i)
-                .unwrap()
-                .build()
-                .unwrap()
-        })
-        .collect();
+    let accounts: Vec<_> = (1..100).map(test_signer).collect();
 
     let (whitelisted_senders, non_whitelisted_accounts) = accounts.split_at(accounts.len() / 2);
     let whitelisted_receivers: Vec<Address> = (0..whitelisted_senders.len())
@@ -668,7 +648,7 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let admin_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let admin_wallet = test_signer(0);
     let admin = admin_wallet.address();
     let admin_provider = ProviderBuilder::new()
         .wallet(admin_wallet)
@@ -676,18 +656,14 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
 
     let token = setup_test_token(admin_provider.clone(), admin).await?;
 
-    let alice_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
+    let alice_wallet = test_signer(1);
     let alice = alice_wallet.address();
     let alice_provider = ProviderBuilder::new()
         .wallet(alice_wallet)
         .connect_http(http_url.clone());
     let alice_token = ITIP20::new(*token.address(), alice_provider);
 
-    let bob_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(2)?
-        .build()?;
+    let bob_wallet = test_signer(2);
     let bob = bob_wallet.address();
     let bob_provider = ProviderBuilder::new()
         .wallet(bob_wallet)
@@ -726,7 +702,7 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
             .send()
             .await?,
     );
-    await_receipts(&mut pending).await?;
+    await_successful_receipts(pending.drain(..)).await?;
 
     // Rewards are disabled. Distribution is a no-op and should not emit reward events.
     let distribute_receipt = token
@@ -756,7 +732,7 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
             .send()
             .await?,
     );
-    await_receipts(&mut pending).await?;
+    await_successful_receipts(pending).await?;
 
     assert_eq!(token.balanceOf(alice).call().await?, U256::from(900e18));
     assert_eq!(token.balanceOf(bob).call().await?, U256::ZERO);
@@ -791,16 +767,14 @@ async fn test_tip20_pause_blocks_fee_collection() -> eyre::Result<()> {
     let http_url = setup.http_url;
 
     // Admin creates and controls the token
-    let admin_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let admin_wallet = test_signer(0);
     let admin = admin_wallet.address();
     let admin_provider = ProviderBuilder::new()
         .wallet(admin_wallet)
         .connect_http(http_url.clone());
 
     // User who will have their fee token paused
-    let user_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
+    let user_wallet = test_signer(1);
     let user = user_wallet.address();
     let user_provider = ProviderBuilder::new()
         .wallet(user_wallet)
@@ -865,18 +839,15 @@ async fn test_tip20_pause_blocks_fee_collection() -> eyre::Result<()> {
         .await?;
 
     // Verify user can transact before pause
-    let transfer_result = user_token
+    user_token
         .transfer(Address::random(), U256::from(100))
         .gas(gas)
         .gas_price(gas_price)
         .send()
         .await?
-        .get_receipt()
-        .await?;
-    assert!(
-        transfer_result.status(),
-        "Transfer should succeed before pause"
-    );
+        .successful_receipt()
+        .await
+        .wrap_err("Transfer should succeed before pause")?;
 
     // ===== Test 1: User pauses the token in their transaction =====
     // This should succeed because:
@@ -886,19 +857,15 @@ async fn test_tip20_pause_blocks_fee_collection() -> eyre::Result<()> {
 
     let balance_before_pause_tx = token.balanceOf(user).call().await?;
 
-    let pause_receipt = user_token
+    user_token
         .pause()
         .gas(gas)
         .gas_price(gas_price)
         .send()
         .await?
-        .get_receipt()
-        .await?;
-
-    assert!(
-        pause_receipt.status(),
-        "Pause transaction should succeed - post_tx refund allowed even when paused"
-    );
+        .successful_receipt()
+        .await
+        .wrap_err("Pause transaction should succeed - post_tx refund allowed even when paused")?;
 
     // Verify token is now paused
     assert!(token.paused().call().await?, "Token should be paused");
@@ -946,7 +913,7 @@ async fn setup_virtual_test() -> eyre::Result<(
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url.clone();
 
-    let admin_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let admin_wallet = test_signer(0);
     let admin = admin_wallet.address();
     assert_eq!(admin, VIRTUAL_MASTER);
 
@@ -987,9 +954,8 @@ async fn test_tip20_virtual_mint() -> eyre::Result<()> {
         .mint(virtual_addr, mint_amount)
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(mint_receipt.status());
 
     assert_eq!(token.balanceOf(admin).call().await?, mint_amount);
     assert_eq!(token.balanceOf(virtual_addr).call().await?, U256::ZERO);
@@ -1028,9 +994,7 @@ async fn test_tip20_virtual_transfer() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
     let (_setup, http_url, master, token, virtual_addr) = setup_virtual_test().await?;
 
-    let sender_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
+    let sender_wallet = test_signer(1);
     let sender = sender_wallet.address();
     let sender_provider = ProviderBuilder::new()
         .wallet(sender_wallet)
@@ -1050,9 +1014,8 @@ async fn test_tip20_virtual_transfer() -> eyre::Result<()> {
         .transfer(virtual_addr, amount)
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(receipt.status());
 
     assert_eq!(token.balanceOf(sender).call().await?, U256::ZERO);
     assert_eq!(
@@ -1094,9 +1057,7 @@ async fn test_tip20_virtual_transfer_from() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
     let (_setup, http_url, master, token, virtual_addr) = setup_virtual_test().await?;
 
-    let sender_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
+    let sender_wallet = test_signer(1);
     let sender = sender_wallet.address();
     let sender_provider = ProviderBuilder::new()
         .wallet(sender_wallet)
@@ -1123,9 +1084,8 @@ async fn test_tip20_virtual_transfer_from() -> eyre::Result<()> {
         .transferFrom(sender, virtual_addr, amount)
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(receipt.status());
 
     assert_eq!(token.balanceOf(sender).call().await?, U256::ZERO);
     assert_eq!(
@@ -1168,9 +1128,7 @@ async fn test_tip20_virtual_transfer_with_memo() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
     let (_setup, http_url, master, token, virtual_addr) = setup_virtual_test().await?;
 
-    let sender_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
+    let sender_wallet = test_signer(1);
     let sender = sender_wallet.address();
     let sender_provider = ProviderBuilder::new()
         .wallet(sender_wallet)
@@ -1191,9 +1149,8 @@ async fn test_tip20_virtual_transfer_with_memo() -> eyre::Result<()> {
         .transferWithMemo(virtual_addr, amount, memo)
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(receipt.status());
 
     assert_eq!(token.balanceOf(sender).call().await?, U256::ZERO);
     assert_eq!(
@@ -1252,9 +1209,7 @@ async fn test_tip20_virtual_transfer_from_with_memo() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
     let (_setup, http_url, master, token, virtual_addr) = setup_virtual_test().await?;
 
-    let sender_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
+    let sender_wallet = test_signer(1);
     let sender = sender_wallet.address();
     let sender_provider = ProviderBuilder::new()
         .wallet(sender_wallet)
@@ -1282,9 +1237,8 @@ async fn test_tip20_virtual_transfer_from_with_memo() -> eyre::Result<()> {
         .transferFromWithMemo(sender, virtual_addr, amount, memo)
         .send()
         .await?
-        .get_receipt()
+        .successful_receipt()
         .await?;
-    assert!(receipt.status());
 
     assert_eq!(token.balanceOf(sender).call().await?, U256::ZERO);
     assert_eq!(
@@ -1361,15 +1315,14 @@ async fn test_tip20_registry_deployed_at_t3_activation() -> eyre::Result<()> {
         .with_genesis(serde_json::to_string(&genesis)?)
         .build_with_node_access()
         .await?;
-    let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
+    let provider = setup.node.rpc_provider();
 
     // Pre-T3: registry should have no code.
     let code = provider.get_code_at(ADDRESS_REGISTRY_ADDRESS).await?;
     assert!(code.is_empty(), "registry should have no code before T3");
 
     // Advance past t3Time to trigger T3 activation.
-    setup.node.advance_block().await?;
-    setup.node.advance_block().await?;
+    setup.node.advance_blocks(2).await?;
 
     // Post-T3: registry should have 0xEF marker bytecode.
     let code = provider.get_code_at(ADDRESS_REGISTRY_ADDRESS).await?;

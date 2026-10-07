@@ -147,7 +147,7 @@ mod tests {
         assert!(!Address::ZERO.is_tip20());
 
         // random address is not TIP20
-        assert!(!address!("0x1111111111111111111111111111111111111111").is_tip20());
+        assert!(!Address::repeat_byte(0x11).is_tip20());
 
         // differs at byte index 1 (0xC0 → 0x00) — not TIP20
         let mut wrong = [0u8; 20];
@@ -201,7 +201,7 @@ mod tests {
     #[test]
     fn is_valid_master_variations() {
         // regular address is valid master
-        let regular = address!("0x1111111111111111111111111111111111111111");
+        let regular = Address::repeat_byte(0x11);
         assert!(regular.is_valid_master());
 
         // zero address is not valid master

@@ -25,9 +25,8 @@ use crate::{
     prewarming::{BestTransactionsPrewarming, PrewarmedTransaction, PrewarmingExecutionContext},
 };
 use alloy_consensus::{BlockHeader as _, TxReceipt};
-use alloy_eip7928::bal::Bal;
 use alloy_eips::{eip1559::calculate_block_gas_limit, eip2718::Encodable2718};
-use alloy_primitives::{Address, B256, Bloom, Bytes, U256, keccak256};
+use alloy_primitives::{Address, B256, Bloom, U256};
 use alloy_rlp::Encodable;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
@@ -135,8 +134,6 @@ pub struct TempoPayloadBuilder<Provider> {
     evm_config: TempoEvmConfig,
     metrics: TempoPayloadBuilderMetrics,
     cache_metrics: CachedStateMetrics,
-    /// Whether to include block access lists in built execution payloads.
-    enable_bal: bool,
     /// Learned estimate of total replayable build work divided by work at tx cutoff.
     ///
     /// This lets the builder reserve time for non-interruptible
@@ -204,7 +201,6 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             evm_config,
             metrics: TempoPayloadBuilderMetrics::default(),
             cache_metrics: CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
-            enable_bal: cfg!(feature = "bal"),
             build_time_multiplier: Arc::new(AtomicU64::new(scaled_build_time_multiplier(
                 config.build_time_multiplier,
             ))),
@@ -424,9 +420,6 @@ where
 
         check_cancel!();
 
-        if self.enable_bal {
-            executor.enable_block_access_list_builder();
-        }
         if let Some(handle) = state_root_handle.as_mut() {
             let mut hook = handle.take_state_hook();
             executor.set_state_hook(move |state| hook.on_state(state));
@@ -632,7 +625,6 @@ where
                     tx.transaction.executable(),
                     *replay,
                     result_closure,
-                    self.enable_bal,
                 )
             } else {
                 executor.invalidate_expiring_nonce_cache();
@@ -761,7 +753,7 @@ where
         // Drop the roots task handle to trigger finalization
         drop(roots_tx);
 
-        let (execution_output, raw_block_access_list) = executor.finish_with_block_access_list()?;
+        let execution_output = executor.finish()?;
         let execution_result = &execution_output.result;
         let execution_state = &execution_output.state;
 
@@ -816,16 +808,6 @@ where
             }
             .unzip();
 
-        let (block_access_list, block_access_list_hash) = raw_block_access_list
-            .map(|raw| {
-                let bal = Bal::from(raw);
-                let mut encoded = Vec::new();
-                bal.encode(&mut encoded);
-                let hash = keccak256(&encoded);
-                (Bytes::from(encoded), hash)
-            })
-            .unzip();
-
         let (state_root, trie_updates) = if self.config.skip_state_root {
             (parent_header.state_root(), Arc::new(Default::default()))
         } else if let Some(outcome) = state_root_outcome {
@@ -859,7 +841,7 @@ where
                 execution_state,
                 &finish_provider,
                 state_root,
-                block_access_list_hash,
+                None,
             ),
             Some(transactions_root),
             Some(receipts_root),
@@ -964,8 +946,6 @@ where
                 max_rlp_length: MAX_RLP_BLOCK_SIZE,
             }));
         }
-        let recorded_block_size_bytes =
-            estimated_rlp_block_size + block_access_list.as_ref().map_or(0, Encodable::length);
         let final_workload = ValidationLatencyWorkload::new(gas_used, total_transactions);
         let validation_latency_duration = validation_latency
             .and_then(|estimate| estimate.estimate(final_workload))
@@ -977,10 +957,10 @@ where
         self.metrics.gas_per_second_last.set(gas_per_second);
         self.metrics
             .rlp_block_size_bytes
-            .record(recorded_block_size_bytes as f64);
+            .record(estimated_rlp_block_size as f64);
         self.metrics
             .rlp_block_size_bytes_last
-            .set(recorded_block_size_bytes as f64);
+            .set(estimated_rlp_block_size as f64);
 
         info!(
             parent_hash = ?block.parent_hash(),
@@ -1030,7 +1010,6 @@ where
 
         let payload = TempoBuiltPayload::new(
             eth_payload,
-            block_access_list,
             Some(executed_block),
             validation_work_duration,
             validation_latency_duration,

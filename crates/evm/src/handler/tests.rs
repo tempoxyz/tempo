@@ -855,7 +855,7 @@ fn test_aa_gas_create_call() {
 #[test]
 fn test_aa_gas_value_transfer() {
     use alloy_primitives::{Bytes, TxKind};
-    use tempo_primitives::transaction::{Call, TempoSignature};
+    use tempo_primitives::transaction::Call;
 
     let calldata = Bytes::from(vec![1]);
 
@@ -2476,7 +2476,7 @@ proptest! {
 #[test]
 fn test_t1_2d_nonce_key_charges_250k_gas() {
     // Deterministic test addresses
-    const TEST_TARGET: Address = Address::new([0xAA; 20]);
+    const TEST_TARGET: Address = Address::repeat_byte(0xAA);
     const TEST_NONCE_KEY: U256 = U256::from_limbs([42, 0, 0, 0]);
     const SPEC: TempoHardfork = TempoHardfork::T1;
     const NEW_NONCE_KEY_GAS: u64 = SPEC.gas_new_nonce_key();
@@ -2557,7 +2557,7 @@ fn test_t1_2d_nonce_key_charges_250k_gas() {
 #[test]
 fn test_t1_existing_2d_nonce_key_charges_5k_gas() {
     const BASE_INTRINSIC_GAS: u64 = 21_000;
-    const TEST_TARGET: Address = Address::new([0xBB; 20]);
+    const TEST_TARGET: Address = Address::repeat_byte(0xBB);
     const TEST_NONCE_KEY: U256 = U256::from_limbs([99, 0, 0, 0]);
     const SPEC: TempoHardfork = TempoHardfork::T1;
     const EXISTING_NONCE_KEY_GAS: u64 = SPEC.gas_existing_nonce_key();
