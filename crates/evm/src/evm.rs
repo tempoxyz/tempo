@@ -24,12 +24,10 @@ use std::{
     rc::Rc,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_precompiles::{
-    storage::{StorageAction, StorageActions},
-    storage_credits::NonCreditableSlots,
-};
+use tempo_precompiles::{storage::StorageAction, storage_credits::NonCreditableSlots};
 use tempo_revm::{
-    ProtocolFeeManager, TempoInvalidTransaction, TempoTxEnv, ValidationContext, evm::TempoContext,
+    ProtocolFeeManager, TempoInvalidTransaction, TempoTxEnv, ValidationContext,
+    evm::{PrecompilesBuilder, TempoContext},
     handler::TempoEvmHandler,
 };
 
@@ -82,23 +80,17 @@ pub struct TempoEvm<DB: Database, I = NoOpInspector> {
 impl<DB: Database> TempoEvm<DB> {
     /// Create a new [`TempoEvm`] instance.
     pub fn new(db: DB, input: EvmEnv<TempoHardfork, TempoBlockEnv>) -> Self {
-        Self::new_with_precompiles(db, input, tempo_precompiles::tempo_precompiles)
+        Self::new_with_precompiles(db, input, |ctx, actions, non_creditable_slots| {
+            tempo_precompiles::tempo_precompiles(&ctx.cfg, actions, non_creditable_slots)
+        })
     }
 
     /// See [`tempo_revm::TempoEvm::new_with_precompiles`].
-    pub fn new_with_precompiles<F>(
+    pub fn new_with_precompiles(
         db: DB,
         input: EvmEnv<TempoHardfork, TempoBlockEnv>,
-        precompiles: F,
-    ) -> Self
-    where
-        F: Fn(
-                &CfgEnv<TempoHardfork>,
-                StorageActions,
-                Rc<RefCell<NonCreditableSlots>>,
-            ) -> PrecompilesMap
-            + 'static,
-    {
+        builder: PrecompilesBuilder<DB>,
+    ) -> Self {
         // TIP-1016 (EIP-8037 state gas split) is gated by `cfg_env.enable_amsterdam_eip8037`
         // and is independent of the T4 hardfork. The caller is responsible for setting the
         // flag on the input `EvmEnv`; here we pass it through unchanged.
@@ -109,7 +101,7 @@ impl<DB: Database> TempoEvm<DB> {
             .with_tx(Default::default());
 
         Self {
-            inner: tempo_revm::TempoEvm::new_with_precompiles(ctx, NoOpInspector {}, precompiles),
+            inner: tempo_revm::TempoEvm::new_with_precompiles(ctx, NoOpInspector {}, builder),
             inspect: false,
         }
     }
@@ -1796,8 +1788,8 @@ mod tests {
         assert!(evm.precompiles().get(&PATH_USD_ADDRESS).is_some());
         assert!(evm.precompiles().get(&ecrecover).is_some());
 
-        let evm = TempoEvm::new_with_precompiles(EmptyDB::default(), env, |cfg, _, _| {
-            tempo_precompiles::ethereum_precompiles(cfg)
+        let evm = TempoEvm::new_with_precompiles(EmptyDB::default(), env, |ctx, _, _| {
+            tempo_precompiles::ethereum_precompiles(&ctx.cfg)
         });
         assert!(evm.precompiles().get(&PATH_USD_ADDRESS).is_none());
         assert!(evm.precompiles().get(&ecrecover).is_some());
