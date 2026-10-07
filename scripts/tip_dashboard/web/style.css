@@ -1,0 +1,27 @@
+:root { color-scheme: light dark; --bg: light-dark(#fafafa,#171717); --surface: light-dark(#fff,#222); --line: light-dark(#ddd,#444); --muted: light-dark(#595959,#bbb); }
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; background: var(--bg); font: 14px/1.5 system-ui,sans-serif; }
+main { max-width: 1120px; margin: auto; padding: 24px; }
+h1 { font-size: 28px; margin: 0 0 18px; } h2 { font-size: 18px; margin: 24px 0 8px; } h4 { margin-bottom: 6px; }
+.eyebrow,.muted,#load-status,#result-count { color: var(--muted); }
+.eyebrow { margin-bottom: 4px; }
+.controls { display: flex; flex-wrap: wrap; gap: 12px; }
+label { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+input,select { max-width: 100%; font: inherit; color: inherit; background: var(--surface); border: 1px solid var(--line); border-radius: 5px; padding: 8px; }
+.source { font-weight: 600; margin-bottom: 5px; }
+summary { cursor: pointer; overflow-wrap: anywhere; }
+.tip { border: 1px solid var(--line); border-radius: 6px; background: var(--surface); margin: 6px 0; padding: 12px; }
+.tip-title { font-weight: 650; }
+.summary-line { display: block; margin: 3px 0 0 17px; color: var(--muted); }
+details details { margin: 12px 0; padding: 8px; border-top: 1px solid var(--line); }
+.meta { display: grid; grid-template-columns: minmax(100px,1fr) minmax(0,4fr); gap: 5px 12px; }
+dt { font-weight: 600; } dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+a { color: light-dark(#164d93,#aacdff); overflow-wrap: anywhere; }
+p,li { overflow-wrap: anywhere; } ul { padding-left: 20px; }
+.card { margin: 10px 0; }
+.empty { border: 1px dashed var(--line); padding: 12px; color: var(--muted); }
+.warning { border-left: 3px solid var(--muted); padding-left: 12px; }
+:focus-visible { outline: 3px solid light-dark(#185abd,#92bcff); outline-offset: 3px; }
+.skip { position: absolute; top: -100px; background: var(--surface); padding: 10px; } .skip:focus { top: 0; }
+@media (max-width:600px) { main { padding: 16px; } label { flex: 1 1 140px; } .meta { grid-template-columns: 1fr; } dd { margin-bottom: 6px; } }

@@ -506,6 +506,7 @@ impl StablecoinDEX {
             self.books[book_key].asks[tick].read()?
         };
 
+        // @implements TIP-1088:R7 gate=self.storage.spec().is_t12()
         if self.storage.spec().is_t12() {
             // Sum the remaining amount of every order reachable from the tick's head.
             let mut order_id = level.links.head;
@@ -763,6 +764,7 @@ impl StablecoinDEX {
             level.links.tail = order.order_id();
         }
 
+        // @implements TIP-1088:R6 gate=self.storage.spec().is_t12()
         if !self.storage.spec().is_t12() {
             level.total_liquidity = level
                 .total_liquidity
@@ -1034,6 +1036,7 @@ impl StablecoinDEX {
         }
 
         // Update price level total liquidity
+        // @implements TIP-1088:R6 gate=self.storage.spec().is_t12()
         if !self.storage.spec().is_t12() {
             level.total_liquidity = level
                 .total_liquidity
@@ -1105,6 +1108,7 @@ impl StablecoinDEX {
 
             // Business logic errors are ignored so that flip failure does not block the swap.
             // System errors (OOG, DB errors, panics) propagate because state may be inconsistent.
+            // @implements TIP-1088:R9 gate=always
             if let Err(err) = &res {
                 if err.is_system_error() && self.storage.spec().is_t1a() {
                     return Err(res.unwrap_err());
@@ -1169,6 +1173,7 @@ impl StablecoinDEX {
                 self.orders[order.next()].prev()?.delete()
             })?;
 
+            // @implements TIP-1088:R6 gate=self.storage.spec().is_t12()
             if !self.storage.spec().is_t12() {
                 level.total_liquidity = level
                     .total_liquidity
@@ -1190,6 +1195,7 @@ impl StablecoinDEX {
     }
 
     /// Fill orders for exact output amount
+    // @implements TIP-1088:R2 gate=always
     fn fill_orders_exact_out(
         &mut self,
         storage_credits: &mut StorageCreditDeltas,
@@ -1208,6 +1214,7 @@ impl StablecoinDEX {
     }
 
     /// Fill orders with exact amount in
+    // @implements TIP-1088:R12 gate=always
     fn fill_orders_exact_in(
         &mut self,
         storage_credits: &mut StorageCreditDeltas,
@@ -1283,6 +1290,7 @@ impl StablecoinDEX {
     ///
     /// Used by the per-order quote paths so quotes walk the book exactly like a
     /// swap does. Uses the order's in-memory `next`/`tick` (unchanged by a fill).
+    // @implements TIP-1088:R3 gate=always
     fn next_order_after(
         &self,
         book_key: B256,
@@ -1494,6 +1502,8 @@ impl StablecoinDEX {
     /// under-estimate the input across fragmented levels; it is kept for pre-T12
     /// historical determinism.
     fn quote_exact_out(&self, book_key: B256, amount_out: u128, is_bid: bool) -> Result<u128> {
+        // @implements TIP-1088:R1 gate=self.storage.spec().is_t12()
+        // @implements TIP-1088:R2 gate=self.storage.spec().is_t12()
         if self.storage.spec().is_t12() {
             self.quote_per_order(book_key, amount_out, is_bid, step_exact_out)
         } else {
@@ -1504,6 +1514,8 @@ impl StablecoinDEX {
     /// Per-order quote that walks the book like swap execution but without
     /// mutating state, sharing the same `step` arithmetic so quoted amounts equal
     /// executed amounts.
+    // @implements TIP-1088:R5 gate=always
+    // @implements TIP-1088:R4 gate=always
     fn quote_per_order(
         &self,
         book_key: B256,
@@ -1756,6 +1768,8 @@ impl StablecoinDEX {
     /// per-order floors is `<=` the floor of the sum; it is kept for pre-T12
     /// historical determinism.
     fn quote_exact_in(&self, book_key: B256, amount_in: u128, is_bid: bool) -> Result<u128> {
+        // @implements TIP-1088:R1 gate=self.storage.spec().is_t12()
+        // @implements TIP-1088:R2 gate=self.storage.spec().is_t12()
         if self.storage.spec().is_t12() {
             self.quote_per_order(book_key, amount_in, is_bid, step_exact_in)
         } else {
@@ -7402,5 +7416,650 @@ mod tests {
         )?;
 
         Ok(())
+    }
+
+    // Test-only evidence is emitted only after the condition succeeds, evaluated once.
+    macro_rules! spec_evidence {
+        ($rid:literal, $case:literal, $test:literal, $fork:literal, $condition:expr) => {{
+            assert!($condition, "{} {}", $rid, $case);
+            println!(
+                "{}",
+                concat!(
+                    "TIP_EVIDENCE {\"requirement\":\"",
+                    $rid,
+                    "\",\"case\":\"",
+                    $case,
+                    "\",\"test\":\"",
+                    $test,
+                    "\",\"fork\":\"",
+                    $fork,
+                    "\"}"
+                )
+            );
+        }};
+    }
+
+    #[test]
+    #[ignore = "explicit TIP dashboard evidence run"]
+    fn spec_dashboard_dex_t11() -> eyre::Result<()> {
+        let spec = TempoHardfork::T11;
+        with_fragmented_book(
+            spec,
+            &[(100_006_000, 10), (100_006_000, 10)],
+            true,
+            |dex, base, quote, taker| {
+                let writes = dex.storage.counter_sstore();
+                let logs = dex.emitted_events();
+                let quoted = dex.quote_swap_exact_amount_in(base, quote, 200_012_000)?;
+                // @asserts TIP-1088:R4 case=quote_no_persistent_writes_events_t11 test=stablecoin_dex::tests::spec_dashboard_dex_t11 fork=T11
+                spec_evidence!(
+                    "TIP-1088:R4",
+                    "quote_no_persistent_writes_events_t11",
+                    "stablecoin_dex::tests::spec_dashboard_dex_t11",
+                    "T11",
+                    dex.storage.counter_sstore() == writes && dex.emitted_events() == logs
+                );
+                let executed = dex.swap_exact_amount_in(taker, base, quote, 200_012_000, 0)?;
+                // @asserts TIP-1088:R1 case=activation_fragmented_bid_t11 test=stablecoin_dex::tests::spec_dashboard_dex_t11 fork=T11
+                spec_evidence!(
+                    "TIP-1088:R1",
+                    "activation_fragmented_bid_t11",
+                    "stablecoin_dex::tests::spec_dashboard_dex_t11",
+                    "T11",
+                    quoted == 200_032_001
+                );
+                // @asserts TIP-1088:R12 case=historical_execution_price_t11 test=stablecoin_dex::tests::spec_dashboard_dex_t11 fork=T11
+                spec_evidence!(
+                    "TIP-1088:R12",
+                    "historical_execution_price_t11",
+                    "stablecoin_dex::tests::spec_dashboard_dex_t11",
+                    "T11",
+                    executed == 200_032_000
+                );
+                Ok(())
+            },
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "explicit TIP dashboard evidence run"]
+    fn spec_dashboard_dex_t12() -> eyre::Result<()> {
+        let spec = TempoHardfork::T12;
+        with_fragmented_book(
+            spec,
+            &[(100_006_000, 10), (100_006_000, 10)],
+            true,
+            |dex, base, quote, taker| {
+                let writes = dex.storage.counter_sstore();
+                let logs = dex.emitted_events();
+                let quoted = dex.quote_swap_exact_amount_in(base, quote, 200_012_000)?;
+                // @asserts TIP-1088:R4 case=quote_no_persistent_writes_events_t12 test=stablecoin_dex::tests::spec_dashboard_dex_t12 fork=T12
+                spec_evidence!(
+                    "TIP-1088:R4",
+                    "quote_no_persistent_writes_events_t12",
+                    "stablecoin_dex::tests::spec_dashboard_dex_t12",
+                    "T12",
+                    dex.storage.counter_sstore() == writes && dex.emitted_events() == logs
+                );
+                let executed = dex.swap_exact_amount_in(taker, base, quote, 200_012_000, 0)?;
+                // @asserts TIP-1088:R1 case=activation_fragmented_bid_t12 test=stablecoin_dex::tests::spec_dashboard_dex_t12 fork=T12
+                spec_evidence!(
+                    "TIP-1088:R1",
+                    "activation_fragmented_bid_t12",
+                    "stablecoin_dex::tests::spec_dashboard_dex_t12",
+                    "T12",
+                    quoted == executed
+                );
+                // @asserts TIP-1088:R12 case=historical_execution_price_t12 test=stablecoin_dex::tests::spec_dashboard_dex_t12 fork=T12
+                spec_evidence!(
+                    "TIP-1088:R12",
+                    "historical_execution_price_t12",
+                    "stablecoin_dex::tests::spec_dashboard_dex_t12",
+                    "T12",
+                    executed == 200_032_000
+                );
+                Ok(())
+            },
+        )?;
+
+        // Fresh snapshots for both sides, both quantities and partial/full boundaries.
+        for is_bid in [true, false] {
+            for exact_in in [true, false] {
+                for amount in [1, 100_006_000, 150_000_003, 250_000_003] {
+                    with_fragmented_book(
+                        spec,
+                        &[
+                            (100_006_000, 10),
+                            (100_006_000, 10),
+                            (100_006_000, if is_bid { 0 } else { 20 }),
+                        ],
+                        is_bid,
+                        |dex, base, quote, taker| {
+                            let (input, output) =
+                                if is_bid { (base, quote) } else { (quote, base) };
+                            let quoted = if exact_in {
+                                dex.quote_swap_exact_amount_in(input, output, amount)?
+                            } else {
+                                dex.quote_swap_exact_amount_out(input, output, amount)?
+                            };
+                            let executed = if exact_in {
+                                dex.swap_exact_amount_in(taker, input, output, amount, quoted)?
+                            } else {
+                                dex.swap_exact_amount_out(taker, input, output, amount, quoted)?
+                            };
+                            // @asserts TIP-1088:R2 case=shared_entrypoints_t12 test=stablecoin_dex::tests::spec_dashboard_dex_t12 fork=T12
+                            spec_evidence!(
+                                "TIP-1088:R2",
+                                "shared_entrypoints_t12",
+                                "stablecoin_dex::tests::spec_dashboard_dex_t12",
+                                "T12",
+                                quoted == executed
+                            );
+                            // @asserts TIP-1088:R3 case=per_order_rounding_t12 test=stablecoin_dex::tests::spec_dashboard_dex_t12 fork=T12
+                            spec_evidence!(
+                                "TIP-1088:R3",
+                                "per_order_rounding_t12",
+                                "stablecoin_dex::tests::spec_dashboard_dex_t12",
+                                "T12",
+                                quoted == executed
+                            );
+                            Ok(())
+                        },
+                    )?;
+                }
+                with_fragmented_book(
+                    spec,
+                    &[(100_006_000, 10), (100_006_000, 10)],
+                    is_bid,
+                    |dex, base, quote, taker| {
+                        let (input, output) = if is_bid { (base, quote) } else { (quote, base) };
+                        let amount = 1_000_000_000;
+                        let q = if exact_in {
+                            dex.quote_swap_exact_amount_in(input, output, amount)
+                        } else {
+                            dex.quote_swap_exact_amount_out(input, output, amount)
+                        };
+                        let ex = if exact_in {
+                            dex.swap_exact_amount_in(taker, input, output, amount, 0)
+                        } else {
+                            dex.swap_exact_amount_out(taker, input, output, amount, u128::MAX)
+                        };
+                        let expected: TempoPrecompileError =
+                            StablecoinDEXError::insufficient_liquidity().into();
+                        // @asserts TIP-1088:R11 case=exhaustion_both_sides_quantities_t12 test=stablecoin_dex::tests::spec_dashboard_dex_t12 fork=T12
+                        spec_evidence!(
+                            "TIP-1088:R11",
+                            "exhaustion_both_sides_quantities_t12",
+                            "stablecoin_dex::tests::spec_dashboard_dex_t12",
+                            "T12",
+                            q == Err(expected.clone()) && ex == Err(expected)
+                        );
+                        Ok(())
+                    },
+                )?;
+            }
+        }
+        with_fragmented_book(
+            spec,
+            &[(100_006_000, 10), (100_006_000, 10)],
+            true,
+            |dex, base, quote, taker| {
+                let before = dex.get_price_level(base, 10, true)?.total_liquidity;
+                dex.swap_exact_amount_in(taker, base, quote, 100_006_001, 0)?;
+                let after = dex.get_price_level(base, 10, true)?.total_liquidity;
+                // @asserts TIP-1088:R7 case=active_remaining_sum_t12 test=stablecoin_dex::tests::spec_dashboard_dex_t12 fork=T12
+                spec_evidence!(
+                    "TIP-1088:R7",
+                    "active_remaining_sum_t12",
+                    "stablecoin_dex::tests::spec_dashboard_dex_t12",
+                    "T12",
+                    before == 200_012_000 && after == 100_005_999
+                );
+                Ok(())
+            },
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "explicit TIP dashboard evidence run"]
+    fn spec_dashboard_dex_t13() -> eyre::Result<()> {
+        let spec = TempoHardfork::T13;
+        with_fragmented_book(
+            spec,
+            &[(100_006_000, 10), (100_006_000, 10)],
+            true,
+            |dex, base, quote, taker| {
+                let writes = dex.storage.counter_sstore();
+                let logs = dex.emitted_events();
+                let quoted = dex.quote_swap_exact_amount_in(base, quote, 200_012_000)?;
+                // @asserts TIP-1088:R4 case=quote_no_persistent_writes_events_t13 test=stablecoin_dex::tests::spec_dashboard_dex_t13 fork=T13
+                spec_evidence!(
+                    "TIP-1088:R4",
+                    "quote_no_persistent_writes_events_t13",
+                    "stablecoin_dex::tests::spec_dashboard_dex_t13",
+                    "T13",
+                    dex.storage.counter_sstore() == writes && dex.emitted_events() == logs
+                );
+                let executed = dex.swap_exact_amount_in(taker, base, quote, 200_012_000, 0)?;
+                // @asserts TIP-1088:R1 case=activation_fragmented_bid_t13 test=stablecoin_dex::tests::spec_dashboard_dex_t13 fork=T13
+                spec_evidence!(
+                    "TIP-1088:R1",
+                    "activation_fragmented_bid_t13",
+                    "stablecoin_dex::tests::spec_dashboard_dex_t13",
+                    "T13",
+                    quoted == executed
+                );
+                // @asserts TIP-1088:R12 case=historical_execution_price_t13 test=stablecoin_dex::tests::spec_dashboard_dex_t13 fork=T13
+                spec_evidence!(
+                    "TIP-1088:R12",
+                    "historical_execution_price_t13",
+                    "stablecoin_dex::tests::spec_dashboard_dex_t13",
+                    "T13",
+                    executed == 200_032_000
+                );
+                Ok(())
+            },
+        )?;
+
+        // Fresh snapshots for both sides, both quantities and partial/full boundaries.
+        for is_bid in [true, false] {
+            for exact_in in [true, false] {
+                for amount in [1, 100_006_000, 150_000_003, 250_000_003] {
+                    with_fragmented_book(
+                        spec,
+                        &[
+                            (100_006_000, 10),
+                            (100_006_000, 10),
+                            (100_006_000, if is_bid { 0 } else { 20 }),
+                        ],
+                        is_bid,
+                        |dex, base, quote, taker| {
+                            let (input, output) =
+                                if is_bid { (base, quote) } else { (quote, base) };
+                            let quoted = if exact_in {
+                                dex.quote_swap_exact_amount_in(input, output, amount)?
+                            } else {
+                                dex.quote_swap_exact_amount_out(input, output, amount)?
+                            };
+                            let executed = if exact_in {
+                                dex.swap_exact_amount_in(taker, input, output, amount, quoted)?
+                            } else {
+                                dex.swap_exact_amount_out(taker, input, output, amount, quoted)?
+                            };
+                            // @asserts TIP-1088:R2 case=shared_entrypoints_t13 test=stablecoin_dex::tests::spec_dashboard_dex_t13 fork=T13
+                            spec_evidence!(
+                                "TIP-1088:R2",
+                                "shared_entrypoints_t13",
+                                "stablecoin_dex::tests::spec_dashboard_dex_t13",
+                                "T13",
+                                quoted == executed
+                            );
+                            // @asserts TIP-1088:R3 case=per_order_rounding_t13 test=stablecoin_dex::tests::spec_dashboard_dex_t13 fork=T13
+                            spec_evidence!(
+                                "TIP-1088:R3",
+                                "per_order_rounding_t13",
+                                "stablecoin_dex::tests::spec_dashboard_dex_t13",
+                                "T13",
+                                quoted == executed
+                            );
+                            Ok(())
+                        },
+                    )?;
+                }
+                with_fragmented_book(
+                    spec,
+                    &[(100_006_000, 10), (100_006_000, 10)],
+                    is_bid,
+                    |dex, base, quote, taker| {
+                        let (input, output) = if is_bid { (base, quote) } else { (quote, base) };
+                        let amount = 1_000_000_000;
+                        let q = if exact_in {
+                            dex.quote_swap_exact_amount_in(input, output, amount)
+                        } else {
+                            dex.quote_swap_exact_amount_out(input, output, amount)
+                        };
+                        let ex = if exact_in {
+                            dex.swap_exact_amount_in(taker, input, output, amount, 0)
+                        } else {
+                            dex.swap_exact_amount_out(taker, input, output, amount, u128::MAX)
+                        };
+                        let expected: TempoPrecompileError =
+                            StablecoinDEXError::insufficient_liquidity().into();
+                        // @asserts TIP-1088:R11 case=exhaustion_both_sides_quantities_t13 test=stablecoin_dex::tests::spec_dashboard_dex_t13 fork=T13
+                        spec_evidence!(
+                            "TIP-1088:R11",
+                            "exhaustion_both_sides_quantities_t13",
+                            "stablecoin_dex::tests::spec_dashboard_dex_t13",
+                            "T13",
+                            q == Err(expected.clone()) && ex == Err(expected)
+                        );
+                        Ok(())
+                    },
+                )?;
+            }
+        }
+        with_fragmented_book(
+            spec,
+            &[(100_006_000, 10), (100_006_000, 10)],
+            true,
+            |dex, base, quote, taker| {
+                let before = dex.get_price_level(base, 10, true)?.total_liquidity;
+                dex.swap_exact_amount_in(taker, base, quote, 100_006_001, 0)?;
+                let after = dex.get_price_level(base, 10, true)?.total_liquidity;
+                // @asserts TIP-1088:R7 case=active_remaining_sum_t13 test=stablecoin_dex::tests::spec_dashboard_dex_t13 fork=T13
+                spec_evidence!(
+                    "TIP-1088:R7",
+                    "active_remaining_sum_t13",
+                    "stablecoin_dex::tests::spec_dashboard_dex_t13",
+                    "T13",
+                    before == 200_012_000 && after == 100_005_999
+                );
+                Ok(())
+            },
+        )?;
+        Ok(())
+    }
+    #[test]
+    #[ignore = "explicit TIP dashboard evidence run"]
+    fn spec_dashboard_dex_layout() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        let maker = Address::random();
+        let admin = Address::random();
+        let tick = 10;
+        let amount = MIN_ORDER_AMOUNT;
+
+        let (base, quote, book_key, first_order) = StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+            let (base, quote) = setup_test_tokens(admin, maker, exchange.address, amount * 4)?;
+            let book_key = exchange.create_pair(base)?;
+            let first_order = exchange.place(maker, base, amount, true, tick)?;
+            exchange.place(maker, base, amount, true, tick)?;
+
+            let stored = exchange.books[book_key]
+                .tick_level_handler(tick, true)
+                .read()?;
+            assert_eq!(stored.total_liquidity, amount * 2);
+            assert_eq!(
+                exchange.get_price_level(base, tick, true)?.total_liquidity,
+                amount * 2,
+                "pre-T12 must return the maintained aggregate"
+            );
+
+            Ok::<_, eyre::Report>((base, quote, book_key, first_order))
+        })?;
+
+        let mut storage = storage.with_spec(TempoHardfork::T12);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+
+            assert_eq!(
+                exchange.get_price_level(base, tick, true)?.total_liquidity,
+                amount * 2,
+                "T12 must derive the same liquidity at the fork boundary"
+            );
+
+            exchange.cancel(maker, first_order)?;
+
+            let stored = Handler::<TickLevel>::read(
+                exchange.books[book_key].tick_level_handler(tick, true),
+            )?;
+            assert_eq!(
+                stored.total_liquidity,
+                amount * 2,
+                "T12 must leave the legacy aggregate stale"
+            );
+            assert_eq!(
+                exchange.get_price_level(base, tick, true)?.total_liquidity,
+                amount,
+                "T12 must derive liquidity from the remaining order"
+            );
+
+            exchange.place(maker, base, amount * 2, true, tick)?;
+            let stored = Handler::<TickLevel>::read(
+                exchange.books[book_key].tick_level_handler(tick, true),
+            )?;
+            assert_eq!(
+                stored.total_liquidity,
+                amount * 2,
+                "T12 placement must not write the legacy aggregate"
+            );
+            assert_eq!(
+                exchange.get_price_level(base, tick, true)?.total_liquidity,
+                amount * 3
+            );
+
+            exchange.swap_exact_amount_in(maker, base, quote, amount * 3, 0)?;
+            let stored = Handler::<TickLevel>::read(
+                exchange.books[book_key].tick_level_handler(tick, true),
+            )?;
+            assert_eq!(stored.links.head, 0);
+            assert_eq!(stored.links.tail, 0);
+            assert_eq!(
+                stored.total_liquidity,
+                amount * 2,
+                "T12 tick exhaustion must not clear the legacy aggregate"
+            );
+            assert_eq!(
+                exchange.get_price_level(base, tick, true)?.total_liquidity,
+                0
+            );
+
+            // @asserts TIP-1088:R6 case=stale_aggregate_t12 test=stablecoin_dex::tests::spec_dashboard_dex_layout fork=T12
+            spec_evidence!(
+                "TIP-1088:R6",
+                "stale_aggregate_t12",
+                "stablecoin_dex::tests::spec_dashboard_dex_layout",
+                "T12",
+                stored.total_liquidity == amount * 2 && stored.links.head == 0
+            );
+            // @asserts TIP-1088:R8 case=stale_layout_no_migration_t12 test=stablecoin_dex::tests::spec_dashboard_dex_layout fork=T12
+            spec_evidence!(
+                "TIP-1088:R8",
+                "stale_layout_no_migration_t12",
+                "stablecoin_dex::tests::spec_dashboard_dex_layout",
+                "T12",
+                stored.total_liquidity == amount * 2
+            );
+            let maker_1 = Address::random();
+            let maker_2 = Address::random();
+            let overflow_amount = u128::MAX / 2 + 1;
+            let escrow = base_to_quote(overflow_amount, MIN_TICK, RoundingDirection::Up).unwrap();
+            let mut quote_token = TIP20Token::from_address(quote)?;
+            for maker in [maker_1, maker_2] {
+                quote_token.mint(
+                    admin,
+                    ITIP20::mintCall {
+                        to: maker,
+                        amount: U256::from(escrow),
+                    },
+                )?;
+                quote_token.approve(
+                    maker,
+                    ITIP20::approveCall {
+                        spender: exchange.address,
+                        amount: U256::MAX,
+                    },
+                )?;
+            }
+            let head = exchange.place(maker_1, base, overflow_amount, true, MIN_TICK)?;
+            let tail = exchange.place(maker_2, base, overflow_amount, true, MIN_TICK)?;
+
+            let links_before = exchange.books[book_key]
+                .tick_level_handler(MIN_TICK, true)
+                .read()?
+                .links;
+            assert_eq!(links_before.head, head);
+            assert_eq!(links_before.tail, tail);
+            assert_eq!(
+                exchange.get_price_level(base, MIN_TICK, true),
+                Err(TempoPrecompileError::under_overflow())
+            );
+            assert_eq!(
+                exchange.books[book_key]
+                    .tick_level_handler(MIN_TICK, true)
+                    .read()?
+                    .links,
+                links_before
+            );
+
+            // @asserts TIP-1088:R7 case=checked_overflow_t12 test=stablecoin_dex::tests::spec_dashboard_dex_layout fork=T12
+            spec_evidence!(
+                "TIP-1088:R7",
+                "checked_overflow_t12",
+                "stablecoin_dex::tests::spec_dashboard_dex_layout",
+                "T12",
+                exchange.get_price_level(base, MIN_TICK, true)
+                    == Err(TempoPrecompileError::under_overflow())
+            );
+            Ok::<_, eyre::Report>(())
+        })
+    }
+
+    #[test]
+    #[ignore = "explicit TIP dashboard evidence run"]
+    fn spec_dashboard_dex_flip() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let admin = Address::random();
+            let maker_flip = Address::random();
+            let maker_next = Address::random();
+            let taker = Address::random();
+            let tick = 10;
+            let flip_tick = 20;
+            let amount = MIN_ORDER_AMOUNT;
+            let fund = U256::from(1_000_000_000_000_000_000u128);
+            let actors = [maker_flip, maker_next, taker];
+
+            let base = fund_and_approve(
+                TIP20Setup::create("BASE", "BASE", admin).with_issuer(admin),
+                actors,
+                exchange.address,
+                fund,
+            )
+            .apply()?;
+            let base_token = base.address();
+            let quote_token = base.quote_token()?;
+
+            fund_and_approve(
+                TIP20Setup::path_usd(admin).with_issuer(admin),
+                actors,
+                exchange.address,
+                fund,
+            )
+            .apply()?;
+
+            let book_key = exchange.create_pair(base_token)?;
+            let flip_order = exchange
+                .place_flip(maker_flip, base_token, amount, true, tick, flip_tick, false)?;
+            let next_order = exchange.place(maker_next, base_token, amount + 7, true, tick)?;
+
+            let bid_level_before = exchange.books[book_key]
+                .tick_level_handler(tick, true)
+                .read()?;
+            assert_eq!(bid_level_before.links.head, flip_order);
+            assert_eq!(bid_level_before.links.tail, next_order);
+
+            let amount_in = amount + 1;
+            let writes = exchange.storage.counter_sstore();
+            let logs = exchange.emitted_events();
+            let quoted = exchange.quote_swap_exact_amount_in(base_token, quote_token, amount_in)?;
+            let expected = base_to_quote(amount, tick, RoundingDirection::Down)
+                .unwrap()
+                .checked_add(base_to_quote(1, tick, RoundingDirection::Down).unwrap())
+                .unwrap();
+            assert_eq!(quoted, expected);
+
+            let flip_after_quote = exchange.get_order(flip_order)?;
+            assert!(flip_after_quote.is_bid());
+            assert_eq!(flip_after_quote.tick(), tick);
+            assert_eq!(flip_after_quote.next(), next_order);
+            assert_eq!(
+                exchange.books[book_key]
+                    .tick_level_handler(tick, true)
+                    .read()?,
+                bid_level_before
+            );
+
+            // @asserts TIP-1088:R4 case=flip_read_only_t12 test=stablecoin_dex::tests::spec_dashboard_dex_flip fork=T12
+            spec_evidence!(
+                "TIP-1088:R4",
+                "flip_read_only_t12",
+                "stablecoin_dex::tests::spec_dashboard_dex_flip",
+                "T12",
+                exchange.storage.counter_sstore() == writes
+                    && exchange.emitted_events() == logs
+                    && flip_after_quote.is_bid()
+                    && flip_after_quote.tick() == tick
+            );
+            let executed =
+                exchange.swap_exact_amount_in(taker, base_token, quote_token, amount_in, quoted)?;
+            assert_eq!(executed, quoted);
+
+            let flipped = exchange.get_order(flip_order)?;
+            assert!(flipped.is_ask());
+            assert_eq!(flipped.tick(), flip_tick);
+            assert_eq!(flipped.remaining(), amount);
+
+            let residual = exchange.get_order(next_order)?;
+            assert_eq!(residual.remaining(), amount + 6);
+            let bid_level_after = exchange.books[book_key]
+                .tick_level_handler(tick, true)
+                .read()?;
+            assert_eq!(bid_level_after.links.head, next_order);
+            assert_eq!(bid_level_after.links.tail, next_order);
+            assert_eq!(
+                bid_level_after.total_liquidity, 0,
+                "stored T12 aggregate stays unused"
+            );
+            assert_eq!(
+                exchange
+                    .get_price_level(base_token, tick, true)?
+                    .total_liquidity,
+                amount + 6
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    #[ignore = "explicit TIP dashboard evidence run"]
+    fn spec_dashboard_dex_multi_hop() -> eyre::Result<()> {
+        with_fragmented_two_hop_books(|dex, token_a, token_b, taker| {
+            let amount_in = 200_012_000;
+            let quoted = dex.quote_swap_exact_amount_in(token_a, token_b, amount_in)?;
+            let executed = dex.swap_exact_amount_in(taker, token_a, token_b, amount_in, quoted)?;
+            // @asserts TIP-1088:R3 case=multi_hop_t12 test=stablecoin_dex::tests::spec_dashboard_dex_multi_hop fork=T12
+            spec_evidence!(
+                "TIP-1088:R3",
+                "multi_hop_t12",
+                "stablecoin_dex::tests::spec_dashboard_dex_multi_hop",
+                "T12",
+                quoted == executed
+            );
+            Ok(())
+        })?;
+
+        with_fragmented_two_hop_books(|dex, token_a, token_b, taker| {
+            let amount_out = 150_000_000;
+            let quoted = dex.quote_swap_exact_amount_out(token_a, token_b, amount_out)?;
+            let executed =
+                dex.swap_exact_amount_out(taker, token_a, token_b, amount_out, quoted)?;
+            // @asserts TIP-1088:R3 case=multi_hop_t12 test=stablecoin_dex::tests::spec_dashboard_dex_multi_hop fork=T12
+            spec_evidence!(
+                "TIP-1088:R3",
+                "multi_hop_t12",
+                "stablecoin_dex::tests::spec_dashboard_dex_multi_hop",
+                "T12",
+                quoted == executed
+            );
+            Ok(())
+        })
     }
 }

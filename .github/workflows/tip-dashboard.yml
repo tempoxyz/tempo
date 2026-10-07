@@ -1,0 +1,150 @@
+name: TIP Implementation Dashboard
+
+on:
+  pull_request:
+    paths:
+      - 'tips/**'
+      - '**/*.rs'
+      - '**/*.sol'
+      - '.config/nextest.toml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'scripts/tip_dashboard/**'
+      - '.github/workflows/tip-dashboard.yml'
+      - '.cargo/**'
+      - 'rust-toolchain*'
+      - 'docs/tip-dashboard.md'
+  push:
+    branches: [main]
+    paths:
+      - 'tips/**'
+      - '**/*.rs'
+      - '**/*.sol'
+      - '.config/nextest.toml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'scripts/tip_dashboard/**'
+      - '.github/workflows/tip-dashboard.yml'
+      - '.cargo/**'
+      - 'rust-toolchain*'
+      - 'docs/tip-dashboard.md'
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: 'Candidate branch, tag or commit (blank uses the workflow revision)'
+        required: false
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: tip-dashboard-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  report:
+    name: Advisory TIP report
+    # This job must not be added to branch protection or existing required aggregates.
+    continue-on-error: true
+    runs-on: depot-ubuntu-latest-16
+    timeout-minutes: 50
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f
+      - name: Checkout reporting tools
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          path: tooling
+          persist-credentials: false
+      - name: Checkout candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          path: candidate
+          ref: ${{ inputs.revision || github.sha }}
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+      - name: Set up Rust
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@e813067e922303348ee5aad965f745803cc24f1f
+      - name: Cache Rust compilation
+        uses: tempoxyz/gh-actions/vendor/Swatinem/rust-cache@e813067e922303348ee5aad965f745803cc24f1f
+        with:
+          workspaces: candidate
+      - name: Validate reporter and dashboard
+        id: tooling_tests
+        continue-on-error: true
+        run: |
+          python3 -m unittest discover -s tooling/scripts/tip_dashboard/tests -p 'test_*.py'
+          python3 -m unittest discover -s tooling/scripts/tip_dashboard -p 'test_runner.py'
+          node --test tooling/scripts/tip_dashboard/web/app.test.cjs
+      - name: Run optional assertion witnesses
+        id: pilot
+        continue-on-error: true
+        env:
+          CARGO_TERM_COLOR: never
+          CARGO_HTTP_TIMEOUT: '180'
+          RUST_MIN_STACK: '8388608'
+        run: |
+          python3 tooling/scripts/tip_dashboard/run_pilot.py \
+            --repo candidate --output output/tip-dashboard/evidence.json \
+            --timeout 2400 --jobs 8
+      - name: Generate report and dashboard
+        id: dashboard
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 tooling/scripts/tip_dashboard/report.py \
+            --repo candidate --revision HEAD --output output/tip-dashboard \
+            --evidence output/tip-dashboard/evidence.json --github
+      - name: Record reporting failure
+        if: always() && (steps.dashboard.outcome != 'success' || steps.tooling_tests.outcome != 'success')
+        env:
+          REPORT_OUTPUT: output/tip-dashboard
+        run: |
+          mkdir -p "$REPORT_OUTPUT"
+          python3 - <<'PY'
+          import datetime, json, os
+          from pathlib import Path
+          output = Path(os.environ['REPORT_OUTPUT'])
+          failure = {
+              'schema_version': 1,
+              'generated_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              'repository': 'tempoxyz/tempo',
+              'revision': {'requested': 'candidate', 'sha': None, 'dirty': False},
+              'collection': {'status': 'error', 'warnings': [
+                  {'code': 'report_unavailable', 'message': 'Report generation failed; inspect this workflow run.'}
+              ]},
+              'summary': {'tips': 0, 'requirements': 0, 'linked': 0, 'reviewed': 0, 'verified': 0, 'warnings': 1},
+              'tips': []
+          }
+          (output / 'dashboard.html').unlink(missing_ok=True)
+          (output / 'report.json').write_text(json.dumps(failure, indent=2) + '\n')
+          (output / 'summary.md').write_text('TIP report unavailable. Inspect this workflow run; no verification result is available.\n')
+          source = Path('tooling/scripts/tip_dashboard/web')
+          if source.exists():
+              import shutil
+              for name in ('index.html', 'app.js', 'style.css'):
+                  shutil.copy2(source / name, output / name)
+          PY
+      - name: Publish advisory summary
+        if: always()
+        run: |
+          if test -f output/tip-dashboard/summary.md; then
+            cat output/tip-dashboard/summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'TIP report unavailable for this run.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload report, UI and execution evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: tip-dashboard-${{ github.run_id }}-${{ github.run_attempt }}
+          path: output/tip-dashboard
+          if-no-files-found: warn
+          retention-days: 30
