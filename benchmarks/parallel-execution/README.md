@@ -365,6 +365,13 @@ at least 60 seconds: it adds a 15-second all-CPU trace after a 20-second delay,
 with 100 Hz Samply for scope identity and Slack off. `scheduler_trace.py` provides
 `preflight --output PATH` and bounded `capture` for two explicit node datadirs.
 
+`profiling=kernel-scheduling-only` records the same bounded trace without Samply
+and allows one through four pairs. Each phase retains a separate 15-second trace;
+Slack is disabled. Join the named Engine thread's scheduler events to canonical
+execution intervals in the node logs. This mode does not provide CPU stacks or
+identify execution on unnamed builder threads, and tracing overhead remains
+unqualified.
+
 ```sh
 python3 benchmarks/parallel-execution/decode_scheduler_trace.py \
   --input /path/to/phase/perf.data --preflight /path/to/phase/preflight.json \

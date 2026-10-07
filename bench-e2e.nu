@@ -1678,7 +1678,7 @@ def "main e2e" [
     --no-default-features                               # Disable Cargo default features
     --samply                                            # Profile validators with samply
     --samply-args: string = ""                          # Additional samply arguments
-    --scheduler-trace                                   # Capture a bounded kernel scheduler diagnostic (one pair, >=60s)
+    --scheduler-trace                                   # Capture a bounded kernel scheduler diagnostic (1-4 pairs, >=60s; one pair with Samply)
     --tracy: string = "off"                             # Tracy profiling: off, tracy
     --tracy-filter: string = "debug"                    # Tracy tracing filter level
     --tracy-seconds: int = 0                            # Tracy capture duration limit in seconds; 0 captures until stopped
@@ -1790,8 +1790,8 @@ def "main e2e" [
         let checked = (^python3 benchmarks/parallel-execution/official_disposal_clock.py environment | complete)
         if $checked.exit_code != 0 { error make { msg: $"disposal calibration environment rejected: ($checked.stdout) ($checked.stderr)" } }
     }
-    if $scheduler_trace and ($duration < 60 or $run_pairs != 1 or not $samply) {
-        error make { msg: "--scheduler-trace requires --samply, --duration >= 60 and --run-pairs 1" }
+    if $scheduler_trace and ($duration < 60 or $run_pairs < 1 or $run_pairs > 4 or ($samply and $run_pairs != 1)) {
+        error make { msg: "--scheduler-trace requires --duration >= 60 and --run-pairs 1..4 (exactly 1 with --samply)" }
     }
     let preset_spec = if $preset_path == "" {
         txgen-resolve-bench-spec $preset

@@ -89,6 +89,7 @@ on:
           - samply-buffered
           - samply-scheduling
           - kernel-scheduling
+          - kernel-scheduling-only
           - tracy
           - both
       otlp:
@@ -407,13 +408,13 @@ jobs:
       BENCH_FEATURE_HARDFORK: ${{ inputs.feature-hardfork }}
       BENCH_TXGEN_REF: ${{ inputs.txgen-ref }}
       BENCH_TOKEN_COUNT: ${{ inputs.token-count || '4' }}
-      BENCH_SAMPLY: ${{ inputs.profiling == 'samply' || inputs.profiling == 'samply-low-rate' || inputs.profiling == 'samply-buffered' || inputs.profiling == 'samply-scheduling' || inputs.profiling == 'kernel-scheduling' || inputs.profiling == 'both' || inputs.samply == true || inputs.samply == 'true' }}
+      BENCH_SAMPLY: ${{ inputs.profiling != 'kernel-scheduling-only' && (inputs.profiling == 'samply' || inputs.profiling == 'samply-low-rate' || inputs.profiling == 'samply-buffered' || inputs.profiling == 'samply-scheduling' || inputs.profiling == 'kernel-scheduling' || inputs.profiling == 'both' || inputs.samply == true || inputs.samply == 'true') }}
       BENCH_SAMPLY_ARGS: ${{ inputs.profiling == 'samply-scheduling' && '--per-cpu-threads --cswitch-markers --rate 100' || ((inputs.profiling == 'kernel-scheduling' || inputs.profiling == 'samply-low-rate' || inputs.profiling == 'samply-buffered') && '--rate 100' || '') }}
       BENCH_SAMPLY_BUFFERED: ${{ inputs.profiling == 'samply-buffered' }}
       BENCH_SAMPLY_BINARY: ""
       BENCH_SAMPLY_BINARY_SHA256: ""
       BENCH_SAMPLY_BUILD_MANIFEST: ""
-      BENCH_SCHED_TRACE: ${{ inputs.profiling == 'kernel-scheduling' }}
+      BENCH_SCHED_TRACE: ${{ inputs.profiling == 'kernel-scheduling' || inputs.profiling == 'kernel-scheduling-only' }}
       BENCH_DISPOSAL_CLOCK: ${{ inputs.profiling == 'disposal-clock' }}
       BENCH_PRODUCER_ISOLATION: ${{ inputs.profiling == 'producer-isolation' }}
       BENCH_PIPELINE_PRESSURE: ${{ inputs.profiling == 'pipeline-pressure' }}
@@ -436,7 +437,7 @@ jobs:
       BENCH_RUN_TYPE: ${{ inputs.run-type || 'dispatch' }}
       BENCH_FORCE_BLOAT: ${{ inputs.force-bloat || 'false' }}
       BENCH_NO_CACHE: ${{ inputs.no-cache || 'false' }}
-      BENCH_NO_SLACK: ${{ (inputs.artifacts-only == true || inputs.sequential-peer || inputs.profiling == 'samply-low-rate' || inputs.profiling == 'samply-buffered' || inputs.profiling == 'samply-scheduling' || inputs.profiling == 'kernel-scheduling' || inputs.profiling == 'disposal-clock' || inputs.profiling == 'producer-isolation' || inputs.profiling == 'pipeline-pressure') && 'true' || inputs.no-slack }}
+      BENCH_NO_SLACK: ${{ (inputs.artifacts-only == true || inputs.sequential-peer || inputs.profiling == 'samply-low-rate' || inputs.profiling == 'samply-buffered' || inputs.profiling == 'samply-scheduling' || inputs.profiling == 'kernel-scheduling' || inputs.profiling == 'kernel-scheduling-only' || inputs.profiling == 'disposal-clock' || inputs.profiling == 'producer-isolation' || inputs.profiling == 'pipeline-pressure') && 'true' || inputs.no-slack }}
       # The reusable input defaults to always. Direct manual dispatch has no slack
       # input and uses win-only notifications, without adding a 26th UI input.
       BENCH_SLACK: ${{ inputs.slack || 'on-win' }}
@@ -596,10 +597,12 @@ jobs:
         run: |
           python3 - <<'PY'
           import os
-          if int(os.environ['BENCH_DURATION']) < 60 or os.environ['BENCH_RUN_PAIRS'] != '1':
-              raise SystemExit('Kernel scheduler diagnostics require duration >= 60 and run-pairs = 1.')
+          max_pairs = 1 if os.environ['BENCH_SAMPLY'] == 'true' else 4
+          if int(os.environ['BENCH_DURATION']) < 60 or not 1 <= int(os.environ['BENCH_RUN_PAIRS']) <= max_pairs:
+              raise SystemExit(f'Kernel scheduler diagnostics require duration >= 60 and 1..{max_pairs} run pairs.')
           PY
           python3 benchmarks/parallel-execution/scheduler_trace.py preflight --output bench-results/scheduler-preflight.json
+          printf 'Kernel scheduler diagnostic: 15s per phase after 20s; Samply=%s; Slack disabled.\n' "$BENCH_SAMPLY" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Checkout ValScope report builder
         if: env.BENCH_VALSCOPE == 'true'
@@ -675,9 +678,11 @@ jobs:
             const txgenRef = process.env.BENCH_TXGEN_REF || 'default';
             const tokenCount = process.env.BENCH_TOKEN_COUNT || '4';
             const samply = process.env.BENCH_SAMPLY === 'true';
-            const samplyNote = process.env.BENCH_SAMPLY_ARGS
+            const samplyNote = (process.env.BENCH_SAMPLY_ARGS
               ? `, samply diagnostic: \`${process.env.BENCH_SAMPLY_ARGS}\`${process.env.BENCH_SCHED_TRACE === 'true' ? ', kernel scheduler trace: `15s`' : ''}`
-              : (samply ? ', samply: `enabled`' : '');
+              : (samply ? ', samply: `enabled`' : ''))
+              + (process.env.BENCH_SCHED_TRACE === 'true' && !process.env.BENCH_SAMPLY_ARGS
+                ? ', kernel scheduler trace: `15s`, Samply: `disabled`' : '');
             const tracy = process.env.BENCH_TRACY;
             const tracyNote = tracy !== 'off' ? ', tracy: `enabled`' : '';
             const otlp = process.env.BENCH_OTLP === 'true';
@@ -1196,9 +1201,11 @@ jobs:
             const txgenRef = process.env.BENCH_TXGEN_REF || 'default';
             const tokenCount = process.env.BENCH_TOKEN_COUNT || '4';
             const samply = process.env.BENCH_SAMPLY === 'true';
-            const samplyNote = process.env.BENCH_SAMPLY_ARGS
+            const samplyNote = (process.env.BENCH_SAMPLY_ARGS
               ? `, samply diagnostic: \`${process.env.BENCH_SAMPLY_ARGS}\`${process.env.BENCH_SCHED_TRACE === 'true' ? ', kernel scheduler trace: `15s`' : ''}`
-              : (samply ? ', samply: `enabled`' : '');
+              : (samply ? ', samply: `enabled`' : ''))
+              + (process.env.BENCH_SCHED_TRACE === 'true' && !process.env.BENCH_SAMPLY_ARGS
+                ? ', kernel scheduler trace: `15s`, Samply: `disabled`' : '');
             const tracy = process.env.BENCH_TRACY;
             const tracyNote = tracy !== 'off' ? ', tracy: `enabled`' : '';
             const otlp = process.env.BENCH_OTLP === 'true';
@@ -1555,15 +1562,15 @@ jobs:
           [ -n "$BENCH_FEATURE_ENV" ] && derek_cmd+=(feature-env="$BENCH_FEATURE_ENV")
           DEREK_BENCH_COMMAND=""
           # The bot parser cannot reproduce artifacts-only, custom Samply options
-          # or disposal clock controls. Omit unsupported shortcuts from summaries.
-          if [ "$BENCH_ARTIFACTS_ONLY" != "true" ] && [ "$BENCH_DISPOSAL_CLOCK" != "true" ] && [ "$BENCH_OWNED_DIAGNOSTIC" != "true" ] && [ -z "$BENCH_SAMPLY_ARGS" ]; then
+          # or scheduler/disposal clock controls. Omit unsupported shortcuts from summaries.
+          if [ "$BENCH_ARTIFACTS_ONLY" != "true" ] && [ "$BENCH_DISPOSAL_CLOCK" != "true" ] && [ "$BENCH_OWNED_DIAGNOSTIC" != "true" ] && [ "$BENCH_SCHED_TRACE" != "true" ] && [ -z "$BENCH_SAMPLY_ARGS" ]; then
             for arg in "${derek_cmd[@]}"; do
               if [ -n "$DEREK_BENCH_COMMAND" ]; then
                 DEREK_BENCH_COMMAND+=" "
               fi
               DEREK_BENCH_COMMAND+="$(quote_derek_arg "$arg")"
             done
-          elif [ -n "$BENCH_SAMPLY_ARGS" ]; then
+          elif [ -n "$BENCH_SAMPLY_ARGS" ] || [ "$BENCH_SCHED_TRACE" = "true" ]; then
             # Preserve the actual Nu argv with protected values referenced by
             # environment variable, never copied into the uploaded artifact.
             mkdir -p bench-results
