@@ -1,4 +1,4 @@
-use crate::{TempoEvmConfig, error::TempoEvmError};
+use crate::TempoEvmConfig;
 use alloy_consensus::crypto::RecoveryError;
 use alloy_primitives::Address;
 use reth_evm::{
