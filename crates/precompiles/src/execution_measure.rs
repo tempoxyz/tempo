@@ -105,12 +105,14 @@ impl Stamp {
         }
     }
 }
+#[cfg(feature = "execution-measure")]
 pub struct Guard {
     area: usize,
     op: usize,
     start: Option<Stamp>,
     restore: Option<Area>,
 }
+#[cfg(feature = "execution-measure")]
 impl Drop for Guard {
     #[inline]
     fn drop(&mut self) {
@@ -134,14 +136,17 @@ impl Drop for Guard {
         }
     }
 }
+#[cfg(feature = "execution-measure")]
 #[inline]
 pub fn operation(op: Op) -> Guard {
     guard(op, None)
 }
+#[cfg(feature = "execution-measure")]
 #[inline]
 pub fn area(area: Area) -> Guard {
     guard(Op::Phase, Some(area))
 }
+#[cfg(feature = "execution-measure")]
 #[inline]
 fn guard(op: Op, area: Option<Area>) -> Guard {
     if !cfg!(feature = "execution-measure") || ACTIVE.load(Ordering::Relaxed) == 0 {
@@ -205,6 +210,25 @@ fn guard(op: Op, area: Option<Area>) -> Guard {
         }
     })
 }
+/// Feature-disabled markers have no fields or destructor: no hot-path scaffolding survives.
+#[cfg(not(feature = "execution-measure"))]
+pub struct Guard;
+#[cfg(not(feature = "execution-measure"))]
+const _: () = {
+    assert!(std::mem::size_of::<Guard>() == 0);
+    assert!(!std::mem::needs_drop::<Guard>());
+};
+#[cfg(not(feature = "execution-measure"))]
+#[inline(always)]
+pub fn operation(_: Op) -> Guard {
+    Guard
+}
+#[cfg(not(feature = "execution-measure"))]
+#[inline(always)]
+pub fn area(_: Area) -> Guard {
+    Guard
+}
+
 pub fn reset(mode: u8) {
     ACTIVE.store(mode, Ordering::Relaxed);
     STATS.with(|s| {
