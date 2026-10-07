@@ -85,7 +85,7 @@ impl<DB: Database> CancellableDatabase<'_, DB> {
 // The wrapper owns no state and is used only beneath the strict recorder. It
 // cannot commit. Prefix hits and computation without provider reads do not
 // poll; publication still rejects work that finishes after its ordered take.
-impl<DB: Database> Database for CancellableDatabase<'_, DB> {
+impl<DB: Database> reth_revm::Database for CancellableDatabase<'_, DB> {
     type Error = CaptureDatabaseError<DB::Error>;
 
     fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
