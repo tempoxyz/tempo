@@ -583,6 +583,7 @@ fn canonical_miss_does_not_accept_late_capture() {
 
 /// Advance ordered consumption inside a provider read, before the next strict
 /// read polls cancellation. No timing assumptions or background threads.
+#[derive(Debug)]
 struct ConsumeDuringStorage {
     inner: TestDB,
     session: Arc<EnginePrewarmingSession>,

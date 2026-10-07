@@ -63,6 +63,7 @@ impl<E: DBErrorMarker> DBErrorMarker for CaptureDatabaseError<E> {
     }
 }
 
+#[derive(Debug)]
 struct CancellableDatabase<'a, DB> {
     db: DB,
     session: &'a EnginePrewarmingSession,
