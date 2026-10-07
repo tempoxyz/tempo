@@ -76,7 +76,7 @@ fn pending_payload_job_is_delivered() {
         h.execution
             .deliver_payload(payload_id, built_payload(&proposal));
         let payload = build.await.expect("payload should be delivered");
-        let (block, _) = payload.into_execution_payload();
+        let block = payload.into_execution_payload();
         assert_eq!(Digest(block.hash()), digest);
         assert!(h.execution.pending_payload_jobs().is_empty());
         assert!(h.execution.canceled_payload_jobs().is_empty());
@@ -170,7 +170,7 @@ fn build_delivers_its_parent_before_queued_finalization() {
             .await
             .expect("finalized block should be acknowledged");
 
-        let (block, _) = payload.into_execution_payload();
+        let block = payload.into_execution_payload();
         assert_eq!(Digest(block.hash()), proposal.digest());
         assert!(
             h.execution.fcus().contains(&(d1, GENESIS, true)),
@@ -408,12 +408,12 @@ fn latest_queued_build_survives_while_the_active_build_finishes() {
             .send(())
             .expect("new requests must not cancel active delivery");
         let payload = first.await.expect("the active build should complete");
-        let (block, _) = payload.into_execution_payload();
+        let block = payload.into_execution_payload();
         assert_eq!(Digest(block.hash()), first_proposal.digest());
         let payload = latest
             .await
             .expect("the latest queued build should complete next");
-        let (block, _) = payload.into_execution_payload();
+        let block = payload.into_execution_payload();
         assert_eq!(Digest(block.hash()), proposal.digest());
         assert_eq!(
             h.execution.fcus(),

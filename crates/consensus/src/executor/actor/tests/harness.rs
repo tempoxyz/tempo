@@ -74,26 +74,23 @@ pub(super) fn make_block_with_proposer(
     parent: Digest,
     proposer: tempo_primitives::ed25519::PublicKey,
 ) -> Block {
-    Block::from_execution_block_unchecked(
-        SealedBlock::seal_slow(TempoBlock {
-            header: TempoHeader {
-                inner: alloy_consensus::Header {
-                    number: height,
-                    parent_hash: parent.0,
-                    ..Default::default()
-                },
-                consensus_context: Some(TempoConsensusContext {
-                    epoch: 0,
-                    view,
-                    parent_view: view.saturating_sub(1),
-                    proposer,
-                }),
+    Block::from_execution_block_unchecked(SealedBlock::seal_slow(TempoBlock {
+        header: TempoHeader {
+            inner: alloy_consensus::Header {
+                number: height,
+                parent_hash: parent.0,
                 ..Default::default()
             },
-            body: Default::default(),
-        }),
-        None,
-    )
+            consensus_context: Some(TempoConsensusContext {
+                epoch: 0,
+                view,
+                parent_view: view.saturating_sub(1),
+                proposer,
+            }),
+            ..Default::default()
+        },
+        body: Default::default(),
+    }))
 }
 
 /// Wraps `block` in a [`TempoBuiltPayload`] the way the payload builder
@@ -102,7 +99,6 @@ pub(super) fn built_payload(block: &Block) -> TempoBuiltPayload {
     let recovered = RecoveredBlock::new_sealed(block.block().clone(), Vec::new());
     TempoBuiltPayload::new(
         EthBuiltPayload::new(Arc::new(recovered), U256::ZERO, None, None),
-        None,
         None,
         Duration::ZERO,
         Duration::ZERO,
@@ -330,10 +326,10 @@ impl FakeExecution {
                 scripted_builds: Mutex::new(VecDeque::new()),
                 bodies: Mutex::new(HashMap::from([(
                     genesis,
-                    Block::from_execution_block_unchecked(
-                        SealedBlock::new_unchecked(TempoBlock::default(), genesis),
-                        None,
-                    ),
+                    Block::from_execution_block_unchecked(SealedBlock::new_unchecked(
+                        TempoBlock::default(),
+                        genesis,
+                    )),
                 )])),
             }),
         }
@@ -645,7 +641,7 @@ impl ExecutionLayer for FakeExecution {
         &self,
         payload: TempoExecutionData,
     ) -> impl Future<Output = eyre::Result<PayloadStatus>> + Send + 'static {
-        let block = Block::from_execution_block_unchecked(payload.block, None);
+        let block = Block::from_execution_block_unchecked(payload.block);
         let (digest, height, parent) = (
             block.digest().0,
             block.height().get(),
