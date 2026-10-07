@@ -205,3 +205,8 @@ pub fn dump() {
         }
     });
 }
+
+/// Process-level batch timestamp; never called per transaction.
+pub fn timestamp() -> u64 {
+    Stamp::read().ticks
+}

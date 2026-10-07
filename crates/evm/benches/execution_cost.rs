@@ -601,6 +601,7 @@ fn main() {
     for round in 0..rounds {
         let db = fixture.state_db();
         let started = std::time::Instant::now();
+        let ticks = tempo_precompiles::execution_measure::timestamp();
         let stats = execute_txs(
             &config,
             db,
@@ -608,8 +609,9 @@ fn main() {
             workload.block_timestamp,
             hardfork,
         );
+        let elapsed_ticks = tempo_precompiles::execution_measure::timestamp().saturating_sub(ticks);
         println!(
-            "round={round} nanos={} gas={} txs={}",
+            "round={round} nanos={} gas={} txs={} ticks={elapsed_ticks}",
             started.elapsed().as_nanos(),
             stats.gas_used,
             stats.txs
