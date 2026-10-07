@@ -1057,9 +1057,12 @@ def run-local-e2e-phase [run: record, ctx: record] {
     if ("report.json" | path exists) { rm report.json }
     let tuning_state = if $ctx.tune { apply-system-tuning } else { { tuned: false } }
 
+    # Report port owners before startup; measurement runners may already expose 9001.
+    print "Listening TCP endpoints before benchmark node startup:"
+    ^sudo ss -ltnp
     let a_rpc = "http://127.0.0.1:8545"
     let b_rpc = "http://127.0.0.1:8645"
-    let a_base_args = (build-base-args $genesis $ctx.a.datadir $a_log_dir "0.0.0.0" 8545 9001)
+    let a_base_args = (build-base-args $genesis $ctx.a.datadir $a_log_dir "0.0.0.0" 8545 19001)
         | append ["--log.file.format" "json"]
         | append (build-e2e-consensus-args $ctx.a.node_dir $ctx.trusted_peers $ctx.a.consensus_port $ctx.a.ip)
         | append $local_reth_args
@@ -1068,7 +1071,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
         | append (if $ctx.samply { ["--log.samply"] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
         | append (benchmark-otlp-args $ctx.tracing_otlp)
-    let b_base_args = (build-base-args $genesis $ctx.b.datadir $b_log_dir "0.0.0.0" 8645 9101)
+    let b_base_args = (build-base-args $genesis $ctx.b.datadir $b_log_dir "0.0.0.0" 8645 19101)
         | append ["--log.file.format" "json"]
         | append (build-e2e-consensus-args $ctx.b.node_dir $ctx.trusted_peers $ctx.b.consensus_port $ctx.b.ip)
         | append $local_reth_args
@@ -1140,7 +1143,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     } else {
         ""
     }
-    let metrics_urls = ["a:http://127.0.0.1:9001/metrics" "b:http://127.0.0.1:9101/metrics"]
+    let metrics_urls = ["a:http://127.0.0.1:19001/metrics" "b:http://127.0.0.1:19101/metrics"]
         | append (if $ctx.runner_metrics_url != "" { [$"runner:($ctx.runner_metrics_url)"] } else { [] })
     let submit_rpc_url = [$a_rpc $b_rpc] | str join ","
 
