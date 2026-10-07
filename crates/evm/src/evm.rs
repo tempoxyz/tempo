@@ -80,12 +80,29 @@ struct ExecutionStageTimings {
     ordinary_calls: u64,
     ordinary_errors: u64,
     ordinary: Duration,
+    ordinary_by_reason: [OrdinaryStageTiming; 4],
     commit_calls: u64,
     commit: Duration,
     prewarmed_reuse_disposal_calls: u64,
     prewarmed_reuse_disposal: Duration,
     prewarmed_fallback_disposal_calls: u64,
     prewarmed_fallback_disposal: Duration,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct OrdinaryStageTiming {
+    calls: u64,
+    elapsed: Duration,
+}
+
+/// Why this invocation reached ordered execution. A missing candidate includes
+/// unavailable results and reuse guards; it does not imply a worker was scheduled.
+#[derive(Clone, Copy)]
+enum OrdinaryReason {
+    NoCandidate,
+    Conflict,
+    SpeculativeError,
+    ValidationError,
 }
 
 /// Opt-in disposal timing at the existing partial-move boundary. A local
@@ -513,6 +530,14 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             ordinary_calls = timings.ordinary_calls,
             ordinary_errors = timings.ordinary_errors,
             ordinary_seconds = timings.ordinary.as_secs_f64(),
+            ordinary_no_candidate_calls = timings.ordinary_by_reason[OrdinaryReason::NoCandidate as usize].calls,
+            ordinary_no_candidate_seconds = timings.ordinary_by_reason[OrdinaryReason::NoCandidate as usize].elapsed.as_secs_f64(),
+            ordinary_conflict_calls = timings.ordinary_by_reason[OrdinaryReason::Conflict as usize].calls,
+            ordinary_conflict_seconds = timings.ordinary_by_reason[OrdinaryReason::Conflict as usize].elapsed.as_secs_f64(),
+            ordinary_speculative_error_calls = timings.ordinary_by_reason[OrdinaryReason::SpeculativeError as usize].calls,
+            ordinary_speculative_error_seconds = timings.ordinary_by_reason[OrdinaryReason::SpeculativeError as usize].elapsed.as_secs_f64(),
+            ordinary_validation_error_calls = timings.ordinary_by_reason[OrdinaryReason::ValidationError as usize].calls,
+            ordinary_validation_error_seconds = timings.ordinary_by_reason[OrdinaryReason::ValidationError as usize].elapsed.as_secs_f64(),
             commit_calls = timings.commit_calls,
             commit_seconds = timings.commit.as_secs_f64(),
             prewarmed_reuse_disposal_calls = timings.prewarmed_reuse_disposal_calls,
@@ -761,6 +786,7 @@ where
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         self.inner.set_body_replay(None);
+        let mut ordinary_reason = OrdinaryReason::NoCandidate;
         if let Some(session) = self.engine_session.as_ref() {
             if let Some(capture) = self.engine_capture {
                 // Capture mutably inspects the EVM while holding its worker guard.
@@ -862,6 +888,7 @@ where
         {
             if candidate.result.is_err() {
                 self.execution_stats.retries += 1;
+                ordinary_reason = OrdinaryReason::SpeculativeError;
             } else {
                 let started = self
                     .execution_stage_timings
@@ -881,6 +908,7 @@ where
                     timings.validation_errors += u64::from(valid.is_err());
                     timings.validation += elapsed;
                 }
+                let validation_error = valid.is_err();
                 if valid.unwrap_or(false) {
                     self.execution_stats.reused += 1;
                     if prewarmed && let Some(executor) = &self.speculative {
@@ -905,6 +933,11 @@ where
                     }
                     return candidate.result;
                 } else {
+                    ordinary_reason = if validation_error {
+                        OrdinaryReason::ValidationError
+                    } else {
+                        OrdinaryReason::Conflict
+                    };
                     self.execution_stats.conflicts += 1;
                     use crate::parallel::ConflictKind;
                     match candidate.conflict {
@@ -975,6 +1008,11 @@ where
                 timings.ordinary_calls += 1;
                 timings.ordinary_errors += u64::from(result.is_err());
                 timings.ordinary += elapsed;
+                // Partition the existing interval exactly, without another
+                // clock read or any timing work when diagnostics are disabled.
+                let reason = &mut timings.ordinary_by_reason[ordinary_reason as usize];
+                reason.calls += 1;
+                reason.elapsed += elapsed;
             }
             if self.inner.body_was_reused() {
                 self.execution_stats.bodies_reused += 1;
@@ -1392,24 +1430,36 @@ mod tests {
             ..Default::default()
         };
         for enabled in [false, true] {
-            for case in ["reuse", "conflict", "provider_error"] {
+            for case in ["reuse", "conflict", "provider_error", "retry", "missing"] {
+                let mut tx = tx.clone();
+                if case == "retry" {
+                    tx.inner.nonce = 1;
+                }
                 let mut expected = TempoEvm::new(parent.clone(), env.clone());
                 let mut actual = TempoEvm::new(parent.clone(), env.clone());
                 actual.set_speculative_executor(Some(
                     SpeculativeExecutor::new(1, 1)
                         .unwrap()
+                        .with_streaming(false)
                         .with_stage_diagnostics(enabled),
                 ));
-                let candidate = PrewarmingExecutor::new(parent.clone(), env.clone())
-                    .execute(tx.clone(), None)
-                    .unwrap();
-                actual.set_preexecuted_transaction(candidate);
-                if case == "conflict" {
+                if case == "retry" {
+                    // Complete an invalid future-nonce candidate before the
+                    // ordered prefix changes. Its error must be retried.
+                    actual.prepare_transactions([(tx.clone(), env.block_env.beneficiary)]);
+                } else if case != "missing" {
+                    let candidate = PrewarmingExecutor::new(parent.clone(), env.clone())
+                        .execute(tx.clone(), None)
+                        .unwrap();
+                    actual.set_preexecuted_transaction(candidate);
+                }
+                if matches!(case, "conflict" | "retry") {
                     for evm in [&mut actual, &mut expected] {
                         evm.db_mut().insert_account_info(
                             tx.inner.caller,
                             AccountInfo {
                                 balance: U256::ONE,
+                                nonce: u64::from(case == "retry"),
                                 ..Default::default()
                             },
                         );
@@ -1442,7 +1492,8 @@ mod tests {
                 );
                 if enabled {
                     let timings = actual.execution_stage_timings.as_ref().unwrap();
-                    assert_eq!(timings.validation_calls, 1);
+                    let validation_calls = u64::from(!matches!(case, "retry" | "missing"));
+                    assert_eq!(timings.validation_calls, validation_calls);
                     assert_eq!(timings.validation_conflicts, u64::from(case == "conflict"));
                     assert_eq!(
                         timings.validation_errors,
@@ -1450,6 +1501,34 @@ mod tests {
                     );
                     assert_eq!(timings.ordinary_calls, if case == "reuse" { 1 } else { 2 });
                     assert_eq!(timings.ordinary_errors, 1);
+                    assert_eq!(
+                        timings
+                            .ordinary_by_reason
+                            .each_ref()
+                            .map(|stage| stage.calls),
+                        [
+                            1 + u64::from(case == "missing"),
+                            u64::from(case == "conflict"),
+                            u64::from(case == "retry"),
+                            u64::from(case == "provider_error"),
+                        ]
+                    );
+                    assert_eq!(
+                        timings
+                            .ordinary_by_reason
+                            .iter()
+                            .map(|stage| stage.calls)
+                            .sum::<u64>(),
+                        timings.ordinary_calls
+                    );
+                    assert_eq!(
+                        timings
+                            .ordinary_by_reason
+                            .iter()
+                            .map(|stage| stage.elapsed)
+                            .sum::<Duration>(),
+                        timings.ordinary
+                    );
                     assert_eq!(timings.commit_calls, 1);
                     assert_eq!(
                         timings.prewarmed_reuse_disposal_calls,
@@ -1457,7 +1536,7 @@ mod tests {
                     );
                     assert_eq!(
                         timings.prewarmed_fallback_disposal_calls,
-                        u64::from(case != "reuse")
+                        u64::from(matches!(case, "conflict" | "provider_error"))
                     );
                     let inspected = actual.with_inspector(NoOpInspector {});
                     assert_eq!(
@@ -1466,7 +1545,7 @@ mod tests {
                             .as_ref()
                             .unwrap()
                             .validation_calls,
-                        1
+                        validation_calls
                     );
                     actual = inspected;
                 } else {
@@ -1480,6 +1559,9 @@ mod tests {
                 let timings = actual.execution_stage_timings.as_ref().unwrap();
                 assert_eq!(timings.validation_calls, 0);
                 assert_eq!(timings.ordinary_calls, 0);
+                for stage in &timings.ordinary_by_reason {
+                    assert_eq!(stage, &OrdinaryStageTiming::default());
+                }
                 assert_eq!(timings.commit_calls, 0);
                 assert_eq!(timings.prewarmed_reuse_disposal_calls, 0);
                 assert_eq!(timings.prewarmed_reuse_disposal, Duration::ZERO);

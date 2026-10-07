@@ -26,6 +26,12 @@ The previous detailed diary is archived locally as
 | `--execution.capture-diagnostics` | Optional Engine admission/publication/consumption counters; defaults off. |
 | `--execution.stage-diagnostics` | Optional ordered validation, ordinary execution, commit and consumed-candidate disposal wall timers; defaults off. |
 
+Ordinary execution timers split the existing interval into missing candidates,
+read conflicts, speculative errors and validation provider errors. Their counts
+and durations sum to the ordinary totals, including failed ordered calls. These
+are elapsed wall times; missing candidates also include reuse guards and do not
+prove that work was scheduled.
+
 Engine consumes strict prewarming results when ready and executes ordered misses
 or conflicts directly. Canonical transaction commits publish advisory prefix
 hints; discarded candidates do not. Every reused result still passes ordered
