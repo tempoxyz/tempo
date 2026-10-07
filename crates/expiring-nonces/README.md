@@ -85,6 +85,56 @@ identities, node implementations, and workload settings are unchanged.
 It measures two validators on one runner, alternating three 180-second runs of
 each implementation against the same 100,000 MiB state snapshot.
 
+### AWS multiregion rerun with verified funding
+
+The [AWS rerun](https://github.com/tempoxyz/tempo/actions/runs/37548185616)
+completed all six phases and infrastructure teardown. It compares the same
+`3113606c8933` baseline and `93b3d8a06cda` feature with 8 validators, two each in
+`us-east-1`, `eu-central-1`, `ap-southeast-1`, and `ap-northeast-1`. Workload inputs
+remain 100 GiB state, `tip20_existing_recipients`, 3 pairs of 180 seconds, 50,000
+target TPS, 1,000 accounts, 5,000 concurrent requests, and txgen
+`8ca73369c4b42ffffaf40066bbde8673141049c1`.
+
+The Tempo workflow runs from benchmark-only commit
+`90bb1ccc35b673abff57fe1f07999cd0251a7c70`, which pins the harness to
+`b4924f164531651a884228b36ec16e00b811ab78`. That revision adds a sender fee-balance
+preflight and rejects a phase if insufficient-funds errors exceed 0.1% of sends.
+The preflight checks pathUSD; a necessary faucet top-up funds all four fee tokens.
+All six phase preflights found zero underfunded senders and required no top-ups.
+The minimum observed pathUSD balance was 18,446,744,063,709,551,615 base units,
+versus a required 2,570,000,000. An independent scan of all six sender logs found
+**zero insufficient-funds errors**; logged submission failures were exclusively
+`txpool is full`. Neither arm recorded EVM reverts.
+
+| Metric | Baseline | Feature | Observed change |
+| --- | ---: | ---: | ---: |
+| Included TPS, mean across runs | 9,859.7 | 10,820.7 | +9.7% |
+| Builder throughput, Mgas/s | 1,267.5 | 1,407.5 | +11.1% |
+| Validator throughput, Mgas/s | 1,446.1 | 1,582.3 | +9.4% |
+| Mean block time, ms | 625.0 | 627.9 | +0.5% |
+| Reported block time p50, ms | 628 | 633 | +0.8% |
+| Reported block time p99, ms | 792 | 765 | −3.4% |
+| RPC submission acceptance | 98.95% | 99.26% | +0.31 percentage points |
+
+Per-pair included TPS was 9,835→10,836 (+10.18%), 9,889→10,786 (+9.07%), and
+9,855→10,840 (+9.99%). All three favor the feature. This workflow supplies no
+confidence interval, and each pair runs baseline before feature; these are
+observed gains rather than a formal significance claim. Reported block latency
+percentiles aggregate per-run percentiles, not a pooled block distribution.
+The feature's mean and median block times are slightly higher despite greater
+throughput. The 50,000 TPS target was not achieved; this comparison does not
+establish which component limits throughput.
+
+Feature-1's wrapper phase lasted 711 seconds while its measurement window was
+approximately 180 seconds, like the other five phases. Wrapper elapsed includes
+preparation and reporting, so it is not a transaction-throughput denominator.
+The [artifact](https://github.com/tempoxyz/tempo/actions/runs/37548185616/artifacts/11454069835)
+contains all six `fee-balance-preflight.json` files, sender logs, per-phase
+reports, raw metrics, and the comparison summary. The invalid GCP comparison
+below remains withdrawn and is not used to infer this AWS result.
+
+### GCP multiregion comparison: withdrawn
+
 A [multiregion comparison](https://github.com/tempoxyz/tempo/actions/runs/37537005393)
 was also dispatched with the same baseline and optimized `93b3d8a06` feature,
 100 GiB of state,
