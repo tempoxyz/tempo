@@ -1222,10 +1222,7 @@ fn execute_batch(
         host.state_mut().rollback(checkpoint, features);
         return Ok(result);
     }
-    let mut reservoir = reservoir;
-    let mut refund = 0i64;
-    let mut state_gas = 0i64;
-    let mut spilled_state_gas = 0u64;
+    let mut batch_gas = GasTracker::from_parts(gas_limit, remaining, reservoir);
     let mut final_result = None;
     let tx_env = TxEnv::<TempoEvmTypes> {
         origin: caller,
@@ -1238,6 +1235,8 @@ fn execute_batch(
         if let TxKind::Call(address) = call.to {
             host.state_mut().prewarm(&address);
         }
+        let remaining = batch_gas.remaining();
+        let reservoir = batch_gas.reservoir();
         let mut gas = GasTracker::new_with_execution_gas_and_reservoir(remaining, reservoir);
         let mut result = if call.to.is_create() && !host.state_mut().account(&caller)?.bump_nonce()
         {
@@ -1260,7 +1259,9 @@ fn execute_batch(
             )?;
             execute_initial_frame(host, &tx_env, frame, &mut gas, remaining, reservoir)?
         };
-        // Check if call succeeded
+        // Each call receives all remaining execution gas and returns settled gas.
+        batch_gas.spend_all();
+        batch_gas.merge_child_gas(result.gas, result.stop);
         if !result.is_success() {
             // Revert checkpoint - rolls back ALL state changes from all executed calls.
             host.state_mut().rollback(checkpoint, features);
@@ -1268,19 +1269,11 @@ fn execute_batch(
             {
                 host.state_mut().account(&caller)?.bump_nonce();
             }
-            result.gas.set_limit(gas_limit);
-            result.gas.add_state_gas_spent(state_gas);
-            result.gas.add_state_gas_spilled(spilled_state_gas);
-            result.gas.settle_gas(result.stop);
+            // Roll back the earlier successful calls' state gas and refunds as well.
+            batch_gas.settle_gas(result.stop);
+            result.gas = batch_gas;
             return Ok(result);
         }
-        // Call succeeded - accumulate gas usage, refunds, and state gas
-        refund = refund.saturating_add(result.gas.refunded());
-        state_gas = state_gas.saturating_add(result.gas.state_gas_spent());
-        spilled_state_gas = spilled_state_gas.saturating_add(result.gas.state_gas_spilled());
-        // Update gas limit and reservoir to remaining values
-        remaining = result.gas.remaining();
-        reservoir = result.gas.reservoir();
         final_result = Some(result);
     }
 
@@ -1288,10 +1281,7 @@ fn execute_batch(
     let mut result = final_result.ok_or(TempoInvalidTransaction::CallsValidation(
         "calls list cannot be empty",
     ))?;
-    result.gas = GasTracker::from_parts(gas_limit, remaining, reservoir);
-    result.gas.record_refund(refund);
-    result.gas.add_state_gas_spent(state_gas);
-    result.gas.add_state_gas_spilled(spilled_state_gas);
+    result.gas = batch_gas;
     Ok(result)
 }
 
