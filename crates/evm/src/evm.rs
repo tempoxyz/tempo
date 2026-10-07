@@ -92,11 +92,12 @@ impl<DB: Database> TempoEvm<DB> {
         precompiles: F,
     ) -> Self
     where
-        F: FnOnce(
-            &CfgEnv<TempoHardfork>,
-            StorageActions,
-            Rc<RefCell<NonCreditableSlots>>,
-        ) -> PrecompilesMap,
+        F: Fn(
+                &CfgEnv<TempoHardfork>,
+                StorageActions,
+                Rc<RefCell<NonCreditableSlots>>,
+            ) -> PrecompilesMap
+            + 'static,
     {
         // TIP-1016 (EIP-8037 state gas split) is gated by `cfg_env.enable_amsterdam_eip8037`
         // and is independent of the T4 hardfork. The caller is responsible for setting the
@@ -1798,6 +1799,11 @@ mod tests {
         let evm = TempoEvm::new_with_precompiles(EmptyDB::default(), env, |cfg, _, _| {
             tempo_precompiles::ethereum_precompiles(cfg)
         });
+        assert!(evm.precompiles().get(&PATH_USD_ADDRESS).is_none());
+        assert!(evm.precompiles().get(&ecrecover).is_some());
+
+        // Enabling action recording must rebuild the same custom set.
+        let evm = evm.with_actions();
         assert!(evm.precompiles().get(&PATH_USD_ADDRESS).is_none());
         assert!(evm.precompiles().get(&ecrecover).is_some());
     }
