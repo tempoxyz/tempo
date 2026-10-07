@@ -855,7 +855,7 @@ pub(crate) mod tests {
     fn test_envelope_identifier_populates_sender_scoped_cache() {
         let envelope = crate::TempoTxEnvelope::AA(AASigned::new_unhashed(
             make_tx(),
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
+            TempoSignature::from(Signature::test_signature()),
         ));
         let signed = envelope.as_aa().unwrap();
         let sender = Address::repeat_byte(0x01);
