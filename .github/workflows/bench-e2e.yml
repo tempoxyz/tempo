@@ -357,6 +357,7 @@ env:
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: "sccache"
   NODE_MEASURE_MODE: ${{ inputs.measurement-mode || '3' }}
+  RUSTUP_TOOLCHAIN: nightly-2026-10-06
 
 permissions:
   contents: read
@@ -617,6 +618,8 @@ jobs:
             });
 
       - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        with:
+          toolchain: nightly-2026-10-06
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
         continue-on-error: true
 
