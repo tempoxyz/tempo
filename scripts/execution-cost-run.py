@@ -51,7 +51,7 @@ for cache in ['cold','warm']:
     for pair in range(3):
         order = ['revm','native'] if pair%2==0 else ['native','revm']
         for hook in [False, True]:
-            for label,mode in [('plain',0),('instrumented',0),('instrumented',1),('instrumented',2)]:
+            for label,mode in [('plain',0),('instrumented',0),('instrumented',1),('instrumented',2),('instrumented',3)]:
                 for backend in order:
                     name=f'p{pair}-{backend}-{cache}-{label}-m{mode}-hook{int(hook)}'
                     run(f'{backend}-{label}',name,mode,hook=hook,cache=cache)

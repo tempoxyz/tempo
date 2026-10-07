@@ -152,6 +152,14 @@ fn guard(op: Op, area: Option<Area>) -> Guard {
             restore: None,
         };
     }
+    if ACTIVE.load(Ordering::Relaxed) == 3 && !matches!(op, Op::Phase) {
+        return Guard {
+            area: 0,
+            op: 0,
+            start: None,
+            restore: None,
+        };
+    }
     STATS.with(|s| {
         let mut s = s.borrow_mut();
         let restore = (s.mode != 0)
@@ -177,9 +185,17 @@ fn guard(op: Op, area: Option<Area>) -> Guard {
                 .wrapping_add(salt.wrapping_mul(0xd6e8feb86659fd93))
                 .wrapping_mul(0x9e3779b97f4a7c15);
             n = (n ^ (n >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
-            mode == 2
+            (mode == 2 || mode == 3)
                 && cfg!(target_arch = "x86_64")
-                && ((n ^ (n >> 27)) & if matches!(op, Op::Phase) { 15 } else { 1023 }) == 0
+                && ((n ^ (n >> 27))
+                    & if mode == 3 {
+                        63
+                    } else if matches!(op, Op::Phase) {
+                        15
+                    } else {
+                        1023
+                    })
+                    == 0
         };
         Guard {
             area: a,
