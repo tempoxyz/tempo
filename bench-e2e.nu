@@ -1190,6 +1190,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let b_args = if $ctx.sequential_peer {
         dedup-args $b_args ["--execution.threads" "0"]
     } else { $b_args }
+    let b_tempo = if $ctx.sequential_peer_baseline { $ctx.reference_tempo } else { $run.tempo }
+    let b_ref = if $ctx.sequential_peer_baseline { $ctx.reference_sha } else { $run.ref }
     let producer_context = if $ctx.producer_isolation {
         let folder = ($"($ctx.results_dir)/producer-isolation" | path expand)
         mkdir $folder
@@ -1230,14 +1232,23 @@ def run-local-e2e-phase [run: record, ctx: record] {
     } else { "" }
     let differential_config = $"($ctx.results_dir)/differential-config-($phase).json"
     if $ctx.sequential_peer {
-        {
+        let config = {
             mode: sequential-peer
             phase: $phase
             feature_ref: $run.ref
             binary_sha256: (e2e-binary-sha256 $run.tempo)
             a: { rpc_url: $a_rpc, args: $a_args, log_dir: $a_log_dir }
             b: { rpc_url: $b_rpc, args: $b_args, log_dir: $b_log_dir }
-        } | to json | save -f $differential_config
+        }
+        let config = if $ctx.sequential_peer_baseline {
+            $config | merge {
+                feature_ref: $ctx.feature_sha
+                reference_ref: $b_ref
+                reference_binary_sha256: (e2e-binary-sha256 $b_tempo)
+                build_manifest: (open $"($ctx.results_dir)/build-manifest.json")
+            }
+        } else { $config }
+        $config | to json | save -f $differential_config
         let checked = (^python3 benchmarks/parallel-execution/verify_generated.py --config $differential_config --check-config | complete)
         if $checked.exit_code != 0 {
             print $checked.stderr
@@ -1252,7 +1263,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let tracy_env_prefix = if $ctx.tracy != "off" { $"TRACY_SAMPLING_HZ=($TRACY_SAMPLING_HZ) " } else { "" }
     let env_prefix = if $side_env != "" { $"($side_env) " } else { "" }
     let a_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=a,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
-    let b_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=b,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
+    let b_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=b,run_type=($run_type),git_ref=($b_ref),reference_epoch=($ctx.reference_epoch) "
 
     if $ctx.disposal_clock {
         {
@@ -1276,7 +1287,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let producer_units = if $ctx.owned_diagnostic { $ctx.producer_lifecycle.node_units } else { ["" ""] }
     let producer_description = if $ctx.owned_diagnostic { $ctx.producer_lifecycle.unit_description } else { "" }
     start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory --unit ($producer_units | get 0) --description $producer_description
-    start-e2e-local-node b $phase $run.tempo $b_args $env_prefix $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory --unit ($producer_units | get 1) --description $producer_description
+    start-e2e-local-node b $phase $b_tempo $b_args $env_prefix $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory --unit ($producer_units | get 1) --description $producer_description
 
     sleep 2sec
     let rpc_timeout = if $ctx.bloat > 0 { 600 } else { 300 }
@@ -1669,6 +1680,7 @@ def "main e2e" [
     --run-pairs: int = 3                                # Number of baseline/feature run pairs
     --run-side: string = "comparison"                   # Phases to run: comparison, feature, or baseline
     --sequential-peer                                  # Verify generated blocks with sequential peer B; feature-only
+    --sequential-peer-baseline                         # Build --baseline for sequential peer B; requires --sequential-peer
     --disposal-clock-calibration                       # Fixed 25k same-binary stage timer diagnostic
     --producer-isolation                              # Generate signed output into wc; never submit the measured workload
     --pipeline-pressure                               # Fixed loaded pipeline diagnostic; requires instrumented txgen
@@ -1805,6 +1817,12 @@ def "main e2e" [
     }
     if $sequential_peer and $run_side != "feature" {
         error make { msg: "--sequential-peer requires --run-side feature; this is a correctness run" }
+    }
+    if $sequential_peer_baseline and not $sequential_peer {
+        error make { msg: "--sequential-peer-baseline requires --sequential-peer" }
+    }
+    if $sequential_peer_baseline and ($samply or $scheduler_trace or $tracy != "off") {
+        error make { msg: "reference-peer correctness runs require profiling disabled" }
     }
     if $sequential_peer and ($clickhouse_url != "" or $victoriametrics_url != "" or $valscope_static_report) {
         error make { msg: "--sequential-peer cannot publish performance reports" }
@@ -2001,7 +2019,7 @@ def "main e2e" [
     let baseline_wt = $"($BENCH_WORKTREES_DIR)/e2e-local-baseline"
     let feature_wt = $"($BENCH_WORKTREES_DIR)/e2e-local-feature"
     let regenesis_needed = $hardfork_mode or $gas_limit != "" or $general_gas_limit != ""
-    let needs_baseline = $run_side in ["comparison" "baseline"]
+    let needs_baseline = $run_side in ["comparison" "baseline"] or $sequential_peer_baseline
     let needs_feature = $run_side in ["comparison" "feature"]
     mut worktrees = []
     if $needs_baseline {
@@ -2031,6 +2049,9 @@ def "main e2e" [
     let effective_no_cache = $no_cache or ($tracy != "off") or $disposal_clock_calibration
     let baseline_sha = if $needs_baseline { e2e-worktree-sha $baseline_wt } else { "" }
     let feature_sha = if $needs_feature { e2e-worktree-sha $feature_wt } else { "" }
+    if $sequential_peer_baseline and $baseline_sha == $feature_sha {
+        error make { msg: "reference-peer correctness requires distinct resolved source revisions" }
+    }
     # Profile, base RUSTFLAGS and default-feature controls are common to both arms.
     # Identical effective build inputs must use the same executable for a config A/B.
     let shared_build = $needs_baseline and $needs_feature and $baseline_sha == $feature_sha and $baseline_tbc == $feature_tbc
@@ -2095,6 +2116,9 @@ def "main e2e" [
     } else { "" }
     let baseline_arg_filter = if $needs_baseline { supported-node-arg-filter $baseline_tempo $E2E_LOCAL_RETH_ARGS } else { { supported: [], removed: [] } }
     let feature_arg_filter = if $needs_feature { supported-node-arg-filter $feature_tempo $E2E_LOCAL_RETH_ARGS } else { { supported: [], removed: [] } }
+    if $sequential_peer_baseline and $baseline_arg_filter != $feature_arg_filter {
+        error make { msg: "reference peers must support the same common node arguments" }
+    }
     let removed_arg_config = $"(format-removed-node-arg-config 'baseline' $baseline_arg_filter.removed)(format-removed-node-arg-config 'feature' $feature_arg_filter.removed)"
     if $removed_arg_config != "" {
         let current_config = ($env | get -o BENCH_CONFIG | default "")
@@ -2168,6 +2192,10 @@ def "main e2e" [
         baseline_args: $baseline_args
         feature_args: $feature_args
         sequential_peer: $sequential_peer
+        sequential_peer_baseline: $sequential_peer_baseline
+        reference_tempo: $baseline_tempo
+        reference_sha: $baseline_sha
+        feature_sha: $feature_sha
         disposal_clock: $disposal_clock_calibration
         disposal_clock_config: $disposal_clock_config
         producer_isolation: $producer_isolation

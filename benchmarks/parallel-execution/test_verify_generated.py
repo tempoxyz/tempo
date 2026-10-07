@@ -104,6 +104,70 @@ class GeneratedTests(unittest.TestCase):
     def run_check(self):
         return verify.verify(self.config, self.report, rpcs=self.rpcs, logs=self.logs())
 
+    def use_reference_peer(self):
+        self.config.update(reference_ref="c" * 40, reference_binary_sha256="d" * 64,
+                           build_manifest={"shared_binary": False, "arms": [
+                               {"side": "feature", "resolved_ref": "a" * 40, "sha256": "b" * 64},
+                               {"side": "baseline", "resolved_ref": "c" * 40, "sha256": "d" * 64}]})
+        for events, revision in zip(self.events, ("a" * 40, "c" * 40)):
+            events.insert(0, event("Starting Tempo", {"version": f"1.0.0-dev-{revision[:8]}"}, second=0))
+
+    def test_distinct_reference_checks_both_execution_roles(self):
+        self.use_reference_peer()
+        result = self.run_check()
+        self.assertIn("distinct pinned sequential reference", result["scope"])
+        self.assertIn("pinned reference", result["shared_changes"])
+        self.assertEqual(set(result["binary_startups"]), {"a", "b"})
+        self.assertEqual(result["verified_transactions"], 24)
+        self.assertEqual(result["parallel_reused"], {"builder_a": 6, "engine_a": 6})
+
+    def test_reference_rejects_missing_ambiguous_or_swapped_startup(self):
+        for role in range(2):
+            for fault in ("missing", "duplicate", "wrong"):
+                with self.subTest(role=role, fault=fault):
+                    self.setUp()
+                    self.use_reference_peer()
+                    if fault == "missing":
+                        self.events[role].pop(0)
+                    elif fault == "duplicate":
+                        self.events[role].insert(0, copy.deepcopy(self.events[role][0]))
+                    else:
+                        self.events[role][0]["fields"]["version"] = self.events[1 - role][0]["fields"]["version"]
+                    with self.assertRaisesRegex(verify.VerificationError, "startup"):
+                        self.run_check()
+
+    def test_reference_requires_bound_distinct_builds(self):
+        self.use_reference_peer()
+        mutations = [
+            lambda c: c.pop("reference_ref"),
+            lambda c: c.pop("build_manifest"),
+            lambda c: c.update(reference_ref=c["feature_ref"]),
+            lambda c: c.update(reference_ref="main"),
+            lambda c: c.update(reference_binary_sha256=c["binary_sha256"]),
+            lambda c: c["build_manifest"].update(shared_binary=True),
+            lambda c: c["build_manifest"]["arms"].pop(),
+            lambda c: c["build_manifest"]["arms"][1].update(side="feature"),
+            lambda c: c["build_manifest"]["arms"][1].update(resolved_ref="e" * 40),
+            lambda c: c["build_manifest"]["arms"][1].update(sha256="f" * 64),
+        ]
+        for mutation in mutations:
+            config = copy.deepcopy(self.config)
+            mutation(config)
+            with self.subTest(config=config), self.assertRaises(verify.VerificationError):
+                verify.check_config(config)
+
+    def test_reference_still_rejects_state_and_full_receipt_differences(self):
+        for field in ("stateRoot", "feeToken"):
+            with self.subTest(field=field):
+                self.setUp()
+                self.use_reference_peer()
+                if field == "stateRoot":
+                    self.rpcs[1].blocks[3][field] = digest(999)
+                else:
+                    self.rpcs[1].receipt_blocks[3][0][field] = "0x" + "22" * 20
+                with self.assertRaises(verify.VerificationError):
+                    self.run_check()
+
     def test_exact_dense_chain_both_directions_excludes_setup(self):
         result = self.run_check()
         self.assertEqual((result["from_block"], result["to_block"]), (2, 5))

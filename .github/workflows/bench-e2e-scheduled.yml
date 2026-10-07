@@ -38,6 +38,11 @@ on:
         required: false
         default: false
         type: boolean
+      reference-ref:
+        description: "Optional distinct baseline revision for the sequential correctness peer; empty uses the candidate binary."
+        required: false
+        default: ""
+        type: string
       correctness-tps:
         description: "Offered TPS for generated sequential-peer correctness validation only"
         required: false
@@ -203,7 +208,7 @@ jobs:
       contents: read
       id-token: write
     with:
-      baseline: ${{ inputs.ref || github.sha }}
+      baseline: ${{ inputs.reference-ref || inputs.ref || github.sha }}
       feature: ${{ inputs.ref || github.sha }}
       baseline-hardfork: T14
       feature-hardfork: T14
@@ -219,9 +224,10 @@ jobs:
       run-side: feature
       run-pairs: "1"
       sequential-peer: true
-      no-slack: "true"
-      no-cache: "true"
-      otlp: "false"
+      sequential-peer-baseline: ${{ inputs.reference-ref && true || false }}
+      no-slack: ${{ 'true' }}
+      no-cache: ${{ 'true' }}
+      otlp: ${{ 'false' }}
 
   bench-e2e:
     needs: resolve-refs

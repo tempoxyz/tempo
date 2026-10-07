@@ -126,9 +126,17 @@ full live receipt JSON, and requires producer/fresh opposite-peer Engine evidenc
 followed by `VALID`. Both producer roles must contain blocks larger than the
 selected window, with positive included builder reuse and exact Engine reuse.
 `verify_generated.py` validates the config and live cohort; missing evidence fails.
-Shared changes such as State commit optimization need separate ordinary-State
-oracles. This mode has no performance classification or Slack notification.
+Shared changes such as State commit optimization need a separate reference
+revision or ordinary-State oracle. This mode has no performance classification or Slack notification.
 Archived receipt digests support the live check; they are not full receipt bodies.
+
+For changes shared by both execution modes, set `reference-ref` to a distinct
+baseline revision. The workflow builds that revision for sequential peer B and
+checks both binary hashes, resolved revisions and node startup identities before
+accepting the same roots/receipts comparison. The reference must support the
+requested execution flags and hardfork. For example, add
+`-f reference-ref='<baseline-sha>'` to the dispatch above. An omitted reference
+keeps the existing comparison using the same candidate binary on both peers.
 
 Set `correctness-preset` to
 `tip20:recipient=existing,auth=keychain,fee-token=any_tip20` for transfers signed by

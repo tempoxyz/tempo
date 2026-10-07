@@ -68,6 +68,28 @@ def check_config(config):
             "missing binary SHA-256")
     require(isinstance(config.get("feature_ref"), str) and config["feature_ref"],
             "missing feature reference")
+    reference_fields = {"reference_ref", "reference_binary_sha256", "build_manifest"}
+    if reference_fields & config.keys():
+        require(reference_fields <= config.keys(), "incomplete reference binary provenance")
+        require(re.fullmatch(r"[0-9a-f]{40}", config["feature_ref"])
+                and re.fullmatch(r"[0-9a-f]{40}", str(config["reference_ref"]))
+                and config["feature_ref"] != config["reference_ref"],
+                "reference peers require distinct pinned source revisions")
+        require(re.fullmatch(r"[0-9a-f]{64}", str(config["reference_binary_sha256"]))
+                and config["binary_sha256"] != config["reference_binary_sha256"],
+                "reference peers require distinct binary hashes")
+        manifest = config["build_manifest"]
+        require(isinstance(manifest, dict) and manifest.get("shared_binary") is False
+                and isinstance(manifest.get("arms"), list), "invalid reference build manifest")
+        arms = manifest["arms"]
+        require(len(arms) == 2 and all(isinstance(arm, dict) for arm in arms)
+                and {arm.get("side") for arm in arms} == {"baseline", "feature"},
+                "reference build manifest must contain both distinct arms")
+        for arm in arms:
+            reference = arm["side"] == "baseline"
+            require(arm.get("resolved_ref") == config["reference_ref" if reference else "feature_ref"]
+                    and arm.get("sha256") == config["reference_binary_sha256" if reference else "binary_sha256"],
+                    "reference build manifest source/binary mismatch")
     forbidden = {"--debug.skip-state-root", "--builder.parallel", "--builder.disable-prewarming",
                  "--engine.disable-prewarming", "--engine.disable-caching-and-prewarming"}
     windows, explicit_window = [], False
@@ -231,10 +253,10 @@ def log_events(directory):
 
 
 def index_logs(events):
-    index = {"built": {}, "executed": {}, "valid": {}, "engine_reuse": {}, "builder_reuse": {}}
+    index = {"built": {}, "executed": {}, "valid": {}, "engine_reuse": {}, "builder_reuse": {}, "startups": []}
     relevant = []
     messages = {"building new payload", "Built payload", "Executed block", "Executed block via BAL path",
-                "execution layer reported payload status", "Finished speculative block execution"}
+                "execution layer reported payload status", "Finished speculative block execution", "Starting Tempo"}
     for event, location in events:
         require(isinstance(event, dict) and isinstance(event.get("fields"), dict), f"malformed event at {location}")
         if event["fields"].get("message") not in messages:
@@ -254,6 +276,9 @@ def index_logs(events):
         require(isinstance(spans, list) and all(isinstance(span, dict) for span in spans), f"malformed spans at {location}")
         message = fields["message"]
         proof = {"source": location, "time": stamp.isoformat()}
+        if message == "Starting Tempo":
+            index["startups"].append({**proof, "version": fields.get("version")})
+            continue
         builder_span = next((span for span in reversed(spans)
                             if span.get("name") == "build_payload" and span.get("id")), None)
         key = (builder_span["id"], builder_span.get("parent_hash")) if builder_span else None
@@ -364,6 +389,16 @@ def verify(config, report, rpcs=None, logs=None, finality_timeout=60, dense_tran
         require(header(rpc("eth_getBlockByNumber", [hex(start - 1), False])) == anchor[0],
                 "finalized canonical anchor changed during verification")
     logs = logs or [index_logs(log_events(config[role]["log_dir"])) for role in ("a", "b")]
+    binary_startups = {}
+    if "reference_ref" in config:
+        for role, log, revision in zip("ab", logs, (config["feature_ref"], config["reference_ref"])):
+            startups = log.get("startups", [])
+            require(len(startups) == 1, f"{role}: missing or ambiguous node startup identity")
+            version = startups[0]["version"]
+            prefixes = re.findall(r"(?<![0-9a-f])[0-9a-f]{7,40}(?![0-9a-f])", str(version))
+            require(any(revision.startswith(prefix) for prefix in prefixes),
+                    f"{role}: node startup source does not match pinned revision")
+            binary_startups[role] = startups[0]
     producers = {"a": 0, "b": 0}
     reuse = {"builder_a": 0, "engine_a": 0}
     for block in verified:
@@ -412,9 +447,13 @@ def verify(config, report, rpcs=None, logs=None, finality_timeout=60, dense_tran
     require(sum(producers.values()) >= min_dense_blocks and all(producers.values()),
             f"insufficient dense generated cohort / both producer roles at >= {dense_transactions} transactions: {producers}")
     require(all(reuse.values()), f"missing positive canonical parallel reuse in each role: {reuse}")
+    comparison = ("candidate against a distinct pinned sequential reference binary" if binary_startups
+                  else "same candidate binary with speculation on/off")
     return {"status": "passed", "mode": "generated-correctness", "speedup_claim": False,
-            "scope": "same candidate binary with speculation on/off; matching selected finalized header fields (including state and receipt roots), ordered transaction hashes and full receipt JSON for the interval; producer execution plus fresh opposite-peer Engine execution for every nonempty block",
-            "shared_changes": "not independently checked against unmodified main; State commit has separate oracle tests",
+            "scope": comparison + "; matching selected finalized header fields (including state and receipt roots), ordered transaction hashes and full receipt JSON for the interval; producer execution plus fresh opposite-peer Engine execution for every nonempty block",
+            "shared_changes": ("checked against the pinned reference for this generated cohort" if binary_startups
+                               else "not independently checked against unmodified main; State commit has separate oracle tests"),
+            "binary_startups": binary_startups,
             "config": config, "from_block": start, "to_block": end, "parent_anchor": anchor[0]["hash"],
             "verified_transactions": sum(block["tx_count"] for block in verified),
             "receipt_types": dict(sorted(receipt_types.items())),
