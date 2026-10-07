@@ -45,6 +45,9 @@ pub trait StorageCreditsBackend {
     /// Gas parameters for the active EVM2 version.
     fn gas_params(&self) -> &GasParams;
 
+    /// Whether EIP-8037 charges storage creation to state gas instead of execution gas.
+    fn state_gas_enabled(&self) -> bool;
+
     /// Gas tracker for the active EVM2 execution context.
     fn gas_tracker(&mut self) -> &mut GasTracker;
 
@@ -57,6 +60,21 @@ pub trait StorageCreditsBackend {
         } else {
             gas.spend(cost).map_err(|_| Self::Error::out_of_gas())
         }
+    }
+
+    /// Charges the credit-backed creation cost in the active gas dimension.
+    #[inline]
+    fn charge_storage_creation(&mut self) -> Result<(), Self::Error> {
+        if !self.state_gas_enabled() {
+            return self.charge_gas(STORAGE_CREDIT_VALUE);
+        }
+        let gas = self.gas_tracker();
+        gas.spend_state(STORAGE_CREDIT_VALUE).map_err(|_| {
+            // The execution-gas spill uses wrapping subtraction, even on failure.
+            // Clear the wrapped balance so OOG cannot leave an inflated gas budget.
+            gas.set_remaining(0);
+            Self::Error::out_of_gas()
+        })
     }
 
     /// SLOAD `address[key]`, optionally skipping the cold load.
@@ -182,12 +200,12 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
             }
             CreditMode::Direct | CreditMode::Preserve => {
                 // Direct without spendable credits, or Preserve, pays the creditable portion as gas.
-                backend.charge_gas(STORAGE_CREDIT_VALUE)?;
+                backend.charge_storage_creation()?;
             }
             CreditMode::Refund => {
                 // Charge the 245k creditable portion upfront and record a pending refund-eligible
                 // creation, settled at end-of-transaction.
-                backend.charge_gas(STORAGE_CREDIT_VALUE)?;
+                backend.charge_storage_creation()?;
                 transient_state.pending_refunds = transient_state.pending_refunds.saturating_add(1);
                 store_credit_state(backend, account_slot, transient_state)?;
             }

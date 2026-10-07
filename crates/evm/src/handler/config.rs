@@ -12,6 +12,7 @@ use evm2::{
     ethereum::{LazyTxEip7702, PreparedTx, eip1559, eip2930, eip7702, finalize_gas, legacy},
     evm::{DynDatabase, SystemTx, precompile::PrecompileProvider},
     handler::{GasSettlement, TxHandlerHooks},
+    interpreter::{GasTracker, InstrStop},
     registry::{HandlerError, HandlerResult, TxRegistry, TxRequest, handler},
     version::GasId,
 };
@@ -139,7 +140,8 @@ impl tempo_precompiles::storage::evm::EvmStorageExt for TempoEvmExt {
     }
 }
 
-/// Builds an EVM2 execution config for Tempo's ERC-20 fee model.
+/// Builds an EVM2 execution config for Tempo's ERC-20 fee model, including
+/// TIP-1016's execution/state gas split from T14.
 pub fn tempo_execution_config(
     tempo_spec: TempoHardfork,
     chain_id: u64,
@@ -196,10 +198,10 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
             return Ok(());
         }
 
-        let (nonce, zero_nonce_authorizations) = match envelope.evm_tx() {
-            TempoEvmTx::Legacy { transaction, .. } => (transaction.nonce, 0),
-            TempoEvmTx::Eip2930(transaction) => (transaction.nonce, 0),
-            TempoEvmTx::Eip1559(transaction) => (transaction.nonce, 0),
+        let (nonce, zero_nonce_authorizations, authorizations) = match envelope.evm_tx() {
+            TempoEvmTx::Legacy { transaction, .. } => (transaction.nonce, 0, 0),
+            TempoEvmTx::Eip2930(transaction) => (transaction.nonce, 0, 0),
+            TempoEvmTx::Eip1559(transaction) => (transaction.nonce, 0, 0),
             TempoEvmTx::Eip7702(transaction) => (
                 transaction.nonce,
                 transaction
@@ -207,6 +209,7 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
                     .iter()
                     .filter(|authorization| authorization.nonce() == 0)
                     .count() as u64,
+                transaction.authorization_list.len() as u64,
             ),
             TempoEvmTx::AA(_) => return Ok(()),
         };
@@ -217,7 +220,37 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
         *initial_state_gas = initial_state_gas.saturating_add(
             new_accounts.saturating_mul(host.version().gas_params.new_account_state_gas()),
         );
+        if host.feature(EvmFeatures::EIP8037) {
+            *initial_state_gas = initial_state_gas.saturating_add(
+                authorizations.saturating_mul(host.version().gas_params.eip7702_auth_state_gas()),
+            );
+        }
         Ok(())
+    }
+
+    fn apply_authorizations(
+        host: &mut Evm<'_, TempoEvmTypes>,
+        _envelope: &TempoTxEnv,
+        tx: &LazyTxEip7702,
+        caller: Address,
+        gas: &mut GasTracker,
+    ) -> HandlerResult<eip7702::AuthorizationResult> {
+        if host.feature(EvmFeatures::EIP8037) {
+            // TIP-1016 charges every authorization intrinsically, including redelegation.
+            let chain_id = host.version().chain_id;
+            let out_of_gas = eip7702::apply_auth_list(
+                host,
+                chain_id,
+                &tx.authorization_list,
+                &mut IntrinsicAuth,
+            )?;
+            Ok(eip7702::AuthorizationResult {
+                out_of_gas,
+                ..Default::default()
+            })
+        } else {
+            eip7702::apply_authorizations(host, tx, caller, gas)
+        }
     }
 
     fn before_execution(
@@ -441,9 +474,12 @@ fn settle_storage_credit_refunds(
         }
         Ok::<_, TempoPrecompileError>(settled)
     })?;
-    result
-        .gas
-        .record_refund(settled.saturating_mul(STORAGE_CREDIT_VALUE as i64));
+    let refund = settled.saturating_mul(STORAGE_CREDIT_VALUE as i64);
+    if host.feature(EvmFeatures::EIP8037) {
+        result.gas.refill_reservoir(refund as u64);
+    } else {
+        result.gas.record_refund(refund);
+    }
     Ok(())
 }
 
@@ -573,4 +609,19 @@ pub fn tempo_tx_registry(spec_id: SpecId) -> TxRegistry<TempoEvmTypes, TxResult<
     );
 
     registry
+}
+
+/// TIP-1016 authorization costs are paid intrinsically and never refunded.
+struct IntrinsicAuth;
+
+impl eip7702::AuthAccounting for IntrinsicAuth {
+    fn rejected(&mut self) {}
+
+    fn accepted(
+        &mut self,
+        _authority: Address,
+        _auth: &eip7702::AppliedAuth,
+    ) -> Result<(), InstrStop> {
+        Ok(())
+    }
 }

@@ -47,7 +47,7 @@ use tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_precompiles::{
     error::TempoPrecompileError,
-    storage::{PrecompileStorageProvider, StorageCtx},
+    storage::{PrecompileStorageProvider, StorageCheckpoint, StorageCtx},
     validator_config_v2::ValidatorConfigV2,
 };
 use tempo_primitives::{TempoBlockEnv, TempoPrimitives};
@@ -595,29 +595,29 @@ where
         false
     }
 
-    fn checkpoint(&mut self) -> StateCheckpoint {
+    fn checkpoint(&mut self) -> StorageCheckpoint {
         let idx = self.snapshots.len();
         self.snapshots
             .push((self.overlay.clone(), self.events.clone()));
-        StateCheckpoint::new(idx, 0)
+        StorageCheckpoint::new(StateCheckpoint::new(idx, 0))
     }
 
-    fn checkpoint_commit(&mut self, checkpoint: StateCheckpoint) {
+    fn checkpoint_commit(&mut self, checkpoint: StorageCheckpoint) {
         assert_eq!(
-            checkpoint.journal_len(),
+            checkpoint.state().journal_len(),
             self.snapshots.len() - 1,
             "out-of-order checkpoint commit",
         );
         self.snapshots.pop();
     }
 
-    fn checkpoint_revert(&mut self, checkpoint: StateCheckpoint) {
+    fn checkpoint_revert(&mut self, checkpoint: StorageCheckpoint) {
         assert_eq!(
-            checkpoint.journal_len(),
+            checkpoint.state().journal_len(),
             self.snapshots.len() - 1,
             "out-of-order checkpoint revert",
         );
-        let (overlay, events) = self.snapshots.remove(checkpoint.journal_len());
+        let (overlay, events) = self.snapshots.remove(checkpoint.state().journal_len());
         self.overlay = overlay;
         self.events = events;
     }
@@ -1280,5 +1280,44 @@ impl Read for BootstrapDkgState {
             players,
             is_full_dkg,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reth_db::mdbx::init_db;
+
+    #[test]
+    fn storage_overlay_checkpoints_restore_storage_and_events() -> eyre::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let db = init_db(dir.path(), DatabaseArguments::default())?;
+        let tx = db.tx_mut()?;
+        let mut storage = DbStorageOverlay::new(&tx, 1, 0, StorageSettings::v1());
+        let address = Address::repeat_byte(1);
+        let slot = U256::ZERO;
+        storage.sstore(address, slot, U256::from(1))?;
+
+        let outer = storage.checkpoint();
+        storage.sstore(address, slot, U256::from(2))?;
+        storage.emit_event(address, LogData::default())?;
+        let inner = storage.checkpoint();
+        storage.sstore(address, slot, U256::from(3))?;
+        storage.emit_event(address, LogData::default())?;
+        storage.checkpoint_revert(inner);
+        assert_eq!(storage.sload(address, slot)?, U256::from(2));
+        assert_eq!(storage.events.len(), 1);
+
+        let inner = storage.checkpoint();
+        storage.sstore(address, slot, U256::from(4))?;
+        storage.emit_event(address, LogData::default())?;
+        storage.checkpoint_commit(inner);
+        assert_eq!(storage.sload(address, slot)?, U256::from(4));
+        assert_eq!(storage.events.len(), 2);
+        storage.checkpoint_revert(outer);
+        assert_eq!(storage.sload(address, slot)?, U256::from(1));
+        assert!(storage.events.is_empty());
+        assert!(storage.snapshots.is_empty());
+        Ok(())
     }
 }

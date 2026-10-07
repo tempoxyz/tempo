@@ -1,8 +1,9 @@
 use std::{collections::BTreeMap, ops::Deref};
 
 use alloy::{
+    consensus::{SignableTransaction, TxEip1559, TxEnvelope},
     network::EthereumWallet,
-    primitives::{Address, B256, U256},
+    primitives::{Address, B256, Bytes, U256},
     providers::{Provider, ProviderBuilder, RootProvider},
     rpc::client::RpcClient,
     signers::{SignerSync, local::PrivateKeySigner},
@@ -10,7 +11,7 @@ use alloy::{
     transports::http::reqwest::Url,
 };
 use alloy_eips::eip2718::Encodable2718;
-use alloy_network::ReceiptResponse;
+use alloy_network::{ReceiptResponse, TxSignerSync};
 use reth_primitives_traits::transaction::TxHashRef;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::{constants::gas::TEMPO_T1_TX_GAS_LIMIT_CAP, spec::TEMPO_T1_BASE_FEE};
@@ -65,6 +66,55 @@ impl Deref for GasSnapshot {
 pub(crate) fn fixed_signer(last_byte: u8) -> PrivateKeySigner {
     PrivateKeySigner::from_bytes(&B256::with_last_byte(last_byte))
         .expect("fixed test private key must be valid")
+}
+
+/// Builds and encodes a signed EIP-1559 CALL transaction.
+pub(crate) fn build_call_tx(
+    signer: &PrivateKeySigner,
+    chain_id: u64,
+    nonce: u64,
+    gas_limit: u64,
+    to: Address,
+    input: Bytes,
+) -> Bytes {
+    let mut tx = TxEip1559 {
+        chain_id,
+        nonce,
+        gas_limit,
+        to: to.into(),
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        input,
+        ..Default::default()
+    };
+    let signature = signer.sign_transaction_sync(&mut tx).unwrap();
+    TxEnvelope::Eip1559(tx.into_signed(signature))
+        .encoded_2718()
+        .into()
+}
+
+/// Builds and encodes a signed EIP-1559 CREATE transaction.
+pub(crate) fn build_create_tx(
+    signer: &PrivateKeySigner,
+    chain_id: u64,
+    nonce: u64,
+    gas_limit: u64,
+    initcode: Bytes,
+) -> Bytes {
+    let mut tx = TxEip1559 {
+        chain_id,
+        nonce,
+        gas_limit,
+        to: alloy::primitives::TxKind::Create,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        input: initcode,
+        ..Default::default()
+    };
+    let signature = signer.sign_transaction_sync(&mut tx).unwrap();
+    TxEnvelope::Eip1559(tx.into_signed(signature))
+        .encoded_2718()
+        .into()
 }
 
 pub(crate) struct TempoTxSender<P> {

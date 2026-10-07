@@ -16,7 +16,7 @@ use crate::{
 };
 use alloy_primitives::{Address, KECCAK256_EMPTY, TxKind, U256};
 use evm2::{
-    Evm, EvmFeatures, TxResult,
+    Evm, EvmFeatures, TxResult, Version,
     env::TxEnv,
     ethereum::{
         access_list_counts, execute_initial_frame, initial_gas_and_reservoir,
@@ -29,7 +29,7 @@ use evm2::{
     interpreter::{GasTracker, InstrStop, MessageResult},
     precompiles::PrecompileError,
     registry::{HandlerError, HandlerResult, TxRequest},
-    version::{GasId, GasParams},
+    version::GasId,
 };
 use std::cmp::Ordering;
 use tempo_chainspec::{constants::gas::STORAGE_CREDIT_VALUE, hardfork::TempoHardfork};
@@ -201,15 +201,16 @@ fn call_scope_extra_gas(auth: &tempo_primitives::transaction::KeyAuthorization) 
 ///   SSTORE (write key) + N × SSTORE (per spending limit)
 ///   This is the sole gas accounting — the precompile runs with unlimited gas.
 ///
-/// Returns `(total_gas, state_gas)` where `total_gas` includes the state gas portion.
-/// On T4+, each storage-creating SSTORE contributes `sstore_set_state_gas` to state gas
-/// per TIP-1016.
+/// Returns `(execution_gas, state_gas)`. With TIP-1016 enabled, each
+/// storage-creating SSTORE contributes its credit-backed portion to state gas.
 #[inline]
 fn calculate_key_authorization_gas(
     key_auth: &tempo_primitives::transaction::SignedKeyAuthorization,
-    gas_params: &GasParams,
+    version: &Version,
     spec: TempoHardfork,
 ) -> (u64, u64) {
+    let gas_params = &version.gas_params;
+    let state_gas_enabled = version.feature(EvmFeatures::EIP8037);
     // All signature types pay ECRECOVER_GAS (3k) as the baseline since
     // primitive_signature_verification_gas assumes ecrecover is already in base 21k.
     // For KeyAuthorization, we're doing an additional signature verification.
@@ -247,7 +248,7 @@ fn calculate_key_authorization_gas(
         }
 
         let mut sstore_cost = u64::from(gas_params.get(GasId::SstoreSetWithoutLoadCost));
-        if spec.is_t7() {
+        if spec.is_t7() && !state_gas_enabled {
             // T7 exposes only the SSTORE residual in the gas table. Since key-auth storage is
             // intrinsic-only, we must also add the creditable portion here.
             sstore_cost = sstore_cost.saturating_add(STORAGE_CREDIT_VALUE);
@@ -268,8 +269,11 @@ fn calculate_key_authorization_gas(
         }
 
         // TIP-1016: each storage-creating SSTORE also incurs state gas.
-        let state_gas =
-            u64::from(gas_params.get(GasId::SstoreSetState)).saturating_mul(num_sstores);
+        let state_gas = if state_gas_enabled {
+            u64::from(gas_params.get(GasId::SstoreSetState)).saturating_mul(num_sstores)
+        } else {
+            0
+        };
 
         (regular_gas, state_gas)
     } else {
@@ -287,7 +291,7 @@ fn key_authorization_gas(
     host: &Evm<'_, TempoEvmTypes>,
     spec: TempoHardfork,
 ) -> (u64, u64) {
-    calculate_key_authorization_gas(authorization, &host.version().gas_params, spec)
+    calculate_key_authorization_gas(authorization, host.version(), spec)
 }
 
 /// Calculates intrinsic gas for an AA transaction batch using EVM2 gas parameters.
@@ -350,7 +354,7 @@ fn intrinsic_gas(
     // 5. Key authorization costs (if present)
     if let Some(authorization) = &tx.key_authorization {
         let (auth_regular, auth_state) =
-            calculate_key_authorization_gas(authorization, params, spec);
+            calculate_key_authorization_gas(authorization, host.version(), spec);
         regular = regular.saturating_add(auth_regular);
         state = state.saturating_add(auth_state);
     }
@@ -941,9 +945,6 @@ fn apply_key_authorization(
 #[derive(Clone, Copy, Debug)]
 struct AppliedAuthorization {
     refund_eligible: bool,
-    delegated_before_tx: bool,
-    delegated_now: bool,
-    clearing: bool,
 }
 
 fn apply_one_authorization(
@@ -975,15 +976,8 @@ fn apply_one_authorization(
     if authorization.nonce != nonce {
         return Ok(None);
     }
-    let delegated_before_tx = account.original_code()?.is_eip7702();
-    let clearing = authorization.address.is_zero();
     account.set_delegation(authorization.address);
-    Ok(Some(AppliedAuthorization {
-        refund_eligible,
-        delegated_before_tx,
-        delegated_now,
-        clearing,
-    }))
+    Ok(Some(AppliedAuthorization { refund_eligible }))
 }
 
 fn apply_authorization_list(
@@ -991,47 +985,21 @@ fn apply_authorization_list(
     authorizations: &[tempo_primitives::transaction::TempoSignedAuthorization],
     spec: TempoHardfork,
 ) -> HandlerResult<(u64, u64)> {
-    let eip8037 = host.feature(EvmFeatures::EIP8037);
-    let new_account = host.version().gas_params.new_account_state_gas();
-    let auth_base = u64::from(host.version().gas_params.get(GasId::TxEip7702PerAuthState));
     let regular_per_auth = u64::from(host.version().gas_params.get(GasId::TxEip7702AuthRefund));
-    let mut state_refund = 0u64;
     let mut regular_refund = 0u64;
-
     for authorization in authorizations
         .iter()
         .filter(|authorization| !(spec.is_t0() && authorization.signature().is_keychain()))
     {
-        let Some(applied) = apply_one_authorization(host, authorization)? else {
-            if eip8037 {
-                state_refund = state_refund.saturating_add(new_account + auth_base);
-                regular_refund = regular_refund.saturating_add(regular_per_auth);
-            }
-            continue;
-        };
-
-        if applied.refund_eligible {
+        if let Some(applied) = apply_one_authorization(host, authorization)?
+            && applied.refund_eligible
+        {
             regular_refund = regular_refund.saturating_add(regular_per_auth);
         }
-        if !eip8037 {
-            continue;
-        }
-        let mut refund = 0u64;
-        if applied.refund_eligible {
-            refund = refund.saturating_add(new_account);
-        }
-        if applied.clearing {
-            refund = refund.saturating_add(auth_base);
-            if applied.delegated_now && !applied.delegated_before_tx {
-                refund = refund.saturating_add(auth_base);
-            }
-        } else if applied.delegated_now || applied.delegated_before_tx {
-            refund = refund.saturating_add(auth_base);
-        }
-        state_refund = state_refund.saturating_add(refund);
     }
-
-    Ok((state_refund, regular_refund))
+    // TIP-1016 prices every authorization, including redelegations, upfront.
+    // These state changes survive failure of the subsequent execution batch.
+    Ok((0, regular_refund))
 }
 
 fn prevalidate_call_scopes(
@@ -1254,10 +1222,7 @@ fn execute_batch(
         host.state_mut().rollback(checkpoint, features);
         return Ok(result);
     }
-    let mut reservoir = reservoir;
-    let mut refund = 0i64;
-    let mut state_gas = 0i64;
-    let mut spilled_state_gas = 0u64;
+    let mut batch_gas = GasTracker::from_parts(gas_limit, remaining, reservoir);
     let mut final_result = None;
     let tx_env = TxEnv::<TempoEvmTypes> {
         origin: caller,
@@ -1270,6 +1235,8 @@ fn execute_batch(
         if let TxKind::Call(address) = call.to {
             host.state_mut().prewarm(&address);
         }
+        let remaining = batch_gas.remaining();
+        let reservoir = batch_gas.reservoir();
         let mut gas = GasTracker::new_with_execution_gas_and_reservoir(remaining, reservoir);
         let mut result = if call.to.is_create() && !host.state_mut().account(&caller)?.bump_nonce()
         {
@@ -1292,7 +1259,9 @@ fn execute_batch(
             )?;
             execute_initial_frame(host, &tx_env, frame, &mut gas, remaining, reservoir)?
         };
-        // Check if call succeeded
+        // Each call receives all remaining execution gas and returns settled gas.
+        batch_gas.spend_all();
+        batch_gas.merge_child_gas(result.gas, result.stop);
         if !result.is_success() {
             // Revert checkpoint - rolls back ALL state changes from all executed calls.
             host.state_mut().rollback(checkpoint, features);
@@ -1300,18 +1269,11 @@ fn execute_batch(
             {
                 host.state_mut().account(&caller)?.bump_nonce();
             }
-            let restored_reservoir = result.gas.reservoir().saturating_add_signed(state_gas);
-            result.gas =
-                GasTracker::from_parts(gas_limit, result.gas.remaining(), restored_reservoir);
+            // Roll back the earlier successful calls' state gas and refunds as well.
+            batch_gas.settle_gas(result.stop);
+            result.gas = batch_gas;
             return Ok(result);
         }
-        // Call succeeded - accumulate gas usage, refunds, and state gas
-        refund = refund.saturating_add(result.gas.refunded());
-        state_gas = state_gas.saturating_add(result.gas.state_gas_spent());
-        spilled_state_gas = spilled_state_gas.saturating_add(result.gas.state_gas_spilled());
-        // Update gas limit and reservoir to remaining values
-        remaining = result.gas.remaining();
-        reservoir = result.gas.reservoir();
         final_result = Some(result);
     }
 
@@ -1319,10 +1281,7 @@ fn execute_batch(
     let mut result = final_result.ok_or(TempoInvalidTransaction::CallsValidation(
         "calls list cannot be empty",
     ))?;
-    result.gas = GasTracker::from_parts(gas_limit, remaining, reservoir);
-    result.gas.record_refund(refund);
-    result.gas.add_state_gas_spent(state_gas);
-    result.gas.add_state_gas_spilled(spilled_state_gas);
+    result.gas = batch_gas;
     Ok(result)
 }
 

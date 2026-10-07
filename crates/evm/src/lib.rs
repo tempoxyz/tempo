@@ -408,14 +408,14 @@ mod tests {
         assert_eq!(evm_env.block.ext.proposer_public_key, Some(proposer));
     }
 
-    /// Test that evm_env sets 30M gas limit cap for T1 hardfork as per [TIP-1000].
+    /// TIP-1016 restores the Osaka execution cap while retaining the pre-T14 cap.
     ///
     /// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
     #[test]
-    fn test_evm_env_t1_gas_cap() {
+    fn test_evm_env_tip1016_gas_cap() {
         use tempo_chainspec::spec::DEV;
 
-        // DEV chainspec has T1 activated at timestamp 0
+        // DEV activates T14 at genesis.
         let chainspec = DEV.clone();
         let evm_config = TempoEvmConfig::new(chainspec.clone());
 
@@ -433,17 +433,18 @@ mod tests {
             ..Default::default()
         };
 
-        // Verify we're in T1
-        assert!(chainspec.tempo_hardfork_at(header.timestamp()).is_t1());
+        // Verify the production T14 environment enables TIP-1016.
+        assert!(chainspec.tempo_hardfork_at(header.timestamp()).is_t14());
 
         let evm_env = evm_config.evm_env(&header).unwrap();
 
-        // Verify TIP-1000 gas limit cap is set
+        assert!(evm_env.version.feature(evm2::EvmFeatures::EIP8037));
         assert_eq!(
-            evm_env.version.tx_gas_limit_cap,
-            tempo_chainspec::spec::TEMPO_T1_TX_GAS_LIMIT_CAP,
-            "TIP-1000 requires 30M gas limit cap for T1 hardfork"
+            evm_env.version.tx_gas_limit_cap, 16_777_216,
+            "TIP-1016 restores the Osaka execution cap"
         );
+        assert_eq!(TempoHardfork::T13.tx_gas_limit_cap(), Some(30_000_000));
+        assert_eq!(TempoHardfork::T14.tx_gas_limit_cap(), Some(16_777_216));
     }
 
     #[test]

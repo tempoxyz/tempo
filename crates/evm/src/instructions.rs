@@ -38,6 +38,10 @@ impl StorageCreditsBackend for StorageCreditsContext<'_, '_, '_> {
         self.state.gas_params()
     }
 
+    fn state_gas_enabled(&self) -> bool {
+        self.state.feature(EvmFeatures::EIP8037)
+    }
+
     fn gas_tracker(&mut self) -> &mut GasTracker {
         self.gas.tracker_mut()
     }
@@ -103,6 +107,16 @@ pub fn sstore(cx: _, [key, value]: [Word]) -> Result {
         .sstore(&destination, key, value, skip_cold_load)
         .map_err(|error| cx.state.fail(error))?;
 
+    let dynamic_gas = cx
+        .state
+        .gas_params()
+        .sstore_dynamic_gas(is_eip2200, &state_load);
+    // TIP-1016 requires execution charges to precede state charges. Preserve
+    // the pre-activation ordering, including its exceptional-halt behavior.
+    let state_gas = cx.state.feature(EvmFeatures::EIP8037);
+    if state_gas {
+        cx.gas.spend(dynamic_gas)?;
+    }
     if cx.state.host().config_spec_id().is_t7() {
         sstore_storage_credits(
             &mut StorageCreditsContext {
@@ -116,17 +130,8 @@ pub fn sstore(cx: _, [key, value]: [Word]) -> Result {
         .map_err(|error| cx.state.fail(error))?;
     }
 
-    cx.gas.spend(
-        cx.state
-            .gas_params()
-            .sstore_dynamic_gas(is_eip2200, &state_load),
-    )?;
-
-    if cx.state.feature(EvmFeatures::EIP8037) {
-        cx.gas
-            .spend_state(cx.state.gas_params().sstore_state_gas(&state_load))?;
-        cx.gas
-            .refill_reservoir(cx.state.gas_params().sstore_state_gas_refill(&state_load));
+    if !state_gas {
+        cx.gas.spend(dynamic_gas)?;
     }
 
     cx.gas

@@ -1,6 +1,9 @@
 use crate::{
     error::TempoPrecompileError,
-    storage::{PrecompileStorageProvider, StorageActions, actions::StorageAction},
+    storage::{
+        GasCheckpoint, PrecompileStorageProvider, StorageActions, StorageCheckpoint,
+        actions::StorageAction,
+    },
     storage_credits::{NonCreditableSlots, StorageCreditsBackend, sstore_storage_credits},
 };
 use alloy::primitives::{Address, B256, Bytes, Log, LogData, U256};
@@ -8,7 +11,7 @@ use bitflags::bitflags;
 use evm2::{
     Evm, EvmFeatures, EvmTypes, Version,
     bytecode::Bytecode,
-    evm::{AccountInfo, SLoad, SStore, StateCheckpoint},
+    evm::{AccountInfo, SLoad, SStore},
     interpreter::{GasTracker, gas},
     version::{GasId, GasParams},
 };
@@ -266,17 +269,23 @@ where
             self.deduct_gas(u64::from(self.version.gas_params.get(GasId::SstoreStatic)))?;
         }
 
+        let dynamic_gas = self.version.gas_params.sstore_dynamic_gas(true, &result);
+        let state_gas = self.state_gas_enabled();
+        if state_gas {
+            // Charge execution gas before the storage-credit hook charges state gas.
+            self.deduct_gas(dynamic_gas)?;
+        }
+
         // TIP-1060 (T7+): run the storage credits policy so precompile-driven storage
         // writes honor the same accounting as the opcode-level SSTORE hook.
+        // Its settlement replaces EIP-8037's immediate slot-restoration refill.
         if self.tip1060_storage_credits_enabled {
             sstore_storage_credits(self, address, Some(key), &result)?
         }
 
-        // dynamic gas
-        self.deduct_gas(self.version.gas_params.sstore_dynamic_gas(true, &result))?;
-
-        // Track state gas (cold SSTORE zero->non-zero only)
-        self.deduct_state_gas(self.version.gas_params.sstore_state_gas(&result))?;
+        if !state_gas {
+            self.deduct_gas(dynamic_gas)?;
+        }
 
         // Native precompile storage did not surface SSTORE refunds before TIP-1016.
         if self.spec.is_t4() {
@@ -335,6 +344,11 @@ where
     #[inline]
     fn gas_params(&self) -> &GasParams {
         &self.version.gas_params
+    }
+
+    #[inline]
+    fn state_gas_enabled(&self) -> bool {
+        self.version.feature(EvmFeatures::EIP8037)
     }
 
     #[inline]
@@ -415,13 +429,14 @@ where
         self.ensure_not_static()?;
         let code = Bytecode::new_raw(code);
         let code_len = code.len();
-        self.deduct_gas(
-            u64::from(self.version.gas_params.get(GasId::CodeDepositCost))
-                .saturating_mul(code_len as u64),
-        )?;
-
-        // Track state gas for code deposit
-        self.deduct_state_gas(self.version.gas_params.code_deposit_state_gas(code_len))?;
+        let mut execution_gas = u64::from(self.version.gas_params.get(GasId::CodeDepositCost))
+            .saturating_mul(code_len as u64);
+        let state_gas = self.state_gas_enabled();
+        if state_gas {
+            execution_gas =
+                execution_gas.saturating_add(self.version.gas_params.keccak256_word_cost(code_len));
+        }
+        self.deduct_gas(execution_gas)?;
 
         let was_empty = {
             let mut account = self.evm.state_mut().account(&address)?;
@@ -430,15 +445,13 @@ where
             was_empty
         };
 
-        // TIP-1016: charge TIP20 deployments as CREATE.
-        if self.version.feature(EvmFeatures::EIP8037) && was_empty {
-            self.deduct_gas(u64::from(self.version.gas_params.get(GasId::Create)))?;
-            self.deduct_state_gas(self.version.gas_params.create_state_gas())?;
-            self.deduct_gas(
-                self.version
-                    .gas_params
-                    .keccak256_word_cost(code_len.div_ceil(32)),
-            )?;
+        if state_gas {
+            // Finish charging execution work before drawing on the state reservoir.
+            if was_empty {
+                self.deduct_gas(u64::from(self.version.gas_params.get(GasId::Create)))?;
+                self.deduct_state_gas(self.version.gas_params.create_state_gas())?;
+            }
+            self.deduct_state_gas(self.version.gas_params.code_deposit_state_gas(code_len))?;
         }
 
         Ok(())
@@ -640,18 +653,35 @@ where
     }
 
     #[inline]
-    fn checkpoint(&mut self) -> StateCheckpoint {
-        self.evm.state_mut().checkpoint()
+    fn checkpoint(&mut self) -> StorageCheckpoint {
+        StorageCheckpoint {
+            state: self.evm.state_mut().checkpoint(),
+            gas: self
+                .version
+                .feature(EvmFeatures::EIP8037)
+                .then_some(GasCheckpoint {
+                    state_gas_spent: self.gas_tracker.state_gas_spent(),
+                    refunded: self.gas_tracker.refunded(),
+                }),
+        }
     }
 
     #[inline]
-    fn checkpoint_commit(&mut self, _checkpoint: StateCheckpoint) {}
+    fn checkpoint_commit(&mut self, _checkpoint: StorageCheckpoint) {}
 
     #[inline]
-    fn checkpoint_revert(&mut self, checkpoint: StateCheckpoint) {
+    fn checkpoint_revert(&mut self, checkpoint: StorageCheckpoint) {
+        if let Some(gas) = checkpoint.gas {
+            // TIP-1060 only refills state gas at transaction settlement, so
+            // state spending within a native checkpoint is nonnegative.
+            let state = u64::try_from(self.gas_tracker.state_gas_spent() - gas.state_gas_spent)
+                .expect("native checkpoint cannot settle storage credits");
+            self.gas_tracker.refill_reservoir(state);
+            self.gas_tracker.set_refunded(gas.refunded);
+        }
         self.evm
             .state_mut()
-            .rollback(checkpoint, self.version.features);
+            .rollback(checkpoint.state, self.version.features);
     }
 
     #[inline]
@@ -833,17 +863,24 @@ mod tests {
         storage_credits::StorageCredits,
     };
     use alloy::primitives::{
-        Address, B256, Bytes, KECCAK256_EMPTY, LogData, U256, bytes, keccak256,
+        Address, B256, Bytes, KECCAK256_EMPTY, Log, LogData, U256, bytes, keccak256,
     };
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use evm2::{
         BaseEvmConfigSelector, Evm, EvmTypesHost, ExecutionConfig, SpecId, Version,
-        evm::{InMemoryDB, precompile::NoPrecompiles},
-        interpreter::GasTracker,
+        evm::{
+            InMemoryDB,
+            precompile::{NoPrecompiles, PrecompileOutput},
+        },
+        interpreter::{GasTracker, Host, InstrStop, Message, MessageKind},
+        precompiles::{
+            Precompile, PrecompileError, PrecompileId, PrecompileMap, PrecompileResult, Precompiles,
+        },
         registry::TxRegistry,
         version::{GasId, GasParams},
     };
+    use std::borrow::Cow;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
 
@@ -871,39 +908,18 @@ mod tests {
 
     impl TestEvm {
         fn new(spec: TempoHardfork) -> Self {
-            Self::with_amsterdam(spec, false)
-        }
-
-        /// Constructs a [`TestEvm`] with TIP-1016 (EIP-8037) manually enabled.
-        ///
-        /// Used by tests that exercise TIP-1016 behavior (state gas split, reservoir
-        /// accounting). TIP-1016 is otherwise opt-in through EVM2's feature set and
-        /// defaults to `false` in production.
-        fn new_with_tip1016(spec: TempoHardfork) -> Self {
-            Self::with_amsterdam(spec, true)
-        }
-
-        fn with_amsterdam(spec: TempoHardfork, amsterdam_eip8037_enabled: bool) -> Self {
-            Self::with_database(spec, amsterdam_eip8037_enabled, InMemoryDB::default())
+            Self::with_database(spec, InMemoryDB::default())
         }
 
         fn with_storage(spec: TempoHardfork, address: Address, key: U256, value: U256) -> Self {
             let mut database = InMemoryDB::default();
             database.insert_account_info(&address, Default::default());
             database.insert_account_storage(&address, &key, &value);
-            Self::with_database(spec, false, database)
+            Self::with_database(spec, database)
         }
 
-        fn with_database(
-            spec: TempoHardfork,
-            amsterdam_eip8037_enabled: bool,
-            database: InMemoryDB,
-        ) -> Self {
-            let version = tempo_chainspec::gas_params::version(
-                SpecId::OSAKA,
-                spec,
-                amsterdam_eip8037_enabled,
-            );
+        fn with_database(spec: TempoHardfork, database: InMemoryDB) -> Self {
+            let version = tempo_chainspec::gas_params::version(SpecId::OSAKA, spec, false);
             Self {
                 evm: Evm::new_with_execution_config(
                     ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
@@ -1403,6 +1419,34 @@ mod tests {
     }
 
     #[test]
+    fn test_storage_creation_oog_consumes_execution_gas_and_settles_state_gas() -> eyre::Result<()>
+    {
+        let mut evm = TestEvm::new(TempoHardfork::T14);
+        let mut provider = evm.provider_with_gas_limit(100, 50);
+        provider.deduct_state_gas(75)?;
+        provider.refund_gas(5_000);
+
+        assert_eq!(
+            crate::storage_credits::StorageCreditsBackend::charge_storage_creation(&mut provider),
+            Err(TempoPrecompileError::OutOfGas)
+        );
+        assert_eq!(provider.gas_tracker.remaining(), 0);
+        assert_eq!(provider.state_gas_used(), 75);
+        assert_eq!(provider.state_gas_spilled(), 25);
+        assert_eq!(provider.reservoir(), 0);
+
+        provider
+            .gas_tracker
+            .settle_gas(evm2::interpreter::InstrStop::OutOfGas);
+        assert_eq!(provider.gas_tracker.remaining(), 0);
+        assert_eq!(provider.state_gas_used(), 0);
+        assert_eq!(provider.state_gas_spilled(), 0);
+        assert_eq!(provider.reservoir(), 50);
+        assert_eq!(provider.gas_refunded(), 0);
+        Ok(())
+    }
+
+    #[test]
     fn test_recover_signer_gas() -> eyre::Result<()> {
         let mut evm = TestEvm::default();
         let mut provider = evm.provider_max_gas();
@@ -1442,7 +1486,7 @@ mod tests {
 
     #[test]
     fn test_state_gas_used_only_counts_state_creating_ops() -> eyre::Result<()> {
-        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
+        let mut evm = TestEvm::new(TempoHardfork::T14);
         let gas_params = evm.gas_params();
         let mut provider = evm.provider_with_reservoir(0);
 
@@ -1462,8 +1506,8 @@ mod tests {
         provider.sstore(address, slot, U256::ONE)?;
         let state_gas_after_set = provider.state_gas_used();
         assert_eq!(
-            state_gas_after_set, 230_000,
-            "SSTORE zero->non-zero should add 230k state gas"
+            state_gas_after_set, 245_000,
+            "SSTORE zero->non-zero should add 245k state gas"
         );
         assert!(
             provider.gas_used() > gas_before,
@@ -1496,24 +1540,24 @@ mod tests {
     /// spills into regular gas once the reservoir is exhausted.
     #[test]
     fn test_state_gas_spills_from_reservoir_to_regular_gas() -> eyre::Result<()> {
-        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
+        let mut evm = TestEvm::new(TempoHardfork::T14);
 
-        // Reservoir = 500k: enough for 2 full SSTOREs (2 × 230k = 460k)
-        // but the 3rd SSTORE (230k) must spill 190k into regular gas.
+        // Reservoir = 500k: enough for 2 full SSTOREs (2 × 245k = 490k)
+        // but the 3rd SSTORE (245k) must spill 235k into regular gas.
         let gas_limit = 1_000_000u64;
         let reservoir = 500_000u64;
-        let state_gas_per_sstore = 230_000u64;
+        let state_gas_per_sstore = 245_000u64;
         let mut provider = evm.provider_with_gas_limit(gas_limit, reservoir);
         let address = Address::random();
 
         // --- First SSTORE (zero→non-zero): fully covered by reservoir ---
         provider.sstore(address, U256::ONE, U256::from(42))?;
 
-        let regular_gas_per_sstore = provider.gas_used(); // static + dynamic (regular)
+        let regular_gas_per_sstore = provider.gas_used() - 2_000; // Subsequent credit-slot loads are warm.
         assert_eq!(
             provider.state_gas_used(),
             state_gas_per_sstore,
-            "first SSTORE should consume 230k state gas"
+            "first SSTORE should consume 245k state gas"
         );
         assert_eq!(
             provider.reservoir(),
@@ -1521,29 +1565,29 @@ mod tests {
             "reservoir should decrease by state gas cost"
         );
 
-        // --- Second SSTORE: still fits in remaining reservoir (270k left, need 230k) ---
+        // --- Second SSTORE: still fits in remaining reservoir (255k left, need 245k) ---
         provider.sstore(address, U256::from(2), U256::from(43))?;
 
         assert_eq!(
             provider.state_gas_used(),
             2 * state_gas_per_sstore,
-            "two SSTOREs should consume 460k state gas"
+            "two SSTOREs should consume 490k state gas"
         );
         assert_eq!(
             provider.reservoir(),
             reservoir - 2 * state_gas_per_sstore,
-            "reservoir should have 40k left after 2 SSTOREs"
+            "reservoir should have 10k left after 2 SSTOREs"
         );
-        let remaining_reservoir = provider.reservoir(); // 40k
+        let remaining_reservoir = provider.reservoir(); // 10k
         let regular_gas_before_spill = provider.gas_used();
 
-        // --- Third SSTORE: reservoir insufficient, 190k spills to regular gas ---
+        // --- Third SSTORE: reservoir insufficient, 235k spills to regular gas ---
         provider.sstore(address, U256::from(3), U256::from(44))?;
 
         assert_eq!(
             provider.state_gas_used(),
             3 * state_gas_per_sstore,
-            "three SSTOREs should consume 690k state gas total"
+            "three SSTOREs should consume 735k state gas total"
         );
         assert_eq!(
             provider.reservoir(),
@@ -1552,7 +1596,7 @@ mod tests {
         );
 
         // Regular gas increase = normal sstore cost + spill from reservoir
-        let spill = state_gas_per_sstore - remaining_reservoir; // 230k - 40k = 190k
+        let spill = state_gas_per_sstore - remaining_reservoir; // 245k - 10k = 235k
         let expected_regular_after = regular_gas_before_spill + regular_gas_per_sstore + spill;
         assert_eq!(
             provider.gas_used(),
@@ -1564,22 +1608,39 @@ mod tests {
     }
 
     #[test]
-    fn test_t4_cold_sstore_matches_tip1016_spec() -> eyre::Result<()> {
-        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
-        let mut provider = evm.provider_with_reservoir(460_000);
+    fn test_sstore_credit_price_changes_dimension_at_tip1016() -> eyre::Result<()> {
+        for (spec, expected_execution, expected_state) in [
+            (TempoHardfork::T7, 254_300, 0),
+            (TempoHardfork::T13, 254_300, 0),
+            (TempoHardfork::T14, 9_300, 245_000),
+        ] {
+            let mut evm = TestEvm::new(spec);
+            let mut provider = evm.provider_with_reservoir(245_000);
+            provider.sstore(Address::repeat_byte(0x22), U256::ZERO, U256::ONE)?;
+            assert_eq!(provider.gas_used(), expected_execution, "{spec:?}");
+            assert_eq!(provider.state_gas_used(), expected_state, "{spec:?}");
+            assert_eq!(provider.reservoir(), 245_000 - expected_state, "{spec:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_t14_cold_sstore_matches_tip1016_spec() -> eyre::Result<()> {
+        let mut evm = TestEvm::new(TempoHardfork::T14);
+        let mut provider = evm.provider_with_reservoir(490_000);
 
         let (address, cold_slot, warm_slot) = (Address::random(), U256::ONE, U256::from(2));
 
         provider.sstore(address, cold_slot, U256::ONE)?;
         assert_eq!(
             provider.gas_used(),
-            22_200,
-            "TIP-1016 cold SSTORE should consume 22,200 regular gas including the retained Berlin cold-slot access charge"
+            9_300,
+            "TIP-1016 cold SSTORE should consume 9,300 regular gas (100 static + 5,000 write + 2,100 Berlin cold-slot access + 2,100 cold credits-slot load)"
         );
         assert_eq!(
             provider.state_gas_used(),
-            230_000,
-            "TIP-1016 cold SSTORE should consume 230,000 state gas"
+            245_000,
+            "TIP-1016 cold SSTORE should consume the 245,000 creditable portion as state gas"
         );
 
         provider.sload(address, warm_slot)?;
@@ -1589,29 +1650,29 @@ mod tests {
         provider.sstore(address, warm_slot, U256::ONE)?;
         assert_eq!(
             provider.gas_used() - gas_before_warm_sstore,
-            20_100,
-            "TIP-1016 warm zero-to-non-zero SSTORE should consume 20,100 regular gas after the slot is warmed by SLOAD"
+            5_200,
+            "TIP-1016 warm zero-to-non-zero SSTORE should consume 5,200 regular gas (100 static + 5,000 write + 100 warm credits-slot load) after the slot is warmed by SLOAD"
         );
         assert_eq!(
             provider.state_gas_used() - state_gas_before_warm_sstore,
-            230_000,
-            "TIP-1016 warm zero-to-non-zero SSTORE should still consume 230,000 state gas"
+            245_000,
+            "TIP-1016 warm zero-to-non-zero SSTORE should still consume 245,000 state gas"
         );
 
         Ok(())
     }
 
     #[test]
-    fn test_t4_set_code_new_account_matches_tip1016_success_path() -> eyre::Result<()> {
-        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
+    fn test_t14_set_code_new_account_matches_tip1016_success_path() -> eyre::Result<()> {
+        let mut evm = TestEvm::new(TempoHardfork::T14);
         let gas_params = evm.gas_params();
 
         let code = Bytes::from(vec![0xef]);
         let expected_state_gas =
             gas_params.create_state_gas() + gas_params.code_deposit_state_gas(code.len());
-        let expected_regular_gas = u64::from(gas_params.get(GasId::Create))
-            + u64::from(gas_params.get(GasId::CodeDepositCost)) * code.len() as u64
-            + gas_params.keccak256_word_cost(code.len().div_ceil(32));
+        let expected_regular_gas = u64::from(gas_params[GasId::Create])
+            + (u64::from(gas_params[GasId::CodeDepositCost]) * code.len() as u64)
+            + gas_params.keccak256_word_cost(code.len());
         let mut provider = evm.provider_with_reservoir(expected_state_gas);
 
         provider.set_code(Address::random(), code)?;
@@ -1702,17 +1763,16 @@ mod tests {
     }
 
     #[test]
-    fn test_sstore_insufficient_gas_for_cold_load_t4() -> eyre::Result<()> {
-        // T4 fork sstore with a tight gas budget: cold-load cost is skipped when the
-        // pre-charged static gas leaves the remaining gas below the cold additional cost.
-        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
+    fn test_sstore_with_limited_execution_gas_t14() -> eyre::Result<()> {
+        // T14 SSTORE uses the reservoir for state gas and a limited execution budget.
+        let mut evm = TestEvm::new(TempoHardfork::T14);
         let gas_params = evm.gas_params();
 
         let static_gas = u64::from(gas_params.get(GasId::SstoreStatic));
         let dynamic_gas = 25_000u64;
         let gas_limit = static_gas + dynamic_gas;
 
-        // Generous reservoir so T4 state-gas (zero->non-zero) doesn't spill into regular gas.
+        // Generous reservoir so T14 state-gas (zero->non-zero) doesn't spill into regular gas.
         let mut provider = evm.provider_with_gas_limit(gas_limit, u64::MAX);
 
         let initial_gas = provider.gas_used();
@@ -1788,9 +1848,9 @@ mod tests {
     }
 
     #[test]
-    fn test_multiple_sstore_insufficient_gas_scenarios_t4() -> eyre::Result<()> {
-        // T4 fork multiple sstores under a constrained gas budget.
-        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
+    fn test_multiple_sstore_with_limited_execution_gas_t14() -> eyre::Result<()> {
+        // T14 multiple SSTOREs under a constrained execution gas budget.
+        let mut evm = TestEvm::new(TempoHardfork::T14);
         let gas_params = evm.gas_params();
 
         let static_gas = u64::from(gas_params.get(GasId::SstoreStatic));
@@ -1842,6 +1902,205 @@ mod tests {
     }
 
     #[test]
+    fn test_native_checkpoints_match_frame_gas_settlement() -> eyre::Result<()> {
+        fn write(
+            storage: &mut EvmPrecompileStorageProvider<'_, '_, '_, TestTypes>,
+            address: Address,
+            slot: u64,
+            execution_gas: u64,
+            state_gas: u64,
+            refund: i64,
+        ) {
+            storage.deduct_gas(execution_gas).unwrap();
+            storage.deduct_state_gas(state_gas).unwrap();
+            storage.refund_gas(refund);
+            // Journal changes independently of gas pricing to isolate checkpoint accounting.
+            crate::storage_credits::StorageCreditsBackend::sstore(
+                storage,
+                address,
+                U256::from(slot),
+                U256::ONE,
+                false,
+            )
+            .unwrap();
+            crate::storage_credits::StorageCreditsBackend::tstore(
+                storage,
+                address,
+                U256::from(slot),
+                U256::ONE,
+            )
+            .unwrap();
+            storage.evm.log(Log {
+                address,
+                data: LogData::default(),
+            });
+        }
+
+        fn run(
+            evm: &mut Evm<'_, TestTypes>,
+            message: &Message<TestTypes>,
+            gas: &mut GasTracker,
+        ) -> PrecompileResult {
+            let address = message.destination;
+            let commit = message.input[0] != 0;
+            let ending = message.input[1];
+            let refund = if message.input[2] == 0 { 400 } else { -1_400 };
+            let mut storage =
+                EvmPrecompileStorageProvider::new(evm, gas, TempoHardfork::T14, false);
+            write(&mut storage, address, 0, 11, 150, 1_000);
+            let outer = storage.checkpoint();
+            write(&mut storage, address, 1, 17, 200, refund);
+            let inner = storage.checkpoint();
+            write(&mut storage, address, 2, 7, 100, 300);
+            storage.checkpoint_commit(inner);
+
+            if ending == 2 {
+                // OOG zeroes execution gas, then checkpoint rollback can return spilled
+                // gas. The enclosing frame must still burn it when the halt propagates.
+                let error = crate::storage_credits::StorageCreditsBackend::charge_storage_creation(
+                    &mut storage,
+                )
+                .unwrap_err();
+                storage.checkpoint_revert(outer);
+                return error.into_precompile_result();
+            }
+            if commit {
+                storage.checkpoint_commit(outer);
+            } else {
+                storage.checkpoint_revert(outer);
+            }
+            if ending == 1 {
+                Err(PrecompileError::Revert(Bytes::new()))
+            } else {
+                Ok(PrecompileOutput::new(Bytes::new()))
+            }
+        }
+
+        let address = Address::repeat_byte(0x66);
+        for reservoir in [0, 100, 200, 1_000] {
+            for commit in [false, true] {
+                for refund in [400, -1_400] {
+                    for (ending, stop) in [
+                        (0, InstrStop::Return),
+                        (1, InstrStop::Revert),
+                        (2, InstrStop::PrecompileOOG),
+                    ] {
+                        let mut evm = TestEvm::new(TempoHardfork::T14);
+                        let mut map = PrecompileMap::new();
+                        map.insert(Precompile::new(
+                            address,
+                            PrecompileId::custom("checkpoint"),
+                            run,
+                        ));
+                        evm.evm.set_precompiles(Precompiles::new(Cow::Owned(map)));
+                        let mut message = Message::<TestTypes> {
+                            kind: MessageKind::Call,
+                            destination: address,
+                            call_target: address,
+                            code_address: address,
+                            gas_limit: 10_000,
+                            reservoir,
+                            input: vec![u8::from(commit), ending, u8::from(refund < 0)].into(),
+                            ..Default::default()
+                        };
+                        let result =
+                            Host::execute_message(&mut evm.evm, &Default::default(), &mut message)?;
+
+                        // Equivalent parent/child accounting using evm2's frame-return helpers.
+                        let mut expected =
+                            GasTracker::new_with_execution_gas_and_reservoir(10_000, reservoir);
+                        expected.spend(11).unwrap();
+                        expected.spend_state(150).unwrap();
+                        expected.record_refund(1_000);
+                        let mut child = GasTracker::new_with_execution_gas_and_reservoir(
+                            expected.remaining(),
+                            expected.reservoir(),
+                        );
+                        child.spend(24).unwrap();
+                        child.spend_state(300).unwrap();
+                        child.record_refund(refund + 300);
+                        let child_stop = if commit {
+                            InstrStop::Return
+                        } else {
+                            InstrStop::Revert
+                        };
+                        child.settle_gas(child_stop);
+                        expected.spend_all();
+                        expected.merge_child_gas(child, child_stop);
+                        expected.settle_gas(stop);
+                        assert_eq!(result.stop, stop);
+                        assert_eq!(
+                            result.gas, expected,
+                            "reservoir={reservoir}, commit={commit}, refund={refund}, stop={stop:?}"
+                        );
+
+                        let success = stop.is_success();
+                        for slot in 0..3 {
+                            let value = U256::from(u64::from(success && (slot == 0 || commit)));
+                            assert_eq!(
+                                evm.evm
+                                    .state_mut()
+                                    .storage(&address)
+                                    .into_slot(U256::from(slot))?
+                                    .current(),
+                                value
+                            );
+                            assert_eq!(
+                                evm.evm.state_mut().tload(&address, &U256::from(slot)),
+                                value
+                            );
+                        }
+                        assert_eq!(
+                            evm.evm.logs().len(),
+                            if !success {
+                                0
+                            } else if commit {
+                                3
+                            } else {
+                                1
+                            }
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_t14_nested_checkpoint_restores_refunds_and_preserves_committed_gas() -> eyre::Result<()>
+    {
+        let mut evm = TestEvm::new(TempoHardfork::T14);
+        let mut provider = evm.provider_with_reservoir(1_000_000);
+        let address = Address::repeat_byte(0x22);
+
+        provider.sstore(address, U256::ZERO, U256::ONE)?;
+        provider.sstore(address, U256::ZERO, U256::ZERO)?;
+        assert_eq!(provider.gas_refunded(), 5_000);
+
+        let outer = provider.checkpoint();
+        provider.sstore(address, U256::ONE, U256::ONE)?;
+        let inner = provider.checkpoint();
+        provider.sstore(address, U256::ONE, U256::ZERO)?;
+        assert_eq!(provider.gas_refunded(), 10_000);
+
+        provider.checkpoint_revert(inner);
+        assert_eq!(provider.gas_refunded(), 5_000);
+        assert_eq!(provider.sload(address, U256::ONE)?, U256::ONE);
+        provider.checkpoint_commit(outer);
+        assert_eq!(provider.state_gas_used(), 490_000);
+        assert_eq!(provider.reservoir(), 510_000);
+
+        let committed = provider.checkpoint();
+        provider.sstore(address, U256::ONE, U256::ZERO)?;
+        provider.checkpoint_commit(committed);
+        assert_eq!(provider.gas_refunded(), 10_000);
+        assert_eq!(provider.state_gas_used(), 490_000);
+        assert_eq!(provider.reservoir(), 510_000);
+        Ok(())
+    }
+
+    #[test]
     fn test_clearing_storage_mints_a_tip1060_credit() -> eyre::Result<()> {
         let owner = Address::repeat_byte(0x33);
         let key = U256::from(1);
@@ -1874,20 +2133,151 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "TIP-1016 mismatch: 0->X->0 refund math does not net to GAS_WARM_ACCESS (100 gas) yet"]
-    fn test_t4_sstore_restore_refund_matches_tip1016_spec() -> eyre::Result<()> {
-        let mut evm = TestEvm::new(TempoHardfork::T4);
-        let mut provider = evm.provider_with_reservoir(230_000);
+    fn test_t14_sstore_restore_refund_matches_tip1016_spec() -> eyre::Result<()> {
+        let mut evm = TestEvm::new(TempoHardfork::T14);
+        let reservoir = 245_000;
+        let mut provider = evm.provider_with_reservoir(reservoir);
 
         let (address, slot) = (Address::random(), U256::ONE);
         provider.sstore(address, slot, U256::ONE)?;
         provider.sstore(address, slot, U256::ZERO)?;
-        assert_eq!(provider.gas_refunded(), 247_800);
-        let net_gas_after_refund =
-            provider.gas_used() + provider.state_gas_used() - provider.gas_refunded() as u64;
+
+        // 0→x→0 restoration under the storage-credit hook: only the 5,000
+        // write portion goes through the execution refund counter. The 245k
+        // creditable portion is NOT returned — the x→0 clear mints a storage
+        // credit for the contract instead of refilling the reservoir.
         assert_eq!(
-            net_gas_after_refund, 100,
-            "TIP-1016 says 0->X->0 should net to GAS_WARM_ACCESS (100)"
+            provider.gas_refunded(),
+            5_000,
+            "refund counter must carry only the regular portion of the restoration"
+        );
+        assert_eq!(
+            provider.state_gas_used(),
+            245_000,
+            "the creditable portion stays consumed; the clear mints a credit instead"
+        );
+        assert_eq!(
+            provider.reservoir(),
+            0,
+            "no reservoir refill under the storage-credit hook"
+        );
+        assert_eq!(
+            provider.sload(
+                crate::STORAGE_CREDITS_ADDRESS,
+                crate::storage_credits::StorageCredits::slot(address)
+            )?,
+            U256::ONE,
+            "the x→0 clear must mint exactly one storage credit for the contract"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_t14_set_code_charges_hash_cost_per_word_of_code_bytes() -> eyre::Result<()> {
+        let mut evm = TestEvm::new(TempoHardfork::T14);
+        let gas_params = evm.gas_params();
+
+        let code_len = 45usize; // 2 words, e.g. the zone portal proxy runtime
+        let code = Bytes::from(vec![0x00; code_len]);
+        let expected_hash_cost = 6 * code_len.div_ceil(32) as u64;
+        let expected_regular_gas = u64::from(gas_params[GasId::Create])
+            + (u64::from(gas_params[GasId::CodeDepositCost]) * code_len as u64)
+            + expected_hash_cost;
+        let expected_state_gas =
+            gas_params.create_state_gas() + gas_params.code_deposit_state_gas(code_len);
+        let mut provider = evm.provider_with_reservoir(expected_state_gas);
+
+        provider.set_code(Address::random(), code)?;
+        assert_eq!(
+            provider.gas_used(),
+            expected_regular_gas,
+            "set_code should charge HASH_COST over code bytes, not words"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_t14_set_code_oog_rolls_back_installed_code() -> eyre::Result<()> {
+        for fail_execution_charge in [true, false] {
+            let mut evm = TestEvm::new(TempoHardfork::T14);
+            let gas_params = evm.gas_params();
+            let code = Bytes::from(vec![0xef]);
+            let execution_gas = u64::from(gas_params[GasId::CodeDepositCost])
+                + gas_params.keccak256_word_cost(code.len())
+                + u64::from(gas_params[GasId::Create]);
+            let (gas_limit, reservoir) = if fail_execution_charge {
+                (execution_gas - 1, gas_params.create_state_gas())
+            } else {
+                // CREATE spills 25 gas, leaving no gas for code-deposit state charges.
+                (execution_gas + 25, gas_params.create_state_gas() - 25)
+            };
+            let address = Address::repeat_byte(0x55);
+            let mut provider = evm.provider_with_gas_limit(gas_limit, reservoir);
+            let checkpoint = provider.checkpoint();
+
+            assert_eq!(
+                provider.set_code(address, code),
+                Err(TempoPrecompileError::OutOfGas)
+            );
+            provider.checkpoint_revert(checkpoint);
+            assert_eq!(provider.state_gas_used(), 0);
+            assert_eq!(provider.state_gas_spilled(), 0);
+            assert_eq!(provider.reservoir(), reservoir);
+            std::mem::drop(provider);
+            assert!(evm.load_account_code(address)?.is_empty());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_t14_set_code_pre_touched_destination_skips_create() -> eyre::Result<()> {
+        let mut evm = TestEvm::new(TempoHardfork::T14);
+        let gas_params = evm.gas_params();
+
+        let address = Address::random();
+        evm.evm.overlay_db_mut().insert_account_info(
+            &address,
+            evm2::evm::AccountInfo {
+                balance: U256::ONE,
+                nonce: 1,
+                ..Default::default()
+            },
+        );
+
+        let code = Bytes::from(vec![0xef]);
+        let expected_state_gas = gas_params.code_deposit_state_gas(code.len());
+        let expected_regular_gas = (u64::from(gas_params[GasId::CodeDepositCost])
+            * code.len() as u64)
+            + gas_params.keccak256_word_cost(code.len());
+        // Reservoir also covers the second deployment below so no state gas
+        // spills into regular gas and skews the assertions.
+        let mut provider =
+            evm.provider_with_reservoir(expected_state_gas + gas_params.code_deposit_state_gas(2));
+
+        provider.set_code(address, code)?;
+        assert_eq!(
+            provider.gas_used(),
+            expected_regular_gas,
+            "a pre-touched destination is not empty, so only code deposit + hash cost are charged"
+        );
+        assert_eq!(
+            provider.state_gas_used(),
+            expected_state_gas,
+            "a pre-touched destination should pay only code deposit state gas"
+        );
+
+        // Re-deploying over existing code is not a fresh deployment either,
+        // but it still pays the deposit and hash costs.
+        let code = Bytes::from(vec![0xef, 0xef]);
+        provider.set_code(address, code.clone())?;
+        assert_eq!(
+            provider.gas_used(),
+            expected_regular_gas
+                + (u64::from(gas_params[GasId::CodeDepositCost]) * code.len() as u64)
+                + gas_params.keccak256_word_cost(code.len()),
+            "set_code over existing code must not charge CREATE"
         );
 
         Ok(())

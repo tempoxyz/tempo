@@ -353,14 +353,6 @@ mod tests {
     }
 
     fn test_evm(spec: TempoHardfork, initialized_token: bool) -> Evm<'static, TestTypes> {
-        test_evm_with_amsterdam(spec, initialized_token, false)
-    }
-
-    fn test_evm_with_amsterdam(
-        spec: TempoHardfork,
-        initialized_token: bool,
-        amsterdam_eip8037_enabled: bool,
-    ) -> Evm<'static, TestTypes> {
         let mut database = InMemoryDB::default();
         if initialized_token {
             database.insert_account_info(
@@ -368,8 +360,7 @@ mod tests {
                 AccountInfo::default().with_code(Bytecode::new_raw(bytes!("0xEF"))),
             );
         }
-        let version =
-            tempo_chainspec::gas_params::version(SpecId::OSAKA, spec, amsterdam_eip8037_enabled);
+        let version = tempo_chainspec::gas_params::version(SpecId::OSAKA, spec, false);
         Evm::new_with_execution_config(
             ExecutionConfig::for_spec_and_version(SpecId::OSAKA, version),
             SpecId::OSAKA,
@@ -622,14 +613,14 @@ mod tests {
         );
     }
 
-    /// T4+ precompile state gas must only include state-creating gas, not all gas consumed. A
+    /// T14+ precompile state gas must only include state-creating gas, not all gas consumed. A
     /// read-only operation and a nonzero-to-nonzero storage update must both use no state gas.
     #[test]
-    fn test_t4_state_gas_only_includes_state_creating_ops() {
-        let spec = TempoHardfork::T4;
+    fn test_t14_state_gas_only_includes_state_creating_ops() {
+        let spec = TempoHardfork::T14;
         let sender = Address::repeat_byte(0x01);
         let recipient = Address::repeat_byte(0x02);
-        let mut evm = test_evm_with_amsterdam(spec, false, true);
+        let mut evm = test_evm(spec, false);
 
         // Set up TIP20 token state: initialize pathUSD and mint tokens to sender
         {
@@ -703,17 +694,13 @@ mod tests {
         );
     }
 
-    /// T4+ precompile calls that trigger SSTORE refunds must record the refund
-    /// in the EVM2 gas tracker so transaction settlement can apply it.
-    /// Pre-T4 blocks were executed without refund propagation, so they must NOT
-    /// record refunds.
+    /// TIP-1016 forwards execution refunds while TIP-1060 handles storage credits.
     #[test]
-    fn test_precompile_gas_refund_in_reservoir_t4() {
-        let spec = TempoHardfork::T4;
-        // TIP-1016 gates state-gas refund propagation on Amsterdam EIP-8037.
+    fn test_precompile_gas_refund_in_reservoir_t14() {
+        let spec = TempoHardfork::T14;
         let sender = Address::repeat_byte(0x01);
         let recipient = Address::repeat_byte(0x02);
-        let mut evm = test_evm_with_amsterdam(spec, false, true);
+        let mut evm = test_evm(spec, false);
 
         // Set up TIP20 token state: initialize pathUSD and mint tokens to sender
         {
@@ -728,7 +715,7 @@ mod tests {
         }
 
         // Transfer ALL tokens from sender to recipient (sender balance: 1000 → 0)
-        // This triggers SSTORE refund because the balance slot goes from nonzero to zero.
+        // Setup and transfer share a journal, so this restores the original zero balance.
         let calldata: Bytes = ITIP20::transferCall {
             to: recipient,
             amount: U256::from(1000),
@@ -746,11 +733,8 @@ mod tests {
         );
         assert!(output.is_ok(), "transfer should be successful");
 
-        // T4+: gas refund must be recorded in the gas tracker
-        assert!(
-            gas.refunded() != 0,
-            "T4+ successful precompile with SSTORE refund must record a refund, got 0"
-        );
+        // Restoration refunds the execution write cost; the state charge becomes a credit.
+        assert_eq!(gas.refunded(), 5_000);
     }
 
     #[test]

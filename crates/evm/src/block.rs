@@ -32,6 +32,16 @@ use tempo_contracts::precompiles::{
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tracing::trace;
 
+/// TIP-1016 block gas excludes state gas and applies execution refunds before
+/// the calldata floor. Receipts retain the total fee-paying gas.
+pub(crate) fn execution_gas_used(result: &TxResult<TempoEvmTypes>) -> u64 {
+    result
+        .total_gas_spent
+        .saturating_sub(result.state_gas_spent)
+        .saturating_sub(result.refunded)
+        .max(result.floor_gas)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum BlockSection {
     /// Start of block system transactions.
@@ -224,7 +234,9 @@ impl<'a> TempoBlockExecutor<'a> {
             evm.block().number.saturating_to::<u64>(),
         );
         let extra_data = ctx.inner.extra_data.clone();
-        let mut inner = EthBlockExecutor::new(evm, ctx.inner, chain_spec, TempoReceiptBuilder);
+        let mut inner = EthBlockExecutor::new(evm, ctx.inner, chain_spec, TempoReceiptBuilder)
+            .with_block_state_gas_limit(false)
+            .with_block_gas_refunds(true);
         inner.set_spec_id(spec_id);
         Self {
             t13_active_at_genesis: chain_spec
@@ -625,7 +637,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
         // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.
         let block_gas_used = if self.evm().version().feature(evm2::EvmFeatures::EIP8037) {
-            inner.result().result.execution_gas_spent()
+            execution_gas_used(&inner.result().result)
         } else {
             inner.result().result.tx_gas_used()
         };
@@ -728,7 +740,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         // TIP-1016 enabled: block header `gas_used` = block_regular_gas_used.
         // State gas is charged to users (in receipts) but exempted from block
         // capacity. block_regular_gas_used is accumulated per-tx as
-        // max(total_spent - state_spent, floor) and is independent of refunds.
+        // max(total_spent - state_spent - refunded, floor).
         //
         // TIP-1016 disabled: use the standard gas_used from the inner executor which equals
         // cumulative_tx_gas_used (total_spent - refunded), matching the original
@@ -803,6 +815,129 @@ impl TempoBlockExecutor<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tip1016_blocks_and_receipts_meter_different_gas_dimensions() {
+        let chainspec = test_chainspec();
+        let caller = Address::repeat_byte(0x77);
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(&caller, evm2::evm::AccountInfo::default().with_nonce(1));
+        let mut executor = TestExecutorBuilder::default()
+            .with_spec(TempoHardfork::T14)
+            .with_epoch_length(100)
+            .with_general_gas_limit(30_000_000)
+            .build(db, &chainspec);
+        let mut block = *executor.evm().block();
+        block.basefee = U256::ZERO;
+        executor.evm_mut().set_block(block);
+        executor.enable_block_access_list_builder();
+        let mut paid = 0;
+        let mut execution = 0;
+        for nonce in 1..=3 {
+            let tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
+                TxLegacy {
+                    chain_id: Some(chainspec.chain().id()),
+                    nonce,
+                    gas_limit: 70_000_000,
+                    to: TxKind::Create,
+                    input: alloy_primitives::bytes!("6160006000f3"),
+                    ..Default::default()
+                },
+                Signature::test_signature(),
+            ));
+            let result = executor
+                .execute_transaction_without_commit(Recovered::new_unchecked(tx, caller))
+                .unwrap();
+            assert!(result.result().status);
+            assert_eq!(result.state_gas_used(), 468_000 + 24_576 * 2_300);
+            paid += result.result().tx_gas_used();
+            execution += result.block_gas_used();
+            let gas = executor.commit_transaction(result).unwrap();
+            assert_eq!(
+                gas.regular_gas_used(),
+                gas.tx_gas_used() - gas.state_gas_used()
+            );
+            assert_eq!(
+                executor.receipts().last().unwrap().cumulative_gas_used,
+                paid
+            );
+        }
+        assert!(paid > 3 * 30_000_000);
+        let (output, bal) = executor.finish_with_block_access_list().unwrap();
+        assert_eq!(output.result.gas_used, execution);
+        assert!(output.result.gas_used < 20_000_000);
+        assert_eq!(
+            output.result.receipts.last().unwrap().cumulative_gas_used,
+            paid
+        );
+        assert!(bal.is_some());
+    }
+
+    #[test]
+    fn tip1016_applies_the_floor_after_execution_refunds() {
+        let mut result = TxResult::<TempoEvmTypes> {
+            total_gas_spent: 300_000,
+            state_gas_spent: 245_000,
+            refunded: 5_000,
+            floor_gas: 53_000,
+            ..Default::default()
+        };
+        assert_eq!(execution_gas_used(&result), 53_000);
+        assert_eq!(result.tx_gas_used(), 295_000);
+        result.floor_gas = 21_000;
+        assert_eq!(execution_gas_used(&result), 50_000);
+    }
+
+    #[test]
+    fn test_commit_accumulates_refund_aware_block_gas() {
+        let chainspec = test_chainspec();
+        let mut executor = TestExecutorBuilder::default()
+            .with_spec(TempoHardfork::T14)
+            .with_epoch_length(100)
+            .with_general_gas_limit(30_000_000)
+            .build(InMemoryDB::default(), &chainspec);
+        let previous_regular_gas = 123_000;
+        executor.block_gas_used = previous_regular_gas;
+        for index in 1..=2 {
+            // Receipt = 300k - 30k; block = 300k - 40k state - 30k refund.
+            let gas = executor
+                .commit_transaction(TempoTxResult {
+                    tx_type: TempoTxType::Legacy,
+                    execution_context: ExecutionContext::Transaction {
+                        tx_hash: B256::ZERO,
+                    },
+                    inner: EthTransactionResultWithState::new(
+                        TxResultWithState {
+                            result: TxResult::<TempoEvmTypes> {
+                                status: true,
+                                total_gas_spent: 300_000,
+                                state_gas_spent: 40_000,
+                                refunded: 30_000,
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        },
+                        TempoTxType::Legacy,
+                        0,
+                    ),
+                    next_section: BlockSection::StartOfBlock,
+                    is_payment: false,
+                    block_gas_used: 230_000,
+                    validator_fee: U256::ZERO,
+                })
+                .unwrap();
+            assert_eq!(gas.tx_gas_used(), 270_000);
+            assert_eq!(gas.regular_gas_used(), 230_000);
+            assert_eq!(
+                executor.receipts().last().unwrap().cumulative_gas_used,
+                index * 270_000
+            );
+            assert_eq!(
+                executor.block_gas_used,
+                previous_regular_gas + index * 230_000
+            );
+        }
+    }
     use crate::test_utils::{TestExecutorBuilder, test_chainspec};
     use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
     use alloy_eips::{
@@ -2557,10 +2692,10 @@ mod tests {
 
         // Simulate: tx with total=300k, refund=30k, state=40k
         // tx_gas_used = max(300k - 30k, floor) = 270k  (receipt gas)
-        // block_regular_gas_used = max(300k - 40k, floor) = 260k  (capacity gas)
+        // block_regular_gas_used = max(300k - 40k - 30k, floor) = 230k (capacity gas)
         // block_state_gas_used = 40k
         let tx_gas_used = 270_000u64;
-        let regular_gas = 260_000u64;
+        let regular_gas = 230_000u64;
         let state_gas = 40_000u64;
 
         executor
