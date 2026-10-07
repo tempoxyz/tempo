@@ -476,7 +476,7 @@ fn main() {
     let warm = std::env::var("MEASURE_TX_CACHE").unwrap_or_else(|_| "cold".to_string()) == "warm";
     if warm {
         for tx in &workload.transactions {
-            tx.inner().unique_tx_identifier(tx.signer());
+            tx.inner().as_aa().unwrap().expiring_nonce_hash(tx.signer());
         }
     }
     println!("tx_cache={}", if warm { "warm" } else { "cold" });
