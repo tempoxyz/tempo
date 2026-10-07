@@ -1158,6 +1158,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
         $"($ctx.results_dir)/tracy-profile-($phase).tracy"
         $"($ctx.results_dir)/tracy-capture-($phase).log"
         $"($ctx.results_dir)/scheduler-($phase)"
+        $"($ctx.results_dir)/faults-($phase)"
         $"($ctx.results_dir)/logs-($phase)-a"
         $"($ctx.results_dir)/logs-($phase)-b"
     ] {
@@ -1354,13 +1355,15 @@ def run-local-e2e-phase [run: record, ctx: record] {
     if $phase_exit == 0 {
         let phase_started_ms = ((date now | into int) / 1_000_000 | into int)
         let initial_db_size_bytes = (e2e-db-size-bytes $ctx.a.datadir)
-        let scheduler_output = $"($ctx.results_dir)/scheduler-($phase)"
-        if $ctx.scheduler_trace {
+        let trace_kind = if $ctx.fault_trace { "faults" } else { "scheduler" }
+        let scheduler_output = $"($ctx.results_dir)/($trace_kind)-($phase)"
+        if $ctx.scheduler_trace or $ctx.fault_trace {
             mkdir $scheduler_output
-            print "  Scheduling a 15-second kernel trace after a 20-second delay..."
+            print $"  Scheduling a 15-second ($trace_kind) trace after a 20-second delay..."
             job spawn {
                 let result = (try {
                     (^python3 benchmarks/parallel-execution/scheduler_trace.py capture
+                        --kind $trace_kind
                         --output $scheduler_output --binary $run.tempo
                         --datadir-a $ctx.a.datadir --datadir-b $ctx.b.datadir
                         --delay 20 --seconds 15) | complete
@@ -1412,7 +1415,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
             1
         })
         # Join before report parsing or any other fallible post-processing.
-        let scheduler_exit = if $ctx.scheduler_trace {
+        let scheduler_exit = if $ctx.scheduler_trace or $ctx.fault_trace {
             wait-for-scheduler-trace $phase $scheduler_output $sender_exit
         } else { 0 }
         if $sender_exit == 0 and $phase_clickhouse_url != "" {
@@ -1679,6 +1682,7 @@ def "main e2e" [
     --samply                                            # Profile validators with samply
     --samply-args: string = ""                          # Additional samply arguments
     --scheduler-trace                                   # Capture a bounded kernel scheduler diagnostic (one pair, >=60s)
+    --fault-trace                                       # Capture major-fault stacks (same-source diagnostic, three pairs)
     --tracy: string = "off"                             # Tracy profiling: off, tracy
     --tracy-filter: string = "debug"                    # Tracy tracing filter level
     --tracy-seconds: int = 0                            # Tracy capture duration limit in seconds; 0 captures until stopped
@@ -1716,6 +1720,14 @@ def "main e2e" [
     --valscope-dir: string = "../valscope"               # Path to the ValScope checkout
     --skip-summary                                       # Leave summary generation to a later workflow step
 ] {
+    if $fault_trace {
+        if $scheduler_trace or $samply or $tracy != "off" or $sequential_peer or $disposal_clock_calibration or $producer_isolation or $pipeline_pressure or not $artifacts_only or $valscope_static_report or $clickhouse_url != "" or $victoriametrics_url != "" {
+            error make { msg: "fault tracing requires artifacts-only and cannot combine other profilers or performance publication" }
+        }
+        if $duration != 90 or $run_pairs != 3 or $run_side != "comparison" or $baseline != $feature or $baseline_args != $feature_args or $baseline_features != $feature_features or $baseline_hardfork != $feature_hardfork or $baseline_env != "" or $feature_env != "" {
+            error make { msg: "fault tracing requires three 90-second same-source pairs with identical node controls" }
+        }
+    }
     # Override destinations even when supplied explicitly; OTLP is a separate control.
     let clickhouse_url = if $artifacts_only { "" } else { $clickhouse_url }
     let victoriametrics_url = if $artifacts_only { "" } else { $victoriametrics_url }
@@ -2196,6 +2208,7 @@ def "main e2e" [
         samply: $samply
         samply_args: $samply_args_list
         scheduler_trace: $scheduler_trace
+        fault_trace: $fault_trace
         tracy: $tracy
         tracy_filter: $tracy_filter
         tracy_seconds: $tracy_seconds

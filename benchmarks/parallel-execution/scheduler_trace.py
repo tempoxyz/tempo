@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Bounded Linux scheduler evidence capture. Does not establish block coverage.
+"""Bounded Linux scheduler or major-fault evidence capture.
 
-Only the named Engine/builder TIDs are recorded; builder tasks can also execute on
-Tokio threads. Keep raw perf.data and validate physical scope coverage separately.
+Scheduler mode selects named Engine/builder TIDs. Fault mode attaches to both
+node processes, including their worker threads. Neither establishes block coverage.
+Keep raw perf.data remotely and validate scope, loss and symbolization separately.
 """
 import argparse
 import contextlib
@@ -168,13 +169,26 @@ def perf_command(perf, output, tids, pages, seconds):
     return cmd + ["--", "/bin/sleep", str(seconds)]
 
 
+def fault_command(perf, output, pids, pages, seconds):
+    require(len(pids) == 2 and len(set(pids)) == 2 and
+            all(type(pid) is int and pid > 0 for pid in pids), "expected two node PIDs")
+    # Process attachment includes existing threads and inherits future threads.
+    # Fault addresses plus MMAP records identify mappings; stacks identify paths.
+    # This measures fault occurrences, not time spent waiting for each fault.
+    return [perf, "record", "--pid", ",".join(map(str, sorted(pids))),
+            "-e", "major-faults", "-c", "1", "-d", "-T", "--sample-cpu",
+            "-k", "mono", "--call-graph", "fp,64", "-m", str(pages),
+            "--no-buildid", "--no-buildid-cache", "--timestamp-boundary",
+            "--max-size", "32M", "-o", str(output), "--", "/bin/sleep", str(seconds)]
+
+
 def checked_output(argv, timeout=8):
     result = subprocess.run(argv, capture_output=True, timeout=timeout, check=False)
     require(len(result.stdout) + len(result.stderr) <= 2 * MIB, "unexpectedly large tool output")
     return result
 
 
-def probe():
+def probe(kind="scheduler"):
     result = {"ok": False, "kernel": list(os.uname()), "events": {}, "perf_help": {},
               "scope": "Read-only preflight; does not open perf events or prove recording permission"}
     try:
@@ -190,6 +204,10 @@ def probe():
             "--count", "--mmap-pages", "--no-buildid", "--no-buildid-cache", "--synth",
             "--timestamp-boundary", "--max-size", "--event", "--filter"],
             "script": ["--ns", "--show-lost-events", "--dump-raw-trace", "--header-only", "--fields"]}
+        if kind == "faults":
+            required["record"] = ["--pid", "--event", "--count", "--data", "--timestamp",
+                "--sample-cpu", "--clockid", "--call-graph", "--mmap-pages", "--no-buildid",
+                "--no-buildid-cache", "--timestamp-boundary", "--max-size"]
         for mode, options in required.items():
             response = checked_output([perf, mode, "-h"])
             text = (response.stdout + response.stderr).decode(errors="replace")
@@ -197,7 +215,7 @@ def probe():
             for opt in options:
                 require(re.search(r"(?m)^\s*(?:-\w,\s*)?" + re.escape(opt) + r"(?=[\s=\[]|$)", text),
                         f"perf {mode} missing {opt}")
-        for event in EVENTS:
+        for event in EVENTS if kind == "scheduler" else ():
             directory = next((Path(root) / "events/sched" / event for root in
                 ("/sys/kernel/tracing", "/sys/kernel/debug/tracing")
                 if (Path(root) / "events/sched" / event / "format").is_file()), None)
@@ -207,7 +225,8 @@ def probe():
             fields = ("prev_pid", "next_pid", "prev_state") if event == "sched_switch" else ("pid", "target_cpu")
             require(all(re.search(r"field:[^;]*\b" + f + r";", text) for f in fields), f"bad {event} schema")
         online = cpu_set(Path("/sys/devices/system/cpu/online").read_text())
-        result.update(online_cpus=online, rings=ring_budget(online, os.sysconf("SC_PAGE_SIZE")), ok=True)
+        result.update(kind=kind, online_cpus=online,
+                      rings=ring_budget(online, os.sysconf("SC_PAGE_SIZE")), ok=True)
     except (TraceError, OSError, ValueError, subprocess.SubprocessError) as error:
         result["error"] = str(error)
     return result
@@ -322,11 +341,14 @@ def decode_worker(config_path):
     commands = [("header", ["--header-only"]),
         ("events", ["--ns", "--show-lost-events", "-F", "trace:comm,pid,tid,cpu,time,event,trace"]),
         ("raw", ["-D"])]
+    if config.get("kind") == "faults":
+        commands[1] = ("events", ["--ns", "--show-lost-events", "-F",
+            "sw:comm,pid,tid,cpu,time,event,addr,ip,sym,dso,period", "--max-stack", "64"])
     try:
         with cancellation():
             for name, options in commands:
                 with open(output / (name + ".txt"), "wb") as stdout, open(output / (name + ".stderr"), "wb") as stderr:
-                    code = run_owned([perf, "script", "-i", str(output / "perf.data"), *options], stdout, stderr, 8, output / "stop")
+                    code = run_owned([perf, "script", "-i", str(output / "perf.data"), *options], stdout, stderr, (30 if name == "events" else 12) if config.get("kind") == "faults" else 8, output / "stop")
                 require(code == 0, f"perf decode {name} exit {code}")
         result["ok"] = True
     except (TraceError, OSError) as error:
@@ -352,14 +374,18 @@ def loss_evidence(output):
 
 
 def capture(args):
+    kind = getattr(args, "kind", "scheduler")
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     require(not any(p.name != "stop" for p in output.iterdir()), "capture output must be empty")
     manifest = {"ok": False, "clock_requested": clocks(), "scope": "Named-thread evidence only; no complete builder/Engine scope coverage or performance claim",
         "exact_accounting_qualified": False, "capture_duration_qualified": False}
+    if kind == "faults":
+        manifest["scope"] = "Major-fault occurrences on both node processes and workers; no per-fault duration, complete execution coverage or performance claim"
+    manifest["kind"] = kind
     try:
         with cancellation():
-            deadline = time.monotonic() + 90
+            deadline = time.monotonic() + (130 if kind == "faults" else 90)
             def remaining(limit):
                 require(not (output / "stop").exists(), "cancelled by stop sentinel")
                 require(time.monotonic() < deadline, "capture helper deadline")
@@ -367,12 +393,17 @@ def capture(args):
             end_delay = time.monotonic() + args.delay
             while time.monotonic() < end_delay:
                 remaining(1); time.sleep(min(0.1, end_delay - time.monotonic()))
-            preflight = privileged(["_probe"], remaining(12)); save(output / "preflight.json", preflight)
+            preflight = privileged(["_probe", "--kind", kind], remaining(12)); save(output / "preflight.json", preflight)
             require(preflight["ok"], preflight.get("error", "preflight failed"))
             snapshot_args = ["_snapshot", "--binary", args.binary, "--datadir-a", args.datadir_a, "--datadir-b", args.datadir_b]
             before = privileged(snapshot_args, remaining(12)); save(output / "threads-before.json", before)
             command = perf_command(preflight["perf_path"], output / "perf.data", selected_tids(before), preflight["rings"]["pages_per_ring"], args.seconds)
-            config = {"output": str(output), "seconds": args.seconds, "command": command}
+            if kind == "faults":
+                pids = [n["pid"] for n in before["nodes"].values()]
+                command = fault_command(preflight["perf_path"], output / "perf.data", pids,
+                                        preflight["rings"]["pages_per_ring"], args.seconds)
+            config = {"output": str(output), "seconds": args.seconds, "command": command,
+                      "kind": kind}
             save(output / "record-config.json", config)
             # The privileged supervisor has its own deadline/finally cleanup. The
             # stop sentinel also survives a killed ordinary helper or sudo proxy.
@@ -388,11 +419,11 @@ def capture(args):
                     with cleanup_signals():
                         (output / "stop").touch()
                         worker.wait(timeout=args.seconds + 10)
-            require((output / "perf.data").stat().st_size < FILE_LIMIT, "raw perf file reached hard cap")
+            require((output / "perf.data").stat().st_size < (32 * MIB if kind == "faults" else FILE_LIMIT), "raw perf file reached hard cap")
             after = privileged(snapshot_args, remaining(12)); save(output / "threads-after.json", after)
             stable(before, after)
             require(cpu_set(Path('/sys/devices/system/cpu/online').read_text()) == preflight['online_cpus'], 'online CPUs changed')
-            result = checked_output(["sudo", "-n", sys.executable, SELF, "_decode", str(output / "record-config.json")], remaining(26))
+            result = checked_output(["sudo", "-n", sys.executable, SELF, "_decode", str(output / "record-config.json")], remaining(56 if kind == "faults" else 26))
             require(result.returncode == 0, "decoder failed; see decode-result.json")
             findings = loss_evidence(output); save(output / "loss-evidence.json", findings)
             require(not findings, "loss/throttle/limit/decoder anomaly; exact scheduler accounting unavailable")
@@ -401,6 +432,10 @@ def capture(args):
                 decode_accounting_ready=False,
                 loss_scope="No known loss/throttle/error lines in retained decode; raw READ-format loss counters and timeline completeness still require qualified analysis",
                 state_scope="Decoded trace text may display symbolic prev_state; original numeric fields remain in perf.data with tracepoint formats")
+            if kind == "faults":
+                manifest.pop("selected_tids")
+                manifest.update(selected_pids=pids,
+                    state_scope="Fault addresses, MMAP/COMM records and frame-pointer stacks retained; unknown/truncated stacks and mapping changes need review")
     except (TraceError, OSError, ValueError, subprocess.SubprocessError) as error:
         (output / "stop").touch()
         manifest["error"] = str(error)
@@ -413,11 +448,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="mode", required=True)
     preflight = commands.add_parser("preflight"); preflight.add_argument("--output", required=True)
+    preflight.add_argument("--kind", choices=("scheduler", "faults"), default="scheduler")
     record = commands.add_parser("capture")
     record.add_argument("--output", required=True)
     for name in ("binary", "datadir-a", "datadir-b"): record.add_argument("--" + name, required=True)
     record.add_argument("--delay", type=float, default=20); record.add_argument("--seconds", type=float, default=15)
-    commands.add_parser("_probe")
+    record.add_argument("--kind", choices=("scheduler", "faults"), default="scheduler")
+    commands.add_parser("_probe").add_argument("--kind", choices=("scheduler", "faults"), default="scheduler")
     snap = commands.add_parser("_snapshot")
     for name in ("binary", "datadir-a", "datadir-b"): snap.add_argument("--" + name, required=True)
     for name in ("_record", "_decode"): commands.add_parser(name).add_argument("config")
@@ -425,10 +462,10 @@ def main():
     try:
         if args.mode == "preflight":
             result = {"ok": False}
-            try: result.update(privileged(["_probe"], 15))
+            try: result.update(privileged(["_probe", "--kind", args.kind], 15))
             except (TraceError, OSError, subprocess.SubprocessError) as error: result["error"] = str(error)
             save(args.output, result); return 0 if result["ok"] else 1
-        if args.mode == "_probe": print(json.dumps(probe())); return 0
+        if args.mode == "_probe": print(json.dumps(probe(args.kind))); return 0
         if args.mode == "_snapshot": print(json.dumps(snapshot(args.binary, {"a": args.datadir_a, "b": args.datadir_b}))); return 0
         if args.mode == "_record": return recorder_worker(args.config)
         if args.mode == "_decode": return decode_worker(args.config)

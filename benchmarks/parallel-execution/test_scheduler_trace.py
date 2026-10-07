@@ -94,6 +94,30 @@ class SchedulerTraceTests(unittest.TestCase):
         self.assertEqual(filters[1:], ["(pid == 101 || pid == 202)"] * 2)
         self.assertEqual(command[-3:], ["--", "/bin/sleep", "15"])
 
+    def test_fault_capture_attaches_only_both_processes_with_bounded_stacks(self):
+        command = trace.fault_command("/perf", "/out", [200, 100], 64, 15)
+        self.assertEqual(command[command.index("--pid") + 1], "100,200")
+        self.assertEqual(command[command.index("-e") + 1], "major-faults")
+        self.assertEqual(command[command.index("--call-graph") + 1], "fp,64")
+        self.assertEqual(command[command.index("--max-size") + 1], "32M")
+        self.assertIn("-d", command)  # Fault address for mapping attribution.
+        for forbidden in ("-a", "--all-cpus", "--no-inherit", "--synth", "--filter"):
+            self.assertNotIn(forbidden, command)
+        for pids in ([], [100], [100, 100], [100, -1], [100, "200"]):
+            with self.assertRaises(trace.TraceError):
+                trace.fault_command("/perf", "/out", pids, 64, 15)
+
+    def test_fault_decoder_keeps_mapping_records_and_callchains(self):
+        config = self.root / "config.json"
+        config.write_text(json.dumps({"output": str(self.root), "command": ["/perf"], "kind": "faults"}))
+        with patch.object(trace, "run_owned", return_value=0) as run:
+            self.assertEqual(trace.decode_worker(config), 0)
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertEqual(len(commands), 3)
+        self.assertIn("sw:comm,pid,tid,cpu,time,event,addr,ip,sym,dso,period", commands[1])
+        self.assertNotIn("--hide-call-graph", commands[1])
+        self.assertIn("-D", commands[2])
+
     def test_budget_counts_tracepoint_and_dummy_rings_per_cpu(self):
         for count in (1, 32, 192, 4096):
             budget = trace.ring_budget(list(range(count)), 4096)
