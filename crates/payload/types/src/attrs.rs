@@ -155,23 +155,6 @@ impl TempoPayloadAttributes {
     }
 }
 
-// Required by reth's e2e-test-utils for integration tests.
-// The test utilities need to convert from standard Ethereum payload attributes
-// to custom chain-specific attributes.
-impl From<EthPayloadAttributes> for TempoPayloadAttributes {
-    fn from(inner: EthPayloadAttributes) -> Self {
-        Self {
-            inner,
-            payload_build_budget: None,
-            validation_latency_estimate: None,
-            timestamp_millis_part: 0,
-            extra_data: Bytes::default(),
-            proposer_public_key: None,
-            consensus_context: None,
-        }
-    }
-}
-
 impl PayloadAttributes for TempoPayloadAttributes {
     fn payload_id(&self, parent_hash: &B256) -> PayloadId {
         // XXX: derives the payload ID from the parent so that
@@ -335,43 +318,6 @@ mod tests {
         let attrs = TempoPayloadAttributes::random().with_timestamp(large_ts + 500);
         assert_eq!(attrs.timestamp_millis_part(), 500);
         assert!(attrs.timestamp_millis() >= large_ts);
-    }
-
-    #[test]
-    fn test_from_eth_payload_builder_attributes() {
-        let eth_attrs = EthPayloadAttributes {
-            timestamp: 1000,
-            suggested_fee_recipient: Address::random(),
-            prev_randao: B256::random(),
-            withdrawals: Some(Default::default()),
-            parent_beacon_block_root: Some(B256::random()),
-            slot_number: None,
-            target_gas_limit: None,
-        };
-
-        let tempo_attrs: TempoPayloadAttributes = eth_attrs.clone().into();
-
-        // Inner fields preserved
-        let parent = B256::random();
-        assert_eq!(
-            tempo_attrs.payload_id(&parent),
-            payload_id_from_block_hash(&parent)
-        );
-        assert_eq!(tempo_attrs.timestamp(), eth_attrs.timestamp);
-        assert_eq!(
-            tempo_attrs.suggested_fee_recipient,
-            eth_attrs.suggested_fee_recipient
-        );
-        assert_eq!(tempo_attrs.prev_randao, eth_attrs.prev_randao);
-        assert_eq!(tempo_attrs.withdrawals().as_ref().map(|w| w.len()), Some(0));
-        assert_eq!(
-            tempo_attrs.parent_beacon_block_root(),
-            eth_attrs.parent_beacon_block_root
-        );
-
-        // Tempo-specific defaults
-        assert_eq!(tempo_attrs.timestamp_millis_part(), 0);
-        assert_eq!(tempo_attrs.extra_data(), &Bytes::default());
     }
 
     #[test]
