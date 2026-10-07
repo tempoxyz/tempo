@@ -15,7 +15,3 @@ imbl = "7.0.2"
 
 [dev-dependencies]
 proptest.workspace = true
-
-[[bench]]
-name = "lifecycle"
-harness = false
