@@ -121,6 +121,73 @@ class GeneratedTests(unittest.TestCase):
         self.assertEqual(result["verified_transactions"], 24)
         self.assertEqual(result["parallel_reused"], {"builder_a": 6, "engine_a": 6})
 
+    def test_txpool_prewarming_requires_independent_reference(self):
+        self.enable_txpool()
+        for env in (None, {}, {"RETH_ENGINE_TXPOOL_PREWARMING": "true"}):
+            with self.subTest(env=env):
+                self.config["b"]["env"] = env
+                with self.assertRaisesRegex(verify.VerificationError, "prewarming environment"):
+                    self.run_check()
+        self.config["b"]["env"] = {"RETH_ENGINE_TXPOOL_PREWARMING": "false"}
+        self.assertEqual(self.run_check()["verified_transactions"], 24)
+        for flag in ("--engine.txpool-prewarming", "--engine.txpool-prewarming=true"):
+            with self.subTest(flag=flag):
+                self.config["b"]["args"].append(flag)
+                with self.assertRaisesRegex(verify.VerificationError, "independent reference"):
+                    self.run_check()
+                self.config["b"]["args"].pop()
+
+    def enable_txpool(self):
+        self.config["a"]["args"] += ["--engine.txpool-prewarming", "--engine.slow-block-threshold", "0"]
+        self.config["b"]["env"] = {"RETH_ENGINE_TXPOOL_PREWARMING": "false"}
+        for row in list(self.events[0]):
+            if row["fields"]["message"] == "Executed block":
+                number, digest, _ = verify.span_identity(row["spans"])
+                cache = event("Slow block", {"block.hash": digest, "block.number": number,
+                    "cache.txpool_snapshot.account.hits": 1,
+                    "cache.txpool_snapshot.storage.hits": 5,
+                    "cache.txpool_snapshot.code.hits": 0})
+                cache["target"] = "reth::slow_block"
+                self.events[0].append(cache)
+
+    def test_txpool_requires_reads_on_fresh_canonical_cohort(self):
+        self.enable_txpool()
+        result = self.run_check()
+        self.assertEqual(result["txpool_snapshot_hits"], {"account": 2, "storage": 10, "code": 0})
+        for fault in ("absent", "zero", "wrong_fork", "wrong_height", "reference", "malformed"):
+            with self.subTest(fault=fault):
+                self.setUp()
+                self.enable_txpool()
+                for row in self.events[0]:
+                    if row["fields"]["message"] != "Slow block":
+                        continue
+                    fields = row["fields"]
+                    if fault == "absent":
+                        fields["message"] = "unrelated"
+                    elif fault == "zero":
+                        for kind in ("account", "storage", "code"):
+                            fields[f"cache.txpool_snapshot.{kind}.hits"] = 0
+                    elif fault == "wrong_fork":
+                        fields["block.hash"] = digest(90000 + fields["block.number"])
+                    elif fault == "wrong_height":
+                        fields["block.number"] += 1
+                    elif fault == "reference":
+                        self.events[1].append(copy.deepcopy(row))
+                    else:
+                        fields["cache.txpool_snapshot.storage.hits"] = -1
+                with self.assertRaises(verify.VerificationError):
+                    self.run_check()
+
+    def test_txpool_persistence_reemit_does_not_double_count(self):
+        self.enable_txpool()
+        cache = next(row for row in self.events[0] if row["fields"]["message"] == "Slow block"
+                     and row["fields"]["block.number"] == 3)
+        self.events[0].append(copy.deepcopy(cache))
+        self.assertEqual(self.run_check()["txpool_snapshot_hits"]["storage"], 10)
+        self.events[0][-1]["fields"]["cache.txpool_snapshot.storage.hits"] = 6
+        with self.assertRaisesRegex(verify.VerificationError, "contradictory txpool"):
+            self.run_check()
+
     def test_reference_rejects_missing_ambiguous_or_swapped_startup(self):
         for role in range(2):
             for fault in ("missing", "duplicate", "wrong"):

@@ -1188,7 +1188,12 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let a_args = (dedup-args $a_base_args $extra_args)
     let b_args = (dedup-args $b_base_args $extra_args)
     let b_args = if $ctx.sequential_peer {
-        dedup-args $b_args ["--execution.threads" "0"]
+        # Keep the reference independent of the cache under test, including
+        # when both peers use the same binary.
+        let reference_args = ($b_args | where { |arg|
+            ($arg | split row "=" | first) != "--engine.txpool-prewarming"
+        })
+        dedup-args $reference_args ["--execution.threads" "0"]
     } else { $b_args }
     let b_tempo = if $ctx.sequential_peer_baseline { $ctx.reference_tempo } else { $run.tempo }
     let b_ref = if $ctx.sequential_peer_baseline { $ctx.reference_sha } else { $run.ref }
@@ -1238,7 +1243,10 @@ def run-local-e2e-phase [run: record, ctx: record] {
             feature_ref: $run.ref
             binary_sha256: (e2e-binary-sha256 $run.tempo)
             a: { rpc_url: $a_rpc, args: $a_args, log_dir: $a_log_dir }
-            b: { rpc_url: $b_rpc, args: $b_args, log_dir: $b_log_dir }
+            b: {
+                rpc_url: $b_rpc, args: $b_args, log_dir: $b_log_dir
+                env: { RETH_ENGINE_TXPOOL_PREWARMING: "false" }
+            }
         }
         let config = if $ctx.sequential_peer_baseline {
             $config | merge {
@@ -1262,6 +1270,9 @@ def run-local-e2e-phase [run: record, ctx: record] {
     }
     let tracy_env_prefix = if $ctx.tracy != "off" { $"TRACY_SAMPLING_HZ=($TRACY_SAMPLING_HZ) " } else { "" }
     let env_prefix = if $side_env != "" { $"($side_env) " } else { "" }
+    let b_env_prefix = if $ctx.sequential_peer {
+        $"($env_prefix)RETH_ENGINE_TXPOOL_PREWARMING=false "
+    } else { $env_prefix }
     let a_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=a,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
     let b_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=b,run_type=($run_type),git_ref=($b_ref),reference_epoch=($ctx.reference_epoch) "
 
@@ -1287,7 +1298,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let producer_units = if $ctx.owned_diagnostic { $ctx.producer_lifecycle.node_units } else { ["" ""] }
     let producer_description = if $ctx.owned_diagnostic { $ctx.producer_lifecycle.unit_description } else { "" }
     start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory --unit ($producer_units | get 0) --description $producer_description
-    start-e2e-local-node b $phase $b_tempo $b_args $env_prefix $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory --unit ($producer_units | get 1) --description $producer_description
+    start-e2e-local-node b $phase $b_tempo $b_args $b_env_prefix $b_otel "" $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory --unit ($producer_units | get 1) --description $producer_description
 
     sleep 2sec
     let rpc_timeout = if $ctx.bloat > 0 { 600 } else { 300 }

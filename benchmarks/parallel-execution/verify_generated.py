@@ -104,6 +104,13 @@ def check_config(config):
         require(threads is not None and threads.isdecimal(), f"{role}: explicit execution threads required")
         require(int(threads) > 0 if role == "a" else int(threads) == 0,
                 f"{role}: expected parallel A and sequential B")
+        if role == "b":
+            require(not any(arg.split("=", 1)[0] == "--engine.txpool-prewarming" for arg in args),
+                    "b: independent reference must disable txpool prewarming")
+            if txpool_enabled(config) or "env" in node:
+                require(isinstance(node.get("env"), dict)
+                        and node["env"].get("RETH_ENGINE_TXPOOL_PREWARMING") == "false",
+                        "b: reference must override the txpool prewarming environment to false")
         window = option(args, "--execution.capture-window")
         require(window is None or window in ("128", "256", "512"),
                 f"{role}: capture window must be 128, 256 or 512")
@@ -117,7 +124,14 @@ def check_config(config):
     require(Path(config["a"]["log_dir"]).resolve() != Path(config["b"]["log_dir"]).resolve(),
             "peer log directories must differ")
     require(windows[0] == windows[1], "peer capture windows must match (default: 128)")
+    if txpool_enabled(config):
+        require(option(config["a"]["args"], "--engine.slow-block-threshold") == "0",
+                "a: txpool correctness requires per-block cache hit diagnostics")
     return windows[0], explicit_window
+
+
+def txpool_enabled(config):
+    return any(arg.split("=", 1)[0] == "--engine.txpool-prewarming" for arg in config["a"]["args"])
 
 
 def rpc_result(payload, request_id):
@@ -253,10 +267,12 @@ def log_events(directory):
 
 
 def index_logs(events):
-    index = {"built": {}, "executed": {}, "valid": {}, "engine_reuse": {}, "builder_reuse": {}, "startups": []}
+    index = {"built": {}, "executed": {}, "valid": {}, "engine_reuse": {}, "builder_reuse": {},
+             "startups": [], "txpool_cache": {}}
     relevant = []
     messages = {"building new payload", "Built payload", "Executed block", "Executed block via BAL path",
-                "execution layer reported payload status", "Finished speculative block execution", "Starting Tempo"}
+                "execution layer reported payload status", "Finished speculative block execution", "Starting Tempo",
+                "Slow block"}
     for event, location in events:
         require(isinstance(event, dict) and isinstance(event.get("fields"), dict), f"malformed event at {location}")
         if event["fields"].get("message") not in messages:
@@ -278,6 +294,20 @@ def index_logs(events):
         proof = {"source": location, "time": stamp.isoformat()}
         if message == "Starting Tempo":
             index["startups"].append({**proof, "version": fields.get("version")})
+            continue
+        if message == "Slow block":
+            names = {kind: f"cache.txpool_snapshot.{kind}.hits" for kind in ("account", "storage", "code")}
+            if not any(name in fields for name in names.values()):
+                continue  # Older reference binaries may lack these counters.
+            require(event.get("target") == "reth::slow_block", f"wrong cache diagnostic target at {location}")
+            digest = block_hash(fields.get("block.hash"))
+            counts = {kind: integer(fields.get(name), name) for kind, name in names.items()}
+            value = {"number": integer(fields.get("block.number"), "cache block number"), "hits": counts}
+            previous = index["txpool_cache"].get(digest)
+            require(previous is None or all(previous[key] == value[key] for key in value),
+                    f"contradictory txpool cache diagnostics at {location}")
+            if previous is None:
+                index["txpool_cache"][digest] = {**proof, **value}
             continue
         builder_span = next((span for span in reversed(spans)
                             if span.get("name") == "build_payload" and span.get("id")), None)
@@ -447,6 +477,28 @@ def verify(config, report, rpcs=None, logs=None, finality_timeout=60, dense_tran
     require(sum(producers.values()) >= min_dense_blocks and all(producers.values()),
             f"insufficient dense generated cohort / both producer roles at >= {dense_transactions} transactions: {producers}")
     require(all(reuse.values()), f"missing positive canonical parallel reuse in each role: {reuse}")
+    txpool_hits = None
+    if txpool_enabled(config):
+        txpool_hits = {kind: 0 for kind in ("account", "storage", "code")}
+        for block in verified:
+            if not block["tx_count"]:
+                continue
+            digest = block["hash"]
+            for role, log in zip("ab", logs):
+                cache = log["txpool_cache"].get(digest)
+                if cache is not None:
+                    require(cache["number"] == quantity(block["number"], "cache block number"),
+                            "txpool cache diagnostic height mismatch")
+                    require(role != "b" or not any(cache["hits"].values()),
+                            "sequential reference consumed a txpool snapshot")
+                # Only fresh opposite-peer Engine executions qualify. Own
+                # proposals can have a different validation/cache lifecycle.
+                if role == "a" and digest in logs[1]["built"]:
+                    require(cache is not None, f"missing canonical txpool cache diagnostics for {digest}")
+                    for kind, count in cache["hits"].items():
+                        txpool_hits[kind] += count
+                    block["txpool_cache"] = cache
+        require(any(txpool_hits.values()), "no txpool snapshot reads in fresh canonical feature execution")
     comparison = ("candidate against a distinct pinned sequential reference binary" if binary_startups
                   else "same candidate binary with speculation on/off")
     return {"status": "passed", "mode": "generated-correctness", "speedup_claim": False,
@@ -460,6 +512,7 @@ def verify(config, report, rpcs=None, logs=None, finality_timeout=60, dense_tran
             "capture_window": capture_window, "capture_window_explicit": explicit_window,
             "dense_transactions": dense_transactions, "minimum_dense_blocks": min_dense_blocks,
             "dense_blocks_by_producer": producers, "parallel_reused": reuse,
+            "txpool_snapshot_hits": txpool_hits,
             "reuse_count_semantics": "builder_a is an included-reuse lower bound after subtracting all invalid execution attempts; engine_a is exact",
             "blocks": verified}
 
