@@ -10,27 +10,16 @@ use revm::{
     inspector::InspectorEvmTr,
     interpreter::{InitialAndFloorGas, interpreter::EthInterpreter},
 };
-use std::{cell::RefCell, fmt, rc::Rc, sync::Arc};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{storage::StorageActions, storage_credits::NonCreditableSlots};
 
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardfork>, DB>;
 
-type BuildPrecompiles = dyn Fn(
-    &CfgEnv<TempoHardfork>,
-    StorageActions,
-    Rc<RefCell<NonCreditableSlots>>,
-) -> PrecompilesMap;
-
-/// Builds an EVM's precompiles, so they can be rebuilt when storage actions change.
-pub(crate) struct PrecompilesBuilder(Rc<BuildPrecompiles>);
-
-impl fmt::Debug for PrecompilesBuilder {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("PrecompilesBuilder")
-    }
-}
+/// Builds an EVM's precompiles from its context and shared accounting state.
+pub type PrecompilesBuilder<DB> =
+    fn(&TempoContext<DB>, StorageActions, Rc<RefCell<NonCreditableSlots>>) -> PrecompilesMap;
 
 /// TempoEvm extends the Evm with Tempo specific types and logic.
 #[derive(Debug, derive_more::Deref, derive_more::DerefMut)]
@@ -83,30 +72,27 @@ pub struct TempoEvm<DB: Database, I> {
     /// Internal protocol fee hooks.
     pub(crate) fee_manager: Arc<dyn ProtocolFeeManager<DB>>,
     /// Builds `inner.precompiles`.
-    pub(crate) precompiles_builder: PrecompilesBuilder,
+    pub(crate) precompiles_builder: PrecompilesBuilder<DB>,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
     /// Create a new Tempo EVM.
     pub fn new(ctx: TempoContext<DB>, inspector: I) -> Self {
-        Self::new_with_precompiles(ctx, inspector, tempo_precompiles::tempo_precompiles)
+        Self::new_with_precompiles(ctx, inspector, |ctx, actions, non_creditable_slots| {
+            tempo_precompiles::tempo_precompiles(&ctx.cfg, actions, non_creditable_slots)
+        })
     }
 
-    /// Create a new Tempo EVM with precompiles built from its config and shared accounting state.
+    /// Create a new Tempo EVM with precompiles built from its context and shared accounting state.
     /// Unlike replacing the lookup afterwards, this keeps the Tempo set out of the binary.
-    pub fn new_with_precompiles<F>(ctx: TempoContext<DB>, inspector: I, precompiles: F) -> Self
-    where
-        F: Fn(
-                &CfgEnv<TempoHardfork>,
-                StorageActions,
-                Rc<RefCell<NonCreditableSlots>>,
-            ) -> PrecompilesMap
-            + 'static,
-    {
+    pub fn new_with_precompiles(
+        ctx: TempoContext<DB>,
+        inspector: I,
+        builder: PrecompilesBuilder<DB>,
+    ) -> Self {
         let non_creditable_slots = Rc::new(RefCell::new(NonCreditableSlots::empty()));
         let actions = StorageActions::disabled();
-        let builder = PrecompilesBuilder(Rc::new(precompiles));
-        let precompiles = (builder.0)(&ctx.cfg, actions.clone(), non_creditable_slots.clone());
+        let precompiles = builder(&ctx, actions.clone(), non_creditable_slots.clone());
 
         Self::new_inner(
             Evm {
@@ -180,7 +166,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         actions: StorageActions,
         non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
         fee_manager: Arc<dyn ProtocolFeeManager<DB>>,
-        precompiles_builder: PrecompilesBuilder,
+        precompiles_builder: PrecompilesBuilder<DB>,
     ) -> Self {
         Self {
             inner,
@@ -237,8 +223,8 @@ impl<DB: Database, I> TempoEvm<DB, I> {
 
     /// Consumes self and returns a new Evm type with given storage actions.
     pub fn with_actions(mut self, actions: StorageActions) -> Self {
-        self.inner.precompiles = (self.precompiles_builder.0)(
-            &self.inner.ctx.cfg,
+        self.inner.precompiles = (self.precompiles_builder)(
+            &self.inner.ctx,
             actions.clone(),
             self.non_creditable_slots.clone(),
         );
