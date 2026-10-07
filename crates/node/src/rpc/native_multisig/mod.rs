@@ -1,7 +1,7 @@
 use alloy_primitives::Address;
 use reth_evm::revm::Database;
 use reth_rpc_eth_types::EthApiError;
-use tempo_alloy::rpc::{TempoTransactionRequest, create_mock_native_multisig_signature};
+use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::{
     SignatureType, TempoBlockEnv, TempoSignature, TempoTxEnvelope,
@@ -45,7 +45,8 @@ pub(super) fn prepare_native_multisig_simulation(
     }
     if let Some(spec) = request.multisig_simulation.as_ref() {
         let account = request.key_id.unwrap_or(parent);
-        let signature = create_mock_native_multisig_signature(account, spec)
+        let signature = spec
+            .mock_signature(account)
             .map_err(EthApiError::InvalidParams)?;
         validate_witness(&signature, factory, hardfork, db)?;
         request.multisig_simulation_signature = Some(signature);
@@ -77,7 +78,8 @@ pub(super) fn prepare_native_multisig_simulation(
                 "admin-signed grant simulation requires its signer as keyId and the parent as account",
             ));
         }
-        let signature = create_mock_native_multisig_signature(signer, spec)
+        let signature = spec
+            .mock_signature(signer)
             .map_err(EthApiError::InvalidParams)?;
         validate_witness(&signature, factory, hardfork, db)?;
         request.key_authorization =

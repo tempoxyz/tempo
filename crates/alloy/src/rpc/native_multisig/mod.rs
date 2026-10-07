@@ -1,14 +1,5 @@
-#[cfg(feature = "revm")]
-use super::revm_compat::create_mock_primitive_signature_with_webauthn_limit;
-#[cfg(feature = "revm")]
-use alloy_primitives::B256;
 use alloy_primitives::{Address, Bytes};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
-#[cfg(feature = "revm")]
-use tempo_primitives::transaction::{
-    MAX_WEBAUTHN_SIGNATURE_LENGTH, MultisigSignature, PrimitiveSignature,
-    tt_signature::WebAuthnSignature,
-};
 use tempo_primitives::{
     SignatureType,
     transaction::{
@@ -96,38 +87,5 @@ mod serde_multisig_config {
     }
 }
 
-/// Constructs bounded dummy approvals only after checking the claimed owner quorum.
-#[cfg(feature = "revm")]
-pub fn create_mock_native_multisig_signature(
-    account: Address,
-    spec: &MultisigSimulationSpec,
-) -> Result<MultisigSignature, String> {
-    spec.validate_owners(account)?;
-    let signatures = spec
-        .approvals
-        .iter()
-        .map(|approval| {
-            let signature = match approval.key_type {
-                None => PrimitiveSignature::WebAuthn(WebAuthnSignature {
-                    webauthn_data: Bytes::from(vec![0xff; MAX_WEBAUTHN_SIGNATURE_LENGTH - 128]),
-                    r: B256::ZERO,
-                    s: B256::ZERO,
-                    pub_key_x: B256::ZERO,
-                    pub_key_y: B256::ZERO,
-                }),
-                Some(key_type) => create_mock_primitive_signature_with_webauthn_limit(
-                    &key_type,
-                    approval.key_data.clone(),
-                    MAX_WEBAUTHN_SIGNATURE_LENGTH - 128,
-                )
-                .ok_or("multisig owners must use primitive signatures")?,
-            };
-            Ok(signature)
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    MultisigSignature::try_new(account, spec.config.clone(), signatures)
-        .map_err(|error| error.to_string())
-}
-
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

@@ -155,18 +155,24 @@ impl FromConsensusHeader<TempoHeader> for TempoHeaderResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rpc::revm_compat::{
-        RPC_SIMULATION_UNIQUE_TX_IDENTIFIER, create_mock_primitive_signature,
+    use crate::rpc::{
+        native_multisig::tests::spec,
+        revm_compat::{RPC_SIMULATION_UNIQUE_TX_IDENTIFIER, create_mock_primitive_signature},
     };
     use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address};
     use alloy_rpc_types_eth::TransactionRequest;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
+    use reth_evm::FromTxWithEncoded;
     use reth_rpc_convert::TryIntoTxEnv;
     use tempo_primitives::{
         SignatureType, TempoTransaction,
-        transaction::{Call, FEE_PAYER_SIGNATURE_MARKER, tt_signature::PrimitiveSignature},
+        transaction::{
+            Call, FEE_PAYER_SIGNATURE_MARKER, KeyAuthorization, KeychainSignature, MultisigConfig,
+            MultisigOwner, MultisigSignature, multisig_digest, tt_signature::PrimitiveSignature,
+        },
     };
+    use tempo_revm::ExecutionContext;
 
     fn call_request(target: Address) -> TransactionRequest {
         TransactionRequest {
@@ -530,5 +536,94 @@ mod tests {
                 other.tx_type()
             ),
         }
+    }
+
+    #[test_case::test_case(0; "direct")]
+    #[test_case::test_case(1; "delegate")]
+    #[test_case::test_case(2; "inline grant")]
+    fn native_roles_keep_transaction_context_with_empty_encoding(role: u8) {
+        let account = Address::repeat_byte(9);
+        let multisig = spec().mock_signature(account).unwrap();
+        let mut tx = TempoTransaction::default();
+        let signature = match role {
+            0 => TempoSignature::Multisig(multisig),
+            1 => {
+                TempoSignature::Keychain(KeychainSignature::new(Address::repeat_byte(8), multisig))
+            }
+            _ => {
+                tx.key_authorization = Some(
+                    KeyAuthorization::unrestricted(
+                        4217,
+                        SignatureType::Secp256k1,
+                        Address::repeat_byte(8),
+                    )
+                    .into_signed(multisig),
+                );
+                TempoSignature::default()
+            }
+        };
+        let tx = tx.into_signed(signature);
+        let env = TempoTxEnv::from_encoded_tx(&tx, account, Bytes::new());
+        assert!(matches!(
+            env.execution_context,
+            ExecutionContext::Transaction { .. }
+        ));
+    }
+
+    #[test_case::test_case(false; "direct")]
+    #[test_case::test_case(true; "delegate")]
+    fn block_simulation_rejects_configurable_roles(delegate: bool) {
+        let request = TempoTransactionRequest {
+            multisig_simulation: Some(spec()),
+            key_id: delegate.then_some(Address::repeat_byte(9)),
+            ..Default::default()
+        };
+        let error = TryIntoSimTx::<TempoTxEnvelope>::try_into_sim_tx(request).unwrap_err();
+        assert!(error.to_string().contains("evolving-position state"));
+    }
+
+    #[tokio::test]
+    async fn signing_preserves_real_configurable_grant_without_simulation_hints() {
+        let signer = PrivateKeySigner::random();
+        let parent = signer.address();
+        let authorization =
+            KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, Address::repeat_byte(8));
+        let config = MultisigConfig {
+            salt: B256::ZERO,
+            version: 1,
+            threshold: 1,
+            owners: vec![MultisigOwner {
+                owner: parent,
+                weight: 1,
+            }],
+        };
+        let digest = multisig_digest(authorization.signature_hash(), parent, 1);
+        let signature = MultisigSignature::try_new(
+            parent,
+            config,
+            vec![PrimitiveSignature::Secp256k1(
+                signer.sign_hash_sync(&digest).unwrap(),
+            )],
+        )
+        .unwrap();
+        let authorization = authorization.into_signed(signature);
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(parent),
+                to: Some(Address::repeat_byte(7).into()),
+                chain_id: Some(4217),
+                nonce: Some(0),
+                gas: Some(100_000),
+                max_fee_per_gas: Some(1),
+                max_priority_fee_per_gas: Some(1),
+                ..Default::default()
+            },
+            key_authorization: Some(authorization.clone()),
+            ..Default::default()
+        };
+        let TempoTxEnvelope::AA(tx) = request.try_build_and_sign(signer).await.unwrap() else {
+            panic!("AA expected");
+        };
+        assert_eq!(tx.tx().key_authorization, Some(authorization));
     }
 }
