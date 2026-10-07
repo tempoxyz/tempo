@@ -2,16 +2,16 @@
 
 The port builds, imports, validates and persists development blocks. In this
 small-state workload, the QMDB prototype is **slower** than the MPT backend:
-12.08× higher mean submission/build/import latency and 2.34× higher mean latency
+13.14× higher mean submission/build/import latency and 2.42× higher mean latency
 through the harness's durable-persistence check. These results are not a production
 TPS estimate or a root-only microbenchmark.
 
 ## Configuration
 
-- Tempo: `ba37e4b4f982a9a399c8d5c8fb898bed4c95590c`, based on main `3bfcf42140`.
-- Reth: `362dea1d85d77fd3f960ab6ef13e9dee6d503f83`, based on main
+- Tempo: `30a67ebf44c25d50f6bd21d9a27610d27cbf21eb`, based on main `3bfcf42140`.
+- Reth: `adcaaa8291154a15ccb0e2986f40b08ebcd547f7`, based on main
   `8cd725d582628cfbe5c1903aa3f88eac6c3a7243`.
-- Commonware storage: `2a7dd423f0a241276a5a38db8cc3d05f11de0c03`.
+- Commonware storage: published `2026.9.0`, shared with Tempo's consensus packages.
 - Bare metal: AMD EPYC 4484PX, 12 physical cores / 24 logical CPUs, FRA2.
 - Rust: `1.101.0-nightly (ea137335b 2026-10-05)`; release optimization,
   debug assertions off, LTO disabled.
@@ -34,8 +34,8 @@ the per-round throughput values.
 
 | Backend | Build/import mean (ms/block) | Build/import observed tx/s | Through durability mean (ms/block) | Through durability observed tx/s |
 | --- | ---: | ---: | ---: | ---: |
-| MPT | 2.773 | 5,769.6 | 23.842 | 671.1 |
-| QMDB | 33.493 | 477.7 | 55.755 | 287.0 |
+| MPT | 2.785 | 5,744.7 | 23.864 | 670.5 |
+| QMDB | 36.602 | 437.1 | 57.702 | 277.3 |
 
 ## Per-round results
 
@@ -43,12 +43,12 @@ These percentiles are per round, not pooled percentiles across all rounds.
 
 | Round | Backend | Build/import mean | Build/import p50 | Build/import p95 | Through durability mean | Through durability p50 | Through durability p95 |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | MPT | 2.819 | 3.036 | 3.517 | 23.922 | 24.142 | 24.671 |
-| 1 | QMDB | 36.633 | 33.651 | 72.718 | 58.323 | 54.731 | 93.808 |
-| 2 | MPT | 2.799 | 2.978 | 3.654 | 23.874 | 24.065 | 24.845 |
-| 2 | QMDB | 35.891 | 33.476 | 78.159 | 58.663 | 54.548 | 105.534 |
-| 3 | MPT | 2.702 | 2.886 | 3.547 | 23.730 | 23.936 | 24.662 |
-| 3 | QMDB | 27.956 | 24.417 | 66.347 | 50.279 | 45.485 | 87.427 |
+| 1 | MPT | 2.821 | 3.047 | 3.587 | 23.896 | 24.110 | 24.655 |
+| 1 | QMDB | 35.492 | 31.671 | 71.323 | 56.626 | 52.689 | 92.449 |
+| 2 | MPT | 2.737 | 2.929 | 3.443 | 23.775 | 23.982 | 24.509 |
+| 2 | QMDB | 37.313 | 33.128 | 74.428 | 58.377 | 54.199 | 95.505 |
+| 3 | MPT | 2.797 | 2.891 | 3.340 | 23.922 | 23.981 | 24.565 |
+| 3 | QMDB | 37.000 | 33.149 | 71.995 | 58.104 | 54.274 | 92.522 |
 
 All latency columns are milliseconds per block.
 
@@ -60,8 +60,17 @@ CARGO_PROFILE_RELEASE_LTO=false QMDB_BENCH_BLOCKS=100 QMDB_BENCH_TXS=16 QMDB_BEN
   -- --ignored --nocapture
 ```
 
-The completed benchmark test took 26.80 seconds after compilation and returned
-success. Each `QMDB_BENCH` line contains the full-precision JSON summary.
+The completed benchmark test took 27.37 seconds after compilation and returned
+success. The development-node independent-validation/persistence/restart test
+also passed in the same release build (0.45 seconds).
+Each `QMDB_BENCH` line contains the full-precision JSON summary.
+
+These rerun results supersede the initial April-Commonware-snapshot report shared
+in the Slack thread. The final branch pins Reth
+`5d76959dbcee7b1db53c42e9ba31dc347cbc8623`; its only change after the measured SDK
+revision is a narrowly scoped Clippy annotation for account-feature compatibility.
+The subsequent Tempo changes only update that dependency reference and this report.
+The runtime implementation measured here is otherwise unchanged.
 
 Signing, token-balance probes, receipt checks and pool-head synchronization happen
 outside the timed interval. The processing interval covers pool submission,
