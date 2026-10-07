@@ -691,9 +691,9 @@ def txgen-prepare-vault-preset [spec_path: string, accounts: int, chain_id: int]
     $output
 }
 
-# Only public-mix needs category metadata; all presets use gas weighting.
+# Only public-mix needs category metadata; this comparison uses selection weights.
 def txgen-workload-metadata-args [preset_name: string, spec_path: string] {
-    if $preset_name != "public-mix" { return ["-m" "workload_mix_weighting=gas"] }
+    if $preset_name != "public-mix" { return ["-m" "workload_mix_weighting=selection"] }
 
     # Read only the prepared file's mix, not its included setup/template specs.
     # Pin the jq-compatible Python yq, rather than relying on a system yq variant.
@@ -708,7 +708,7 @@ def txgen-workload-metadata-args [preset_name: string, spec_path: string] {
     if $result.exit_code != 0 {
         error make {msg: $"Failed to extract public-mix metadata: ($result.stderr)"}
     }
-    ["-m" "workload_mix_version=1" "-m" "workload_mix_weighting=gas" "-m" $"workload_mix_weights=($result.stdout | str trim)"]
+    ["-m" "workload_mix_version=1" "-m" "workload_mix_weighting=selection" "-m" $"workload_mix_weights=($result.stdout | str trim)"]
 }
 
 def txgen-run-preset-pipeline [
