@@ -7,6 +7,7 @@ Keep raw perf.data remotely and validate scope, loss and symbolization separatel
 """
 import argparse
 import contextlib
+import gzip
 import hashlib
 import json
 import math
@@ -14,14 +15,18 @@ import os
 from pathlib import Path
 import re
 import resource
+import selectors
 import shutil
 import signal
 import subprocess
 import sys
 import time
+import zlib
 
 MIB = 1024 * 1024
 FILE_LIMIT = 128 * MIB
+FAULT_DECODE_LIMIT = 2048 * MIB
+FAULT_COMPRESSED_LIMIT = 64 * MIB
 FAULT_SAMPLE_PERIOD = 32
 EVENTS = ("sched_switch", "sched_wakeup", "sched_wakeup_new")
 NAMES = ("engine", "payload-builder")
@@ -301,6 +306,43 @@ def privileged(args, timeout=15):
     return json.loads(result.stdout)
 
 
+def run_owned_gzip(argv, output, stderr, timeout, stop=None):
+    """Stream repetitive symbol text into bounded gzip without a large plain file."""
+    child = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                             stderr=stderr, start_new_session=True, preexec_fn=capped_child)
+    start = time.monotonic()
+    decoded = compressed = 0
+    digest = hashlib.sha256()
+    encoder = zlib.compressobj(level=1, wbits=31)
+    try:
+        with child.stdout, selectors.DefaultSelector() as ready, open(output, "wb") as target:
+            ready.register(child.stdout, selectors.EVENT_READ)
+            eof = False
+            def write(chunk):
+                nonlocal compressed
+                compressed += len(chunk)
+                require(compressed <= FAULT_COMPRESSED_LIMIT, "compressed decode size limit")
+                target.write(chunk)
+            while not eof or child.poll() is None:
+                require(not (stop and stop.exists()), "cancelled by stop sentinel")
+                require(time.monotonic() - start < timeout, "owned command exceeded deadline")
+                for key, _ in ready.select(0.05):
+                    chunk = os.read(key.fd, 64 * 1024)
+                    if not chunk:
+                        ready.unregister(key.fileobj); eof = True
+                        continue
+                    decoded += len(chunk)
+                    require(decoded <= FAULT_DECODE_LIMIT, "uncompressed decode size limit")
+                    digest.update(chunk)
+                    write(encoder.compress(chunk))
+            write(encoder.flush())
+        return child.returncode, {"decoded_bytes": decoded, "compressed_bytes": compressed,
+                                  "decoded_sha256": digest.hexdigest()}
+    finally:
+        with cleanup_signals():
+            stop_owned(child)
+
+
 def recorder_worker(config_path):
     config = json.loads(Path(config_path).read_text())
     output = Path(config["output"])
@@ -339,7 +381,7 @@ def recorder_worker(config_path):
 
 def decode_worker(config_path):
     config = json.loads(Path(config_path).read_text()); output = Path(config["output"])
-    perf = config["command"][0]; result = {"ok": False}
+    perf = config["command"][0]; result = {"ok": False, "outputs": {}}
     commands = [("header", ["--header-only"]),
         ("events", ["--ns", "--show-lost-events", "-F", "trace:comm,pid,tid,cpu,time,event,trace"]),
         ("raw", ["-D"])]
@@ -349,8 +391,15 @@ def decode_worker(config_path):
     try:
         with cancellation():
             for name, options in commands:
-                with open(output / (name + ".txt"), "wb") as stdout, open(output / (name + ".stderr"), "wb") as stderr:
-                    code = run_owned([perf, "script", "-i", str(output / "perf.data"), *options], stdout, stderr, (30 if name == "events" else 12) if config.get("kind") == "faults" else 8, output / "stop")
+                argv = [perf, "script", "-i", str(output / "perf.data"), *options]
+                with open(output / (name + ".stderr"), "wb") as stderr:
+                    if config.get("kind") == "faults" and name != "header":
+                        code, stats = run_owned_gzip(argv, output / (name + ".txt.gz"),
+                            stderr, 30 if name == "events" else 12, output / "stop")
+                        result["outputs"][name] = stats
+                    else:
+                        with open(output / (name + ".txt"), "wb") as stdout:
+                            code = run_owned(argv, stdout, stderr, 12 if config.get("kind") == "faults" else 8, output / "stop")
                 require(code == 0, f"perf decode {name} exit {code}")
         result["ok"] = True
     except (TraceError, OSError) as error:
@@ -358,7 +407,7 @@ def decode_worker(config_path):
     finally:
         save(output / "decode-result.json", result)
         for name, _ in commands:
-            for suffix in ("txt", "stderr"):
+            for suffix in ("txt", "txt.gz", "stderr"):
                 path = output / f"{name}.{suffix}"
                 if path.exists(): path.chmod(0o644)
         (output / "decode-result.json").chmod(0o644)
@@ -368,7 +417,10 @@ def decode_worker(config_path):
 def loss_evidence(output):
     findings = []
     for name in ("record.stderr", "events.txt", "events.stderr", "raw.txt", "raw.stderr"):
-        with open(output / name, errors="replace") as stream:
+        path = output / name
+        compressed = path.with_suffix(path.suffix + ".gz")
+        opener = gzip.open if compressed.exists() else open
+        with opener(compressed if compressed.exists() else path, "rt", errors="replace") as stream:
             for number, line in enumerate(stream, 1):
                 if re.search(r"PERF_RECORD_(?:LOST(?:_SAMPLES)?|THROTTLE|UNTHROTTLE)\b|\blost\s+[1-9]\d*\s+(?:events|samples)|\b(?:out of order|size limit reached|failed|truncated)\b", line, re.I):
                     findings.append({"file": name, "line": number, "text": line.strip()[:1000]})
@@ -430,7 +482,9 @@ def capture(args):
             require(result.returncode == 0, "decoder failed; see decode-result.json")
             findings = loss_evidence(output); save(output / "loss-evidence.json", findings)
             require(not findings, "loss/throttle/limit/decoder anomaly; exact scheduler accounting unavailable")
-            require((output / "events.txt").stat().st_size > 0, "empty decoded scheduler trace")
+            events_size = (json.loads((output / "decode-result.json").read_text())["outputs"]["events"]["decoded_bytes"]
+                           if kind == "faults" else (output / "events.txt").stat().st_size)
+            require(events_size > 0, "empty decoded trace")
             manifest.update(ok=True, selected_tids=selected_tids(before), raw_bytes=(output / "perf.data").stat().st_size,
                 decode_accounting_ready=False,
                 loss_scope="No known loss/throttle/error lines in retained decode; raw READ-format loss counters and timeline completeness still require qualified analysis",

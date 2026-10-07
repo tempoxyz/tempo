@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """No tracing/root required: synthetic /proc and real owned child cleanup tests."""
 import contextlib
+import gzip
 import importlib.util
 import io
 import json
@@ -111,13 +112,56 @@ class SchedulerTraceTests(unittest.TestCase):
     def test_fault_decoder_keeps_mapping_records_and_callchains(self):
         config = self.root / "config.json"
         config.write_text(json.dumps({"output": str(self.root), "command": ["/perf"], "kind": "faults"}))
-        with patch.object(trace, "run_owned", return_value=0) as run:
+        commands = []
+        def plain(argv, *_):
+            commands.append(argv); return 0
+        def compressed(argv, *_):
+            commands.append(argv); return 0, {"decoded_bytes": 1}
+        with patch.object(trace, "run_owned", side_effect=plain), \
+             patch.object(trace, "run_owned_gzip", side_effect=compressed):
             self.assertEqual(trace.decode_worker(config), 0)
-        commands = [call.args[0] for call in run.call_args_list]
         self.assertEqual(len(commands), 3)
         self.assertIn("sw:comm,pid,tid,cpu,time,event,addr,ip,sym,dso,period", commands[1])
         self.assertNotIn("--hide-call-graph", commands[1])
         self.assertIn("-D", commands[2])
+
+    def test_compressed_decoder_preserves_full_output_beyond_plain_file_limit(self):
+        path = self.root / "events.txt.gz"
+        raw = b"repeated symbol and mapping\n" * 10000
+        argv = [sys.executable, "-c", "import sys; sys.stdout.buffer.write(%r * 10000)" % b"repeated symbol and mapping\n"]
+        with patch.object(trace, "FILE_LIMIT", 4096), open(os.devnull, "wb") as stderr:
+            code, stats = trace.run_owned_gzip(argv, path, stderr, 3)
+        self.assertEqual(code, 0)
+        self.assertEqual(gzip.decompress(path.read_bytes()), raw)
+        self.assertEqual(stats["decoded_bytes"], len(raw))
+        self.assertEqual(stats["compressed_bytes"], path.stat().st_size)
+
+    def test_compressed_decoder_limits_reap_child_and_leave_other_processes(self):
+        unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(20)"])
+        self.addCleanup(lambda: unrelated.poll() is None and (unrelated.kill(), unrelated.wait()))
+        for constant, error in [("FAULT_DECODE_LIMIT", "uncompressed"), ("FAULT_COMPRESSED_LIMIT", "compressed")]:
+            pid_file = self.root / (constant + ".pid")
+            program = ("import os,time; from pathlib import Path; "
+                       "Path(%r).write_text(str(os.getpid())); "
+                       "os.write(1, os.urandom(100000)); time.sleep(20)") % str(pid_file)
+            with patch.object(trace, constant, 1024), open(os.devnull, "wb") as stderr:
+                with self.assertRaisesRegex(trace.TraceError, error + " decode size limit"):
+                    trace.run_owned_gzip([sys.executable, "-c", program], self.root / (constant + ".gz"), stderr, 3)
+            with self.assertRaises(ProcessLookupError): os.kill(int(pid_file.read_text()), 0)
+            self.assertLessEqual((self.root / (constant + ".gz")).stat().st_size, trace.FAULT_COMPRESSED_LIMIT)
+        self.assertIsNone(unrelated.poll())
+
+    def test_compressed_decoder_quiet_child_obeys_stop_and_deadline(self):
+        for cancel in (False, True):
+            stop = self.root / "stop"
+            if cancel: stop.touch()
+            pid_file = self.root / ("cancel.pid" if cancel else "timeout.pid")
+            program = "import os,time; from pathlib import Path; Path(%r).write_text(str(os.getpid())); time.sleep(20)" % str(pid_file)
+            with open(os.devnull, "wb") as stderr:
+                with self.assertRaisesRegex(trace.TraceError, "stop sentinel" if cancel else "deadline"):
+                    trace.run_owned_gzip([sys.executable, "-c", program], self.root / "quiet.gz", stderr, 0.2, stop)
+            if pid_file.exists():
+                with self.assertRaises(ProcessLookupError): os.kill(int(pid_file.read_text()), 0)
 
     def test_preflight_creates_report_directory_and_exposes_failure(self):
         output = self.root / "new-results" / "faults-preflight.json"
@@ -153,6 +197,15 @@ class SchedulerTraceTests(unittest.TestCase):
         # duration includes setup/flush and cannot qualify that truncated run.
         (self.root / "record.stderr").write_text("perf size limit reached (122880 KB), stopping session\n")
         self.assertEqual(len(trace.loss_evidence(self.root)), 1)
+
+    def test_loss_evidence_reads_compressed_fault_decodes(self):
+        for name in ("record.stderr", "events.stderr", "raw.stderr"):
+            (self.root / name).write_text("")
+        for name, data in (("events", b"normal event\n"), ("raw", b"PERF_RECORD_LOST_SAMPLES\n")):
+            (self.root / (name + ".txt.gz")).write_bytes(gzip.compress(data))
+        findings = trace.loss_evidence(self.root)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["file"], "raw.txt")
 
     def test_owned_timeout_reaps_only_its_process_group(self):
         unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(20)"])
