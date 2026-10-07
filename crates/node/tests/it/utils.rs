@@ -677,6 +677,15 @@ impl TestNodeBuilder {
 
     /// Build multiple nodes with direct access
     pub(crate) async fn build_multi_node(self) -> eyre::Result<MultiNodeSetup> {
+        Box::pin(self.build_multi_node_inner(false)).await
+    }
+
+    /// Build multiple nodes that can explicitly stop and close their databases.
+    pub(crate) async fn build_restartable_multi_node(self) -> eyre::Result<MultiNodeSetup> {
+        Box::pin(self.build_multi_node_inner(true)).await
+    }
+
+    async fn build_multi_node_inner(self, restartable: bool) -> eyre::Result<MultiNodeSetup> {
         if self.node_count < 2 {
             return Err(eyre::eyre!(
                 "build_multi_node requires node_count >= 2, use build_with_node_access for single node"
@@ -691,10 +700,11 @@ impl TestNodeBuilder {
 
         let chain_spec = self.build_chain_spec()?;
 
-        let (nodes, _wallet) = tempo_test_setup(self.node_count, Arc::new(chain_spec))
-            .with_dev_mode(true)
-            .build()
-            .await?;
+        let mut setup = tempo_test_setup(self.node_count, Arc::new(chain_spec)).with_dev_mode(true);
+        if restartable {
+            setup = setup.with_restartable_nodes();
+        }
+        let (nodes, _wallet) = setup.build().await?;
 
         Ok(MultiNodeSetup { nodes })
     }

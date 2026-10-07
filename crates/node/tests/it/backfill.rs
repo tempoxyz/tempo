@@ -27,7 +27,7 @@ async fn test_backfill_sync() -> eyre::Result<()> {
 
     let mut multi_setup = crate::utils::TestNodeBuilder::new()
         .with_node_count(2)
-        .build_multi_node()
+        .build_restartable_multi_node()
         .await?;
 
     let mut node1 = multi_setup.nodes.remove(0);
@@ -140,6 +140,13 @@ async fn test_backfill_sync() -> eyre::Result<()> {
         tempo_e2e::get_pipeline_runs(metrics_recorder) == 1,
         "Backfill was never triggered"
     );
+
+    // Await engine and database shutdown before the test runtime exits. Merely
+    // dropping the node handles can leave persistence work running at teardown.
+    drop(provider1);
+    drop(provider2);
+    node2.stop().await?;
+    node1.stop().await?;
 
     Ok(())
 }
