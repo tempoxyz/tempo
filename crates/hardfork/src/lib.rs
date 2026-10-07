@@ -169,6 +169,19 @@ macro_rules! tempo_hardfork {
                     }
                 )*
             }
+
+            #[cfg(feature = "evm")]
+            #[test]
+            fn test_ethereum_spec_conversion() {
+                for fork in TempoHardfork::VARIANTS {
+                    let expected = match fork {
+                        Genesis | T0 | T1 | T1A | T1B => SpecId::PRAGUE,
+                        _ => SpecId::OSAKA,
+                    };
+                    assert_eq!(SpecId::from(*fork), expected, "{fork:?}");
+                    assert_eq!(SpecId::from(fork), expected, "{fork:?}");
+                }
+            }
         }
     };
 }
@@ -478,8 +491,12 @@ impl TempoHardfork {
 
 #[cfg(feature = "evm")]
 impl From<TempoHardfork> for SpecId {
-    fn from(_value: TempoHardfork) -> Self {
-        Self::OSAKA
+    fn from(value: TempoHardfork) -> Self {
+        if value.is_t1c() {
+            Self::OSAKA
+        } else {
+            Self::PRAGUE
+        }
     }
 }
 
@@ -493,7 +510,6 @@ impl From<&TempoHardfork> for SpecId {
 #[cfg(feature = "evm")]
 impl From<SpecId> for TempoHardfork {
     fn from(_spec: SpecId) -> Self {
-        // All Tempo hardforks map to SpecId::OSAKA, so we cannot derive the hardfork from SpecId.
         // Default to the default hardfork when converting from SpecId.
         // The actual hardfork should be passed explicitly where needed.
         Self::default()
