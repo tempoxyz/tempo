@@ -559,6 +559,21 @@ impl GenesisArgs {
         }
         Ok(mnemonic.to_owned())
     }
+
+    /// Uses the same public testing keys as `--chain dev` for generated devnets.
+    /// Explicit keys take precedence; standalone genesis generation remains opt-in.
+    pub(crate) fn with_dev_verifying_keys(mut self) -> Self {
+        for (scheme, key) in tempo_chainspec::spec::DEV.info.zk_verifying_keys() {
+            if !self
+                .zk_verifying_keys
+                .iter()
+                .any(|(configured, _)| *configured == scheme)
+            {
+                self.zk_verifying_keys.push((scheme, key.clone()));
+            }
+        }
+        self
+    }
 }
 
 fn insert_zone_state_at_genesis(
@@ -970,6 +985,34 @@ mod tests {
         ))
         .unwrap();
         vectors["verifyingKey"].as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn devnet_genesis_inherits_development_verifying_keys() {
+        let genesis = parse("")
+            .unwrap()
+            .with_dev_verifying_keys()
+            .generate_genesis()
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(
+            genesis.config.extra_fields.get("zkVerifyingKeys"),
+            Some(&serde_json::json!({ "1": dev_verifying_key() }))
+        );
+        let standalone = generate("").await;
+        assert_eq!(standalone.config.extra_fields.get("zkVerifyingKeys"), None);
+    }
+
+    #[test]
+    fn devnet_genesis_preserves_explicit_verifying_keys() {
+        let mut args = parse("").unwrap();
+        let override_key = Bytes::from(vec![0x11; 576]);
+        args.zk_verifying_keys = vec![(1, override_key.clone())];
+        assert_eq!(
+            args.with_dev_verifying_keys().zk_verifying_keys,
+            vec![(1, override_key)]
+        );
     }
 
     #[tokio::test]

@@ -47,6 +47,7 @@ impl GenerateDevnet {
 
         let seed = genesis_args.seed;
         let (genesis, consensus_config) = genesis_args
+            .with_dev_verifying_keys()
             .generate_genesis()
             .await
             .wrap_err("failed to generate genesis")?;

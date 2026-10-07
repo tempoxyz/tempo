@@ -77,6 +77,10 @@ ZK signatures, scheme `0x01`), so the network accepts proofs from the
 [reference circuit](../circuits/oidc-rs256/README.md)'s development key. Its setup is deterministic and public,
 so anyone can forge proofs for it: treat OIDC accounts on this network as test-only.
 
+`tempo-xtask generate-devnet` carries these same development keys into generated genesis files,
+including PR preview devnets. An explicit `--zk-verifying-key` overrides a scheme's default.
+Standalone `generate-genesis` still requires explicit keys and never adds development keys by default.
+
 ## Fund a test account
 
 The default mode exposes the same faucet method used by Tempo test networks:
