@@ -1,6 +1,5 @@
-use crate::utils::with_t1_fees;
+use crate::utils::{t1_account, tempo_test_setup};
 use alloy_primitives::{Address, B256};
-use alloy_rpc_types_eth::TransactionRequest;
 use reth_e2e_test_utils::wallet::Wallet;
 use reth_ethereum::{chainspec::EthChainSpec as _, tasks::Runtime};
 use reth_node_api::BuiltPayload;
@@ -11,8 +10,8 @@ use tempo_node::node::{TempoNode, TempoNodeArgs};
 use tempo_primitives::SignatureType;
 
 /// One node builds two blocks. A second node only executes them with
-/// `newPayload` and never receives a forkchoice update, so its head stays at
-/// genesis. The first block becomes the engine's pending block. The second
+/// `newPayload` and receives no forkchoice update for them, so its head stays
+/// at genesis. The first block becomes the engine's pending block. The second
 /// block is neither canonical nor pending, so the provider has no state for
 /// it, but [`tempo_node::ExecutedState`] reads it from the engine.
 #[test_case::test_case(0, 1; "sequential_singleton")]
@@ -37,20 +36,14 @@ async fn executed_state_reads_blocks_that_are_not_canonical(
     let chain_spec = producer.inner.chain_spec();
     let chain_id = chain_spec.chain_id();
 
-    let mut account = Wallet::default().with_chain_id(chain_id).account(0);
+    let mut account = t1_account(&Wallet::default().with_chain_id(chain_id), 0);
     let sender = account.address();
-    let tx = TransactionRequest::default()
-        .to(Address::ZERO)
-        .gas_limit(300_000);
     for _ in 1..transaction_count {
-        producer
-            .rpc
-            .inject_tx(account.sign_tx_bytes(with_t1_fees(tx.clone())).await)
-            .await?;
+        let tx = account.tx().to(Address::ZERO).gas_limit(300_000).await;
+        producer.rpc.inject_tx(tx).await?;
     }
-    let (_, first) = producer
-        .inject_and_advance(account.sign_tx_bytes(with_t1_fees(tx)).await)
-        .await?;
+    let tx = account.tx().to(Address::ZERO).gas_limit(300_000).await;
+    let (_, first) = producer.inject_and_advance(tx).await?;
     let second = producer.advance_block().await?;
     let second_hash = second.block().hash();
 
@@ -67,19 +60,17 @@ async fn executed_state_reads_blocks_that_are_not_canonical(
 
     let tempo_node = TempoNode::default().with_execution_threads(execution_threads, 32);
     let executed_state = tempo_node.executed_state();
-    let runtime = Runtime::test();
-    let mut config = NodeConfig::new(chain_spec).with_unused_ports();
-    config.network.discovery.disable_discovery = true;
-    // The positive scheduling fixture must use generic workers at the Engine
-    // prewarming boundary. Small blocks retain the ordinary Engine configuration.
-    config.engine.prewarming_disabled = transaction_count >= 5;
-    let observer_handle = NodeBuilder::new(config)
-        .testing_node(runtime.clone())
-        .node(tempo_node)
-        .launch()
+    let (observer, _) = tempo_test_setup(1, chain_spec)
+        .with_node(move |_| tempo_node.clone())
+        .with_node_config_modifier(move |mut config| {
+            // Exercise generic workers at the Engine prewarming boundary;
+            // short blocks retain the ordinary Engine configuration.
+            config.engine.prewarming_disabled = transaction_count >= 5;
+            config
+        })
+        .build_single()
         .await?;
-    let observer = &observer_handle.node;
-    let workers = observer.evm_config.speculative_executor.as_ref();
+    let workers = observer.inner.evm_config.speculative_executor.as_ref();
     assert_eq!(workers.is_some(), execution_threads > 0);
     assert_eq!(
         workers
@@ -87,13 +78,10 @@ async fn executed_state_reads_blocks_that_are_not_canonical(
             .unwrap_or(0),
         0
     );
+    let provider = &observer.inner.provider;
 
     for payload in [first, second] {
-        let status = observer
-            .add_ons_handle
-            .beacon_engine_handle
-            .new_payload(payload.into())
-            .await?;
+        let status = observer.submit_payload_with_status(payload).await?;
         assert!(status.is_valid(), "unexpected payload status: {status:?}");
     }
 
@@ -113,15 +101,15 @@ async fn executed_state_reads_blocks_that_are_not_canonical(
     }
 
     assert!(
-        observer.provider.state_by_block_hash(second_hash).is_err(),
+        provider.state_by_block_hash(second_hash).is_err(),
         "the provider must not serve state for a block that is neither canonical nor pending",
     );
-    let state = executed_state.state_by_block_hash(observer.provider.clone(), second_hash)?;
+    let state = executed_state.state_by_block_hash(provider.clone(), second_hash)?;
     assert_eq!(state.basic_account(&sender)?, expected);
 
     assert!(
         executed_state
-            .state_by_block_hash(observer.provider.clone(), B256::repeat_byte(0xab))
+            .state_by_block_hash(provider.clone(), B256::repeat_byte(0xab))
             .is_err(),
         "a block that the engine has not executed must not resolve",
     );

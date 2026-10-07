@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, ops::Deref};
 
 use alloy::{
     network::EthereumWallet,
-    primitives::{Address, B256, Bytes, U256},
+    primitives::{Address, B256, U256},
     providers::{Provider, ProviderBuilder, RootProvider},
     rpc::client::RpcClient,
     signers::{SignerSync, local::PrivateKeySigner},
@@ -11,15 +11,11 @@ use alloy::{
 };
 use alloy_eips::eip2718::Encodable2718;
 use alloy_network::ReceiptResponse;
-use alloy_rpc_types_eth::TransactionRequest;
-use reth_e2e_test_utils::wallet::TestAccount;
 use reth_primitives_traits::transaction::TxHashRef;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::{constants::gas::TEMPO_T1_TX_GAS_LIMIT_CAP, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIP20};
 use tempo_primitives::{TempoTransaction, TempoTxEnvelope, transaction::Call};
-
-use crate::utils::with_t1_fees;
 
 pub(crate) const GAS_LIMIT: u64 = TEMPO_T1_TX_GAS_LIMIT_CAP;
 
@@ -69,15 +65,6 @@ impl Deref for GasSnapshot {
 pub(crate) fn fixed_signer(last_byte: u8) -> PrivateKeySigner {
     PrivateKeySigner::from_bytes(&B256::with_last_byte(last_byte))
         .expect("fixed test private key must be valid")
-}
-
-/// Builds and encodes a signed EIP-1559 CALL transaction with a 5M gas limit.
-pub(crate) async fn build_call_tx(account: &mut TestAccount, to: Address, input: Bytes) -> Bytes {
-    let tx = TransactionRequest::default()
-        .to(to)
-        .gas_limit(5_000_000)
-        .input(input.into());
-    account.sign_tx_bytes(with_t1_fees(tx)).await
 }
 
 pub(crate) struct TempoTxSender<P> {
