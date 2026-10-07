@@ -167,7 +167,7 @@
         const scheduled = active.tips.filter(t => fork(t) === key), rows = tips.filter(t => fork(t) === key);
         if (search && !rows.length) continue;
         const section = node('section', undefined, 'upgrade');
-        const role = [key === active.next_fork ? 'next Foundry fork' : '', key === active.current_fork ? 'current Foundry fork' : '', key === active.default_fork ? 'default Foundry fork' : ''].filter(Boolean).join(' · ');
+        const role = /^T\d+[A-Z]?$/.test(key) ? 'network upgrade' : '';
         section.append(node('h2', `${key}${role ? ' · ' + role : ''}`));
         if (!scheduled.length) section.append(node('p', 'No scheduled TIPs recorded', 'empty'));
         for (const tip of rows) section.append(tipCard(tip));

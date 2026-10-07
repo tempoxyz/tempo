@@ -32,7 +32,7 @@ test('latest groups descend, include empty next fork and exclude historical tips
   r.tips.push({id:'TIP-OLD',scheduled_fork:'T11'}, {id:'TIP-T12',scheduled_fork:'T12'});
   assert.deepEqual(upgradeForks(r),['T14','T13','T12']);
   const d=dom(), app=mount(d,null,'file:'); app.showReport(JSON.stringify(r));
-  assert.match(d.elements.results.textContent,/T14 · next Foundry fork No scheduled TIPs recorded/);
+  assert.match(d.elements.results.textContent,/T14 · network upgrade No scheduled TIPs recorded/);
   assert.doesNotMatch(d.elements.results.textContent,/TIP-OLD|TIP-UNKNOWN|Complete:/);
   d.elements.scope.value='all'; d.elements.scope.fire('change');
   assert.match(d.elements.results.textContent,/TIP-OLD/);
@@ -99,7 +99,7 @@ test('report latest_forks controls defaults even with future scheduled TIPs', ()
   assert.deepEqual(upgradeForks(r),['T14','T13','T12']);
   assert.deepEqual(upgradeForks(r,true),['T20','T14','T13','T12','Unknown / unscheduled']);
   const d=dom();mount(d,null,'file:').showReport(JSON.stringify(r));
-  assert.match(d.elements.results.textContent,/T12 No scheduled TIPs recorded/);
+  assert.match(d.elements.results.textContent,/T12 · network upgrade No scheduled TIPs recorded/);
   assert.doesNotMatch(d.elements.results.textContent,/TIP-FUTURE/);
 });
 test('empty inventories stay visibly unknown in collapsed rows', () => {

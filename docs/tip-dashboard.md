@@ -1,6 +1,6 @@
 # TIP implementation dashboard
 
-A read-only view of scheduled TIPs, code links, fork guards, implementation PRs and assertion results. It opens on the latest upgrades: the Foundry `next` and default profiles, followed by the preceding scheduled fork. These profiles describe test targets, not approved network activation dates. Select **All upgrades** for older and unscheduled TIPs.
+A read-only view of network upgrades: scheduled TIPs, code links, activation rules, implementation PRs and assertion results. It opens on the latest upgrades: the Foundry `next` and default profiles, followed by the preceding scheduled fork. These profiles describe test targets, not approved network activation dates. Select **All upgrades** for older and unscheduled TIPs.
 
 ## Read a report
 
