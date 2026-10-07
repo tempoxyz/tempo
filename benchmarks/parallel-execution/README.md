@@ -85,6 +85,12 @@ ran three pairs at 25k offered TPS: 15,925 baseline versus 15,160 candidate TPS
 candidate remains unmerged without a TPS gain. Separate historical and generated
 comparisons matched state roots and full receipts; historical replay timings regressed.
 
+The [storage-credit context allocation comparison](https://github.com/tempoxyz/tempo/actions/runs/37583310972)
+ran three pairs at 25k offered TPS: 12,063 baseline versus 12,803 candidate TPS
+(+6.1%, statistically neutral). All six phases had sender failures, so the result
+does not establish a throughput gain. The candidate remains unmerged; workload
+composition passed, but neither the confidence result nor sender qualification did.
+
 The official workflow's `disposal-clock` profiling choice runs a fixed 25k
 same-binary comparison with stage timers disabled and enabled. It calibrates the
 empty timer on the runner before and after each phase, retains the controls as
