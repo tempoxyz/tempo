@@ -98,6 +98,7 @@ class SchedulerTraceTests(unittest.TestCase):
         command = trace.fault_command("/perf", "/out", [200, 100], 64, 15)
         self.assertEqual(command[command.index("--pid") + 1], "100,200")
         self.assertEqual(command[command.index("-e") + 1], "major-faults")
+        self.assertEqual(command[command.index("-c") + 1], "32")
         self.assertEqual(command[command.index("--call-graph") + 1], "fp,64")
         self.assertEqual(command[command.index("--max-size") + 1], "32M")
         self.assertIn("-d", command)  # Fault address for mapping attribution.

@@ -16,12 +16,13 @@ The previous detailed diary is archived locally as
 `benchmark-artifacts/parallel-execution/research-notes-readme-a8b560e0a.md`.
 
 The `bench-e2e` workflow's `major-faults` profiling mode captures 15 seconds of
-fault addresses and frame-pointer stacks on both nodes in each phase. It requires
+fault addresses and frame-pointer stacks on both nodes in each phase, sampling
+every 32nd major fault. It requires
 three 90-second pairs with identical source and node controls, and forces artifact
 storage with no performance-series or Slack publication. Raw `perf.data` is capped
 at 32 MiB per phase; decoded files have a 128 MiB hard limit. Keep raw traces in
 GitHub artifacts, download selected evidence within a fixed budget, and remove it
-after review. Fault counts identify access paths, not their wait duration; validate
+after review. Periodic samples identify access paths, not population counts or wait duration; validate
 process identity, event loss, symbols and measured-block coverage before attribution.
 
 ## Execution controls and limits

@@ -22,6 +22,7 @@ import time
 
 MIB = 1024 * 1024
 FILE_LIMIT = 128 * MIB
+FAULT_SAMPLE_PERIOD = 32
 EVENTS = ("sched_switch", "sched_wakeup", "sched_wakeup_new")
 NAMES = ("engine", "payload-builder")
 MAX_RING_EVENTS = len(EVENTS) + 1  # perf also creates a dummy metadata event.
@@ -174,9 +175,10 @@ def fault_command(perf, output, pids, pages, seconds):
             all(type(pid) is int and pid > 0 for pid in pids), "expected two node PIDs")
     # Process attachment includes existing threads and inherits future threads.
     # Fault addresses plus MMAP records identify mappings; stacks identify paths.
-    # This measures fault occurrences, not time spent waiting for each fault.
+    # Every 32nd fault bounds observer work on large state. Periodic samples are
+    # access-path evidence, not a random sample or per-fault wait measurement.
     return [perf, "record", "--pid", ",".join(map(str, sorted(pids))),
-            "-e", "major-faults", "-c", "1", "-d", "-T", "--sample-cpu",
+            "-e", "major-faults", "-c", str(FAULT_SAMPLE_PERIOD), "-d", "-T", "--sample-cpu",
             "-k", "mono", "--call-graph", "fp,64", "-m", str(pages),
             "--no-buildid", "--no-buildid-cache", "--timestamp-boundary",
             "--max-size", "32M", "-o", str(output), "--", "/bin/sleep", str(seconds)]
@@ -381,7 +383,8 @@ def capture(args):
     manifest = {"ok": False, "clock_requested": clocks(), "scope": "Named-thread evidence only; no complete builder/Engine scope coverage or performance claim",
         "exact_accounting_qualified": False, "capture_duration_qualified": False}
     if kind == "faults":
-        manifest["scope"] = "Major-fault occurrences on both node processes and workers; no per-fault duration, complete execution coverage or performance claim"
+        manifest["scope"] = "Periodic major-fault samples on both node processes and workers; no population estimate, per-fault duration, complete execution coverage or performance claim"
+        manifest["fault_sample_period"] = FAULT_SAMPLE_PERIOD
     manifest["kind"] = kind
     try:
         with cancellation():
@@ -439,6 +442,7 @@ def capture(args):
     except (TraceError, OSError, ValueError, subprocess.SubprocessError) as error:
         (output / "stop").touch()
         manifest["error"] = str(error)
+        print(str(error), file=sys.stderr)
     finally:
         manifest["clock_finished"] = clocks(); save(output / "manifest.json", manifest)
     return 0 if manifest["ok"] else 1
