@@ -1128,7 +1128,7 @@ mod tests {
         let provider =
             MockEthProvider::<TempoPrimitives>::new().with_chain_spec(spec.as_ref().clone());
         let initial = create_mock_block(0);
-        provider.add_block(initial.hash(), initial.clone().into_block());
+        provider.add_block(initial.hash(), initial.into_block());
         let inner =
             EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::new(spec))
                 .build(InMemoryBlobStore::default());
