@@ -521,7 +521,10 @@ fn run_worker<E: DBErrorMarker>(
     let mut evm = TempoEvm::new(db, shared.inputs[0].1.clone());
     evm.inner_mut().enable_body_recording(minimum_body_duration);
     let mut standard_fee_gas = fee_rebasing
-        && evm.ctx().cfg.gas_params == tempo_revm::gas_params::tempo_gas_params(evm.ctx().cfg.spec);
+        && tempo_revm::gas_params::matches_tempo_gas_params(
+            &evm.ctx().cfg.gas_params,
+            evm.ctx().cfg.spec,
+        );
     while !shared.cancelled.load(Ordering::Relaxed) {
         let index = if let Some(forwarding) = &shared.forwarding {
             let Some(index) = forwarding.next(&shared.cancelled) else {
@@ -548,8 +551,10 @@ fn run_worker<E: DBErrorMarker>(
             evm = TempoEvm::new(db, env.clone());
             evm.inner_mut().enable_body_recording(minimum_body_duration);
             standard_fee_gas = fee_rebasing
-                && env.cfg_env.gas_params
-                    == tempo_revm::gas_params::tempo_gas_params(env.cfg_env.spec);
+                && tempo_revm::gas_params::matches_tempo_gas_params(
+                    &env.cfg_env.gas_params,
+                    env.cfg_env.spec,
+                );
         } else {
             evm.ctx_mut().block = env.block_env.clone();
         }

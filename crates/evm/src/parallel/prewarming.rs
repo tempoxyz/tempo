@@ -334,8 +334,10 @@ impl<DB: Database> PrewarmingExecutor<DB> {
             }
         }
         let record_fees = !self.env.cfg_env.enable_amsterdam_eip8037
-            && self.env.cfg_env.gas_params
-                == tempo_revm::gas_params::tempo_gas_params(self.env.cfg_env.spec)
+            && tempo_revm::gas_params::matches_tempo_gas_params(
+                &self.env.cfg_env.gas_params,
+                self.env.cfg_env.spec,
+            )
             && tx.calls().all(|(kind, _)| kind.is_call());
         let native_target = native_rebase::target(&tx, &self.env);
         let execute = || {

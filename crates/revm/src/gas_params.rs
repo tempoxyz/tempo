@@ -50,6 +50,23 @@ pub fn tempo_gas_params_with_amsterdam(
     spec: TempoHardfork,
     amsterdam_eip8037_enabled: bool,
 ) -> GasParams {
+    with_tempo_gas_params(spec, amsterdam_eip8037_enabled, Clone::clone)
+}
+
+/// Compare all gas costs with Tempo's standard table, with TIP-1016 disabled.
+/// Borrows the cached table so speculative workers do not update its shared
+/// reference count merely to check eligibility. Equal independent tables match.
+#[inline]
+pub fn matches_tempo_gas_params(params: &GasParams, spec: TempoHardfork) -> bool {
+    with_tempo_gas_params(spec, false, |expected| params == expected)
+}
+
+#[inline]
+fn with_tempo_gas_params<R>(
+    spec: TempoHardfork,
+    amsterdam_eip8037_enabled: bool,
+    f: impl FnOnce(&GasParams) -> R,
+) -> R {
     debug_assert!(
         !(spec.is_t7() && amsterdam_eip8037_enabled),
         "TODO(TIP-1016): generate combined TIP-1060 + EIP-8037 gas params before enabling both"
@@ -57,22 +74,22 @@ pub fn tempo_gas_params_with_amsterdam(
 
     if amsterdam_eip8037_enabled {
         static TABLE: OnceLock<GasParams> = OnceLock::new();
-        return TABLE.get_or_init(amsterdam_gas_params).clone();
+        return f(TABLE.get_or_init(amsterdam_gas_params));
     }
 
     // TIP-1060 (T7+): the SSTORE creation cost drops to the 5k residual; the
     // 245k creditable portion is handled by the storage-credit hook.
     if spec.is_t7() {
         static TABLE: OnceLock<GasParams> = OnceLock::new();
-        return TABLE.get_or_init(t7_gas_params).clone();
+        return f(TABLE.get_or_init(t7_gas_params));
     }
 
     if spec.is_t1() {
         static TABLE: OnceLock<GasParams> = OnceLock::new();
-        return TABLE.get_or_init(t1_gas_params).clone();
+        return f(TABLE.get_or_init(t1_gas_params));
     }
 
-    GasParams::new_spec(spec.into())
+    f(&GasParams::new_spec(spec.into()))
 }
 
 /// Builds the T7 gas table: TIP-1000 creation costs, but the SSTORE creation
@@ -175,6 +192,37 @@ pub fn tempo_gas_params(spec: TempoHardfork) -> GasParams {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn standard_gas_comparison_checks_every_value() {
+        for spec in [
+            TempoHardfork::T0,
+            TempoHardfork::T1,
+            TempoHardfork::T1B,
+            TempoHardfork::T1C,
+            TempoHardfork::T4,
+            TempoHardfork::T7,
+            TempoHardfork::T14,
+        ] {
+            let standard = tempo_gas_params(spec);
+            assert!(matches_tempo_gas_params(&standard, spec));
+            let independent = GasParams::new(std::sync::Arc::new(*standard.table()));
+            assert!(matches_tempo_gas_params(&independent, spec));
+            for slot in 0..256 {
+                let mut changed = *standard.table();
+                changed[slot] ^= 1;
+                let changed = GasParams::new(std::sync::Arc::new(changed));
+                assert!(
+                    !matches_tempo_gas_params(&changed, spec),
+                    "{spec:?} slot {slot}"
+                );
+            }
+        }
+        for spec in [TempoHardfork::T1, TempoHardfork::T4] {
+            let amsterdam = tempo_gas_params_with_amsterdam(spec, true);
+            assert!(!matches_tempo_gas_params(&amsterdam, spec));
+        }
+    }
 
     #[test]
     fn test_tempo_override_gas_params_are_cached() {

@@ -37,7 +37,10 @@ pub(super) fn target(tx: &TempoTxEnv, env: &Env) -> Option<NativeIncrementTarget
         || !tx.inner.authorization_list.is_empty()
         || !aa.tempo_authorization_list.is_empty()
         || aa.key_authorization.is_some()
-        || env.cfg_env.gas_params != tempo_revm::gas_params::tempo_gas_params(TempoHardfork::T14)
+        || !tempo_revm::gas_params::matches_tempo_gas_params(
+            &env.cfg_env.gas_params,
+            TempoHardfork::T14,
+        )
     {
         return None;
     }
