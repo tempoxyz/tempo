@@ -1408,6 +1408,9 @@ def "main e2e" [
     --valscope-dir: string = "../valscope"               # Path to the ValScope checkout
     --skip-summary                                       # Leave summary generation to a later workflow step
 ] {
+    # Pin the compiler for both measured node builds; LLVM 23 crashed during thin LTO.
+    ^rustup toolchain install 1.98.0 --profile minimal
+    $env.RUSTUP_TOOLCHAIN = "1.98.0"
     let preset_spec = if $preset_path == "" {
         txgen-resolve-bench-spec $preset
     } else {
