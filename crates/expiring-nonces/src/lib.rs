@@ -8,9 +8,13 @@
 //! # State transition
 //!
 //! At the beginning of a block, remove buckets with `expiry <= block.timestamp`.
-//! Validate each replay ID against the live map, but insert it only when its
+//! Validate each replay ID against its expiry bucket, but insert it only when its
 //! transaction is included, including EVM reverts. Discarded execution must not
 //! consume IDs. Never evict a live ID to make room; reject at the live-set limit.
+//! Replay IDs must cryptographically commit to their expiry, as Tempo's transaction
+//! identifiers do. Callers must derive both values from the same authenticated transaction. This
+//! allows membership checks within one bucket and expiry of whole buckets without
+//! a second index or per-ID removals.
 //!
 //! The bucket digest is `keccak256(bucket_domain || previous_digest || replay_id)`,
 //! starting from zero. The state root is `keccak256(state_domain || summaries)`,
@@ -29,22 +33,23 @@
 //! explicit migration of the old nonce-precompile state.
 
 use alloy_primitives::{B256, Keccak256};
-use imbl::{HashMap, OrdMap, Vector};
+use imbl::{HashSet, OrdMap};
 
 /// Maximum history required to reconstruct replay protection (TIP-1093).
 pub const MAX_EXPIRY_SECS: u64 = 300;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Bucket {
-    ids: Vector<B256>,
+    ids: HashSet<B256>,
     digest: B256,
 }
 
 /// Replay protection state. Clone before advancing to another block or fork.
+/// Replay IDs must commit to their expiry; derive both from the same authenticated transaction.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct ExpiringNonceState {
-    seen: HashMap<B256, u64>,
     buckets: OrdMap<u64, Bucket>,
+    live_ids: usize,
     timestamp: u64,
 }
 
@@ -52,7 +57,7 @@ impl core::fmt::Debug for ExpiringNonceState {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ExpiringNonceState")
             .field("timestamp", &self.timestamp)
-            .field("live_ids", &self.seen.len())
+            .field("live_ids", &self.live_ids)
             .field("expiry_buckets", &self.buckets.len())
             .finish()
     }
@@ -92,17 +97,16 @@ impl ExpiringNonceState {
 
     /// Number of live IDs.
     pub fn len(&self) -> usize {
-        self.seen.len()
+        self.live_ids
     }
 
     /// Whether the state contains no live IDs.
     pub fn is_empty(&self) -> bool {
-        self.seen.is_empty()
+        self.live_ids == 0
     }
 
     /// Drops expired buckets. This must precede validation at a new block time.
     pub fn advance(&mut self, timestamp: u64) -> Result<(), NonceError> {
-        let live_before = self.len();
         if timestamp < self.timestamp {
             return Err(NonceError::TimestampRegression);
         }
@@ -111,37 +115,16 @@ impl ExpiringNonceState {
             .get_max()
             .is_some_and(|(expiry, _)| *expiry <= timestamp)
         {
-            // After a gap covering the entire window, detach the persistent
-            // collections instead of cloning paths just to delete every key.
-            self.seen.clear();
+            // Detach the entire map when no buckets survive.
             self.buckets.clear();
+            self.live_ids = 0;
         } else {
-            let expiring: usize = self
-                .buckets
-                .iter()
-                .take_while(|(expiry, _)| **expiry <= timestamp)
-                .map(|(_, bucket)| bucket.ids.len())
-                .sum();
-            // If most IDs expire together, rebuild the small surviving index.
-            // This avoids copying shared HAMT paths for IDs we immediately delete.
-            let rebuild = expiring > live_before - live_before / 4;
             while let Some(expiry) = self.buckets.get_min().map(|(expiry, _)| *expiry) {
                 if expiry > timestamp {
                     break;
                 }
                 let bucket = self.buckets.remove(&expiry).expect("bucket exists");
-                if !rebuild {
-                    for id in bucket.ids {
-                        self.seen.remove(&id);
-                    }
-                }
-            }
-            if rebuild {
-                self.seen = self
-                    .buckets
-                    .iter()
-                    .flat_map(|(expiry, bucket)| bucket.ids.iter().map(move |id| (*id, *expiry)))
-                    .collect();
+                self.live_ids -= bucket.ids.len();
             }
         }
         self.timestamp = timestamp;
@@ -149,6 +132,7 @@ impl ExpiringNonceState {
     }
 
     /// Validates without consuming an ID. Invalid and discarded transactions do not mutate state.
+    /// The replay ID must commit to `expiry`; derive both from the same authenticated transaction.
     pub fn check(
         &self,
         id: B256,
@@ -164,7 +148,11 @@ impl ExpiringNonceState {
         {
             return Err(NonceError::Expiry);
         }
-        if self.seen.contains_key(&id) {
+        if self
+            .buckets
+            .get(&expiry)
+            .is_some_and(|bucket| bucket.ids.contains(&id))
+        {
             Err(NonceError::Replay)
         } else if self.len() >= capacity {
             Err(NonceError::Capacity)
@@ -175,6 +163,7 @@ impl ExpiringNonceState {
 
     /// Validates against an RPC timestamp override without modifying the snapshot.
     /// Normal execution uses the snapshot's timestamp and needs no extra copy.
+    /// Requires the same ID/expiry binding as [`Self::check`].
     pub fn check_at(
         &self,
         timestamp: u64,
@@ -192,6 +181,7 @@ impl ExpiringNonceState {
     }
 
     /// Records an included transaction, including transactions whose EVM calls reverted.
+    /// Requires the same ID/expiry binding as [`Self::check`].
     pub fn insert(
         &mut self,
         id: B256,
@@ -200,14 +190,14 @@ impl ExpiringNonceState {
         capacity: usize,
     ) -> Result<(), NonceError> {
         self.check(id, expiry, max_expiry, capacity)?;
-        self.seen.insert(id, expiry);
         let bucket = self.buckets.entry(expiry).or_default();
         let mut hash = Keccak256::new();
         hash.update(b"tempo.expiring-nonce.bucket.v1");
         hash.update(bucket.digest);
         hash.update(id);
         bucket.digest = hash.finalize();
-        bucket.ids.push_back(id);
+        bucket.ids.insert(id);
+        self.live_ids += 1;
         Ok(())
     }
 
@@ -227,22 +217,66 @@ impl ExpiringNonceState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::b256;
     use proptest::prelude::*;
+
+    fn replay_id(nonce: u64, expiry: u64) -> B256 {
+        let mut hash = Keccak256::new();
+        hash.update(nonce.to_be_bytes());
+        hash.update(expiry.to_be_bytes());
+        hash.finalize()
+    }
+
+    #[test]
+    fn commitment_encoding_is_stable() {
+        let mut state = ExpiringNonceState::default();
+        state.advance(100).unwrap();
+        assert_eq!(
+            state.root(),
+            b256!("0437898620ea8e67dcdce33b8994347e15ea4d82044866337f2e889b9a40448d")
+        );
+        for (nonce, expiry) in [(1, 110), (2, 120), (3, 110)] {
+            state
+                .insert(replay_id(nonce, expiry), expiry, 300, 10)
+                .unwrap();
+        }
+        assert_eq!(
+            state.root(),
+            b256!("9cae1d540a5af2d52af1533282a66c72a9d835309df7abacdf0e3ed87e4b0794")
+        );
+        state.advance(110).unwrap();
+        assert_eq!(
+            state.root(),
+            b256!("d068cb67257d9f18650afcb230aa9a43c4b1bf6008dda1719cfbb87109c576db")
+        );
+    }
 
     proptest! {
         #[test]
         fn matches_reference_model(operations in prop::collection::vec((0u8..40, 1u64..301, 0u64..4), 1..500)) {
             let mut state = ExpiringNonceState::default();
             let mut reference = std::collections::HashMap::new();
+            let mut expiries = std::collections::HashMap::new();
             let mut now = 0;
-            for (id, lifetime, elapsed) in operations {
+            for (nonce, lifetime, elapsed) in operations {
                 now += elapsed;
                 state.advance(now).unwrap();
                 reference.retain(|_, expiry| *expiry > now);
-                let id = B256::repeat_byte(id);
-                let expected = if reference.contains_key(&id) { Err(NonceError::Replay) } else { Ok(()) };
-                prop_assert_eq!(state.insert(id, now + lifetime, 300, 100), expected);
-                if expected.is_ok() { reference.insert(id, now + lifetime); }
+                // Keep two expiry variants per nonce so both live replays and
+                // distinct transactions with the same nonce are exercised.
+                let expiry = *expiries.entry((nonce, lifetime % 2)).and_modify(|expiry| {
+                    if *expiry <= now { *expiry = now + lifetime; }
+                }).or_insert(now + lifetime);
+                let id = replay_id(u64::from(nonce), expiry);
+                let expected = if reference.contains_key(&id) {
+                    Err(NonceError::Replay)
+                } else if reference.len() >= 30 {
+                    Err(NonceError::Capacity)
+                } else {
+                    Ok(())
+                };
+                prop_assert_eq!(state.insert(id, expiry, 300, 30), expected);
+                if expected.is_ok() { reference.insert(id, expiry); }
                 prop_assert_eq!(state.len(), reference.len());
             }
         }
@@ -252,15 +286,15 @@ mod tests {
     fn expiry_boundary_and_replay() {
         let mut state = ExpiringNonceState::default();
         state.advance(100).unwrap();
-        let id = B256::repeat_byte(1);
+        let id = replay_id(1, 130);
         state.insert(id, 130, 300, 10).unwrap();
-        assert_eq!(state.insert(id, 140, 300, 10), Err(NonceError::Replay));
+        assert_eq!(state.insert(id, 130, 300, 10), Err(NonceError::Replay));
         state.advance(129).unwrap();
-        assert_eq!(state.check(id, 140, 300, 10), Err(NonceError::Replay));
+        assert_eq!(state.check(id, 130, 300, 10), Err(NonceError::Replay));
         state.advance(130).unwrap();
         assert!(state.is_empty());
         assert_eq!(state.check(id, 130, 300, 10), Err(NonceError::Expiry));
-        state.insert(id, 140, 300, 10).unwrap();
+        state.insert(replay_id(1, 140), 140, 300, 10).unwrap();
     }
 
     #[test]
@@ -268,14 +302,10 @@ mod tests {
         for expired in [10, 90, 100] {
             let mut parent = ExpiringNonceState::default();
             parent.advance(100).unwrap();
-            for id in 0..100 {
+            for nonce in 0..100 {
+                let expiry = if nonce < expired { 110 } else { 120 };
                 parent
-                    .insert(
-                        B256::repeat_byte(id),
-                        if id < expired { 110 } else { 120 },
-                        300,
-                        100,
-                    )
+                    .insert(replay_id(nonce, expiry), expiry, 300, 100)
                     .unwrap();
             }
             let parent_root = parent.root();
@@ -283,26 +313,21 @@ mod tests {
             child.advance(110).unwrap();
             let mut reconstructed = ExpiringNonceState::default();
             reconstructed.advance(110).unwrap();
-            for id in 0..100 {
-                if id < expired {
-                    assert!(child.check(B256::repeat_byte(id), 130, 300, 100).is_ok());
+            for nonce in 0..100 {
+                let expiry = if nonce < expired { 110 } else { 120 };
+                let id = replay_id(nonce, expiry);
+                if nonce < expired {
+                    assert_eq!(child.check(id, expiry, 300, 100), Err(NonceError::Expiry));
+                    assert!(child.check(replay_id(nonce, 130), 130, 300, 100).is_ok());
                 } else {
-                    assert_eq!(
-                        child.check(B256::repeat_byte(id), 130, 300, 100),
-                        Err(NonceError::Replay)
-                    );
-                    reconstructed
-                        .insert(B256::repeat_byte(id), 120, 300, 100)
-                        .unwrap();
+                    assert_eq!(child.check(id, expiry, 300, 100), Err(NonceError::Replay));
+                    reconstructed.insert(id, expiry, 300, 100).unwrap();
                 }
-                assert_eq!(
-                    parent.check(B256::repeat_byte(id), 130, 300, 100),
-                    Err(NonceError::Replay)
-                );
+                assert_eq!(parent.check(id, expiry, 300, 100), Err(NonceError::Replay));
             }
             assert_eq!(child, reconstructed);
             assert_eq!(child.root(), reconstructed.root());
-            let child_id = B256::repeat_byte(100);
+            let child_id = replay_id(100, 130);
             child.insert(child_id, 130, 300, 100).unwrap();
             assert!(parent.check(child_id, 130, 300, 101).is_ok());
             assert_eq!(parent.root(), parent_root);
@@ -313,31 +338,26 @@ mod tests {
     fn simulation_time_overrides_expire_a_private_snapshot() {
         let mut state = ExpiringNonceState::default();
         state.advance(100).unwrap();
-        state.insert(B256::ZERO, 110, 300, 1).unwrap();
+        let id = replay_id(0, 110);
+        state.insert(id, 110, 300, 1).unwrap();
         let before = state.clone();
-        assert_eq!(
-            state.check_at(110, B256::repeat_byte(1), 410, 300, 1),
-            Ok(())
-        );
+        assert_eq!(state.check_at(110, replay_id(1, 410), 410, 300, 1), Ok(()));
         assert_eq!(state, before);
-        assert_eq!(
-            state.check(B256::ZERO, 120, 300, 1),
-            Err(NonceError::Replay)
-        );
+        assert_eq!(state.check(id, 110, 300, 1), Err(NonceError::Replay));
     }
 
     #[test]
     fn failed_updates_are_atomic_and_live_entries_are_never_evicted() {
         let mut state = ExpiringNonceState::default();
         state.advance(100).unwrap();
-        state.insert(B256::ZERO, 101, 300, 1).unwrap();
+        state.insert(replay_id(0, 101), 101, 300, 1).unwrap();
         let before = state.clone();
         assert_eq!(
-            state.insert(B256::repeat_byte(1), 102, 300, 1),
+            state.insert(replay_id(1, 102), 102, 300, 1),
             Err(NonceError::Capacity)
         );
         assert_eq!(
-            state.insert(B256::repeat_byte(1), 401, 300, 2),
+            state.insert(replay_id(1, 401), 401, 300, 2),
             Err(NonceError::Expiry)
         );
         assert_eq!(state.advance(99), Err(NonceError::TimestampRegression));
@@ -347,15 +367,15 @@ mod tests {
     #[test]
     fn commitment_binds_expiry_and_bucket_order() {
         let mut a = ExpiringNonceState::default();
-        a.insert(B256::repeat_byte(1), 10, 300, 10).unwrap();
-        a.insert(B256::repeat_byte(2), 10, 300, 10).unwrap();
+        a.insert(replay_id(1, 10), 10, 300, 10).unwrap();
+        a.insert(replay_id(2, 10), 10, 300, 10).unwrap();
         let mut b = ExpiringNonceState::default();
-        b.insert(B256::repeat_byte(2), 10, 300, 10).unwrap();
-        b.insert(B256::repeat_byte(1), 10, 300, 10).unwrap();
+        b.insert(replay_id(2, 10), 10, 300, 10).unwrap();
+        b.insert(replay_id(1, 10), 10, 300, 10).unwrap();
         assert_ne!(a.root(), b.root());
         let mut c = ExpiringNonceState::default();
-        c.insert(B256::repeat_byte(1), 11, 300, 10).unwrap();
-        c.insert(B256::repeat_byte(2), 11, 300, 10).unwrap();
+        c.insert(replay_id(1, 11), 11, 300, 10).unwrap();
+        c.insert(replay_id(2, 11), 11, 300, 10).unwrap();
         assert_ne!(a.root(), c.root());
         a.advance(10).unwrap();
         assert_eq!(a.root(), ExpiringNonceState::default().root());

@@ -76,8 +76,11 @@ impl AASigned {
         &self.tx
     }
 
-    /// Returns a mutable reference to the transaction.
-    pub const fn tx_mut(&mut self) -> &mut TempoTransaction {
+    /// Returns a mutable reference to the transaction, invalidating its cached hashes.
+    pub fn tx_mut(&mut self) -> &mut TempoTransaction {
+        self.hash = OnceLock::new();
+        self.signature_hash = OnceLock::new();
+        self.expiring_nonce_hash = OnceLock::new();
         &mut self.tx
     }
 
@@ -751,7 +754,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_expiring_nonce_hash_invariant_to_fee_payer() {
+    fn test_expiring_nonce_hash_binds_expiry_but_not_fee_payer() {
         let sender = Address::repeat_byte(0x01);
 
         let make_sponsored_tx = |fee_payer_sig: Signature| -> TempoTransaction {
@@ -774,12 +777,13 @@ pub(crate) mod tests {
 
         let sig = TempoSignature::from(Signature::test_signature());
 
-        // Two txs identical except for fee_payer_signature
+        // Sponsored variants may change both the fee payer and the fee token.
         let tx1 = make_sponsored_tx(Signature::new(U256::ONE, U256::from(2), false));
-        let tx2 = make_sponsored_tx(Signature::new(U256::from(3), U256::from(4), true));
+        let mut tx2 = make_sponsored_tx(Signature::new(U256::from(3), U256::from(4), true));
+        tx2.fee_token = Some(Address::repeat_byte(0xFD));
 
-        let signed1 = tx1.into_signed(sig.clone());
-        let signed2 = tx2.into_signed(sig);
+        let signed1 = tx1.clone().into_signed(sig.clone());
+        let signed2 = tx2.into_signed(sig.clone());
 
         // tx_hash MUST differ (fee_payer_signature is part of the envelope)
         assert_ne!(signed1.hash(), signed2.hash(), "tx hashes must differ");
@@ -789,9 +793,29 @@ pub(crate) mod tests {
         let hash2 = signed2.expiring_nonce_hash(sender);
         assert_eq!(
             hash1, hash2,
-            "expiring_nonce_hash must be invariant to fee payer signature changes"
+            "sponsored variants must retain the same replay ID"
         );
-        assert_ne!(hash1, B256::ZERO);
+
+        // Expiry-local replay protection relies on every replay ID committing
+        // to valid_before, with or without a fee payer. Changing the bucket must
+        // change both the legacy transaction hash and the sender-scoped ID.
+        for sponsored in [false, true] {
+            let mut original = tx1.clone();
+            if !sponsored {
+                original.fee_payer_signature = None;
+            }
+            let original = original.into_signed(sig.clone());
+            let signing_hash = original.signature_hash();
+            let tx_hash = *original.hash();
+            let replay_id = original.expiring_nonce_hash(sender);
+
+            // Mutating a signed transaction must also invalidate cached hashes.
+            let mut changed_expiry = original.clone();
+            changed_expiry.tx_mut().valid_before = core::num::NonZeroU64::new(101);
+            assert_ne!(signing_hash, changed_expiry.signature_hash());
+            assert_ne!(tx_hash, *changed_expiry.hash());
+            assert_ne!(replay_id, changed_expiry.expiring_nonce_hash(sender));
+        }
     }
 
     #[test]

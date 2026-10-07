@@ -898,6 +898,32 @@ mod tests {
                     validator_fee: result.validator_fee(),
                 };
                 drop(result);
+                // Cached actions must not move a replay ID into another expiry bucket.
+                let mismatched = crate::StorageActionReplay {
+                    result: replay.result.clone(),
+                    actions: vec![],
+                    expiring_nonce: replay.expiring_nonce.map(|mut nonce| {
+                        nonce.valid_before += 1;
+                        nonce
+                    }),
+                    validator_fee: replay.validator_fee,
+                };
+                assert!(
+                    executor
+                        .execute_transaction_with_actions(&recovered, mismatched, |_| {}, false)
+                        .is_err()
+                );
+                assert_eq!(
+                    executor
+                        .inner
+                        .evm
+                        .block
+                        .expiring_nonces
+                        .as_ref()
+                        .unwrap()
+                        .root(),
+                    before
+                );
                 executor
                     .execute_transaction_with_actions(&recovered, replay, |_| {}, false)
                     .unwrap();
