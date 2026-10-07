@@ -767,15 +767,12 @@ mod tests {
     use alloy_evm::{EvmEnv, EvmFactory, EvmInternals, revm::context::Host};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
-    use revm::{
-        database::{CacheDB, EmptyDB},
-        interpreter::StateLoad,
-    };
+    use revm::{database::InMemoryDB, interpreter::StateLoad};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_evm::{TempoEvmFactory, evm::TempoEvm};
     use tempo_revm::gas_params::tempo_gas_params_with_amsterdam;
 
-    struct TestEvm(TempoEvm<CacheDB<EmptyDB>>);
+    struct TestEvm(TempoEvm<InMemoryDB>);
 
     impl TestEvm {
         fn new(spec: TempoHardfork) -> Self {
@@ -792,7 +789,7 @@ mod tests {
         }
 
         fn with_amsterdam(spec: TempoHardfork, amsterdam_eip8037_enabled: bool) -> Self {
-            let db = CacheDB::new(EmptyDB::new());
+            let db = InMemoryDB::default();
             let mut cfg = revm::context::CfgEnv::<TempoHardfork>::default();
             cfg.spec = spec;
             cfg.enable_amsterdam_eip8037 = amsterdam_eip8037_enabled;
@@ -849,7 +846,7 @@ mod tests {
     }
 
     impl std::ops::Deref for TestEvm {
-        type Target = TempoEvm<CacheDB<EmptyDB>>;
+        type Target = TempoEvm<InMemoryDB>;
         fn deref(&self) -> &Self::Target {
             &self.0
         }
