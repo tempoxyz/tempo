@@ -17,14 +17,15 @@ use tempo_primitives::TempoBlockEnv;
 
 // An explicit completion marker distinguishes success from a worker that exits early.
 pub(crate) type PruneReceiver = mpsc::Receiver<Result<Option<EvmState>, BlockExecutionError>>;
-pub(crate) type PruneTask = Arc<Mutex<Option<PruneReceiver>>>;
-const NONCES_PER_CHUNK: u64 = 1024;
+pub(crate) type PruneTask = Arc<Mutex<Option<(mpsc::Sender<u64>, PruneReceiver)>>>;
+pub(crate) const NONCES_PER_CHUNK: u64 = 1024;
 
 /// Runs the same pruning algorithm used by sequential execution and reconstruction.
 pub(crate) fn prune<DB: Database, I>(
     evm: &mut TempoEvm<DB, I>,
+    limit: u64,
 ) -> Result<EvmState, BlockExecutionError> {
-    prune_chunk(evm, &mut PruneCursor::default(), u64::MAX).map(|(state, _)| state)
+    prune_chunk(evm, &mut PruneCursor::default(), limit).map(|(state, _)| state)
 }
 
 pub(crate) fn prune_chunk<DB: Database, I>(
@@ -52,6 +53,7 @@ impl TempoEvmConfig {
         provider: impl FnOnce() -> ProviderResult<StateProviderBox> + Send + 'static,
     ) -> Result<Self, BlockExecutionError> {
         let (sender, receiver) = mpsc::sync_channel(2);
+        let (budget, requests) = mpsc::channel();
         std::thread::Builder::new()
             .name("nonce-prune".into())
             .spawn(move || {
@@ -72,9 +74,11 @@ impl TempoEvmConfig {
                     }
                     let mut evm = TempoEvm::new(db, env);
                     let mut cursor = PruneCursor::default();
-                    loop {
+                    // Credits come only from committed expiring-nonce transactions.
+                    // Closing requests finishes the block; dropping results cancels it.
+                    for limit in requests {
                         let chunk_start = std::time::Instant::now();
-                        let (mut state, done) = prune_chunk(&mut evm, &mut cursor, NONCES_PER_CHUNK)?;
+                        let (mut state, done) = prune_chunk(&mut evm, &mut cursor, limit)?;
                         for account in state.values_mut() {
                             account.storage.retain(|_, slot| slot.is_changed());
                         }
@@ -89,6 +93,7 @@ impl TempoEvmConfig {
                             return Ok(());
                         }
                     }
+                    Ok(())
                 })();
                 tracing::debug!(target: "tempo::nonce_prune", %block, elapsed = ?start.elapsed(), "Background nonce pruning finished");
                 // A cancelled payload drops its receiver; the worker then releases its
@@ -96,7 +101,7 @@ impl TempoEvmConfig {
                 let _ = sender.send(result.map(|()| None));
             })
             .map_err(BlockExecutionError::other)?;
-        self.nonce_prune = Some(Arc::new(Mutex::new(Some(receiver))));
+        self.nonce_prune = Some(Arc::new(Mutex::new(Some((budget, receiver)))));
         Ok(self)
     }
 }
