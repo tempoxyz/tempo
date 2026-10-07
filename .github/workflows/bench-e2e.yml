@@ -140,11 +140,12 @@ on:
         required: true
         default: "3"
       measurement-mode:
-        description: "0 disables phase counters; 3 enables sparse phase timing."
+        description: "off compiles probes out; 0 disables counters; 3 enables sparse phase timing."
         type: choice
         required: true
         default: "3"
         options:
+          - "off"
           - "0"
           - "3"
   workflow_call:
@@ -356,7 +357,7 @@ env:
   CARGO_HTTP_TIMEOUT: "180"
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: "sccache"
-  NODE_MEASURE_MODE: ${{ inputs.measurement-mode || '3' }}
+  NODE_MEASURE_MODE: ${{ inputs.measurement-mode == 'off' && '0' || inputs.measurement-mode || '3' }}
   RUSTUP_TOOLCHAIN: nightly-2026-10-06
 
 permissions:
@@ -391,7 +392,7 @@ jobs:
       BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset }}
       BENCH_OTLP: ${{ inputs.otlp != false && inputs.otlp != 'false' }}
       BENCH_VALSCOPE: ${{ inputs.valscope == true || inputs.valscope == 'true' }}
-      BENCH_FEATURES: ${{ (inputs.otlp != false && inputs.otlp != 'false') && 'jemalloc,asm-keccak,keccak-cache-global,otlp,execution-measure' || 'jemalloc,asm-keccak,keccak-cache-global,execution-measure' }}
+      BENCH_FEATURES: ${{ format('{0}{1}', (inputs.otlp != false && inputs.otlp != 'false') && 'jemalloc,asm-keccak,keccak-cache-global,otlp' || 'jemalloc,asm-keccak,keccak-cache-global', inputs.measurement-mode != 'off' && ',execution-measure' || '') }}
       BENCH_BASELINE_FEATURES: ${{ inputs.baseline-features }}
       BENCH_FEATURE_FEATURES: ${{ inputs.feature-features }}
       BENCH_BASELINE_ARGS: ${{ inputs.baseline-args }}
