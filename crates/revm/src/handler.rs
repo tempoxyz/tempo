@@ -869,6 +869,10 @@ where
         init_and_floor_gas: InitialAndFloorGas,
         eip7702_gas_refund: i64,
     ) -> Result<ResultGas, Self::Error> {
+        let _measurement = tempo_precompiles::execution_measure::area(
+            tempo_precompiles::execution_measure::Area::Settlement,
+        );
+
         if exec_result.instruction_result().is_ok() {
             gas_credits::apply_refund(evm, exec_result.gas_mut())?;
         }
@@ -989,6 +993,9 @@ where
         let _measurement = tempo_precompiles::execution_measure::area(
             tempo_precompiles::execution_measure::Area::Prepare,
         );
+        let fee_resolve_measurement = tempo_precompiles::execution_measure::area(
+            tempo_precompiles::execution_measure::Area::FeeResolve,
+        );
         self.seed_precompile_tx_context(evm)?;
 
         let actions = evm.actions.clone();
@@ -1020,6 +1027,10 @@ where
         // Load the fee payer balance
         let account_balance = get_token_balance(journal, fee_token, fee_payer)?;
 
+        drop(fee_resolve_measurement);
+        let nonce_apply_measurement = tempo_precompiles::execution_measure::area(
+            tempo_precompiles::execution_measure::Area::NonceApply,
+        );
         // Load caller's account
         let mut caller_account = journal.load_account_with_code_mut(tx.caller())?.data;
 
@@ -1235,6 +1246,7 @@ where
             }
         }
 
+        drop(nonce_apply_measurement);
         // calculate the new balance after the fee is collected.
         let new_balance = calculate_caller_fee(account_balance, tx, block, cfg)?;
         // doing max to avoid underflow as new_balance can be more than account
@@ -1769,6 +1781,10 @@ where
     /// - Time window validation (validAfter/validBefore)
     #[inline]
     fn validate_env(&self, evm: &mut Self::Evm) -> Result<(), Self::Error> {
+        let _measurement = tempo_precompiles::execution_measure::area(
+            tempo_precompiles::execution_measure::Area::EnvValidation,
+        );
+
         // Reset per-tx fee state.
         evm.collected_fee = U256::ZERO;
         evm.validator_fee = U256::ZERO;
@@ -2079,6 +2095,10 @@ where
         &self,
         evm: &mut Self::Evm,
     ) -> Result<InitialAndFloorGas, Self::Error> {
+        let _measurement = tempo_precompiles::execution_measure::area(
+            tempo_precompiles::execution_measure::Area::Intrinsic,
+        );
+
         let tx = evm.ctx_ref().tx();
         let spec = evm.ctx_ref().cfg().spec();
         let gas_params = evm.ctx_ref().cfg().gas_params();

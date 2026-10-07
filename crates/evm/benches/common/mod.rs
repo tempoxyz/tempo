@@ -525,7 +525,7 @@ pub(crate) fn execute_txs(
             tempo_precompiles::execution_measure::Area::Execution,
         );
         let output = executor
-            .execute_transaction_without_commit(tx)
+            .execute_transaction_without_commit(Recovered::new_unchecked(tx.inner(), tx.signer()))
             .expect("transaction execution failed");
         drop(execution_measurement);
         assert!(
