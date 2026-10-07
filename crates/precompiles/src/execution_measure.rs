@@ -1,0 +1,207 @@
+//! Measurement-branch instrumentation: counters and sparse fenced TSC samples, never clock syscalls.
+use std::cell::RefCell;
+
+#[derive(Clone, Copy)]
+pub enum Area {
+    Other,
+    FeePre,
+    FeePost,
+    Nonce,
+    Transfer,
+    Execution,
+    Commit,
+    Calls,
+    Prepare,
+}
+#[derive(Clone, Copy)]
+pub enum Op {
+    Phase,
+    LoadJournal,
+    StoreJournal,
+    LoadTotal,
+    StoreTotal,
+    ProviderAccount,
+    ProviderStorage,
+    ProviderCode,
+    AccountAccess,
+    SlotLoad,
+    SlotStore,
+}
+const AREAS: [&str; 9] = [
+    "other",
+    "fee_pre",
+    "fee_post",
+    "nonce",
+    "transfer",
+    "execution",
+    "commit",
+    "calls",
+    "prepare",
+];
+const OPS: [&str; 11] = [
+    "phase",
+    "load_journal",
+    "store_journal",
+    "load_total",
+    "store_total",
+    "provider_account",
+    "provider_storage",
+    "provider_code",
+    "account_access",
+    "slot_load",
+    "slot_store",
+];
+#[derive(Clone, Copy, Default)]
+struct Cell {
+    calls: u64,
+    samples: u64,
+    ticks: u64,
+    dropped: u64,
+}
+struct Stats {
+    mode: u8,
+    area: Area,
+    cells: [[Cell; 11]; 9],
+}
+thread_local! { static STATS: RefCell<Stats> = const { RefCell::new(Stats { mode: 0, area: Area::Other, cells: [[Cell { calls: 0, samples: 0, ticks: 0, dropped: 0 }; 11]; 9] }) }; }
+#[derive(Clone, Copy)]
+struct Stamp {
+    ticks: u64,
+    cpu: u32,
+}
+impl Stamp {
+    #[inline]
+    fn read() -> Self {
+        #[cfg(target_arch = "x86_64")]
+        {
+            let mut cpu = 0;
+            let ticks = unsafe {
+                core::arch::x86_64::_mm_lfence();
+                let ticks = core::arch::x86_64::__rdtscp(&mut cpu);
+                core::arch::x86_64::_mm_lfence();
+                ticks
+            };
+            Self { ticks, cpu }
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            Self { ticks: 0, cpu: 0 }
+        }
+    }
+}
+pub struct Guard {
+    area: usize,
+    op: usize,
+    start: Option<Stamp>,
+    restore: Option<Area>,
+}
+impl Drop for Guard {
+    #[inline]
+    fn drop(&mut self) {
+        let end = self.start.map(|_| Stamp::read());
+        if self.start.is_some() || self.restore.is_some() {
+            STATS.with(|s| {
+                let mut s = s.borrow_mut();
+                if let (Some(start), Some(end)) = (self.start, end) {
+                    let cell = &mut s.cells[self.area][self.op];
+                    if start.cpu == end.cpu && end.ticks >= start.ticks {
+                        cell.samples += 1;
+                        cell.ticks += end.ticks - start.ticks;
+                    } else {
+                        cell.dropped += 1;
+                    }
+                }
+                if let Some(old) = self.restore {
+                    s.area = old;
+                }
+            });
+        }
+    }
+}
+#[inline]
+pub fn operation(op: Op) -> Guard {
+    guard(op, None)
+}
+#[inline]
+pub fn area(area: Area) -> Guard {
+    guard(Op::Phase, Some(area))
+}
+#[inline]
+fn guard(op: Op, area: Option<Area>) -> Guard {
+    if !cfg!(feature = "execution-measure") {
+        return Guard {
+            area: 0,
+            op: 0,
+            start: None,
+            restore: None,
+        };
+    }
+    STATS.with(|s| {
+        let mut s = s.borrow_mut();
+        let restore = (s.mode != 0)
+            .then(|| {
+                area.map(|a| {
+                    let old = s.area;
+                    s.area = a;
+                    old
+                })
+            })
+            .flatten();
+        let a = s.area as usize;
+        let mode = s.mode;
+        let cell = &mut s.cells[a][op as usize];
+        let sample = if mode == 0 {
+            false
+        } else {
+            cell.calls += 1;
+            let mut n = cell.calls.wrapping_mul(0x9e3779b97f4a7c15);
+            n = (n ^ (n >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+            mode == 2
+                && cfg!(target_arch = "x86_64")
+                && ((n ^ (n >> 27)) & if matches!(op, Op::Phase) { 15 } else { 1023 }) == 0
+        };
+        Guard {
+            area: a,
+            op: op as usize,
+            start: sample.then(Stamp::read),
+            restore,
+        }
+    })
+}
+pub fn reset(mode: u8) {
+    STATS.with(|s| {
+        *s.borrow_mut() = Stats {
+            mode,
+            area: Area::Other,
+            cells: [[Cell::default(); 11]; 9],
+        }
+    });
+}
+pub fn dump() {
+    let mut overhead = u64::MAX;
+    if cfg!(target_arch = "x86_64") {
+        for _ in 0..4096 {
+            let a = Stamp::read();
+            let b = Stamp::read();
+            if a.cpu == b.cpu {
+                overhead = overhead.min(b.ticks - a.ticks);
+            }
+        }
+    } else {
+        overhead = 0;
+    }
+    println!("MEASURE timer_pair_ticks={overhead}");
+    STATS.with(|s| {
+        let s = s.borrow();
+        for (a, row) in s.cells.iter().enumerate() {
+            for (o, c) in row.iter().enumerate() {
+                if c.calls != 0 {
+                    println!(
+                        "MEASURE area={} op={} calls={} samples={} ticks={} dropped={}",
+                        AREAS[a], OPS[o], c.calls, c.samples, c.ticks, c.dropped
+                    );
+                }
+            }
+        }
+    });
+}

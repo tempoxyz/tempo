@@ -601,6 +601,9 @@ where
             &mut GasTracker,
         ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>,
     {
+        let _measurement = tempo_precompiles::execution_measure::area(
+            tempo_precompiles::execution_measure::Area::Calls,
+        );
         // Create checkpoint for atomic execution - captures state before any calls
         let checkpoint = evm.ctx().journal_mut().checkpoint();
         let mut accumulated_gas_refund = 0i64;
@@ -983,6 +986,9 @@ where
         evm: &mut Self::Evm,
         init_gas: &mut InitialAndFloorGas,
     ) -> Result<(), Self::Error> {
+        let _measurement = tempo_precompiles::execution_measure::area(
+            tempo_precompiles::execution_measure::Area::Prepare,
+        );
         self.seed_precompile_tx_context(evm)?;
 
         let actions = evm.actions.clone();

@@ -77,6 +77,7 @@ tempo-primitives = { workspace = true, features = ["arbitrary", "test-utils"] }
 tikv-jemallocator = "0.6.1"
 
 [features]
+execution-measure = ["tempo-precompiles/execution-measure"]
 default = ["rpc", "engine"]
 rpc = ["dep:alloy-rpc-types-eth", "dep:reth-rpc-eth-api", "tempo-primitives/serde", "tempo-primitives/reth-codec"]
 engine = ["dep:tempo-payload-types", "dep:rayon"]
@@ -89,4 +90,8 @@ harness = false
 
 [[bench]]
 name = "dex_execution"
+harness = false
+
+[[bench]]
+name = "execution_cost"
 harness = false

@@ -140,7 +140,14 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         key: U256,
         skip_cold_load: bool,
     ) -> Result<StateLoad<U256>, TempoPrecompileError> {
-        let mut account = self.internals.load_account_mut(address)?;
+        let _measurement =
+            crate::execution_measure::operation(crate::execution_measure::Op::LoadJournal);
+        let mut account = {
+            let _m =
+                crate::execution_measure::operation(crate::execution_measure::Op::AccountAccess);
+            self.internals.load_account_mut(address)?
+        };
+        let _m = crate::execution_measure::operation(crate::execution_measure::Op::SlotLoad);
         let val = account.sload(key, skip_cold_load)?;
         Ok(StateLoad::new(val.present_value, val.is_cold))
     }
@@ -154,11 +161,16 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         value: U256,
         skip_cold_load: bool,
     ) -> Result<StateLoad<SStoreResult>, TempoPrecompileError> {
+        let _measurement =
+            crate::execution_measure::operation(crate::execution_measure::Op::StoreJournal);
         self.ensure_not_static()?;
-        Ok(self
-            .internals
-            .load_account_mut(address)?
-            .sstore(key, value, skip_cold_load)?)
+        let mut account = {
+            let _m =
+                crate::execution_measure::operation(crate::execution_measure::Op::AccountAccess);
+            self.internals.load_account_mut(address)?
+        };
+        let _m = crate::execution_measure::operation(crate::execution_measure::Op::SlotStore);
+        Ok(account.sstore(key, value, skip_cold_load)?)
     }
 
     /// Performs a metered precompile SLOAD, optionally recording the storage action.
@@ -169,6 +181,8 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         key: U256,
         record: bool,
     ) -> Result<U256, TempoPrecompileError> {
+        let _measurement =
+            crate::execution_measure::operation(crate::execution_measure::Op::LoadTotal);
         let additional_cost = self.gas_params.cold_storage_additional_cost();
 
         // T4+: pre-charge static gas to avoid cheap useless work.
@@ -206,6 +220,8 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         value: U256,
         action: impl FnOnce(&SStoreResult) -> StorageAction,
     ) -> Result<(), TempoPrecompileError> {
+        let _measurement =
+            crate::execution_measure::operation(crate::execution_measure::Op::StoreTotal);
         // T12+: EIP-2200 sentry. SSTORE fails if the frame only has the call stipend remaining.
         if self.spec.is_t12() && self.gas_tracker.remaining() <= self.gas_params.call_stipend() {
             return Err(TempoPrecompileError::OutOfGas);

@@ -63,6 +63,7 @@ tempo-alloy.workspace = true
 tempo-revm.workspace = true
 
 [features]
+execution-measure = []
 default = ["rpc"]
 test-utils = [
     "alloy/getrandom",

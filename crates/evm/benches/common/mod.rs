@@ -2,7 +2,7 @@
 
 use alloy_consensus::transaction::{Recovered, SignerRecoverable};
 use alloy_evm::{
-    EvmEnv, EvmFactory,
+    Evm, EvmEnv, EvmFactory,
     block::{BlockExecutor, BlockExecutorFactory, StateDB, TxResult},
     eth::EthBlockExecutionCtx,
 };
@@ -87,10 +87,60 @@ pub(crate) struct ExecutionFixture {
 }
 
 pub(crate) type FixedCacheDb = State<
-    StateProviderDatabase<CachedStateProvider<EvmStateProviderAdapter<InMemoryStateProvider>>>,
+    MeasuredDb<
+        StateProviderDatabase<CachedStateProvider<EvmStateProviderAdapter<InMemoryStateProvider>>>,
+    >,
 >;
 
+#[derive(Debug)]
+pub(crate) struct MeasuredDb<D>(D);
+impl<D: revm::Database> revm::Database for MeasuredDb<D> {
+    type Error = D::Error;
+    fn basic(&mut self, address: Address) -> Result<Option<revm::state::AccountInfo>, Self::Error> {
+        let _m = tempo_precompiles::execution_measure::operation(
+            tempo_precompiles::execution_measure::Op::ProviderAccount,
+        );
+        self.0.basic(address)
+    }
+    fn storage(&mut self, address: Address, key: U256) -> Result<U256, Self::Error> {
+        let _m = tempo_precompiles::execution_measure::operation(
+            tempo_precompiles::execution_measure::Op::ProviderStorage,
+        );
+        self.0.storage(address, key)
+    }
+    fn code_by_hash(&mut self, hash: B256) -> Result<revm::state::Bytecode, Self::Error> {
+        let _m = tempo_precompiles::execution_measure::operation(
+            tempo_precompiles::execution_measure::Op::ProviderCode,
+        );
+        self.0.code_by_hash(hash)
+    }
+    fn block_hash(&mut self, number: u64) -> Result<B256, Self::Error> {
+        self.0.block_hash(number)
+    }
+}
+
 impl ExecutionFixture {
+    pub(crate) fn digest(&self) -> B256 {
+        let mut rows = Vec::new();
+        for (address, account) in self.provider.accounts.iter() {
+            rows.push(format!("account:{address}:{account:?}"));
+        }
+        for ((address, key), value) in self.provider.storage.iter() {
+            rows.push(format!("storage:{address}:{key}:{value}"));
+        }
+        for (hash, code) in self.provider.contracts.iter() {
+            rows.push(format!(
+                "code:{hash}:{}",
+                alloy_primitives::hex::encode(code.0.original_bytes())
+            ));
+        }
+        rows.sort();
+        if let Ok(path) = std::env::var("MEASURE_STATE_ROWS") {
+            std::fs::write(path, rows.join("\n")).unwrap();
+        }
+        alloy_primitives::keccak256(rows.join("\n"))
+    }
+
     pub(crate) fn state_db(&self) -> FixedCacheDb {
         let provider = CachedStateProvider::new(
             self.provider.clone().into_evm_state_provider(),
@@ -98,7 +148,7 @@ impl ExecutionFixture {
             Some(self.metrics.clone()),
         );
         State::builder()
-            .with_database(StateProviderDatabase::new(provider))
+            .with_database(MeasuredDb(StateProviderDatabase::new(provider)))
             .with_bundle_update()
             .build()
     }
@@ -109,7 +159,7 @@ impl ExecutionFixture {
             self.cache.clone(),
         );
         State::builder()
-            .with_database(StateProviderDatabase::new(provider))
+            .with_database(MeasuredDb(StateProviderDatabase::new(provider)))
             .with_bundle_update()
             .build()
     }
@@ -337,8 +387,18 @@ pub(crate) fn fixture_from_seeded_db(seeded: CacheDB<EmptyDB>) -> ExecutionFixtu
         contracts.insert(hash, bytecode);
     }
     for (address, account) in state_cache.accounts {
+        if matches!(
+            account.account_state,
+            revm::database::AccountState::NotExisting
+        ) {
+            execution_cache.insert_account(address, None);
+            continue;
+        }
         insert_account(&execution_cache, &mut accounts, address, &account);
         for (slot, value) in account.storage {
+            if value.is_zero() {
+                continue;
+            }
             let storage_key = B256::new(slot.to_be_bytes());
             execution_cache.insert_storage(address, storage_key, Some(value));
             storage.insert((address, storage_key), value);
@@ -388,16 +448,13 @@ fn insert_account(
     accounts.insert(address, account);
 }
 
-pub(crate) fn execute_txs<DB>(
+pub(crate) fn execute_txs(
     config: &TempoEvmConfig,
-    db: DB,
+    db: FixedCacheDb,
     txs: &[Recovered<TempoTxEnvelope>],
     block_timestamp: u64,
     hardfork: TempoHardfork,
-) -> ExecutionStats
-where
-    DB: StateDB,
-{
+) -> ExecutionStats {
     let evm: TempoEvm<_, _> =
         TempoEvmFactory::default().create_evm(db, bench_env(hardfork, block_timestamp));
     let ctx = TempoBlockExecutionCtx {
@@ -418,24 +475,86 @@ where
     executor
         .apply_pre_execution_changes()
         .expect("failed to apply pre-execution changes");
+    let mut validation_rows = None;
+
+    if std::env::var_os("MEASURE_HOOK").is_some() {
+        let validate = std::env::var_os("MEASURE_VALIDATE").is_some();
+        let updates = std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::<
+            String,
+            String,
+        >::new()));
+        let observed = updates.clone();
+        executor.evm_mut().db_mut().set_state_hook(Some(Box::new(
+            move |state: revm::state::EvmState| {
+                if validate {
+                    let mut rows = observed.lock().unwrap();
+                    for (address, account) in &state {
+                        if !account.is_touched() {
+                            continue;
+                        }
+                        let info = &account.info;
+                        if !info.is_empty() {
+                            rows.insert(
+                                format!("account:{address}"),
+                                format!("{}:{}:{}", info.nonce, info.balance, info.code_hash),
+                            );
+                        }
+                        for (key, slot) in &account.storage {
+                            if slot.is_changed() {
+                                rows.insert(
+                                    format!("storage:{address}:{key}"),
+                                    slot.present_value.to_string(),
+                                );
+                            }
+                        }
+                    }
+                }
+                std::hint::black_box(state);
+            },
+        )));
+        // Keep validation state available until the transaction loop completes.
+        validation_rows = Some(updates);
+    }
     let mut stats = ExecutionStats::default();
     for tx in txs {
         assert!(
             tx.inner().is_aa(),
             "execution bench expects Tempo AA transactions"
         );
+        let execution_measurement = tempo_precompiles::execution_measure::area(
+            tempo_precompiles::execution_measure::Area::Execution,
+        );
         let output = executor
             .execute_transaction_without_commit(tx)
             .expect("transaction execution failed");
+        drop(execution_measurement);
         assert!(
             output.result().result.is_success(),
             "transaction reverted: {:?}",
             output.result().result
         );
+        let commit_measurement = tempo_precompiles::execution_measure::area(
+            tempo_precompiles::execution_measure::Area::Commit,
+        );
         stats.gas_used = stats
             .gas_used
             .saturating_add(executor.commit_transaction(output).tx_gas_used());
+        drop(commit_measurement);
         stats.txs += 1;
+    }
+    if let Some(updates) = validation_rows {
+        if std::env::var_os("MEASURE_VALIDATE").is_some() {
+            let rows = updates.lock().unwrap();
+            let text = rows
+                .iter()
+                .map(|(k, v)| format!("{k}:{v}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            println!("output={}", alloy_primitives::keccak256(text.as_bytes()));
+            if let Ok(path) = std::env::var("MEASURE_OUTPUT_ROWS") {
+                std::fs::write(path, text).unwrap();
+            }
+        }
     }
     stats
 }
