@@ -356,6 +356,50 @@ fn aa_batch_failure_refills_prior_calls_in_lifo_order() -> eyre::Result<()> {
 }
 
 #[test]
+fn aa_batch_merges_refunds_only_when_all_calls_succeed() -> eyre::Result<()> {
+    let signer = P256KeyPair::random();
+    let second = Address::repeat_byte(0x73);
+    let final_call = Address::repeat_byte(0x74);
+    for cap in [100_000, 2_000_000] {
+        for (ending, success) in [
+            (bytes!("00"), true),
+            (bytes!("60006000fd"), false),
+            (bytes!("fe"), false),
+        ] {
+            let mut evm = evm(cap);
+            fund_account_with_nonce(&mut evm, signer.address, 1);
+            for address in [CONTRACT, second] {
+                // Creating then restoring a slot earns a 5,000 execution-gas refund.
+                install(
+                    &mut evm,
+                    address,
+                    Bytecode::new_raw(bytes!("6001600055600060005500")),
+                );
+            }
+            install(&mut evm, final_call, Bytecode::new_raw(ending));
+            let tx = signer.sign_tx(
+                TxBuilder::new()
+                    .nonce(1)
+                    .call(CONTRACT, &[])
+                    .call(second, &[])
+                    .call(final_call, &[])
+                    .gas_limit(800_000)
+                    .build(),
+            )?;
+            let result = evm.transact_commit(
+                Recovered::new_unchecked(TempoTxEnvelope::AA(tx), signer.address).into(),
+            )?;
+            assert_eq!(result.status, success);
+            assert_eq!(result.refunded, if success { 10_000 } else { 0 });
+            if !success {
+                assert_eq!(result.state_gas_spent, 0);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn precompile_storage_uses_credit_policy_and_execution_first_charging() -> eyre::Result<()> {
     for mode in [CreditMode::Refund, CreditMode::Preserve, CreditMode::Direct] {
         let mut evm = evm(100_000);
