@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import signal
 import subprocess
+import struct
 import sys
 import tempfile
 import time
@@ -118,12 +119,50 @@ class SchedulerTraceTests(unittest.TestCase):
         def compressed(argv, *_):
             commands.append(argv); return 0, {"decoded_bytes": 1}
         with patch.object(trace, "run_owned", side_effect=plain), \
-             patch.object(trace, "run_owned_gzip", side_effect=compressed):
+             patch.object(trace, "run_owned_gzip", side_effect=compressed), \
+             patch.object(trace, "fault_record_summary", return_value={"loss_throttle_records": []}):
             self.assertEqual(trace.decode_worker(config), 0)
-        self.assertEqual(len(commands), 3)
+        self.assertEqual(len(commands), 2)
         self.assertIn("sw:comm,pid,tid,cpu,time,event,addr,ip,sym,dso,period", commands[1])
         self.assertNotIn("--hide-call-graph", commands[1])
-        self.assertIn("-D", commands[2])
+        self.assertFalse(any("-D" in cmd for cmd in commands))
+        self.assertTrue((self.root / "raw-records.json").is_file())
+
+    def perf_records(self, records):
+        data = b"".join(struct.pack("<IHH", kind, 0, 8 + len(payload)) + payload
+                        for kind, payload in records)
+        header = struct.pack("<8s12Q", b"PERFILE2", 104, 152, 104, 152, 256, len(data), 0, 0, 0, 0, 0, 0)
+        path = self.root / "perf.data"
+        path.write_bytes(header + bytes(152) + data)
+        return path
+
+    def test_fault_binary_summary_detects_all_loss_and_throttle_types(self):
+        for kind in (2, 5, 6, 13):
+            path = self.perf_records([(9, bytes(80)), (kind, bytes(24))])
+            result = trace.fault_record_summary(path)
+            self.assertEqual(result["record_counts"][9], 1)
+            self.assertEqual(result["loss_throttle_records"][0]["record_type"], kind)
+            trace.save(self.root / "raw-records.json", result)
+            for name in ("record.stderr", "events.txt", "events.stderr"):
+                (self.root / name).write_text("")
+            self.assertEqual(len(trace.loss_evidence(self.root)), 1)
+
+    def test_fault_binary_summary_preserves_unknown_record_counts_without_claiming_accounting(self):
+        path = self.perf_records([(9, bytes(80)), (8, bytes(24)), (1234, bytes(16))])
+        result = trace.fault_record_summary(path)
+        self.assertEqual(result["record_counts"], {9: 1, 8: 1, 1234: 1})
+        self.assertEqual(result["loss_throttle_records"], [])
+        self.assertIn("unqualified", result["scope"])
+
+    def test_fault_binary_summary_rejects_malformed_or_compressed_records(self):
+        original = self.perf_records([(9, bytes(80))]).read_bytes()
+        for raw in (original[:80], original[:-1], b"2ELIFREP" + original[8:],
+                    original[:24] + struct.pack("<Q", 260) + original[32:],
+                    original[:256] + struct.pack("<IHH", 9, 0, 0) + original[264:]):
+            path = self.root / "perf.data"; path.write_bytes(raw)
+            with self.assertRaises(trace.TraceError): trace.fault_record_summary(path)
+        with self.assertRaisesRegex(trace.TraceError, "compressed perf"):
+            trace.fault_record_summary(self.perf_records([(81, bytes(80))]))
 
     def test_compressed_decoder_preserves_full_output_beyond_plain_file_limit(self):
         path = self.root / "events.txt.gz"

@@ -20,8 +20,10 @@ fault addresses and frame-pointer stacks on both nodes in each phase, sampling
 every 32nd major fault. It requires
 three 90-second pairs with identical source and node controls, and forces artifact
 storage with no performance-series or Slack publication. Raw `perf.data` is capped
-at 32 MiB per phase. Fault events and raw-record text stream directly to gzip:
-each has a 64 MiB compressed and 2 GiB decoded limit, with no plain-text copy.
+at 32 MiB per phase. Fault events stream directly to gzip with a 64 MiB compressed
+and 2 GiB decoded limit. A compact binary-record summary checks explicit loss and
+throttle records without expanding the raw recording into a redundant text dump;
+READ-format counters and timeline completeness still require separate review.
 Other decoder files retain their 128 MiB limit. Keep raw traces in
 GitHub artifacts, download selected evidence within a fixed budget, and remove it
 after review. Periodic samples identify access paths, not population counts or wait duration; validate

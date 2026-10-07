@@ -7,6 +7,7 @@ Keep raw perf.data remotely and validate scope, loss and symbolization separatel
 """
 import argparse
 import contextlib
+from collections import Counter
 import gzip
 import hashlib
 import json
@@ -19,6 +20,7 @@ import selectors
 import shutil
 import signal
 import subprocess
+import struct
 import sys
 import time
 import zlib
@@ -343,6 +345,41 @@ def run_owned_gzip(argv, output, stderr, timeout, stop=None):
             stop_owned(child)
 
 
+def fault_record_summary(path):
+    """Scan bounded perf record headers instead of expanding a redundant hex dump.
+
+    This detects explicit loss/throttle records. It does not interpret READ-format
+    counters, resolve mappings, or establish complete timeline accounting.
+    """
+    require(path.stat().st_size < 32 * MIB, "raw perf file reached hard cap")
+    data = path.read_bytes()
+    require(len(data) >= 104, "short perf header")
+    magic, header_size, attr_size, attrs_offset, attrs_size, offset, size = struct.unpack_from("<8s6Q", data)
+    require(magic == b"PERFILE2", "unsupported perf byte order or format")
+    require(104 <= header_size <= len(data), "invalid perf header size")
+    require(attr_size >= 16 and attrs_size > 0 and attrs_size % attr_size == 0 and
+            header_size <= attrs_offset <= len(data) - attrs_size, "invalid perf attribute section")
+    require(header_size <= offset <= len(data) - size, "invalid perf data section")
+    require(offset + size <= attrs_offset or attrs_offset + attrs_size <= offset,
+            "overlapping perf sections")
+    counts = Counter(); findings = []; cursor = offset
+    while cursor < offset + size:
+        require(cursor + 8 <= offset + size, "short perf record header")
+        kind, _misc, length = struct.unpack_from("<IHH", data, cursor)
+        require(length >= 8 and cursor + length <= offset + size, "truncated perf record")
+        require(kind != 81, "compressed perf records unsupported")
+        counts[kind] += 1
+        if kind in (2, 5, 6, 13):  # LOST, THROTTLE, UNTHROTTLE, LOST_SAMPLES.
+            require(len(findings) < 1000, "excessive loss/throttle records")
+            findings.append({"record_type": kind, "offset": cursor, "bytes": length})
+        cursor += length
+    require(counts[9] > 0, "no perf sample records")
+    return {"raw_sha256": hashlib.sha256(data).hexdigest(), "raw_bytes": len(data),
+            "data_offset": offset, "data_bytes": size, "record_counts": dict(counts),
+            "loss_throttle_records": findings,
+            "scope": "Record headers only; READ-format loss counters and timeline completeness unqualified"}
+
+
 def recorder_worker(config_path):
     config = json.loads(Path(config_path).read_text())
     output = Path(config["output"])
@@ -386,6 +423,7 @@ def decode_worker(config_path):
         ("events", ["--ns", "--show-lost-events", "-F", "trace:comm,pid,tid,cpu,time,event,trace"]),
         ("raw", ["-D"])]
     if config.get("kind") == "faults":
+        commands.pop()  # Raw bytes remain in perf.data; scan record headers below.
         commands[1] = ("events", ["--ns", "--show-lost-events", "-F",
             "sw:comm,pid,tid,cpu,time,event,addr,ip,sym,dso,period", "--max-stack", "64"])
     try:
@@ -401,6 +439,8 @@ def decode_worker(config_path):
                         with open(output / (name + ".txt"), "wb") as stdout:
                             code = run_owned(argv, stdout, stderr, 12 if config.get("kind") == "faults" else 8, output / "stop")
                 require(code == 0, f"perf decode {name} exit {code}")
+            if config.get("kind") == "faults":
+                save(output / "raw-records.json", fault_record_summary(output / "perf.data"))
         result["ok"] = True
     except (TraceError, OSError) as error:
         result["error"] = str(error)
@@ -411,12 +451,20 @@ def decode_worker(config_path):
                 path = output / f"{name}.{suffix}"
                 if path.exists(): path.chmod(0o644)
         (output / "decode-result.json").chmod(0o644)
+        if (output / "raw-records.json").exists():
+            (output / "raw-records.json").chmod(0o644)
     return 0 if result["ok"] else 1
 
 
 def loss_evidence(output):
     findings = []
-    for name in ("record.stderr", "events.txt", "events.stderr", "raw.txt", "raw.stderr"):
+    names = ["record.stderr", "events.txt", "events.stderr"]
+    if (output / "raw-records.json").exists():
+        records = json.loads((output / "raw-records.json").read_text())
+        findings.extend({"file": "raw-records.json", **item} for item in records["loss_throttle_records"])
+    else:
+        names.extend(("raw.txt", "raw.stderr"))
+    for name in names:
         path = output / name
         compressed = path.with_suffix(path.suffix + ".gz")
         opener = gzip.open if compressed.exists() else open
