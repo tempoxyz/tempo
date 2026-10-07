@@ -268,19 +268,16 @@ pub fn begin_node_block(number: u64) {
             .and_then(|s| s.parse().ok())
             .unwrap_or(0)
     });
-    if mode != 0 {
-        reset(mode);
-        NODE_SEQUENCE.with(|sequence| {
-            let next = sequence.get().wrapping_add(1);
-            sequence.set(next);
-            STATS.with(|stats| {
-                stats.borrow_mut().sample_offset = next.wrapping_mul(0x9e3779b97f4a7c15)
-            });
-        });
-        NODE_STARTED.with(|started| {
-            *started.borrow_mut() = Some((number, std::time::Instant::now(), Stamp::read()))
-        });
-    }
+    reset(mode);
+    NODE_SEQUENCE.with(|sequence| {
+        let next = sequence.get().wrapping_add(1);
+        sequence.set(next);
+        STATS
+            .with(|stats| stats.borrow_mut().sample_offset = next.wrapping_mul(0x9e3779b97f4a7c15));
+    });
+    NODE_STARTED.with(|started| {
+        *started.borrow_mut() = Some((number, std::time::Instant::now(), Stamp::read()))
+    });
 }
 /// Writes one aggregate record after block execution, with no per-transaction log writes.
 pub fn report_node_block(backend: &str, gas: u64, accepted: usize) {
@@ -330,7 +327,8 @@ pub fn report_node_block(backend: &str, gas: u64, accepted: usize) {
             }
         }
     });
-    eprintln!("{row}");
+    let thread = std::thread::current();
+    tracing::info!(target: "tempo::execution_measure", measurement = %row, worker = thread.name().unwrap_or("unnamed"));
 }
 
 thread_local! { static NODE_SEQUENCE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) }; }
