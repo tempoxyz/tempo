@@ -97,6 +97,13 @@ ran three pairs at 25k offered TPS: 15,880 baseline versus 14,995 candidate TPS
 failures and all workload-composition checks passing. The candidate remains unmerged;
 the isolated reference-count improvement did not produce a whole-node gain.
 
+The [stale prewarming cancellation comparison](https://github.com/tempoxyz/tempo/actions/runs/37596114595)
+ran four balanced pairs at 25k offered TPS: 16,124 baseline versus 15,580 candidate
+TPS (−3.4%, statistically neutral). Median block time regressed 3.6%; all eight
+phases passed sender and workload-composition checks. Engine candidate availability
+and validated reuse were nearly unchanged. The candidate remains unmerged, and its
+conditional historical/generated differentials were not dispatched.
+
 The official workflow's `disposal-clock` profiling choice runs a fixed 25k
 same-binary comparison with stage timers disabled and enabled. It calibrates the
 empty timer on the runner before and after each phase, retains the controls as
