@@ -73,6 +73,12 @@ all = "warn"
 debug = "line-tables-only"
 split-debuginfo = "unpacked"
 
+# Pin build-script/proc-macro debuginfo so host deps hash the same in `cargo build` and
+# `cargo test`. With the default, a crate that is a build-dep in one and also a normal dep in
+# the other (e.g. `glob` via bindgen) changes hash and rebuilds librocksdb-sys (~3.5 min).
+[profile.dev.build-override]
+debug = "line-tables-only"
+
 # Meant for testing - all optimizations, but with debug assertions and overflow checks.
 [profile.hivetests]
 inherits = "test"
