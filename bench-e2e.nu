@@ -630,7 +630,9 @@ def start-e2e-local-node [
     let pinned_cmd = taskset-command [$tempo_bin ...$args] $cpus
     let node_cmd = wrap-samply $pinned_cmd $samply $full_samply_args
     let node_cmd_str = ($node_cmd | str join " ")
-    let script = $"($env_prefix)($otel_attrs)($tracy_env_prefix)($node_cmd_str) 2>&1"
+    let measure_mode = ($env.NODE_MEASURE_MODE? | default "0")
+    if $measure_mode not-in ["0" "3"] { error make { msg: "NODE_MEASURE_MODE must be 0 or 3" } }
+    let script = $"NODE_MEASURE_MODE=($measure_mode) ($env_prefix)($otel_attrs)($tracy_env_prefix)($node_cmd_str) 2>&1"
     let unit_phase = ($phase | str replace -a "_" "-" | str replace -a "." "-")
     let runner = (systemd-scope-command $"tempo-e2e-($role)-($unit_phase)" $cpus $memory $script)
     print $"Starting local e2e validator ($role) for ($phase): ($runner | str join ' ')"
