@@ -1026,6 +1026,14 @@ jobs:
           export DEREK_BENCH_COMMAND
           echo "DEREK_BENCH_COMMAND=$DEREK_BENCH_COMMAND" >> "$GITHUB_ENV"
 
+          sudo sysctl kernel.perf_event_paranoid=-1 kernel.kptr_restrict=0
+          mkdir -p bench-results
+          sudo python3 contrib/bench/capture-process-stalls.py bench-results/process-stalls.ndjson.gz &
+          diagnostic_pid=$!
+          trap 'sudo kill -TERM "$diagnostic_pid" 2>/dev/null || true; wait "$diagnostic_pid" || true; sudo chown -R "$(id -u):$(id -g)" bench-results' EXIT
+          if [ "$BENCH_SAMPLY" = "true" ]; then
+            cmd+=(--samply-args="--rate 99 --cswitch-markers")
+          fi
           "${cmd[@]}"
 
       - name: Preserve metrics from failed senders
