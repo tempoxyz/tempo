@@ -595,6 +595,7 @@ jobs:
       - name: Validate kernel scheduler tracing
         if: env.BENCH_SCHED_TRACE == 'true'
         run: |
+          mkdir -p bench-results
           python3 - <<'PY'
           import os
           max_pairs = 1 if os.environ['BENCH_SAMPLY'] == 'true' else 4
