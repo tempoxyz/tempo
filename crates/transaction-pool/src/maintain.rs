@@ -562,16 +562,30 @@ where
                 .filter(|tx| !removed_this_iteration.contains(tx.hash()))
                 .filter(|tx| tx.transaction.inner().fee_token().is_none())
                 .filter(|tx| {
-                    tx.transaction.fee_balance_slot().is_some_and(|(_, slot)| {
-                        // TIP-20 balance slots share a layout. Include credits and protocol
-                        // fee writes, which may change the choice without Transfer logs.
-                        fallback_tokens.iter().any(|token| {
-                            bundle_state
-                                .get(token)
-                                .and_then(|account| account.storage.get(&slot))
-                                .is_some_and(|value| value.is_changed())
+                    tx.transaction
+                        .fee_balance_slot()
+                        .is_some_and(|(selected_token, slot)| {
+                            // TIP-20 balance slots share a layout. Include credits and protocol
+                            // fee writes, which may change the choice without Transfer logs.
+                            let fee = tx.transaction.fee_token_cost();
+                            for token in fallback_tokens {
+                                if bundle_state
+                                    .get(token)
+                                    .and_then(|account| account.storage.get(&slot))
+                                    .is_some_and(|value| {
+                                        let had_sufficient_balance = value.original_value() >= fee;
+                                        let has_sufficient_balance = value.present_value >= fee;
+                                        had_sufficient_balance != has_sufficient_balance
+                                    })
+                                {
+                                    return true;
+                                }
+                                if *token == selected_token {
+                                    break;
+                                }
+                            }
+                            false
                         })
-                    })
                 })
                 .map(|tx| *tx.hash())
                 .collect()
