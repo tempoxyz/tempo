@@ -13796,6 +13796,7 @@ dependencies = [
  "reth-storage-api",
  "reth-trie",
  "revm",
+ "rustix",
  "serde_json",
  "tempo-chainspec",
  "tempo-contracts",

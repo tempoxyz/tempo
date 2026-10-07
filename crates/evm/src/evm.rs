@@ -40,6 +40,9 @@ use crate::{
     },
 };
 
+mod cpu_timings;
+use cpu_timings::SampledCpuTimings;
+
 type CandidateValidator<DB> = fn(
     &mut SpeculativeResult<<DB as reth_revm::Database>::Error>,
     &mut DB,
@@ -77,10 +80,12 @@ struct ExecutionStageTimings {
     validation_conflicts: u64,
     validation_errors: u64,
     validation: Duration,
+    validation_cpu: SampledCpuTimings,
     ordinary_calls: u64,
     ordinary_errors: u64,
     ordinary: Duration,
     ordinary_by_reason: [OrdinaryStageTiming; 4],
+    ordinary_cpu_by_reason: [SampledCpuTimings; 4],
     commit_calls: u64,
     commit: Duration,
     prewarmed_reuse_disposal_calls: u64,
@@ -546,6 +551,15 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             prewarmed_fallback_disposal_seconds = timings.prewarmed_fallback_disposal.as_secs_f64(),
             "Ordered execution stage timings"
         );
+        tracing::debug!(target: "tempo::execution",
+            phase = "before_block_finalization",
+            validation = ?timings.validation_cpu,
+            no_candidate = ?timings.ordinary_cpu_by_reason[OrdinaryReason::NoCandidate as usize],
+            conflict = ?timings.ordinary_cpu_by_reason[OrdinaryReason::Conflict as usize],
+            speculative_error = ?timings.ordinary_cpu_by_reason[OrdinaryReason::SpeculativeError as usize],
+            validation_error = ?timings.ordinary_cpu_by_reason[OrdinaryReason::ValidationError as usize],
+            "Ordered execution CPU samples"
+        );
     }
 
     /// Consumes this EVM wrapper and returns the inner [`tempo_revm::TempoEvm`].
@@ -894,6 +908,10 @@ where
                     .execution_stage_timings
                     .as_ref()
                     .map(|_| Instant::now());
+                let cpu_sample = self
+                    .execution_stage_timings
+                    .as_mut()
+                    .and_then(|timings| timings.validation_cpu.start());
                 let valid = match self.candidate_validator {
                     Some(validate) => {
                         validate(&mut candidate, &mut self.inner.ctx.journaled_state.database)
@@ -903,6 +921,7 @@ where
                 if let Some(started) = started {
                     let elapsed = started.elapsed();
                     let timings = self.execution_stage_timings.as_mut().unwrap();
+                    timings.validation_cpu.finish(cpu_sample, valid.is_err());
                     timings.validation_calls += 1;
                     timings.validation_conflicts += u64::from(matches!(valid, Ok(false)));
                     timings.validation_errors += u64::from(valid.is_err());
@@ -1001,10 +1020,15 @@ where
                 .execution_stage_timings
                 .as_ref()
                 .map(|_| Instant::now());
+            let cpu_sample = self.execution_stage_timings.as_mut().and_then(|timings| {
+                timings.ordinary_cpu_by_reason[ordinary_reason as usize].start()
+            });
             let result = self.inner.transact(tx);
             if let Some(started) = started {
                 let elapsed = started.elapsed();
                 let timings = self.execution_stage_timings.as_mut().unwrap();
+                timings.ordinary_cpu_by_reason[ordinary_reason as usize]
+                    .finish(cpu_sample, result.is_err());
                 timings.ordinary_calls += 1;
                 timings.ordinary_errors += u64::from(result.is_err());
                 timings.ordinary += elapsed;
@@ -1494,6 +1518,7 @@ mod tests {
                     let timings = actual.execution_stage_timings.as_ref().unwrap();
                     let validation_calls = u64::from(!matches!(case, "retry" | "missing"));
                     assert_eq!(timings.validation_calls, validation_calls);
+                    assert_eq!(timings.validation_cpu.calls, validation_calls);
                     assert_eq!(timings.validation_conflicts, u64::from(case == "conflict"));
                     assert_eq!(
                         timings.validation_errors,
@@ -1501,6 +1526,16 @@ mod tests {
                     );
                     assert_eq!(timings.ordinary_calls, if case == "reuse" { 1 } else { 2 });
                     assert_eq!(timings.ordinary_errors, 1);
+                    assert_eq!(
+                        timings
+                            .ordinary_cpu_by_reason
+                            .each_ref()
+                            .map(|stage| stage.calls),
+                        timings
+                            .ordinary_by_reason
+                            .each_ref()
+                            .map(|stage| stage.calls)
+                    );
                     assert_eq!(
                         timings
                             .ordinary_by_reason
@@ -1558,7 +1593,14 @@ mod tests {
                 ));
                 let timings = actual.execution_stage_timings.as_ref().unwrap();
                 assert_eq!(timings.validation_calls, 0);
+                assert_eq!(timings.validation_cpu.calls, 0);
                 assert_eq!(timings.ordinary_calls, 0);
+                assert!(
+                    timings
+                        .ordinary_cpu_by_reason
+                        .iter()
+                        .all(|stage| stage.calls == 0)
+                );
                 for stage in &timings.ordinary_by_reason {
                     assert_eq!(stage, &OrdinaryStageTiming::default());
                 }

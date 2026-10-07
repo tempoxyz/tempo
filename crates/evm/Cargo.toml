@@ -52,6 +52,9 @@ derive_more.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1.1.4", features = ["time"] }
+
 [dev-dependencies]
 reth-cli-util = { workspace = true, features = ["jemalloc"] }
 alloy-trie = "0.9.5"

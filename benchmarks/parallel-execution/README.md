@@ -66,6 +66,21 @@ Stage timers include descheduling/errors, exclude several block stages, and are
 neither CPU time nor total validation/build time. Confirm performance with
 diagnostics disabled.
 
+On Linux, stage diagnostics also emit `Ordered execution CPU samples`: paired
+thread-CPU and wall durations for read validation and each ordinary-execution
+reason, including failed calls. Each stage samples its first call and roughly
+1/64 subsequent calls using a mixed invocation index. Counts distinguish all
+calls, sample attempts, valid pairs, failed sampled calls, unavailable clocks and
+invalid clock pairs. Other platforms report unavailable CPU clocks. The paired
+wall interval includes the clock reads; it is slightly wider than the stage body.
+These are deterministic sparse observations, not a random sample or total CPU
+accounting: do not multiply them by 64 or subtract them from full-stage wall
+totals. They exclude worker CPU, commit, receipts, prefix publication and
+finalization. Before interpreting a diagnostic, measure the paired-clock floor
+with the ignored `execution_cpu_clock_floor` test on the validator affinity and
+compare uninstrumented throughput; the empty scope does not measure total
+instrumentation overhead.
+
 The [fallback timing diagnostic](https://github.com/tempoxyz/tempo/actions/runs/37571062322)
 checked 363 accepted blocks and 2,936,569 transactions with no sender failures.
 Across two identical instrumented runs, conflict replay took 5.2–5.4% of measured
