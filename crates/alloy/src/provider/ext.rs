@@ -2,10 +2,11 @@ use alloy_contract::Result as ContractResult;
 use alloy_network::Network;
 use alloy_primitives::{Address, U256};
 use alloy_provider::{
-    Identity, Provider, ProviderBuilder, ProviderLayer, RootProvider,
+    Identity, Provider, ProviderBuilder, ProviderLayer, RootProvider, RpcWithBlock,
     fillers::{JoinFill, NonceFiller, TxFiller},
 };
 use alloy_rpc_client::{BuiltInConnectionString, ConnectionConfig};
+use alloy_rpc_types_eth::simulate::{SimulatePayload, SimulatedBlock};
 use alloy_transport::{
     Authorization, BoxTransport, TransportConnect, TransportError, TransportErrorKind,
 };
@@ -22,7 +23,7 @@ use tempo_primitives::transaction::{CallScope, TEMPO_EXPIRING_NONCE_KEY};
 use crate::{
     TempoFillers, TempoNetwork,
     fillers::{ExpiringNonceFiller, NonceKeyFiller, Random2DNonceFiller, SponsorFiller},
-    rpc::ForkSchedule,
+    rpc::{ForkSchedule, TempoTransactionRequest},
     transport::{AuthHeaderTransport, RelayConnector, SponsorshipMode},
 };
 
@@ -31,6 +32,20 @@ use crate::{
 #[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
 pub trait TempoProviderExt: Provider<TempoNetwork> {
+    /// Simulates Tempo transactions with `eth_simulateV1`.
+    ///
+    /// Alloy's [`Provider::simulate`] accepts Ethereum transaction requests, which cannot carry
+    /// Tempo fields such as `nonceKey` and `validBefore`.
+    fn simulate_v1<'req>(
+        &self,
+        payload: &'req SimulatePayload<TempoTransactionRequest>,
+    ) -> RpcWithBlock<
+        &'req SimulatePayload<TempoTransactionRequest>,
+        Vec<SimulatedBlock<<TempoNetwork as Network>::BlockResponse>>,
+    > {
+        self.client().request("eth_simulateV1", payload).into()
+    }
+
     /// Returns a typed instance for the Account Keychain precompile.
     fn account_keychain(&self) -> IAccountKeychainInstance<&Self, TempoNetwork>
     where

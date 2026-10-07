@@ -234,12 +234,14 @@ fell from 24,479 to 21,787 (11.0%); sorted trie-update entries fell from 8.22 to
 uses one pair of the same workload. Its throughput comparison is exploratory,
 not a statistically significant replacement for three pairs.
 
-Counters and timers cover cache lookup, lock wait/hold, snapshot destruction,
+Temporary counters and timers covered cache lookup, lock wait/hold, snapshot destruction,
 history reads/reconstruction/signature recovery, pool head stages, expiry,
 membership checks, insertion stages, per-transaction commitment hashing, and
-final root aggregation. Hot paths sample one call per 1,024 per thread; block
-operations record every call. Slow operations (at least 10 ms) retain tracing
-block context. Sampling leaves an unfinished tail on each thread.
+final root aggregation. Hot paths sampled one call per 1,024 per thread; block
+operations recorded every call. Slow operations (at least 10 ms) retained tracing
+block context. Sampling left an unfinished tail on each thread. This diagnostic
+instrumentation and its analysis script were removed after measurement; the
+results below describe the instrumented revisions linked here.
 
 The measured window excludes the first five included blocks, matching the
 repository summary. Counter deltas use scrapes inside that window. Latency
@@ -348,7 +350,7 @@ Sampled check-site estimates were 14.44 million executor, 45.22 million handler,
 and 13.36 million insertion calls across both nodes and all three runs. Checks
 remain repeated; the measured costs above do not justify changing their replay
 validation semantics in this patch. Per-transaction commitment maintenance and
-final aggregation remain separately instrumented.
+final aggregation were measured separately.
 
 There were 25 feature block gaps above two seconds, totaling 228.448 seconds.
 Observed slow nonce intervals overlapped 0.411 seconds of those gaps, at most
@@ -360,11 +362,6 @@ remove demonstrated nonce overhead; the full-node result is still mixed.
 Two earlier dispatches failed before sending transactions because other
 processes occupied auth RPC port 8103 and then alternate metrics port 19001.
 Free-port selection applies equally to feature and baseline.
-Analyze its extracted raw artifact with:
-
-```sh
-python3 contrib/bench/analyze-expiring-nonces.py /path/to/extracted/run-directory
-```
 
 ### Supporting storage microbenchmark
 

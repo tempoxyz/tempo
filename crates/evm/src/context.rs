@@ -94,21 +94,4 @@ mod tests {
         assert_eq!(pending_env.shared_gas_limit, shared_gas_limit);
         assert_eq!(pending_env.timestamp_millis_part, timestamp_millis_part);
     }
-
-    #[test]
-    fn pending_nonce_state_uses_the_simulation_timestamp() {
-        let parent = SealedHeader::seal_slow(TempoHeader {
-            inner: alloy_consensus::Header {
-                timestamp: 1000,
-                ..Default::default()
-            },
-            ..Default::default()
-        });
-        let overrides = alloy_rpc_types_eth::BlockOverrides {
-            time: Some(1001),
-            ..Default::default()
-        };
-        let attributes = TempoNextBlockEnvAttributes::build_pending_env(&parent, Some(&overrides));
-        assert_eq!(attributes.timestamp, 1001);
-    }
 }

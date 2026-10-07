@@ -5,6 +5,10 @@ use alloy::{
     network::ReceiptResponse,
     primitives::{Address, Bytes, TxKind, U256},
     providers::{Provider, ProviderBuilder},
+    rpc::types::{
+        BlockOverrides, TransactionRequest,
+        simulate::{SimBlock, SimulatePayload},
+    },
     signers::{SignerSync, local::MnemonicBuilder},
 };
 use commonware_macros::test_traced;
@@ -12,7 +16,7 @@ use commonware_runtime::{
     Runner as _,
     deterministic::{Config, Runner},
 };
-use tempo_alloy::TempoNetwork;
+use tempo_alloy::{TempoNetwork, provider::TempoProviderExt, rpc::TempoTransactionRequest};
 use tempo_primitives::{TempoTransaction, TempoTxEnvelope, transaction::Call};
 
 #[test_traced("WARN")]
@@ -35,50 +39,42 @@ fn expiring_nonce_replay_is_rejected_after_execution_node_restart() {
                     .await?
                     .unwrap();
                 let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+                let mut call = TempoTransactionRequest {
+                    inner: TransactionRequest {
+                        from: Some(signer.address()),
+                        to: Some(Address::with_last_byte(4).into()),
+                        gas: Some(1_000_000),
+                        ..Default::default()
+                    },
+                    nonce_key: Some(U256::MAX),
+                    valid_before: std::num::NonZeroU64::new(latest.header.timestamp() + 10),
+                    ..Default::default()
+                };
                 // txgen samples gas with eth_simulateV1. Its block time can be
                 // earlier than Reth's default pending timestamp (parent + 12s).
-                let simulation: serde_json::Value = provider
-                    .client()
-                    .request(
-                        "eth_simulateV1",
-                        (
-                            serde_json::json!({
-                                "blockStateCalls": [{
-                                    "blockOverrides": { "time": latest.header.timestamp() + 1 },
-                                    "calls": [{
-                                        "from": signer.address(),
-                                        "to": Address::with_last_byte(4),
-                                        "nonceKey": U256::MAX,
-                                        "validBefore": latest.header.timestamp() + 10,
-                                        "gas": "0xf4240"
-                                    }]
-                                }],
-                                "validation": false
-                            }),
-                            latest.header.hash,
-                        ),
-                    )
+                let payload = SimulatePayload::default().extend(
+                    SimBlock::default()
+                        .with_block_overrides(BlockOverrides {
+                            time: Some(latest.header.timestamp() + 1),
+                            ..Default::default()
+                        })
+                        .call(call.clone()),
+                );
+                let simulation = provider
+                    .simulate_v1(&payload)
+                    .hash(latest.header.hash)
                     .await?;
-                assert_eq!(simulation[0]["calls"][0]["status"], "0x1");
+                assert!(simulation[0].calls[0].status);
                 // eth_call applies overrides directly to an existing environment.
                 // Its expiry window must also use the overridden timestamp.
-                let _: Bytes = provider
-                    .client()
-                    .request(
-                        "eth_call",
-                        (
-                            serde_json::json!({
-                                "from": signer.address(),
-                                "to": Address::with_last_byte(4),
-                                "nonceKey": U256::MAX,
-                                "validBefore": latest.header.timestamp() + 310,
-                                "gas": "0xf4240"
-                            }),
-                            latest.header.hash,
-                            serde_json::json!({}),
-                            serde_json::json!({ "time": latest.header.timestamp() + 10 }),
-                        ),
-                    )
+                call.valid_before = std::num::NonZeroU64::new(latest.header.timestamp() + 310);
+                provider
+                    .call(call)
+                    .block(latest.header.hash.into())
+                    .with_block_overrides(BlockOverrides {
+                        time: Some(latest.header.timestamp() + 10),
+                        ..Default::default()
+                    })
                     .await?;
                 let tx = TempoTransaction {
                     chain_id: provider.get_chain_id().await?,

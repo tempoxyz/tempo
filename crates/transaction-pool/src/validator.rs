@@ -833,35 +833,17 @@ where
     }
 
     fn on_new_head_block(&self, new_tip_block: &SealedBlock<Self::Block>) {
-        use tempo_expiring_nonces::diagnostics::{self, Timer};
-        let _span = tracing::info_span!(target: "tempo::expiring_nonces", "nonce_pool_head",
-            block_hash = %new_tip_block.hash(), block_number = new_tip_block.header().inner.number)
-        .entered();
-        let _timer = Timer::start("pool_head");
-        {
-            let _inner_timer = Timer::start("pool_inner_head");
-            self.inner.on_new_head_block(new_tip_block);
-        }
+        self.inner.on_new_head_block(new_tip_block);
 
         // Look up the post-tip state before constructing an execution environment:
         // execution would load and expire a parent snapshot that admission discards.
-        let env_timer = Timer::start("pool_head_environment");
         let snapshot = self
             .expiring_nonce_cache
             .as_ref()
             .and_then(|cache| cache.cached_state_at(new_tip_block.hash()));
-        diagnostics::event(
-            if snapshot.is_some() {
-                "pool_head_snapshot_hit"
-            } else {
-                "pool_head_snapshot_miss"
-            },
-            1,
-        );
         let evm_env = if let (Some(state), Some(build)) =
             (snapshot.as_ref(), self.nonce_snapshot_environment)
         {
-            diagnostics::event("pool_head_direct_environment", 1);
             build(
                 self.inner.evm_config(),
                 new_tip_block.header(),
@@ -875,10 +857,8 @@ where
                 .evm_env(new_tip_block.header())
                 .expect("invalid block in on_new_head_block");
             if let Some(state) = snapshot.filter(|_| env.block_env.expiring_nonces.is_some()) {
-                let _timer = Timer::start("pool_parent_snapshot_drop");
                 env.block_env.expiring_nonces = Some(state);
             } else {
-                let _timer = Timer::start("pool_tip_replay");
                 apply_tip_nonces(
                     &mut env,
                     new_tip_block.header(),
@@ -887,16 +867,11 @@ where
             }
             env
         };
-        drop(env_timer);
         self.active_hardfork
             .store(evm_env.cfg_env.spec.variant_index(), Ordering::Relaxed);
-        let replace_timer = Timer::start("pool_environment_replace");
+        // Drop the old snapshot after releasing the environment lock.
         let previous_env = std::mem::replace(&mut *self.cached_evm_env.write(), evm_env);
-        drop(replace_timer);
-        {
-            let _drop_timer = Timer::start("pool_old_environment_drop");
-            drop(previous_env);
-        }
+        drop(previous_env);
 
         // State changed, drop all cached reads and anchor the new cache to this tip.
         *self.cached_state.write() = (new_tip_block.hash(), Arc::new(StateCache::default()));

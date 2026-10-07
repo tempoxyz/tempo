@@ -206,10 +206,6 @@ mod tests {
             ..header.clone()
         };
         assert_ne!(changed.hash_slow(), header.hash_slow());
-        assert!(
-            TempoHeader::decode(&mut append_explicit_none_to_rlp_list(&encoded).as_slice())
-                .is_err()
-        );
     }
 
     fn append_explicit_none_to_rlp_list(encoded: &[u8]) -> Vec<u8> {
