@@ -68,6 +68,10 @@ pub const BLOCK_GAS_LIMIT_500M: u64 = 500_000_000;
 /// Tempo node CLI arguments.
 #[derive(Debug, Clone, PartialEq, clap::Args)]
 pub struct TempoNodeArgs {
+    /// Experimental state commitment backend for isolated development nodes.
+    #[cfg(feature = "qmdb")]
+    #[arg(long = "state-root.backend", value_enum, default_value = "mpt")]
+    pub state_root_backend: crate::qmdb::StateRootBackend,
     /// Maximum allowed `valid_after` offset for AA txs.
     #[arg(long = "txpool.aa-valid-after-max-secs", default_value_t = DEFAULT_AA_VALID_AFTER_MAX_SECS)]
     pub aa_valid_after_max_secs: u64,
@@ -148,6 +152,8 @@ impl Default for TempoNodeArgs {
             engine_disable_execution_cache_sharing_with_builder: false,
             builder_build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
             shadow_replay: None,
+            #[cfg(feature = "qmdb")]
+            state_root_backend: crate::qmdb::StateRootBackend::Mpt,
         }
     }
 }
@@ -248,6 +254,8 @@ pub struct TempoNode {
     network_builder: TempoNetworkBuilder,
     /// Filled with the engine's in-memory overlay when the node launches.
     executed_state: ExecutedState,
+    #[cfg(feature = "qmdb")]
+    qmdb: Option<crate::qmdb::QmdbStateLoader>,
 }
 
 impl TempoNode {
@@ -259,6 +267,9 @@ impl TempoNode {
             validator_key,
             network_builder: TempoNetworkBuilder::default(),
             executed_state: ExecutedState::default(),
+            #[cfg(feature = "qmdb")]
+            qmdb: (args.state_root_backend == crate::qmdb::StateRootBackend::Qmdb)
+                .then(crate::qmdb::QmdbStateLoader::default),
         }
     }
 
@@ -362,6 +373,8 @@ impl NodeTypes for TempoNode {
 
 #[derive(Debug)]
 pub struct TempoAddOns<N: FullNodeTypes<Types = TempoNode>> {
+    #[cfg(feature = "qmdb")]
+    qmdb: bool,
     #[allow(clippy::type_complexity)]
     inner: RpcAddOns<
         NodeAdapter<N>,
@@ -382,12 +395,24 @@ where
     ///
     /// `executed_state` is filled when reth launches the engine.
     pub fn new(validator_key: Option<B256>, executed_state: ExecutedState) -> Self {
+        Self::with_validator_builder(
+            validator_key,
+            TempoEngineTreeValidatorBuilder::new(executed_state),
+        )
+    }
+
+    fn with_validator_builder(
+        validator_key: Option<B256>,
+        builder: TempoEngineTreeValidatorBuilder,
+    ) -> Self {
         Self {
+            #[cfg(feature = "qmdb")]
+            qmdb: builder.qmdb_enabled(),
             inner: RpcAddOns::new(
                 TempoEthApiBuilder::default(),
                 TempoEngineValidatorBuilder,
                 NoopEngineApiBuilder::default(),
-                TempoEngineTreeValidatorBuilder::new(executed_state),
+                builder,
                 Identity::default(),
                 Default::default(),
             ),
@@ -416,6 +441,12 @@ where
                 let reth_node_builder::rpc::RpcModuleContainer {
                     modules, registry, ..
                 } = container;
+
+                #[cfg(feature = "qmdb")]
+                if self.qmdb {
+                    // MPT proofs cannot authenticate an experimental QMDB header root.
+                    modules.remove_method_from_configured("eth_getProof");
+                }
 
                 let eth_api = registry.eth_api().clone();
                 let token = TempoToken::new(eth_api.clone());
@@ -489,7 +520,10 @@ where
     }
 
     fn add_ons(&self) -> Self::AddOns {
-        TempoAddOns::new(self.validator_key, self.executed_state.clone())
+        let builder = TempoEngineTreeValidatorBuilder::new(self.executed_state.clone());
+        #[cfg(feature = "qmdb")]
+        let builder = builder.with_qmdb(self.qmdb.clone());
+        TempoAddOns::with_validator_builder(self.validator_key, builder)
     }
 }
 

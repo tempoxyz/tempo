@@ -97,6 +97,18 @@ const DEFAULT_DEV_ZONE_FACTORY_OWNER: Address =
     alloy_primitives::address!("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
 
 fn apply_tempo_cli_overrides(cli: &mut TempoCli) -> eyre::Result<()> {
+    #[cfg(feature = "qmdb")]
+    if let Commands::Node(node_cmd) = &mut cli.command
+        && node_cmd.ext.node_args.state_root_backend == tempo_node::qmdb::StateRootBackend::Qmdb
+    {
+        if !node_cmd.dev.dev {
+            eyre::bail!("QMDB is experimental and requires an isolated --dev node");
+        }
+        node_cmd.engine.persistence_threshold = 0;
+        node_cmd.engine.memory_block_buffer_target = Some(0);
+        node_cmd.engine.share_sparse_trie_with_payload_builder = true;
+    }
+
     if let Commands::Node(node_cmd) = &mut cli.command
         && node_cmd
             .ext

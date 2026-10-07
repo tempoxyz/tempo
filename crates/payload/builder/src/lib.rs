@@ -762,6 +762,10 @@ where
 
         let builder_finish_start = Instant::now();
 
+        let on_payload_built = state_root_handle
+            .as_mut()
+            .and_then(|handle| handle.take_on_payload_built());
+
         // Drop the roots task handle to trigger finalization
         drop(roots_tx);
 
@@ -817,6 +821,9 @@ where
                         Some((outcome, elapsed))
                     }
                     Err(err) => {
+                        if handle.name() == "qmdb" {
+                            return Err(PayloadBuilderError::other(err));
+                        }
                         warn!(
                             target: "payload_builder",
                             id = %payload_id,
@@ -872,6 +879,10 @@ where
         )?;
 
         let block = RecoveredBlock::new_unhashed(block, senders);
+
+        if let Some(callback) = on_payload_built {
+            callback(block.hash(), state_root);
+        }
 
         let builder_finish_elapsed = builder_finish_start.elapsed();
         self.metrics
