@@ -1,0 +1,82 @@
+[package]
+name = "zone-precompiles"
+description = "Zone-specific precompile implementations"
+version = "0.3.5"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+autotests = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# zones
+tempo-zone-contracts = { workspace = true, default-features = false }
+zone-primitives = { workspace = true, default-features = false }
+
+# tempo (workspace deps already have default-features = false)
+tempo-chainspec = { workspace = true, default-features = false }
+tempo-contracts = { workspace = true, default-features = false }
+tempo-precompiles = { workspace = true, default-features = false }
+tempo-precompiles-macros = { workspace = true }
+tempo-primitives = { workspace = true, default-features = false }
+
+# alloy
+alloy-consensus = { workspace = true, default-features = false }
+alloy = { workspace = true, default-features = false }
+alloy-evm = { workspace = true, default-features = false }
+alloy-primitives = { workspace = true, default-features = false }
+alloy-rlp = { workspace = true, default-features = false }
+alloy-sol-types = { workspace = true, default-features = false }
+
+# revm
+revm = { workspace = true, default-features = false }
+
+# crypto
+aes-gcm = { version = "0.10.3", default-features = false, features = ["aes", "alloc"] }
+k256 = { version = "0.13.4", default-features = false, features = ["arithmetic", "ecdh"] }
+sha2 = { version = "0.10.9", default-features = false }
+rand_08 = { package = "rand", version = "0.8.5", default-features = false }
+
+# misc
+derive_more = { workspace = true, default-features = true }
+paste = "1.0.15"
+thiserror = { workspace = true }
+
+[dev-dependencies]
+eyre = { workspace = true }
+serde = { workspace = true, features = ["alloc"] }
+tempo-precompiles = { workspace = true, features = ["test-utils"] }
+
+[features]
+default = ["std"]
+test-utils = [
+    "tempo-precompiles/test-utils",
+    "tempo-primitives/test-utils"
+]
+std = [
+    "tempo-zone-contracts/std",
+    "zone-primitives/std",
+    "tempo-primitives/std",
+    "alloy-consensus/std",
+    "alloy-evm/std",
+    "alloy-primitives/std",
+    "alloy-rlp/std",
+    "alloy-sol-types/std",
+    "revm/std",
+    "aes-gcm/std",
+    "k256/std",
+    "sha2/std",
+    "rand_08/std",
+    "alloy/std",
+    "serde/std",
+    "tempo-chainspec/std",
+    "tempo-contracts/std"
+]
+
+[[test]]
+name = "storage"
+path = "tests/mod.rs"
+required-features = ["test-utils"]

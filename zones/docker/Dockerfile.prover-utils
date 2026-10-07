@@ -1,0 +1,30 @@
+# syntax=docker/dockerfile:1.7
+
+ARG CHEF_IMAGE=chef
+
+FROM ${CHEF_IMAGE} AS builder
+
+ARG TARGETARCH
+ARG CACHE_FAMILY=prover
+
+ARG RUST_PROFILE=release
+
+COPY . .
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=zones-${TARGETARCH}-${RUST_PROFILE}-${CACHE_FAMILY}-registry \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked,id=zones-${TARGETARCH}-${RUST_PROFILE}-${CACHE_FAMILY}-git \
+    --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=zones-${TARGETARCH}-${RUST_PROFILE}-${CACHE_FAMILY}-sccache \
+    RUSTFLAGS="-C link-arg=-fuse-ld=mold" \
+    cargo build --locked --profile ${RUST_PROFILE} --bin tempo-zone-prover-utils \
+    && /app/target/${RUST_PROFILE}/tempo-zone-prover-utils --help >/dev/null
+
+FROM debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/target/release/tempo-zone-prover-utils /usr/local/bin/tempo-zone-prover-utils
+
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/tempo-zone-prover-utils"]

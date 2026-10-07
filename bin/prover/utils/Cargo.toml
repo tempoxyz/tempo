@@ -1,0 +1,59 @@
+[package]
+name = "tempo-zone-prover-utils"
+description = "Prover development and input-generation utilities for Tempo Zones"
+version = "0.3.5"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+tempo-zone-contracts = { workspace = true, features = ["std"] }
+zone-chainspec = { workspace = true, features = ["cli"] }
+zone-evm.workspace = true
+zone-precompiles = { workspace = true, features = ["std"] }
+zone-primitives.workspace = true
+zone-prover.workspace = true
+zone-rpc.workspace = true
+zone-spf.workspace = true
+
+tempo-alloy = { workspace = true }
+tempo-precompiles = { workspace = true }
+tempo-primitives = { workspace = true, features = ["reth", "reth-codec", "serde", "serde-bincode-compat"] }
+
+alloy-consensus = { workspace = true }
+alloy-eips = { workspace = true }
+alloy-network = { workspace = true }
+alloy-primitives = { workspace = true, features = ["serde"] }
+alloy-provider = { workspace = true, features = ["reqwest", "ws"] }
+alloy-rlp = { workspace = true }
+alloy-rpc-types-eth = { workspace = true }
+alloy-sol-types = { workspace = true }
+reth-cli = { workspace = true }
+
+clap = { workspace = true, features = ["env"] }
+const-hex = { workspace = true }
+eyre = { workspace = true }
+futures = { workspace = true }
+reqwest = { workspace = true, features = ["json", "rustls"] }
+serde = { workspace = true, features = ["alloc", "derive"] }
+serde_json = { workspace = true, default-features = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[dev-dependencies]
+alloy-transport = { workspace = true }
+tempo-chainspec = { workspace = true }
+
+[features]
+default = ["asm-keccak", "keccak-cache-global"]
+
+asm-keccak = [
+    "alloy-primitives/asm-keccak",
+    "tempo-alloy/asm-keccak"
+]
+keccak-cache-global = ["alloy-primitives/keccak-cache-global"]

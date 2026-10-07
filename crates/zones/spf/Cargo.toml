@@ -1,0 +1,61 @@
+[package]
+name = "zone-spf"
+description = "Stateless proof function for Tempo Zones"
+version = "0.3.5"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+tempo-zone-contracts = { workspace = true, features = ["std"] }
+zone-chainspec.workspace = true
+zone-evm.workspace = true
+zone-precompiles = { workspace = true, features = ["std"] }
+zone-primitives = { workspace = true, features = ["std"] }
+
+# Tempo
+tempo-chainspec = { workspace = true }
+tempo-evm = { workspace = true }
+tempo-primitives = { workspace = true, features = ["reth", "reth-codec", "serde", "serde-bincode-compat"] }
+tempo-precompiles = { workspace = true }
+tempo-revm = { workspace = true }
+
+# Alloy / REVM
+alloy-consensus = { workspace = true }
+alloy-eips = { workspace = true }
+alloy-evm = { workspace = true }
+alloy-primitives = { workspace = true }
+alloy-rlp = { workspace = true }
+alloy-sol-types = { workspace = true }
+reth-chainspec = { workspace = true, default-features = true }
+reth-evm = { workspace = true }
+reth-primitives-traits = { workspace = true }
+reth-storage-api = { workspace = true }
+reth-trie-common = { workspace = true, features = ["std"] }
+reth-trie-sparse.workspace = true
+revm = { workspace = true }
+serde = { workspace = true, optional = true, features = ["alloc"] }
+thiserror = "2"
+
+[features]
+default = ["serde"]
+serde = [
+    "dep:serde",
+    "alloy-primitives/serde",
+    "tempo-zone-contracts/serde",
+    "zone-primitives/serde",
+    "alloy-consensus/serde",
+    "alloy-eips/serde",
+    "reth-primitives-traits/serde",
+    "reth-storage-api/serde",
+    "reth-trie-common/serde",
+    "revm/serde",
+    "tempo-chainspec/serde",
+    "tempo-precompiles/serde",
+    "tempo-primitives/serde",
+    "tempo-revm/serde"
+]

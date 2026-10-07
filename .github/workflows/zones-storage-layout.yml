@@ -1,0 +1,53 @@
+name: Zones Storage Layout
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  zone-portal:
+    permissions:
+      contents: read
+      id-token: write
+    name: ZonePortal layout unchanged
+    runs-on: ubuntu-latest
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install Foundry
+        uses: tempoxyz/gh-actions/actions/setup-foundry@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        with:
+          version: nightly-fc14f674bd853bc817c308a5202faa5be8df05e7
+
+      - name: Check storage layout
+        working-directory: crates/zones/contracts
+        run: |
+          set -o pipefail
+          normalizer='
+            def strip_ast_id: gsub("(?<prefix>t_(?:struct|enum|contract|userDefinedValueType)\\([^)]*\\))[0-9]+"; "\(.prefix)");
+            del(.. | .astId?)
+            | walk(if type == "string" then strip_ast_id else . end)
+            | .types |= (to_entries | map(.key |= strip_ast_id)
+              | if (map(.key) | unique | length) == length then from_entries
+                else error("type-key collision while stripping AST IDs") end)
+          '
+          expected_layout="$RUNNER_TEMP/ZonePortal.expected.json"
+          generated_layout="$RUNNER_TEMP/ZonePortal.generated.json"
+
+          jq --sort-keys "$normalizer" storage-layouts/ZonePortal.json > "$expected_layout"
+          forge inspect ZonePortal storage-layout --json \
+            | jq --sort-keys "$normalizer" > "$generated_layout"
+
+          diff --unified \
+            --label storage-layouts/ZonePortal.json \
+            --label generated/ZonePortal.json \
+            "$expected_layout" "$generated_layout"

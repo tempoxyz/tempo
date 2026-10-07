@@ -4,3 +4,12 @@ docs/
 localnet/
 scripts/
 target/
+
+# Zones builds use the repository root context.
+.tempo-genesis/
+crates/zones/contracts/foundry.lock
+zones/contrib/
+zones/docs/
+zones/generated/
+zones/scripts/*
+!zones/scripts/run-prover-host.sh

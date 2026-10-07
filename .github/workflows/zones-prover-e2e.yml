@@ -1,0 +1,132 @@
+name: Zones Prover E2E
+
+"on":
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Exact 40-character Tempo commit SHA to test
+        type: string
+        required: true
+      suite:
+        description: Fast suite or full suite including ancestry
+        type: choice
+        options: [fast, full]
+        default: fast
+
+permissions:
+  contents: read
+
+# Merge/deploy the sensor and pinned workflow templates before this publisher.
+# Keep dispatch manual until the sensor and templates consume the Tempo repository.
+jobs:
+  dispatch:
+    if: github.repository == 'tempoxyz/tempo'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      statuses: write
+      id-token: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+      # Never check out or execute candidate code in this privileged publisher.
+      - name: Resolve candidate and seed owned pending status
+        id: candidate
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          INPUT_SHA: ${{ inputs.sha }}
+          INPUT_SUITE: ${{ inputs.suite }}
+        with:
+          script: |
+            const event = context.eventName;
+            if (!['workflow_dispatch', 'merge_group', 'push'].includes(event)) throw new Error('Unsupported trigger');
+            if (event === 'push' && context.ref !== 'refs/heads/main') throw new Error('Full suite requires a main push');
+            const sha = event === 'workflow_dispatch' ? process.env.INPUT_SHA
+              : event === 'merge_group' ? context.payload.merge_group.head_sha : context.sha;
+            const base = event === 'merge_group' ? context.payload.merge_group.base_sha : '';
+            if (!/^[0-9a-f]{40}$/.test(sha) || (event === 'merge_group' && !/^[0-9a-f]{40}$/.test(base))) {
+              throw new Error('Exact lowercase commit SHAs are required');
+            }
+            const suite = event === 'push' ? 'full' : event === 'merge_group' ? 'fast' : (process.env.INPUT_SUITE || 'fast');
+            if (!['fast', 'full'].includes(suite)) throw new Error('Unknown suite');
+            const {data: commit} = await github.rest.repos.getCommit({...context.repo, ref: sha});
+            if (commit.sha !== sha) throw new Error('Candidate SHA mismatch');
+            const statusContext = suite === 'full' ? 'Tempo Zone Prover E2E (full)' : 'Tempo Zone Prover E2E';
+            core.setOutput('sha', sha);
+            core.setOutput('base', base);
+            core.setOutput('suite', suite);
+            core.setOutput('status_context', statusContext);
+            const owner = `${context.runId}-${process.env.GITHUB_RUN_ATTEMPT}`;
+            await github.rest.repos.createCommitStatus({
+              ...context.repo, sha, state: 'pending', context: statusContext,
+              description: `${owner}: Checking prover E2E changes`,
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            });
+      - name: Detect merge-queue changes
+        id: paths
+        if: github.event_name == 'merge_group'
+        uses: tempoxyz/gh-actions/actions/changed-paths@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        with:
+          base: ${{ steps.candidate.outputs.base }}
+          head: ${{ steps.candidate.outputs.sha }}
+          filters: |
+            prover:
+              - 'crates/zones/sequencer/**'
+              - 'crates/zones/prover/**'
+              - 'crates/zones/precompiles/**'
+              - 'crates/zones/spf/**'
+              - 'crates/zones/evm/**'
+      - name: Publish prover E2E event
+        id: publish
+        if: github.event_name != 'merge_group' || contains(fromJSON(steps.paths.outputs.changes || '[]'), 'prover')
+        env:
+          SHA: ${{ steps.candidate.outputs.sha }}
+          SUITE: ${{ steps.candidate.outputs.suite }}
+          EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
+          EVENTS_CERT: ${{ secrets.EVENTS_CERT }}
+          EVENTS_ARGS: ${{ secrets.EVENTS_ARGS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          key="$RUNNER_TEMP/prover-e2e.key"
+          cert="$RUNNER_TEMP/prover-e2e.crt"
+          trap 'rm -f "$key" "$cert"' EXIT
+          printf '%s' "$EVENTS_KEY" > "$key"
+          printf '%s' "$EVENTS_CERT" > "$cert"
+          payload=$(jq -cn --arg sha "$SHA" --arg run "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --arg trigger "$GITHUB_EVENT_NAME" --arg suite "$SUITE" --arg ref "$GITHUB_REF" \
+            '{repository:"tempoxyz/tempo",event:"tempo_zone_prover_e2e",data:{sha:$sha,run:$run,trigger:$trigger,suite:$suite,ref:$ref}}')
+          mapfile -t events_args < <(python3 -c 'import os,shlex; print("\n".join(shlex.split(os.environ["EVENTS_ARGS"])))')
+          [[ ${#events_args[@]} -gt 0 && -n "${events_args[0]}" ]]
+          curl --fail-with-body --silent --show-error --connect-timeout 15 --max-time 60 \
+            --retry 2 --retry-all-errors "${events_args[@]}" \
+            --key "$key" --cert "$cert" -H 'Content-Type: application/json' --data "$payload"
+      - name: Report irrelevant changes or dispatch failure
+        if: always() && steps.candidate.outputs.sha != '' && steps.publish.outcome != 'success'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          SHA: ${{ steps.candidate.outputs.sha }}
+          STATUS_CONTEXT: ${{ steps.candidate.outputs.status_context }}
+          PATHS_RESULT: ${{ steps.paths.outcome }}
+          CHANGES: ${{ steps.paths.outputs.changes || '[]' }}
+        with:
+          script: |
+            const owner = `${context.runId}-${process.env.GITHUB_RUN_ATTEMPT}`;
+            const statusContext = process.env.STATUS_CONTEXT;
+            const skipped = context.eventName === 'merge_group' && process.env.PATHS_RESULT === 'success'
+              && !JSON.parse(process.env.CHANGES).includes('prover');
+            let latest;
+            for await (const page of github.paginate.iterator(github.rest.repos.listCommitStatusesForRef, {
+              ...context.repo, ref: process.env.SHA, per_page: 100,
+            })) {
+              latest = page.data.find(status => status.context === statusContext);
+              if (latest) break;
+            }
+            if (!latest?.description?.startsWith(`${owner}: `)) return;
+            await github.rest.repos.createCommitStatus({
+              ...context.repo, sha: process.env.SHA, context: statusContext, state: skipped ? 'success' : 'failure',
+              description: `${owner}: ${skipped ? 'No relevant changes' : 'Prover E2E dispatch failed'}`,
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            });
+            if (!skipped) core.setFailed('Prover E2E could not be started');

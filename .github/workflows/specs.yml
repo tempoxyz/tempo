@@ -9,6 +9,7 @@ on:
       - "Cargo.lock"
       - "**/Cargo.toml"
       - "tips/verify/**"
+      - "crates/zones/**"
       - "crates/alloy/**"
       - "crates/chainspec/**"
       - "crates/contracts/**"
@@ -59,6 +60,7 @@ jobs:
               - 'Cargo.lock'
               - '**/Cargo.toml'
               - 'tips/verify/**'
+              - 'crates/zones/**'
               - 'crates/alloy/**'
               - 'crates/chainspec/**'
               - 'crates/contracts/**'
@@ -381,6 +383,197 @@ jobs:
             foundry/target/release/forge
           retention-days: 1
 
+  zones-build:
+    needs: check-specs-changes
+    if: needs.check-specs-changes.outputs.should_run == 'true'
+    permissions:
+      contents: read
+      id-token: write
+    name: Zones Forge Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install Foundry
+        uses: tempoxyz/gh-actions/actions/setup-foundry@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        with:
+          version: nightly-fc14f674bd853bc817c308a5202faa5be8df05e7
+
+      - name: Show Forge version
+        run: forge --version
+
+      - name: Resolve Solidity cache key
+        id: solidity-key
+        run: |
+          echo "forge-sha=$(forge --version | sed -n 's/^Commit SHA: //p')" >> "$GITHUB_OUTPUT"
+          echo "contracts-tree=$(git rev-parse HEAD:crates/zones/contracts)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Solidity artifacts
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            crates/zones/contracts/cache
+            crates/zones/contracts/out
+          key: forge-${{ runner.os }}-${{ steps.solidity-key.outputs.forge-sha }}-${{ steps.solidity-key.outputs.contracts-tree }}
+
+      - name: Run Forge build
+        working-directory: crates/zones/contracts
+        run: forge build --skip test
+
+      # Exclude all test helpers too: their imports would pull the runtimes back in. Protocol-
+      # installed runtimes have a separate 64 KiB budget in PortalRuntime.t.sol.
+      - name: Check sizes of normally deployed contracts
+        working-directory: crates/zones/contracts
+        run: |
+          forge build --sizes --skip 'test/**' \
+            src/runtime/tempo/ZonePortal.sol \
+            src/runtime/tempo/ZoneMessenger.sol \
+            src/runtime/tempo/Verifier.sol
+
+  zones-lint:
+    needs: check-specs-changes
+    if: needs.check-specs-changes.outputs.should_run == 'true'
+    permissions:
+      contents: read
+      id-token: write
+    name: Zones Forge Fmt
+    runs-on: ubuntu-latest
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install Foundry
+        uses: tempoxyz/gh-actions/actions/setup-foundry@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        with:
+          version: nightly-fc14f674bd853bc817c308a5202faa5be8df05e7
+
+      - name: Run Forge fmt check
+        working-directory: crates/zones/contracts
+        run: forge fmt --check src/runtime test
+
+  zones-test:
+    needs: [check-specs-changes, foundry-build]
+    if: needs.foundry-build.result == 'success'
+    permissions:
+      contents: read
+      id-token: write
+    name: Zones Forge Test & Coverage
+    runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: "sccache"
+      MIN_LINES: "88"
+      MIN_BRANCHES: "60"
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Download patched Forge
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: patched-forge
+          path: foundry/target/release
+      - name: Make Forge executable
+        run: chmod +x foundry/target/release/forge
+
+      - name: Install z3 (symbolic solver)
+        run: sudo apt-get update && sudo apt-get install -y z3
+
+      - name: Resolve contracts cache key
+        id: contracts-key
+        run: echo "tree=$(git rev-parse HEAD:crates/zones/contracts)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Tempo Forge Solidity artifacts
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            crates/zones/contracts/cache
+            crates/zones/contracts/out
+          key: tempo-forge-specs-v1-${{ runner.os }}-${{ github.sha }}-${{ steps.contracts-key.outputs.tree }}
+
+      - name: Build and check deployment sizes with Tempo-capable Forge
+        working-directory: crates/zones/contracts
+        run: |
+          "$GITHUB_WORKSPACE/foundry/target/release/forge" build --skip test
+          # Protocol-installed runtimes are excluded here and have a separate 64 KiB budget in
+          # PortalRuntime.t.sol.
+          "$GITHUB_WORKSPACE/foundry/target/release/forge" build --sizes --skip 'test/**' \
+            src/runtime/tempo/ZonePortal.sol \
+            src/runtime/tempo/ZoneMessenger.sol \
+            src/runtime/tempo/Verifier.sol
+
+      - name: Run Forge tests (zone specs)
+        working-directory: crates/zones/contracts
+        run: |
+          "$GITHUB_WORKSPACE/foundry/target/release/forge" test -vvv --match-path "test/**"
+
+      - name: Run symbolic (symex) property tests
+        working-directory: crates/zones/contracts
+        run: |
+          "$GITHUB_WORKSPACE/foundry/target/release/forge" test \
+            --symbolic --match-test "check_" \
+            --symbolic-solver z3 --symbolic-timeout 180 -vvv
+
+      - name: Forge coverage (zone specs)
+        working-directory: crates/zones/contracts
+        run: |
+          set -o pipefail
+          "$GITHUB_WORKSPACE/foundry/target/release/forge" coverage \
+            --ir-minimum --match-path "test/**" --exclude-tests --report summary | tee coverage.txt
+          {
+            echo '### Zone spec coverage'
+            echo '```'
+            cat coverage.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Coverage gate (production src)
+        working-directory: crates/zones/contracts
+        run: |
+          python3 - <<'PY'
+          import os, re, sys
+          ln = ld = bn = bd = 0
+          for line in open("coverage.txt"):
+              if "| src/runtime/" in line and "| src/runtime/interfaces/" not in line:
+                  c = line.split("|")
+                  lm = re.search(r"\((\d+)/(\d+)\)", c[2])
+                  bm = re.search(r"\((\d+)/(\d+)\)", c[4])
+                  if lm:
+                      ln += int(lm.group(1)); ld += int(lm.group(2))
+                  if bm:
+                      bn += int(bm.group(1)); bd += int(bm.group(2))
+          if ld == 0 or bd == 0:
+              sys.exit("Coverage gate failed: no production src coverage rows matched")
+          lines = 100 * ln / ld
+          branches = 100 * bn / bd
+          min_l = float(os.environ["MIN_LINES"])
+          min_b = float(os.environ["MIN_BRANCHES"])
+          print(f"runtime: lines={lines:.2f}% (min {min_l}), branches={branches:.2f}% (min {min_b})")
+          failed = []
+          if lines < min_l:
+              failed.append(f"lines {lines:.2f}% < {min_l}%")
+          if branches < min_b:
+              failed.append(f"branches {branches:.2f}% < {min_b}%")
+          if failed:
+              sys.exit("Coverage gate failed: " + "; ".join(failed))
+          print("Coverage gate passed.")
+          PY
+
   specs-success:
     name: specs success
     runs-on: ubuntu-latest
@@ -396,6 +589,9 @@ jobs:
       - lint
       - foundry-build
       - foundry-test
+      - zones-build
+      - zones-lint
+      - zones-test
     timeout-minutes: 5
     steps:
       - name: Secure runner
@@ -404,7 +600,7 @@ jobs:
       - name: Decide whether the needed jobs succeeded or failed
         uses: tempoxyz/gh-actions/actions/check-needs@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
-          allowed-skips: check-precompiles,build,abi-alignment-check,lint,foundry-build,foundry-test
+          allowed-skips: check-precompiles,build,abi-alignment-check,lint,foundry-build,foundry-test,zones-build,zones-lint,zones-test
           jobs: ${{ toJSON(needs) }}
 
   precompiles-coverage:

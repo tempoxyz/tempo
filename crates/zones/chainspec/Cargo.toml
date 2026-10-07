@@ -1,0 +1,43 @@
+[package]
+name = "zone-chainspec"
+description = "Tempo Zone chain specification"
+version = "0.3.5"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# zones
+
+# tempo
+tempo-chainspec = { workspace = true, features = ["reth"] }
+tempo-primitives = { workspace = true, features = ["reth", "reth-codec", "serde", "serde-bincode-compat"] }
+zone-primitives.workspace = true
+
+# reth
+reth-chainspec = { workspace = true, default-features = true }
+reth-cli = { workspace = true, optional = true }
+reth-network-peers = { workspace = true, default-features = true }
+
+# alloy
+alloy-eips = { workspace = true }
+alloy-evm = { workspace = true }
+alloy-genesis = { workspace = true }
+alloy-primitives = { workspace = true }
+
+# misc
+eyre = { workspace = true, optional = true }
+serde_json = { workspace = true, default-features = true }
+thiserror = { version = "2", default-features = false }
+
+[features]
+default = []
+cli = ["dep:eyre", "dep:reth-cli"]
+test-utils = [
+    "reth-chainspec/test-utils",
+    "tempo-primitives/test-utils"
+]

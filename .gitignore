@@ -45,3 +45,16 @@ __pycache__/
 
 # Amp orb portals
 .amp/portals/*
+
+# Zones operational output and Solidity build products
+zones/generated/
+zones/earn/
+zones/contrib/bench/logs/
+zones/scripts/logs/
+zones/scripts/data/
+crates/zones/contracts/cache/
+crates/zones/contracts/out/
+crates/zones/contracts/benchmark-out/
+crates/zones/contracts/*.log
+crates/zones/contracts/soljson-latest.js
+.tempo-genesis/

@@ -8,6 +8,8 @@ no_std_crates=(
     tempo-chainspec
     tempo-contracts
     tempo-primitives
+    zone-primitives
+    tempo-zone-contracts
 )
 
 for crate in "${no_std_crates[@]}"; do

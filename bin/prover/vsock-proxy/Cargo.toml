@@ -1,0 +1,19 @@
+[package]
+name = "tempo-vsock-proxy"
+version = "0.3.5"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+clap = { workspace = true }
+libc.workspace = true
+tokio = { workspace = true }
+tokio-vsock.workspace = true
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+vsock.workspace = true

@@ -8,7 +8,7 @@ use std::{collections::BTreeMap, env, error::Error, fmt::Write, fs, path::PathBu
 mod pcr;
 
 const PCRS_PATH: &str = "src/zone_verifier/pcrs.json";
-const COMMIT_PREFIX: &str = "https://github.com/tempoxyz/zones/commit/";
+const COMMIT_PREFIX: &str = "https://github.com/tempoxyz/tempo/commit/";
 const IMAGE_PREFIX: &str = "ghcr.io/tempoxyz/tempo-zone-prover@sha256:";
 
 /// One approved PCR0/1/2 tuple and the release that produced it.

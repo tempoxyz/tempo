@@ -15,3 +15,6 @@ tempo-dev-down: scripts::tempo-dev-down
 check-abi tempo_std="":
     @if [ -n "{{tempo_std}}" ]; then cd "{{tempo_std}}" && forge build --sizes 2>&1 | tail -1; else cd tips/verify/lib/tempo-std && forge build --sizes 2>&1 | tail -1; fi
     @cargo run -q -p tempo-xtask -- check-abi {{ if tempo_std != "" { "--tempo-std " + tempo_std } else { "" } }}
+
+# Zone recipes execute from the shared workspace root.
+mod zones
