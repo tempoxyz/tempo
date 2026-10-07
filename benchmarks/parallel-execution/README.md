@@ -66,6 +66,13 @@ Stage timers include descheduling/errors, exclude several block stages, and are
 neither CPU time nor total validation/build time. Confirm performance with
 diagnostics disabled.
 
+The [fallback timing diagnostic](https://github.com/tempoxyz/tempo/actions/runs/37571062322)
+checked 363 accepted blocks and 2,936,569 transactions with no sender failures.
+Across two identical instrumented runs, conflict replay took 5.2–5.4% of measured
+Engine execution wall time; ordinary execution without a reusable candidate took
+37.4–38.5%. This confirms availability as the larger opportunity on this workload;
+it does not establish recoverable CPU time, a TPS gain, or a root/receipt differential.
+
 The official workflow's `disposal-clock` profiling choice runs a fixed 25k
 same-binary comparison with stage timers disabled and enabled. It calibrates the
 empty timer on the runner before and after each phase, retains the controls as
