@@ -43,6 +43,18 @@ pub struct StorageCheckpoint {
     gas: Option<GasCheckpoint>,
 }
 
+impl StorageCheckpoint {
+    /// Creates a state-only checkpoint for providers without gas accounting.
+    pub const fn new(state: StateCheckpoint) -> Self {
+        Self { state, gas: None }
+    }
+
+    /// Returns the underlying state checkpoint.
+    pub const fn state(&self) -> &StateCheckpoint {
+        &self.state
+    }
+}
+
 /// Gas counters restored on rollback while execution gas remains spent.
 /// TIP-1060 settles credits only at transaction completion, so the net state gas
 /// spent since a live native checkpoint is nonnegative and determines the refill.
