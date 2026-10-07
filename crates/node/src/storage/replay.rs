@@ -275,7 +275,7 @@ pub(super) fn replay_block(
             manager.oldest_unpruned_block.write(block).map_err(error)?;
             *deployed = true;
         }
-        manager.prune().map_err(error)?;
+        let mut budget = 0;
         for (index, transaction) in transactions.iter().enumerate() {
             let Some(signed) = transaction.as_aa() else {
                 continue;
@@ -283,6 +283,7 @@ pub(super) fn replay_block(
             if !spec.is_t1() || !signed.tx().is_expiring_nonce_tx() {
                 continue;
             }
+            budget += 1;
             let hash = if spec.is_t1b() {
                 match senders.get(index) {
                     Some(sender) => signed.expiring_nonce_hash(*sender),
@@ -303,6 +304,7 @@ pub(super) fn replay_block(
                 .check_and_mark_expiring_nonce(hash, expiry.get())
                 .map_err(error)?;
         }
+        manager.prune(budget).map_err(error)?;
         Ok(())
     })
 }

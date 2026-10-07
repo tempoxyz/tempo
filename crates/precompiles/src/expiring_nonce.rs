@@ -15,6 +15,7 @@ pub struct ExpiringNonceManager {
     bucket_count: Mapping<u64, u64>,
     bucket_max_expiry: Mapping<u64, u64>,
     oldest_unpruned_block: u64,
+    oldest_unpruned_index: u64,
 }
 
 /// Progress through a prune operation against a fixed parent state.
@@ -54,27 +55,32 @@ impl ExpiringNonceManager {
         Ok(())
     }
 
-    /// Prunes whole buckets in block order, stopping at the first potentially live bucket.
-    pub fn prune(&mut self) -> Result<()> {
-        self.prune_chunk(&mut PruneCursor::default(), u64::MAX)
+    /// Prunes at most `limit` nonces, stopping at the first potentially live bucket.
+    pub fn prune(&mut self, limit: u64) -> Result<()> {
+        self.prune_chunk(&mut PruneCursor::default(), limit)
             .map(|_| ())
     }
 
     /// Deletes at most `limit` entries, returning whether pruning is complete.
     ///
-    /// The caller must finish every chunk before publishing the block. The storage cursor
-    /// advances only in the final chunk; intermediate progress lives in `cursor`.
+    /// Each chunk persists its progress so the next block can resume a partial bucket.
+    /// `cursor` also carries progress across chunks reading the same parent state.
     pub fn prune_chunk(&mut self, cursor: &mut PruneCursor, mut limit: u64) -> Result<bool> {
-        assert!(limit > 0);
+        if limit == 0 {
+            return Ok(false);
+        }
         let current_block = self.storage.block_number();
         let now = self.storage.timestamp().saturating_to::<u64>();
         if cursor.block.is_none() {
             cursor.block = Some(self.oldest_unpruned_block.read()?);
+            cursor.index = self.oldest_unpruned_index.read()?;
         }
         let block = cursor.block.as_mut().expect("initialized above");
+        let mut done = false;
         while *block < current_block {
             let mut max_expiry = self.bucket_max_expiry.at_owned(block);
             if max_expiry.read()? > now {
+                done = true;
                 break;
             }
             let mut bucket_count = self.bucket_count.at_owned(block);
@@ -90,7 +96,7 @@ impl ExpiringNonceManager {
             limit -= end - cursor.index;
             cursor.index = end;
             if end < count {
-                return Ok(false);
+                break;
             }
             if count != 0 {
                 bucket_count.write(0)?;
@@ -99,13 +105,14 @@ impl ExpiringNonceManager {
             *block += 1;
             cursor.index = 0;
             if limit == 0 {
-                return Ok(false);
+                break;
             }
         }
-        if *block != self.oldest_unpruned_block.read()? {
-            self.oldest_unpruned_block.write(*block)?;
-        }
-        Ok(true)
+        // Always write both fields: earlier chunks may have changed them while this
+        // worker still reads the original parent view (including an original zero index).
+        self.oldest_unpruned_block.write(*block)?;
+        self.oldest_unpruned_index.write(cursor.index)?;
+        Ok(done || *block == current_block)
     }
 }
 
@@ -242,7 +249,7 @@ mod tests {
         storage.set_timestamp(U256::from(1299));
         StorageCtx::enter(&mut storage, || {
             let mut mgr = ExpiringNonceManager::new();
-            mgr.prune()?;
+            mgr.prune(u64::MAX)?;
             assert_eq!(mgr.oldest_unpruned_block.read()?, 7);
             assert_eq!(mgr.seen[first].read()?, 1100);
             assert_eq!(mgr.seen[later].read()?, 1200);
@@ -277,9 +284,53 @@ mod tests {
             assert_eq!(mgr.bucket[9][0].read()?, B256::ZERO);
             assert_eq!(mgr.seen[current].read()?, 1301);
             assert_eq!(mgr.bucket_count[11].read()?, 1);
-            mgr.prune()?;
+            mgr.prune(u64::MAX)?;
             Ok(())
         })
+    }
+
+    #[test]
+    fn expiring_nonce_pruning_resumes_partial_buckets_across_blocks() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        storage.set_timestamp(U256::from(1000));
+        storage.set_block_number(7);
+        StorageCtx::enter(&mut storage, || {
+            let mut manager = ExpiringNonceManager::new();
+            for i in 0..3 {
+                manager.check_and_mark_expiring_nonce(B256::repeat_byte(i), 1100)?;
+            }
+            Ok::<_, eyre::Report>(())
+        })?;
+        storage.set_timestamp(U256::from(1100));
+        for (block, budget, index) in [(8, 0, 0), (9, 1, 1), (10, 0, 1), (11, 1, 2), (12, 1, 0)] {
+            storage.set_block_number(block);
+            StorageCtx::enter(&mut storage, || {
+                let mut manager = ExpiringNonceManager::new();
+                manager.prune(budget)?;
+                assert_eq!(manager.oldest_unpruned_index.read()?, index);
+                if block == 8 {
+                    assert_eq!(manager.oldest_unpruned_block.read()?, 0);
+                } else {
+                    assert_eq!(
+                        manager.oldest_unpruned_block.read()?,
+                        if block == 12 { 8 } else { 7 }
+                    );
+                }
+                let pruned = if block == 12 { 3 } else { index };
+                for i in 0..3 {
+                    assert_eq!(
+                        manager.seen[B256::repeat_byte(i)].read()?,
+                        if u64::from(i) < pruned { 0 } else { 1100 }
+                    );
+                }
+                assert_eq!(
+                    manager.bucket_count[7].read()?,
+                    if block == 12 { 0 } else { 3 }
+                );
+                Ok::<_, eyre::Report>(())
+            })?;
+        }
+        Ok(())
     }
 
     #[test]
@@ -290,13 +341,13 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut mgr = ExpiringNonceManager::new();
             mgr.check_and_mark_expiring_nonce(B256::ZERO, 1030)?;
-            mgr.prune()?;
+            mgr.prune(u64::MAX)?;
             Ok::<_, eyre::Report>(())
         })?;
         storage.set_block_number(1_000_000);
         StorageCtx::enter(&mut storage, || {
             let mut mgr = ExpiringNonceManager::new();
-            mgr.prune()?;
+            mgr.prune(u64::MAX)?;
             assert_eq!(mgr.oldest_unpruned_block.read()?, 0);
             assert_eq!(mgr.seen[B256::ZERO].read()?, 1030);
             Ok(())

@@ -239,7 +239,16 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
     let lazy = db.tx().unwrap();
     // Advancing persistence must not change the already-open transaction's derived snapshot.
     injected.set_storage_settings_cache(factory.cached_storage_settings());
-    let block = make_block(2, 1200, vec![], tx.snapshot().unwrap().hash);
+    let transaction = TempoTransaction {
+        nonce_key: U256::MAX,
+        valid_before: Some(1300.try_into().unwrap()),
+        ..Default::default()
+    };
+    let signature = signer
+        .sign_hash_sync(&transaction.signature_hash())
+        .unwrap();
+    let signed = AASigned::new_unhashed(transaction, TempoSignature::from(signature));
+    let block = make_block(2, 1200, vec![signed.into()], tx.snapshot().unwrap().hash);
     // An aborted persistence task must not publish its prepared successor.
     drop(
         db.prepare_persistence(vec![Arc::new(block.clone())])
@@ -280,7 +289,7 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
     );
     let next = db.tx().unwrap();
     assert!(!next.slots().unwrap().contains_key(&hashed_slot));
-    assert_eq!(next.slots().unwrap().len(), 1); // only oldest cursor survives
+    assert_eq!(next.slots().unwrap().len(), 5); // new nonce, bucket metadata and cursor
     assert_eq!(db.cache.published.lock().unwrap().computations, 2);
     assert_eq!(db.cache.published.lock().unwrap().replayed_blocks, 2);
     let old_lease = Arc::downgrade(tx.snapshot().unwrap());
@@ -661,4 +670,87 @@ fn published_reads_do_not_wait_for_computation() {
             &first
         ));
     });
+}
+
+#[test]
+fn nonce_reconstruction_prunes_only_as_many_entries_as_new_expiring_transactions() {
+    use super::{backend::ReplayStorage, replay::replay_block};
+    use tempo_precompiles::{
+        expiring_nonce::ExpiringNonceManager,
+        storage::{Handler, StorageCtx},
+    };
+
+    let sender = alloy_primitives::Address::repeat_byte(1);
+    let transaction = |expiry: u64, nonce_key, nonce| {
+        AASigned::new_unhashed(
+            TempoTransaction {
+                nonce_key,
+                nonce,
+                valid_before: Some(expiry.try_into().unwrap()),
+                ..Default::default()
+            },
+            TempoSignature::default(),
+        )
+    };
+    let old: Vec<_> = (0..3)
+        .map(|nonce| transaction(1100u64, U256::MAX, nonce))
+        .collect();
+    let hashes: Vec<_> = old
+        .iter()
+        .map(|tx| tx.expiring_nonce_hash(sender))
+        .collect();
+    let mut storage = ReplayStorage::new(1, Default::default());
+    let mut deployed = false;
+    let blocks = [
+        (
+            1,
+            1000,
+            old.into_iter().map(Into::into).collect::<Vec<_>>(),
+            0,
+        ),
+        (2, 1100, vec![], 0),
+        (
+            3,
+            1100,
+            vec![
+                transaction(1200, U256::ZERO, 0).into(),
+                transaction(1200, U256::MAX, 0).into(),
+            ],
+            1,
+        ),
+        (
+            4,
+            1100,
+            vec![
+                transaction(1200, U256::MAX, 1).into(),
+                transaction(1200, U256::MAX, 2).into(),
+            ],
+            3,
+        ),
+    ];
+    for (number, timestamp, transactions, pruned) in blocks {
+        replay_block(
+            &mut storage,
+            &mut deployed,
+            number,
+            timestamp,
+            tempo_chainspec::hardfork::TempoHardfork::T11,
+            &transactions,
+            &vec![sender; transactions.len()],
+        )
+        .unwrap();
+        StorageCtx::enter(&mut storage, || {
+            let manager = ExpiringNonceManager::new();
+            for (index, hash) in hashes.iter().enumerate() {
+                assert_eq!(
+                    manager.seen[*hash].read().unwrap(),
+                    if index < pruned { 0 } else { 1100 }
+                );
+            }
+            assert_eq!(
+                manager.oldest_unpruned_index.read().unwrap(),
+                if pruned == 1 { 1 } else { 0 }
+            );
+        });
+    }
 }

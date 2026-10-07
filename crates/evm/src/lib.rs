@@ -149,10 +149,14 @@ impl BlockExecutorFactory for TempoEvmConfig {
         I: Inspector<TempoContext<DB>>,
     {
         let mut executor = TempoBlockExecutor::new(evm, ctx, self.chain_spec());
-        executor.nonce_prune = self
+        if let Some((requests, receiver)) = self
             .nonce_prune
             .as_ref()
-            .and_then(|task| task.lock().expect("nonce prune task poisoned").take());
+            .and_then(|task| task.lock().expect("nonce prune task poisoned").take())
+        {
+            executor.nonce_prune_requests = Some(requests);
+            executor.nonce_prune = Some(receiver);
+        }
         executor
     }
 }
