@@ -7,7 +7,7 @@ on:
       - '**/*.rs'
       - '**/*.sol'
       - '.config/nextest.toml'
-      - 'Cargo.toml'
+      - '**/Cargo.toml'
       - 'Cargo.lock'
       - 'scripts/tip_dashboard/**'
       - '.github/workflows/tip-dashboard.yml'
@@ -21,7 +21,7 @@ on:
       - '**/*.rs'
       - '**/*.sol'
       - '.config/nextest.toml'
-      - 'Cargo.toml'
+      - '**/Cargo.toml'
       - 'Cargo.lock'
       - 'scripts/tip_dashboard/**'
       - '.github/workflows/tip-dashboard.yml'
@@ -54,14 +54,14 @@ jobs:
       pull-requests: read
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f
+        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
       - name: Checkout reporting tools
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           path: tooling
           persist-credentials: false
       - name: Checkout candidate
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           path: candidate
           ref: ${{ inputs.revision || github.sha }}
@@ -69,9 +69,9 @@ jobs:
           submodules: recursive
           persist-credentials: false
       - name: Set up Rust
-        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@e813067e922303348ee5aad965f745803cc24f1f
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
       - name: Cache Rust compilation
-        uses: tempoxyz/gh-actions/vendor/Swatinem/rust-cache@e813067e922303348ee5aad965f745803cc24f1f
+        uses: tempoxyz/gh-actions/vendor/Swatinem/rust-cache@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
           workspaces: candidate
       - name: Validate reporter and dashboard
@@ -142,7 +142,7 @@ jobs:
           fi
       - name: Upload report, UI and execution evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: tip-dashboard-${{ github.run_id }}-${{ github.run_attempt }}
           path: output/tip-dashboard
