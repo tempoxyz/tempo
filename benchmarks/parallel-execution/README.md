@@ -126,6 +126,9 @@ full live receipt JSON, and requires producer/fresh opposite-peer Engine evidenc
 followed by `VALID`. Both producer roles must contain blocks larger than the
 selected window, with positive included builder reuse and exact Engine reuse.
 `verify_generated.py` validates the config and live cohort; missing evidence fails.
+Set `prewarming-threads` to `8`, `16` (default), or `32` to validate the worker
+count used by a throughput comparison. Both peers use that prewarming count;
+peer B still disables speculative execution with `--execution.threads 0`.
 Shared changes such as State commit optimization need a separate reference
 revision or ordinary-State oracle. This mode has no performance classification or Slack notification.
 Archived receipt digests support the live check; they are not full receipt bodies.

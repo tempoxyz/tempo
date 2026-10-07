@@ -70,6 +70,15 @@ on:
           - "128"
           - "256"
           - "512"
+      prewarming-threads:
+        description: "Prewarming workers per node for generated sequential-peer correctness validation only"
+        required: false
+        default: "16"
+        type: choice
+        options:
+          - "8"
+          - "16"
+          - "32"
       state-provider-metrics:
         description: "Enable Engine provider diagnostics for generated sequential-peer correctness validation only"
         required: false
@@ -220,7 +229,7 @@ jobs:
       max-concurrent-requests: "100"
       token-count: "4"
       txgen-ref: 8ca73369c4b42ffffaf40066bbde8673141049c1
-      feature-args: --execution.threads 8 --execution.batch-size 128 --engine.prewarming-threads 16 --execution.capture-window ${{ inputs.capture-window || '128' }} ${{ inputs.state-provider-metrics && '--engine.state-provider-metrics' || '' }} ${{ inputs.proof-prefetch && '--execution.proof-prefetch' || '' }}
+      feature-args: --execution.threads 8 --execution.batch-size 128 --engine.prewarming-threads ${{ inputs.prewarming-threads || '16' }} --execution.capture-window ${{ inputs.capture-window || '128' }} ${{ inputs.state-provider-metrics && '--engine.state-provider-metrics' || '' }} ${{ inputs.proof-prefetch && '--execution.proof-prefetch' || '' }}
       run-side: feature
       run-pairs: "1"
       sequential-peer: true
