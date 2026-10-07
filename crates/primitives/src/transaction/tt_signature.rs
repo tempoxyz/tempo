@@ -588,6 +588,7 @@ pub enum AccountSignature {
     Primitive(PrimitiveSignature),
     /// An account's primitive-owner quorum.
     Multisig(MultisigSignature),
+    /// An OIDC signer whose proof and issuer key require stateful validation.
     Zk(Box<ZkSignature>),
 }
 
@@ -709,6 +710,7 @@ impl AccountSignature {
         self.key_type()
     }
 
+    /// Returns a direct ZK approval, if present.
     pub fn as_zk(&self) -> Option<&ZkSignature> {
         match self {
             Self::Zk(signature) => Some(signature),
@@ -716,10 +718,12 @@ impl AccountSignature {
         }
     }
 
+    /// Whether this is a direct ZK approval rather than a quorum.
     pub fn is_zk(&self) -> bool {
         self.as_zk().is_some()
     }
 
+    /// Collects direct and owner proofs with their role-specific context digests.
     pub fn zk_signatures(&self, digest: B256) -> Vec<(&ZkSignature, B256)> {
         match self {
             Self::Zk(signature) => vec![(signature, digest)],

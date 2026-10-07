@@ -1,18 +1,5 @@
 //! Strictly typed Tempo Accounts store integration.
 
-use std::{
-    borrow::Cow,
-    collections::{BTreeMap, BTreeSet},
-    env, fmt, fs,
-    io::Write,
-    num::NonZeroU64,
-    path::{Path, PathBuf},
-    str::FromStr,
-    sync::{Arc, LazyLock, Mutex},
-    time::{SystemTime, UNIX_EPOCH},
-};
-use tempo_primitives::transaction::MultisigSignature;
-
 use alloy_network::{NetworkTransactionBuilder, NetworkWallet, TransactionBuilder};
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256, keccak256};
 use alloy_provider::{
@@ -28,12 +15,24 @@ use serde::{
     de::{self, Visitor},
 };
 use serde_json::value::RawValue;
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+    env, fmt, fs,
+    io::Write,
+    num::NonZeroU64,
+    path::{Path, PathBuf},
+    str::FromStr,
+    sync::{Arc, LazyLock, Mutex},
+    time::{SystemTime, UNIX_EPOCH},
+};
 use tempo_contracts::precompiles::ITIP20;
 use tempo_primitives::{
     SignatureType, TempoAddressExt, TempoTxEnvelope,
     transaction::{
-        AccountSignature, Call, CallScope, KeyAuthorization, KeychainSignature, PrimitiveSignature,
-        SelectorRule, SignedKeyAuthorization, TempoSignature, TempoTypedTransaction, TokenLimit,
+        AccountSignature, Call, CallScope, KeyAuthorization, KeychainSignature, MultisigSignature,
+        PrimitiveSignature, SelectorRule, SignedKeyAuthorization, TempoSignature,
+        TempoTypedTransaction, TokenLimit,
         tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
     },
 };
@@ -2704,11 +2703,7 @@ fn writable_access_key(
             is_admin: authorization.is_admin,
             account: authorization.account,
             key_type: "secp256k1",
-            signature: writable_signature(authorization.signature.as_primitive().ok_or(
-                TempoAccountsError::InvalidAuthorization(
-                    "ZK-signed key authorizations cannot be stored",
-                ),
-            )?)?,
+            signature: writable_signature(&authorization.signature)?,
         },
     })
 }
