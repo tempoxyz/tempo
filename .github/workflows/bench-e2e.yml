@@ -1028,6 +1028,31 @@ jobs:
 
           "${cmd[@]}"
 
+      - name: Preserve metrics from failed senders
+        if: ${{ !cancelled() }}
+        run: |
+          python3 - <<'PYTHON'
+          import gzip, json, os, shutil, tempfile
+          from pathlib import Path
+          root = Path("bench-results")
+          directories = sorted(path for path in root.glob("*") if path.is_dir())
+          if not directories:
+              raise SystemExit(0)
+          for path in Path(tempfile.gettempdir()).glob("txgen-samples-*.samples.ndjson"):
+              try:
+                  with path.open() as source:
+                      labels = json.loads(source.readline())["labels"]
+              except (OSError, ValueError, KeyError):
+                  continue
+              if labels.get("benchmark_id") != os.environ["BENCHMARK_ID"]:
+                  continue
+              phase = labels["benchmark_run"]
+              target = directories[-1] / f"report-{phase}.partial.samples.ndjson.gz"
+              with path.open("rb") as source, gzip.open(target, "wb", compresslevel=1) as dest:
+                  shutil.copyfileobj(source, dest)
+              print(f"Preserved incomplete sender metrics: {target}")
+          PYTHON
+
       - name: Generate e2e summary
         id: results-dir
         if: success()

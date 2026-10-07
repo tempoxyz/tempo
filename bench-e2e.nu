@@ -1792,7 +1792,6 @@ def "main e2e" [
         let phase_exit = (run-local-e2e-phase $run $ctx)
         if $phase_exit != 0 {
             $e2e_exit = $phase_exit
-            break
         }
     }
 
