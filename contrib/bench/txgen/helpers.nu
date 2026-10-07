@@ -882,7 +882,7 @@ def txgen-run-preset-pipeline [
     let bench_env_export = if $bench_env != "" { $"export ($bench_env) && " } else { "" }
     let txgen_extra_args = (txgen-parse-bench-args $bench_args)
     let setup_state_path = $"($report_path).setup.json"
-    let gas_mix_args = ["--gas-weighted-mix" "--setup-state-in" $setup_state_path]
+    let gas_mix_args = ["--setup-state-in" $setup_state_path]
     let workload_extra_args = ($txgen_extra_args | where { |arg| $arg != "--gas-weighted-mix" })
     let txgen_cmd_str = (txgen-shell-join ($txgen_cmd | append $workload_extra_args | append $gas_mix_args))
     let bench_cmd = $bench_cmd | append "--skip-setup"

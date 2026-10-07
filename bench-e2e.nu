@@ -1531,6 +1531,7 @@ def "main e2e" [
     }
 
     if $should_init_snapshots {
+        error make { msg: "This comparison requires existing snapshots; automatic snapshot promotion is disabled." }
         let init_dir = $"($LOCALNET_DIR)/e2e-local-init"
         let generated_genesis = $"($init_dir)/genesis.json"
         let bloat_file = $"($E2E_BLOAT_TMP_DIR)/state_bloat.bin"
