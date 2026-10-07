@@ -1,0 +1,27 @@
+name: Scan GitHub Actions
+
+on:
+  pull_request:
+    paths:
+      - ".github/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/**"
+  workflow_dispatch:
+  schedule:
+    - cron: "19 7 * * 1"
+
+permissions: {}
+
+jobs:
+  scan:
+    name: Scan GitHub Actions
+    # Only the upstream repository runs the recurring organization-wide scan.
+    if: github.event_name != 'schedule' || github.repository == 'tempoxyz/zones'
+    uses: tempoxyz/gh-actions/.github/workflows/scan-github-actions.yml@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+    permissions:
+      id-token: write
+      actions: read
+      contents: read

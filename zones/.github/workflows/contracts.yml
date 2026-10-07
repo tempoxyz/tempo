@@ -1,0 +1,287 @@
+name: Contracts
+
+on:
+  push:
+    branches: [main, dr/validium]
+    paths:
+      - "crates/contracts/src/**"
+      - "crates/contracts/test/**"
+      - "crates/contracts/foundry.*"
+      - "crates/**"
+      - ".github/workflows/contracts.yml"
+  merge_group:
+  pull_request:
+    branches: [main, dr/validium]
+    paths:
+      - "crates/contracts/src/**"
+      - "crates/contracts/test/**"
+      - "crates/contracts/foundry.*"
+      - "crates/**"
+      - ".github/workflows/contracts.yml"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TEMPO_FOUNDRY_REF: 18a5d71d6ab621433145e5ea86dfe3dbace0763a
+  # Keep the custom forge cache stable and the build reproducible. This is the
+  # Foundry revision used by the successful baseline run on 2026-07-22.
+  FOUNDRY_REF: 6902a96211da7bcc3d9c4d8e97910ac5c9d5d2c6
+
+jobs:
+  build:
+    permissions:
+      contents: read
+      id-token: write
+    name: Forge Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install Foundry
+        uses: tempoxyz/gh-actions/actions/setup-foundry@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        with:
+          version: nightly-fc14f674bd853bc817c308a5202faa5be8df05e7
+
+      - name: Show Forge version
+        run: forge --version
+
+      - name: Resolve Solidity cache key
+        id: solidity-key
+        run: |
+          echo "forge-sha=$(forge --version | sed -n 's/^Commit SHA: //p')" >> "$GITHUB_OUTPUT"
+          echo "contracts-tree=$(git rev-parse HEAD:crates/contracts)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Solidity artifacts
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            crates/contracts/cache
+            crates/contracts/out
+          key: forge-${{ runner.os }}-${{ steps.solidity-key.outputs.forge-sha }}-${{ steps.solidity-key.outputs.contracts-tree }}
+
+      - name: Run Forge build
+        working-directory: crates/contracts
+        run: forge build --skip test
+
+      # Exclude all test helpers too: their imports would pull the runtimes back in. Protocol-
+      # installed runtimes have a separate 64 KiB budget in PortalRuntime.t.sol.
+      - name: Check sizes of normally deployed contracts
+        working-directory: crates/contracts
+        run: |
+          forge build --sizes --skip 'test/**' \
+            src/runtime/tempo/ZonePortal.sol \
+            src/runtime/tempo/ZoneMessenger.sol \
+            src/runtime/tempo/Verifier.sol
+
+  lint:
+    permissions:
+      contents: read
+      id-token: write
+    name: Forge Fmt
+    runs-on: ubuntu-latest
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install Foundry
+        uses: tempoxyz/gh-actions/actions/setup-foundry@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        with:
+          version: nightly-fc14f674bd853bc817c308a5202faa5be8df05e7
+
+      - name: Run Forge fmt check
+        working-directory: crates/contracts
+        run: forge fmt --check src/runtime test
+
+  test:
+    permissions:
+      contents: read
+      id-token: write
+    name: Forge Test & Coverage
+    runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: "sccache"
+      MIN_LINES: "88"
+      MIN_BRANCHES: "60"
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Checkout tempo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: tempoxyz/tempo
+          ref: ${{ env.TEMPO_FOUNDRY_REF }}
+          path: tempo
+          persist-credentials: false
+
+      - name: Checkout foundry
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: foundry-rs/foundry
+          ref: ${{ env.FOUNDRY_REF }}
+          path: foundry
+          persist-credentials: false
+
+      - name: Resolve Foundry revision
+        id: foundry-ref
+        working-directory: foundry
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # sccache cannot cache the final forge executable. Cache that link output
+      # against the exact Foundry and Tempo revisions so most runs can skip the
+      # Rust setup, dependency restore, patch, and eight-minute link entirely.
+      - name: Restore Tempo-capable forge
+        id: forge-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: foundry/target/release/forge
+          key: tempo-forge-v1-${{ runner.os }}-${{ steps.foundry-ref.outputs.sha }}-${{ env.TEMPO_FOUNDRY_REF }}
+
+      - name: Setup Rust
+        if: steps.forge-cache.outputs.cache-hit != 'true'
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        with:
+          toolchain: stable
+      - name: Setup mold
+        if: steps.forge-cache.outputs.cache-hit != 'true'
+        uses: tempoxyz/gh-actions/actions/setup-mold@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+      - name: Setup sccache
+        if: steps.forge-cache.outputs.cache-hit != 'true'
+        uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        with:
+          version: v0.15.0
+      - uses: tempoxyz/gh-actions/vendor/Swatinem/rust-cache@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        if: steps.forge-cache.outputs.cache-hit != 'true'
+        with:
+          workspaces: foundry
+
+      - name: Patch foundry to use pinned Tempo crates
+        if: steps.forge-cache.outputs.cache-hit != 'true'
+        run: tempo/scripts/foundry-patch.sh "$GITHUB_WORKSPACE/tempo" "$GITHUB_WORKSPACE/foundry"
+
+      - name: Build Tempo-capable forge
+        if: steps.forge-cache.outputs.cache-hit != 'true'
+        working-directory: foundry
+        run: cargo build --bin forge --profile release --no-default-features
+
+      - name: Install z3 (symbolic solver)
+        run: sudo apt-get update && sudo apt-get install -y z3
+
+      - name: Resolve contracts cache key
+        id: contracts-key
+        run: echo "tree=$(git rev-parse HEAD:crates/contracts)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Tempo Forge Solidity artifacts
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            crates/contracts/cache
+            crates/contracts/out
+          key: tempo-forge-specs-v1-${{ runner.os }}-${{ steps.foundry-ref.outputs.sha }}-${{ env.TEMPO_FOUNDRY_REF }}-${{ steps.contracts-key.outputs.tree }}
+
+      - name: Build and check deployment sizes with Tempo-capable Forge
+        working-directory: crates/contracts
+        run: |
+          "$GITHUB_WORKSPACE/foundry/target/release/forge" build --skip test
+          # Protocol-installed runtimes are excluded here and have a separate 64 KiB budget in
+          # PortalRuntime.t.sol.
+          "$GITHUB_WORKSPACE/foundry/target/release/forge" build --sizes --skip 'test/**' \
+            src/runtime/tempo/ZonePortal.sol \
+            src/runtime/tempo/ZoneMessenger.sol \
+            src/runtime/tempo/Verifier.sol
+
+      - name: Run Forge tests (zone specs)
+        working-directory: crates/contracts
+        run: |
+          "$GITHUB_WORKSPACE/foundry/target/release/forge" test -vvv --match-path "test/**"
+
+      - name: Run symbolic (symex) property tests
+        working-directory: crates/contracts
+        run: |
+          "$GITHUB_WORKSPACE/foundry/target/release/forge" test \
+            --symbolic --match-test "check_" \
+            --symbolic-solver z3 --symbolic-timeout 180 -vvv
+
+      - name: Forge coverage (zone specs)
+        working-directory: crates/contracts
+        run: |
+          set -o pipefail
+          "$GITHUB_WORKSPACE/foundry/target/release/forge" coverage \
+            --ir-minimum --match-path "test/**" --exclude-tests --report summary | tee coverage.txt
+          {
+            echo '### Zone spec coverage'
+            echo '```'
+            cat coverage.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Coverage gate (production src)
+        working-directory: crates/contracts
+        run: |
+          python3 - <<'PY'
+          import os, re, sys
+          ln = ld = bn = bd = 0
+          for line in open("coverage.txt"):
+              if "| src/runtime/" in line and "| src/runtime/interfaces/" not in line:
+                  c = line.split("|")
+                  lm = re.search(r"\((\d+)/(\d+)\)", c[2])
+                  bm = re.search(r"\((\d+)/(\d+)\)", c[4])
+                  if lm:
+                      ln += int(lm.group(1)); ld += int(lm.group(2))
+                  if bm:
+                      bn += int(bm.group(1)); bd += int(bm.group(2))
+          if ld == 0 or bd == 0:
+              sys.exit("Coverage gate failed: no production src coverage rows matched")
+          lines = 100 * ln / ld
+          branches = 100 * bn / bd
+          min_l = float(os.environ["MIN_LINES"])
+          min_b = float(os.environ["MIN_BRANCHES"])
+          print(f"runtime: lines={lines:.2f}% (min {min_l}), branches={branches:.2f}% (min {min_b})")
+          failed = []
+          if lines < min_l:
+              failed.append(f"lines {lines:.2f}% < {min_l}%")
+          if branches < min_b:
+              failed.append(f"branches {branches:.2f}% < {min_b}%")
+          if failed:
+              sys.exit("Coverage gate failed: " + "; ".join(failed))
+          print("Coverage gate passed.")
+          PY
+
+  contracts-success:
+    permissions:
+      contents: read
+      id-token: write
+    name: contracts success
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - build
+      - lint
+      - test
+    timeout-minutes: 5
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+
+      - name: Decide whether the needed jobs succeeded or failed
+        uses: tempoxyz/gh-actions/actions/check-needs@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        with:
+          jobs: ${{ toJSON(needs) }}

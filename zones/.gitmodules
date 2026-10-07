@@ -1,0 +1,6 @@
+[submodule "crates/contracts/lib/tempo-std"]
+	path = crates/contracts/lib/tempo-std
+	url = https://github.com/tempoxyz/tempo-std
+[submodule "crates/contracts/lib/forge-std"]
+	path = crates/contracts/lib/forge-std
+	url = https://github.com/foundry-rs/forge-std

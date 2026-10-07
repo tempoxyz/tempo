@@ -1,0 +1,13 @@
+# Allow only the sync-from-upstream workflows on the main branches of the
+# zones-private-fork and zones-firedrill repositories to mint a short-lived
+# token. The subject pins the repositories and refs; the claim pattern pins
+# the workflow files. `workflows: write` is required because synced commits
+# can touch .github/workflows files.
+subject:
+  - repo:tempoxyz@211589300/zones-private-fork@1329742643:ref:refs/heads/main
+  - repo:tempoxyz@211589300/zones-firedrill@1330635096:ref:refs/heads/main
+claim_pattern:
+  job_workflow_ref: tempoxyz/(zones-private-fork|zones-firedrill)/\.github/workflows/sync-from-upstream\.yml@refs/heads/main
+permissions:
+  contents: write
+  workflows: write

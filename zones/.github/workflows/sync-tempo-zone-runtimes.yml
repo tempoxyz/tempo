@@ -1,0 +1,93 @@
+name: Sync Tempo Zone runtimes
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/contracts/**"
+      - ".github/workflows/sync-tempo-zone-runtimes.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: sync-tempo-zone-runtimes
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  request:
+    name: Request AI Zone runtime hardfork sync
+    if: github.repository == 'tempoxyz/zones' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+
+      - name: Checkout Zones
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: zones
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install Foundry
+        uses: tempoxyz/gh-actions/actions/setup-foundry@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        with:
+          version: nightly-fc14f674bd853bc817c308a5202faa5be8df05e7
+
+      - name: Compile Zone runtimes
+        working-directory: zones/crates/contracts
+        run: |
+          forge inspect ZonePortal deployedBytecode > "$RUNNER_TEMP/ZonePortal"
+          forge inspect ZoneMessenger deployedBytecode > "$RUNNER_TEMP/ZoneMessenger"
+          forge inspect Verifier deployedBytecode > "$RUNNER_TEMP/Verifier"
+
+      - name: Publish runtime sync event
+        env:
+          EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
+          EVENTS_CERT: ${{ secrets.EVENTS_CERT }}
+          EVENTS_ARGS: ${{ secrets.EVENTS_ARGS }}
+          ZONES_SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          install -m 0700 -d "$RUNNER_TEMP/events"
+          printf '%s' "$EVENTS_KEY" > "$RUNNER_TEMP/events/key.pem"
+          printf '%s' "$EVENTS_CERT" > "$RUNNER_TEMP/events/cert.pem"
+          payload=$(jq -cn \
+            --arg zones_sha "$ZONES_SHA" \
+            --arg run_url "$RUN_URL" \
+            '{
+              repository: "tempoxyz/zones",
+              event: "tempo_zone_runtime_sync_requested",
+              data: {
+                zones_sha: $zones_sha,
+                run_url: $run_url
+              }
+            }')
+          command -v python3 >/dev/null || {
+            echo "python3 is required to parse EVENTS_ARGS" >&2
+            exit 1
+          }
+          mapfile -t events_args < <(
+            python3 - "$EVENTS_ARGS" <<'PY'
+          import shlex
+          import sys
+
+          for argument in shlex.split(sys.argv[1]):
+              print(argument)
+          PY
+          )
+          (( ${#events_args[@]} > 0 )) || {
+            echo "EVENTS_ARGS is empty" >&2
+            exit 1
+          }
+          curl --fail-with-body --silent --show-error \
+            --key "$RUNNER_TEMP/events/key.pem" \
+            --cert "$RUNNER_TEMP/events/cert.pem" \
+            "${events_args[@]}" \
+            -H "Content-Type: application/json" \
+            -d "$payload"

@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+step() {
+    printf '\n[%(%H:%M:%S)T] %s\n' -1 "$1"
+}
+
+step "Install system build dependencies"
+packages=(build-essential ca-certificates clang curl git jq libclang-dev libssl-dev mold pkg-config)
+missing=()
+for package in "${packages[@]}"; do
+    dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'install ok installed' || missing+=("$package")
+done
+if ((${#missing[@]})); then
+    sudo apt-get update
+    sudo apt-get install -y --no-install-recommends "${missing[@]}"
+fi
+
+step "Install Rust toolchains"
+if [[ ! -x "$HOME/.cargo/bin/rustup" ]]; then
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+        sh -s -- -y --profile minimal --default-toolchain none
+fi
+# shellcheck disable=SC1091
+source "$HOME/.cargo/env"
+rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt
+rustup toolchain install nightly-2026-02-21 --profile minimal --component clippy,rustfmt
+rustup default nightly-2026-02-21
+
+step "Install Rust development commands"
+if ! command -v just >/dev/null; then
+    case "$(uname -m)" in
+        x86_64) just_target=x86_64-unknown-linux-musl ;;
+        aarch64) just_target=aarch64-unknown-linux-musl ;;
+        *) printf 'Unsupported architecture: %s\n' "$(uname -m)" >&2; exit 1 ;;
+    esac
+    archive="$(mktemp)"
+    trap 'rm -f "$archive"' EXIT
+    curl --proto '=https' --tlsv1.2 -sSfL \
+        "https://github.com/casey/just/releases/download/1.58.0/just-1.58.0-${just_target}.tar.gz" \
+        -o "$archive"
+    tar -xzf "$archive" -C "$HOME/.cargo/bin" just
+    rm -f "$archive"
+    trap - EXIT
+fi
+if ! command -v cargo-nextest >/dev/null; then
+    archive="$(mktemp)"
+    trap 'rm -f "$archive"' EXIT
+    curl --proto '=https' --tlsv1.2 -sSfL \
+        https://get.nexte.st/0.9.124/linux -o "$archive"
+    tar -xzf "$archive" -C "$HOME/.cargo/bin"
+    rm -f "$archive"
+    trap - EXIT
+fi
+
+step "Install Foundry"
+if [[ ! -x "$HOME/.foundry/bin/foundryup" ]]; then
+    curl --proto '=https' --tlsv1.2 -sSfL https://foundry.paradigm.xyz | bash
+fi
+export PATH="$HOME/.foundry/bin:$PATH"
+source .amp/versions.env
+if ! anvil --version 2>/dev/null | grep -q "${FOUNDRY_VERSION#v}"; then
+    foundryup --install "$FOUNDRY_VERSION"
+fi
+
+step "Persist tool paths for Amp and supervised services"
+profile_marker="# zones development tools"
+if ! grep -Fqx "$profile_marker" "$HOME/.bash_profile" 2>/dev/null; then
+    cat >>"$HOME/.bash_profile" <<'EOF'
+
+# zones development tools
+[[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
+export PATH="$HOME/.foundry/bin:$PATH"
+EOF
+fi
+
+step "Fetch repository dependencies"
+git submodule update --init --recursive --depth 1
+cargo fetch --locked
+
+step "Prepare local portal dependencies"
+bash .amp/setup
+
+step "Build Solidity artifacts"
+forge build --root crates/contracts --skip test --no-lint
+
+step "Warm Rust build artifacts"
+cargo +1.96.0 build --workspace --locked
+
+step "Prepare local L1 genesis"
+bash .amp/genesis
+
+step "Orb setup complete"

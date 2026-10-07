@@ -1,0 +1,270 @@
+[workspace.package]
+version = "0.3.4"
+edition = "2024"
+rust-version = "1.95.0"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace]
+members = [
+  "bin/prover/utils",
+  "bin/prover/vsock-proxy",
+  "bin/prover/enclave",
+  "bin/tempo-zone",
+  "crates/chainspec",
+  "crates/contracts",
+  "crates/evm",
+  "crates/exithatch",
+  "crates/l1",
+  "crates/node",
+  "crates/checker",
+  "crates/p2p",
+  "crates/payload",
+  "crates/precompiles",
+  "crates/primitives",
+  "crates/prover",
+  "crates/rpc",
+  "crates/sequencer",
+  "crates/spf",
+  "xtask",
+]
+
+# Resolver 3 is available with edition 2024
+resolver = "3"
+
+[workspace.lints]
+[workspace.lints.clippy]
+dbg_macro = "warn"
+manual_string_new = "warn"
+uninlined_format_args = "warn"
+use_self = "warn"
+redundant_clone = "warn"
+default_constructed_unit_structs = "allow"
+
+[workspace.lints.rust]
+rust_2018_idioms = "warn"
+unreachable_pub = "warn"
+unused_must_use = "warn"
+redundant_lifetimes = "warn"
+unnameable_types = "warn"
+
+[workspace.lints.rustdoc]
+all = "warn"
+
+# Speed up compilation time for dev builds by reducing emitted debug info.
+# NOTE: Debuggers may provide less useful information with this setting.
+# Uncomment this section if you're using a debugger.
+[profile.dev]
+# https://davidlattimore.github.io/posts/2024/02/04/speeding-up-the-rust-edit-build-run-cycle.html
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
+
+# Meant for testing - all optimizations, but with debug assertions and overflow checks.
+[profile.hivetests]
+inherits = "test"
+opt-level = 3
+lto = "thin"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+debug = "none"
+strip = "symbols"
+panic = "unwind"
+codegen-units = 16
+
+# Use the `--profile profiling` flag to show symbols in release mode.
+# e.g. `cargo build --profile profiling`
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"
+strip = "none"
+incremental = true
+
+# Include debug info in benchmarks too.
+[profile.bench]
+inherits = "profiling"
+
+[profile.maxperf]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+
+[profile.reproducible]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+strip = "none"
+debug = "none"
+incremental = false
+
+[workspace.dependencies]
+# tempo (from upstream)
+tempo-alloy = { git = "https://github.com/tempoxyz/tempo", rev = "9de35499af7dd84c889fae8edbf8d0db0331b8eb" }
+tempo-chainspec = { git = "https://github.com/tempoxyz/tempo", rev = "9de35499af7dd84c889fae8edbf8d0db0331b8eb", default-features = false }
+tempo-contracts = { git = "https://github.com/tempoxyz/tempo", rev = "9de35499af7dd84c889fae8edbf8d0db0331b8eb", default-features = false, features = [
+  "serde",
+] }
+tempo-evm = { git = "https://github.com/tempoxyz/tempo", rev = "9de35499af7dd84c889fae8edbf8d0db0331b8eb", default-features = false }
+tempo-hardfork = { git = "https://github.com/tempoxyz/tempo", rev = "9de35499af7dd84c889fae8edbf8d0db0331b8eb", default-features = false }
+tempo-node = { git = "https://github.com/tempoxyz/tempo", rev = "9de35499af7dd84c889fae8edbf8d0db0331b8eb" }
+tempo-payload-types = { git = "https://github.com/tempoxyz/tempo", rev = "9de35499af7dd84c889fae8edbf8d0db0331b8eb", default-features = false }
+tempo-precompiles = { git = "https://github.com/tempoxyz/tempo", rev = "9de35499af7dd84c889fae8edbf8d0db0331b8eb", default-features = false }
+tempo-precompiles-macros = { git = "https://github.com/tempoxyz/tempo", rev = "9de35499af7dd84c889fae8edbf8d0db0331b8eb" }
+tempo-primitives = { git = "https://github.com/tempoxyz/tempo", rev = "9de35499af7dd84c889fae8edbf8d0db0331b8eb", default-features = false, features = [
+  "reth",
+  "serde",
+  "serde-bincode-compat",
+  "reth-codec",
+] }
+tempo-revm = { git = "https://github.com/tempoxyz/tempo", rev = "9de35499af7dd84c889fae8edbf8d0db0331b8eb", default-features = false }
+tempo-transaction-pool = { git = "https://github.com/tempoxyz/tempo", rev = "9de35499af7dd84c889fae8edbf8d0db0331b8eb", default-features = false }
+
+# zones
+tempo-zone-contracts = { path = "crates/contracts", default-features = false }
+zone-chainspec = { path = "crates/chainspec" }
+zone-evm = { path = "crates/evm" }
+zone-l1 = { path = "crates/l1" }
+zone-node = { path = "crates/node" }
+zone-p2p = { path = "crates/p2p" }
+zone-payload = { path = "crates/payload" }
+zone-precompiles = { path = "crates/precompiles", default-features = false }
+zone-primitives = { path = "crates/primitives", default-features = false }
+zone-prover = { path = "crates/prover" }
+zone-rpc = { path = "crates/rpc" }
+zone-sequencer = { path = "crates/sequencer" }
+zone-spf = { path = "crates/spf" }
+zone-checker = { path = "crates/checker" }
+
+# AWS Nitro Enclaves
+aws-nitro-enclaves-nsm-api = "0.5.2"
+aws-lc-rs = { version = "1.17.0", features = ["ring-sig-verify"] }
+rcgen = { version = "0.14.7", default-features = false, features = ["crypto", "aws_lc_rs"] }
+rustls = { version = "0.23.45", default-features = false, features = ["std", "aws_lc_rs"] }
+tokio-rustls = { version = "0.26.4", default-features = false, features = ["aws_lc_rs"] }
+tempo-nitro-attestation = { git = "https://github.com/tempoxyz/tempo", rev = "9de35499af7dd84c889fae8edbf8d0db0331b8eb", default-features = false }
+
+# reth
+reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "038edab" }
+reth-chain-state = { git = "https://github.com/paradigmxyz/reth", rev = "038edab" }
+reth-chainspec = { git = "https://github.com/paradigmxyz/reth", rev = "038edab" }
+reth-cli = { git = "https://github.com/paradigmxyz/reth", rev = "038edab" }
+reth-cli-util = { git = "https://github.com/paradigmxyz/reth", rev = "038edab" }
+reth-codecs = { version = "0.8.1", default-features = false }
+reth-db = { git = "https://github.com/paradigmxyz/reth", rev = "038edab" }
+reth-errors = { git = "https://github.com/paradigmxyz/reth", rev = "038edab" }
+reth-eth-wire-types = { git = "https://github.com/paradigmxyz/reth", rev = "038edab" }
+reth-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "038edab" }
+reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "038edab" }
+reth-evm = { git = "https://github.com/paradigmxyz/reth", rev = "038edab" }
+reth-exex = { git = "https://github.com/paradigmxyz/reth", rev = "038edab" }
+reth-metrics = { git = "https://github.com/paradigmxyz/reth", rev = "038edab" }
+reth-network-peers = { git = "https://github.com/paradigmxyz/reth", rev = "038edab" }
+reth-node-api = { git = "https://github.com/paradigmxyz/reth", rev = "038edab" }
+reth-node-builder = { git = "https://github.com/paradigmxyz/reth", rev = "038edab" }
+reth-node-core = { git = "https://github.com/paradigmxyz/reth", rev = "038edab" }
+reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "038edab" }
+reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "038edab" }
+reth-primitives-traits = { version = "0.8.1", default-features = false }
+reth-provider = { git = "https://github.com/paradigmxyz/reth", rev = "038edab" }
+reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "038edab", features = [
+  "std",
+  "optional-checks",
+] }
+reth-rpc = { git = "https://github.com/paradigmxyz/reth", rev = "038edab" }
+reth-rpc-api = { git = "https://github.com/paradigmxyz/reth", rev = "038edab" }
+reth-rpc-builder = { git = "https://github.com/paradigmxyz/reth", rev = "038edab" }
+reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", rev = "038edab" }
+reth-rpc-eth-types = { git = "https://github.com/paradigmxyz/reth", rev = "038edab" }
+reth-storage-api = { git = "https://github.com/paradigmxyz/reth", rev = "038edab" }
+reth-tasks = { git = "https://github.com/paradigmxyz/reth", rev = "038edab" }
+reth-tracing = { git = "https://github.com/paradigmxyz/reth", rev = "038edab" }
+reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", rev = "038edab" }
+reth-trie-common = { git = "https://github.com/paradigmxyz/reth", rev = "038edab", default-features = false, features = [
+  "std",
+] }
+reth-trie-sparse = { git = "https://github.com/paradigmxyz/reth", rev = "038edab", default-features = false, features = [
+  "std",
+] }
+revm = { version = "43.0.2", features = [
+  "optional_fee_charge",
+], default-features = false }
+
+# alloy
+alloy = { version = "2.4.2", default-features = false }
+alloy-chains = "0.2.36"
+alloy-consensus = { version = "2.4.2", default-features = false }
+alloy-contract = { version = "2.4.2", default-features = false }
+alloy-eips = { version = "2.4.2", default-features = false }
+alloy-evm = { version = "0.39.0", default-features = false }
+alloy-genesis = { version = "2.4.2", default-features = false }
+alloy-network = { version = "2.4.2", default-features = false }
+alloy-primitives = { version = "1.7.3", default-features = false }
+alloy-provider = { version = "2.4.2", default-features = false }
+alloy-rlp = { version = "0.3.16", default-features = false }
+alloy-rpc-client = "2.4.2"
+alloy-rpc-types-debug = "2.4.2"
+alloy-rpc-types-engine = "2.4.2"
+alloy-rpc-types-eth = { version = "2.4.2" }
+alloy-signer = "2.4.2"
+alloy-signer-local = "2.4.2"
+alloy-sol-types = { version = "1.7.3", default-features = false }
+alloy-transport = "2.4.2"
+
+# commonware
+commonware-actor = "=2026.9.0"
+commonware-codec = "=2026.9.0"
+commonware-cryptography = "=2026.9.0"
+commonware-math = "=2026.9.0"
+commonware-p2p = "=2026.9.0"
+commonware-runtime = "=2026.9.0"
+commonware-utils = "=2026.9.0"
+
+# misc
+bincode = "1.3.3"
+bytes = { version = "1.11.1", default-features = false }
+minicbor = { version = "=2.3.0", default-features = false, features = ["alloc"] }
+minicbor-serde = { version = "=0.7.1", default-features = false, features = ["alloc"] }
+base64 = "0.22.1"
+clap = { version = "4.5.45", features = ["derive"] }
+const-hex = { version = "1.15.0" }
+keccak-const = "0.2.0"
+derive_more = { version = "2.0.0" }
+eyre = "0.6.12"
+futures = "0.3.31"
+jsonrpsee = { version = "0.26.0", features = ["server", "macros"] }
+libc = "0.2.186"
+metrics = "0.24.3"
+k256 = { version = "0.13.4", features = ["arithmetic", "ecdh"] }
+parking_lot = "0.12.4"
+p256 = { version = "0.13.2", default-features = false, features = ["ecdsa"] }
+proptest = "1.11.0"
+rand = "0.8.5"
+sha2 = "0.10.9"
+rayon = "1.10"
+serde = { version = "1.0.219", default-features = false, features = [
+  "derive",
+  "alloc",
+] }
+tempfile = "3.20"
+serde_bytes = "0.11"
+serde_json = "1.0.142"
+serde_yaml = "0.9.34"
+schnellru = "0.2.4"
+thiserror = "2"
+tokio = { version = "1.45.1", features = ["full"] }
+tokio-vsock = "0.7.2"
+tokio-util = "0.7.18"
+toml = "0.9.12"
+vsock = "0.5.4"
+axum = "0.8"
+reqwest = { version = "0.13", default-features = false, features = [
+  "json",
+  "rustls",
+] }
+tokio-tungstenite = "0.28"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+vergen = { version = "10.0.1", features = ["build", "cargo", "emit_and_set"] }
+vergen-git2 = "10.0.1"
+zeroize = "1.9.0"

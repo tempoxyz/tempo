@@ -1,0 +1,71 @@
+[package]
+name = "zone-checker"
+description = "Observe-only Zone L2 checker ExEx"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+# reth
+reth-exex.workspace = true
+reth-chainspec.workspace = true
+reth-codecs.workspace = true
+reth-db.workspace = true
+reth-node-api.workspace = true
+reth-metrics.workspace = true
+reth-primitives-traits = { workspace = true, features = ["std"] }
+reth-storage-api.workspace = true
+
+# alloy
+alloy-consensus.workspace = true
+alloy-contract.workspace = true
+alloy-eips.workspace = true
+alloy-network.workspace = true
+alloy-primitives.workspace = true
+alloy-provider = { workspace = true, features = ["ws"] }
+alloy-rpc-client.workspace = true
+alloy-rpc-types-eth.workspace = true
+alloy-sol-types.workspace = true
+alloy-transport.workspace = true
+
+# tempo
+tempo-alloy.workspace = true
+tempo-chainspec = { workspace = true, features = ["reth"] }
+tempo-contracts.workspace = true
+tempo-precompiles.workspace = true
+tempo-revm = { workspace = true, features = ["reth"] }
+
+# zones
+tempo-zone-contracts = { workspace = true, features = ["rpc", "std"] }
+zone-precompiles.workspace = true
+zone-primitives.workspace = true
+zone-l1.workspace = true
+
+# misc
+eyre.workspace = true
+futures.workspace = true
+metrics.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+bincode.workspace = true
+bytes.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["time"] }
+
+[dev-dependencies]
+alloy-consensus = { workspace = true, features = ["std"] }
+alloy-rlp.workspace = true
+alloy-rpc-types-eth.workspace = true
+reth-ethereum-primitives.workspace = true
+reth-primitives-traits = { workspace = true, features = ["std", "test-utils"] }
+reth-provider = { workspace = true, features = ["test-utils"] }
+tempo-primitives.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }

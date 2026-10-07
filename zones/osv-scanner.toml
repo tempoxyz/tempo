@@ -1,0 +1,3 @@
+[[IgnoredVulns]]
+id = "RUSTSEC-2021-0127"
+reason = "Accept serde_cbor's unmaintained advisory while aws-nitro-enclaves-nsm-api depends on it; track replacement at https://github.com/aws/aws-nitro-enclaves-nsm-api/issues/19."
