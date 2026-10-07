@@ -257,7 +257,7 @@ where
         }
 
         let dynamic_gas = self.version.gas_params.sstore_dynamic_gas(true, &result);
-        let state_gas = self.version.feature(EvmFeatures::EIP8037);
+        let state_gas = self.state_gas_enabled();
         if state_gas {
             // Charge execution gas before the storage-credit hook charges state gas.
             self.deduct_gas(dynamic_gas)?;
@@ -416,7 +416,7 @@ where
         let code_len = code.len();
         let mut execution_gas = u64::from(self.version.gas_params.get(GasId::CodeDepositCost))
             .saturating_mul(code_len as u64);
-        let state_gas = self.version.feature(EvmFeatures::EIP8037);
+        let state_gas = self.state_gas_enabled();
         if state_gas {
             execution_gas =
                 execution_gas.saturating_add(self.version.gas_params.keccak256_word_cost(code_len));
