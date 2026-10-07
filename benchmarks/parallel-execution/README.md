@@ -157,6 +157,13 @@ tokens, with 6,187 included builder reuses and 11,244 Engine reuses. Another 106
 reported transactions preceded the verified interval. This does not cover live
 P256/WebAuthn or sponsorship, and establishes no throughput gain.
 
+The [32-worker real-node AA oracle](https://github.com/tempoxyz/tempo/actions/runs/37566508422)
+passes six 256-transaction cases: secp256k1, P256 and WebAuthn access keys, each
+with and without sponsorship. Producer and observer nodes use 32 prewarming
+workers; sequential and speculative observers check the same roots, receipts,
+execution output, balances, invalid-sibling rejection and valid recovery. Reuse
+remains scheduling-dependent in this test; it is not live txgen throughput coverage.
+
 For example, [boxed-result validation](https://github.com/tempoxyz/tempo/actions/runs/37164999238)
 checks 187 blocks and 1,579,481 transactions using eight versus zero workers.
 This establishes workload-specific correctness, not a comparison against main.
