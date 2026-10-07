@@ -863,17 +863,24 @@ mod tests {
         storage_credits::StorageCredits,
     };
     use alloy::primitives::{
-        Address, B256, Bytes, KECCAK256_EMPTY, LogData, U256, bytes, keccak256,
+        Address, B256, Bytes, KECCAK256_EMPTY, Log, LogData, U256, bytes, keccak256,
     };
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use evm2::{
         BaseEvmConfigSelector, Evm, EvmTypesHost, ExecutionConfig, SpecId, Version,
-        evm::{InMemoryDB, precompile::NoPrecompiles},
-        interpreter::GasTracker,
+        evm::{
+            InMemoryDB,
+            precompile::{NoPrecompiles, PrecompileOutput},
+        },
+        interpreter::{GasTracker, Host, InstrStop, Message, MessageKind},
+        precompiles::{
+            Precompile, PrecompileError, PrecompileId, PrecompileMap, PrecompileResult, Precompiles,
+        },
         registry::TxRegistry,
         version::{GasId, GasParams},
     };
+    use std::borrow::Cow;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
 
@@ -1891,6 +1898,172 @@ mod tests {
         provider.sstore(address, key, U256::from(3))?;
         provider.checkpoint_commit(checkpoint);
         assert_eq!(provider.sload(address, key)?, U256::from(3));
+        Ok(())
+    }
+
+    #[test]
+    fn test_native_checkpoints_match_frame_gas_settlement() -> eyre::Result<()> {
+        fn write(
+            storage: &mut EvmPrecompileStorageProvider<'_, '_, '_, TestTypes>,
+            address: Address,
+            slot: u64,
+            execution_gas: u64,
+            state_gas: u64,
+            refund: i64,
+        ) {
+            storage.deduct_gas(execution_gas).unwrap();
+            storage.deduct_state_gas(state_gas).unwrap();
+            storage.refund_gas(refund);
+            // Journal changes independently of gas pricing to isolate checkpoint accounting.
+            crate::storage_credits::StorageCreditsBackend::sstore(
+                storage,
+                address,
+                U256::from(slot),
+                U256::ONE,
+                false,
+            )
+            .unwrap();
+            crate::storage_credits::StorageCreditsBackend::tstore(
+                storage,
+                address,
+                U256::from(slot),
+                U256::ONE,
+            )
+            .unwrap();
+            storage.evm.log(Log {
+                address,
+                data: LogData::default(),
+            });
+        }
+
+        fn run(
+            evm: &mut Evm<'_, TestTypes>,
+            message: &Message<TestTypes>,
+            gas: &mut GasTracker,
+        ) -> PrecompileResult {
+            let address = message.destination;
+            let commit = message.input[0] != 0;
+            let ending = message.input[1];
+            let refund = if message.input[2] == 0 { 400 } else { -1_400 };
+            let mut storage =
+                EvmPrecompileStorageProvider::new(evm, gas, TempoHardfork::T14, false);
+            write(&mut storage, address, 0, 11, 150, 1_000);
+            let outer = storage.checkpoint();
+            write(&mut storage, address, 1, 17, 200, refund);
+            let inner = storage.checkpoint();
+            write(&mut storage, address, 2, 7, 100, 300);
+            storage.checkpoint_commit(inner);
+
+            if ending == 2 {
+                // OOG zeroes execution gas, then checkpoint rollback can return spilled
+                // gas. The enclosing frame must still burn it when the halt propagates.
+                let error = crate::storage_credits::StorageCreditsBackend::charge_storage_creation(
+                    &mut storage,
+                )
+                .unwrap_err();
+                storage.checkpoint_revert(outer);
+                return error.into_precompile_result();
+            }
+            if commit {
+                storage.checkpoint_commit(outer);
+            } else {
+                storage.checkpoint_revert(outer);
+            }
+            if ending == 1 {
+                Err(PrecompileError::Revert(Bytes::new()))
+            } else {
+                Ok(PrecompileOutput::new(Bytes::new()))
+            }
+        }
+
+        let address = Address::repeat_byte(0x66);
+        for reservoir in [0, 100, 200, 1_000] {
+            for commit in [false, true] {
+                for refund in [400, -1_400] {
+                    for (ending, stop) in [
+                        (0, InstrStop::Return),
+                        (1, InstrStop::Revert),
+                        (2, InstrStop::PrecompileOOG),
+                    ] {
+                        let mut evm = TestEvm::new(TempoHardfork::T14);
+                        let mut map = PrecompileMap::new();
+                        map.insert(Precompile::new(
+                            address,
+                            PrecompileId::custom("checkpoint"),
+                            run,
+                        ));
+                        evm.evm.set_precompiles(Precompiles::new(Cow::Owned(map)));
+                        let mut message = Message::<TestTypes> {
+                            kind: MessageKind::Call,
+                            destination: address,
+                            call_target: address,
+                            code_address: address,
+                            gas_limit: 10_000,
+                            reservoir,
+                            input: vec![u8::from(commit), ending, u8::from(refund < 0)].into(),
+                            ..Default::default()
+                        };
+                        let result =
+                            Host::execute_message(&mut evm.evm, &Default::default(), &mut message)?;
+
+                        // Equivalent parent/child accounting using evm2's frame-return helpers.
+                        let mut expected =
+                            GasTracker::new_with_execution_gas_and_reservoir(10_000, reservoir);
+                        expected.spend(11).unwrap();
+                        expected.spend_state(150).unwrap();
+                        expected.record_refund(1_000);
+                        let mut child = GasTracker::new_with_execution_gas_and_reservoir(
+                            expected.remaining(),
+                            expected.reservoir(),
+                        );
+                        child.spend(24).unwrap();
+                        child.spend_state(300).unwrap();
+                        child.record_refund(refund + 300);
+                        let child_stop = if commit {
+                            InstrStop::Return
+                        } else {
+                            InstrStop::Revert
+                        };
+                        child.settle_gas(child_stop);
+                        expected.spend_all();
+                        expected.merge_child_gas(child, child_stop);
+                        expected.settle_gas(stop);
+                        assert_eq!(result.stop, stop);
+                        assert_eq!(
+                            result.gas, expected,
+                            "reservoir={reservoir}, commit={commit}, refund={refund}, stop={stop:?}"
+                        );
+
+                        let success = stop.is_success();
+                        for slot in 0..3 {
+                            let value = U256::from(u64::from(success && (slot == 0 || commit)));
+                            assert_eq!(
+                                evm.evm
+                                    .state_mut()
+                                    .storage(&address)
+                                    .into_slot(U256::from(slot))?
+                                    .current(),
+                                value
+                            );
+                            assert_eq!(
+                                evm.evm.state_mut().tload(&address, &U256::from(slot)),
+                                value
+                            );
+                        }
+                        assert_eq!(
+                            evm.evm.logs().len(),
+                            if !success {
+                                0
+                            } else if commit {
+                                3
+                            } else {
+                                1
+                            }
+                        );
+                    }
+                }
+            }
+        }
         Ok(())
     }
 

@@ -33,6 +33,10 @@ use tempo_primitives::TempoBlockEnv;
 use crate::error::{Result, TempoPrecompileError};
 
 /// State and gas accounting saved for a native atomic operation.
+///
+/// This is a checkpoint within the current precompile frame, not a child frame
+/// with a separate gas budget. Rollback preserves execution work already spent;
+/// an exceptional halt must propagate to the enclosing frame for gas settlement.
 #[derive(Debug)]
 pub struct StorageCheckpoint {
     state: StateCheckpoint,
@@ -40,6 +44,8 @@ pub struct StorageCheckpoint {
 }
 
 /// Gas counters restored on rollback while execution gas remains spent.
+/// TIP-1060 settles credits only at transaction completion, so the net state gas
+/// spent since a live native checkpoint is nonnegative and determines the refill.
 #[derive(Debug)]
 struct GasCheckpoint {
     state_gas_spent: i64,
