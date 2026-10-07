@@ -17,10 +17,17 @@ def valid_log():
             "ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 236 filtered out; finished in 0.01s\n")
 
 
+def valid_resources():
+    buckets = [[16384, 3000000, 6000000]] + [[0, 0, 0] for _ in range(15)]
+    return ("ResourceSamples { samples: 16384, failed_samples: 0, unavailable: 0, invalid: 0, "
+            "events: [0, 0, 0, 0], buckets: " + json.dumps(buckets) + " }")
+
+
 def valid_cpu_log():
     return ("running 1 test\n" + "test " + clock.CPU_TEST + " ... "
             "execution_cpu_clock_floor CpuSamples { calls: 16384, attempts: 16384, samples: 16384, "
             "failed_samples: 0, unavailable: 0, invalid: 0, cpu_ns: 3000000, wall_ns: 6000000 }\n"
+            "execution_resource_clock_floor " + valid_resources() + "\n"
             "ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 240 filtered out; finished in 0.01s\n")
 
 
@@ -46,6 +53,42 @@ class CpuClockOutputTests(unittest.TestCase):
                         text.rstrip(), text + text, text + "unexpected warning\n"]:
             with self.subTest(altered=altered[-120:]), self.assertRaises(ValueError):
                 self.parse(altered)
+
+    def test_resource_buckets_must_partition_paired_cpu_samples(self):
+        text = valid_cpu_log()
+        for altered in [text.replace("[16384, 3000000, 6000000]", "[16383, 3000000, 6000000]"),
+                        text.replace("[16384, 3000000, 6000000]", "[16384, 2999999, 6000000]"),
+                        text.replace("[16384, 3000000, 6000000]", "[16384, 3000000, 5999999]"),
+                        text.replace("[0, 0, 0, 0]", "[1, 0, 0, 0]"),
+                        text.replace("[0, 0, 0]", "[0, 0, 1]", 1),
+                        text.replace("[0, 0, 0]", "[0, 0]", 1),
+                        text.replace("[0, 0, 0]", "[-1, 0, 0]", 1),
+                        text.replace("[0, 0, 0]", "[true, 0, 0]", 1),
+                        text.replace("execution_resource_clock_floor " + valid_resources() + "\n", ""),
+                        text + "execution_resource_clock_floor " + valid_resources() + "\n"]:
+            with self.subTest(altered=altered[-120:]), self.assertRaises(ValueError):
+                self.parse(altered)
+
+    def test_mixed_events_remain_one_bucket_per_sample(self):
+        buckets = [[0, 0, 0] for _ in range(16)]
+        buckets[3] = [16384, 3000000, 6000000]
+        body = valid_resources().replace("[0, 0, 0, 0]", "[32768, 16384, 0, 0]")
+        body = body[:body.index("buckets: ")] + "buckets: " + json.dumps(buckets) + " }"
+        result = self.parse(valid_cpu_log().replace(valid_resources(), body))
+        self.assertEqual(result["resources"]["events"], [32768, 16384, 0, 0])
+        self.assertEqual(result["resources"]["buckets"][3][0], 16384)
+
+    def test_unavailable_resource_reads_are_counted_but_not_calibrations(self):
+        cpu = dict(samples=2, failed_samples=1, cpu_ns=30, wall_ns=40)
+        buckets = [[1, 10, 20]] + [[0, 0, 0] for _ in range(15)]
+        body = ("ResourceSamples { samples: 1, failed_samples: 0, unavailable: 1, invalid: 0, "
+                "events: [0, 0, 0, 0], buckets: " + json.dumps(buckets) + " }")
+        value = clock.parse_resource_samples(body, cpu)
+        self.assertEqual(value["unavailable"], 1)
+        for corrupted in [body.replace("unavailable: 1", "unavailable: 2"),
+                          body.replace("failed_samples: 0", "failed_samples: 2")]:
+            with self.assertRaises(ValueError):
+                clock.parse_resource_samples(corrupted, cpu)
 
 
 class ClockOutputTests(unittest.TestCase):

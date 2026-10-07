@@ -13780,6 +13780,7 @@ dependencies = [
  "eyre",
  "indexmap 2.14.0",
  "insta",
+ "nix 0.30.1",
  "rand 0.10.2",
  "rayon",
  "reth-chainspec",

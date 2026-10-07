@@ -18,11 +18,13 @@ pub(super) struct SampledCpuTimings {
     invalid: u64,
     cpu: Duration,
     wall: Duration,
+    pub(super) resources: ResourceSamples,
 }
 
 pub(super) struct CpuSample {
     wall: Instant,
     cpu: Option<Duration>,
+    resources: Option<ThreadResources>,
 }
 
 impl CpuSample {
@@ -32,6 +34,7 @@ impl CpuSample {
         Self {
             wall: Instant::now(),
             cpu: thread_cpu_time(),
+            resources: thread_resources(),
         }
     }
 }
@@ -48,8 +51,13 @@ impl SampledCpuTimings {
 
     pub(super) fn finish(&mut self, sample: Option<CpuSample>, failed: bool) {
         if let Some(sample) = sample {
+            let resources = thread_resources();
             let end = thread_cpu_time();
-            self.record(sample.cpu, end, sample.wall.elapsed(), failed);
+            let wall = sample.wall.elapsed();
+            if let Some(cpu) = self.record(sample.cpu, end, wall, failed) {
+                self.resources
+                    .record(sample.resources, resources, cpu, wall, failed);
+            }
         }
     }
 
@@ -59,20 +67,95 @@ impl SampledCpuTimings {
         end: Option<Duration>,
         wall: Duration,
         failed: bool,
-    ) {
+    ) -> Option<Duration> {
         let (Some(start), Some(end)) = (start, end) else {
             self.unavailable += 1;
-            return;
+            return None;
         };
         let Some(cpu) = end.checked_sub(start).filter(|cpu| *cpu <= wall) else {
             self.invalid += 1;
-            return;
+            return None;
         };
         self.samples += 1;
         self.failed_samples += u64::from(failed);
         self.cpu += cpu;
         self.wall += wall;
+        Some(cpu)
     }
+}
+
+/// Event counts enclose synchronous work inside the CPU/wall envelopes:
+/// wall -> CPU -> resources -> work -> resources -> CPU -> wall.
+/// Switches at the edges can therefore be missing from the event counters.
+/// Counts indicate association, not the duration or cause of individual waits.
+#[derive(Debug, Default)]
+pub(super) struct ResourceSamples {
+    samples: u64,
+    failed_samples: u64,
+    unavailable: u64,
+    invalid: u64,
+    // Voluntary switches, involuntary switches, minor faults, major faults.
+    events: [u64; 4],
+    // Mask bits match `events`; each bucket is [samples, CPU ns, wall ns].
+    // Every paired sample with valid resource counters enters exactly one bucket.
+    buckets: [[u128; 3]; 16],
+}
+
+#[derive(Clone, Copy, Default)]
+struct ThreadResources([u64; 4]);
+
+impl ResourceSamples {
+    fn record(
+        &mut self,
+        start: Option<ThreadResources>,
+        end: Option<ThreadResources>,
+        cpu: Duration,
+        wall: Duration,
+        failed: bool,
+    ) {
+        let (Some(start), Some(end)) = (start, end) else {
+            self.unavailable += 1;
+            return;
+        };
+        let mut delta = [0; 4];
+        for (index, value) in delta.iter_mut().enumerate() {
+            let Some(difference) = end.0[index].checked_sub(start.0[index]) else {
+                self.invalid += 1;
+                return;
+            };
+            *value = difference;
+        }
+        let mut mask = 0;
+        for (index, value) in delta.into_iter().enumerate() {
+            self.events[index] += value;
+            if value != 0 {
+                mask |= 1 << index;
+            }
+        }
+        self.samples += 1;
+        self.failed_samples += u64::from(failed);
+        let bucket = &mut self.buckets[mask];
+        bucket[0] += 1;
+        bucket[1] += cpu.as_nanos();
+        bucket[2] += wall.as_nanos();
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn thread_resources() -> Option<ThreadResources> {
+    use nix::sys::resource::{UsageWho, getrusage};
+    let usage = getrusage(UsageWho::RUSAGE_THREAD).ok()?;
+    Some(ThreadResources([
+        u64::try_from(usage.voluntary_context_switches()).ok()?,
+        u64::try_from(usage.involuntary_context_switches()).ok()?,
+        u64::try_from(usage.minor_page_faults()).ok()?,
+        u64::try_from(usage.major_page_faults()).ok()?,
+    ]))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn thread_resources() -> Option<ThreadResources> {
+    None
 }
 
 impl fmt::Debug for SampledCpuTimings {
@@ -122,12 +205,36 @@ mod tests {
     fn invalid_or_missing_cpu_readings_do_not_enter_paired_totals() {
         let mut timings = SampledCpuTimings::default();
         let us = |value| Some(Duration::from_micros(value));
-        timings.record(us(10), us(13), Duration::from_micros(9), false);
-        timings.record(us(13), us(15), Duration::from_micros(4), true);
-        timings.record(None, us(20), Duration::from_micros(9), false);
-        timings.record(us(20), None, Duration::from_micros(9), false);
-        timings.record(us(20), us(19), Duration::from_micros(9), false);
-        timings.record(us(20), us(30), Duration::from_micros(9), false);
+        assert!(
+            timings
+                .record(us(10), us(13), Duration::from_micros(9), false)
+                .is_some()
+        );
+        assert!(
+            timings
+                .record(us(13), us(15), Duration::from_micros(4), true)
+                .is_some()
+        );
+        assert!(
+            timings
+                .record(None, us(20), Duration::from_micros(9), false)
+                .is_none()
+        );
+        assert!(
+            timings
+                .record(us(20), None, Duration::from_micros(9), false)
+                .is_none()
+        );
+        assert!(
+            timings
+                .record(us(20), us(19), Duration::from_micros(9), false)
+                .is_none()
+        );
+        assert!(
+            timings
+                .record(us(20), us(30), Duration::from_micros(9), false)
+                .is_none()
+        );
         assert_eq!(timings.samples, 2);
         assert_eq!(timings.failed_samples, 1);
         assert_eq!(timings.cpu, Duration::from_micros(5));
@@ -150,10 +257,16 @@ mod tests {
             timings.samples + timings.unavailable + timings.invalid
         );
         assert_eq!(timings.failed_samples, 0);
+        assert_eq!(
+            timings.samples,
+            timings.resources.samples + timings.resources.unavailable + timings.resources.invalid
+        );
+        assert_eq!(timings.resources.failed_samples, 0);
         let before = timings.samples;
         timings.finish(None, true);
         assert_eq!(timings.samples, before);
         assert_eq!(timings.failed_samples, 0);
+        assert_eq!(timings.resources.failed_samples, 0);
     }
 
     #[test]
@@ -166,6 +279,55 @@ mod tests {
         assert_eq!(timings.samples, 1);
         assert!(timings.wall >= Duration::from_millis(20));
         assert!(timings.cpu < timings.wall / 2);
+        assert_eq!(timings.resources.samples, 1);
+        assert!(timings.resources.events[0] >= 1);
+        assert_eq!(
+            timings.resources.buckets.iter().map(|b| b[0]).sum::<u128>(),
+            1
+        );
+    }
+
+    #[test]
+    fn resource_events_partition_samples_without_double_counting() {
+        let mut resources = ResourceSamples::default();
+        for mask in 0..16 {
+            let end = ThreadResources(std::array::from_fn(|index| {
+                if mask & (1 << index) != 0 { 2 } else { 0 }
+            }));
+            resources.record(
+                Some(ThreadResources::default()),
+                Some(end),
+                Duration::from_nanos(7),
+                Duration::from_nanos(10),
+                mask == 3,
+            );
+        }
+        assert_eq!(resources.samples, 16);
+        assert_eq!(resources.failed_samples, 1);
+        assert_eq!(resources.events, [16; 4]);
+        assert_eq!(resources.buckets, [[1, 7, 10]; 16]);
+    }
+
+    #[test]
+    fn invalid_resource_counters_do_not_partially_update_buckets() {
+        let mut resources = ResourceSamples::default();
+        let zero = Some(ThreadResources::default());
+        for (start, end) in [(None, zero), (zero, None)] {
+            resources.record(start, end, Duration::ZERO, Duration::ZERO, false);
+        }
+        resources.record(
+            Some(ThreadResources([0, 0, 0, 1])),
+            Some(ThreadResources([2, 3, 4, 0])),
+            Duration::from_nanos(7),
+            Duration::from_nanos(10),
+            true,
+        );
+        assert_eq!(resources.unavailable, 2);
+        assert_eq!(resources.invalid, 1);
+        assert_eq!(resources.samples, 0);
+        assert_eq!(resources.failed_samples, 0);
+        assert_eq!(resources.events, [0; 4]);
+        assert_eq!(resources.buckets, [[0; 3]; 16]);
     }
 
     #[test]
@@ -180,9 +342,13 @@ mod tests {
             timings.finish(sample, false);
         }
         println!("execution_cpu_clock_floor {timings:?}");
+        println!("execution_resource_clock_floor {:?}", timings.resources);
         assert_eq!(timings.attempts, 16_384);
         assert_eq!(timings.invalid, 0);
         #[cfg(target_os = "linux")]
-        assert_eq!(timings.samples, 16_384);
+        {
+            assert_eq!(timings.samples, 16_384);
+            assert_eq!(timings.resources.samples, 16_384);
+        }
     }
 }

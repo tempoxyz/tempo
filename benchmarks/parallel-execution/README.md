@@ -83,6 +83,24 @@ instrumentation overhead.
 The official `disposal-clock` mode runs this additional calibration automatically
 before and after each phase when the bound source includes the CPU sampler.
 
+`Ordered execution resource samples` partitions those valid CPU/wall samples by
+Linux thread resource counter changes. Bucket mask bits 0–3 indicate voluntary
+switches, involuntary switches, minor faults and major faults; each of the 16
+buckets contains `[sample_count, cpu_ns, wall_ns]`. Event totals count all events,
+while a sampled call enters exactly one bucket, including calls with several
+event types. Failed calls remain included and counted. Missing or decreasing
+resource counters exclude a call from these buckets, with explicit counters;
+they do not change execution or remove its valid CPU/wall observation.
+
+The order is wall, CPU, resource counters, work, resource counters, CPU, wall.
+The CPU/wall envelopes include the resource syscalls; counter edges lie inside
+those envelopes. A zero-event bucket therefore does not prove uninterrupted
+execution. Event counts describe associations, not individual wait durations or
+which lock, I/O operation or competing thread caused a delay. See the Linux
+[getrusage documentation](https://man7.org/linux/man-pages/man2/getrusage.2.html).
+The same ignored calibration now records and verifies the resource buckets too.
+Its idle overhead floor cannot establish the observer's cost under contention.
+
 The [fallback timing diagnostic](https://github.com/tempoxyz/tempo/actions/runs/37571062322)
 checked 363 accepted blocks and 2,936,569 transactions with no sender failures.
 Across two identical instrumented runs, conflict replay took 5.2–5.4% of measured

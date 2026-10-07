@@ -301,10 +301,41 @@ def parse_clock(path):
     return values
 
 
+def parse_resource_samples(body, cpu):
+    keys = ("samples", "failed_samples", "unavailable", "invalid")
+    pattern = (r"ResourceSamples \{ " + ", ".join(key + r": (\d+)" for key in keys)
+               + r", events: (\[[\d, ]+\]), buckets: (\[[\d, \[\]]+\]) \}")
+    match = re.fullmatch(pattern, body)
+    require(match is not None, "malformed resource samples")
+    value = dict(zip(keys, map(int, match.groups()[:4])))
+    value["events"] = json.loads(match[5])
+    value["buckets"] = json.loads(match[6])
+    require(len(value["events"]) == 4 and len(value["buckets"]) == 16, "resource sample shape")
+    require(all(type(n) is int and 0 <= n < 2**64 for n in value["events"]), "resource event bounds")
+    require(all(isinstance(row, list) and len(row) == 3
+                and all(type(n) is int and 0 <= n < 2**128 for n in row)
+                and row[1] <= row[2] and (row[0] != 0 or row[2] == 0)
+                for row in value["buckets"]), "resource bucket bounds")
+    require(value["samples"] + value["unavailable"] + value["invalid"] == cpu["samples"],
+            "resource/CPU sample conservation")
+    require(value["failed_samples"] <= min(value["samples"], cpu["failed_samples"]),
+            "resource failed sample count")
+    totals = [sum(row[i] for row in value["buckets"]) for i in range(3)]
+    require(totals[0] == value["samples"] and totals[1] <= cpu["cpu_ns"]
+            and totals[2] <= cpu["wall_ns"], "resource bucket conservation")
+    if value["unavailable"] == value["invalid"] == 0:
+        require(totals == [cpu["samples"], cpu["cpu_ns"], cpu["wall_ns"]]
+                and value["failed_samples"] == cpu["failed_samples"], "unpartitioned CPU samples")
+    for bit, count in enumerate(value["events"]):
+        observed = sum(row[0] for mask, row in enumerate(value["buckets"]) if mask & (1 << bit))
+        require(count >= observed and (observed != 0 or count == 0), "resource event/bucket mismatch")
+    return value
+
+
 def parse_cpu_clock(path):
     raw = Path(path).read_bytes()
     require(len(raw) <= SAMPLE_BYTES and raw.endswith(b"\n"), "oversized/truncated CPU clock output")
-    values, summaries = [], []
+    values, resources, summaries = [], [], []
     keys = ("calls", "attempts", "samples", "failed_samples", "unavailable", "invalid", "cpu_ns", "wall_ns")
     pattern = r"CpuSamples \{ " + ", ".join(key + r": (\d+)" for key in keys) + r" \}"
     for line in raw.decode().splitlines():
@@ -315,6 +346,8 @@ def parse_cpu_clock(path):
             match = re.fullmatch(pattern, "CpuSamples " + body)
             require(match is not None, "malformed CPU clock totals")
             values.append(dict(zip(keys, map(int, match.groups()))))
+        elif line.startswith("execution_resource_clock_floor "):
+            resources.append(line.removeprefix("execution_resource_clock_floor "))
         elif line.startswith("test result: "):
             summaries.append(line)
         else:
@@ -325,6 +358,9 @@ def parse_cpu_clock(path):
     require(all(value[key] == 16384 for key in ("calls", "attempts", "samples")), "CPU clock sample count")
     require(all(value[key] == 0 for key in ("failed_samples", "unavailable", "invalid")), "invalid CPU clock samples")
     require(0 < value["cpu_ns"] <= value["wall_ns"] < 2**64, "CPU clock total bounds")
+    require(len(resources) == 1, "missing/duplicate resource clock totals")
+    value["resources"] = parse_resource_samples(resources[0], value)
+    require(value["resources"]["samples"] == 16384, "resource clock sample count")
     require(len(summaries) == 1 and re.fullmatch(
         r"test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; \d+ filtered out; finished in [0-9.]+s",
         summaries[0]), "CPU clock process did not execute exactly one successful test")

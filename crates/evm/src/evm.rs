@@ -560,6 +560,15 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             validation_error = ?timings.ordinary_cpu_by_reason[OrdinaryReason::ValidationError as usize],
             "Ordered execution CPU samples"
         );
+        tracing::debug!(target: "tempo::execution",
+            phase = "before_block_finalization",
+            validation = ?timings.validation_cpu.resources,
+            no_candidate = ?timings.ordinary_cpu_by_reason[OrdinaryReason::NoCandidate as usize].resources,
+            conflict = ?timings.ordinary_cpu_by_reason[OrdinaryReason::Conflict as usize].resources,
+            speculative_error = ?timings.ordinary_cpu_by_reason[OrdinaryReason::SpeculativeError as usize].resources,
+            validation_error = ?timings.ordinary_cpu_by_reason[OrdinaryReason::ValidationError as usize].resources,
+            "Ordered execution resource samples"
+        );
     }
 
     /// Consumes this EVM wrapper and returns the inner [`tempo_revm::TempoEvm`].
