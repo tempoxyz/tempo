@@ -1,5 +1,5 @@
 """Measurement-only branch: identical fixtures, CPU affinity, paired runs, overhead controls."""
-import json, os, pathlib, shutil, subprocess
+import json, os, pathlib, shutil, subprocess, glob
 root = pathlib.Path.cwd()
 out = root / 'execution-cost-results'
 out.mkdir(exist_ok=True)
@@ -37,7 +37,7 @@ def run(label, name, mode, hook=True, validate=False, rounds=128, perf=False, ca
         control, ack = out/f'{name}-control', out/f'{name}-ack'
         os.mkfifo(control); os.mkfifo(ack)
         env.update(MEASURE_PERF_CONTROL=str(control), MEASURE_PERF_ACK=str(ack))
-        cmd = ['perf','stat','--delay=-1',f'--control=fifo:{control},{ack}', '-x',',','-o',str(out/f'{name}-perf.csv'),'-e','cycles,instructions,branches,branch-misses,cache-misses']+cmd
+        cmd = [os.environ.get('EXECUTION_PERF_COMMAND', 'perf'),'stat','--delay=-1',f'--control=fifo:{control},{ack}', '-x',',','-o',str(out/f'{name}-perf.csv'),'-e','cycles,instructions,branches,branch-misses,cache-misses']+cmd
     with (out/f'{name}.log').open('w') as log:
         subprocess.run(cmd,env=env,stdout=log,stderr=subprocess.STDOUT,check=True,timeout=300)
     if perf: control.unlink(); ack.unlink()
@@ -56,8 +56,20 @@ for cache in ['cold','warm']:
                     name=f'p{pair}-{backend}-{cache}-{label}-m{mode}-hook{int(hook)}'
                     run(f'{backend}-{label}',name,mode,hook=hook,cache=cache)
 # Retired hardware counters corroborate total CPU cost without per-transaction clock calls.
-for backend in ['revm','native']:
-    run(backend+'-plain',backend+'-hardware',0,rounds=512,perf=True)
-
-# Keep artifacts small: raw data and build logs, rather than four identical large binaries.
-for binary in binaries.values(): pathlib.Path(binary).unlink()
+# Some runners have the perf wrapper without its matching kernel binary. Retain timing
+# results regardless of optional counter availability, and retain plain executables for audit.
+perf_command = shutil.which('perf')
+if perf_command and subprocess.run([perf_command, 'version'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:
+    candidates = sorted(glob.glob('/usr/lib/linux-tools/*/perf'))
+    perf_command = next((p for p in candidates if os.access(p, os.X_OK)), None)
+if perf_command:
+    os.environ['EXECUTION_PERF_COMMAND'] = perf_command
+    for backend in ['revm','native']:
+        try:
+            run(backend+'-plain',backend+'-hardware',0,rounds=512,perf=True)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+            (out/f'{backend}-hardware-status.txt').write_text(f'Optional counters failed: {type(error).__name__}\n')
+else:
+    (out/'hardware-status.txt').write_text('Optional counters unavailable: no executable perf binary.\n')
+for label, binary in binaries.items():
+    if label.endswith('-instrumented'): pathlib.Path(binary).unlink()
