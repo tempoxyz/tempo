@@ -3,6 +3,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  actions: read
 jobs:
   measure:
     runs-on: [self-hosted, Linux, X64, bare-metal-dual-schelk]
@@ -21,8 +22,26 @@ jobs:
           ref: codex/execution-cost-revm
           path: revm
       - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0
+        with:
+          toolchain: nightly
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0
         continue-on-error: true
+      - name: Wait for other e2e benchmarks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PYTHON'
+          import json, os, time, urllib.request
+          url = 'https://api.github.com/repos/tempoxyz/tempo/actions/workflows/bench-e2e.yml/runs?status=in_progress&per_page=100'
+          for attempt in range(60):
+              req = urllib.request.Request(url, headers={'Authorization': 'Bearer '+os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json'})
+              runs = json.load(urllib.request.urlopen(req))['workflow_runs']
+              other = [r['id'] for r in runs if str(r['id']) != os.environ['GITHUB_RUN_ID']]
+              if not other: break
+              print('Waiting for other benchmark runs:', other, flush=True)
+              time.sleep(60)
+          else: raise RuntimeError('Other benchmarks still active; no measurements taken')
+          PYTHON
       - name: Build and run controlled measurements
         run: python3 native/scripts/execution-cost-run.py
       - name: Upload raw measurements
