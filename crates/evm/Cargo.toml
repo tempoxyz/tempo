@@ -69,9 +69,6 @@ indexmap.workspace = true
 insta.workspace = true
 rand.workspace = true
 reth-execution-cache.workspace = true
-reth-db.workspace = true
-reth-db-api.workspace = true
-reth-trie-db.workspace = true
 reth-storage-api.workspace = true
 reth-trie.workspace = true
 revm.workspace = true
@@ -79,7 +76,6 @@ serde_json.workspace = true
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempo-primitives = { workspace = true, features = ["arbitrary", "test-utils"] }
 tikv-jemallocator = "0.6.1"
-tempfile = "3"
 
 [features]
 default = ["rpc", "engine"]
@@ -94,8 +90,4 @@ harness = false
 
 [[bench]]
 name = "dex_execution"
-harness = false
-
-[[bench]]
-name = "expiring_nonces"
 harness = false
