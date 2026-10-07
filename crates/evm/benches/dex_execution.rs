@@ -12,7 +12,7 @@ use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
 use alloy_sol_types::{SolCall, SolValue};
 use common::{
     DEFAULT_ACCOUNT_COUNT, DEFAULT_BLOCK_TIMESTAMP, bench_evm, execute_txs, fixture_from_seeded_db,
-    hardfork_bench_cases, prepare_txs, seeded_db, txgen_signers,
+    hardfork_bench_cases, seeded_db, txgen_signers,
 };
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use evm2::evm::InMemoryDB;
@@ -339,18 +339,17 @@ fn dex_order_execution(c: &mut Criterion) {
     let dex_workloads = dex_bench_workloads();
     for &(label, hardfork) in &hardfork_cases {
         for dex_workload in &dex_workloads {
-            let tx_envs = prepare_txs(&dex_workload.transactions);
             let fixture = fixture_from_seeded_db(seed_dex_cache_db(
                 &dex_workload.participants,
                 DEFAULT_BLOCK_TIMESTAMP,
                 hardfork,
-            ));
+            ))
+            .with_transactions(&dex_workload.transactions);
             // Validate the workload once before timing fresh copies of the seeded state.
             execute_txs(
                 &config,
                 fixture.prewarm_state_db(),
                 &dex_workload.transactions,
-                tx_envs.clone(),
                 DEFAULT_BLOCK_TIMESTAMP,
                 hardfork,
             );
@@ -359,13 +358,12 @@ fn dex_order_execution(c: &mut Criterion) {
             group.throughput(Throughput::Elements(dex_workload.transactions.len() as u64));
             group.bench_function(dex_workload.name, |b| {
                 b.iter_batched(
-                    || (fixture.state_db(), tx_envs.clone()),
-                    |(db, tx_envs)| {
+                    || fixture.state_db(),
+                    |db| {
                         let stats = execute_txs(
                             &config,
                             db,
                             &dex_workload.transactions,
-                            tx_envs,
                             DEFAULT_BLOCK_TIMESTAMP,
                             hardfork,
                         );

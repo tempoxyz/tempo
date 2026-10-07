@@ -2,7 +2,7 @@
 //!
 //! By default this generates txgen-style AA TIP20 transfers from the benchmark mnemonic. Set
 //! `TEMPO_TIP20_EXEC_TXS` to a newline-delimited raw 2718 txgen output file to replay exact
-//! txgen transactions against the in-memory execution path.
+//! txgen transactions against the in-memory fixed-cache execution path.
 
 mod common;
 
@@ -13,7 +13,7 @@ use alloy_signer_local::PrivateKeySigner;
 use alloy_sol_types::SolCall;
 use common::{
     DEFAULT_ACCOUNT_COUNT, DEFAULT_BLOCK_TIMESTAMP, bench_evm, execute_txs, fixture_from_seeded_db,
-    hardfork_bench_cases, prepare_txs, seeded_db, sign_precompile_call, txgen_signers,
+    hardfork_bench_cases, seeded_db, sign_precompile_call, txgen_signers,
 };
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use evm2::evm::InMemoryDB;
@@ -456,7 +456,6 @@ fn workload() -> Workload {
 
 fn tip20_execution(c: &mut Criterion) {
     let workload = workload();
-    let tx_envs = prepare_txs(&workload.transactions);
     let hardfork_cases = hardfork_bench_cases();
     let config = TempoEvmConfig::new(Arc::new(TempoChainSpec::moderato()));
 
@@ -466,12 +465,12 @@ fn tip20_execution(c: &mut Criterion) {
             workload.block_timestamp,
             None,
             hardfork,
-        ));
+        ))
+        .with_transactions(&workload.transactions);
         execute_txs(
             &config,
             fixture.prewarm_state_db(),
             &workload.transactions,
-            tx_envs.clone(),
             workload.block_timestamp,
             hardfork,
         );
@@ -480,13 +479,12 @@ fn tip20_execution(c: &mut Criterion) {
         group.throughput(Throughput::Elements(workload.transactions.len() as u64));
         group.bench_function("txgen_tip20_pure_execution", |b| {
             b.iter_batched(
-                || (fixture.state_db(), tx_envs.clone()),
-                |(db, tx_envs)| {
+                || fixture.state_db(),
+                |db| {
                     let stats = execute_txs(
                         &config,
                         db,
                         &workload.transactions,
-                        tx_envs,
                         workload.block_timestamp,
                         hardfork,
                     );
@@ -501,18 +499,17 @@ fn tip20_execution(c: &mut Criterion) {
     let reward_workloads = reward_bench_workloads();
     for &(label, hardfork) in &hardfork_cases {
         for reward_workload in &reward_workloads {
-            let tx_envs = prepare_txs(&reward_workload.transactions);
             let fixture = fixture_from_seeded_db(seed_in_memory_cache_db(
                 &reward_workload.participants,
                 DEFAULT_BLOCK_TIMESTAMP,
                 Some((&reward_workload.delegates, reward_workload.kind)),
                 hardfork,
-            ));
+            ))
+            .with_transactions(&reward_workload.transactions);
             execute_txs(
                 &config,
                 fixture.prewarm_state_db(),
                 &reward_workload.transactions,
-                tx_envs.clone(),
                 DEFAULT_BLOCK_TIMESTAMP,
                 hardfork,
             );
@@ -523,13 +520,12 @@ fn tip20_execution(c: &mut Criterion) {
             ));
             group.bench_function(reward_workload.name, |b| {
                 b.iter_batched(
-                    || (fixture.state_db(), tx_envs.clone()),
-                    |(db, tx_envs)| {
+                    || fixture.state_db(),
+                    |db| {
                         let stats = execute_txs(
                             &config,
                             db,
                             &reward_workload.transactions,
-                            tx_envs,
                             DEFAULT_BLOCK_TIMESTAMP,
                             hardfork,
                         );

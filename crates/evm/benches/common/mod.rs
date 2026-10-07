@@ -7,7 +7,7 @@ use alloy_primitives::{
 };
 use alloy_signer::SignerSync;
 use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner};
-use evm2::evm::InMemoryDB;
+use evm2::evm::{AccountInfo, InMemoryDB};
 use reth_evm::{BlockExecutor, BlockExecutorFactory, database::StateProviderDatabase};
 use reth_evm_ethereum::EthBlockExecutionCtx;
 use reth_execution_cache::{
@@ -77,19 +77,34 @@ pub(crate) struct ExecutionFixture {
     provider: InMemoryStateProvider,
     cache: ExecutionCache,
     metrics: CachedStateMetrics,
+    tx_envs: Vec<Recovered<TempoTxEnv>>,
 }
 
-pub(crate) type FixedCacheDb =
-    StateProviderDatabase<CachedStateProvider<EvmStateProviderAdapter<InMemoryStateProvider>>>;
+/// Fresh execution state and prepared transactions, constructed outside benchmark timing.
+pub(crate) struct FixedCacheDb {
+    db: StateProviderDatabase<CachedStateProvider<EvmStateProviderAdapter<InMemoryStateProvider>>>,
+    tx_envs: Vec<Recovered<TempoTxEnv>>,
+}
 
 impl ExecutionFixture {
+    pub(crate) fn with_transactions(mut self, txs: &[Recovered<TempoTxEnvelope>]) -> Self {
+        self.tx_envs = txs
+            .iter()
+            .map(|tx| Recovered::new_unchecked(TempoTxEnv::from(tx.clone()), tx.signer()))
+            .collect();
+        self
+    }
+
     pub(crate) fn state_db(&self) -> FixedCacheDb {
         let provider = CachedStateProvider::new(
             self.provider.clone().into_evm_state_provider(),
             self.cache.clone(),
             Some(self.metrics.clone()),
         );
-        StateProviderDatabase::new(provider)
+        FixedCacheDb {
+            db: StateProviderDatabase::new(provider),
+            tx_envs: self.tx_envs.clone(),
+        }
     }
 
     pub(crate) fn prewarm_state_db(&self) -> FixedCacheDb {
@@ -97,7 +112,10 @@ impl ExecutionFixture {
             self.provider.clone().into_evm_state_provider(),
             self.cache.clone(),
         );
-        StateProviderDatabase::new(provider)
+        FixedCacheDb {
+            db: StateProviderDatabase::new(provider),
+            tx_envs: self.tx_envs.clone(),
+        }
     }
 }
 
@@ -239,7 +257,7 @@ pub(crate) fn bench_env(hardfork: TempoHardfork, block_timestamp: u64) -> TempoE
         spec: hardfork,
         version,
         block: TempoBlockEnv {
-            number: U256::from(1),
+            number: U256::ONE,
             beneficiary: Address::repeat_byte(0x42),
             timestamp: U256::from(block_timestamp),
             basefee: U256::from(TEMPO_T1_BASE_FEE),
@@ -327,15 +345,11 @@ pub(crate) fn fixture_from_seeded_db(seeded: InMemoryDB) -> ExecutionFixture {
         execution_cache.insert_code(hash, Some(bytecode.clone()));
         contracts.insert(hash, bytecode);
     }
-    for (address, info) in state_cache.accounts {
-        let account = info.map(|info| RethAccount {
-            nonce: info.nonce,
-            balance: info.balance,
-            bytecode_hash: Some(info.code_hash),
-        });
-        execution_cache.insert_account(address, account);
+    for (address, account) in state_cache.accounts {
         if let Some(account) = account {
-            accounts.insert(address, account);
+            insert_account(&execution_cache, &mut accounts, address, &account);
+        } else {
+            execution_cache.insert_account(address, None);
         }
     }
     for (address, account_storage) in state_cache.storage {
@@ -369,27 +383,35 @@ pub(crate) fn fixture_from_seeded_db(seeded: InMemoryDB) -> ExecutionFixture {
         },
         cache: execution_cache,
         metrics: CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
+        tx_envs: Vec::new(),
     }
 }
 
-/// Converts signed envelopes once; iterations only clone the prepared, Arc-backed environments.
-pub(crate) fn prepare_txs(txs: &[Recovered<TempoTxEnvelope>]) -> Vec<Recovered<TempoTxEnv>> {
-    txs.iter()
-        .map(|tx| Recovered::new_unchecked(TempoTxEnv::from(tx.clone()), tx.signer()))
-        .collect()
+fn insert_account(
+    cache: &ExecutionCache,
+    accounts: &mut AddressMap<RethAccount>,
+    address: Address,
+    account: &AccountInfo,
+) {
+    let info = account;
+    let bytecode_hash = info.code_hash;
+    let account = RethAccount {
+        nonce: info.nonce,
+        balance: info.balance,
+        bytecode_hash: Some(bytecode_hash),
+    };
+    cache.insert_account(address, Some(account));
+    accounts.insert(address, account);
 }
 
-pub(crate) fn execute_txs<DB>(
+pub(crate) fn execute_txs(
     config: &TempoEvmConfig,
-    db: DB,
+    db: FixedCacheDb,
     txs: &[Recovered<TempoTxEnvelope>],
-    tx_envs: Vec<Recovered<TempoTxEnv>>,
     block_timestamp: u64,
     hardfork: TempoHardfork,
-) -> ExecutionStats
-where
-    DB: evm2::evm::Database + 'static,
-{
+) -> ExecutionStats {
+    let FixedCacheDb { db, tx_envs } = db;
     let evm = config.evm_with_database(db, bench_env(hardfork, block_timestamp));
     let ctx = TempoBlockExecutionCtx {
         inner: EthBlockExecutionCtx {
