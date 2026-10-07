@@ -13,6 +13,13 @@ Existing localnet databases with unknown or different bloat fail; use
 `nu tempo.nu bench --force` to rebuild them. Comparison snapshot rebuilds
 regenerate the bloat file for the requested size.
 
+Generated bloat also fills the expiring nonce ring and its seen map with expired
+entries, so nonce eviction is exercised from the first transaction. This adds
+about 36.6 MiB before T11 or 366.2 MiB from T11 on top of the requested TIP20 size.
+The generator accepts `--nonce-ring-hardfork` (default: latest); comparisons use
+the higher hardfork for their shared dump. Cached bloat and snapshots must match
+the current bloat version and selected ring hardfork to be reused.
+
 All txgen bench presets and scenarios interpret mix weights as target gas shares
 by default (`public-mix`: transfer 80%, mint 5%, MPP 15%), in both local and
 e2e runners. The harness confirms setup, reuses the setup bindings,
