@@ -510,11 +510,8 @@ where
         let tip = &new;
         let bundle_state = tip.execution_outcome().state().state();
         let tip_timestamp = tip.tip().header().timestamp();
-        let fallback_tokens = pool
-            .client()
-            .chain_spec()
-            .tempo_hardfork_at(tip_timestamp)
-            .fallback_fee_tokens();
+        let spec = pool.client().chain_spec().tempo_hardfork_at(tip_timestamp);
+        let fallback_tokens = spec.fallback_fee_tokens();
 
         // Removed transactions are collected here and dropped at the end of the
         // iteration: deallocating them (input data, signatures, allocator work) is
@@ -560,7 +557,7 @@ where
             all_txs
                 .iter()
                 .filter(|tx| !removed_this_iteration.contains(tx.hash()))
-                .filter(|tx| tx.transaction.inner().fee_token().is_none())
+                .filter(|tx| spec.is_t13() && tx.transaction.inner().fee_token().is_none())
                 .filter(|tx| {
                     tx.transaction
                         .fee_balance_slot()

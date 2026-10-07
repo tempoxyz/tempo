@@ -255,7 +255,7 @@ impl TempoHardfork {
         if self.is_t13() {
             &[constants::PATH_USD_ADDRESS, constants::OUSD_ADDRESS]
         } else {
-            &[]
+            &[constants::PATH_USD_ADDRESS]
         }
     }
 

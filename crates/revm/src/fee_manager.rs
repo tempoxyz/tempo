@@ -302,15 +302,11 @@ where
         }
     }
 
+    if !spec.is_t13() || max_fee.is_zero() {
+        return Ok(DEFAULT_FEE_TOKEN);
+    }
+
     let candidates = spec.fallback_fee_tokens();
-    if candidates.is_empty() {
-        return Ok(DEFAULT_FEE_TOKEN);
-    }
-
-    if max_fee.is_zero() {
-        return Ok(DEFAULT_FEE_TOKEN);
-    }
-
     let mut richest_token = DEFAULT_FEE_TOKEN;
     let mut highest_balance = U256::ZERO;
     // Replay depends on affordability, not the exact balance.
