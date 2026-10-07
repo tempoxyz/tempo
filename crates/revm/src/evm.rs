@@ -72,13 +72,22 @@ pub struct TempoEvm<DB: Database, I> {
 impl<DB: Database, I> TempoEvm<DB, I> {
     /// Create a new Tempo EVM.
     pub fn new(ctx: TempoContext<DB>, inspector: I) -> Self {
+        Self::new_with_precompiles(ctx, inspector, tempo_precompiles::tempo_precompiles)
+    }
+
+    /// Create a new Tempo EVM with precompiles built from its config and shared accounting state.
+    /// Unlike replacing the lookup afterwards, this keeps the Tempo set out of the binary.
+    pub fn new_with_precompiles<F>(ctx: TempoContext<DB>, inspector: I, precompiles: F) -> Self
+    where
+        F: FnOnce(
+            &CfgEnv<TempoHardfork>,
+            StorageActions,
+            Rc<RefCell<NonCreditableSlots>>,
+        ) -> PrecompilesMap,
+    {
         let non_creditable_slots = Rc::new(RefCell::new(NonCreditableSlots::empty()));
         let actions = StorageActions::disabled();
-        let precompiles = tempo_precompiles::tempo_precompiles(
-            &ctx.cfg,
-            actions.clone(),
-            non_creditable_slots.clone(),
-        );
+        let precompiles = precompiles(&ctx.cfg, actions.clone(), non_creditable_slots.clone());
 
         Self::new_inner(
             Evm {
@@ -201,6 +210,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     }
 
     /// Consumes self and returns a new Evm type with given storage actions.
+    /// Reinstalls the Tempo precompile set.
     pub fn with_actions(mut self, actions: StorageActions) -> Self {
         self.inner.precompiles = tempo_precompiles::tempo_precompiles(
             &self.inner.ctx.cfg,
