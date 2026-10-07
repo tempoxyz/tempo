@@ -1320,9 +1320,10 @@ where
     }
 
     fn on_canonical_state_change(&self, update: CanonicalStateUpdate<'_, Self::Block>) {
-        let info = update.block_info();
+        self.aa_2d_pool
+            .write()
+            .set_base_fee(update.block_info().pending_basefee);
         self.protocol_pool.on_canonical_state_change(update);
-        self.aa_2d_pool.write().set_base_fee(info.pending_basefee);
     }
 
     fn update_accounts(&self, accounts: Vec<ChangedAccount>) {
