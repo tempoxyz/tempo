@@ -335,6 +335,43 @@ async fn paid_expiring_block_differential(
         Ok(())
     }
 
+    async fn close_fixture_database(
+        database: reth_e2e_test_utils::TmpDB,
+        rocksdb_path: std::path::PathBuf,
+    ) -> eyre::Result<()> {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        let interval = std::time::Duration::from_millis(10);
+        while std::sync::Arc::strong_count(&database) > 1 {
+            eyre::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "fixture database is still referenced after runtime shutdown"
+            );
+            tokio::time::sleep(interval).await;
+        }
+        // A provider releases its database handle before closing RocksDB.
+        // As in the SDK's restartable-node helper, verify its exclusive lock
+        // has been released before removing the fixture's temporary directory.
+        loop {
+            let path = rocksdb_path.clone();
+            let opened = tokio::task::spawn_blocking(move || {
+                reth_provider::providers::RocksDBProvider::builder(path)
+                    .with_default_tables()
+                    .build()
+                    .map(drop)
+            })
+            .await?;
+            match opened {
+                Ok(()) => break,
+                Err(err) if tokio::time::Instant::now() >= deadline => {
+                    eyre::bail!("fixture RocksDB remained open after runtime shutdown: {err}")
+                }
+                Err(_) => tokio::time::sleep(interval).await,
+            }
+        }
+        drop(database);
+        Ok(())
+    }
+
     reth_tracing::init_test_tracing();
     let (producer_setup, producer_database) = TestNodeBuilder::new()
         .with_node_access_runtime(runtime_with_prewarming_threads(prewarming_threads)?)
@@ -887,6 +924,7 @@ async fn paid_expiring_block_differential(
         let observer_database = observer_builder.db().clone();
         let observer_handle = observer_builder.launch().await?;
         let observer = &observer_handle.node;
+        let observer_rocksdb_path = observer.data_dir.rocksdb();
         assert_eq!(
             observer.evm_config.speculative_executor.is_some(),
             execution_threads > 0
@@ -1109,9 +1147,10 @@ async fn paid_expiring_block_differential(
         )
         .await?;
         drop(runtime);
-        drop(observer_database);
+        close_fixture_database(observer_database, observer_rocksdb_path).await?;
     }
     let producer_runtime = producer.inner.task_executor.clone();
+    let producer_rocksdb_path = producer.inner.data_dir.rocksdb();
     producer.inner.rpc_server_handle().clone().stop()?;
     producer.inner.auth_server_handle().clone().stop()?;
     shutdown_fixture_node(&producer_runtime).await?;
@@ -1123,6 +1162,6 @@ async fn paid_expiring_block_differential(
     )
     .await?;
     drop(producer_runtime);
-    drop(producer_database);
+    close_fixture_database(producer_database, producer_rocksdb_path).await?;
     Ok(())
 }
