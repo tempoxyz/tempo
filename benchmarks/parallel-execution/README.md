@@ -79,6 +79,12 @@ was 16,465 TPS with the option off and 16,366 on (−0.6%, statistically neutral
 Median validation latency improved 4.1%, which triggered the workflow's improvement
 classification, but this option remains disabled without a whole-node throughput gain.
 
+The [storage cursor reuse comparison](https://github.com/tempoxyz/tempo/actions/runs/37578596708)
+ran three pairs at 25k offered TPS: 15,925 baseline versus 15,160 candidate TPS
+(−4.8%, statistically neutral). Builder gas throughput improved 2.6%, but the
+candidate remains unmerged without a TPS gain. Separate historical and generated
+comparisons matched state roots and full receipts; historical replay timings regressed.
+
 The official workflow's `disposal-clock` profiling choice runs a fixed 25k
 same-binary comparison with stage timers disabled and enabled. It calibrates the
 empty timer on the runner before and after each phase, retains the controls as
