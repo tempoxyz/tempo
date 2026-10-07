@@ -146,6 +146,14 @@ Keychain setup and workload share one generator stream, with setup confirmed by
 the sender before measurement; its single transfer workload uses transaction
 weighting because stock txgen cannot save access-key setup bindings.
 
+The [reference-binary AA comparison](https://github.com/tempoxyz/tempo/actions/runs/37557832005)
+matched roots and full live receipts for 111,356 transactions across 188 blocks:
+candidate `3f0ff3e24` with eight workers versus reference `61369bcca` with zero.
+It exercised inline secp256k1 key authorizations, expiring nonces and four fee
+tokens, with 6,187 included builder reuses and 11,244 Engine reuses. Another 106
+reported transactions preceded the verified interval. This does not cover live
+P256/WebAuthn or sponsorship, and establishes no throughput gain.
+
 For example, [boxed-result validation](https://github.com/tempoxyz/tempo/actions/runs/37164999238)
 checks 187 blocks and 1,579,481 transactions using eight versus zero workers.
 This establishes workload-specific correctness, not a comparison against main.
