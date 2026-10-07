@@ -1,5 +1,9 @@
 //! Measurement-branch instrumentation: counters and sparse fenced TSC samples, never clock syscalls.
-use std::cell::RefCell;
+use std::{
+    cell::RefCell,
+    sync::atomic::{AtomicU8, Ordering},
+};
+static ACTIVE: AtomicU8 = AtomicU8::new(0);
 
 #[derive(Clone, Copy)]
 pub enum Area {
@@ -140,7 +144,7 @@ pub fn area(area: Area) -> Guard {
 }
 #[inline]
 fn guard(op: Op, area: Option<Area>) -> Guard {
-    if !cfg!(feature = "execution-measure") {
+    if !cfg!(feature = "execution-measure") || ACTIVE.load(Ordering::Relaxed) == 0 {
         return Guard {
             area: 0,
             op: 0,
@@ -186,6 +190,7 @@ fn guard(op: Op, area: Option<Area>) -> Guard {
     })
 }
 pub fn reset(mode: u8) {
+    ACTIVE.store(mode, Ordering::Relaxed);
     STATS.with(|s| {
         *s.borrow_mut() = Stats {
             mode,
