@@ -429,13 +429,14 @@ where
         self.ensure_not_static()?;
         let code = Bytecode::new_raw(code);
         let code_len = code.len();
-        let code_deposit_gas = u64::from(self.version.gas_params.get(GasId::CodeDepositCost))
+        let mut execution_gas = u64::from(self.version.gas_params.get(GasId::CodeDepositCost))
             .saturating_mul(code_len as u64);
-        self.deduct_gas(code_deposit_gas)?;
         let state_gas = self.version.feature(EvmFeatures::EIP8037);
         if state_gas {
-            self.deduct_gas(self.version.gas_params.keccak256_word_cost(code_len))?;
+            execution_gas =
+                execution_gas.saturating_add(self.version.gas_params.keccak256_word_cost(code_len));
         }
+        self.deduct_gas(execution_gas)?;
 
         let was_empty = {
             let mut account = self.evm.state_mut().account(&address)?;
