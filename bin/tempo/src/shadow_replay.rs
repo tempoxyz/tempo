@@ -133,7 +133,7 @@ impl ShadowReplay {
             );
         }
         ensure!(
-            !self.fail_on_findings || findings <= 0 && inconclusive <= 0,
+            !self.fail_on_findings || findings == 0 && inconclusive == 0,
             "historical shadow replay needs review: {findings} blocks with unexplained differences, {inconclusive} inconclusive blocks"
         );
         Ok(())
