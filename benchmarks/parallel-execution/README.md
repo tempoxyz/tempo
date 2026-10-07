@@ -73,6 +73,12 @@ Engine execution wall time; ordinary execution without a reusable candidate took
 37.4–38.5%. This confirms availability as the larger opportunity on this workload;
 it does not establish recoverable CPU time, a TPS gain, or a root/receipt differential.
 
+The [txpool prewarming comparison](https://github.com/tempoxyz/tempo/actions/runs/37573283685)
+ran three pairs at 25k offered TPS with identical speculative binaries. Throughput
+was 16,465 TPS with the option off and 16,366 on (−0.6%, statistically neutral).
+Median validation latency improved 4.1%, which triggered the workflow's improvement
+classification, but this option remains disabled without a whole-node throughput gain.
+
 The official workflow's `disposal-clock` profiling choice runs a fixed 25k
 same-binary comparison with stage timers disabled and enabled. It calibrates the
 empty timer on the runner before and after each phase, retains the controls as
