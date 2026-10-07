@@ -28,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [baseline, boxed]
+        mode: [baseline, matrix-boxed]
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 45
     env:
@@ -53,15 +53,15 @@ jobs:
         with:
           version: v0.15.0
       - name: Run clippy on runtime targets
-        run: /usr/bin/time -v cargo clippy --workspace --lib --bins --all-features --locked --timings
+        run: /usr/bin/time -v cargo clippy --workspace --lib --bins --all-features --locked --timings -- -Ztime-passes
         env:
           RUSTFLAGS: -D warnings
       - name: Run clippy on test targets
-        run: /usr/bin/time -v cargo clippy --workspace --tests --all-features --locked --timings
+        run: /usr/bin/time -v cargo clippy --workspace --tests --all-features --locked --timings -- -Ztime-passes
         env:
           RUSTFLAGS: -D warnings
       - name: Run clippy on bench and example targets
-        run: /usr/bin/time -v cargo clippy --workspace --benches --examples --all-features --locked --timings
+        run: /usr/bin/time -v cargo clippy --workspace --benches --examples --all-features --locked --timings -- -Ztime-passes
         env:
           RUSTFLAGS: -D warnings
       - name: Upload compiler timings

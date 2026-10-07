@@ -276,7 +276,6 @@ use alloy::{
 };
 use alloy_primitives::{B256, Bytes};
 use eyre::WrapErr;
-use futures::FutureExt;
 use reth_e2e_test_utils::{
     E2ETestSetupBuilder,
     wallet::{TestAccount, Wallet},
@@ -531,11 +530,9 @@ impl TestNodeBuilder {
         let chain_spec = self.build_chain_spec()?;
         let hardfork = chain_spec.tempo_hardfork_at(0);
 
-        // Erase the deeply nested setup future before embedding it in every test future.
         let (node, _wallet) = tempo_test_setup(1, Arc::new(chain_spec))
             .with_dev_mode(true)
             .build_single()
-            .boxed()
             .await?;
 
         Ok(SingleNodeSetup { node, hardfork })
@@ -560,7 +557,6 @@ impl TestNodeBuilder {
         let (nodes, _wallet) = tempo_test_setup(self.node_count, Arc::new(chain_spec))
             .with_dev_mode(true)
             .build()
-            .boxed()
             .await?;
 
         Ok(MultiNodeSetup { nodes })
@@ -603,7 +599,6 @@ impl TestNodeBuilder {
                 config
             })
             .build_single()
-            .boxed()
             .await?;
 
         Ok(HttpOnlySetup {

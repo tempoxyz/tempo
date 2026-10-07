@@ -167,7 +167,7 @@ jobs:
           retention-days: 1
 
   e2e:
-    name: e2e (${{ matrix.partition }}/4)
+    name: e2e (${{ matrix.group }} ${{ matrix.partition }}/${{ matrix.partitions }})
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 30
     permissions:
@@ -176,8 +176,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        partition: [1, 2, 3, 4]
+        include:
+          - { group: regular, partition: 1, partitions: 4 }
+          - { group: regular, partition: 2, partitions: 4 }
+          - { group: regular, partition: 3, partitions: 4 }
+          - { group: regular, partition: 4, partitions: 4 }
+          - { group: exclusive, partition: 1, partitions: 3 }
+          - { group: exclusive, partition: 2, partitions: 3 }
+          - { group: exclusive, partition: 3, partitions: 3 }
     env:
+      # Run whole-runner tests alongside the regular shards instead of at their tail.
+      # Keep these selectors aligned with the exclusive tests in .config/nextest.toml.
+      NEXTEST_FILTER: ${{ matrix.group == 'exclusive' && '(test(can_restart_after_joining_from_snapshot) | test(validator_can_fast_sync_after_full_dkg))' || 'not (test(can_restart_after_joining_from_snapshot) | test(validator_can_fast_sync_after_full_dkg))' }}
       # Set to 8 MiB because some tests run into stack overflows with jemalloc
       RUST_MIN_STACK: 8388608
     steps:
@@ -204,9 +214,9 @@ jobs:
         continue-on-error: true
         run: uv run --no-project python -m unittest discover -s .github/scripts -p 'test_warn_flaky_e2e.py'
       - name: Build e2e tests
-        run: cargo nextest run --profile ci -p tempo-e2e --partition slice:${{ matrix.partition }}/4 --no-run
+        run: cargo nextest run --profile ci -p tempo-e2e -E "$NEXTEST_FILTER" --partition slice:${{ matrix.partition }}/${{ matrix.partitions }} --no-run
       - name: Run e2e tests
-        run: cargo nextest run --profile ci -p tempo-e2e --partition slice:${{ matrix.partition }}/4
+        run: cargo nextest run --profile ci -p tempo-e2e -E "$NEXTEST_FILTER" --partition slice:${{ matrix.partition }}/${{ matrix.partitions }}
       - name: Warn about flaky e2e tests
         if: ${{ !cancelled() }}
         continue-on-error: true
@@ -215,7 +225,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: e2e-junit-${{ matrix.partition }}
+          name: e2e-junit-${{ matrix.group }}-${{ matrix.partition }}
           path: target/nextest/ci/junit.xml
           if-no-files-found: warn
           retention-days: 30
