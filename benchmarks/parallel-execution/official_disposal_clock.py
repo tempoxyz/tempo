@@ -19,6 +19,8 @@ import time
 
 RUSTFLAGS = "-C target-cpu=native -C force-frame-pointers=yes"
 TEST = "evm::tests::consumed_candidate_disposal_clock_calibration"
+CPU_TEST = "evm::cpu_timings::tests::execution_cpu_clock_floor"
+CPU_SOURCE = "crates/evm/src/evm/cpu_timings.rs"
 BUILD_SECONDS = 3600
 BUILD_BYTES = 64 * 1024**2
 SAMPLE_SECONDS = 30
@@ -217,7 +219,8 @@ def check_config(path):
 
 
 def source_hashes(worktree):
-    return {name: sha(worktree / name) for name in SOURCES}
+    names = (*SOURCES, CPU_SOURCE) if (worktree / CPU_SOURCE).is_file() else SOURCES
+    return {name: sha(worktree / name) for name in names}
 
 
 def compile_clock(config_path):
@@ -298,6 +301,36 @@ def parse_clock(path):
     return values
 
 
+def parse_cpu_clock(path):
+    raw = Path(path).read_bytes()
+    require(len(raw) <= SAMPLE_BYTES and raw.endswith(b"\n"), "oversized/truncated CPU clock output")
+    values, summaries = [], []
+    keys = ("calls", "attempts", "samples", "failed_samples", "unavailable", "invalid", "cpu_ns", "wall_ns")
+    pattern = r"CpuSamples \{ " + ", ".join(key + r": (\d+)" for key in keys) + r" \}"
+    for line in raw.decode().splitlines():
+        prefix = "execution_cpu_clock_floor CpuSamples "
+        if prefix in line:
+            lead, body = line.split(prefix, 1)
+            require(not lead or lead == "test " + CPU_TEST + " ... ", "unexpected CPU clock prefix")
+            match = re.fullmatch(pattern, "CpuSamples " + body)
+            require(match is not None, "malformed CPU clock totals")
+            values.append(dict(zip(keys, map(int, match.groups()))))
+        elif line.startswith("test result: "):
+            summaries.append(line)
+        else:
+            require(not line or line in ("running 1 test", "ok", "test " + CPU_TEST + " ... ok"),
+                    "unexpected CPU clock process output")
+    require(len(values) == 1, "missing/duplicate CPU clock totals")
+    value = values[0]
+    require(all(value[key] == 16384 for key in ("calls", "attempts", "samples")), "CPU clock sample count")
+    require(all(value[key] == 0 for key in ("failed_samples", "unavailable", "invalid")), "invalid CPU clock samples")
+    require(0 < value["cpu_ns"] <= value["wall_ns"] < 2**64, "CPU clock total bounds")
+    require(len(summaries) == 1 and re.fullmatch(
+        r"test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; \d+ filtered out; finished in [0-9.]+s",
+        summaries[0]), "CPU clock process did not execute exactly one successful test")
+    return value
+
+
 def sample(config_path, phase, boundary):
     require(re.fullmatch(r"(baseline|feature)-[1-3]", phase), "invalid phase")
     require(boundary in ("pre", "post"), "invalid boundary")
@@ -330,6 +363,17 @@ def sample(config_path, phase, boundary):
             records.append(record)
             require(record["exit_code"] == 0 and record["stop_reason"] is None, "clock process failed")
             record["clock"] = parse_clock(attempt / (role + ".log"))
+            if CPU_SOURCE in build["sources"]:
+                assert_idle()
+                cpu_argv = [CPU_TEST if arg == TEST else arg for arg in argv]
+                cpu_log = attempt / (role + "-cpu.log")
+                cpu_record = run_bounded(cpu_argv, worktree, dict(os.environ), cpu_log,
+                                         SAMPLE_SECONDS, SAMPLE_BYTES)
+                record["cpu_clock_process"] = cpu_record
+                save(attempt / (role + "-cpu-process.json"), cpu_record)
+                require(cpu_record["exit_code"] == 0 and cpu_record["stop_reason"] is None,
+                        "CPU clock process failed")
+                record["cpu_clock"] = parse_cpu_clock(cpu_log)
         require(source_hashes(worktree) == build["sources"], "sources changed during calibration")
         require(reference(build["binary"]["path"]) == build["binary"], "clock binary changed during calibration")
         assert_idle()

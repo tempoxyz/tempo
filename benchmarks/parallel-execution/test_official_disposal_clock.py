@@ -17,6 +17,37 @@ def valid_log():
             "ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 236 filtered out; finished in 0.01s\n")
 
 
+def valid_cpu_log():
+    return ("running 1 test\n" + "test " + clock.CPU_TEST + " ... "
+            "execution_cpu_clock_floor CpuSamples { calls: 16384, attempts: 16384, samples: 16384, "
+            "failed_samples: 0, unavailable: 0, invalid: 0, cpu_ns: 3000000, wall_ns: 6000000 }\n"
+            "ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 240 filtered out; finished in 0.01s\n")
+
+
+class CpuClockOutputTests(unittest.TestCase):
+    def parse(self, text):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "clock.log"
+            path.write_text(text)
+            return clock.parse_cpu_clock(path)
+
+    def test_paired_totals_are_retained_without_extrapolation(self):
+        self.assertEqual(self.parse(valid_cpu_log())["cpu_ns"], 3000000)
+        standalone = valid_cpu_log().replace("test " + clock.CPU_TEST + " ... ", "")
+        self.assertEqual(self.parse(standalone)["samples"], 16384)
+
+    def test_unavailable_incomplete_invalid_and_duplicate_samples_refused(self):
+        text = valid_cpu_log()
+        for altered in [text.replace("unavailable: 0", "unavailable: 1"),
+                        text.replace("invalid: 0", "invalid: 1"),
+                        text.replace("samples: 16384", "samples: 0"),
+                        text.replace("cpu_ns: 3000000", "cpu_ns: 7000000"),
+                        text.replace("1 passed; 0 failed", "0 passed; 1 failed"),
+                        text.rstrip(), text + text, text + "unexpected warning\n"]:
+            with self.subTest(altered=altered[-120:]), self.assertRaises(ValueError):
+                self.parse(altered)
+
+
 class ClockOutputTests(unittest.TestCase):
     def parse(self, text):
         with tempfile.TemporaryDirectory() as directory:
@@ -243,6 +274,52 @@ class SampleTests(unittest.TestCase):
                     clock.sample(path, "feature-1", "pre")
                 self.assertEqual(run.call_count, 2)
             self.assertEqual(clock.read(out / "feature-1-pre/result.json")["status"], "passed")
+
+    def test_cpu_calibration_uses_both_affinities_and_the_bound_test_binary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path, cfg, out, binary = self.fixture(root)
+            build = clock.read(out / "build.json")
+            build["sources"] = {clock.CPU_SOURCE: "source-hash"}
+            (out / "build.json").write_text(json.dumps(build))
+
+            def process(argv, cwd, env, log, seconds, cap):
+                log.write_text(valid_cpu_log() if clock.CPU_TEST in argv else valid_log())
+                return {"argv": argv, "exit_code": 0, "stop_reason": None, "log": clock.reference(log)}
+
+            with self.patches(cfg, root), \
+                    mock.patch.object(clock, "source_hashes", return_value=build["sources"]), \
+                    mock.patch.object(clock, "run_bounded", side_effect=process) as run:
+                clock.sample(path, "feature-1", "pre")
+                self.assertEqual(run.call_count, 4)
+                self.assertEqual([call.args[0][2] for call in run.call_args_list],
+                                 [cpus for cpus in clock.CPU_SETS.values() for _ in range(2)])
+                self.assertTrue(all(call.args[0][3] == str(binary) for call in run.call_args_list))
+            result = clock.read(out / "feature-1-pre/result.json")
+            self.assertEqual(result["status"], "passed")
+            self.assertTrue(all(row["cpu_clock"]["samples"] == 16384 for row in result["processes"]))
+
+    def test_failed_cpu_calibration_prevents_next_role(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path, cfg, out, _ = self.fixture(root)
+            build = clock.read(out / "build.json")
+            build["sources"] = {clock.CPU_SOURCE: "source-hash"}
+            (out / "build.json").write_text(json.dumps(build))
+
+            def process(argv, cwd, env, log, seconds, cap):
+                cpu = clock.CPU_TEST in argv
+                log.write_text("CPU clock failure\n" if cpu else valid_log())
+                return {"argv": argv, "exit_code": int(cpu), "stop_reason": None, "log": clock.reference(log)}
+
+            with self.patches(cfg, root), \
+                    mock.patch.object(clock, "source_hashes", return_value=build["sources"]), \
+                    mock.patch.object(clock, "run_bounded", side_effect=process) as run:
+                with self.assertRaisesRegex(ValueError, "CPU clock process failed"):
+                    clock.sample(path, "feature-1", "pre")
+                self.assertEqual(run.call_count, 2)
+            self.assertEqual(clock.read(out / "feature-1-pre/result.json")["status"], "inconclusive")
+            self.assertTrue((out / "feature-1-pre/a-cpu-process.json").is_file())
 
     def test_failed_first_role_prevents_second_role_and_retains_failure(self):
         def failed(*args):

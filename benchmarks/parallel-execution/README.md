@@ -80,6 +80,8 @@ finalization. Before interpreting a diagnostic, measure the paired-clock floor
 with the ignored `execution_cpu_clock_floor` test on the validator affinity and
 compare uninstrumented throughput; the empty scope does not measure total
 instrumentation overhead.
+The official `disposal-clock` mode runs this additional calibration automatically
+before and after each phase when the bound source includes the CPU sampler.
 
 The [fallback timing diagnostic](https://github.com/tempoxyz/tempo/actions/runs/37571062322)
 checked 363 accepted blocks and 2,936,569 transactions with no sender failures.
