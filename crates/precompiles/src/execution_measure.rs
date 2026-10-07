@@ -154,7 +154,12 @@ fn guard(op: Op, area: Option<Area>) -> Guard {
             false
         } else {
             cell.calls += 1;
-            let mut n = cell.calls.wrapping_mul(0x9e3779b97f4a7c15);
+            // Independent streams prevent parent/child timers from selecting the same calls.
+            let salt = (a * OPS.len() + op as usize + 1) as u64;
+            let mut n = cell
+                .calls
+                .wrapping_add(salt.wrapping_mul(0xd6e8feb86659fd93))
+                .wrapping_mul(0x9e3779b97f4a7c15);
             n = (n ^ (n >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
             mode == 2
                 && cfg!(target_arch = "x86_64")
