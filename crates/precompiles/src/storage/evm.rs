@@ -28,7 +28,9 @@ pub struct EvmPrecompileStorageProvider<'a> {
     gas_params: GasParams,
     tip1060_storage_credits_enabled: bool,
     tip1060_storage_credit_minting_enabled: bool,
-    non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
+    /// An absent context has the same policy as `NonCreditableSlots::empty()`.
+    /// Native calls attach the transaction's context without allocating a temporary one.
+    non_creditable_slots: Option<Rc<RefCell<NonCreditableSlots>>>,
     /// Debug-only LIFO checkpoint validator. See [`Self::assert_lifo`].
     #[cfg(debug_assertions)]
     checkpoint_stack: Vec<(usize, usize)>,
@@ -58,7 +60,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             gas_params,
             tip1060_storage_credits_enabled: spec.is_t7(),
             tip1060_storage_credit_minting_enabled: true,
-            non_creditable_slots: Rc::new(RefCell::new(NonCreditableSlots::empty())),
+            non_creditable_slots: None,
             #[cfg(debug_assertions)]
             checkpoint_stack: Vec::new(),
             actions: StorageActions::disabled(),
@@ -105,7 +107,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
 
     /// Sets the transaction-local non-creditable clear-slot context for this provider.
     pub fn with_non_creditable_slots(mut self, slots: Rc<RefCell<NonCreditableSlots>>) -> Self {
-        self.non_creditable_slots = slots;
+        self.non_creditable_slots = Some(slots);
         self
     }
 
@@ -385,8 +387,8 @@ impl crate::storage_credits::StorageCreditsBackend for EvmPrecompileStorageProvi
     #[inline]
     fn is_non_creditable_slot(&mut self, owner: Address, key: U256) -> bool {
         self.non_creditable_slots
-            .borrow()
-            .is_non_creditable_slot(owner, key)
+            .as_ref()
+            .is_some_and(|slots| slots.borrow().is_non_creditable_slot(owner, key))
     }
 
     #[inline]
@@ -887,6 +889,48 @@ mod tests {
     impl std::ops::DerefMut for TestEvm {
         fn deref_mut(&mut self) -> &mut Self::Target {
             &mut self.0
+        }
+    }
+
+    #[test]
+    fn storage_credit_context_tracks_shared_policy() {
+        use crate::{
+            ACCOUNT_KEYCHAIN_ADDRESS, PATH_USD_ADDRESS, account_keychain::AccountKeychain,
+            storage_credits::StorageCreditsBackend, tip20::TIP20Token,
+        };
+
+        let payer = Address::repeat_byte(0x31);
+        let key_id = Address::repeat_byte(0x32);
+        let balance_slot =
+            TIP20Token::from_address_unchecked(PATH_USD_ADDRESS).balances[payer].slot();
+        let keychain = AccountKeychain::new();
+        let limit_key = AccountKeychain::spending_limit_key(payer, key_id);
+        let limit_slot = keychain.spending_limits[limit_key][PATH_USD_ADDRESS]
+            .remaining
+            .slot();
+
+        for spec in [TempoHardfork::T7, TempoHardfork::T14] {
+            let mut evm = TestEvm::new(spec);
+            let mut provider = evm.provider_max_gas();
+            assert!(!provider.is_non_creditable_slot(PATH_USD_ADDRESS, balance_slot));
+            assert!(!provider.is_non_creditable_slot(ACCOUNT_KEYCHAIN_ADDRESS, limit_slot));
+
+            let shared = Rc::new(RefCell::new(NonCreditableSlots::empty()));
+            provider = provider.with_non_creditable_slots(shared.clone());
+            assert!(!provider.is_non_creditable_slot(PATH_USD_ADDRESS, balance_slot));
+            shared
+                .borrow_mut()
+                .initialize(payer, PATH_USD_ADDRESS, Some(key_id));
+            assert!(provider.is_non_creditable_slot(PATH_USD_ADDRESS, balance_slot));
+            assert!(provider.is_non_creditable_slot(ACCOUNT_KEYCHAIN_ADDRESS, limit_slot));
+            assert!(!provider.is_non_creditable_slot(PATH_USD_ADDRESS, balance_slot + U256::ONE));
+            assert!(
+                !provider.is_non_creditable_slot(ACCOUNT_KEYCHAIN_ADDRESS, limit_slot + U256::ONE)
+            );
+
+            shared.borrow_mut().clear();
+            assert!(!provider.is_non_creditable_slot(PATH_USD_ADDRESS, balance_slot));
+            assert!(!provider.is_non_creditable_slot(ACCOUNT_KEYCHAIN_ADDRESS, limit_slot));
         }
     }
 
