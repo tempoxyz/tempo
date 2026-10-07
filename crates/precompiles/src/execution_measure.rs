@@ -93,13 +93,21 @@ impl Stamp {
     fn read() -> Self {
         #[cfg(target_arch = "x86_64")]
         {
-            let mut cpu = 0;
-            let ticks = unsafe {
-                core::arch::x86_64::_mm_lfence();
-                let ticks = core::arch::x86_64::__rdtscp(&mut cpu);
-                core::arch::x86_64::_mm_lfence();
-                ticks
-            };
+            let (low, high, cpu): (u32, u32, u32);
+            unsafe {
+                // Volatile assembly with a compiler memory barrier avoids LLVM's RDTSCP
+                // intrinsic lowering. LFENCE orders the timestamps around the measured work.
+                core::arch::asm!(
+                    "lfence",
+                    "rdtscp",
+                    "lfence",
+                    out("eax") low,
+                    out("edx") high,
+                    out("ecx") cpu,
+                    options(nostack, preserves_flags),
+                );
+            }
+            let ticks = (u64::from(high) << 32) | u64::from(low);
             Self { ticks, cpu }
         }
         #[cfg(not(target_arch = "x86_64"))]
