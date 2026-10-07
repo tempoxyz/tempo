@@ -5,6 +5,7 @@
 //! txgen transactions against the in-memory execution path.
 
 mod common;
+mod payment_pipeline;
 
 use alloy_consensus::transaction::{Recovered, SignerRecoverable};
 use alloy_eips::Decodable2718;
@@ -12,8 +13,8 @@ use alloy_primitives::{Address, Bytes, U256};
 use alloy_signer_local::PrivateKeySigner;
 use alloy_sol_types::SolCall;
 use common::{
-    DEFAULT_ACCOUNT_COUNT, DEFAULT_BLOCK_TIMESTAMP, bench_evm, execute_txs, fixture_from_seeded_db,
-    hardfork_bench_cases, seeded_db, sign_precompile_call, txgen_signers,
+    DEFAULT_ACCOUNT_COUNT, DEFAULT_BLOCK_TIMESTAMP, bench_evm, execute_txs, execute_txs_with_mode,
+    fixture_from_seeded_db, hardfork_bench_cases, seeded_db, sign_precompile_call, txgen_signers,
 };
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use evm2::evm::InMemoryDB;
@@ -455,6 +456,10 @@ fn workload() -> Workload {
 }
 
 fn tip20_execution(c: &mut Criterion) {
+    if std::env::var_os("TEMPO_PAYMENT_PIPELINE_BENCH").is_some() {
+        payment_pipeline::run();
+        return;
+    }
     let workload = workload();
     let hardfork_cases = hardfork_bench_cases();
     let config = TempoEvmConfig::new(Arc::new(TempoChainSpec::moderato()));
@@ -494,6 +499,39 @@ fn tip20_execution(c: &mut Criterion) {
         });
         group.finish();
     }
+
+    let hardfork = TempoHardfork::T14;
+    let fixture = fixture_from_seeded_db(seed_in_memory_cache_db(
+        &workload.participants,
+        workload.block_timestamp,
+        None,
+        hardfork,
+    ));
+    let mut group = c.benchmark_group("payment_lane");
+    group.throughput(Throughput::Elements(workload.transactions.len() as u64));
+    group.sample_size(20);
+    for (label, direct) in [("evm2", false), ("direct", true)] {
+        group.bench_function(label, |b| {
+            b.iter_batched(
+                || fixture.state_db(),
+                |db| {
+                    black_box(
+                        execute_txs_with_mode(
+                            &config,
+                            db,
+                            &workload.transactions,
+                            workload.block_timestamp,
+                            hardfork,
+                            direct,
+                        )
+                        .gas_used,
+                    )
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+    group.finish();
 
     let reward_workloads = reward_bench_workloads();
     for &(label, hardfork) in &hardfork_cases {

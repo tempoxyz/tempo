@@ -173,7 +173,47 @@ pub(crate) fn execute_txs<DB>(
 where
     DB: evm2::evm::DynDatabase + 'static,
 {
-    let evm = BlockExecutorFactory::evm_with_env(config, db, bench_env(hardfork, block_timestamp));
+    execute_txs_with_mode(config, db, txs, block_timestamp, hardfork, true)
+}
+
+pub(crate) fn execute_txs_with_mode<DB>(
+    config: &TempoEvmConfig,
+    db: DB,
+    txs: &[Recovered<TempoTxEnvelope>],
+    block_timestamp: u64,
+    hardfork: TempoHardfork,
+    direct_payments: bool,
+) -> ExecutionStats
+where
+    DB: evm2::evm::DynDatabase + 'static,
+{
+    execute_txs_inspecting_cache(
+        config,
+        db,
+        txs,
+        block_timestamp,
+        hardfork,
+        direct_payments,
+        |_| (),
+    )
+    .0
+}
+
+pub(crate) fn execute_txs_inspecting_cache<DB, R>(
+    config: &TempoEvmConfig,
+    db: DB,
+    txs: &[Recovered<TempoTxEnvelope>],
+    block_timestamp: u64,
+    hardfork: TempoHardfork,
+    direct_payments: bool,
+    inspect: impl FnOnce(&evm2::evm::Cache) -> R,
+) -> (ExecutionStats, R)
+where
+    DB: evm2::evm::DynDatabase + 'static,
+{
+    let mut evm =
+        BlockExecutorFactory::evm_with_env(config, db, bench_env(hardfork, block_timestamp));
+    evm.ext_mut().direct_payment_execution = direct_payments;
     let ctx = TempoBlockExecutionCtx {
         inner: EthBlockExecutionCtx {
             parent_hash: B256::ZERO,
@@ -218,5 +258,6 @@ where
         );
         stats.txs += 1;
     }
-    stats
+    let inspected = inspect(&executor.evm().overlay_db().cache);
+    (stats, inspected)
 }

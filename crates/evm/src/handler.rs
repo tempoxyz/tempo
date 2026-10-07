@@ -1,6 +1,13 @@
 //! Tempo EVM Handler implementation.
 
 mod config;
+mod execution;
+mod payment;
+pub use payment::execute_payment_transaction;
+
+use execution::TempoExecutionHost;
+#[cfg(test)]
+use tempo_precompiles::storage::StorageCtx;
 
 pub use self::config::{
     TempoBlockEnv, TempoBlockExt, TempoConfig, TempoConfigSelector, TempoEvmExt, TempoEvmTypes,
@@ -23,7 +30,7 @@ use evm2::{
         prepare_initial_frame, validate_block_gas_limit, validate_chain_id,
         validate_create_initcode, validate_execution_gas_limit_cap, validate_floor_gas,
         validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow,
-        validate_priority_fee, validate_tx_gas_limit_cap, warm_access_list, warm_base_accounts,
+        validate_priority_fee, validate_tx_gas_limit_cap,
     },
     evm::handler::{GasSettlement, TxHandlerHooks},
     interpreter::{GasTracker, InstrStop, MessageResult},
@@ -44,7 +51,7 @@ use tempo_precompiles::{
     },
     error::TempoPrecompileError,
     nonce::{INonce::getNonceCall, NonceManager},
-    storage::{Handler as _, StorageCtx},
+    storage::Handler as _,
 };
 use tempo_primitives::transaction::{
     SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, validate_calls,
@@ -282,9 +289,9 @@ fn calculate_key_authorization_gas(
 }
 
 #[cfg(test)]
-fn key_authorization_gas(
+fn key_authorization_gas<'db>(
     authorization: &tempo_primitives::transaction::SignedKeyAuthorization,
-    host: &Evm<'_, TempoEvmTypes>,
+    host: &impl TempoExecutionHost<'db>,
     spec: TempoHardfork,
 ) -> (u64, u64) {
     calculate_key_authorization_gas(authorization, &host.version().gas_params, spec)
@@ -307,8 +314,8 @@ fn key_authorization_gas(
 ///   - Pre-T1B: 27k base + 3k ecrecover + 22k per spending limit
 ///   - T1B+: ecrecover + SLOAD + SSTORE × (1 + N limits)
 /// - Floor gas calculation (EIP-7623, Prague+)
-fn intrinsic_gas(
-    host: &Evm<'_, TempoEvmTypes>,
+fn intrinsic_gas<'db>(
+    host: &impl TempoExecutionHost<'db>,
     aa: &TempoAaTx,
 ) -> Result<(u64, u64, u64), TempoInvalidTransaction> {
     let signed = aa.inner();
@@ -403,7 +410,7 @@ fn intrinsic_gas(
     Ok((regular, state, floor))
 }
 
-fn nonce_intrinsic_gas(host: &Evm<'_, TempoEvmTypes>, aa: &TempoAaTx) -> (u64, u64) {
+fn nonce_intrinsic_gas<'db>(host: &impl TempoExecutionHost<'db>, aa: &TempoAaTx) -> (u64, u64) {
     let tx = aa.inner().tx();
     let spec = host.config_spec_id();
     let params = &host.version().gas_params;
@@ -630,8 +637,8 @@ fn keychain_error(error: TempoPrecompileError) -> HandlerError {
     }
 }
 
-fn prepare_keychain(
-    host: &mut Evm<'_, TempoEvmTypes>,
+fn prepare_keychain<'db>(
+    host: &mut impl TempoExecutionHost<'db>,
     aa: &TempoAaTx,
     fee: TempoFeeContext,
 ) -> HandlerResult<KeychainState> {
@@ -707,7 +714,7 @@ fn prepare_keychain(
         let expected_signature_type = (key_authorization.is_some()
             || host.config_spec_id().is_t1())
         .then_some(u8::from(keychain_signature.signature.signature_type()));
-        let loaded = StorageCtx::enter_evm_without_tip1060_accounting(host, || {
+        let loaded = host.enter_protocol_storage(|| {
             let mut keychain = AccountKeychain::new();
             let key = keychain
                 .validate_keychain_authorization(
@@ -794,8 +801,8 @@ fn translate_allowed_calls_for_precompile(
         .collect()
 }
 
-fn apply_key_authorization(
-    host: &mut Evm<'_, TempoEvmTypes>,
+fn apply_key_authorization<'db>(
+    host: &mut impl TempoExecutionHost<'db>,
     aa: &TempoAaTx,
     fee: TempoFeeContext,
     state: &KeychainState,
@@ -830,60 +837,59 @@ fn apply_key_authorization(
         key_authorization_gas_params.set(GasId::SstoreSetWithoutLoadCost, sstore_set);
         key_authorization_gas_params.set(GasId::WarmStorageReadCost, warm_storage_read);
     }
-    let (result, gas) =
-        StorageCtx::enter_evm_without_tip1060_accounting_with_gas_limit_and_gas_params(
-            host,
-            if metered { remaining_gas } else { u64::MAX },
-            // It's ok to set reservoir to 0 because pre-T1B it doesn't matter and post-T1B we have unlimited gas anyway.
-            0,
-            key_authorization_gas_params,
-            || {
-                let mut keychain = AccountKeychain::new();
-                // Convert signature type to precompile SignatureType enum
-                // Use the key_type field which specifies the type of key being authorized
-                let signature_type: PrecompileSignatureType = authorization.key_type.into();
-                let restrictions = KeyRestrictions {
-                    // Handle expiry: None means never expires (store as u64::MAX)
-                    expiry: authorization.expiry.map_or(u64::MAX, |expiry| expiry.get()),
-                    // Handle limits: None means unlimited spending (enforce_limits=false)
-                    // Some([]) means no spending allowed (enforce_limits=true)
-                    // Some([...]) means specific limits (enforce_limits=true)
-                    enforceLimits: authorization.limits.is_some(),
-                    limits: authorization
-                        .limits
-                        .as_deref()
-                        .unwrap_or_default()
-                        .iter()
-                        .map(|limit| TokenLimit {
-                            token: limit.token,
-                            amount: limit.limit,
-                            period: limit.period,
-                        })
-                        .collect(),
-                    allowAnyCalls: authorization.allowed_calls.is_none(),
-                    allowedCalls: translate_allowed_calls_for_precompile(authorization),
-                };
-                // Call precompile to authorize the key (same phase as nonce increment).
-                if authorization.is_admin() {
-                    keychain.authorize_admin_key(
-                        aa.signer(),
-                        authorization.key_id,
-                        signature_type,
-                        authorization.witness(),
-                    )?;
-                } else {
-                    keychain.authorize_key(
-                        aa.signer(),
-                        authorization.key_id,
-                        signature_type,
-                        restrictions,
-                        authorization.witness(),
-                    )?;
-                }
+    let (result, gas) = host.enter_storage_with_gas_params(
+        false,
+        if metered { remaining_gas } else { u64::MAX },
+        // It's ok to set reservoir to 0 because pre-T1B it doesn't matter and post-T1B we have unlimited gas anyway.
+        0,
+        key_authorization_gas_params,
+        || {
+            let mut keychain = AccountKeychain::new();
+            // Convert signature type to precompile SignatureType enum
+            // Use the key_type field which specifies the type of key being authorized
+            let signature_type: PrecompileSignatureType = authorization.key_type.into();
+            let restrictions = KeyRestrictions {
+                // Handle expiry: None means never expires (store as u64::MAX)
+                expiry: authorization.expiry.map_or(u64::MAX, |expiry| expiry.get()),
+                // Handle limits: None means unlimited spending (enforce_limits=false)
+                // Some([]) means no spending allowed (enforce_limits=true)
+                // Some([...]) means specific limits (enforce_limits=true)
+                enforceLimits: authorization.limits.is_some(),
+                limits: authorization
+                    .limits
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|limit| TokenLimit {
+                        token: limit.token,
+                        amount: limit.limit,
+                        period: limit.period,
+                    })
+                    .collect(),
+                allowAnyCalls: authorization.allowed_calls.is_none(),
+                allowedCalls: translate_allowed_calls_for_precompile(authorization),
+            };
+            // Call precompile to authorize the key (same phase as nonce increment).
+            if authorization.is_admin() {
+                keychain.authorize_admin_key(
+                    aa.signer(),
+                    authorization.key_id,
+                    signature_type,
+                    authorization.witness(),
+                )?;
+            } else {
+                keychain.authorize_key(
+                    aa.signer(),
+                    authorization.key_id,
+                    signature_type,
+                    restrictions,
+                    authorization.witness(),
+                )?;
+            }
 
-                Ok::<_, TempoPrecompileError>(())
-            },
-        );
+            Ok::<_, TempoPrecompileError>(())
+        },
+    );
 
     let gas_used = match result {
         Ok(()) => {
@@ -916,7 +922,7 @@ fn apply_key_authorization(
     // OOG rollback: nonzero sender-paid fees must fail with KeyNotFound.
     // Admin delegation must keep the actual signer as the transaction key.
     if state.same_tx_authorization {
-        StorageCtx::enter_evm_without_tip1060_accounting(host, || {
+        host.enter_protocol_storage(|| {
             let mut keychain = AccountKeychain::new();
             keychain.set_transaction_key(authorization.key_id)?;
             if !fee.collected.is_zero() {
@@ -946,8 +952,8 @@ struct AppliedAuthorization {
     clearing: bool,
 }
 
-fn apply_one_authorization(
-    host: &mut Evm<'_, TempoEvmTypes>,
+fn apply_one_authorization<'db>(
+    host: &mut impl TempoExecutionHost<'db>,
     authorization: &tempo_primitives::transaction::TempoSignedAuthorization,
 ) -> HandlerResult<Option<AppliedAuthorization>> {
     if !authorization.chain_id.is_zero()
@@ -986,8 +992,8 @@ fn apply_one_authorization(
     }))
 }
 
-fn apply_authorization_list(
-    host: &mut Evm<'_, TempoEvmTypes>,
+fn apply_authorization_list<'db>(
+    host: &mut impl TempoExecutionHost<'db>,
     authorizations: &[tempo_primitives::transaction::TempoSignedAuthorization],
     spec: TempoHardfork,
 ) -> HandlerResult<(u64, u64)> {
@@ -1034,8 +1040,8 @@ fn apply_authorization_list(
     Ok((state_refund, regular_refund))
 }
 
-fn prevalidate_call_scopes(
-    host: &mut Evm<'_, TempoEvmTypes>,
+fn prevalidate_call_scopes<'db>(
+    host: &mut impl TempoExecutionHost<'db>,
     caller: Address,
     access_key: Option<Address>,
     calls: &[tempo_primitives::transaction::Call],
@@ -1052,19 +1058,18 @@ fn prevalidate_call_scopes(
     // Call-scope matching scales with batch size, so it runs under a metered storage provider.
     // This keeps unpaid transaction validation bounded while still failing before the first
     // user call executes.
-    let (validation, mut gas) =
-        StorageCtx::enter_evm_with_gas_limit(host, *remaining, reservoir, || {
-            let keychain = AccountKeychain::new();
-            for call in calls {
-                keychain.validate_call_scope_for_transaction(
-                    caller,
-                    access_key,
-                    &call.to,
-                    call.input.as_ref(),
-                )?;
-            }
-            Ok::<_, TempoPrecompileError>(())
-        });
+    let (validation, mut gas) = host.enter_metered_storage(*remaining, reservoir, || {
+        let keychain = AccountKeychain::new();
+        for call in calls {
+            keychain.validate_call_scope_for_transaction(
+                caller,
+                access_key,
+                &call.to,
+                call.input.as_ref(),
+            )?;
+        }
+        Ok::<_, TempoPrecompileError>(())
+    });
     let Err(error) = validation else {
         *remaining = gas.remaining();
         return Ok(None);
@@ -1088,8 +1093,8 @@ fn prevalidate_call_scopes(
     }))
 }
 
-fn apply_nonce(
-    host: &mut Evm<'_, TempoEvmTypes>,
+fn apply_nonce<'db>(
+    host: &mut impl TempoExecutionHost<'db>,
     envelope: &TempoTxEnv,
     aa: &TempoAaTx,
 ) -> HandlerResult<u64> {
@@ -1148,7 +1153,7 @@ fn apply_nonce(
         let timestamp = host.block().timestamp.saturating_to::<u64>();
         let max_expiry_secs = spec.expiring_nonce_max_expiry_secs();
         let capacity = spec.expiring_nonce_set_capacity();
-        return StorageCtx::enter_evm_without_tip1060_accounting(host, || {
+        return host.enter_protocol_storage( || {
             let mut nonces = NonceManager::new();
             let previous_pointer = if let Some(index) = aa.expiring_nonce_idx() {
                 let pointer = nonces.expiring_nonce_ring_ptr.read().map_err(nonce_error)?;
@@ -1189,7 +1194,7 @@ fn apply_nonce(
     }
 
     // 2D nonce transaction
-    StorageCtx::enter_evm_without_tip1060_accounting(host, || {
+    host.enter_protocol_storage(|| {
         let mut nonces = NonceManager::new();
         if nonce_check {
             let state = nonces
@@ -1344,10 +1349,18 @@ struct PreparedAa {
 fn prepare_aa(
     request: &mut TxRequest<'_, '_, TempoEvmTypes, TempoAaTx>,
 ) -> HandlerResult<PreparedAa> {
-    let caller = request.tx.signer();
-    let signed = request.tx.inner();
+    prepare_aa_on_host(request.host, request.envelope, request.tx.inner())
+}
+
+fn prepare_aa_on_host<'db>(
+    host: &mut impl TempoExecutionHost<'db>,
+    envelope: &TempoTxEnv,
+    aa: &TempoAaTx,
+) -> HandlerResult<PreparedAa> {
+    let caller = aa.signer();
+    let signed = aa.inner();
     let tx = signed.tx();
-    let spec = request.host.config_spec_id();
+    let spec = host.config_spec_id();
 
     if tempo_primitives::subblock::has_sub_block_nonce_key_prefix(&tx.nonce_key) {
         return Err(TempoInvalidTransaction::SubblockTransactionsDisabled.into());
@@ -1367,7 +1380,7 @@ fn prepare_aa(
             .validate_version(spec.is_t1c())
             .map_err(TempoInvalidTransaction::from)?;
     }
-    validate_key_authorization(request.tx.inner(), request.host.version().chain_id, spec)?;
+    validate_key_authorization(aa, host.version().chain_id, spec)?;
     // Access-key CREATE is a cheap structural rejection that does not depend on any
     // per-call scope walk or state mutation. Rejecting it here keeps validation work
     // constant and avoids entering CREATE execution paths that require special protocol-
@@ -1387,8 +1400,7 @@ fn prepare_aa(
         return Err(TempoInvalidTransaction::ValueTransferNotAllowedInAATx.into());
     }
     // Validate the fee payer signature
-    let fee_payer = request
-        .envelope
+    let fee_payer = envelope
         .fee_payer()
         .map_err(|_| TempoInvalidTransaction::InvalidFeePayerSignature)?;
     if spec.is_t2() && tx.fee_payer_signature.is_some() && fee_payer == caller {
@@ -1398,42 +1410,33 @@ fn prepare_aa(
     let max_fee = U256::from(tx.max_fee_per_gas);
     let priority_fee = U256::from(tx.max_priority_fee_per_gas);
     let gas_price =
-        evm2::ethereum::effective_gas_price(max_fee, priority_fee, request.host.block().basefee);
+        evm2::ethereum::effective_gas_price(max_fee, priority_fee, host.block().basefee);
     // First perform standard validation (header + transaction environment)
     // This validates: chain_id, gas limits, tx type support, and fee fields.
-    validate_priority_fee(request.host.version(), max_fee, priority_fee)?;
-    validate_gas_price(
-        request.host.version(),
-        gas_price,
-        request.host.block().basefee,
-    )?;
-    validate_chain_id(request.host.version(), Some(tx.chain_id), false)?;
-    validate_tx_gas_limit_cap(request.host.version(), tx.gas_limit)?;
-    validate_block_gas_limit(
-        request.host.version(),
-        tx.gas_limit,
-        request.host.block().gas_limit,
-    )?;
+    validate_priority_fee(host.version(), max_fee, priority_fee)?;
+    validate_gas_price(host.version(), gas_price, host.block().basefee)?;
+    validate_chain_id(host.version(), Some(tx.chain_id), false)?;
+    validate_tx_gas_limit_cap(host.version(), tx.gas_limit)?;
+    validate_block_gas_limit(host.version(), tx.gas_limit, host.block().gas_limit)?;
     if !(spec.is_t12() && tx.nonce_key == TEMPO_EXPIRING_NONCE_KEY) {
         validate_nonce_not_overflow(tx.nonce)?;
     }
     for call in &tx.calls {
-        validate_create_initcode(request.host.version(), call.to, &call.input)?;
+        validate_create_initcode(host.version(), call.to, &call.input)?;
     }
     // Validate time window for AA transactions
-    let timestamp = request.host.block().timestamp.saturating_to::<u64>();
+    let timestamp = host.block().timestamp.saturating_to::<u64>();
     validate_time_window(
         tx.valid_after
             .map(|value| value.get())
-            .filter(|_| !request.host.ext().skip_valid_after_check),
+            .filter(|_| !host.ext().skip_valid_after_check),
         tx.valid_before.map(|value| value.get()),
         timestamp,
     )?;
 
     // Route to the AA gas calculation and validation path.
-    let (mut intrinsic, mut initial_state_gas, floor_gas) =
-        intrinsic_gas(request.host, request.tx.inner())?;
-    let (nonce_gas, nonce_state_gas) = nonce_intrinsic_gas(request.host, request.tx.inner());
+    let (mut intrinsic, mut initial_state_gas, floor_gas) = intrinsic_gas(host, aa)?;
+    let (nonce_gas, nonce_state_gas) = nonce_intrinsic_gas(host, aa);
 
     // For T0+, include 2D nonce gas in validation (charged upfront)
     // For pre-T0 (Genesis), 2D nonce gas is added AFTER validation to allow transactions
@@ -1462,40 +1465,38 @@ fn prepare_aa(
     // to appear as the first call in the batch (validated in `validate_calls`)
     if !tx.nonce_key.is_zero()
         && tx.calls.first().is_some_and(|call| call.to.is_create())
-        && request
-            .host
+        && host
             .state_mut()
             .account_info_untracked(&caller)?
             .is_none_or(|account| account.nonce == 0)
     {
-        intrinsic = intrinsic.saturating_add(u64::from(
-            request.host.version().gas_params[GasId::NewAccountCost],
-        ));
-        initial_state_gas = initial_state_gas
-            .saturating_add(request.host.version().gas_params.new_account_state_gas());
+        intrinsic =
+            intrinsic.saturating_add(u64::from(host.version().gas_params[GasId::NewAccountCost]));
+        initial_state_gas =
+            initial_state_gas.saturating_add(host.version().gas_params.new_account_state_gas());
 
         // Recheck the complete cost here, including Genesis nonce gas added after
         // initial validation. This CREATE case must not use the unbounded gas fallback.
         validate_intrinsic_gas(tx.gas_limit, intrinsic, initial_state_gas)?;
     }
 
-    validate_execution_gas_limit_cap(request.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
+    validate_execution_gas_limit_cap(host.version(), tx.gas_limit, intrinsic, floor_gas)?;
 
-    warm_base_accounts(request.host, caller, tx.calls[0].to);
-    warm_access_list(request.host, &tx.access_list);
+    host.warm_base_accounts(caller, tx.calls[0].to);
+    host.warm_access_list(&tx.access_list);
 
     // Collect fees for the transaction.
-    let fee_context = TempoHandlerHooks::resolve_fee_context(request.host, request.envelope)?;
+    let fee_context = TempoHandlerHooks::resolve_fee_context(host, envelope)?;
 
-    let create_nonce = apply_nonce(request.host, request.envelope, request.tx.inner())?;
+    let create_nonce = apply_nonce(host, envelope, aa)?;
 
     // For Keychain signatures, validate the acting access key before fee collection when it
     // already exists. Same-tx auth+use is the exception: that key is registered only after fees
     // are collected, so fee-limit validation uses the inline authorization payload instead.
-    let keychain = prepare_keychain(request.host, request.tx.inner(), fee_context)?;
-    if request.host.feature(EvmFeatures::FEE_CHARGE) {
+    let keychain = prepare_keychain(host, aa, fee_context)?;
+    if host.feature(EvmFeatures::FEE_CHARGE) {
         TempoHandlerHooks::collect_fee(
-            request.host,
+            host,
             fee_context,
             (fee_context.fee_payer == caller)
                 .then_some(keychain.fee_key)
@@ -1504,8 +1505,8 @@ fn prepare_aa(
     }
 
     let key_auth_gas = apply_key_authorization(
-        request.host,
-        request.tx.inner(),
+        host,
+        aa,
         fee_context,
         &keychain,
         tx.gas_limit
@@ -1513,7 +1514,7 @@ fn prepare_aa(
             .saturating_sub(initial_state_gas),
     )?;
     let (state_refund, regular_refund) =
-        apply_authorization_list(request.host, &tx.tempo_authorization_list, spec)?;
+        apply_authorization_list(host, &tx.tempo_authorization_list, spec)?;
     let result = if key_auth_gas == u64::MAX
         || key_auth_gas
             > tx.gas_limit
@@ -1525,9 +1526,9 @@ fn prepare_aa(
             gas: GasTracker::new_spent_with_reservoir(tx.gas_limit.saturating_sub(intrinsic), 0),
             ..MessageResult::<TempoEvmTypes>::default()
         };
-        Some(TempoHandlerHooks::settle_transaction(
-            request.host,
-            request.envelope,
+        Some(config::settle_transaction(
+            host,
+            envelope,
             GasSettlement {
                 caller,
                 gas_price,

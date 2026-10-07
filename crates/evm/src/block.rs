@@ -32,6 +32,58 @@ use tempo_contracts::precompiles::{
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tracing::trace;
 
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+struct PaymentInvalidTxError(evm2::registry::HandlerError);
+
+impl reth_evm::InvalidTxError for PaymentInvalidTxError {
+    fn is_nonce_too_low(&self) -> bool {
+        matches!(self.0, evm2::registry::HandlerError::InvalidNonce { expected, got } if got < expected)
+    }
+    fn is_gas_limit_too_high(&self) -> bool {
+        matches!(
+            self.0,
+            evm2::registry::HandlerError::GasLimitMoreThanBlock { .. }
+                | evm2::registry::HandlerError::TxGasLimitGreaterThanCap { .. }
+        )
+    }
+    fn is_gas_limit_too_low(&self) -> bool {
+        matches!(
+            self.0,
+            evm2::registry::HandlerError::IntrinsicGasTooLow { .. }
+        )
+    }
+    fn as_any(&self) -> &(dyn core::any::Any + 'static) {
+        self
+    }
+}
+
+fn map_payment_transaction_error(
+    error: evm2::registry::HandlerError,
+    hash: B256,
+) -> BlockExecutionError {
+    use evm2::registry::HandlerError;
+    match error {
+        HandlerError::Database(ref db) if !db.is_fatal() => BlockValidationError::EVM {
+            hash,
+            error: Box::new(error),
+        }
+        .into(),
+        HandlerError::Database(_)
+        | HandlerError::Fatal(_)
+        | HandlerError::WrongTransactionType { .. } => reth_evm::InternalBlockExecutionError::EVM {
+            hash,
+            error: Box::new(error),
+        }
+        .into(),
+        error => BlockValidationError::InvalidTx {
+            hash,
+            error: Box::new(PaymentInvalidTxError(error)),
+        }
+        .into(),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum BlockSection {
     /// Start of block system transactions.
@@ -591,9 +643,48 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         let tx_hash = *original.tx_hash();
         let tx_type = original.tx_type();
         let is_payment = self.is_payment(original);
-        let inner = self
-            .inner
-            .execute_transaction_without_commit((tx_env, recovered))?;
+        let use_direct_payment = is_payment
+            && self.evm().config_spec_id().is_t5()
+            && self.evm().ext().direct_payment_execution
+            && self.evm().ext().fee_manager.supports_direct_payment_execution()
+            && self.evm().inspector().is_none()
+            // Reth owns the BAL transaction index, including segment offsets.
+            && self.evm().state().bal_builder().is_none()
+            && self.evm().state().bal().is_none();
+        let inner = if use_direct_payment {
+            self.inner
+                .validate_transaction_gas_limit(original.gas_limit())?;
+            let evm = self.evm_mut();
+            let version = *evm.version();
+            let block = *evm.block();
+            let spec = evm.config_spec_id();
+            let mut ext = evm.ext().clone();
+            let result = crate::execute_payment_transaction(
+                evm.state_mut(),
+                &version,
+                spec,
+                &block,
+                &mut ext,
+                tx_env.inner(),
+            );
+            *evm.ext_mut() = ext;
+            match result {
+                Ok(result) => EthTransactionResultWithState::new(result, tx_type, 0),
+                Err(error)
+                    if matches!(
+                        error.external_ref::<crate::TempoInvalidTransaction>(),
+                        Some(crate::TempoInvalidTransaction::DirectPaymentUnsupported)
+                    ) =>
+                {
+                    self.inner
+                        .execute_transaction_without_commit((tx_env, recovered))?
+                }
+                Err(error) => return Err(map_payment_transaction_error(error, tx_hash)),
+            }
+        } else {
+            self.inner
+                .execute_transaction_without_commit((tx_env, recovered))?
+        };
 
         // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
         // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.

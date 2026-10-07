@@ -76,6 +76,7 @@ p256 = { workspace = true, features = ["ecdsa"] }
 proptest.workspace = true
 rand_08.workspace = true
 rand.workspace = true
+rayon.workspace = true
 reth-execution-cache.workspace = true
 reth-storage-api.workspace = true
 reth-trie.workspace = true

@@ -1,15 +1,17 @@
 //! EVM2 transaction handler plumbing.
 
+use super::execution::TempoExecutionHost;
+
 use crate::{
-    FeePaymentError, ProtocolFeeContext, ProtocolFeeManager, SYSTEM_CALL_GAS_LIMIT, TempoEvmTx,
-    TempoFeeManager, TempoInvalidTransaction, TempoStateAccess, TempoTxEnv,
+    FeePaymentError, ProtocolFeeManager, SYSTEM_CALL_GAS_LIMIT, TempoEvmTx, TempoFeeManager,
+    TempoInvalidTransaction, TempoTxEnv,
 };
 use alloy_consensus::{Transaction, TxEip1559, TxEip2930, TxLegacy};
 use alloy_primitives::{Address, TxKind, U256};
 use evm2::{
     Evm, EvmConfig, EvmConfigSelector, EvmFeatures, EvmTypesHost, ExecutionConfig, OpcodeConfig,
     SpecId, TxResult,
-    ethereum::{LazyTxEip7702, PreparedTx, eip1559, eip2930, eip7702, finalize_gas, legacy},
+    ethereum::{LazyTxEip7702, PreparedTx, eip1559, eip2930, eip7702, legacy},
     evm::{DynDatabase, SystemTx, precompile::PrecompileProvider},
     handler::{GasSettlement, TxHandlerHooks},
     registry::{HandlerError, HandlerResult, TxRegistry, TxRequest, handler},
@@ -91,6 +93,9 @@ pub struct TempoTxResultExt {
 /// Tempo-specific state owned by an EVM2 instance.
 #[derive(Clone, Debug)]
 pub struct TempoEvmExt {
+    /// Enables native payment execution in the block executor. Disable for custom
+    /// precompile providers; inspectors and custom fee policies use general execution.
+    pub direct_payment_execution: bool,
     /// Protocol fee implementation used by transaction hooks.
     pub fee_manager: Arc<dyn ProtocolFeeManager>,
     /// Recorder for protocol storage accesses.
@@ -110,6 +115,7 @@ pub struct TempoEvmExt {
 impl Default for TempoEvmExt {
     fn default() -> Self {
         Self {
+            direct_payment_execution: false,
             fee_manager: Arc::new(TempoFeeManager::new()),
             actions: StorageActions::disabled(),
             non_creditable_slots: Rc::new(RefCell::new(NonCreditableSlots::empty())),
@@ -236,54 +242,54 @@ impl TxHandlerHooks<TempoEvmTypes> for TempoHandlerHooks {
     fn settle_transaction(
         host: &mut Evm<'_, TempoEvmTypes>,
         envelope: &TempoTxEnv,
-        mut gas: GasSettlement<TempoEvmTypes>,
+        gas: GasSettlement<TempoEvmTypes>,
     ) -> HandlerResult<TxResult<TempoEvmTypes>> {
-        settle_storage_credit_refunds(host, &mut gas.result)?;
-        let gas_price = u128::try_from(gas.gas_price)
-            .map_err(|_| HandlerError::Fatal("effective gas price does not fit u128".into()))?;
-        let gas_limit = gas.gas_limit;
-        let mut result = finalize_gas(host, gas)?;
-        if !host.feature(EvmFeatures::FEE_CHARGE) {
-            return Ok(result);
-        }
-        let actual_spending = calc_gas_balance_spending(result.tx_gas_used(), gas_price);
-        let collected = calc_gas_balance_spending(gas_limit, gas_price);
-        let refund = collected
-            .checked_sub(actual_spending)
-            .ok_or_else(|| HandlerError::Fatal("actual fee exceeds upfront fee".into()))?;
-
-        if collected.is_zero() && !actual_spending.is_zero() {
-            return Ok(result);
-        }
-
-        let fee_payer = envelope
-            .fee_payer()
-            .map_err(|_| TempoInvalidTransaction::InvalidFeePayerSignature)?;
-        let fee_token = host.ext().resolved_fee_token.ok_or_else(|| {
-            HandlerError::Fatal("fee token was not resolved before settlement".into())
-        })?;
-        let fee_manager = host.ext().fee_manager.clone();
-        let beneficiary = host.block().beneficiary;
-        let validator_fee = if actual_spending.is_zero() && refund.is_zero() {
-            U256::ZERO
-        } else {
-            fee_manager.collect_fee_post_tx(
-                ProtocolFeeContext { host },
-                fee_payer,
-                actual_spending,
-                refund,
-                fee_token,
-                beneficiary,
-            )?
-        };
-        result.ext.validator_fee = validator_fee;
-        Ok(result)
+        settle_transaction(host, envelope, gas)
     }
 }
 
+pub(super) fn settle_transaction<'db>(
+    host: &mut impl TempoExecutionHost<'db>,
+    envelope: &TempoTxEnv,
+    mut gas: GasSettlement<TempoEvmTypes>,
+) -> HandlerResult<TxResult<TempoEvmTypes>> {
+    settle_storage_credit_refunds(host, &mut gas.result)?;
+    let gas_price = u128::try_from(gas.gas_price)
+        .map_err(|_| HandlerError::Fatal("effective gas price does not fit u128".into()))?;
+    let gas_limit = gas.gas_limit;
+    let mut result = host.finalize_gas(gas)?;
+    if !host.feature(EvmFeatures::FEE_CHARGE) {
+        return Ok(result);
+    }
+    let actual_spending = calc_gas_balance_spending(result.tx_gas_used(), gas_price);
+    let collected = calc_gas_balance_spending(gas_limit, gas_price);
+    let refund = collected
+        .checked_sub(actual_spending)
+        .ok_or_else(|| HandlerError::Fatal("actual fee exceeds upfront fee".into()))?;
+
+    if collected.is_zero() && !actual_spending.is_zero() {
+        return Ok(result);
+    }
+
+    let fee_payer = envelope
+        .fee_payer()
+        .map_err(|_| TempoInvalidTransaction::InvalidFeePayerSignature)?;
+    let fee_token = host.ext().resolved_fee_token.ok_or_else(|| {
+        HandlerError::Fatal("fee token was not resolved before settlement".into())
+    })?;
+    let beneficiary = host.block().beneficiary;
+    let validator_fee = if actual_spending.is_zero() && refund.is_zero() {
+        U256::ZERO
+    } else {
+        host.collect_fee_post_tx(fee_payer, actual_spending, refund, fee_token, beneficiary)?
+    };
+    result.ext.validator_fee = validator_fee;
+    Ok(result)
+}
+
 impl TempoHandlerHooks {
-    pub(super) fn resolve_fee_context(
-        host: &mut Evm<'_, TempoEvmTypes>,
+    pub(super) fn resolve_fee_context<'db>(
+        host: &mut impl TempoExecutionHost<'db>,
         envelope: &TempoTxEnv,
     ) -> HandlerResult<TempoFeeContext> {
         host.ext_mut().resolved_fee_token = None;
@@ -304,20 +310,19 @@ impl TempoHandlerHooks {
             calc_gas_balance_spending(envelope.evm_tx().gas_limit(), envelope.max_fee_per_gas());
         let spec = host.config_spec_id();
 
-        StorageCtx::enter_evm_without_tip1060_accounting(host, || {
+        host.enter_protocol_storage(|| {
             AccountKeychain::new().set_tx_origin(envelope.evm_tx().signer())?;
             TIP20ChannelReserve::new()
                 .set_channel_open_context_hash(envelope.channel_open_context_hash())
         })?;
 
-        let fee_manager = host.ext().fee_manager.clone();
-        let fee_token = fee_manager.get_fee_token(host, envelope, fee_payer, spec)?;
+        let fee_token = host.get_fee_token(envelope, fee_payer, spec)?;
         host.ext_mut().resolved_fee_token = Some(fee_token);
         if !fee_token.is_tip20() {
             return Err(TempoInvalidTransaction::FeeTokenNotTip20 { address: fee_token }.into());
         }
         if !max_fee.is_zero() {
-            fee_manager.validate_fee_token(host, fee_token, spec)?;
+            host.validate_fee_token(fee_token, spec)?;
         }
         let balance =
             host.get_token_balance(fee_token, fee_payer, spec, StorageActions::disabled())?;
@@ -338,8 +343,8 @@ impl TempoHandlerHooks {
         })
     }
 
-    pub(super) fn collect_fee(
-        host: &mut Evm<'_, TempoEvmTypes>,
+    pub(super) fn collect_fee<'db>(
+        host: &mut impl TempoExecutionHost<'db>,
         context: TempoFeeContext,
         key_id: Option<Address>,
     ) -> HandlerResult<()> {
@@ -347,10 +352,8 @@ impl TempoHandlerHooks {
         let features = host.version().features;
         let beneficiary = host.block().beneficiary;
         let skip_liquidity_check = host.ext().skip_liquidity_check;
-        let fee_manager = host.ext().fee_manager.clone();
         if !context.collected.is_zero()
-            && let Err(error) = fee_manager.collect_fee_pre_tx(
-                ProtocolFeeContext { host },
+            && let Err(error) = host.collect_fee_pre_tx(
                 context.fee_payer,
                 context.fee_token,
                 context.collected,
@@ -361,7 +364,7 @@ impl TempoHandlerHooks {
             host.state_mut().rollback(checkpoint, features);
             return Err(match error {
                 TempoPrecompileError::TIPFeeAMMError(TIPFeeAMMError::InsufficientLiquidity(_)) => {
-                    let validator_token = fee_manager.get_validator_token(host, beneficiary).ok();
+                    let validator_token = host.get_validator_token(beneficiary).ok();
                     TempoInvalidTransaction::from(FeePaymentError::InsufficientAmmLiquidity {
                         user_token: validator_token.map(|_| context.fee_token),
                         validator_token,
@@ -402,8 +405,8 @@ impl TempoHandlerHooks {
     }
 }
 
-fn settle_storage_credit_refunds(
-    host: &mut Evm<'_, TempoEvmTypes>,
+fn settle_storage_credit_refunds<'db>(
+    host: &mut impl TempoExecutionHost<'db>,
     result: &mut evm2::interpreter::MessageResult<TempoEvmTypes>,
 ) -> HandlerResult<()> {
     if !host.config_spec_id().is_t7() || !result.is_success() {
@@ -417,7 +420,7 @@ fn settle_storage_credit_refunds(
         return Ok(());
     }
 
-    let settled = StorageCtx::enter_evm_without_tip1060_accounting(host, || {
+    let settled = host.enter_protocol_storage(|| {
         let mut storage = StorageCtx;
         let mut settled = 0i64;
         for (key, word) in slots {

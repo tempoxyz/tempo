@@ -30,6 +30,7 @@ impl TempoEvmFactory {
 
     pub(crate) fn evm_ext(&self, mut ext: TempoEvmExt) -> TempoEvmExt {
         ext.fee_manager = self.fee_manager.clone();
+        ext.direct_payment_execution = true;
         ext
     }
 }
@@ -61,6 +62,7 @@ impl reth_evm_ethereum::EvmFactory for TempoEvmFactory {
         let spec = evm.config_spec_id();
         let mut ext = core::mem::take(evm.ext_mut());
         ext.fee_manager = self.fee_manager.clone();
+        ext.direct_payment_execution = true;
         let precompiles = tempo_precompiles::TempoPrecompiles::new(
             spec,
             ext.actions.clone(),

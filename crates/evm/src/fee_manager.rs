@@ -48,6 +48,12 @@ pub trait FeeTokenResolver {
 
 /// Internal protocol fee hooks, separate from the public FeeManager precompile.
 pub trait ProtocolFeeManager: Debug + Send + Sync {
+    /// Whether this implementation uses the native Tempo fee policy and can be
+    /// executed without an EVM host. Custom policies use the general executor.
+    fn supports_direct_payment_execution(&self) -> bool {
+        false
+    }
+
     /// Resolves the fee token that should pay for `tx`.
     fn get_fee_token(
         &self,
@@ -136,6 +142,10 @@ impl TempoFeeManager {
 }
 
 impl ProtocolFeeManager for TempoFeeManager {
+    fn supports_direct_payment_execution(&self) -> bool {
+        true
+    }
+
     fn collect_fee_pre_tx(
         &self,
         ctx: ProtocolFeeContext<'_, '_>,

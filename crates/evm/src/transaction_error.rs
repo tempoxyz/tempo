@@ -7,6 +7,10 @@ use tempo_primitives::transaction::{KeyAuthorizationChainIdError, KeychainVersio
 /// Tempo-specific invalid transaction errors.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum TempoInvalidTransaction {
+    /// Transaction requires the general executor rather than native payment dispatch.
+    #[error("transaction is not supported by the direct payment executor")]
+    DirectPaymentUnsupported,
+
     /// System transaction must be a call (not a create).
     #[error("system transaction must be a call, not a create")]
     SystemTransactionMustBeCall,
@@ -265,7 +269,8 @@ impl TempoInvalidTransaction {
             | Self::LegacyKeychainSignature
             | Self::CallsValidation(_) => true,
             // State-dependent: may resolve as state advances.
-            Self::ValidAfter { .. }
+            Self::DirectPaymentUnsupported
+            | Self::ValidAfter { .. }
             | Self::ValidBefore { .. }
             | Self::InvalidFeeToken(_)
             | Self::FeeTokenNotTip20 { .. }

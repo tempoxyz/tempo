@@ -8,7 +8,7 @@ use bitflags::bitflags;
 use evm2::{
     Evm, EvmFeatures, EvmTypes, Version,
     bytecode::Bytecode,
-    evm::{AccountInfo, SLoad, SStore, StateCheckpoint},
+    evm::{AccountInfo, SLoad, SStore, State, StateCheckpoint},
     interpreter::{GasTracker, gas},
     version::{GasId, GasParams},
 };
@@ -24,7 +24,7 @@ use tempo_primitives::{TempoBlockEnv, TempoBlockExt};
 ///
 /// Wraps [`evm2::evm::State`] and tracks gas consumption for storage operations.
 pub struct EvmPrecompileStorageProvider<'evm, 'gas, 'db, T: EvmTypes> {
-    evm: &'evm mut Evm<'db, T>,
+    host: StorageHost<'evm, 'db, T>,
     version: Version,
     block: TempoBlockEnv,
     gas_tracker: GasTrackerStorage<'gas>,
@@ -35,6 +35,27 @@ pub struct EvmPrecompileStorageProvider<'evm, 'gas, 'db, T: EvmTypes> {
     non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
     /// Recorded storage actions.
     actions: StorageActions,
+}
+
+enum StorageHost<'host, 'db, T: EvmTypes> {
+    Evm(&'host mut Evm<'db, T>),
+    State(&'host mut State<'db>),
+}
+
+impl<'db, T: EvmTypes> StorageHost<'_, 'db, T> {
+    fn state_mut(&mut self) -> &mut State<'db> {
+        match self {
+            Self::Evm(evm) => evm.state_mut(),
+            Self::State(state) => state,
+        }
+    }
+
+    fn log(&mut self, log: Log) {
+        match self {
+            Self::Evm(evm) => evm.log(log),
+            Self::State(state) => state.logs_mut().push(log),
+        }
+    }
 }
 
 impl<'evm, 'gas, 'db, T> EvmPrecompileStorageProvider<'evm, 'gas, 'db, T>
@@ -51,7 +72,7 @@ where
         let version = *evm.version();
         let block = *evm.block();
         Self::with_gas_tracker(
-            evm,
+            StorageHost::Evm(evm),
             version,
             block,
             GasTrackerStorage::Borrowed(gas_tracker),
@@ -65,7 +86,7 @@ where
         let version = *evm.version();
         let block = *evm.block();
         Self::with_gas_tracker(
-            evm,
+            StorageHost::Evm(evm),
             version,
             block,
             GasTrackerStorage::Owned(GasTracker::new(u64::MAX)),
@@ -75,7 +96,7 @@ where
     }
 
     fn with_gas_tracker(
-        evm: &'evm mut Evm<'db, T>,
+        host: StorageHost<'evm, 'db, T>,
         version: Version,
         block: TempoBlockEnv,
         gas_tracker: GasTrackerStorage<'gas>,
@@ -83,7 +104,7 @@ where
         is_static: bool,
     ) -> Self {
         Self {
-            evm,
+            host,
             version,
             block,
             gas_tracker,
@@ -94,6 +115,25 @@ where
             non_creditable_slots: Rc::new(RefCell::new(NonCreditableSlots::empty())),
             actions: StorageActions::disabled(),
         }
+    }
+
+    /// Creates a provider directly over transaction state, without constructing an EVM.
+    pub fn from_state(
+        state: &'evm mut State<'db>,
+        gas_tracker: &'gas mut GasTracker,
+        version: Version,
+        block: TempoBlockEnv,
+        spec: TempoHardfork,
+        is_static: bool,
+    ) -> Self {
+        Self::with_gas_tracker(
+            StorageHost::State(state),
+            version,
+            block,
+            GasTrackerStorage::Borrowed(gas_tracker),
+            spec,
+            is_static,
+        )
     }
 
     /// Sets the storage actions for this provider.
@@ -145,9 +185,9 @@ where
         key: U256,
         skip_cold_load: bool,
     ) -> Result<SLoad, TempoPrecompileError> {
-        self.evm.state_mut().account(&address)?.warm();
+        self.host.state_mut().account(&address)?.warm();
         let mut slot = self
-            .evm
+            .host
             .state_mut()
             .storage(&address)
             .into_slot_with_skip(key, skip_cold_load)?;
@@ -169,9 +209,9 @@ where
         skip_cold_load: bool,
     ) -> Result<SStore, TempoPrecompileError> {
         self.ensure_not_static()?;
-        self.evm.state_mut().account(&address)?.warm();
+        self.host.state_mut().account(&address)?.warm();
         let mut slot = self
-            .evm
+            .host
             .state_mut()
             .storage(&address)
             .into_slot_with_skip(key, skip_cold_load)?;
@@ -305,7 +345,7 @@ where
         };
 
         let mut account = self
-            .evm
+            .host
             .state_mut()
             .account_with_skip(&address, insufficient_gas_for_cold_load)?;
         let is_cold = self.version.feature(EvmFeatures::EIP2929) && account.warm();
@@ -375,13 +415,13 @@ where
 
     #[inline]
     fn tload(&mut self, address: Address, key: U256) -> U256 {
-        self.evm.state_mut().tload(&address, &key)
+        self.host.state_mut().tload(&address, &key)
     }
 
     #[inline]
     fn tstore(&mut self, address: Address, key: U256, value: U256) -> Result<(), Self::Error> {
         self.ensure_not_static()?;
-        self.evm.state_mut().tstore(&address, &key, &value);
+        self.host.state_mut().tstore(&address, &key, &value);
         Ok(())
     }
 
@@ -424,7 +464,7 @@ where
         self.deduct_state_gas(self.version.gas_params.code_deposit_state_gas(code_len))?;
 
         let was_empty = {
-            let mut account = self.evm.state_mut().account(&address)?;
+            let mut account = self.host.state_mut().account(&address)?;
             let was_empty = account.get().is_none_or(AccountInfo::is_empty);
             account.set_code_slow(code);
             was_empty
@@ -542,7 +582,7 @@ where
         self.deduct_gas(u64::from(
             self.version.gas_params.get(GasId::WarmStorageReadCost),
         ))?;
-        self.evm.state_mut().tstore(&address, &key, &value);
+        self.host.state_mut().tstore(&address, &key, &value);
         Ok(())
     }
 
@@ -558,7 +598,7 @@ where
             ),
         )?;
 
-        self.evm.log(Log {
+        self.host.log(Log {
             address,
             data: event,
         });
@@ -575,7 +615,7 @@ where
         self.deduct_gas(u64::from(
             self.version.gas_params.get(GasId::WarmStorageReadCost),
         ))?;
-        Ok(self.evm.state_mut().tload(&address, &key))
+        Ok(self.host.state_mut().tload(&address, &key))
     }
 
     #[inline]
@@ -641,7 +681,7 @@ where
 
     #[inline]
     fn checkpoint(&mut self) -> StateCheckpoint {
-        self.evm.state_mut().checkpoint()
+        self.host.state_mut().checkpoint()
     }
 
     #[inline]
@@ -649,7 +689,7 @@ where
 
     #[inline]
     fn checkpoint_revert(&mut self, checkpoint: StateCheckpoint) {
-        self.evm
+        self.host
             .state_mut()
             .rollback(checkpoint, self.version.features);
     }
@@ -825,7 +865,7 @@ impl DerefMut for GasTrackerStorage<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{EvmPrecompileStorageProvider, GasTrackerStorage};
+    use super::{EvmPrecompileStorageProvider, GasTrackerStorage, StorageHost};
     use crate::{
         STORAGE_CREDITS_ADDRESS,
         error::TempoPrecompileError,
@@ -927,7 +967,7 @@ mod tests {
             self.gas_tracker =
                 GasTracker::new_with_execution_gas_and_reservoir(gas_limit, reservoir);
             EvmPrecompileStorageProvider::with_gas_tracker(
-                &mut self.evm,
+                StorageHost::Evm(&mut self.evm),
                 self.version,
                 TempoBlockEnv::default(),
                 GasTrackerStorage::Borrowed(&mut self.gas_tracker),
@@ -945,7 +985,7 @@ mod tests {
 
         fn provider_max_gas(&mut self) -> EvmPrecompileStorageProvider<'_, '_, 'static, TestTypes> {
             EvmPrecompileStorageProvider::with_gas_tracker(
-                &mut self.evm,
+                StorageHost::Evm(&mut self.evm),
                 self.version,
                 TempoBlockEnv::default(),
                 GasTrackerStorage::Owned(GasTracker::new(u64::MAX)),
@@ -956,7 +996,7 @@ mod tests {
 
         fn static_provider(&mut self) -> EvmPrecompileStorageProvider<'_, '_, 'static, TestTypes> {
             EvmPrecompileStorageProvider::with_gas_tracker(
-                &mut self.evm,
+                StorageHost::Evm(&mut self.evm),
                 self.version,
                 TempoBlockEnv::default(),
                 GasTrackerStorage::Owned(GasTracker::new(u64::MAX)),
