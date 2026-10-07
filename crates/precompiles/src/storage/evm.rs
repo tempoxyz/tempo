@@ -431,29 +431,27 @@ where
         let code_len = code.len();
         let code_deposit_gas = u64::from(self.version.gas_params.get(GasId::CodeDepositCost))
             .saturating_mul(code_len as u64);
-        if self.version.feature(EvmFeatures::EIP8037) {
-            let was_empty = self
-                .evm
-                .state_mut()
-                .account(&address)?
-                .get()
-                .is_none_or(AccountInfo::is_empty);
-
-            // Charge all execution work before drawing on the state reservoir.
+        self.deduct_gas(code_deposit_gas)?;
+        let state_gas = self.version.feature(EvmFeatures::EIP8037);
+        if state_gas {
             self.deduct_gas(self.version.gas_params.keccak256_word_cost(code_len))?;
+        }
+
+        let was_empty = {
+            let mut account = self.evm.state_mut().account(&address)?;
+            let was_empty = account.get().is_none_or(AccountInfo::is_empty);
+            account.set_code_slow(code);
+            was_empty
+        };
+
+        if state_gas {
+            // Finish charging execution work before drawing on the state reservoir.
             if was_empty {
                 self.deduct_gas(u64::from(self.version.gas_params.get(GasId::Create)))?;
-            }
-            self.deduct_gas(code_deposit_gas)?;
-
-            if was_empty {
                 self.deduct_state_gas(self.version.gas_params.create_state_gas())?;
             }
             self.deduct_state_gas(self.version.gas_params.code_deposit_state_gas(code_len))?;
-        } else {
-            self.deduct_gas(code_deposit_gas)?;
         }
-        self.evm.state_mut().account(&address)?.set_code_slow(code);
 
         Ok(())
     }
@@ -2023,6 +2021,39 @@ mod tests {
             "set_code should charge HASH_COST over code bytes, not words"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_t14_set_code_oog_rolls_back_installed_code() -> eyre::Result<()> {
+        for fail_execution_charge in [true, false] {
+            let mut evm = TestEvm::new(TempoHardfork::T14);
+            let gas_params = evm.gas_params();
+            let code = Bytes::from(vec![0xef]);
+            let execution_gas = u64::from(gas_params[GasId::CodeDepositCost])
+                + gas_params.keccak256_word_cost(code.len())
+                + u64::from(gas_params[GasId::Create]);
+            let (gas_limit, reservoir) = if fail_execution_charge {
+                (execution_gas - 1, gas_params.create_state_gas())
+            } else {
+                // CREATE spills 25 gas, leaving no gas for code-deposit state charges.
+                (execution_gas + 25, gas_params.create_state_gas() - 25)
+            };
+            let address = Address::repeat_byte(0x55);
+            let mut provider = evm.provider_with_gas_limit(gas_limit, reservoir);
+            let checkpoint = provider.checkpoint();
+
+            assert_eq!(
+                provider.set_code(address, code),
+                Err(TempoPrecompileError::OutOfGas)
+            );
+            provider.checkpoint_revert(checkpoint);
+            assert_eq!(provider.state_gas_used(), 0);
+            assert_eq!(provider.state_gas_spilled(), 0);
+            assert_eq!(provider.reservoir(), reservoir);
+            std::mem::drop(provider);
+            assert!(evm.load_account_code(address)?.is_empty());
+        }
         Ok(())
     }
 

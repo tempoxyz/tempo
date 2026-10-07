@@ -410,6 +410,8 @@ fn precompile_code_deposit_hashes_all_words_and_charges_state_last() -> eyre::Re
     }
     let mut evm = evm(100_000);
     let (result, gas) = StorageCtx::enter_evm_with_gas_limit(&mut evm, 32_001, 1_000_000, || {
+        // Model the enclosing call's rollback when charging fails after code installation.
+        let _checkpoint = StorageCtx.checkpoint();
         StorageCtx.set_code(CONTRACT, vec![0; 33].into())
     });
     assert!(result.is_err());
