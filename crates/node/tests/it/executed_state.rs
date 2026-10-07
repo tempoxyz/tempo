@@ -153,6 +153,84 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
     access_key_type: Option<SignatureType>,
     sponsored: bool,
 ) -> eyre::Result<()> {
+    paid_expiring_block_differential(
+        builder_threads,
+        transaction_count,
+        sender_count,
+        recipient_count,
+        workload,
+        capture_window,
+        stage_diagnostics,
+        access_key_type,
+        sponsored,
+        2,
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn engine_prewarming_preserves_signed_aa_with_32_workers() -> eyre::Result<()> {
+    for key_type in [
+        SignatureType::Secp256k1,
+        SignatureType::P256,
+        SignatureType::WebAuthn,
+    ] {
+        for sponsored in [false, true] {
+            paid_expiring_block_differential(
+                4,
+                256,
+                16,
+                16,
+                PaidBlockWorkload::Transfers,
+                EngineCaptureWindow::Transactions128,
+                false,
+                Some(key_type),
+                sponsored,
+                32,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+fn runtime_with_prewarming_threads(threads: usize) -> eyre::Result<Runtime> {
+    use reth_ethereum::tasks::{RayonConfig, RuntimeBuilder, RuntimeConfig, TokioConfig};
+
+    // Match Runtime::test's small pools except for the explicitly tested pool.
+    // Keep the test's Tokio handle so teardown cannot drop its own executor.
+    let runtime = RuntimeBuilder::new(RuntimeConfig {
+        tokio: TokioConfig::existing_handle(tokio::runtime::Handle::current()),
+        rayon: RayonConfig {
+            cpu_threads: Some(2),
+            reserved_cpu_cores: 0,
+            rpc_threads: Some(2),
+            storage_threads: Some(2),
+            max_blocking_tasks: 16,
+            proof_storage_worker_threads: Some(2),
+            proof_account_worker_threads: Some(2),
+            prewarming_threads: Some(threads),
+            bal_streaming_threads: Some(2),
+            state_trie_overlay_worker_threads: Some(2),
+        },
+    })
+    .build()?;
+    assert_eq!(runtime.prewarming_pool().current_num_threads(), threads);
+    Ok(runtime)
+}
+
+async fn paid_expiring_block_differential(
+    builder_threads: usize,
+    transaction_count: usize,
+    sender_count: usize,
+    recipient_count: usize,
+    workload: PaidBlockWorkload,
+    capture_window: EngineCaptureWindow,
+    stage_diagnostics: bool,
+    access_key_type: Option<SignatureType>,
+    sponsored: bool,
+    prewarming_threads: usize,
+) -> eyre::Result<()> {
     use crate::{
         tempo_transaction::helpers::{
             create_basic_aa_tx, generate_p256_access_key, sign_aa_tx_secp256k1,
@@ -259,6 +337,7 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
 
     reth_tracing::init_test_tracing();
     let (producer_setup, producer_database) = TestNodeBuilder::new()
+        .with_node_access_runtime(runtime_with_prewarming_threads(prewarming_threads)?)
         .with_execution_threads(builder_threads)
         .with_execution_stage_diagnostics(stage_diagnostics)
         .with_schedule(ForkSchedule::DevnetAt(TempoHardfork::T14))
@@ -797,7 +876,7 @@ async fn engine_prewarming_preserves_paid_expiring_transfer_block(
             None,
         );
         let executed_state = tempo_node.executed_state();
-        let runtime = Runtime::test();
+        let runtime = runtime_with_prewarming_threads(prewarming_threads)?;
         let mut config = NodeConfig::new(chain_spec.clone()).with_unused_ports();
         config.network.discovery.disable_discovery = true;
         let observer_builder = NodeBuilder::new(config)

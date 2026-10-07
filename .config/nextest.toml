@@ -46,8 +46,14 @@ test-threads = 1
 retries = 3
 slow-timeout = { period = "5m", terminate-after = 1 }
 
-# tempo-node integration tests (pool, block_building, etc.) also launch full
-# execution nodes with rayon pools. Limit to 4 slots so at most 8 run in parallel.
+# The worker-scaling differential creates full 32-thread prewarming pools on
+# producer and observer nodes. Run it alone to avoid CI thread contention.
+[[profile.ci.overrides]]
+filter = "package(tempo-node) & binary(it) & test(engine_prewarming_preserves_signed_aa_with_32_workers)"
+threads-required = "num-test-threads"
+
+# Other tempo-node integration tests also launch full execution nodes with rayon
+# pools. Limit to 4 slots so at most 8 run in parallel.
 [[profile.ci.overrides]]
 filter = "package(tempo-node) & binary(it)"
 threads-required = 4
@@ -70,6 +76,10 @@ priority = -100
 [[profile.default.overrides]]
 filter = "package(tempo-e2e)"
 threads-required = 4
+
+[[profile.default.overrides]]
+filter = "package(tempo-node) & binary(it) & test(engine_prewarming_preserves_signed_aa_with_32_workers)"
+threads-required = "num-test-threads"
 
 [[profile.default.overrides]]
 filter = "package(tempo-node) & binary(it)"

@@ -449,6 +449,7 @@ pub(crate) struct HttpOnlySetup {
 
 /// Builder for creating test nodes
 pub(crate) struct TestNodeBuilder {
+    node_access_runtime: Option<Runtime>,
     execution_threads: usize,
     execution_stage_diagnostics: bool,
     share_sparse_trie: bool,
@@ -467,6 +468,7 @@ impl TestNodeBuilder {
     /// Create a new builder with default test genesis
     pub(crate) fn new() -> Self {
         Self {
+            node_access_runtime: None,
             execution_threads: 0,
             execution_stage_diagnostics: false,
             share_sparse_trie: false,
@@ -480,6 +482,12 @@ impl TestNodeBuilder {
             dynamic_validator: None,
             schedule: ForkSchedule::Devnet,
         }
+    }
+
+    /// Override the runtime for a single node built with direct access.
+    pub(crate) fn with_node_access_runtime(mut self, runtime: Runtime) -> Self {
+        self.node_access_runtime = Some(runtime);
+        self
     }
 
     /// Configure speculative execution for a single local test node.
@@ -600,7 +608,10 @@ impl TestNodeBuilder {
         let chain_spec = self.build_chain_spec()?;
         let hardfork = chain_spec.tempo_hardfork_at(0);
 
-        let (node, database) = if self.execution_threads > 0 || retain_database {
+        let (node, database) = if self.execution_threads > 0
+            || retain_database
+            || self.node_access_runtime.is_some()
+        {
             // Retain the fixture's explicit launch configuration and optional
             // database ownership while keeping manual block control.
             let chain_spec = Arc::new(chain_spec);
@@ -618,7 +629,7 @@ impl TestNodeBuilder {
             config.debug.startup_sync_state_idle = true;
             // Match the setup helper's small test execution cache (MiB).
             config.engine.cross_block_cache_size = 1;
-            let runtime = Runtime::test();
+            let runtime = self.node_access_runtime.unwrap_or_else(Runtime::test);
             let tempo_node = if self.execution_threads > 0 {
                 TempoNode::default()
                     .with_execution_threads(self.execution_threads, 32)
