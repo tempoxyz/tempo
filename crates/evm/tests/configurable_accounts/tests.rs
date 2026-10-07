@@ -755,7 +755,6 @@ fn native_replay_rejects_account_authorization() {
                     validator_fee: U256::ZERO,
                 },
                 |_| panic!("unsupported replay must not commit"),
-                false,
             )
             .unwrap_err();
         assert_eq!(
@@ -824,7 +823,6 @@ fn native_grant_recipient_code_change_rejects_stale_replay() {
                 validator_fee: U256::ZERO,
             },
             |_| panic!("stale grant replay must not commit"),
-            false,
         )
         .unwrap_err();
     assert_eq!(
