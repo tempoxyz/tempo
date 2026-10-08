@@ -243,7 +243,10 @@ def bench-init-db [tempo_bin: string, genesis: string, datadir: string, bloat: i
 
     if $bloat > 0 {
         print $"Loading state bloat into ($datadir)..."
-        run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis "--datadir" $datadir $bloat_file | complete
+        let result = (run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis "--datadir" $datadir $bloat_file | complete)
+        if $result.exit_code != 0 {
+            error make { msg: $"state bloat load failed for ($datadir) with exit code ($result.exit_code)" }
+        }
     }
 }
 
