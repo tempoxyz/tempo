@@ -9,8 +9,11 @@ use alloy_primitives::Bytes;
 use ml_dsa::{MlDsa65, Seed, SigningKey};
 use revm::context::result::EVMError;
 use std::{fs, str::FromStr};
+use tempo_contracts::precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, IAccountKeychain, authorizeKeyCall};
 use tempo_precompiles::key_publisher::{IKeyPublisher, KeyPublisher};
-use tempo_primitives::transaction::{SignatureType, ZkSignature, tt_signature::Mldsa65Signature};
+use tempo_primitives::transaction::{
+    KeychainSignature, SignatureType, ZkSignature, tt_signature::Mldsa65Signature,
+};
 use tempo_revm::{TempoInvalidTransaction, TempoTxEnv, native_multisig::NativeMultisigError};
 
 /// Runs against the real receipt generated from oidc-demo/scripts/pq-fixture.ts.
@@ -89,7 +92,23 @@ fn migration_runtime_real_pq_owner_retires_secp_root_and_rejects_bad_proof() {
         chain_id: 1,
         nonce: 4,
         gas_limit: 200_000_000,
-        calls: vec![f.getter()],
+        calls: vec![Call {
+            to: ACCOUNT_KEYCHAIN_ADDRESS.into(),
+            value: U256::ZERO,
+            input: authorizeKeyCall {
+                keyId: Address::from(statement.access_key_id),
+                signatureType: IAccountKeychain::SignatureType::Mldsa65,
+                config: IAccountKeychain::KeyRestrictions {
+                    expiry: statement.valid_until,
+                    enforceLimits: false,
+                    limits: vec![],
+                    allowAnyCalls: true,
+                    allowedCalls: vec![],
+                },
+            }
+            .abi_encode()
+            .into(),
+        }],
         ..Default::default()
     };
     let digest = multisig_digest(tx.signature_hash(), f.account, f.config.version);
@@ -125,6 +144,7 @@ fn migration_runtime_real_pq_owner_retires_secp_root_and_rejects_bad_proof() {
     assert!(output.result.is_success(), "{:?}", output.result);
     assert_eq!(output.state[&f.account].info.nonce, 5);
     assert_eq!(output.state[&f.account].info.balance, U256::from(42));
+    let granted_state = output.state;
     // Leave the successful state uncommitted so the negative proof uses the same nonce/digest.
     credential.proof = Bytes::from_static(b"{}");
     let signature = device
@@ -140,4 +160,32 @@ fn migration_runtime_real_pq_owner_retires_secp_root_and_rejects_bad_proof() {
             .transact(TempoTxEnv::from_recovered_tx(&bad, f.account))
             .is_err()
     );
+
+    f.evm.db_mut().commit(granted_state);
+    let tx = TempoTransaction {
+        chain_id: 1,
+        nonce: 5,
+        gas_limit: 1_000_000,
+        calls: vec![f.getter()],
+        ..Default::default()
+    };
+    let digest = KeychainSignature::signing_hash(tx.signature_hash(), f.account);
+    let signature = device
+        .expanded_key()
+        .sign_deterministic(digest.as_slice(), b"")
+        .unwrap();
+    let key = PrimitiveSignature::Mldsa65(Mldsa65Signature {
+        public_key: device.verifying_key().encode().to_vec().into(),
+        signature: signature.encode().to_vec().into(),
+    });
+    let signed = tx.into_signed(TempoSignature::Keychain(KeychainSignature::new(
+        f.account, key,
+    )));
+    let output = f
+        .evm
+        .transact(TempoTxEnv::from_recovered_tx(&signed, f.account))
+        .unwrap();
+    assert!(output.result.is_success(), "{:?}", output.result);
+    assert_eq!(output.state[&f.account].info.nonce, 6);
+    assert_eq!(output.state[&f.account].info.balance, U256::from(42));
 }
