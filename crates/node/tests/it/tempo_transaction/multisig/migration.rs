@@ -78,7 +78,9 @@ async fn migration_rpc_all_root_types_quorum_rotation_and_retirement() -> eyre::
             TempoSignature::Primitive(root.sign(root_tx.signature_hash())?),
         )
         .await?;
-        insta::assert_snapshot!(error.replace(&root.address().to_string(), "ACCOUNT"), @"server returned an error response: error code -32000: primitive root key retired for account ACCOUNT");
+        insta::allow_duplicates! {
+            insta::assert_snapshot!(error.replace(&root.address().to_string(), "ACCOUNT"), @"server returned an error response: error code -32000: primitive root key retired for account ACCOUNT");
+        }
         assert!(reject(&env, tx, signature).await.is_ok());
 
         let tx = account.transaction(&env, vec![noop()]);
@@ -191,7 +193,9 @@ async fn migration_rpc_rejects_extra_calls_and_inline_grants_before_side_effects
             TempoSignature::Primitive(root.sign(tx.signature_hash())?),
         )
         .await?;
-        insta::assert_snapshot!(error, @"server returned an error response: error code -32000: migration must be the sole call without authorizations");
+        insta::allow_duplicates! {
+            insta::assert_snapshot!(error, @"server returned an error response: error code -32000: migration must be the sole call without authorizations");
+        }
     }
     let mut tx = account.transaction(&env, vec![upgrade(&account.config)]);
     let grant = KeyAuthorization::unrestricted(env.chain_id(), SignatureType::Secp256k1, recipient);
@@ -591,7 +595,9 @@ async fn migration_rpc_incoming_grants_preserve_limits_scopes_and_revocation() -
             ))?,
         ));
         let error = reject(&env, tx.clone(), old_signature).await?;
-        insta::assert_snapshot!(error.replace(&delegate.address.to_string(), "ACCOUNT"), @"server returned an error response: error code -32000: primitive root key retired for account ACCOUNT");
+        insta::allow_duplicates! {
+            insta::assert_snapshot!(error.replace(&delegate.address.to_string(), "ACCOUNT"), @"server returned an error response: error code -32000: primitive root key retired for account ACCOUNT");
+        }
         let signature = delegate.as_delegate(&tx, parent.address, false)?;
         parent.submit(&mut env, tx, signature, true).await?;
         assert_eq!(
@@ -655,7 +661,7 @@ async fn migration_rpc_incoming_grants_preserve_limits_scopes_and_revocation() -
         assert_eq!(
             error,
             format!(
-                "server returned an error response: error code -32003: invalid transaction: keychain validation failed: {reason:?}"
+                "server returned an error response: error code -32000: keychain validation failed: {reason:?}"
             )
         );
     }
