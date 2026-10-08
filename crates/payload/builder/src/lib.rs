@@ -438,7 +438,7 @@ where
 
         debug!("building new payload");
 
-        let (roots_tx, roots_rx) = self.spawn_roots_task();
+        let mut roots_task = None;
 
         if is_osaka && estimated_rlp_block_size > MAX_RLP_BLOCK_SIZE {
             return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
@@ -707,6 +707,7 @@ where
             if !receipt.success {
                 reverted_transactions += 1;
             }
+            let (roots_tx, _) = roots_task.get_or_insert_with(|| self.spawn_roots_task());
             let _ = roots_tx.send((tx, receipt));
         };
 
@@ -762,8 +763,11 @@ where
 
         let builder_finish_start = Instant::now();
 
-        // Drop the roots task handle to trigger finalization
-        drop(roots_tx);
+        // Empty blocks need no roots worker. Closing a nonempty stream triggers finalization.
+        let roots_rx = roots_task.map(|(roots_tx, roots_rx)| {
+            drop(roots_tx);
+            roots_rx
+        });
 
         let (evm, execution_result) = executor.finish()?;
         let evm_env = evm.into_env();
@@ -850,9 +854,13 @@ where
             transactions,
             senders,
             encoded_block_transactions,
-        } = roots_rx
-            .blocking_recv()
-            .map_err(PayloadBuilderError::other)?;
+        } = if let Some(roots_rx) = roots_rx {
+            roots_rx
+                .blocking_recv()
+                .map_err(PayloadBuilderError::other)?
+        } else {
+            RootsTaskResult::empty()
+        };
 
         let block = self.evm_config.block_assembler.assemble_block(
             BlockAssemblerInput::new(
@@ -1181,6 +1189,19 @@ pub(crate) struct RootsTaskResult {
     /// Since roots task already encodes every transaction for the transaction trie,
     /// we can reuse those bytes for the [`ExecutionBlockEncoder`].
     encoded_block_transactions: EncodedBlockTransactionList,
+}
+
+impl RootsTaskResult {
+    fn empty() -> Self {
+        Self {
+            transactions_root: alloy_consensus::constants::EMPTY_ROOT_HASH,
+            receipts_root: alloy_consensus::constants::EMPTY_ROOT_HASH,
+            receipts_bloom: Bloom::ZERO,
+            transactions: Vec::new(),
+            senders: Vec::new(),
+            encoded_block_transactions: EncodedBlockTransactionsBuilder::default().finish(),
+        }
+    }
 }
 
 #[cfg(test)]
