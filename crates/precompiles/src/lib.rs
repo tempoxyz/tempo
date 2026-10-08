@@ -10,7 +10,7 @@ pub mod storage;
 pub mod dispatch;
 pub use dispatch::*;
 
-pub(crate) mod ip_validation;
+pub(crate) mod ip;
 
 pub mod account_keychain;
 pub mod address_registry;
