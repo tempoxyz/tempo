@@ -247,7 +247,8 @@ impl TempoStateAccess<((),)> for Evm<'_, TempoEvmTypes> {
 
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, DatabaseError> {
         self.state_mut()
-            .storage_slot(&address, key)
+            .storage(&address)?
+            .into_slot(key)
             .map(|mut slot| {
                 slot.warm();
                 slot.current()

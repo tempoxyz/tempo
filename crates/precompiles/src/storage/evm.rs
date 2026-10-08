@@ -145,13 +145,18 @@ where
         key: U256,
         skip_cold_load: bool,
     ) -> Result<SLoad, TempoPrecompileError> {
-        self.evm.state_mut().account(&address)?.warm();
-        let mut slot = self
-            .evm
-            .state_mut()
-            .storage(&address)
-            .into_slot_with_skip(key, skip_cold_load)?;
-        let is_cold = self.version.feature(EvmFeatures::EIP2929) && slot.warm();
+        let mut account = self.evm.state_mut().account(&address)?;
+        account.warm();
+        let (slot, is_cold) = if self.version.feature(EvmFeatures::EIP2929) {
+            account
+                .storage()
+                .into_slot_with_skip_and_warm(key, skip_cold_load)?
+        } else {
+            (
+                account.storage().into_slot_with_skip(key, skip_cold_load)?,
+                false,
+            )
+        };
         Ok(SLoad {
             value: slot.current(),
             is_cold,
@@ -169,13 +174,18 @@ where
         skip_cold_load: bool,
     ) -> Result<SStore, TempoPrecompileError> {
         self.ensure_not_static()?;
-        self.evm.state_mut().account(&address)?.warm();
-        let mut slot = self
-            .evm
-            .state_mut()
-            .storage(&address)
-            .into_slot_with_skip(key, skip_cold_load)?;
-        let is_cold = self.version.feature(EvmFeatures::EIP2929) && slot.warm();
+        let mut account = self.evm.state_mut().account(&address)?;
+        account.warm();
+        let (mut slot, is_cold) = if self.version.feature(EvmFeatures::EIP2929) {
+            account
+                .storage()
+                .into_slot_with_skip_and_warm(key, skip_cold_load)?
+        } else {
+            (
+                account.storage().into_slot_with_skip(key, skip_cold_load)?,
+                false,
+            )
+        };
         let (original_value, present_value) = slot.write(value);
         Ok(SStore {
             original_value,
