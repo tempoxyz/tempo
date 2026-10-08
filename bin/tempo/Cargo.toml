@@ -35,6 +35,8 @@ tempo-evm.workspace = true
 tempo-faucet.workspace = true
 tempo-telemetry-util.workspace = true
 tempo-state-bloat.workspace = true
+tempo-metabinary = { path = "../tempo-metabinary" }
+jsonrpsee.workspace = true
 
 alloy = { workspace = true, default-features = false, features = [
 	"network",
@@ -117,9 +119,6 @@ opentelemetry-otlp = { version = "0.32", default-features = false, optional = tr
 pyroscope = { workspace = true, optional = true }
 pyroscope_pprofrs = { workspace = true, optional = true }
 tracy-client = { workspace = true, optional = true }
-
-[dev-dependencies]
-jsonrpsee.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.30.1", features = ["signal"], optional = true }

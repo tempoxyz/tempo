@@ -130,33 +130,15 @@ impl ProcessGroup {
     }
 
     pub async fn shutdown(&mut self) -> Result<()> {
-        let mut first_error = None;
         let mut workers = std::mem::take(&mut self.workers);
-        // Request every shutdown before waiting, so a slow reader cannot keep the writer alive.
         // Readers are launched after the writer, so signal them first.
-        for worker in workers.iter_mut().rev() {
-            if let Err(error) = request_termination(&mut worker.child) {
-                first_error
-                    .get_or_insert_with(|| error.wrap_err(format!("stopping {}", worker.name)));
-                let _ = worker.child.start_kill();
-            }
-        }
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        let results = futures::future::join_all(workers.iter_mut().map(|worker| async {
-            wait_for_exit(&mut worker.child, deadline)
-                .await
-                .wrap_err_with(|| format!("reaping {}", worker.name))
-        }))
-        .await;
-        for result in results {
-            if let Err(error) = result {
-                first_error.get_or_insert(error);
-            }
-        }
-        match first_error {
-            Some(error) => Err(error),
-            None => Ok(()),
-        }
+        shutdown_children(
+            workers
+                .iter_mut()
+                .rev()
+                .map(|worker| (worker.name.as_str(), &mut worker.child)),
+        )
+        .await
     }
 
     fn spawn(&mut self, era: &Era, args: &[OsString], name: &str) -> Result<()> {
@@ -164,13 +146,7 @@ impl ProcessGroup {
             !self.workers.iter().any(|worker| worker.name == name),
             "worker {name} already running"
         );
-        let child = Command::new(&era.binary)
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .kill_on_drop(true)
-            .spawn()
+        let child = spawn_child(Command::new(&era.binary).args(args))
             .wrap_err_with(|| format!("starting {name} from {}", era.binary.display()))?;
         self.workers.push(Worker {
             name: name.to_owned(),
@@ -178,6 +154,44 @@ impl ProcessGroup {
         });
         Ok(())
     }
+}
+
+/// Every supervised child uses the same I/O and cancellation fallback.
+pub(crate) fn spawn_child(command: &mut Command) -> std::io::Result<Child> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .kill_on_drop(true)
+        .spawn()
+}
+
+/// Signal all owned children before concurrently reaping them under one grace period.
+/// Callers retain ownership across this await so cancellation still triggers `kill_on_drop`.
+pub(crate) async fn shutdown_children<'a>(
+    children: impl IntoIterator<Item = (&'a str, &'a mut Child)>,
+) -> Result<()> {
+    let mut children: Vec<_> = children.into_iter().collect();
+    let mut first_error = None;
+    for (name, child) in &mut children {
+        if let Err(error) = request_termination(child) {
+            first_error.get_or_insert_with(|| error.wrap_err(format!("stopping {name}")));
+            let _ = child.start_kill();
+        }
+    }
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    for result in futures::future::join_all(children.into_iter().map(|(name, child)| async move {
+        wait_for_exit(child, deadline)
+            .await
+            .wrap_err_with(|| format!("reaping {name}"))
+    }))
+    .await
+    {
+        if let Err(error) = result {
+            first_error.get_or_insert(error);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
 }
 
 fn shared_args(manifest: &Manifest, args: &mut Vec<OsString>) {
@@ -241,52 +255,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shutdown_reaps_all_children_even_after_one_exits() {
+    async fn failed_spawn_and_shutdown_reap_every_child() {
         let mut group = ProcessGroup::new();
-        group
-            .spawn(
-                &era("/bin/sh", "running"),
-                &["-c".into(), "exec sleep 60".into()],
-                "running",
-            )
-            .unwrap();
-        group
-            .spawn(
-                &era("/bin/sh", "exited"),
-                &["-c".into(), "exit 7".into()],
-                "exited",
-            )
-            .unwrap();
-        let running_pid = group.workers[0].child.id().unwrap();
-        group.workers[1].child.wait().await.unwrap();
-        assert!(group.check_alive().is_err());
-        group.shutdown().await.unwrap();
-        assert!(group.workers.is_empty());
-        // ESRCH demonstrates that the subprocess was reaped, not just signalled.
-        assert_eq!(unsafe { libc::kill(running_pid as libc::pid_t, 0) }, -1);
-        assert_eq!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::ESRCH)
-        );
-    }
-
-    #[tokio::test]
-    async fn failed_spawn_keeps_previous_child_owned_for_cleanup() {
-        let mut group = ProcessGroup::new();
-        group
-            .spawn(
-                &era("/bin/sh", "first"),
-                &["-c".into(), "exec sleep 60".into()],
-                "first",
-            )
-            .unwrap();
+        for (name, command) in [
+            ("running", "exec sleep 60"),
+            ("forced", "exec sleep 60"),
+            ("exited", "exit 7"),
+        ] {
+            group
+                .spawn(&era("/bin/sh", name), &["-c".into(), command.into()], name)
+                .unwrap();
+        }
+        let pids: Vec<_> = group
+            .workers
+            .iter()
+            .map(|worker| worker.child.id().unwrap())
+            .collect();
         assert!(
             group
-                .spawn(&era("/nonexistent-tempo-test", "second"), &[], "second")
+                .spawn(&era("/nonexistent-tempo-test", "failed"), &[], "failed")
                 .is_err()
         );
-        assert_eq!(group.workers.len(), 1);
+        group.workers[2].child.wait().await.unwrap();
+        assert!(group.check_alive().is_err());
+        wait_for_exit(&mut group.workers[1].child, tokio::time::Instant::now())
+            .await
+            .unwrap();
+        assert!(group.workers[1].child.try_wait().unwrap().is_some());
         group.shutdown().await.unwrap();
+        for pid in pids {
+            // SAFETY: signal zero checks that each child was reaped, rather than just signalled.
+            assert_eq!(unsafe { libc::kill(pid as libc::pid_t, 0) }, -1);
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::ESRCH)
+            );
+        }
     }
 
     #[tokio::test]

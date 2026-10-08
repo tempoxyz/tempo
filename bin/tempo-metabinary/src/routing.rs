@@ -1,5 +1,6 @@
 use std::{collections::HashSet, sync::Arc};
 
+use futures::future::BoxFuture;
 use jsonrpsee::{
     core::{
         RpcResult,
@@ -9,50 +10,15 @@ use jsonrpsee::{
     http_client::HttpClient,
     types::ErrorObjectOwned,
 };
-use serde::Deserialize;
 use serde_json::{Value, json, value::RawValue};
 
-use crate::manifest::Manifest;
+use crate::{
+    catalog::{ChainEras, ReleaseEra},
+    handshake::WorkerIdentity,
+    manifest::Manifest,
+};
 
-/// This describes the actual private transport's registered methods, not a global RPC catalogue.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ExecutionInfo {
-    pub protocol_version: u64,
-    pub chain_id: String,
-    pub genesis_hash: String,
-    pub read_only: bool,
-    pub process_id: u32,
-    pub methods: Vec<String>,
-}
-
-impl ExecutionInfo {
-    pub fn validate(&self, manifest: &Manifest, read_only: bool) -> eyre::Result<()> {
-        eyre::ensure!(self.protocol_version == 1, "unsupported worker protocol");
-        eyre::ensure!(
-            self.chain_id.eq_ignore_ascii_case(&manifest.chain_id),
-            "worker chain ID mismatch"
-        );
-        eyre::ensure!(
-            self.genesis_hash
-                .eq_ignore_ascii_case(&manifest.genesis_hash),
-            "worker genesis mismatch"
-        );
-        eyre::ensure!(
-            self.read_only == read_only,
-            "worker read-only mode mismatch"
-        );
-        eyre::ensure!(
-            self.methods.len() <= 1024,
-            "worker reports too many RPC methods"
-        );
-        eyre::ensure!(
-            self.methods.iter().all(|m| m.len() <= 256),
-            "worker method name too long"
-        );
-        Ok(())
-    }
-}
+pub use crate::handshake::ExecutionInfo;
 
 /// JSON-RPC supports both positional and named params. Keep that representation when forwarding.
 #[derive(Debug, Clone)]
@@ -165,11 +131,67 @@ impl Block {
     }
 }
 
-/// Resolve identifiers through the writer. Workers only receive pinned historical identifiers.
-pub struct Router {
+/// Execution-independent request adapter. The live adapter may invoke native RPC callbacks
+/// directly; historical adapters may start a frozen worker lazily.
+pub trait Backend: Send + Sync {
+    fn request<'a>(
+        &'a self,
+        era: usize,
+        method: &'a str,
+        params: RpcParams,
+    ) -> BoxFuture<'a, RpcResult<Value>>;
+
+    /// Only the chain-specific adapter knows the raw block encoding.
+    fn raw_block_timestamp<'a>(&'a self, _params: &'a RpcParams) -> BoxFuture<'a, RpcResult<u64>> {
+        Box::pin(async {
+            Err(unsupported(
+                "raw-block tracing requires a chain-specific decoder; use debug_traceBlockByHash or debug_traceBlockByNumber",
+            ))
+        })
+    }
+}
+
+struct HttpBackend {
     manifest: Arc<Manifest>,
     clients: Vec<HttpClient>,
     methods: Vec<Option<HashSet<String>>>,
+}
+
+impl Backend for HttpBackend {
+    fn request<'a>(
+        &'a self,
+        era: usize,
+        method: &'a str,
+        params: RpcParams,
+    ) -> BoxFuture<'a, RpcResult<Value>> {
+        Box::pin(async move {
+            let methods = self.methods[era].as_ref().ok_or_else(|| {
+                unsupported("historical execution is disabled; start serve with --history")
+            })?;
+            if !methods.contains(method) {
+                return Err(unsupported(format!(
+                    "{method} is unavailable in era {}",
+                    self.manifest.eras[era].name
+                )));
+            }
+            self.clients[era]
+                .request(method, params)
+                .await
+                .map_err(upstream_error)
+        })
+    }
+}
+
+pub struct Route {
+    pub era: usize,
+    pub params: RpcParams,
+}
+
+/// Resolve identifiers through the live node. Frozen workers receive pinned historical IDs.
+pub struct Router {
+    schedule: ChainEras,
+    backend: Arc<dyn Backend>,
+    live_methods: HashSet<String>,
 }
 
 impl Router {
@@ -187,33 +209,69 @@ impl Router {
         eyre::ensure!(info[live].is_some(), "the live worker is required");
         for (index, metadata) in info.iter().enumerate() {
             if let Some(metadata) = metadata {
-                metadata.validate(&manifest, index != live)?;
+                metadata.validate(
+                    WorkerIdentity {
+                        chain_id: &manifest.chain_id,
+                        genesis_hash: &manifest.genesis_hash,
+                        read_only: index != live,
+                    },
+                    None,
+                )?;
             }
         }
-        Ok(Self {
+        let live_methods = info[live]
+            .as_ref()
+            .expect("validated live worker")
+            .methods
+            .iter()
+            .cloned()
+            .collect();
+        let schedule = ChainEras {
+            chain_id: manifest.chain_id.clone(),
+            genesis_hash: manifest.genesis_hash.clone(),
+            eras: manifest
+                .eras
+                .iter()
+                .enumerate()
+                .map(|(index, era)| ReleaseEra {
+                    name: era.name.clone(),
+                    start_timestamp: era.start_timestamp,
+                    binary: (index != live).then(|| era.binary.clone()),
+                })
+                .collect(),
+        };
+        let backend = Arc::new(HttpBackend {
             manifest,
             clients,
             methods: info
                 .into_iter()
                 .map(|i| i.map(|i| i.methods.into_iter().collect()))
                 .collect(),
+        });
+        Self::with_backend(schedule, backend, live_methods)
+    }
+
+    pub fn with_backend(
+        schedule: ChainEras,
+        backend: Arc<dyn Backend>,
+        live_methods: HashSet<String>,
+    ) -> eyre::Result<Self> {
+        schedule.validate()?;
+        Ok(Self {
+            schedule,
+            backend,
+            live_methods,
         })
     }
 
     pub fn live_methods(&self) -> &HashSet<String> {
-        self.methods
-            .last()
-            .and_then(Option::as_ref)
-            .expect("validated live worker")
+        &self.live_methods
     }
-    fn live_index(&self) -> usize {
-        self.clients.len() - 1
-    }
-    fn live(&self) -> &HttpClient {
-        &self.clients[self.live_index()]
+    pub fn live_index(&self) -> usize {
+        self.schedule.eras.len() - 1
     }
     fn era(&self, timestamp: u64) -> usize {
-        self.manifest.era_for_timestamp(timestamp)
+        self.schedule.era_for_timestamp(timestamp)
     }
 
     async fn block(&self, selector: &Value) -> RpcResult<Block> {
@@ -226,62 +284,94 @@ impl Router {
                     .filter(|s| s.len() == 66 && s.starts_with("0x"))
             });
         let value = if let Some(hash) = hash {
-            self.live()
-                .request("eth_getBlockByHash", (hash, false))
+            self.backend
+                .request(
+                    self.live_index(),
+                    "eth_getBlockByHash",
+                    RpcParams(json!([hash, false])),
+                )
                 .await
         } else {
             let number = selector.get("blockNumber").unwrap_or(selector);
-            self.live()
-                .request("eth_getBlockByNumber", (number, false))
+            self.backend
+                .request(
+                    self.live_index(),
+                    "eth_getBlockByNumber",
+                    RpcParams(json!([number, false])),
+                )
                 .await
-        }
-        .map_err(upstream_error)?;
+        }?;
         Block::parse(value)
     }
 
-    async fn forward(&self, era: usize, method: &str, params: RpcParams) -> RpcResult<Value> {
-        let methods = self.methods[era].as_ref().ok_or_else(|| {
-            unsupported("historical execution is disabled; start serve with --history")
-        })?;
-        if !methods.contains(method) {
-            return Err(unsupported(format!(
-                "{method} is unavailable in era {}",
-                self.manifest.eras[era].name
-            )));
-        }
-        self.clients[era]
-            .request(method, params)
-            .await
-            .map_err(upstream_error)
+    pub async fn forward(&self, era: usize, method: &str, params: RpcParams) -> RpcResult<Value> {
+        self.backend.request(era, method, params).await
     }
 
-    pub async fn call(&self, method: &str, mut params: RpcParams) -> RpcResult<Value> {
+    pub async fn call(&self, method: &str, params: RpcParams) -> RpcResult<Value> {
+        let route = self.route(method, params).await?;
+        self.forward(route.era, method, route.params).await
+    }
+
+    pub async fn route(&self, method: &str, mut params: RpcParams) -> RpcResult<Route> {
         if !params.0.is_null() && !params.0.is_array() && !params.0.is_object() {
             return Err(invalid("params must be an array or an object"));
         }
         let live = self.live_index();
         let era = match method {
+            "debug_subscribe" => {
+                if params.get(0, &["subscription"]).and_then(Value::as_str) != Some("traceChain") {
+                    live
+                } else {
+                    let start = self
+                        .block(
+                            params
+                                .get(1, &["start_exclusive", "startExclusive"])
+                                .ok_or_else(|| invalid("missing start block"))?,
+                        )
+                        .await?;
+                    let end = self
+                        .block(
+                            params
+                                .get(2, &["end_inclusive", "endInclusive"])
+                                .ok_or_else(|| invalid("missing end block"))?,
+                        )
+                        .await?;
+                    if start.number < end.number {
+                        let first = self
+                            .block(&json!(format!("0x{:x}", start.number + 1)))
+                            .await?;
+                        if self.era(first.timestamp) != live || self.era(end.timestamp) != live {
+                            return Err(unsupported(
+                                "historical debug trace subscriptions are unavailable; use block tracing",
+                            ));
+                        }
+                    }
+                    live
+                }
+            }
             "eth_simulateV1" | "tempo_simulateV1" => self.simulation(method, &mut params).await?,
+            "eth_callBundle" => self.call_bundle(&mut params).await?,
+            "mev_simBundle" => self.mev_bundle(&mut params).await?,
+            "reth_getBlockExecutionOutcome" => self.execution_outcome(&mut params).await?,
             "eth_callMany" | "debug_traceCallMany" => self.bundles(method, &mut params).await?,
             "trace_filter" => self.filter(&mut params).await?,
-            "debug_traceBlock" => {
-                return Err(unsupported(
-                    "raw-block tracing is unsupported; use debug_traceBlockByHash or debug_traceBlockByNumber",
-                ));
-            }
+            "debug_traceBlock" => self.era(self.backend.raw_block_timestamp(&params).await?),
             "debug_traceTransaction"
             | "trace_transaction"
             | "trace_get"
             | "trace_replayTransaction"
-            | "trace_transactionOpcodeGas" => {
+            | "trace_transactionOpcodeGas"
+            | "ots_getInternalOperations"
+            | "ots_getTransactionError"
+            | "ots_traceTransaction" => {
                 let hash = params
                     .get(0, &["tx_hash", "txHash", "hash", "transaction"])
                     .ok_or_else(|| invalid("missing transaction hash"))?;
                 let tx: Value = self
-                    .live()
-                    .request("eth_getTransactionByHash", (hash,))
-                    .await
-                    .map_err(upstream_error)?;
+                    .backend
+                    .request(live, "eth_getTransactionByHash", RpcParams(json!([hash])))
+                    .await?;
                 match tx.get("blockHash").filter(|v| !v.is_null()) {
                     Some(hash) => self.era(self.block(hash).await?.timestamp),
                     // The native implementation defines missing/pending transaction behavior.
@@ -324,7 +414,7 @@ impl Router {
                 }
             }
         };
-        self.forward(era, method, params).await
+        Ok(Route { era, params })
     }
 
     fn check_time(&self, era: usize, overrides: Option<&Value>) -> RpcResult<()> {
@@ -380,6 +470,131 @@ impl Router {
         filter["fromBlock"] = from.number_id();
         filter["toBlock"] = to.number_id();
         params.set(0, &["filter"], filter);
+        Ok(era)
+    }
+
+    async fn call_bundle(&self, params: &mut RpcParams) -> RpcResult<usize> {
+        let mut request = params
+            .get(0, &["request"])
+            .filter(|value| value.is_object())
+            .cloned()
+            .ok_or_else(|| invalid("missing bundle request"))?;
+        // Unlike BlockId, the native bundle API accepts only a block number or tag here.
+        let selector = request
+            .get("stateBlockNumber")
+            .and_then(Value::as_str)
+            .ok_or_else(|| invalid("stateBlockNumber must be a block number or tag"))?;
+        if !matches!(
+            selector,
+            "earliest" | "latest" | "safe" | "finalized" | "pending"
+        ) {
+            quantity(&json!(selector))?;
+        }
+        let timestamp = request
+            .get("timestamp")
+            .filter(|value| !value.is_null())
+            .map(quantity)
+            .transpose()?;
+        if selector == "pending" {
+            let live = self.live_index();
+            if timestamp.is_some_and(|timestamp| self.era(timestamp) != live) {
+                return Err(unsupported("bundle timestamp crosses an era boundary"));
+            }
+            // The native pending environment supplies its own timestamp and remains live.
+            return Ok(live);
+        }
+        let parent = self.block(&json!(selector)).await?;
+        let era = self.era(parent.timestamp);
+        let timestamp = match timestamp {
+            Some(timestamp) => timestamp,
+            None => parent
+                .timestamp
+                .checked_add(12)
+                .ok_or_else(|| invalid("timestamp overflow"))?,
+        };
+        // Reth selects its configuration from the state block before changing its timestamp.
+        // Require both environments to belong to one binary until that native behavior changes.
+        if self.era(timestamp) != era {
+            return Err(unsupported("bundle timestamp crosses an era boundary"));
+        }
+        request["stateBlockNumber"] = parent.number_id();
+        params.set(0, &["request"], request);
+        Ok(era)
+    }
+
+    async fn mev_bundle(&self, params: &mut RpcParams) -> RpcResult<usize> {
+        let names = &["sim_overrides", "simOverrides"];
+        let mut overrides = params
+            .get(1, names)
+            .filter(|value| value.is_object())
+            .cloned()
+            .ok_or_else(|| invalid("missing bundle simulation overrides"))?;
+        let selector = overrides
+            .get("parentBlock")
+            .filter(|value| !value.is_null())
+            .cloned()
+            .unwrap_or_else(|| json!("latest"));
+        if selector == "pending" {
+            let live = self.live_index();
+            self.check_time(live, Some(&overrides))?;
+            return Ok(live);
+        }
+        let parent = self.block(&selector).await?;
+        let era = self.era(parent.timestamp);
+        // Native cfg is selected for parent + 12 before flattened block overrides are applied.
+        if self.era(parent.timestamp.saturating_add(12)) != era {
+            return Err(unsupported("bundle simulation crosses an era boundary"));
+        }
+        self.check_time(era, Some(&overrides))?;
+        overrides["parentBlock"] = parent.pin(&selector);
+        params.set(1, names, overrides);
+        Ok(era)
+    }
+
+    async fn execution_outcome(&self, params: &mut RpcParams) -> RpcResult<usize> {
+        let count = params
+            .get(1, &["count"])
+            .map(quantity)
+            .transpose()?
+            .unwrap_or(1);
+        if !(1..=128).contains(&count) {
+            return Err(invalid("block count must be between 1 and 128"));
+        }
+        let selector = params
+            .get(0, &["block_id", "blockId"])
+            .cloned()
+            .ok_or_else(|| invalid("missing block identifier"))?;
+        if selector == "pending" {
+            return Ok(self.live_index());
+        }
+        let mut first = self.block(&selector).await?;
+        if selector.get("blockHash").is_some()
+            || selector.as_str().is_some_and(|value| value.len() == 66)
+        {
+            // Native replay resolves a hash to a height, then executes canonical blocks by height.
+            first = self.block(&first.number_id()).await?;
+        }
+        // The native method returns an empty execution outcome for genesis without executing.
+        if first.number == 0 {
+            return Ok(self.live_index());
+        }
+        let era = self.era(first.timestamp);
+        let last = first
+            .number
+            .checked_add(count - 1)
+            .ok_or_else(|| invalid("block number overflow"))?;
+        if count > 1 {
+            // Native replay stops at the first absent block when a range extends past the head.
+            let head = self.block(&json!("latest")).await?;
+            let last = last.min(head.number);
+            if last > first.number {
+                let end = self.block(&json!(format!("0x{last:x}"))).await?;
+                if self.era(end.timestamp) != era {
+                    return Err(unsupported("block execution outcome spans multiple eras"));
+                }
+            }
+        }
+        params.set(0, &["block_id", "blockId"], first.pin(&selector));
         Ok(era)
     }
 
@@ -468,7 +683,7 @@ impl Router {
             return Ok(era);
         }
         let base = self.block(&selector).await?;
-        let chain_id = quantity(&json!(self.manifest.chain_id))?;
+        let chain_id = quantity(&json!(self.schedule.chain_id))?;
         let step = alloy_chains::Chain::from(chain_id)
             .average_blocktime_hint()
             .map(|d| d.as_secs().saturating_add(u64::from(d.subsec_nanos() > 0)))
@@ -550,6 +765,12 @@ fn block_argument(method: &str) -> Option<(usize, &'static [&'static str], bool)
         "trace_callMany" => (1, &["block_id", "blockId"], false),
         "debug_traceBlockByNumber" | "debug_standardTraceBlockToFile" => (0, &["block"], true),
         "debug_traceBlockByHash" => (0, &["block"], false),
+        "eth_getBlockAccessListByBlockHash" => (0, &["hash"], false),
+        "eth_getBlockAccessListByBlockNumber" => (0, &["number"], true),
+        "eth_getBlockAccessList" => (0, &["block_id", "blockId"], false),
+        "eth_getBlockAccessListRaw" | "debug_getRawBlockAccessList" => {
+            (0, &["block", "block_id", "blockId"], false)
+        }
         "debug_executionWitnessByBlockHash" => (0, &["hash"], false),
         "debug_storageRangeAt" | "debug_intermediateRoots" => {
             (0, &["block_hash", "blockHash"], false)
@@ -562,6 +783,48 @@ fn block_argument(method: &str) -> Option<(usize, &'static [&'static str], bool)
         | "trace_blockOpcodeGas" => (0, &["block_id", "blockId"], false),
         _ => return None,
     })
+}
+
+/// Decorate only callbacks that can execute an EVM. Unreviewed debug/trace calls fail closed;
+/// storage and operational callbacks continue through the native handler unchanged.
+pub fn is_execution_method(method: &str) -> bool {
+    if stored_or_live_method(method) {
+        return false;
+    }
+    block_argument(method).is_some()
+        || matches!(
+            method,
+            "eth_simulateV1"
+                | "tempo_simulateV1"
+                | "eth_callMany"
+                | "debug_traceCallMany"
+                | "trace_filter"
+                | "debug_traceBlock"
+                | "debug_traceTransaction"
+                | "trace_transaction"
+                | "trace_get"
+                | "trace_replayTransaction"
+                | "trace_transactionOpcodeGas"
+                | "eth_getBlockAccessListByBlockHash"
+                | "eth_getBlockAccessListByBlockNumber"
+                | "eth_getBlockAccessList"
+                | "eth_getBlockAccessListRaw"
+                | "eth_callBundle"
+                | "mev_simBundle"
+                | "reth_getBlockExecutionOutcome"
+                | "ots_getInternalOperations"
+                | "ots_getTransactionError"
+                | "ots_traceTransaction"
+                | "ots_getContractCreator"
+        )
+        || ((method.starts_with("debug_")
+            || method.starts_with("trace_")
+            || method.starts_with("eth_")
+            || method.starts_with("tempo_"))
+            && !matches!(
+                method,
+                "debug_subscribe" | "debug_unsubscribe" | "eth_subscribe" | "eth_unsubscribe"
+            ))
 }
 
 /// Unknown execution namespaces fail closed until their selector semantics have been reviewed.
@@ -628,6 +891,7 @@ fn stored_or_live_method(method: &str) -> bool {
             | "eth_sendTransaction"
             | "eth_sendRawTransaction"
             | "eth_sendRawTransactionSync"
+            | "eth_sendRawTransactionConditional"
             | "eth_sign"
             | "eth_signTransaction"
             | "eth_signTypedData"
@@ -635,10 +899,6 @@ fn stored_or_live_method(method: &str) -> bool {
             | "eth_getProof"
             | "eth_getMultiProof"
             | "eth_getAccountInfo"
-            | "eth_getBlockAccessListByBlockHash"
-            | "eth_getBlockAccessListByBlockNumber"
-            | "eth_getBlockAccessList"
-            | "eth_getBlockAccessListRaw"
             | "eth_getLogs"
             | "eth_newFilter"
             | "eth_newBlockFilter"
@@ -653,17 +913,39 @@ fn stored_or_live_method(method: &str) -> bool {
             | "token_getTokensByAddress"
             | "tempo_fundAddress"
             | "tempo_forkSchedule"
+            | "tempo_executionInfo"
             | "debug_getRawHeader"
             | "debug_getRawBlock"
             | "debug_getRawTransaction"
             | "debug_getRawTransactions"
-            | "debug_getRawBlockAccessList"
             | "debug_getRawReceipts"
             | "debug_getBadBlocks"
+            | "debug_clearTxpool"
+            | "debug_chaindbCompact"
+            | "debug_chainConfig"
+            | "debug_chaindbProperty"
             | "debug_codeByHash"
+            | "debug_dbAncient"
+            | "debug_dbAncients"
+            | "debug_dbGet"
+            | "debug_dumpBlock"
+            | "debug_freeOSMemory"
+            | "debug_gcStats"
+            | "debug_getAccessibleState"
             | "debug_accountRange"
             | "debug_getModifiedAccountsByNumber"
             | "debug_getModifiedAccountsByHash"
+            | "debug_memStats"
+            | "debug_preimage"
+            | "debug_printBlock"
+            | "debug_seedHash"
+            | "debug_setGCPercent"
+            | "debug_setHead"
+            | "debug_setTrieFlushInterval"
+            // These APIs are currently non-executing stubs in the pinned native backend.
+            | "debug_standardTraceBadBlockToFile"
+            | "debug_standardTraceBlockToFile"
+            | "debug_storageRangeAt"
             | "debug_stateRootWithUpdates"
     )
 }

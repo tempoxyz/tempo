@@ -9,6 +9,7 @@ use jsonrpsee::{
 };
 use serde_json::Value;
 use tempo_metabinary::{
+    handshake::{WorkerIdentity, wait_for_worker},
     manifest::{Bootstrap, Manifest},
     process::ProcessGroup,
     routing::{ExecutionInfo, Router, quantity},
@@ -101,38 +102,22 @@ async fn ready(
     let expected_pid = processes
         .worker_pid(&era.name)
         .expect("worker was launched");
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        processes.check_alive()?;
-        let response = tokio::time::timeout(
-            Duration::from_secs(1),
-            client.request::<ExecutionInfo, _>("tempo_executionInfo", jsonrpsee::rpc_params![]),
-        )
-        .await;
-        match response {
-            Ok(Ok(metadata)) => {
-                metadata.validate(manifest, read_only)?;
-                ensure!(
-                    metadata.process_id == expected_pid,
-                    "private endpoint belongs to another process"
-                );
-                return Ok(metadata);
-            }
-            Ok(Err(jsonrpsee::core::client::Error::Call(error))) if error.code() == -32601 => {
-                return Err(eyre::eyre!(
-                    "era {} lacks tempo_executionInfo; its binary needs the worker protocol",
-                    era.name
-                ));
-            }
-            _ => {}
-        }
-        ensure!(
-            tokio::time::Instant::now() < deadline,
-            "era {} did not become ready",
-            era.name
-        );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    let deadline = tokio::time::Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| eyre::eyre!("worker startup timeout exceeds the clock range"))?;
+    wait_for_worker(
+        client,
+        WorkerIdentity {
+            chain_id: &manifest.chain_id,
+            genesis_hash: &manifest.genesis_hash,
+            read_only,
+        },
+        expected_pid,
+        deadline,
+        || processes.check_alive(),
+    )
+    .await
+    .wrap_err_with(|| format!("waiting for era {}", era.name))
 }
 
 async fn serve(
@@ -184,6 +169,9 @@ async fn serve(
     }
     metadata.push(Some(live_info));
     let ws = if let Some(port) = manifest.live().ws_port {
+        let expected_pid = processes
+            .worker_pid(&manifest.live().name)
+            .ok_or_else(|| eyre::eyre!("live worker exited before WebSocket handshake"))?;
         let ws = Arc::new(
             WsClientBuilder::default()
                 .max_response_size(options.max_response_bytes)
@@ -193,11 +181,14 @@ async fn serve(
         let metadata: ExecutionInfo = ws
             .request("tempo_executionInfo", jsonrpsee::rpc_params![])
             .await?;
-        metadata.validate(&manifest, false)?;
-        ensure!(
-            Some(metadata.process_id) == processes.worker_pid(&manifest.live().name),
-            "private WebSocket endpoint belongs to another process"
-        );
+        metadata.validate(
+            WorkerIdentity {
+                chain_id: &manifest.chain_id,
+                genesis_hash: &manifest.genesis_hash,
+                read_only: false,
+            },
+            Some(expected_pid),
+        )?;
         Some(ws)
     } else {
         None

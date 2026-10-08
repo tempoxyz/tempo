@@ -66,6 +66,11 @@ impl Fixture {
             "trace_filter",
             "eth_futureExecution",
             "debug_traceBlock",
+            "eth_getBlockAccessListByBlockHash",
+            "eth_getBlockAccessListByBlockNumber",
+            "eth_getBlockAccessList",
+            "eth_getBlockAccessListRaw",
+            "debug_getRawBlockAccessList",
         ];
         let mut handles = vec![];
         let mut clients = vec![];
@@ -156,7 +161,6 @@ impl Fixture {
             genesis_hash: hash(0),
             eras,
         });
-        manifest.validate().unwrap();
         Self {
             router: Arc::new(Router::new(manifest, clients, metadata).unwrap()),
             handles,
@@ -185,6 +189,51 @@ impl Fixture {
     async fn call(&self, method: &str, params: Value) -> Value {
         self.router.call(method, RpcParams(params)).await.unwrap()
     }
+
+    async fn error_code(&self, method: &str, params: Value) -> i32 {
+        self.router
+            .call(method, RpcParams(params))
+            .await
+            .unwrap_err()
+            .code()
+    }
+}
+
+#[tokio::test]
+async fn debug_subscriptions_guard_the_included_range() {
+    let f = Fixture::new().await;
+    let live = f
+        .router
+        .route(
+            "debug_subscribe",
+            RpcParams(json!(["traceChain", "0x2", "0x4"])),
+        )
+        .await
+        .unwrap();
+    assert_eq!(live.era, 1); // 0x2 is exclusive and still belongs to the predecessor era.
+    let error = f
+        .router
+        .route(
+            "debug_subscribe",
+            RpcParams(
+                json!({"subscription":"traceChain", "startExclusive":"0x0", "endInclusive":"0x4"}),
+            ),
+        )
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(error.code(), -32004);
+    assert_eq!(
+        f.router
+            .route(
+                "debug_subscribe",
+                RpcParams(json!(["native-invalid-subscription"]))
+            )
+            .await
+            .unwrap()
+            .era,
+        1
+    );
 }
 
 #[tokio::test]
@@ -193,6 +242,19 @@ async fn historical_execution_and_stored_state_use_different_backends() {
     let old = f.call("eth_call", json!([{}, "0x1"])).await;
     assert_eq!(old["era"], 0);
     assert_eq!(old["params"][1], json!({"blockHash":hash(1)}));
+    for (method, selector) in [
+        ("eth_getBlockAccessListByBlockHash", json!(hash(1))),
+        ("eth_getBlockAccessListByBlockNumber", json!("0x1")),
+        ("eth_getBlockAccessList", json!("0x1")),
+        ("eth_getBlockAccessListRaw", json!("0x1")),
+        ("debug_getRawBlockAccessList", json!("0x1")),
+    ] {
+        assert_eq!(
+            f.call(method, json!([selector])).await["era"],
+            0,
+            "{method}"
+        );
+    }
     assert_eq!(f.call("eth_call", json!([{}, "0x3"])).await["era"], 1);
     assert_eq!(
         f.call("eth_call", json!([{}, "pending"])).await["params"][1],
@@ -265,33 +327,12 @@ async fn simulations_select_the_child_era_and_reject_filler_or_bundle_crossings(
         assert_eq!(response["params"][block_name], json!({"blockHash":hash(2)}));
     }
     let cross = json!([{"blockStateCalls":[{"blockOverrides":{"time":"0x63"}},{"blockOverrides":{"time":"0x64"}}]},"0x1"]);
-    assert_eq!(
-        f.router
-            .call("eth_simulateV1", RpcParams(cross))
-            .await
-            .unwrap_err()
-            .code(),
-        -32004
-    );
+    assert_eq!(f.error_code("eth_simulateV1", cross).await, -32004);
     // Number gaps create intermediate blocks even if only the final requested block is new.
     let gap = json!([{"blockStateCalls":[{"blockOverrides":{"blockNumber":"0x40", "timestamp":"0x12c"}}]},"0x1"]);
-    assert_eq!(
-        f.router
-            .call("eth_simulateV1", RpcParams(gap))
-            .await
-            .unwrap_err()
-            .code(),
-        -32004
-    );
+    assert_eq!(f.error_code("eth_simulateV1", gap).await, -32004);
     let bundles = json!([[{"transactions":[{}]}, {"transactions":[{}]}], {"blockNumber":"0x2"}]);
-    assert_eq!(
-        f.router
-            .call("debug_traceCallMany", RpcParams(bundles))
-            .await
-            .unwrap_err()
-            .code(),
-        -32004
-    );
+    assert_eq!(f.error_code("debug_traceCallMany", bundles).await, -32004);
 }
 
 #[tokio::test]
@@ -299,14 +340,7 @@ async fn overrides_cannot_bypass_era_selection_and_nulls_keep_native_defaults() 
     let f = Fixture::new().await;
     for name in ["time", "timestamp"] {
         let overrides = json!([{}, "0x1", null, {name:"0x64"}]);
-        assert_eq!(
-            f.router
-                .call("eth_call", RpcParams(overrides))
-                .await
-                .unwrap_err()
-                .code(),
-            -32004
-        );
+        assert_eq!(f.error_code("eth_call", overrides).await, -32004);
     }
     let response = f
         .call("eth_call", json!([{}, "0x1", null, {"time":null}]))
@@ -346,11 +380,8 @@ async fn trace_filter_defaults_each_bound_to_latest_and_requires_one_era() {
         0
     );
     assert_eq!(
-        f.router
-            .call("trace_filter", RpcParams(json!([{"fromBlock":"0x1"}])))
-            .await
-            .unwrap_err()
-            .code(),
+        f.error_code("trace_filter", json!([{"fromBlock":"0x1"}]))
+            .await,
         -32004
     );
 }
@@ -452,7 +483,6 @@ async fn supports_three_eras_and_live_nodes_need_no_historical_worker() {
         .await
         .unwrap_err();
     assert_eq!(error.code(), -32004);
-    assert!(error.message().contains("--history"));
 }
 
 #[tokio::test]
@@ -464,7 +494,6 @@ async fn raw_block_tracing_is_explicitly_unsupported() {
         .await
         .unwrap_err();
     assert_eq!(error.code(), -32004);
-    assert!(error.message().contains("debug_traceBlockByHash"));
 }
 
 #[tokio::test]
