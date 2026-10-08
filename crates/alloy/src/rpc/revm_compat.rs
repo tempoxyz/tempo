@@ -371,7 +371,7 @@ mod tests {
         }
         let signature = spec.mock_signature(Address::repeat_byte(9)).unwrap();
         for approval in signature.signatures() {
-            let PrimitiveSignature::WebAuthn(approval) = approval else {
+            let Some(PrimitiveSignature::WebAuthn(approval)) = approval.as_primitive() else {
                 panic!("wrong mock type")
             };
             assert_eq!(approval.webauthn_data.len(), usize::from(size));
