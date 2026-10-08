@@ -7,13 +7,14 @@ source contrib/bench/txgen/helpers.nu
 const BENCH_DIR = "contrib/bench"
 const LOCALNET_DIR = "localnet"
 const LOGS_DIR = "contrib/bench/logs"
-const RUSTFLAGS = "-C target-cpu=native"
+const RUSTFLAGS = "-C target-cpu=native -C force-frame-pointers=yes"
 const DEFAULT_PROFILE = "profiling"
 const DEFAULT_FEATURES = "jemalloc,asm-keccak"
 const BENCH_WORKTREES_DIR = ".bench-worktrees"
 const BENCH_RESULTS_DIR = "bench-results"
 const MINIO_BUCKET = "minio/tempo-binaries"
 const BENCH_META_SUBDIR = ".bench-meta"
+const BLOAT_VERSION = 1
 const LOCALNET_SIGNING_KEY_SECRET = "tempo-localnet-signing-key-secret"
 
 # TIP20 token IDs created by localnet genesis (pathUSD, AlphaUSD, BetaUSD, ThetaUSD)
@@ -74,7 +75,7 @@ def tracy-build-config [features: string, tracy: string] {
         { features: $features, extra_rustflags: "" }
     } else {
         let tracy_features = if $features == "" { "tracy" } else { $"($features),tracy" }
-        { features: $tracy_features, extra_rustflags: " -C force-frame-pointers=yes" }
+        { features: $tracy_features, extra_rustflags: "" }
     }
 }
 
@@ -144,27 +145,41 @@ def find-tempo-pids [] {
 # 1. Run `tempo init` to create the database
 # 2. Generate state bloat binary file
 # 3. Run `tempo init-from-binary-dump` to load the bloat
-# Generate the bloat binary file once (skips if already exists)
+def bloat-matches [marker: any, size: int, hardfork: string] {
+    (
+        $marker != null
+        and ($marker | get -o bloat_version | default 0) == $BLOAT_VERSION
+        and ($marker | get -o bloat_mib | default (-1)) == $size
+        and ($marker | get -o nonce_ring_hardfork | default "") == $hardfork
+    )
+}
+
+# Reuse bloat only when its contents and nonce ring capacity match the request.
 def generate-bloat-file [bloat_size: int, profile: string, skip_build: bool] {
     let bloat_file = $"($LOCALNET_DIR)/state_bloat.bin"
-    if ($bloat_file | path exists) {
+    let size_marker = $"($LOCALNET_DIR)/state_bloat.json"
+    if ($bloat_file | path exists) and (bloat-matches (try { open $size_marker } catch { null }) $bloat_size (latest-tempo-hardfork)) {
         print $"State bloat file already exists \(($bloat_size) MiB\)"
         return
     }
     print $"Generating state bloat \(($bloat_size) MiB\)..."
     let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-    run-tempo-xtask $profile $skip_build ["generate-state-bloat" "--size" $"($bloat_size)" "--out" $bloat_file ...$token_args]
+    run-tempo-xtask $profile $skip_build ["generate-state-bloat" "--size" $"($bloat_size)" "--nonce-ring-hardfork" (latest-tempo-hardfork) "--out" $bloat_file ...$token_args]
+    { bloat_version: $BLOAT_VERSION, bloat_mib: $bloat_size, nonce_ring_hardfork: (latest-tempo-hardfork) } | to json | save -f $size_marker
 }
 
 # Load the bloat file into a single node's database
-def load-bloat-into-node [tempo_bin: string, genesis_path: string, datadir: string] {
+def load-bloat-into-node [tempo_bin: string, genesis_path: string, datadir: string, bloat_size: int] {
     let bloat_file = $"($LOCALNET_DIR)/state_bloat.bin"
     let db_path = $"($datadir)/db"
+    let size_marker = $"($datadir)/state_bloat.json"
 
-    # Skip if this node already has a database with bloat loaded
     if ($db_path | path exists) {
-        print $"State bloat already loaded into ($datadir | path basename)"
-        return
+        if (bloat-matches (try { open $size_marker } catch { null }) $bloat_size (latest-tempo-hardfork)) {
+            print $"State bloat already loaded into ($datadir | path basename)"
+            return
+        }
+        error make { msg: $"Existing database ($datadir) has unknown or different state bloat; rerun localnet with --reset or bench with --force" }
     }
 
     # Remove existing reth database files while preserving key files (signing.key, signing.share, etc.)
@@ -184,6 +199,7 @@ def load-bloat-into-node [tempo_bin: string, genesis_path: string, datadir: stri
 
     print $"Loading state bloat into ($datadir | path basename)..."
     run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis_path "--datadir" $datadir $bloat_file
+    { bloat_version: $BLOAT_VERSION, bloat_mib: $bloat_size, nonce_ring_hardfork: (latest-tempo-hardfork) } | to json | save -f $size_marker
 }
 
 # ============================================================================
@@ -423,9 +439,11 @@ def resolve-git-ref-label [sha: string, fallback: string] {
     $fallback
 }
 
-def bench-cache-key [commit_sha: string, features: string, no_default_features: bool] {
+def bench-cache-key [commit_sha: string, features: string, no_default_features: bool, profile: string, rustflags: string] {
+    # Include build settings so older binaries without frame pointers are not reused.
+    let build_key = ([$profile $rustflags] | to json --raw | hash sha256 | str substring 0..15)
     if (not $no_default_features) and $features == $DEFAULT_FEATURES {
-        return $commit_sha
+        return $"($commit_sha)-($build_key)"
     }
 
     let feature_key = if $features == "" {
@@ -438,7 +456,7 @@ def bench-cache-key [commit_sha: string, features: string, no_default_features: 
     }
 
     let mode_key = if $no_default_features { "no-default" } else { "features" }
-    $"($commit_sha)-($mode_key)-($feature_key)"
+    $"($commit_sha)-($mode_key)-($feature_key)-($build_key)"
 }
 
 # Try to download cached binaries from MinIO for a given commit SHA.
@@ -518,7 +536,8 @@ def cache-upload [worktree_dir: string, profile: string, commit_sha: string, cac
 
 # Build tempo binary in a git worktree (with optional MinIO cache)
 def build-in-worktree [worktree_dir: string, ref: string, profile: string, features: string, commit_sha: string, --no-cache, --no-default-features, --extra-rustflags: string = "", --bench-features: string = ""] {
-    let cache_key = (bench-cache-key $commit_sha $features $no_default_features)
+    let rustflags = $"($RUSTFLAGS)($extra_rustflags)"
+    let cache_key = (bench-cache-key $commit_sha $features $no_default_features $profile $rustflags)
 
     # Try cache first
     if not $no_cache and (try-cache-download $worktree_dir $profile $commit_sha $cache_key) {
@@ -526,7 +545,6 @@ def build-in-worktree [worktree_dir: string, ref: string, profile: string, featu
     }
 
     print $"Building tempo for ($ref) in ($worktree_dir)..."
-    let rustflags = $"($RUSTFLAGS)($extra_rustflags)"
     let feature_args = (cargo-feature-args $features $no_default_features)
     let build_cmd = ["cargo" "build" "--profile" $profile]
         | append $feature_args
@@ -1382,6 +1400,7 @@ def generate-summary [
             ok: $total_ok
             err: $total_err
             total_gas: $total_gas
+            block_composition: ($report | get -o block_composition.summary | default null)
             block_time_mean: $block_time_mean
             builder_latency_p50: $run_builder.p50
             builder_latency_p90: $run_builder.p90
@@ -1934,7 +1953,7 @@ def run-dev-node [accounts: int, epoch_length: int, genesis: string, samply: boo
         # Custom genesis provided - check if bloat requires init
         if $bloat > 0 {
             generate-bloat-file $bloat $profile $skip_build
-            load-bloat-into-node $tempo_bin $genesis $datadir
+            load-bloat-into-node $tempo_bin $genesis $datadir $bloat
         }
         $genesis
     } else {
@@ -1956,7 +1975,7 @@ def run-dev-node [accounts: int, epoch_length: int, genesis: string, samply: boo
         # Apply state bloat if requested (requires fresh init)
         if $bloat > 0 {
             generate-bloat-file $bloat $profile $skip_build
-            load-bloat-into-node $tempo_bin $default_genesis $datadir
+            load-bloat-into-node $tempo_bin $default_genesis $datadir $bloat
         }
 
         $default_genesis
@@ -2081,7 +2100,7 @@ def run-consensus-nodes [nodes: int, accounts: int, epoch_length: int, genesis: 
     if $bloat > 0 {
         generate-bloat-file $bloat $profile $skip_build
         for node_dir in $validator_dirs {
-            load-bloat-into-node $tempo_bin $genesis_path $node_dir
+            load-bloat-into-node $tempo_bin $genesis_path $node_dir $bloat
         }
     }
 
@@ -2340,6 +2359,10 @@ def apply-system-tuning [] {
     # Print environment info for reproducibility
     print $"  Kernel: (^uname -r | str trim)"
     print $"  CPU: (open /proc/cpuinfo | lines | find 'model name' | first | split row ':' | last | str trim)"
+    print "  NVMe devices:"
+    ^lsblk --nodeps --output NAME,MODEL,REV,SIZE | lines | where { |line|
+        ($line | str trim | str starts-with "nvme") or ($line | str starts-with "NAME")
+    } | each { |line| print $"    ($line)" }
     print $"  Port range: (sysctl -n net.ipv4.ip_local_port_range | str trim)"
     print ""
 
@@ -2383,6 +2406,7 @@ def "main bench-init" [
     }
     let meta_dir = $"($datadir)/($BENCH_META_SUBDIR)"
     let genesis_accounts = ([$accounts 3] | math max) + 1
+    let bloat_hardfork = (latest-tempo-hardfork)
 
     # Mount schelk first so we can read the marker from the datadir
     bench-mount
@@ -2391,7 +2415,7 @@ def "main bench-init" [
     if not $force {
         let marker = (read-bench-marker $datadir)
         if $marker != null {
-            if ($marker.bloat_mib | into int) == $bloat and ($marker.accounts | into int) == $genesis_accounts and ($marker | get -o txgen_mnemonic | default "") == (txgen-account-mnemonic) {
+            if (bloat-matches $marker $bloat $bloat_hardfork) and ($marker.accounts | into int) == $genesis_accounts and ($marker | get -o txgen_mnemonic | default "") == (txgen-account-mnemonic) {
                 if ($"($datadir)/db" | path exists) and ($"($meta_dir)/genesis.json" | path exists) {
                     print $"Virgin snapshot already initialized \(bloat=($bloat) MiB, accounts=($genesis_accounts)\). Use --force to re-initialize."
                     return
@@ -2417,14 +2441,16 @@ def "main bench-init" [
     if $bloat > 0 {
         print $"Generating state bloat \(($bloat) MiB\)..."
         let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --nonce-ring-hardfork $bloat_hardfork --out $bloat_file ...$token_args
     }
 
     bench-clean-datadir $datadir
     bench-init-db $tempo_bin $genesis_path $datadir $bloat $bloat_file
 
     bench-save-and-promote $datadir $meta_dir {
-        bloat_mib: $bloat,
+        bloat_mib: $bloat
+        bloat_version: $BLOAT_VERSION
+        nonce_ring_hardfork: $bloat_hardfork
         accounts: $genesis_accounts,
         bench_datadir: $datadir,
         txgen_mnemonic: (txgen-account-mnemonic)
@@ -2440,7 +2466,7 @@ def "main bench-init" [
 # Run a full benchmark: start infra, localnet, and txgen traffic
 def "main bench" [
     --mode: string = "consensus"                    # Mode: "dev" or "consensus"
-    --preset: string = ""                           # Txgen preset name
+    --preset: string = "default"                    # Txgen preset name
     --tps: int = 10000                              # Target TPS
     --duration: int = 30                            # Duration in seconds
     --accounts: int = 1000                          # Number of accounts
@@ -2459,7 +2485,7 @@ def "main bench" [
     --baseline-env: string = ""                     # Environment variables for baseline node runs (KEY=VAL KEY2=VAL2)
     --feature-env: string = ""                      # Environment variables for feature node runs (KEY=VAL KEY2=VAL2)
     --bench-env: string = ""                        # Environment variables for txgen/bench (KEY=VAL KEY2=VAL2)
-    --bloat: int = 0                                # Generate state bloat (size in MiB) for TIP20 tokens
+    --bloat: int = 1024                             # Generate state bloat (size in MiB) for TIP20 tokens
     --no-infra                                      # Skip starting observability stack (Grafana + Prometheus)
     --baseline: string = ""                         # Git ref for baseline (comparison mode)
     --feature: string = ""                          # Git ref for feature (comparison mode)
@@ -2572,6 +2598,7 @@ def "main bench" [
         }
     }
     let dual_hardfork = $baseline_hardfork != "" and $feature_hardfork != ""
+    let bloat_hardfork = if $dual_hardfork { highest-hardfork [$baseline_hardfork $feature_hardfork] } else { latest-tempo-hardfork }
 
     if $baseline != "" and $feature != "" {
         # ================================================================
@@ -2695,7 +2722,7 @@ def "main bench" [
             let snapshot_ready = (
                 not $force
                 and $marker != null
-                and ($marker.bloat_mib | into int) == $bloat
+                and (bloat-matches $marker $bloat $bloat_hardfork)
                 and ($marker.accounts | into int) == $genesis_accounts
                 and ($marker | get -o baseline_hardfork | default "") == ($baseline_hardfork | str upcase)
                 and ($marker | get -o feature_hardfork | default "") == ($feature_hardfork | str upcase)
@@ -2746,18 +2773,11 @@ def "main bench" [
                 cp $"($feature_genesis_dir)/genesis.json" $feature_genesis_path
                 rm -rf $feature_genesis_dir
 
-                # Generate bloat file (shared, fork-agnostic)
-                if $bloat > 0 and not ($bloat_file | path exists) {
+                # Share one dump, filling the ring for the higher hardfork on both sides.
+                if $bloat > 0 {
                     print $"Generating state bloat \(($bloat) MiB\)..."
                     let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-                    if $baseline == "local" {
-                        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
-                    } else {
-                        do {
-                            cd $baseline_wt
-                            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
-                        }
-                    }
+                    cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --nonce-ring-hardfork $bloat_hardfork --out $bloat_file ...$token_args
                 }
 
                 # Initialize both datadirs
@@ -2772,6 +2792,8 @@ def "main bench" [
 
                 bench-save-and-promote $datadir $meta_dir {
                     bloat_mib: $bloat
+                    bloat_version: $BLOAT_VERSION
+                    nonce_ring_hardfork: $bloat_hardfork
                     accounts: $genesis_accounts
                     bench_datadir: $datadir
                     baseline_hardfork: ($baseline_hardfork | str upcase)
@@ -2793,7 +2815,7 @@ def "main bench" [
             let snapshot_ready = (
                 not $force
                 and $marker != null
-                and ($marker.bloat_mib | into int) == $bloat
+                and (bloat-matches $marker $bloat $bloat_hardfork)
                 and ($marker.accounts | into int) == $genesis_accounts
                 and ($marker | get -o gas_limit | default "") == $gas_limit
                 and ($marker | get -o general_gas_limit | default "") == $general_gas_limit
@@ -2821,24 +2843,19 @@ def "main bench" [
                     }
                 }
 
-                if $bloat > 0 and not ($bloat_file | path exists) {
-                    print $"Generating state bloat \(($bloat) MiB\) from baseline..."
+                if $bloat > 0 {
+                    print $"Generating state bloat \(($bloat) MiB\)..."
                     let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-                    if $baseline == "local" {
-                        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
-                    } else {
-                        do {
-                            cd $baseline_wt
-                            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
-                        }
-                    }
+                    cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --nonce-ring-hardfork $bloat_hardfork --out $bloat_file ...$token_args
                 }
 
                 bench-clean-datadir $datadir
                 bench-init-db $baseline_tempo $genesis_path_std $datadir $bloat $bloat_file
 
                 bench-save-and-promote $datadir $meta_dir {
-                    bloat_mib: $bloat,
+                    bloat_mib: $bloat
+                    bloat_version: $BLOAT_VERSION
+                    nonce_ring_hardfork: $bloat_hardfork
                     accounts: $genesis_accounts,
                     bench_datadir: $datadir,
                     gas_limit: $gas_limit,

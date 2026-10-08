@@ -1346,7 +1346,7 @@ def "main summarize" [
 }
 
 def "main render-txgen-spec" [
-    --preset: string = ""                              # Txgen preset name or scenario expression
+    --preset: string = "default"                       # Txgen preset name or scenario expression
     --out-dir: string = ""                             # Directory for rendered scenario specs
     --accounts: int = 1000                             # Public-mix user count
     --tps: int = 50000                                  # Public-mix target TPS
@@ -1370,7 +1370,7 @@ def "main render-txgen-spec" [
 def "main e2e" [
     --baseline: string                                  # Baseline git SHA/ref
     --feature: string                                   # Feature git SHA/ref
-    --preset: string = ""                               # Txgen preset name
+    --preset: string = "default"                        # Txgen preset name
     --preset-path: string = ""                          # Pre-rendered txgen preset path
     --tps: int = 50000                                  # Target TPS
     --duration: int = 90                                # Duration in seconds
@@ -1529,10 +1529,14 @@ def "main e2e" [
     bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
     bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
 
-    let snapshots_ready = (e2e-snapshots-ready $a_db $b_db)
+    let snapshots_ready = (
+        (e2e-snapshots-ready $a_db $b_db)
+        and (bloat-matches (read-bench-marker $a_db) $bloat_mib $snapshot_state_hardfork)
+        and (bloat-matches (read-bench-marker $b_db) $bloat_mib $snapshot_state_hardfork)
+    )
     let should_init_snapshots = $force_bloat or (not $snapshots_ready)
     if (not $snapshots_ready) and (not $force_bloat) {
-        print $"Local e2e snapshot ($bloat) is missing required files; initializing it once."
+        print $"Local e2e snapshot ($bloat) has missing files or outdated bloat; rebuilding it."
         let missing_a = (e2e-snapshot-missing-files $a_db)
         let missing_b = (e2e-snapshot-missing-files $b_db)
         if ($missing_a | length) > 0 {
@@ -1573,11 +1577,13 @@ def "main e2e" [
             ensure-bloat-space $bloat_mib
             print $"Generating local e2e state bloat \(($bloat_mib) MiB\)..."
             let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_mib --out $bloat_file ...$token_args
+            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_mib --nonce-ring-hardfork $snapshot_state_hardfork --out $bloat_file ...$token_args
         }
 
         let marker = {
             bloat_mib: $bloat_mib
+            bloat_version: $BLOAT_VERSION
+            nonce_ring_hardfork: $snapshot_state_hardfork
             bloat: $bloat
             accounts: $genesis_accounts
             validators: $E2E_VALIDATORS

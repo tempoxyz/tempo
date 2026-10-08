@@ -52,10 +52,6 @@ def txgen-tip20-scenario-alias [name: string] {
         return (txgen-tip20-public-scenario)
     }
 
-    if $name == "default" {
-        return ((txgen-tip20-base-scenario) | merge { recipient: "existing", fee_token: "any_tip20" })
-    }
-
     # Legacy preset names remain accepted, but active workflows should use scenario strings.
     if $name == "tip20" {
         return (txgen-tip20-base-scenario)
@@ -413,7 +409,10 @@ def txgen-static-preset-path [preset: string] {
 }
 
 def txgen-resolve-bench-spec [preset: string, out_dir: string = ""] {
-    let preset_name = ($preset | str trim)
+    # Shared with the multi-region runner; keep workload selection in the assets.
+    let name = ($preset | str trim)
+    let aliases = (open ([ (txgen-presets-dir) "aliases.json" ] | path join))
+    let preset_name = ($aliases | get -o $name | default $name)
     let tip20_scenario = (txgen-parse-tip20-scenario $preset_name)
     if $tip20_scenario != null {
         return (txgen-render-tip20-spec $tip20_scenario $out_dir)
@@ -433,6 +432,15 @@ def txgen-resolve-bench-spec [preset: string, out_dir: string = ""] {
 
 def txgen-preset-path [preset: string] {
     (txgen-resolve-bench-spec $preset).spec_path
+}
+
+# Store concrete workload identities; a moving CLI alias must not relabel history.
+def txgen-scenario-metadata-args [scenario: string, spec_path: string] {
+    let aliases = (open ([ (txgen-presets-dir) "aliases.json" ] | path join))
+    let resolved = ($aliases | get -o $scenario | default $scenario)
+    ["-m" $"preset=($spec_path | path basename | str replace --regex '\.yml$' '')"]
+        | append (if $resolved != "" { ["-m" $"scenario=($resolved)"] } else { [] })
+        | append (if $resolved != $scenario { ["-m" $"requested_preset=($scenario)"] } else { [] })
 }
 
 def txgen-account-mnemonic [] {
@@ -684,9 +692,9 @@ def txgen-prepare-vault-preset [spec_path: string, accounts: int, chain_id: int]
     $output
 }
 
-# Only public-mix needs category metadata; other presets keep their existing metadata.
+# Only public-mix needs category metadata; all presets use gas weighting.
 def txgen-workload-metadata-args [preset_name: string, spec_path: string] {
-    if $preset_name != "public-mix" { return [] }
+    if $preset_name != "public-mix" { return ["-m" "workload_mix_weighting=gas"] }
 
     # Read only the prepared file's mix, not its included setup/template specs.
     # Pin the jq-compatible Python yq, rather than relying on a system yq variant.
@@ -701,7 +709,7 @@ def txgen-workload-metadata-args [preset_name: string, spec_path: string] {
     if $result.exit_code != 0 {
         error make {msg: $"Failed to extract public-mix metadata: ($result.stderr)"}
     }
-    ["-m" "workload_mix_version=1" "-m" $"workload_mix_weights=($result.stdout | str trim)"]
+    ["-m" "workload_mix_version=1" "-m" "workload_mix_weighting=gas" "-m" $"workload_mix_weights=($result.stdout | str trim)"]
 }
 
 # Reuse the standalone renderers, preserving aggregate transaction shares even
@@ -934,41 +942,34 @@ def txgen-run-preset-pipeline [
         | append (if $benchmark_run != "" { ["-m" $"benchmark_run=($benchmark_run)"] } else { [] })
         | append (if $run_type != "" { ["-m" $"run_type=($run_type)"] } else { [] })
         | append (if $platform != "" { ["-m" $"platform=($platform)"] } else { [] })
-        | append (if $scenario != "" { ["-m" $"scenario=($scenario)"] } else { [] })
+        | append (txgen-scenario-metadata-args $scenario $spec_path)
         | append (if $pr_number != "" { ["-m" $"pr_number=($pr_number)"] } else { [] })
         | append (if $initial_db_size_bytes > 0 { ["-m" $"initial_db_size_bytes=($initial_db_size_bytes)"] } else { [] })
     let bench_cmd = $bench_base_cmd | append $report_args | append $metadata_args
 
     let bench_env_export = if $bench_env != "" { $"export ($bench_env) && " } else { "" }
     let txgen_extra_args = (txgen-parse-bench-args $bench_args)
-    let use_two_phase_setup = $is_vault or (txgen-spec-has-keychain-setup $spec_path)
-    let txgen_cmd_str = (txgen-shell-join ($txgen_cmd | append $txgen_extra_args))
-    let bench_cmd = if $use_two_phase_setup { $bench_cmd | append "--skip-setup" } else { $bench_cmd }
+    let setup_state_path = $"($report_path).setup.json"
+    let gas_mix_args = ["--gas-weighted-mix" "--setup-state-in" $setup_state_path]
+    let workload_extra_args = ($txgen_extra_args | where { |arg| $arg != "--gas-weighted-mix" })
+    let txgen_cmd_str = (txgen-shell-join ($txgen_cmd | append $workload_extra_args | append $gas_mix_args))
+    let bench_cmd = $bench_cmd | append "--skip-setup"
     let bench_cmd = if $is_vault { $bench_cmd | append ["--drain-timeout" "300"] } else { $bench_cmd }
     let bench_cmd_str = (txgen-shell-join $bench_cmd)
     let pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_cmd_str) | ($bench_cmd_str)"
 
-    if $use_two_phase_setup {
-        let txgen_setup_cmd_str = (txgen-shell-join ($txgen_setup_cmd | append $txgen_extra_args))
-        let bench_setup_cmd_str = (txgen-shell-join ($bench_send_base_cmd | append ["--drain-timeout" 0]))
-        let setup_pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_setup_cmd_str) | ($bench_setup_cmd_str)"
+    let setup_state_args = ["--setup-state-out" $setup_state_path]
+    let txgen_setup_cmd_str = (txgen-shell-join ($txgen_setup_cmd | append $workload_extra_args | append $setup_state_args))
+    let bench_setup_cmd_str = (txgen-shell-join ($bench_send_base_cmd | append ["--drain-timeout" 0]))
+    let setup_pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_setup_cmd_str) | ($bench_setup_cmd_str)"
 
-        if $is_vault {
-            print "  Streaming vault setup transactions into bench send..."
-        } else {
-            print "  Streaming keychain setup transactions into bench send..."
-        }
-        let setup_result = (bash -lc $setup_pipeline | complete)
-        if $setup_result.stdout != "" { print $setup_result.stdout }
-        if $setup_result.stderr != "" { print $setup_result.stderr }
+    print "  Confirming setup before gas sampling..."
+    let setup_result = (bash -lc $setup_pipeline | complete)
+    if $setup_result.stdout != "" { print $setup_result.stdout }
+    if $setup_result.stderr != "" { print $setup_result.stderr }
 
-        if $setup_result.exit_code != 0 {
-            return { ok: false, exit_code: $setup_result.exit_code, report_path: $report_path }
-        }
-        if $is_vault {
-            # Setup is complete. Do not reserve its nonces again when generating the workload.
-            open $spec_path | reject append | insert setup {steps: []} | to yaml | save -f $spec_path
-        }
+    if $setup_result.exit_code != 0 {
+        return { ok: false, exit_code: $setup_result.exit_code, report_path: $report_path }
     }
 
     if $is_vault or $preset_name == "zones" {

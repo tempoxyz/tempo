@@ -24,7 +24,7 @@ use eyre::Report;
 use parking_lot::Mutex;
 use prometheus_client::metrics::counter::Counter;
 use reth_ethereum::provider::db::DatabaseEnv;
-use reth_network_p2p::{BlockAccessListsClient, BlockClient, FullBlockClient};
+use reth_network_p2p::{BlockClient, FullBlockClient};
 use reth_node_builder::NodeTypesWithDBAdapter;
 use reth_primitives_traits::NodePrimitives;
 use reth_provider::{
@@ -286,9 +286,8 @@ async fn resolve_finalized<U: Upstream>(upstream: &U, height: Height) -> Option<
         .inspect_err(|error| warn!(%error, "failed decoding certificate"))
         .ok()?;
 
-    // Upstream finalization responses carry persisted EL blocks only; no p2p BAL
-    // is available when reconstructing this consensus block.
-    let consensus_block = Block::from_execution_block_unchecked(certified_block.block, None);
+    // Reconstruct the consensus block from the persisted execution-layer block.
+    let consensus_block = Block::from_execution_block_unchecked(certified_block.block);
     Some((finalization, consensus_block).encode())
 }
 
@@ -322,30 +321,15 @@ impl BlockNetwork for NoopBlockNetwork {
 
 impl<C> BlockNetwork for FullBlockClient<C>
 where
-    C: BlockClient<Block = TempoBlock> + BlockAccessListsClient + Send + Sync + 'static,
+    C: BlockClient<Block = TempoBlock> + Send + Sync + 'static,
     C::Header: alloy_consensus::BlockHeader + alloy_primitives::Sealable,
 {
     fn get_block(&self, digest: Digest) -> impl Future<Output = Option<Block>> + Send + 'static {
         let client = self.clone();
         async move {
-            #[cfg(not(feature = "bal"))]
-            return Block::try_from_execution_block(client.get_full_block(digest.0).await, None)
+            Block::try_from_execution_block(client.get_full_block(digest.0).await)
                 .inspect_err(|error| warn!(%error, %digest, "devp2p block failed validation"))
-                .ok();
-
-            #[cfg(feature = "bal")]
-            let (block, block_access_list) = client
-                .get_full_block_with_access_lists(digest.0)
-                .await
-                .split();
-
-            #[cfg(feature = "bal")]
-            Block::try_from_execution_block(
-                block,
-                block_access_list.map(|block_access_list| block_access_list.into_raw()),
-            )
-            .inspect_err(|error| warn!(%error, %digest, "devp2p block failed validation"))
-            .ok()
+                .ok()
         }
     }
 }
@@ -358,7 +342,7 @@ where
     fn block_by_hash(&self, digest: Digest) -> eyre::Result<Option<Block>> {
         self.find_sealed_or_recovered_block(digest.0, BlockSource::Any)
             .map_err(eyre::Report::new)
-            .map(|block| block.map(|block| Block::from_execution_block_unchecked(block, None)))
+            .map(|block| block.map(Block::from_execution_block_unchecked))
     }
 }
 

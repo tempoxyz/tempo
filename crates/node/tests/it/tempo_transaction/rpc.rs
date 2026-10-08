@@ -17,7 +17,9 @@ use alloy::{
     },
 };
 use alloy_eips::Encodable2718;
+use reth_e2e_test_utils::wait::{PollOpts, poll_until_with};
 use reth_primitives_traits::transaction::TxHashRef;
+use std::time::Duration;
 use tempo_chainspec::{
     hardfork::{TempoHardfork, TempoHardforks},
     spec::{DEV, MODERATO, PRESTO},
@@ -26,8 +28,11 @@ use tempo_primitives::{TempoTxEnvelope, transaction::tempo_transaction::Call};
 
 use super::helpers::*;
 
-/// Maximum number of 1-second poll iterations when waiting for RPC state to settle.
-const RPC_POLL_RETRIES: usize = 30;
+/// Polls RPC state every second for up to 30 seconds while waiting for it to settle.
+const RPC_POLL: PollOpts = PollOpts {
+    timeout: Duration::from_secs(30),
+    interval: Duration::from_secs(1),
+};
 
 /// Sends a raw transaction with duplicate-submission handling.
 ///
@@ -203,14 +208,15 @@ impl super::types::TestEnv for RpcEnv {
         }
 
         let expected = start_nonce + count;
-        let mut final_nonce = 0;
-        for _ in 0..RPC_POLL_RETRIES {
-            final_nonce = self.provider.get_transaction_count(signer_addr).await?;
-            if final_nonce >= expected {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        }
+        let final_nonce = poll_until_with(
+            RPC_POLL,
+            format!("protocol nonce of {signer_addr} to reach {expected}"),
+            || async {
+                let nonce = self.provider.get_transaction_count(signer_addr).await?;
+                Ok((nonce >= expected).then_some(nonce))
+            },
+        )
+        .await?;
         assert_eq!(final_nonce, expected, "Protocol nonce should have bumped");
         Ok(())
     }
@@ -290,14 +296,10 @@ async fn wait_for_receipt(
     provider: &impl Provider,
     tx_hash: B256,
 ) -> eyre::Result<serde_json::Value> {
-    for _ in 0..RPC_POLL_RETRIES {
-        let receipt: Option<serde_json::Value> = provider
+    poll_until_with(RPC_POLL, format!("receipt {tx_hash}"), || async {
+        Ok(provider
             .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
-            .await?;
-        if let Some(receipt) = receipt {
-            return Ok(receipt);
-        }
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    }
-    Err(eyre::eyre!("timed out waiting for receipt {tx_hash}"))
+            .await?)
+    })
+    .await
 }

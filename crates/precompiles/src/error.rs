@@ -16,7 +16,7 @@ use alloy::{
 };
 use alloy_evm::EvmInternalsError;
 use revm::{
-    context::journaled_state::JournalLoadError,
+    context::journaled_state::{JournalLoadErasedError, JournalLoadError},
     precompile::{PrecompileError, PrecompileHalt, PrecompileOutput, PrecompileResult},
 };
 use tempo_contracts::{
@@ -150,8 +150,8 @@ impl From<JournalLoadError<EvmInternalsError>> for TempoPrecompileError {
     }
 }
 
-impl From<JournalLoadError<revm::context::ErasedError>> for TempoPrecompileError {
-    fn from(value: JournalLoadError<revm::context::ErasedError>) -> Self {
+impl From<JournalLoadErasedError> for TempoPrecompileError {
+    fn from(value: JournalLoadErasedError) -> Self {
         match value {
             JournalLoadError::DBError(e) => Self::Fatal(e.to_string()),
             JournalLoadError::ColdLoadSkipped => Self::OutOfGas,
@@ -552,9 +552,8 @@ mod tests {
     #[test]
     fn test_encode_precompile_result_trait_success() {
         let result: Result<u64> = Ok(42);
-        let precompile_result = result.encode_precompile_result(0, 0, |val| {
-            alloy::primitives::Bytes::from(val.to_be_bytes().to_vec())
-        });
+        let precompile_result =
+            result.encode_precompile_result(0, 0, |val| val.to_be_bytes().into());
 
         let output = precompile_result.expect("success should be Ok");
         assert!(output.status.is_success());
