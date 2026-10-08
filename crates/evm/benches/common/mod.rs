@@ -409,6 +409,7 @@ where
         },
         general_gas_limit: 10_000_000_000,
         shared_gas_limit: 0,
+        expiring_nonce_count: None,
         consensus_context: None,
     };
     let mut executor = config.create_executor(evm, ctx);

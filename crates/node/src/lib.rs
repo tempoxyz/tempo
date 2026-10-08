@@ -13,13 +13,14 @@ pub use crate::{
         TempoNetworkBuilder, TempoNode, TempoNodeArgs, TempoPayloadBuilderBuilder, TempoPoolBuilder,
     },
 };
-use reth_ethereum::provider::db::DatabaseEnv;
+pub mod storage;
 use reth_node_builder::{FullNode, NodeAdapter, RethFullAdapter};
 pub use reth_storage_api::AccountInfoReader;
 pub use reth_transaction_pool::{
     PoolTransaction, StatefulValidationFn, StatelessValidationFn, TransactionOrigin,
     error::{InvalidPoolTransactionError, PoolTransactionError},
 };
+use storage::TempoDatabase;
 pub use tempo_transaction_pool::{
     AddressFilter,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
@@ -43,7 +44,7 @@ pub use tempo_primitives as primitives;
 
 mod version;
 
-type TempoFullNodeTypes = RethFullAdapter<DatabaseEnv, TempoNode>;
+type TempoFullNodeTypes = RethFullAdapter<TempoDatabase, TempoNode>;
 type TempoNodeAdapter = NodeAdapter<TempoFullNodeTypes>;
 
 /// Type alias for a launched tempo node.

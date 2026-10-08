@@ -87,6 +87,7 @@ pub struct TempoTxResult {
     next_section: BlockSection,
     /// Whether the transaction is a payment transaction.
     is_payment: bool,
+    is_expiring_nonce: bool,
     /// Block gas consumed by this transaction. The block `gas_used` field will be incremented by this value.
     block_gas_used: u64,
     /// Validator-credited fee (in the validator's fee token) reported by `collectFeePostTx`.
@@ -107,6 +108,7 @@ impl Clone for TempoTxResult {
             execution_context: self.execution_context,
             next_section: self.next_section,
             is_payment: self.is_payment,
+            is_expiring_nonce: self.is_expiring_nonce,
             block_gas_used: self.block_gas_used,
             validator_fee: self.validator_fee,
         }
@@ -138,6 +140,7 @@ impl TempoTxResult {
             execution_context,
             next_section,
             is_payment,
+            is_expiring_nonce: tx.is_expiring_nonce(),
             block_gas_used,
             validator_fee,
         }
@@ -177,6 +180,10 @@ impl TxResult for TempoTxResult {
 /// logic on top: section-based transaction ordering (`BlockSection`), system transaction
 /// validation, shared/non-shared gas accounting, and gas incentive tracking.
 pub struct TempoBlockExecutor<'a, DB: Database, I> {
+    pub(crate) nonce_prune: Option<crate::nonce_prune::PruneReceiver>,
+    pub(crate) nonce_prune_requests: Option<std::sync::mpsc::Sender<u64>>,
+    nonce_prune_budget: u64,
+    nonce_prune_precredited: Option<u64>,
     pub(crate) inner:
         EthBlockExecutor<'a, TempoEvm<DB, I>, &'a TempoChainSpec, TempoReceiptBuilder>,
 
@@ -202,6 +209,10 @@ where
         chain_spec: &'a TempoChainSpec,
     ) -> Self {
         Self {
+            nonce_prune: None,
+            nonce_prune_requests: None,
+            nonce_prune_budget: 0,
+            nonce_prune_precredited: None,
             incentive_gas_used: 0,
             non_payment_gas_left: ctx.general_gas_limit,
             non_shared_gas_left: evm.block().gas_limit.saturating_sub(ctx.shared_gas_limit),
@@ -214,6 +225,82 @@ where
             ),
             section: BlockSection::StartOfBlock,
             replay_state: StorageActionReplayState::default(),
+        }
+    }
+
+    pub(crate) fn set_nonce_pruner(
+        &mut self,
+        requests: std::sync::mpsc::Sender<u64>,
+        receiver: crate::nonce_prune::PruneReceiver,
+        nonce_count: Option<u64>,
+    ) {
+        self.nonce_prune_precredited = nonce_count.filter(|_| self.evm().cfg.spec.is_t1());
+        if let Some(mut remaining) = self.nonce_prune_precredited {
+            // Validation knows the full budget before execution. Results still use
+            // the bounded chunk stream, and finish verifies the committed count.
+            while remaining != 0 {
+                let credit = remaining.min(crate::nonce_prune::NONCES_PER_REQUEST);
+                if requests.send(credit).is_err() {
+                    break; // finish reports the worker result, including errors.
+                }
+                remaining -= credit;
+            }
+            // No more credits can arrive: let validation's worker finish and
+            // release its parent-state lease before transaction execution ends.
+            drop(requests);
+        } else {
+            self.nonce_prune_requests = Some(requests);
+        }
+        self.nonce_prune = Some(receiver);
+    }
+
+    /// Commit one ready prune chunk between transactions, or drain all chunks at block end.
+    pub(crate) fn apply_nonce_pruning(&mut self, wait: bool) -> Result<(), BlockExecutionError> {
+        use std::sync::mpsc::TryRecvError;
+        let Some(receiver) = self.nonce_prune.take() else {
+            return Ok(());
+        };
+        loop {
+            let result = if wait {
+                receiver.recv().map_err(BlockExecutionError::other)?
+            } else {
+                match receiver.try_recv() {
+                    Ok(result) => result,
+                    Err(TryRecvError::Empty) => {
+                        self.nonce_prune = Some(receiver);
+                        return Ok(());
+                    }
+                    Err(err) => return Err(BlockExecutionError::other(err)),
+                }
+            };
+            let Some(mut state) = result? else {
+                return Ok(());
+            };
+            if state.is_empty() {
+                continue;
+            }
+            let start = std::time::Instant::now();
+            let slots: usize = state.values().map(|account| account.storage.len()).sum();
+            // Only storage slots commute. Preserve current account metadata (e.g. a
+            // balance changed by a transaction), rather than restoring the parent copy.
+            for (address, account) in &mut state {
+                let info = self
+                    .evm_mut()
+                    .db_mut()
+                    .basic(*address)
+                    .map_err(BlockExecutionError::other)?
+                    .unwrap_or_default();
+                let storage = std::mem::take(&mut account.storage);
+                *account = Account::from(info);
+                account.storage = storage;
+                account.mark_touch();
+            }
+            self.evm_mut().db_mut().commit(state);
+            tracing::debug!(target: "tempo::nonce_prune", slots, elapsed = ?start.elapsed(), "Committed background nonce pruning");
+            if !wait {
+                self.nonce_prune = Some(receiver);
+                return Ok(());
+            }
         }
     }
 
@@ -517,6 +604,16 @@ where
         } else {
             self.inner.apply_pre_execution_changes()?;
         }
+        // Start at deployment so a PoC launched at a high block does not scan from genesis.
+        self.deploy_precompile_at_boundary(
+            tempo_contracts::precompiles::EXPIRING_NONCE_PRECOMPILE_ADDRESS,
+            &[(
+                tempo_precompiles::expiring_nonce::ExpiringNonceManager::new()
+                    .oldest_unpruned_block
+                    .slot(),
+                self.evm().block().number,
+            )],
+        )?;
 
         // Deploy 0xEF marker bytecode to precompiles at their activation hardforks.
         let timestamp = self.evm().block().timestamp.to::<u64>();
@@ -565,9 +662,10 @@ where
         &mut self,
         tx: impl ExecutableTx<Self>,
     ) -> Result<Self::Result, BlockExecutionError> {
+        self.apply_nonce_pruning(false)?;
         let (mut tx_env, recovered) = tx.into_parts();
         let execution_context = tx_env.execution_context;
-        // Remove any prewarming-specific context that was added to the tx env.
+        // Slot hints belong to speculative prewarming, not canonical execution.
         if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
             tempo_tx_env.expiring_nonce_idx = None;
         }
@@ -598,6 +696,7 @@ where
             execution_context,
             next_section,
             is_payment: self.is_payment(recovered.tx()),
+            is_expiring_nonce: recovered.tx().is_expiring_nonce(),
             block_gas_used,
             validator_fee,
         })
@@ -611,9 +710,20 @@ where
             is_payment,
             block_gas_used,
             validator_fee: _,
+            is_expiring_nonce,
         } = output;
 
         let gas_output = self.inner.commit_transaction(inner);
+        if is_expiring_nonce && self.evm().cfg.spec.is_t1() {
+            self.nonce_prune_budget += 1;
+            if self.nonce_prune_precredited.is_none()
+                && self.nonce_prune_budget == crate::nonce_prune::NONCES_PER_REQUEST
+                && let Some(requests) = &self.nonce_prune_requests
+            {
+                // Errors are reported through the result stream, which finish must drain.
+                let _ = requests.send(std::mem::take(&mut self.nonce_prune_budget));
+            }
+        }
 
         self.section = next_section;
 
@@ -651,7 +761,32 @@ where
             return Err(BlockValidationError::msg("incentive gas limit exceeded").into());
         }
 
+        if self
+            .nonce_prune_precredited
+            .is_some_and(|count| count != self.nonce_prune_budget)
+        {
+            return Err(BlockValidationError::msg("expiring nonce pruning budget mismatch").into());
+        }
         self.apply_current_committee_system_call()?;
+        let prune_finish_start = std::time::Instant::now();
+        let remaining_budget = self
+            .nonce_prune_precredited
+            .map_or(self.nonce_prune_budget, |_| 0);
+        if let Some(requests) = self.nonce_prune_requests.take() {
+            if self.nonce_prune_precredited.is_none() && self.nonce_prune_budget != 0 {
+                let _ = requests.send(self.nonce_prune_budget);
+            }
+            drop(requests);
+        } else if self.nonce_prune_precredited.is_none()
+            && self.nonce_prune.is_none()
+            && self.nonce_prune_budget != 0
+        {
+            let budget = self.nonce_prune_budget;
+            let state = crate::nonce_prune::prune(self.evm_mut(), budget)?;
+            self.evm_mut().db_mut().commit(state);
+        }
+        self.apply_nonce_pruning(true)?;
+        tracing::debug!(target: "tempo::nonce_prune", remaining_budget, elapsed = ?prune_finish_start.elapsed(), "Finished nonce pruning");
 
         let amsterdam_eip8037_enabled = self.evm().cfg.enable_amsterdam_eip8037;
 
@@ -744,7 +879,7 @@ mod tests {
     use commonware_utils::{N3f1, TryFromIterator as _, ordered};
     use rand::SeedableRng as _;
     use reth_chainspec::{EthChainSpec, EthereumHardfork, ForkCondition};
-    use reth_revm::{State, state::AccountInfo};
+    use reth_revm::{State, context::JournalTr, state::AccountInfo};
     use revm::{
         Database as _,
         context::result::{ExecutionResult, ResultGas},
@@ -1505,6 +1640,7 @@ mod tests {
             },
             next_section: BlockSection::NonShared,
             is_payment: false,
+            is_expiring_nonce: false,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
         };
@@ -1580,6 +1716,412 @@ mod tests {
             insta::allow_duplicates! {
                 insta::assert_snapshot!(err.to_string(), @"failed decoding boundary block extra data as DKG outcome: Unexpected End-of-Buffer: Not enough bytes remaining to read data");
             }
+        }
+    }
+
+    #[test]
+    fn expiring_nonce_cursor_starts_at_deployment_and_stays_put_without_nonces() {
+        use revm::Database as _;
+        use tempo_precompiles::{
+            EXPIRING_NONCE_PRECOMPILE_ADDRESS, expiring_nonce::ExpiringNonceManager,
+        };
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        for block in [1_000_000, 1_000_001] {
+            let mut executor = TestExecutorBuilder::default()
+                .with_block_number(block)
+                .with_parent_beacon_block_root(B256::ZERO)
+                .with_spec(TempoHardfork::T1)
+                .build(&mut db, &chainspec);
+            executor.apply_pre_execution_changes().unwrap();
+            assert_eq!(
+                executor
+                    .evm_mut()
+                    .db_mut()
+                    .storage(
+                        EXPIRING_NONCE_PRECOMPILE_ADDRESS,
+                        ExpiringNonceManager::new().oldest_unpruned_block.slot(),
+                    )
+                    .unwrap(),
+                U256::from(1_000_000)
+            );
+            executor.finish().unwrap();
+        }
+    }
+
+    #[test]
+    fn background_pruning_preserves_transactions_and_matches_synchronous_state() {
+        use revm::{
+            Database as _, DatabaseCommit as _, database::states::bundle_state::BundleRetention,
+        };
+        use tempo_precompiles::{
+            EXPIRING_NONCE_PRECOMPILE_ADDRESS as ADDRESS,
+            expiring_nonce::{ExpiringNonceManager, PruneCursor},
+        };
+        let chainspec = test_chainspec();
+        let manager = ExpiringNonceManager::new();
+        let expired = B256::repeat_byte(1);
+        let fresh = B256::repeat_byte(2);
+        let make_db = || {
+            let mut db = State::builder().with_bundle_update().build();
+            let code = Bytecode::new_legacy([0xef].into());
+            db.insert_account_with_storage(
+                ADDRESS,
+                AccountInfo {
+                    nonce: 1,
+                    code_hash: code.hash_slow(),
+                    code: Some(code),
+                    ..Default::default()
+                },
+                [
+                    (manager.seen[expired].slot(), U256::from(100)),
+                    (manager.bucket[1][0].slot(), U256::from_be_bytes(expired.0)),
+                    (manager.seen[B256::repeat_byte(3)].slot(), U256::from(100)),
+                    (manager.bucket[1][1].slot(), U256::from_be_bytes([3; 32])),
+                    (manager.seen[B256::repeat_byte(4)].slot(), U256::from(100)),
+                    (manager.bucket[1][2].slot(), U256::from_be_bytes([4; 32])),
+                    (manager.bucket_count[1].slot(), U256::from(3)),
+                    (manager.bucket_max_expiry[1].slot(), U256::from(100)),
+                ]
+                .into_iter()
+                .collect(),
+            );
+            db
+        };
+        let mut expected = None;
+        // Synchronous, asynchronous applied between transactions, and asynchronous
+        // still pending at finish, and validation pruning before execution must
+        // produce identical state/reverts.
+        for mode in 0..4 {
+            let mut db = make_db();
+            let mut executor = TestExecutorBuilder::default()
+                .with_block_number(2)
+                .with_parent_beacon_block_root(B256::ZERO)
+                .with_spec(TempoHardfork::T1)
+                .build(&mut db, &chainspec);
+            executor.evm_mut().ctx_mut().block.timestamp = U256::from(100);
+            let mut parent = TempoEvm::new(make_db(), executor.evm().evm_env());
+            let mut cursor = PruneCursor::default();
+            let mut chunks = Vec::new();
+            loop {
+                let (chunk, done) =
+                    crate::nonce_prune::prune_chunk(&mut parent, &mut cursor, 1).unwrap();
+                chunks.push(chunk);
+                if done {
+                    break;
+                }
+            }
+            assert!(chunks.len() > 1);
+            let (sender, receiver) = std::sync::mpsc::channel();
+            if mode == 3 {
+                let (requests, budgets) = std::sync::mpsc::channel();
+                executor.set_nonce_pruner(requests, receiver, Some(3));
+                assert_eq!(budgets.recv().unwrap(), 3);
+            } else if mode != 0 {
+                executor.nonce_prune = Some(receiver);
+            }
+            executor.apply_pre_execution_changes().unwrap();
+            if mode == 3 {
+                for chunk in &chunks {
+                    sender.send(Ok(Some(chunk.clone()))).unwrap();
+                    executor.apply_nonce_pruning(false).unwrap();
+                }
+                sender.send(Ok(None)).unwrap();
+            } else if mode != 0 {
+                executor.apply_nonce_pruning(false).unwrap();
+                assert_eq!(
+                    executor
+                        .evm_mut()
+                        .db_mut()
+                        .storage(ADDRESS, manager.seen[expired].slot())
+                        .unwrap(),
+                    U256::from(100)
+                );
+            }
+            // Simulate a new nonce and an account balance change while pruning runs.
+            let ctx = executor.evm_mut().ctx_mut();
+            tempo_precompiles::storage::StorageCtx::enter_evm_without_tip1060_accounting(
+                &mut ctx.journaled_state,
+                &ctx.block,
+                &ctx.cfg,
+                &ctx.tx,
+                tempo_precompiles::storage::StorageActions::disabled(),
+                || {
+                    let mut manager = ExpiringNonceManager::new();
+                    for hash in [fresh, B256::repeat_byte(5), B256::repeat_byte(6)] {
+                        manager.check_and_mark_expiring_nonce(hash, 110)?;
+                    }
+                    Ok::<_, tempo_precompiles::error::TempoPrecompileError>(())
+                },
+            )
+            .unwrap();
+            let state = ctx.journaled_state.finalize();
+            executor.evm_mut().db_mut().commit(state);
+            executor.nonce_prune_budget = 3;
+            let mut account =
+                Account::from(executor.evm_mut().db_mut().basic(ADDRESS).unwrap().unwrap());
+            account.info.balance = U256::from(42);
+            account.mark_touch();
+            executor
+                .evm_mut()
+                .db_mut()
+                .commit(EvmState::from_iter([(ADDRESS, account)]));
+            if mode == 1 || mode == 2 {
+                for chunk in chunks {
+                    sender.send(Ok(Some(chunk))).unwrap();
+                    if mode == 1 {
+                        executor.apply_nonce_pruning(false).unwrap();
+                    }
+                }
+                sender.send(Ok(None)).unwrap();
+            }
+            executor.finish().unwrap();
+            assert_eq!(db.basic(ADDRESS).unwrap().unwrap().balance, U256::from(42));
+            assert_eq!(
+                db.storage(ADDRESS, manager.seen[expired].slot()).unwrap(),
+                U256::ZERO
+            );
+            assert_eq!(
+                db.storage(ADDRESS, manager.seen[fresh].slot()).unwrap(),
+                U256::from(110)
+            );
+            assert_eq!(
+                db.storage(ADDRESS, manager.bucket_count[2].slot()).unwrap(),
+                U256::from(3)
+            );
+            db.merge_transitions(BundleRetention::Reverts);
+            let hashed = reth_trie::HashedPostState::from_bundle_state::<reth_trie::KeccakKeyHasher>(
+                db.bundle_state.state(),
+            );
+            let result = (hashed, db.bundle_state.reverts);
+            if let Some(expected) = &expected {
+                assert_eq!(&result, expected);
+            } else {
+                expected = Some(result);
+            }
+        }
+    }
+
+    #[test]
+    fn nonce_pruning_budget_matches_committed_expiring_transactions() {
+        let committed = crate::nonce_prune::NONCES_PER_REQUEST + 2;
+        for precredited in [
+            None,
+            Some(committed),
+            Some(0),
+            Some(committed - 1),
+            Some(committed + 1),
+        ] {
+            let chainspec = test_chainspec();
+            let mut db = State::builder().with_bundle_update().build();
+            let mut executor = TestExecutorBuilder::default()
+                .with_spec(TempoHardfork::T1)
+                .build(&mut db, &chainspec);
+            let (requests, budgets) = std::sync::mpsc::channel();
+            let (results, receiver) = std::sync::mpsc::channel();
+            executor.set_nonce_pruner(requests, receiver, precredited);
+            let initial = budgets.try_iter().collect::<Vec<_>>();
+            assert!(
+                initial
+                    .iter()
+                    .all(|&credit| credit <= crate::nonce_prune::NONCES_PER_REQUEST)
+            );
+            assert_eq!(initial.iter().sum::<u64>(), precredited.unwrap_or(0));
+            results.send(Ok(None)).unwrap();
+            executor.apply_nonce_pruning(false).unwrap();
+            if precredited.is_some() {
+                assert!(matches!(
+                    budgets.try_recv(),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected)
+                ));
+            }
+            let expiring: TempoTxEnvelope = tempo_primitives::AASigned::new_unhashed(
+                TempoTransaction {
+                    nonce_key: U256::MAX,
+                    ..Default::default()
+                },
+                TempoSignature::default(),
+            )
+            .into();
+            let output = |tx: &TempoTxEnvelope| {
+                TempoTxResult::new_precomputed(
+                    tx,
+                    ExecutionContext::Transaction {
+                        tx_hash: B256::ZERO,
+                    },
+                    // Included reverts consume their nonce and must also fund pruning.
+                    ExecutionResult::Revert {
+                        gas: ResultGas::default(),
+                        logs: vec![],
+                        output: Bytes::new(),
+                    },
+                    EvmState::default(),
+                    BlockSection::NonShared,
+                    true,
+                    0,
+                    U256::ZERO,
+                )
+            };
+            drop(output(&expiring)); // A discarded candidate grants no credit.
+            executor.commit_transaction(output(&create_legacy_tx()));
+            assert_eq!(executor.nonce_prune_budget, 0);
+            assert!(budgets.try_recv().is_err());
+            for _ in 0..crate::nonce_prune::NONCES_PER_REQUEST + 2 {
+                executor.commit_transaction(output(&expiring));
+            }
+            if precredited.is_none() {
+                assert_eq!(
+                    budgets.try_recv().unwrap(),
+                    crate::nonce_prune::NONCES_PER_REQUEST
+                );
+                assert_eq!(executor.nonce_prune_budget, 2);
+            } else {
+                assert_eq!(executor.nonce_prune_budget, committed);
+            }
+            assert!(budgets.try_recv().is_err());
+            let result = executor.finish();
+            if precredited.is_some_and(|count| count != committed) {
+                assert!(
+                    result
+                        .err()
+                        .unwrap()
+                        .to_string()
+                        .contains("pruning budget mismatch")
+                );
+            } else {
+                result.unwrap();
+            }
+            if precredited.is_none() {
+                assert_eq!(budgets.recv().unwrap(), 2);
+            }
+            assert!(budgets.recv().is_err());
+            assert!(
+                !db.cache
+                    .accounts
+                    .contains_key(&tempo_precompiles::EXPIRING_NONCE_PRECOMPILE_ADDRESS),
+                "an already completed worker must not trigger synchronous pruning again"
+            );
+        }
+    }
+
+    #[test]
+    fn background_pruning_failure_prevents_block_finalization() {
+        for disconnect in [false, true] {
+            let chainspec = test_chainspec();
+            let mut db = State::builder().with_bundle_update().build();
+            let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+            let (sender, receiver) = std::sync::mpsc::channel();
+            executor.nonce_prune = Some(receiver);
+            // Even after receiving a chunk, an error or disconnect must not be
+            // mistaken for successful completion of the stream.
+            sender.send(Ok(Some(EvmState::default()))).unwrap();
+            if !disconnect {
+                sender
+                    .send(Err(BlockExecutionError::other(std::io::Error::other(
+                        "prune failed",
+                    ))))
+                    .unwrap();
+            }
+            drop(sender);
+            let error = executor
+                .finish()
+                .err()
+                .expect("pruning failure must abort the block");
+            let message = error.to_string();
+            assert!(
+                message.contains(if disconnect {
+                    "closed channel"
+                } else {
+                    "prune failed"
+                }),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn bounded_expiring_nonce_pruning_is_streamed_to_trie_at_finish() {
+        use revm::Database as _;
+        use tempo_precompiles::{
+            EXPIRING_NONCE_PRECOMPILE_ADDRESS, expiring_nonce::ExpiringNonceManager,
+        };
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let mgr = ExpiringNonceManager::new();
+        let hash = B256::repeat_byte(1);
+        let seen = mgr.seen[hash].slot();
+        let bucket = mgr.bucket[1][0].slot();
+        let count = mgr.bucket_count[1].slot();
+        let max_expiry = mgr.bucket_max_expiry[1].slot();
+        db.insert_account_with_storage(
+            EXPIRING_NONCE_PRECOMPILE_ADDRESS,
+            AccountInfo {
+                nonce: 1,
+                code_hash: Bytecode::new_legacy([0xef].into()).hash_slow(),
+                code: Some(Bytecode::new_legacy([0xef].into())),
+                ..Default::default()
+            },
+            [
+                (seen, U256::from(100)),
+                (bucket, U256::from_be_bytes(hash.0)),
+                (count, U256::ONE),
+                (max_expiry, U256::from(100)),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let mut executor = TestExecutorBuilder::default()
+            .with_block_number(2)
+            .with_parent_beacon_block_root(B256::ZERO)
+            .with_spec(TempoHardfork::T1)
+            .build(&mut db, &chainspec);
+        executor.evm_mut().ctx_mut().block.timestamp = U256::from(100);
+        let hook_calls = Arc::new(Mutex::new(Vec::<EvmState>::new()));
+        let calls = hook_calls.clone();
+        executor
+            .evm_mut()
+            .db_mut()
+            .set_state_hook(Some(Box::new(move |state| {
+                calls.lock().unwrap().push(state);
+            })));
+        executor.apply_pre_execution_changes().unwrap();
+        assert_eq!(
+            executor
+                .evm_mut()
+                .db_mut()
+                .storage(EXPIRING_NONCE_PRECOMPILE_ADDRESS, seen)
+                .unwrap(),
+            U256::from(100)
+        );
+        // A committed nonce funds one deletion. Other tests cover real commit counting.
+        executor.nonce_prune_budget = 1;
+        executor.finish().unwrap();
+        let calls = hook_calls.lock().unwrap();
+        assert!(calls.iter().any(|state| {
+            state
+                .get(&EXPIRING_NONCE_PRECOMPILE_ADDRESS)
+                .is_some_and(|account| {
+                    account
+                        .storage
+                        .get(&seen)
+                        .is_some_and(|slot| slot.present_value == U256::ZERO)
+                })
+        }));
+        drop(calls);
+        // Pruning updates are committed through the normal state hook.
+        assert_eq!(
+            db.storage(
+                EXPIRING_NONCE_PRECOMPILE_ADDRESS,
+                mgr.oldest_unpruned_block.slot()
+            )
+            .unwrap(),
+            U256::from(2)
+        );
+        for slot in [seen, bucket, count, max_expiry] {
+            assert_eq!(
+                db.storage(EXPIRING_NONCE_PRECOMPILE_ADDRESS, slot).unwrap(),
+                U256::ZERO
+            );
         }
     }
 
@@ -1699,6 +2241,7 @@ mod tests {
             },
             next_section: BlockSection::NonShared,
             is_payment: false,
+            is_expiring_nonce: false,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
         };
@@ -1741,6 +2284,7 @@ mod tests {
             },
             next_section: BlockSection::NonShared,
             is_payment: false,
+            is_expiring_nonce: false,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
         };
@@ -1767,6 +2311,7 @@ mod tests {
             },
             next_section: BlockSection::NonShared,
             is_payment: false,
+            is_expiring_nonce: false,
             block_gas_used: 50000,
             validator_fee: U256::ZERO,
         };
@@ -1832,6 +2377,7 @@ mod tests {
             },
             next_section: BlockSection::NonShared,
             is_payment: false,
+            is_expiring_nonce: false,
             block_gas_used: 50000,
             validator_fee: U256::ZERO,
         };
@@ -1880,6 +2426,7 @@ mod tests {
             },
             next_section: BlockSection::NonShared,
             is_payment: false,
+            is_expiring_nonce: false,
             block_gas_used: 200_000,
             validator_fee: U256::ZERO,
         };
@@ -1931,6 +2478,7 @@ mod tests {
             },
             next_section: BlockSection::GasIncentive,
             is_payment: false,
+            is_expiring_nonce: false,
             block_gas_used: 200_000,
             validator_fee: U256::ZERO,
         };

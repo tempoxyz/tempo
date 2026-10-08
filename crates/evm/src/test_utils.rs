@@ -157,6 +157,7 @@ impl TestExecutorBuilder {
             },
             general_gas_limit: self.general_gas_limit,
             shared_gas_limit: self.shared_gas_limit,
+            expiring_nonce_count: None,
             consensus_context: None,
         };
 

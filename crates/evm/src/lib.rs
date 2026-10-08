@@ -14,6 +14,7 @@ use alloy_consensus::BlockHeader as _;
 pub use assemble::TempoBlockAssembler;
 pub use pool::{TempoPoolValidationEvm, TempoPoolValidationResult};
 mod block;
+mod nonce_prune;
 pub use block::{TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
 mod context;
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
@@ -63,6 +64,7 @@ mod test_utils;
 /// Tempo-related EVM configuration.
 #[derive(Debug, Clone)]
 pub struct TempoEvmConfig {
+    nonce_prune: Option<nonce_prune::PruneTask>,
     /// Inner evm config
     pub inner: EthEvmConfig<TempoChainSpec, TempoEvmFactory>,
 
@@ -92,6 +94,7 @@ impl TempoEvmConfig {
         let inner =
             EthEvmConfig::new_with_evm_factory(chain_spec.clone(), TempoEvmFactory::default());
         Self {
+            nonce_prune: None,
             inner,
             block_assembler: TempoBlockAssembler::new(chain_spec),
         }
@@ -145,11 +148,31 @@ impl BlockExecutorFactory for TempoEvmConfig {
         DB: StateDB,
         I: Inspector<TempoContext<DB>>,
     {
-        TempoBlockExecutor::new(evm, ctx, self.chain_spec())
+        let nonce_count = ctx.expiring_nonce_count;
+        let mut executor = TempoBlockExecutor::new(evm, ctx, self.chain_spec());
+        if let Some((requests, receiver)) = self
+            .nonce_prune
+            .as_ref()
+            .and_then(|task| task.lock().expect("nonce prune task poisoned").take())
+        {
+            executor.set_nonce_pruner(requests, receiver, nonce_count);
+        }
+        executor
     }
 }
 
 impl ConfigureEvm for TempoEvmConfig {
+    fn with_background_state(
+        self,
+        env: &EvmEnvFor<Self>,
+        provider: impl FnOnce() -> reth_storage_api::errors::ProviderResult<
+            reth_storage_api::StateProviderBox,
+        > + Send
+        + 'static,
+    ) -> Result<Self, alloy_evm::block::BlockExecutionError> {
+        self.start_nonce_pruning(env.clone(), provider)
+    }
+
     type Primitives = TempoPrimitives;
     type Error = TempoEvmError;
     type NextBlockEnvCtx = TempoNextBlockEnvAttributes;
@@ -282,6 +305,14 @@ impl ConfigureEvm for TempoEvmConfig {
                 tx_count_hint: Some(block.body().transactions.len()),
                 slot_number: block.slot_number(),
             },
+            expiring_nonce_count: self.nonce_prune.as_ref().map(|_| {
+                block
+                    .body()
+                    .transactions
+                    .iter()
+                    .filter(|tx| tx.is_expiring_nonce())
+                    .count() as u64
+            }),
             general_gas_limit: block.header().general_gas_limit,
             shared_gas_limit: block.header().shared_gas_limit,
             consensus_context: block.header().consensus_context,
@@ -306,6 +337,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 extra_data: attributes.inner.extra_data,
                 tx_count_hint: None,
             },
+            expiring_nonce_count: None,
             general_gas_limit: attributes.general_gas_limit,
             shared_gas_limit: attributes.shared_gas_limit,
             consensus_context: attributes.consensus_context,
@@ -501,7 +533,7 @@ mod tests {
     #[test]
     fn test_context_for_block() {
         let chainspec = test_chainspec();
-        let evm_config = TempoEvmConfig::new(chainspec.clone());
+        let mut evm_config = TempoEvmConfig::new(chainspec.clone());
 
         // Create subblock metadata
         let validator_key = B256::repeat_byte(0x01);
@@ -546,8 +578,16 @@ mod tests {
             ..Default::default()
         };
 
+        let expiring: TempoTxEnvelope = tempo_primitives::AASigned::new_unhashed(
+            tempo_primitives::TempoTransaction {
+                nonce_key: U256::MAX,
+                ..Default::default()
+            },
+            tempo_primitives::TempoSignature::default(),
+        )
+        .into();
         let body = BlockBody {
-            transactions: vec![system_tx],
+            transactions: vec![system_tx, expiring.clone(), expiring],
             ommers: vec![],
             withdrawals: None,
         };
@@ -555,12 +595,22 @@ mod tests {
         let block = Block { header, body };
         let sealed_block = SealedBlock::seal_slow(block);
 
+        // Synchronous execution needs no speculative budget or extra transaction scan.
+        assert_eq!(
+            evm_config
+                .context_for_block(&sealed_block)
+                .unwrap()
+                .expiring_nonce_count,
+            None
+        );
+        evm_config.nonce_prune = Some(Arc::new(std::sync::Mutex::new(None)));
         let result = evm_config.context_for_block(&sealed_block);
         assert!(result.is_ok());
 
         let context = result.unwrap();
 
         // Verify context fields
+        assert_eq!(context.expiring_nonce_count, Some(2));
         assert_eq!(context.general_gas_limit, 10_000_000);
         assert_eq!(context.shared_gas_limit, 3_000_000);
     }
@@ -639,6 +689,7 @@ mod tests {
 
         let context = result.unwrap();
 
+        assert_eq!(context.expiring_nonce_count, None);
         // Verify context fields from attributes
         assert_eq!(context.general_gas_limit, 12_000_000);
         assert_eq!(context.shared_gas_limit, 4_000_000);

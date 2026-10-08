@@ -97,7 +97,9 @@ impl TempoEngineTreeValidatorBuilder {
     /// engine.
     pub fn new(executed_state: ExecutedState) -> Self {
         Self {
-            inner: BasicEngineValidatorBuilder::default(),
+            inner: BasicEngineValidatorBuilder::default().with_retained_storage_tries(vec![
+                alloy_primitives::keccak256(tempo_precompiles::EXPIRING_NONCE_PRECOMPILE_ADDRESS),
+            ]),
             executed_state,
         }
     }

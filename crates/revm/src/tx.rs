@@ -56,9 +56,7 @@ pub struct TempoBatchCallEnv {
     /// This is not used in actual transaction execution - the key_id is recovered from the signature.
     pub override_key_id: Option<Address>,
 
-    /// Perf optimization for expiring nonce transactions.
-    ///
-    /// Stores how many other expiring nonce transactions are there in the block before this one.
+    /// Expected bucket entry for this expiring transaction, used only for prewarming.
     pub expiring_nonce_idx: Option<usize>,
 }
 
@@ -382,7 +380,6 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 tx_hash: *aa_signed.hash(),
                 // override_key_id is only used for gas estimation, not actual execution
                 override_key_id: None,
-                // can only be derived when given an entire block
                 expiring_nonce_idx: None,
             })),
         }

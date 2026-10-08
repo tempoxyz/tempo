@@ -32,23 +32,26 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
     ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
         let block = payload.block.clone();
         let sender_recovery_cache = self.inner.sender_recovery_cache.clone();
-        let mut transactions = Vec::with_capacity(block.body().transactions.len());
         let mut expiring_nonce_idx = 0;
-
-        for (idx, tx) in block.body().transactions.iter().enumerate() {
-            if tx.is_expiring_nonce() {
-                transactions.push((idx, Some(expiring_nonce_idx)));
-                expiring_nonce_idx += 1;
-            } else {
-                transactions.push((idx, None));
-            }
-        }
-
-        Ok((transactions, move |(index, expiring_nonce_idx)| {
+        let transactions: Vec<_> = block
+            .body()
+            .transactions
+            .iter()
+            .enumerate()
+            .map(|(index, tx)| {
+                let nonce_index = tx.is_expiring_nonce().then(|| {
+                    let next = expiring_nonce_idx;
+                    expiring_nonce_idx += 1;
+                    next
+                });
+                (index, nonce_index)
+            })
+            .collect();
+        Ok((transactions, move |(index, nonce_index)| {
             RecoveredInBlock::new(
                 block.clone(),
                 index,
-                expiring_nonce_idx,
+                nonce_index,
                 sender_recovery_cache.as_ref(),
             )
         }))
@@ -111,7 +114,6 @@ impl ToTxEnv<TempoTxEnv> for RecoveredInBlock {
         if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
             tempo_tx_env.expiring_nonce_idx = self.expiring_nonce_idx;
         }
-
         tx_env
     }
 }
@@ -240,6 +242,43 @@ mod tests {
 
         assert!(sender_recovery_cache.get(&tx_hash).is_some());
         assert_eq!(sender_recovery_cache.get(&system_tx_hash), None);
+    }
+
+    #[test]
+    fn test_prewarming_indexes_only_expiring_nonces() {
+        use tempo_primitives::transaction::{TEMPO_EXPIRING_NONCE_KEY, TempoTransaction};
+
+        let expiring = TempoTxEnvelope::AA(
+            TempoTransaction {
+                nonce_key: TEMPO_EXPIRING_NONCE_KEY,
+                ..Default::default()
+            }
+            .into_signed(Signature::test_signature().into()),
+        );
+        let block = create_test_block(vec![
+            create_legacy_tx(),
+            expiring.clone(),
+            create_legacy_tx(),
+            expiring,
+        ]);
+        let config = TempoEvmConfig::new(Arc::new(TempoChainSpec::from_genesis(
+            MODERATO.genesis().clone(),
+        )));
+        let payload = TempoExecutionData {
+            block: block.into(),
+        };
+        let (iter, recover) = config
+            .tx_iterator_for_payload(&payload)
+            .unwrap()
+            .into_parts();
+        let hints: Vec<_> = iter
+            .into_par_iter()
+            .map(|item| {
+                let (env, _) = recover.convert(item).unwrap().into_parts();
+                env.tempo_tx_env.and_then(|env| env.expiring_nonce_idx)
+            })
+            .collect();
+        assert_eq!(hints, [None, Some(0), None, Some(1)]);
     }
 
     #[test]

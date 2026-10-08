@@ -90,15 +90,12 @@ impl BestTransactionsPrewarming {
                     let _ = ctx.transactions_tx.send(None);
                     return;
                 };
-                let expiring_nonce_offset = if tx.transaction.is_expiring_nonce() {
+                let parallel = ctx.prewarm.parallel;
+                let expiring_nonce_offset = tx.transaction.is_expiring_nonce().then(|| {
                     let offset = ctx.next_expiring_nonce_offset;
                     ctx.next_expiring_nonce_offset += 1;
-                    Some(offset)
-                } else {
-                    None
-                };
-
-                let parallel = ctx.prewarm.parallel;
+                    offset
+                });
                 let prewarm = ctx.prewarm.clone();
                 let commands_tx = ctx.commands_tx.clone();
                 let transactions_tx = ctx.transactions_tx.clone();
