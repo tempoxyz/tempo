@@ -41,7 +41,7 @@ use super::{driver, executor, resolver, stubs};
 use crate::{
     alias,
     consensus::{Digest, block::Block},
-    epoch::SchemeProvider,
+    epoch_manager::SchemeProvider,
     feed::{self, FeedStateHandle},
     follow::upstream,
     storage,

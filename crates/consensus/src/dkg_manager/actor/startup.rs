@@ -12,7 +12,7 @@ use tempo_chainspec::NetworkIdentity;
 use tracing::{info, instrument};
 
 use super::state::State;
-use crate::{config::NAMESPACE, epoch::SchemeProvider, gossip::Certificate};
+use crate::{config::NAMESPACE, epoch_manager::SchemeProvider, gossip::Certificate};
 
 #[instrument(skip_all, err)]
 pub(super) fn verify_finalized_tip(

@@ -52,7 +52,7 @@ pub(in crate::consensus) struct Config<TContext> {
 
     pub(in crate::consensus) executor: crate::executor::Mailbox,
 
-    pub(in crate::consensus) dkg_manager: crate::dkg::manager::Mailbox,
+    pub(in crate::consensus) dkg_manager: crate::dkg_manager::Mailbox,
 
     /// Reads the part of a boundary block's DKG outcome that comes from the
     /// post-state of its parent.
@@ -79,7 +79,7 @@ pub(crate) struct Inner {
     proposal_return_budget: Duration,
 
     executor: crate::executor::Mailbox,
-    dkg_manager: crate::dkg::manager::Mailbox,
+    dkg_manager: crate::dkg_manager::Mailbox,
     parent_state: TempoParentState,
     validation_latency_estimator: Arc<Mutex<ValidationLatencyEstimator>>,
 

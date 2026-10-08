@@ -31,7 +31,7 @@ pub(crate) mod marshal {
 
     use crate::{
         consensus::{Digest, block::Block},
-        epoch::SchemeProvider,
+        epoch_manager::SchemeProvider,
         gossip::Certificate,
         storage::{self, Hybrid},
     };

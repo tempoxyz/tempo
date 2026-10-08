@@ -26,7 +26,7 @@ pub(crate) use ingress::Mailbox;
 
 use crate::{
     consensus::{Block, Digest},
-    epoch::SchemeProvider,
+    epoch_manager::SchemeProvider,
     gossip::Certificate,
 };
 
@@ -184,7 +184,7 @@ impl Marshal for crate::alias::marshal::Mailbox {
     }
 }
 
-impl EpochManager for crate::epoch::manager::Mailbox {
+impl EpochManager for crate::epoch_manager::Mailbox {
     fn enter(
         &mut self,
         epoch: Epoch,

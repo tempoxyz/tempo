@@ -31,14 +31,14 @@ use tempo_primitives::TempoHeader;
 
 use crate::{
     consensus::{Block, Digest},
-    epoch::SchemeProvider,
+    epoch_manager::SchemeProvider,
 };
 
 mod actor;
 mod ingress;
 
 #[cfg(test)]
-mod test;
+mod tests;
 
 pub(super) use actor::Driver;
 pub(super) use ingress::Mailbox;

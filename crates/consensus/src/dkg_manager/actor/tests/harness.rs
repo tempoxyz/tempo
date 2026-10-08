@@ -12,7 +12,7 @@ use std::{
 };
 
 use crate::{
-    epoch::SchemeProvider,
+    epoch_manager::SchemeProvider,
     gossip::Certificate,
     test_utils::{dkg_fixture, make_certificate},
 };
