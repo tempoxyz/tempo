@@ -266,6 +266,54 @@ impl Cache {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reth_db_api::database::PersistenceTask;
+    use std::{sync::mpsc, time::Duration};
+
+    #[test]
+    fn persistence_waits_for_publication_but_not_worker_cleanup() {
+        let (commit, decision) = mpsc::channel::<bool>();
+        let (published, publication) = mpsc::channel();
+        let (release, cleanup) = mpsc::channel();
+        let (exited, exit) = mpsc::channel();
+        let cache = Arc::new(Cache::default());
+        let worker_cache = cache.clone();
+        let worker = std::thread::spawn(move || {
+            let _guard = worker_cache.computation.lock().unwrap();
+            assert!(decision.recv().unwrap());
+            published.send(()).unwrap();
+            cleanup.recv().unwrap();
+            exited.send(()).unwrap();
+            Ok(())
+        });
+        let preparation = Box::new(Preparation {
+            commit: Some(commit),
+            publication,
+            worker: Some(worker),
+        });
+        std::thread::scope(|scope| {
+            let (returned, finished) = mpsc::channel();
+            scope.spawn(move || {
+                preparation.finish();
+                returned.send(()).unwrap();
+            });
+            let result = finished.recv_timeout(Duration::from_secs(2));
+            // Even after acknowledgement, cleanup still serializes the next computation.
+            let cleanup_held_lock = cache.computation.try_lock().is_err();
+            // Release before asserting so a regression cannot leave the test hung.
+            release.send(()).unwrap();
+            exit.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert!(
+                result.is_ok(),
+                "persistence waited for cleanup after publication"
+            );
+            assert!(cleanup_held_lock);
+        });
+    }
+}
+
 pub(super) fn replay_block(
     storage: &mut ReplayStorage,
     deployed: &mut bool,
@@ -314,22 +362,24 @@ pub(super) fn replay_block(
                 .map_err(error)?;
         }
         manager.prune(budget).map_err(error)?;
+        metrics::counter!("tempo_replay_cache_nonces_total").increment(budget);
         Ok(())
     })
 }
 
 /// Dropping an unfinished task signals failed persistence and waits for its worker.
-/// The computation lock remains held until commit decides whether to publish, so
-/// readers of a newly committed view wait instead of duplicating preparation.
+/// Computation and cleanup stay serialized; matching snapshot leases never wait
+/// for cleanup of the preceding version.
 pub(super) struct Preparation {
     commit: Option<std::sync::mpsc::Sender<bool>>,
+    publication: std::sync::mpsc::Receiver<()>,
     worker: Option<std::thread::JoinHandle<Result<(), DatabaseError>>>,
 }
 
 impl Preparation {
-    fn complete(&mut self, committed: bool) {
+    fn join(&mut self) {
         if let Some(commit) = self.commit.take() {
-            let _ = commit.send(committed);
+            let _ = commit.send(false);
         }
         if let Some(worker) = self.worker.take() {
             match worker.join() {
@@ -342,13 +392,21 @@ impl Preparation {
 }
 impl Drop for Preparation {
     fn drop(&mut self) {
-        self.complete(false);
+        self.join();
     }
 }
 impl reth_db_api::database::PersistenceTask for Preparation {
     fn finish(mut self: Box<Self>) {
         let started = std::time::Instant::now();
-        self.complete(true);
+        if let Some(commit) = self.commit.take() {
+            let _ = commit.send(true);
+        }
+        if self.publication.recv().is_ok() {
+            // Publication is complete; the same worker can release old state in the background.
+            drop(self.worker.take());
+        } else {
+            self.join();
+        }
         metrics::histogram!("tempo_replay_cache_publish_wait_seconds")
             .record(started.elapsed().as_secs_f64());
     }
@@ -364,6 +422,7 @@ impl Cache {
     ) -> Result<Preparation, DatabaseError> {
         let cache = self.clone();
         let (commit, committed) = std::sync::mpsc::channel();
+        let (published_tx, publication) = std::sync::mpsc::channel();
         let (ready, acquired) = std::sync::mpsc::sync_channel(0);
         let worker = std::thread::Builder::new()
             .name("nonce-cache-prepare".into())
@@ -424,11 +483,24 @@ impl Cache {
                     // Retain discoverability only for as long as such a lease lives.
                     published.leased.push(Arc::downgrade(&state));
                 }
+                drop(published);
+                if committed {
+                    let _ = published_tx.send(());
+                }
+                // Retain the computation lock through cleanup, bounding old-state
+                // reclamation to one worker even if the next persistence starts now.
+                let cleanup_started = std::time::Instant::now();
+                drop(base);
+                drop(blocks);
+                drop(source);
+                metrics::histogram!("tempo_replay_cache_cleanup_seconds")
+                    .record(cleanup_started.elapsed().as_secs_f64());
                 Ok(())
             })
             .map_err(error)?;
         let task = Preparation {
             commit: Some(commit),
+            publication,
             worker: Some(worker),
         };
         acquired.recv().map_err(error)?;
