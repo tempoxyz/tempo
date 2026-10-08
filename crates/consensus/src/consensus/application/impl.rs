@@ -62,13 +62,13 @@ pub(in crate::consensus) struct Config<TContext> {
     ///
     /// Provides the proposal return budget (the target block time minus the
     /// learned network reservation). This application feeds it validation
-    /// times and, for the network reservation, when each own proposal was
-    /// returned and the header timestamp of the block built on top of it.
+    /// times and, for the network reservation, each own proposal's window and
+    /// the header timestamp of the block built on top of it.
     ///
-    /// The return budget starts when the application is called. Commonware's
-    /// parent fetch happens beforehand and is not charged against it. Proposal
-    /// preparation time is deducted before handing the remaining budget to the
-    /// payload builder.
+    /// The return budget counts from when the proposal window opens: the
+    /// clock reading the header timestamp is taken from. Commonware's parent
+    /// fetch and the proposal preparation before the stamp are not charged
+    /// against it; they belong to the previous block's interval.
     pub(in crate::consensus) estimator: Estimator,
 
     /// The epoch strategy used by tempo, to map block heights to epochs.
@@ -171,8 +171,17 @@ impl Inner {
             (extra_data, None)
         };
 
+        // The proposal window opens at the clock reading the header timestamp
+        // is taken from. Block times are measured between header timestamps,
+        // and the estimator's network sample is the wait after this window
+        // closes, so pacing from any earlier instant would charge the
+        // preparation above twice: here, and in the previous proposer's
+        // sample, which ends at this header.
+        let window_opened = Instant::now();
+        let window_opened_unix_ms = runtime.current().epoch_millis();
+
         // Use current timestamp but make sure that if parent's timestamp is in the future, we account for that.
-        let mut epoch_millis = runtime.current().epoch_millis();
+        let mut epoch_millis = window_opened_unix_ms;
         if epoch_millis <= parent.timestamp_millis() {
             self.metrics.parent_ahead_of_local_time.metric().inc();
             epoch_millis = parent.timestamp_millis() + 1
@@ -195,10 +204,10 @@ impl Inner {
         // most one bounded step. A build that fails after this point has
         // still stepped the reservation. Give the builder only what remains
         // of the window when payload construction is requested.
-        let proposal_budget = self.estimator.start_proposal(Instant::now());
+        let proposal_budget = self.estimator.start_proposal(window_opened);
         let build_budget = proposal_budget
             .return_budget
-            .saturating_sub(propose_start.elapsed());
+            .saturating_sub(window_opened.elapsed());
         let attrs = TempoPayloadAttributes::new(
             Some(proposer_public_key),
             timestamp,
@@ -255,28 +264,28 @@ impl Inner {
             block,
             execution_block_encoded,
         );
-        let proposal_elapsed = propose_start.elapsed();
-        // Pace proposal return from the propose start. Validators still need
-        // to repeat replayable build work, so leave room for it before
+        let proposal_elapsed = window_opened.elapsed();
+        // Pace proposal return from the window's opening. Validators still
+        // need to repeat replayable build work, so leave room for it before
         // returning the proposal.
         let return_delay = proposal_budget
             .return_budget
             .saturating_sub(proposal_elapsed)
             .saturating_sub(validation_latency_elapsed);
         // Decide from the plan, before the sleep, whether the proposal met
-        // its return budget and what the budget leaves for the validators'
-        // replay. When the build already ran past the budget the delay is
-        // zero, so this is decided by what the build spent. The sleep's timer
-        // overshoot must neither decide the overrun nor shrink the unspent
-        // budget: in production it is sub-millisecond and the sleep rarely
-        // fires at all, and in the deterministic e2e runtime the sleep runs
-        // on simulated time while `propose_start` is a real `Instant`.
+        // its return budget. When the build already ran past the budget the
+        // delay is zero, so this is decided by what the build spent. The
+        // sleep's timer overshoot must not decide the overrun: in production
+        // it is sub-millisecond and the sleep rarely fires at all, and in the
+        // deterministic e2e runtime the sleep runs on simulated time while
+        // `window_opened` is a real `Instant`.
         let spent = proposal_elapsed + return_delay;
-        let unspent_return_budget = proposal_budget.unspent(spent);
+        let overran = proposal_budget.overran(spent);
         debug!(
             proposal.digest = %proposal.digest(),
             return_budget = %display_duration(proposal_budget.return_budget),
             network_reserve = %display_duration(proposal_budget.network_reserve),
+            preparation = %display_duration(window_opened.saturating_duration_since(propose_start)),
             proposal_elapsed = %display_duration(proposal_elapsed),
             build_time = %display_duration(payload_build_elapsed),
             payload_validation_work = %display_duration(payload_validation_work_elapsed),
@@ -286,33 +295,33 @@ impl Inner {
         );
         runtime.sleep_until(runtime.current() + return_delay).await;
 
-        // The proposal leaves this node now. What the return budget has left
-        // is what it reserved for the validators' replay, so the chain's wait
-        // beyond it is the network sample that the block built on top of this
-        // proposal completes; record the return on the clock header
-        // timestamps use. A proposal that overran its budget by more than the
+        // The proposal leaves this node now, leaving what its window has not
+        // spent to the validators' replay. The wait after the window closes
+        // is the network sample that the block built on top of this proposal
+        // completes, so record the window on the clock header timestamps
+        // use. A proposal that overran its budget by more than the
         // configured tolerance, by default the builder's pacing precision,
-        // takes no sample: its gap lacks the
-        // unspent replay reserve that normal samples subtract, so it would
-        // sit above its neighbours by that reserve, and the overrun is the
-        // build time multiplier's to absorb. Overruns within the tolerance
-        // still count, with nothing unspent: they are idle builds that
+        // takes no sample: it left nothing of its window to the replay, so
+        // its sample would sit above its neighbours by the overrun and that
+        // replay, and the overrun is the build time multiplier's to absorb.
+        // Overruns within the tolerance still count: they are dry builds that
         // reserved next to nothing for replay and returned a millisecond or
         // two late, and dropping them would drop nearly every sample taken
         // while the pool is dry.
         let returned_at = Instant::now();
-        match unspent_return_budget {
-            Some(unspent_return_budget) => self.estimator.on_proposal_returned(
-                returned_at,
-                runtime.current().epoch_millis(),
-                (round.epoch().get(), round.view().get()),
-                unspent_return_budget,
-            ),
-            None => debug!(
+        if overran {
+            debug!(
                 proposal.digest = %proposal.digest(),
                 overrun = %display_duration(spent.saturating_sub(proposal_budget.return_budget)),
                 "proposal overran its return budget; taking no network sample"
-            ),
+            );
+        } else {
+            self.estimator.on_proposal_returned(
+                returned_at,
+                window_opened_unix_ms,
+                (round.epoch().get(), round.view().get()),
+                proposal_budget.return_budget,
+            );
         }
         self.metrics
             .observe_estimator(&self.estimator.snapshot(returned_at));
@@ -694,6 +703,8 @@ struct Metrics {
     estimator_validation_latency_p90_ms: Gauge,
     /// Build time multiplier in thousandths.
     estimator_build_time_multiplier_permille: Gauge,
+    /// Finish a build reserves once its pool ran dry.
+    estimator_dry_build_finish_ms: Gauge,
 }
 
 impl Metrics {
@@ -725,6 +736,10 @@ impl Metrics {
                 "estimator_build_time_multiplier_permille",
                 "payload build time multiplier in use, in thousandths",
             ),
+            estimator_dry_build_finish_ms: context.gauge(
+                "estimator_dry_build_finish_ms",
+                "finish reserved by payload builds whose pool ran dry, in milliseconds",
+            ),
         }
     }
 
@@ -740,6 +755,8 @@ impl Metrics {
             .set(snapshot.validation_latency_p90.map_or(0, millis));
         self.estimator_build_time_multiplier_permille
             .set((snapshot.build_time_multiplier * 1000.0).round() as i64);
+        self.estimator_dry_build_finish_ms
+            .set(millis(snapshot.dry_build_finish));
     }
 }
 

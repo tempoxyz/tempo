@@ -64,18 +64,7 @@ pub async fn run_consensus_stack(
     estimator: tempo_payload_types::Estimator,
 ) -> eyre::Result<()> {
     config.validate()?;
-    estimator
-        .config()
-        .validate()
-        .map_err(|reason| eyre!("invalid proposal budget estimator configuration: {reason}"))?;
-    let expected = config.estimator_config(estimator.config().build_time_multiplier);
-    if estimator.config() != expected {
-        eyre::bail!(
-            "proposal budget estimator was configured differently than the consensus flags: \
-             {:?} vs {expected:?}",
-            estimator.config()
-        );
-    }
+    config.check_estimator(&estimator)?;
 
     let network_identity = config
         .network_identity()

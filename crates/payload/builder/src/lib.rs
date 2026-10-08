@@ -526,6 +526,7 @@ where
                         transactions = pool_transactions_included,
                         estimated_rlp_block_size,
                         build_time_multiplier = plan.build_time_multiplier(),
+                        dry_build_finish = ?plan.dry_finish(),
                         "stopping pool transaction execution before payload build budget is exhausted"
                     );
                     break BlockBuildStopReason::BuildBudget;
@@ -966,6 +967,7 @@ where
                 FinishedBuild {
                     work_at_tx_cutoff: validation_work_at_tx_cutoff,
                     total_work: validation_work_duration,
+                    idle: normal_transaction_fill_idle_elapsed,
                 },
             );
             self.metrics

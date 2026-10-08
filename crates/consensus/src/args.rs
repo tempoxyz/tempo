@@ -160,8 +160,9 @@ pub struct Args {
     ///
     /// Local proposal work is paced against this value minus the network
     /// reservation, which starts at `--consensus.network-budget` and is
-    /// learned up to `--consensus.network-budget-max`. Time spent fetching
-    /// the parent in commonware is not deducted from this budget.
+    /// learned up to `--consensus.network-budget-max`. The proposal window
+    /// opens when the proposer stamps its header, so time before that, such
+    /// as fetching the parent in commonware, is not deducted from it.
     #[arg(long = "consensus.target-block-time", default_value = "550ms")]
     pub target_block_time: PositiveDuration,
 
@@ -212,11 +213,10 @@ pub struct Args {
 
     /// Largest network reservation the proposal budget estimator may learn.
     ///
-    /// The estimator measures how long its own proposals take from return
-    /// until the next leader starts building on them, subtracts what the
-    /// return budget had left for validation, and reserves a recent
-    /// percentile of the rest (`--consensus.network-reserve-percentile`):
-    /// never less than `--consensus.network-budget`, never more than this.
+    /// The estimator measures how long after its own proposal windows close
+    /// the next leader starts building on them, and reserves a recent
+    /// percentile of that (`--consensus.network-reserve-percentile`): never
+    /// less than `--consensus.network-budget`, never more than this.
     /// The reservation follows that percentile by at most 100ms per own
     /// proposal, so a single outlier cannot take it to this cap at once.
     /// The builder reserves at most its own projected work for the
@@ -268,7 +268,7 @@ pub struct Args {
     /// network time alone cut the share of proposals whose network time
     /// exceeded the reservation from 43% to 37% without costing throughput;
     /// that run also raised the cap from 250 to 320ms and predates the
-    /// unspent-budget sample and the per-proposal step.
+    /// current network sample and the per-proposal step.
     ///
     /// On by default; pass `--consensus.network-reserve-fast-rise=false` to
     /// reserve the window percentile alone.
@@ -281,6 +281,21 @@ pub struct Args {
         action = clap::ArgAction::Set
     )]
     pub network_reserve_fast_rise: bool,
+
+    /// How far an own proposal may run past its return budget and still
+    /// teach the network reservation.
+    ///
+    /// A proposal that overruns its return budget by more than this takes no
+    /// network sample. The default is the builder's pacing precision on a
+    /// build whose pool ran dry, a millisecond or two. A machine whose dry
+    /// builds vary more needs a larger value, or most proposals made while the
+    /// pool is dry take no sample and the reservation ages back to
+    /// `--consensus.network-budget` until load returns.
+    #[arg(
+        long = "consensus.return-budget-overrun-tolerance",
+        default_value = "5ms"
+    )]
+    pub return_budget_overrun_tolerance: PositiveDuration,
 
     /// Deprecated compatibility flag. Ignored by the elastic proposal budget.
     #[arg(
@@ -549,9 +564,28 @@ impl Args {
             network_reserve_percentile: self.network_reserve_percentile,
             network_reserve_fast_rise: self.network_reserve_fast_rise,
             build_time_multiplier,
-            return_budget_overrun_tolerance:
-                tempo_payload_types::DEFAULT_RETURN_BUDGET_OVERRUN_TOLERANCE,
+            return_budget_overrun_tolerance: self.return_budget_overrun_tolerance.into_duration(),
         }
+    }
+
+    /// Checks that `estimator`, which the payload builder shares, was
+    /// configured from these flags, so that none of them is silently
+    /// ignored.
+    ///
+    /// The build time multiplier is the payload builder's flag, so it is
+    /// taken from the estimator rather than compared.
+    pub fn check_estimator(&self, estimator: &tempo_payload_types::Estimator) -> eyre::Result<()> {
+        let config = estimator.config();
+        config.validate().map_err(|reason| {
+            eyre::eyre!("invalid proposal budget estimator configuration: {reason}")
+        })?;
+        let expected = self.estimator_config(config.build_time_multiplier);
+        eyre::ensure!(
+            config == expected,
+            "proposal budget estimator was configured differently than the consensus flags: \
+             {config:?} vs {expected:?}",
+        );
+        Ok(())
     }
 
     /// Rejects Simplex timing values that Commonware's `simplex::Config::assert`
@@ -902,6 +936,47 @@ mod tests {
                 "{err}"
             );
         }
+    }
+
+    #[test]
+    fn overrun_tolerance_flag_reaches_the_shared_estimator() {
+        let multiplier = tempo_payload_types::DEFAULT_BUILD_TIME_MULTIPLIER;
+        let now = std::time::Instant::now();
+        let default_args = parse(&["--dev"]).consensus;
+        assert_eq!(
+            default_args
+                .estimator_config(multiplier)
+                .return_budget_overrun_tolerance,
+            tempo_payload_types::DEFAULT_RETURN_BUDGET_OVERRUN_TOLERANCE
+        );
+
+        // A custom tolerance passes the consistency check `run_consensus_stack`
+        // applies to the estimator the binary builds from the flags, and
+        // reaches every own proposal's budget.
+        let args = parse(&[
+            "--dev",
+            "--consensus.return-budget-overrun-tolerance",
+            "40ms",
+        ])
+        .consensus;
+        args.validate().unwrap();
+        let estimator = tempo_payload_types::Estimator::new(args.estimator_config(multiplier));
+        args.check_estimator(&estimator).unwrap();
+        assert_eq!(
+            estimator.start_proposal(now).overrun_tolerance,
+            Duration::from_millis(40)
+        );
+
+        // The builder's multiplier is the estimator's own.
+        let estimator = tempo_payload_types::Estimator::new(args.estimator_config(1.3));
+        args.check_estimator(&estimator).unwrap();
+
+        // An estimator configured apart from the flags is rejected.
+        let err = default_args
+            .check_estimator(&estimator)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("configured differently"), "{err}");
     }
 
     #[test]
