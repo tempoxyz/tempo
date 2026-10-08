@@ -9,14 +9,15 @@ use std::{
     },
 };
 
-use alloy_consensus::Header;
+use alloy_consensus::{BlockHeader as _, Header};
 use alloy_primitives::B256;
 use alloy_rpc_types_engine::{
-    ForkchoiceState, ForkchoiceUpdated, PayloadStatus, PayloadStatusEnum,
+    ForkchoiceState, ForkchoiceUpdateError, ForkchoiceUpdated, PayloadStatus, PayloadStatusEnum,
 };
 use commonware_consensus::types::{Height, Round};
 use futures::channel::oneshot;
 use parking_lot::Mutex;
+use reth_engine_primitives::BeaconForkChoiceUpdateError;
 use reth_ethereum::rpc::eth::primitives::BlockNumHash;
 use reth_node_core::primitives::{SealedBlock, SealedHeader};
 use tempo_node::TempoExecutionData;
@@ -67,6 +68,7 @@ struct StubExecutionProviderInner {
     durable: Mutex<HashMap<u64, B256>>,
     fail_durable_reads: AtomicBool,
     payloads: AtomicUsize,
+    payload_heights: Mutex<HashMap<B256, u64>>,
     forkchoices: Mutex<Vec<ForkchoiceState>>,
     reject_payloads: AtomicBool,
     reject_forkchoices: AtomicBool,
@@ -164,9 +166,13 @@ impl FinalizedBlockProvider for StubExecutionProvider {
 impl ExecutionEngine for StubExecutionProvider {
     fn new_payload(
         &self,
-        _payload: TempoExecutionData,
+        payload: TempoExecutionData,
     ) -> impl Future<Output = eyre::Result<PayloadStatus>> + Send + 'static {
         self.inner.payloads.fetch_add(1, Ordering::SeqCst);
+        self.inner
+            .payload_heights
+            .lock()
+            .insert(payload.block.hash(), payload.block.number());
         let rejected = self.inner.reject_payloads.load(Ordering::SeqCst);
         async move {
             let status = if rejected {
@@ -187,6 +193,7 @@ impl ExecutionEngine for StubExecutionProvider {
     ) -> impl Future<Output = eyre::Result<ForkchoiceUpdated>> + Send + 'static {
         self.inner.forkchoices.lock().push(state);
         let gate = self.inner.forkchoice_gate.lock().take();
+        let inner = self.inner.clone();
         let rejected = self.inner.reject_forkchoices.load(Ordering::SeqCst);
         let syncing = self
             .inner
@@ -197,11 +204,19 @@ impl ExecutionEngine for StubExecutionProvider {
             if let Some(gate) = gate {
                 let _ = gate.await;
             }
-            let status = if rejected {
-                PayloadStatusEnum::Invalid {
-                    validation_error: "rejected by test engine".into(),
-                }
-            } else if syncing {
+            if rejected
+                || inner
+                    .payload_heights
+                    .lock()
+                    .get(&state.head_block_hash)
+                    .is_some_and(|height| *height < inner.finalized.lock().number)
+            {
+                return Err(BeaconForkChoiceUpdateError::ForkchoiceUpdateError(
+                    ForkchoiceUpdateError::TooDeepReorg,
+                )
+                .into());
+            }
+            let status = if syncing {
                 PayloadStatusEnum::Syncing
             } else {
                 PayloadStatusEnum::Valid

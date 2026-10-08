@@ -14,9 +14,9 @@
 //! upstream, submit them to Reth as finalized payloads, and rely on Reth's sync machinery plus
 //! marshal gap repair to fill history.
 
-use std::{collections::VecDeque, time::Duration};
+use std::{collections::VecDeque, sync::Arc, time::Duration};
 
-use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatus};
+use alloy_rpc_types_engine::{ForkchoiceState, ForkchoiceUpdateError, PayloadStatus};
 use commonware_consensus::{
     Heightable as _,
     marshal::Update,
@@ -26,6 +26,7 @@ use commonware_runtime::{Clock, ContextCell, FutureExt as _, Handle, Pacer, Spaw
 use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
 use eyre::{Report, WrapErr as _, ensure, eyre};
 use futures::{FutureExt as _, StreamExt as _, channel::mpsc, future::BoxFuture};
+use reth_engine_primitives::BeaconForkChoiceUpdateError;
 use tempo_node::TempoExecutionData;
 use tracing::{Level, debug, error, instrument};
 
@@ -38,14 +39,14 @@ pub(crate) struct Actor<TContext, P, E, M = crate::alias::marshal::Mailbox> {
     context: ContextCell<TContext>,
     mailbox: mpsc::UnboundedReceiver<Message>,
 
-    execution_provider: P,
+    execution_provider: Arc<P>,
     execution_engine: E,
     marshal: M,
 
     epoch_strategy: FixedEpocher,
     floor: Height,
 
-    // Only VALID forkchoice responses advance the applied execution watermark.
+    // VALID responses and background sync advance the applied watermark.
     last_fcu: Target,
     // Remember attempted targets separately so SYNCING retries wait for a heartbeat or new tip.
     last_attempted_fcu: Target,
@@ -93,7 +94,7 @@ where
             marshal,
             epoch_strategy,
             floor,
-            execution_provider,
+            execution_provider: Arc::new(execution_provider),
             execution_engine,
 
             last_fcu: tip,
@@ -128,6 +129,9 @@ where
                     match result {
                         ExecutionTaskResult::Completed { last_fcu, attempted } => {
                             self.last_fcu = last_fcu;
+                            if last_fcu.supersedes(&self.latest_tip) {
+                                self.latest_tip = last_fcu;
+                            }
                             if let Some(attempted) = attempted {
                                 if attempted.supersedes(&self.last_attempted_fcu) {
                                     self.last_attempted_fcu = attempted;
@@ -206,8 +210,17 @@ where
         let last_fcu = self.last_fcu;
         let context = self.context.child("execute_request");
         let execution_engine = self.execution_engine.clone();
-        self.execution_task
-            .replace(execute_request(context, execution_engine, last_fcu, request).boxed());
+        let execution_provider = self.execution_provider.clone();
+        self.execution_task.replace(
+            execute_request(
+                context,
+                execution_provider,
+                execution_engine,
+                last_fcu,
+                request,
+            )
+            .boxed(),
+        );
     }
 
     #[instrument(skip_all, err(level = Level::WARN))]
@@ -272,50 +285,66 @@ enum ExecutionTaskResult {
     Fatal(Report),
 }
 
-async fn execute_request<TContext: Pacer, E: ExecutionEngine + 'static>(
+async fn execute_request<TContext: Pacer, P: FinalizedBlockProvider, E: ExecutionEngine>(
     context: TContext,
+    execution_provider: Arc<P>,
     execution_engine: E,
-    last_fcu: Target,
+    mut last_fcu: Target,
     request: ExecutionRequest,
 ) -> ExecutionTaskResult {
-    match request {
-        ExecutionRequest::Forkchoice(tip) => {
+    async {
+        let (tip, ack) = match request {
+            ExecutionRequest::Forkchoice(tip) => (tip, None),
+            ExecutionRequest::Block(block, ack) => {
+                let tip = Target::from_block(&block);
+                submit_new_payload(&context, &execution_engine, block).await?;
+                (tip, Some(ack))
+            }
+        };
+
+        refresh_finalized(execution_provider.as_ref(), &mut last_fcu)?;
+        let mut attempted = None;
+        if tip.supersedes(&last_fcu) || (ack.is_none() && tip == last_fcu) {
+            attempted = Some(tip);
             match submit_forkchoice_update(&context, &execution_engine, &tip).await {
-                Ok(status) => ExecutionTaskResult::Completed {
-                    last_fcu: if status.is_valid() { tip } else { last_fcu },
-                    attempted: Some(tip),
-                },
-                Err(error) => ExecutionTaskResult::Fatal(error),
-            }
-        }
-        ExecutionRequest::Block(block, ack) => {
-            let tip = Target::from_block(&block);
-
-            if let Err(error) = submit_new_payload(&context, &execution_engine, block).await {
-                return ExecutionTaskResult::Fatal(error);
-            }
-
-            let mut applied = last_fcu;
-            let mut attempted = None;
-            if tip.supersedes(&last_fcu) {
-                match submit_forkchoice_update(&context, &execution_engine, &tip).await {
-                    Ok(status) => {
-                        attempted = Some(tip);
-                        if status.is_valid() {
-                            applied = tip;
-                        }
+                Ok(status) if status.is_valid() => last_fcu = tip,
+                Ok(_) => {}
+                Err(error) => {
+                    // Sync may finalize a newer tip while this FCU is in flight.
+                    let overtaken = matches!(
+                        error.downcast_ref::<BeaconForkChoiceUpdateError>(),
+                        Some(BeaconForkChoiceUpdateError::ForkchoiceUpdateError(
+                            ForkchoiceUpdateError::TooDeepReorg
+                        ))
+                    );
+                    refresh_finalized(execution_provider.as_ref(), &mut last_fcu)?;
+                    if !overtaken || !last_fcu.supersedes(&tip) {
+                        return Err(error);
                     }
-                    Err(error) => return ExecutionTaskResult::Fatal(error),
                 }
             }
-
-            ack.acknowledge();
-            ExecutionTaskResult::Completed {
-                last_fcu: applied,
-                attempted,
-            }
         }
+        if let Some(ack) = ack {
+            ack.acknowledge();
+        }
+        Ok(ExecutionTaskResult::Completed {
+            last_fcu,
+            attempted,
+        })
     }
+    .await
+    .unwrap_or_else(ExecutionTaskResult::Fatal)
+}
+
+fn refresh_finalized<P: FinalizedBlockProvider>(
+    provider: &P,
+    applied: &mut Target,
+) -> eyre::Result<()> {
+    let finalized = Target::from_header(&provider.finalized_header()?);
+    if finalized.supersedes(applied) {
+        *applied = finalized;
+    }
+    Ok(())
 }
 
 #[instrument(

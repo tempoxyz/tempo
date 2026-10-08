@@ -298,6 +298,7 @@ fn invalid_payload_exits_without_acknowledging_or_canonicalizing() {
 fn forkchoice_failure_exits_without_acknowledging_block() {
     deterministic::Runner::default().start(|context| async move {
         let provider = StubExecutionProvider::default();
+        // TooDeepReorg without newer finality must remain fatal.
         provider.reject_forkchoices();
 
         let (actor, mut mailbox) = init(
@@ -713,7 +714,7 @@ fn startup_uses_execution_finalized_tip_without_immediate_forkchoice() {
 }
 
 #[test_traced]
-fn syncing_future_tip_does_not_suppress_connected_block_forkchoice() {
+fn syncing_tip_allows_backfill_until_execution_finalizes_it() {
     deterministic::Runner::default().start(|context| async move {
         let provider = StubExecutionProvider::default();
         let initial_hash = digest(100).0;
@@ -728,7 +729,7 @@ fn syncing_future_tip_does_not_suppress_connected_block_forkchoice() {
                 marshal: StubMarshal::default(),
                 epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
                 floor: Height::zero(),
-                fcu_heartbeat_interval: Duration::from_secs(60),
+                fcu_heartbeat_interval: Duration::from_millis(250),
             },
         );
         actor.start();
@@ -761,6 +762,44 @@ fn syncing_future_tip_does_not_suppress_connected_block_forkchoice() {
                 .collect::<Vec<_>>(),
             expected_heads,
             "a syncing future target must not suppress connected-block FCUs or busy-loop",
+        );
+
+        // Background sync can finalize the future tip without a VALID response.
+        provider.set_finalized(200, future_hash, round(100));
+        let block = make_block_at_round(103, parent_hash, round(13));
+        let (ack, waiter) = Exact::handle();
+        let _ = mailbox.report(Update::Block(block.into(), ack));
+        waiter.await.expect("backfill must still be acknowledged");
+        assert_eq!(provider.forkchoices().len(), expected_heads.len());
+
+        // Sync can also finish while a forkchoice request is in flight.
+        let release = provider.pause_next_forkchoice();
+        let block = make_block_at_round(201, future_hash, round(101));
+        let (ack, waiter) = Exact::handle();
+        let _ = mailbox.report(Update::Block(block.into(), ack));
+        wait_until(&context, || provider.forkchoices().len() == 4).await;
+        let synced_hash = digest(202).0;
+        provider.set_finalized(202, synced_hash, round(102));
+        release.send(()).unwrap();
+        waiter
+            .await
+            .expect("sync overtaking forkchoice must not stop the actor");
+
+        context.sleep(Duration::from_millis(300)).await;
+        assert_eq!(
+            provider.forkchoices().last().unwrap().head_block_hash,
+            synced_hash
+        );
+        let block = make_block_at_round(203, synced_hash, round(103));
+        let block_hash = block.digest().0;
+        let (ack, waiter) = Exact::handle();
+        let _ = mailbox.report(Update::Block(block.into(), ack));
+        waiter
+            .await
+            .expect("the follower must continue past the synced tip");
+        assert_eq!(
+            provider.forkchoices().last().unwrap().head_block_hash,
+            block_hash
         );
     });
 }
