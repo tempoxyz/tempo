@@ -208,6 +208,10 @@ impl ConfigureEvm for TempoEvmConfig {
             cfg_env,
             block_env: TempoBlockEnv {
                 multisig_recovery_factory: self.chain_spec().info.multisig_recovery_factory(),
+                account_migration_enabled: self
+                    .chain_spec()
+                    .info
+                    .account_migration_enabled(header.timestamp()),
                 inner: block_env,
                 timestamp_millis_part: header.timestamp_millis_part,
                 epoch_length: self
@@ -264,6 +268,10 @@ impl ConfigureEvm for TempoEvmConfig {
             cfg_env,
             block_env: TempoBlockEnv {
                 multisig_recovery_factory: self.chain_spec().info.multisig_recovery_factory(),
+                account_migration_enabled: self
+                    .chain_spec()
+                    .info
+                    .account_migration_enabled(attributes.timestamp),
                 inner: block_env,
                 timestamp_millis_part: attributes.timestamp_millis_part,
                 epoch_length: self

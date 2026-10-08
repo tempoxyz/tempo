@@ -27,6 +27,14 @@ crate::sol! {
             MultisigOwner[] owners
         );
 
+        event AccountUpgraded(
+            address indexed account,
+            bytes32 indexed commitment,
+            bytes32 salt,
+            uint8 threshold,
+            MultisigOwner[] owners
+        );
+
         function deriveAccount(bytes32 salt, uint8 threshold, MultisigOwner[] calldata owners)
             external
             pure
@@ -38,6 +46,9 @@ crate::sol! {
             MultisigOwner[] calldata owners
         ) external;
 
+        function upgradeAccount(uint8 threshold, MultisigOwner[] calldata owners)
+            external returns (bytes32 commitment);
+
         error InvalidAccount();
         error InvalidConfig();
         error InvalidThreshold();
@@ -47,5 +58,11 @@ crate::sol! {
         error DuplicateOwner();
         error InvalidOwnerOrder();
         error UnauthorizedMultisigCaller();
+        error PrimitiveRootRequired();
+        error UpgradeMustBeOnlyCall();
+        error AccountAlreadyConfigurable();
+        error AccountHasCode();
+        error MigrationNotActive();
+        error RootKeyRetired(address account);
     }
 }
