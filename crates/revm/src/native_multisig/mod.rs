@@ -330,7 +330,8 @@ pub fn verify(tx: &TempoTxEnv) -> Result<(), TempoInvalidTransaction> {
 }
 
 /// Checks independently acting keys, never primitive approvals inside a native quorum.
-fn validate_primitive_authority<J: JournalTr>(
+/// Storage-action replay must repeat this check against the current block state.
+pub fn validate_primitive_authority<J: JournalTr>(
     journal: &mut J,
     tx: &TempoTxEnv,
     block: &TempoBlockEnv,

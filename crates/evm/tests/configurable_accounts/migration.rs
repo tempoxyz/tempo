@@ -1,5 +1,7 @@
 //! Signed migration through the production handler, including same-block retirement and rollback.
 use super::*;
+use alloy_consensus::{SignableTransaction, TxEip7702};
+use alloy_eips::eip7702::Authorization;
 use alloy_evm::FromRecoveredTx;
 use alloy_primitives::{Bytes, aliases::U96, keccak256};
 use alloy_sol_types::SolEvent;
@@ -9,7 +11,10 @@ use tempo_contracts::precompiles::{
     DEFAULT_FEE_TOKEN, ITIP20, ITIP20ChannelReserve, TIP20_CHANNEL_RESERVE_ADDRESS,
 };
 use tempo_precompiles::tip20_channel_reserve::TIP20ChannelReserve;
-use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
+use tempo_primitives::{
+    TempoTxEnvelope,
+    transaction::{TEMPO_EXPIRING_NONCE_KEY, TempoSignedAuthorization},
+};
 use tempo_revm::{
     ExecutionContext, TempoInvalidTransaction, TempoTxEnv, native_multisig::NativeMultisigError,
 };
@@ -401,4 +406,91 @@ fn migration_runtime_unsigned_simulations_preserve_state_and_signed_root_retirem
             NativeMultisigError::RootKeyRetired { account: f.account }
         ))
     );
+}
+
+#[test]
+fn migration_runtime_skips_retired_authorizations_in_both_envelopes() {
+    for ethereum in [false, true] {
+        let mut f = fixture();
+        let migration = root_signed(&f, 3, 1_000_000, vec![upgrade(&f)]);
+        let output = f
+            .evm
+            .transact(TempoTxEnv::from_recovered_tx(&migration, f.account))
+            .unwrap();
+        assert!(output.result.is_success());
+        f.evm.db_mut().commit(output.state);
+        let commitment = f.commitment();
+        let sender = PrivateKeySigner::from_bytes(&B256::repeat_byte(2)).unwrap();
+        let active = PrivateKeySigner::from_bytes(&B256::repeat_byte(3)).unwrap();
+        let target = Address::repeat_byte(0x44);
+        let authorizations = [(&f.owner, 4), (&active, 0)].map(|(owner, nonce)| {
+            let authorization = Authorization {
+                chain_id: U256::ONE,
+                address: target,
+                nonce,
+            };
+            let signature = owner
+                .sign_hash_sync(&authorization.signature_hash())
+                .unwrap();
+            (authorization, signature)
+        });
+        let env = if ethereum {
+            let tx = TxEip7702 {
+                chain_id: 1,
+                gas_limit: 1_000_000,
+                to: Address::repeat_byte(0x45),
+                authorization_list: authorizations
+                    .into_iter()
+                    .map(|(authorization, signature)| authorization.into_signed(signature))
+                    .collect(),
+                ..Default::default()
+            };
+            let signature = sender.sign_hash_sync(&tx.signature_hash()).unwrap();
+            let signed = TempoTxEnvelope::Eip7702(tx.into_signed(signature));
+            TempoTxEnv::from_recovered_tx(&signed, sender.address())
+        } else {
+            let tx = TempoTransaction {
+                chain_id: 1,
+                gas_limit: 1_000_000,
+                calls: vec![Call {
+                    to: Address::repeat_byte(0x45).into(),
+                    value: U256::ZERO,
+                    input: Bytes::new(),
+                }],
+                tempo_authorization_list: authorizations
+                    .into_iter()
+                    .map(|(authorization, signature)| {
+                        TempoSignedAuthorization::new_unchecked(authorization, signature.into())
+                    })
+                    .collect(),
+                ..Default::default()
+            };
+            let signature = sender.sign_hash_sync(&tx.signature_hash()).unwrap();
+            let signed = tx.into_signed(signature.into());
+            TempoTxEnv::from_recovered_tx(&signed, sender.address())
+        };
+        let output = f.evm.transact(env).unwrap();
+        assert!(
+            output.result.is_success(),
+            "{ethereum}: {:?}",
+            output.result
+        );
+        f.evm.db_mut().commit(output.state);
+        let retired_info = f.evm.db_mut().basic(f.account).unwrap().unwrap();
+        assert_eq!(
+            retired_info.nonce, 4,
+            "skipped authority nonce must not change"
+        );
+        assert!(
+            retired_info.is_empty_code_hash(),
+            "skipped authority must not acquire code"
+        );
+        assert_eq!(f.commitment(), commitment);
+        let active_info = f.evm.db_mut().basic(active.address()).unwrap().unwrap();
+        assert_eq!(
+            active_info.nonce, 1,
+            "active authorization must still execute"
+        );
+        assert_eq!(active_info.code, Some(Bytecode::new_eip7702(target)));
+    }
 }
