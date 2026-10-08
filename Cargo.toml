@@ -101,7 +101,6 @@ debug = "line-tables-only"
 strip = "none"
 incremental = true
 
-# Optimized DST builds with debug assertions and overflow checks retained.
 [profile.dst]
 inherits = "profiling"
 debug-assertions = true
