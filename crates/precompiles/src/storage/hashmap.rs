@@ -1,4 +1,4 @@
-use super::ConfigCommitmentWriteGas;
+use super::{ConfigCommitmentWriteGas, ensure_config_commitment_writable};
 use alloy::primitives::{Address, B256, LogData, U256};
 use revm::{
     context::{BlockEnv, journaled_state::JournalCheckpoint},
@@ -115,9 +115,7 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         commitment: B256,
         gas: ConfigCommitmentWriteGas,
     ) -> Result<(), TempoPrecompileError> {
-        if !self.spec.is_t14() || self.is_static || commitment.is_zero() {
-            return Err(TempoPrecompileError::InvalidConfigCommitmentWrite);
-        }
+        ensure_config_commitment_writable(self.spec, self.is_static, commitment)?;
         let previous = self.config_commitment(address)?;
         self.deduct_gas(gas.cost(previous)?)?;
         self.accounts

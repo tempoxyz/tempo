@@ -6,6 +6,18 @@ use reth_codecs::Compact;
 use reth_primitives_traits::Account;
 use revm::state::AccountInfo;
 
+/// Decodes a trie leaf into its RLP string fields, asserting canonical list framing.
+fn leaf_fields(mut buf: &[u8]) -> Vec<&[u8]> {
+    let header = alloy_rlp::Header::decode(&mut buf).unwrap();
+    assert!(header.list);
+    assert_eq!(header.payload_length, buf.len());
+    let mut fields = Vec::new();
+    while !buf.is_empty() {
+        fields.push(alloy_rlp::Header::decode_bytes(&mut buf, false).unwrap());
+    }
+    fields
+}
+
 #[test]
 fn commitment_survives_account_representations() {
     let commitment = B256::repeat_byte(9);
@@ -22,29 +34,15 @@ fn commitment_survives_account_representations() {
     let trie = decoded.into_trie_account(B256::repeat_byte(4));
     // The opaque payload is raw, but the consensus leaf contains exactly one RLP string.
     let encoded = alloy_rlp::encode(&trie);
-    let mut fields = encoded.as_slice();
-    let header = alloy_rlp::Header::decode(&mut fields).unwrap();
-    assert!(header.list);
-    assert_eq!(header.payload_length, fields.len());
-    for _ in 0..4 {
-        alloy_rlp::Header::decode_bytes(&mut fields, false).unwrap();
-    }
-    let payload = alloy_rlp::Header::decode_bytes(&mut fields, false).unwrap();
-    assert!(fields.is_empty());
+    let fields = leaf_fields(&encoded);
+    assert_eq!(fields.len(), 5);
+    let payload = fields[4];
     assert_eq!(payload.len(), 33);
     assert_eq!(payload[0], 0);
     assert_eq!(&payload[1..], commitment.as_slice());
     let mut legacy = trie.clone();
     legacy.extension = Default::default();
-    let legacy = alloy_rlp::encode(&legacy);
-    let mut fields = legacy.as_slice();
-    let header = alloy_rlp::Header::decode(&mut fields).unwrap();
-    assert!(header.list);
-    assert_eq!(header.payload_length, fields.len());
-    for _ in 0..4 {
-        alloy_rlp::Header::decode_bytes(&mut fields, false).unwrap();
-    }
-    assert!(fields.is_empty());
+    assert_eq!(leaf_fields(&alloy_rlp::encode(&legacy)).len(), 4);
     assert_eq!(
         decode_config_commitment(&trie.extension, true),
         Ok(commitment)

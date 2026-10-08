@@ -1,4 +1,4 @@
-use super::ConfigCommitmentWriteGas;
+use super::{ConfigCommitmentWriteGas, ensure_config_commitment_writable};
 use crate::{
     error::TempoPrecompileError,
     storage::{PrecompileStorageProvider, StorageActions, actions::StorageAction},
@@ -421,19 +421,13 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         commitment: B256,
         gas: ConfigCommitmentWriteGas,
     ) -> Result<(), TempoPrecompileError> {
-        if !self.spec.is_t14() || self.is_static || commitment.is_zero() {
-            return Err(TempoPrecompileError::InvalidConfigCommitmentWrite);
-        }
+        ensure_config_commitment_writable(self.spec, self.is_static, commitment)?;
         // The authorization read already charged account access (or was intrinsic).
-        let previous = {
-            let account = self.internals.load_account_mut(address)?;
-            decode_config_commitment(&account.data.account().info.extension, true)
-                .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?
-        };
-        self.deduct_gas(gas.cost(previous)?)?;
-        self.internals
-            .load_account_mut(address)?
-            .set_extension(encode_config_commitment(commitment).into());
+        let mut account = self.internals.load_account_mut(address)?;
+        let previous = decode_config_commitment(&account.data.account().info.extension, true)
+            .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?;
+        deduct_gas(&mut self.gas_tracker, gas.cost(previous)?)?;
+        account.set_extension(encode_config_commitment(commitment).into());
         Ok(())
     }
 
