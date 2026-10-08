@@ -794,7 +794,7 @@ mod tests {
         let key_auth = KeyAuthorization::unrestricted(
             4217,
             SignatureType::Secp256k1,
-            address!("0x1111111111111111111111111111111111111111"),
+            Address::repeat_byte(0x11),
         )
         .into_signed(PrimitiveSignature::default());
 
@@ -819,7 +819,7 @@ mod tests {
     #[test]
     fn test_set_calls_and_push_call() {
         let call = Call {
-            to: address!("0x1111111111111111111111111111111111111111").into(),
+            to: Address::repeat_byte(0x11).into(),
             value: U256::ZERO,
             input: Bytes::from(vec![0xaa]),
         };
@@ -834,7 +834,7 @@ mod tests {
     #[test]
     fn test_call_builder() {
         let call = Call {
-            to: address!("0x1111111111111111111111111111111111111111").into(),
+            to: Address::repeat_byte(0x11).into(),
             value: U256::ZERO,
             input: Bytes::from(vec![0xaa]),
         };
@@ -851,20 +851,17 @@ mod tests {
         let key_auth = KeyAuthorization::unrestricted(
             4217,
             SignatureType::Secp256k1,
-            address!("0x1111111111111111111111111111111111111111"),
+            Address::repeat_byte(0x11),
         )
         .into_signed(PrimitiveSignature::default());
 
         let request = TempoTransactionRequest::default()
-            .with_key_id(address!("0x2222222222222222222222222222222222222222"))
+            .with_key_id(Address::repeat_byte(0x22))
             .with_key_type(SignatureType::WebAuthn)
             .with_key_data(Bytes::from_static(b"auth-data"))
             .with_key_authorization(key_auth.clone());
 
-        assert_eq!(
-            request.key_id,
-            Some(address!("0x2222222222222222222222222222222222222222"))
-        );
+        assert_eq!(request.key_id, Some(Address::repeat_byte(0x22)));
         assert_eq!(request.key_type, Some(SignatureType::WebAuthn));
         assert_eq!(request.key_data, Some(Bytes::from_static(b"auth-data")));
         assert_eq!(request.key_authorization, Some(key_auth));
@@ -884,7 +881,7 @@ mod tests {
 
         // Regression: single-call AA round-trip must not duplicate the call + preserve.
         let call = vec![Call {
-            to: address!("0x1111111111111111111111111111111111111111").into(),
+            to: Address::repeat_byte(0x11).into(),
             value: U256::ZERO,
             input: Bytes::from(vec![0xaa]),
         }];
@@ -902,12 +899,12 @@ mod tests {
         // Regression: multi-call AA round-trip must preserve exact call list.
         let batch = vec![
             Call {
-                to: address!("0x1111111111111111111111111111111111111111").into(),
+                to: Address::repeat_byte(0x11).into(),
                 value: U256::ZERO,
                 input: Bytes::from(vec![0xaa]),
             },
             Call {
-                to: address!("0x2222222222222222222222222222222222222222").into(),
+                to: Address::repeat_byte(0x22).into(),
                 value: U256::ZERO,
                 input: Bytes::from(vec![0xbb]),
             },

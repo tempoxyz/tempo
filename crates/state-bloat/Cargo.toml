@@ -40,5 +40,6 @@ rayon.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempfile.workspace = true
 tokio.workspace = true

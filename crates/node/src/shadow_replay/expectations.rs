@@ -349,10 +349,7 @@ mod tests {
         db::states::{StorageSlot, TransitionAccount},
         state::AccountInfo,
     };
-    use tempo_primitives::{
-        TempoTransaction,
-        transaction::{AASigned, Call, PrimitiveSignature, TempoSignature},
-    };
+    use tempo_primitives::{TempoTransaction, transaction::Call};
 
     #[test]
     fn accepts_exact_bytecode_upgrades() {
@@ -504,16 +501,14 @@ mod tests {
     }
 
     fn signed_tx(calls: Vec<Call>) -> TempoTxEnvelope {
-        AASigned::new_unhashed(
-            TempoTransaction {
-                max_priority_fee_per_gas: 1_000_000_000_000,
-                max_fee_per_gas: 1_000_000_000_000,
-                gas_limit: 35_212,
-                calls,
-                ..Default::default()
-            },
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
-        )
+        TempoTransaction {
+            max_priority_fee_per_gas: 1_000_000_000_000,
+            max_fee_per_gas: 1_000_000_000_000,
+            gas_limit: 35_212,
+            calls,
+            ..Default::default()
+        }
+        .into_signed(Signature::test_signature().into())
         .into()
     }
 
