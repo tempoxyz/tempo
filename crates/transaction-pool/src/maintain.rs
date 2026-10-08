@@ -16,7 +16,7 @@ use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain, HeaderProvider};
 use reth_storage_api::StateProviderFactory;
 use reth_transaction_pool::{AllPoolTransactions, TransactionPool, ValidPoolTransaction};
-use revm::database::BundleAccount;
+use revm::{database::BundleAccount, state::AccountInfo};
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -35,21 +35,30 @@ const EVICTION_BUFFER_SECS: u64 = 3;
 
 /// Accounts whose native configuration commitment changed in this block.
 fn changed_commitments(state: &AddressMap<BundleAccount>) -> AddressSet {
-    let mut changed = AddressSet::default();
-    for (address, account) in state {
-        let previous = account
-            .original_info
-            .as_ref()
-            .map_or(&[][..], |info| info.extension.as_ref());
-        let current = account
-            .info
-            .as_ref()
-            .map_or(&[][..], |info| info.extension.as_ref());
-        if previous != current {
-            changed.insert(*address);
-        }
+    fn extension(info: Option<&AccountInfo>) -> &[u8] {
+        info.map_or(&[], |info| info.extension.as_ref())
     }
-    changed
+    state
+        .iter()
+        .filter(|(_, account)| {
+            extension(account.original_info.as_ref()) != extension(account.info.as_ref())
+        })
+        .map(|(address, _)| *address)
+        .collect()
+}
+
+/// Hashes of snapshot transactions not yet removed this iteration that match `predicate`.
+fn matching_hashes(
+    all_txs: &AllPoolTransactions<TempoPooledTransaction>,
+    removed_this_iteration: &B256Set,
+    predicate: impl Fn(&TempoPooledTransaction) -> bool,
+) -> Vec<TxHash> {
+    all_txs
+        .iter()
+        .filter(|tx| !removed_this_iteration.contains(tx.hash()))
+        .filter(|tx| predicate(&tx.transaction))
+        .map(|tx| *tx.hash())
+        .collect()
 }
 
 fn pool_head_caught_up(
@@ -596,18 +605,11 @@ pub(crate) async fn maintain_tempo_pool_with_events<Client, EvmConfig>(
 
         let changed = changed_commitments(bundle_state);
         if reorg || !changed.is_empty() {
-            let hashes: Vec<TxHash> = {
-                let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
-                all_txs
-                    .iter()
-                    .filter(|tx| !removed_this_iteration.contains(tx.hash()))
-                    .filter(|tx| {
-                        tx.transaction
-                            .needs_configurable_revalidation(&changed, reorg)
-                    })
-                    .map(|tx| *tx.hash())
-                    .collect()
-            };
+            let hashes = matching_hashes(
+                all_txs.get_or_insert_with(|| pool.all_transactions()),
+                &removed_this_iteration,
+                |tx| tx.needs_configurable_revalidation(&changed, reorg),
+            );
             if !hashes.is_empty() {
                 let removed = pool.remove_transactions(hashes);
                 removed_this_iteration.extend(removed.iter().map(|tx| *tx.hash()));
@@ -640,19 +642,14 @@ pub(crate) async fn maintain_tempo_pool_with_events<Client, EvmConfig>(
                 continue;
             }
 
-            let hashes: Vec<TxHash> = {
-                let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
-                all_txs
-                    .iter()
-                    .filter(|tx| !removed_this_iteration.contains(tx.hash()))
-                    .filter(|tx| {
-                        tx.transaction
-                            .resolved_fee_token()
-                            .is_some_and(|t| updated.contains(&t))
-                    })
-                    .map(|tx| *tx.hash())
-                    .collect()
-            };
+            let hashes = matching_hashes(
+                all_txs.get_or_insert_with(|| pool.all_transactions()),
+                &removed_this_iteration,
+                |tx| {
+                    tx.resolved_fee_token()
+                        .is_some_and(|t| updated.contains(&t))
+                },
+            );
             if !hashes.is_empty() {
                 let removed_txs = pool.remove_transactions(hashes);
                 let count = removed_txs.len();
@@ -755,13 +752,7 @@ where
         if pool_head_caught_up(
             (head.last_seen_block_number, head.last_seen_block_hash),
             latest,
-            |number| {
-                pool.client()
-                    .sealed_header(number)
-                    .ok()
-                    .flatten()
-                    .map(|header| header.hash())
-            },
+            |number| pool.client().block_hash(number).ok().flatten(),
         ) {
             return true;
         }
