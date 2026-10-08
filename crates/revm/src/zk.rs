@@ -94,7 +94,7 @@ pub fn check_scheme_and_time(
     timestamp: u64,
 ) -> Result<&'static Scheme, ZkSignatureError> {
     let scheme = tempo_zk::scheme(signature.scheme)
-        .filter(|scheme| scheme.verifying_key().is_some())
+        .filter(|scheme| scheme.is_active())
         .ok_or(ZkSignatureError::UnknownScheme(signature.scheme))?;
     if signature.issued_at > timestamp.saturating_add(MAX_FUTURE_SKEW) {
         return Err(ZkSignatureError::IssuedInFuture {
@@ -149,12 +149,16 @@ pub fn verify(signature: &ZkSignature, d: &B256) -> Result<Address, ZkSignatureE
         return Ok(access_key);
     }
 
-    let outcome = prepare(signature, d).and_then(|prepared| {
-        prepared
-            .key
-            .verify(&prepared.proof, &prepared.input)
-            .then_some(prepared.access_key)
-    });
+    let outcome = if signature.scheme == tempo_zk::pq::SCHEME {
+        verify_pq(signature, d)
+    } else {
+        prepare(signature, d).and_then(|prepared| {
+            prepared
+                .key
+                .verify(&prepared.proof, &prepared.input)
+                .then_some(prepared.access_key)
+        })
+    };
     record(signature, d, key, outcome);
     outcome.ok_or(ZkSignatureError::Invalid)
 }
@@ -162,9 +166,17 @@ pub fn verify(signature: &ZkSignature, d: &B256) -> Result<Address, ZkSignatureE
 /// Verifies many ZK signatures ahead of execution, in parallel and with batched proof checks,
 /// caching each outcome for [`verify`]. Signatures with a cached outcome are skipped.
 pub fn preverify(items: &[(&ZkSignature, B256)]) {
+    items
+        .par_iter()
+        .filter(|(signature, _)| signature.scheme == tempo_zk::pq::SCHEME)
+        .for_each(|(signature, d)| {
+            let _ = verify(signature, d);
+        });
     let pending: Vec<_> = items
         .par_iter()
-        .filter(|(signature, d)| signature.cached_verification(d).is_none())
+        .filter(|(signature, d)| {
+            signature.scheme != tempo_zk::pq::SCHEME && signature.cached_verification(d).is_none()
+        })
         .map(|(signature, d)| {
             let key = cache_key(signature, d);
             let cached = VERIFIED.lock().get(&key).copied();
@@ -235,7 +247,7 @@ struct Prepared {
 fn prepare(signature: &ZkSignature, d: &B256) -> Option<Prepared> {
     let key = tempo_zk::scheme(signature.scheme)?.verifying_key()?;
     let access_key = signature.recover_access_key(d).ok()?;
-    let proof = Proof::decode(&signature.proof.0).ok()?;
+    let proof = Proof::decode(signature.proof.as_ref().try_into().ok()?).ok()?;
     let input = SignatureStatement {
         scheme: signature.scheme,
         issuer: signature.issuer,
@@ -266,4 +278,19 @@ fn cache_key(signature: &ZkSignature, d: &B256) -> B256 {
     signature.encode_bytes_into(&mut buf);
     buf.extend_from_slice(d.as_slice());
     keccak256(buf)
+}
+
+/// Verify the native receipt with the exact public fields used by transaction validation.
+fn verify_pq(signature: &ZkSignature, d: &B256) -> Option<Address> {
+    let image = tempo_zk::scheme(signature.scheme)?.image_id()?;
+    let access_key = signature.recover_access_key(d).ok()?;
+    let statement = tempo_zk::pq::Statement {
+        access_key_id: access_key.into_array(),
+        address_seed: signature.address_seed.0,
+        issued_at: signature.issued_at,
+        issuer: signature.issuer.0,
+        key_hash: signature.key_hash.0,
+        valid_until: signature.valid_until,
+    };
+    tempo_zk::pq::receipt::verify(&signature.proof, image, &statement).then_some(access_key)
 }

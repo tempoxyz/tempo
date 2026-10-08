@@ -836,6 +836,7 @@ impl TIP20Token {
         if recovered != call.owner {
             return Err(TIP20Error::invalid_signature().into());
         }
+        crate::native_multisig::ensure_root_key_active(recovered)?;
 
         // 5. Increment nonce
         self.permit_nonces[call.owner].write(
@@ -5163,6 +5164,59 @@ pub(crate) mod tests {
                 let nonce = token.nonces(ITIP20::noncesCall { owner })?;
                 assert_eq!(nonce, U256::ONE);
 
+                Ok(())
+            })
+        }
+
+        #[test]
+        fn migration_rejects_presigned_root_permit_without_changing_nonce_or_allowance()
+        -> eyre::Result<()> {
+            let PermitFixture {
+                storage,
+                admin,
+                signer,
+                spender,
+            } = PermitFixture::new();
+            let mut storage = storage
+                .with_spec(TempoHardfork::T14)
+                .with_account_migration_enabled(true);
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+                let call = make_permit_call(
+                    &signer,
+                    spender,
+                    token.address,
+                    U256::from(1000),
+                    U256::ZERO,
+                    U256::MAX,
+                );
+                StorageCtx.set_config_commitment(
+                    signer.address(),
+                    B256::repeat_byte(0x55),
+                    crate::storage::ConfigCommitmentWriteGas::Intrinsic,
+                )?;
+                assert_eq!(
+                    token.permit(call),
+                    Err(
+                        tempo_contracts::precompiles::NativeMultisigError::root_key_retired(
+                            signer.address()
+                        )
+                        .into()
+                    )
+                );
+                assert_eq!(
+                    token.nonces(ITIP20::noncesCall {
+                        owner: signer.address()
+                    })?,
+                    U256::ZERO
+                );
+                assert_eq!(
+                    token.allowance(ITIP20::allowanceCall {
+                        owner: signer.address(),
+                        spender
+                    })?,
+                    U256::ZERO
+                );
                 Ok(())
             })
         }

@@ -65,16 +65,11 @@ fn preverify_zk_signatures(transactions: &[TempoTxEnvelope]) {
         .iter()
         .filter_map(TempoTxEnvelope::as_aa)
         .flat_map(|tx| {
-            let signature = tx
-                .signature()
-                .as_zk()
-                .map(|signature| (signature, tx.signature_hash()));
-            let key_authorization = tx.tx().key_authorization.as_ref().and_then(|auth| {
-                auth.signature
-                    .as_zk()
-                    .map(|signature| (signature, auth.signature_hash()))
-            });
-            signature.into_iter().chain(key_authorization)
+            let mut signatures = tx.signature().zk_signatures(tx.signature_hash());
+            if let Some(auth) = &tx.tx().key_authorization {
+                signatures.extend(auth.signature.zk_signatures(auth.signature_hash()));
+            }
+            signatures
         })
         .collect();
     if !items.is_empty() {
@@ -217,7 +212,9 @@ mod tests {
                 .unwrap(),
         );
         let mut broken = signature.clone();
-        broken.proof.0[5] ^= 1;
+        let mut proof = broken.proof.to_vec();
+        proof[5] ^= 1;
+        broken.proof = proof.into();
 
         let transactions = vec![
             create_legacy_tx(),

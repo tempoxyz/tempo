@@ -13,6 +13,9 @@ pub mod field;
 pub mod groth16;
 pub mod poseidon;
 
+/// Experimental ML-DSA OIDC statement and native receipt verifier.
+pub use tempo_pq_oidc as pq;
+
 mod scheme;
 pub use scheme::{
     GenesisKeyError, NAMESPACE_OIDC, SCHEME_OIDC_RS256_V1, Scheme, scheme, set_genesis_keys,

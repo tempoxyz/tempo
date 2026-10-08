@@ -14,7 +14,7 @@ use revm::{
         Block, Cfg, ContextTr, JournalTr, Transaction, TransactionType,
         journaled_state::account::JournaledAccountTr,
         result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction, ResultGas},
-        transaction::{AccessListItem, AccessListItemTr},
+        transaction::{AccessListItem, AccessListItemTr, AuthorizationTr},
     },
     context_interface::{
         cfg::{GasId, GasParams, gas::GasTracker},
@@ -44,10 +44,11 @@ use tempo_precompiles::{
         SelectorRule as PrecompileSelectorRule, TokenLimit,
     },
     error::TempoPrecompileError,
+    native_multisig::NativeMultisig,
     nonce::{INonce::getNonceCall, NonceManager},
     storage::{
-        Handler as _, PrecompileStorageProvider, StorageActions, StorageCtx,
-        evm::EvmPrecompileStorageProvider,
+        ConfigCommitmentWriteGas, Handler as _, PrecompileStorageProvider, StorageActions,
+        StorageCtx, evm::EvmPrecompileStorageProvider,
     },
     tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
     tip20_channel_reserve::TIP20ChannelReserve,
@@ -55,7 +56,8 @@ use tempo_precompiles::{
 use tempo_primitives::{
     TempoAddressExt,
     transaction::{
-        SignatureType, TEMPO_EXPIRING_NONCE_KEY, calc_gas_balance_spending, validate_calls,
+        SignatureType, TEMPO_EXPIRING_NONCE_KEY, TempoSignature, calc_gas_balance_spending,
+        validate_calls,
     },
 };
 
@@ -64,6 +66,7 @@ use crate::{
     error::FeePaymentError,
     evm::TempoContext,
     gas_credits,
+    native_multisig::NativeMultisigError,
     signature_gas::{key_authorization_signature_gas, tempo_signature_verification_gas},
     zk::{self, ZkSignatureError},
 };
@@ -410,6 +413,46 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
             || {
                 let mut keychain = AccountKeychain::new();
                 keychain.set_tx_origin(ctx.tx.caller())?;
+                if ctx.cfg.spec.is_t14() {
+                    let direct = ctx
+                        .tx
+                        .tempo_tx_env
+                        .as_ref()
+                        .and_then(|aa| aa.signature.as_multisig())
+                        .map_or(Address::ZERO, |signature| signature.account());
+                    NativeMultisig::new().set_authority(ctx.tx.caller(), direct)?;
+                    let root = ctx
+                        .tx
+                        .tempo_tx_env
+                        .as_ref()
+                        .filter(|aa| {
+                            matches!(aa.signature, tempo_primitives::TempoSignature::Primitive(_))
+                                && aa.key_authorization.is_none()
+                                && aa.tempo_authorization_list.is_empty()
+                                && ctx.tx.authorization_list_len() == 0
+                                && !tempo_primitives::subblock::has_sub_block_nonce_key_prefix(
+                                    &aa.nonce_key,
+                                )
+                                && ctx.tx.tx_type() == 0x76
+                                && !ctx.tx.is_system_tx
+                                && matches!(
+                                    ctx.tx.execution_context,
+                                    crate::ExecutionContext::Transaction { .. }
+                                        | crate::ExecutionContext::Simulation
+                                )
+                        })
+                        .map_or(Address::ZERO, |_| ctx.tx.caller());
+                    let only_call = ctx.tx.tempo_tx_env.as_ref().is_some_and(|aa| {
+                        aa.aa_calls.len() == 1
+                            && aa.aa_calls[0].to
+                                == tempo_contracts::precompiles::NATIVE_MULTISIG_ADDRESS.into()
+                    });
+                    NativeMultisig::new().set_migration_authority(
+                        root,
+                        only_call,
+                        pays_nonce_zero_account_gas(&ctx.tx, ctx.cfg.spec),
+                    )?;
+                }
 
                 if let Some(channel_open_context_hash) = channel_open_context_hash {
                     let mut channel_reserve = TIP20ChannelReserve::new();
@@ -590,6 +633,7 @@ where
     /// This checkpoint only covers user-call execution. Inline key authorization attached to the
     /// transaction is applied earlier during validation/pre-execution and intentionally remains
     /// persisted if scope prevalidation fails here or if a later user call reverts the batch.
+    /// Initial configurable-account registration likewise survives execution failure.
     fn execute_multi_call_with<F>(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
@@ -605,7 +649,39 @@ where
             &mut GasTracker,
         ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>,
     {
-        // Create checkpoint for atomic execution - captures state before any calls
+        // Validation, authorization and fee collection have succeeded. Initial registration
+        // persists on execution failure; later owner updates remain inside the call checkpoint.
+        {
+            let ctx = evm.ctx_mut();
+            StorageCtx::enter_evm(
+                &mut ctx.journaled_state,
+                &ctx.block,
+                &ctx.cfg,
+                &ctx.tx,
+                StorageActions::disabled(),
+                || {
+                    let mut seen = Vec::new();
+                    for role in crate::native_multisig::authorizations(&ctx.tx)
+                        .into_iter()
+                        .flatten()
+                    {
+                        let account = role.signature.account();
+                        if !seen.contains(&account)
+                            && StorageCtx.config_commitment(account)?.is_zero()
+                        {
+                            StorageCtx.set_config_commitment(
+                                account,
+                                role.signature.config_commitment(),
+                                ConfigCommitmentWriteGas::Intrinsic,
+                            )?;
+                        }
+                        seen.push(account);
+                    }
+                    Ok::<(), TempoPrecompileError>(())
+                },
+            )
+            .map_err(|error| EVMError::Custom(error.to_string()))?;
+        }
         let checkpoint = evm.ctx().journal_mut().checkpoint();
         let mut accumulated_gas_refund = 0i64;
         let mut accumulated_state_gas_spent = 0i64;
@@ -627,6 +703,7 @@ where
         if let Some(mut frame_result) =
             self.prevalidate_keychain_call_scopes(evm, &calls, &mut remaining_gas, reservoir)?
         {
+            evm.ctx().journal_mut().checkpoint_revert(checkpoint);
             // This path only runs for keychain batches that already passed the structural CREATE
             // rejection in validation, so there is no first-call CREATE nonce to preserve here.
             normalize_failed_batch_result_gas(
@@ -952,6 +1029,15 @@ where
 
         let refunded_accounts = if has_aa_auth_list {
             let tempo_tx_env = ctx.tx.tempo_tx_env.as_ref().unwrap();
+            let retired = retired_authorization_accounts(
+                &mut ctx.journaled_state,
+                tempo_tx_env
+                    .tempo_authorization_list
+                    .iter()
+                    .filter(|auth| !(spec.is_t0() && auth.signature().is_keychain())),
+                ctx.cfg.chain_id,
+                spec.is_t14() && ctx.block.account_migration_enabled,
+            )?;
 
             apply_auth_list::<_, Self::Error>(
                 ctx.cfg.chain_id,
@@ -959,13 +1045,26 @@ where
                     .tempo_authorization_list
                     .iter()
                     // T0 hardfork: skip keychain signatures in auth list processing
-                    .filter(|auth| !(spec.is_t0() && auth.signature().is_keychain())),
+                    .filter(|auth| !(spec.is_t0() && auth.signature().is_keychain()))
+                    .filter(|auth| {
+                        auth.authority()
+                            .is_none_or(|account| !retired.contains(&account))
+                    }),
                 &mut ctx.journaled_state,
             )?
         } else {
+            let retired = retired_authorization_accounts(
+                &mut ctx.journaled_state,
+                ctx.tx.authorization_list(),
+                ctx.cfg.chain_id,
+                spec.is_t14() && ctx.block.account_migration_enabled,
+            )?;
             apply_auth_list::<_, Self::Error>(
                 ctx.cfg.chain_id,
-                ctx.tx.authorization_list(),
+                ctx.tx.authorization_list().filter(|auth| {
+                    auth.authority()
+                        .is_none_or(|account| !retired.contains(&account))
+                }),
                 &mut ctx.journaled_state,
             )?
         };
@@ -1236,6 +1335,7 @@ where
         // doing max to avoid underflow as new_balance can be more than account
         // balance if `cfg.is_balance_check_disabled()` is true.
         let gas_balance_spending = core::cmp::max(account_balance, new_balance) - new_balance;
+        crate::native_multisig::verify(tx)?;
 
         // Note: Signature verification happens during recover_signer() before entering the pool,
         // except for ZK signatures, which are verified below.
@@ -1246,23 +1346,13 @@ where
         // operation. Verification is cached, so a signature already checked by the pool or ahead
         // of execution is not checked again.
         if let Some(aa_env) = tx.tempo_tx_env.as_ref() {
-            let zk_signatures = [
-                aa_env
-                    .signature
-                    .as_zk()
-                    .map(|signature| (signature, aa_env.signature_hash)),
-                aa_env.key_authorization.as_ref().and_then(|auth| {
-                    auth.signature
-                        .as_zk()
-                        .map(|signature| (signature, auth.signature_hash()))
-                }),
-            ];
+            let zk_signatures = credentials(aa_env);
             let timestamp = block.timestamp().saturating_to::<u64>();
-            for (signature, _) in zk_signatures.iter().flatten() {
+            for (signature, _) in zk_signatures.iter() {
                 zk::check_issuer_key(journal, signature, timestamp)?
                     .map_err(TempoInvalidTransaction::from)?;
             }
-            for (signature, d) in zk_signatures.iter().flatten() {
+            for (signature, d) in zk_signatures.iter() {
                 zk::verify(signature, d).map_err(TempoInvalidTransaction::from)?;
             }
         }
@@ -1347,7 +1437,7 @@ where
                         // type to authenticate as a key registered with a different type.
                         // Only validate signature type on T1+ to maintain backward compatibility
                         // with historical blocks during re-execution.
-                        let tx_sig_type = keychain_sig.signature.signature_type().into();
+                        let tx_sig_type = keychain_sig.signature.key_type().into();
                         let sig_type = (key_auth.is_some() || spec.is_t1()).then_some(tx_sig_type);
 
                         let key = keychain
@@ -1396,11 +1486,11 @@ where
             && let Some(key_auth) = tempo_tx_env.key_authorization.as_ref()
         {
             let auth_signer = key_auth
-                .recover_signer()
+                .recover_account()
                 .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
 
             if auth_signer != tx.caller {
-                let key_auth_sig_type: u8 = key_auth.signature.signature_type().into();
+                let key_auth_sig_type: u8 = key_auth.signature.key_type().into();
                 let signer_is_admin = match loaded_tx_access_key {
                     Some(loaded_key)
                         if loaded_key.key_id == auth_signer
@@ -1581,6 +1671,8 @@ where
                     SignatureType::Secp256k1 => PrecompileSignatureType::Secp256k1,
                     SignatureType::P256 => PrecompileSignatureType::P256,
                     SignatureType::WebAuthn => PrecompileSignatureType::WebAuthn,
+                    SignatureType::Mldsa65 => PrecompileSignatureType::Mldsa65,
+                    SignatureType::Multisig => PrecompileSignatureType::Multisig,
                 };
 
                 // Handle expiry: None means never expires (store as u64::MAX)
@@ -1797,6 +1889,12 @@ where
         evm.validator_fee = U256::ZERO;
         evm.non_creditable_slots.borrow_mut().clear();
 
+        crate::native_multisig::validate_migration_envelope(
+            &evm.ctx.tx,
+            &evm.ctx.block,
+            evm.ctx.cfg.spec,
+        )?;
+
         // Validate the fee payer signature
         let fee_payer = evm.ctx.tx.fee_payer()?;
 
@@ -1847,6 +1945,16 @@ where
             if tempo_primitives::subblock::has_sub_block_nonce_key_prefix(&aa_env.nonce_key) {
                 return Err(TempoInvalidTransaction::SubblockTransactionsDisabled.into());
             }
+            if aa_env
+                .tempo_authorization_list
+                .iter()
+                .any(|auth| auth.signature().primitive_signature_type().is_none())
+            {
+                return Err(TempoInvalidTransaction::NativeMultisig(
+                    NativeMultisigError::InvalidSignatureContext,
+                )
+                .into());
+            }
             // Validate AA transaction structure (calls list, CREATE rules)
             validate_calls(
                 &aa_env.aa_calls,
@@ -1893,10 +2001,20 @@ where
             )?;
 
             if let Some(key_auth) = &aa_env.key_authorization {
+                if key_auth.key_type == SignatureType::Multisig && !cfg.spec.is_t14() {
+                    return Err(TempoInvalidTransaction::NativeMultisig(
+                        NativeMultisigError::UnsupportedContext,
+                    )
+                    .into());
+                }
                 // Check if this TX is using a Keychain signature (access key). Non-admin access
                 // keys cannot authorize other keys; T6 admin keys can.
                 let mut same_tx_auth_use = false;
-                if let Some(keychain_sig) = aa_env.signature.as_keychain() {
+                if let Some(keychain_sig) = aa_env.signature.as_keychain()
+                    && crate::native_multisig::authorizations(tx)
+                        .iter()
+                        .all(Option::is_none)
+                {
                     // Use override_key_id if provided (for gas estimation), otherwise recover from signature
                     let access_key_addr = if let Some(override_key_id) = aa_env.override_key_id {
                         override_key_id
@@ -1916,7 +2034,7 @@ where
 
                     if same_tx_auth_use
                         && cfg.spec.is_t3()
-                        && key_auth.key_type != keychain_sig.signature.signature_type()
+                        && key_auth.key_type != keychain_sig.signature.key_type()
                     {
                         return Err(TempoInvalidTransaction::KeychainValidationFailed {
                                 reason: "key authorization key_type does not match the keychain signature type"
@@ -2010,7 +2128,11 @@ where
                     }
                 }
 
-                if cfg.spec.is_t6() {
+                if cfg.spec.is_t6()
+                    && crate::native_multisig::authorizations(tx)
+                        .iter()
+                        .all(Option::is_none)
+                {
                     let auth_signer = key_auth.recover_signer().map_err(|_| {
                         TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed
                     })?;
@@ -2061,9 +2183,7 @@ where
                             .into());
                         }
 
-                        if key_auth.signature.signature_type()
-                            != keychain_sig.signature.signature_type()
-                        {
+                        if key_auth.signature.key_type() != keychain_sig.signature.key_type() {
                             return Err(TempoInvalidTransaction::KeychainValidationFailed {
                                 reason:
                                     "admin-signed key authorization signature type does not match transaction key signature type"
@@ -2114,6 +2234,25 @@ where
         &self,
         evm: &mut Self::Evm,
     ) -> Result<InitialAndFloorGas, Self::Error> {
+        if crate::native_multisig::has_account_access(evm.ctx_ref().tx())
+            || (evm.ctx_ref().cfg().spec.is_t14()
+                && evm.ctx_ref().block().account_migration_enabled)
+        {
+            // Native intrinsic validation loads additional accounts before normal pre-execution.
+            // Install transaction warmth first so access-listed/beneficiary accounts are priced
+            // correctly. Upstream repeats this idempotent setup before applying authorizations.
+            self.load_accounts(evm)?;
+        }
+        let (native_regular_gas, native_state_gas) = {
+            let ctx = evm.ctx_mut();
+            crate::native_multisig::validate_state(
+                &mut ctx.journaled_state,
+                &ctx.tx,
+                &ctx.block,
+                ctx.cfg.spec,
+                &ctx.cfg.gas_params,
+            )?
+        };
         let tx = evm.ctx_ref().tx();
         let spec = evm.ctx_ref().cfg().spec();
         let gas_params = evm.ctx_ref().cfg().gas_params();
@@ -2188,6 +2327,19 @@ where
             init_gas
         };
 
+        init_gas.initial_regular_gas += native_regular_gas;
+        init_gas.initial_state_gas += native_state_gas;
+        // Recheck only newly added native costs: the AA helper deliberately adds
+        // Genesis 2D nonce gas after its historical sufficiency validation.
+        if (native_regular_gas != 0 || native_state_gas != 0)
+            && gas_limit < init_gas.initial_total_gas()
+        {
+            return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
+                gas_limit,
+                initial_gas: init_gas.initial_total_gas(),
+            }
+            .into());
+        }
         if evm.ctx.cfg.is_eip7623_disabled() {
             init_gas.floor_gas = 0u64;
         }
@@ -2381,11 +2533,20 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
     Ok(gas)
 }
 
-/// Validates and calculates initial transaction gas for AA transactions.
-///
-/// Calculates intrinsic gas based on:
-/// - Signature type (secp256k1: 21k, P256: 26k, WebAuthn: 26k + calldata)
-/// - Batch call costs (per-call overhead, calldata, CREATE, value transfers)
+/// Whether the AA intrinsic charge already covers creation of the sender account.
+pub(crate) fn pays_nonce_zero_account_gas(
+    tx: &crate::TempoTxEnv,
+    spec: tempo_chainspec::hardfork::TempoHardfork,
+) -> bool {
+    spec.is_t1()
+        && tx.nonce == 0
+        && tx
+            .tempo_tx_env
+            .as_ref()
+            .is_some_and(|aa| aa.nonce_key != TEMPO_EXPIRING_NONCE_KEY)
+}
+
+/// Validates and calculates intrinsic gas for AA signatures and batch calls.
 fn validate_aa_initial_tx_gas<DB, I>(
     evm: &TempoEvm<DB, I>,
 ) -> Result<InitialAndFloorGas, EVMError<DB::Error, TempoInvalidTransaction>>
@@ -2428,7 +2589,7 @@ where
             // - 2D nonce (nonce_key != 0): SLOAD + SSTORE for nonce increment
             // - Regular nonce (nonce_key == 0): no additional gas
             batch_gas.initial_regular_gas += EXPIRING_NONCE_GAS;
-        } else if tx.nonce == 0 {
+        } else if pays_nonce_zero_account_gas(tx, spec) {
             // TIP-1000: Storage pricing updates for launch
             // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas
             batch_gas.initial_regular_gas += gas_params.get(GasId::new_account_cost());
@@ -2573,6 +2734,43 @@ fn validate_zk_signatures(
     timestamp: u64,
     caller: Address,
 ) -> Result<(), TempoInvalidTransaction> {
+    if aa_env
+        .signature
+        .as_keychain()
+        .is_some_and(|signature| signature.signature.as_zk().is_some())
+    {
+        return Err(ZkSignatureError::NotAccepted.into());
+    }
+    let experimental_signature = match &aa_env.signature {
+        TempoSignature::Primitive(signature) => {
+            signature.signature_type() == SignatureType::Mldsa65
+        }
+        TempoSignature::Keychain(signature) => {
+            signature.signature.signature_type() == SignatureType::Mldsa65
+                || signature
+                    .signature
+                    .as_multisig()
+                    .is_some_and(has_experimental_owners)
+        }
+        TempoSignature::Zk(signature) => signature.scheme == 0x80,
+        TempoSignature::Multisig(signature) => has_experimental_owners(signature),
+    };
+    let experimental_authorization = aa_env.key_authorization.as_ref().is_some_and(|auth| {
+        auth.key_type == SignatureType::Mldsa65
+            || auth.signature.signature_type() == SignatureType::Mldsa65
+            || auth
+                .signature
+                .as_multisig()
+                .is_some_and(has_experimental_owners)
+    });
+    let experimental_delegation = aa_env.tempo_authorization_list.iter().any(|auth| {
+        matches!(auth.signature(), TempoSignature::Primitive(signature) if signature.signature_type() == SignatureType::Mldsa65)
+    });
+    if (experimental_signature || experimental_authorization || experimental_delegation)
+        && (!spec.is_t14() || !tempo_zk::scheme(0x80).is_some_and(|scheme| scheme.is_active()))
+    {
+        return Err(ZkSignatureError::NotActive.into());
+    }
     // Authorization list entries are recovered without state, so they can never carry one.
     if aa_env
         .tempo_authorization_list
@@ -2586,19 +2784,14 @@ fn validate_zk_signatures(
         .key_authorization
         .as_ref()
         .and_then(|auth| auth.signature.as_zk());
-    let mut signatures = aa_env
-        .signature
-        .as_zk()
-        .into_iter()
-        .chain(key_auth_signature)
-        .peekable();
-    if signatures.peek().is_none() {
-        return Ok(());
+    let signatures = credentials(aa_env);
+    if signatures.len() > 2 {
+        return Err(ZkSignatureError::NotAccepted.into());
     }
-    if !spec.is_t14() {
+    if !signatures.is_empty() && !spec.is_t14() {
         return Err(ZkSignatureError::NotActive.into());
     }
-    for signature in signatures {
+    for (signature, _) in signatures {
         zk::check_scheme_and_time(signature, timestamp)?;
     }
 
@@ -2648,3 +2841,55 @@ pub fn validate_time_window(
 
 #[cfg(test)]
 mod tests;
+
+/// Authorization-list entries are skipped, not transaction-fatal, when authority is retired.
+fn retired_authorization_accounts<J: JournalTr>(
+    journal: &mut J,
+    authorizations: impl Iterator<Item = impl AuthorizationTr>,
+    chain_id: u64,
+    active: bool,
+) -> Result<Vec<Address>, EVMError<<J::Database as Database>::Error, TempoInvalidTransaction>> {
+    if !active {
+        return Ok(Vec::new());
+    }
+    let mut retired = Vec::new();
+    for authorization in authorizations {
+        if (authorization.chain_id().is_zero() || authorization.chain_id() == U256::from(chain_id))
+            && authorization.nonce() != u64::MAX
+            && let Some(account) = authorization.authority()
+        {
+            let loaded = journal.load_account(account)?;
+            let commitment = tempo_primitives::account::decode_config_commitment(
+                &loaded.data.info.extension,
+                true,
+            )
+            .map_err(|error| EVMError::Custom(error.to_string()))?;
+            if !commitment.is_zero() && !retired.contains(&account) {
+                retired.push(account);
+            }
+        }
+    }
+    Ok(retired)
+}
+
+/// Credentials for every independently signed transaction role.
+fn credentials(
+    aa: &TempoBatchCallEnv,
+) -> Vec<(
+    &tempo_primitives::transaction::ZkSignature,
+    alloy_primitives::B256,
+)> {
+    let mut signatures = aa.signature.zk_signatures(aa.signature_hash);
+    if let Some(auth) = &aa.key_authorization {
+        signatures.extend(auth.signature.zk_signatures(auth.signature_hash()));
+    }
+    signatures
+}
+
+/// Finds experimental approvals inside a bounded native multisig witness.
+fn has_experimental_owners(signature: &tempo_primitives::transaction::MultisigSignature) -> bool {
+    signature
+        .signatures()
+        .iter()
+        .any(|owner| owner.signature_type() == SignatureType::Mldsa65)
+}

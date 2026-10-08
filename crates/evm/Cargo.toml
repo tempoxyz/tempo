@@ -69,14 +69,21 @@ indexmap.workspace = true
 insta.workspace = true
 rand.workspace = true
 reth-execution-cache.workspace = true
+reth-execution-types.workspace = true
+reth-ethereum-primitives.workspace = true
+reth-provider = { workspace = true, features = ["test-utils"] }
 reth-storage-api.workspace = true
+reth-stages.workspace = true
 reth-trie.workspace = true
+reth-trie-db.workspace = true
 revm.workspace = true
 serde_json.workspace = true
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempo-primitives = { workspace = true, features = ["arbitrary", "test-utils"] }
 tempo-zk = { workspace = true, features = ["test-utils"] }
 tikv-jemallocator = "0.6.1"
+ml-dsa = { version = "=0.1.1", default-features = false, features = ["alloc"] }
+tempo-pq-oidc = { path = "../../pq/protocol" }
 
 [features]
 default = ["rpc", "engine"]

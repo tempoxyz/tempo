@@ -23,6 +23,7 @@ ark-ec = { workspace = true, features = ["std"] }
 ark-ff = { workspace = true, features = ["std"] }
 rayon.workspace = true
 thiserror.workspace = true
+tempo-pq-oidc = { path = "../../pq/protocol", features = ["verify"] }
 
 [dev-dependencies]
 criterion.workspace = true

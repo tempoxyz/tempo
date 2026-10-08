@@ -8,7 +8,7 @@ mod assemble;
 mod pool;
 pub use action_replay::{
     ExpiringNonceReplay, StorageActionReplay, StorageActionReplayError, StorageActionReplayOutcome,
-    StorageActionReplayState,
+    StorageActionReplayState, supports_storage_action_replay,
 };
 use alloy_consensus::BlockHeader as _;
 pub use assemble::TempoBlockAssembler;
@@ -202,11 +202,21 @@ impl ConfigureEvm for TempoEvmConfig {
             spec,
             tempo_gas_params_with_amsterdam(spec, amsterdam_eip8037_enabled),
         );
-        cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
+        cfg_env.tx_gas_limit_cap = self
+            .chain_spec()
+            .info
+            .experimental_pq_tx_gas_limit()
+            .filter(|_| spec.is_t14())
+            .or_else(|| spec.tx_gas_limit_cap());
 
         Ok(EvmEnv {
             cfg_env,
             block_env: TempoBlockEnv {
+                multisig_recovery_factory: self.chain_spec().info.multisig_recovery_factory(),
+                account_migration_enabled: self
+                    .chain_spec()
+                    .info
+                    .account_migration_enabled(header.timestamp()),
                 inner: block_env,
                 timestamp_millis_part: header.timestamp_millis_part,
                 epoch_length: self
@@ -257,11 +267,21 @@ impl ConfigureEvm for TempoEvmConfig {
             spec,
             tempo_gas_params_with_amsterdam(spec, amsterdam_eip8037_enabled),
         );
-        cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
+        cfg_env.tx_gas_limit_cap = self
+            .chain_spec()
+            .info
+            .experimental_pq_tx_gas_limit()
+            .filter(|_| spec.is_t14())
+            .or_else(|| spec.tx_gas_limit_cap());
 
         Ok(EvmEnv {
             cfg_env,
             block_env: TempoBlockEnv {
+                multisig_recovery_factory: self.chain_spec().info.multisig_recovery_factory(),
+                account_migration_enabled: self
+                    .chain_spec()
+                    .info
+                    .account_migration_enabled(attributes.timestamp),
                 inner: block_env,
                 timestamp_millis_part: attributes.timestamp_millis_part,
                 epoch_length: self
@@ -439,7 +459,13 @@ mod tests {
 
     #[test]
     fn test_next_evm_env() {
-        let evm_config = TempoEvmConfig::new(test_chainspec());
+        let factory = Address::repeat_byte(0x71);
+        let mut genesis = test_chainspec().genesis().clone();
+        genesis
+            .config
+            .extra_fields
+            .insert("multisigRecoveryFactory".into(), serde_json::json!(factory));
+        let evm_config = TempoEvmConfig::new(Arc::new(TempoChainSpec::from_genesis(genesis)));
 
         let parent = TempoHeader {
             inner: alloy_consensus::Header {
@@ -476,6 +502,15 @@ mod tests {
         assert!(result.is_ok());
 
         let evm_env = result.unwrap();
+        assert_eq!(evm_env.block_env.multisig_recovery_factory, Some(factory));
+        assert_eq!(
+            evm_config
+                .evm_env(&parent)
+                .unwrap()
+                .block_env
+                .multisig_recovery_factory,
+            Some(factory)
+        );
 
         // Verify block env uses attributes
         // parent + 1
@@ -658,5 +693,38 @@ mod tests {
             context.inner.parent_beacon_block_root,
             Some(B256::repeat_byte(0x05))
         );
+    }
+
+    #[test]
+    fn experimental_pq_gas_cap_requires_image_and_t14() {
+        for (image, t14_time, expected) in [
+            (Some(format!("0x{}", "11".repeat(32))), 0, 200_000_000),
+            (None, 0, 30_000_000),
+            (Some("0x11".to_owned()), 0, 30_000_000),
+            (Some(format!("0x{}", "11".repeat(32))), 2000, 30_000_000),
+        ] {
+            let mut genesis = serde_json::json!({
+                "config": { "chainId": 1337, "t1Time": 0, "t1aTime": 0,
+                    "t14Time": t14_time, "experimentalPqTxGasLimit": 200_000_000 },
+                "alloc": {}
+            });
+            if let Some(image) = image {
+                genesis["config"]["zkVerifyingKeys"] = serde_json::json!({ "128": image });
+            }
+            let chainspec = TempoChainSpec::from_genesis(serde_json::from_value(genesis).unwrap());
+            let config = TempoEvmConfig::new(Arc::new(chainspec));
+            let header = TempoHeader {
+                inner: alloy_consensus::Header {
+                    timestamp: 1000,
+                    gas_limit: 500_000_000,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            assert_eq!(
+                config.evm_env(&header).unwrap().cfg_env.tx_gas_limit_cap,
+                Some(expected)
+            );
+        }
     }
 }

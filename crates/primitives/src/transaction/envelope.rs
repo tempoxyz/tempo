@@ -4,6 +4,7 @@ use super::{
     unique_tx_identifier_from_signable,
 };
 use crate::{TempoAddressExt, TempoTransaction};
+use alloc::vec::Vec;
 use alloy_consensus::{
     EthereumTxEnvelope, SignableTransaction, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702,
     TxLegacy, TxType, TypedTransaction,
@@ -122,12 +123,14 @@ impl TempoTxEnvelope {
 
     /// Returns an AA transaction's ZK signatures: its own, then its key authorization's.
     pub fn zk_signatures(&self) -> impl Iterator<Item = &super::ZkSignature> {
-        let tx = self.as_aa();
-        let own = tx.and_then(|tx| tx.signature().as_zk());
-        let key_authorization = tx
-            .and_then(|tx| tx.tx().key_authorization.as_ref())
-            .and_then(|auth| auth.signature.as_zk());
-        own.into_iter().chain(key_authorization)
+        let mut signatures = Vec::new();
+        if let Some(tx) = self.as_aa() {
+            signatures.extend(tx.signature().zk_signatures(tx.signature_hash()));
+            if let Some(auth) = &tx.tx().key_authorization {
+                signatures.extend(auth.signature.zk_signatures(auth.signature_hash()));
+            }
+        }
+        signatures.into_iter().map(|(signature, _)| signature)
     }
 
     /// Returns an AA transaction's `valid_after` timestamp, if set.
