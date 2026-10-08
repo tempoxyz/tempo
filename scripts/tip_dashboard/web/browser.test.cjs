@@ -31,7 +31,7 @@ const {pathToFileURL} = require('node:url');
     const headerText = await page.locator('#snapshot').innerText();
     assert.doesNotMatch(headerText,/Collection:|Current revision|invalid_evidence|Malformed|empty_inventory|Read-only/);
     assert.ok(!headerText.includes(real.revision.sha.slice(0,12)),'raw commit metadata is secondary');
-    if(real.main_comparison?.warnings?.some(w=>w.code==='empty_inventory')) assert.match(headerText,/Main not yet verifiable/);
+    assert.match(headerText,/This page is a work in progress\./);
     await page.locator('.snapshot-details > summary').click();
     assert.ok((await page.locator('.snapshot-details').innerText()).includes(real.revision.sha),'selected commit remains accessible');
     await page.locator('.snapshot-details > summary').click();

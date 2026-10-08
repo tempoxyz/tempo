@@ -312,16 +312,8 @@
         const main = obj(data.main_comparison), mainRevision = obj(main.revision);
         const summary = node('div', undefined, 'snapshot-summary');
         const status = node('div', undefined, 'snapshot-status');
-        const mainWarnings = arr(main.warnings), codes = mainWarnings.map(w => obj(w).code);
-        if (main.status === 'available' && codes.includes('empty_inventory')) {
-          status.append(node('strong', 'Main not yet verifiable'), node('p', 'Requirements on main haven’t been labelled yet.', 'muted'));
-        } else if (main.status === 'available' && mainWarnings.length) {
-          status.append(node('strong', 'Main evidence incomplete'), node('p', 'Some checks are missing or unavailable. See snapshot details.', 'muted'));
-        } else if (main.status === 'available') {
-          status.append(node('strong', 'Compared with main'), node('p', 'Main coverage is shown inside each TIP.', 'muted'));
-        } else {
-          status.append(node('strong', 'Main comparison unavailable'), node('p', 'Showing the inspected revision only.', 'muted'));
-        }
+        const mainWarnings = arr(main.warnings);
+        status.append(node('strong', 'This page is a work in progress.'));
         summary.append(status);
         const provenance = node('details', undefined, 'snapshot-details');
         provenance.append(node('summary', 'Snapshot details'));
