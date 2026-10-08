@@ -27,8 +27,19 @@ prerequisites. From this repository:
 cargo test --manifest-path pq/Cargo.toml --features verify
 cargo run --manifest-path pq/methods/Cargo.toml --bin export -- guest.elf pq-genesis.json
 cargo build --bin tempo
-cargo run --bin tempo -- node --dev --chain ./pq-genesis.json --http --http.port 8545 --rpc.max-request-size 20 --rpc.max-response-size 20 --txpool.max-tx-input-bytes 17000000 --txpool.max-tx-gas 200000000
+cargo run --bin tempo -- node --dev --dev.block-time 1s --chain ./pq-genesis.json \
+  --http --http.port 8545 --http.api all \
+  --rpc.max-request-size 20 --rpc.max-response-size 20 \
+  --txpool.max-tx-input-bytes 17000000 --txpool.max-tx-gas 200000000 \
+  --faucet.enabled \
+  --faucet.private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
+  --faucet.amount 1000000000000000 \
+  --faucet.node-address http://127.0.0.1:8545 \
+  --faucet.address 0x20c0000000000000000000000000000000000000
 ```
+
+The faucet uses the well-known public Anvil development key already authorized
+in the development genesis. Keep this profile on a disposable local chain.
 
 The export command prints the image ID and writes a development genesis with it in
 `config.zkVerifyingKeys["128"]`. It also enables `accountMigrationTime=0` and reserves
