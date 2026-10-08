@@ -5,6 +5,7 @@ use std::{collections::HashMap, sync::Arc};
 use jsonrpsee::{
     RpcModule,
     core::{
+        RpcResult,
         client::{ClientT, Error as ClientError},
         params::BatchRequestBuilder,
     },
@@ -14,7 +15,7 @@ use jsonrpsee::{
 use serde_json::{Value, json};
 use tempo_metabinary::{
     manifest::{Era, Manifest},
-    routing::{ExecutionInfo, Router, RpcParams},
+    routing::{ExecutionInfo, Route, Router, RpcParams},
     server::{self, ServerOptions},
 };
 
@@ -197,38 +198,31 @@ impl Fixture {
             .unwrap_err()
             .code()
     }
+
+    async fn route(&self, method: &str, params: Value) -> RpcResult<Route> {
+        self.router.route(method, RpcParams(params)).await
+    }
 }
 
 #[tokio::test]
 async fn debug_subscriptions_guard_the_included_range() {
     let f = Fixture::new().await;
     let live = f
-        .router
-        .route(
-            "debug_subscribe",
-            RpcParams(json!(["traceChain", "0x2", "0x4"])),
-        )
+        .route("debug_subscribe", json!(["traceChain", "0x2", "0x4"]))
         .await
         .unwrap();
     assert_eq!(live.era, 1); // 0x2 is exclusive and still belongs to the predecessor era.
     let error = f
-        .router
         .route(
             "debug_subscribe",
-            RpcParams(
-                json!({"subscription":"traceChain", "startExclusive":"0x0", "endInclusive":"0x4"}),
-            ),
+            json!({"subscription":"traceChain", "startExclusive":"0x0", "endInclusive":"0x4"}),
         )
         .await
         .err()
         .unwrap();
     assert_eq!(error.code(), -32004);
     assert_eq!(
-        f.router
-            .route(
-                "debug_subscribe",
-                RpcParams(json!(["native-invalid-subscription"]))
-            )
+        f.route("debug_subscribe", json!(["native-invalid-subscription"]))
             .await
             .unwrap()
             .era,

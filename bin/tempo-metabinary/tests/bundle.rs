@@ -7,6 +7,7 @@ use jsonrpsee::{core::RpcResult, types::ErrorObjectOwned};
 use serde_json::{Value, json};
 use tempo_metabinary::{
     catalog::{ChainEras, ReleaseEra},
+    handshake::EXECUTION_INFO_METHOD,
     routing::{Backend, Route, Router, RpcParams, is_execution_method},
 };
 
@@ -181,7 +182,7 @@ async fn optional_execution_methods_cannot_bypass_era_policy() {
         "reth_getBalanceChangesInBlock",
         "ots_hasCode",
         "ots_getBlockDetails",
-        "tempo_executionInfo",
+        EXECUTION_INFO_METHOD,
         "eth_sendRawTransactionConditional",
     ] {
         assert!(!is_execution_method(method), "{method}");

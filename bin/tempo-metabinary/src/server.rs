@@ -11,7 +11,10 @@ use jsonrpsee::{
 };
 use serde_json::{Value, json};
 
-use crate::routing::{Router, RpcParams, upstream_error};
+use crate::{
+    handshake::EXECUTION_INFO_METHOD,
+    routing::{Router, RpcParams, upstream_error},
+};
 
 /// Limits are enforced by jsonrpsee for individual responses and batches alike.
 #[derive(Debug, Clone, clap::Args)]
@@ -63,7 +66,7 @@ pub fn rpc_module(
         .filter(|name| {
             !matches!(
                 name.as_str(),
-                "tempo_executionInfo"
+                EXECUTION_INFO_METHOD
                     | "rpc_modules"
                     | "eth_subscribe"
                     | "eth_unsubscribe"

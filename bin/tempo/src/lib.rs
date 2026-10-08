@@ -479,7 +479,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                 eras::EraRuntime::new(
                     schedule.clone(),
                     chain,
-                    datadir.clone().resolve_datadir(chain.chain()).data_dir().to_owned(),
+                    builder.config().datadir().data_dir().to_owned(),
                     datadir.static_files_path.clone(),
                     datadir.rocksdb_path.clone(),
                     serde_json::to_value(builder.config().rpc.eth_config())?,

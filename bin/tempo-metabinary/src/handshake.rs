@@ -93,7 +93,7 @@ pub async fn wait_for_worker(
             }
             Ok(Err(ClientError::Call(error))) if error.code() == -32601 => {
                 bail!(
-                    "executable lacks tempo_executionInfo; it needs the private RPC worker protocol"
+                    "executable lacks {EXECUTION_INFO_METHOD}; it needs the private RPC worker protocol"
                 );
             }
             _ => {}

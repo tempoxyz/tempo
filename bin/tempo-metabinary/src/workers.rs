@@ -69,7 +69,7 @@ struct Process {
 
 enum State {
     Dormant,
-    Running(Process),
+    Running(Box<Process>),
     Failed(String),
 }
 
@@ -146,7 +146,7 @@ impl HistoricalWorkers {
         }
         let result = async {
             if matches!(*state, State::Dormant) {
-                *state = State::Running(spawn(&self.inner.context, era)?);
+                *state = State::Running(Box::new(spawn(&self.inner.context, era)?));
             }
             let State::Running(process) = &mut *state else {
                 unreachable!("spawned or failed")
@@ -172,7 +172,7 @@ impl HistoricalWorkers {
                     // Keep this child owned while waiting. Cancellation falls back to kill_on_drop.
                     let _ = process.child.kill().await;
                 }
-                bail!("{message}")
+                bail!("{message}");
             }
         }
     }
@@ -292,7 +292,7 @@ async fn ready(
         },
     );
     let info = tokio::select! {
-        _ = inner.shutdown.notified() => bail!("historical workers are shutting down"),
+        _ = inner.shutdown.notified() => { bail!("historical workers are shutting down"); },
         info = handshake => info?,
     };
     tracing::debug!(era = %era.name, pid, "Historical RPC worker ready");
@@ -308,6 +308,8 @@ mod tests {
     use jsonrpsee::{RpcModule, server::ServerBuilder};
     use serde_json::json;
     use std::os::unix::fs::PermissionsExt;
+
+    use crate::handshake::EXECUTION_INFO_METHOD;
 
     /// Executed only as a child fixture, using this test binary as a real private RPC worker.
     #[tokio::test]
@@ -332,19 +334,19 @@ mod tests {
             "methods": match mode.as_str() {
                 "too-many-methods" => vec!["eth_call".to_owned(); 1025],
                 "long-method" => vec!["x".repeat(257)],
-                _ => vec!["tempo_executionInfo".into(), "eth_call".into()],
+                _ => vec![EXECUTION_INFO_METHOD.into(), "eth_call".into()],
             }
         });
         let mut methods = RpcModule::new(info);
         if mode == "stalled" {
             methods
-                .register_async_method("tempo_executionInfo", |_, _, _| async {
+                .register_async_method(EXECUTION_INFO_METHOD, |_, _, _| async {
                     std::future::pending::<Value>().await
                 })
                 .unwrap();
         } else if mode != "missing-protocol" {
             methods
-                .register_method("tempo_executionInfo", |_, info, _| info.clone())
+                .register_method(EXECUTION_INFO_METHOD, |_, info, _| info.clone())
                 .unwrap();
         }
         methods
