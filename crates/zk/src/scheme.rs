@@ -77,7 +77,7 @@ pub fn set_genesis_keys<'a>(
 static OIDC_MLDSA65: Scheme = Scheme {
     id: 0x80,
     namespace: 0x80,
-    max_window: 600,
+    max_window: crate::pq::MAX_WINDOW,
     message_form: false,
     verifying_key: None,
     prepared: OnceLock::new(),

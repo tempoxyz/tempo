@@ -68,6 +68,14 @@ fn migration_runtime_real_pq_owner_retires_secp_root_and_rejects_bad_proof() {
         proof,
         PrimitiveSignature::default(),
     );
+    let mut boundary = credential.clone();
+    boundary.valid_until = boundary.issued_at + tempo_pq_oidc::MAX_WINDOW;
+    assert!(tempo_revm::zk::check_scheme_and_time(&boundary, 1500).is_ok());
+    boundary.valid_until += 1;
+    assert_eq!(
+        tempo_revm::zk::check_scheme_and_time(&boundary, 1500).unwrap_err(),
+        tempo_revm::zk::ZkSignatureError::WindowTooLong
+    );
     let owner = credential.address().unwrap();
     f.config.owners = vec![MultisigOwner { owner, weight: 1 }];
     let migrated = root_signed(&f, 3, 1_000_000, vec![upgrade(&f)]);
