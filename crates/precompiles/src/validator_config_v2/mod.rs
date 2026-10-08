@@ -10,8 +10,8 @@ use tempo_contracts::precompiles::{VALIDATOR_CONFIG_V2_ADDRESS, ValidatorConfigV
 use tempo_precompiles_macros::{Storable, contract};
 
 use crate::{
-    error::{Result, TempoPrecompileError},
-    ip::{IpAddress, IpAddressWithPort, IpParseError},
+    error::Result,
+    ip::{IpAddress, IpAddressWithPort, IpWithPortParseError},
     storage::{Handler, Mapping},
     validator_config::ValidatorConfig,
 };
@@ -319,12 +319,9 @@ impl ValidatorConfigV2 {
     fn ingress_key(ingress: &str) -> Result<B256> {
         let ingress = ingress
             .parse::<std::net::SocketAddr>()
-            .map_err(IpParseError::from)
+            .map_err(IpWithPortParseError::from)
             .map_err(|err| {
-                TempoPrecompileError::from(ValidatorConfigV2Error::not_ip_port(
-                    ingress.to_string(),
-                    err.to_string(),
-                ))
+                ValidatorConfigV2Error::not_ip_port(ingress.to_string(), err.to_string())
             })?;
         let mut hasher = Keccak256::new();
         match ingress {
