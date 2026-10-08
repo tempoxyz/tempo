@@ -69,6 +69,9 @@ where
     C: TempoConsensusSpec,
 {
     fn validate_header(&self, header: &SealedHeader<TempoHeader>) -> Result<(), ConsensusError> {
+        if header.inner.block_access_list_hash.is_some() {
+            return Err(TempoConsensusError::UnsupportedBlockAccessList.into());
+        }
         self.inner.validate_header(header)?;
 
         // Validate the timestamp milliseconds part
@@ -423,6 +426,17 @@ mod tests {
         let sealed = SealedHeader::seal_slow(header);
 
         assert!(consensus.validate_header(&sealed).is_ok());
+    }
+
+    #[test]
+    fn test_reject_bal_with_account_extensions() {
+        let consensus = TempoConsensus::new(MODERATO.clone());
+        let mut header = TestHeaderBuilder::default().build();
+        header.inner.block_access_list_hash = Some(B256::ZERO);
+        let error = consensus
+            .validate_header(&SealedHeader::seal_slow(header))
+            .unwrap_err();
+        assert!(error.to_string().contains("BAL is unsupported"));
     }
 
     #[test]

@@ -26,6 +26,7 @@ tempo-evm = { workspace = true, features = ["genesis"] }
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempo-revm.workspace = true
 tempo-state-bloat.workspace = true
+tempo-zk.workspace = true
 
 alloy = { workspace = true, features = [
   "genesis",

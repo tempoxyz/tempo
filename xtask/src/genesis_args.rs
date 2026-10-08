@@ -161,6 +161,36 @@ pub(crate) struct GenesisArgs {
     /// Tempo hardfork schedule. Individual `--<fork>-time` flags default to genesis (0).
     #[command(flatten)]
     hardforks: TempoHardforkArgs,
+
+    /// Verifying key for a ZK signature scheme without a protocol key, as `<scheme>=<hex>`.
+    /// Whoever knows the key's setup secrets can forge proofs, so set this only on development
+    /// chains.
+    #[arg(long = "zk-verifying-key", value_name = "SCHEME=HEX", value_parser = parse_zk_verifying_key)]
+    zk_verifying_keys: Vec<(u8, Bytes)>,
+
+    /// Development recovery factory used to derive configurable accounts.
+    #[arg(long)]
+    multisig_recovery_factory: Option<Address>,
+}
+
+/// Parses `<scheme>=<hex>` into a scheme byte and a valid 576-byte Groth16 verifying key.
+fn parse_zk_verifying_key(value: &str) -> Result<(u8, Bytes), String> {
+    let (scheme, key) = value
+        .split_once('=')
+        .ok_or_else(|| "expected <scheme>=<hex>".to_string())?;
+    let scheme: u8 = scheme
+        .parse()
+        .map_err(|error| format!("invalid scheme: {error}"))?;
+    let key: Bytes = key
+        .parse()
+        .map_err(|error| format!("invalid hex: {error}"))?;
+    let encoded = key
+        .as_ref()
+        .try_into()
+        .map_err(|_| format!("verifying key is {} bytes, expected 576", key.len()))?;
+    tempo_zk::VerifyingKey::decode(encoded)
+        .map_err(|error| format!("invalid verifying key: {error}"))?;
+    Ok((scheme, key))
 }
 
 #[derive(Clone, Debug)]
@@ -481,6 +511,25 @@ impl GenesisArgs {
                 .insert_value("generalGasLimit".to_string(), general_gas_limit)?;
         }
         self.hardforks.write_to(&mut chain_config);
+        if let Some(factory) = self.multisig_recovery_factory {
+            eyre::ensure!(
+                tempo_chainspec::is_valid_native_account(factory, TempoHardfork::T14),
+                "multisig recovery factory must be a nonzero, non-reserved address"
+            );
+            chain_config
+                .extra_fields
+                .insert_value("multisigRecoveryFactory".to_string(), factory)?;
+        }
+        if !self.zk_verifying_keys.is_empty() {
+            let keys: BTreeMap<String, Bytes> = self
+                .zk_verifying_keys
+                .iter()
+                .map(|(scheme, key)| (scheme.to_string(), key.clone()))
+                .collect();
+            chain_config
+                .extra_fields
+                .insert_value("zkVerifyingKeys".to_string(), keys)?;
+        }
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
@@ -522,6 +571,24 @@ impl GenesisArgs {
             return Err(eyre!("mnemonic file `{}` is empty", path.display()));
         }
         Ok(mnemonic.to_owned())
+    }
+
+    /// Inherits development-only signer settings without overriding explicit configuration.
+    pub(crate) fn with_dev_signer_config(mut self) -> Self {
+        let dev = &tempo_chainspec::spec::DEV.info;
+        for (scheme, key) in dev.zk_verifying_keys() {
+            if !self
+                .zk_verifying_keys
+                .iter()
+                .any(|(configured, _)| *configured == scheme)
+            {
+                self.zk_verifying_keys.push((scheme, key.clone()));
+            }
+        }
+        self.multisig_recovery_factory = self
+            .multisig_recovery_factory
+            .or(dev.multisig_recovery_factory());
+        self
     }
 }
 
@@ -905,6 +972,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn writes_zk_verifying_keys() {
+        let key = dev_verifying_key();
+        let genesis = generate(&format!("--zk-verifying-key 1={key}")).await;
+        assert_eq!(
+            genesis.config.extra_fields.get("zkVerifyingKeys"),
+            Some(&serde_json::json!({ "1": key }))
+        );
+        let chainspec = tempo_chainspec::TempoChainSpec::from_genesis(genesis);
+        assert_eq!(chainspec.info.zk_verifying_keys().count(), 1);
+    }
+
+    #[test]
+    fn rejects_invalid_zk_verifying_keys() {
+        let zeros = format!("1=0x{}", "00".repeat(576));
+        for value in ["1", "x=0x00", "1=zz", "1=0x0102", zeros.as_str()] {
+            assert!(
+                parse(&format!("--zk-verifying-key {value}")).is_err(),
+                "{value}"
+            );
+        }
+    }
+
+    /// The development verifying key of the OIDC RS256 v1 circuit.
+    fn dev_verifying_key() -> String {
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(
+            "../../crates/zk/testdata/oidc_rs256_v1_dev.json"
+        ))
+        .unwrap();
+        vectors["verifyingKey"].as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
     async fn legacy_genesis_writes_every_fork_time() {
         let genesis = generate("--t3-time 100").await;
 
@@ -1043,5 +1142,60 @@ mod tests {
         assert!(from_file.resolved_mnemonic().is_err());
         std::fs::remove_file(path).unwrap();
         assert!(from_file.validator_onchain_addresses().is_err());
+    }
+
+    #[tokio::test]
+    async fn devnet_genesis_enables_oidc_and_configurable_accounts() {
+        let genesis = parse("")
+            .unwrap()
+            .with_dev_signer_config()
+            .generate_genesis()
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(
+            genesis.config.extra_fields.get("zkVerifyingKeys"),
+            Some(&serde_json::json!({ "1": dev_verifying_key() }))
+        );
+        let spec = tempo_chainspec::TempoChainSpec::from_genesis(genesis);
+        assert_eq!(spec.info.fork_time(TempoHardfork::T14), Some(0));
+        assert_eq!(
+            spec.info.multisig_recovery_factory(),
+            Some(Address::repeat_byte(0x71))
+        );
+        let standalone = generate("").await;
+        assert_eq!(standalone.config.extra_fields.get("zkVerifyingKeys"), None);
+        assert_eq!(
+            standalone
+                .config
+                .extra_fields
+                .get("multisigRecoveryFactory"),
+            None
+        );
+    }
+
+    #[test]
+    fn devnet_genesis_preserves_explicit_signer_configuration() {
+        let factory = Address::repeat_byte(0x72);
+        let key = dev_verifying_key();
+        let mut args = parse(&format!(
+            "--zk-verifying-key 1={key} --multisig-recovery-factory {factory}"
+        ))
+        .unwrap();
+        let override_key = Bytes::from(vec![0x11; 576]);
+        args.zk_verifying_keys = vec![(1, override_key.clone())];
+        let args = args.with_dev_signer_config();
+        assert_eq!(args.zk_verifying_keys, vec![(1, override_key)]);
+        assert_eq!(args.multisig_recovery_factory, Some(factory));
+    }
+
+    #[tokio::test]
+    async fn genesis_rejects_reserved_recovery_factory() {
+        let args = parse("--multisig-recovery-factory 0x0000000000000000000000000000000000000000")
+            .unwrap();
+        assert_eq!(
+            args.generate_genesis().await.unwrap_err().to_string(),
+            "multisig recovery factory must be a nonzero, non-reserved address"
+        );
     }
 }

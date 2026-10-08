@@ -72,6 +72,20 @@ It can therefore include protocol changes that are not active on Presto, Moderat
 network. Use it for deterministic application tests, not live-network fork compatibility tests.
 Point compatibility tests at the intended network or a forked environment with its chainspec.
 
+The `dev` chainspec also sets a development verifying key for OIDC signers ([TIP-1131](../tips/tip-1131.md)
+ZK signatures, scheme `0x01`), so the network accepts proofs from the
+[reference circuit](../circuits/oidc-rs256/README.md)'s development key. Its setup is deterministic and public,
+so anyone can forge proofs for it: treat OIDC accounts on this network as test-only.
+
+This development snapshot also enables configurable accounts at T14, including OIDC owner
+approvals. Its test-only recovery factory is `0x7171717171717171717171717171717171717171`;
+use that factory when deriving configurable accounts in your client. This is not a production
+recovery factory commitment.
+
+`cargo xtask generate-devnet` inherits both the development OIDC verifying key and recovery
+factory. Explicit `--zk-verifying-key` and `--multisig-recovery-factory` values take precedence.
+Standalone `generate-genesis` remains opt-in for both settings; mainnet and Moderato inherit neither.
+
 ## Fund a test account
 
 The default mode exposes the same faucet method used by Tempo test networks:

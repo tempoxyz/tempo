@@ -112,6 +112,26 @@ impl TempoTxEnvelope {
         }
     }
 
+    /// Returns the first timestamp at which a ZK signature, including an owner approval, expires.
+    pub fn zk_signature_expiry(&self) -> Option<u64> {
+        self.zk_signatures()
+            .map(|signature| signature.valid_until.saturating_add(1))
+            .min()
+    }
+
+    /// Returns transaction and key-authorization ZK signatures, including owner approvals.
+    pub fn zk_signatures(&self) -> impl Iterator<Item = &super::ZkSignature> {
+        let tx = self.as_aa();
+        let own = tx
+            .into_iter()
+            .flat_map(|tx| tx.signature().zk_signatures(tx.signature_hash()));
+        let key_authorization = tx
+            .and_then(|tx| tx.tx().key_authorization.as_ref())
+            .into_iter()
+            .flat_map(|auth| auth.signature.zk_signatures(auth.signature_hash()));
+        own.chain(key_authorization).map(|(signature, _)| signature)
+    }
+
     /// Returns an AA transaction's `valid_after` timestamp, if set.
     ///
     /// Other transaction types do not carry this bound.
@@ -618,7 +638,8 @@ impl reth_rpc_convert::TryIntoSimTx<TempoTxEnvelope> for alloy_rpc_types_eth::Tr
 mod tests {
     use super::*;
     use crate::transaction::{
-        Call, TempoSignedAuthorization, TempoTransaction, TokenLimit,
+        AccountSignature, Call, MultisigConfig, MultisigOwner, MultisigSignature,
+        TempoSignedAuthorization, TempoTransaction, TokenLimit, ZkProof, ZkSignature,
         key_authorization::KeyAuthorization,
         tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature},
     };
@@ -1427,5 +1448,74 @@ mod tests {
         let envelope = TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()));
         assert!(envelope.is_payment_v1(), "V1 must accept AA without calls");
         assert!(!envelope.is_payment_v2(), "V2 must reject AA without calls");
+    }
+
+    #[test]
+    fn zk_expiry_includes_transaction_and_grant_owner_approvals() {
+        let owner_signature = |valid_until| {
+            ZkSignature::new(
+                1,
+                B256::repeat_byte(1),
+                B256::with_last_byte(2),
+                B256::with_last_byte(3),
+                B256::with_last_byte(4),
+                1_000,
+                valid_until,
+                ZkProof::ZERO,
+                PrimitiveSignature::default(),
+            )
+        };
+        let owner = owner_signature(1_110);
+        let config = MultisigConfig {
+            salt: B256::ZERO,
+            version: 0,
+            threshold: 1,
+            owners: vec![MultisigOwner {
+                owner: owner.address().unwrap(),
+                weight: 1,
+            }],
+        };
+        let account = config.derive_account(Address::repeat_byte(0x71)).unwrap();
+        let multisig = |signature: ZkSignature| {
+            MultisigSignature::try_new_with_owner_signatures(
+                account,
+                config.clone(),
+                vec![signature.into()],
+            )
+            .unwrap()
+        };
+        let grant = KeyAuthorization {
+            chain_id: 1,
+            key_type: crate::SignatureType::Secp256k1,
+            key_id: Address::repeat_byte(0x72),
+            expiry: None,
+            limits: None,
+            allowed_calls: None,
+            witness: None,
+            is_admin: false,
+            account: None,
+        }
+        .into_signed(AccountSignature::Multisig(multisig(owner_signature(1_010))));
+        let tx = TempoTransaction {
+            key_authorization: Some(grant),
+            ..Default::default()
+        };
+        for signature in [
+            TempoSignature::Multisig(multisig(owner.clone())),
+            TempoSignature::Keychain(KeychainSignature::new(
+                account,
+                AccountSignature::Multisig(multisig(owner.clone())),
+            )),
+        ] {
+            let envelope = TempoTxEnvelope::AA(tx.clone().into_signed(signature));
+            assert_eq!(
+                envelope
+                    .zk_signatures()
+                    .map(|signature| signature.valid_until)
+                    .collect::<Vec<_>>(),
+                vec![1_110, 1_010]
+            );
+            assert_eq!(envelope.zk_signature_expiry(), Some(1_011));
+        }
     }
 }

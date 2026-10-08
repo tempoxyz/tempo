@@ -1,5 +1,6 @@
 //! Tempo-specific transaction validation errors.
 
+use crate::native_multisig::NativeMultisigError;
 use alloy_evm::error::InvalidTxError;
 use alloy_primitives::{Address, U256};
 use revm::context::result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction};
@@ -11,6 +12,9 @@ use tempo_primitives::transaction::{KeyAuthorizationChainIdError, KeychainVersio
 /// validation errors that occur during transaction processing.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum TempoInvalidTransaction {
+    /// Native account authorization failure.
+    #[error(transparent)]
+    NativeMultisig(#[from] NativeMultisigError),
     /// Standard Ethereum transaction validation error.
     #[error(transparent)]
     EthInvalidTransaction(#[from] InvalidTransaction),
@@ -241,6 +245,10 @@ pub enum TempoInvalidTransaction {
     /// This wraps validation errors from the shared validate_calls function.
     #[error("{0}")]
     CallsValidation(&'static str),
+
+    /// A TIP-1131 ZK signature was rejected.
+    #[error(transparent)]
+    ZkSignature(#[from] crate::zk::ZkSignatureError),
 }
 
 impl TempoInvalidTransaction {
@@ -251,6 +259,13 @@ impl TempoInvalidTransaction {
     /// that may resolve as state advances.
     pub fn is_bad_transaction(&self) -> bool {
         match self {
+            Self::NativeMultisig(error) => matches!(
+                error,
+                NativeMultisigError::OwnerSignatureRecoveryFailed { .. }
+                    | NativeMultisigError::AccountMismatch { .. }
+                    | NativeMultisigError::InvalidSignatureContext
+                    | NativeMultisigError::Quorum(_)
+            ),
             Self::EthInvalidTransaction(eth) => match eth {
                 InvalidTransaction::PriorityFeeGreaterThanMaxFee
                 | InvalidTransaction::CallGasCostMoreThanGasLimit { .. }
@@ -323,6 +338,8 @@ impl TempoInvalidTransaction {
             | Self::CollectFeePreTx(_)
             | Self::NonceManagerError(_)
             | Self::V2KeychainBeforeActivation => false,
+
+            Self::ZkSignature(err) => err.is_bad_transaction(),
         }
     }
 }

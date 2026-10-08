@@ -12,7 +12,9 @@ use crate::{
 };
 use alloy_primitives::B256;
 use reth_chainspec::{ChainKind, EthChainSpec, Hardforks, NamedChain};
-use reth_ethereum::network::{NetworkHandle, PeersInfo as _, primitives::BasicNetworkPrimitives};
+use reth_ethereum::network::{
+    NetworkHandle, NetworkManager, PeersInfo as _, primitives::BasicNetworkPrimitives,
+};
 use reth_node_api::{
     AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
     PayloadAttributesBuilder, PayloadTypes, PrimitivesTy, TxTy,
@@ -217,7 +219,9 @@ where
         ctx: &BuilderContext<Node>,
         pool: Pool,
     ) -> eyre::Result<Self::Network> {
-        let mut network = ctx.network_builder().await?;
+        // Account extensions are not represented by the snap wire protocol.
+        let config = ctx.build_network_config(ctx.network_config_builder()?.with_snap(false));
+        let mut network = NetworkManager::builder(config).await?;
         if let Some(gossip) = self.gossip {
             let gossip = gossip.install();
             network.network_mut().add_rlpx_sub_protocol(gossip);
@@ -555,6 +559,9 @@ where
     type EVM = TempoEvmConfig;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
+        // Before the pool or executor verifies a ZK signature.
+        tempo_evm::set_zk_verifying_keys(&ctx.chain_spec())
+            .map_err(|error| eyre::eyre!("invalid zkVerifyingKeys in genesis: {error}"))?;
         let mut evm_config = TempoEvmConfig::new(ctx.chain_spec());
         if let Some(cache) = ctx.sender_recovery_cache() {
             evm_config = evm_config.with_sender_recovery_cache(cache.clone());

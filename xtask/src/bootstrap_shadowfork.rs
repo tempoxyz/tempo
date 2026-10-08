@@ -47,7 +47,7 @@ use tempo_contracts::precompiles::VALIDATOR_CONFIG_V2_ADDRESS;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_precompiles::{
     error::TempoPrecompileError,
-    storage::{PrecompileStorageProvider, StorageCtx},
+    storage::{ConfigCommitmentWriteGas, PrecompileStorageProvider, StorageCtx},
     validator_config_v2::ValidatorConfigV2,
 };
 use tempo_primitives::{TempoBlockEnv, TempoPrimitives};
@@ -502,6 +502,23 @@ where
         let account = self.read_db_account_info(address)?;
         f(&account);
         Ok(())
+    }
+
+    fn with_warm_caller_info(
+        &mut self,
+        address: Address,
+        f: &mut dyn FnMut(&AccountInfo),
+    ) -> Result<(), TempoPrecompileError> {
+        self.with_account_info(address, f)
+    }
+
+    fn set_config_commitment(
+        &mut self,
+        _address: Address,
+        _commitment: B256,
+        _gas: ConfigCommitmentWriteGas,
+    ) -> Result<(), TempoPrecompileError> {
+        Err(TempoPrecompileError::InvalidConfigCommitmentWrite)
     }
 
     fn account_code(

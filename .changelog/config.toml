@@ -28,6 +28,7 @@ ignore = [
     "tempo-transaction-pool",
     "tempo-validator-config",
     "tempo-xtask",
+    "tempo-zk",
 ]
 
 [changelog]
