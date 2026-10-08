@@ -141,8 +141,6 @@ impl TempoEvmConfig {
         version.tx_gas_limit_cap = tempo_spec.tx_gas_limit_cap().unwrap_or(u64::MAX);
         if let Some(blob_params) = blob_params {
             version.max_blobs_per_tx = blob_params.max_blobs_per_tx as usize;
-            version.blob_base_fee_update_fraction =
-                u64::try_from(blob_params.update_fraction).unwrap_or(u64::MAX);
         }
         TempoEvmEnv::new_with_version(tempo_spec, block, version)
     }
