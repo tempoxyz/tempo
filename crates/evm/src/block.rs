@@ -260,12 +260,13 @@ where
             .map_err(BlockExecutionError::other)?
             .unwrap_or_default();
         let marker = Bytecode::new_legacy([0xef].into());
-        if info.code_hash == marker.hash_slow() && info.nonce >= 1 {
+        let marker_hash = marker.hash_slow();
+        if info.code_hash == marker_hash && info.nonce >= 1 {
             return Ok(());
         }
         let mut account = Account::from(info);
         account.info.nonce = account.info.nonce.max(1);
-        account.info.code_hash = marker.hash_slow();
+        account.info.code_hash = marker_hash;
         account.info.code = Some(marker);
         account.mark_touch();
         db.commit(EvmState::from_iter([(address, account)]));

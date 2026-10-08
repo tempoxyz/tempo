@@ -488,9 +488,6 @@ fn is_invalidated_buffered_transaction(
 
 /// Returns true if the transaction is a candidate for parallel prewarming.
 fn is_parallel_candidate(tx: &BestTransaction) -> bool {
-    if !tempo_evm::supports_storage_action_replay(tx.transaction.inner()) {
-        return false;
-    }
     // Payment lane transactions
     tx.transaction.is_payment()
         // 2D or expiring nonces, no protocol nonces
@@ -498,6 +495,8 @@ fn is_parallel_candidate(tx: &BestTransaction) -> bool {
             .transaction
             .nonce_key_ref()
             .is_some_and(|nonce_key| !nonce_key.is_zero())
+        // No configurable-account roles or keychain/multisig calls that replay cannot reproduce
+        && tempo_evm::supports_storage_action_replay(tx.transaction.inner())
 }
 
 #[cfg(test)]

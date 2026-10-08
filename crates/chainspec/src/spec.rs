@@ -232,8 +232,7 @@ impl TempoChainSpec {
         info.multisig_recovery_factory = genesis
             .config
             .extra_fields
-            .get("multisigRecoveryFactory")
-            .map(|value| serde_json::from_value::<Option<Address>>(value.clone()))
+            .get_deserialized::<Option<Address>>("multisigRecoveryFactory")
             .transpose()?
             .flatten();
         if info
