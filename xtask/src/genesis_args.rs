@@ -1228,8 +1228,11 @@ mod tests {
                 .await
                 .unwrap()
                 .0;
+            assert_eq!(
+                genesis.config.extra_fields.get("accountMigrationTime"),
+                expected.map(serde_json::Value::from).as_ref()
+            );
             let spec = tempo_chainspec::TempoChainSpec::from_genesis(genesis);
-            assert_eq!(spec.info.account_migration_time, expected);
             assert!(!spec.info.account_migration_enabled(19));
             assert_eq!(
                 spec.info.account_migration_enabled(20),
