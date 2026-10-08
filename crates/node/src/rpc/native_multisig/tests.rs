@@ -234,6 +234,13 @@ fn prepares_independent_delegate_and_parent_roles(version: u64, admin: bool) {
     wrong_delegate.key_id = Some(parent);
     let mut missing_witness = request.clone();
     missing_witness.multisig_simulation = None;
+    let mut unbound_admin_grant = request.clone();
+    unbound_admin_grant
+        .key_authorization
+        .as_mut()
+        .unwrap()
+        .authorization
+        .account = None;
     let mut invalid_cases = vec![
         (
             wrong_metadata,
@@ -248,7 +255,13 @@ fn prepares_independent_delegate_and_parent_roles(version: u64, admin: bool) {
             "multisig simulation signature requires its source witness".into(),
         ),
     ];
-    if !admin {
+    if admin {
+        invalid_cases.push((
+            unbound_admin_grant,
+            "admin-signed grant simulation requires its signer as keyId and the parent as account"
+                .into(),
+        ));
+    } else {
         invalid_cases.push((
             wrong_signer,
             "admin-signed grant requires its signer as keyId and the parent as account".into(),

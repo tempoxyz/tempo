@@ -97,7 +97,8 @@ pub(super) fn prepare_native_multisig_simulation(
     Ok(())
 }
 
-/// Rejects a grant naming another parent; an admin `signer` must be keyId with the parent named.
+/// Rejects a grant bound to another account; a grant signed by an admin (`signer != parent`) must
+/// name the parent as `account` and use the signer as `keyId`.
 fn validate_grant_binding(
     authorization: &SignedKeyAuthorization,
     parent: Address,
