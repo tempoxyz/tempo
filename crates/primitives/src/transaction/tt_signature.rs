@@ -607,7 +607,7 @@ impl AccountSignature {
     pub fn encode_bytes_into(&self, out: &mut dyn alloy_rlp::BufMut) {
         match self {
             Self::Primitive(signature) => signature.encode_bytes_into(out),
-            Self::Multisig(signature) => signature.encode_typed(out),
+            Self::Multisig(signature) => signature.encode_bytes_into(out),
         }
     }
 
@@ -615,7 +615,7 @@ impl AccountSignature {
     pub fn encoded_length(&self) -> usize {
         match self {
             Self::Primitive(signature) => signature.encoded_length(),
-            Self::Multisig(signature) => signature.typed_length(),
+            Self::Multisig(signature) => signature.encoded_length(),
         }
     }
 
@@ -852,7 +852,7 @@ impl TempoSignature {
                 out.put_slice(keychain_sig.user_address.as_slice());
                 keychain_sig.signature.encode_bytes_into(out);
             }
-            Self::Multisig(multisig_sig) => multisig_sig.encode_typed(out),
+            Self::Multisig(multisig_sig) => multisig_sig.encode_bytes_into(out),
         }
     }
 
@@ -865,7 +865,7 @@ impl TempoSignature {
         match self {
             Self::Primitive(primitive_sig) => primitive_sig.encoded_length(),
             Self::Keychain(keychain_sig) => 1 + 20 + keychain_sig.signature.encoded_length(),
-            Self::Multisig(multisig_sig) => multisig_sig.typed_length(),
+            Self::Multisig(multisig_sig) => multisig_sig.encoded_length(),
         }
     }
 

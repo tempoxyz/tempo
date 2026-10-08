@@ -328,13 +328,13 @@ impl MultisigSignature {
     }
 
     /// Writes the type-prefixed signature encoding.
-    pub(crate) fn encode_typed(&self, out: &mut dyn alloy_rlp::BufMut) {
+    pub(crate) fn encode_bytes_into(&self, out: &mut dyn alloy_rlp::BufMut) {
         out.put_u8(SIGNATURE_TYPE_MULTISIG);
         alloy_rlp::Encodable::encode(self, out);
     }
 
-    /// Length of [`Self::encode_typed`].
-    pub(crate) fn typed_length(&self) -> usize {
+    /// Length of [`Self::encode_bytes_into`].
+    pub(crate) fn encoded_length(&self) -> usize {
         1 + alloy_rlp::Encodable::length(self)
     }
 
