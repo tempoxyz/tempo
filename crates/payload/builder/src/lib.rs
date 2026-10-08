@@ -438,6 +438,7 @@ where
 
         debug!("building new payload");
 
+        let roots_parent = Span::current();
         let mut roots_task = None;
 
         if is_osaka && estimated_rlp_block_size > MAX_RLP_BLOCK_SIZE {
@@ -707,7 +708,8 @@ where
             if !receipt.success {
                 reverted_transactions += 1;
             }
-            let (roots_tx, _) = roots_task.get_or_insert_with(|| self.spawn_roots_task());
+            let (roots_tx, _) =
+                roots_task.get_or_insert_with(|| self.spawn_roots_task(&roots_parent));
             let _ = roots_tx.send((tx, receipt));
         };
 
@@ -1061,6 +1063,7 @@ where
 
     fn spawn_roots_task(
         &self,
+        parent: &Span,
     ) -> (
         Sender<(BestTransaction, TempoReceipt)>,
         oneshot::Receiver<RootsTaskResult>,
@@ -1068,7 +1071,7 @@ where
         let (transactions_tx, transactions_rx) =
             crossbeam_channel::unbounded::<(BestTransaction, TempoReceipt)>();
         let (result_tx, result_rx) = oneshot::channel();
-        let parent = Span::current();
+        let parent = parent.clone();
 
         self.executor
             .spawn_blocking_named("builder-roots-task", move || {
