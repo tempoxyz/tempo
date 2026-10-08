@@ -16,7 +16,7 @@ migration. It implements an experimental proof scheme, not a production protocol
 
 The guest checks canonical compact JWT encoding, `alg=ML-DSA-65`, issuer, audience
 and subject, and binds its nonce to the access key, expiry and blinding. It rejects
-windows over 600 seconds and authorizations outside the token lifetime.
+windows over 3600 seconds and authorizations outside the token lifetime.
 
 ## Build and run
 
