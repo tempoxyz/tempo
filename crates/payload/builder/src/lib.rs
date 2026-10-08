@@ -66,8 +66,7 @@ use tempo_evm::{
     TempoTxResult, evm::TempoEvm,
 };
 use tempo_payload_types::{
-    Estimator, EstimatorConfig, FinishedBuild, TempoBuiltPayload, TempoPayloadAttributes,
-    ValidationLatencyWorkload,
+    Estimator, FinishedBuild, TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload,
 };
 use tempo_precompiles::{storage::StorageActions, validator_config_v2::ValidatorConfigV2};
 use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
@@ -161,17 +160,6 @@ pub struct TempoPayloadBuilderConfig {
     pub skip_state_root: bool,
     /// Whether to enable speculative parallel payload-builder planning.
     pub enable_parallel: bool,
-    /// Initial estimate of total replayable build work divided by work at tx cutoff.
-    ///
-    /// `1.0` means no finish-work headroom beyond observed work so far. Values
-    /// above `1.0` stop transaction execution earlier to leave room for
-    /// `builder_finish`, which validators also repeat.
-    ///
-    /// This only seeds the builder-local estimator that
-    /// [`TempoPayloadBuilder::new`] creates; it has no effect once
-    /// [`TempoPayloadBuilder::with_estimator`] injects a shared one, which
-    /// carries its own initial multiplier.
-    pub build_time_multiplier: f64,
 }
 
 impl TempoPayloadBuilderConfig {
@@ -194,12 +182,18 @@ impl TempoPayloadBuilderConfig {
 }
 
 impl<Provider> TempoPayloadBuilder<Provider> {
+    /// Creates a builder that paces consensus builds with `estimator`.
+    ///
+    /// Pass the handle consensus uses, so that the builder's stop decisions
+    /// see the validation times consensus observes; an estimator of its own
+    /// only learns from this builder's builds.
     pub fn new(
         pool: TempoTransactionPool<Provider>,
         provider: Provider,
         executor: TaskExecutor,
         evm_config: TempoEvmConfig,
         config: TempoPayloadBuilderConfig,
+        estimator: Estimator,
     ) -> Self {
         Self {
             pool,
@@ -209,24 +203,8 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             evm_config,
             metrics: TempoPayloadBuilderMetrics::default(),
             cache_metrics: CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
-            estimator: Estimator::new(
-                EstimatorConfig::default().with_build_time_multiplier(config.build_time_multiplier),
-            ),
+            estimator,
         }
-    }
-
-    /// Shares a proposal budget estimator with consensus.
-    ///
-    /// Without this the builder learns from its own builds only and never
-    /// sees the validation times consensus observes.
-    pub fn with_estimator(mut self, estimator: Estimator) -> Self {
-        self.estimator = estimator;
-        self
-    }
-
-    /// The proposal budget estimator this builder reports to.
-    pub fn estimator(&self) -> &Estimator {
-        &self.estimator
     }
 }
 

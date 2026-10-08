@@ -263,12 +263,7 @@ pub struct Args {
     /// `--consensus.network-budget-max`. One slow proposal alone lifts
     /// nothing, since each own proposal's successor is an independent draw.
     /// The next faster proposal hands the reservation back to the window
-    /// percentile, again by at most 100ms per own proposal. On a 10
-    /// validator, four region benchmark lifting it to the most recent
-    /// network time alone cut the share of proposals whose network time
-    /// exceeded the reservation from 43% to 37% without costing throughput;
-    /// that run also raised the cap from 250 to 320ms and predates the
-    /// current network sample and the per-proposal step.
+    /// percentile, again by at most 100ms per own proposal.
     ///
     /// On by default; pass `--consensus.network-reserve-fast-rise=false` to
     /// reserve the window percentile alone.

@@ -90,10 +90,10 @@ where
     pub network_identity: tempo_chainspec::NetworkIdentity,
     /// Feed state shared by the consensus and execution layers.
     pub feed_state: FeedStateHandle,
-    /// Local proposal work budget used whenever the consensus engine starts.
-    pub proposal_return_budget: Duration,
     /// Proposal budget estimator shared by this node's builder and consensus
-    /// engine. Pinned to `proposal_return_budget` so tests stay deterministic.
+    /// engine whenever they start. Built once from the constructor's
+    /// proposal return budget with a pinned network reservation, so tests
+    /// stay deterministic.
     pub estimator: tempo_node::Estimator,
     /// Verification mode used whenever the consensus engine starts.
     pub verification_mode: VerificationMode,
@@ -144,7 +144,6 @@ where
             share,
             network_identity,
             feed_state,
-            proposal_return_budget,
             estimator,
             verification_mode,
             consensus_handle: None,
@@ -198,7 +197,6 @@ where
         self.share = identity_source.share;
         self.network_identity = identity_source.network_identity;
         self.feed_state = identity_source.feed_state;
-        self.proposal_return_budget = identity_source.proposal_return_budget;
         self.estimator = identity_source.estimator;
         self.execution_config.estimator = Some(self.estimator.clone());
         self.verification_mode = identity_source.verification_mode;

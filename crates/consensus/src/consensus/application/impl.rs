@@ -1,7 +1,7 @@
 //! Tempo's block building and verification.
 
 use std::{
-    sync::Arc,
+    sync::{Arc, atomic::AtomicU64},
     time::{Duration, Instant},
 };
 
@@ -21,7 +21,7 @@ use commonware_cryptography::{
 };
 use commonware_runtime::{
     Clock, Spawner,
-    telemetry::metrics::{Counter, Gauge, MetricsExt as _},
+    telemetry::metrics::{Counter, MetricsExt as _, Registered},
 };
 use commonware_utils::{Acknowledgement as _, SystemTimeExt as _};
 use eyre::{OptionExt as _, WrapErr as _, ensure, eyre};
@@ -692,20 +692,23 @@ struct Metrics {
     parent_ahead_of_local_time: Counter,
     /// Network reservation the most recent own proposal subtracted from the
     /// target block time.
-    estimator_network_reserve_ms: Gauge,
+    estimator_network_reserve_seconds: FloatGauge,
     /// Learned network time before clamping, zero while the window holds no
     /// completed proposal. The reservation moves toward it, clamped, by at
     /// most one bounded step per own proposal.
-    estimator_network_observed_ms: Gauge,
+    estimator_network_observed_seconds: FloatGauge,
     /// Proposal return budget of the most recent own proposal.
-    estimator_proposal_return_budget_ms: Gauge,
+    estimator_proposal_return_budget_seconds: FloatGauge,
     /// Recent P90 execution-layer validation time.
-    estimator_validation_latency_p90_ms: Gauge,
-    /// Build time multiplier in thousandths.
-    estimator_build_time_multiplier_permille: Gauge,
+    estimator_validation_latency_p90_seconds: FloatGauge,
+    /// Build time multiplier in use.
+    estimator_build_time_multiplier: FloatGauge,
     /// Finish a build reserves once its pool ran dry.
-    estimator_dry_build_finish_ms: Gauge,
+    estimator_dry_build_finish_seconds: FloatGauge,
 }
+
+/// A gauge that holds a fractional value, such as seconds or a ratio.
+type FloatGauge = Registered<prometheus_client::metrics::gauge::Gauge<f64, AtomicU64>>;
 
 impl Metrics {
     fn init<TContext: commonware_runtime::Metrics>(context: &TContext) -> Self {
@@ -713,50 +716,55 @@ impl Metrics {
             "parent_ahead_of_local_time",
             "number of times the parent block timestamp was ahead of local time when proposing",
         );
+        let float_gauge = |name: &str, help: &str| -> FloatGauge {
+            context.register(name, help, Default::default())
+        };
 
         Self {
             parent_ahead_of_local_time,
-            estimator_network_reserve_ms: context.gauge(
-                "estimator_network_reserve_ms",
-                "time reserved for proposal propagation and votes, in milliseconds",
+            estimator_network_reserve_seconds: float_gauge(
+                "estimator_network_reserve_seconds",
+                "time reserved after the proposal window for propagation and votes",
             ),
-            estimator_network_observed_ms: context.gauge(
-                "estimator_network_observed_ms",
-                "learned proposal propagation and vote time before clamping, in milliseconds",
+            estimator_network_observed_seconds: float_gauge(
+                "estimator_network_observed_seconds",
+                "learned time after the proposal window before clamping",
             ),
-            estimator_proposal_return_budget_ms: context.gauge(
-                "estimator_proposal_return_budget_ms",
-                "local proposal return budget of the most recent own proposal, in milliseconds",
+            estimator_proposal_return_budget_seconds: float_gauge(
+                "estimator_proposal_return_budget_seconds",
+                "local proposal return budget of the most recent own proposal",
             ),
-            estimator_validation_latency_p90_ms: context.gauge(
-                "estimator_validation_latency_p90_ms",
-                "recent p90 execution-layer block validation time, in milliseconds",
+            estimator_validation_latency_p90_seconds: float_gauge(
+                "estimator_validation_latency_p90_seconds",
+                "recent p90 execution-layer block validation time",
             ),
-            estimator_build_time_multiplier_permille: context.gauge(
-                "estimator_build_time_multiplier_permille",
-                "payload build time multiplier in use, in thousandths",
+            estimator_build_time_multiplier: float_gauge(
+                "estimator_build_time_multiplier",
+                "payload build time multiplier in use",
             ),
-            estimator_dry_build_finish_ms: context.gauge(
-                "estimator_dry_build_finish_ms",
-                "finish reserved by payload builds whose pool ran dry, in milliseconds",
+            estimator_dry_build_finish_seconds: float_gauge(
+                "estimator_dry_build_finish_seconds",
+                "finish reserved by payload builds whose pool ran dry",
             ),
         }
     }
 
     fn observe_estimator(&self, snapshot: &EstimatorSnapshot) {
-        let millis = |duration: Duration| duration.as_millis().min(i64::MAX as u128) as i64;
-        self.estimator_network_reserve_ms
-            .set(millis(snapshot.network_reserve));
-        self.estimator_network_observed_ms
-            .set(snapshot.network_observed.map_or(0, millis));
-        self.estimator_proposal_return_budget_ms
-            .set(millis(snapshot.proposal_return_budget));
-        self.estimator_validation_latency_p90_ms
-            .set(snapshot.validation_latency_p90.map_or(0, millis));
-        self.estimator_build_time_multiplier_permille
-            .set((snapshot.build_time_multiplier * 1000.0).round() as i64);
-        self.estimator_dry_build_finish_ms
-            .set(millis(snapshot.dry_build_finish));
+        self.estimator_network_reserve_seconds
+            .set(snapshot.network_reserve.as_secs_f64());
+        self.estimator_network_observed_seconds
+            .set(snapshot.network_observed.map_or(0.0, |d| d.as_secs_f64()));
+        self.estimator_proposal_return_budget_seconds
+            .set(snapshot.proposal_return_budget.as_secs_f64());
+        self.estimator_validation_latency_p90_seconds.set(
+            snapshot
+                .validation_latency_p90
+                .map_or(0.0, |d| d.as_secs_f64()),
+        );
+        self.estimator_build_time_multiplier
+            .set(snapshot.build_time_multiplier);
+        self.estimator_dry_build_finish_seconds
+            .set(snapshot.dry_build_finish.as_secs_f64());
     }
 }
 

@@ -909,7 +909,14 @@ where
             _ => None,
         });
 
-        let builder = TempoPayloadBuilder::new(
+        // Without a handle shared with consensus, the builder paces against an
+        // estimator of its own.
+        let estimator = self.estimator.unwrap_or_else(|| {
+            Estimator::new(
+                EstimatorConfig::default().with_build_time_multiplier(self.build_time_multiplier),
+            )
+        });
+        Ok(TempoPayloadBuilder::new(
             pool,
             ctx.provider().clone(),
             ctx.task_executor().clone(),
@@ -921,13 +928,9 @@ where
                 enable_prewarming: self.enable_prewarming,
                 skip_state_root: ctx.config().tree_config().skip_state_root(),
                 enable_parallel: self.enable_parallel,
-                build_time_multiplier: self.build_time_multiplier,
             },
-        );
-        Ok(match self.estimator {
-            Some(estimator) => builder.with_estimator(estimator),
-            None => builder,
-        })
+            estimator,
+        ))
     }
 }
 

@@ -54,6 +54,14 @@ const MAINNET_TESTNET_EPOCH_LENGTH_BLOCKS: u64 = 21_600;
 /// the finalized tip should be able to sync from peers.
 pub const MINIMAL_PEER_SYNC_FINALIZED_BLOCKS: u64 = 3 * MAINNET_TESTNET_EPOCH_LENGTH_BLOCKS;
 
+/// Runs the validator's consensus engine against `execution_node` until it
+/// exits.
+///
+/// `estimator` must be the handle the node's payload builder was given (see
+/// `TempoNode::with_estimator`), not merely one configured the same way:
+/// consensus feeds it the validation times and network samples the builder's
+/// stop decisions read, and reads back the builder's finished builds. Its
+/// configuration must match `config`, see [`Args::check_estimator`].
 pub async fn run_consensus_stack(
     context: commonware_runtime::tokio::Context,
     config: Args,

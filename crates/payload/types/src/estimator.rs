@@ -11,11 +11,9 @@
 //!
 //! Marshal persistence is not part of the model: the marshal wrapper persists
 //! a block concurrently with voting, so it gates finalization rather than the
-//! next block. Each of the three was previously estimated in a different
-//! place (a builder-local atomic, an actor-local sample window and a fixed CLI
-//! constant). The [`Estimator`] owns all of them so that consensus and the
-//! builder read one consistent picture, and so that the whole model can be
-//! driven by a simulated block sequence in tests.
+//! next block. The [`Estimator`] owns all three estimates so that consensus
+//! and the builder read one consistent picture, and so that the whole model
+//! can be driven by a simulated block sequence in tests.
 //!
 //! The estimator is pure bookkeeping: callers feed observations through the
 //! `on_*` hooks and take decisions through [`Estimator::start_proposal`] and
@@ -101,10 +99,11 @@ pub const DEFAULT_NETWORK_BUDGET: Duration = Duration::from_millis(50);
 /// The cap bounds how much of the block time the chain's wait after a return
 /// may claim before an operator has to look at the network rather than the
 /// estimator. On the 10 validator, four region GCP benchmark with the shipped
-/// sample (the wait after the proposal window closes, see the
-/// `NetworkTracker` docs) the far-away (Asia) proposers settle at a reserve
-/// p50 of about 195 to 215 ms and touch 300 ms only on tails, so the cap
-/// leaves them their learned reservation and only bounds the outliers.
+/// sample (the wait after the proposal window closes, see
+/// [`Estimator::on_proposal_returned`]) the far-away (Asia) proposers settle
+/// at a reserve p50 of about 195 to 215 ms and touch 300 ms only on tails, so
+/// the cap leaves them their learned reservation and only bounds the
+/// outliers.
 ///
 /// The cap also bounds validator replay that the builder did not reserve
 /// for: the builder caps its validator term at its own projected work, so
@@ -117,8 +116,7 @@ pub const DEFAULT_NETWORK_RESERVE_PERCENTILE: u8 = 75;
 ///
 /// `1.15` means "when cutoff work is 100 ms, expect the completed replayable
 /// build work to be about 115 ms". Measured finish work on a busy 10 validator
-/// network is 5 to 10% of fill work; the previous default of 1.35 cost 10 to
-/// 15% of every block's transactions before the first observation.
+/// network is 5 to 10% of fill work.
 pub const DEFAULT_BUILD_TIME_MULTIPLIER: f64 = 1.15;
 /// How far a proposal may run past its return budget and still count as
 /// having met it when no tolerance is configured, see
@@ -133,7 +131,7 @@ pub const DEFAULT_BUILD_TIME_MULTIPLIER: f64 = 1.15;
 pub const DEFAULT_RETURN_BUDGET_OVERRUN_TOLERANCE: Duration = Duration::from_millis(5);
 
 /// Fixed-point scale for build time multipliers.
-pub const BUILD_TIME_MULTIPLIER_SCALE: u64 = 1_000_000;
+const BUILD_TIME_MULTIPLIER_SCALE: u64 = 1_000_000;
 /// Builder work never shrinks after the transaction cutoff.
 const MIN_BUILD_TIME_MULTIPLIER_SCALED: u64 = BUILD_TIME_MULTIPLIER_SCALE;
 /// Finish work larger than 70% of fill work is treated as an outlier.
@@ -281,12 +279,6 @@ pub struct EstimatorConfig {
     /// and lifting the target to a single sample chased that noise. It decays
     /// through the window: the next faster sample hands the target back to
     /// the percentile.
-    ///
-    /// On a 10 validator, four region benchmark lifting the target to the
-    /// most recent sample alone cut the share of proposals whose network
-    /// time exceeds the reservation from 43% to 37% without costing
-    /// throughput. That run also raised the cap from 250 to 320 ms, and it
-    /// predates both the current sample and the per-proposal step.
     pub network_reserve_fast_rise: bool,
     /// Initial ratio of total replayable build work over work at tx cutoff.
     ///
@@ -547,9 +539,13 @@ impl Estimator {
 
     /// Records the replayable work of a finished consensus payload build.
     ///
-    /// A build that waited for transactions ([`FinishedBuild::idle`] is not
-    /// zero) teaches the dry build finish, every other build the multiplier,
-    /// see the `BuildTimeTracker` docs.
+    /// A build that never waited for transactions teaches the multiplier, the
+    /// ratio of its total over its cutoff work, unless it did no work before
+    /// the cutoff. A dry build, one that waited ([`FinishedBuild::idle`] is
+    /// not zero), teaches the dry build finish instead, its total minus its
+    /// cutoff work, which builds that wait for transactions reserve, see
+    /// [`BuildPlan::decision`]: the finish of its near-empty block is mostly
+    /// fixed cost, which its ratio would carry over to full blocks.
     pub fn on_build_finished(&self, now: Instant, build: FinishedBuild) {
         let mut state = self.state();
         match state.build_time.observe(now, build) {
@@ -579,8 +575,9 @@ impl Estimator {
     /// the parent's timestamp. `return_budget` is the window the proposal
     /// used, [`ProposalBudget::return_budget`], and the proposal must have
     /// been paced from the same instant. The sample is how much later than
-    /// the window's close the next leader stamped its header, see the
-    /// `NetworkTracker` docs. A proposal that
+    /// the window's close the next leader stamped its header,
+    /// `child_timestamp_ms - window_opened_unix_ms - return_budget`, which is
+    /// this node's own block time minus its return budget. A proposal that
     /// [overran](ProposalBudget::overran) its return budget must not be
     /// recorded at all. `window_opened_unix_ms` must come from the same clock
     /// that block header timestamps use.
@@ -607,8 +604,21 @@ impl Estimator {
     /// since consensus does not run `verify()` for a node's own proposal.
     /// Feed it only children that passed every check before the vote, so
     /// that an invalid child, a rejected boundary outcome or a failed build
-    /// never becomes a sample. The `NetworkTracker` docs list the children
-    /// that take no sample.
+    /// never becomes a sample.
+    ///
+    /// No sample is taken for a child that:
+    ///
+    /// - builds on a parent this node did not propose, or on a pending
+    ///   proposal it no longer holds: one returned more than 10 s earlier,
+    ///   or pushed out by 8 newer ones, which happens when a view was
+    ///   nullified or the next leader built on an ancestor;
+    /// - is not in the view right after its parent's, since the chain then
+    ///   waited on a leader timeout rather than on propagation;
+    /// - is the first block of an epoch, which names the re-proposed boundary
+    ///   block by its view in the new epoch and so matches no pending
+    ///   proposal;
+    /// - was stamped more than 5 s after the parent's window closed, which is
+    ///   clock skew or a stall unrelated to propagation.
     ///
     /// The sample moves the target of the network reservation; the
     /// reservation itself only follows it with the next own proposal, see
@@ -646,9 +656,12 @@ impl Estimator {
     /// This is the one call that changes the estimator without an
     /// observation, so it must be made exactly once per own proposal: every
     /// call moves the reservation from the one the previous own proposal
-    /// used toward what the window currently implies, by at most 100 ms, see
-    /// the `NetworkTracker` docs. A proposal whose build fails afterwards has
-    /// still taken its step. [`Self::snapshot`] reports the reservation
+    /// used toward its target by at most 100 ms. The target is the
+    /// configured percentile of recent network samples, under fast rise at
+    /// least the smaller of the two newest, clamped between the configured
+    /// network budget and its maximum, and the network budget itself while
+    /// no sample is in the window. A proposal whose build fails afterwards
+    /// has still taken its step. [`Self::snapshot`] reports the reservation
     /// without moving it.
     ///
     /// Network samples older than the window's ttl no longer count, also
@@ -663,11 +676,6 @@ impl Estimator {
     }
 
     // --- reads ------------------------------------------------------------
-
-    /// The current validation latency estimate, if any block was validated.
-    pub fn validation_latency_estimate(&self) -> Option<ValidationLatencyEstimate> {
-        self.state().validation.estimate()
-    }
 
     /// The build time multiplier in use at `now`.
     ///
@@ -732,9 +740,9 @@ impl Estimator {
 ///
 /// Configurations are validated before they reach this, see
 /// [`EstimatorConfig::validate`], so the mapping of values outside that
-/// range only guards embedders that pass an unvalidated multiplier: a
-/// non-finite one maps to 1.0, and the result is clamped to 1.0 to 1.7.
-pub fn scaled_build_time_multiplier(multiplier: f64) -> u64 {
+/// range only guards an unvalidated multiplier: a non-finite one maps to
+/// 1.0, and the result is clamped to 1.0 to 1.7.
+fn scaled_build_time_multiplier(multiplier: f64) -> u64 {
     if !multiplier.is_finite() {
         return MIN_BUILD_TIME_MULTIPLIER_SCALED;
     }
@@ -957,6 +965,11 @@ pub struct EstimatorSnapshot {
 }
 
 /// Bounded, age-limited window of samples with percentile reads.
+///
+/// Samples are kept in insertion order. The `Instant` each one is pushed with
+/// only ages it: callers on different threads read the clock before they
+/// take the estimator's lock, so a sample may be pushed with a slightly older
+/// `Instant` than the one before it, and expiry does not rely on the order.
 #[derive(Clone, Debug)]
 struct SampleWindow<T> {
     samples: VecDeque<(Instant, T)>,
@@ -973,8 +986,10 @@ impl<T: Copy + Ord> SampleWindow<T> {
         }
     }
 
+    /// Adds a sample, evicting the oldest one at capacity. Owners prune
+    /// first: expiring a build window also resets its estimate, see
+    /// [`BoundedFollower::prune`].
     fn push(&mut self, now: Instant, value: T) {
-        self.prune(now);
         if self.samples.len() == self.capacity {
             self.samples.pop_front();
         }
@@ -982,13 +997,8 @@ impl<T: Copy + Ord> SampleWindow<T> {
     }
 
     fn prune(&mut self, now: Instant) {
-        while let Some((at, _)) = self.samples.front() {
-            if now.saturating_duration_since(*at) > self.ttl {
-                self.samples.pop_front();
-            } else {
-                break;
-            }
-        }
+        self.samples
+            .retain(|(at, _)| now.saturating_duration_since(*at) <= self.ttl);
     }
 
     fn len(&self) -> usize {
@@ -1100,7 +1110,6 @@ impl BuildTimeTracker {
 
     /// Records a finished build. Returns what it taught, if anything.
     fn observe(&mut self, now: Instant, build: FinishedBuild) -> Option<BuildSample> {
-        self.prune(now);
         if !build.idle.is_zero() {
             let finish = build.total_work.saturating_sub(build.work_at_tx_cutoff);
             self.dry_finish.observe(now, nanos(finish));
@@ -1718,6 +1727,20 @@ mod tests {
     }
 
     #[test]
+    fn sample_window_expiry_does_not_depend_on_insertion_order() {
+        // Two hooks read the clock before they take the lock, so the later
+        // reading may be pushed first. The older sample still expires on
+        // time although a younger one sits in front of it.
+        let now = Instant::now();
+        let mut window = SampleWindow::new(4, ms(100));
+        window.push(now + ms(10), 10u64);
+        window.push(now, 20);
+        window.prune(now + ms(105));
+        assert_eq!(window.len(), 1);
+        assert_eq!(window.percentile(100), Some(10));
+    }
+
+    #[test]
     fn scaled_build_time_multiplier_stays_within_the_learned_range() {
         assert_eq!(scaled_build_time_multiplier(1.15), 1_150_000);
         // Configurations are validated before they get here; an embedder's
@@ -1753,8 +1776,9 @@ mod tests {
         window.push(now + ms(40), 50);
         assert_eq!(window.len(), 4);
         assert_eq!(window.percentile(25), Some(20));
-        // Age evicts everything older than the ttl: only the sample pushed
-        // at +40 ms survives a push at +135 ms.
+        // Age evicts everything older than the ttl: at +135 ms only the
+        // sample pushed at +40 ms is left.
+        window.prune(now + ms(135));
         window.push(now + ms(135), 60);
         assert_eq!(window.len(), 2);
         assert_eq!(window.percentile(50), Some(50));
