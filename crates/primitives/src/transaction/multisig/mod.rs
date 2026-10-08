@@ -327,6 +327,17 @@ impl MultisigSignature {
         self.config.commitment_validated()
     }
 
+    /// Writes the type-prefixed signature encoding.
+    pub(crate) fn encode_typed(&self, out: &mut dyn alloy_rlp::BufMut) {
+        out.put_u8(SIGNATURE_TYPE_MULTISIG);
+        alloy_rlp::Encodable::encode(self, out);
+    }
+
+    /// Length of [`Self::encode_typed`].
+    pub(crate) fn typed_length(&self) -> usize {
+        1 + alloy_rlp::Encodable::length(self)
+    }
+
     /// Returns a heuristic for the in-memory size of the signature.
     pub fn size(&self) -> usize {
         size_of::<Self>()
@@ -597,10 +608,7 @@ impl MultisigWeightAccumulator {
         if weight == 0 {
             return Err(MultisigQuorumError::SignerNotOwner);
         }
-        self.signer_count = self
-            .signer_count
-            .checked_add(1)
-            .ok_or(MultisigQuorumError::TooManySignatures)?;
+        self.signer_count += 1;
         if self.signer_count > MAX_MULTISIG_SIGNATURES {
             return Err(MultisigQuorumError::TooManySignatures);
         }

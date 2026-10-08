@@ -54,9 +54,7 @@ use tempo_precompiles::{
 };
 use tempo_primitives::{
     TempoAddressExt,
-    transaction::{
-        SignatureType, TEMPO_EXPIRING_NONCE_KEY, calc_gas_balance_spending, validate_calls,
-    },
+    transaction::{TEMPO_EXPIRING_NONCE_KEY, calc_gas_balance_spending, validate_calls},
 };
 
 use crate::{
@@ -1546,12 +1544,7 @@ where
 
                 // Convert signature type to precompile SignatureType enum
                 // Use the key_type field which specifies the type of key being authorized
-                let signature_type = match key_auth.key_type {
-                    SignatureType::Secp256k1 => PrecompileSignatureType::Secp256k1,
-                    SignatureType::P256 => PrecompileSignatureType::P256,
-                    SignatureType::WebAuthn => PrecompileSignatureType::WebAuthn,
-                    SignatureType::Multisig => PrecompileSignatureType::Multisig,
-                };
+                let signature_type: PrecompileSignatureType = key_auth.key_type.into();
 
                 // Handle expiry: None means never expires (store as u64::MAX)
                 let expiry = key_auth.expiry.map_or(u64::MAX, |expiry| expiry.get());
