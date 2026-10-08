@@ -22,7 +22,7 @@ pub const MAX_TOKEN_LEN: usize = 8192;
 /// Maximum receipt wire size, before deserialization.
 pub const MAX_PROOF_LEN: usize = 8 * 1024 * 1024;
 /// Maximum credential lifetime in seconds.
-pub const MAX_WINDOW: u64 = 600;
+pub const MAX_WINDOW: u64 = 3600;
 
 /// Private sign-in witness. Never include this in diagnostics or logs.
 #[derive(Clone, Deserialize, Serialize)]
@@ -237,6 +237,10 @@ mod tests {
     use ml_dsa::{Keypair as _, SigningKey};
 
     fn witness() -> Witness {
+        witness_with_window(540)
+    }
+
+    fn witness_with_window(window: u64) -> Witness {
         let key = SigningKey::<MlDsa65>::from_seed(&[7; 32].into());
         let mut witness = Witness {
             access_key_id: [3; 20],
@@ -244,11 +248,11 @@ mod tests {
             public_key: key.verifying_key().encode().to_vec(),
             salt: [5; 32],
             token: String::new(),
-            valid_until: 1540,
+            valid_until: 1000 + window,
         };
         let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"ML-DSA-65","kid":"test","typ":"JWT"}"#);
         let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&serde_json::json!({
-            "aud": "oidc-demo", "exp": 1600, "iat": 1000, "iss": "https://issuer.example",
+            "aud": "oidc-demo", "exp": 1000 + window, "iat": 1000, "iss": "https://issuer.example",
             "nonce": nonce(&witness.access_key_id, witness.valid_until, &witness.blinding), "sub": "user"
         })).unwrap());
         let message = format!("{header}.{payload}");
@@ -296,5 +300,11 @@ mod tests {
             verify_signature(&public_key[..PUBLIC_KEY_LEN - 1], &signature, b"digest").is_err()
         );
         assert!(verify_signature(&public_key, &signature[..SIGNATURE_LEN - 1], b"digest").is_err());
+    }
+
+    #[test]
+    fn token_cannot_extend_the_credential_window() {
+        assert!(evaluate(&witness_with_window(MAX_WINDOW)).is_ok());
+        assert!(evaluate(&witness_with_window(MAX_WINDOW + 1)).is_err());
     }
 }
