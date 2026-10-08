@@ -213,7 +213,7 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
     let injected =
         ProviderFactory::<reth_ethereum::node::api::NodeTypesWithDBAdapter<TempoNode, _>>::new(
             db.clone(),
-            db.chain.clone(),
+            db.context.chain.clone(),
             factory.static_file_provider(),
             factory.rocksdb_provider(),
             reth_ethereum::tasks::Runtime::test(),
@@ -256,7 +256,7 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
             assert!(Arc::ptr_eq(&handle.join().unwrap(), tx.snapshot().unwrap()));
         }
     });
-    assert_eq!(db.cache.published.read().unwrap().computations, 1);
+    assert_eq!(db.context.cache.published.read().unwrap().computations, 1);
     let lazy = db.tx().unwrap();
     // Advancing persistence must not change the already-open transaction's derived snapshot.
     injected.set_storage_settings_cache(factory.cached_storage_settings());
@@ -276,7 +276,7 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
             .unwrap()
             .unwrap(),
     );
-    assert_eq!(db.cache.published.read().unwrap().computations, 1);
+    assert_eq!(db.context.cache.published.read().unwrap().computations, 1);
     let preparation = db
         .prepare_persistence(vec![Arc::new(block.clone())])
         .unwrap()
@@ -300,7 +300,7 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
             next.snapshot().unwrap().clone()
         });
         started.recv().unwrap();
-        assert_eq!(db.cache.published.read().unwrap().computations, 1);
+        assert_eq!(db.context.cache.published.read().unwrap().computations, 1);
         preparation.finish();
         assert_eq!(reader.join().unwrap().number, 2);
     });
@@ -311,8 +311,11 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
     let next = db.tx().unwrap();
     assert!(!next.slots().unwrap().contains_key(&hashed_slot));
     assert_eq!(next.slots().unwrap().len(), 5); // new nonce, bucket metadata and cursor
-    assert_eq!(db.cache.published.read().unwrap().computations, 2);
-    assert_eq!(db.cache.published.read().unwrap().replayed_blocks, 2);
+    assert_eq!(db.context.cache.published.read().unwrap().computations, 2);
+    assert_eq!(
+        db.context.cache.published.read().unwrap().replayed_blocks,
+        2
+    );
     let old_lease = Arc::downgrade(tx.snapshot().unwrap());
     drop(hashed);
     drop(state);
@@ -324,7 +327,7 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
         lazy.slots().unwrap().get(&hashed_slot),
         Some(&U256::from(1200))
     );
-    assert_eq!(db.cache.published.read().unwrap().computations, 2);
+    assert_eq!(db.context.cache.published.read().unwrap().computations, 2);
     // Fresh transactions reuse the newly advanced state.
     assert!(Arc::ptr_eq(
         db.tx().unwrap().snapshot().unwrap(),
@@ -350,8 +353,11 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
     rw.commit().unwrap();
     let fork = db.tx().unwrap();
     assert_eq!(fork.slots().unwrap().len(), 1);
-    assert_eq!(db.cache.published.read().unwrap().computations, 3);
-    assert_eq!(db.cache.published.read().unwrap().replayed_blocks, 4);
+    assert_eq!(db.context.cache.published.read().unwrap().computations, 3);
+    assert_eq!(
+        db.context.cache.published.read().unwrap().replayed_blocks,
+        4
+    );
 }
 
 #[test]
@@ -389,7 +395,7 @@ fn storage_cursor_matches_native_traversal() {
         .seek_by_key_subkey(B256::with_last_byte(1), B256::with_last_byte(2))
         .unwrap();
     assert_eq!(
-        wrapper.cache.published.read().unwrap().computations,
+        wrapper.context.cache.published.read().unwrap().computations,
         0,
         "unrelated storage must not reconstruct nonces"
     );
@@ -585,9 +591,11 @@ fn merged_cursor_matches_native_storage() {
         tx.cursor_dup_read().unwrap(),
         Some(Arc::new(View {
             source: Source::new(&tx, 0).unwrap(),
-            chain: DEV.clone(),
-            cache: Arc::default(),
-            static_files: factory.static_file_provider().directory().to_owned(),
+            context: Arc::new(ReplayContext {
+                chain: DEV.clone(),
+                cache: Arc::default(),
+                static_files: factory.static_file_provider().directory().to_owned(),
+            }),
             snapshot: OnceLock::from(Ok(snapshot)),
         })),
     );
@@ -681,7 +689,7 @@ fn concurrent_cold_readers_compute_once() {
             .map(|handle| handle.join().unwrap())
             .collect::<Vec<_>>()
     });
-    assert_eq!(db.cache.published.read().unwrap().computations, 1);
+    assert_eq!(db.context.cache.published.read().unwrap().computations, 1);
     for state in &states {
         assert!(Arc::ptr_eq(state, &states[0]));
     }
@@ -696,8 +704,8 @@ fn published_reads_share_access_and_do_not_wait_for_computation() {
         factory.static_file_provider().directory().to_owned(),
     );
     let first = db.tx().unwrap().snapshot().unwrap().clone();
-    let guard = db.cache.computation.lock().unwrap();
-    let reader = db.cache.published.read().unwrap();
+    let guard = db.context.cache.computation.lock().unwrap();
+    let reader = db.context.cache.published.read().unwrap();
     let (send, receive) = std::sync::mpsc::channel();
     std::thread::scope(|scope| {
         scope.spawn(|| {

@@ -39,6 +39,11 @@ use tempo_precompiles::EXPIRING_NONCE_PRECOMPILE_ADDRESS;
 #[derive(Clone, Debug)]
 pub struct TempoDatabase<D = DatabaseEnv> {
     inner: D,
+    context: Arc<ReplayContext>,
+}
+
+#[derive(Debug)]
+struct ReplayContext {
     chain: Arc<TempoChainSpec>,
     static_files: PathBuf,
     cache: Arc<Cache>,
@@ -47,12 +52,13 @@ pub struct TempoDatabase<D = DatabaseEnv> {
 impl<D: Database> TempoDatabase<D> {
     /// Wrap a database using its chain specification and static-file directory.
     pub fn new(inner: D, chain: Arc<TempoChainSpec>, static_files: PathBuf) -> Self {
-        let cache = Arc::new(Cache::default());
         Self {
             inner,
-            chain,
-            static_files,
-            cache,
+            context: Arc::new(ReplayContext {
+                chain,
+                static_files,
+                cache: Arc::default(),
+            }),
         }
     }
 }
@@ -66,9 +72,9 @@ impl<D: Database> Database for TempoDatabase<D> {
     fn tx(&self) -> Result<Self::TX, DatabaseError> {
         // Pin the database and an available snapshot atomically with publication.
         // Otherwise a lazy reader can lose its old state before its first nonce read.
-        let published = self.cache.published.read().unwrap();
+        let published = self.context.cache.published.read().unwrap();
         let inner = self.inner.tx()?;
-        let genesis = self.chain.genesis_header().number();
+        let genesis = self.context.chain.genesis_header().number();
         let source = Source::new(&inner, genesis)?;
         let snapshot = published
             .find(&source, genesis)?
@@ -78,10 +84,8 @@ impl<D: Database> Database for TempoDatabase<D> {
             inner,
             view: Arc::new(View {
                 source,
-                chain: self.chain.clone(),
-                static_files: self.static_files.clone(),
+                context: self.context.clone(),
                 snapshot,
-                cache: self.cache.clone(),
             }),
         })
     }
@@ -101,12 +105,16 @@ impl<D: Database> Database for TempoDatabase<D> {
         let blocks = (Box::new(blocks) as Box<dyn std::any::Any>)
             .downcast::<Vec<Arc<reth_primitives_traits::RecoveredBlock<tempo_primitives::Block>>>>()
             .map_err(|_| DatabaseError::Other("non-Tempo persistence blocks".into()))?;
-        let source = Source::new(&self.inner.tx()?, self.chain.genesis_header().number())?;
-        self.cache
+        let source = Source::new(
+            &self.inner.tx()?,
+            self.context.chain.genesis_header().number(),
+        )?;
+        self.context
+            .cache
             .prepare_blocks(
                 source,
-                self.chain.clone(),
-                self.static_files.clone(),
+                self.context.chain.clone(),
+                self.context.static_files.clone(),
                 *blocks,
             )
             .map(|task| Some(Box::new(task) as Box<dyn reth_db_api::database::PersistenceTask>))
@@ -147,17 +155,18 @@ pub struct ReplayTx<TX> {
 #[derive(Debug)]
 pub(super) struct View {
     source: Source,
-    chain: Arc<TempoChainSpec>,
-    static_files: PathBuf,
-    cache: Arc<Cache>,
+    context: Arc<ReplayContext>,
     snapshot: OnceLock<Result<Arc<Snapshot>, DatabaseError>>,
 }
 impl View {
     fn snapshot(&self) -> Result<&Arc<Snapshot>, DatabaseError> {
         self.snapshot
             .get_or_init(|| {
-                self.cache
-                    .get(&self.source, &self.chain, &self.static_files)
+                self.context.cache.get(
+                    &self.source,
+                    &self.context.chain,
+                    &self.context.static_files,
+                )
             })
             .as_ref()
             .map_err(Clone::clone)
