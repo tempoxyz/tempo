@@ -15,6 +15,27 @@ use tempo_primitives::{
 };
 
 #[test]
+fn derived_storage_values_support_native_and_raw_tables() {
+    for value in [U256::ZERO, U256::ONE, U256::MAX] {
+        let entry = StorageEntry {
+            key: B256::repeat_byte(0x42),
+            value,
+        };
+        assert_eq!(
+            storage_value::<tables::HashedStorages>(entry).unwrap(),
+            entry
+        );
+        for raw in [
+            storage_value::<tables::RawTable<tables::HashedStorages>>(entry).unwrap(),
+            storage_value::<tables::RawDupSort<tables::HashedStorages>>(entry).unwrap(),
+        ] {
+            assert_eq!(raw.value().unwrap(), entry);
+            assert_eq!(raw.raw_value(), entry.compress().as_slice());
+        }
+    }
+}
+
+#[test]
 fn reads_derive_from_blocks_and_writes_remain_native() {
     let chain = DEV.clone();
     let factory = create_test_provider_factory_with_node_types::<TempoNode>(chain.clone());

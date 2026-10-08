@@ -1,10 +1,10 @@
-use super::{View, replay::Slots};
+use super::{View, replay::Slots, storage_value};
 use alloy_primitives::{B256, U256};
 use reth_db_api::{
     DatabaseError,
     common::{PairResult, ValueOnlyResult},
     cursor::{DbCursorRO, DbDupCursorRO, DupWalker, RangeWalker, ReverseWalker, Walker},
-    table::{Compress, Decode, Decompress, DupSort, Encode, Table},
+    table::{Decode, DupSort, Encode, Table},
 };
 use reth_primitives_traits::StorageEntry;
 use std::{
@@ -65,7 +65,7 @@ impl<T: Table, C> Cursor<T, C> {
         row.map(|(key, value)| {
             Ok((
                 T::Key::decode(Self::address().as_slice())?,
-                T::Value::decompress(StorageEntry { key, value }.compress().as_ref())?,
+                storage_value::<T>(StorageEntry { key, value })?,
             ))
         })
         .transpose()

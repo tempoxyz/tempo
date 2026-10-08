@@ -228,7 +228,7 @@ where
             .expiring_nonce
             .bucket_count(db, block_number)?;
 
-        let seen_slot = nonce_manager.seen[expiring_nonce.hash].slot();
+        let seen_slot = nonce_manager.seen.at_owned(&expiring_nonce.hash).slot();
         let seen_expiry = db
             .storage(EXPIRING_NONCE_PRECOMPILE_ADDRESS, seen_slot)
             .map_err(BlockExecutionError::other)?;
@@ -239,7 +239,11 @@ where
         let index: u64 = count
             .try_into()
             .map_err(|_| StorageActionReplayError::ActionConflict)?;
-        let bucket_slot = nonce_manager.bucket[block_number][index].slot();
+        let bucket_slot = nonce_manager
+            .bucket
+            .at_owned(&block_number)
+            .at_owned(&index)
+            .slot();
         let original = db
             .storage(EXPIRING_NONCE_PRECOMPILE_ADDRESS, bucket_slot)
             .map_err(BlockExecutionError::other)?;
@@ -263,11 +267,14 @@ where
         );
         self.replay_state.record_sstore(
             EXPIRING_NONCE_PRECOMPILE_ADDRESS,
-            nonce_manager.bucket_count[block_number].slot(),
+            nonce_manager.bucket_count.at_owned(&block_number).slot(),
             count,
             next,
         );
-        let max_expiry_slot = nonce_manager.bucket_max_expiry[block_number].slot();
+        let max_expiry_slot = nonce_manager
+            .bucket_max_expiry
+            .at_owned(&block_number)
+            .slot();
         let max_expiry = db
             .storage(EXPIRING_NONCE_PRECOMPILE_ADDRESS, max_expiry_slot)
             .map_err(BlockExecutionError::other)?;
@@ -573,7 +580,10 @@ impl ExpiringNonceReplayState {
                 let count = db
                     .storage(
                         EXPIRING_NONCE_PRECOMPILE_ADDRESS,
-                        ExpiringNonceManager::new().bucket_count[block_number].slot(),
+                        ExpiringNonceManager::new()
+                            .bucket_count
+                            .at_owned(&block_number)
+                            .slot(),
                     )
                     .map_err(BlockExecutionError::other)?;
                 self.bucket_count = Some(count);

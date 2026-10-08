@@ -79,9 +79,17 @@ impl ExpiringNonceManager {
         let mut done = false;
         while *block < current_block {
             let mut max_expiry = self.bucket_max_expiry.at_owned(block);
-            if max_expiry.read()? > now {
+            let expiry = max_expiry.read()?;
+            if expiry > now {
                 done = true;
                 break;
+            }
+            // Every inserted nonce has a positive expiry, retained until its entire
+            // bucket is pruned. Zero therefore means there is no bucket to load.
+            if expiry == 0 {
+                *block += 1;
+                cursor.index = 0;
+                continue;
             }
             let mut bucket_count = self.bucket_count.at_owned(block);
             let count = bucket_count.read()?;
@@ -353,6 +361,23 @@ mod tests {
             Ok(())
         })
     }
+    #[test]
+    fn pruning_empty_blocks_reads_only_expiry_metadata() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let blocks = 10_000;
+        storage.set_timestamp(U256::from(1000));
+        storage.set_block_number(blocks);
+        StorageCtx::enter(&mut storage, || ExpiringNonceManager::new().prune(1))?;
+        // One expiry read per empty block, plus the packed pruning cursor's reads/writes.
+        assert_eq!(storage.counter_sload(), blocks + 4);
+        StorageCtx::enter(&mut storage, || {
+            let manager = ExpiringNonceManager::new();
+            assert_eq!(manager.oldest_unpruned_block.read()?, blocks);
+            assert_eq!(manager.oldest_unpruned_index.read()?, 0);
+            Ok(())
+        })
+    }
+
     #[test]
     fn expiring_nonce_has_no_external_prune_method() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);

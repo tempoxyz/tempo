@@ -167,6 +167,20 @@ impl View {
 static HASHED_ADDRESS: LazyLock<B256> =
     LazyLock::new(|| keccak256(EXPIRING_NONCE_PRECOMPILE_ADDRESS));
 
+/// Avoid encoding an in-memory entry just to decode it as the same type.
+fn storage_value<T: Table>(entry: StorageEntry) -> Result<T::Value, DatabaseError> {
+    let mut value = None::<T::Value>;
+    if let Some(storage) =
+        (&mut value as &mut dyn std::any::Any).downcast_mut::<Option<StorageEntry>>()
+    {
+        *storage = Some(entry);
+        Ok(value.expect("initialized StorageEntry"))
+    } else {
+        // Raw table wrappers share the table name but require encoded bytes.
+        T::Value::decompress(entry.compress().as_ref()).map_err(Into::into)
+    }
+}
+
 fn address_key<T: Table>() -> Option<B256> {
     match T::NAME {
         tables::HashedStorages::NAME => Some(*HASHED_ADDRESS),
@@ -197,10 +211,7 @@ impl<TX: DbTx + 'static> DbTx for ReplayTx<TX> {
                 .slots()?
                 .iter()
                 .next()
-                .map(|(&key, &value)| {
-                    T::Value::decompress(StorageEntry { key, value }.compress().as_ref())
-                        .map_err(Into::into)
-                })
+                .map(|(&key, &value)| storage_value::<T>(StorageEntry { key, value }))
                 .transpose();
         }
         self.inner.get::<T>(key)
@@ -233,10 +244,7 @@ impl<TX: DbTx + 'static> DbTx for ReplayTx<TX> {
             return self
                 .slots()?
                 .get(&key)
-                .map(|&value| {
-                    T::Value::decompress(StorageEntry { key, value }.compress().as_ref())
-                        .map_err(Into::into)
-                })
+                .map(|&value| storage_value::<T>(StorageEntry { key, value }))
                 .transpose();
         }
         self.inner.get_by_key_subkey::<T>(key, subkey)
