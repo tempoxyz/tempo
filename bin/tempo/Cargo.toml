@@ -163,6 +163,7 @@ pyroscope = ["dep:pyroscope", "dep:pyroscope_pprofrs"]
 js-tracer = [
 	"reth-node-builder/js-tracer",
 	"reth-ethereum/js-tracer",
+	"reth-rpc-eth-api/js-tracer",
 	"tempo-node/js-tracer",
 ]
 
