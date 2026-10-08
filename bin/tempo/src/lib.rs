@@ -307,7 +307,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         tempo_node::ExecutedState,
         TempoArgs,
         Option<tempo_node::gossip::TransportHandle>,
-        tempo_node::Estimator,
+        tempo_node::ProposalBudgetEstimator,
     )>();
     let (consensus_dead_tx, mut consensus_dead_rx) = oneshot::channel();
 
@@ -549,9 +549,10 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             url => Some(url.to_string()),
         };
 
+        args.consensus.validate()?;
         // One proposal budget estimator is shared by the payload builder and
         // the consensus engine so both pace against the same learned window.
-        let estimator = tempo_node::Estimator::new(
+        let estimator = tempo_node::ProposalBudgetEstimator::new(
             args.consensus
                 .estimator_config(args.node_args.builder_build_time_multiplier),
         );

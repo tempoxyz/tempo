@@ -87,7 +87,7 @@ pub struct Builder<TBlocker, TPeerManager> {
     /// Owns the target block time, the learned network reservation and the
     /// validation and build feedback. The payload builder must be given the
     /// same handle so both sides pace the same proposal window.
-    pub estimator: tempo_payload_types::Estimator,
+    pub estimator: tempo_payload_types::ProposalBudgetEstimator,
     pub fcu_heartbeat_interval: Duration,
 
     pub feed_state: crate::feed::FeedStateHandle,

@@ -66,8 +66,8 @@ use tempo_evm::{
     TempoTxResult, evm::TempoEvm,
 };
 use tempo_payload_types::{
-    Estimator, EstimatorConfig, FinishedBuild, TempoBuiltPayload, TempoPayloadAttributes,
-    ValidationLatencyWorkload,
+    FinishedBuild, ProposalBudgetEstimator, ProposalBudgetEstimatorConfig, TempoBuiltPayload,
+    TempoPayloadAttributes, ValidationLatencyWorkload,
 };
 use tempo_precompiles::{storage::StorageActions, validator_config_v2::ValidatorConfigV2};
 use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
@@ -141,7 +141,7 @@ pub struct TempoPayloadBuilder<Provider> {
     /// from it and reports the finished build's replayable work back. The
     /// network reservation is not read here: the proposal window reaches the
     /// builder as `payload_build_budget` in the attributes.
-    estimator: Estimator,
+    estimator: ProposalBudgetEstimator,
 }
 
 /// Runtime settings for the Tempo payload builder.
@@ -163,9 +163,10 @@ pub struct TempoPayloadBuilderConfig {
     pub enable_parallel: bool,
     /// Initial estimate of total replayable build work divided by work at tx cutoff.
     ///
-    /// `1.0` means no finish-work headroom beyond observed work so far. Values
-    /// above `1.0` stop transaction execution earlier to leave room for
-    /// `builder_finish`, which validators also repeat.
+    /// Must be finite and between `1.0` and `1.7`. `1.0` means no finish-work
+    /// headroom beyond observed work so far. Increasing the value stops
+    /// transaction execution earlier to leave room for `builder_finish`,
+    /// which validators also repeat.
     ///
     /// This only seeds the builder-local estimator that
     /// [`TempoPayloadBuilder::new`] creates; it has no effect once
@@ -194,6 +195,12 @@ impl TempoPayloadBuilderConfig {
 }
 
 impl<Provider> TempoPayloadBuilder<Provider> {
+    /// Creates a payload builder with a local proposal budget estimator.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `config.build_time_multiplier` is not finite or outside
+    /// `1.0..=1.7`.
     pub fn new(
         pool: TempoTransactionPool<Provider>,
         provider: Provider,
@@ -209,9 +216,10 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             evm_config,
             metrics: TempoPayloadBuilderMetrics::default(),
             cache_metrics: CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
-            estimator: Estimator::new(
-                EstimatorConfig::default().with_build_time_multiplier(config.build_time_multiplier),
-            ),
+            estimator: ProposalBudgetEstimator::new(ProposalBudgetEstimatorConfig {
+                build_time_multiplier: config.build_time_multiplier,
+                ..ProposalBudgetEstimatorConfig::default()
+            }),
         }
     }
 
@@ -219,14 +227,9 @@ impl<Provider> TempoPayloadBuilder<Provider> {
     ///
     /// Without this the builder learns from its own builds only and never
     /// sees the validation times consensus observes.
-    pub fn with_estimator(mut self, estimator: Estimator) -> Self {
+    pub fn with_estimator(mut self, estimator: ProposalBudgetEstimator) -> Self {
         self.estimator = estimator;
         self
-    }
-
-    /// The proposal budget estimator this builder reports to.
-    pub fn estimator(&self) -> &Estimator {
-        &self.estimator
     }
 }
 

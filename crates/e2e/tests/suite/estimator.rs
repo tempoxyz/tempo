@@ -1,7 +1,7 @@
 //! The consensus application feeds the proposal budget estimator.
 //!
 //! The harness pins every node's network reservation
-//! (`EstimatorConfig::fixed`), but completed own proposals are still pushed
+//! (`ProposalBudgetEstimatorConfig::fixed`), but completed own proposals are still pushed
 //! into the window as network samples, so counting them shows that the hooks
 //! ran: `build()` records each own proposal's return and completes the sample
 //! when the node builds the child itself, and `verify()` completes it when
