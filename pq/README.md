@@ -31,7 +31,8 @@ cargo run --bin tempo -- node --dev --chain ./pq-genesis.json --http --http.port
 ```
 
 The export command prints the image ID and writes a development genesis with it in
-`config.zkVerifyingKeys["128"]`. Use that same ELF/image in the prover and demo.
+`config.zkVerifyingKeys["128"]`. It also enables `accountMigrationTime=0` and reserves
+the development recovery factory required by TIP1113. Use that same ELF/image in the prover and demo.
 The chain activates ML-DSA and scheme `0x80` only when this image is configured and
 T14 is active. Never reuse an existing chain database with a different genesis.
 
