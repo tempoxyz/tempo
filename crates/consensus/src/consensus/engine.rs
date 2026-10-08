@@ -28,7 +28,7 @@ use tracing::info;
 use crate::{
     VerificationMode, alias, config,
     consensus::application,
-    dkg_manager,
+    dkg,
     epoch_manager::{self, SchemeProvider},
     network::limit_channel,
     peer_manager, storage,
@@ -256,11 +256,11 @@ where
             })
             .unzip();
 
-        let (dkg_manager, dkg_manager_mailbox) = dkg_manager::init(
+        let (dkg_manager, dkg_manager_mailbox) = dkg::init(
             context.child("dkg_manager"),
-            dkg_manager::Config {
+            dkg::Config {
                 epoch_strategy: epoch_strategy.clone(),
-                execution_node: dkg_manager::TempoExecutionLayer {
+                execution_node: dkg::TempoExecutionLayer {
                     node: execution_node.clone(),
                 },
                 initial_share: self.share.clone(),
@@ -369,8 +369,8 @@ where
     broadcast: buffered::Engine<TContext, PublicKey, Block, peer_manager::Mailbox>,
     broadcast_mailbox: buffered::Mailbox<PublicKey, Block>,
 
-    dkg_manager: dkg_manager::Actor<TContext>,
-    dkg_manager_mailbox: dkg_manager::Mailbox,
+    dkg_manager: dkg::Actor<TContext>,
+    dkg_manager_mailbox: dkg::Mailbox,
 
     /// Responsible for keeping the consensus layer state and execution layer
     /// states in sync. Drives the chain state of the execution layer by sending
