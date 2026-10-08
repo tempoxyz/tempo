@@ -14,6 +14,7 @@ use revm::interpreter::gas::{STANDARD_TOKEN_COST, get_tokens_in_calldata_istanbu
 use tempo_contracts::precompiles::SignatureVerifierError;
 use tempo_precompiles_macros::contract;
 use tempo_primitives::{
+    TempoBlockEnv,
     account::decode_config_commitment,
     transaction::{
         MultisigSignature,
@@ -96,8 +97,7 @@ impl SignatureVerifier {
         }
         let factory = self
             .storage
-            .with_block_env(|block| block.multisig_recovery_factory)
-            .filter(|factory| !factory.is_zero());
+            .with_block_env(TempoBlockEnv::configured_multisig_recovery_factory);
         if signature
             .validate_account_commitment(commitment, factory)
             .is_err()
@@ -174,16 +174,19 @@ pub fn multisig_verification_gas(signature: &MultisigSignature) -> u64 {
         + signature
             .signatures()
             .iter()
-            .map(|approval| {
-                let webauthn_data_gas = match approval {
-                    PrimitiveSignature::WebAuthn(sig) => {
-                        get_tokens_in_calldata_istanbul(&sig.webauthn_data) * STANDARD_TOKEN_COST
-                    }
-                    _ => 0,
-                };
-                approval.base_verification_gas() + webauthn_data_gas
-            })
+            .map(primitive_verification_gas)
             .sum::<u64>()
+}
+
+/// Full primitive verification cost, including WebAuthn data calldata.
+pub fn primitive_verification_gas(signature: &PrimitiveSignature) -> u64 {
+    let webauthn_data_gas = match signature {
+        PrimitiveSignature::WebAuthn(sig) => {
+            get_tokens_in_calldata_istanbul(&sig.webauthn_data) * STANDARD_TOKEN_COST
+        }
+        _ => 0,
+    };
+    signature.base_verification_gas() + webauthn_data_gas
 }
 
 #[cfg(test)]

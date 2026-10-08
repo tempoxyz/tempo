@@ -8,14 +8,18 @@ use crate::{
     storage::{ConfigCommitmentWriteGas, Handler},
 };
 use alloy::primitives::{Address, B256};
+use revm::interpreter::gas::{KECCAK256, KECCAK256WORD};
 pub use tempo_chainspec::is_valid_native_account as valid_account;
 use tempo_contracts::precompiles::{
     INativeMultisig, NATIVE_MULTISIG_ADDRESS, NativeMultisigError, NativeMultisigEvent,
 };
 use tempo_precompiles_macros::contract;
-use tempo_primitives::transaction::{
-    MultisigConfig, MultisigConfigError, MultisigOwner,
-    multisig::MULTISIG_ACCOUNT_CREATE2_PREIMAGE_LEN,
+use tempo_primitives::{
+    TempoBlockEnv,
+    transaction::{
+        MultisigConfig, MultisigConfigError, MultisigOwner,
+        multisig::MULTISIG_ACCOUNT_CREATE2_PREIMAGE_LEN,
+    },
 };
 
 #[contract(addr = NATIVE_MULTISIG_ADDRESS)]
@@ -39,7 +43,7 @@ impl NativeMultisig {
         owners: Vec<INativeMultisig::MultisigOwner>,
     ) -> Result<Address> {
         let factory = self.factory()?;
-        let config = config(salt, 0, threshold, owners);
+        let config = config(salt, 0, threshold, &owners);
         config.validate().map_err(map_config_error)?;
         self.storage
             .deduct_gas(initial_account_proof_gas(&config))?;
@@ -74,7 +78,7 @@ impl NativeMultisig {
             current.salt,
             current.version,
             current.threshold,
-            current.owners,
+            &current.owners,
         );
         current
             .validate_for_account(sender)
@@ -90,7 +94,7 @@ impl NativeMultisig {
             .version
             .checked_add(1)
             .ok_or_else(NativeMultisigError::invalid_config)?;
-        let next = config(current.salt, version, threshold, owners.clone());
+        let next = config(current.salt, version, threshold, &owners);
         next.validate_for_account(sender)
             .map_err(map_config_error)?;
         let hash = self
@@ -108,14 +112,13 @@ impl NativeMultisig {
 
     fn factory(&self) -> Result<Address> {
         self.storage
-            .with_block_env(|block| block.multisig_recovery_factory)
-            .filter(|factory| !factory.is_zero())
+            .with_block_env(TempoBlockEnv::configured_multisig_recovery_factory)
             .ok_or_else(|| NativeMultisigError::invalid_config().into())
     }
 }
 
 pub const fn keccak_cost(bytes: usize) -> u64 {
-    30 + 6 * bytes.div_ceil(32) as u64
+    KECCAK256 + KECCAK256WORD * bytes.div_ceil(32) as u64
 }
 
 /// Hashing cost of deriving an unregistered account from its initial configuration.
@@ -128,14 +131,14 @@ fn config(
     salt: B256,
     version: u64,
     threshold: u8,
-    owners: Vec<INativeMultisig::MultisigOwner>,
+    owners: &[INativeMultisig::MultisigOwner],
 ) -> MultisigConfig {
     MultisigConfig {
         salt,
         version,
         threshold,
         owners: owners
-            .into_iter()
+            .iter()
             .map(|owner| MultisigOwner {
                 owner: owner.owner,
                 weight: owner.weight,

@@ -35,6 +35,9 @@ use tempo_primitives::TempoBlockEnv;
 
 use crate::error::{Result, TempoPrecompileError};
 
+/// TIP-1108 charge for the first config-commitment write to an account.
+pub const CONFIG_COMMITMENT_REGISTRATION_GAS: u64 = 20_000;
+
 /// Determines where TIP-1108's field-write charge is paid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigCommitmentWriteGas {
@@ -49,7 +52,7 @@ impl ConfigCommitmentWriteGas {
         match self {
             Self::Intrinsic if previous.is_zero() => Ok(0),
             Self::Intrinsic => Err(TempoPrecompileError::InvalidConfigCommitmentWrite),
-            Self::Precompile if previous.is_zero() => Ok(20_000),
+            Self::Precompile if previous.is_zero() => Ok(CONFIG_COMMITMENT_REGISTRATION_GAS),
             Self::Precompile => Ok(5_000),
         }
     }

@@ -1,7 +1,8 @@
-use revm::interpreter::gas::{
-    COLD_SLOAD_COST, STANDARD_TOKEN_COST, get_tokens_in_calldata_istanbul,
+use revm::interpreter::gas::COLD_SLOAD_COST;
+use tempo_precompiles::{
+    ECRECOVER_GAS,
+    signature_verifier::{multisig_verification_gas, primitive_verification_gas},
 };
-use tempo_precompiles::{ECRECOVER_GAS, signature_verifier::multisig_verification_gas};
 use tempo_primitives::transaction::{AccountSignature, PrimitiveSignature, TempoSignature};
 
 /// Additional gas for keychain signatures (key validation overhead: cold SLOAD + processing).
@@ -15,13 +16,7 @@ const KEYCHAIN_VALIDATION_GAS: u64 = COLD_SLOAD_COST + 900;
 /// - WebAuthn: 5000 gas + calldata cost for `webauthn_data`
 #[inline]
 pub(crate) fn primitive_signature_verification_gas(signature: &PrimitiveSignature) -> u64 {
-    let webauthn_data_gas = match signature {
-        PrimitiveSignature::WebAuthn(sig) => {
-            get_tokens_in_calldata_istanbul(&sig.webauthn_data) * STANDARD_TOKEN_COST
-        }
-        _ => 0,
-    };
-    signature.base_verification_gas() - ECRECOVER_GAS + webauthn_data_gas
+    primitive_verification_gas(signature) - ECRECOVER_GAS
 }
 
 /// Verification cost beyond the baseline signature charge, without keychain processing.

@@ -61,6 +61,12 @@ impl TempoBlockEnv {
     pub fn epoch(&self, height: u64) -> u64 {
         height / self.epoch_length
     }
+
+    /// Returns the configured recovery factory, treating the zero address as unset.
+    pub fn configured_multisig_recovery_factory(&self) -> Option<Address> {
+        self.multisig_recovery_factory
+            .filter(|factory| !factory.is_zero())
+    }
 }
 
 impl Block for TempoBlockEnv {
