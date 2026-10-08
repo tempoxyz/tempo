@@ -41,6 +41,7 @@ members = [
   "crates/revm",
   "crates/state-bloat",
   "xtask",
+  "vendor/reth-chain-state",
 ]
 
 # Resolver 3 is available with edition 2024
@@ -353,7 +354,10 @@ bitflags = "2.11.1"
 vergen = { version = "10.0.1", features = ["build", "cargo", "emit_and_set"] }
 vergen-git2 = "10.0.1"
 
-# [patch."https://github.com/paradigmxyz/reth"]
+[patch."https://github.com/paradigmxyz/reth"]
+reth-chain-state = { path = "vendor/reth-chain-state" }
+
+# Optional local overrides for other Reth crates:
 # reth-basic-payload-builder = { path = "../reth/crates/payload/basic" }
 # reth-chain-state = { path = "../reth/crates/chain-state" }
 # reth-chainspec = { path = "../reth/crates/chainspec" }

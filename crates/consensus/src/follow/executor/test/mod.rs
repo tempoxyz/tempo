@@ -711,3 +711,130 @@ fn startup_uses_execution_finalized_tip_without_immediate_forkchoice() {
         assert_eq!(forkchoice.finalized_block_hash, finalized_hash);
     });
 }
+
+#[test_traced]
+fn syncing_future_tip_does_not_suppress_connected_block_forkchoice() {
+    deterministic::Runner::default().start(|context| async move {
+        let provider = StubExecutionProvider::default();
+        let initial_hash = digest(100).0;
+        provider.set_finalized(100, initial_hash, round(10));
+        let future_hash = digest(200).0;
+        provider.set_forkchoice_syncing(future_hash, true);
+        let (actor, mut mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
+                fcu_heartbeat_interval: Duration::from_secs(60),
+            },
+        );
+        actor.start();
+        let _ = mailbox.report(Update::Tip(
+            round(100),
+            Height::new(200),
+            Digest(future_hash),
+        ));
+        wait_until(&context, || provider.forkchoices().len() == 1).await;
+
+        let mut parent_hash = initial_hash;
+        let mut expected_heads = vec![future_hash];
+        for (height, view) in [(101, 11), (102, 12)] {
+            let block = make_block_at_round(height, parent_hash, round(view));
+            parent_hash = block.digest().0;
+            expected_heads.push(parent_hash);
+            let (ack, waiter) = Exact::handle();
+            let _ = mailbox.report(Update::Block(block.into(), ack));
+            waiter
+                .await
+                .expect("connected payload must be acknowledged");
+        }
+        context.sleep(Duration::from_millis(1)).await;
+        assert_eq!(provider.payload_count(), 2);
+        assert_eq!(
+            provider
+                .forkchoices()
+                .iter()
+                .map(|fcu| fcu.head_block_hash)
+                .collect::<Vec<_>>(),
+            expected_heads,
+            "a syncing future target must not suppress connected-block FCUs or busy-loop",
+        );
+    });
+}
+
+#[test_traced]
+fn syncing_tip_retries_on_heartbeat_without_busy_loop() {
+    deterministic::Runner::default().start(|context| async move {
+        let provider = StubExecutionProvider::default();
+        let future_hash = digest(200).0;
+        provider.set_forkchoice_syncing(future_hash, true);
+        let (actor, mut mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
+                fcu_heartbeat_interval: HEARTBEAT_INTERVAL,
+            },
+        );
+        actor.start();
+        let _ = mailbox.report(Update::Tip(
+            round(100),
+            Height::new(200),
+            Digest(future_hash),
+        ));
+        wait_until(&context, || provider.forkchoices().len() == 1).await;
+        context.sleep(Duration::from_millis(1)).await;
+        assert_eq!(provider.forkchoices().len(), 1);
+        wait_until(&context, || provider.forkchoices().len() == 2).await;
+        assert!(
+            provider
+                .forkchoices()
+                .iter()
+                .all(|fcu| fcu.head_block_hash == future_hash)
+        );
+    });
+}
+
+#[test_traced]
+fn syncing_block_forkchoice_is_retained_for_heartbeat_retry() {
+    deterministic::Runner::default().start(|context| async move {
+        let provider = StubExecutionProvider::default();
+        provider.set_finalized(100, digest(100).0, round(10));
+        let block = make_block_at_round(101, digest(100).0, round(11));
+        let block_hash = block.digest().0;
+        provider.set_forkchoice_syncing(block_hash, true);
+        let (actor, mut mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
+                fcu_heartbeat_interval: HEARTBEAT_INTERVAL,
+            },
+        );
+        actor.start();
+        let (ack, waiter) = Exact::handle();
+        let _ = mailbox.report(Update::Block(block.into(), ack));
+        waiter
+            .await
+            .expect("syncing payload submission must be acknowledged");
+        context.sleep(Duration::from_millis(1)).await;
+        assert_eq!(provider.forkchoices().len(), 1);
+        provider.set_forkchoice_syncing(block_hash, false);
+        wait_until(&context, || provider.forkchoices().len() == 2).await;
+        assert!(
+            provider
+                .forkchoices()
+                .iter()
+                .all(|fcu| fcu.head_block_hash == block_hash)
+        );
+    });
+}

@@ -9136,7 +9136,6 @@ dependencies = [
 [[package]]
 name = "reth-chain-state"
 version = "2.7.0"
-source = "git+https://github.com/paradigmxyz/reth?rev=42fa3c5#42fa3c569ad182914d26db410919d6a10c7b4859"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -9153,6 +9152,7 @@ dependencies = [
  "reth-execution-types",
  "reth-metrics",
  "reth-primitives-traits",
+ "reth-testing-utils",
  "reth-trie",
  "reth-trie-sparse",
  "revm",

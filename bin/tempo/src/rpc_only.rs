@@ -3,7 +3,7 @@
 //! This command is reusable by wrappers and development tools. It runs the binary's ordinary EVM
 //! and RPC implementation without consensus, networking, or a transaction pool.
 
-use std::{net::SocketAddr, path::PathBuf, time::Duration};
+use std::{net::SocketAddr, path::PathBuf};
 
 use alloy_primitives::U256;
 use clap::Parser;
@@ -14,7 +14,7 @@ use reth_ethereum::{
     network::api::noop::NoopNetwork,
     pool::noop::NoopTransactionPool,
     provider::{
-        BlockHashReader as _, StaticFileProviderFactory as _,
+        BlockHashReader as _,
         providers::{BlockchainProvider, RocksDBProvider},
     },
     rpc::{
@@ -42,7 +42,7 @@ use tempo_node::{
         TempoToken, TempoTokenApiServer, execution_info::install_execution_info,
     },
 };
-use tracing::{info, warn};
+use tracing::info;
 
 /// Private, read-only RPC server bound to loopback.
 #[derive(Debug, Parser)]
@@ -99,7 +99,10 @@ impl RpcOnly {
         } = self
             .env
             .init::<TempoNode>(AccessRights::RO, runtime.clone())?;
-        let static_files = provider_factory.static_file_provider();
+        // Environment::init(RO) does not enable the factory's on-demand synchronization.
+        // Catch up RocksDB secondary state and static-file indexes after opening each MDBX
+        // read transaction, so concurrent persistence cannot leave historical RPCs stale.
+        let provider_factory = provider_factory.with_read_only_sync(false);
 
         let provider = BlockchainProvider::new(provider_factory)?;
         ensure!(
@@ -207,30 +210,18 @@ impl RpcOnly {
         .start(&modules)
         .await?;
         info!(endpoint = ?handle.http_url(), "Serving private read-only RPC");
-        let refresh = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(5));
-            loop {
-                interval.tick().await;
-                if let Err(err) = static_files.initialize_index() {
-                    warn!(%err, "Failed refreshing read-only static-file index");
-                }
-            }
-        });
         Ok(RpcOnlyHandle {
             server: Some(handle),
-            refresh,
         })
     }
 }
 
 struct RpcOnlyHandle {
     server: Option<RpcServerHandle>,
-    refresh: tokio::task::JoinHandle<()>,
 }
 
 impl Drop for RpcOnlyHandle {
     fn drop(&mut self) {
-        self.refresh.abort();
         if let Some(server) = self.server.take() {
             let _ = server.stop();
         }

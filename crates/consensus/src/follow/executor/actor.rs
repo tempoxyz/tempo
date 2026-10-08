@@ -16,7 +16,7 @@
 
 use std::{collections::VecDeque, time::Duration};
 
-use alloy_rpc_types_engine::ForkchoiceState;
+use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatus};
 use commonware_consensus::{
     Heightable as _,
     marshal::Update,
@@ -45,7 +45,10 @@ pub(crate) struct Actor<TContext, P, E, M = crate::alias::marshal::Mailbox> {
     epoch_strategy: FixedEpocher,
     floor: Height,
 
+    // Only VALID forkchoice responses advance the applied execution watermark.
     last_fcu: Target,
+    // Remember attempted targets separately so SYNCING retries wait for a heartbeat or new tip.
+    last_attempted_fcu: Target,
     latest_tip: Target,
 
     block_queue: VecDeque<(Block, Exact)>,
@@ -94,6 +97,7 @@ where
             execution_engine,
 
             last_fcu: tip,
+            last_attempted_fcu: tip,
             latest_tip: tip,
             block_queue: VecDeque::new(),
             floor_candidate: None,
@@ -122,10 +126,15 @@ where
                 result = &mut self.execution_task => {
                     self.execution_task = OptionFuture::none();
                     match result {
-                        ExecutionTaskResult::Completed(last_fcu) => {
+                        ExecutionTaskResult::Completed { last_fcu, attempted } => {
                             self.last_fcu = last_fcu;
-                            if last_fcu.supersedes(&self.latest_tip) {
-                                self.latest_tip = last_fcu;
+                            if let Some(attempted) = attempted {
+                                if attempted.supersedes(&self.last_attempted_fcu) {
+                                    self.last_attempted_fcu = attempted;
+                                }
+                                if attempted.supersedes(&self.latest_tip) {
+                                    self.latest_tip = attempted;
+                                }
                             }
 
                             // Emits an event on error.
@@ -166,7 +175,8 @@ where
     }
 
     fn should_send_forkchoice(&self) -> bool {
-        self.latest_tip.digest != self.last_fcu.digest && self.latest_tip.supersedes(&self.last_fcu)
+        self.latest_tip.digest != self.last_fcu.digest
+            && self.latest_tip.supersedes(&self.last_attempted_fcu)
     }
 
     fn update_fcu_heartbeat_timer(&mut self) {
@@ -255,7 +265,10 @@ enum ExecutionRequest {
 }
 
 enum ExecutionTaskResult {
-    Completed(Target),
+    Completed {
+        last_fcu: Target,
+        attempted: Option<Target>,
+    },
     Fatal(Report),
 }
 
@@ -268,7 +281,10 @@ async fn execute_request<TContext: Pacer, E: ExecutionEngine + 'static>(
     match request {
         ExecutionRequest::Forkchoice(tip) => {
             match submit_forkchoice_update(&context, &execution_engine, &tip).await {
-                Ok(()) => ExecutionTaskResult::Completed(tip),
+                Ok(status) => ExecutionTaskResult::Completed {
+                    last_fcu: if status.is_valid() { tip } else { last_fcu },
+                    attempted: Some(tip),
+                },
                 Err(error) => ExecutionTaskResult::Fatal(error),
             }
         }
@@ -279,19 +295,25 @@ async fn execute_request<TContext: Pacer, E: ExecutionEngine + 'static>(
                 return ExecutionTaskResult::Fatal(error);
             }
 
-            let last_fcu = if tip.supersedes(&last_fcu) {
-                if let Err(error) =
-                    submit_forkchoice_update(&context, &execution_engine, &tip).await
-                {
-                    return ExecutionTaskResult::Fatal(error);
+            let mut applied = last_fcu;
+            let mut attempted = None;
+            if tip.supersedes(&last_fcu) {
+                match submit_forkchoice_update(&context, &execution_engine, &tip).await {
+                    Ok(status) => {
+                        attempted = Some(tip);
+                        if status.is_valid() {
+                            applied = tip;
+                        }
+                    }
+                    Err(error) => return ExecutionTaskResult::Fatal(error),
                 }
-                tip
-            } else {
-                last_fcu
-            };
+            }
 
             ack.acknowledge();
-            ExecutionTaskResult::Completed(last_fcu)
+            ExecutionTaskResult::Completed {
+                last_fcu: applied,
+                attempted,
+            }
         }
     }
 }
@@ -327,7 +349,7 @@ async fn submit_forkchoice_update<TContext: Pacer, E: ExecutionEngine + ?Sized>(
     context: &TContext,
     execution_engine: &E,
     tip: &Target,
-) -> eyre::Result<()> {
+) -> eyre::Result<PayloadStatus> {
     let hash = tip.digest.0;
     let forkchoice = ForkchoiceState {
         head_block_hash: hash,
@@ -344,9 +366,9 @@ async fn submit_forkchoice_update<TContext: Pacer, E: ExecutionEngine + ?Sized>(
     debug!(payload_status = %response.payload_status, "execution layer reported FCU status");
 
     ensure!(
-        !response.is_invalid(),
+        response.payload_status.is_valid() || response.payload_status.is_syncing(),
         Report::msg(response.payload_status).wrap_err("execution layer rejected fcu")
     );
 
-    Ok(())
+    Ok(response.payload_status)
 }

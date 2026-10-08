@@ -1,7 +1,7 @@
 //! Test doubles and deterministic block construction for the follower executor.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     future::Future,
     sync::{
         Arc,
@@ -70,6 +70,7 @@ struct StubExecutionProviderInner {
     forkchoices: Mutex<Vec<ForkchoiceState>>,
     reject_payloads: AtomicBool,
     reject_forkchoices: AtomicBool,
+    syncing_forkchoices: Mutex<HashSet<B256>>,
     forkchoice_gate: Mutex<Option<oneshot::Receiver<()>>>,
 }
 
@@ -100,6 +101,15 @@ impl StubExecutionProvider {
 
     pub(super) fn reject_forkchoices(&self) {
         self.inner.reject_forkchoices.store(true, Ordering::SeqCst);
+    }
+
+    pub(super) fn set_forkchoice_syncing(&self, hash: B256, syncing: bool) {
+        let mut hashes = self.inner.syncing_forkchoices.lock();
+        if syncing {
+            hashes.insert(hash);
+        } else {
+            hashes.remove(&hash);
+        }
     }
 
     pub(super) fn pause_next_forkchoice(&self) -> oneshot::Sender<()> {
@@ -178,6 +188,11 @@ impl ExecutionEngine for StubExecutionProvider {
         self.inner.forkchoices.lock().push(state);
         let gate = self.inner.forkchoice_gate.lock().take();
         let rejected = self.inner.reject_forkchoices.load(Ordering::SeqCst);
+        let syncing = self
+            .inner
+            .syncing_forkchoices
+            .lock()
+            .contains(&state.head_block_hash);
         async move {
             if let Some(gate) = gate {
                 let _ = gate.await;
@@ -186,6 +201,8 @@ impl ExecutionEngine for StubExecutionProvider {
                 PayloadStatusEnum::Invalid {
                     validation_error: "rejected by test engine".into(),
                 }
+            } else if syncing {
+                PayloadStatusEnum::Syncing
             } else {
                 PayloadStatusEnum::Valid
             };
