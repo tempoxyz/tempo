@@ -1,11 +1,13 @@
 //! Journaled native account configuration updates.
 pub mod dispatch;
 #[cfg(test)]
+mod migration_tests;
+#[cfg(test)]
 mod tests;
 
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::{ConfigCommitmentWriteGas, Handler},
+    storage::{ConfigCommitmentWriteGas, Handler, StorageCtx},
 };
 use alloy::primitives::{Address, B256};
 pub use tempo_chainspec::is_valid_native_account as valid_account;
@@ -13,15 +15,20 @@ use tempo_contracts::precompiles::{
     INativeMultisig, NATIVE_MULTISIG_ADDRESS, NativeMultisigError, NativeMultisigEvent,
 };
 use tempo_precompiles_macros::contract;
-use tempo_primitives::transaction::{
-    MultisigConfig, MultisigConfigError, MultisigOwner,
-    multisig::MULTISIG_ACCOUNT_CREATE2_PREIMAGE_LEN,
+use tempo_primitives::{
+    account::decode_config_commitment,
+    transaction::{
+        MultisigConfig, MultisigConfigError, MultisigOwner,
+        multisig::MULTISIG_ACCOUNT_CREATE2_PREIMAGE_LEN,
+    },
 };
 
 #[contract(addr = NATIVE_MULTISIG_ADDRESS)]
 pub struct NativeMultisig {
     tx_origin: Address,
     directly_authorized_account: Address,
+    migration_root: Address,
+    migration_only_call: bool,
 }
 
 impl NativeMultisig {
@@ -112,6 +119,76 @@ impl NativeMultisig {
             .filter(|factory| !factory.is_zero())
             .ok_or_else(|| NativeMultisigError::invalid_config().into())
     }
+
+    /// Handler-only transaction context; all fields are reset before each execution.
+    pub fn set_migration_authority(&mut self, root: Address, only_call: bool) -> Result<()> {
+        self.migration_root.t_write(root)?;
+        self.migration_only_call.t_write(only_call)
+    }
+
+    /// Journaled in-place migration authorized only by a direct primitive root.
+    pub fn upgrade_account(
+        &mut self,
+        sender: Address,
+        threshold: u8,
+        owners: Vec<INativeMultisig::MultisigOwner>,
+    ) -> Result<B256> {
+        if !self.storage.spec().is_t14()
+            || !self
+                .storage
+                .with_block_env(|block| block.account_migration_enabled)
+        {
+            return Err(NativeMultisigError::migration_not_active().into());
+        }
+        if sender.is_zero()
+            || self.tx_origin.t_read()? != sender
+            || self.migration_root.t_read()? != sender
+        {
+            return Err(NativeMultisigError::primitive_root_required().into());
+        }
+        if !self.migration_only_call.t_read()? {
+            return Err(NativeMultisigError::upgrade_must_be_only_call().into());
+        }
+        if !valid_account(sender, self.storage.spec()) {
+            return Err(NativeMultisigError::invalid_account().into());
+        }
+        let (has_code, commitment) = self.storage.with_account_info(sender, |info| {
+            Ok((
+                !info.is_empty_code_hash(),
+                decode_config_commitment(&info.extension, true)
+                    .map_err(|error| TempoPrecompileError::Fatal(error.to_string()))?,
+            ))
+        })?;
+        if has_code {
+            return Err(NativeMultisigError::account_has_code().into());
+        }
+        if !commitment.is_zero() {
+            return Err(NativeMultisigError::account_already_configurable().into());
+        }
+        self.factory()?;
+        let salt = self
+            .storage
+            .keccak256(&[b"tempo:multisig:upgrade".as_slice(), sender.as_slice()].concat())?;
+        // Positive versions permit the old root as an explicitly weighted owner and
+        // validate against the stored leaf rather than re-deriving the account address.
+        let next = config(salt, 1, threshold, owners.clone());
+        next.validate_for_account(sender)
+            .map_err(|_| NativeMultisigError::invalid_config())?;
+        let hash = self.storage.keccak256(
+            &next
+                .commitment_preimage()
+                .map_err(|_| NativeMultisigError::invalid_config())?,
+        )?;
+        if hash.is_zero() {
+            return Err(NativeMultisigError::invalid_config().into());
+        }
+        self.storage
+            .set_config_commitment(sender, hash, ConfigCommitmentWriteGas::Migration)?;
+        self.emit_event(NativeMultisigEvent::account_upgraded(
+            sender, hash, salt, threshold, owners,
+        ))?;
+        Ok(hash)
+    }
 }
 
 pub const fn keccak_cost(bytes: usize) -> u64 {
@@ -161,4 +238,22 @@ fn map_config_error(error: MultisigConfigError) -> TempoPrecompileError {
         MultisigConfigError::DerivedAccountZero => NativeMultisigError::invalid_account(),
     }
     .into()
+}
+
+/// Protocol authority check, not a pure signature recovery check.
+pub fn root_key_retired(account: Address) -> Result<bool> {
+    if !StorageCtx.spec().is_t14()
+        || !StorageCtx.with_block_env(|block| block.account_migration_enabled)
+    {
+        return Ok(false);
+    }
+    Ok(!StorageCtx.config_commitment(account)?.is_zero())
+}
+
+/// Rejects independently acting primitive keys after migration activation.
+pub fn ensure_root_key_active(account: Address) -> Result<()> {
+    if root_key_retired(account)? {
+        return Err(NativeMultisigError::root_key_retired(account).into());
+    }
+    Ok(())
 }

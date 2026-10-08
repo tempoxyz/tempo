@@ -447,12 +447,25 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             return Err(TempoPrecompileError::InvalidConfigCommitmentWrite);
         }
         // The authorization read already charged account access (or was intrinsic).
-        let previous = {
+        let (previous, empty) = {
             let account = self.internals.load_account_mut(address)?;
-            decode_config_commitment(&account.data.account().info.extension, true)
-                .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?
+            let info = &account.data.account().info;
+            (
+                decode_config_commitment(&info.extension, true)
+                    .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?,
+                info.is_empty(),
+            )
         };
         self.deduct_gas(gas.cost(previous)?)?;
+        if gas == ConfigCommitmentWriteGas::Migration && empty {
+            // Protocol-nonce creation has already made this account nonempty. A
+            // 2D nonce slot or expiring nonce does not pay for this new account leaf.
+            self.deduct_gas(
+                self.gas_params
+                    .get(revm::context_interface::cfg::GasId::new_account_cost()),
+            )?;
+            self.deduct_state_gas(self.gas_params.new_account_state_gas())?;
+        }
         self.internals
             .load_account_mut(address)?
             .set_extension(encode_config_commitment(commitment).into());

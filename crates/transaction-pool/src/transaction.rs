@@ -276,12 +276,29 @@ impl TempoPooledTransaction {
         })
     }
 
-    /// Whether a changed commitment can stale a native signer in this transaction.
+    /// Whether changed commitments can stale a native witness or retire primitive authority.
     pub(crate) fn needs_configurable_revalidation(
         &self,
         changed_commitments: &AddressSet,
         reorg: bool,
+        retire_primitives: bool,
     ) -> bool {
+        // Reorgs can reactivate a primitive key as well as replace a native configuration.
+        if retire_primitives
+            && (reorg
+                || changed_commitments.contains(self.sender_ref())
+                || self
+                    .fee_payer()
+                    .is_ok_and(|payer| changed_commitments.contains(&payer))
+                || self
+                    .keychain_subject()
+                    .is_some_and(|subject| changed_commitments.contains(&subject.key_id))
+                || self
+                    .key_authorization_signer_subject()
+                    .is_some_and(|subject| changed_commitments.contains(&subject.key_id)))
+        {
+            return true;
+        }
         let Some(tx) = self.inner().as_aa() else {
             return false;
         };
@@ -1221,17 +1238,18 @@ mod tests {
             TxBuilder::aa(signer).build(),
             TempoSignature::Multisig(multisig.clone()),
         );
-        assert!(direct.needs_configurable_revalidation(&changed(signer), false));
-        assert!(!direct.needs_configurable_revalidation(&changed(parent), false));
-        assert!(direct.needs_configurable_revalidation(&none, true));
+        assert!(direct.needs_configurable_revalidation(&changed(signer), false, true));
+        assert!(!direct.needs_configurable_revalidation(&changed(parent), false, true));
+        assert!(direct.needs_configurable_revalidation(&none, true, true));
 
         let delegated = pooled(
             TxBuilder::aa(parent).build(),
             TempoSignature::Keychain(KeychainSignature::new(parent, multisig.clone())),
         );
-        assert!(delegated.needs_configurable_revalidation(&changed(signer), false));
-        assert!(!delegated.needs_configurable_revalidation(&changed(parent), false));
-        assert!(delegated.needs_configurable_revalidation(&none, true));
+        assert!(delegated.needs_configurable_revalidation(&changed(signer), false, true));
+        assert!(delegated.needs_configurable_revalidation(&changed(parent), false, true));
+        assert!(!delegated.needs_configurable_revalidation(&changed(parent), false, false));
+        assert!(delegated.needs_configurable_revalidation(&none, true, true));
 
         let primitive_keychain = pooled(
             TxBuilder::aa(parent).build(),
@@ -1240,19 +1258,20 @@ mod tests {
                 PrimitiveSignature::Secp256k1(Signature::test_signature()),
             )),
         );
-        assert!(!primitive_keychain.needs_configurable_revalidation(&changed(parent), false));
-        assert!(!primitive_keychain.needs_configurable_revalidation(&none, true));
+        assert!(primitive_keychain.needs_configurable_revalidation(&changed(parent), false, true));
+        assert!(primitive_keychain.needs_configurable_revalidation(&none, true, true));
+        assert!(!primitive_keychain.needs_configurable_revalidation(&none, true, false));
 
         let grant = KeyAuthorization::unrestricted(1, SignatureType::Multisig, recipient)
             .into_signed(multisig);
         let inline = TxBuilder::aa(parent).key_authorization(grant).build();
-        assert!(inline.needs_configurable_revalidation(&changed(signer), false));
-        assert!(!inline.needs_configurable_revalidation(&changed(recipient), false));
-        assert!(inline.needs_configurable_revalidation(&none, true));
+        assert!(inline.needs_configurable_revalidation(&changed(signer), false, true));
+        assert!(!inline.needs_configurable_revalidation(&changed(recipient), false, true));
+        assert!(inline.needs_configurable_revalidation(&none, true, true));
         assert!(
-            !TxBuilder::aa(parent)
+            TxBuilder::aa(parent)
                 .build()
-                .needs_configurable_revalidation(&none, true)
+                .needs_configurable_revalidation(&none, true, true)
         );
     }
 

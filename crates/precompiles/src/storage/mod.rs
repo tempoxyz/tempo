@@ -42,6 +42,8 @@ pub enum ConfigCommitmentWriteGas {
     Intrinsic,
     /// Charge the explicit precompile operation here.
     Precompile,
+    /// Migration creates a leaf if needed, separately from nonce-key storage.
+    Migration,
 }
 
 impl ConfigCommitmentWriteGas {
@@ -51,6 +53,8 @@ impl ConfigCommitmentWriteGas {
             Self::Intrinsic => Err(TempoPrecompileError::InvalidConfigCommitmentWrite),
             Self::Precompile if previous.is_zero() => Ok(20_000),
             Self::Precompile => Ok(5_000),
+            Self::Migration if previous.is_zero() => Ok(20_000),
+            Self::Migration => Err(TempoPrecompileError::InvalidConfigCommitmentWrite),
         }
     }
 }

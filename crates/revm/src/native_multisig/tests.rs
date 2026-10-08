@@ -302,6 +302,11 @@ fn native_error_classification_preserves_state_dependent_errors() {
             true,
         ),
         (NativeMultisigError::InvalidSignatureContext, true),
+        (NativeMultisigError::InvalidMigrationEnvelope, true),
+        (
+            NativeMultisigError::RootKeyRetired { account: address },
+            false,
+        ),
         (
             NativeMultisigError::OwnerSignatureRecoveryFailed { approval_index: 0 },
             true,
@@ -323,6 +328,90 @@ fn native_error_classification_preserves_state_dependent_errors() {
         let error = TempoInvalidTransaction::NativeMultisig(error);
         assert_eq!(error.is_bad_transaction(), bad, "{error}");
     }
+}
+
+#[test]
+fn migration_gate_retires_direct_primitive_roots_and_separate_fee_payers() {
+    let (native_tx, mut block) = fixture();
+    let gas = tempo_gas_params(TempoHardfork::T14);
+    for enabled in [false, true] {
+        for fee_role in [false, true] {
+            let mut journal: Journal<CacheDB<EmptyDB>> =
+                Journal::new(CacheDB::new(EmptyDB::default()));
+            let retired = native_tx.caller;
+            let mut tx = native_tx.clone();
+            tx.tempo_tx_env.as_mut().unwrap().signature = TempoSignature::Primitive(
+                PrimitiveSignature::Secp256k1(Signature::test_signature()),
+            );
+            if fee_role {
+                tx.caller = Address::repeat_byte(0x44);
+                tx.fee_payer = Some(Some(retired));
+            }
+            journal.load_account(retired).unwrap();
+            journal.state.get_mut(&retired).unwrap().info.extension =
+                encode_config_commitment(B256::repeat_byte(0x55)).into();
+            block.account_migration_enabled = enabled;
+            let result = validate_state(&mut journal, &tx, &block, TempoHardfork::T14, &gas);
+            if enabled {
+                assert_eq!(
+                    result,
+                    Err(EVMError::Transaction(
+                        TempoInvalidTransaction::NativeMultisig(
+                            NativeMultisigError::RootKeyRetired { account: retired }
+                        )
+                    ))
+                );
+            } else {
+                assert!(result.is_ok());
+            }
+        }
+    }
+}
+
+#[test]
+fn migration_gate_does_not_retire_explicit_owner_approvals() {
+    let (tx, mut block) = fixture();
+    block.account_migration_enabled = true;
+    let gas = tempo_gas_params(TempoHardfork::T14);
+    let owner = tx
+        .tempo_tx_env
+        .as_ref()
+        .unwrap()
+        .signature
+        .as_multisig()
+        .unwrap()
+        .config()
+        .owners[0]
+        .owner;
+    let mut journal: Journal<CacheDB<EmptyDB>> = Journal::new(CacheDB::new(EmptyDB::default()));
+    journal.load_account(owner).unwrap();
+    journal.state.get_mut(&owner).unwrap().info.extension =
+        encode_config_commitment(B256::repeat_byte(0x55)).into();
+    validate_state(&mut journal, &tx, &block, TempoHardfork::T14, &gas).unwrap();
+    verify(&tx).unwrap();
+}
+
+#[test]
+fn migration_envelope_rejects_all_sidecar_forms_before_execution() {
+    let (mut tx, mut block) = fixture();
+    block.account_migration_enabled = true;
+    let call = tempo_primitives::transaction::Call {
+        to: tempo_contracts::precompiles::NATIVE_MULTISIG_ADDRESS.into(),
+        value: alloy_primitives::U256::ZERO,
+        input: tempo_contracts::precompiles::INativeMultisig::upgradeAccountCall {
+            threshold: 1,
+            owners: vec![],
+        }
+        .abi_encode()
+        .into(),
+    };
+    tx.tempo_tx_env.as_mut().unwrap().aa_calls = vec![call.clone(), call];
+    assert_eq!(
+        validate_migration_envelope(&tx, &block, TempoHardfork::T14),
+        Err(NativeMultisigError::InvalidMigrationEnvelope.into())
+    );
+    block.account_migration_enabled = false;
+    validate_migration_envelope(&tx, &block, TempoHardfork::T14).unwrap();
 }
 
 #[test_case::test_case(8; "invalid_final_signature")]

@@ -848,6 +848,7 @@ impl TIP20ChannelReserve {
         if signer != self.expected_signer(descriptor) {
             return Err(TIP20ChannelReserveError::invalid_signature().into());
         }
+        crate::native_multisig::ensure_root_key_active(signer)?;
         Ok(())
     }
 
@@ -937,6 +938,56 @@ mod tests {
                 domain_separator_inner(chain_id)
             );
         }
+    }
+
+    #[test]
+    fn migration_rejects_presigned_vouchers_for_payer_and_explicit_signer() -> eyre::Result<()> {
+        let signer = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x55)).unwrap();
+        for explicit in [false, true] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14)
+                .with_account_migration_enabled(true);
+            StorageCtx::enter(&mut storage, || {
+                let reserve = TIP20ChannelReserve::new();
+                let descriptor = descriptor(
+                    if explicit {
+                        Address::repeat_byte(0x33)
+                    } else {
+                        signer.address()
+                    },
+                    Address::repeat_byte(0x44),
+                    Address::ZERO,
+                    Address::repeat_byte(0x66),
+                    B256::ZERO,
+                    if explicit {
+                        signer.address()
+                    } else {
+                        Address::ZERO
+                    },
+                    B256::repeat_byte(0x77),
+                );
+                let channel_id = B256::repeat_byte(0x88);
+                let cumulative = U96::from(1);
+                let digest = reserve.get_voucher_digest_inner(channel_id, cumulative)?;
+                let signature = Bytes::from(signer.sign_hash_sync(&digest)?.as_bytes());
+                reserve.validate_voucher(&descriptor, channel_id, cumulative, &signature)?;
+                StorageCtx.set_config_commitment(
+                    signer.address(),
+                    B256::repeat_byte(0x55),
+                    crate::storage::ConfigCommitmentWriteGas::Intrinsic,
+                )?;
+                assert_eq!(
+                    reserve.validate_voucher(&descriptor, channel_id, cumulative, &signature),
+                    Err(
+                        tempo_contracts::precompiles::NativeMultisigError::root_key_retired(
+                            signer.address()
+                        )
+                        .into()
+                    )
+                );
+                Ok::<_, eyre::Error>(())
+            })?;
+        }
+        Ok(())
     }
 
     fn descriptor(

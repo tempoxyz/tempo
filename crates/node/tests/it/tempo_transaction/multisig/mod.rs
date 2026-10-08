@@ -1,4 +1,5 @@
 //! Signed native-account transactions through a local node's public RPC.
+mod migration;
 mod tests;
 
 use super::{
@@ -297,11 +298,18 @@ async fn reject(
 }
 
 async fn environment() -> eyre::Result<Localnet> {
+    environment_with_migration(false).await
+}
+
+async fn environment_with_migration(enabled: bool) -> eyre::Result<Localnet> {
     reth_tracing::init_test_tracing();
     let mut genesis: serde_json::Value =
         serde_json::from_str(&make_genesis_at(TempoHardfork::T14))?;
     genesis["config"]["t14Time"] = serde_json::json!(0);
     genesis["config"]["multisigRecoveryFactory"] = serde_json::json!(FACTORY);
+    if enabled {
+        genesis["config"]["accountMigrationTime"] = serde_json::json!(0);
+    }
     // Store the getter's result in slot zero, proving visibility inside the first signed call.
     let mut code = vec![0x63];
     code.extend_from_slice(&INativeMultisig::getConfigCommitmentCall::SELECTOR);

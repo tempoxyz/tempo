@@ -31,6 +31,7 @@ use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     error::Result,
     has_duplicates_metered,
+    native_multisig::{ensure_root_key_active, root_key_retired},
     storage::{Handler, Mapping, Set},
     tip20_factory::TIP20Factory,
 };
@@ -1158,11 +1159,11 @@ impl AccountKeychain {
 
     /// Internal predicate for root/admin status.
     ///
-    /// Warning: this returns true when `key_id == account`, because the root key
-    /// is implicitly admin even when it is not stored as an access key.
+    /// The root is implicitly admin without a grant until root retirement activates.
+    /// Retired primitive keys are not admins; explicitly granted native keys remain eligible.
     pub fn is_admin_key(&self, account: Address, key_id: Address) -> Result<bool> {
         if key_id == account {
-            return Ok(true);
+            return Ok(!root_key_retired(key_id)?);
         }
 
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
@@ -1171,6 +1172,10 @@ impl AccountKeychain {
             Err(err) if err.is_system_error() => return Err(err),
             Err(_) => return Ok(false),
         };
+
+        if key.signature_type != StoredSignatureType::Multisig && root_key_retired(key_id)? {
+            return Ok(false);
+        }
 
         Ok(key.is_admin)
     }
@@ -1276,6 +1281,10 @@ impl AccountKeychain {
                 sig_type,
             )
             .into());
+        }
+
+        if key.signature_type as u8 != SignatureType::Multisig as u8 {
+            ensure_root_key_active(key_id)?;
         }
 
         Ok(key)

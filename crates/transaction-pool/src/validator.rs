@@ -197,6 +197,24 @@ where
         self.inner.client()
     }
 
+    /// Computes the migration gate from the same environment as execution and RPC.
+    pub(crate) fn account_migration_enabled(&self, header: &TempoHeader) -> bool {
+        self.inner
+            .evm_config()
+            .evm_env(header)
+            .expect("invalid block in migration activation check")
+            .block_env
+            .account_migration_enabled
+    }
+
+    /// The gate at the pool's currently cached canonical head.
+    pub(crate) fn cached_account_migration_enabled(&self) -> bool {
+        self.cached_evm_env
+            .read()
+            .block_env
+            .account_migration_enabled
+    }
+
     /// Pool-only time-bound admission checks.
     ///
     /// These enforce propagation-liveness constraints that are stricter than the EVM's

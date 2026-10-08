@@ -14,7 +14,7 @@ use revm::{
         Block, Cfg, ContextTr, JournalTr, Transaction, TransactionType,
         journaled_state::account::JournaledAccountTr,
         result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction, ResultGas},
-        transaction::{AccessListItem, AccessListItemTr},
+        transaction::{AccessListItem, AccessListItemTr, AuthorizationTr},
     },
     context_interface::{
         cfg::{GasId, GasParams, gas::GasTracker},
@@ -416,6 +416,33 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                         .and_then(|aa| aa.signature.as_multisig())
                         .map_or(Address::ZERO, |signature| signature.account());
                     NativeMultisig::new().set_authority(ctx.tx.caller(), direct)?;
+                    let root = ctx
+                        .tx
+                        .tempo_tx_env
+                        .as_ref()
+                        .filter(|aa| {
+                            matches!(aa.signature, tempo_primitives::TempoSignature::Primitive(_))
+                                && aa.key_authorization.is_none()
+                                && aa.tempo_authorization_list.is_empty()
+                                && ctx.tx.authorization_list_len() == 0
+                                && !tempo_primitives::subblock::has_sub_block_nonce_key_prefix(
+                                    &aa.nonce_key,
+                                )
+                                && ctx.tx.tx_type() == 0x76
+                                && !ctx.tx.is_system_tx
+                                && matches!(
+                                    ctx.tx.execution_context,
+                                    crate::ExecutionContext::Transaction { .. }
+                                        | crate::ExecutionContext::Simulation
+                                )
+                        })
+                        .map_or(Address::ZERO, |_| ctx.tx.caller());
+                    let only_call = ctx.tx.tempo_tx_env.as_ref().is_some_and(|aa| {
+                        aa.aa_calls.len() == 1
+                            && aa.aa_calls[0].to
+                                == tempo_contracts::precompiles::NATIVE_MULTISIG_ADDRESS.into()
+                    });
+                    NativeMultisig::new().set_migration_authority(root, only_call)?;
                 }
 
                 if let Some(channel_open_context_hash) = channel_open_context_hash {
@@ -993,6 +1020,15 @@ where
 
         let refunded_accounts = if has_aa_auth_list {
             let tempo_tx_env = ctx.tx.tempo_tx_env.as_ref().unwrap();
+            let retired = retired_authorization_accounts(
+                &mut ctx.journaled_state,
+                tempo_tx_env
+                    .tempo_authorization_list
+                    .iter()
+                    .filter(|auth| !(spec.is_t0() && auth.signature().is_keychain())),
+                ctx.cfg.chain_id,
+                spec.is_t14() && ctx.block.account_migration_enabled,
+            )?;
 
             apply_auth_list::<_, Self::Error>(
                 ctx.cfg.chain_id,
@@ -1000,13 +1036,26 @@ where
                     .tempo_authorization_list
                     .iter()
                     // T0 hardfork: skip keychain signatures in auth list processing
-                    .filter(|auth| !(spec.is_t0() && auth.signature().is_keychain())),
+                    .filter(|auth| !(spec.is_t0() && auth.signature().is_keychain()))
+                    .filter(|auth| {
+                        auth.authority()
+                            .is_none_or(|account| !retired.contains(&account))
+                    }),
                 &mut ctx.journaled_state,
             )?
         } else {
+            let retired = retired_authorization_accounts(
+                &mut ctx.journaled_state,
+                ctx.tx.authorization_list(),
+                ctx.cfg.chain_id,
+                spec.is_t14() && ctx.block.account_migration_enabled,
+            )?;
             apply_auth_list::<_, Self::Error>(
                 ctx.cfg.chain_id,
-                ctx.tx.authorization_list(),
+                ctx.tx.authorization_list().filter(|auth| {
+                    auth.authority()
+                        .is_none_or(|account| !retired.contains(&account))
+                }),
                 &mut ctx.journaled_state,
             )?
         };
@@ -1814,6 +1863,12 @@ where
         evm.validator_fee = U256::ZERO;
         evm.non_creditable_slots.borrow_mut().clear();
 
+        crate::native_multisig::validate_migration_envelope(
+            &evm.ctx.tx,
+            &evm.ctx.block,
+            evm.ctx.cfg.spec,
+        )?;
+
         // Validate the fee payer signature
         let fee_payer = evm.ctx.tx.fee_payer()?;
 
@@ -2143,7 +2198,10 @@ where
         &self,
         evm: &mut Self::Evm,
     ) -> Result<InitialAndFloorGas, Self::Error> {
-        if crate::native_multisig::has_account_access(evm.ctx_ref().tx()) {
+        if crate::native_multisig::has_account_access(evm.ctx_ref().tx())
+            || (evm.ctx_ref().cfg().spec.is_t14()
+                && evm.ctx_ref().block().account_migration_enabled)
+        {
             // Native intrinsic validation loads additional accounts before normal pre-execution.
             // Install transaction warmth first so access-listed/beneficiary accounts are priced
             // correctly. Upstream repeats this idempotent setup before applying authorizations.
@@ -2667,3 +2725,33 @@ pub fn validate_time_window(
 
 #[cfg(test)]
 mod tests;
+
+/// Authorization-list entries are skipped, not transaction-fatal, when authority is retired.
+fn retired_authorization_accounts<J: JournalTr>(
+    journal: &mut J,
+    authorizations: impl Iterator<Item = impl AuthorizationTr>,
+    chain_id: u64,
+    active: bool,
+) -> Result<Vec<Address>, EVMError<<J::Database as Database>::Error, TempoInvalidTransaction>> {
+    if !active {
+        return Ok(Vec::new());
+    }
+    let mut retired = Vec::new();
+    for authorization in authorizations {
+        if (authorization.chain_id().is_zero() || authorization.chain_id() == U256::from(chain_id))
+            && authorization.nonce() != u64::MAX
+            && let Some(account) = authorization.authority()
+        {
+            let loaded = journal.load_account(account)?;
+            let commitment = tempo_primitives::account::decode_config_commitment(
+                &loaded.data.info.extension,
+                true,
+            )
+            .map_err(|error| EVMError::Custom(error.to_string()))?;
+            if !commitment.is_zero() && !retired.contains(&account) {
+                retired.push(account);
+            }
+        }
+    }
+    Ok(retired)
+}

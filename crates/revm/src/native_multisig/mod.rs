@@ -1,8 +1,9 @@
 //! Bounded native authorization shared by execution, pool validation, and simulation.
 use crate::{ExecutionContext, TempoInvalidTransaction, TempoTxEnv};
 use alloy_primitives::{Address, B256};
+use alloy_sol_types::SolCall;
 use revm::{
-    context::{JournalTr, result::EVMError},
+    context::{JournalTr, Transaction, result::EVMError},
     context_interface::cfg::{GasId, GasParams},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -24,6 +25,10 @@ pub enum NativeMultisigError {
     InvalidSignatureContext,
     #[error("native multisig recovery factory is not configured")]
     FactoryNotConfigured,
+    #[error("primitive root key retired for account {account}")]
+    RootKeyRetired { account: Address },
+    #[error("migration must be the sole call without authorizations")]
+    InvalidMigrationEnvelope,
     #[error("invalid multisig account {account}")]
     InvalidAccount { account: Address },
     #[error("multisig signer account mismatch: expected {expected}, actual {actual}")]
@@ -155,6 +160,7 @@ pub fn validate_state<J: JournalTr>(
     gas: &GasParams,
 ) -> NativeValidationResult<(u64, u64), <J::Database as revm::Database>::Error> {
     let roles = authorizations(tx);
+    let retired_gas = validate_primitive_authority(journal, tx, block, spec, gas)?;
     let invalid = |error| EVMError::Transaction(TempoInvalidTransaction::NativeMultisig(error));
     // Context rejection must not depend on factory configuration or account reads.
     if roles.iter().any(Option::is_some) {
@@ -188,7 +194,10 @@ pub fn validate_state<J: JournalTr>(
         }
     }
     if roles.iter().all(Option::is_none) {
-        return Ok((grant_delegate_access_gas(journal, tx, spec, gas, &[])?, 0));
+        return Ok((
+            retired_gas + grant_delegate_access_gas(journal, tx, spec, gas, &[])?,
+            0,
+        ));
     }
     let aa = tx.tempo_tx_env.as_ref().expect("roles require AA");
     // Grant signers may be admin access keys; later checks bind them to the caller.
@@ -254,7 +263,7 @@ pub fn validate_state<J: JournalTr>(
         }
     }
     Ok((
-        extra_gas + grant_delegate_access_gas(journal, tx, spec, gas, &accounts)?,
+        retired_gas + extra_gas + grant_delegate_access_gas(journal, tx, spec, gas, &accounts)?,
         state_gas,
     ))
 }
@@ -316,6 +325,90 @@ pub fn verify(tx: &TempoTxEnv) -> Result<(), TempoInvalidTransaction> {
                 "key authorization key_type does not match the keychain signature type",
             ));
         }
+    }
+    Ok(())
+}
+
+/// Checks independently acting keys, never primitive approvals inside a native quorum.
+fn validate_primitive_authority<J: JournalTr>(
+    journal: &mut J,
+    tx: &TempoTxEnv,
+    block: &TempoBlockEnv,
+    spec: TempoHardfork,
+    gas: &GasParams,
+) -> NativeValidationResult<u64, <J::Database as revm::Database>::Error> {
+    if !spec.is_t14() || !block.account_migration_enabled || tx.is_system_tx {
+        return Ok(0);
+    }
+    let mut keys = Vec::with_capacity(3);
+    if let Some(aa) = &tx.tempo_tx_env {
+        if matches!(aa.signature, TempoSignature::Primitive(_)) {
+            keys.push(tx.caller);
+        } else if let Some(key) = aa.signature.as_keychain()
+            && key.signature.as_multisig().is_none()
+        {
+            keys.push(
+                key.key_id(&aa.signature_hash)
+                    .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?,
+            );
+        }
+        if let Some(auth) = &aa.key_authorization
+            && auth.signature.as_multisig().is_none()
+        {
+            keys.push(
+                auth.recover_signer().map_err(|_| {
+                    TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed
+                })?,
+            );
+        }
+    } else {
+        keys.push(tx.caller);
+    }
+    if tx.has_fee_payer_signature() {
+        keys.push(tx.fee_payer()?);
+    }
+    keys.sort_unstable();
+    keys.dedup();
+    let mut extra_gas = 0;
+    for account in keys {
+        let loaded = journal.load_account(account)?;
+        let commitment = decode_config_commitment(&loaded.data.info.extension, true)
+            .map_err(|error| EVMError::Custom(error.to_string()))?;
+        if !commitment.is_zero() {
+            return Err(TempoInvalidTransaction::NativeMultisig(
+                NativeMultisigError::RootKeyRetired { account },
+            )
+            .into());
+        }
+        if account != tx.caller {
+            extra_gas += account_access_gas(gas, loaded.is_cold);
+        }
+    }
+    Ok(extra_gas)
+}
+
+/// Sidecars can persist on call failure, so reject mixed migrations before pre-execution.
+pub(crate) fn validate_migration_envelope(
+    tx: &TempoTxEnv,
+    block: &TempoBlockEnv,
+    spec: TempoHardfork,
+) -> Result<(), TempoInvalidTransaction> {
+    if !spec.is_t14() || !block.account_migration_enabled {
+        return Ok(());
+    }
+    if let Some(aa) = &tx.tempo_tx_env
+        && aa.aa_calls.iter().any(|call| {
+            call.to == tempo_contracts::precompiles::NATIVE_MULTISIG_ADDRESS.into()
+                && call.input.starts_with(
+                    &tempo_contracts::precompiles::INativeMultisig::upgradeAccountCall::SELECTOR,
+                )
+        })
+        && (aa.aa_calls.len() != 1
+            || aa.key_authorization.is_some()
+            || !aa.tempo_authorization_list.is_empty()
+            || tx.inner.authorization_list_len() != 0)
+    {
+        return Err(NativeMultisigError::InvalidMigrationEnvelope.into());
     }
     Ok(())
 }
