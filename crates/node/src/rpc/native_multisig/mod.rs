@@ -61,23 +61,14 @@ pub(super) fn prepare_native_multisig_simulation(
             .key_authorization
             .as_ref()
             .ok_or_else(|| invalid("keyAuthorizationSimulation requires keyAuthorization"))?;
-        if authorization
-            .account
-            .is_some_and(|account| account != parent)
-        {
-            return Err(EthApiError::InvalidParams(format!(
-                "key authorization account mismatch: expected {parent}, actual {}",
-                authorization.account.unwrap()
-            )));
-        }
         let signer = spec.signer.unwrap_or(parent);
-        if signer != parent
-            && (authorization.account != Some(parent) || request.key_id != Some(signer))
-        {
-            return Err(invalid(
-                "admin-signed grant simulation requires its signer as keyId and the parent as account",
-            ));
-        }
+        validate_grant_binding(
+            authorization,
+            parent,
+            signer,
+            request.key_id,
+            "admin-signed grant simulation requires its signer as keyId and the parent as account",
+        )?;
         let signature = spec
             .mock_signature(signer)
             .map_err(EthApiError::InvalidParams)?;
@@ -87,21 +78,13 @@ pub(super) fn prepare_native_multisig_simulation(
     } else if let Some(authorization) = &request.key_authorization
         && let Some(signature) = authorization.signature.as_multisig()
     {
-        if let Some(actual) = authorization.account
-            && actual != parent
-        {
-            return Err(EthApiError::InvalidParams(format!(
-                "key authorization account mismatch: expected {parent}, actual {actual}"
-            )));
-        }
-        if signature.account() != parent
-            && (authorization.account != Some(parent)
-                || request.key_id != Some(signature.account()))
-        {
-            return Err(invalid(
-                "admin-signed grant requires its signer as keyId and the parent as account",
-            ));
-        }
+        validate_grant_binding(
+            authorization,
+            parent,
+            signature.account(),
+            request.key_id,
+            "admin-signed grant requires its signer as keyId and the parent as account",
+        )?;
         validate_witness(signature, factory, hardfork, db)?;
         NativeAuthorization {
             signature,
@@ -111,6 +94,28 @@ pub(super) fn prepare_native_multisig_simulation(
         .map_err(|error| EthApiError::InvalidParams(error.to_string()))?;
     }
     request.multisig_simulation_prepared = true;
+    Ok(())
+}
+
+/// Rejects a grant bound to another account; a grant signed by an admin (`signer != parent`) must
+/// name the parent as `account` and use the signer as `keyId`.
+fn validate_grant_binding(
+    authorization: &SignedKeyAuthorization,
+    parent: Address,
+    signer: Address,
+    key_id: Option<Address>,
+    admin_error: &str,
+) -> Result<(), EthApiError> {
+    if let Some(actual) = authorization.account
+        && actual != parent
+    {
+        return Err(EthApiError::InvalidParams(format!(
+            "key authorization account mismatch: expected {parent}, actual {actual}"
+        )));
+    }
+    if signer != parent && (authorization.account != Some(parent) || key_id != Some(signer)) {
+        return Err(EthApiError::InvalidParams(admin_error.into()));
+    }
     Ok(())
 }
 
