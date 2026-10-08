@@ -72,14 +72,14 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/actions/secure-runner@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
-      - uses: tempoxyz/gh-actions/actions/setup-mold@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
-      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
+      - uses: tempoxyz/gh-actions/actions/setup-mold@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
       - name: Install cargo-codspeed
         run: |
           cargo install cargo-codspeed \
@@ -157,7 +157,7 @@ jobs:
           # shellcheck disable=SC2086  # BUILD_ARGS must word-split into multiple cargo args
           cargo codspeed build $BUILD_ARGS
       - name: Run benchmark target(s)
-        uses: tempoxyz/gh-actions/vendor/CodSpeedHQ/action@0a60d757d0f4725a34f22f7b9ebf7b91b4b00bcf
+        uses: tempoxyz/gh-actions/vendor/CodSpeedHQ/action@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
         with:
           mode: ${{ steps.args.outputs.measurement_modes }}
           run: cargo codspeed run ${{ steps.args.outputs.run_args }}
