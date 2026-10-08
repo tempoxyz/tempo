@@ -714,7 +714,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{TestExecutorBuilder, test_chainspec, test_evm};
+    use crate::{
+        StorageActionReplay,
+        test_utils::{TestExecutorBuilder, test_chainspec, test_evm},
+    };
     use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
     use alloy_eips::{
         eip2935::{HISTORY_STORAGE_ADDRESS, HISTORY_STORAGE_CODE},
@@ -766,6 +769,7 @@ mod tests {
         },
     };
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+    use tempo_precompiles::storage::StorageAction;
     use tempo_primitives::{
         SubBlockMetadata, TempoSignature, TempoTransaction, TempoTxType,
         subblock::{SubBlockVersion, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
@@ -2415,6 +2419,78 @@ mod tests {
             "pre-T4 header gas_used ({}) must equal cumulative_tx_gas_used ({}), \
              not block_regular_gas_used ({})",
             result.gas_used, cumulative, regular
+        );
+    }
+
+    #[test]
+    fn test_discard_replay_preserves_committed_prefix() {
+        let chainspec = test_chainspec();
+        let address = Address::repeat_byte(0x42);
+        let slot = U256::from(7);
+        let mut db = State::builder().with_bundle_update().build();
+        db.insert_account_with_storage(
+            address,
+            AccountInfo {
+                nonce: 1,
+                ..Default::default()
+            },
+            [(slot, U256::ZERO)].into_iter().collect(),
+        );
+        let mut executor = TestExecutorBuilder::default()
+            .with_spec(TempoHardfork::T3)
+            .build(&mut db, &chainspec);
+        let tx = Recovered::new_unchecked(create_legacy_tx(), Address::ZERO);
+        let initial_non_shared_gas = executor.non_shared_gas_left;
+        let initial_non_payment_gas = executor.non_payment_gas_left;
+
+        for (original, value, commit) in [(0, 1, true), (1, 2, false), (1, 3, true)] {
+            let result = executor
+                .execute_transaction_with_actions_without_commit(
+                    (tempo_revm::TempoTxEnv::default(), &tx),
+                    StorageActionReplay {
+                        result: ExecutionResult::Success {
+                            reason: revm::context::result::SuccessReason::Stop,
+                            logs: vec![],
+                            gas: ResultGas::default().with_total_gas_spent(21_000),
+                            output: revm::context::result::Output::Call(Bytes::new()),
+                        },
+                        actions: vec![StorageAction::Sstore(
+                            address,
+                            slot,
+                            U256::from(original),
+                            U256::from(value),
+                        )],
+                        expiring_nonce: None,
+                        validator_fee: U256::ZERO,
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                executor.evm_mut().db_mut().storage(address, slot).unwrap(),
+                U256::from(original),
+            );
+            if commit {
+                executor.commit_transaction(result);
+            } else {
+                drop(result);
+                assert_eq!(executor.receipts().len(), 1);
+                assert_eq!(executor.inner.cumulative_tx_gas_used, 21_000);
+                assert_eq!(
+                    executor.non_shared_gas_left,
+                    initial_non_shared_gas - 21_000
+                );
+                assert_eq!(
+                    executor.non_payment_gas_left,
+                    initial_non_payment_gas - 21_000
+                );
+            }
+        }
+
+        assert_eq!(executor.receipts().len(), 2);
+        assert_eq!(executor.inner.cumulative_tx_gas_used, 42_000);
+        assert_eq!(
+            executor.evm_mut().db_mut().storage(address, slot).unwrap(),
+            U256::from(3),
         );
     }
 }

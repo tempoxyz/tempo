@@ -589,9 +589,6 @@ where
             }
 
             check_cancel!();
-            if is_payment {
-                payment_transactions += 1;
-            }
 
             let tx_rlp_length =
                 block_transaction_length(&tx.transaction, tx.transaction.encoded_length());
@@ -614,40 +611,20 @@ where
                 .then(|| format!("{:?}", tx.transaction))
                 .unwrap_or_default();
 
-            let result_closure = |result: &TempoTxResult| {
-                cumulative_gas_used += result.block_gas_used();
-                cumulative_state_gas_used += result.state_gas_used();
-                if !is_payment {
-                    non_payment_gas_used += result.block_gas_used();
-                }
-
-                // Score payload value by the validator-credited fee amount that the
-                // FeeManager precompile actually wrote during this transaction.
-                total_fees += result.validator_fee();
-
-                // Notify transactions iterator about the new state.
-                best_txs.on_new_result(result);
-            };
-
             let execution_result = if let Some(replay) = pool_tx.replay.take() {
                 parallel_transactions_executed += 1;
-                executor.execute_transaction_with_actions(
+                executor.execute_transaction_with_actions_without_commit(
                     tx.transaction.executable(),
                     *replay,
-                    result_closure,
                 )
             } else {
                 executor.invalidate_expiring_nonce_cache();
-                executor
-                    .execute_transaction_with_result_closure(
-                        tx.transaction.executable(),
-                        result_closure,
-                    )
-                    .map(|_| ())
+                executor.execute_transaction_without_commit(tx.transaction.executable())
             };
 
-            if let Err(err) = execution_result {
-                match err {
+            let result = match execution_result {
+                Ok(result) => result,
+                Err(err) => match err {
                     BlockExecutionError::Validation(BlockValidationError::InvalidTx {
                         error,
                         ..
@@ -696,8 +673,51 @@ where
                         }
                     }
                     _ => return Err(PayloadBuilderError::evm(err)),
+                },
+            };
+
+            // A single slow transaction can consume the remaining budget. Check
+            // its projected workload before committing any state, receipt or fees.
+            if let Some(build_budget) = payload_build_budget {
+                let elapsed = start.elapsed();
+                let current_workload = ValidationLatencyWorkload::new(
+                    cumulative_gas_used + result.block_gas_used(),
+                    pool_transactions_included as usize + 1,
+                );
+                let budget_decision = payload_budget_decision(
+                    elapsed,
+                    normal_transaction_fill_idle_elapsed,
+                    build_time_multiplier,
+                    validation_latency,
+                    current_workload,
+                );
+                if budget_decision.total_reserved >= build_budget {
+                    debug!(
+                        target: "payload_builder",
+                        tx_hash = ?tx.hash(),
+                        ?elapsed,
+                        ?build_budget,
+                        total_reserved = ?budget_decision.total_reserved,
+                        "dropping transaction that exhausted the payload build budget"
+                    );
+                    self.metrics.inc_pool_tx_skipped("build_budget");
+                    break BlockBuildStopReason::BuildBudget;
                 }
             }
+
+            cumulative_gas_used += result.block_gas_used();
+            cumulative_state_gas_used += result.state_gas_used();
+            if is_payment {
+                payment_transactions += 1;
+            } else {
+                non_payment_gas_used += result.block_gas_used();
+            }
+
+            // Score payload value by the validator-credited fee amount that the
+            // FeeManager precompile actually wrote during this transaction.
+            total_fees += result.validator_fee();
+            best_txs.on_new_result(&result);
+            executor.commit_transaction(result);
 
             trace!("Transaction executed");
 
