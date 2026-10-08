@@ -55,6 +55,20 @@ impl ConfigCommitmentWriteGas {
     }
 }
 
+/// Rejects commitment writes that are zero, pre-T14, or in a static context.
+///
+/// Call it before any account load or gas charge, so rejected writes are never charged.
+fn ensure_config_commitment_writable(
+    spec: TempoHardfork,
+    is_static: bool,
+    commitment: B256,
+) -> Result<()> {
+    if !spec.is_t14() || is_static || commitment.is_zero() {
+        return Err(TempoPrecompileError::InvalidConfigCommitmentWrite);
+    }
+    Ok(())
+}
+
 /// Low-level storage provider for interacting with the EVM.
 ///
 /// # Implementations
