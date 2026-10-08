@@ -320,6 +320,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         );
 
         let num_accounts = accounts_seen.len();
+
         // Write hashed account entries using the real account metadata from plain state.
         // This preserves bytecode_hash for genesis accounts (e.g. TIP20 tokens with 0xEF code).
         provider_rw.insert_account_for_hashing(

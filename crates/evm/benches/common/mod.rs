@@ -375,6 +375,7 @@ fn insert_account(
     account: &DbAccount,
 ) {
     let account = RethAccount {
+        // Keep `Some` even for empty code, unlike `RethAccount::from`.
         bytecode_hash: Some(account.info.code_hash),
         ..RethAccount::from(&account.info)
     };
