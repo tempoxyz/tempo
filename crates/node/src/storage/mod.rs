@@ -66,7 +66,7 @@ impl<D: Database> Database for TempoDatabase<D> {
     fn tx(&self) -> Result<Self::TX, DatabaseError> {
         // Pin the database and an available snapshot atomically with publication.
         // Otherwise a lazy reader can lose its old state before its first nonce read.
-        let mut published = self.cache.published.lock().unwrap();
+        let published = self.cache.published.read().unwrap();
         let inner = self.inner.tx()?;
         let genesis = self.chain.genesis_header().number();
         let source = Source::new(&inner, genesis)?;

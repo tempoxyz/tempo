@@ -11,7 +11,7 @@ use reth_provider::{
 };
 use std::{
     path::Path,
-    sync::{Arc, Mutex, Weak},
+    sync::{Arc, Mutex, RwLock, Weak},
 };
 use tempo_chainspec::{TempoChainSpec, TempoHardforks};
 use tempo_precompiles::{
@@ -48,7 +48,7 @@ pub(super) struct Published {
 #[derive(Default, Debug)]
 pub(super) struct Cache {
     pub(super) computation: Mutex<()>,
-    pub(super) published: Mutex<Published>,
+    pub(super) published: RwLock<Published>,
 }
 
 /// These cursors retain the originating database view without opening another
@@ -105,11 +105,10 @@ fn error(err: impl std::fmt::Display) -> DatabaseError {
 
 impl Published {
     pub(super) fn find(
-        &mut self,
+        &self,
         tx: &Source,
         genesis: u64,
     ) -> Result<Option<Arc<Snapshot>>, DatabaseError> {
-        self.leased.retain(|state| state.strong_count() != 0);
         for state in self
             .latest
             .iter()
@@ -133,7 +132,7 @@ impl Cache {
     ) -> Result<Arc<Snapshot>, DatabaseError> {
         let genesis = chain.genesis_header().number();
         let number = tx.number;
-        if let Some(state) = self.published.lock().unwrap().find(tx, genesis)? {
+        if let Some(state) = self.published.read().unwrap().find(tx, genesis)? {
             return Ok(state);
         }
         let started = std::time::Instant::now();
@@ -153,11 +152,11 @@ impl Cache {
         number: u64,
     ) -> Result<Arc<Snapshot>, DatabaseError> {
         let genesis_number = chain.genesis_header().number();
-        if let Some(state) = self.published.lock().unwrap().find(tx, genesis_number)? {
+        if let Some(state) = self.published.read().unwrap().find(tx, genesis_number)? {
             return Ok(state);
         }
         let started = std::time::Instant::now();
-        let latest = self.published.lock().unwrap().latest.clone();
+        let latest = self.published.read().unwrap().latest.clone();
         let base = latest
             .as_ref()
             .filter(|state| state.number < number)
@@ -243,7 +242,8 @@ impl Cache {
                 return Err(error("static-file tip does not match database snapshot"));
             }
         }
-        let mut published = self.published.lock().unwrap();
+        let mut published = self.published.write().unwrap();
+        published.leased.retain(|state| state.strong_count() != 0);
         published.computations += 1;
         published.replayed_blocks += number - start;
         metrics::counter!("tempo_replay_cache_blocks_total").increment(number - start);
@@ -395,7 +395,8 @@ impl Cache {
                     .record(prepare_started.elapsed().as_secs_f64());
                 let (base, state) = result?;
                 if committed.recv().unwrap_or(false) {
-                    let mut published = cache.published.lock().unwrap();
+                    let mut published = cache.published.write().unwrap();
+                    published.leased.retain(|state| state.strong_count() != 0);
                     published.computations += 1;
                     published.replayed_blocks += state.number - base.number;
                     metrics::counter!("tempo_replay_cache_blocks_total")

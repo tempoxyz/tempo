@@ -256,7 +256,7 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
             assert!(Arc::ptr_eq(&handle.join().unwrap(), tx.snapshot().unwrap()));
         }
     });
-    assert_eq!(db.cache.published.lock().unwrap().computations, 1);
+    assert_eq!(db.cache.published.read().unwrap().computations, 1);
     let lazy = db.tx().unwrap();
     // Advancing persistence must not change the already-open transaction's derived snapshot.
     injected.set_storage_settings_cache(factory.cached_storage_settings());
@@ -276,7 +276,7 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
             .unwrap()
             .unwrap(),
     );
-    assert_eq!(db.cache.published.lock().unwrap().computations, 1);
+    assert_eq!(db.cache.published.read().unwrap().computations, 1);
     let preparation = db
         .prepare_persistence(vec![Arc::new(block.clone())])
         .unwrap()
@@ -300,7 +300,7 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
             next.snapshot().unwrap().clone()
         });
         started.recv().unwrap();
-        assert_eq!(db.cache.published.lock().unwrap().computations, 1);
+        assert_eq!(db.cache.published.read().unwrap().computations, 1);
         preparation.finish();
         assert_eq!(reader.join().unwrap().number, 2);
     });
@@ -311,8 +311,8 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
     let next = db.tx().unwrap();
     assert!(!next.slots().unwrap().contains_key(&hashed_slot));
     assert_eq!(next.slots().unwrap().len(), 5); // new nonce, bucket metadata and cursor
-    assert_eq!(db.cache.published.lock().unwrap().computations, 2);
-    assert_eq!(db.cache.published.lock().unwrap().replayed_blocks, 2);
+    assert_eq!(db.cache.published.read().unwrap().computations, 2);
+    assert_eq!(db.cache.published.read().unwrap().replayed_blocks, 2);
     let old_lease = Arc::downgrade(tx.snapshot().unwrap());
     drop(hashed);
     drop(state);
@@ -324,7 +324,7 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
         lazy.slots().unwrap().get(&hashed_slot),
         Some(&U256::from(1200))
     );
-    assert_eq!(db.cache.published.lock().unwrap().computations, 2);
+    assert_eq!(db.cache.published.read().unwrap().computations, 2);
     // Fresh transactions reuse the newly advanced state.
     assert!(Arc::ptr_eq(
         db.tx().unwrap().snapshot().unwrap(),
@@ -350,8 +350,8 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
     rw.commit().unwrap();
     let fork = db.tx().unwrap();
     assert_eq!(fork.slots().unwrap().len(), 1);
-    assert_eq!(db.cache.published.lock().unwrap().computations, 3);
-    assert_eq!(db.cache.published.lock().unwrap().replayed_blocks, 4);
+    assert_eq!(db.cache.published.read().unwrap().computations, 3);
+    assert_eq!(db.cache.published.read().unwrap().replayed_blocks, 4);
 }
 
 #[test]
@@ -389,7 +389,7 @@ fn storage_cursor_matches_native_traversal() {
         .seek_by_key_subkey(B256::with_last_byte(1), B256::with_last_byte(2))
         .unwrap();
     assert_eq!(
-        wrapper.cache.published.lock().unwrap().computations,
+        wrapper.cache.published.read().unwrap().computations,
         0,
         "unrelated storage must not reconstruct nonces"
     );
@@ -681,14 +681,14 @@ fn concurrent_cold_readers_compute_once() {
             .map(|handle| handle.join().unwrap())
             .collect::<Vec<_>>()
     });
-    assert_eq!(db.cache.published.lock().unwrap().computations, 1);
+    assert_eq!(db.cache.published.read().unwrap().computations, 1);
     for state in &states {
         assert!(Arc::ptr_eq(state, &states[0]));
     }
 }
 
 #[test]
-fn published_reads_do_not_wait_for_computation() {
+fn published_reads_share_access_and_do_not_wait_for_computation() {
     let factory = create_test_provider_factory_with_node_types::<TempoNode>(DEV.clone());
     let db = TempoDatabase::new(
         factory.db_ref().clone(),
@@ -697,6 +697,7 @@ fn published_reads_do_not_wait_for_computation() {
     );
     let first = db.tx().unwrap().snapshot().unwrap().clone();
     let guard = db.cache.computation.lock().unwrap();
+    let reader = db.cache.published.read().unwrap();
     let (send, receive) = std::sync::mpsc::channel();
     std::thread::scope(|scope| {
         scope.spawn(|| {
@@ -704,6 +705,7 @@ fn published_reads_do_not_wait_for_computation() {
                 .unwrap()
         });
         let result = receive.recv_timeout(std::time::Duration::from_secs(2));
+        drop(reader);
         drop(guard);
         assert!(Arc::ptr_eq(
             &result.expect("published reads blocked behind writer"),
