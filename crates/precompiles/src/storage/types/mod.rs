@@ -21,13 +21,11 @@ mod primitives;
 mod cache;
 pub(crate) use cache::HandlerCache;
 
-mod slot_hash;
-
 use crate::{
     error::Result,
     storage::{StorageOps, packing},
 };
-use alloy::primitives::{Address, U256};
+use alloy::primitives::{Address, U256, keccak256};
 
 /// Describes how a type is laid out in EVM storage.
 ///
@@ -369,6 +367,6 @@ pub trait StorageKey: sealed::OnlyPrimitives {
         buf[32 - key_bytes.len()..32].copy_from_slice(key_bytes);
         buf[32..].copy_from_slice(&slot.to_be_bytes::<32>());
 
-        slot_hash::mapping_slot_hash(buf)
+        U256::from_be_bytes(keccak256(buf).0)
     }
 }
