@@ -40,6 +40,9 @@ macro_rules! tempo_genesis_info {
                 /// Development-only TIP-1110 factory; public networks remain unconfigured.
                 #[serde(skip_serializing_if = "Option::is_none")]
                 multisig_recovery_factory: Option<Address>,
+                /// Independent TIP-1113 activation; configuring T14 alone is insufficient.
+                #[serde(skip_serializing_if = "Option::is_none")]
+                account_migration_time: Option<u64>,
                 /// The epoch length used by consensus.
                 #[serde(skip_serializing_if = "Option::is_none")]
                 epoch_length: Option<NonZeroU64>,
@@ -74,6 +77,15 @@ impl TempoGenesisInfo {
     /// Explicit custom-chain factory shared by execution, pool validation, and RPC.
     pub fn multisig_recovery_factory(&self) -> Option<Address> {
         self.multisig_recovery_factory
+    }
+
+    /// Migration and root retirement are enabled together, never before T14.
+    pub fn account_migration_enabled(&self, timestamp: u64) -> bool {
+        self.account_migration_time
+            .is_some_and(|time| timestamp >= time)
+            && self
+                .fork_time(TempoHardfork::T14)
+                .is_some_and(|time| timestamp >= time)
     }
     /// Extract Tempo genesis info from genesis extra_fields
     fn extract_from(genesis: &Genesis) -> Self {
@@ -236,6 +248,23 @@ impl TempoChainSpec {
             .map(|value| serde_json::from_value::<Option<Address>>(value.clone()))
             .transpose()?
             .flatten();
+        info.account_migration_time = genesis
+            .config
+            .extra_fields
+            .get("accountMigrationTime")
+            .map(|value| serde_json::from_value::<Option<u64>>(value.clone()))
+            .transpose()?
+            .flatten();
+        if let Some(time) = info.account_migration_time
+            && (info.multisig_recovery_factory.is_none()
+                || !info
+                    .fork_time(TempoHardfork::T14)
+                    .is_some_and(|t14| time >= t14))
+        {
+            return Err(serde::de::Error::custom(
+                "accountMigrationTime requires multisigRecoveryFactory and must not precede T14",
+            ));
+        }
         if info
             .multisig_recovery_factory
             .is_some_and(|address| !valid_native_address(address))
@@ -1373,5 +1402,50 @@ mod tests {
 
             assert_eq!(spec.chain(), resolved.chain(), "chain mismatch for {name}");
         }
+    }
+
+    #[test]
+    fn migration_gate_is_independent_validated_and_disabled_on_public_networks() {
+        let mut genesis = DEV.genesis().clone();
+        genesis
+            .config
+            .extra_fields
+            .insert("t14Time".into(), serde_json::json!(10));
+        genesis.config.extra_fields.insert(
+            "multisigRecoveryFactory".into(),
+            serde_json::json!(Address::repeat_byte(0x71)),
+        );
+        let without_migration = TempoChainSpec::try_from_genesis(genesis.clone()).unwrap();
+        assert!(!without_migration.info.account_migration_enabled(u64::MAX));
+        genesis
+            .config
+            .extra_fields
+            .insert("accountMigrationTime".into(), serde_json::json!(20));
+        let spec = TempoChainSpec::try_from_genesis(genesis.clone()).unwrap();
+        for (timestamp, enabled) in [(9, false), (10, false), (19, false), (20, true), (21, true)] {
+            assert_eq!(spec.info.account_migration_enabled(timestamp), enabled);
+        }
+        for invalid in [
+            serde_json::json!(9),
+            serde_json::json!("invalid"),
+            serde_json::json!(-1),
+        ] {
+            genesis
+                .config
+                .extra_fields
+                .insert("accountMigrationTime".into(), invalid);
+            assert!(TempoChainSpec::try_from_genesis(genesis.clone()).is_err());
+        }
+        genesis
+            .config
+            .extra_fields
+            .insert("accountMigrationTime".into(), serde_json::json!(20));
+        genesis
+            .config
+            .extra_fields
+            .remove("multisigRecoveryFactory");
+        assert!(TempoChainSpec::try_from_genesis(genesis).is_err());
+        assert!(!PRESTO.info.account_migration_enabled(u64::MAX));
+        assert!(!MODERATO.info.account_migration_enabled(u64::MAX));
     }
 }

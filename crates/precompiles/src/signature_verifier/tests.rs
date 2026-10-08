@@ -18,6 +18,39 @@ fn sign_recover(hash: B256, signature: Vec<u8>) -> Result<Address> {
 }
 
 #[test]
+fn migration_retires_implicit_keychain_admin_without_changing_pure_recovery() -> eyre::Result<()> {
+    let signer = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x55)).unwrap();
+    let account = signer.address();
+    let hash = B256::repeat_byte(0x77);
+    let primitive = PrimitiveSignature::Secp256k1(
+        signer.sign_hash_sync(&KeychainSignature::signing_hash(hash, account))?,
+    );
+    let signature = TempoSignature::Keychain(KeychainSignature::new(account, primitive.clone()));
+    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14)
+        .with_account_migration_enabled(true);
+    StorageCtx::enter(&mut storage, || {
+        let verifier = SignatureVerifier::new();
+        assert!(verifier.verify_keychain_admin(account, hash, signature.to_bytes())?);
+        assert!(AccountKeychain::new().is_admin_key(account, account)?);
+        StorageCtx.set_config_commitment(
+            account,
+            B256::repeat_byte(0x55),
+            crate::storage::ConfigCommitmentWriteGas::Intrinsic,
+        )?;
+        assert!(!verifier.verify_keychain_admin(account, hash, signature.to_bytes())?);
+        assert!(!AccountKeychain::new().is_admin_key(account, account)?);
+        assert_eq!(
+            verifier.recover(
+                KeychainSignature::signing_hash(hash, account),
+                primitive.to_bytes()
+            )?,
+            account
+        );
+        Ok(())
+    })
+}
+
+#[test]
 fn keychain_verification_rejects_multisig() -> eyre::Result<()> {
     let account = Address::repeat_byte(1);
     let multisig = MultisigSignature::try_new(

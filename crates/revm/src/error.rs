@@ -260,6 +260,7 @@ impl TempoInvalidTransaction {
                 NativeMultisigError::OwnerSignatureRecoveryFailed { .. }
                     | NativeMultisigError::AccountMismatch { .. }
                     | NativeMultisigError::InvalidSignatureContext
+                    | NativeMultisigError::InvalidMigrationEnvelope
                     | NativeMultisigError::Quorum(_)
             ),
             Self::EthInvalidTransaction(eth) => match eth {

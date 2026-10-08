@@ -109,6 +109,20 @@ where
         self.protocol_pool.validator().validator().client()
     }
 
+    pub(crate) fn account_migration_enabled(&self, header: &TempoHeader) -> bool {
+        self.protocol_pool
+            .validator()
+            .validator()
+            .account_migration_enabled(header)
+    }
+
+    pub(crate) fn cached_account_migration_enabled(&self) -> bool {
+        self.protocol_pool
+            .validator()
+            .validator()
+            .cached_account_migration_enabled()
+    }
+
     /// Updates the 2d nonce pool with the given state changes.
     ///
     /// Returns mined AA transactions.

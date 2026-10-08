@@ -3,7 +3,7 @@ use alloy_evm::{
     Evm,
     revm::{Database, context::result::EVMError},
 };
-use tempo_revm::{TempoTxEnv, ValidationContext};
+use tempo_revm::{TempoBlockEnv, TempoTxEnv, ValidationContext};
 
 /// Result of validating a transaction with Tempo transaction-pool semantics.
 pub type TempoPoolValidationResult<DBError> =
@@ -23,7 +23,7 @@ pub type TempoPoolValidationResult<DBError> =
 ///
 /// Owning the complete lifecycle lets custom EVMs additionally clear adapter-specific state without
 /// exposing their internal contexts or databases to the transaction pool.
-pub trait TempoPoolValidationEvm: Evm<Tx = TempoTxEnv> {
+pub trait TempoPoolValidationEvm: Evm<Tx = TempoTxEnv, BlockEnv = TempoBlockEnv> {
     /// Configures this EVM for transaction-pool validation.
     fn configure_for_pool(&mut self);
 

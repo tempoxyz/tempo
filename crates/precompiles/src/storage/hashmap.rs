@@ -98,6 +98,12 @@ impl HashMapStorageProvider {
         self
     }
 
+    /// Explicitly opts a custom-chain fixture into migration and root retirement.
+    pub fn with_account_migration_enabled(mut self, enabled: bool) -> Self {
+        self.block_env.account_migration_enabled = enabled;
+        self
+    }
+
     /// Returns self with the hardfork spec overridden (builder pattern).
     pub fn with_spec(mut self, spec: TempoHardfork) -> Self {
         self.spec = spec;
@@ -133,6 +139,23 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         }
         let previous = self.config_commitment(address)?;
         self.deduct_gas(gas.cost(previous)?)?;
+        if gas == ConfigCommitmentWriteGas::Migration
+            && self
+                .accounts
+                .get(&address)
+                .is_none_or(AccountInfo::is_empty)
+        {
+            self.deduct_gas(
+                self.gas_params
+                    .get(revm::context_interface::cfg::GasId::new_account_cost()),
+            )?;
+            if !self
+                .gas_tracker
+                .record_state_cost(self.gas_params.new_account_state_gas())
+            {
+                return Err(TempoPrecompileError::OutOfGas);
+            }
+        }
         self.accounts
             .entry(address)
             .or_default()

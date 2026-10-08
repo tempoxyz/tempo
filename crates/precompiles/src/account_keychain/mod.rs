@@ -31,6 +31,7 @@ use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     error::Result,
     has_duplicates_metered,
+    native_multisig::root_key_retired,
     storage::{Handler, Mapping, Set},
     tip20_factory::TIP20Factory,
 };
@@ -1158,11 +1159,11 @@ impl AccountKeychain {
 
     /// Internal predicate for root/admin status.
     ///
-    /// Warning: this returns true when `key_id == account`, because the root key
-    /// is implicitly admin even when it is not stored as an access key.
+    /// The root is implicitly admin without a grant until root retirement activates.
+    /// Explicit grants retain admin status when their delegate migrates to native ownership.
     pub fn is_admin_key(&self, account: Address, key_id: Address) -> Result<bool> {
         if key_id == account {
-            return Ok(true);
+            return Ok(!root_key_retired(key_id)?);
         }
 
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
@@ -1243,7 +1244,7 @@ impl AccountKeychain {
         Ok(key)
     }
 
-    /// Validate keychain authorization (existence, revocation, expiry, and optionally signature type).
+    /// Validate keychain authorization against the delegate's current authority.
     ///
     /// # Arguments
     /// * `account` - The account that owns the key
@@ -1256,7 +1257,7 @@ impl AccountKeychain {
     /// - `KeyAlreadyRevoked` — the key has been permanently revoked
     /// - `KeyNotFound` — no key is registered under the given `key_id`
     /// - `KeyExpired` — `current_timestamp` is at or past the key's expiry
-    /// - `SignatureTypeMismatch` — the key's stored type differs from `expected_sig_type`
+    /// - `SignatureTypeMismatch` — the effective authority differs from `expected_sig_type`
     pub fn validate_keychain_authorization(
         &self,
         account: Address,
@@ -1264,10 +1265,12 @@ impl AccountKeychain {
         current_timestamp: u64,
         expected_sig_type: Option<u8>,
     ) -> Result<AuthorizedKey> {
-        let key = self.load_active_key(account, key_id, current_timestamp)?;
+        let mut key = self.load_active_key(account, key_id, current_timestamp)?;
 
-        // Validate that the signature type matches the key type stored in the keychain
-        // Only check if expected_sig_type is provided (T1+ hardfork)
+        if root_key_retired(key_id)? {
+            key.signature_type = StoredSignatureType::Multisig;
+        }
+
         if let Some(sig_type) = expected_sig_type
             && key.signature_type as u8 != sig_type
         {
@@ -5857,6 +5860,119 @@ mod tests {
                 .expect_err("unexpected success for CREATE");
             assert_call_not_allowed(err);
 
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn migration_incoming_grants_follow_current_authority_without_rewriting() -> eyre::Result<()> {
+        for enabled in [false, true] {
+            for signature_type in [
+                StoredSignatureType::Secp256k1,
+                StoredSignatureType::P256,
+                StoredSignatureType::WebAuthn,
+            ] {
+                let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14)
+                    .with_account_migration_enabled(enabled);
+                StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                    let mut keychain = AccountKeychain::new();
+                    let parent = Address::repeat_byte(1);
+                    let delegate = Address::repeat_byte(2);
+                    let key = AuthorizedKey {
+                        signature_type,
+                        expiry: u64::MAX,
+                        enforce_limits: true,
+                        is_admin: false,
+                        is_revoked: false,
+                    };
+                    keychain.keys[parent][delegate].write(key.clone())?;
+                    for migrated in [false, true] {
+                        if migrated {
+                            StorageCtx.set_config_commitment(
+                                delegate,
+                                B256::repeat_byte(0x22),
+                                ConfigCommitmentWriteGas::Intrinsic,
+                            )?;
+                        }
+                        let effective = if enabled && migrated {
+                            StoredSignatureType::Multisig
+                        } else {
+                            signature_type
+                        };
+                        for presented in 0..=3 {
+                            let result = keychain.validate_keychain_authorization(
+                                parent,
+                                delegate,
+                                0,
+                                Some(presented),
+                            );
+                            if presented == effective as u8 {
+                                assert_eq!(
+                                    result?,
+                                    AuthorizedKey {
+                                        signature_type: effective,
+                                        ..key.clone()
+                                    }
+                                );
+                            } else {
+                                assert_eq!(
+                                    result,
+                                    Err(AccountKeychainError::signature_type_mismatch(
+                                        effective as u8,
+                                        presented,
+                                    )
+                                    .into())
+                                );
+                            }
+                            assert_eq!(keychain.keys[parent][delegate].read()?, key);
+                        }
+                    }
+                    Ok(())
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn migration_incoming_grants_do_not_revive_missing_expired_or_revoked_keys() -> eyre::Result<()>
+    {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14)
+            .with_account_migration_enabled(true);
+        storage.set_timestamp(U256::from(100));
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut keychain = AccountKeychain::new();
+            let parent = Address::repeat_byte(1);
+            let delegate = Address::repeat_byte(2);
+            StorageCtx.set_config_commitment(
+                delegate,
+                B256::repeat_byte(0x22),
+                ConfigCommitmentWriteGas::Intrinsic,
+            )?;
+            for (expiry, is_revoked, error) in [
+                (0, false, AccountKeychainError::key_not_found()),
+                (100, false, AccountKeychainError::key_expired()),
+                (u64::MAX, true, AccountKeychainError::key_already_revoked()),
+            ] {
+                keychain.keys[parent][delegate].write(AuthorizedKey {
+                    expiry,
+                    is_revoked,
+                    is_admin: true,
+                    ..Default::default()
+                })?;
+                assert_eq!(
+                    keychain.validate_keychain_authorization(parent, delegate, 100, Some(3)),
+                    Err(error.into())
+                );
+                assert!(!keychain.is_admin_key(parent, delegate)?);
+            }
+            keychain.keys[parent][delegate].write(AuthorizedKey {
+                expiry: u64::MAX,
+                is_admin: true,
+                ..Default::default()
+            })?;
+            assert!(keychain.is_admin_key(parent, delegate)?);
+            assert!(!keychain.is_admin_key(delegate, delegate)?);
             Ok(())
         })
     }

@@ -117,6 +117,9 @@ impl TempoTransactionRequest {
         tx_env.unique_tx_identifier = Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER);
         tx_env.fee_payer = fee_payer;
         tx_env.tempo_tx_env = if is_aa {
+            // Ethereum request normalization does not preserve Tempo's AA type. Restore it
+            // alongside the batch so simulation uses the same authority rules as execution.
+            tx_env.inner.tx_type = 0x76;
             let mut calls = calls;
             if let Some(to) = &inner.to {
                 calls.push(Call {
@@ -331,6 +334,7 @@ mod tests {
         let aa = env.tempo_tx_env.as_ref().expect("AA simulation env");
 
         assert_eq!(aa.override_key_id, Some(key_id));
+        assert_eq!(env.inner.tx_type, 0x76);
         assert_eq!(aa.aa_calls.len(), 1);
         assert_eq!(aa.aa_calls[0].to, TxKind::Call(target));
         assert!(aa.signature.is_keychain());
@@ -339,6 +343,34 @@ mod tests {
             env.unique_tx_identifier,
             Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER)
         );
+    }
+
+    #[test]
+    fn primitive_batch_simulation_restores_aa_transaction_type() {
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(Address::repeat_byte(1)),
+                transaction_type: Some(0x76),
+                ..Default::default()
+            },
+            calls: vec![Call {
+                to: TxKind::Call(Address::repeat_byte(2)),
+                value: Default::default(),
+                input: Default::default(),
+            }],
+            ..Default::default()
+        };
+        let mut normalized = TempoTxEnv::default();
+        normalized.inner.tx_type = 2;
+        let env = request
+            .try_into_tempo_tx_env(normalized, true)
+            .expect("valid primitive batch simulation");
+        assert_eq!(env.inner.tx_type, 0x76);
+        assert_eq!(env.execution_context(), ExecutionContext::Simulation);
+        assert!(matches!(
+            env.tempo_tx_env.unwrap().signature,
+            TempoSignature::Primitive(_)
+        ));
     }
 
     #[test]
