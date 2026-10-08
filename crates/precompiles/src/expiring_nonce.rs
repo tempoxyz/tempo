@@ -2,9 +2,10 @@
 use crate::{
     EXPIRING_NONCE_PRECOMPILE_ADDRESS, Precompile, charge_input_cost, dispatch,
     error::Result,
-    storage::{Handler, Mapping},
+    storage::{Handler, Mapping, Slot},
 };
-use alloy::primitives::{Address, B256};
+use alloy::primitives::{Address, B256, U256};
+use std::cell::Cell;
 use tempo_contracts::precompiles::NonceError;
 use tempo_precompiles_macros::contract;
 
@@ -25,7 +26,39 @@ pub struct PruneCursor {
     index: u64,
 }
 
+#[derive(Clone, Copy)]
+struct BlockSlots {
+    block: u64,
+    bucket: U256,
+    count: U256,
+    max_expiry: U256,
+}
+
+thread_local! {
+    // Only slot addresses are cached. Values always come from the current storage
+    // context, so changing database views or reverting execution needs no invalidation.
+    static BLOCK_SLOTS: Cell<Option<BlockSlots>> = const { Cell::new(None) };
+}
+
 impl ExpiringNonceManager {
+    fn block_slots(&self, block: u64) -> BlockSlots {
+        BLOCK_SLOTS.with(|cache| {
+            if let Some(slots) = cache.get()
+                && slots.block == block
+            {
+                return slots;
+            }
+            let slots = BlockSlots {
+                block,
+                bucket: self.bucket.at_owned(&block).slot(),
+                count: self.bucket_count.at_owned(&block).slot(),
+                max_expiry: self.bucket_max_expiry.at_owned(&block).slot(),
+            };
+            cache.set(Some(slots));
+            slots
+        })
+    }
+
     /// Checks replay protection and appends the hash to this block's bucket.
     pub fn check_and_mark_expiring_nonce(&mut self, hash: B256, valid_before: u64) -> Result<()> {
         let now = self.storage.timestamp().saturating_to::<u64>();
@@ -40,15 +73,18 @@ impl ExpiringNonceManager {
             return Err(NonceError::expiring_nonce_replay().into());
         }
         let block = self.storage.block_number();
-        let mut bucket_count = self.bucket_count.at_owned(&block);
+        let slots = self.block_slots(block);
+        let mut bucket_count = Slot::<u64>::new(slots.count, self.address);
         let count = bucket_count.read()?;
         let next = count
             .checked_add(1)
             .ok_or_else(NonceError::nonce_overflow)?;
         seen.write(valid_before)?;
-        self.bucket.at_owned(&block).at_owned(&count).write(hash)?;
+        Mapping::<u64, B256>::new(slots.bucket, self.address)
+            .at_owned(&count)
+            .write(hash)?;
         bucket_count.write(next)?;
-        let mut max_expiry = self.bucket_max_expiry.at_owned(&block);
+        let mut max_expiry = Slot::<u64>::new(slots.max_expiry, self.address);
         if valid_before > max_expiry.read()? {
             max_expiry.write(valid_before)?;
         }
@@ -78,7 +114,8 @@ impl ExpiringNonceManager {
         let block = cursor.block.as_mut().expect("initialized above");
         let mut done = false;
         while *block < current_block {
-            let mut max_expiry = self.bucket_max_expiry.at_owned(block);
+            let slots = self.block_slots(*block);
+            let mut max_expiry = Slot::<u64>::new(slots.max_expiry, self.address);
             let expiry = max_expiry.read()?;
             if expiry > now {
                 done = true;
@@ -91,9 +128,9 @@ impl ExpiringNonceManager {
                 cursor.index = 0;
                 continue;
             }
-            let mut bucket_count = self.bucket_count.at_owned(block);
+            let mut bucket_count = Slot::<u64>::new(slots.count, self.address);
             let count = bucket_count.read()?;
-            let bucket = self.bucket.at_owned(block);
+            let bucket = Mapping::<u64, B256>::new(slots.bucket, self.address);
             let end = count.min(cursor.index.saturating_add(limit));
             for i in cursor.index..end {
                 let mut entry = bucket.at_owned(&i);
@@ -147,6 +184,39 @@ mod tests {
     };
     use alloy::primitives::U256;
     use tempo_chainspec::hardfork::TempoHardfork;
+
+    #[test]
+    fn bucket_slot_cache_does_not_share_values_between_views() -> eyre::Result<()> {
+        let mut first = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        let mut fork = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T11);
+        for storage in [&mut first, &mut fork] {
+            storage.set_timestamp(U256::from(1000));
+            storage.set_block_number(7);
+            StorageCtx::enter(storage, || {
+                ExpiringNonceManager::new()
+                    .check_and_mark_expiring_nonce(B256::repeat_byte(1), 1100)
+            })?;
+        }
+        // Switching block numbers also changes the memoized addresses.
+        first.set_block_number(8);
+        StorageCtx::enter(&mut first, || {
+            ExpiringNonceManager::new().check_and_mark_expiring_nonce(B256::repeat_byte(2), 1100)
+        })?;
+        StorageCtx::enter(&mut fork, || {
+            let mut manager = ExpiringNonceManager::new();
+            manager.check_and_mark_expiring_nonce(B256::repeat_byte(2), 1100)?;
+            assert_eq!(manager.bucket_count[7].read()?, 2);
+            assert_eq!(manager.bucket_count[8].read()?, 0);
+            Ok::<_, eyre::Report>(())
+        })?;
+        StorageCtx::enter(&mut first, || {
+            let manager = ExpiringNonceManager::new();
+            assert_eq!(manager.bucket_count[7].read()?, 1);
+            assert_eq!(manager.bucket_count[8].read()?, 1);
+            Ok(())
+        })
+    }
+
     #[test]
     fn test_expiring_nonce_basic_flow() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
