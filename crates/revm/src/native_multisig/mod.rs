@@ -6,7 +6,10 @@ use revm::{
     context_interface::cfg::{GasId, GasParams},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_precompiles::native_multisig::{initial_account_proof_gas, valid_account};
+use tempo_precompiles::{
+    native_multisig::{initial_account_proof_gas, valid_account},
+    storage::CONFIG_COMMITMENT_REGISTRATION_GAS,
+};
 use tempo_primitives::{
     TempoBlockEnv,
     account::decode_config_commitment,
@@ -154,28 +157,22 @@ pub fn validate_state<J: JournalTr>(
     spec: TempoHardfork,
     gas: &GasParams,
 ) -> NativeValidationResult<(u64, u64), <J::Database as revm::Database>::Error> {
+    // Non-AA transactions have no native roles or grant delegate.
+    let Some(aa) = tx.tempo_tx_env.as_ref() else {
+        return Ok((0, 0));
+    };
     let roles = authorizations(tx);
     let invalid = |error| EVMError::Transaction(TempoInvalidTransaction::NativeMultisig(error));
     // Context rejection must not depend on factory configuration or account reads.
     if roles.iter().any(Option::is_some) {
-        let aa = tx.tempo_tx_env.as_ref().expect("roles require AA");
-        if aa
-            .signature
-            .as_keychain()
-            .is_some_and(|key| key.is_legacy())
-        {
+        if aa.signature.is_legacy_keychain() {
             return Err(invalid(NativeMultisigError::InvalidSignatureContext));
         }
         if !spec.is_t14() || matches!(tx.execution_context, ExecutionContext::Unspecified) {
             return Err(invalid(NativeMultisigError::UnsupportedContext));
         }
     }
-    if spec.is_t14()
-        && tx
-            .tempo_tx_env
-            .as_ref()
-            .is_some_and(|aa| aa.signature.is_keychain())
-    {
+    if spec.is_t14() && aa.signature.is_keychain() {
         let caller = journal.load_account(tx.caller)?;
         let commitment = decode_config_commitment(&caller.data.info.extension, true)
             .map_err(|error| EVMError::Custom(error.to_string()))?;
@@ -190,7 +187,6 @@ pub fn validate_state<J: JournalTr>(
     if roles.iter().all(Option::is_none) {
         return Ok((grant_delegate_access_gas(journal, tx, spec, gas, &[])?, 0));
     }
-    let aa = tx.tempo_tx_env.as_ref().expect("roles require AA");
     // Grant signers may be admin access keys; later checks bind them to the caller.
     if let Some(signature) = aa.signature.as_multisig()
         && signature.account() != tx.caller
@@ -201,8 +197,7 @@ pub fn validate_state<J: JournalTr>(
         }));
     }
     let factory = block
-        .multisig_recovery_factory
-        .filter(|factory| !factory.is_zero())
+        .configured_multisig_recovery_factory()
         .ok_or_else(|| invalid(NativeMultisigError::FactoryNotConfigured))?;
     let mut accounts = Vec::with_capacity(2);
     let mut extra_gas = 0;
@@ -242,7 +237,7 @@ pub fn validate_state<J: JournalTr>(
         if commitment.is_zero() {
             extra_gas += initial_account_proof_gas(signature.config());
             if first {
-                extra_gas += 20_000;
+                extra_gas += CONFIG_COMMITMENT_REGISTRATION_GAS;
                 if info.is_empty()
                     && !(address == tx.caller
                         && crate::handler::pays_nonce_zero_account_gas(tx, spec))

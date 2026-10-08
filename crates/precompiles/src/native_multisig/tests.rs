@@ -65,9 +65,7 @@ fn native_rotation_requires_registered_current_leaf_and_direct_authority() {
             native.update_config(account, current.clone(), 1, owners.clone()),
             Err(NativeMultisigError::invalid_config().into())
         );
-        let initial = config(B256::ZERO, 0, 1, owners.clone())
-            .commitment()
-            .unwrap();
+        let initial = config(B256::ZERO, 0, 1, &owners).commitment().unwrap();
         StorageCtx
             .set_config_commitment(account, initial, ConfigCommitmentWriteGas::Intrinsic)
             .unwrap();
@@ -84,7 +82,7 @@ fn native_rotation_requires_registered_current_leaf_and_direct_authority() {
             .unwrap();
         assert_eq!(
             native.get_config_commitment(account).unwrap(),
-            config(B256::ZERO, 2, 1, owners).commitment().unwrap()
+            config(B256::ZERO, 2, 1, &owners).commitment().unwrap()
         );
     });
 }
