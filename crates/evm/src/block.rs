@@ -183,6 +183,7 @@ pub struct TempoBlockExecutor<'a, DB: Database, I> {
     pub(crate) nonce_prune: Option<crate::nonce_prune::PruneReceiver>,
     pub(crate) nonce_prune_requests: Option<std::sync::mpsc::Sender<u64>>,
     nonce_prune_budget: u64,
+    nonce_prune_precredited: Option<u64>,
     pub(crate) inner:
         EthBlockExecutor<'a, TempoEvm<DB, I>, &'a TempoChainSpec, TempoReceiptBuilder>,
 
@@ -211,6 +212,7 @@ where
             nonce_prune: None,
             nonce_prune_requests: None,
             nonce_prune_budget: 0,
+            nonce_prune_precredited: None,
             incentive_gas_used: 0,
             non_payment_gas_left: ctx.general_gas_limit,
             non_shared_gas_left: evm.block().gas_limit.saturating_sub(ctx.shared_gas_limit),
@@ -224,6 +226,32 @@ where
             section: BlockSection::StartOfBlock,
             replay_state: StorageActionReplayState::default(),
         }
+    }
+
+    pub(crate) fn set_nonce_pruner(
+        &mut self,
+        requests: std::sync::mpsc::Sender<u64>,
+        receiver: crate::nonce_prune::PruneReceiver,
+        nonce_count: Option<u64>,
+    ) {
+        self.nonce_prune_precredited = nonce_count.filter(|_| self.evm().cfg.spec.is_t1());
+        if let Some(mut remaining) = self.nonce_prune_precredited {
+            // Validation knows the full budget before execution. Results still use
+            // the bounded chunk stream, and finish verifies the committed count.
+            while remaining != 0 {
+                let credit = remaining.min(crate::nonce_prune::NONCES_PER_REQUEST);
+                if requests.send(credit).is_err() {
+                    break; // finish reports the worker result, including errors.
+                }
+                remaining -= credit;
+            }
+            // No more credits can arrive: let validation's worker finish and
+            // release its parent-state lease before transaction execution ends.
+            drop(requests);
+        } else {
+            self.nonce_prune_requests = Some(requests);
+        }
+        self.nonce_prune = Some(receiver);
     }
 
     /// Commit one ready prune chunk between transactions, or drain all chunks at block end.
@@ -688,7 +716,8 @@ where
         let gas_output = self.inner.commit_transaction(inner);
         if is_expiring_nonce && self.evm().cfg.spec.is_t1() {
             self.nonce_prune_budget += 1;
-            if self.nonce_prune_budget == crate::nonce_prune::NONCES_PER_REQUEST
+            if self.nonce_prune_precredited.is_none()
+                && self.nonce_prune_budget == crate::nonce_prune::NONCES_PER_REQUEST
                 && let Some(requests) = &self.nonce_prune_requests
             {
                 // Errors are reported through the result stream, which finish must drain.
@@ -732,15 +761,26 @@ where
             return Err(BlockValidationError::msg("incentive gas limit exceeded").into());
         }
 
+        if self
+            .nonce_prune_precredited
+            .is_some_and(|count| count != self.nonce_prune_budget)
+        {
+            return Err(BlockValidationError::msg("expiring nonce pruning budget mismatch").into());
+        }
         self.apply_current_committee_system_call()?;
         let prune_finish_start = std::time::Instant::now();
-        let remaining_budget = self.nonce_prune_budget;
+        let remaining_budget = self
+            .nonce_prune_precredited
+            .map_or(self.nonce_prune_budget, |_| 0);
         if let Some(requests) = self.nonce_prune_requests.take() {
-            if self.nonce_prune_budget != 0 {
+            if self.nonce_prune_precredited.is_none() && self.nonce_prune_budget != 0 {
                 let _ = requests.send(self.nonce_prune_budget);
             }
             drop(requests);
-        } else if self.nonce_prune.is_none() && self.nonce_prune_budget != 0 {
+        } else if self.nonce_prune_precredited.is_none()
+            && self.nonce_prune.is_none()
+            && self.nonce_prune_budget != 0
+        {
             let budget = self.nonce_prune_budget;
             let state = crate::nonce_prune::prune(self.evm_mut(), budget)?;
             self.evm_mut().db_mut().commit(state);
@@ -1750,8 +1790,9 @@ mod tests {
         };
         let mut expected = None;
         // Synchronous, asynchronous applied between transactions, and asynchronous
-        // still pending when finish is called must produce identical state/reverts.
-        for mode in 0..3 {
+        // still pending at finish, and validation pruning before execution must
+        // produce identical state/reverts.
+        for mode in 0..4 {
             let mut db = make_db();
             let mut executor = TestExecutorBuilder::default()
                 .with_block_number(2)
@@ -1772,11 +1813,21 @@ mod tests {
             }
             assert!(chunks.len() > 1);
             let (sender, receiver) = std::sync::mpsc::channel();
-            if mode != 0 {
+            if mode == 3 {
+                let (requests, budgets) = std::sync::mpsc::channel();
+                executor.set_nonce_pruner(requests, receiver, Some(3));
+                assert_eq!(budgets.recv().unwrap(), 3);
+            } else if mode != 0 {
                 executor.nonce_prune = Some(receiver);
             }
             executor.apply_pre_execution_changes().unwrap();
-            if mode != 0 {
+            if mode == 3 {
+                for chunk in &chunks {
+                    sender.send(Ok(Some(chunk.clone()))).unwrap();
+                    executor.apply_nonce_pruning(false).unwrap();
+                }
+                sender.send(Ok(None)).unwrap();
+            } else if mode != 0 {
                 executor.apply_nonce_pruning(false).unwrap();
                 assert_eq!(
                     executor
@@ -1815,7 +1866,7 @@ mod tests {
                 .evm_mut()
                 .db_mut()
                 .commit(EvmState::from_iter([(ADDRESS, account)]));
-            if mode != 0 {
+            if mode == 1 || mode == 2 {
                 for chunk in chunks {
                     sender.send(Ok(Some(chunk))).unwrap();
                     if mode == 1 {
@@ -1852,57 +1903,105 @@ mod tests {
     }
 
     #[test]
-    fn nonce_pruning_budget_counts_only_committed_expiring_transactions() {
-        let chainspec = test_chainspec();
-        let mut db = State::builder().with_bundle_update().build();
-        let mut executor = TestExecutorBuilder::default()
-            .with_spec(TempoHardfork::T1)
-            .build(&mut db, &chainspec);
-        let (requests, budgets) = std::sync::mpsc::channel();
-        executor.nonce_prune_requests = Some(requests);
-        let expiring: TempoTxEnvelope = tempo_primitives::AASigned::new_unhashed(
-            TempoTransaction {
-                nonce_key: U256::MAX,
-                ..Default::default()
-            },
-            TempoSignature::default(),
-        )
-        .into();
-        let output = |tx: &TempoTxEnvelope| {
-            TempoTxResult::new_precomputed(
-                tx,
-                ExecutionContext::Transaction {
-                    tx_hash: B256::ZERO,
+    fn nonce_pruning_budget_matches_committed_expiring_transactions() {
+        let committed = crate::nonce_prune::NONCES_PER_REQUEST + 2;
+        for precredited in [
+            None,
+            Some(committed),
+            Some(0),
+            Some(committed - 1),
+            Some(committed + 1),
+        ] {
+            let chainspec = test_chainspec();
+            let mut db = State::builder().with_bundle_update().build();
+            let mut executor = TestExecutorBuilder::default()
+                .with_spec(TempoHardfork::T1)
+                .build(&mut db, &chainspec);
+            let (requests, budgets) = std::sync::mpsc::channel();
+            let (results, receiver) = std::sync::mpsc::channel();
+            executor.set_nonce_pruner(requests, receiver, precredited);
+            let initial = budgets.try_iter().collect::<Vec<_>>();
+            assert!(
+                initial
+                    .iter()
+                    .all(|&credit| credit <= crate::nonce_prune::NONCES_PER_REQUEST)
+            );
+            assert_eq!(initial.iter().sum::<u64>(), precredited.unwrap_or(0));
+            results.send(Ok(None)).unwrap();
+            executor.apply_nonce_pruning(false).unwrap();
+            if precredited.is_some() {
+                assert!(matches!(
+                    budgets.try_recv(),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected)
+                ));
+            }
+            let expiring: TempoTxEnvelope = tempo_primitives::AASigned::new_unhashed(
+                TempoTransaction {
+                    nonce_key: U256::MAX,
+                    ..Default::default()
                 },
-                // Included reverts consume their nonce and must also fund pruning.
-                ExecutionResult::Revert {
-                    gas: ResultGas::default(),
-                    logs: vec![],
-                    output: Bytes::new(),
-                },
-                EvmState::default(),
-                BlockSection::NonShared,
-                true,
-                0,
-                U256::ZERO,
+                TempoSignature::default(),
             )
-        };
-        drop(output(&expiring)); // A discarded candidate grants no credit.
-        executor.commit_transaction(output(&create_legacy_tx()));
-        assert_eq!(executor.nonce_prune_budget, 0);
-        assert!(budgets.try_recv().is_err());
-        for _ in 0..crate::nonce_prune::NONCES_PER_REQUEST + 2 {
-            executor.commit_transaction(output(&expiring));
+            .into();
+            let output = |tx: &TempoTxEnvelope| {
+                TempoTxResult::new_precomputed(
+                    tx,
+                    ExecutionContext::Transaction {
+                        tx_hash: B256::ZERO,
+                    },
+                    // Included reverts consume their nonce and must also fund pruning.
+                    ExecutionResult::Revert {
+                        gas: ResultGas::default(),
+                        logs: vec![],
+                        output: Bytes::new(),
+                    },
+                    EvmState::default(),
+                    BlockSection::NonShared,
+                    true,
+                    0,
+                    U256::ZERO,
+                )
+            };
+            drop(output(&expiring)); // A discarded candidate grants no credit.
+            executor.commit_transaction(output(&create_legacy_tx()));
+            assert_eq!(executor.nonce_prune_budget, 0);
+            assert!(budgets.try_recv().is_err());
+            for _ in 0..crate::nonce_prune::NONCES_PER_REQUEST + 2 {
+                executor.commit_transaction(output(&expiring));
+            }
+            if precredited.is_none() {
+                assert_eq!(
+                    budgets.try_recv().unwrap(),
+                    crate::nonce_prune::NONCES_PER_REQUEST
+                );
+                assert_eq!(executor.nonce_prune_budget, 2);
+            } else {
+                assert_eq!(executor.nonce_prune_budget, committed);
+            }
+            assert!(budgets.try_recv().is_err());
+            let result = executor.finish();
+            if precredited.is_some_and(|count| count != committed) {
+                assert!(
+                    result
+                        .err()
+                        .unwrap()
+                        .to_string()
+                        .contains("pruning budget mismatch")
+                );
+            } else {
+                result.unwrap();
+            }
+            if precredited.is_none() {
+                assert_eq!(budgets.recv().unwrap(), 2);
+            }
+            assert!(budgets.recv().is_err());
+            assert!(
+                !db.cache
+                    .accounts
+                    .contains_key(&tempo_precompiles::EXPIRING_NONCE_PRECOMPILE_ADDRESS),
+                "an already completed worker must not trigger synchronous pruning again"
+            );
         }
-        assert_eq!(
-            budgets.try_recv().unwrap(),
-            crate::nonce_prune::NONCES_PER_REQUEST
-        );
-        assert_eq!(executor.nonce_prune_budget, 2);
-        assert!(budgets.try_recv().is_err());
-        executor.finish().unwrap();
-        assert_eq!(budgets.recv().unwrap(), 2);
-        assert!(budgets.recv().is_err());
     }
 
     #[test]

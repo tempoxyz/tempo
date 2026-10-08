@@ -8,6 +8,8 @@ pub struct TempoBlockExecutionCtx<'a> {
     /// Inner [`EthBlockExecutionCtx`].
     #[deref]
     pub inner: EthBlockExecutionCtx<'a>,
+    /// Budget for background block validation; absent during building or synchronous execution.
+    pub expiring_nonce_count: Option<u64>,
     /// Non-payment gas limit for the block.
     pub general_gas_limit: u64,
     /// Shared gas limit for the block.

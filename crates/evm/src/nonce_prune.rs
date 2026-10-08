@@ -86,7 +86,8 @@ impl TempoEvmConfig {
                     }
                     let mut evm = TempoEvm::new(db, env);
                     let mut cursor = PruneCursor::default();
-                    // Credits come only from committed expiring-nonce transactions.
+                    // Builders grant credits after commit; validators can grant the full
+                    // known block budget up front and verify it at finalization.
                     // Closing requests finishes the block; dropping results cancels it.
                     for limit in prune_budgets(&requests) {
                         let chunk_start = std::time::Instant::now();

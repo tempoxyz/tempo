@@ -38,6 +38,7 @@ impl TempoBlockAssembler {
                     general_gas_limit,
                     shared_gas_limit,
                     consensus_context,
+                    ..
                 },
             parent,
             transactions,
@@ -187,6 +188,7 @@ mod tests {
             },
             general_gas_limit,
             shared_gas_limit,
+            expiring_nonce_count: None,
             consensus_context: None,
         };
 
@@ -296,6 +298,7 @@ mod tests {
             },
             general_gas_limit,
             shared_gas_limit,
+            expiring_nonce_count: None,
             consensus_context: Some(ctx),
         };
 
@@ -376,6 +379,7 @@ mod tests {
             },
             general_gas_limit,
             shared_gas_limit,
+            expiring_nonce_count: None,
             consensus_context: None,
         };
 
