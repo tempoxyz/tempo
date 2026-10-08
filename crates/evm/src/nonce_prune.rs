@@ -18,7 +18,19 @@ use tempo_primitives::TempoBlockEnv;
 // An explicit completion marker distinguishes success from a worker that exits early.
 pub(crate) type PruneReceiver = mpsc::Receiver<Result<Option<EvmState>, BlockExecutionError>>;
 pub(crate) type PruneTask = Arc<Mutex<Option<(mpsc::Sender<u64>, PruneReceiver)>>>;
-pub(crate) const NONCES_PER_CHUNK: u64 = 1024;
+pub(crate) const NONCES_PER_REQUEST: u64 = 256;
+const NONCES_PER_CHUNK: u64 = 1024;
+
+// Start on the first available credit batch; combine queued credits when behind.
+fn prune_budgets(requests: &mpsc::Receiver<u64>) -> impl Iterator<Item = u64> + '_ {
+    requests.iter().map(move |mut limit| {
+        while limit <= NONCES_PER_CHUNK - NONCES_PER_REQUEST {
+            let Ok(next) = requests.try_recv() else { break };
+            limit += next;
+        }
+        limit
+    })
+}
 
 /// Runs the same pruning algorithm used by sequential execution and reconstruction.
 pub(crate) fn prune<DB: Database, I>(
@@ -76,7 +88,7 @@ impl TempoEvmConfig {
                     let mut cursor = PruneCursor::default();
                     // Credits come only from committed expiring-nonce transactions.
                     // Closing requests finishes the block; dropping results cancels it.
-                    for limit in requests {
+                    for limit in prune_budgets(&requests) {
                         let chunk_start = std::time::Instant::now();
                         let (mut state, done) = prune_chunk(&mut evm, &mut cursor, limit)?;
                         for account in state.values_mut() {
@@ -84,7 +96,7 @@ impl TempoEvmConfig {
                         }
                         state.retain(|_, account| !account.storage.is_empty());
                         let slots: usize = state.values().map(|account| account.storage.len()).sum();
-                        tracing::debug!(target: "tempo::nonce_prune", %block, slots, elapsed = ?chunk_start.elapsed(), "Prepared nonce prune chunk");
+                        tracing::debug!(target: "tempo::nonce_prune", %block, limit, slots, elapsed = ?chunk_start.elapsed(), "Prepared nonce prune chunk");
                         // Cancellation releases the parent view without scanning more buckets.
                         if !state.is_empty() && sender.send(Ok(Some(state))).is_err() {
                             return Ok(());
@@ -103,5 +115,29 @@ impl TempoEvmConfig {
             .map_err(BlockExecutionError::other)?;
         self.nonce_prune = Some(Arc::new(Mutex::new(Some((budget, receiver)))));
         Ok(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prune_budgets_start_early_and_coalesce_without_exceeding_limit() {
+        let (sender, receiver) = mpsc::channel();
+        let mut budgets = prune_budgets(&receiver);
+        sender.send(NONCES_PER_REQUEST).unwrap();
+        // Does not wait for a full chunk or for the sender to close.
+        assert_eq!(budgets.next(), Some(NONCES_PER_REQUEST));
+
+        for _ in 0..2 * NONCES_PER_CHUNK / NONCES_PER_REQUEST {
+            sender.send(NONCES_PER_REQUEST).unwrap();
+        }
+        sender.send(3).unwrap();
+        drop(sender);
+        assert_eq!(
+            budgets.collect::<Vec<_>>(),
+            [NONCES_PER_CHUNK, NONCES_PER_CHUNK, 3]
+        );
     }
 }

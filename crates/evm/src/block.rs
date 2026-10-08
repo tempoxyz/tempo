@@ -688,7 +688,7 @@ where
         let gas_output = self.inner.commit_transaction(inner);
         if is_expiring_nonce && self.evm().cfg.spec.is_t1() {
             self.nonce_prune_budget += 1;
-            if self.nonce_prune_budget == crate::nonce_prune::NONCES_PER_CHUNK
+            if self.nonce_prune_budget == crate::nonce_prune::NONCES_PER_REQUEST
                 && let Some(requests) = &self.nonce_prune_requests
             {
                 // Errors are reported through the result stream, which finish must drain.
@@ -733,6 +733,8 @@ where
         }
 
         self.apply_current_committee_system_call()?;
+        let prune_finish_start = std::time::Instant::now();
+        let remaining_budget = self.nonce_prune_budget;
         if let Some(requests) = self.nonce_prune_requests.take() {
             if self.nonce_prune_budget != 0 {
                 let _ = requests.send(self.nonce_prune_budget);
@@ -744,6 +746,7 @@ where
             self.evm_mut().db_mut().commit(state);
         }
         self.apply_nonce_pruning(true)?;
+        tracing::debug!(target: "tempo::nonce_prune", remaining_budget, elapsed = ?prune_finish_start.elapsed(), "Finished nonce pruning");
 
         let amsterdam_eip8037_enabled = self.evm().cfg.enable_amsterdam_eip8037;
 
@@ -1888,12 +1891,12 @@ mod tests {
         executor.commit_transaction(output(&create_legacy_tx()));
         assert_eq!(executor.nonce_prune_budget, 0);
         assert!(budgets.try_recv().is_err());
-        for _ in 0..crate::nonce_prune::NONCES_PER_CHUNK + 2 {
+        for _ in 0..crate::nonce_prune::NONCES_PER_REQUEST + 2 {
             executor.commit_transaction(output(&expiring));
         }
         assert_eq!(
             budgets.try_recv().unwrap(),
-            crate::nonce_prune::NONCES_PER_CHUNK
+            crate::nonce_prune::NONCES_PER_REQUEST
         );
         assert_eq!(executor.nonce_prune_budget, 2);
         assert!(budgets.try_recv().is_err());
