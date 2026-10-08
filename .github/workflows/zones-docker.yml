@@ -93,12 +93,12 @@ jobs:
 
   build-and-push:
     name: Build and Push Docker Images
-    # Private copies retain PR image builds, but must not publish shared images
-    # or run the upstream's scheduled refreshes.
+    # The Docker recipe still targets the Zones repository layout (docker/,
+    # crates/contracts, zones/Cargo.toml). Keep it inert in Tempo until the
+    # Docker migration in .github/README.md lands.
     if: >-
-      (github.event_name != 'workflow_dispatch' || inputs.reproducible_verify != true) &&
-      (github.repository == 'tempoxyz/zones' ||
-      (github.event_name != 'schedule' && github.event_name != 'push'))
+      github.repository == 'tempoxyz/zones' &&
+      (github.event_name != 'workflow_dispatch' || inputs.reproducible_verify != true)
     runs-on: depot-ubuntu-latest-16
     permissions:
       contents: read

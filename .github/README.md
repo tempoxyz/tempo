@@ -31,7 +31,9 @@ publication coverage:
   trust-policy update before those tests can authenticate here.
 - Docker, release, benchmarks, and prover workflows retain distinct product
   behavior. Their legacy paths, repository guards, tag/release ownership, and
-  external event/STS/AWS consumers need a coordinated migration. In particular,
+  external event/STS/AWS consumers need a coordinated migration. The Zones
+  Docker build is gated to `tempoxyz/zones` until then, since its recipe still
+  expects `docker/`, `crates/contracts`, and the Zones Cargo workspace. In particular,
   Tempo and Zones release workflows currently share `v*.*.*` triggers: settle
   release ownership before publishing tags from the integrated branch.
 - Zones reproducible builds have a separate concurrency group so they cannot
