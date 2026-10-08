@@ -119,37 +119,21 @@ mod tests {
 
     #[test]
     fn identity_and_order_are_release_bound() {
-        let mut catalog = Catalog {
-            chains: vec![ChainEras {
-                chain_id: "0x1".into(),
-                genesis_hash: format!("0x{}", "11".repeat(32)),
-                eras: vec![
-                    ReleaseEra {
-                        name: "old".into(),
-                        start_timestamp: 0,
-                        binary: Some("old-tempo".into()),
-                    },
-                    ReleaseEra {
-                        name: "live".into(),
-                        start_timestamp: 100,
-                        binary: None,
-                    },
-                ],
-            }],
-        };
+        let mut catalog: Catalog = serde_json::from_value(serde_json::json!({
+            "chains":[{"chain_id":"0x1", "genesis_hash":format!("0x{:064x}", 1), "eras":[
+                {"name":"old", "start_timestamp":0, "binary":"old-tempo"},
+                {"name":"live", "start_timestamp":100}
+            ]}]
+        }))
+        .unwrap();
         catalog.validate().unwrap();
-        assert!(
-            catalog
-                .for_chain(1, &format!("0x{}", "22".repeat(32)))
-                .is_none()
-        );
+        assert!(catalog.for_chain(1, &format!("0x{:064x}", 2)).is_none());
         let chain = catalog
             .for_chain(1, &catalog.chains[0].genesis_hash)
             .unwrap();
-        assert_eq!(chain.era_for_timestamp(0), 0);
-        assert_eq!(chain.era_for_timestamp(99), 0);
-        assert_eq!(chain.era_for_timestamp(100), 1);
-        assert_eq!(chain.era_for_timestamp(u64::MAX), 1);
+        for (timestamp, era) in [(0, 0), (99, 0), (100, 1), (u64::MAX, 1)] {
+            assert_eq!(chain.era_for_timestamp(timestamp), era);
+        }
         catalog.chains[0].eras[1].start_timestamp = 0;
         assert!(catalog.validate().is_err());
     }

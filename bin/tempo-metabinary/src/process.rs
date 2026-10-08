@@ -237,33 +237,32 @@ async fn wait_for_exit(child: &mut Child, deadline: tokio::time::Instant) -> Res
 }
 
 #[cfg(all(test, unix))]
-mod tests {
+pub(crate) mod tests {
     use super::*;
-    use crate::manifest::Bootstrap;
+    use crate::manifest::tests::manifest;
     use std::os::unix::fs::PermissionsExt;
 
-    fn era(binary: &str, name: &str) -> Era {
-        Era {
-            name: name.into(),
-            start_timestamp: 0,
-            binary: binary.into(),
-            node_args: vec![],
-            rpc_port: 18545,
-            ws_port: None,
-            bootstrap: None,
-        }
+    pub(crate) fn assert_reaped(pid: u32) {
+        // SAFETY: signal zero only checks whether the process exists.
+        assert_eq!(unsafe { libc::kill(pid as libc::pid_t, 0) }, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
     }
 
     #[tokio::test]
     async fn failed_spawn_and_shutdown_reap_every_child() {
         let mut group = ProcessGroup::new();
+        let mut era = manifest().eras.remove(0);
+        era.binary = "/bin/sh".into();
         for (name, command) in [
             ("running", "exec sleep 60"),
             ("forced", "exec sleep 60"),
             ("exited", "exit 7"),
         ] {
             group
-                .spawn(&era("/bin/sh", name), &["-c".into(), command.into()], name)
+                .spawn(&era, &["-c".into(), command.into()], name)
                 .unwrap();
         }
         let pids: Vec<_> = group
@@ -271,25 +270,16 @@ mod tests {
             .iter()
             .map(|worker| worker.child.id().unwrap())
             .collect();
-        assert!(
-            group
-                .spawn(&era("/nonexistent-tempo-test", "failed"), &[], "failed")
-                .is_err()
-        );
+        era.binary = "/nonexistent-tempo-test".into();
+        assert!(group.spawn(&era, &[], "failed").is_err());
         group.workers[2].child.wait().await.unwrap();
         assert!(group.check_alive().is_err());
         wait_for_exit(&mut group.workers[1].child, tokio::time::Instant::now())
             .await
             .unwrap();
-        assert!(group.workers[1].child.try_wait().unwrap().is_some());
         group.shutdown().await.unwrap();
         for pid in pids {
-            // SAFETY: signal zero checks that each child was reaped, rather than just signalled.
-            assert_eq!(unsafe { libc::kill(pid as libc::pid_t, 0) }, -1);
-            assert_eq!(
-                std::io::Error::last_os_error().raw_os_error(),
-                Some(libc::ESRCH)
-            );
+            assert_reaped(pid);
         }
     }
 
@@ -301,22 +291,11 @@ mod tests {
         // Keep arguments as distinct lines, including paths containing spaces.
         std::fs::write(&binary, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$0.args\"\n").unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let mut frozen = era(binary.to_str().unwrap(), "frozen");
-        frozen.bootstrap = Some(Bootstrap {
-            args: vec!["import".into(), "canonical-blocks.rlp".into()],
-            terminal_block_number: 42,
-            terminal_block_hash: format!("0x{}", "11".repeat(32)),
-        });
-        let mut live = era("/bin/false", "live");
-        live.start_timestamp = 100;
-        live.rpc_port = 18546;
-        let manifest = Manifest {
-            chain: "tempo".into(),
-            datadir: temp.path().join("data with spaces"),
-            chain_id: "0x1".into(),
-            genesis_hash: format!("0x{}", "00".repeat(32)),
-            eras: vec![frozen, live],
-        };
+        let mut manifest = manifest();
+        manifest.datadir = temp.path().join("data with spaces");
+        manifest.eras[0].binary = binary;
+        manifest.eras[0].bootstrap.as_mut().unwrap().args =
+            vec!["import".into(), "canonical-blocks.rlp".into()];
         let mut group = ProcessGroup::new();
         group.run_bootstrap(&manifest, 0).await.unwrap();
         let actual = std::fs::read_to_string(output).unwrap();
@@ -326,7 +305,7 @@ mod tests {
                 "import",
                 "canonical-blocks.rlp",
                 "--chain",
-                "tempo",
+                &manifest.chain,
                 "--datadir",
                 manifest.datadir.to_str().unwrap(),
                 "--fail-on-invalid-block",

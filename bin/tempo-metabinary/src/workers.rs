@@ -3,16 +3,7 @@
 //! The node remains the only writer and keeps its normal public RPC transports. These workers
 //! only open existing storage and are started when a historical execution request needs them.
 
-use std::{
-    collections::HashSet,
-    net::TcpListener,
-    path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Duration,
-};
+use std::{collections::HashSet, net::TcpListener, path::PathBuf, sync::Arc, time::Duration};
 
 use eyre::{Context, OptionExt, Result, bail, ensure};
 use jsonrpsee::{
@@ -23,22 +14,18 @@ use jsonrpsee::{
 use serde_json::Value;
 use tokio::{
     process::{Child, Command},
-    sync::{Mutex, Notify},
+    sync::Mutex,
     time::Instant,
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::{
+    catalog::ReleaseEra,
     handshake::{WorkerIdentity, wait_for_worker},
     manifest::{parse_quantity, validate_hash},
     process::{shutdown_children, spawn_child},
-    routing::{ExecutionInfo, RpcParams, upstream_error},
+    routing::{ExecutionInfo, RpcParams, unsupported, upstream_error},
 };
-
-#[derive(Clone, Debug)]
-pub struct WorkerEra {
-    pub name: String,
-    pub binary: PathBuf,
-}
 
 /// Resolved from the ordinary node's chain and data-directory configuration.
 #[derive(Clone, Debug)]
@@ -73,25 +60,19 @@ enum State {
     Failed(String),
 }
 
-struct Inner {
-    context: WorkerContext,
-    eras: Vec<WorkerEra>,
-    states: Vec<Mutex<State>>,
-    closing: AtomicBool,
-    shutdown: Notify,
-}
-
 /// Clones share one process per era. Startup is serialized independently for each era.
 ///
 /// A cancelled request leaves a starting child owned by its state, so another request can finish
 /// the handshake. Explicit shutdown reaps every child; final drop kills children as a fallback.
-#[derive(Clone)]
 pub struct HistoricalWorkers {
-    inner: Arc<Inner>,
+    context: WorkerContext,
+    eras: Vec<ReleaseEra>,
+    states: Vec<Mutex<State>>,
+    shutdown: CancellationToken,
 }
 
 impl HistoricalWorkers {
-    pub fn new(context: WorkerContext, eras: Vec<WorkerEra>) -> Result<Self> {
+    pub fn new(context: WorkerContext, eras: Vec<ReleaseEra>) -> Result<Arc<Self>> {
         ensure!(
             !context.chain.is_empty(),
             "historical worker chain must not be empty"
@@ -113,32 +94,30 @@ impl HistoricalWorkers {
                 "historical era names must be unique and nonempty"
             );
             ensure!(
-                !era.binary.as_os_str().is_empty(),
+                era.binary
+                    .as_ref()
+                    .is_some_and(|path| !path.as_os_str().is_empty()),
                 "historical era {} has no executable",
                 era.name
             );
         }
         let states = eras.iter().map(|_| Mutex::new(State::Dormant)).collect();
-        Ok(Self {
-            inner: Arc::new(Inner {
-                context,
-                eras,
-                states,
-                closing: AtomicBool::new(false),
-                shutdown: Notify::new(),
-            }),
-        })
+        Ok(Arc::new(Self {
+            context,
+            eras,
+            states,
+            shutdown: CancellationToken::new(),
+        }))
     }
 
     pub async fn get(&self, index: usize) -> Result<Arc<HistoricalWorker>> {
         let era = self
-            .inner
             .eras
             .get(index)
             .ok_or_else(|| eyre::eyre!("unknown historical era {index}"))?;
-        let mut state = self.inner.states[index].lock().await;
+        let mut state = self.states[index].lock().await;
         ensure!(
-            !self.inner.closing.load(Ordering::Acquire),
+            !self.shutdown.is_cancelled(),
             "historical workers are shutting down"
         );
         if let State::Failed(error) = &*state {
@@ -146,7 +125,7 @@ impl HistoricalWorkers {
         }
         let result = async {
             if matches!(*state, State::Dormant) {
-                *state = State::Running(Box::new(spawn(&self.inner.context, era)?));
+                *state = State::Running(Box::new(spawn(&self.context, era)?));
             }
             let State::Running(process) = &mut *state else {
                 unreachable!("spawned or failed")
@@ -157,7 +136,7 @@ impl HistoricalWorkers {
             if let Some(worker) = &process.ready {
                 return Ok(worker.clone());
             }
-            let worker = ready(&self.inner, era, process).await?;
+            let worker = ready(self, era, process).await?;
             process.ready = Some(worker.clone());
             Ok(worker)
         }
@@ -183,14 +162,10 @@ impl HistoricalWorkers {
             .await
             .map_err(|error| ErrorObjectOwned::owned(-32000, error.to_string(), None::<()>))?;
         if !worker.info.methods.iter().any(|name| name == method) {
-            return Err(ErrorObjectOwned::owned(
-                -32004,
-                format!(
-                    "{method} is unavailable in historical era {}",
-                    self.inner.eras[index].name
-                ),
-                None::<()>,
-            ));
+            return Err(unsupported(format!(
+                "{method} is unavailable in historical era {}",
+                self.eras[index].name
+            )));
         }
         worker
             .client
@@ -200,19 +175,17 @@ impl HistoricalWorkers {
     }
 
     pub async fn shutdown(&self) -> Result<()> {
-        self.inner.closing.store(true, Ordering::Release);
-        self.inner.shutdown.notify_waiters();
-        let processes =
-            futures::future::join_all(self.inner.states.iter().zip(&self.inner.eras).map(
-                |(slot, era)| async {
-                    let mut state = slot.lock().await;
-                    match std::mem::replace(&mut *state, State::Dormant) {
-                        State::Running(process) => Some((era.name.as_str(), process)),
-                        _ => None,
-                    }
-                },
-            ))
-            .await;
+        self.shutdown.cancel();
+        let processes = futures::future::join_all(self.states.iter().zip(&self.eras).map(
+            |(slot, era)| async {
+                let mut state = slot.lock().await;
+                match std::mem::replace(&mut *state, State::Dormant) {
+                    State::Running(process) => Some((era.name.as_str(), process)),
+                    _ => None,
+                }
+            },
+        ))
+        .await;
         let mut processes: Vec<_> = processes.into_iter().flatten().collect();
         shutdown_children(
             processes
@@ -223,7 +196,7 @@ impl HistoricalWorkers {
     }
 }
 
-fn spawn(context: &WorkerContext, era: &WorkerEra) -> Result<Process> {
+fn spawn(context: &WorkerContext, era: &ReleaseEra) -> Result<Process> {
     let deadline = Instant::now()
         .checked_add(context.startup_timeout)
         .ok_or_eyre("historical worker startup timeout exceeds the clock range")?;
@@ -237,7 +210,11 @@ fn spawn(context: &WorkerContext, era: &WorkerEra) -> Result<Process> {
         // Execution timeouts and public limits belong to the ordinary RPC implementation.
         .request_timeout(Duration::MAX)
         .build(format!("http://127.0.0.1:{port}"))?;
-    let mut command = Command::new(&era.binary);
+    let binary = era
+        .binary
+        .as_ref()
+        .expect("validated historical executable");
+    let mut command = Command::new(binary);
     command
         .args(["rpc-only", "--chain", &context.chain, "--datadir"])
         .arg(&context.datadir)
@@ -252,8 +229,8 @@ fn spawn(context: &WorkerContext, era: &WorkerEra) -> Result<Process> {
         command.arg("--rpc-config").arg(path);
     }
     drop(reservation);
-    let child = spawn_child(&mut command)
-        .wrap_err_with(|| format!("launching {}", era.binary.display()))?;
+    let child =
+        spawn_child(&mut command).wrap_err_with(|| format!("launching {}", binary.display()))?;
     Ok(Process {
         child,
         client,
@@ -263,8 +240,8 @@ fn spawn(context: &WorkerContext, era: &WorkerEra) -> Result<Process> {
 }
 
 async fn ready(
-    inner: &Inner,
-    era: &WorkerEra,
+    workers: &HistoricalWorkers,
+    era: &ReleaseEra,
     process: &mut Process,
 ) -> Result<Arc<HistoricalWorker>> {
     let pid = process
@@ -274,15 +251,15 @@ async fn ready(
     let handshake = wait_for_worker(
         &process.client,
         WorkerIdentity {
-            chain_id: &inner.context.chain_id,
-            genesis_hash: &inner.context.genesis_hash,
+            chain_id: &workers.context.chain_id,
+            genesis_hash: &workers.context.genesis_hash,
             read_only: true,
         },
         pid,
         process.deadline,
         || {
             ensure!(
-                !inner.closing.load(Ordering::Acquire),
+                !workers.shutdown.is_cancelled(),
                 "historical workers are shutting down"
             );
             if let Some(status) = process.child.try_wait()? {
@@ -292,7 +269,7 @@ async fn ready(
         },
     );
     let info = tokio::select! {
-        _ = inner.shutdown.notified() => { bail!("historical workers are shutting down"); },
+        _ = workers.shutdown.cancelled() => { bail!("historical workers are shutting down"); },
         info = handshake => info?,
     };
     tracing::debug!(era = %era.name, pid, "Historical RPC worker ready");
@@ -309,7 +286,7 @@ mod tests {
     use serde_json::json;
     use std::os::unix::fs::PermissionsExt;
 
-    use crate::handshake::EXECUTION_INFO_METHOD;
+    use crate::{handshake::EXECUTION_INFO_METHOD, process::tests::assert_reaped};
 
     /// Executed only as a child fixture, using this test binary as a real private RPC worker.
     #[tokio::test]
@@ -337,16 +314,15 @@ mod tests {
                 _ => vec![EXECUTION_INFO_METHOD.into(), "eth_call".into()],
             }
         });
-        let mut methods = RpcModule::new(info);
-        if mode == "stalled" {
+        let mut methods = RpcModule::new((info, mode == "stalled"));
+        if mode != "missing-protocol" {
             methods
-                .register_async_method(EXECUTION_INFO_METHOD, |_, _, _| async {
-                    std::future::pending::<Value>().await
+                .register_async_method(EXECUTION_INFO_METHOD, |_, info, _| async move {
+                    if info.1 {
+                        std::future::pending::<()>().await;
+                    }
+                    info.0.clone()
                 })
-                .unwrap();
-        } else if mode != "missing-protocol" {
-            methods
-                .register_method(EXECUTION_INFO_METHOD, |_, info, _| info.clone())
                 .unwrap();
         }
         methods
@@ -356,34 +332,26 @@ mod tests {
             .build((std::net::Ipv4Addr::LOCALHOST, port))
             .await
             .unwrap();
-        let _server = server.start(methods);
-        std::future::pending::<()>().await;
+        server.start(methods).stopped().await;
     }
 
     struct Fixture {
         _directory: tempfile::TempDir,
         starts: PathBuf,
-        workers: HistoricalWorkers,
+        workers: Arc<HistoricalWorkers>,
     }
 
     impl Fixture {
         fn new(mode: &str, delay_ms: u64) -> Self {
             let directory = tempfile::tempdir().unwrap();
             let binary = directory.path().join("tempo-frozen");
-            let test_binary = std::env::current_exe().unwrap();
             let quote = |value: &str| format!("'{}'", value.replace('\'', "'\\''"));
             let script = format!(
                 "#!/bin/sh\nprintf '%s\\n' \"$$\" >> \"$0.starts\"\n\
-                 while [ \"$#\" -gt 0 ]; do\n\
-                   if [ \"$1\" = --port ]; then shift; export TEMPO_WORKER_TEST_PORT=\"$1\"; fi\n\
-                   shift\n\
-                 done\n\
-                 export TEMPO_WORKER_TEST_MODE={}\n\
-                 export TEMPO_WORKER_TEST_DELAY_MS={}\n\
+                 while [ \"$1\" != --port ]; do shift; done\n\
+                 export TEMPO_WORKER_TEST_PORT=\"$2\" TEMPO_WORKER_TEST_MODE={mode} TEMPO_WORKER_TEST_DELAY_MS={delay_ms}\n\
                  exec {} --exact workers::tests::child_rpc_fixture --ignored --nocapture\n",
-                quote(mode),
-                delay_ms,
-                quote(test_binary.to_str().unwrap())
+                quote(std::env::current_exe().unwrap().to_str().unwrap())
             );
             std::fs::write(&binary, script).unwrap();
             std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -396,15 +364,12 @@ mod tests {
                     rpc_config: None,
                     chain_id: "0x1".into(),
                     genesis_hash: format!("0x{}", "00".repeat(32)),
-                    startup_timeout: if mode == "stalled" {
-                        Duration::from_secs(2)
-                    } else {
-                        Duration::from_secs(5)
-                    },
+                    startup_timeout: Duration::from_secs(if mode == "stalled" { 2 } else { 5 }),
                 },
-                vec![WorkerEra {
+                vec![ReleaseEra {
                     name: "frozen".into(),
-                    binary: binary.clone(),
+                    start_timestamp: 0,
+                    binary: Some(binary.clone()),
                 }],
             )
             .unwrap();
@@ -417,19 +382,17 @@ mod tests {
 
         fn pids(&self) -> Vec<u32> {
             std::fs::read_to_string(&self.starts)
-                .unwrap()
+                .unwrap_or_default()
                 .lines()
-                .map(|line| line.parse().unwrap())
+                .filter_map(|line| line.parse().ok())
                 .collect()
         }
 
         async fn spawned_pid(&self) -> u32 {
             tokio::time::timeout(Duration::from_secs(5), async {
                 loop {
-                    if let Ok(text) = std::fs::read_to_string(&self.starts)
-                        && let Some(pid) = text.lines().next().and_then(|line| line.parse().ok())
-                    {
-                        return pid;
+                    if let Some(pid) = self.pids().first() {
+                        return *pid;
                     }
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
@@ -437,15 +400,6 @@ mod tests {
             .await
             .unwrap()
         }
-    }
-
-    fn assert_reaped(pid: u32) {
-        // SAFETY: signal zero only checks whether the process exists.
-        assert_eq!(unsafe { libc::kill(pid as libc::pid_t, 0) }, -1);
-        assert_eq!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::ESRCH)
-        );
     }
 
     #[tokio::test]
@@ -493,10 +447,10 @@ mod tests {
             "stalled",
         ] {
             let fixture = Fixture::new(mode, 0);
-            let timeout = fixture.workers.inner.context.startup_timeout + Duration::from_secs(2);
+            let timeout = fixture.workers.context.startup_timeout + Duration::from_secs(2);
             let error = tokio::time::timeout(timeout, fixture.workers.get(0))
                 .await
-                .unwrap_or_else(|_| panic!("worker startup exceeded test deadline: {mode}"))
+                .expect(mode)
                 .unwrap_err();
             if mode == "stalled" {
                 assert!(error.to_string().contains("startup timed out"));
@@ -510,31 +464,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancelled_startup_remains_owned_and_is_reused() {
-        let fixture = Fixture::new("", 400);
-        let workers = fixture.workers.clone();
-        let request = tokio::spawn(async move { workers.get(0).await });
-        let pid = fixture.spawned_pid().await;
-        request.abort();
-        assert!(request.await.unwrap_err().is_cancelled());
-        let worker = fixture.workers.get(0).await.unwrap();
-        assert_eq!(worker.info.process_id, pid);
-        assert_eq!(fixture.pids(), [pid]);
-        fixture.workers.shutdown().await.unwrap();
-        assert_reaped(pid);
-    }
-
-    #[tokio::test]
-    async fn shutdown_interrupts_startup_and_reaps_child() {
-        let fixture = Fixture::new("", 60_000);
-        let workers = fixture.workers.clone();
-        let request = tokio::spawn(async move { workers.get(0).await });
-        let pid = fixture.spawned_pid().await;
-        tokio::time::timeout(Duration::from_secs(2), fixture.workers.shutdown())
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(request.await.unwrap().is_err());
-        assert_reaped(pid);
+    async fn interrupted_startup_keeps_the_child_owned() {
+        for shutdown in [false, true] {
+            let fixture = Fixture::new("", if shutdown { 60_000 } else { 400 });
+            let workers = fixture.workers.clone();
+            let request = tokio::spawn(async move { workers.get(0).await });
+            let pid = fixture.spawned_pid().await;
+            if shutdown {
+                tokio::time::timeout(Duration::from_secs(2), fixture.workers.shutdown())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert!(request.await.unwrap().is_err());
+            } else {
+                request.abort();
+                let _ = request.await;
+                assert_eq!(fixture.workers.get(0).await.unwrap().info.process_id, pid);
+                fixture.workers.shutdown().await.unwrap();
+            }
+            assert_reaped(pid);
+        }
     }
 }

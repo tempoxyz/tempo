@@ -1,15 +1,17 @@
-//! Native Flashbots bundle semantics select configuration from stateBlockNumber and then
-//! advance or override the timestamp. Both contexts must stay inside one executable's era.
+//! Bundle configuration and generated/overridden timestamps must stay in one executable's era.
 use std::{collections::HashSet, sync::Arc};
 
 use futures::future::BoxFuture;
-use jsonrpsee::{core::RpcResult, types::ErrorObjectOwned};
+use jsonrpsee::core::RpcResult;
 use serde_json::{Value, json};
 use tempo_metabinary::{
-    catalog::{ChainEras, ReleaseEra},
     handshake::EXECUTION_INFO_METHOD,
-    routing::{Backend, Route, Router, RpcParams, is_execution_method},
+    routing::{Backend, Router, RpcParams, is_execution_method},
 };
+
+fn hash(number: u64) -> String {
+    format!("0x{number:064x}")
+}
 
 struct Blocks;
 
@@ -22,136 +24,104 @@ impl Backend for Blocks {
     ) -> BoxFuture<'a, RpcResult<Value>> {
         Box::pin(async move {
             assert_eq!(era, 1, "resolve through the live node");
-            if method == "eth_getTransactionByHash" {
-                return Ok(
-                    json!({"blockHash":format!("0x{:064x}", if params.0[0] == "old" {1} else {3})}),
-                );
-            }
-            if method == "eth_getBlockByHash" {
-                let hash = params.0[0].as_str().unwrap();
-                let number = u64::from_str_radix(&hash[2..], 16).unwrap();
-                let (number, timestamp) = match number {
+            let selector = params.0[0].as_str().unwrap();
+            let (number, timestamp) = match (method, selector) {
+                ("eth_getTransactionByHash", _) => {
+                    return Ok(json!({"blockHash":hash(if selector == "old" {1} else {3})}));
+                }
+                ("eth_getBlockByHash", _) => match u64::from_str_radix(&selector[2..], 16).unwrap()
+                {
                     1 => (1, 50),
                     3 => (3, 110),
-                    // Side-chain header has a different timestamp, but Reth replay uses height 2.
+                    // The side-chain timestamp differs, but Reth replays canonical height 2.
                     5 => (2, 150),
-                    _ => panic!("unexpected hash {hash}"),
-                };
-                return Ok(
-                    json!({"number":format!("0x{number:x}"), "hash":hash, "timestamp":format!("0x{timestamp:x}")}),
-                );
-            }
-            assert_eq!(method, "eth_getBlockByNumber");
-            let (number, timestamp) = match params.0[0].as_str().unwrap() {
-                "0x0" => (0, 0),
-                "safe" | "0x1" => (1, 50),
-                "0x2" => (2, 99),
-                "latest" | "0x3" => (3, 110),
-                "0x4" => (4, u64::MAX),
-                selector => panic!("unexpected selector {selector}"),
+                    _ => panic!("unexpected hash {selector}"),
+                },
+                ("eth_getBlockByNumber", "0x0") => (0, 0),
+                ("eth_getBlockByNumber", "safe" | "0x1") => (1, 50),
+                ("eth_getBlockByNumber", "0x2") => (2, 99),
+                ("eth_getBlockByNumber", "latest" | "0x3") => (3, 110),
+                ("eth_getBlockByNumber", "0x4") => (4, u64::MAX),
+                _ => panic!("unexpected {method} {selector}"),
             };
-            Ok(json!({
-                "number": format!("0x{number:x}"),
-                "hash": format!("0x{number:064x}"),
-                "timestamp": format!("0x{timestamp:x}"),
-            }))
+            let hash = if method == "eth_getBlockByHash" {
+                selector.to_owned()
+            } else {
+                hash(number)
+            };
+            Ok(
+                json!({"number":format!("0x{number:x}"), "hash":hash, "timestamp":format!("0x{timestamp:x}")}),
+            )
         })
     }
 }
 
 fn router() -> Router {
     Router::with_backend(
-        ChainEras {
-            chain_id: "0x1".into(),
-            genesis_hash: format!("0x{}", "00".repeat(32)),
-            eras: vec![
-                ReleaseEra {
-                    name: "old".into(),
-                    start_timestamp: 0,
-                    binary: Some("/unused/frozen".into()),
-                },
-                ReleaseEra {
-                    name: "live".into(),
-                    start_timestamp: 100,
-                    binary: None,
-                },
-            ],
-        },
+        serde_json::from_value(json!({"chain_id":"0x1", "genesis_hash":hash(0), "eras":[
+            {"name":"old", "start_timestamp":0, "binary":"/unused/frozen"},
+            {"name":"live", "start_timestamp":100}
+        ]}))
+        .unwrap(),
         Arc::new(Blocks),
         HashSet::new(),
     )
     .unwrap()
 }
 
-async fn route_ok(router: &Router, method: &str, params: Value) -> Route {
-    router.route(method, RpcParams(params)).await.unwrap()
+async fn routed(router: &Router, method: &str, params: Value, era: usize) -> Value {
+    assert!(is_execution_method(method), "{method}");
+    let route = router.route(method, RpcParams(params)).await.unwrap();
+    assert_eq!(route.era, era, "{method}");
+    route.params.0
 }
 
-async fn route_err(router: &Router, method: &str, params: Value) -> ErrorObjectOwned {
-    router.route(method, RpcParams(params)).await.err().unwrap()
+async fn reject(router: &Router, method: &str, params: Value, code: i32) {
+    let error = router.route(method, RpcParams(params)).await.err().unwrap();
+    assert_eq!(error.code(), code, "{method}");
 }
 
-fn request(selector: Value) -> Value {
-    json!({"txs": ["0x02"], "blockNumber": "0xffff", "stateBlockNumber": selector})
-}
-
-#[tokio::test]
-async fn bundle_routes_configuration_and_pins_the_numeric_state_selector() {
-    let router = router();
-    let bundle = request(json!("safe"));
-    let route = route_ok(&router, "eth_callBundle", json!([bundle])).await;
-    assert_eq!(route.era, 0);
-    assert_eq!(route.params.0, json!([request(json!("0x1"))]));
-
-    let mut bundle = request(json!("0x2"));
-    bundle["timestamp"] = json!("0x62");
-    let route = route_ok(&router, "eth_callBundle", json!({"request": bundle})).await;
-    assert_eq!(route.era, 0);
-    assert_eq!(route.params.0, json!({"request": bundle}));
-
-    let route = route_ok(&router, "eth_callBundle", json!([request(json!("latest"))])).await;
-    assert_eq!(route.era, 1);
-    assert_eq!(route.params.0[0]["stateBlockNumber"], "0x3");
-
-    let params = json!([request(json!("pending"))]);
-    let route = route_ok(&router, "eth_callBundle", params.clone()).await;
-    assert_eq!(route.era, 1);
-    assert_eq!(route.params.0, params);
+fn request(selector: &str) -> Value {
+    json!({"txs":["0x02"], "blockNumber":"0xffff", "stateBlockNumber":selector})
 }
 
 #[tokio::test]
-async fn bundle_rejects_generated_and_explicit_timestamp_crossings() {
+async fn bundle_pins_numeric_state_and_rejects_invalid_or_crossing_timestamps() {
     let router = router();
-    for (selector, timestamp) in [
-        ("0x2", None),
-        ("0x1", Some("0x64")),
-        ("latest", Some("0x63")),
-        ("pending", Some("0x63")),
+    for (selector, pinned, era) in [
+        ("safe", "0x1", 0),
+        ("latest", "0x3", 1),
+        ("pending", "pending", 1),
     ] {
-        let mut bundle = request(json!(selector));
+        assert_eq!(
+            routed(&router, "eth_callBundle", json!([request(selector)]), era).await,
+            json!([request(pinned)])
+        );
+    }
+    let mut bundle = request("0x2");
+    bundle["timestamp"] = json!("0x62");
+    let named = json!({"request":bundle});
+    assert_eq!(
+        routed(&router, "eth_callBundle", named.clone(), 0).await,
+        named
+    );
+
+    for (selector, timestamp, code) in [
+        (json!("0x2"), None, -32004),
+        (json!("0x1"), Some("0x64"), -32004),
+        (json!("latest"), Some("0x63"), -32004),
+        (json!("pending"), Some("0x63"), -32004),
+        (json!({"blockNumber":"0x1"}), None, -32602),
+        (json!({"blockHash":hash(1)}), None, -32602),
+        (Value::Null, None, -32602),
+        (json!("0x4"), None, -32602),
+    ] {
+        let mut bundle = request("latest");
+        bundle["stateBlockNumber"] = selector;
         if let Some(timestamp) = timestamp {
             bundle["timestamp"] = json!(timestamp);
         }
-        let error = route_err(&router, "eth_callBundle", json!([bundle])).await;
-        assert_eq!(error.code(), -32004);
-    }
-}
-
-#[tokio::test]
-async fn bundle_rejects_block_id_objects_and_timestamp_overflow() {
-    let router = router();
-    for selector in [
-        json!({"blockNumber":"0x1"}),
-        json!({"blockHash":format!("0x{}", "11".repeat(32))}),
-        Value::Null,
-        json!("0x4"),
-    ] {
-        assert_eq!(
-            route_err(&router, "eth_callBundle", json!([request(selector)]))
-                .await
-                .code(),
-            -32602
-        );
+        reject(&router, "eth_callBundle", json!([bundle]), code).await;
     }
 }
 
@@ -164,16 +134,7 @@ async fn optional_execution_methods_cannot_bypass_era_policy() {
         "ots_getContractCreator",
     ] {
         assert!(is_execution_method(method), "{method}");
-        assert_eq!(route_err(&router, method, json!([])).await.code(), -32004);
-    }
-    for method in [
-        "mev_simBundle",
-        "reth_getBlockExecutionOutcome",
-        "ots_getInternalOperations",
-        "ots_getTransactionError",
-        "ots_traceTransaction",
-    ] {
-        assert!(is_execution_method(method), "{method}");
+        reject(&router, method, json!([]), -32004).await;
     }
     for method in [
         "debug_chainConfig",
@@ -197,106 +158,75 @@ async fn ots_transaction_methods_resolve_the_replayed_transaction() {
         "ots_getTransactionError",
         "ots_traceTransaction",
     ] {
-        let old = route_ok(&router, method, json!({"tx_hash":"old"})).await;
-        assert_eq!(old.era, 0);
-        assert_eq!(old.params.0["tx_hash"], "old");
-        let live = route_ok(&router, method, json!(["live"])).await;
-        assert_eq!(live.era, 1);
+        for (params, era) in [(json!({"tx_hash":"old"}), 0), (json!(["live"]), 1)] {
+            assert_eq!(routed(&router, method, params.clone(), era).await, params);
+        }
     }
 }
 
 #[tokio::test]
-async fn reth_execution_ranges_use_canonical_heights_and_stop_at_the_head() {
+async fn execution_ranges_use_canonical_heights_and_stop_at_the_head() {
     let router = router();
-    let old = route_ok(
-        &router,
-        "reth_getBlockExecutionOutcome",
-        json!(["0x1", "0x2"]),
-    )
-    .await;
-    assert_eq!(old.era, 0);
-    let error = route_err(
-        &router,
-        "reth_getBlockExecutionOutcome",
-        json!(["0x1", "0x3"]),
-    )
-    .await;
-    assert_eq!(error.code(), -32004);
-    let live = route_ok(
-        &router,
-        "reth_getBlockExecutionOutcome",
-        json!({"blockId":"latest", "count":"0x80"}),
-    )
-    .await;
-    assert_eq!(live.era, 1);
-    assert_eq!(live.params.0["count"], "0x80");
-    let side_hash = json!({"blockHash":format!("0x{:064x}", 5), "requireCanonical":true});
-    let side = route_ok(
-        &router,
-        "reth_getBlockExecutionOutcome",
-        json!([side_hash.clone()]),
-    )
-    .await;
-    assert_eq!(side.era, 0);
-    assert_eq!(side.params.0[0], side_hash);
-    for count in ["0x0", "0x81"] {
+    let side_hash = json!({"blockHash":hash(5), "requireCanonical":true});
+    for (params, era, pinned) in [
+        (
+            json!(["0x1", "0x2"]),
+            0,
+            json!([{ "blockHash":hash(1)}, "0x2"]),
+        ),
+        (
+            json!({"blockId":"latest", "count":"0x80"}),
+            1,
+            json!({"blockId":{"blockHash":hash(3)}, "count":"0x80"}),
+        ),
+        (json!([side_hash]), 0, json!([side_hash])),
+        (json!(["0x0", "0x80"]), 1, json!(["0x0", "0x80"])),
+        (json!(["pending", "0x80"]), 1, json!(["pending", "0x80"])),
+    ] {
         assert_eq!(
-            route_err(
-                &router,
-                "reth_getBlockExecutionOutcome",
-                json!(["0x1", count])
-            )
-            .await
-            .code(),
-            -32602
+            routed(&router, "reth_getBlockExecutionOutcome", params, era).await,
+            pinned
         );
     }
-    for selector in ["0x0", "pending"] {
-        assert_eq!(
-            route_ok(
-                &router,
-                "reth_getBlockExecutionOutcome",
-                json!([selector, "0x80"])
-            )
-            .await
-            .era,
-            1
-        );
+    for (count, code) in [("0x3", -32004), ("0x0", -32602), ("0x81", -32602)] {
+        reject(
+            &router,
+            "reth_getBlockExecutionOutcome",
+            json!(["0x1", count]),
+            code,
+        )
+        .await;
     }
 }
 
 #[tokio::test]
 async fn mev_bundle_checks_generated_and_flattened_override_timestamps() {
     let router = router();
-    let request = json!([{}, {"parentBlock":"safe", "time":"0x62"}]);
-    let old = route_ok(&router, "mev_simBundle", request).await;
-    assert_eq!(old.era, 0);
-    assert_eq!(
-        old.params.0[1]["parentBlock"]["blockHash"],
-        format!("0x{:064x}", 1)
-    );
-    let live = route_ok(
-        &router,
-        "mev_simBundle",
-        json!({"bundle":{}, "sim_overrides":{}}),
-    )
-    .await;
-    assert_eq!(live.era, 1);
+    for (params, era, pinned) in [
+        (
+            json!([{}, {"parentBlock":"safe", "time":"0x62"}]),
+            0,
+            json!([{}, {"parentBlock":{"blockHash":hash(1)}, "time":"0x62"}]),
+        ),
+        (
+            json!({"bundle":{}, "sim_overrides":{}}),
+            1,
+            json!({"bundle":{}, "sim_overrides":{"parentBlock":{"blockHash":hash(3)}}}),
+        ),
+        (
+            json!([{}, {"parentBlock":"pending"}]),
+            1,
+            json!([{}, {"parentBlock":"pending"}]),
+        ),
+    ] {
+        assert_eq!(routed(&router, "mev_simBundle", params, era).await, pinned);
+    }
     for overrides in [
         json!({"parentBlock":"0x2"}),
         json!({"parentBlock":"0x2", "time":"0x62"}),
         json!({"parentBlock":"0x1", "timestamp":"0x64"}),
         json!({"parentBlock":"pending", "time":"0x63"}),
     ] {
-        assert_eq!(
-            route_err(&router, "mev_simBundle", json!([{}, overrides]))
-                .await
-                .code(),
-            -32004
-        );
+        reject(&router, "mev_simBundle", json!([{}, overrides]), -32004).await;
     }
-    let pending = json!([{}, {"parentBlock":"pending"}]);
-    let live = route_ok(&router, "mev_simBundle", pending.clone()).await;
-    assert_eq!(live.era, 1);
-    assert_eq!(live.params.0, pending);
 }

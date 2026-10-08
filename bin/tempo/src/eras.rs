@@ -5,21 +5,22 @@ use std::{sync::Arc, time::Duration};
 use alloy_primitives::Bytes;
 use alloy_rlp::Decodable;
 use futures::future::BoxFuture;
-use jsonrpsee::{
-    core::{
-        RpcResult,
-        server::{Methods, MethodsError},
-    },
-    types::{ErrorObjectOwned, error::INTERNAL_ERROR_CODE},
+use jsonrpsee::core::{
+    RpcResult,
+    server::{Methods, MethodsError},
 };
-use reth_ethereum::{chainspec::EthChainSpec as _, rpc::builder::TransportRpcModules};
+use reth_ethereum::{
+    chainspec::EthChainSpec as _,
+    rpc::{builder::TransportRpcModules, eth::EthConfig},
+};
+use reth_rpc_server_types::result::internal_rpc_err;
 use serde_json::Value;
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_metabinary::{
     catalog::{Catalog, ChainEras},
     decorate::decorate,
-    routing::{Backend, Router, RpcParams},
-    workers::{HistoricalWorkers, WorkerContext, WorkerEra},
+    routing::{Backend, Router, RpcParams, invalid},
+    workers::{HistoricalWorkers, WorkerContext},
 };
 
 /// Load chain-bound metadata bundled with the release. Development builds have no frozen eras.
@@ -56,7 +57,7 @@ pub(crate) fn supports_release_catalog(spec: &TempoChainSpec) -> bool {
 
 pub(crate) struct EraRuntime {
     schedule: ChainEras,
-    workers: HistoricalWorkers,
+    workers: Arc<HistoricalWorkers>,
     // Frozen releases parse exactly the live chain's genesis, including custom fork schedules.
     _chain_file: tempfile::NamedTempFile,
     _rpc_config_file: tempfile::NamedTempFile,
@@ -69,20 +70,14 @@ impl EraRuntime {
         datadir: std::path::PathBuf,
         static_files_path: Option<std::path::PathBuf>,
         rocksdb_path: Option<std::path::PathBuf>,
-        rpc_config: Value,
+        rpc_config: EthConfig,
     ) -> eyre::Result<Arc<Self>> {
         schedule.validate()?;
         let mut chain_file = tempfile::Builder::new().suffix(".json").tempfile()?;
         serde_json::to_writer(chain_file.as_file_mut(), chain.genesis())?;
         let mut rpc_config_file = tempfile::NamedTempFile::new()?;
         serde_json::to_writer(rpc_config_file.as_file_mut(), &rpc_config)?;
-        let eras = schedule.eras[..schedule.eras.len() - 1]
-            .iter()
-            .map(|era| WorkerEra {
-                name: era.name.clone(),
-                binary: era.binary.clone().expect("validated frozen executable"),
-            })
-            .collect();
+        let eras = schedule.eras[..schedule.eras.len() - 1].to_vec();
         let workers = HistoricalWorkers::new(
             WorkerContext {
                 chain: chain_file.path().to_string_lossy().into_owned(),
@@ -154,11 +149,7 @@ impl Backend for NativeBackend {
                     .await
                     .map_err(|error| match error {
                         MethodsError::JsonRpc(error) => error,
-                        error => ErrorObjectOwned::owned(
-                            INTERNAL_ERROR_CODE,
-                            error.to_string(),
-                            None::<()>,
-                        ),
+                        error => internal_rpc_err(error.to_string()),
                     })
             } else {
                 self.runtime.workers.request(era, method, params).await
@@ -173,18 +164,14 @@ impl Backend for NativeBackend {
                 Value::Object(values) => values.get("rlp_block").or_else(|| values.get("rlpBlock")),
                 _ => None,
             }
-            .ok_or_else(|| ErrorObjectOwned::owned(-32602, "missing raw block", None::<()>))?;
+            .ok_or_else(|| invalid("missing raw block"))?;
             let bytes: Bytes = serde_json::from_value(value.clone())
-                .map_err(|error| ErrorObjectOwned::owned(-32602, error.to_string(), None::<()>))?;
+                .map_err(|error| invalid(error.to_string()))?;
             let mut raw = bytes.as_ref();
             let block = tempo_primitives::Block::decode(&mut raw)
-                .map_err(|error| ErrorObjectOwned::owned(-32602, error.to_string(), None::<()>))?;
+                .map_err(|error| invalid(error.to_string()))?;
             if !raw.is_empty() {
-                return Err(ErrorObjectOwned::owned(
-                    -32602,
-                    "trailing raw block data",
-                    None::<()>,
-                ));
+                return Err(invalid("trailing raw block data"));
             }
             Ok(block.header.inner.timestamp)
         })
@@ -195,20 +182,18 @@ impl Backend for NativeBackend {
 mod tests {
     use super::*;
     use serde_json::json;
-    use tempo_metabinary::catalog::ReleaseEra;
 
     #[test]
     fn custom_fork_schedule_does_not_inherit_builtin_eras() {
         let known = &*tempo_chainspec::spec::PRESTO;
         assert!(supports_release_catalog(known));
         let mut genesis = known.genesis().clone();
-        let original_hash = known.genesis_hash();
         genesis
             .config
             .extra_fields
             .insert("t11Time".into(), json!(2000000000));
         let custom = TempoChainSpec::from_genesis(genesis);
-        assert_eq!(custom.genesis_hash(), original_hash);
+        assert_eq!(custom.genesis_hash(), known.genesis_hash());
         assert!(!supports_release_catalog(&custom));
     }
 
@@ -216,27 +201,20 @@ mod tests {
     async fn native_registry_routes_with_eth_disabled_and_decodes_tempo_blocks() {
         let chain = &*tempo_chainspec::spec::DEV;
         let runtime = EraRuntime::new(
-            ChainEras {
-                chain_id: format!("0x{:x}", chain.chain_id()),
-                genesis_hash: chain.genesis_hash().to_string(),
-                eras: vec![
-                    ReleaseEra {
-                        name: "old".into(),
-                        start_timestamp: 0,
-                        binary: Some("/missing/frozen-tempo".into()),
-                    },
-                    ReleaseEra {
-                        name: "live".into(),
-                        start_timestamp: 100,
-                        binary: None,
-                    },
-                ],
-            },
+            serde_json::from_value(json!({
+                "chain_id": format!("0x{:x}", chain.chain_id()),
+                "genesis_hash": chain.genesis_hash().to_string(),
+                "eras": [
+                    {"name":"old", "start_timestamp":0, "binary":"/missing/frozen-tempo"},
+                    {"name":"live", "start_timestamp":100}
+                ]
+            }))
+            .unwrap(),
             chain,
             "/unused".into(),
             None,
             None,
-            serde_json::to_value(reth_ethereum::rpc::eth::EthConfig::default()).unwrap(),
+            EthConfig::default(),
         )
         .unwrap();
         let mut resolver = jsonrpsee::RpcModule::new(());
@@ -259,17 +237,19 @@ mod tests {
         assert_eq!(value, "native");
         let backend = NativeBackend {
             resolver: Methods::new(),
-            runtime: runtime.clone(),
+            runtime,
         };
         let mut header = chain.genesis_header().clone();
         header.inner.timestamp = 123;
         let block = tempo_primitives::Block::new(header, Default::default());
         let mut bytes = alloy_rlp::encode(block);
-        let timestamp = backend
-            .raw_block_timestamp(&RpcParams(json!([Bytes::copy_from_slice(&bytes)])))
-            .await
-            .unwrap();
-        assert_eq!(timestamp, 123);
+        assert_eq!(
+            backend
+                .raw_block_timestamp(&RpcParams(json!([Bytes::copy_from_slice(&bytes)])))
+                .await
+                .unwrap(),
+            123
+        );
         bytes.push(0);
         let error = backend
             .raw_block_timestamp(&RpcParams(json!([Bytes::from(bytes)])))
@@ -277,6 +257,5 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.code(), -32602);
         assert_eq!(error.message(), "trailing raw block data");
-        runtime.shutdown().await.unwrap();
     }
 }

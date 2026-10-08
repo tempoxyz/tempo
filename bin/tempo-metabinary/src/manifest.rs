@@ -255,10 +255,10 @@ pub(crate) fn validate_hash(value: &str) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn manifest() -> Manifest {
+    pub(crate) fn manifest() -> Manifest {
         let mut manifest: Manifest =
             serde_json::from_str(include_str!("../examples/eras.json")).unwrap();
         manifest.eras[1].start_timestamp = 100;
@@ -266,20 +266,16 @@ mod tests {
     }
 
     #[test]
-    fn rejects_ambiguous_or_uncovered_eras() {
-        let mut manifest = manifest();
-        manifest.eras[0].start_timestamp = 1;
-        assert!(manifest.validate().is_err());
-        manifest.eras[0].start_timestamp = 0;
-        manifest.eras[1].start_timestamp = 0;
-        assert!(manifest.validate().is_err());
-        manifest.eras[1].start_timestamp = 100;
-        manifest.eras[1].rpc_port = manifest.eras[0].rpc_port;
-        assert!(manifest.validate().is_err());
-    }
-
-    #[test]
-    fn rejects_private_rpc_and_storage_overrides() {
+    fn rejects_invalid_eras_and_worker_options() {
+        let mut schedule = manifest();
+        schedule.eras[0].start_timestamp = 1;
+        assert!(schedule.validate().is_err());
+        schedule.eras[0].start_timestamp = 0;
+        schedule.eras[1].start_timestamp = 0;
+        assert!(schedule.validate().is_err());
+        schedule.eras[1].start_timestamp = 100;
+        schedule.eras[1].rpc_port = schedule.eras[0].rpc_port;
+        assert!(schedule.validate().is_err());
         for flag in [
             "--http.addr=0.0.0.0",
             "--http.port",
@@ -292,10 +288,6 @@ mod tests {
             manifest.eras[1].node_args = vec![flag.into()];
             assert!(manifest.validate().is_err(), "accepted {flag}");
         }
-    }
-
-    #[test]
-    fn bootstrap_requires_execution_and_operator_checkpoint() {
         let mut manifest = manifest();
         manifest.eras[0].bootstrap.as_mut().unwrap().args = vec!["node".into()];
         assert!(manifest.validate_bootstrap().is_err());

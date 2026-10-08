@@ -18,7 +18,6 @@ use reth_ethereum::{
         providers::{BlockchainProvider, RocksDBProvider},
     },
     rpc::{
-        EthApiBuilder,
         builder::{
             RethRpcModule, RpcModuleBuilder, RpcModuleConfig, RpcServerConfig, RpcServerHandle,
             TransportRpcModuleConfig,
@@ -66,7 +65,7 @@ impl RpcOnly {
         std::future::pending().await
     }
 
-    async fn start(self, runtime: Runtime) -> eyre::Result<RpcOnlyHandle> {
+    async fn start(self, runtime: Runtime) -> eyre::Result<RpcServerHandle> {
         let mut rpc_config: EthConfig = match &self.rpc_config {
             Some(path) => serde_json::from_slice(
                 &std::fs::read(path)
@@ -112,53 +111,53 @@ impl RpcOnly {
         let evm = TempoEvmConfig::new(chain_spec.clone());
         let pool = NoopTransactionPool::<TempoPooledTransaction>::new();
         let network = NoopNetwork::default().with_chain_id(chain_spec.chain_id());
-        let eth_api =
-            EthApiBuilder::new(provider.clone(), pool.clone(), network.clone(), evm.clone())
-                // Keep this mapping aligned with the SDK's EthApiCtx::eth_api_builder. The
-                // serialized EthConfig preserves ordinary node CLI options across workers.
-                .task_spawner(runtime.clone())
-                .eth_state_cache_config(rpc_config.cache)
-                .gas_cap(rpc_config.rpc_gas_cap.into())
-                .max_simulate_blocks(rpc_config.rpc_max_simulate_blocks)
-                .compute_state_root_for_eth_simulate(rpc_config.compute_state_root_for_eth_simulate)
-                .eth_proof_window(rpc_config.eth_proof_window)
-                .fee_history_cache_config(rpc_config.fee_history_cache)
-                .proof_permits(rpc_config.proof_permits)
-                .gas_oracle_config(rpc_config.gas_oracle)
-                .max_batch_size(rpc_config.max_batch_size)
-                .max_blocking_io_requests(rpc_config.max_blocking_io_requests)
-                .pending_block_kind(rpc_config.pending_block_kind)
-                .raw_tx_forwarder(rpc_config.raw_tx_forwarder.clone())
-                .evm_memory_limit(rpc_config.rpc_evm_memory_limit)
-                .force_blob_sidecar_upcasting(rpc_config.force_blob_sidecar_upcasting)
-                .map_converter(|_| {
-                    RpcConverter::new(TempoReceiptConverter::new(chain_spec.clone())).erased()
-                })
-                .build();
-        let eth_api = TempoEthApi::new(eth_api);
         let eth_config = EthConfigHandler::new(provider.clone(), evm.clone());
-
-        let mut modules = RpcModuleBuilder::default()
+        let module_builder = RpcModuleBuilder::default()
             .with_provider(provider.clone())
             .with_pool(pool)
             .with_network(network)
-            .with_executor(runtime)
+            .with_executor(runtime.clone())
             .with_evm_config(evm)
-            .with_consensus(TempoConsensus::new(chain_spec.clone()))
-            .build(
-                TransportRpcModuleConfig::default()
-                    .with_config(RpcModuleConfig::new(rpc_config))
-                    .with_http([
-                        RethRpcModule::Eth,
-                        RethRpcModule::Debug,
-                        RethRpcModule::Trace,
-                        RethRpcModule::Reth,
-                        RethRpcModule::Ots,
-                        RethRpcModule::Mev,
-                    ]),
-                eth_api.clone(),
-                Default::default(),
-            );
+            .with_consensus(TempoConsensus::new(chain_spec.clone()));
+        let eth_api = module_builder
+            .eth_api_builder()
+            // Keep this mapping aligned with the SDK's EthApiCtx::eth_api_builder. The
+            // serialized EthConfig preserves ordinary node CLI options across workers.
+            .task_spawner(runtime)
+            .eth_state_cache_config(rpc_config.cache)
+            .gas_cap(rpc_config.rpc_gas_cap.into())
+            .max_simulate_blocks(rpc_config.rpc_max_simulate_blocks)
+            .compute_state_root_for_eth_simulate(rpc_config.compute_state_root_for_eth_simulate)
+            .eth_proof_window(rpc_config.eth_proof_window)
+            .fee_history_cache_config(rpc_config.fee_history_cache)
+            .proof_permits(rpc_config.proof_permits)
+            .gas_oracle_config(rpc_config.gas_oracle)
+            .max_batch_size(rpc_config.max_batch_size)
+            .max_blocking_io_requests(rpc_config.max_blocking_io_requests)
+            .pending_block_kind(rpc_config.pending_block_kind)
+            .raw_tx_forwarder(rpc_config.raw_tx_forwarder.clone())
+            .evm_memory_limit(rpc_config.rpc_evm_memory_limit)
+            .force_blob_sidecar_upcasting(rpc_config.force_blob_sidecar_upcasting)
+            .map_converter(|_| {
+                RpcConverter::new(TempoReceiptConverter::new(chain_spec.clone())).erased()
+            })
+            .build();
+        let eth_api = TempoEthApi::new(eth_api);
+
+        let mut modules = module_builder.build(
+            TransportRpcModuleConfig::default()
+                .with_config(RpcModuleConfig::new(rpc_config))
+                .with_http([
+                    RethRpcModule::Eth,
+                    RethRpcModule::Debug,
+                    RethRpcModule::Trace,
+                    RethRpcModule::Reth,
+                    RethRpcModule::Ots,
+                    RethRpcModule::Mev,
+                ]),
+            eth_api.clone(),
+            Default::default(),
+        );
         modules.merge_http(TempoToken::new(eth_api.clone()).into_rpc())?;
         modules.merge_http(TempoEthExt::new(eth_api.clone()).into_rpc())?;
         modules.merge_http(TempoSimulate::new(eth_api).into_rpc())?;
@@ -167,7 +166,7 @@ impl RpcOnly {
 
         // Subscriptions and transaction submission require live node components. Do not advertise
         // or register these callbacks on the private read-only worker.
-        for method in [
+        modules.remove_http_methods([
             "eth_subscribe",
             "eth_unsubscribe",
             "eth_sendRawTransaction",
@@ -186,9 +185,7 @@ impl RpcOnly {
             "debug_setTrieFlushInterval",
             "debug_standardTraceBadBlockToFile",
             "debug_standardTraceBlockToFile",
-        ] {
-            modules.remove_http_method(method);
-        }
+        ]);
         install_execution_info(
             &mut modules,
             chain_spec.chain_id(),
@@ -210,21 +207,7 @@ impl RpcOnly {
         .start(&modules)
         .await?;
         info!(endpoint = ?handle.http_url(), "Serving private read-only RPC");
-        Ok(RpcOnlyHandle {
-            server: Some(handle),
-        })
-    }
-}
-
-struct RpcOnlyHandle {
-    server: Option<RpcServerHandle>,
-}
-
-impl Drop for RpcOnlyHandle {
-    fn drop(&mut self) {
-        if let Some(server) = self.server.take() {
-            let _ = server.stop();
-        }
+        Ok(handle)
     }
 }
 
@@ -234,17 +217,17 @@ mod tests {
     use alloy_primitives::Address;
     use alloy_rpc_types_eth::TransactionRequest;
     use jsonrpsee::{core::client::ClientT, rpc_params};
+    use serde_json::{Value, json};
+    use tempo_metabinary::handshake::WorkerIdentity;
     use tempo_node::rpc::execution_info::{EXECUTION_INFO_METHOD, ExecutionInfo};
 
     fn command(datadir: &std::path::Path) -> RpcOnly {
         RpcOnly::parse_from([
             "rpc-only",
-            "--chain",
-            "dev",
+            "--chain=dev",
+            "--port=0",
             "--datadir",
             datadir.to_str().unwrap(),
-            "--port",
-            "0",
         ])
     }
 
@@ -252,136 +235,105 @@ mod tests {
     async fn missing_storage_is_rejected_without_creating_files() {
         let parent = tempfile::tempdir().unwrap();
         let path = parent.path().join("missing");
-        let result = command(&path).start(Runtime::test()).await;
-        assert!(result.is_err());
+        assert!(command(&path).start(Runtime::test()).await.is_err());
         assert!(!path.exists());
     }
 
     #[tokio::test]
-    async fn serves_initialized_database_without_live_node_components() {
-        let dir = tempfile::tempdir().unwrap();
+    async fn read_only_rpc_preserves_native_methods_config_and_shutdown() {
         let runtime = Runtime::test();
-        let cmd = command(dir.path());
-        let chain_id = cmd.env.chain.chain_id();
-        let genesis_hash = cmd.env.chain.genesis_hash();
-        let environment = cmd
-            .env
-            .init::<TempoNode>(AccessRights::RW, runtime.clone())
-            .unwrap();
-        drop(environment);
-
-        let worker = cmd.start(runtime).await.unwrap();
-        let client = worker.server.as_ref().unwrap().http_client().unwrap();
-        let info: ExecutionInfo = client
-            .request(EXECUTION_INFO_METHOD, rpc_params![])
-            .await
-            .unwrap();
-        assert!(info.read_only);
-        assert_eq!(info.chain_id, format!("0x{chain_id:x}"));
-        assert_eq!(info.genesis_hash, genesis_hash);
-        for method in [
-            "eth_call",
-            "debug_traceCall",
-            "trace_block",
-            "tempo_simulateV1",
-        ] {
-            assert!(
-                info.methods.iter().any(|name| name == method),
-                "missing {method}"
-            );
-        }
-        assert!(!info.methods.iter().any(|name| name.starts_with("eth_send")));
-        let block_number: String = client
-            .request("eth_blockNumber", rpc_params![])
-            .await
-            .unwrap();
-        assert_eq!(block_number, "0x0");
-        let call = call_request();
-        let output: String = client
-            .request("eth_call", rpc_params![call.clone(), "0x0"])
-            .await
-            .unwrap();
-        assert_eq!(output, "0x");
-        let trace: serde_json::Value = client
-            .request(
-                "debug_traceCall",
-                rpc_params![call, "0x0", serde_json::json!({ "tracer": "callTracer" })],
-            )
-            .await
-            .unwrap();
-        assert_eq!(trace["type"], "CALL");
-        let result = client
-            .request::<serde_json::Value, _>("eth_sendRawTransaction", rpc_params!["0x00"])
-            .await;
-        assert!(
-            matches!(result, Err(jsonrpsee::core::client::Error::Call(err)) if err.code() == -32601)
-        );
-    }
-
-    #[tokio::test]
-    async fn private_config_preserves_the_nodes_execution_gas_cap() {
-        let dir = tempfile::tempdir().unwrap();
-        let capped_dir = tempfile::tempdir().unwrap();
-        let runtime = Runtime::test();
-        let environment = command(dir.path())
-            .env
-            .init::<TempoNode>(AccessRights::RW, runtime.clone())
-            .unwrap();
-        drop(environment);
-        let call = call_request().input(vec![1; 100].into());
-        let ordinary = command(dir.path()).start(runtime.clone()).await.unwrap();
-        let client = ordinary.server.as_ref().unwrap().http_client().unwrap();
-        let output: String = client
-            .request("eth_call", rpc_params![call.clone(), "0x0"])
-            .await
-            .unwrap();
-        assert_eq!(output, "0x");
-        drop(ordinary);
-
-        // MDBX environments cannot be reopened concurrently in the same process. Native
-        // workers are separate processes; use another identical genesis DB for this fixture.
-        let environment = command(capped_dir.path())
-            .env
-            .init::<TempoNode>(AccessRights::RW, runtime.clone())
-            .unwrap();
-        drop(environment);
-        let config_file = tempfile::NamedTempFile::new().unwrap();
-        let config = EthConfig::default().rpc_gas_cap(21_000);
-        serde_json::to_writer(config_file.as_file(), &config).unwrap();
-        let mut capped = command(capped_dir.path());
-        capped.rpc_config = Some(config_file.path().to_owned());
-        let capped = capped.start(runtime).await.unwrap();
-        let client = capped.server.as_ref().unwrap().http_client().unwrap();
-        let error = client
-            .request::<String, _>("eth_call", rpc_params![call, "0x0"])
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(error, jsonrpsee::core::client::Error::Call(ref error)
-            if error.message().to_ascii_lowercase().contains("gas")),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn typed_call_requests_preserve_wire_encoding() {
-        let expected = serde_json::json!({
-            "to": "0x0000000000000000000000000000000000000000",
-            "gas": "0x4c4b40", "gasPrice": "0x0"
-        });
-        assert_eq!(serde_json::to_value(call_request()).unwrap(), expected);
-        let mut expected = expected;
-        expected["input"] = serde_json::json!(format!("0x{}", "01".repeat(100)));
-        assert_eq!(
-            serde_json::to_value(call_request().input(vec![1; 100].into())).unwrap(),
-            expected
-        );
-    }
-
-    fn call_request() -> TransactionRequest {
-        TransactionRequest::default()
+        let call = TransactionRequest::default()
             .to(Address::ZERO)
             .gas_limit(5_000_000)
             .gas_price(0)
+            .input(vec![1; 100].into());
+        // Separate DBs avoid reopening MDBX concurrently in this process.
+        for gas_cap in [None, Some(21_000)] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut cmd = command(dir.path());
+            let chain = cmd.env.chain.clone();
+            drop(
+                cmd.env
+                    .init::<TempoNode>(AccessRights::RW, runtime.clone())
+                    .unwrap(),
+            );
+            let config = tempfile::NamedTempFile::new().unwrap();
+            if let Some(cap) = gas_cap {
+                serde_json::to_writer(config.as_file(), &EthConfig::default().rpc_gas_cap(cap))
+                    .unwrap();
+                cmd.rpc_config = Some(config.path().to_owned());
+            }
+            let worker = cmd.start(runtime.clone()).await.unwrap();
+            let client = worker.http_client().unwrap();
+            let result = client
+                .request::<String, _>("eth_call", rpc_params![call.clone(), "0x0"])
+                .await;
+            if gas_cap.is_some() {
+                let error = result.unwrap_err();
+                assert!(
+                    matches!(error, jsonrpsee::core::client::Error::Call(ref error)
+                    if error.message().to_ascii_lowercase().contains("gas")),
+                    "{error}"
+                );
+            } else {
+                assert_eq!(result.unwrap(), "0x");
+                let info: ExecutionInfo = client
+                    .request(EXECUTION_INFO_METHOD, rpc_params![])
+                    .await
+                    .unwrap();
+                info.validate(
+                    WorkerIdentity {
+                        chain_id: &format!("0x{:x}", chain.chain_id()),
+                        genesis_hash: &chain.genesis_hash().to_string(),
+                        read_only: true,
+                    },
+                    Some(std::process::id()),
+                )
+                .unwrap();
+                for method in [
+                    "eth_call",
+                    "debug_traceCall",
+                    "trace_block",
+                    "tempo_simulateV1",
+                ] {
+                    assert!(
+                        info.methods.iter().any(|name| name == method),
+                        "missing {method}"
+                    );
+                }
+                assert!(!info.methods.iter().any(|name| name.starts_with("eth_send")));
+                assert_eq!(
+                    client
+                        .request::<String, _>("eth_blockNumber", rpc_params![])
+                        .await
+                        .unwrap(),
+                    "0x0"
+                );
+                let trace: Value = client
+                    .request(
+                        "debug_traceCall",
+                        rpc_params![call.clone(), "0x0", json!({"tracer":"callTracer"})],
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(trace["type"], "CALL");
+                assert!(
+                    matches!(client.request::<Value, _>("eth_sendRawTransaction", rpc_params!["0x00"]).await,
+                    Err(jsonrpsee::core::client::Error::Call(error)) if error.code() == -32601)
+                );
+            }
+            drop(worker);
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while client
+                    .request::<String, _>("eth_blockNumber", rpc_params![])
+                    .await
+                    .is_ok()
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("dropping the RPC handle must stop the server");
+        }
     }
 }

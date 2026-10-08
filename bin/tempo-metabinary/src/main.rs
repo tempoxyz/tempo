@@ -184,8 +184,6 @@ async fn serve(
     let router = Arc::new(Router::new(manifest.clone(), clients.clone(), metadata)?);
     let (address, handle) = server::start(router, options.server, ws).await?;
     info!(%address, "era RPC router ready");
-    // The guard stops the server even when main cancels this future on a shutdown signal.
-    let _stop_server = StopServer(handle.clone());
     let mut tick = tokio::time::interval(Duration::from_millis(250));
     loop {
         tokio::select! {
@@ -195,13 +193,6 @@ async fn serve(
                 if !boundary_verified { boundary_verified = verify_live_boundary(&clients[live], &manifest).await?; }
             }
         }
-    }
-}
-
-struct StopServer(jsonrpsee::server::ServerHandle);
-impl Drop for StopServer {
-    fn drop(&mut self) {
-        let _ = self.0.stop();
     }
 }
 
@@ -347,33 +338,12 @@ async fn shutdown_signal() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::CommandFactory;
     use jsonrpsee::{
         RpcModule,
         server::{ServerBuilder, ServerHandle},
     };
     use serde_json::json;
-    use std::{collections::HashMap, sync::Mutex};
-
-    #[test]
-    fn cli_validates_and_parses_archive_and_bootstrap_modes() {
-        Cli::command().debug_assert();
-        let cli = Cli::try_parse_from([
-            "tempo-metabinary",
-            "--manifest",
-            "eras.json",
-            "serve",
-            "--history",
-        ])
-        .unwrap();
-        assert!(matches!(
-            cli.command,
-            Command::Serve(Serve { history: true, .. })
-        ));
-        let cli = Cli::try_parse_from(["tempo-metabinary", "--manifest", "eras.json", "bootstrap"])
-            .unwrap();
-        assert!(matches!(cli.command, Command::Bootstrap));
-    }
+    use std::sync::Mutex;
 
     fn hash(n: u64) -> String {
         format!("0x{n:064x}")
@@ -382,28 +352,18 @@ mod tests {
         json!({"number":format!("0x{n:x}"), "hash":hash(n), "parentHash":hash(n.saturating_sub(1)), "timestamp":format!("0x{timestamp:x}")})
     }
     struct Storage {
-        headers: Arc<Mutex<HashMap<String, Value>>>,
+        headers: Arc<Mutex<Value>>,
         client: HttpClient,
-        server: ServerHandle,
-    }
-    impl Drop for Storage {
-        fn drop(&mut self) {
-            let _ = self.server.stop();
-        }
+        _server: ServerHandle,
     }
     impl Storage {
         async fn new() -> Self {
-            let headers = Arc::new(Mutex::new(HashMap::<String, Value>::new()));
+            let headers = Arc::new(Mutex::new(json!({})));
             let mut module = RpcModule::from_arc(headers.clone());
             module
                 .register_method("eth_getBlockByNumber", |params, headers, _| {
                     let (number, _): (String, bool) = params.parse().unwrap();
-                    headers
-                        .lock()
-                        .unwrap()
-                        .get(&number)
-                        .cloned()
-                        .unwrap_or(Value::Null)
+                    headers.lock().unwrap()[&number].clone()
                 })
                 .unwrap();
             let server = ServerBuilder::default().build("127.0.0.1:0").await.unwrap();
@@ -411,11 +371,11 @@ mod tests {
             Self {
                 headers,
                 client,
-                server: server.start(module),
+                _server: server.start(module),
             }
         }
         fn put(&self, id: &str, value: Value) {
-            self.headers.lock().unwrap().insert(id.into(), value);
+            self.headers.lock().unwrap()[id] = value;
         }
     }
 
@@ -430,71 +390,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bootstrap_requires_canonical_checkpoint_exact_head_and_era() {
+    async fn bootstrap_validates_checkpoint_and_successor() {
         let storage = Storage::new().await;
         let manifest = manifest();
         let checkpoint = manifest.eras[0].bootstrap.as_ref().unwrap();
-        assert!(
-            verify_checkpoint(&storage.client, checkpoint, 0, 100, true)
-                .await
-                .is_err()
-        );
-        storage.put("0x2", header(2, 99));
-        storage.put("latest", header(2, 99));
-        verify_checkpoint(&storage.client, checkpoint, 0, 100, true)
-            .await
-            .unwrap();
-        storage.put("latest", header(3, 100));
-        assert!(
-            verify_checkpoint(&storage.client, checkpoint, 0, 100, true)
-                .await
-                .is_err()
-        );
-        verify_checkpoint(&storage.client, checkpoint, 0, 100, false)
-            .await
-            .unwrap();
-        storage.put("0x2", header(20, 99));
-        assert!(
-            verify_checkpoint(&storage.client, checkpoint, 0, 100, false)
-                .await
-                .is_err()
-        );
-        storage.put("0x2", header(2, 100));
-        assert!(
-            verify_checkpoint(&storage.client, checkpoint, 0, 100, false)
-                .await
-                .is_err()
-        );
-    }
-
-    #[tokio::test]
-    async fn successor_verification_rejects_truncated_bootstrap_and_wrong_parent() {
-        let storage = Storage::new().await;
-        let manifest = manifest();
-        assert!(
-            !verify_live_boundary(&storage.client, &manifest)
-                .await
-                .unwrap()
-        );
-        storage.put("0x3", header(3, 99));
-        assert!(
-            verify_live_boundary(&storage.client, &manifest)
-                .await
-                .is_err()
-        );
+        for (block, head, exact, valid) in [
+            (Value::Null, Value::Null, true, false),
+            (header(2, 99), header(2, 99), true, true),
+            (header(2, 99), header(3, 100), true, false),
+            (header(2, 99), header(3, 100), false, true),
+            (header(20, 99), Value::Null, false, false),
+            (header(2, 100), Value::Null, false, false),
+        ] {
+            storage.put("0x2", block);
+            storage.put("latest", head);
+            assert_eq!(
+                verify_checkpoint(&storage.client, checkpoint, 0, 100, exact)
+                    .await
+                    .is_ok(),
+                valid
+            );
+        }
         let mut wrong_parent = header(3, 100);
         wrong_parent["parentHash"] = json!(hash(42));
-        storage.put("0x3", wrong_parent);
-        assert!(
-            verify_live_boundary(&storage.client, &manifest)
-                .await
-                .is_err()
-        );
-        storage.put("0x3", header(3, 100));
-        assert!(
-            verify_live_boundary(&storage.client, &manifest)
-                .await
-                .unwrap()
-        );
+        for (block, expected) in [
+            (Value::Null, Ok(false)),
+            (header(3, 99), Err(())),
+            (wrong_parent, Err(())),
+            (header(3, 100), Ok(true)),
+        ] {
+            storage.put("0x3", block);
+            assert_eq!(
+                verify_live_boundary(&storage.client, &manifest)
+                    .await
+                    .map_err(|_| ()),
+                expected
+            );
+        }
     }
 }

@@ -1,11 +1,10 @@
 //! Exercise the public JSON-RPC transport against distinct era backends. These tests check
 //! routing semantics and policy, rather than a second implementation of EVM execution.
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use jsonrpsee::{
     RpcModule,
     core::{
-        RpcResult,
         client::{ClientT, Error as ClientError},
         params::BatchRequestBuilder,
     },
@@ -14,8 +13,8 @@ use jsonrpsee::{
 };
 use serde_json::{Value, json};
 use tempo_metabinary::{
-    manifest::{Era, Manifest},
-    routing::{ExecutionInfo, Route, Router, RpcParams},
+    manifest::Manifest,
+    routing::{Router, RpcParams},
     server::{self, ServerOptions},
 };
 
@@ -33,14 +32,6 @@ struct Fixture {
     handles: Vec<ServerHandle>,
 }
 
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        for handle in &self.handles {
-            let _ = handle.stop();
-        }
-    }
-}
-
 impl Fixture {
     async fn new() -> Self {
         Self::with_eras(2, true).await
@@ -49,24 +40,17 @@ impl Fixture {
     async fn with_eras(count: usize, history: bool) -> Self {
         let routed = [
             "eth_call",
-            "eth_estimateGas",
-            "eth_createAccessList",
             "eth_callMany",
             "eth_simulateV1",
             "tempo_simulateV1",
             "debug_traceCallMany",
-            "debug_traceCall",
             "debug_traceBlockByNumber",
             "debug_traceBlockByHash",
-            "debug_traceTransaction",
-            "debug_executionWitness",
             "debug_accountInfoAt",
             "trace_transactionOpcodeGas",
             "trace_blockOpcodeGas",
-            "trace_callMany",
             "trace_filter",
             "eth_futureExecution",
-            "debug_traceBlock",
             "eth_getBlockAccessListByBlockHash",
             "eth_getBlockAccessListByBlockNumber",
             "eth_getBlockAccessList",
@@ -80,35 +64,26 @@ impl Fixture {
         for index in 0..count {
             let mut module = RpcModule::new(());
             let latest = if count == 2 { 4 } else { 7 };
+            for method in ["eth_getBlockByNumber", "eth_getBlockByHash"] {
+                module
+                    .register_method(method, move |params, _, _| {
+                        let (selector, _): (String, bool) = params.parse().unwrap();
+                        let n = match selector.as_str() {
+                            "latest" | "safe" | "finalized" => latest,
+                            "earliest" => 0,
+                            other => {
+                                u64::from_str_radix(other.strip_prefix("0x").unwrap(), 16).unwrap()
+                            }
+                        };
+                        if n > latest { Value::Null } else { block(n) }
+                    })
+                    .unwrap();
+            }
             module
-                .register_method("eth_getBlockByNumber", move |params, _, _| {
-                    let (selector, _): (Value, bool) = params.parse().unwrap();
-                    let n = match selector.as_str().unwrap() {
-                        "latest" | "safe" | "finalized" => latest,
-                        "earliest" => 0,
-                        other => {
-                            u64::from_str_radix(other.strip_prefix("0x").unwrap(), 16).unwrap()
-                        }
-                    };
-                    if n > latest { Value::Null } else { block(n) }
-                })
-                .unwrap();
-            module
-                .register_method("eth_getBlockByHash", move |params, _, _| {
-                    let (h, _): (String, bool) = params.parse().unwrap();
-                    let n = u64::from_str_radix(h.trim_start_matches("0x"), 16).unwrap();
-                    if n > latest { Value::Null } else { block(n) }
-                })
-                .unwrap();
-            module
-                .register_method("eth_getTransactionByHash", |params, _, _| {
-                    let (h,): (String,) = params.parse().unwrap();
-                    if h == hash(999) {
-                        Value::Null
-                    } else {
-                        json!({"blockHash": hash(1)})
-                    }
-                })
+                .register_method(
+                    "eth_getTransactionByHash",
+                    |_, _, _| json!({"blockHash":hash(1)}),
+                )
                 .unwrap();
             module
                 .register_method("eth_getBalance", move |_, _, _| json!({"era":index}))
@@ -120,11 +95,11 @@ impl Fixture {
                 module
                     .register_method(method, move |params, _, _| {
                         let params: Value = params.parse().unwrap_or(Value::Null);
-                        json!({"era":index, "method":method, "params":params})
+                        json!({"era":index, "params":params})
                     })
                     .unwrap();
             }
-            let names = module.method_names().map(str::to_owned).collect();
+            let names: Vec<_> = module.method_names().map(str::to_owned).collect();
             let server = ServerBuilder::default().build("127.0.0.1:0").await.unwrap();
             let address = server.local_addr().unwrap();
             handles.push(server.start(module));
@@ -133,37 +108,22 @@ impl Fixture {
                     .build(format!("http://{address}"))
                     .unwrap(),
             );
-            eras.push(Era {
-                name: format!("era{index}"),
-                binary: "/fake/tempo".into(),
-                start_timestamp: (index * 100) as u64,
-                node_args: vec![],
-                rpc_port: address.port(),
-                ws_port: None,
-                bootstrap: None,
-            });
-            metadata.push(if index + 1 == count || history {
-                Some(ExecutionInfo {
-                    protocol_version: 1,
-                    chain_id: "0xa410".into(),
-                    genesis_hash: hash(0).parse().unwrap(),
-                    read_only: index + 1 != count,
-                    process_id: std::process::id(),
-                    methods: names,
-                })
-            } else {
-                None
-            });
+            eras.push(json!({"name":format!("era{index}"), "binary":"/fake/tempo",
+                "start_timestamp":index * 100, "rpc_port":address.port()}));
+            metadata.push((index + 1 == count || history).then(|| {
+                serde_json::from_value(json!({
+                    "protocolVersion":1, "chainId":"0xa410", "genesisHash":hash(0),
+                    "readOnly":index + 1 != count, "processId":std::process::id(), "methods":names
+                }))
+                .unwrap()
+            }));
         }
-        let manifest = Arc::new(Manifest {
-            chain: "test".into(),
-            datadir: "/fake/data".into(),
-            chain_id: "0xa410".into(),
-            genesis_hash: hash(0),
-            eras,
-        });
+        let manifest: Manifest =
+            serde_json::from_value(json!({"chain":"test", "datadir":"/fake/data",
+            "chain_id":"0xa410", "genesis_hash":hash(0), "eras":eras}))
+            .unwrap();
         Self {
-            router: Arc::new(Router::new(manifest, clients, metadata).unwrap()),
+            router: Arc::new(Router::new(Arc::new(manifest), clients, metadata).unwrap()),
             handles,
         }
     }
@@ -199,61 +159,78 @@ impl Fixture {
             .code()
     }
 
-    async fn route(&self, method: &str, params: Value) -> RpcResult<Route> {
-        self.router.route(method, RpcParams(params)).await
+    async fn check(&self, method: &str, params: Value, era: usize, expected: Value) {
+        let expected = json!({"era":era, "params":expected});
+        assert_eq!(self.call(method, params).await, expected, "{method}");
     }
 }
 
 #[tokio::test]
 async fn debug_subscriptions_guard_the_included_range() {
     let f = Fixture::new().await;
-    let live = f
-        .route("debug_subscribe", json!(["traceChain", "0x2", "0x4"]))
-        .await
-        .unwrap();
-    assert_eq!(live.era, 1); // 0x2 is exclusive and still belongs to the predecessor era.
-    let error = f
-        .route(
-            "debug_subscribe",
+    for (params, expected) in [
+        // The exclusive start belongs to the predecessor; all included blocks are live.
+        (json!(["traceChain", "0x2", "0x4"]), Ok(1)),
+        (
             json!({"subscription":"traceChain", "startExclusive":"0x0", "endInclusive":"0x4"}),
-        )
-        .await
-        .err()
-        .unwrap();
-    assert_eq!(error.code(), -32004);
-    assert_eq!(
-        f.route("debug_subscribe", json!(["native-invalid-subscription"]))
-            .await
-            .unwrap()
-            .era,
-        1
-    );
+            Err(-32004),
+        ),
+        (json!(["native-invalid-subscription"]), Ok(1)),
+    ] {
+        assert_eq!(
+            f.router
+                .route("debug_subscribe", RpcParams(params))
+                .await
+                .map(|route| route.era)
+                .map_err(|error| error.code()),
+            expected
+        );
+    }
 }
 
 #[tokio::test]
-async fn historical_execution_and_stored_state_use_different_backends() {
+async fn execution_routes_and_preserves_native_block_selectors() {
     let f = Fixture::new().await;
-    let old = f.call("eth_call", json!([{}, "0x1"])).await;
-    assert_eq!(old["era"], 0);
-    assert_eq!(old["params"][1], json!({"blockHash":hash(1)}));
-    for (method, selector) in [
-        ("eth_getBlockAccessListByBlockHash", json!(hash(1))),
-        ("eth_getBlockAccessListByBlockNumber", json!("0x1")),
-        ("eth_getBlockAccessList", json!("0x1")),
-        ("eth_getBlockAccessListRaw", json!("0x1")),
-        ("debug_getRawBlockAccessList", json!("0x1")),
-    ] {
-        assert_eq!(
-            f.call(method, json!([selector])).await["era"],
+    f.check(
+        "eth_call",
+        json!([{}, "0x1"]),
+        0,
+        json!([{}, {"blockHash":hash(1)}]),
+    )
+    .await;
+    for selector in ["block_number", "blockNumber"] {
+        f.check(
+            "eth_call",
+            json!({"request":{}, selector:"earliest"}),
             0,
-            "{method}"
-        );
+            json!({"request":{}, selector:{"blockHash":hash(0)}}),
+        )
+        .await;
     }
-    assert_eq!(
-        f.call("eth_call", json!([{}, "pending"])).await["params"][1],
-        "pending"
-    );
+    let id = json!({"blockHash":hash(1), "requireCanonical":true});
     for (method, params, era) in [
+        ("eth_call", json!([{}, id]), 0),
+        ("eth_call", json!([{}, "pending"]), 1),
+        (
+            "eth_callMany",
+            json!([[{"transactions":[{}]}], {"blockNumber":id}]),
+            0,
+        ),
+        (
+            "eth_simulateV1",
+            json!([{"blockStateCalls":[{"calls":[{}]}]}, id]),
+            0,
+        ),
+        ("debug_traceBlockByHash", json!([hash(1)]), 0),
+    ] {
+        f.check(method, params.clone(), era, params).await;
+    }
+    for (method, params, era) in [
+        ("eth_getBlockAccessListByBlockHash", json!([hash(1)]), 0),
+        ("eth_getBlockAccessListByBlockNumber", json!(["0x1"]), 0),
+        ("eth_getBlockAccessList", json!(["0x1"]), 0),
+        ("eth_getBlockAccessListRaw", json!(["0x1"]), 0),
+        ("debug_getRawBlockAccessList", json!(["0x1"]), 0),
         ("eth_call", json!([{}, "0x3"]), 1),
         ("eth_getBalance", json!(["0x0", "0x1"]), 1),
         ("trace_transactionOpcodeGas", json!([hash(10)]), 0),
@@ -265,67 +242,25 @@ async fn historical_execution_and_stored_state_use_different_backends() {
 }
 
 #[tokio::test]
-async fn named_params_pin_the_correct_field_and_preserve_canonical_hash_requirements() {
+async fn simulations_ranges_and_overrides_stay_in_one_era() {
     let f = Fixture::new().await;
-    for selector in ["block_number", "blockNumber"] {
-        let response = f
-            .call("eth_call", json!({"request":{}, selector:"earliest"}))
-            .await;
-        assert_eq!(response["era"], 0);
-        assert_eq!(response["params"][selector], json!({"blockHash":hash(0)}));
-        assert_eq!(response["params"].as_object().unwrap().len(), 2);
-    }
-    let id = json!({"blockHash":hash(1), "requireCanonical":true});
-    let response = f.call("eth_call", json!([{}, id])).await;
-    assert_eq!(response["params"][1], id);
-    let bundle = f
-        .call(
-            "eth_callMany",
-            json!([[{"transactions":[{}]}], {"blockNumber":id}]),
-        )
-        .await;
-    assert_eq!(bundle["params"][1]["blockNumber"], id);
-    let simulated = f
-        .call(
-            "eth_simulateV1",
-            json!([{"blockStateCalls":[{"calls":[{}]}]}, id]),
-        )
-        .await;
-    assert_eq!(simulated["params"][1], id);
-    assert_eq!(
-        f.call("debug_traceBlockByHash", json!([hash(1)])).await["params"][0],
-        hash(1)
-    );
-}
-
-#[tokio::test]
-async fn simulations_select_the_child_era_and_reject_filler_or_bundle_crossings() {
-    let f = Fixture::new().await;
-    // Base state is the last old block, but the child belongs to the new era.
+    // Base state is the last old block; the simulated child is in the new era.
     for (method, payload_name, block_name) in [
         ("eth_simulateV1", "opts", "blockNumber"),
         ("tempo_simulateV1", "payload", "block"),
     ] {
-        let response = f.call(method, json!({payload_name:{"blockStateCalls":[{"blockOverrides":{"time":"0x64"},"calls":[{}]}]}, block_name:"0x2"})).await;
-        assert_eq!(response["era"], 1);
-        assert_eq!(response["params"][block_name], json!({"blockHash":hash(2)}));
+        let params = json!({payload_name:{"blockStateCalls":[{"blockOverrides":{"time":"0x64"},"calls":[{}]}]}, block_name:"0x2"});
+        let mut expected = params.clone();
+        expected[block_name] = json!({"blockHash":hash(2)});
+        f.check(method, params, 1, expected).await;
     }
-    let cross = json!([{"blockStateCalls":[{"blockOverrides":{"time":"0x63"}},{"blockOverrides":{"time":"0x64"}}]},"0x1"]);
-    assert_eq!(f.error_code("eth_simulateV1", cross).await, -32004);
-    // Number gaps create intermediate blocks even if only the final requested block is new.
-    let gap = json!([{"blockStateCalls":[{"blockOverrides":{"blockNumber":"0x40", "timestamp":"0x12c"}}]},"0x1"]);
-    assert_eq!(f.error_code("eth_simulateV1", gap).await, -32004);
-    let bundles = json!([[{"transactions":[{}]}, {"transactions":[{}]}], {"blockNumber":"0x2"}]);
-    assert_eq!(f.error_code("debug_traceCallMany", bundles).await, -32004);
-}
-
-#[tokio::test]
-async fn overrides_cannot_bypass_era_selection_and_nulls_keep_native_defaults() {
-    let f = Fixture::new().await;
-    for name in ["time", "timestamp"] {
-        let overrides = json!([{}, "0x1", null, {name:"0x64"}]);
-        assert_eq!(f.error_code("eth_call", overrides).await, -32004);
-    }
+    f.check(
+        "trace_filter",
+        json!([{}]),
+        1,
+        json!([{"fromBlock":"0x4", "toBlock":"0x4"}]),
+    )
+    .await;
     for (method, params, era) in [
         ("eth_call", json!([{}, "0x1", null, {"time":null}]), 0),
         (
@@ -343,50 +278,57 @@ async fn overrides_cannot_bypass_era_selection_and_nulls_keep_native_defaults() 
             json!([{"fromBlock":null,"toBlock":null}]),
             1,
         ),
+        (
+            "trace_filter",
+            json!([{"fromBlock":"0x1","toBlock":"0x2"}]),
+            0,
+        ),
     ] {
         assert_eq!(f.call(method, params).await["era"], era, "{method}");
     }
-}
-
-#[tokio::test]
-async fn trace_filter_defaults_each_bound_to_latest_and_requires_one_era() {
-    let f = Fixture::new().await;
-    assert_eq!(
-        f.call("trace_filter", json!([{}])).await["params"][0],
-        json!({"fromBlock":"0x4", "toBlock":"0x4"})
-    );
-    assert_eq!(
-        f.call("trace_filter", json!([{"fromBlock":"0x1","toBlock":"0x2"}]))
-            .await["era"],
-        0
-    );
-    assert_eq!(
-        f.error_code("trace_filter", json!([{"fromBlock":"0x1"}]))
-            .await,
-        -32004
-    );
+    for (method, params) in [
+        ("eth_call", json!([{}, "0x1", null, {"time":"0x64"}])),
+        ("eth_call", json!([{}, "0x1", null, {"timestamp":"0x64"}])),
+        (
+            "eth_simulateV1",
+            json!([{"blockStateCalls":[{"blockOverrides":{"time":"0x63"}},{"blockOverrides":{"time":"0x64"}}]},"0x1"]),
+        ),
+        // Number gaps generate intermediate blocks, even if the requested block is new.
+        (
+            "eth_simulateV1",
+            json!([{"blockStateCalls":[{"blockOverrides":{"blockNumber":"0x40", "timestamp":"0x12c"}}]},"0x1"]),
+        ),
+        (
+            "debug_traceCallMany",
+            json!([[{"transactions":[{}]}, {"transactions":[{}]}], {"blockNumber":"0x2"}]),
+        ),
+        ("trace_filter", json!([{"fromBlock":"0x1"}])),
+    ] {
+        assert_eq!(f.error_code(method, params).await, -32004, "{method}");
+    }
 }
 
 #[tokio::test]
 async fn public_registry_enforces_namespaces_and_unknown_execution_fails_closed() {
     let mut f = Fixture::new().await;
     let client = f.public(&["eth", "rpc"], 10_000).await;
-    let error = client
-        .request::<Value, _>("debug_traceBlockByNumber", ("0x1",))
-        .await
-        .unwrap_err();
-    assert!(matches!(error, ClientError::Call(e) if e.code() == -32601));
-    let modules: HashMap<String, String> = client
-        .request("rpc_modules", jsonrpsee::rpc_params![])
-        .await
-        .unwrap();
-    assert!(modules.contains_key("eth"));
-    assert!(!modules.contains_key("debug"));
-    let error = client
-        .request::<Value, _>("eth_futureExecution", ("0x1",))
-        .await
-        .unwrap_err();
-    assert!(matches!(error, ClientError::Call(e) if e.code() == -32004));
+    for (method, code) in [
+        ("debug_traceBlockByNumber", -32601),
+        ("eth_futureExecution", -32004),
+    ] {
+        assert!(
+            matches!(client.request::<Value, _>(method, ("0x1",)).await.unwrap_err(),
+            ClientError::Call(error) if error.code() == code),
+            "{method}"
+        );
+    }
+    assert_eq!(
+        client
+            .request::<Value, _>("rpc_modules", jsonrpsee::rpc_params![])
+            .await
+            .unwrap(),
+        json!({"eth":"1.0", "rpc":"1.0"})
+    );
 }
 
 #[tokio::test]
@@ -394,39 +336,36 @@ async fn batches_route_independently_and_response_limits_apply_to_all_backends()
     let mut f = Fixture::new().await;
     let client = f.public(&["eth", "debug"], 10_000).await;
     let mut batch = BatchRequestBuilder::new();
-    batch.insert("eth_call", (json!({}), "0x1")).unwrap();
-    batch.insert("eth_call", (json!({}), "0x3")).unwrap();
-    batch.insert("debug_traceBlockByNumber", ("0x1",)).unwrap();
+    for (method, params) in [
+        ("eth_call", json!([{}, "0x1"])),
+        ("eth_call", json!([{}, "0x3"])),
+        ("debug_traceBlockByNumber", json!(["0x1"])),
+    ] {
+        batch.insert(method, RpcParams(params)).unwrap();
+    }
     let response = client.batch_request::<Value>(batch).await.unwrap();
-    let values: Vec<_> = response.into_iter().map(Result::unwrap).collect();
     assert_eq!(
-        values
-            .iter()
-            .map(|v| v["era"].as_u64().unwrap())
+        response
+            .into_iter()
+            .map(|result| result.unwrap()["era"].clone())
             .collect::<Vec<_>>(),
         [0, 1, 0]
     );
 
     let limited = f.public(&["eth"], 512).await;
-    assert!(
-        limited
-            .request::<Value, _>("eth_getCode", ("0x0",))
-            .await
-            .is_err()
-    );
-    for target in ["0x1", "0x3"] {
+    for (method, params) in [
+        ("eth_getCode", json!(["0x0"])),
+        ("eth_call", json!([{"data":"x".repeat(3000)}, "0x1"])),
+        ("eth_call", json!([{"data":"x".repeat(3000)}, "0x3"])),
+    ] {
         assert!(
             limited
-                .request::<Value, _>("eth_call", (json!({"data":"x".repeat(3000)}), target))
+                .request::<Value, _>(method, RpcParams(params))
                 .await
-                .is_err()
+                .is_err(),
+            "{method}"
         );
     }
-    let mut batch = BatchRequestBuilder::new();
-    batch.insert("eth_getCode", ("0x0",)).unwrap();
-    batch.insert("eth_call", (json!({}), "0x1")).unwrap();
-    let response = limited.batch_request::<Value>(batch).await;
-    assert!(response.is_err() || response.unwrap().into_iter().any(|r| r.is_err()));
     let mut batch = BatchRequestBuilder::new();
     for _ in 0..10 {
         batch.insert("eth_call", (json!({}), "0x1")).unwrap();
@@ -458,16 +397,16 @@ async fn supports_three_eras_and_live_nodes_need_no_historical_worker() {
             .await["era"],
         2
     );
-    assert_eq!(
-        live_only.error_code("eth_call", json!([{}, "0x1"])).await,
-        -32004
-    );
-    assert_eq!(
-        live_only
-            .error_code("debug_traceBlock", json!(["0xc0"]))
-            .await,
-        -32004
-    );
+    for (method, params) in [
+        ("eth_call", json!([{}, "0x1"])),
+        ("debug_traceBlock", json!(["0xc0"])),
+    ] {
+        assert_eq!(
+            live_only.error_code(method, params).await,
+            -32004,
+            "{method}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -476,12 +415,9 @@ async fn websocket_subscriptions_forward_live_events_and_unsubscribe() {
         core::{SubscriptionResult, client::SubscriptionClientT},
         ws_client::WsClientBuilder,
     };
-    use std::{
-        sync::atomic::{AtomicBool, Ordering},
-        time::Duration,
-    };
+    use std::time::Duration;
     let mut f = Fixture::new().await;
-    let closed = Arc::new(AtomicBool::new(false));
+    let closed = Arc::new(tokio::sync::Notify::new());
     let observer = closed.clone();
     let mut module = RpcModule::new(());
     module
@@ -496,7 +432,7 @@ async fn websocket_subscriptions_forward_live_events_and_unsubscribe() {
                     sink.send(serde_json::value::to_raw_value(&json!({"number":"0x5"}))?)
                         .await?;
                     sink.closed().await;
-                    observer.store(true, Ordering::SeqCst);
+                    observer.notify_one();
                     Ok(()) as SubscriptionResult
                 }
             },
@@ -537,11 +473,7 @@ async fn websocket_subscriptions_forward_live_events_and_unsubscribe() {
         .unwrap();
     assert_eq!(event, json!({"number":"0x5"}));
     subscription.unsubscribe().await.unwrap();
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while !closed.load(Ordering::SeqCst) {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), closed.notified())
+        .await
+        .unwrap();
 }

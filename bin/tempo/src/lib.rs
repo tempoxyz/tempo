@@ -482,7 +482,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     builder.config().datadir().data_dir().to_owned(),
                     datadir.static_files_path.clone(),
                     datadir.rocksdb_path.clone(),
-                    serde_json::to_value(builder.config().rpc.eth_config())?,
+                    builder.config().rpc.eth_config(),
                 )
             })
             .transpose()?;

@@ -84,11 +84,11 @@ pub fn upstream_error(error: ClientError) -> ErrorObjectOwned {
     }
 }
 
-fn invalid(message: impl Into<String>) -> ErrorObjectOwned {
+pub fn invalid(message: impl Into<String>) -> ErrorObjectOwned {
     ErrorObjectOwned::owned(-32602, message.into(), None::<()>)
 }
 
-fn unsupported(message: impl Into<String>) -> ErrorObjectOwned {
+pub(crate) fn unsupported(message: impl Into<String>) -> ErrorObjectOwned {
     ErrorObjectOwned::owned(-32004, message.into(), None::<()>)
 }
 
@@ -128,9 +128,11 @@ impl Block {
     fn id(&self) -> Value {
         json!({"blockHash": self.hash})
     }
-    fn pin(&self, selector: &Value) -> Value {
+    fn pin(&self, selector: Value, number_only: bool) -> Value {
         if selector.get("blockHash").is_some() || selector.as_str().is_some_and(|s| s.len() == 66) {
-            selector.clone()
+            selector
+        } else if number_only {
+            self.number_id()
         } else {
             self.id()
         }
@@ -399,15 +401,7 @@ impl Router {
                         let era = self.era(block.timestamp);
                         self.check_overrides(method, &params, era)?;
                         // Preserve explicit hashes and EIP-1898 requireCanonical. Pin tags/numbers.
-                        let id = if selector.get("blockHash").is_some()
-                            || selector.as_str().is_some_and(|s| s.len() == 66)
-                        {
-                            selector
-                        } else if number_only {
-                            block.number_id()
-                        } else {
-                            block.id()
-                        };
+                        let id = block.pin(selector, number_only);
                         params.set(index, names, id);
                         era
                     }
@@ -550,7 +544,7 @@ impl Router {
             return Err(unsupported("bundle simulation crosses an era boundary"));
         }
         self.check_time(era, Some(&overrides))?;
-        overrides["parentBlock"] = parent.pin(&selector);
+        overrides["parentBlock"] = parent.pin(selector, false);
         params.set(1, names, overrides);
         Ok(era)
     }
@@ -598,7 +592,7 @@ impl Router {
                 }
             }
         }
-        params.set(0, &["block_id", "blockId"], first.pin(&selector));
+        params.set(0, &["block_id", "blockId"], first.pin(selector, false));
         Ok(era)
     }
 
@@ -650,7 +644,7 @@ impl Router {
             if !context.is_object() {
                 return Err(invalid("state context must be an object"));
             }
-            context["blockNumber"] = block.pin(&selector);
+            context["blockNumber"] = block.pin(selector, false);
             params.set(1, &["state_context", "stateContext"], context);
         }
         Ok(era)
@@ -744,7 +738,7 @@ impl Router {
             number = next_number;
             time = next_time;
         }
-        params.set(1, block_names, base.pin(&selector));
+        params.set(1, block_names, base.pin(selector, false));
         Ok(era.unwrap_or(self.era(base.timestamp)))
     }
 }

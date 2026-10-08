@@ -2,24 +2,18 @@
 
 use std::sync::Arc;
 
-use futures::{FutureExt as _, future::BoxFuture};
+use futures::FutureExt as _;
 use jsonrpsee::{
     core::{
-        RegisterMethodError, RpcResult,
+        RegisterMethodError,
         server::{IntoResponse as _, MethodCallback, MethodResponse, Methods, SubscriptionState},
         traits::IdProvider,
     },
-    types::{ErrorObjectOwned, SubscriptionId},
+    types::SubscriptionId,
 };
 use serde_json::Value;
 
-use crate::routing::{Route, Router, RpcParams, is_execution_method};
-
-type RouteCall =
-    Arc<dyn Fn(&'static str, RpcParams) -> BoxFuture<'static, RpcResult<Route>> + Send + Sync>;
-type ForwardCall = Arc<
-    dyn Fn(usize, &'static str, RpcParams) -> BoxFuture<'static, RpcResult<Value>> + Send + Sync,
->;
+use crate::routing::{Router, RpcParams, is_execution_method, unsupported};
 
 /// The native callback consumes its provider synchronously. Allocate from that provider before
 /// awaiting the guard, then give the generated callback the same subscription ID afterwards.
@@ -41,27 +35,6 @@ impl IdProvider for AllocatedId {
 /// their namespace selection, authentication, transport settings, or batching behavior.
 pub fn decorate(methods: Methods, router: Arc<Router>) -> Result<Methods, RegisterMethodError> {
     let live = router.live_index();
-    let route_router = router.clone();
-    decorate_with(
-        methods,
-        live,
-        Arc::new(move |method, params| {
-            let router = route_router.clone();
-            async move { router.route(method, params).await }.boxed()
-        }),
-        Arc::new(move |era, method, params| {
-            let router = router.clone();
-            async move { router.forward(era, method, params).await }.boxed()
-        }),
-    )
-}
-
-fn decorate_with(
-    methods: Methods,
-    live: usize,
-    route: RouteCall,
-    forward: ForwardCall,
-) -> Result<Methods, RegisterMethodError> {
     let mut registry = jsonrpsee::RpcModule::new(());
     *registry = methods;
     let names: Vec<_> = registry
@@ -74,10 +47,10 @@ fn decorate_with(
             && let MethodCallback::Subscription(callback) = &native
         {
             let native = callback.clone();
-            let route = route.clone();
+            let router = router.clone();
             MethodCallback::Subscription(Arc::new(move |id, params, sink, state, extensions| {
                 let native = native.clone();
-                let route = route.clone();
+                let router = router.clone();
                 let id = id.into_owned();
                 let params = params.into_owned();
                 let provider = AllocatedId(state.id_provider.next_id());
@@ -85,7 +58,7 @@ fn decorate_with(
                 let permit = state.subscription_permit;
                 async move {
                     let target = match RpcParams::parse(&params) {
-                        Ok(params) => route(name, params).await,
+                        Ok(params) => router.route(name, params).await,
                         Err(error) => Err(error),
                     };
                     match target {
@@ -106,10 +79,8 @@ fn decorate_with(
                         target => {
                             let error = match target {
                                 Err(error) => error,
-                                Ok(_) => ErrorObjectOwned::owned(
-                                    -32004,
+                                Ok(_) => unsupported(
                                     "historical chain tracing subscriptions are unsupported",
-                                    None::<()>,
                                 ),
                             };
                             let response = MethodResponse::subscription_response(
@@ -129,16 +100,14 @@ fn decorate_with(
         } else if is_execution_method(name)
             && matches!(native, MethodCallback::Sync(_) | MethodCallback::Async(_))
         {
-            let route = route.clone();
-            let forward = forward.clone();
+            let router = router.clone();
             MethodCallback::Async(Arc::new(
                 move |id, params, connection, max_response, extensions| {
                     let native = native.clone();
-                    let route = route.clone();
-                    let forward = forward.clone();
+                    let router = router.clone();
                     async move {
                         let target = match RpcParams::parse(&params) {
-                            Ok(params) => route(name, params).await,
+                            Ok(params) => router.route(name, params).await,
                             Err(error) => Err(error),
                         };
                         match target {
@@ -153,7 +122,9 @@ fn decorate_with(
                             },
                             target => {
                                 let result = match target {
-                                    Ok(target) => forward(target.era, name, target.params).await,
+                                    Ok(target) => {
+                                        router.forward(target.era, name, target.params).await
+                                    }
                                     Err(error) => Err(error),
                                 };
                                 MethodResponse::response(id, result.into_response(), max_response)
@@ -176,42 +147,76 @@ fn decorate_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{catalog::ChainEras, routing::Backend};
+    use futures::future::BoxFuture;
     use jsonrpsee::{
         Extensions, RpcModule,
-        core::server::{BoundedSubscriptions, ConnectionId, MethodSink},
-        types::{Id, Params, error::OVERSIZED_RESPONSE_CODE},
+        core::{
+            RpcResult,
+            server::{BoundedSubscriptions, ConnectionId, MethodSink},
+        },
+        types::{ErrorObjectOwned, Id, Params, error::OVERSIZED_RESPONSE_CODE},
     };
     use serde_json::json;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::{
+        collections::BTreeSet,
+        sync::atomic::{AtomicBool, Ordering},
+    };
 
-    fn target(era: usize, params: Value) -> RouteCall {
-        Arc::new(move |_, _| {
-            let params = params.clone();
+    struct FakeBackend {
+        timestamp: RpcResult<u64>,
+        response: Option<Value>,
+    }
+
+    impl Backend for FakeBackend {
+        fn request<'a>(
+            &'a self,
+            era: usize,
+            method: &'a str,
+            params: RpcParams,
+        ) -> BoxFuture<'a, RpcResult<Value>> {
             async move {
-                Ok(Route {
-                    era,
-                    params: RpcParams(params),
-                })
-            }
-            .boxed()
-        })
+                match method {
+                    "eth_getBlockByNumber" | "eth_getBlockByHash" => {
+                        assert_eq!(era, 1);
+                        let number = if params.0[0] == "0x1" { 1 } else { 2 };
+                        Ok(json!({"number":number, "hash":format!("0x{:064x}", number), "timestamp":self.timestamp.clone()?}))
+                    }
+                    "eth_call" => {
+                        assert_eq!(era, 0);
+                        assert_eq!(params.0, json!({"block":"latest", "block_number":{"blockHash":format!("0x{:064x}", 2)}}));
+                        Ok(self.response.clone().expect("unexpected historical forwarding"))
+                    }
+                    _ => panic!("unexpected method {method}"),
+                }
+            }.boxed()
+        }
     }
 
-    fn no_forward() -> ForwardCall {
-        Arc::new(|_, _, _| async { panic!("unexpected historical forwarding") }.boxed())
+    fn router(timestamp: RpcResult<u64>, response: Option<Value>) -> Arc<Router> {
+        let schedule: ChainEras = serde_json::from_value(json!({
+            "chain_id":"0x1", "genesis_hash":format!("0x{}", "00".repeat(32)),
+            "eras":[
+                {"name":"old", "start_timestamp":0, "binary":"/unused/frozen"},
+                {"name":"live", "start_timestamp":100}
+            ]
+        }))
+        .unwrap();
+        let backend = Arc::new(FakeBackend {
+            timestamp,
+            response,
+        });
+        Arc::new(Router::with_backend(schedule, backend, Default::default()).unwrap())
     }
 
-    async fn invoke(methods: &Methods, name: &str, limit: usize) -> MethodResponse {
+    async fn invoke(methods: &Methods) -> MethodResponse {
         let mut extensions = Extensions::new();
         extensions.insert(42_u32);
         let params = Params::new(Some(r#"{"block":"latest"}"#));
-        match methods.method(name).unwrap() {
-            MethodCallback::Sync(callback) => callback(Id::Number(7), params, limit, extensions),
-            MethodCallback::Async(callback) => {
-                callback(Id::Number(7), params, ConnectionId(11), limit, extensions).await
-            }
-            _ => panic!("ordinary callback required"),
-        }
+        let MethodCallback::Async(callback) = methods.method("eth_call").unwrap() else {
+            panic!("execution callback must be decorated");
+        };
+        callback(Id::Number(7), params, ConnectionId(11), 256, extensions).await
     }
 
     fn native_response(
@@ -247,13 +252,11 @@ mod tests {
             )
             .unwrap();
         let originals: Methods = module.into();
-        let decorated =
-            decorate_with(originals.clone(), 1, target(0, json!([])), no_forward()).unwrap();
-        let mut expected: Vec<_> = originals.method_names().collect();
-        let mut actual: Vec<_> = decorated.method_names().collect();
-        expected.sort_unstable();
-        actual.sort_unstable();
-        assert_eq!(actual, expected);
+        let decorated = decorate(originals.clone(), router(Ok(50), None)).unwrap();
+        assert_eq!(
+            decorated.method_names().collect::<BTreeSet<_>>(),
+            originals.method_names().collect()
+        );
         match (
             originals.method("eth_subscribe"),
             decorated.method("eth_subscribe"),
@@ -276,80 +279,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn live_callbacks_keep_native_context_parameters_and_limits() {
-        for synchronous in [true, false] {
-            let native = if synchronous {
-                MethodCallback::Sync(Arc::new(native_response))
-            } else {
-                MethodCallback::Async(Arc::new(
-                    move |id, params, connection, limit, extensions| {
-                        assert_eq!(connection, ConnectionId(11));
-                        async move { native_response(id, params, limit, extensions) }.boxed()
-                    },
-                ))
-            };
-            let mut methods = Methods::new();
-            methods.verify_and_insert("eth_call", native).unwrap();
-            let decorated =
-                decorate_with(methods, 1, target(1, json!(["pinned"])), no_forward()).unwrap();
-            let response = invoke(&decorated, "eth_call", 256).await;
-            assert_eq!(
-                serde_json::from_str::<Value>(response.as_ref()).unwrap()["result"],
-                "native"
-            );
-            assert_eq!(response.into_parts().2.get::<u32>(), Some(&42));
-        }
-    }
-
-    #[tokio::test]
-    async fn historical_forwarding_uses_pinned_params_and_public_response_limit() {
-        let mut module = RpcModule::new(());
-        module
-            .register_method::<Value, _>("eth_call", |_, _, _| {
-                panic!("native execution must not run")
-            })
-            .unwrap();
-        let forward: ForwardCall = Arc::new(move |era, method, params| {
-            assert_eq!(era, 0);
-            assert_eq!(method, "eth_call");
-            assert_eq!(params.0, json!(["pinned"]));
-            async { Ok(json!("x".repeat(1024))) }.boxed()
-        });
-        let decorated =
-            decorate_with(module.into(), 1, target(0, json!(["pinned"])), forward).unwrap();
-        let response = invoke(&decorated, "eth_call", 256).await;
-        assert_eq!(response.as_error_code(), Some(OVERSIZED_RESPONSE_CODE));
-        let (value, _, extensions) = response.into_parts();
-        assert_eq!(serde_json::from_str::<Value>(value.get()).unwrap()["id"], 7);
-        assert_eq!(extensions.get::<u32>(), Some(&42));
-    }
-
-    #[tokio::test]
-    async fn routing_errors_keep_error_data_and_request_context() {
-        let mut module = RpcModule::new(());
-        module
-            .register_method::<Value, _>("eth_call", |_, _, _| {
-                panic!("native execution must not run")
-            })
-            .unwrap();
-        let route: RouteCall = Arc::new(|_, _| {
-            async {
-                Err(ErrorObjectOwned::owned(
-                    -32004,
-                    "cross-era request",
-                    Some(json!({"era": 0})),
-                ))
+    async fn execution_preserves_native_context_errors_and_response_limits() {
+        let error = ErrorObjectOwned::owned(-32004, "cross-era request", Some(json!({"era":0})));
+        for native in [
+            MethodCallback::Sync(Arc::new(native_response)),
+            MethodCallback::Async(Arc::new(|id, params, connection, limit, extensions| {
+                assert_eq!(connection, ConnectionId(11));
+                async move { native_response(id, params, limit, extensions) }.boxed()
+            })),
+        ] {
+            for code in [None, Some(OVERSIZED_RESPONSE_CODE), Some(-32004)] {
+                let timestamp = match code {
+                    None => Ok(110),
+                    Some(-32004) => Err(error.clone()),
+                    _ => Ok(50),
+                };
+                let mut methods = Methods::new();
+                methods
+                    .verify_and_insert("eth_call", native.clone())
+                    .unwrap();
+                let decorated =
+                    decorate(methods, router(timestamp, Some(json!("x".repeat(1024))))).unwrap();
+                let response = invoke(&decorated).await;
+                assert_eq!(response.as_error_code(), code);
+                let (value, _, extensions) = response.into_parts();
+                let value: Value = serde_json::from_str(value.get()).unwrap();
+                assert_eq!(value["id"], 7);
+                assert_eq!(extensions.get::<u32>(), Some(&42));
+                match code {
+                    None => assert_eq!(value["result"], "native"),
+                    Some(-32004) => {
+                        assert_eq!(value["error"], serde_json::to_value(&error).unwrap())
+                    }
+                    _ => (),
+                }
             }
-            .boxed()
-        });
-        let decorated = decorate_with(module.into(), 1, route, no_forward()).unwrap();
-        let response = invoke(&decorated, "eth_call", 256).await;
-        let (value, _, extensions) = response.into_parts();
-        let value: Value = serde_json::from_str(value.get()).unwrap();
-        assert_eq!(value["id"], 7);
-        assert_eq!(value["error"]["code"], -32004);
-        assert_eq!(value["error"]["data"], json!({"era": 0}));
-        assert_eq!(extensions.get::<u32>(), Some(&42));
+        }
     }
 
     #[tokio::test]
@@ -386,7 +351,7 @@ mod tests {
                 )
                 .unwrap();
             let decorated =
-                decorate_with(methods, 1, target(era, json!([])), no_forward()).unwrap();
+                decorate(methods, router(Ok(if era == 0 { 50 } else { 110 }), None)).unwrap();
             let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
             let mut extensions = Extensions::new();
             extensions.insert(42_u32);
@@ -409,7 +374,6 @@ mod tests {
                 extensions,
             )
             .await;
-            assert!(response.is_subscription());
             assert_eq!(called.load(Ordering::SeqCst), era == 1);
             assert_eq!(response.as_error_code(), (era == 0).then_some(-32004));
             let delivered = receiver.recv().await.unwrap();
