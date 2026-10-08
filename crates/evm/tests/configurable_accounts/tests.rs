@@ -624,27 +624,8 @@ fn native_commitment_persisted_storage_trie_resume_and_proof() {
 #[test]
 fn native_first_call_registration_and_retry() {
     let mut f = Fixture::new();
-    let reverter = Address::repeat_byte(0x55);
-    let code = Bytecode::new_legacy(bytes!("60006000fd"));
-    f.evm.db_mut().insert_account(
-        reverter,
-        AccountInfo {
-            code_hash: code.hash_slow(),
-            code: Some(code),
-            ..Default::default()
-        },
-    );
-    let failed = f.signed(
-        3,
-        vec![
-            f.getter(),
-            Call {
-                to: TxKind::Call(reverter),
-                value: U256::ZERO,
-                input: Default::default(),
-            },
-        ],
-    );
+    let revert = f.install_contract(Address::repeat_byte(0x55), bytes!("60006000fd").to_vec());
+    let failed = f.signed(3, vec![f.getter(), revert]);
     let output = f
         .evm
         .transact(TempoTxEnv::from_recovered_tx(&failed, f.account))
