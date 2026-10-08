@@ -54,6 +54,10 @@ const MAINNET_TESTNET_EPOCH_LENGTH_BLOCKS: u64 = 21_600;
 /// the finalized tip should be able to sync from peers.
 pub const MINIMAL_PEER_SYNC_FINALIZED_BLOCKS: u64 = 3 * MAINNET_TESTNET_EPOCH_LENGTH_BLOCKS;
 
+/// Starts the consensus stack for the execution node.
+///
+/// `estimator` must be a clone of the handle supplied to this node's payload
+/// builder, configured from `config`, so both components share observations.
 pub async fn run_consensus_stack(
     context: commonware_runtime::tokio::Context,
     config: Args,
@@ -61,7 +65,7 @@ pub async fn run_consensus_stack(
     executed_state: tempo_node::ExecutedState,
     feed_state: feed::FeedStateHandle,
     gossip_transport: Option<tempo_node::gossip::TransportHandle>,
-    estimator: tempo_payload_types::Estimator,
+    estimator: tempo_payload_types::ProposalBudgetEstimator,
 ) -> eyre::Result<()> {
     config.validate()?;
     config.check_estimator(&estimator)?;

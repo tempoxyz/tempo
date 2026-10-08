@@ -264,7 +264,7 @@ pub struct ExecutionNodeConfig {
     /// negotiates capabilities during the handshake.
     pub gossip: Option<tempo_node::gossip::Config>,
     /// Proposal budget estimator shared with this node's consensus engine.
-    pub estimator: Option<tempo_node::Estimator>,
+    pub estimator: Option<tempo_node::ProposalBudgetEstimator>,
 }
 
 impl ExecutionNodeConfig {

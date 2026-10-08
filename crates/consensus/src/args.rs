@@ -263,12 +263,7 @@ pub struct Args {
     /// `--consensus.network-budget-max`. One slow proposal alone lifts
     /// nothing, since each own proposal's successor is an independent draw.
     /// The next faster proposal hands the reservation back to the window
-    /// percentile, again by at most 100ms per own proposal. On a 10
-    /// validator, four region benchmark lifting it to the most recent
-    /// network time alone cut the share of proposals whose network time
-    /// exceeded the reservation from 43% to 37% without costing throughput;
-    /// that run also raised the cap from 250 to 320ms and predates the
-    /// current network sample and the per-proposal step.
+    /// percentile, again by at most 100ms per own proposal.
     ///
     /// On by default; pass `--consensus.network-reserve-fast-rise=false` to
     /// reserve the window percentile alone.
@@ -538,14 +533,14 @@ impl FromStr for PositiveDuration {
 impl Args {
     /// The largest network reservation the proposal budget estimator may
     /// learn: `--consensus.network-budget-max` if given, otherwise
-    /// [`tempo_payload_types::EstimatorConfig::default_network_budget_max`],
+    /// [`tempo_payload_types::ProposalBudgetEstimatorConfig::default_network_budget_max`],
     /// which stays valid for any target block time and network budget where a
     /// fixed default would not.
     pub fn network_budget_max(&self) -> Duration {
         if let Some(network_budget_max) = self.network_budget_max {
             return network_budget_max.into_duration();
         }
-        tempo_payload_types::EstimatorConfig::default_network_budget_max(
+        tempo_payload_types::ProposalBudgetEstimatorConfig::default_network_budget_max(
             self.target_block_time.into_duration(),
             self.network_budget.into_duration(),
         )
@@ -556,8 +551,8 @@ impl Args {
     pub fn estimator_config(
         &self,
         build_time_multiplier: f64,
-    ) -> tempo_payload_types::EstimatorConfig {
-        tempo_payload_types::EstimatorConfig {
+    ) -> tempo_payload_types::ProposalBudgetEstimatorConfig {
+        tempo_payload_types::ProposalBudgetEstimatorConfig {
             target_block_time: self.target_block_time.into_duration(),
             network_budget: self.network_budget.into_duration(),
             network_budget_max: self.network_budget_max(),
@@ -574,7 +569,10 @@ impl Args {
     ///
     /// The build time multiplier is the payload builder's flag, so it is
     /// taken from the estimator rather than compared.
-    pub fn check_estimator(&self, estimator: &tempo_payload_types::Estimator) -> eyre::Result<()> {
+    pub fn check_estimator(
+        &self,
+        estimator: &tempo_payload_types::ProposalBudgetEstimator,
+    ) -> eyre::Result<()> {
         let config = estimator.config();
         config.validate().map_err(|reason| {
             eyre::eyre!("invalid proposal budget estimator configuration: {reason}")
@@ -960,15 +958,16 @@ mod tests {
         ])
         .consensus;
         args.validate().unwrap();
-        let estimator = tempo_payload_types::Estimator::new(args.estimator_config(multiplier));
+        let estimator =
+            tempo_payload_types::ProposalBudgetEstimator::new(args.estimator_config(multiplier));
         args.check_estimator(&estimator).unwrap();
-        assert_eq!(
-            estimator.start_proposal(now).overrun_tolerance,
-            Duration::from_millis(40)
-        );
+        let budget = estimator.start_proposal(now);
+        assert!(!budget.overran(budget.return_budget() + Duration::from_millis(40)));
+        assert!(budget.overran(budget.return_budget() + Duration::from_millis(41)));
 
         // The builder's multiplier is the estimator's own.
-        let estimator = tempo_payload_types::Estimator::new(args.estimator_config(1.3));
+        let estimator =
+            tempo_payload_types::ProposalBudgetEstimator::new(args.estimator_config(1.3));
         args.check_estimator(&estimator).unwrap();
 
         // An estimator configured apart from the flags is rejected.

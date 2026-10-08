@@ -50,5 +50,6 @@ type TempoNodeAdapter = NodeAdapter<TempoFullNodeTypes>;
 pub type TempoFullNode = FullNode<TempoNodeAdapter, TempoAddOns<TempoFullNodeTypes>>;
 
 pub use tempo_payload_types::{
-    DEFAULT_BUILD_TIME_MULTIPLIER, Estimator, EstimatorConfig, EstimatorSnapshot,
+    DEFAULT_BUILD_TIME_MULTIPLIER, ProposalBudgetEstimator, ProposalBudgetEstimatorConfig,
+    ProposalBudgetEstimatorSnapshot,
 };

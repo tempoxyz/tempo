@@ -48,7 +48,9 @@ use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_payload_builder::{
     DEFAULT_BUILD_TIME_MULTIPLIER, TempoPayloadBuilder, TempoPayloadBuilderConfig,
 };
-use tempo_payload_types::{Estimator, EstimatorConfig, TempoPayloadAttributes};
+use tempo_payload_types::{
+    ProposalBudgetEstimator, ProposalBudgetEstimatorConfig, TempoPayloadAttributes,
+};
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{
     AA2dPool, AA2dPoolConfig, AddressFilter, TempoTransactionPool,
@@ -356,7 +358,7 @@ impl TempoNode {
     /// times it observes reach the builder's stop decisions and the builder's
     /// finished builds reach consensus's metrics; the proposal window itself
     /// reaches the builder through the payload attributes.
-    pub fn with_estimator(mut self, estimator: Estimator) -> Self {
+    pub fn with_estimator(mut self, estimator: ProposalBudgetEstimator) -> Self {
         self.payload_builder_builder.estimator = Some(estimator);
         self
     }
@@ -872,7 +874,7 @@ pub struct TempoPayloadBuilderBuilder {
     /// Only used when no shared `estimator` is provided.
     pub build_time_multiplier: f64,
     /// Proposal budget estimator shared with consensus, if the node runs one.
-    pub estimator: Option<Estimator>,
+    pub estimator: Option<ProposalBudgetEstimator>,
 }
 
 impl Default for TempoPayloadBuilderBuilder {
@@ -940,9 +942,11 @@ fn parse_build_time_multiplier(value: &str) -> Result<f64, String> {
     let multiplier = value
         .parse::<f64>()
         .map_err(|error| format!("invalid build time multiplier `{value}`: {error}"))?;
-    EstimatorConfig::default()
-        .with_build_time_multiplier(multiplier)
-        .validate()?;
+    ProposalBudgetEstimatorConfig {
+        build_time_multiplier: multiplier,
+        ..ProposalBudgetEstimatorConfig::default()
+    }
+    .validate()?;
     Ok(multiplier)
 }
 
