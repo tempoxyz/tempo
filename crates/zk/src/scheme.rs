@@ -31,6 +31,7 @@ pub struct Scheme {
     verifying_key: Option<&'static [u8; VERIFYING_KEY_LENGTH]>,
     prepared: OnceLock<Option<PreparedVerifyingKey>>,
     genesis_key: OnceLock<GenesisKey>,
+    image: OnceLock<[u32; 8]>,
 }
 
 /// A verifying key from a development chain's genesis.
@@ -48,12 +49,14 @@ static OIDC_RS256_V1: Scheme = Scheme {
     verifying_key: VK_OIDC_RS256_V1,
     prepared: OnceLock::new(),
     genesis_key: OnceLock::new(),
+    image: OnceLock::new(),
 };
 
 /// Returns the scheme with the given byte, if one is defined.
 pub fn scheme(id: u8) -> Option<&'static Scheme> {
     match id {
         SCHEME_OIDC_RS256_V1 => Some(&OIDC_RS256_V1),
+        0x80 => Some(&OIDC_MLDSA65),
         _ => None,
     }
 }
@@ -71,7 +74,32 @@ pub fn set_genesis_keys<'a>(
     Ok(())
 }
 
+static OIDC_MLDSA65: Scheme = Scheme {
+    id: 0x80,
+    namespace: 0x80,
+    max_window: 600,
+    message_form: false,
+    verifying_key: None,
+    prepared: OnceLock::new(),
+    genesis_key: OnceLock::new(),
+    image: OnceLock::new(),
+};
+
 impl Scheme {
+    /// Whether the chain has pinned the verifier for this scheme.
+    pub fn is_active(&'static self) -> bool {
+        if self.id == 0x80 {
+            self.image.get().is_some()
+        } else {
+            self.verifying_key().is_some()
+        }
+    }
+
+    /// Experimental guest image pinned by a development genesis.
+    pub fn image_id(&self) -> Option<[u32; 8]> {
+        self.image.get().copied()
+    }
+
     /// Returns the scheme's prepared verifying key, or `None` while it has none.
     ///
     /// The protocol key takes precedence over a key set from genesis.
@@ -97,6 +125,28 @@ impl Scheme {
     /// Sets the verifying key a development chain's genesis supplies. Fails if the scheme has a
     /// protocol key or a different genesis key.
     pub fn set_genesis_key(&'static self, encoded: &[u8]) -> Result<(), GenesisKeyError> {
+        if self.id == 0x80 {
+            let bytes: [u8; 32] = encoded.try_into().map_err(|_| GenesisKeyError::Length {
+                scheme: self.id,
+                length: encoded.len(),
+            })?;
+            let image = core::array::from_fn(|i| {
+                u32::from_le_bytes(
+                    bytes[i * 4..i * 4 + 4]
+                        .try_into()
+                        .expect("four-byte image word"),
+                )
+            });
+            if image == [0; 8] {
+                return Err(GenesisKeyError::Conflict(self.id));
+            }
+            let _ = self.image.set(image);
+            return if self.image.get() == Some(&image) {
+                Ok(())
+            } else {
+                Err(GenesisKeyError::Conflict(self.id))
+            };
+        }
         if self.verifying_key.is_some() {
             return Err(GenesisKeyError::ProtocolKey(self.id));
         }
@@ -176,6 +226,7 @@ mod tests {
             verifying_key,
             prepared: OnceLock::new(),
             genesis_key: OnceLock::new(),
+            image: OnceLock::new(),
         }
     }
 

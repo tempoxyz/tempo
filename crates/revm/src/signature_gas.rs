@@ -27,6 +27,9 @@ pub const ZK_VERIFY_GAS: u64 = 350_000;
 #[inline]
 pub(crate) fn primitive_signature_verification_gas(signature: &PrimitiveSignature) -> u64 {
     match signature {
+        PrimitiveSignature::Mldsa65(sig) => {
+            100_000 + 16 * (sig.public_key.len() + sig.signature.len()) as u64
+        }
         PrimitiveSignature::Secp256k1(_) => 0,
         PrimitiveSignature::P256(_) => P256_VERIFY_GAS,
         PrimitiveSignature::WebAuthn(webauthn_sig) => {
@@ -75,8 +78,11 @@ pub(crate) fn zk_signature_verification_gas(signature: &ZkSignature) -> u64 {
     // except that signature.
     let bytes = signature.to_bytes();
     let rest = &bytes[..bytes.len() - signature.access_key_signature_length()];
-    ZK_VERIFY_GAS
-        + primitive_signature_verification_gas(&signature.access_key_signature)
+    (if signature.scheme == 0x80 {
+        10_000_000
+    } else {
+        ZK_VERIFY_GAS
+    }) + primitive_signature_verification_gas(&signature.access_key_signature)
         + COLD_SLOAD_COST
         + get_tokens_in_calldata_istanbul(rest) * STANDARD_TOKEN_COST
 }

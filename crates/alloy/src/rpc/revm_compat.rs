@@ -139,6 +139,12 @@ pub(super) fn create_mock_primitive_signature(
     };
 
     match sig_type {
+        SignatureType::Mldsa65 => PrimitiveSignature::Mldsa65(
+            tempo_primitives::transaction::tt_signature::Mldsa65Signature {
+                public_key: vec![0; 1952].into(),
+                signature: vec![0; 3309].into(),
+            },
+        ),
         SignatureType::Secp256k1 => PrimitiveSignature::Secp256k1(Signature::new(
             alloy_primitives::U256::ZERO,
             alloy_primitives::U256::ZERO,

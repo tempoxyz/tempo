@@ -56,6 +56,29 @@ pub const SIGNATURE_TYPE_WEBAUTHN: u8 = 0x02;
 pub const SIGNATURE_TYPE_KEYCHAIN: u8 = 0x03;
 pub const SIGNATURE_TYPE_KEYCHAIN_V2: u8 = 0x04;
 
+/// Experimental ML-DSA-65 signature with its public key.
+pub const SIGNATURE_TYPE_MLDSA65: u8 = 0x80;
+
+/// Encoded ML-DSA-65 public key and signature.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Mldsa65Signature {
+    /// FIPS 204 public key, exactly 1952 bytes.
+    pub public_key: Bytes,
+    /// FIPS 204 pure signature, exactly 3309 bytes.
+    pub signature: Bytes,
+}
+
+#[cfg(any(test, feature = "arbitrary"))]
+impl<'a> arbitrary::Arbitrary<'a> for Mldsa65Signature {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        Ok(Self {
+            public_key: Bytes::copy_from_slice(u.bytes(1952)?),
+            signature: Bytes::copy_from_slice(u.bytes(3309)?),
+        })
+    }
+}
+
 // Minimum authenticatorData is 37 bytes (32 rpIdHash + 1 flags + 4 signCount)
 const MIN_AUTH_DATA_LEN: usize = 37;
 
@@ -138,6 +161,9 @@ pub enum PrimitiveSignature {
 
     /// WebAuthn signature with variable-length authenticator data
     WebAuthn(WebAuthnSignature),
+
+    /// Experimental ML-DSA-65 signature.
+    Mldsa65(Mldsa65Signature),
 }
 
 impl PrimitiveSignature {
@@ -203,6 +229,15 @@ impl PrimitiveSignature {
                 }))
             }
 
+            SIGNATURE_TYPE_MLDSA65 => {
+                if sig_data.len() != 1952 + 3309 {
+                    return Err("Invalid ML-DSA-65 signature length");
+                }
+                Ok(Self::Mldsa65(Mldsa65Signature {
+                    public_key: Bytes::copy_from_slice(&sig_data[..1952]),
+                    signature: Bytes::copy_from_slice(&sig_data[1952..]),
+                }))
+            }
             _ => Err("Unknown signature type identifier"),
         }
     }
@@ -222,6 +257,11 @@ impl PrimitiveSignature {
     /// without allocating an intermediate buffer.
     pub fn encode_bytes_into(&self, out: &mut dyn alloy_rlp::BufMut) {
         match self {
+            Self::Mldsa65(sig) => {
+                out.put_u8(SIGNATURE_TYPE_MLDSA65);
+                out.put_slice(&sig.public_key);
+                out.put_slice(&sig.signature);
+            }
             Self::Secp256k1(sig) => {
                 // Backward compatibility: no type identifier for secp256k1
                 let sig_bytes: [u8; SECP256K1_SIGNATURE_LENGTH] = sig.as_bytes();
@@ -253,6 +293,7 @@ impl PrimitiveSignature {
     /// - P256/WebAuthn: includes 1-byte type identifier prefix
     pub fn encoded_length(&self) -> usize {
         match self {
+            Self::Mldsa65(sig) => 1 + sig.public_key.len() + sig.signature.len(),
             Self::Secp256k1(_) => SECP256K1_SIGNATURE_LENGTH,
             Self::P256(_) => 1 + P256_SIGNATURE_LENGTH,
             Self::WebAuthn(webauthn_sig) => 1 + webauthn_sig.webauthn_data.len() + 128,
@@ -265,6 +306,7 @@ impl PrimitiveSignature {
             Self::Secp256k1(_) => SignatureType::Secp256k1,
             Self::P256(_) => SignatureType::P256,
             Self::WebAuthn(_) => SignatureType::WebAuthn,
+            Self::Mldsa65(_) => SignatureType::Mldsa65,
         }
     }
 
@@ -274,6 +316,7 @@ impl PrimitiveSignature {
             + match self {
                 Self::Secp256k1(_) | Self::P256(_) => 0,
                 Self::WebAuthn(webauthn_sig) => webauthn_sig.webauthn_data.len(),
+                Self::Mldsa65(sig) => sig.public_key.len() + sig.signature.len(),
             }
     }
 
@@ -288,6 +331,26 @@ impl PrimitiveSignature {
         sig_hash: &B256,
     ) -> Result<Address, alloy_consensus::crypto::RecoveryError> {
         match self {
+            Self::Mldsa65(sig) => {
+                let key = ml_dsa::EncodedVerifyingKey::<ml_dsa::MlDsa65>::try_from(
+                    sig.public_key.as_ref(),
+                )
+                .map_err(|_| alloy_consensus::crypto::RecoveryError::new())?;
+                let signature =
+                    ml_dsa::Signature::<ml_dsa::MlDsa65>::try_from(sig.signature.as_ref())
+                        .map_err(|_| alloy_consensus::crypto::RecoveryError::new())?;
+                if !ml_dsa::VerifyingKey::decode(&key).verify_with_context(
+                    sig_hash.as_slice(),
+                    b"",
+                    &signature,
+                ) {
+                    return Err(alloy_consensus::crypto::RecoveryError::new());
+                }
+                let mut preimage = Vec::with_capacity(1953);
+                preimage.push(SIGNATURE_TYPE_MLDSA65);
+                preimage.extend_from_slice(&sig.public_key);
+                Ok(Address::from_slice(&keccak256(preimage)[12..]))
+            }
             Self::Secp256k1(sig) => {
                 // Standard secp256k1 recovery using alloy's built-in methods
                 // This simultaneously verifies the signature AND recovers the address

@@ -36,6 +36,12 @@ impl SignatureVerifier {
             SignatureType::Secp256k1 => SECP256K1_VERIFY_GAS,
             SignatureType::P256 => P256_VERIFY_GAS,
             SignatureType::WebAuthn => WEBAUTHN_VERIFY_GAS,
+            SignatureType::Mldsa65 => {
+                if !tempo_zk::scheme::scheme(0x80).is_some_and(|scheme| scheme.is_active()) {
+                    return Err(SignatureVerifierError::invalid_format().into());
+                }
+                100_000 + 16 * signature.len() as u64
+            }
         };
         self.storage.deduct_gas(verify_gas)?;
 

@@ -1581,6 +1581,7 @@ where
                     SignatureType::Secp256k1 => PrecompileSignatureType::Secp256k1,
                     SignatureType::P256 => PrecompileSignatureType::P256,
                     SignatureType::WebAuthn => PrecompileSignatureType::WebAuthn,
+                    SignatureType::Mldsa65 => PrecompileSignatureType::Mldsa65,
                 };
 
                 // Handle expiry: None means never expires (store as u64::MAX)
@@ -2573,6 +2574,24 @@ fn validate_zk_signatures(
     timestamp: u64,
     caller: Address,
 ) -> Result<(), TempoInvalidTransaction> {
+    let experimental_signature = match &aa_env.signature {
+        TempoSignature::Primitive(signature) => {
+            signature.signature_type() == SignatureType::Mldsa65
+        }
+        TempoSignature::Keychain(signature) => {
+            signature.signature.signature_type() == SignatureType::Mldsa65
+        }
+        TempoSignature::Zk(signature) => signature.scheme == 0x80,
+    };
+    let experimental_authorization = aa_env.key_authorization.as_ref().is_some_and(|auth| {
+        auth.key_type == SignatureType::Mldsa65 || u8::from(auth.signature.signature_type()) == 3
+    });
+    if (experimental_signature || experimental_authorization)
+        && (!spec.is_t14()
+            || !tempo_zk::scheme::scheme(0x80).is_some_and(|scheme| scheme.is_active()))
+    {
+        return Err(ZkSignatureError::NotActive.into());
+    }
     // Authorization list entries are recovered without state, so they can never carry one.
     if aa_env
         .tempo_authorization_list

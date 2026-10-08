@@ -40,6 +40,8 @@ pub enum SignatureType {
     Secp256k1 = 0,
     P256 = 1,
     WebAuthn = 2,
+    /// Experimental ML-DSA-65 access keys.
+    Mldsa65 = 3,
 }
 
 impl From<SignatureType> for u8 {
@@ -48,6 +50,7 @@ impl From<SignatureType> for u8 {
             SignatureType::Secp256k1 => 0,
             SignatureType::P256 => 1,
             SignatureType::WebAuthn => 2,
+            SignatureType::Mldsa65 => 3,
         }
     }
 }
@@ -60,6 +63,7 @@ impl From<SignatureType> for AbiSignatureType {
             SignatureType::Secp256k1 => Self::Secp256k1,
             SignatureType::P256 => Self::P256,
             SignatureType::WebAuthn => Self::WebAuthn,
+            SignatureType::Mldsa65 => Self::Mldsa65,
         }
     }
 }
@@ -72,6 +76,7 @@ impl TryFrom<AbiSignatureType> for SignatureType {
             AbiSignatureType::Secp256k1 => Ok(Self::Secp256k1),
             AbiSignatureType::P256 => Ok(Self::P256),
             AbiSignatureType::WebAuthn => Ok(Self::WebAuthn),
+            AbiSignatureType::Mldsa65 => Ok(Self::Mldsa65),
             _ => Err(sig_type as u8),
         }
     }
@@ -94,6 +99,7 @@ impl alloy_rlp::Decodable for SignatureType {
             0 => Ok(Self::Secp256k1),
             1 => Ok(Self::P256),
             2 => Ok(Self::WebAuthn),
+            3 => Ok(Self::Mldsa65),
             _ => Err(alloy_rlp::Error::Custom("Invalid signature type")),
         }
     }

@@ -1,0 +1,16 @@
+[package]
+name = "oidc-pq-methods"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[package.metadata.risc0]
+methods = ["../guest"]
+
+[build-dependencies]
+risc0-build = "=3.0.3"
+
+[dependencies]
+risc0-zkvm = { version = "=3.0.3", default-features = false, features = ["std"] }
+

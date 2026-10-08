@@ -217,7 +217,9 @@ mod tests {
                 .unwrap(),
         );
         let mut broken = signature.clone();
-        broken.proof.0[5] ^= 1;
+        let mut proof = broken.proof.to_vec();
+        proof[5] ^= 1;
+        broken.proof = proof.into();
 
         let transactions = vec![
             create_legacy_tx(),

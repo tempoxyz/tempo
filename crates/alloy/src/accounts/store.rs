@@ -2493,6 +2493,11 @@ fn writable_signature(
     signature: &PrimitiveSignature,
 ) -> Result<WritablePrimitiveSignature, TempoAccountsError> {
     Ok(match signature {
+        PrimitiveSignature::Mldsa65(_) => {
+            return Err(TempoAccountsError::InvalidAuthorization(
+                "ML-DSA-65 authorization export is unsupported",
+            ));
+        }
         PrimitiveSignature::Secp256k1(signature) => WritablePrimitiveSignature::Secp256k1 {
             signature: WritableSecpSignature {
                 r: writable_bigint(signature.r()),

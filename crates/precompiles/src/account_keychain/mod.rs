@@ -81,6 +81,7 @@ pub enum StoredSignatureType {
     Secp256k1,
     P256,
     WebAuthn,
+    Mldsa65,
 }
 
 impl TryFrom<SignatureType> for StoredSignatureType {
@@ -91,6 +92,7 @@ impl TryFrom<SignatureType> for StoredSignatureType {
             SignatureType::Secp256k1 => Ok(Self::Secp256k1),
             SignatureType::P256 => Ok(Self::P256),
             SignatureType::WebAuthn => Ok(Self::WebAuthn),
+            SignatureType::Mldsa65 => Ok(Self::Mldsa65),
             _ => Err(AccountKeychainError::invalid_signature_type().into()),
         }
     }
@@ -102,6 +104,7 @@ impl From<StoredSignatureType> for SignatureType {
             StoredSignatureType::Secp256k1 => Self::Secp256k1,
             StoredSignatureType::P256 => Self::P256,
             StoredSignatureType::WebAuthn => Self::WebAuthn,
+            StoredSignatureType::Mldsa65 => Self::Mldsa65,
         }
     }
 }
@@ -293,6 +296,11 @@ impl AccountKeychain {
         }
 
         let signature_type = StoredSignatureType::try_from(signature_type)?;
+        if signature_type == StoredSignatureType::Mldsa65
+            && !tempo_zk::scheme::scheme(0x80).is_some_and(|scheme| scheme.is_active())
+        {
+            return Err(AccountKeychainError::invalid_signature_type().into());
+        }
 
         // TIP-1011 fields are hardfork-gated at T3, so reject them before mutating state.
         let allowed_call_configs = if is_t3 {

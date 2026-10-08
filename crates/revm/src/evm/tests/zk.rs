@@ -248,7 +248,7 @@ fn zk_signatures_reject_bad_proofs_and_replays() {
     // access key signs the proof bytes, so a re-randomized or replaced proof fails.
     let input = identity.statement().public_input().unwrap();
     let mut signature = identity.sign(d);
-    signature.proof = ZkProof::from(identity.trapdoor.prove(&input, 2));
+    signature.proof = ZkProof::from(identity.trapdoor.prove(&input, 2)).into();
     let signed = tx.into_signed(TempoSignature::from(signature));
     assert_eq!(
         zk_error(evm.transact(tx_env(&signed))),

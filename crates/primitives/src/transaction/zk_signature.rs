@@ -8,7 +8,7 @@
 
 use super::tt_signature::PrimitiveSignature;
 use alloc::vec::Vec;
-use alloy_primitives::{Address, B256, FixedBytes, U256, keccak256, uint};
+use alloy_primitives::{Address, B256, Bytes, FixedBytes, U256, keccak256, uint};
 use alloy_rlp::{Decodable, Encodable, Header};
 
 #[cfg(not(feature = "std"))]
@@ -36,6 +36,12 @@ pub const ZK_SCHEME_OIDC_RS256_V1: u8 = 0x01;
 /// Address namespace of OIDC schemes.
 pub const ZK_NAMESPACE_OIDC: u8 = 0x01;
 
+/// Experimental native ZK-STARK proof of an ML-DSA-65 OIDC token.
+pub const ZK_SCHEME_OIDC_MLDSA65: u8 = 0x80;
+
+/// Receipt size limit for the experimental scheme.
+pub const MAX_PQ_ZK_SIGNATURE_SIZE: usize = 8 * 1024 * 1024 + 8192;
+
 /// Most ZK signatures a transaction may carry, across all of its signatures.
 pub const MAX_ZK_SIGNATURES_PER_TX: usize = 2;
 
@@ -50,6 +56,7 @@ pub type ZkProof = FixedBytes<ZK_PROOF_LENGTH>;
 pub const fn zk_namespace(scheme: u8) -> Option<u8> {
     match scheme {
         ZK_SCHEME_OIDC_RS256_V1 => Some(ZK_NAMESPACE_OIDC),
+        ZK_SCHEME_OIDC_MLDSA65 => Some(ZK_SCHEME_OIDC_MLDSA65),
         _ => None,
     }
 }
@@ -96,8 +103,8 @@ pub struct ZkSignature {
     /// When the signature expires, in seconds.
     #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
     pub valid_until: u64,
-    /// Groth16 proof.
-    pub proof: ZkProof,
+    /// Scheme-specific proof: Groth16 bytes or an experimental native ZK-STARK receipt.
+    pub proof: Bytes,
     /// Access key signature over [`Self::signing_hash`].
     pub access_key_signature: PrimitiveSignature,
     /// Cached result of proof and access-key verification for one digest.
@@ -127,7 +134,7 @@ impl ZkSignature {
         address_seed: B256,
         issued_at: u64,
         valid_until: u64,
-        proof: ZkProof,
+        proof: impl Into<Bytes>,
         access_key_signature: PrimitiveSignature,
     ) -> Self {
         Self {
@@ -138,7 +145,7 @@ impl ZkSignature {
             address_seed,
             issued_at,
             valid_until,
-            proof,
+            proof: proof.into(),
             access_key_signature,
             verification: OnceLock::new(),
         }
@@ -151,7 +158,7 @@ impl ZkSignature {
     /// bytes, and encodings over [`MAX_ZK_SIGNATURE_SIZE`] bytes. Curve, subgroup, scheme, and
     /// time checks happen during validation.
     pub fn from_bytes(data: &[u8]) -> Result<Self, &'static str> {
-        if data.len() > MAX_ZK_SIGNATURE_SIZE {
+        if data.len() > MAX_PQ_ZK_SIGNATURE_SIZE {
             return Err("ZK signature too large");
         }
         let (&type_id, mut buf) = data.split_first().ok_or("ZK signature is empty")?;
@@ -169,13 +176,27 @@ impl ZkSignature {
 
         let invalid = |_| "invalid ZK signature field";
         let scheme = u8::decode(&mut buf).map_err(invalid)?;
+        let maximum = if scheme == ZK_SCHEME_OIDC_MLDSA65 {
+            MAX_PQ_ZK_SIGNATURE_SIZE
+        } else {
+            MAX_ZK_SIGNATURE_SIZE
+        };
+        if data.len() > maximum {
+            return Err("ZK signature too large");
+        }
         let publisher_id = B256::decode(&mut buf).map_err(invalid)?;
         let issuer = B256::decode(&mut buf).map_err(invalid)?;
         let key_hash = B256::decode(&mut buf).map_err(invalid)?;
         let address_seed = B256::decode(&mut buf).map_err(invalid)?;
         let issued_at = u64::decode(&mut buf).map_err(invalid)?;
         let valid_until = u64::decode(&mut buf).map_err(invalid)?;
-        let proof = ZkProof::decode(&mut buf).map_err(|_| "ZK proof must be 256 bytes")?;
+        let proof = Bytes::decode(&mut buf).map_err(|_| "invalid ZK proof encoding")?;
+        if scheme != ZK_SCHEME_OIDC_MLDSA65 && proof.len() != ZK_PROOF_LENGTH {
+            return Err("ZK proof must be 256 bytes");
+        }
+        if scheme == ZK_SCHEME_OIDC_MLDSA65 && (proof.is_empty() || proof.len() > 8 * 1024 * 1024) {
+            return Err("invalid PQ proof length");
+        }
         let access_key_bytes = Header::decode_bytes(&mut buf, false).map_err(invalid)?;
         if !buf.is_empty() {
             return Err("ZK signature must have exactly nine fields");
@@ -188,6 +209,11 @@ impl ZkSignature {
         }
 
         let access_key_signature = PrimitiveSignature::from_bytes(access_key_bytes)?;
+        if scheme == ZK_SCHEME_OIDC_MLDSA65
+            && !matches!(access_key_signature, PrimitiveSignature::Mldsa65(_))
+        {
+            return Err("PQ scheme requires an ML-DSA-65 access key");
+        }
         if access_key_signature.encoded_length() != access_key_bytes.len()
             || access_key_signature.to_bytes().as_ref() != access_key_bytes
         {
@@ -242,7 +268,9 @@ impl ZkSignature {
 
     /// Returns the in-memory size of the signature.
     pub fn size(&self) -> usize {
-        size_of::<Self>() - size_of::<PrimitiveSignature>() + self.access_key_signature.size()
+        size_of::<Self>() - size_of::<PrimitiveSignature>()
+            + self.access_key_signature.size()
+            + self.proof.len()
     }
 
     /// Returns the address this signature signs for, or `None` for an unknown scheme.
@@ -385,14 +413,14 @@ impl<'a> arbitrary::Arbitrary<'a> for ZkSignature {
             access_key_signature = PrimitiveSignature::default();
         }
         Ok(Self::new(
-            u.arbitrary()?,
+            0x01,
             u.arbitrary()?,
             issuer,
             key_hash,
             address_seed,
             u.arbitrary()?,
             u.arbitrary()?,
-            u.arbitrary()?,
+            u.arbitrary::<ZkProof>()?,
             access_key_signature,
         ))
     }
@@ -534,7 +562,7 @@ mod tests {
         other.key_hash = B256::with_last_byte(9);
         other.issued_at += 1;
         other.valid_until += 1;
-        other.proof = ZkProof::repeat_byte(0x66);
+        other.proof = ZkProof::repeat_byte(0x66).into();
         other.access_key_signature = PrimitiveSignature::default();
         assert_eq!(other.address(), signature.address());
 
@@ -572,7 +600,9 @@ mod tests {
         s.valid_until = 0;
         changes.push(s);
         let mut s = signature;
-        s.proof.0[200] ^= 1;
+        let mut proof = s.proof.to_vec();
+        proof[200] ^= 1;
+        s.proof = proof.into();
         changes.push(s);
         for changed in changes {
             assert_ne!(changed.signing_hash(&d), base);
