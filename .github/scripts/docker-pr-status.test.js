@@ -13,7 +13,7 @@ const context = {
 };
 const status = { id: 456, attempt: 1, number: 123, mode: '', status: 'completed', conclusion: 'success' };
 function images(mode = '') {
-  const names = mode === 'profiling' ? ['tempo'] : ['tempo', 'tempo-localnet', 'tempo-sidecar', 'tempo-xtask'];
+  const names = mode === 'profiling' ? ['tempo'] : ['tempo', 'tempo-devnet', 'tempo-localnet', 'tempo-sidecar', 'tempo-xtask'];
   const registries = mode === 'profiling' ? ['ghcr.io'] : ['ghcr.io', 'docker.io'];
   const prefix = mode === 'profiling' ? 'profiling-' : '';
   const tags = [`${prefix}pr-123`, `${prefix}sha-${sha.slice(0, 7)}`, ...(mode === 'nightly' ? ['nightly'] : [])];
@@ -154,6 +154,31 @@ test('failed post-push signing still reports the push and overall failure separa
   const body = render({ ...status, conclusion: 'failure' }, images());
   assert.match(body, /\*\*failure\*\*/);
   assert.match(body, /successful push step/);
+});
+
+for (const mode of ['', 'nightly']) {
+  test(`${mode || 'regular'} builds report the optional devnet image`, () => {
+    const data = images(mode);
+    const devnet = data.images.find(image => image.name === 'tempo-devnet');
+    const body = render({ ...status, mode }, data);
+    assert.ok(body.includes(`ghcr.io/tempoxyz/tempo-devnet@${digest}`));
+    for (const tag of devnet.tags) assert.ok(body.includes(tag));
+
+    devnet.tags[0] = 'ghcr.io/tempoxyz/tempo:latest';
+    assert.throws(() => validateImages(data, { ...status, mode }));
+  });
+
+  test(`${mode || 'regular'} builds still accept legacy image reports`, () => {
+    const data = images(mode);
+    data.images = data.images.filter(image => image.name !== 'tempo-devnet');
+    assert.doesNotThrow(() => validateImages(data, { ...status, mode }));
+  });
+}
+
+test('profiling builds reject an unexpected devnet image', () => {
+  const data = images('profiling');
+  data.images.push({ ...data.images[0], name: 'tempo-devnet' });
+  assert.throws(() => validateImages(data, { ...status, mode: 'profiling' }));
 });
 
 for (const [name, change] of [

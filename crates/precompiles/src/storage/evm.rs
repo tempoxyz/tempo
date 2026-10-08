@@ -117,6 +117,14 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
     }
 
     #[inline]
+    fn ensure_not_static(&self) -> Result<(), TempoPrecompileError> {
+        match self.is_static {
+            false => Ok(()),
+            true => Err(TempoPrecompileError::StaticCallNotAllowed),
+        }
+    }
+
+    #[inline]
     fn deduct_state_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
         if !self.gas_tracker.record_state_cost(gas) {
             return Err(TempoPrecompileError::OutOfGas);
@@ -146,6 +154,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         value: U256,
         skip_cold_load: bool,
     ) -> Result<StateLoad<SStoreResult>, TempoPrecompileError> {
+        self.ensure_not_static()?;
         Ok(self
             .internals
             .load_account_mut(address)?
@@ -197,6 +206,11 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         value: U256,
         action: impl FnOnce(&SStoreResult) -> StorageAction,
     ) -> Result<(), TempoPrecompileError> {
+        // T12+: EIP-2200 sentry. SSTORE fails if the frame only has the call stipend remaining.
+        if self.spec.is_t12() && self.gas_tracker.remaining() <= self.gas_params.call_stipend() {
+            return Err(TempoPrecompileError::OutOfGas);
+        }
+
         // T4+: pre-charge static gas before loading storage to avoid cheap useless work.
         let skip_cold_load = if self.spec.is_t4() {
             self.deduct_gas(self.gas_params.sstore_static_gas())?;
@@ -322,8 +336,10 @@ impl crate::storage_credits::StorageCreditsBackend for EvmPrecompileStorageProvi
     }
 
     #[inline]
-    fn tstore(&mut self, address: Address, key: U256, value: U256) {
+    fn tstore(&mut self, address: Address, key: U256, value: U256) -> Result<(), Self::Error> {
+        self.ensure_not_static()?;
         self.internals.tstore(address, key, value);
+        Ok(())
     }
 
     #[inline]
@@ -352,6 +368,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
+        self.ensure_not_static()?;
+
         let code_len = code.len();
         self.deduct_gas(self.gas_params.code_deposit_cost(code_len))?;
 
@@ -400,6 +418,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
+        self.ensure_not_static()?;
+
         self.sstore_inner(address, key, value, |result| {
             StorageAction::Sstore(address, key, result.present_value, value)
         })
@@ -412,6 +432,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         delta: U256,
     ) -> Result<(), TempoPrecompileError> {
+        self.ensure_not_static()?;
+
         let current = self.sload_inner(address, key, false)?;
         let value = current
             .checked_add(delta)
@@ -419,7 +441,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
         // If the value goes from zero to non-zero, do not record it as `Sinc`,
         // because it requires special TIP-1060 gas credits accounting.
-        let sstore_action = if current == U256::ZERO && value != U256::ZERO {
+        let sstore_action = if current.is_zero() && !value.is_zero() {
             self.actions
                 .record(StorageAction::Sload(address, key, current));
             StorageAction::Sstore(address, key, current, value)
@@ -437,6 +459,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         delta: U256,
     ) -> Result<(), TempoPrecompileError> {
+        self.ensure_not_static()?;
+
         let current = self.sload_inner(address, key, false)?;
         let value = current
             .checked_sub(delta)
@@ -444,7 +468,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
         // If the value goes from non-zero to zero, do not record it as `Sdec`,
         // because it requires special TIP-1060 gas credits accounting.
-        let sstore_action = if current != U256::ZERO && value == U256::ZERO {
+        let sstore_action = if !current.is_zero() && value.is_zero() {
             self.actions
                 .record(StorageAction::Sload(address, key, current));
             StorageAction::Sstore(address, key, current, value)
@@ -462,6 +486,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
+        self.ensure_not_static()?;
+
         self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
         self.internals.tstore(address, key, value);
         Ok(())
@@ -469,6 +495,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), TempoPrecompileError> {
+        self.ensure_not_static()?;
+
         self.deduct_gas(
             gas::LOG
                 + self
@@ -733,20 +761,18 @@ pub fn deduct_gas(
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
-    use alloy::primitives::{B256, b256, bytes, keccak256};
+    use alloy::primitives::{B256, bytes, keccak256};
     use alloy_evm::{EvmEnv, EvmFactory, EvmInternals, revm::context::Host};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
-    use revm::{
-        database::{CacheDB, EmptyDB},
-        interpreter::StateLoad,
-    };
+    use revm::{database::InMemoryDB, interpreter::StateLoad};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_evm::{TempoEvmFactory, evm::TempoEvm};
     use tempo_revm::gas_params::tempo_gas_params_with_amsterdam;
 
-    struct TestEvm(TempoEvm<CacheDB<EmptyDB>>);
+    struct TestEvm(TempoEvm<InMemoryDB>);
 
     impl TestEvm {
         fn new(spec: TempoHardfork) -> Self {
@@ -763,7 +789,7 @@ mod tests {
         }
 
         fn with_amsterdam(spec: TempoHardfork, amsterdam_eip8037_enabled: bool) -> Self {
-            let db = CacheDB::new(EmptyDB::new());
+            let db = InMemoryDB::default();
             let mut cfg = revm::context::CfgEnv::<TempoHardfork>::default();
             cfg.spec = spec;
             cfg.enable_amsterdam_eip8037 = amsterdam_eip8037_enabled;
@@ -820,7 +846,7 @@ mod tests {
     }
 
     impl std::ops::Deref for TestEvm {
-        type Target = TempoEvm<CacheDB<EmptyDB>>;
+        type Target = TempoEvm<InMemoryDB>;
         fn deref(&self) -> &Self::Target {
             &self.0
         }
@@ -833,6 +859,42 @@ mod tests {
     }
 
     #[test]
+    fn test_static_provider_mutation_guards() {
+        use crate::storage_credits::StorageCreditsBackend;
+
+        let mut evm = TestEvm::default();
+        let ctx = evm.ctx_mut();
+        let internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+        let mut provider = EvmPrecompileStorageProvider::new(
+            internals,
+            u64::MAX,
+            0,
+            ctx.cfg.spec,
+            ctx.cfg.enable_amsterdam_eip8037,
+            true,
+            ctx.cfg.gas_params.clone(),
+        );
+
+        let (address, key, value) = (Address::ZERO, U256::ZERO, U256::ZERO);
+        let results = [
+            provider.set_code(address, Bytecode::default()),
+            PrecompileStorageProvider::sstore(&mut provider, address, key, value),
+            PrecompileStorageProvider::tstore(&mut provider, address, key, value),
+            StorageCreditsBackend::sstore(&mut provider, address, key, value, false).map(|_| ()),
+            StorageCreditsBackend::tstore(&mut provider, address, key, value),
+            provider.sinc(address, key, value),
+            provider.sdec(address, key, value),
+            provider.emit_event(address, LogData::new_unchecked(vec![], bytes!())),
+        ];
+
+        assert!(
+            results
+                .into_iter()
+                .all(|result| { result == Err(TempoPrecompileError::StaticCallNotAllowed) })
+        );
+    }
+
+    #[test]
     fn test_sstore_sload_actions_recording() -> eyre::Result<()> {
         let mut evm = TestEvm::default();
         let addr = Address::random();
@@ -841,7 +903,7 @@ mod tests {
             .provider_max_gas()
             .with_actions(StorageActions::enabled());
 
-        let (k1, v1) = (U256::from(1), U256::from(10));
+        let (k1, v1) = (U256::ONE, U256::from(10));
         let (k2, v2) = (U256::from(2), U256::from(20));
         let v1_new = U256::from(11);
 
@@ -874,8 +936,8 @@ mod tests {
         let mut evm = TestEvm::default();
         let mut provider = evm.provider_max_gas();
         let addr = Address::random();
-        provider.sstore(addr, U256::from(1), U256::from(100))?;
-        let _ = provider.sload(addr, U256::from(1))?;
+        provider.sstore(addr, U256::ONE, U256::from(100))?;
+        let _ = provider.sload(addr, U256::ONE)?;
 
         assert_eq!(provider.take_actions(), None);
 
@@ -940,7 +1002,7 @@ mod tests {
         let mut evm = TestEvm::default();
         let mut provider = evm.provider_max_gas();
 
-        let topic = b256!("0000000000000000000000000000000000000000000000000000000000000001");
+        let topic = B256::with_last_byte(1);
         let data = bytes!(
             "00000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000001"
         );
@@ -972,6 +1034,38 @@ mod tests {
             let expected_value = U256::from(i * 100);
             let loaded_value = provider.sload(address, key)?;
             assert_eq!(loaded_value, expected_value);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_sstore_reentrancy_sentry_blocks_dirty_write() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T11, TempoHardfork::T12] {
+            let mut evm = TestEvm::new(spec);
+            let gas_params = evm.ctx().cfg.gas_params.clone();
+            let address = Address::random();
+            let key = U256::from(42);
+
+            evm.provider_max_gas().sstore(address, key, U256::ONE)?;
+
+            let result = evm
+                .provider_with_gas_limit(gas_params.call_stipend(), 0)
+                .sstore(address, key, U256::from(2));
+
+            let expected = if spec.is_t12() {
+                assert_eq!(result, Err(TempoPrecompileError::OutOfGas));
+                U256::ONE
+            } else {
+                result.expect("pre-T12 SSTORE at stipend should preserve historical behavior");
+                U256::from(2)
+            };
+
+            assert_eq!(
+                evm.provider_max_gas().sload(address, key)?,
+                expected,
+                "failed SSTORE must not mutate storage"
+            );
         }
 
         Ok(())
@@ -1188,7 +1282,7 @@ mod tests {
 
         // SSTORE zero->non-zero should add state gas
         let gas_before = provider.gas_used();
-        provider.sstore(address, slot, U256::from(1))?;
+        provider.sstore(address, slot, U256::ONE)?;
         let state_gas_after_set = provider.state_gas_used();
         assert_eq!(
             state_gas_after_set, 230_000,
@@ -1239,7 +1333,7 @@ mod tests {
         let address = Address::random();
 
         // --- First SSTORE (zero→non-zero): fully covered by reservoir ---
-        provider.sstore(address, U256::from(1), U256::from(42))?;
+        provider.sstore(address, U256::ONE, U256::from(42))?;
 
         let regular_gas_per_sstore = provider.gas_used(); // static + dynamic (regular)
         assert_eq!(
@@ -1417,7 +1511,7 @@ mod tests {
 
         let addr1 = Address::random();
         let addr2 = Address::random();
-        let key1 = U256::from(1);
+        let key1 = U256::ONE;
         let key2 = U256::from(2);
 
         // Cold writes

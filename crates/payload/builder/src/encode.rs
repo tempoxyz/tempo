@@ -163,6 +163,26 @@ impl EncodedBlockTransactionsBuilder {
     }
 }
 
+/// Returns the length of a transaction as a block-body transaction-list element, given the length
+/// of its EIP-2718 encoding.
+///
+/// Matches [`EncodedBlockTransactionsBuilder::push`]: typed transactions carry an extra RLP string
+/// header, legacy transactions don't.
+pub(crate) fn block_transaction_length(
+    transaction: &impl Typed2718,
+    encoded_2718_len: usize,
+) -> usize {
+    if transaction.is_legacy() {
+        encoded_2718_len
+    } else {
+        alloy_rlp::Header {
+            list: false,
+            payload_length: encoded_2718_len,
+        }
+        .length_with_payload()
+    }
+}
+
 /// Encodes the execution block into the shared cache when dropped.
 ///
 /// The payload builder creates this after assembling a recovered block, passes a clone of
@@ -226,10 +246,7 @@ mod tests {
     use proptest::prelude::*;
     use reth_primitives_traits::{RecoveredBlock, SealedBlock};
     use std::sync::Arc;
-    use tempo_primitives::{
-        Block, Header, TempoHeader, TempoTransaction,
-        transaction::{AASigned, Call},
-    };
+    use tempo_primitives::{Block, Header, TempoHeader, TempoTransaction, transaction::Call};
 
     fn arb_address() -> impl Strategy<Value = Address> {
         any::<[u8; 20]>().prop_map(Address::from)
@@ -471,7 +488,7 @@ mod tests {
     }
 
     fn aa_tx(input: Bytes) -> TempoTxEnvelope {
-        TempoTxEnvelope::AA(AASigned::new_unhashed(
+        TempoTxEnvelope::AA(
             TempoTransaction {
                 calls: vec![Call {
                     to: Address::ZERO.into(),
@@ -479,9 +496,9 @@ mod tests {
                     input,
                 }],
                 ..Default::default()
-            },
-            Signature::test_signature().into(),
-        ))
+            }
+            .into_signed(Signature::test_signature().into()),
+        )
     }
 
     fn all_transaction_types(input: Bytes) -> Vec<TempoTxEnvelope> {
@@ -509,6 +526,18 @@ mod tests {
         let mut expected = Vec::new();
         block.encode(&mut expected);
         expected
+    }
+
+    #[test]
+    fn block_transaction_length_matches_list_element_length() {
+        for input_len in [0, 1, 55, 56, 255, 256, 65_535, 65_536] {
+            for transaction in all_transaction_types(vec![0xa5; input_len].into()) {
+                assert_eq!(
+                    block_transaction_length(&transaction, transaction.encode_2718_len()),
+                    transaction.length(),
+                );
+            }
+        }
     }
 
     #[test]

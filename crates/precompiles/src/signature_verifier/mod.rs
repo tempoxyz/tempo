@@ -26,7 +26,7 @@ impl SignatureVerifier {
         self.__initialize()
     }
 
-    pub fn recover(&mut self, hash: B256, signature: Bytes) -> Result<Address> {
+    pub fn recover(&self, hash: B256, signature: Bytes) -> Result<Address> {
         // Parse and validate signature (handles size checks + type disambiguation).
         let sig = PrimitiveSignature::from_bytes(&signature)
             .map_err(|_| SignatureVerifierError::invalid_format())?;
@@ -44,12 +44,7 @@ impl SignatureVerifier {
             .map_err(|_| SignatureVerifierError::invalid_signature().into())
     }
 
-    pub fn verify_keychain(
-        &mut self,
-        account: Address,
-        hash: B256,
-        signature: Bytes,
-    ) -> Result<bool> {
+    pub fn verify_keychain(&self, account: Address, hash: B256, signature: Bytes) -> Result<bool> {
         let (embedded_account, key_id) = self.recover_keychain_key(hash, signature)?;
         if embedded_account != account {
             return Ok(false);
@@ -59,7 +54,7 @@ impl SignatureVerifier {
     }
 
     pub fn verify_keychain_admin(
-        &mut self,
+        &self,
         account: Address,
         hash: B256,
         signature: Bytes,
@@ -72,7 +67,7 @@ impl SignatureVerifier {
         AccountKeychain::new().is_admin_key(account, key_id)
     }
 
-    fn recover_keychain_key(&mut self, hash: B256, signature: Bytes) -> Result<(Address, Address)> {
+    fn recover_keychain_key(&self, hash: B256, signature: Bytes) -> Result<(Address, Address)> {
         let sig = TempoSignature::from_bytes(&signature)
             .map_err(|_| SignatureVerifierError::invalid_format())?;
         let keychain_sig = sig
@@ -109,7 +104,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         StorageCtx::enter(&mut storage, || {
             let signer = PrivateKeySigner::random();
-            let hash = B256::from([0xAA; 32]);
+            let hash = B256::repeat_byte(0xAA);
             let sig = signer.sign_hash_sync(&hash)?;
             let sig_bytes = sig.as_bytes().to_vec();
             assert_eq!(sig_bytes.len(), 65);
@@ -136,7 +131,7 @@ mod tests {
                 B256::from_slice(encoded.y().ok_or_else(|| eyre::eyre!("missing y coord"))?);
             let expected_address = derive_p256_address(&pub_key_x, &pub_key_y);
 
-            let hash = B256::from([0xBB; 32]);
+            let hash = B256::repeat_byte(0xBB);
             let (signature, _) = signing_key.sign_prehash_recoverable(hash.as_slice())?;
             let r = B256::from_slice(&signature.r().to_bytes());
             let s =

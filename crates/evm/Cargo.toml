@@ -45,6 +45,9 @@ alloy-rlp.workspace = true
 alloy-sol-types.workspace = true
 alloy-rpc-types-eth = { workspace = true, optional = true }
 
+alloy-genesis = { workspace = true, features = ["std"], optional = true }
+eyre = { workspace = true, optional = true }
+
 derive_more.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -77,6 +80,8 @@ tikv-jemallocator = "0.6.1"
 default = ["rpc", "engine"]
 rpc = ["dep:alloy-rpc-types-eth", "dep:reth-rpc-eth-api", "tempo-primitives/serde", "tempo-primitives/reth-codec"]
 engine = ["dep:tempo-payload-types", "dep:rayon"]
+# Shared genesis state initialization helpers for genesis generators.
+genesis = ["dep:alloy-genesis", "dep:eyre"]
 
 [[bench]]
 name = "tip20_execution"

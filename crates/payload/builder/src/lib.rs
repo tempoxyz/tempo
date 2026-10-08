@@ -17,14 +17,16 @@ use crate::{
         BUILD_TIME_MULTIPLIER_SCALE, decay_build_time_multiplier, observed_build_time_multiplier,
         payload_budget_decision, scaled_build_time_multiplier,
     },
-    encode::{EncodedBlockTransactionList, EncodedBlockTransactionsBuilder, ExecutionBlockEncoder},
+    encode::{
+        EncodedBlockTransactionList, EncodedBlockTransactionsBuilder, ExecutionBlockEncoder,
+        block_transaction_length,
+    },
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
     prewarming::{BestTransactionsPrewarming, PrewarmedTransaction, PrewarmingExecutionContext},
 };
 use alloy_consensus::{BlockHeader as _, TxReceipt};
-use alloy_eip7928::bal::Bal;
 use alloy_eips::{eip1559::calculate_block_gas_limit, eip2718::Encodable2718};
-use alloy_primitives::{Address, B256, Bloom, Bytes, U256, keccak256};
+use alloy_primitives::{Address, B256, Bloom, U256};
 use alloy_rlp::Encodable;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
@@ -38,7 +40,7 @@ use reth_engine_tree::tree::{
 };
 use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
-    ConfigureEvm, Database, Evm, NextBlockEnvAttributes, OnStateHook,
+    ConfigureEvm, Database, Evm, NextBlockEnvAttributes,
     block::{BlockExecutionError, BlockExecutor, BlockValidationError},
     execute::BlockAssemblerInput,
 };
@@ -48,9 +50,12 @@ use reth_payload_primitives::BuiltPayloadExecutedBlock;
 use reth_primitives_traits::{RecoveredBlock, transaction::error::InvalidTransactionError};
 use reth_revm::{
     State, context::Block, database::StateProviderDatabase,
-    db::states::bundle_state::BundleRetention, state::EvmState,
+    db::states::bundle_state::BundleRetention,
 };
-use reth_storage_api::{HashedPostStateProvider, StateProviderFactory, StateRootProvider};
+use reth_storage_api::{
+    EvmStateProvider, HashedPostStateProvider, StateProvider, StateProviderFactory,
+    StateRootProvider,
+};
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
@@ -60,7 +65,6 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
-        mpsc,
     },
     time::{Duration, Instant},
 };
@@ -69,9 +73,7 @@ use tempo_evm::{
     StorageActionReplayError, TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess,
     TempoTxResult, evm::TempoEvm,
 };
-use tempo_payload_types::{
-    TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload, marshal_persist_estimate,
-};
+use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload};
 use tempo_precompiles::{storage::StorageActions, validator_config_v2::ValidatorConfigV2};
 use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
 use tempo_transaction_pool::{
@@ -79,7 +81,7 @@ use tempo_transaction_pool::{
     transaction::TempoPoolTransactionError,
 };
 use tokio::sync::oneshot;
-use tracing::{Level, debug, debug_span, info, instrument, trace, warn};
+use tracing::{Level, Span, debug, debug_span, info, instrument, trace, warn};
 
 /// Conservative estimate for non-transaction execution block RLP bytes.
 ///
@@ -137,8 +139,6 @@ pub struct TempoPayloadBuilder<Provider> {
     evm_config: TempoEvmConfig,
     metrics: TempoPayloadBuilderMetrics,
     cache_metrics: CachedStateMetrics,
-    /// Whether to include block access lists in built execution payloads.
-    enable_bal: bool,
     /// Learned estimate of total replayable build work divided by work at tx cutoff.
     ///
     /// This lets the builder reserve time for non-interruptible
@@ -206,7 +206,6 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             evm_config,
             metrics: TempoPayloadBuilderMetrics::default(),
             cache_metrics: CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
-            enable_bal: cfg!(feature = "bal"),
             build_time_multiplier: Arc::new(AtomicU64::new(scaled_build_time_multiplier(
                 config.build_time_multiplier,
             ))),
@@ -330,19 +329,24 @@ where
 
         let state_setup_start = Instant::now();
         let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
-        let mut state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
+        let state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
+        let mut evm_state_provider: Box<dyn EvmStateProvider + '_> =
+            Box::new((&state_provider).into_evm_state_provider());
         if let Some(execution_cache) = &execution_cache {
-            state_provider = Box::new(CachedStateProvider::new(
-                state_provider,
+            evm_state_provider = Box::new(CachedStateProvider::new(
+                evm_state_provider,
                 execution_cache.cache().clone(),
                 Some(self.cache_metrics.clone()),
             ));
         }
         if self.config.state_provider_metrics {
-            state_provider = Box::new(InstrumentedStateProvider::new(state_provider, "builder"));
+            evm_state_provider = Box::new(InstrumentedStateProvider::new(
+                evm_state_provider,
+                "builder",
+            ));
         }
 
-        let state = StateProviderDatabase::new(&state_provider);
+        let state = StateProviderDatabase::new(&evm_state_provider);
         let mut db = State::builder()
             .with_database(Box::new(state) as Box<dyn Database<Error = ProviderError>>)
             .with_bundle_update()
@@ -418,34 +422,17 @@ where
         // validator config contract, if available.
         maybe_override_fee_recipient(&mut executor, &attributes);
 
-        let bal_task_handle = if self.enable_bal {
-            let bal_task_handle = self.spawn_bal_task(
-                state_root_handle
-                    .as_mut()
-                    .map(|handle| handle.take_state_hook()),
-            );
+        if let Some(handle) = state_root_handle.as_mut() {
             executor
                 .evm_mut()
                 .db_mut()
-                .set_state_hook(Some(Box::new(bal_task_handle.state_hook())));
-            Some(bal_task_handle)
-        } else {
-            if let Some(handle) = state_root_handle.as_mut() {
-                executor
-                    .evm_mut()
-                    .db_mut()
-                    .set_state_hook(Some(Box::new(handle.take_state_hook())));
-            }
-            None
-        };
+                .set_state_hook(Some(Box::new(handle.take_state_hook())));
+        }
 
         executor.apply_pre_execution_changes().map_err(|err| {
             warn!(%err, "failed to apply pre-execution changes");
             PayloadBuilderError::Internal(err.into())
         })?;
-        if let Some(bal_task_handle) = &bal_task_handle {
-            bal_task_handle.bump_bal_index();
-        }
 
         check_cancel!();
 
@@ -505,7 +492,6 @@ where
         // work would consume that window.
         let payload_build_budget = attributes.payload_build_budget();
         let build_time_multiplier = self.build_time_multiplier();
-        let marshal_persist = marshal_persist_estimate();
         let validation_latency = attributes.validation_latency_estimate();
         let block_build_stop_reason = loop {
             check_cancel!();
@@ -520,8 +506,6 @@ where
                     elapsed,
                     normal_transaction_fill_idle_elapsed,
                     build_time_multiplier,
-                    marshal_persist,
-                    estimated_rlp_block_size,
                     validation_latency,
                     current_workload,
                 );
@@ -534,7 +518,6 @@ where
                         predicted_builder_work = ?budget_decision.predicted_builder_work,
                         predicted_validator_work = ?budget_decision.predicted_validator_work,
                         total_reserved = ?budget_decision.total_reserved,
-                        marshal_persist = ?budget_decision.marshal_persist,
                         ?current_workload,
                         gas_used = cumulative_gas_used,
                         transactions = pool_transactions_included,
@@ -610,7 +593,8 @@ where
                 payment_transactions += 1;
             }
 
-            let tx_rlp_length = tx.transaction.encoded_length();
+            let tx_rlp_length =
+                block_transaction_length(&tx.transaction, tx.transaction.encoded_length());
             let estimated_block_size_with_tx = estimated_rlp_block_size + tx_rlp_length;
 
             if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
@@ -651,7 +635,6 @@ where
                     tx.transaction.executable(),
                     *replay,
                     result_closure,
-                    bal_task_handle.is_some(),
                 )
             } else {
                 executor.invalidate_expiring_nonce_cache();
@@ -717,9 +700,6 @@ where
             }
 
             trace!("Transaction executed");
-            if let Some(bal_task_handle) = &bal_task_handle {
-                bal_task_handle.bump_bal_index();
-            }
 
             pool_transactions_included += 1;
             estimated_rlp_block_size += tx_rlp_length;
@@ -793,9 +773,6 @@ where
         // before the transitions are merged, letting the trie finalization overlap with it.
         db.set_state_hook(None);
 
-        // Drop the BAL task sender to trigger finalization.
-        let bal_rx = bal_task_handle.map(|handle| handle.into_bal_rx());
-
         // merge all transitions into bundle state before deriving the hashed post-state
         db.merge_transitions(BundleRetention::Reverts);
 
@@ -854,13 +831,6 @@ where
             }
             .unzip();
 
-        let (block_access_list, block_access_list_hash) = if let Some(bal_rx) = bal_rx {
-            let (bal, bal_hash) = bal_rx.blocking_recv().map_err(PayloadBuilderError::other)?;
-            (Some(bal), Some(bal_hash))
-        } else {
-            (None, None)
-        };
-
         let (state_root, trie_updates) = if self.config.skip_state_root {
             (parent_header.state_root(), Arc::new(Default::default()))
         } else if let Some(outcome) = state_root_outcome {
@@ -894,7 +864,7 @@ where
                 &db.bundle_state,
                 &finish_provider,
                 state_root,
-                block_access_list_hash,
+                None,
             ),
             Some(transactions_root),
             Some(receipts_root),
@@ -999,8 +969,6 @@ where
                 max_rlp_length: MAX_RLP_BLOCK_SIZE,
             }));
         }
-        let recorded_block_size_bytes =
-            estimated_rlp_block_size + block_access_list.as_ref().map_or(0, Encodable::length);
         let final_workload = ValidationLatencyWorkload::new(gas_used, total_transactions);
         let validation_latency_duration = validation_latency
             .and_then(|estimate| estimate.estimate(final_workload))
@@ -1012,10 +980,10 @@ where
         self.metrics.gas_per_second_last.set(gas_per_second);
         self.metrics
             .rlp_block_size_bytes
-            .record(recorded_block_size_bytes as f64);
+            .record(estimated_rlp_block_size as f64);
         self.metrics
             .rlp_block_size_bytes_last
-            .set(recorded_block_size_bytes as f64);
+            .set(estimated_rlp_block_size as f64);
 
         info!(
             parent_hash = ?block.parent_hash(),
@@ -1070,7 +1038,6 @@ where
 
         let payload = TempoBuiltPayload::new(
             eth_payload,
-            block_access_list,
             Some(executed_block),
             validation_work_duration,
             validation_latency_duration,
@@ -1079,6 +1046,7 @@ where
         );
 
         drop(db);
+        drop(evm_state_provider);
         self.executor.spawn_drop(state_provider);
         Ok(BuildOutcome::Freeze(payload))
     }
@@ -1092,9 +1060,12 @@ where
         let (transactions_tx, transactions_rx) =
             crossbeam_channel::unbounded::<(BestTransaction, TempoReceipt)>();
         let (result_tx, result_rx) = oneshot::channel();
+        let parent = Span::current();
 
         self.executor
-            .spawn_blocking_named("builder-roots-task", || {
+            .spawn_blocking_named("builder-roots-task", move || {
+                let _span = debug_span!(target: "payload_builder", parent: parent, "builder_roots")
+                    .entered();
                 let mut transactions = Vec::new();
                 let mut senders = Vec::new();
 
@@ -1135,68 +1106,6 @@ where
 
         (transactions_tx, result_rx)
     }
-
-    fn spawn_bal_task(&self, mut state_root_task_hook: Option<impl OnStateHook>) -> BalTaskHandle {
-        let (task_tx, task_rx) = mpsc::channel::<BalMessage>();
-        let (bal_tx, bal_rx) = oneshot::channel();
-        self.executor.spawn_blocking_named("builder-bal-task", || {
-            let mut bal_state =
-                reth_revm::database_interface::bal::BalState::new().with_bal_builder();
-            for msg in task_rx {
-                match msg {
-                    BalMessage::BumpIndex => {
-                        bal_state.bump_bal_index();
-                    }
-                    BalMessage::State(state) => {
-                        bal_state.commit(&state);
-                        if let Some(state_root_task_hook) = &mut state_root_task_hook {
-                            state_root_task_hook.on_state(state);
-                        }
-                    }
-                }
-            }
-
-            drop(state_root_task_hook);
-            let bal: Bal = bal_state.take_built_alloy_bal().unwrap().into();
-            let mut encoded = Vec::new();
-            bal.encode(&mut encoded);
-            let bal_hash = keccak256(&encoded);
-
-            let _ = bal_tx.send((encoded.into(), bal_hash));
-        });
-
-        BalTaskHandle {
-            msg_tx: task_tx,
-            bal_rx,
-        }
-    }
-}
-
-struct BalTaskHandle {
-    msg_tx: mpsc::Sender<BalMessage>,
-    bal_rx: oneshot::Receiver<(Bytes, B256)>,
-}
-
-impl BalTaskHandle {
-    fn state_hook(&self) -> impl OnStateHook {
-        let msg_tx = self.msg_tx.clone();
-        move |state: EvmState| {
-            let _ = msg_tx.send(BalMessage::State(state));
-        }
-    }
-
-    fn bump_bal_index(&self) {
-        let _ = self.msg_tx.send(BalMessage::BumpIndex);
-    }
-
-    fn into_bal_rx(self) -> oneshot::Receiver<(Bytes, B256)> {
-        self.bal_rx
-    }
-}
-
-enum BalMessage {
-    State(EvmState),
-    BumpIndex,
 }
 
 /// Overrides the block's fee recipient (beneficiary) with the value from the

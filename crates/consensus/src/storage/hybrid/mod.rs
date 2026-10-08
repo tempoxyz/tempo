@@ -36,8 +36,7 @@
 //!   below).
 //!
 //! Pick `retention_blocks` as a few multiples of `items_per_section` so
-//! section overshoot is a small fraction of the working set; see
-//! [`super::DEFAULT_FINALIZED_BLOCKS_RETENTION`].
+//! section overshoot is a small fraction of the working set.
 //!
 //! # Stale puts
 //!
@@ -102,6 +101,7 @@ use commonware_storage::{
     translator::TwoCap,
 };
 use reth_node_core::primitives::SealedBlock;
+use reth_primitives_traits::SealedOrRecoveredBlock;
 use reth_provider::{
     BlockReader, BlockSource, HeaderProvider, ProviderError, ProviderResult,
     providers::{BlockchainProvider, ProviderNodeTypes},
@@ -187,9 +187,10 @@ where
             return Ok(None);
         }
         match self.block_by_number(height) {
-            Ok(maybe_block) => Ok(maybe_block.map(|block| {
-                Block::from_execution_block_unchecked(SealedBlock::seal_slow(block), None)
-            })),
+            Ok(Some(block)) => {
+                validate_execution_block(SealedBlock::seal_slow(block).into()).map(Some)
+            }
+            Ok(None) => Ok(None),
             Err(err @ ProviderError::BlockExpired { .. }) => {
                 info!(error = %eyre::Report::new(err), "cannot find block");
                 Ok(None)
@@ -204,9 +205,8 @@ where
         // block that lives only in reth's pending in-memory tree — see
         // [`Blocks::get`] on [`Hybrid`].
         match self.find_sealed_or_recovered_block(hash, BlockSource::Canonical) {
-            Ok(maybe_block) => {
-                Ok(maybe_block.map(|block| Block::from_execution_block_unchecked(block, None)))
-            }
+            Ok(Some(block)) => validate_execution_block(block).map(Some),
+            Ok(None) => Ok(None),
             Err(err @ ProviderError::BlockExpired { .. }) => {
                 info!(error = %eyre::Report::new(err), "cannot find block");
                 Ok(None)
@@ -227,6 +227,13 @@ where
     fn header_by_hash(&self, hash: B256) -> ProviderResult<Option<TempoHeader>> {
         self.header(hash)
     }
+}
+
+/// Validate an execution-layer block before handing it to marshal.
+fn validate_execution_block(
+    block: SealedOrRecoveredBlock<tempo_primitives::Block>,
+) -> ProviderResult<Block> {
+    Block::try_from_execution_block(block).map_err(ProviderError::other)
 }
 
 /// Error returned by [`Hybrid`]'s [`Blocks`] impl.

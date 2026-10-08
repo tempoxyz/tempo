@@ -26,6 +26,10 @@ on:
         type: string
         default: ""
   workflow_call:
+    outputs:
+      tempo_image_tag:
+        description: Image tag published by this build attempt
+        value: ${{ jobs.build-and-push.outputs.tempo_image_tag }}
   # We're building nightly only once a day to let the rollout cook for 24h without interruptions
   schedule:
     - cron: "5 9 * * *"
@@ -42,6 +46,8 @@ env:
 jobs:
   build-and-push:
     name: Build and Push Docker Images
+    outputs:
+      tempo_image_tag: ${{ steps.meta-tempo.outputs.version }}
     if: ${{ (github.event_name != 'schedule' || github.repository == 'tempoxyz/tempo') && !(github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository != 'tempoxyz/tempo') }}
     runs-on: depot-ubuntu-latest-16
     permissions:
@@ -52,7 +58,7 @@ jobs:
       id-token: write
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
+        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
 
       - name: Resolve build source
         id: source
@@ -63,7 +69,12 @@ jobs:
         with:
           script: |
             const number = process.env.PR_NUMBER || '';
-            let sha = context.sha;
+            const pullRequest = context.payload.pull_request;
+            // PR builds use the submitted commit, not GitHub's temporary merge commit.
+            let sha = pullRequest?.head.sha || context.sha;
+            if (pullRequest && pullRequest.head.repo?.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
+              throw new Error('PR image publishing only supports branches in this repository, not forks');
+            }
             let branch = process.env.BRANCH_NAME;
             if (number) {
               if (!/^[1-9][0-9]*$/.test(number) || !Number.isSafeInteger(Number(number))) {
@@ -89,7 +100,7 @@ jobs:
             core.setOutput('sha', sha);
             core.setOutput('short_sha', sha.slice(0, 7));
             core.setOutput('branch', branch);
-            core.setOutput('revision_label', number ? `org.opencontainers.image.revision=${sha}` : '');
+            core.setOutput('revision_label', (number || pullRequest) ? `org.opencontainers.image.revision=${sha}` : '');
             await core.summary
               .addHeading('Docker build source')
               .addTable([
@@ -106,7 +117,7 @@ jobs:
           ref: ${{ steps.source.outputs.sha }}
           persist-credentials: false
 
-      - uses: tempoxyz/gh-actions/vendor/depot/setup-action@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
+      - uses: tempoxyz/gh-actions/vendor/depot/setup-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
 
       - name: Determine Docker labels
         id: docker-labels
@@ -129,7 +140,7 @@ jobs:
 
       - name: Docker metadata for tempo
         id: meta-tempo
-        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
+        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
           images: |
             ${{ env.REGISTRY }}/tempo
@@ -147,14 +158,35 @@ jobs:
             type=raw,value=stable,enable=${{ inputs.pr_number == '' && github.ref_type == 'tag' }}
             type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
             type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
-            type=sha,prefix=sha-,enable=${{ inputs.pr_number == '' }}
-            type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100,enable=${{ inputs.pr_number != '' }}
-            type=ref,event=pr,enable=${{ inputs.pr_number == '' }}
+            type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100
+            type=raw,value=pr-${{ inputs.pr_number }},enable=${{ inputs.pr_number != '' }}
+
+      - name: Docker metadata for tempo-devnet
+        id: meta-tempo-devnet
+        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        with:
+          images: |
+            ${{ env.REGISTRY }}/tempo-devnet
+            docker.io/tempoxyz/tempo-devnet
+          bake-target: tempo-devnet
+          labels: |
+            ${{ steps.docker-labels.outputs.value }}
+            ${{ steps.source.outputs.revision_label }}
+          tags: |
+            type=schedule,pattern=nightly,enable=${{ inputs.pr_number == '' }}
+            type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
+            type=semver,pattern={{version}},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{major}},enable=${{ inputs.pr_number == '' }}
+            type=raw,value=stable,enable=${{ inputs.pr_number == '' && github.ref_type == 'tag' }}
+            type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
+            type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
+            type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100
             type=raw,value=pr-${{ inputs.pr_number }},enable=${{ inputs.pr_number != '' }}
 
       - name: Docker metadata for tempo-localnet
         id: meta-tempo-localnet
-        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
+        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
           images: |
             ${{ env.REGISTRY }}/tempo-localnet
@@ -172,14 +204,12 @@ jobs:
             type=raw,value=stable,enable=${{ inputs.pr_number == '' && github.ref_type == 'tag' }}
             type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
             type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
-            type=sha,prefix=sha-,enable=${{ inputs.pr_number == '' }}
-            type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100,enable=${{ inputs.pr_number != '' }}
-            type=ref,event=pr,enable=${{ inputs.pr_number == '' }}
+            type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100
             type=raw,value=pr-${{ inputs.pr_number }},enable=${{ inputs.pr_number != '' }}
 
       - name: Docker metadata for tempo-sidecar
         id: meta-tempo-sidecar
-        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
+        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
           images: |
             ${{ env.REGISTRY }}/tempo-sidecar
@@ -197,14 +227,12 @@ jobs:
             type=raw,value=stable,enable=${{ inputs.pr_number == '' && github.ref_type == 'tag' }}
             type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
             type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
-            type=sha,prefix=sha-,enable=${{ inputs.pr_number == '' }}
-            type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100,enable=${{ inputs.pr_number != '' }}
-            type=ref,event=pr,enable=${{ inputs.pr_number == '' }}
+            type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100
             type=raw,value=pr-${{ inputs.pr_number }},enable=${{ inputs.pr_number != '' }}
 
       - name: Docker metadata for tempo-xtask
         id: meta-tempo-xtask
-        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
+        uses: tempoxyz/gh-actions/vendor/docker/metadata-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
           images: |
             ${{ env.REGISTRY }}/tempo-xtask
@@ -222,31 +250,30 @@ jobs:
             type=raw,value=stable,enable=${{ inputs.pr_number == '' && github.ref_type == 'tag' }}
             type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
             type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
-            type=sha,prefix=sha-,enable=${{ inputs.pr_number == '' }}
-            type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100,enable=${{ inputs.pr_number != '' }}
-            type=ref,event=pr,enable=${{ inputs.pr_number == '' }}
+            type=raw,value=sha-${{ steps.source.outputs.short_sha }},priority=100
             type=raw,value=pr-${{ inputs.pr_number }},enable=${{ inputs.pr_number != '' }}
 
       - name: Log in to Container Registry
-        uses: tempoxyz/gh-actions/vendor/docker/login-action@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log in to Docker Hub
-        uses: tempoxyz/gh-actions/vendor/docker/login-action@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
+        uses: tempoxyz/gh-actions/vendor/docker/login-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
           username: ${{ vars.DOCKER_HUB_USER }}
           password: ${{ secrets.DOCKER_HUB_TOKEN }}
 
       - name: Build and push Docker images
         id: build-and-push
-        uses: tempoxyz/gh-actions/vendor/depot/bake-action@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
+        uses: tempoxyz/gh-actions/vendor/depot/bake-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
           files: |
             docker-bake.hcl
             ${{ steps.meta-tempo.outputs.bake-file }}
+            ${{ steps.meta-tempo-devnet.outputs.bake-file }}
             ${{ steps.meta-tempo-localnet.outputs.bake-file }}
             ${{ steps.meta-tempo-sidecar.outputs.bake-file }}
             ${{ steps.meta-tempo-xtask.outputs.bake-file }}
@@ -268,6 +295,7 @@ jobs:
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
           BUILD_METADATA: ${{ steps.build-and-push.outputs.metadata }}
           TEMPO_TAGS: ${{ steps.meta-tempo.outputs.tags }}
+          TEMPO_DEVNET_TAGS: ${{ steps.meta-tempo-devnet.outputs.tags }}
           TEMPO_LOCALNET_TAGS: ${{ steps.meta-tempo-localnet.outputs.tags }}
           TEMPO_SIDECAR_TAGS: ${{ steps.meta-tempo-sidecar.outputs.tags }}
           TEMPO_XTASK_TAGS: ${{ steps.meta-tempo-xtask.outputs.tags }}
@@ -276,7 +304,7 @@ jobs:
             const fs = require('node:fs');
             const path = require('node:path');
             const metadata = JSON.parse(process.env.BUILD_METADATA || '{}');
-            const images = ['tempo', 'tempo-localnet', 'tempo-sidecar', 'tempo-xtask'].map(name => ({
+            const images = ['tempo', 'tempo-devnet', 'tempo-localnet', 'tempo-sidecar', 'tempo-xtask'].map(name => ({
               name,
               tags: (process.env[`${name.toUpperCase().replaceAll('-', '_')}_TAGS`] || '').split('\n').filter(Boolean),
               digest: metadata[name]?.['containerimage.digest'] || '',
@@ -295,13 +323,14 @@ jobs:
           retention-days: 7
 
       - name: Install cosign
-        uses: tempoxyz/gh-actions/vendor/sigstore/cosign-installer@d39baa2b43f5eba5d261c047521a4fbd56101129 # 2026-09-23T04-31-11Z-d39baa2b
+        uses: tempoxyz/gh-actions/vendor/sigstore/cosign-installer@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
 
       - name: Sign Docker images
         id: sign-images
         shell: bash
         env:
           TEMPO_TAGS: ${{ steps.meta-tempo.outputs.tags }}
+          TEMPO_DEVNET_TAGS: ${{ steps.meta-tempo-devnet.outputs.tags }}
           TEMPO_LOCALNET_TAGS: ${{ steps.meta-tempo-localnet.outputs.tags }}
           TEMPO_SIDECAR_TAGS: ${{ steps.meta-tempo-sidecar.outputs.tags }}
           TEMPO_XTASK_TAGS: ${{ steps.meta-tempo-xtask.outputs.tags }}
@@ -329,6 +358,7 @@ jobs:
 
           images=(
             "$TEMPO_TAGS"
+            "$TEMPO_DEVNET_TAGS"
             "$TEMPO_LOCALNET_TAGS"
             "$TEMPO_SIDECAR_TAGS"
             "$TEMPO_XTASK_TAGS"
@@ -350,7 +380,7 @@ jobs:
 
       - name: Publish event (sha tag)
         id: publish-sha-event
-        if: ${{ github.repository == 'tempoxyz/tempo' && github.event_name != 'merge_group' }}
+        if: ${{ github.repository == 'tempoxyz/tempo' && github.event_name != 'merge_group' && github.event_name != 'pull_request' }}
         shell: bash
         env:
           EVENTS_KEY: ${{ secrets.EVENTS_KEY }}
@@ -426,6 +456,7 @@ jobs:
         shell: bash
         env:
           TEMPO_TAGS: ${{ steps.meta-tempo.outputs.tags }}
+          TEMPO_DEVNET_TAGS: ${{ steps.meta-tempo-devnet.outputs.tags }}
           TEMPO_LOCALNET_TAGS: ${{ steps.meta-tempo-localnet.outputs.tags }}
           TEMPO_SIDECAR_TAGS: ${{ steps.meta-tempo-sidecar.outputs.tags }}
           TEMPO_XTASK_TAGS: ${{ steps.meta-tempo-xtask.outputs.tags }}
@@ -497,6 +528,7 @@ jobs:
           }
 
           summarize_image "tempo" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo" "$TEMPO_TAGS" "tempo"
+          summarize_image "tempo-devnet" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo-devnet" "$TEMPO_DEVNET_TAGS" "tempo-devnet"
           summarize_image "tempo-localnet" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo-localnet" "$TEMPO_LOCALNET_TAGS" "tempo-localnet"
           summarize_image "tempo-sidecar" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo-sidecar" "$TEMPO_SIDECAR_TAGS" "tempo-sidecar"
           summarize_image "tempo-xtask" "${{ github.server_url }}/orgs/tempoxyz/packages/container/package/tempo-xtask" "$TEMPO_XTASK_TAGS" "tempo-xtask"
