@@ -27,7 +27,6 @@ pub(crate) enum IpWithPortParseError {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct IpAddress<'a> {
     input: &'a str,
-    len: u8,
 }
 
 /// A parsed IP address with a port.
@@ -36,12 +35,11 @@ pub(crate) struct IpAddress<'a> {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct IpAddressWithPort<'a> {
     input: &'a str,
-    len: u8,
 }
 
 impl<'a> IpAddressWithPort<'a> {
     pub(crate) fn len(&self) -> u8 {
-        self.len
+        self.input.len() as u8
     }
 
     pub(crate) fn as_bytes(&self) -> &[u8] {
@@ -51,7 +49,7 @@ impl<'a> IpAddressWithPort<'a> {
 
 impl<'a> IpAddress<'a> {
     pub(crate) fn len(&self) -> u8 {
-        self.len
+        self.input.len() as u8
     }
 
     pub(crate) fn as_bytes(&self) -> &[u8] {
@@ -63,10 +61,10 @@ impl<'a> TryFrom<&'a str> for IpAddressWithPort<'a> {
     type Error = IpWithPortParseError;
 
     fn try_from(input: &'a str) -> Result<Self, Self::Error> {
-        let len = u8::try_from(input.len()).map_err(|_| IpWithPortParseError::TooLong)?;
+        u8::try_from(input.len()).map_err(|_| IpWithPortParseError::TooLong)?;
         ensure_address_is_ip_port(input)?;
 
-        Ok(Self { input, len })
+        Ok(Self { input })
     }
 }
 
@@ -74,10 +72,10 @@ impl<'a> TryFrom<&'a str> for IpAddress<'a> {
     type Error = IpParseError;
 
     fn try_from(input: &'a str) -> Result<Self, Self::Error> {
-        let len = u8::try_from(input.len()).map_err(|_| IpParseError::TooLong)?;
+        u8::try_from(input.len()).map_err(|_| IpParseError::TooLong)?;
         input.parse::<IpAddr>()?;
 
-        Ok(Self { input, len })
+        Ok(Self { input })
     }
 }
 
