@@ -157,73 +157,73 @@ tempo-telemetry-util = { path = "crates/telemetry-util", default-features = fals
 tempo-transaction-pool = { path = "crates/transaction-pool", default-features = false }
 tempo-validator-config = { path = "crates/validator-config", default-features = false }
 
-reth-basic-payload-builder = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-chainspec = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5", default-features = false }
-reth-cli = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-cli-commands = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-cli-runner = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-cli-util = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
+reth-basic-payload-builder = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-chainspec = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2", default-features = false }
+reth-cli = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-cli-commands = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-cli-runner = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-cli-util = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
 reth-codecs = { version = "0.8.1", default-features = false }
-reth-consensus = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-consensus-common = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-db = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-discv5 = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-db-api = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-e2e-test-utils = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-engine-local = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-engine-primitives = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-engine-tree = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-errors = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-eth-wire-types = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-etl = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-ethereum = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-ethereum-cli = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-ethereum-consensus = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-ethereum-engine-primitives = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-ethereum-primitives = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5", default-features = false }
-reth-execution-cache = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-execution-types = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-evm = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-evm-ethereum = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-metrics = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-network-api = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-network-p2p = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-network-peers = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5", default-features = false }
-reth-nippy-jar = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-node-api = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-node-builder = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-node-core = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-node-ethereum = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-node-metrics = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-payload-builder = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-payload-primitives = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
+reth-consensus = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-consensus-common = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-db = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-discv5 = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-db-api = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-e2e-test-utils = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-engine-local = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-engine-primitives = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-engine-tree = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-errors = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-eth-wire-types = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-etl = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-ethereum = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-ethereum-cli = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-ethereum-consensus = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-ethereum-engine-primitives = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-ethereum-primitives = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2", default-features = false }
+reth-execution-cache = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-execution-types = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-evm = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-evm-ethereum = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-metrics = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-network-api = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-network-p2p = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-network-peers = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2", default-features = false }
+reth-nippy-jar = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-node-api = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-node-builder = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-node-core = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-node-ethereum = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-node-metrics = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-payload-builder = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-payload-primitives = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
 reth-primitives-traits = { version = "0.8.1", default-features = false }
-reth-config = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-downloaders = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-provider = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-prune-types = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-rpc = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-rpc-api = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-rpc-builder = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-rpc-convert = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-rpc-eth-api = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-rpc-eth-types = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-rpc-server-types = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-revm = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5", features = [
+reth-config = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-downloaders = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-provider = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-prune-types = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-rpc = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-rpc-api = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-rpc-builder = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-rpc-convert = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-rpc-eth-api = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-rpc-eth-types = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-rpc-server-types = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-revm = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2", features = [
   "std",
   "optional-checks",
 ] }
-reth-stages = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-static-file = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-static-file-types = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-storage-api = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-storage-overlay = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-tasks = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-tracing = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-transaction-pool = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-trie = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-trie-common = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
-reth-trie-db = { git = "https://github.com/klkvr/reth", rev = "0d556c3f81a25a0e401420f617842ba0caf0f3d5" }
+reth-stages = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-static-file = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-static-file-types = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-storage-api = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-storage-overlay = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-tasks = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-tracing = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-transaction-pool = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-trie = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-trie-common = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
+reth-trie-db = { git = "https://github.com/klkvr/reth", rev = "be8acb697a2fb24ac5cdc78dc7170a243b1c15d2" }
 
 revm = { version = "43.0.0", features = ["optional_fee_charge"], default-features = false }
 
@@ -235,8 +235,8 @@ alloy = { version = "2.5.0", default-features = false }
 alloy-consensus = { version = "2.5.0", default-features = false }
 alloy-contract = { version = "2.5.0", default-features = false }
 alloy-eips = { version = "2.5.0", default-features = false }
-evm2 = { git = "https://github.com/alloy-rs/evm2", rev = "45317c1ebfb9a8ab54296b572031367d9caed846", default-features = false }
-evm2-macros = { git = "https://github.com/alloy-rs/evm2", rev = "45317c1ebfb9a8ab54296b572031367d9caed846" }
+evm2 = { git = "https://github.com/alloy-rs/evm2", rev = "afa0088674da6020265c4ff5e82b9944a4119508", default-features = false }
+evm2-macros = { git = "https://github.com/alloy-rs/evm2", rev = "afa0088674da6020265c4ff5e82b9944a4119508" }
 alloy-genesis = { version = "2.5.0", default-features = false }
 alloy-hardforks = "0.4.9"
 alloy-json-rpc = "2.5.0"
