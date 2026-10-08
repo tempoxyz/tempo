@@ -206,7 +206,7 @@ def scan(s, github=False):
         fm = re.match(r'^---\s*\n(.*?)\n---', text, re.S)
         meta = dict(re.findall(r'^([\w]+):\s*(.*?)\s*$', fm.group(1), re.M)) if fm else {}
         tip_id = 'TIP-' + re.search(r'tip-(\d+)', path).group(1)
-        tip = dict(id=tip_id, title=meta.get('title', tip_id).strip('"\''), status=meta.get('status', 'Unknown'), scheduled_fork=canonical_fork(meta.get('protocolVersion')), scheduled_fork_source=meta.get('protocolVersion'),
+        tip = dict(id=tip_id, declared_authors=meta.get('authors', '').strip('"\''), people={'status': 'not_requested'}, title=meta.get('title', tip_id).strip('"\''), status=meta.get('status', 'Unknown'), scheduled_fork=canonical_fork(meta.get('protocolVersion')), scheduled_fork_source=meta.get('protocolVersion'),
                    spec={'path': path, 'url': url(s, path), 'digest': file_digest(s.files[path])}, inventory={'status': 'incomplete', 'count': 0}, implementation_prs=[], merge_status='unknown', implemented_forks=[], coverage={}, warnings=[], requirements=[])
         if fm and len(re.findall(r'^protocolVersion:', fm.group(1), re.M)) > 1:
             tip['scheduled_fork'] = None
@@ -484,6 +484,37 @@ def build_report(repo, revision='WORKTREE', evidence=None, github=False):
                 summary=dict(tips=len(tips), requirements=sum(t['coverage']['total'] for t in tips), **{k: sum(t['coverage'][k] for t in tips) for k in ('linked', 'reviewed', 'verified')}, warnings=warning_count), tips=tips)
 
 
+def compare_reports(candidate, baseline, requested):
+    """Compare independent snapshots; never promote PR evidence into main evidence."""
+    available = baseline.get('collection', {}).get('status') != 'error' and bool(baseline.get('revision', {}).get('sha'))
+    candidate['main_comparison'] = dict(
+        status='available' if available else 'unavailable', revision=baseline.get('revision', {'requested': requested}),
+        url='main/report.json', warnings=baseline.get('collection', {}).get('warnings', []),
+        only_on_main=sorted({t['id'] for t in baseline.get('tips', [])} - {t['id'] for t in candidate['tips']}) if available else [])
+    by_id = {t['id']: t for t in baseline.get('tips', [])}
+    for tip in candidate['tips']:
+        other = by_id.get(tip['id'])
+        comparison = dict(status='unavailable' if not available else 'present' if other else 'absent',
+                          sha=baseline.get('revision', {}).get('sha'))
+        if other:
+            comparison.update(spec_changed=tip['spec']['digest'] != other['spec']['digest'],
+                              inventory=other['inventory'], coverage=other['coverage'],
+                              scheduled_fork=other['scheduled_fork'], merge_status=other['merge_status'])
+        tip['main_comparison'] = comparison
+    if not available:
+        candidate['collection']['warnings'].append(warning('main_unavailable', 'Main comparison unavailable; no main coverage is established.'))
+        if candidate['collection']['status'] != 'error':
+            candidate['collection']['status'] = 'warnings'
+        candidate['summary']['warnings'] += 1
+    return candidate
+
+
+def enrich_people(report, cache):
+    # The CLI lives beside this module even when tooling and candidate checkouts differ.
+    import github_people
+    github_people.collect_people(report['revision']['sha'], report['tips'], cache=cache)
+
+
 def markdown_summary(report):
     rev = report['revision']
     lines = ['# TIP dashboard', '', f"Revision: `{rev.get('sha') or 'unavailable'}` ({rev.get('requested')})",
@@ -491,9 +522,31 @@ def markdown_summary(report):
              ', '.join(f'{v} {k}' for k, v in report['summary'].items()), '']
     for w in report['collection']['warnings']:
         lines.append(f"- {w['code']}: {w['message']}")
+    comparison = report.get('main_comparison')
+    if comparison:
+        lines += ['', f"Main comparison: {comparison['status']}; commit `{comparison.get('revision', {}).get('sha') or 'unavailable'}`", '',
+                  'Main has its own inventory and execution evidence; PR reviews and passing PR tests do not verify main.']
+        for w in comparison.get('warnings', []):
+            lines.append(f"- Main: {w.get('code')}: {w.get('message')}")
     for tip in report['tips']:
         lines += ['', f"## {tip['id']} — scheduled {tip['scheduled_fork'] or 'unknown'}", '',
                   f"Inventory: {tip['inventory']['status']}; PR state: {tip['merge_status']}; coverage: {tip['coverage']}"]
+        main = tip.get('main_comparison')
+        if main:
+            lines.append(f"- Main: {main['status']}; inventory {main.get('inventory', {}).get('status', 'unknown')}; coverage {main.get('coverage', 'unknown')}")
+        if tip.get('declared_authors'):
+            lines.append('Declared spec authors: ' + tip['declared_authors'])
+        people = tip.get('people', {})
+        lines.append('GitHub attribution: ' + people.get('status', 'not_requested'))
+        for scope in ('spec', 'implementation'):
+            for person in people.get(scope, {}).get('contributors', []):
+                lines.append(f"- {scope} contributor: {person.get('login') or person.get('name') or 'unmapped'} ({', '.join(person.get('roles', []))})")
+            for pr in people.get(scope, {}).get('pull_requests', []):
+                author = pr.get('author') or {}
+                lines.append(f"- {scope} PR #{pr['number']}: {pr['url']}; author {author.get('login') or author.get('name') or 'unavailable'}")
+                for review in pr.get('reviews', []):
+                    reviewer = review.get('author') or {}
+                    lines.append(f"  Review {review.get('state')}: {reviewer.get('login') or reviewer.get('name') or 'unavailable'}; {review.get('url')}; commit {review.get('commit_sha') or 'unknown'}")
         for w in tip['warnings']:
             lines.append(f"- {w['code']}: {w['message']}")
         for r in tip['requirements']:
@@ -515,21 +568,8 @@ def error_report(revision, exc):
                 summary=dict(tips=0, requirements=0, linked=0, reviewed=0, verified=0, warnings=1))
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--repo', default='.')
-    parser.add_argument('--revision', default='WORKTREE')
-    parser.add_argument('--output', default='output/tip-dashboard')
-    parser.add_argument('--evidence')
-    parser.add_argument('--github', action='store_true', help='Read PR states using gh (network, read-only).')
-    args = parser.parse_args()
-    failed = False
-    try:
-        report = build_report(args.repo, args.revision, args.evidence, args.github)
-    except (OSError, subprocess.SubprocessError, ValueError, TypeError) as exc:
-        report = error_report(args.revision, exc)
-        failed = True
-    output = Path(args.output)
+def write_outputs(report, output):
+    output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     temporary = output / 'report.json.tmp'
     temporary.write_text(json.dumps(report, indent=2) + '\n')
@@ -545,6 +585,48 @@ def main():
         embedded = json.dumps(report, ensure_ascii=False).replace('<', '\\u003c')
         portable = portable.replace('</body>', '<script type="application/json" id="embedded-report">' + embedded + '</script><script>' + (web / 'app.js').read_text() + '</script></body>')
         (output / 'dashboard.html').write_text(portable)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--repo', default='.')
+    parser.add_argument('--revision', default='WORKTREE')
+    parser.add_argument('--output', default='output/tip-dashboard')
+    parser.add_argument('--evidence')
+    parser.add_argument('--github', action='store_true', help='Read PR states and GitHub authors/contributors/reviews (read-only).')
+    parser.add_argument('--compare-main', metavar='REVISION', help='Independently inspect a main revision, e.g. origin/main.')
+    parser.add_argument('--main-repo', help='Separate main checkout; defaults to --repo.')
+    parser.add_argument('--main-evidence', help='Evidence collected at the main commit; never reuses candidate evidence.')
+    args = parser.parse_args()
+    failed = False
+    baseline = None
+    people_cache = {}
+    try:
+        report = build_report(args.repo, args.revision, args.evidence, args.github)
+        if args.github:
+            enrich_people(report, people_cache)
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError) as exc:
+        report = error_report(args.revision, exc)
+        failed = True
+    if args.compare_main:
+        try:
+            baseline = build_report(args.main_repo or args.repo, args.compare_main, args.main_evidence, args.github)
+            if args.github:
+                enrich_people(baseline, people_cache)
+        except (OSError, subprocess.SubprocessError, ValueError, TypeError) as exc:
+            baseline = error_report(args.compare_main, exc)
+        compare_reports(report, baseline, args.compare_main)
+    write_outputs(report, args.output)
+    if baseline is not None:
+        write_outputs(baseline, Path(args.output) / 'main')
+        entries = []
+        for label, value, location in [('Inspected revision', report, 'report.json'), ('main', baseline, 'main/report.json')]:
+            if not failed and value.get('revision', {}).get('sha'):
+                entries.append(dict(label=label, url=location, sha=value['revision']['sha']))
+        (Path(args.output) / 'index.json').write_text(json.dumps({'reports': entries}, indent=2) + '\n')
+    else:
+        (Path(args.output) / 'index.json').unlink(missing_ok=True)
+    summary = report['summary']
     print(json.dumps(summary, sort_keys=True))
     if os.environ.get('GITHUB_ACTIONS') and (failed or summary['warnings']):
         print('::warning::TIP implementation evidence is incomplete; inspect the dashboard artifact and job summary.')

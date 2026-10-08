@@ -5,11 +5,13 @@ A read-only view of network upgrades: scheduled TIPs, code links, activation rul
 ## Read a report
 
 ```sh
-python3 scripts/tip_dashboard/report.py --revision WORKTREE --output output/tip-dashboard --github
+python3 scripts/tip_dashboard/report.py --revision WORKTREE --output output/tip-dashboard --github --compare-main origin/main
 python3 -m http.server 8765 --bind 127.0.0.1 --directory output/tip-dashboard
 ```
 
-Open `http://127.0.0.1:8765`, or open the generated self-contained `dashboard.html` directly. The hosted page reads adjacent `report.json`; it has no upload/import flow. `summary.md` consumes the same report data. `--github` reads PR states through `gh`; without access they stay unknown.
+Open `http://127.0.0.1:8765`, or open the generated self-contained `dashboard.html` directly. The hosted page reads adjacent `report.json`; it has no upload/import flow. `summary.md` consumes the same report data. `--github` reads PR states, submitted GitHub reviews, PR authors and commit authors/committers through `gh`. Spec-file history is anchored to the selected commit; implementation PR activity is shown separately. Declared spec authors come from TIP frontmatter. Missing access, deleted identities or truncated history stay explicit; requested reviewers are not counted as submitted reviews. GitHub reviews retain their state, date and reviewed commit, and never satisfy source or execution coverage.
+
+Fetch the latest main ref before comparison (`git fetch origin main`). `--compare-main origin/main` scans it independently, pins its resolved commit and publishes `main/report.json` plus a revision selector. Each TIP shows its main inventory and coverage alongside the inspected revision. `--main-repo` can select a separate main checkout and `--main-evidence` accepts only evidence from that checkout/commit; PR results are never reused as main evidence. If main has no labels, its coverage remains unknown. The advisory workflow checks both snapshots and attempts main assertions separately, reporting unavailable evidence immediately when none are annotated.
 
 Pass `--revision main`, a release tag or a commit to inspect that Git tree. `WORKTREE` includes local edits and displays its base SHA and source digest. A hosted collection can offer revision selection through adjacent `index.json`:
 
@@ -59,7 +61,7 @@ The matching Foundry helper is `tips/verify/test/helpers/SpecEvidence.sol`. A Fo
 
 `tips/verification/reviews.json` binds reviewed inventories and source/assertion links to their content digests, with reviewer, automated/human kind and review reference. Review meaning before recording hashes; never refresh hashes automatically. Empty or incomplete inventories cannot establish complete coverage. Historical merged PRs cannot substitute for current code. See [the schema](../scripts/tip_dashboard/SCHEMA.md) for the full contract.
 
-The separate advisory workflow runs on relevant changes and supports explicit release revisions. It publishes the JSON, static UI, summary and evidence as a run/attempt artifact. New completeness checks are warnings, not required gates. A failed report publishes a fresh unavailable result, never an old green result.
+The separate advisory workflow runs on relevant changes, compares against a freshly checked-out main commit and supports explicit release revisions. It publishes the JSON, static UI, summary and evidence as a run/attempt artifact. New completeness checks are warnings, not required gates. A failed report publishes a fresh unavailable result, never an old green result.
 
 Validate tooling with:
 

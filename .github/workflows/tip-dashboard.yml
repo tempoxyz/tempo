@@ -47,7 +47,7 @@ jobs:
     # This job must not be added to branch protection or existing required aggregates.
     continue-on-error: true
     runs-on: depot-ubuntu-latest-16
-    timeout-minutes: 50
+    timeout-minutes: 90
     permissions:
       id-token: write
       contents: read
@@ -65,6 +65,14 @@ jobs:
         with:
           path: candidate
           ref: ${{ inputs.revision || github.sha }}
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+      - name: Checkout main for independent comparison
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: main-candidate
+          ref: main
           fetch-depth: 0
           submodules: recursive
           persist-credentials: false
@@ -92,6 +100,17 @@ jobs:
           python3 tooling/scripts/tip_dashboard/run_pilot.py \
             --repo candidate --output output/tip-dashboard/evidence.json \
             --timeout 2400 --jobs 8
+      - name: Check optional main assertion witnesses
+        id: main_pilot
+        continue-on-error: true
+        env:
+          CARGO_TERM_COLOR: never
+          CARGO_HTTP_TIMEOUT: '180'
+          RUST_MIN_STACK: '8388608'
+        run: |
+          python3 tooling/scripts/tip_dashboard/run_pilot.py \
+            --repo main-candidate --output output/tip-dashboard/main/evidence.json \
+            --timeout 1200 --jobs 8
       - name: Generate report and dashboard
         id: dashboard
         if: always()
@@ -101,7 +120,9 @@ jobs:
         run: |
           python3 tooling/scripts/tip_dashboard/report.py \
             --repo candidate --revision HEAD --output output/tip-dashboard \
-            --evidence output/tip-dashboard/evidence.json --github
+            --evidence output/tip-dashboard/evidence.json --github \
+            --compare-main HEAD --main-repo main-candidate \
+            --main-evidence output/tip-dashboard/main/evidence.json
       - name: Record reporting failure
         if: always() && (steps.dashboard.outcome != 'success' || steps.tooling_tests.outcome != 'success')
         env:
@@ -124,6 +145,7 @@ jobs:
               'tips': []
           }
           (output / 'dashboard.html').unlink(missing_ok=True)
+          (output / 'index.json').unlink(missing_ok=True)
           (output / 'report.json').write_text(json.dumps(failure, indent=2) + '\n')
           (output / 'summary.md').write_text('TIP report unavailable. Inspect this workflow run; no verification result is available.\n')
           source = Path('tooling/scripts/tip_dashboard/web')

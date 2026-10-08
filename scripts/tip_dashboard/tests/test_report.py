@@ -76,6 +76,14 @@ assert_eq!(after, true);
                     attempts=[{'id': 'attempt-1', 'test': 'boundary', 'outcome': 'passed', 'exit_code': 0, 'timed_out': False,
                                'markers': [{'requirement': 'TIP-1116:R1', 'case': case, 'test': 'boundary', 'fork': fork} for case, fork in [('before', 'T11'), ('at', 'T12'), ('after', 'T13')]]}])
 
+    def test_unavailable_main_does_not_mask_candidate_failure(self):
+        candidate = report.error_report('candidate', ValueError('candidate unavailable'))
+        main = report.error_report('main', ValueError('main unavailable'))
+        report.compare_reports(candidate, main, 'main')
+        self.assertEqual(candidate['collection']['status'], 'error')
+        self.assertEqual(candidate['main_comparison']['status'], 'unavailable')
+        self.assertEqual(candidate['summary']['verified'], 0)
+
     def test_inventory_is_schedule_based_not_highest_number(self):
         self.write('tips/tip-9999.md', '---\nid: TIP-9999\nprotocolVersion: T99\n---\nFuture prose\n')
         result = self.build()
@@ -123,6 +131,38 @@ assert_eq!(after, true);
     def test_dispatch_schedule_cannot_be_labelled_always(self):
         self.write('src/lib.rs', '// @implements TIP-1116:R1 gate=always\n#[schedule(since = T12)]\nBurnCall => mutate(call),\n')
         self.assertIn('invalid_gate', [w['code'] for w in self.req()['warnings']])
+
+    def test_main_comparison_does_not_reuse_candidate_evidence(self):
+        candidate = self.build(evidence=self.envelope())
+        baseline = self.build(revision='HEAD')
+        report.compare_reports(candidate, baseline, 'main')
+        self.assertEqual(candidate['tips'][0]['coverage']['verified'], 1)
+        self.assertEqual(candidate['tips'][0]['main_comparison']['coverage']['verified'], 0)
+        self.assertEqual(candidate['tips'][0]['main_comparison']['inventory']['status'], 'incomplete')
+        self.assertEqual(candidate['main_comparison']['revision']['sha'], baseline['revision']['sha'])
+
+    def test_main_comparison_missing_tip_and_unavailable_are_distinct(self):
+        candidate, baseline = self.build(), self.build()
+        baseline['tips'] = []
+        report.compare_reports(candidate, baseline, 'main')
+        self.assertEqual(candidate['tips'][0]['main_comparison']['status'], 'absent')
+        report.compare_reports(candidate, report.error_report('main', ValueError('missing ref')), 'main')
+        self.assertEqual(candidate['tips'][0]['main_comparison']['status'], 'unavailable')
+        self.assertNotIn('coverage', candidate['tips'][0]['main_comparison'])
+        self.assertIn('main_unavailable', [w['code'] for w in candidate['collection']['warnings']])
+
+    def test_main_spec_changes_and_main_only_tips_remain_visible(self):
+        baseline = self.build()
+        p = self.repo / 'tips/tip-1116.md'
+        p.write_text(p.read_text() + '\nA new revision.\n')
+        candidate = self.build()
+        baseline['tips'].append(dict(baseline['tips'][0], id='TIP-9999'))
+        report.compare_reports(candidate, baseline, 'main')
+        self.assertTrue(candidate['tips'][0]['main_comparison']['spec_changed'])
+        self.assertEqual(candidate['main_comparison']['only_on_main'], ['TIP-9999'])
+        summary = report.markdown_summary(candidate)
+        self.assertIn('Main comparison: available', summary)
+        self.assertIn('Main: present', summary)
 
     def test_annotations_are_never_review_or_execution(self):
         r = self.req()

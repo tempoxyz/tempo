@@ -110,6 +110,88 @@
         box.append(provenance); parent.append(box);
       }
     }
+    function automatedReview(parent, value) {
+      const d = node('details', undefined, 'automated-provenance');
+      d.append(node('summary', 'Automated source checks · provenance'));
+      d.append(node('p', 'Verification records, not GitHub approval.', 'muted'), evidenceValue(value || 'No automated check recorded'));
+      parent.append(d);
+    }
+    function account(value) {
+      const a = obj(value);
+      const label = a.login ? `@${str(a.login)}${a.name ? ' (' + str(a.name) + ')' : ''}` : `${str(a.name, 'Deleted / unavailable account')} · unmapped GitHub identity`;
+      return link(a.url, label + (a.account_type === 'Bot' ? ' · Bot' : ''));
+    }
+    function reviewRow(value) {
+      const r = obj(value), row = node('p');
+      row.append(account(r.author), node('span', ' · '), link(r.url, str(r.state)), node('span', ` · ${str(r.submitted_at, 'Submission time unavailable')} · Commit ${str(r.commit_sha, 'unknown')} · ${r.on_current_head === true ? 'current PR head' : r.on_current_head === false ? 'older / different PR head' : 'head context unknown'}`));
+      return row;
+    }
+    function peopleScope(parent, label, value) {
+      const scope = obj(value), section = node('section', undefined, 'people-scope');
+      section.append(node('h4', `${label} · ${str(scope.status, 'unavailable')}`));
+      section.append(node('p', label === 'Specification' ? 'Spec file contributors: commit authors / committers at selected revision' : 'Contributors: associated implementation PR commits (authors / committers)', 'muted'));
+      for (const value of arr(scope.contributors)) {
+        const c = obj(value), row = node('div');
+        row.append(account(c), node('span', ` · ${arr(c.roles).map(v => str(v)).join(', ') || 'role unavailable'}`));
+        if (arr(c.commits).length) {
+          const commits = node('details'); commits.append(node('summary', `${c.commits.length} associated commits`));
+          for (const commit of c.commits) { const p = node('p'); p.append(link(obj(commit).url, str(obj(commit).sha))); commits.append(p); }
+          row.append(commits);
+        }
+        section.append(row);
+      }
+      if (!arr(scope.contributors).length) section.append(node('p', scope.status === 'complete' ? 'No contributors recorded.' : 'Contributor data incomplete or unavailable.', 'muted'));
+      section.append(node('p', label === 'Specification' ? 'Reviews on spec PRs' : 'Reviews on implementation PRs', 'muted'));
+      for (const value of arr(scope.pull_requests)) {
+        const pr = obj(value), box = node('div', undefined, 'card');
+        box.append(link(pr.url, `PR #${str(pr.number, '?')} · ${str(pr.title, '')}`), node('p', `${str(pr.state)} · Review data: ${str(pr.status, 'unavailable')} · Decision: ${str(pr.review_decision, 'unavailable')}`));
+        const author = node('p', 'PR author: '); author.append(account(pr.author)); box.append(author);
+        const reviews = arr(pr.reviews).filter(r => obj(r).submitted_at && obj(r).state !== 'PENDING');
+        // Sort by submission time and show the latest submitted record per mapped account.
+        // Unmapped identities remain separate: names alone do not establish an account.
+        const latest = new Map();
+        reviews.forEach((r, i) => {
+          const key = obj(r.author).login || `unmapped:${i}`, previous = latest.get(key);
+          if (!previous || str(r.submitted_at, '') >= str(previous.submitted_at, '')) latest.set(key, r);
+        });
+        box.append(node('p', 'Latest submitted review per account', 'muted'));
+        for (const r of latest.values()) box.append(reviewRow(r));
+        if (!reviews.length) box.append(node('p', pr.status === 'complete' ? 'No submitted reviews recorded.' : 'Submitted review data incomplete or unavailable.'));
+        if (reviews.length > latest.size) {
+          const history = node('details', undefined, 'review-history'); history.append(node('summary', `All submitted reviews (${reviews.length})`));
+          for (const r of reviews) history.append(reviewRow(r));
+          box.append(history);
+        }
+        warnings(box, pr.warnings); section.append(box);
+      }
+      if (!arr(scope.pull_requests).length) section.append(node('p', scope.status === 'complete' ? 'No associated PRs recorded.' : 'PR association / review data incomplete or unavailable.', 'muted'));
+      warnings(section, scope.warnings); parent.append(section);
+    }
+    function people(parent, tip) {
+      const p = obj(tip.people), section = node('section', undefined, 'github-people');
+      section.append(node('h3', 'GitHub people'));
+      section.append(node('p', `Declared spec authors: ${str(tip.declared_authors, 'Unavailable')}`));
+      section.append(node('p', `GitHub data: ${str(p.status, 'unavailable')} · Observed ${str(p.observed_at, 'unknown')}`, 'muted'));
+      section.append(node('p', 'Submitted PR reviews describe their recorded commit context; they do not establish approval of this exact specification or implementation. Requested reviewers are not submitted reviews.', 'muted'));
+      peopleScope(section, 'Specification', p.spec); peopleScope(section, 'Implementation', p.implementation);
+      warnings(section, p.warnings);
+      const provenance = node('details'); provenance.append(node('summary', 'People data provenance'), evidenceValue({revision:p.revision, observed_at:p.observed_at})); section.append(provenance);
+      parent.append(section);
+    }
+    function mainRow(tip) {
+      const m = obj(tip.main_comparison), row = node('div', undefined, 'main-comparison');
+      if (obj(active.main_comparison).status !== 'available' || !['present', 'absent'].includes(m.status)) {
+        row.append(node('p', 'Main comparison unavailable · presence and coverage unknown.')); return row;
+      }
+      const sha = str(m.sha || obj(obj(active.main_comparison).revision).sha).slice(0, 12);
+      row.append(node('p', `Main ${sha}: ${m.status === 'absent' ? 'TIP absent' : 'TIP present'} · PR reviews do not establish main presence.`));
+      if (m.status === 'present') {
+        row.append(node('p', `Spec: ${m.spec_changed === true ? 'changed from current' : m.spec_changed === false ? 'same as current' : 'comparison unknown'} · Scheduled ${str(m.scheduled_fork, 'unknown')} · PR: ${str(m.merge_status, 'unknown')}`));
+        if (!Number.isSafeInteger(obj(m.inventory).count) || obj(m.inventory).count <= 0) row.append(node('p', 'Main inventory missing · Coverage unknown'));
+        else { row.append(node('p', `Main inventory: ${str(obj(m.inventory).status)} · ${count(obj(m.inventory).count)} requirements`)); coverage(row, m.coverage); }
+      }
+      return row;
+    }
     function requirement(value) {
       const r = obj(value), d = node('details');
       d.append(node('summary', `${str(r.id)} · ${str(r.implementation_status)} · ${str(r.verification_status)}`));
@@ -119,8 +201,7 @@
       d.append(r.applicability ? evidenceValue(r.applicability) : node('p', 'Scope not recorded.'));
       meta(d, [['Kind', r.kind], ['Required cases', arr(r.cases).map(v => str(v)).join(', ') || 'None recorded']]);
       d.append(node('p', caseLabel(caseCoverage(r)), 'case-coverage'));
-      d.append(node('h4', 'Implementation review'));
-      d.append(r.review ? evidenceValue(r.review) : arr(r.reviews).length ? evidenceValue(r.reviews) : node('p', 'No review recorded.'));
+      automatedReview(d, r.review || r.reviews);
       warnings(d, r.warnings);
       sourceList(d, 'Implementation / code gates', r.implementations, false);
       sourceList(d, 'Assertions', r.assertions, true);
@@ -136,14 +217,15 @@
       const c = obj(tip.coverage), cases = tipCases(tip);
       const missing = Number.isSafeInteger(c.total) && Number.isSafeInteger(c.linked) ? Math.max(0, c.total - c.linked) : undefined;
       s.append(node('span', `PR: ${str(tip.merge_status)} · ${str(tip.status)}`, 'summary-line'));
-      s.append(node('span', c.total === 0 ? 'Inventory missing · Coverage unknown' : `Linked ${count(c.linked)}/${count(c.total)} · Reviewed ${count(c.reviewed)}/${count(c.total)} · Verified ${count(c.verified)}/${count(c.total)} · Assertions ${cases.linked}/${cases.total} · Missing links ${count(missing)}`, 'summary-line'));
+      s.append(node('span', (!Number.isSafeInteger(obj(tip.inventory).count) || obj(tip.inventory).count <= 0 || c.total === 0) ? 'Inventory missing · Coverage unknown' : `Linked ${count(c.linked)}/${count(c.total)} · Reviewed ${count(c.reviewed)}/${count(c.total)} · Verified ${count(c.verified)}/${count(c.total)} · Assertions ${cases.linked}/${cases.total} · Missing links ${count(missing)}`, 'summary-line'));
       const guards = [...new Set(arr(tip.requirements).flatMap(r => arr(obj(r).implementations).map(i => obj(i).gate)).filter(g => typeof g === 'string' && g))];
       s.append(node('span', `Scheduled ${fork(tip)} · Actual guards: ${guards.join(', ') || 'None recorded'}`, 'summary-line'));
       d.append(s);
       d.append(node('p', `Inventory: ${str(obj(tip.inventory).status)}. Assertion counts are unique declared cases; reviewed counts do not imply human review. Missing links counts inventoried requirements without implementation links.`, 'muted'));
       d.append(link(obj(tip.spec).url, `Specification: ${str(obj(tip.spec).path)}`));
-      d.append(node('h4', 'Inventory review'));
-      d.append(evidenceValue(obj(tip.inventory).review || obj(tip.inventory).reviews || 'No review recorded'));
+      d.append(mainRow(tip));
+      people(d, tip);
+      automatedReview(d, obj(tip.inventory).review || obj(tip.inventory).reviews);
       warnings(d, tip.warnings);
       for (const value of arr(tip.implementation_prs)) {
         const pr = obj(value), box = node('p');
@@ -189,8 +271,24 @@
         active = data;
         const revision = obj(data.revision), box = el('snapshot'); box.replaceChildren();
         box.append(node('p', `Source ${str(revision.sha).slice(0, 12)}${revision.dirty === true ? ' · local changes included' : ''} · ${str(revision.requested)} · Collection: ${str(obj(data.collection).status)}`, 'source'));
+        const main = obj(data.main_comparison), mainRevision = obj(main.revision);
+        box.append(node('p', `Current revision ${str(revision.sha).slice(0, 12)}${revision.dirty === true ? ' + local changes' : ''} vs main ${main.status === 'available' ? str(mainRevision.sha).slice(0, 12) : 'unavailable'}`, 'main-comparison'));
+        if (main.status === 'available') {
+          const only = arr(main.only_on_main).filter(id => typeof id === 'string');
+          if (only.length) {
+            const mainOnly = node('details');
+            mainOnly.append(node('summary', `Only on main: ${only.length} TIPs`), node('p', only.join(', ')));
+            box.append(mainOnly);
+          }
+          if (reportURL(main.url)) {
+            const reportLink = node('a', 'Main report · full inventory');
+            reportLink.href = main.url; reportLink.target = '_blank'; reportLink.rel = 'noopener noreferrer';
+            box.append(reportLink);
+          }
+        }
+        warnings(box, main.warnings);
         const provenance = node('details');
-        provenance.append(node('summary', 'Provenance'), evidenceValue({repository:data.repository, revision, generated_at:data.generated_at, collection:data.collection})); box.append(provenance);
+        provenance.append(node('summary', 'Provenance'), evidenceValue({repository:data.repository, revision, main_comparison:main, generated_at:data.generated_at, collection:data.collection})); box.append(provenance);
         el('load-status').textContent = 'Read-only report snapshot';
         renderTips();
         return data;

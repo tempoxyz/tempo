@@ -103,6 +103,10 @@ def main(argv=None):
             raise ValueError("timeout and jobs must be positive")
         context = report.evidence_context(repo, "WORKTREE")
         envelope.update(context)
+        snapshot = report.Snapshot(repo, "WORKTREE")
+        tips, _ = report.scan(snapshot)
+        if not any(r['assertions'] for t in tips for r in t['requirements']):
+            raise RuntimeError("No annotated assertions in this revision; execution evidence is unavailable.")
         build = ["cargo", "test", "--locked", "-p", args.package, "--features", "test-utils", "--lib", "--no-run",
                  "--message-format=json", "-j", str(args.jobs)]
         code, stdout, timed_out = execute(build, repo, max(1, deadline - time.monotonic()))

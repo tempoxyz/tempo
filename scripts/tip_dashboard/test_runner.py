@@ -3,8 +3,11 @@ import json
 from pathlib import Path
 import sys
 import unittest
+import tempfile
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent))
+import run_pilot
 from run_pilot import parse_attempt
 
 
@@ -16,6 +19,18 @@ class RunnerTests(unittest.TestCase):
 
     def good(self):
         return self.marker() + "test result: ok. 1 passed; 0 failed; 0 ignored; 17 filtered out; finished in 0.01s\n"
+
+    def test_uninstrumented_main_never_builds_or_reuses_old_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'evidence.json'
+            output.write_text('{"old_green": true}')
+            with patch.object(run_pilot.report, 'evidence_context', return_value={'identity': {'sha': 'a' * 40}}), patch.object(run_pilot.report, 'Snapshot'), patch.object(run_pilot.report, 'scan', return_value=([], [])), patch.object(run_pilot, 'execute') as execute:
+                self.assertEqual(run_pilot.main(['--repo', directory, '--output', str(output)]), 1)
+            execute.assert_not_called()
+            data = json.loads(output.read_text())
+            self.assertNotIn('old_green', data)
+            self.assertEqual(data['attempts'], [])
+            self.assertIn('No annotated assertions', data['errors'][0])
 
     def test_real_attempt(self):
         result = parse_attempt(self.good(), "dispatch::tests::spec_dashboard_abi", 0)

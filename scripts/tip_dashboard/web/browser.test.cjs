@@ -8,7 +8,7 @@ const {pathToFileURL} = require('node:url');
   const root = path.resolve(__dirname,'../../..');
   const reportPath = process.env.TIP_DASHBOARD_REPORT || path.join(root,'output/tip-dashboard/report.json');
   const real = JSON.parse(fs.readFileSync(reportPath));
-  const out = path.join(root,'output/tip-dashboard-ui');
+  const out = process.env.TIP_DASHBOARD_UI_OUTPUT || path.join(root,'output/tip-dashboard-ui');
   const browser = await chromium.launch({headless:true,...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? {executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE} : {})});
   try {
     const page = await browser.newPage({viewport:{width:1440,height:1000}});
@@ -39,6 +39,21 @@ const {pathToFileURL} = require('node:url');
     await page.locator('#search').fill(linked.id);
     const card = page.locator('#results > section > details').filter({has:page.locator(':scope > summary',{hasText:linked.id+' —'})}).first();
     await card.locator(':scope > summary').click();
+    if (linked.people?.status === 'complete' || linked.people?.status === 'partial') {
+      const visible = await card.locator('.github-people').innerText();
+      for (const scope of ['spec', 'implementation']) {
+        for (const pr of linked.people[scope]?.pull_requests || []) {
+          if (pr.author?.login) assert.ok(visible.includes('@' + pr.author.login), 'real PR author');
+          for (const review of pr.reviews || []) {
+            if (review.author?.login) assert.ok(visible.includes('@' + review.author.login), 'real submitted reviewer');
+          }
+        }
+      }
+    }
+    if (real.main_comparison?.status === 'available') {
+      assert.ok((await page.locator('#snapshot').innerText()).includes(real.main_comparison.revision.sha.slice(0,12)), 'real main commit');
+      if (!linked.main_comparison?.inventory?.count) assert.match(await card.locator('.main-comparison').innerText(), /Coverage unknown/);
+    }
     const req = linked.requirements.find(r=>r.implementations.length);
     const detail = card.locator(':scope > details').filter({has:page.locator(':scope > summary',{hasText:req.id+' ·'})}).first();
     await detail.locator(':scope > summary').click();
@@ -47,7 +62,14 @@ const {pathToFileURL} = require('node:url');
     assert.ok(text.includes(req.implementations[0].gate));
     if(req.assertions.length) assert.ok(text.includes(req.assertions[0].test));
     assert.match(text,/Assertion-linked cases:/);
-    if(req.review?.reviewer_kind === 'agent') assert.match(text,/agent/);
+    if(req.review?.reviewer_kind === 'agent') {
+      const automated=detail.locator('.automated-provenance');
+      assert.equal(await automated.getAttribute('open'),null);
+      assert.doesNotMatch(await automated.innerText(),/reviewer kind/);
+      await automated.locator('summary').click();
+      assert.match(await automated.innerText(),/agent/);
+      await automated.locator('summary').click();
+    }
     await page.screenshot({path:path.join(out,'showcase-evidence.png'),fullPage:true});
     await page.locator('#search').fill('definitely-no-such-tip');
     assert.match(await page.locator('#results').innerText(),/No TIPs match/);
@@ -75,8 +97,47 @@ const {pathToFileURL} = require('node:url');
     await page.waitForFunction(()=>document.querySelector('#load-status').textContent.includes('Read-only'));
     assert.ok((await page.locator('#snapshot').innerText()).includes(real.revision.sha.slice(0,12)));
     assert.equal(await page.locator('input[type=file]').count(),0);
+    // Synthetic fixtures independently exercise identities, history, trust boundaries and main scope.
+    const fixture=JSON.parse(JSON.stringify(real));
+    fixture.tips=[JSON.parse(JSON.stringify(linked))]; fixture.latest_forks=[linked.scheduled_fork];
+    fixture.main_comparison={status:'available',revision:{sha:'b'.repeat(40),requested:'main',dirty:false},warnings:[]};
+    const t=fixture.tips[0], reviewer={login:'reviewer-fixture',account_type:'User',url:'https://github.com/reviewer-fixture'};
+    t.declared_authors='<img src=x onerror="window.fixtureXSS=true">';
+    t.main_comparison={status:'present',sha:'b'.repeat(40),spec_changed:true,inventory:{status:'missing',count:0},coverage:{total:0,linked:0,reviewed:0,verified:0},scheduled_fork:'T12',merge_status:'merged'};
+    t.people={status:'partial',observed_at:'2026-10-08',spec:{status:'complete',contributors:[{login:'bot-fixture',account_type:'Bot',roles:['committer'],commits:[]},{name:'Unmapped contributor',roles:['author']}],pull_requests:[{number:10,title:'Spec fixture',author:{login:'spec-author'},status:'complete',reviews:[{author:reviewer,state:'APPROVED',submitted_at:'2026-01-01',commit_sha:'c'.repeat(40),on_current_head:false,url:'https://github.com/test/review/old'},{author:reviewer,state:'DISMISSED',submitted_at:'2026-02-01',commit_sha:'b'.repeat(40),on_current_head:true,url:'https://github.com/test/review/new'},{author:{login:'requested-only'},state:'PENDING'},{author:{name:'Deleted reviewer'},state:'COMMENTED',submitted_at:'2026-03-01',url:'javascript:alert(1)'}]}]},implementation:{status:'unavailable',contributors:[],pull_requests:[]},warnings:['Fixture unavailable implementation lookup']};
+    reportBody=JSON.stringify(fixture); indexBody=null;
+    await page.goto('https://dashboard.test/');
+    await page.waitForFunction(()=>document.querySelector('#load-status').textContent.includes('Read-only'));
+    const fixtureCard=page.locator('#results .tip').first();
+    await fixtureCard.locator(':scope > summary').click();
+    const people=fixtureCard.locator('.github-people');
+    const visible=await people.innerText();
+    for(const expected of ['GitHub people','Reviews on spec PRs','@spec-author','@bot-fixture · Bot','committer','Unmapped contributor','unmapped GitHub identity','DISMISSED','Deleted reviewer','Implementation · unavailable']) assert.ok(visible.includes(expected),expected);
+    assert.doesNotMatch(visible,/APPROVED|requested-only/);
+    assert.equal(await people.locator('img').count(),0);
+    assert.equal(await page.evaluate(()=>window.fixtureXSS),undefined);
+    assert.equal(await people.locator('a[href^="javascript:"]').count(),0);
+    assert.equal(await people.locator('a[href="https://github.com/test/review/new"]:visible').count(),1);
+    const history=people.locator('.review-history');
+    assert.equal(await history.getAttribute('open'),null);
+    await history.locator('summary').click();
+    assert.match(await history.innerText(),/APPROVED/);
+    assert.match(await history.innerText(),/older \/ different PR head/);
+    assert.match(await fixtureCard.locator('.main-comparison').innerText(),/TIP present[\s\S]*Spec: changed/);
+    assert.match(await fixtureCard.locator('.main-comparison').innerText(),/Main inventory missing · Coverage unknown/);
+    assert.match(await page.locator('#snapshot').innerText(),/vs main b{12}/);
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'people mobile overflow');
+    await page.screenshot({path:path.join(out,'people-main-fixture.png'),fullPage:true});
+    fixture.main_comparison.status='unavailable';t.people.spec.status='unavailable';t.people.spec.pull_requests=[];
+    reportBody=JSON.stringify(fixture);await page.reload();
+    await page.waitForFunction(()=>document.querySelector('#load-status').textContent.includes('Read-only'));
+    await page.locator('#results .tip > summary').click();
+    assert.match(await page.locator('#snapshot').innerText(),/vs main unavailable/);
+    assert.match(await page.locator('#results .main-comparison').innerText(),/presence and coverage unknown/);
+    assert.doesNotMatch(await page.locator('#results .main-comparison').innerText(),/TIP present/);
+    assert.match(await page.locator('.github-people').innerText(),/PR association \/ review data incomplete or unavailable/);
     assert.deepEqual(errors,[]);
-    const result = {status:'passed',revision:real.revision,drilldown:{tip:linked.id,requirement:req.id},checks:['read-only controls','latest upgrades','empty configured fork','optional hosted selector','short source SHA','source/guard/assertion drilldown','search','mobile overflow','schema/network failure clears stale evidence','portable bundled dashboard'],limitations:'Browser checks supplied report evidence, not live network activation.'};
+    const result = {status:'passed',revision:real.revision,drilldown:{tip:linked.id,requirement:req.id},checks:['read-only controls','latest upgrades','empty configured fork','optional hosted selector','short source SHA','source/guard/assertion drilldown','search','mobile overflow','schema/network failure clears stale evidence','portable bundled dashboard','GitHub people and escaped names','latest submitted review and dismissed old-head history','main coverage scope and unavailable comparison'],limitations:'Browser checks supplied report evidence, not live network activation.'};
     fs.writeFileSync(path.join(out,'browser-results.json'),JSON.stringify(result,null,2)+'\n');
     console.log(JSON.stringify(result));
   } finally { await browser.close(); }
