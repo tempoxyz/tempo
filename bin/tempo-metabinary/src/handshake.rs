@@ -1,21 +1,26 @@
 //! Identity validation and readiness polling shared by eager and lazy workers.
 
+use alloy_primitives::B256;
 use eyre::{Result, bail, ensure};
 use jsonrpsee::{
     core::client::{ClientT, Error as ClientError},
     http_client::HttpClient,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tokio::time::Instant;
 
+/// Private discovery method and wire protocol shared by workers and their launchers.
+pub const EXECUTION_INFO_METHOD: &str = "tempo_executionInfo";
+pub const EXECUTION_INFO_PROTOCOL_VERSION: u32 = 1;
+
 /// The actual private transport's registered methods, not a global RPC catalogue.
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecutionInfo {
-    pub protocol_version: u64,
+    pub protocol_version: u32,
     pub chain_id: String,
-    pub genesis_hash: String,
+    pub genesis_hash: B256,
     pub read_only: bool,
     pub process_id: u32,
     pub methods: Vec<String>,
@@ -32,14 +37,16 @@ pub struct WorkerIdentity<'a> {
 impl ExecutionInfo {
     /// Startup checks the owned child's PID; router construction can recheck metadata without it.
     pub fn validate(&self, identity: WorkerIdentity<'_>, process_id: Option<u32>) -> Result<()> {
-        ensure!(self.protocol_version == 1, "unsupported worker protocol");
+        ensure!(
+            self.protocol_version == EXECUTION_INFO_PROTOCOL_VERSION,
+            "unsupported worker protocol"
+        );
         ensure!(
             self.chain_id.eq_ignore_ascii_case(identity.chain_id),
             "worker chain ID mismatch"
         );
         ensure!(
-            self.genesis_hash
-                .eq_ignore_ascii_case(identity.genesis_hash),
+            self.genesis_hash == identity.genesis_hash.parse::<B256>()?,
             "worker genesis mismatch"
         );
         ensure!(
@@ -76,7 +83,7 @@ pub async fn wait_for_worker(
         ensure!(Instant::now() < deadline, "worker startup timed out");
         let response = tokio::time::timeout_at(
             deadline.min(Instant::now() + Duration::from_secs(1)),
-            client.request::<ExecutionInfo, _>("tempo_executionInfo", jsonrpsee::rpc_params![]),
+            client.request::<ExecutionInfo, _>(EXECUTION_INFO_METHOD, jsonrpsee::rpc_params![]),
         )
         .await;
         match response {

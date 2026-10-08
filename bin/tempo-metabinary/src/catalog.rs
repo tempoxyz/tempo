@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use eyre::{Context, ensure};
 use serde::{Deserialize, Serialize};
 
+use crate::manifest::{resolve_path, validate_hash, validate_schedule};
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Catalog {
@@ -42,10 +44,8 @@ impl Catalog {
             .to_owned();
         for chain in &mut catalog.chains {
             for era in &mut chain.eras {
-                if let Some(binary) = &mut era.binary
-                    && binary.is_relative()
-                {
-                    *binary = parent.join(&*binary);
+                if let Some(binary) = &mut era.binary {
+                    resolve_path(&parent, binary);
                 }
             }
         }
@@ -82,33 +82,13 @@ impl ChainEras {
             self.chain_id.starts_with("0x") && u64::from_str_radix(&self.chain_id[2..], 16).is_ok(),
             "invalid era chain ID"
         );
-        ensure!(
-            self.genesis_hash.len() == 66
-                && self.genesis_hash.starts_with("0x")
-                && self.genesis_hash[2..]
-                    .bytes()
-                    .all(|b| b.is_ascii_hexdigit()),
-            "invalid era genesis hash"
-        );
-        ensure!(!self.eras.is_empty(), "era catalog needs an active era");
-        ensure!(
-            self.eras[0].start_timestamp == 0,
-            "first era must start at zero"
-        );
+        validate_hash(&self.genesis_hash).wrap_err("invalid era genesis hash")?;
+        validate_schedule(
+            self.eras
+                .iter()
+                .map(|era| (era.name.as_str(), era.start_timestamp)),
+        )?;
         for (index, era) in self.eras.iter().enumerate() {
-            ensure!(!era.name.trim().is_empty(), "empty era name");
-            ensure!(
-                !self.eras[..index]
-                    .iter()
-                    .any(|previous| previous.name == era.name),
-                "duplicate era name"
-            );
-            if index > 0 {
-                ensure!(
-                    self.eras[index - 1].start_timestamp < era.start_timestamp,
-                    "era activations must strictly increase"
-                );
-            }
             if index + 1 == self.eras.len() {
                 ensure!(
                     era.binary.is_none(),
@@ -166,8 +146,10 @@ mod tests {
         let chain = catalog
             .for_chain(1, &catalog.chains[0].genesis_hash)
             .unwrap();
+        assert_eq!(chain.era_for_timestamp(0), 0);
         assert_eq!(chain.era_for_timestamp(99), 0);
         assert_eq!(chain.era_for_timestamp(100), 1);
+        assert_eq!(chain.era_for_timestamp(u64::MAX), 1);
         catalog.chains[0].eras[1].start_timestamp = 0;
         assert!(catalog.validate().is_err());
     }

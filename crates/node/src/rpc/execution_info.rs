@@ -7,26 +7,9 @@ use jsonrpsee::{
     types::ErrorObjectOwned,
 };
 use reth_rpc_builder::TransportRpcModules;
-use serde::{Deserialize, Serialize};
-
-/// The private RPC protocol understood by the metabinary wrapper.
-pub const EXECUTION_INFO_PROTOCOL_VERSION: u32 = 1;
-/// Method used to identify an RPC endpoint before forwarding requests.
-pub const EXECUTION_INFO_METHOD: &str = "tempo_executionInfo";
-
-/// Identity and capabilities of the endpoint serving this response.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ExecutionInfo {
-    pub protocol_version: u32,
-    pub process_id: u32,
-    /// Ethereum quantity encoding, matching `eth_chainId`.
-    pub chain_id: String,
-    pub genesis_hash: B256,
-    pub read_only: bool,
-    /// Ordinary calls on this transport. Subscription callbacks are excluded.
-    pub methods: Vec<String>,
-}
+pub use tempo_metabinary::handshake::{
+    EXECUTION_INFO_METHOD, EXECUTION_INFO_PROTOCOL_VERSION, ExecutionInfo,
+};
 
 fn info_module(
     methods: Methods,
@@ -72,9 +55,7 @@ pub fn install_execution_info(
     genesis_hash: B256,
     read_only: bool,
 ) -> Result<(), jsonrpsee::core::RegisterMethodError> {
-    modules.remove_http_method(EXECUTION_INFO_METHOD);
-    modules.remove_ws_method(EXECUTION_INFO_METHOD);
-    modules.remove_ipc_method(EXECUTION_INFO_METHOD);
+    modules.remove_method_from_configured(EXECUTION_INFO_METHOD);
     if let Some(methods) = modules.http_methods(|_| true) {
         modules.merge_http(info_module(methods, chain_id, genesis_hash, read_only)?)?;
     }
@@ -116,13 +97,7 @@ mod tests {
             .call(EXECUTION_INFO_METHOD, rpc_params![])
             .await
             .unwrap();
-        assert!(http_info.methods.iter().any(|name| name == "eth_chainId"));
-        assert!(
-            !http_info
-                .methods
-                .iter()
-                .any(|name| name.starts_with("debug_"))
-        );
+        assert_eq!(http_info.methods, ["eth_chainId", EXECUTION_INFO_METHOD]);
         assert_eq!(http_info.chain_id, "0x1");
         assert!(!http_info.read_only);
         assert_eq!(http_info.process_id, std::process::id());
@@ -132,14 +107,10 @@ mod tests {
             .call(EXECUTION_INFO_METHOD, rpc_params![])
             .await
             .unwrap();
-        assert!(
-            ws_info
-                .methods
-                .iter()
-                .any(|name| name.starts_with("debug_"))
+        assert_eq!(
+            ws_info.methods,
+            ["debug_traceBlockByNumber", EXECUTION_INFO_METHOD]
         );
-        assert!(!ws_info.methods.iter().any(|name| name == "eth_subscribe"));
-        assert!(!ws_info.methods.iter().any(|name| name == "eth_unsubscribe"));
 
         let mut extension = RpcModule::new(());
         extension
@@ -153,14 +124,9 @@ mod tests {
             .call(EXECUTION_INFO_METHOD, rpc_params![])
             .await
             .unwrap();
-        assert!(refreshed.methods.iter().any(|name| name == "tempo_example"));
         assert_eq!(
-            refreshed
-                .methods
-                .iter()
-                .filter(|name| *name == EXECUTION_INFO_METHOD)
-                .count(),
-            1
+            refreshed.methods,
+            ["eth_chainId", "tempo_example", EXECUTION_INFO_METHOD]
         );
     }
 }

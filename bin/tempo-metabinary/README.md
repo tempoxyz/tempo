@@ -1,9 +1,9 @@
 # Tempo metabinary
 
-The normal entrypoint is **`tempo node`**, using its existing arguments and defaults. The active
-node runs in the same process. A small execution-independent library decorates its existing RPC
-callbacks and starts frozen read-only workers lazily when a request needs historical execution.
-It has no Tempo execution, Reth, or database dependencies.
+`tempo node` remains the normal entrypoint, with its existing arguments and defaults. The live
+node runs in-process; an execution-independent library decorates its registered RPC callbacks and
+starts frozen read-only workers lazily for historical execution. The library has no Tempo execution,
+Reth, or database dependencies.
 
 ```mermaid
 flowchart LR
@@ -14,162 +14,106 @@ flowchart LR
     Frozen --> DB
 ```
 
-Ordinary commands retain their meaning:
+## Release configuration
 
-```sh
-tempo node --chain mainnet --http
-tempo node --chain mainnet --full --http --ws
-tempo node --dev
-```
-
-There is no new node `--history` or `--eras` flag. The release supplies `tempo-eras.json` beside its
-executable, binding activation times and frozen artifact paths to a chain ID **and genesis hash**.
-Paths resolve relative to that catalog. The built-in development catalog (`bin/tempo/eras.json`)
-is currently empty: no production freeze boundary or historical artifact is invented by this change.
-An unmatched chain takes the ordinary native path, including custom chains and development mode.
-
-A release catalog has this shape (values below are illustrative):
+The release supplies `tempo-eras.json` beside the executable. There is no node `--history` or
+`--eras` flag. Each catalog entry binds a chain ID and genesis hash to ordered eras:
 
 ```json
-{
-  "chains": [{
-    "chain_id": "0x1",
-    "genesis_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
-    "eras": [
-      {"name": "genesis-to-T10", "start_timestamp": 0, "binary": "eras/tempo-t10"},
-      {"name": "T11-live", "start_timestamp": 2000000000}
-    ]
-  }]
-}
+{"chains":[{
+  "chain_id":"0x1",
+  "genesis_hash":"0x1111111111111111111111111111111111111111111111111111111111111111",
+  "eras":[
+    {"name":"genesis-to-T10","start_timestamp":0,"binary":"eras/tempo-t10"},
+    {"name":"T11-live","start_timestamp":2000000000}
+  ]
+}]}
 ```
 
-The active era always uses the running node; only closed eras name executables. Chain specification,
-datadir, custom static-file/RocksDB paths, and pruning come from the existing node configuration.
-Private temporary files pass the selected genesis and the SDK's resolved `EthConfig` to frozen workers.
-Gas, simulation, memory, and tracing settings therefore retain their configured values. Execution
-concurrency budgets apply per process; the existing public transport limits remain global to the node.
+These values are illustrative. Closed eras name frozen executables, resolved relative to the
+catalog; the last era uses the running node. The built-in development catalog
+(`bin/tempo/eras.json`) is empty. Unmatched chains and custom fork schedules use the native path.
 
-Each public transport retains its original method registry, subscriptions, authentication, CORS,
-compression, request/response and batch limits. Only registered execution callbacks are decorated.
-Stored-data and live callbacks stay native. Block resolution uses an internal eth module even on a
-transport that exposes only debug/trace; it never exposes additional methods publicly. Raw-block
-tracing uses a small Tempo codec adapter outside the generic wrapper. Historical debug trace
-subscriptions are rejected; live debug trace subscriptions remain native. Bad-block tracing and
-`ots_getContractCreator` remain unsupported with active era routing: their execution targets require
-native cache access or a whole-history deployment search before an executor can be chosen.
-
-Workers are coalesced per era, verified by protocol/chain/genesis/read-only mode/process ID, and
-reaped on shutdown. A missing artifact or failed worker affects historical requests for that era;
-live RPC remains available. No worker is selected based on `--full`: retained history may cross an
-era boundary even on pruned nodes. Missing historical state continues to fail through the native
-worker's normal storage behavior.
-
-**Genesis sync remains the normal native sync path.** The active binary still supports old forks.
-Automatic writer handoff after removing those branches needs a bounded native sync interface that
-also gates consensus payloads and fork-choice targets. Reth's pipeline `--debug.max-block` alone
-cannot provide that contract. The finite import helper below remains available for development;
-it is not silently substituted for ordinary node sync.
-
-## Standalone development harness
-
-The separate `tempo-metabinary` executable is retained for fixture development, process isolation,
-and finite canonical-block-file import. It starts a live child and its own HTTP/WebSocket router;
-its transport flags are not the ordinary node CLI. Prefer `tempo node` for normal operation.
-
-### Running the harness
-
-Build the two executables:
-
-```sh
-cargo build --release -p tempo --bin tempo -p tempo-metabinary
-```
-
-Copy the [example manifest](examples/eras.json) and replace its illustrative chain identity,
-activation timestamp, executable paths, and canonical checkpoints. Paths for `binary`, `datadir`,
-and explicit chain specification files resolve relative to the manifest. Paths inside ordinary
-command arguments should be absolute. `node_args` belongs only to the live era and contains its
-ordinary node options, such as consensus or follow configuration. The wrapper supplies chain,
-datadir, and private loopback RPC flags.
-
-```sh
-# Live execution only; historical state queries remain available from the live node.
-tempo-metabinary --manifest /path/to/eras.json serve
-
-# Archive execution RPCs, including historical calls and traces.
-tempo-metabinary --manifest /path/to/eras.json serve --history --api eth,net,web3,tempo,token,consensus,debug,trace,rpc
-
-# Replay canonical block files sequentially from genesis, without state snapshots.
-tempo-metabinary --manifest /path/to/eras.json bootstrap
-```
-
-The public listener defaults to `127.0.0.1:8545`. Set `--listen` to change it. The optional `ws_port`
-on the live era enables public Ethereum and consensus subscription forwarding to the private live WebSocket server.
-Each era has a distinct private `rpc_port`; historical eras have no WebSocket server.
-
-Before exposing RPC, the launcher verifies protocol version, process ID, chain ID, genesis hash,
-read-only mode, and the actual registered methods of every launched endpoint. A worker exit stops
-the service. Shutdown signals and reaps all owned children, including after partial startup failure.
-Live nodes do not need historical executables installed unless running bootstrap or `--history`.
+Workers inherit the selected genesis, datadir, custom static-file/RocksDB paths, and resolved SDK
+`EthConfig` through private temporary files. Gas, simulation, memory, and tracing settings retain
+the node's configured values. Execution concurrency budgets apply per process; public transport
+limits remain global. Historical workers are selected by requests, regardless of `--full` or pruning.
+Missing historical state fails through the worker's ordinary storage behavior.
 
 ## Routing contract
 
-- Stored blocks, receipts, logs, proofs, raw state queries, and live transaction operations use the
-  live process. Historical data does not require a historical EVM.
-- Execution requests resolve their block or transaction through the live process, then select the
-  owning era by timestamp. Block tags are pinned before forwarding; explicit hashes and
-  `requireCanonical` are preserved. Positional and named parameters are supported.
-- Calls, gas estimation, access lists, transaction/block tracing, witnesses, and prefix replay use
-  the execution block's era. `eth_simulateV1` and `tempo_simulateV1` use their generated child blocks'
-  eras, including gap fillers. The base state may belong to an older era.
-- Requests spanning eras are rejected with `-32004`. This includes trace filters, multi-block
-  simulations, call bundles, and timestamp overrides that would escape the selected era. Split a
-  trace range into separate requests. The wrapper does not transfer speculative state between
-  processes.
-- RPC methods are registered through jsonrpsee after the public namespace allowlist. Its standard
-  batching, request/response limits, and notifications remain in effect. Subscription notifications
-  are also size limited. `rpc_modules` describes the public registry.
-- Unreviewed execution methods fail with `-32004` instead of silently executing with the live EVM.
-  Add their selector semantics to `routing.rs` when introducing an execution RPC. Raw-block tracing
-  in the standalone harness, bad-block tracing, `ots_getContractCreator`, and historical debug
-  subscriptions are currently unsupported. Use block hash/number tracing for blocks in the database;
-  the generic wrapper deliberately has no Tempo block codec.
+- Stored blocks, receipts, logs, proofs, state queries, and live transaction operations stay native.
+- Execution requests resolve blocks or transactions through the live node and choose an era by
+  timestamp. Tags are pinned; explicit hashes and `requireCanonical` are preserved. Positional
+  and named parameters are supported. Simulations select their generated child blocks' eras,
+  including gap fillers; the base state may belong to an older era.
+- Requests crossing eras return `-32004`, including trace filters, multi-block simulations, call
+  bundles, and timestamp overrides. Split ranges rather than transferring speculative state
+  between processes. Unreviewed execution methods fail closed until their selectors are supported.
+- Native transports retain their registries, authentication, CORS, compression, subscriptions,
+  batching, and limits. Resolution uses an internal eth module even when eth is disabled publicly.
+  Live debug trace subscriptions stay native; historical debug trace subscriptions are rejected.
+- Raw-block tracing uses a Tempo codec adapter. The generic standalone harness cannot decode it.
+  Bad-block tracing and `ots_getContractCreator` remain unsupported with era routing because
+  choosing an executor requires native cache access or a whole-history deployment search.
 
-## Bootstrap and freezing an era
+Workers are coalesced per era and verified by protocol, chain, genesis, read-only mode, and PID.
+Shutdown reaps owned children. A failed or missing worker affects historical requests for its era;
+live RPC stays available.
 
-A closed era's optional `bootstrap` contains an ordinary `import` command and a trusted canonical
-terminal block number/hash. Its file must contain the blocks to execute for that era, ending at the
-last block before the successor's activation. The wrapper forces `--fail-on-invalid-block`, waits
-for the writer to exit, opens a reader, and verifies the canonical checkpoint, era timestamp, and
-exact database head before advancing. It never rewrites pipeline checkpoints or creates a handoff
-database marker. On successive phases it verifies that the first successor header belongs to the
-successor era; live startup repeats this check as soon as that header is available.
+## Standalone development harness
 
-Checkpoints are operator-supplied trust anchors, not independently discovered activation boundaries.
-Bootstrap does not download block files or switch a running peer-to-peer sync process between eras.
-Reth's `--debug.max-block` does not bound every Tempo consensus/follow path, so the wrapper does not
-use it as a network bootstrap contract. An import failure can leave partial progress in the normal
-database; recovery follows the ordinary Tempo import workflow.
+`tempo-metabinary` provides process isolation, an HTTP/WebSocket router, and finite canonical-file
+import for development. Its transport flags are separate from the ordinary node CLI.
 
-To freeze an era, retain a tested executable with this `rpc-only` command and discovery protocol,
-plus its build revision and checksum. The interface includes discovery and the hidden
-`rpc-only --rpc-config` option for the parent node's serialized execution settings. Existing releases
-lacking this interface need it backported; they cannot be used directly. Point the closed era at
-that artifact, then develop the active binary independently. Frozen workers must support that era's execution and the
-shared storage layout; the identity handshake alone does not prove execution compatibility.
+```sh
+cargo build --release -p tempo --bin tempo -p tempo-metabinary
 
-This change integrates the wrapper into the native CLI and establishes the reusable worker
-interface. It does **not** delete historical hardfork branches from the active EVM or introduce a compile-time supported-fork floor. That cleanup
-must be paired with freezing the corresponding executable and execution-range guards, including the
-pool's prospective child environment and override paths. Historical validator-config storage reads
-have been decoupled from EVM construction so consensus can inspect old state after that cleanup.
+# Live execution; stored historical data remains accessible.
+tempo-metabinary --manifest /path/to/eras.json serve
+# Historical execution and tracing.
+tempo-metabinary --manifest /path/to/eras.json serve --history --api eth,net,web3,tempo,token,consensus,debug,trace,rpc
+# Sequential canonical-file import through closed eras.
+tempo-metabinary --manifest /path/to/eras.json bootstrap
+```
+
+Copy the [example manifest](examples/eras.json) and replace its illustrative identity, timestamps,
+executable paths, and checkpoints. Binary, datadir, and explicit chain-spec paths are manifest-relative;
+paths inside command arguments should be absolute. Only the live era has `node_args`. The wrapper
+owns shared storage and private loopback RPC flags. Each era has a distinct `rpc_port`; the live
+era's optional `ws_port` enables Ethereum and consensus subscription forwarding. The public listener
+defaults to `127.0.0.1:8545`; use `--listen` to change it.
+
+The harness discovers each launched endpoint's actual methods and exposes only allowed namespaces.
+jsonrpsee enforces batching and response limits; subscription notifications are also size limited.
+A child exit stops serving. Partial startup failures still clean up all owned children. Live-only
+serving does not require historical artifacts; bootstrap and `--history` do.
+
+## Bootstrap and frozen artifacts
+
+Each closed era's `bootstrap` supplies an ordinary `import` command and a trusted terminal block
+number/hash. Its file ends immediately before the successor's activation. The wrapper forces
+`--fail-on-invalid-block`, waits for import, opens a reader, and verifies the canonical checkpoint,
+era timestamp, and exact head. Subsequent imports verify the predecessor and first successor;
+live startup checks the successor when available. No pipeline checkpoints or handoff markers are
+rewritten. An import failure may leave partial progress; use the ordinary Tempo recovery workflow.
+
+Genesis network sync remains native, and the active binary still supports old forks. Bootstrap does
+not download files or switch peer-to-peer writers. Removing historical execution branches requires
+frozen artifacts, execution-range guards, and a bounded sync interface that also gates consensus
+payloads and fork choice. Reth's pipeline `--debug.max-block` alone does not supply that contract.
+Historical validator-config reads already use storage without constructing an EVM.
+
+Frozen artifacts need this `rpc-only` discovery protocol and hidden `--rpc-config` interface,
+backported where necessary, plus a recorded revision and checksum. They must support their era and
+shared storage layout; identity discovery does not establish execution compatibility.
 
 ## Validation
 
-`cargo test --locked -p tempo-metabinary` covers era routing, three-era operation, live-only mode,
-named parameters, simulation and override boundaries, trace-filter defaults, unsupported raw-block policy,
-namespace policy, batching, response limits, subscriptions, manifests, and subprocess cleanup.
-Native tests cover real read-only database calls/traces, configured gas caps, identity discovery,
-custom fork-schedule isolation, and historical validator-config reads. Process smoke tests verify
-native `tempo node` routing through HTTP/WS/IPC, unchanged method exposure, lazy workers, custom storage paths, WebSocket events, restart, and child cleanup. The
-standalone harness additionally covers finite genesis import followed by archive serving. Those
-fixtures use the same native artifact for both eras. A production rollout still needs independent frozen-artifact genesis replay and consensus restart coverage on a representative chain.
+`cargo test --locked -p tempo-metabinary` covers routing, era boundaries, parameters, transport
+policy, limits, subscriptions, manifests, and subprocess ownership/cleanup. Native tests cover
+read-only calls/traces, gas caps, discovery, custom fork schedules, and validator-config storage.
+Process smoke tests exercise HTTP/WS/IPC, lazy workers, storage paths, subscriptions, restart,
+cleanup, and finite import/archive serving. These fixtures reuse the same native artifact across
+eras. Production rollout still requires independent frozen-artifact genesis replay and consensus
+restart coverage on a representative chain.

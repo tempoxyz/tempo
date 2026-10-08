@@ -57,15 +57,19 @@ pub fn decorate(methods: Methods, router: Arc<Router>) -> Result<Methods, Regist
 }
 
 fn decorate_with(
-    mut methods: Methods,
+    methods: Methods,
     live: usize,
     route: RouteCall,
     forward: ForwardCall,
 ) -> Result<Methods, RegisterMethodError> {
-    let mut decorated = Methods::new();
-    *decorated.extensions_mut() = methods.extensions().clone();
-    for name in methods.method_names() {
-        let native = methods.method(name).expect("registered method").clone();
+    let mut registry = jsonrpsee::RpcModule::new(());
+    *registry = methods;
+    let names: Vec<_> = registry
+        .method_names()
+        .filter(|name| *name == "debug_subscribe" || is_execution_method(name))
+        .collect();
+    for name in names {
+        let native = registry.method(name).expect("registered method").clone();
         let callback = if name == "debug_subscribe"
             && let MethodCallback::Subscription(callback) = &native
         {
@@ -80,7 +84,7 @@ fn decorate_with(
                 let connection = state.conn_id;
                 let permit = state.subscription_permit;
                 async move {
-                    let target = match parse_params(&params) {
+                    let target = match RpcParams::parse(&params) {
                         Ok(params) => route(name, params).await,
                         Err(error) => Err(error),
                     };
@@ -133,7 +137,7 @@ fn decorate_with(
                     let route = route.clone();
                     let forward = forward.clone();
                     async move {
-                        let target = match parse_params(&params) {
+                        let target = match RpcParams::parse(&params) {
                             Ok(params) => route(name, params).await,
                             Err(error) => Err(error),
                         };
@@ -161,20 +165,12 @@ fn decorate_with(
                 },
             ))
         } else {
-            native
+            continue;
         };
-        decorated.verify_and_insert(name, callback)?;
+        registry.remove_method(name);
+        registry.verify_and_insert(name, callback)?;
     }
-    Ok(decorated)
-}
-
-fn parse_params(params: &jsonrpsee::types::Params<'_>) -> RpcResult<RpcParams> {
-    params
-        .as_str()
-        .map(serde_json::from_str::<Value>)
-        .transpose()
-        .map(|value| RpcParams(value.unwrap_or(Value::Null)))
-        .map_err(|error| ErrorObjectOwned::owned(-32602, error.to_string(), None::<()>))
+    Ok(registry.into())
 }
 
 #[cfg(test)]

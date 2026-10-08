@@ -145,7 +145,7 @@ impl Fixture {
                 Some(ExecutionInfo {
                     protocol_version: 1,
                     chain_id: "0xa410".into(),
-                    genesis_hash: hash(0),
+                    genesis_hash: hash(0).parse().unwrap(),
                     read_only: index + 1 != count,
                     process_id: std::process::id(),
                     methods: names,
@@ -255,29 +255,19 @@ async fn historical_execution_and_stored_state_use_different_backends() {
             "{method}"
         );
     }
-    assert_eq!(f.call("eth_call", json!([{}, "0x3"])).await["era"], 1);
     assert_eq!(
         f.call("eth_call", json!([{}, "pending"])).await["params"][1],
         "pending"
     );
-    assert_eq!(
-        f.call("eth_getBalance", json!(["0x0", "0x1"])).await["era"],
-        1
-    );
-    assert_eq!(
-        f.call("trace_transactionOpcodeGas", json!([hash(10)]))
-            .await["era"],
-        0
-    );
-    assert_eq!(
-        f.call("trace_blockOpcodeGas", json!(["0x1"])).await["era"],
-        0
-    );
-    assert_eq!(
-        f.call("debug_accountInfoAt", json!(["0x1", 0, "0x0"]))
-            .await["era"],
-        0
-    );
+    for (method, params, era) in [
+        ("eth_call", json!([{}, "0x3"]), 1),
+        ("eth_getBalance", json!(["0x0", "0x1"]), 1),
+        ("trace_transactionOpcodeGas", json!([hash(10)]), 0),
+        ("trace_blockOpcodeGas", json!(["0x1"]), 0),
+        ("debug_accountInfoAt", json!(["0x1", 0, "0x0"]), 0),
+    ] {
+        assert_eq!(f.call(method, params).await["era"], era, "{method}");
+    }
 }
 
 #[tokio::test]
@@ -342,29 +332,26 @@ async fn overrides_cannot_bypass_era_selection_and_nulls_keep_native_defaults() 
         let overrides = json!([{}, "0x1", null, {name:"0x64"}]);
         assert_eq!(f.error_code("eth_call", overrides).await, -32004);
     }
-    let response = f
-        .call("eth_call", json!([{}, "0x1", null, {"time":null}]))
-        .await;
-    assert_eq!(response["era"], 0);
-    let response = f
-        .call(
+    for (method, params, era) in [
+        ("eth_call", json!([{}, "0x1", null, {"time":null}]), 0),
+        (
             "eth_callMany",
             json!([[{"transactions":[{}]}], {"blockNumber":null}]),
-        )
-        .await;
-    assert_eq!(response["era"], 1);
-    let response = f
-        .call(
+            1,
+        ),
+        (
             "eth_simulateV1",
             json!([{"blockStateCalls":[{"blockOverrides":{"time":null,"number":null}}]}, "0x1"]),
-        )
-        .await;
-    assert_eq!(response["era"], 0);
-    assert_eq!(
-        f.call("trace_filter", json!([{"fromBlock":null,"toBlock":null}]))
-            .await["era"],
-        1
-    );
+            0,
+        ),
+        (
+            "trace_filter",
+            json!([{"fromBlock":null,"toBlock":null}]),
+            1,
+        ),
+    ] {
+        assert_eq!(f.call(method, params).await["era"], era, "{method}");
+    }
 }
 
 #[tokio::test]
@@ -477,23 +464,16 @@ async fn supports_three_eras_and_live_nodes_need_no_historical_worker() {
             .await["era"],
         2
     );
-    let error = live_only
-        .router
-        .call("eth_call", RpcParams(json!([{}, "0x1"])))
-        .await
-        .unwrap_err();
-    assert_eq!(error.code(), -32004);
-}
-
-#[tokio::test]
-async fn raw_block_tracing_is_explicitly_unsupported() {
-    let f = Fixture::new().await;
-    let error = f
-        .router
-        .call("debug_traceBlock", RpcParams(json!(["0xc0"])))
-        .await
-        .unwrap_err();
-    assert_eq!(error.code(), -32004);
+    assert_eq!(
+        live_only.error_code("eth_call", json!([{}, "0x1"])).await,
+        -32004
+    );
+    assert_eq!(
+        live_only
+            .error_code("debug_traceBlock", json!(["0xc0"]))
+            .await,
+        -32004
+    );
 }
 
 #[tokio::test]

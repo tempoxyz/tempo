@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use clap::{Args, Parser, Subcommand};
 use eyre::{Context, Result, ensure};
@@ -9,7 +9,7 @@ use jsonrpsee::{
 };
 use serde_json::Value;
 use tempo_metabinary::{
-    handshake::{WorkerIdentity, wait_for_worker},
+    handshake::{EXECUTION_INFO_METHOD, WorkerIdentity, wait_for_worker},
     manifest::{Bootstrap, Manifest},
     process::ProcessGroup,
     routing::{ExecutionInfo, Router, quantity},
@@ -42,21 +42,8 @@ struct Serve {
     /// Start frozen read-only workers to serve historical execution RPCs.
     #[arg(long)]
     history: bool,
-    #[arg(long, default_value = "127.0.0.1:8545")]
-    listen: SocketAddr,
-    /// Public namespaces. Private worker methods outside this list are never registered.
-    #[arg(
-        long,
-        value_delimiter = ',',
-        default_value = "eth,net,web3,tempo,token,consensus,rpc"
-    )]
-    api: Vec<String>,
-    #[arg(long, default_value_t = 10_485_760)]
-    max_request_bytes: u32,
-    #[arg(long, default_value_t = 26_214_400)]
-    max_response_bytes: u32,
-    #[arg(long, default_value_t = 100)]
-    max_connections: u32,
+    #[command(flatten)]
+    server: ServerOptions,
 }
 
 #[tokio::main]
@@ -130,7 +117,7 @@ async fn serve(
     let clients: Vec<_> = manifest
         .eras
         .iter()
-        .map(|e| client(e.rpc_port, options.max_response_bytes))
+        .map(|e| client(e.rpc_port, options.server.max_response_bytes))
         .collect::<Result<_>>()?;
     // Before starting a binary whose old execution may have been deleted, establish that storage
     // is already in its era or at the explicitly pinned predecessor handoff.
@@ -174,12 +161,12 @@ async fn serve(
             .ok_or_else(|| eyre::eyre!("live worker exited before WebSocket handshake"))?;
         let ws = Arc::new(
             WsClientBuilder::default()
-                .max_response_size(options.max_response_bytes)
+                .max_response_size(options.server.max_response_bytes)
                 .build(format!("ws://127.0.0.1:{port}"))
                 .await?,
         );
         let metadata: ExecutionInfo = ws
-            .request("tempo_executionInfo", jsonrpsee::rpc_params![])
+            .request(EXECUTION_INFO_METHOD, jsonrpsee::rpc_params![])
             .await?;
         metadata.validate(
             WorkerIdentity {
@@ -195,18 +182,7 @@ async fn serve(
     };
     let mut boundary_verified = verify_live_boundary(&clients[live], &manifest).await?;
     let router = Arc::new(Router::new(manifest.clone(), clients.clone(), metadata)?);
-    let (address, handle) = server::start(
-        router,
-        ServerOptions {
-            listen: options.listen,
-            api: options.api,
-            max_request_bytes: options.max_request_bytes,
-            max_response_bytes: options.max_response_bytes,
-            max_connections: options.max_connections,
-        },
-        ws,
-    )
-    .await?;
+    let (address, handle) = server::start(router, options.server, ws).await?;
     info!(%address, "era RPC router ready");
     // The guard stops the server even when main cancels this future on a shutdown signal.
     let _stop_server = StopServer(handle.clone());
@@ -239,6 +215,10 @@ async fn verify_live_boundary(client: &HttpClient, manifest: &Manifest) -> Resul
     else {
         return Ok(true);
     };
+    verify_successor(client, checkpoint, manifest.live().start_timestamp).await
+}
+
+async fn verify_successor(client: &HttpClient, checkpoint: &Bootstrap, start: u64) -> Result<bool> {
     let first_number = checkpoint
         .terminal_block_number
         .checked_add(1)
@@ -259,8 +239,8 @@ async fn verify_live_boundary(client: &HttpClient, manifest: &Manifest) -> Resul
         "successor does not extend the pinned handoff block"
     );
     ensure!(
-        quantity(&first["timestamp"])? >= manifest.live().start_timestamp,
-        "bootstrap ended before the actual live era boundary"
+        quantity(&first["timestamp"])? >= start,
+        "bootstrap ended before the successor era boundary"
     );
     Ok(true)
 }
@@ -341,19 +321,9 @@ async fn bootstrap(
                 false,
             )
             .await?;
-            let first_number = previous
-                .terminal_block_number
-                .checked_add(1)
-                .ok_or_else(|| eyre::eyre!("terminal block number overflows"))?;
-            let first: Value = client
-                .request(
-                    "eth_getBlockByNumber",
-                    (format!("0x{first_number:x}"), false),
-                )
-                .await?;
             ensure!(
-                quantity(&first["timestamp"])? >= era.start_timestamp,
-                "predecessor checkpoint ended before the actual era boundary"
+                verify_successor(&client, previous, era.start_timestamp).await?,
+                "successor header is missing after bootstrap"
             );
         }
         processes.shutdown().await?;
@@ -384,7 +354,6 @@ mod tests {
     };
     use serde_json::json;
     use std::{collections::HashMap, sync::Mutex};
-    use tempo_metabinary::manifest::Era;
 
     #[test]
     fn cli_validates_and_parses_archive_and_bootstrap_modes() {
@@ -451,36 +420,13 @@ mod tests {
     }
 
     fn manifest() -> Manifest {
-        Manifest {
-            chain: "test".into(),
-            datadir: "data".into(),
-            chain_id: "0x1".into(),
-            genesis_hash: hash(0),
-            eras: vec![
-                Era {
-                    name: "old".into(),
-                    start_timestamp: 0,
-                    binary: "old".into(),
-                    node_args: vec![],
-                    rpc_port: 18545,
-                    ws_port: None,
-                    bootstrap: Some(Bootstrap {
-                        args: vec!["import".into(), "blocks.rlp".into()],
-                        terminal_block_number: 2,
-                        terminal_block_hash: hash(2),
-                    }),
-                },
-                Era {
-                    name: "live".into(),
-                    start_timestamp: 100,
-                    binary: "live".into(),
-                    node_args: vec![],
-                    rpc_port: 18546,
-                    ws_port: None,
-                    bootstrap: None,
-                },
-            ],
-        }
+        let mut manifest: Manifest =
+            serde_json::from_str(include_str!("../examples/eras.json")).unwrap();
+        manifest.eras[1].start_timestamp = 100;
+        let checkpoint = manifest.eras[0].bootstrap.as_mut().unwrap();
+        checkpoint.terminal_block_number = 2;
+        checkpoint.terminal_block_hash = hash(2);
+        manifest
     }
 
     #[tokio::test]

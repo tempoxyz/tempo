@@ -1,5 +1,6 @@
 //! The wrapper's only knowledge of execution history: ordered binaries and activation times.
 
+use alloy_primitives::B256;
 use eyre::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -73,7 +74,6 @@ impl Manifest {
             resolve_path(&parent, &mut chain_path);
             manifest.chain = chain_path.to_string_lossy().into_owned();
         }
-        manifest.validate()?;
         Ok(manifest)
     }
 
@@ -85,16 +85,13 @@ impl Manifest {
         );
         parse_quantity(&self.chain_id).wrap_err("invalid chain_id")?;
         validate_hash(&self.genesis_hash).wrap_err("invalid genesis_hash")?;
-        ensure!(!self.eras.is_empty(), "manifest needs at least one era");
-        ensure!(
-            self.eras[0].start_timestamp == 0,
-            "first era must start at timestamp zero"
-        );
-        let mut names = HashSet::new();
+        validate_schedule(
+            self.eras
+                .iter()
+                .map(|era| (era.name.as_str(), era.start_timestamp)),
+        )?;
         let mut ports = HashSet::new();
         for (index, era) in self.eras.iter().enumerate() {
-            ensure!(!era.name.trim().is_empty(), "era name must not be empty");
-            ensure!(names.insert(&era.name), "duplicate era name: {}", era.name);
             ensure!(
                 !era.binary.as_os_str().is_empty(),
                 "era {} has no binary",
@@ -114,12 +111,6 @@ impl Manifest {
                 ensure!(
                     port != 0 && ports.insert(port),
                     "invalid or duplicate private WebSocket port: {port}"
-                );
-            }
-            if index > 0 {
-                ensure!(
-                    self.eras[index - 1].start_timestamp < era.start_timestamp,
-                    "era activation timestamps must strictly increase"
                 );
             }
             if index + 1 < self.eras.len() {
@@ -177,18 +168,6 @@ impl Manifest {
             .last()
             .expect("validated manifest contains an era")
     }
-
-    pub fn era_for_timestamp(&self, timestamp: u64) -> usize {
-        self.eras
-            .partition_point(|era| era.start_timestamp <= timestamp)
-            .saturating_sub(1)
-    }
-}
-
-impl Era {
-    pub fn rpc_url(&self) -> String {
-        format!("http://127.0.0.1:{}", self.rpc_port)
-    }
 }
 
 impl Bootstrap {
@@ -215,7 +194,25 @@ impl Bootstrap {
     }
 }
 
-fn resolve_path(parent: &Path, path: &mut PathBuf) {
+pub(crate) fn validate_schedule<'a>(eras: impl IntoIterator<Item = (&'a str, u64)>) -> Result<()> {
+    let mut names = HashSet::new();
+    let mut previous = None;
+    for (name, timestamp) in eras {
+        ensure!(
+            !name.trim().is_empty() && names.insert(name),
+            "era names must be unique and nonempty"
+        );
+        ensure!(
+            previous.map_or(timestamp == 0, |start| start < timestamp),
+            "era activations must start at zero and strictly increase"
+        );
+        previous = Some(timestamp);
+    }
+    ensure!(previous.is_some(), "schedule needs at least one era");
+    Ok(())
+}
+
+pub(crate) fn resolve_path(parent: &Path, path: &mut PathBuf) {
     if path.is_relative() {
         *path = parent.join(&*path);
     }
@@ -251,14 +248,9 @@ pub fn parse_quantity(value: &str) -> Result<u64> {
     Ok(u64::from_str_radix(digits, 16)?)
 }
 
-fn validate_hash(value: &str) -> Result<()> {
-    let digits = value
-        .strip_prefix("0x")
-        .ok_or_else(|| eyre::eyre!("expected 0x-prefixed hash"))?;
-    ensure!(
-        digits.len() == 64 && digits.bytes().all(|byte| byte.is_ascii_hexdigit()),
-        "expected a 32-byte hexadecimal hash"
-    );
+pub(crate) fn validate_hash(value: &str) -> Result<()> {
+    ensure!(value.starts_with("0x"), "expected 0x-prefixed hash");
+    value.parse::<B256>()?;
     Ok(())
 }
 
@@ -266,47 +258,11 @@ fn validate_hash(value: &str) -> Result<()> {
 mod tests {
     use super::*;
 
-    pub(super) fn manifest() -> Manifest {
-        Manifest {
-            chain: "tempo".into(),
-            datadir: "/tmp/tempo-test".into(),
-            chain_id: "0xa5bd".into(),
-            genesis_hash: format!("0x{}", "00".repeat(32)),
-            eras: vec![
-                Era {
-                    name: "frozen".into(),
-                    start_timestamp: 0,
-                    binary: "/bin/false".into(),
-                    node_args: vec![],
-                    rpc_port: 18545,
-                    ws_port: None,
-                    bootstrap: Some(Bootstrap {
-                        args: vec!["import".into(), "blocks.rlp".into()],
-                        terminal_block_number: 10,
-                        terminal_block_hash: format!("0x{}", "11".repeat(32)),
-                    }),
-                },
-                Era {
-                    name: "live".into(),
-                    start_timestamp: 100,
-                    binary: "/bin/false".into(),
-                    node_args: vec![],
-                    rpc_port: 18546,
-                    ws_port: None,
-                    bootstrap: None,
-                },
-            ],
-        }
-    }
-
-    #[test]
-    fn routes_exact_activation_to_successor() {
-        let manifest = manifest();
-        manifest.validate_bootstrap().unwrap();
-        assert_eq!(manifest.era_for_timestamp(0), 0);
-        assert_eq!(manifest.era_for_timestamp(99), 0);
-        assert_eq!(manifest.era_for_timestamp(100), 1);
-        assert_eq!(manifest.era_for_timestamp(u64::MAX), 1);
+    fn manifest() -> Manifest {
+        let mut manifest: Manifest =
+            serde_json::from_str(include_str!("../examples/eras.json")).unwrap();
+        manifest.eras[1].start_timestamp = 100;
+        manifest
     }
 
     #[test]

@@ -29,7 +29,7 @@ use tokio::{
 
 use crate::{
     handshake::{WorkerIdentity, wait_for_worker},
-    manifest::parse_quantity,
+    manifest::{parse_quantity, validate_hash},
     process::{shutdown_children, spawn_child},
     routing::{ExecutionInfo, RpcParams, upstream_error},
 };
@@ -37,7 +37,6 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct WorkerEra {
     pub name: String,
-    pub start_timestamp: u64,
     pub binary: PathBuf,
 }
 
@@ -53,8 +52,6 @@ pub struct WorkerContext {
     pub chain_id: String,
     pub genesis_hash: String,
     pub startup_timeout: Duration,
-    /// Private transport limit. The node's existing server retains the public response limit.
-    pub max_response_bytes: u32,
 }
 
 #[derive(Debug)]
@@ -104,20 +101,13 @@ impl HistoricalWorkers {
             "historical worker datadir must not be empty"
         );
         parse_quantity(&context.chain_id).wrap_err("invalid historical worker chain ID")?;
-        ensure!(
-            context
-                .genesis_hash
-                .strip_prefix("0x")
-                .is_some_and(|digits| digits.len() == 64
-                    && digits.bytes().all(|byte| byte.is_ascii_hexdigit())),
-            "invalid historical worker genesis hash"
-        );
+        validate_hash(&context.genesis_hash).wrap_err("invalid historical worker genesis hash")?;
         ensure!(
             !context.startup_timeout.is_zero(),
             "historical worker startup timeout must be positive"
         );
         let mut names = HashSet::new();
-        for (index, era) in eras.iter().enumerate() {
+        for era in &eras {
             ensure!(
                 !era.name.is_empty() && names.insert(&era.name),
                 "historical era names must be unique and nonempty"
@@ -127,12 +117,6 @@ impl HistoricalWorkers {
                 "historical era {} has no executable",
                 era.name
             );
-            if index > 0 {
-                ensure!(
-                    eras[index - 1].start_timestamp < era.start_timestamp,
-                    "historical era timestamps must strictly increase"
-                );
-            }
         }
         let states = eras.iter().map(|_| Mutex::new(State::Dormant)).collect();
         Ok(Self {
@@ -160,36 +144,26 @@ impl HistoricalWorkers {
         if let State::Failed(error) = &*state {
             bail!("{error}");
         }
-        if matches!(*state, State::Dormant) {
-            match spawn(&self.inner.context, era) {
-                Ok(process) => *state = State::Running(process),
-                Err(error) => {
-                    let message = format!("starting historical era {}: {error:#}", era.name);
-                    tracing::warn!(era = %era.name, %message, "Historical worker failed");
-                    *state = State::Failed(message.clone());
-                    bail!("{message}");
-                }
+        let result = async {
+            if matches!(*state, State::Dormant) {
+                *state = State::Running(spawn(&self.inner.context, era)?);
             }
+            let State::Running(process) = &mut *state else {
+                unreachable!("spawned or failed")
+            };
+            if let Some(status) = process.child.try_wait()? {
+                bail!("historical era {} exited with {status}", era.name);
+            }
+            if let Some(worker) = &process.ready {
+                return Ok(worker.clone());
+            }
+            let worker = ready(&self.inner, era, process).await?;
+            process.ready = Some(worker.clone());
+            Ok(worker)
         }
-        let State::Running(process) = &mut *state else {
-            unreachable!("spawned or failed")
-        };
-        let result = match process.child.try_wait() {
-            Ok(Some(status)) => Err(eyre::eyre!(
-                "historical era {} exited with {status}",
-                era.name
-            )),
-            Err(error) => Err(error.into()),
-            Ok(None) => match &process.ready {
-                Some(worker) => return Ok(worker.clone()),
-                None => ready(&self.inner, era, process).await,
-            },
-        };
+        .await;
         match result {
-            Ok(worker) => {
-                process.ready = Some(worker.clone());
-                Ok(worker)
-            }
+            Ok(worker) => Ok(worker),
             Err(error) => {
                 let message = format!("historical era {} unavailable: {error:#}", era.name);
                 tracing::warn!(era = %era.name, %message, "Historical worker failed");
@@ -223,30 +197,6 @@ impl HistoricalWorkers {
             .request(method, params)
             .await
             .map_err(upstream_error)
-    }
-
-    /// Observe exited workers without blocking behind an in-progress startup handshake.
-    pub async fn check_alive(&self) -> Result<()> {
-        for (index, slot) in self.inner.states.iter().enumerate() {
-            let Ok(mut state) = slot.try_lock() else {
-                continue;
-            };
-            match &mut *state {
-                State::Failed(error) => bail!("{error}"),
-                State::Running(process) => {
-                    if let Some(status) = process.child.try_wait()? {
-                        let message = format!(
-                            "historical era {} exited with {status}",
-                            self.inner.eras[index].name
-                        );
-                        *state = State::Failed(message.clone());
-                        bail!("{message}");
-                    }
-                }
-                State::Dormant => {}
-            }
-        }
-        Ok(())
     }
 
     pub async fn shutdown(&self) -> Result<()> {
@@ -283,7 +233,7 @@ fn spawn(context: &WorkerContext, era: &WorkerEra) -> Result<Process> {
     let port = reservation.local_addr()?.port();
     let client = HttpClientBuilder::default()
         .max_request_size(u32::MAX)
-        .max_response_size(context.max_response_bytes)
+        .max_response_size(u32::MAX)
         // Execution timeouts and public limits belong to the ordinary RPC implementation.
         .request_timeout(Duration::MAX)
         .build(format!("http://127.0.0.1:{port}"))?;
@@ -445,15 +395,13 @@ mod tests {
                     chain_id: "0x1".into(),
                     genesis_hash: format!("0x{}", "00".repeat(32)),
                     startup_timeout: if mode == "stalled" {
-                        Duration::from_millis(200)
+                        Duration::from_secs(2)
                     } else {
                         Duration::from_secs(5)
                     },
-                    max_response_bytes: u32::MAX,
                 },
                 vec![WorkerEra {
                     name: "frozen".into(),
-                    start_timestamp: 0,
                     binary: binary.clone(),
                 }],
             )
@@ -543,7 +491,7 @@ mod tests {
             "stalled",
         ] {
             let fixture = Fixture::new(mode, 0);
-            let timeout = Duration::from_secs(if mode == "stalled" { 1 } else { 6 });
+            let timeout = fixture.workers.inner.context.startup_timeout + Duration::from_secs(2);
             let error = tokio::time::timeout(timeout, fixture.workers.get(0))
                 .await
                 .unwrap_or_else(|_| panic!("worker startup exceeded test deadline: {mode}"))

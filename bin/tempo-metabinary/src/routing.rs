@@ -35,6 +35,15 @@ impl ToRpcParams for RpcParams {
 }
 
 impl RpcParams {
+    pub(crate) fn parse(params: &jsonrpsee::types::Params<'_>) -> RpcResult<Self> {
+        params
+            .as_str()
+            .map(serde_json::from_str::<Value>)
+            .transpose()
+            .map(|value| Self(value.unwrap_or(Value::Null)))
+            .map_err(|error| invalid(error.to_string()))
+    }
+
     fn get(&self, index: usize, names: &[&str]) -> Option<&Value> {
         match &self.0 {
             Value::Array(a) => a.get(index),
@@ -283,25 +292,22 @@ impl Router {
                     .as_str()
                     .filter(|s| s.len() == 66 && s.starts_with("0x"))
             });
-        let value = if let Some(hash) = hash {
+        let (method, selector) = match hash {
+            Some(hash) => ("eth_getBlockByHash", json!(hash)),
+            None => (
+                "eth_getBlockByNumber",
+                selector.get("blockNumber").unwrap_or(selector).clone(),
+            ),
+        };
+        Block::parse(
             self.backend
                 .request(
                     self.live_index(),
-                    "eth_getBlockByHash",
-                    RpcParams(json!([hash, false])),
+                    method,
+                    RpcParams(json!([selector, false])),
                 )
-                .await
-        } else {
-            let number = selector.get("blockNumber").unwrap_or(selector);
-            self.backend
-                .request(
-                    self.live_index(),
-                    "eth_getBlockByNumber",
-                    RpcParams(json!([number, false])),
-                )
-                .await
-        }?;
-        Block::parse(value)
+                .await?,
+        )
     }
 
     pub async fn forward(&self, era: usize, method: &str, params: RpcParams) -> RpcResult<Value> {
@@ -788,43 +794,22 @@ fn block_argument(method: &str) -> Option<(usize, &'static [&'static str], bool)
 /// Decorate only callbacks that can execute an EVM. Unreviewed debug/trace calls fail closed;
 /// storage and operational callbacks continue through the native handler unchanged.
 pub fn is_execution_method(method: &str) -> bool {
-    if stored_or_live_method(method) {
-        return false;
-    }
-    block_argument(method).is_some()
-        || matches!(
+    !stored_or_live_method(method)
+        && (matches!(
             method,
-            "eth_simulateV1"
-                | "tempo_simulateV1"
-                | "eth_callMany"
-                | "debug_traceCallMany"
-                | "trace_filter"
-                | "debug_traceBlock"
-                | "debug_traceTransaction"
-                | "trace_transaction"
-                | "trace_get"
-                | "trace_replayTransaction"
-                | "trace_transactionOpcodeGas"
-                | "eth_getBlockAccessListByBlockHash"
-                | "eth_getBlockAccessListByBlockNumber"
-                | "eth_getBlockAccessList"
-                | "eth_getBlockAccessListRaw"
-                | "eth_callBundle"
-                | "mev_simBundle"
+            "mev_simBundle"
                 | "reth_getBlockExecutionOutcome"
                 | "ots_getInternalOperations"
                 | "ots_getTransactionError"
                 | "ots_traceTransaction"
                 | "ots_getContractCreator"
-        )
-        || ((method.starts_with("debug_")
-            || method.starts_with("trace_")
-            || method.starts_with("eth_")
-            || method.starts_with("tempo_"))
+        ) || (["debug_", "trace_", "eth_", "tempo_"]
+            .iter()
+            .any(|prefix| method.starts_with(prefix))
             && !matches!(
                 method,
                 "debug_subscribe" | "debug_unsubscribe" | "eth_subscribe" | "eth_unsubscribe"
-            ))
+            )))
 }
 
 /// Unknown execution namespaces fail closed until their selector semantics have been reviewed.

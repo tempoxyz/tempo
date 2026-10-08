@@ -7,7 +7,6 @@ use jsonrpsee::{
         client::{Error as ClientError, SubscriptionClientT},
     },
     server::{ServerBuilder, ServerConfig, ServerHandle},
-    types::ErrorObjectOwned,
     ws_client::WsClient,
 };
 use serde_json::{Value, json};
@@ -15,12 +14,18 @@ use serde_json::{Value, json};
 use crate::routing::{Router, RpcParams, upstream_error};
 
 /// Limits are enforced by jsonrpsee for individual responses and batches alike.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, clap::Args)]
 pub struct ServerOptions {
+    #[arg(long, default_value_t = Self::default().listen)]
     pub listen: SocketAddr,
+    /// Public namespaces; private methods outside this list are never registered.
+    #[arg(long, value_delimiter = ',', default_values_t = Self::default().api)]
     pub api: Vec<String>,
+    #[arg(long, default_value_t = Self::default().max_request_bytes)]
     pub max_request_bytes: u32,
+    #[arg(long, default_value_t = Self::default().max_response_bytes)]
     pub max_response_bytes: u32,
+    #[arg(long, default_value_t = Self::default().max_connections)]
     pub max_connections: u32,
 }
 
@@ -81,13 +86,7 @@ pub fn rpc_module(
         // once per server, never from public requests.
         let method: &'static str = Box::leak(method.into_boxed_str());
         module.register_async_method(method, move |params, router, _| async move {
-            let params = params
-                .as_str()
-                .map(serde_json::from_str::<Value>)
-                .transpose()
-                .map_err(|e| ErrorObjectOwned::owned(-32602, e.to_string(), None::<()>))?
-                .unwrap_or(Value::Null);
-            router.call(method, RpcParams(params)).await
+            router.call(method, RpcParams::parse(&params)?).await
         })?;
     }
     if api.iter().any(|a| a == "rpc") {
@@ -120,9 +119,7 @@ pub fn rpc_module(
             let ws = ws.clone();
             async move {
                 let result = async {
-                    let params = params.as_str().map(serde_json::from_str::<Value>).transpose()
-                        .map_err(|e| ErrorObjectOwned::owned(-32602, e.to_string(), None::<()>))?.unwrap_or(Value::Null);
-                    ws.subscribe::<Value, _>(subscribe, RpcParams(params), unsubscribe).await.map_err(upstream_error)
+                    ws.subscribe::<Value, _>(subscribe, RpcParams::parse(&params)?, unsubscribe).await.map_err(upstream_error)
                 }.await;
                 let mut subscription = match result {
                     Ok(subscription) => subscription,

@@ -13867,6 +13867,7 @@ name = "tempo-metabinary"
 version = "1.16.0"
 dependencies = [
  "alloy-chains",
+ "alloy-primitives",
  "clap",
  "eyre",
  "futures",
@@ -13962,6 +13963,7 @@ dependencies = [
  "tempo-contracts",
  "tempo-e2e",
  "tempo-evm",
+ "tempo-metabinary",
  "tempo-payload-builder",
  "tempo-payload-types",
  "tempo-precompiles",

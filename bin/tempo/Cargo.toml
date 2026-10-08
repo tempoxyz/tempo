@@ -35,7 +35,7 @@ tempo-evm.workspace = true
 tempo-faucet.workspace = true
 tempo-telemetry-util.workspace = true
 tempo-state-bloat.workspace = true
-tempo-metabinary = { path = "../tempo-metabinary" }
+tempo-metabinary.workspace = true
 jsonrpsee.workspace = true
 
 alloy = { workspace = true, default-features = false, features = [

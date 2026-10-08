@@ -80,7 +80,6 @@ impl EraRuntime {
             .iter()
             .map(|era| WorkerEra {
                 name: era.name.clone(),
-                start_timestamp: era.start_timestamp,
                 binary: era.binary.clone().expect("validated frozen executable"),
             })
             .collect();
@@ -94,7 +93,6 @@ impl EraRuntime {
                 chain_id: format!("0x{:x}", chain.chain().id()),
                 genesis_hash: chain.genesis_hash().to_string(),
                 startup_timeout: Duration::from_secs(120),
-                max_response_bytes: u32::MAX,
             },
             eras,
         )?;
@@ -121,19 +119,13 @@ impl EraRuntime {
         )?);
         // Replace callbacks in-place, retaining the existing server configuration and transports.
         if let Some(methods) = modules.http_methods(|_| true) {
-            let decorated = decorate(methods, router.clone())?;
-            modules.remove_http_methods(decorated.method_names());
-            modules.merge_http(decorated)?;
+            modules.replace_http(decorate(methods, router.clone())?)?;
         }
         if let Some(methods) = modules.ws_methods(|_| true) {
-            let decorated = decorate(methods, router.clone())?;
-            modules.remove_ws_methods(decorated.method_names());
-            modules.merge_ws(decorated)?;
+            modules.replace_ws(decorate(methods, router.clone())?)?;
         }
         if let Some(methods) = modules.ipc_methods(|_| true) {
-            let decorated = decorate(methods, router)?;
-            modules.remove_ipc_methods(decorated.method_names());
-            modules.merge_ipc(decorated)?;
+            modules.replace_ipc(decorate(methods, router)?)?;
         }
         Ok(())
     }
