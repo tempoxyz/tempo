@@ -6,7 +6,7 @@ use crate::{
 };
 use alloy_primitives::{
     Address, B256, Log, TxHash,
-    map::{AddressMap, AddressSet, B256Set},
+    map::{AddressMap, AddressSet, B256Set, HashSet},
 };
 use alloy_sol_types::SolEvent;
 use futures::StreamExt;
@@ -18,9 +18,12 @@ use reth_storage_api::StateProviderFactory;
 use reth_transaction_pool::{AllPoolTransactions, TransactionPool};
 use std::time::Instant;
 use tempo_chainspec::hardfork::TempoHardforks;
-use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
+use tempo_contracts::precompiles::{
+    IAccountKeychain, IFeeManager, IKeyPublisher, ITIP20, ITIP403Registry,
+};
 use tempo_precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, KEY_PUBLISHER_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    TIP403_REGISTRY_ADDRESS,
 };
 use tempo_primitives::{TempoAddressExt, TempoHeader, TempoPrimitives};
 use tracing::{debug, error};
@@ -91,6 +94,12 @@ pub struct TempoPoolUpdates {
     /// Pending AA transactions carrying the same `(account, witness)` key authorization are no
     /// longer executable once the account explicitly burns that witness.
     pub key_authorization_witness_burns: AddressMap<B256Set>,
+    /// TIP-1132 `(publisher_id, issuer)` pairs whose key list changed through `KeysSet` or
+    /// `KeyRevoked`.
+    ///
+    /// Pending ZK-signed transactions naming these pairs are re-checked against the key's
+    /// current status.
+    pub issuer_key_changes: HashSet<(B256, B256)>,
 }
 
 impl TempoPoolUpdates {
@@ -114,6 +123,7 @@ impl TempoPoolUpdates {
             && self.fee_balance_changes.is_empty()
             && self.spending_limit_spends.is_empty()
             && self.key_authorization_witness_burns.is_empty()
+            && self.issuer_key_changes.is_empty()
     }
 
     /// Extracts pool updates from a committed chain segment.
@@ -217,6 +227,16 @@ impl TempoPoolUpdates {
                     None => {}
                 }
             }
+            // TIP-1132 issuer key list changes
+            else if log.address == KEY_PUBLISHER_ADDRESS {
+                if let Some(topic) = first_topic(log)
+                    && (topic == IKeyPublisher::KeysSet::SIGNATURE_HASH
+                        || topic == IKeyPublisher::KeyRevoked::SIGNATURE_HASH)
+                    && let [_, publisher_id, issuer, ..] = log.topics()
+                {
+                    updates.issuer_key_changes.insert((*publisher_id, *issuer));
+                }
+            }
             // TIP403 blacklist additions and whitelist removals
             else if log.address == TIP403_REGISTRY_ADDRESS {
                 match Tip403PoolEvent::decode(log) {
@@ -249,6 +269,7 @@ impl TempoPoolUpdates {
             || !self.paused_tokens.is_empty()
             || !self.fee_balance_changes.is_empty()
             || !self.key_authorization_witness_burns.is_empty()
+            || !self.issuer_key_changes.is_empty()
     }
 
     /// Returns true if updates may invalidate keychain-signature transactions.
@@ -1069,6 +1090,66 @@ mod tests {
     /// Helper to extract a TempoTxEnvelope from a TempoPooledTransaction.
     fn extract_envelope(tx: &crate::transaction::TempoPooledTransaction) -> TempoTxEnvelope {
         tx.inner().clone().into_inner()
+    }
+
+    mod from_chain_issuer_key_changes {
+        use super::*;
+        use alloy_primitives::{Log, map::HashSet};
+
+        #[test]
+        fn extracts_key_publisher_events() {
+            let sender = Address::random();
+            let publisher_id = B256::repeat_byte(1);
+            let issuer = |n| B256::with_last_byte(n);
+            let logs = vec![
+                Log::new_from_event_unchecked(
+                    KEY_PUBLISHER_ADDRESS,
+                    IKeyPublisher::KeysSet {
+                        publisherId: publisher_id,
+                        issuer: issuer(2),
+                        keyHashes: vec![B256::with_last_byte(7)],
+                        graceUntil: 3_600,
+                    },
+                )
+                .reserialize(),
+                Log::new_from_event_unchecked(
+                    KEY_PUBLISHER_ADDRESS,
+                    IKeyPublisher::KeyRevoked {
+                        publisherId: publisher_id,
+                        issuer: issuer(3),
+                        keyHash: B256::with_last_byte(7),
+                    },
+                )
+                .reserialize(),
+                // The same event from another contract is ignored.
+                Log::new_from_event_unchecked(
+                    Address::repeat_byte(9),
+                    IKeyPublisher::KeyRevoked {
+                        publisherId: publisher_id,
+                        issuer: issuer(4),
+                        keyHash: B256::with_last_byte(7),
+                    },
+                )
+                .reserialize(),
+            ];
+            let receipt = tempo_primitives::TempoReceipt {
+                tx_type: tempo_primitives::TempoTxType::AA,
+                success: true,
+                cumulative_gas_used: 1,
+                logs,
+            };
+            let envelope = extract_envelope(&TxBuilder::aa(sender).build());
+            let block = create_block_with_txs(1, vec![envelope], vec![sender]);
+            let chain = create_test_chain_with_receipts(vec![block], vec![vec![receipt]]);
+
+            let updates = TempoPoolUpdates::from_chain(&chain);
+            let expected: HashSet<(B256, B256)> =
+                [(publisher_id, issuer(2)), (publisher_id, issuer(3))]
+                    .into_iter()
+                    .collect();
+            assert_eq!(updates.issuer_key_changes, expected);
+            assert!(updates.has_invalidation_events());
+        }
     }
 
     mod from_chain_spending_limit_spends {

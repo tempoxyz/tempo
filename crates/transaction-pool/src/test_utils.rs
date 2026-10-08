@@ -190,6 +190,11 @@ impl TxBuilder {
 
     /// Build an AA transaction.
     pub(crate) fn build(self) -> TempoPooledTransaction {
+        self.build_with_signature(Signature::test_signature().into())
+    }
+
+    /// Build an AA transaction carrying `signature`, without checking it.
+    pub(crate) fn build_with_signature(self, signature: TempoSignature) -> TempoPooledTransaction {
         let calls = self.calls.unwrap_or_else(|| {
             vec![Call {
                 to: self.kind,
@@ -215,7 +220,7 @@ impl TxBuilder {
             key_authorization: self.key_authorization,
         };
 
-        let aa_signed = tx.into_signed(Signature::test_signature().into());
+        let aa_signed = tx.into_signed(signature);
         let envelope: TempoTxEnvelope = aa_signed.into();
 
         let recovered = Recovered::new_unchecked(envelope, self.sender);

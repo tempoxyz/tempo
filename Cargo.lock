@@ -13802,6 +13802,7 @@ dependencies = [
  "tempo-precompiles",
  "tempo-primitives",
  "tempo-revm",
+ "tempo-zk",
  "thiserror 2.0.18",
  "tikv-jemallocator",
  "tracing",
@@ -14122,16 +14123,21 @@ dependencies = [
  "derive_more",
  "eyre",
  "p256 0.13.2",
+ "parking_lot",
  "proptest",
+ "rayon",
  "reth-evm",
  "reth-storage-api",
  "revm",
+ "schnellru",
+ "serde_json",
  "sha2 0.10.9",
  "tempo-chainspec",
  "tempo-contracts",
  "tempo-evm",
  "tempo-precompiles",
  "tempo-primitives",
+ "tempo-zk",
  "test-case",
  "thiserror 2.0.18",
  "tracing",
@@ -14302,7 +14308,22 @@ dependencies = [
  "tempo-revm",
  "tempo-state-bloat",
  "tempo-validator-config",
+ "tempo-zk",
  "tokio",
+]
+
+[[package]]
+name = "tempo-zk"
+version = "1.16.0"
+dependencies = [
+ "alloy-primitives",
+ "ark-bn254",
+ "ark-ec",
+ "ark-ff 0.6.0",
+ "codspeed-criterion-compat",
+ "rayon",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

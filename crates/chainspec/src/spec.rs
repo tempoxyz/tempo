@@ -4,11 +4,11 @@ use crate::{
     bootnodes::{moderato_nodes, presto_nodes},
     network_identity::NetworkIdentity,
 };
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec::Vec};
 use alloy_eips::eip7840::BlobParams;
 use alloy_evm::eth::spec::EthExecutorSpec;
 use alloy_genesis::Genesis;
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{Address, B256, Bytes, U256};
 use core::num::NonZeroU64;
 use once_cell as _;
 #[cfg(not(feature = "std"))]
@@ -42,6 +42,10 @@ macro_rules! tempo_genesis_info {
                 /// Optional override for the general (non-payment) gas limit.
                 #[serde(skip_serializing_if = "Option::is_none")]
                 general_gas_limit: Option<u64>,
+                /// Verifying keys for ZK signature schemes without a protocol key, by scheme
+                /// byte. Only development chains set these.
+                #[serde(skip_serializing_if = "Option::is_none")]
+                zk_verifying_keys: Option<BTreeMap<u8, Bytes>>,
                 $(
                     #[doc = concat!("Activation timestamp for the ", stringify!($variant), " hardfork.")]
                     #[serde(skip_serializing_if = "Option::is_none")]
@@ -82,6 +86,14 @@ impl TempoGenesisInfo {
 
     pub fn general_gas_limit(&self) -> Option<u64> {
         self.general_gas_limit
+    }
+
+    /// Returns the ZK signature verifying keys from genesis, by scheme byte.
+    pub fn zk_verifying_keys(&self) -> impl Iterator<Item = (u8, &Bytes)> {
+        self.zk_verifying_keys
+            .iter()
+            .flatten()
+            .map(|(scheme, key)| (*scheme, key))
     }
 }
 
@@ -150,7 +162,10 @@ pub static PRESTO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
 
 /// Development chainspec with funded dev accounts and activated tempo hardforks
 ///
-/// `cargo x generate-genesis -o dev.json --accounts 10 --no-dkg-in-genesis`
+/// `cargo x generate-genesis -o dev.json --accounts 10 --no-dkg-in-genesis
+/// --zk-verifying-key 1=<verifyingKey>`, with the development key of the OIDC RS256 v1 circuit
+/// from `crates/zk/testdata/oidc_rs256_v1_dev.json`. Its setup is deterministic, so anyone can
+/// forge OIDC signatures on this chain.
 pub static DEV: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
     let genesis: Genesis = serde_json::from_str(include_str!("./genesis/dev.json"))
         .expect("`./genesis/dev.json` must be present and deserializable");
@@ -505,6 +520,41 @@ mod tests {
 
         assert_eq!(history.nonce, Some(1));
         assert_eq!(history.code.as_ref(), Some(&HISTORY_STORAGE_CODE));
+    }
+
+    #[test]
+    #[cfg(feature = "cli")]
+    fn only_the_dev_genesis_carries_zk_verifying_keys() {
+        let dev = super::TempoChainSpecParser::parse("dev").unwrap();
+        let keys: super::Vec<_> = dev.info.zk_verifying_keys().collect();
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].0, 0x01);
+        assert_eq!(keys[0].1.len(), 576);
+
+        for chain in ["mainnet", "moderato"] {
+            let spec = super::TempoChainSpecParser::parse(chain).unwrap();
+            assert_eq!(spec.info.zk_verifying_keys().count(), 0, "{chain}");
+        }
+    }
+
+    #[test]
+    fn zk_verifying_keys_parse_alongside_fork_times() {
+        let genesis: super::Genesis = serde_json::from_value(serde_json::json!({
+            "config": {
+                "chainId": 1337,
+                "t14Time": 0,
+                "zkVerifyingKeys": { "1": "0x0102" }
+            },
+            "alloc": {}
+        }))
+        .unwrap();
+        let spec = super::TempoChainSpec::from_genesis(genesis);
+        assert_eq!(spec.info.fork_time(TempoHardfork::T14), Some(0));
+        let key = super::Bytes::from_static(&[1, 2]);
+        assert_eq!(
+            spec.info.zk_verifying_keys().collect::<super::Vec<_>>(),
+            [(1, &key)]
+        );
     }
 
     #[test]
