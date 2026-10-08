@@ -13982,6 +13982,7 @@ dependencies = [
  "reth-transaction-pool",
  "revm",
  "schnellru",
+ "self_cell 1.2.2",
  "serde",
  "serde_json",
  "sha2 0.10.9",

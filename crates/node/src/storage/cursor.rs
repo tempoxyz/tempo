@@ -1,4 +1,4 @@
-use super::View;
+use super::{View, replay::Slots};
 use alloy_primitives::{B256, U256};
 use reth_db_api::{
     DatabaseError,
@@ -13,6 +13,25 @@ use std::{
     sync::Arc,
 };
 
+type SlotRange<'a> = imbl::ordmap::RangedIter<'a, B256, U256, imbl::shared_ptr::DefaultSharedPtr>;
+
+// Own a cheap clone of the immutable tree so the range can live across cursor calls.
+self_cell::self_cell! {
+    struct SlotIter {
+        owner: Slots,
+        #[covariant]
+        dependent: Scan,
+    }
+    impl {Debug}
+}
+
+#[derive(Debug)]
+struct Scan<'a> {
+    position: B256,
+    forward: bool,
+    iter: SlotRange<'a>,
+}
+
 /// Merges the precompile's immutable snapshot with a native database cursor.
 #[derive(Debug)]
 pub struct Cursor<T, C> {
@@ -20,6 +39,7 @@ pub struct Cursor<T, C> {
     view: Option<Arc<View>>,
     virtual_row: Option<(B256, U256)>,
     virtual_position: bool,
+    scan: Option<SlotIter>,
     marker: PhantomData<T>,
 }
 impl<T: Table, C> Cursor<T, C> {
@@ -29,6 +49,7 @@ impl<T: Table, C> Cursor<T, C> {
             view,
             virtual_row: None,
             virtual_position: false,
+            scan: None,
             marker: PhantomData,
         }
     }
@@ -49,6 +70,41 @@ impl<T: Table, C> Cursor<T, C> {
         })
         .transpose()
     }
+    fn advance(
+        &mut self,
+        slot: B256,
+        forward: bool,
+    ) -> Result<Option<(B256, U256)>, DatabaseError> {
+        // The snapshot is immutable: key and direction identify a reusable range
+        // even after a seek, keeping iterator cleanup out of point reads.
+        if self.scan.as_ref().is_none_or(|iter| {
+            let scan = iter.borrow_dependent();
+            scan.position != slot || scan.forward != forward
+        }) {
+            let slots = self.view.as_ref().unwrap().snapshot()?.slots.clone();
+            self.scan = Some(SlotIter::new(slots, |slots| Scan {
+                position: slot,
+                forward,
+                iter: if forward {
+                    slots.range((Bound::Excluded(slot), Bound::Unbounded))
+                } else {
+                    slots.range(..slot)
+                },
+            }));
+        }
+        Ok(self.scan.as_mut().unwrap().with_dependent_mut(|_, scan| {
+            let row = if forward {
+                scan.iter.next()
+            } else {
+                scan.iter.next_back()
+            }
+            .map(|(&key, &value)| (key, value));
+            if let Some((key, _)) = row {
+                scan.position = key;
+            }
+            row
+        }))
+    }
     fn edge(&self, first: bool) -> Result<Option<(B256, U256)>, DatabaseError> {
         let Some(view) = &self.view else {
             return Ok(None);
@@ -64,6 +120,7 @@ impl<T: Table, C> Cursor<T, C> {
 }
 impl<T: Table, C: DbCursorRO<T>> Cursor<T, C> {
     fn after_virtual(&mut self) -> PairResult<T> {
+        self.scan = None;
         self.virtual_position = false;
         self.virtual_row = None;
         let mut address = Self::address();
@@ -72,6 +129,7 @@ impl<T: Table, C: DbCursorRO<T>> Cursor<T, C> {
         self.inner.seek(T::Key::decode(address.as_slice())?)
     }
     fn before_virtual(&mut self) -> PairResult<T> {
+        self.scan = None;
         self.virtual_position = false;
         self.virtual_row = None;
         if self
@@ -110,6 +168,7 @@ impl<T: Table, C: DbCursorRO<T>> Cursor<T, C> {
         }
         self.virtual_position = false;
         self.virtual_row = None;
+        self.scan = None;
         Ok(row)
     }
 }
@@ -166,15 +225,7 @@ impl<T: Table, C: DbCursorRO<T>> DbCursorRO<T> for Cursor<T, C> {
             return self.after_virtual();
         }
         if let Some((slot, _)) = self.virtual_row {
-            let next = self
-                .view
-                .as_ref()
-                .unwrap()
-                .snapshot()?
-                .slots
-                .range((Bound::Excluded(slot), Bound::Unbounded))
-                .next()
-                .map(|(&key, &value)| (key, value));
+            let next = self.advance(slot, true)?;
             return if next.is_some() {
                 self.virtual_at(next)
             } else {
@@ -205,15 +256,7 @@ impl<T: Table, C: DbCursorRO<T>> DbCursorRO<T> for Cursor<T, C> {
             };
         }
         if let Some((slot, _)) = self.virtual_row {
-            let prev = self
-                .view
-                .as_ref()
-                .unwrap()
-                .snapshot()?
-                .slots
-                .range(..slot)
-                .next_back()
-                .map(|(&key, &value)| (key, value));
+            let prev = self.advance(slot, false)?;
             return if prev.is_some() {
                 self.virtual_at(prev)
             } else {
@@ -279,15 +322,7 @@ impl<T: DupSort, C: DbDupCursorRO<T> + DbCursorRO<T>> DbDupCursorRO<T> for Curso
                 self.inner.next_dup()
             };
         };
-        let next = self
-            .view
-            .as_ref()
-            .unwrap()
-            .snapshot()?
-            .slots
-            .range((Bound::Excluded(slot), Bound::Unbounded))
-            .next()
-            .map(|(&key, &value)| (key, value));
+        let next = self.advance(slot, true)?;
         if next.is_some() {
             self.virtual_at(next)
         } else {
@@ -302,15 +337,7 @@ impl<T: DupSort, C: DbDupCursorRO<T> + DbCursorRO<T>> DbDupCursorRO<T> for Curso
                 self.inner.prev_dup()
             };
         };
-        let prev = self
-            .view
-            .as_ref()
-            .unwrap()
-            .snapshot()?
-            .slots
-            .range(..slot)
-            .next_back()
-            .map(|(&key, &value)| (key, value));
+        let prev = self.advance(slot, false)?;
         if prev.is_some() {
             self.virtual_at(prev)
         } else {

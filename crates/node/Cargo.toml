@@ -29,6 +29,7 @@ tempo-revm.workspace = true
 
 thiserror.workspace = true
 imbl = "=7.0.0"
+self_cell = "1.2.2"
 tracing.workspace = true
 revm.workspace = true
 

@@ -542,9 +542,8 @@ fn merged_cursor_matches_native_storage() {
     let target = keccak256(EXPIRING_NONCE_PRECOMPILE_ADDRESS);
     let owners = [B256::ZERO, target, B256::repeat_byte(0xff)];
     let rw = factory.provider_rw().unwrap();
-    let slots: Slots = [2, 4, 8]
-        .into_iter()
-        .map(|slot| (B256::with_last_byte(slot), U256::from(slot)))
+    let slots: Slots = (0u64..512)
+        .map(|slot| (keccak256(slot.to_be_bytes()), U256::from(slot + 1)))
         .collect();
     for owner in owners {
         for (&key, &value) in &slots {
@@ -608,6 +607,26 @@ fn merged_cursor_matches_native_storage() {
         for slot in [0, 2, 3, 4, 8, 9] {
             same!(seek_by_key_subkey(owner, B256::with_last_byte(slot)));
         }
+    }
+    // Scan across tree nodes, retry exhausted scans, and reverse direction.
+    same!(seek_exact(target));
+    for _ in 0..514 {
+        same!(next_dup());
+    }
+    same!(current());
+    for _ in 0..514 {
+        same!(prev_dup());
+    }
+    for slot in 0u64..100 {
+        same!(seek_by_key_subkey(target, keccak256(slot.to_be_bytes())));
+        same!(next_dup());
+        same!(next_dup());
+        same!(current());
+        same!(prev_dup());
+        same!(prev_dup());
+        same!(next_dup());
+        same!(last_dup());
+        same!(prev_dup());
     }
     same!(seek_exact(target));
     same!(next());
