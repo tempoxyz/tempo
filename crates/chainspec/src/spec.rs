@@ -753,6 +753,7 @@ mod tests {
         let account = genesis.alloc.entry(factory).or_default();
         account.balance = U256::from(42);
         account.nonce = Some(7);
+        account.code = Some(bytes!("6000"));
         account.storage = Some([(B256::ZERO, B256::repeat_byte(9))].into());
         let spec = TempoChainSpec::try_from_genesis(genesis.clone()).unwrap();
         let account = &spec.genesis().alloc[&factory];
@@ -844,16 +845,21 @@ mod tests {
 
     #[test]
     #[cfg(feature = "cli")]
-    fn only_the_dev_genesis_carries_zk_verifying_keys() {
+    fn only_the_dev_genesis_carries_experimental_signer_configuration() {
         let dev = super::TempoChainSpecParser::parse("dev").unwrap();
         let keys: super::Vec<_> = dev.info.zk_verifying_keys().collect();
         assert_eq!(keys.len(), 1);
         assert_eq!(keys[0].0, 0x01);
         assert_eq!(keys[0].1.len(), 576);
+        assert_eq!(
+            dev.info.multisig_recovery_factory(),
+            Some(Address::repeat_byte(0x71))
+        );
 
         for chain in ["mainnet", "moderato"] {
             let spec = super::TempoChainSpecParser::parse(chain).unwrap();
             assert_eq!(spec.info.zk_verifying_keys().count(), 0, "{chain}");
+            assert_eq!(spec.info.multisig_recovery_factory(), None, "{chain}");
         }
     }
 
