@@ -319,12 +319,13 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             "Storage written, writing hashed accounts..."
         );
 
+        let num_accounts = accounts_seen.len();
         // Write hashed account entries using the real account metadata from plain state.
         // This preserves bytecode_hash for genesis accounts (e.g. TIP20 tokens with 0xEF code).
         provider_rw.insert_account_for_hashing(
             accounts_seen
-                .iter()
-                .map(|(addr, account)| (*addr, Some(account.clone()))),
+                .into_iter()
+                .map(|(addr, account)| (addr, Some(account))),
         )?;
 
         storage_changeset_worker
@@ -336,7 +337,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
         info!(
             target: "tempo::cli",
-            addresses = accounts_seen.len(),
+            addresses = num_accounts,
             "Hashed accounts written, computing state root and trie nodes..."
         );
 

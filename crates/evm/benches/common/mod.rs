@@ -15,7 +15,7 @@ use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner};
 use reth_execution_cache::{
     CachedStateMetrics, CachedStateMetricsSource, CachedStateProvider, ExecutionCache,
 };
-use reth_primitives_traits::{Account as RethAccount, AccountExtension, Bytecode as RethBytecode};
+use reth_primitives_traits::{Account as RethAccount, Bytecode as RethBytecode};
 use reth_revm::{State, database::StateProviderDatabase, db::InMemoryDB};
 use reth_storage_api::{
     AccountReader, BlockHashReader, BytecodeReader, EvmStateProviderAdapter,
@@ -374,13 +374,9 @@ fn insert_account(
     address: Address,
     account: &DbAccount,
 ) {
-    let info = account.info.clone();
-    let bytecode_hash = info.code_hash;
     let account = RethAccount {
-        nonce: info.nonce,
-        balance: info.balance,
-        bytecode_hash: Some(bytecode_hash),
-        extension: AccountExtension::from_shared(info.extension.into_shared()),
+        bytecode_hash: Some(account.info.code_hash),
+        ..RethAccount::from(&account.info)
     };
     cache.insert_account(address, Some(account.clone()));
     accounts.insert(address, account);
