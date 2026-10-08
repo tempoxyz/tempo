@@ -495,6 +495,7 @@ fn is_parallel_candidate(tx: &BestTransaction) -> bool {
             .transaction
             .nonce_key_ref()
             .is_some_and(|nonce_key| !nonce_key.is_zero())
+        // No configurable-account roles or keychain/multisig calls that replay cannot reproduce
         && tempo_evm::supports_storage_action_replay(tx.transaction.inner())
 }
 

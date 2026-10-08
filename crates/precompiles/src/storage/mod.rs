@@ -86,14 +86,11 @@ pub trait PrecompileStorageProvider {
     /// Reads the warm transaction caller without a second account-access charge.
     /// Normal transaction setup has already loaded this caller. Production rejects
     /// other addresses or a cold caller; this is not a generic cache-only read.
-    /// Unmetered providers default to [`Self::with_account_info`].
     fn with_warm_caller_info(
         &mut self,
         address: Address,
         f: &mut dyn FnMut(&AccountInfo),
-    ) -> Result<()> {
-        self.with_account_info(address, f)
-    }
+    ) -> Result<()>;
 
     /// Reads the commitment with normal account-access gas. Already-loaded authorization
     /// code should decode its account info directly instead.
