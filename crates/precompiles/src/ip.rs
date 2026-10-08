@@ -7,24 +7,32 @@ use std::net::{IpAddr, SocketAddr};
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum IpParseError {
-    #[error(transparent)]
+    #[error("input was not a valid IP address")]
     Parse(#[from] std::net::AddrParseError),
     #[error("IP address exceeds 255 bytes")]
     TooLong,
 }
 
-/// A parsed IP address whose original text fits in a one-byte length prefix.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum IpWithPortParseError {
+    #[error("input was not of the form `<ip>:<port>`")]
+    Parse(#[from] std::net::AddrParseError),
+    #[error("IP address exceeds 255 bytes")]
+    TooLong,
+}
+
+/// A parsed IP address.
 ///
-/// Retains the original spelling because validator signatures cover the input text.
+/// Retains the original text because validator signatures cover the input.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct IpAddress<'a> {
     input: &'a str,
     len: u8,
 }
 
-/// A parsed IP address with a port whose original text fits in a one-byte length prefix.
+/// A parsed IP address with a port.
 ///
-/// Retains the original spelling because validator signatures cover the input text.
+/// Retains the original because validator signatures cover the input.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct IpAddressWithPort<'a> {
     input: &'a str,
@@ -52,10 +60,10 @@ impl<'a> IpAddress<'a> {
 }
 
 impl<'a> TryFrom<&'a str> for IpAddressWithPort<'a> {
-    type Error = IpParseError;
+    type Error = IpWithPortParseError;
 
     fn try_from(input: &'a str) -> Result<Self, Self::Error> {
-        let len = u8::try_from(input.len()).map_err(|_| IpParseError::TooLong)?;
+        let len = u8::try_from(input.len()).map_err(|_| IpWithPortParseError::TooLong)?;
         ensure_address_is_ip_port(input)?;
 
         Ok(Self { input, len })
@@ -77,7 +85,9 @@ impl<'a> TryFrom<&'a str> for IpAddress<'a> {
 ///
 /// Kept separate for ValidatorConfig V1, which validates the format without
 /// enforcing the one-byte length limit required by V2 signatures.
-pub(crate) fn ensure_address_is_ip_port(input: &str) -> core::result::Result<(), IpParseError> {
+pub(crate) fn ensure_address_is_ip_port(
+    input: &str,
+) -> core::result::Result<(), IpWithPortParseError> {
     input.parse::<SocketAddr>()?;
     Ok(())
 }
@@ -128,7 +138,7 @@ mod tests {
                 } else {
                     assert!(matches!(
                         IpAddressWithPort::try_from(input.as_str()),
-                        Err(IpParseError::TooLong)
+                        Err(IpWithPortParseError::TooLong)
                     ));
                 }
             }
@@ -136,7 +146,7 @@ mod tests {
         for input in ["", "localhost:80", "127.0.0.1", "::1", "127.0.0.1:65536"] {
             assert!(matches!(
                 IpAddressWithPort::try_from(input),
-                Err(IpParseError::Parse(_))
+                Err(IpWithPortParseError::Parse(_))
             ));
         }
     }
