@@ -246,6 +246,7 @@ impl std::fmt::Display for DecodedValidatorV2 {
 #[cfg(test)]
 mod tests {
     use alloy_consensus::{Header, Sealable as _};
+    use alloy_primitives::map::AddressMap;
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use tempo_chainspec::{
         TempoHardfork, constants::moderato::MODERATO_T11_TIMESTAMP, spec::MODERATO,
@@ -289,7 +290,7 @@ mod tests {
             Ok(())
         })?;
 
-        let mut accounts = HashMap::<Address, Vec<(B256, U256)>>::new();
+        let mut accounts = AddressMap::<Vec<_>>::default();
         for (address, slot, value) in storage.into_storage() {
             accounts
                 .entry(address)

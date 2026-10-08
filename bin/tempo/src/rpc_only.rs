@@ -111,7 +111,7 @@ impl RpcOnly {
         );
         let evm = TempoEvmConfig::new(chain_spec.clone());
         let pool = NoopTransactionPool::<TempoPooledTransaction>::new();
-        let network = NoopNetwork::default().with_chain_id(chain_spec.chain().id());
+        let network = NoopNetwork::default().with_chain_id(chain_spec.chain_id());
         let eth_api =
             EthApiBuilder::new(provider.clone(), pool.clone(), network.clone(), evm.clone())
                 // Keep this mapping aligned with the SDK's EthApiCtx::eth_api_builder. The
@@ -191,7 +191,7 @@ impl RpcOnly {
         }
         install_execution_info(
             &mut modules,
-            chain_spec.chain().id(),
+            chain_spec.chain_id(),
             chain_spec.genesis_hash(),
             true,
         )?;
@@ -231,6 +231,8 @@ impl Drop for RpcOnlyHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::Address;
+    use alloy_rpc_types_eth::TransactionRequest;
     use jsonrpsee::{core::client::ClientT, rpc_params};
     use tempo_node::rpc::execution_info::{EXECUTION_INFO_METHOD, ExecutionInfo};
 
@@ -260,7 +262,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let runtime = Runtime::test();
         let cmd = command(dir.path());
-        let chain_id = cmd.env.chain.chain().id();
+        let chain_id = cmd.env.chain.chain_id();
         let genesis_hash = cmd.env.chain.genesis_hash();
         let environment = cmd
             .env
@@ -294,11 +296,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(block_number, "0x0");
-        let call = serde_json::json!({
-            "to": "0x0000000000000000000000000000000000000000",
-            "gas": "0x4c4b40",
-            "gasPrice": "0x0"
-        });
+        let call = call_request();
         let output: String = client
             .request("eth_call", rpc_params![call.clone(), "0x0"])
             .await
@@ -330,11 +328,7 @@ mod tests {
             .init::<TempoNode>(AccessRights::RW, runtime.clone())
             .unwrap();
         drop(environment);
-        let call = serde_json::json!({
-            "to": "0x0000000000000000000000000000000000000000",
-            "gas": "0x4c4b40", "gasPrice": "0x0",
-            "input": format!("0x{}", "01".repeat(100))
-        });
+        let call = call_request().input(vec![1; 100].into());
         let ordinary = command(dir.path()).start(runtime.clone()).await.unwrap();
         let client = ordinary.server.as_ref().unwrap().http_client().unwrap();
         let output: String = client
@@ -367,5 +361,27 @@ mod tests {
             if error.message().to_ascii_lowercase().contains("gas")),
             "{error}"
         );
+    }
+
+    #[test]
+    fn typed_call_requests_preserve_wire_encoding() {
+        let expected = serde_json::json!({
+            "to": "0x0000000000000000000000000000000000000000",
+            "gas": "0x4c4b40", "gasPrice": "0x0"
+        });
+        assert_eq!(serde_json::to_value(call_request()).unwrap(), expected);
+        let mut expected = expected;
+        expected["input"] = serde_json::json!(format!("0x{}", "01".repeat(100)));
+        assert_eq!(
+            serde_json::to_value(call_request().input(vec![1; 100].into())).unwrap(),
+            expected
+        );
+    }
+
+    fn call_request() -> TransactionRequest {
+        TransactionRequest::default()
+            .to(Address::ZERO)
+            .gas_limit(5_000_000)
+            .gas_price(0)
     }
 }

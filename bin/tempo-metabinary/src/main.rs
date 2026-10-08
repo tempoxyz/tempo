@@ -1,7 +1,7 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use clap::{Args, Parser, Subcommand};
-use eyre::{Context, Result, ensure};
+use eyre::{Context, OptionExt, Result, ensure};
 use jsonrpsee::{
     core::client::ClientT,
     http_client::{HttpClient, HttpClientBuilder},
@@ -91,7 +91,7 @@ async fn ready(
         .expect("worker was launched");
     let deadline = tokio::time::Instant::now()
         .checked_add(timeout)
-        .ok_or_else(|| eyre::eyre!("worker startup timeout exceeds the clock range"))?;
+        .ok_or_eyre("worker startup timeout exceeds the clock range")?;
     wait_for_worker(
         client,
         WorkerIdentity {
@@ -158,7 +158,7 @@ async fn serve(
     let ws = if let Some(port) = manifest.live().ws_port {
         let expected_pid = processes
             .worker_pid(&manifest.live().name)
-            .ok_or_else(|| eyre::eyre!("live worker exited before WebSocket handshake"))?;
+            .ok_or_eyre("live worker exited before WebSocket handshake")?;
         let ws = Arc::new(
             WsClientBuilder::default()
                 .max_response_size(options.server.max_response_bytes)
@@ -222,7 +222,7 @@ async fn verify_successor(client: &HttpClient, checkpoint: &Bootstrap, start: u6
     let first_number = checkpoint
         .terminal_block_number
         .checked_add(1)
-        .ok_or_else(|| eyre::eyre!("terminal block number overflows"))?;
+        .ok_or_eyre("terminal block number overflows")?;
     let first: Value = client
         .request(
             "eth_getBlockByNumber",

@@ -472,14 +472,14 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         let catalog = eras::release_catalog()?;
         let chain = &builder.config().chain;
         let era_runtime = catalog
-            .for_chain(chain.chain().id(), &chain.genesis_hash().to_string())
+            .for_chain(chain.chain_id(), &chain.genesis_hash().to_string())
             .filter(|schedule| schedule.eras.len() > 1 && eras::supports_release_catalog(chain))
             .map(|schedule| {
                 let datadir = &builder.config().datadir;
                 eras::EraRuntime::new(
                     schedule.clone(),
                     chain,
-                    datadir.clone().resolve_datadir(chain.chain()).data_dir().to_owned(),
+                    builder.config().datadir().data_dir().to_owned(),
                     datadir.static_files_path.clone(),
                     datadir.rocksdb_path.clone(),
                     serde_json::to_value(builder.config().rpc.eth_config())?,
@@ -617,7 +617,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     let chain_spec = ctx.config().chain.clone();
                     tempo_node::rpc::execution_info::install_execution_info(
                         ctx.modules,
-                        chain_spec.chain().id(),
+                        chain_spec.chain_id(),
                         chain_spec.genesis_hash(),
                         false,
                     )?;

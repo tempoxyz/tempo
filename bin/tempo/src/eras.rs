@@ -10,7 +10,7 @@ use jsonrpsee::{
         RpcResult,
         server::{Methods, MethodsError},
     },
-    types::ErrorObjectOwned,
+    types::{ErrorObjectOwned, error::INTERNAL_ERROR_CODE},
 };
 use reth_ethereum::{chainspec::EthChainSpec as _, rpc::builder::TransportRpcModules};
 use serde_json::Value;
@@ -47,7 +47,7 @@ pub(crate) fn release_catalog() -> eyre::Result<Catalog> {
 pub(crate) fn supports_release_catalog(spec: &TempoChainSpec) -> bool {
     use tempo_chainspec::spec::{DEV, MODERATO, PRESTO};
     [&**PRESTO, &**MODERATO, &**DEV].into_iter().any(|known| {
-        spec.chain().id() == known.chain().id()
+        spec.chain_id() == known.chain_id()
             && spec.genesis().config == known.genesis().config
             && spec.inner.hardforks == known.inner.hardforks
             && spec.info == known.info
@@ -90,7 +90,7 @@ impl EraRuntime {
                 static_files_path,
                 rocksdb_path,
                 rpc_config: Some(rpc_config_file.path().to_owned()),
-                chain_id: format!("0x{:x}", chain.chain().id()),
+                chain_id: format!("0x{:x}", chain.chain_id()),
                 genesis_hash: chain.genesis_hash().to_string(),
                 startup_timeout: Duration::from_secs(120),
             },
@@ -154,7 +154,11 @@ impl Backend for NativeBackend {
                     .await
                     .map_err(|error| match error {
                         MethodsError::JsonRpc(error) => error,
-                        error => ErrorObjectOwned::owned(-32603, error.to_string(), None::<()>),
+                        error => ErrorObjectOwned::owned(
+                            INTERNAL_ERROR_CODE,
+                            error.to_string(),
+                            None::<()>,
+                        ),
                     })
             } else {
                 self.runtime.workers.request(era, method, params).await
@@ -213,7 +217,7 @@ mod tests {
         let chain = &*tempo_chainspec::spec::DEV;
         let runtime = EraRuntime::new(
             ChainEras {
-                chain_id: format!("0x{:x}", chain.chain().id()),
+                chain_id: format!("0x{:x}", chain.chain_id()),
                 genesis_hash: chain.genesis_hash().to_string(),
                 eras: vec![
                     ReleaseEra {
@@ -260,12 +264,19 @@ mod tests {
         let mut header = chain.genesis_header().clone();
         header.inner.timestamp = 123;
         let block = tempo_primitives::Block::new(header, Default::default());
-        let bytes = alloy_rlp::encode(block);
+        let mut bytes = alloy_rlp::encode(block);
         let timestamp = backend
-            .raw_block_timestamp(&RpcParams(json!([Bytes::from(bytes)])))
+            .raw_block_timestamp(&RpcParams(json!([Bytes::copy_from_slice(&bytes)])))
             .await
             .unwrap();
         assert_eq!(timestamp, 123);
+        bytes.push(0);
+        let error = backend
+            .raw_block_timestamp(&RpcParams(json!([Bytes::from(bytes)])))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), -32602);
+        assert_eq!(error.message(), "trailing raw block data");
         runtime.shutdown().await.unwrap();
     }
 }

@@ -439,7 +439,7 @@ where
                 let chain_spec = registry.eth_api().provider().chain_spec();
                 crate::rpc::execution_info::install_execution_info(
                     modules,
-                    chain_spec.chain().id(),
+                    chain_spec.chain_id(),
                     chain_spec.genesis_hash(),
                     false,
                 )?;

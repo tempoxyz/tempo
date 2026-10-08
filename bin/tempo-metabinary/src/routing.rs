@@ -14,7 +14,7 @@ use serde_json::{Value, json, value::RawValue};
 
 use crate::{
     catalog::{ChainEras, ReleaseEra},
-    handshake::WorkerIdentity,
+    handshake::{EXECUTION_INFO_METHOD, WorkerIdentity},
     manifest::Manifest,
 };
 
@@ -300,13 +300,12 @@ impl Router {
             ),
         };
         Block::parse(
-            self.backend
-                .request(
-                    self.live_index(),
-                    method,
-                    RpcParams(json!([selector, false])),
-                )
-                .await?,
+            self.forward(
+                self.live_index(),
+                method,
+                RpcParams(json!([selector, false])),
+            )
+            .await?,
         )
     }
 
@@ -375,8 +374,7 @@ impl Router {
                     .get(0, &["tx_hash", "txHash", "hash", "transaction"])
                     .ok_or_else(|| invalid("missing transaction hash"))?;
                 let tx: Value = self
-                    .backend
-                    .request(live, "eth_getTransactionByHash", RpcParams(json!([hash])))
+                    .forward(live, "eth_getTransactionByHash", RpcParams(json!([hash])))
                     .await?;
                 match tx.get("blockHash").filter(|v| !v.is_null()) {
                     Some(hash) => self.era(self.block(hash).await?.timestamp),
@@ -898,7 +896,7 @@ fn stored_or_live_method(method: &str) -> bool {
             | "token_getTokensByAddress"
             | "tempo_fundAddress"
             | "tempo_forkSchedule"
-            | "tempo_executionInfo"
+            | EXECUTION_INFO_METHOD
             | "debug_getRawHeader"
             | "debug_getRawBlock"
             | "debug_getRawTransaction"
