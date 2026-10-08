@@ -38,6 +38,8 @@ pub(super) struct Snapshot {
 #[derive(Default, Debug)]
 pub(super) struct Published {
     latest: Option<Arc<Snapshot>>,
+    // Usable only when a reader's own committed checkpoint and hash match it.
+    pub(super) prepared: Option<Arc<Snapshot>>,
     leased: Vec<Weak<Snapshot>>,
     pub computations: u64,
     pub replayed_blocks: u64,
@@ -118,6 +120,13 @@ impl Published {
             if state.number == tx.number && state.canonical(tx, genesis)? {
                 return Ok(Some(state));
             }
+        }
+        if let Some(state) = &self.prepared
+            && state.number == tx.number
+            && state.canonical(tx, genesis)?
+        {
+            metrics::counter!("tempo_replay_cache_prepared_hits_total").increment(1);
+            return Ok(Some(state.clone()));
         }
         Ok(None)
     }
@@ -394,9 +403,15 @@ impl Cache {
                 metrics::histogram!("tempo_replay_cache_prepare_seconds")
                     .record(prepare_started.elapsed().as_secs_f64());
                 let (base, state) = result?;
-                if committed.recv().unwrap_or(false) {
-                    let mut published = cache.published.write().unwrap();
-                    published.leased.retain(|state| state.strong_count() != 0);
+                cache.published.write().unwrap().prepared = Some(state.clone());
+                let ready = std::time::Instant::now();
+                let committed = committed.recv().unwrap_or(false);
+                metrics::histogram!("tempo_replay_cache_ready_wait_seconds")
+                    .record(ready.elapsed().as_secs_f64());
+                let mut published = cache.published.write().unwrap();
+                published.prepared = None;
+                published.leased.retain(|state| state.strong_count() != 0);
+                if committed {
                     published.computations += 1;
                     published.replayed_blocks += state.number - base.number;
                     metrics::counter!("tempo_replay_cache_blocks_total")
@@ -404,6 +419,10 @@ impl Cache {
                     if let Some(previous) = published.latest.replace(state) {
                         published.leased.push(Arc::downgrade(&previous));
                     }
+                } else {
+                    // A reader may already have observed the committed MDBX view.
+                    // Retain discoverability only for as long as such a lease lives.
+                    published.leased.push(Arc::downgrade(&state));
                 }
                 Ok(())
             })

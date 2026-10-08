@@ -277,10 +277,36 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
             .unwrap(),
     );
     assert_eq!(db.context.cache.published.read().unwrap().computations, 1);
+    assert!(
+        db.context
+            .cache
+            .published
+            .read()
+            .unwrap()
+            .prepared
+            .is_none()
+    );
     let preparation = db
         .prepare_persistence(vec![Arc::new(block.clone())])
         .unwrap()
         .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while db
+        .context
+        .cache
+        .published
+        .read()
+        .unwrap()
+        .prepared
+        .is_none()
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "preparation did not finish"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    // Preparation alone cannot expose the future state to an old database view.
     assert_eq!(
         db.tx().unwrap().slots().unwrap().get(&hashed_slot),
         Some(&U256::from(1200))
@@ -290,19 +316,23 @@ fn reads_derive_from_blocks_and_writes_remain_native() {
     rw.save_stage_checkpoint(reth_stages_types::StageId::Finish, StageCheckpoint::new(2))
         .unwrap();
     rw.commit().unwrap();
-    // A reader opened between commit and publication waits for the one worker.
+    // Once MDBX exposes the matching checkpoint, readers need not wait for the
+    // persistence callback to promote the prepared state.
     std::thread::scope(|scope| {
-        let (opened, started) = std::sync::mpsc::channel();
+        let (send, receive) = std::sync::mpsc::channel();
         let db = &db;
         let reader = scope.spawn(move || {
             let next = db.tx().unwrap();
-            opened.send(()).unwrap();
-            next.snapshot().unwrap().clone()
+            send.send(next.snapshot().unwrap().clone()).unwrap();
         });
-        started.recv().unwrap();
+        let early = receive.recv_timeout(std::time::Duration::from_secs(2));
         assert_eq!(db.context.cache.published.read().unwrap().computations, 1);
+        // Always release the worker before asserting, including on timeout.
         preparation.finish();
-        assert_eq!(reader.join().unwrap().number, 2);
+        let early = early.expect("matching prepared state waited for persistence callback");
+        assert_eq!(early.number, 2);
+        assert!(Arc::ptr_eq(&early, db.tx().unwrap().snapshot().unwrap()));
+        reader.join().unwrap();
     });
     assert_eq!(
         tx.slots().unwrap().get(&hashed_slot),
@@ -663,6 +693,34 @@ fn merged_cursor_matches_native_storage() {
     same!(next());
     same!(prev());
     same!(seek(B256::with_last_byte(1)));
+}
+
+#[test]
+fn prepared_state_requires_matching_checkpoint_and_hash() {
+    let factory = create_test_provider_factory_with_node_types::<TempoNode>(DEV.clone());
+    let hash = B256::repeat_byte(1);
+    let rw = factory.provider_rw().unwrap();
+    rw.tx_ref().put::<tables::HeaderNumbers>(hash, 1).unwrap();
+    rw.save_stage_checkpoint(reth_stages_types::StageId::Finish, StageCheckpoint::new(1))
+        .unwrap();
+    rw.commit().unwrap();
+    let tx = factory.db_ref().tx().unwrap();
+    let source = Source::new(&tx, 0).unwrap();
+    let cache = Cache::default();
+    let mut published = cache.published.write().unwrap();
+    for (number, prepared_hash, matches) in [
+        (2, hash, false),
+        (1, B256::repeat_byte(2), false),
+        (1, hash, true),
+    ] {
+        published.prepared = Some(Arc::new(Snapshot {
+            number,
+            hash: prepared_hash,
+            slots: Slots::default(),
+            deployed: true,
+        }));
+        assert_eq!(published.find(&source, 0).unwrap().is_some(), matches);
+    }
 }
 
 #[test]
