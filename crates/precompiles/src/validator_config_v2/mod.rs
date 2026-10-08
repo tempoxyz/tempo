@@ -684,6 +684,7 @@ impl ValidatorConfigV2 {
             .require_init()?
             .require_owner_or_validator(sender, v.validator_address)?;
         self.require_new_pubkey(call.publicKey)?;
+
         let ingress = IpAddressWithPort::try_from(call.ingress.as_str()).map_err(|err| {
             ValidatorConfigV2Error::not_ip_port(call.ingress.clone(), err.to_string())
         })?;
