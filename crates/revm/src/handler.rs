@@ -55,7 +55,9 @@ use tempo_precompiles::{
 };
 use tempo_primitives::{
     TempoAddressExt,
-    transaction::{TEMPO_EXPIRING_NONCE_KEY, calc_gas_balance_spending, validate_calls},
+    transaction::{
+        SignatureType, TEMPO_EXPIRING_NONCE_KEY, calc_gas_balance_spending, validate_calls,
+    },
 };
 
 use crate::{
