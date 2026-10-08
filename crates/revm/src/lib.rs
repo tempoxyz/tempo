@@ -28,4 +28,5 @@ pub use handler::{ValidationContext, calculate_aa_batch_intrinsic_gas};
 pub use revm::interpreter::instructions::utility::IntoAddress;
 pub use signature_gas::ZK_VERIFY_GAS;
 pub use tempo_primitives::TempoBlockEnv;
+pub mod native_multisig;
 pub use tx::{ExecutionContext, TempoBatchCallEnv, TempoTxEnv};

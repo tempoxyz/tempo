@@ -1,5 +1,7 @@
 pub mod envelope;
 pub mod key_authorization;
+pub mod multisig;
+pub use multisig::*;
 pub mod tempo_transaction;
 pub mod tt_authorization;
 pub mod tt_signature;
@@ -9,8 +11,8 @@ pub mod zk_signature;
 pub use tt_authorization::{MAGIC, RecoveredTempoAuthorization, TempoSignedAuthorization};
 // Re-export Authorization from alloy for convenience
 pub use tt_signature::{
-    KeychainSignature, KeychainVersion, KeychainVersionError, PrimitiveSignature, TempoSignature,
-    derive_p256_address,
+    AccountSignature, KeychainSignature, KeychainVersion, KeychainVersionError, PrimitiveSignature,
+    TempoSignature, derive_p256_address,
 };
 
 pub use crate::address::TIP20_TOKEN_PREFIX as TIP20_PAYMENT_PREFIX;
@@ -28,8 +30,8 @@ pub use tempo_transaction::{
 pub use tt_signed::AASigned;
 pub use zk_signature::{
     BN254_SCALAR_FIELD, MAX_ZK_SIGNATURE_SIZE, MAX_ZK_SIGNATURES_PER_TX, SIGNATURE_TYPE_ZK,
-    ZK_NAMESPACE_OIDC, ZK_PROOF_LENGTH, ZK_SCHEME_OIDC_RS256_V1, ZkProof, ZkSignature,
-    ZkVerification, zk_address, zk_namespace,
+    ZK_NAMESPACE_OIDC, ZK_PROOF_LENGTH, ZK_SCHEME_OIDC_RS256_V1, ZK_VERIFY_GAS, ZkProof,
+    ZkSignature, ZkVerification, zk_address, zk_namespace,
 };
 
 use alloc::vec::Vec;

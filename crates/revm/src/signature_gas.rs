@@ -1,22 +1,18 @@
 use revm::interpreter::gas::{
     COLD_SLOAD_COST, STANDARD_TOKEN_COST, get_tokens_in_calldata_istanbul,
 };
+use tempo_precompiles::{ECRECOVER_GAS, signature_verifier::multisig_verification_gas};
 use tempo_primitives::transaction::{
-    KeyAuthorizationSignature, PrimitiveSignature, TempoSignature, ZkSignature,
+    AccountSignature, PrimitiveSignature, TempoSignature, ZkSignature,
 };
 
-/// Additional gas for P256 signature verification.
-///
-/// This includes the P256 precompile cost, the extra signature calldata, and the ecrecover savings
-/// already included in the base transaction cost.
-pub(crate) const P256_VERIFY_GAS: u64 = 5_000;
+pub use tempo_primitives::transaction::ZK_VERIFY_GAS;
+
+#[cfg(test)]
+const P256_VERIFY_GAS: u64 = 5_000;
 
 /// Additional gas for keychain signatures (key validation overhead: cold SLOAD + processing).
 const KEYCHAIN_VALIDATION_GAS: u64 = COLD_SLOAD_COST + 900;
-
-/// Gas for decoding, curve and subgroup checks, the public-input hash, and a proof's share of a
-/// batched pairing check (TIP-1131). Placeholder pending the reference benchmark.
-pub const ZK_VERIFY_GAS: u64 = 350_000;
 
 /// Calculates the gas cost for verifying a primitive signature.
 ///
@@ -26,13 +22,24 @@ pub const ZK_VERIFY_GAS: u64 = 350_000;
 /// - WebAuthn: 5000 gas + calldata cost for `webauthn_data`
 #[inline]
 pub(crate) fn primitive_signature_verification_gas(signature: &PrimitiveSignature) -> u64 {
-    match signature {
-        PrimitiveSignature::Secp256k1(_) => 0,
-        PrimitiveSignature::P256(_) => P256_VERIFY_GAS,
-        PrimitiveSignature::WebAuthn(webauthn_sig) => {
-            let tokens = get_tokens_in_calldata_istanbul(&webauthn_sig.webauthn_data);
-            P256_VERIFY_GAS + tokens * STANDARD_TOKEN_COST
+    let webauthn_data_gas = match signature {
+        PrimitiveSignature::WebAuthn(sig) => {
+            get_tokens_in_calldata_istanbul(&sig.webauthn_data) * STANDARD_TOKEN_COST
         }
+        _ => 0,
+    };
+    signature.base_verification_gas() - ECRECOVER_GAS + webauthn_data_gas
+}
+
+/// Verification cost beyond the baseline signature charge, without keychain processing.
+#[inline]
+pub(crate) fn account_signature_verification_gas(signature: &AccountSignature) -> u64 {
+    match signature {
+        AccountSignature::Primitive(signature) => primitive_signature_verification_gas(signature),
+        AccountSignature::Multisig(signature) => {
+            owner_signature_verification_gas(signature).saturating_sub(ECRECOVER_GAS)
+        }
+        AccountSignature::Zk(signature) => zk_signature_verification_gas(signature),
     }
 }
 
@@ -45,7 +52,10 @@ pub(crate) fn tempo_signature_verification_gas(signature: &TempoSignature) -> u6
     match signature {
         TempoSignature::Primitive(prim_sig) => primitive_signature_verification_gas(prim_sig),
         TempoSignature::Keychain(keychain_sig) => {
-            primitive_signature_verification_gas(&keychain_sig.signature) + KEYCHAIN_VALIDATION_GAS
+            account_signature_verification_gas(&keychain_sig.signature) + KEYCHAIN_VALIDATION_GAS
+        }
+        TempoSignature::Multisig(signature) => {
+            owner_signature_verification_gas(signature).saturating_sub(ECRECOVER_GAS)
         }
         TempoSignature::Zk(zk_sig) => zk_signature_verification_gas(zk_sig),
     }
@@ -54,13 +64,24 @@ pub(crate) fn tempo_signature_verification_gas(signature: &TempoSignature) -> u6
 /// Calculates the gas for verifying a key authorization's signature, beyond the `ECRECOVER_GAS`
 /// baseline that every key authorization pays.
 #[inline]
-pub(crate) fn key_authorization_signature_gas(signature: &KeyAuthorizationSignature) -> u64 {
-    match signature {
-        KeyAuthorizationSignature::Primitive(prim_sig) => {
-            primitive_signature_verification_gas(prim_sig)
-        }
-        KeyAuthorizationSignature::Zk(zk_sig) => zk_signature_verification_gas(zk_sig),
-    }
+pub(crate) fn key_authorization_signature_gas(signature: &AccountSignature) -> u64 {
+    account_signature_verification_gas(signature)
+}
+
+fn owner_signature_verification_gas(
+    signature: &tempo_primitives::transaction::MultisigSignature,
+) -> u64 {
+    multisig_verification_gas(signature)
+        + signature
+            .signatures()
+            .iter()
+            .filter_map(|approval| {
+                approval.as_zk().map(|signature| {
+                    zk_signature_verification_gas(signature) + ECRECOVER_GAS
+                        - approval.base_verification_gas()
+                })
+            })
+            .sum::<u64>()
 }
 
 /// Calculates `zk_cost - 3,000` for a ZK signature (TIP-1131), where
@@ -135,7 +156,7 @@ mod tests {
             gas
         );
         assert_eq!(
-            key_authorization_signature_gas(&KeyAuthorizationSignature::from(signature)),
+            key_authorization_signature_gas(&AccountSignature::from(signature)),
             gas
         );
 

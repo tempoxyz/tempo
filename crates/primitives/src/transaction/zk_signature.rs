@@ -39,6 +39,9 @@ pub const ZK_NAMESPACE_OIDC: u8 = 0x01;
 /// Most ZK signatures a transaction may carry, across all of its signatures.
 pub const MAX_ZK_SIGNATURES_PER_TX: usize = 2;
 
+/// Gas charged for a ZK signature's proof verification.
+pub const ZK_VERIFY_GAS: u64 = 350_000;
+
 /// The BN254 scalar field modulus. Field-element fields must be below it.
 pub const BN254_SCALAR_FIELD: U256 =
     uint!(21888242871839275222246405745257275088548364400416034343698204186575808495617_U256);

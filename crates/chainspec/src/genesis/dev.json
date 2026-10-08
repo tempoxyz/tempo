@@ -20,6 +20,7 @@
     "terminalTotalDifficulty": 0,
     "terminalTotalDifficultyPassed": true,
     "epochLength": 302400,
+    "multisigRecoveryFactory": "0x7171717171717171717171717171717171717171",
     "t0Time": 0,
     "t10Time": 0,
     "t11Time": 0,

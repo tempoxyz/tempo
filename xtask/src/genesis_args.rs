@@ -167,6 +167,10 @@ pub(crate) struct GenesisArgs {
     /// chains.
     #[arg(long = "zk-verifying-key", value_name = "SCHEME=HEX", value_parser = parse_zk_verifying_key)]
     zk_verifying_keys: Vec<(u8, Bytes)>,
+
+    /// Development recovery factory used to derive configurable accounts.
+    #[arg(long)]
+    multisig_recovery_factory: Option<Address>,
 }
 
 /// Parses `<scheme>=<hex>` into a scheme byte and a valid 576-byte Groth16 verifying key.
@@ -507,6 +511,15 @@ impl GenesisArgs {
                 .insert_value("generalGasLimit".to_string(), general_gas_limit)?;
         }
         self.hardforks.write_to(&mut chain_config);
+        if let Some(factory) = self.multisig_recovery_factory {
+            eyre::ensure!(
+                tempo_chainspec::is_valid_native_account(factory, TempoHardfork::T14),
+                "multisig recovery factory must be a nonzero, non-reserved address"
+            );
+            chain_config
+                .extra_fields
+                .insert_value("multisigRecoveryFactory".to_string(), factory)?;
+        }
         if !self.zk_verifying_keys.is_empty() {
             let keys: BTreeMap<String, Bytes> = self
                 .zk_verifying_keys
@@ -558,6 +571,24 @@ impl GenesisArgs {
             return Err(eyre!("mnemonic file `{}` is empty", path.display()));
         }
         Ok(mnemonic.to_owned())
+    }
+
+    /// Inherits development-only signer settings without overriding explicit configuration.
+    pub(crate) fn with_dev_signer_config(mut self) -> Self {
+        let dev = &tempo_chainspec::spec::DEV.info;
+        for (scheme, key) in dev.zk_verifying_keys() {
+            if !self
+                .zk_verifying_keys
+                .iter()
+                .any(|(configured, _)| *configured == scheme)
+            {
+                self.zk_verifying_keys.push((scheme, key.clone()));
+            }
+        }
+        self.multisig_recovery_factory = self
+            .multisig_recovery_factory
+            .or(dev.multisig_recovery_factory());
+        self
     }
 }
 
@@ -1111,5 +1142,60 @@ mod tests {
         assert!(from_file.resolved_mnemonic().is_err());
         std::fs::remove_file(path).unwrap();
         assert!(from_file.validator_onchain_addresses().is_err());
+    }
+
+    #[tokio::test]
+    async fn devnet_genesis_enables_oidc_and_configurable_accounts() {
+        let genesis = parse("")
+            .unwrap()
+            .with_dev_signer_config()
+            .generate_genesis()
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(
+            genesis.config.extra_fields.get("zkVerifyingKeys"),
+            Some(&serde_json::json!({ "1": dev_verifying_key() }))
+        );
+        let spec = tempo_chainspec::TempoChainSpec::from_genesis(genesis);
+        assert_eq!(spec.info.fork_time(TempoHardfork::T14), Some(0));
+        assert_eq!(
+            spec.info.multisig_recovery_factory(),
+            Some(Address::repeat_byte(0x71))
+        );
+        let standalone = generate("").await;
+        assert_eq!(standalone.config.extra_fields.get("zkVerifyingKeys"), None);
+        assert_eq!(
+            standalone
+                .config
+                .extra_fields
+                .get("multisigRecoveryFactory"),
+            None
+        );
+    }
+
+    #[test]
+    fn devnet_genesis_preserves_explicit_signer_configuration() {
+        let factory = Address::repeat_byte(0x72);
+        let key = dev_verifying_key();
+        let mut args = parse(&format!(
+            "--zk-verifying-key 1={key} --multisig-recovery-factory {factory}"
+        ))
+        .unwrap();
+        let override_key = Bytes::from(vec![0x11; 576]);
+        args.zk_verifying_keys = vec![(1, override_key.clone())];
+        let args = args.with_dev_signer_config();
+        assert_eq!(args.zk_verifying_keys, vec![(1, override_key)]);
+        assert_eq!(args.multisig_recovery_factory, Some(factory));
+    }
+
+    #[tokio::test]
+    async fn genesis_rejects_reserved_recovery_factory() {
+        let args = parse("--multisig-recovery-factory 0x0000000000000000000000000000000000000000")
+            .unwrap();
+        assert_eq!(
+            args.generate_genesis().await.unwrap_err().to_string(),
+            "multisig recovery factory must be a nonzero, non-reserved address"
+        );
     }
 }
