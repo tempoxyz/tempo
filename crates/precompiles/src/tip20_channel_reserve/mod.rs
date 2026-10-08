@@ -164,6 +164,13 @@ impl TIP20ChannelReserve {
             return Err(TIP20ChannelReserveError::zero_deposit().into());
         }
 
+        // Preserve funded channels, but never give a retired key authority over a new deposit.
+        crate::native_multisig::ensure_root_key_active(if call.authorizedSigner.is_zero() {
+            msg_sender
+        } else {
+            call.authorizedSigner
+        })?;
+
         let expiring_nonce_hash = self.enclosing_channel_open_context_hash()?;
         let channel_id = self.compute_channel_id_inner(
             msg_sender,
@@ -331,6 +338,13 @@ impl TIP20ChannelReserve {
         }
 
         if !additional.is_zero() {
+            crate::native_multisig::ensure_root_key_active(
+                if call.descriptor.authorizedSigner.is_zero() {
+                    call.descriptor.payer
+                } else {
+                    call.descriptor.authorizedSigner
+                },
+            )?;
             let next_deposit = state
                 .deposit
                 .checked_add(additional)
@@ -921,7 +935,7 @@ mod tests {
     use alloy_signer_local::PrivateKeySigner;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
-        ITIP20ChannelReserve::ITIP20ChannelReserveCalls, TIP20Error,
+        ITIP20ChannelReserve::ITIP20ChannelReserveCalls, NativeMultisigError, TIP20Error,
     };
 
     #[test]
@@ -978,6 +992,43 @@ mod tests {
                     crate::storage::ConfigCommitmentWriteGas::Intrinsic,
                 )?;
                 reserve.validate_voucher(&descriptor, channel_id, cumulative, &signature)?;
+                Ok::<_, eyre::Error>(())
+            })?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn migration_rejects_new_channels_with_retired_voucher_signers() -> eyre::Result<()> {
+        for explicit in [false, true] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14)
+                .with_account_migration_enabled(true);
+            StorageCtx::enter(&mut storage, || {
+                let payer = Address::repeat_byte(0x33);
+                let signer = if explicit {
+                    Address::repeat_byte(0x55)
+                } else {
+                    payer
+                };
+                StorageCtx.set_config_commitment(
+                    signer,
+                    B256::repeat_byte(0x55),
+                    crate::storage::ConfigCommitmentWriteGas::Intrinsic,
+                )?;
+                let error = TIP20ChannelReserve::new()
+                    .open(
+                        payer,
+                        open_call(
+                            Address::repeat_byte(0x44),
+                            Address::ZERO,
+                            crate::PATH_USD_ADDRESS,
+                            100,
+                            B256::ZERO,
+                            if explicit { signer } else { Address::ZERO },
+                        ),
+                    )
+                    .unwrap_err();
+                assert_eq!(error, NativeMultisigError::root_key_retired(signer).into());
                 Ok::<_, eyre::Error>(())
             })?;
         }
@@ -1044,6 +1095,23 @@ mod tests {
                             )?;
                         }
                     }
+                    assert_eq!(
+                        reserve.top_up(
+                            payer,
+                            ITIP20ChannelReserve::topUpCall {
+                                descriptor: descriptor.clone(),
+                                additionalDeposit: U96::from(1),
+                            }
+                        ),
+                        Err(NativeMultisigError::root_key_retired(signer.address()).into())
+                    );
+                    reserve.top_up(
+                        payer,
+                        ITIP20ChannelReserve::topUpCall {
+                            descriptor: descriptor.clone(),
+                            additionalDeposit: U96::ZERO,
+                        },
+                    )?;
                     reserve.request_close(
                         payer,
                         ITIP20ChannelReserve::requestCloseCall {

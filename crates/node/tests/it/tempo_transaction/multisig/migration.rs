@@ -78,7 +78,7 @@ async fn migration_rpc_all_root_types_quorum_rotation_and_retirement() -> eyre::
             TempoSignature::Primitive(root.sign(root_tx.signature_hash())?),
         )
         .await?;
-        insta::assert_snapshot!(error.replace(&root.address().to_string(), "ACCOUNT"), @"server returned an error response: error code -32003: invalid transaction: primitive root key retired for account ACCOUNT");
+        insta::assert_snapshot!(error.replace(&root.address().to_string(), "ACCOUNT"), @"server returned an error response: error code -32000: primitive root key retired for account ACCOUNT");
         assert!(reject(&env, tx, signature).await.is_ok());
 
         let tx = account.transaction(&env, vec![noop()]);
@@ -191,7 +191,7 @@ async fn migration_rpc_rejects_extra_calls_and_inline_grants_before_side_effects
             TempoSignature::Primitive(root.sign(tx.signature_hash())?),
         )
         .await?;
-        insta::assert_snapshot!(error, @"server returned an error response: error code -32003: invalid transaction: migration must be the sole call without authorizations");
+        insta::assert_snapshot!(error, @"server returned an error response: error code -32000: migration must be the sole call without authorizations");
     }
     let mut tx = account.transaction(&env, vec![upgrade(&account.config)]);
     let grant = KeyAuthorization::unrestricted(env.chain_id(), SignatureType::Secp256k1, recipient);
@@ -206,7 +206,7 @@ async fn migration_rpc_rejects_extra_calls_and_inline_grants_before_side_effects
         TempoSignature::Primitive(root.sign(tx.signature_hash())?),
     )
     .await?;
-    insta::assert_snapshot!(error, @"server returned an error response: error code -32003: invalid transaction: migration must be the sole call without authorizations");
+    insta::assert_snapshot!(error, @"server returned an error response: error code -32000: migration must be the sole call without authorizations");
     let mut tx = account.transaction(&env, vec![upgrade(&account.config)]);
     let authorization = alloy::eips::eip7702::Authorization {
         chain_id: U256::from(env.chain_id()),
@@ -226,7 +226,7 @@ async fn migration_rpc_rejects_extra_calls_and_inline_grants_before_side_effects
         TempoSignature::Primitive(root.sign(tx.signature_hash())?),
     )
     .await?;
-    insta::assert_snapshot!(error, @"server returned an error response: error code -32003: invalid transaction: migration must be the sole call without authorizations");
+    insta::assert_snapshot!(error, @"server returned an error response: error code -32000: migration must be the sole call without authorizations");
     assert_eq!(commitment(&env, account.address).await?, B256::ZERO);
     assert_eq!(
         env.provider()
@@ -543,9 +543,10 @@ async fn migration_rpc_incoming_grants_preserve_limits_scopes_and_revocation() -
             .await?;
         assert_eq!(
             keychain
-                .getRemainingLimit(parent.address, delegate.address, DEFAULT_FEE_TOKEN)
+                .getRemainingLimitWithPeriod(parent.address, delegate.address, DEFAULT_FEE_TOKEN)
                 .call()
-                .await?,
+                .await?
+                .remaining,
             U256::from(900)
         );
         let tx = delegate.transaction(&env, vec![upgrade(&delegate.config)]);
@@ -567,9 +568,10 @@ async fn migration_rpc_incoming_grants_preserve_limits_scopes_and_revocation() -
         );
         assert_eq!(
             keychain
-                .getRemainingLimit(parent.address, delegate.address, DEFAULT_FEE_TOKEN)
+                .getRemainingLimitWithPeriod(parent.address, delegate.address, DEFAULT_FEE_TOKEN)
                 .call()
-                .await?,
+                .await?
+                .remaining,
             U256::from(900)
         );
         let mut tx = parent.transaction(
@@ -589,14 +591,15 @@ async fn migration_rpc_incoming_grants_preserve_limits_scopes_and_revocation() -
             ))?,
         ));
         let error = reject(&env, tx.clone(), old_signature).await?;
-        insta::assert_snapshot!(error.replace(&delegate.address.to_string(), "ACCOUNT"), @"server returned an error response: error code -32003: invalid transaction: primitive root key retired for account ACCOUNT");
+        insta::assert_snapshot!(error.replace(&delegate.address.to_string(), "ACCOUNT"), @"server returned an error response: error code -32000: primitive root key retired for account ACCOUNT");
         let signature = delegate.as_delegate(&tx, parent.address, false)?;
         parent.submit(&mut env, tx, signature, true).await?;
         assert_eq!(
             keychain
-                .getRemainingLimit(parent.address, delegate.address, DEFAULT_FEE_TOKEN)
+                .getRemainingLimitWithPeriod(parent.address, delegate.address, DEFAULT_FEE_TOKEN)
                 .call()
-                .await?,
+                .await?
+                .remaining,
             U256::from(800)
         );
         let mut tx = parent.transaction(
@@ -612,9 +615,10 @@ async fn migration_rpc_incoming_grants_preserve_limits_scopes_and_revocation() -
         parent.submit(&mut env, tx, signature, false).await?;
         assert_eq!(
             keychain
-                .getRemainingLimit(parent.address, delegate.address, DEFAULT_FEE_TOKEN)
+                .getRemainingLimitWithPeriod(parent.address, delegate.address, DEFAULT_FEE_TOKEN)
                 .call()
-                .await?,
+                .await?
+                .remaining,
             U256::from(800)
         );
         assert_eq!(
@@ -780,7 +784,7 @@ async fn migration_rpc_retired_root_cannot_delegate_code_or_sponsor() -> eyre::R
         env.funder_signer.sign_hash_sync(&tx.signature_hash())?,
     ));
     let error = reject(&env, tx, signature).await?;
-    insta::assert_snapshot!(error.replace(&account.address.to_string(), "ACCOUNT"), @"server returned an error response: error code -32003: invalid transaction: primitive root key retired for account ACCOUNT");
+    insta::assert_snapshot!(error.replace(&account.address.to_string(), "ACCOUNT"), @"server returned an error response: error code -32000: primitive root key retired for account ACCOUNT");
     Ok(())
 }
 
@@ -807,10 +811,14 @@ async fn migration_rpc_unsigned_calls_from_configurable_accounts_are_noncommitti
             "input": Bytes::from(input.clone()),
         });
         if aa {
+            let fields = request.as_object_mut().unwrap();
+            fields.remove("to");
+            fields.remove("input");
             request["type"] = serde_json::json!("0x76");
             request["calls"] = serde_json::json!([{
                 "to": NATIVE_MULTISIG_ADDRESS,
                 "input": Bytes::from(input.clone()),
+                "value": "0x0",
             }]);
         }
         let output: Bytes = env
@@ -837,6 +845,6 @@ async fn migration_rpc_unsigned_calls_from_configurable_accounts_are_noncommitti
     let tx = account.transaction(&env, vec![noop()]);
     let signature = TempoSignature::Primitive(root.sign(tx.signature_hash())?);
     let error = reject(&env, tx, signature).await?;
-    insta::assert_snapshot!(error.replace(&account.address.to_string(), "ACCOUNT"), @"server returned an error response: error code -32003: invalid transaction: primitive root key retired for account ACCOUNT");
+    insta::assert_snapshot!(error.replace(&account.address.to_string(), "ACCOUNT"), @"server returned an error response: error code -32000: primitive root key retired for account ACCOUNT");
     Ok(())
 }

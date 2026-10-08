@@ -40,7 +40,7 @@ use tempo_chainspec::{
 use tempo_evm::{TempoEvmConfig, TempoPoolValidationEvm};
 use tempo_precompiles::{
     nonce::{INonce, NonceManager},
-    storage::StorageActions,
+    storage::{StorageActions, StorageCtx},
 };
 use tempo_primitives::{
     Block, TempoHeader, TempoPrimitives,
@@ -658,6 +658,36 @@ where
                                 existing_authorities.append(&mut recovered_aa_authorities)
                             }
                             None => authorities = Some(recovered_aa_authorities),
+                        }
+                    }
+                }
+
+                // Execution ignores retired-root EIP-7702 authorizations. Do not let those
+                // ignored authorizations reserve delegation slots in the local pool either.
+                if spec.is_t14()
+                    && evm.block().account_migration_enabled
+                    && let Some(recovered) = authorities.take()
+                {
+                    let active = evm.db_mut().with_read_only_storage_ctx(
+                        spec,
+                        StorageActions::disabled(),
+                        || {
+                            let mut active = Vec::with_capacity(recovered.len());
+                            for authority in recovered {
+                                if StorageCtx.config_commitment(authority)?.is_zero() {
+                                    active.push(authority);
+                                }
+                            }
+                            Ok::<_, tempo_precompiles::error::TempoPrecompileError>(active)
+                        },
+                    );
+                    match active {
+                        Ok(active) => authorities = Some(active),
+                        Err(error) => {
+                            return TransactionValidationOutcome::Error(
+                                *transaction.hash(),
+                                Box::new(error),
+                            );
                         }
                     }
                 }
