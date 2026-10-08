@@ -8,6 +8,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::catalog::{ChainEras, ReleaseEra};
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
@@ -167,6 +169,24 @@ impl Manifest {
         self.eras
             .last()
             .expect("validated manifest contains an era")
+    }
+
+    /// The harness adds launch and bootstrap options to the same release schedule as a node.
+    pub fn schedule(&self) -> ChainEras {
+        ChainEras {
+            chain_id: self.chain_id.clone(),
+            genesis_hash: self.genesis_hash.clone(),
+            eras: self
+                .eras
+                .iter()
+                .enumerate()
+                .map(|(index, era)| ReleaseEra {
+                    name: era.name.clone(),
+                    start_timestamp: era.start_timestamp,
+                    binary: (index + 1 < self.eras.len()).then(|| era.binary.clone()),
+                })
+                .collect(),
+        }
     }
 }
 

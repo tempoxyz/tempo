@@ -2,17 +2,18 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use clap::{Args, Parser, Subcommand};
 use eyre::{Context, OptionExt, Result, ensure};
+use futures::future::BoxFuture;
 use jsonrpsee::{
-    core::client::ClientT,
+    core::{RpcResult, client::ClientT},
     http_client::{HttpClient, HttpClientBuilder},
     ws_client::WsClientBuilder,
 };
 use serde_json::Value;
 use tempo_metabinary::{
-    handshake::{EXECUTION_INFO_METHOD, WorkerIdentity, wait_for_worker},
+    handshake::{EXECUTION_INFO_METHOD, ExecutionInfo, WorkerIdentity, wait_for_worker},
     manifest::{Bootstrap, Manifest},
     process::ProcessGroup,
-    routing::{ExecutionInfo, Router, quantity},
+    routing::{Backend, Router, RpcParams, quantity, upstream_error},
     server::{self, ServerOptions},
 };
 use tracing::info;
@@ -44,6 +45,46 @@ struct Serve {
     history: bool,
     #[command(flatten)]
     server: ServerOptions,
+}
+
+/// The eager development harness forwards to its already verified private endpoints.
+struct HarnessBackend {
+    manifest: Arc<Manifest>,
+    clients: Vec<HttpClient>,
+    info: Vec<Option<ExecutionInfo>>,
+}
+
+impl Backend for HarnessBackend {
+    fn request<'a>(
+        &'a self,
+        era: usize,
+        method: &'a str,
+        params: RpcParams,
+    ) -> BoxFuture<'a, RpcResult<Value>> {
+        Box::pin(async move {
+            let info = self.info[era].as_ref().ok_or_else(|| {
+                jsonrpsee::types::ErrorObjectOwned::owned(
+                    -32004,
+                    "historical execution is disabled; start serve with --history",
+                    None::<()>,
+                )
+            })?;
+            if !info.methods.iter().any(|name| name == method) {
+                return Err(jsonrpsee::types::ErrorObjectOwned::owned(
+                    -32004,
+                    format!(
+                        "{method} is unavailable in era {}",
+                        self.manifest.eras[era].name
+                    ),
+                    None::<()>,
+                ));
+            }
+            self.clients[era]
+                .request(method, params)
+                .await
+                .map_err(upstream_error)
+        })
+    }
 }
 
 #[tokio::main]
@@ -143,6 +184,7 @@ async fn serve(
     }
     processes.spawn_live(&manifest)?;
     let live_info = ready(&clients[live], &manifest, live, processes, timeout, false).await?;
+    let live_methods = live_info.methods.iter().cloned().collect();
     if options.history {
         processes.spawn_history(&manifest)?;
     }
@@ -181,7 +223,15 @@ async fn serve(
         None
     };
     let mut boundary_verified = verify_live_boundary(&clients[live], &manifest).await?;
-    let router = Arc::new(Router::new(manifest.clone(), clients.clone(), metadata)?);
+    let router = Arc::new(Router::with_backend(
+        manifest.schedule(),
+        Arc::new(HarnessBackend {
+            manifest: manifest.clone(),
+            clients: clients.clone(),
+            info: metadata,
+        }),
+        live_methods,
+    )?);
     let (address, handle) = server::start(router, options.server, ws).await?;
     info!(%address, "era RPC router ready");
     let mut tick = tokio::time::interval(Duration::from_millis(250));

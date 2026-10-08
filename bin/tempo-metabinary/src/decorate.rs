@@ -177,7 +177,7 @@ mod tests {
         ) -> BoxFuture<'a, RpcResult<Value>> {
             async move {
                 match method {
-                    "eth_getBlockByNumber" | "eth_getBlockByHash" => {
+                    "eth_getHeaderByNumber" | "eth_getHeaderByHash" => {
                         assert_eq!(era, 1);
                         let number = if params.0[0] == "0x1" { 1 } else { 2 };
                         Ok(json!({"number":number, "hash":format!("0x{:064x}", number), "timestamp":self.timestamp.clone()?}))

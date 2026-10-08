@@ -2,23 +2,12 @@ use std::{collections::HashSet, sync::Arc};
 
 use futures::future::BoxFuture;
 use jsonrpsee::{
-    core::{
-        RpcResult,
-        client::{ClientT, Error as ClientError},
-        traits::ToRpcParams,
-    },
-    http_client::HttpClient,
+    core::{RpcResult, client::Error as ClientError, traits::ToRpcParams},
     types::ErrorObjectOwned,
 };
 use serde_json::{Value, json, value::RawValue};
 
-use crate::{
-    catalog::{ChainEras, ReleaseEra},
-    handshake::{EXECUTION_INFO_METHOD, WorkerIdentity},
-    manifest::Manifest,
-};
-
-pub use crate::handshake::ExecutionInfo;
+use crate::{catalog::ChainEras, handshake::EXECUTION_INFO_METHOD};
 
 /// JSON-RPC supports both positional and named params. Keep that representation when forwarding.
 #[derive(Debug, Clone)]
@@ -103,7 +92,7 @@ pub fn quantity(value: &Value) -> RpcResult<u64> {
         .ok_or_else(|| invalid("expected a hexadecimal quantity"))
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Block {
     number: u64,
     hash: String,
@@ -162,37 +151,6 @@ pub trait Backend: Send + Sync {
     }
 }
 
-struct HttpBackend {
-    manifest: Arc<Manifest>,
-    clients: Vec<HttpClient>,
-    methods: Vec<Option<HashSet<String>>>,
-}
-
-impl Backend for HttpBackend {
-    fn request<'a>(
-        &'a self,
-        era: usize,
-        method: &'a str,
-        params: RpcParams,
-    ) -> BoxFuture<'a, RpcResult<Value>> {
-        Box::pin(async move {
-            let methods = self.methods[era].as_ref().ok_or_else(|| {
-                unsupported("historical execution is disabled; start serve with --history")
-            })?;
-            if !methods.contains(method) {
-                return Err(unsupported(format!(
-                    "{method} is unavailable in era {}",
-                    self.manifest.eras[era].name
-                )));
-            }
-            self.clients[era]
-                .request(method, params)
-                .await
-                .map_err(upstream_error)
-        })
-    }
-}
-
 pub struct Route {
     pub era: usize,
     pub params: RpcParams,
@@ -206,62 +164,6 @@ pub struct Router {
 }
 
 impl Router {
-    pub fn new(
-        manifest: Arc<Manifest>,
-        clients: Vec<HttpClient>,
-        info: Vec<Option<ExecutionInfo>>,
-    ) -> eyre::Result<Self> {
-        manifest.validate()?;
-        eyre::ensure!(
-            clients.len() == manifest.eras.len() && info.len() == clients.len(),
-            "one worker per era is required"
-        );
-        let live = clients.len() - 1;
-        eyre::ensure!(info[live].is_some(), "the live worker is required");
-        for (index, metadata) in info.iter().enumerate() {
-            if let Some(metadata) = metadata {
-                metadata.validate(
-                    WorkerIdentity {
-                        chain_id: &manifest.chain_id,
-                        genesis_hash: &manifest.genesis_hash,
-                        read_only: index != live,
-                    },
-                    None,
-                )?;
-            }
-        }
-        let live_methods = info[live]
-            .as_ref()
-            .expect("validated live worker")
-            .methods
-            .iter()
-            .cloned()
-            .collect();
-        let schedule = ChainEras {
-            chain_id: manifest.chain_id.clone(),
-            genesis_hash: manifest.genesis_hash.clone(),
-            eras: manifest
-                .eras
-                .iter()
-                .enumerate()
-                .map(|(index, era)| ReleaseEra {
-                    name: era.name.clone(),
-                    start_timestamp: era.start_timestamp,
-                    binary: (index != live).then(|| era.binary.clone()),
-                })
-                .collect(),
-        };
-        let backend = Arc::new(HttpBackend {
-            manifest,
-            clients,
-            methods: info
-                .into_iter()
-                .map(|i| i.map(|i| i.methods.into_iter().collect()))
-                .collect(),
-        });
-        Self::with_backend(schedule, backend, live_methods)
-    }
-
     pub fn with_backend(
         schedule: ChainEras,
         backend: Arc<dyn Backend>,
@@ -295,19 +197,16 @@ impl Router {
                     .filter(|s| s.len() == 66 && s.starts_with("0x"))
             });
         let (method, selector) = match hash {
-            Some(hash) => ("eth_getBlockByHash", json!(hash)),
+            Some(hash) => ("eth_getHeaderByHash", json!(hash)),
             None => (
-                "eth_getBlockByNumber",
+                "eth_getHeaderByNumber",
                 selector.get("blockNumber").unwrap_or(selector).clone(),
             ),
         };
+        // Resolve only the header metadata needed to select an executor.
         Block::parse(
-            self.forward(
-                self.live_index(),
-                method,
-                RpcParams(json!([selector, false])),
-            )
-            .await?,
+            self.forward(self.live_index(), method, RpcParams(json!([selector])))
+                .await?,
         )
     }
 
@@ -325,8 +224,8 @@ impl Router {
             return Err(invalid("params must be an array or an object"));
         }
         let live = self.live_index();
-        let era = match method {
-            "debug_subscribe" => {
+        let era = match policy(method) {
+            Policy::TraceSubscription => {
                 if params.get(0, &["subscription"]).and_then(Value::as_str) != Some("traceChain") {
                     live
                 } else {
@@ -357,59 +256,49 @@ impl Router {
                     live
                 }
             }
-            "eth_simulateV1" | "tempo_simulateV1" => self.simulation(method, &mut params).await?,
-            "eth_callBundle" => self.call_bundle(&mut params).await?,
-            "mev_simBundle" => self.mev_bundle(&mut params).await?,
-            "reth_getBlockExecutionOutcome" => self.execution_outcome(&mut params).await?,
-            "eth_callMany" | "debug_traceCallMany" => self.bundles(method, &mut params).await?,
-            "trace_filter" => self.filter(&mut params).await?,
-            "debug_traceBlock" => self.era(self.backend.raw_block_timestamp(&params).await?),
-            "debug_traceTransaction"
-            | "trace_transaction"
-            | "trace_get"
-            | "trace_replayTransaction"
-            | "trace_transactionOpcodeGas"
-            | "ots_getInternalOperations"
-            | "ots_getTransactionError"
-            | "ots_traceTransaction" => {
+            Policy::Simulation => self.simulation(method, &mut params).await?,
+            Policy::CallBundle => self.call_bundle(&mut params).await?,
+            Policy::MevBundle => self.mev_bundle(&mut params).await?,
+            Policy::ExecutionOutcome => self.execution_outcome(&mut params).await?,
+            Policy::Bundles => self.bundles(method, &mut params).await?,
+            Policy::TraceFilter => self.filter(&mut params).await?,
+            Policy::RawBlock => self.era(self.backend.raw_block_timestamp(&params).await?),
+            Policy::Transaction => {
                 let hash = params
                     .get(0, &["tx_hash", "txHash", "hash", "transaction"])
                     .ok_or_else(|| invalid("missing transaction hash"))?;
-                let tx: Value = self
+                let tx = self
                     .forward(live, "eth_getTransactionByHash", RpcParams(json!([hash])))
                     .await?;
-                match tx.get("blockHash").filter(|v| !v.is_null()) {
+                match tx.get("blockHash").filter(|hash| !hash.is_null()) {
                     Some(hash) => self.era(self.block(hash).await?.timestamp),
                     // The native implementation defines missing/pending transaction behavior.
                     None => live,
                 }
             }
-            _ => {
-                if let Some((index, names, number_only)) = block_argument(method) {
-                    let selector = params.get(index, names).cloned().unwrap_or_else(|| {
-                        json!(if method == "eth_estimateGas" {
-                            "pending"
-                        } else {
-                            "latest"
-                        })
-                    });
-                    if selector == "pending" {
-                        self.check_overrides(method, &params, live)?;
-                        live
+            Policy::Block(index, names, number_only) => {
+                let selector = params.get(index, names).cloned().unwrap_or_else(|| {
+                    json!(if method == "eth_estimateGas" {
+                        "pending"
                     } else {
-                        let block = self.block(&selector).await?;
-                        let era = self.era(block.timestamp);
-                        self.check_overrides(method, &params, era)?;
-                        // Preserve explicit hashes and EIP-1898 requireCanonical. Pin tags/numbers.
-                        let id = block.pin(selector, number_only);
-                        params.set(index, names, id);
-                        era
-                    }
-                } else if stored_or_live_method(method) {
+                        "latest"
+                    })
+                });
+                if selector == "pending" {
+                    self.check_overrides(method, &params, live)?;
                     live
                 } else {
-                    return Err(unsupported(format!("{method} has no era routing policy")));
+                    let block = self.block(&selector).await?;
+                    let era = self.era(block.timestamp);
+                    self.check_overrides(method, &params, era)?;
+                    // Preserve explicit hashes and EIP-1898 requireCanonical. Pin tags/numbers.
+                    params.set(index, names, block.pin(selector, number_only));
+                    era
                 }
+            }
+            Policy::Native => live,
+            Policy::Unsupported | Policy::Unrouted => {
+                return Err(unsupported(format!("{method} has no era routing policy")));
             }
         };
         Ok(Route { era, params })
@@ -443,27 +332,29 @@ impl Router {
             .get(0, &["filter"])
             .cloned()
             .ok_or_else(|| invalid("missing trace filter"))?;
+        if !filter.is_object() {
+            return Err(invalid("trace filter must be an object"));
+        }
         let from_selector = filter.get("fromBlock").filter(|v| !v.is_null());
         let to_selector = filter.get("toBlock").filter(|v| !v.is_null());
         let latest = if from_selector.is_none() || to_selector.is_none() {
-            Some(self.block(&json!("latest")).await?.id())
+            Some(self.block(&json!("latest")).await?)
         } else {
             None
         };
-        let from = self
-            .block(from_selector.or(latest.as_ref()).expect("resolved default"))
-            .await?;
-        let to = self
-            .block(to_selector.or(latest.as_ref()).expect("resolved default"))
-            .await?;
+        let from = match from_selector {
+            Some(selector) => self.block(selector).await?,
+            None => latest.as_ref().expect("resolved default").clone(),
+        };
+        let to = match to_selector {
+            Some(selector) => self.block(selector).await?,
+            None => latest.expect("resolved default"),
+        };
         let era = self.era(from.timestamp);
         if era != self.era(to.timestamp) {
             return Err(unsupported(
                 "trace_filter spans multiple eras; split the block range",
             ));
-        }
-        if !filter.is_object() {
-            return Err(invalid("trace filter must be an object"));
         }
         filter["fromBlock"] = from.number_id();
         filter["toBlock"] = to.number_id();
@@ -753,75 +644,67 @@ fn ensure_same_era(era: &mut Option<usize>, next: usize) -> RpcResult<()> {
     Ok(())
 }
 
-fn block_argument(method: &str) -> Option<(usize, &'static [&'static str], bool)> {
-    Some(match method {
+/// One policy controls both callback decoration and request routing. Native operations never
+/// resolve an execution selector; unknown execution methods remain decorated and fail closed.
+#[derive(Clone, Copy)]
+enum Policy {
+    Native,
+    Block(usize, &'static [&'static str], bool),
+    Transaction,
+    TraceSubscription,
+    Simulation,
+    CallBundle,
+    MevBundle,
+    ExecutionOutcome,
+    Bundles,
+    TraceFilter,
+    RawBlock,
+    Unsupported,
+    // Other namespaces retain their native callbacks, but the standalone router has no policy.
+    Unrouted,
+}
+
+fn policy(method: &str) -> Policy {
+    match method {
+        "debug_subscribe" => Policy::TraceSubscription,
+        "eth_subscribe" | "eth_unsubscribe" | "debug_unsubscribe" => Policy::Native,
+        "eth_simulateV1" | "tempo_simulateV1" => Policy::Simulation,
+        "eth_callBundle" => Policy::CallBundle,
+        "mev_simBundle" => Policy::MevBundle,
+        "reth_getBlockExecutionOutcome" => Policy::ExecutionOutcome,
+        "eth_callMany" | "debug_traceCallMany" => Policy::Bundles,
+        "trace_filter" => Policy::TraceFilter,
+        "debug_traceBlock" => Policy::RawBlock,
+        "debug_traceTransaction"
+        | "trace_transaction"
+        | "trace_get"
+        | "trace_replayTransaction"
+        | "trace_transactionOpcodeGas"
+        | "ots_getInternalOperations"
+        | "ots_getTransactionError"
+        | "ots_traceTransaction" => Policy::Transaction,
         "eth_call" | "eth_estimateGas" | "eth_createAccessList" => {
-            (1, &["block_number", "blockNumber"], false)
+            Policy::Block(1, &["block_number", "blockNumber"], false)
         }
-        "debug_traceCall" => (1, &["block_id", "blockId"], false),
-        "trace_call" | "trace_rawTransaction" => (2, &["block_id", "blockId"], false),
-        "trace_callMany" => (1, &["block_id", "blockId"], false),
-        "debug_traceBlockByNumber" | "debug_standardTraceBlockToFile" => (0, &["block"], true),
-        "debug_traceBlockByHash" => (0, &["block"], false),
-        "eth_getBlockAccessListByBlockHash" => (0, &["hash"], false),
-        "eth_getBlockAccessListByBlockNumber" => (0, &["number"], true),
-        "eth_getBlockAccessList" => (0, &["block_id", "blockId"], false),
+        "debug_traceCall" => Policy::Block(1, &["block_id", "blockId"], false),
+        "trace_call" | "trace_rawTransaction" => Policy::Block(2, &["block_id", "blockId"], false),
+        "trace_callMany" => Policy::Block(1, &["block_id", "blockId"], false),
+        "debug_traceBlockByNumber" => Policy::Block(0, &["block"], true),
+        "debug_traceBlockByHash" => Policy::Block(0, &["block"], false),
+        "eth_getBlockAccessListByBlockHash" => Policy::Block(0, &["hash"], false),
+        "eth_getBlockAccessListByBlockNumber" => Policy::Block(0, &["number"], true),
+        "eth_getBlockAccessList" => Policy::Block(0, &["block_id", "blockId"], false),
         "eth_getBlockAccessListRaw" | "debug_getRawBlockAccessList" => {
-            (0, &["block", "block_id", "blockId"], false)
+            Policy::Block(0, &["block", "block_id", "blockId"], false)
         }
-        "debug_executionWitnessByBlockHash" => (0, &["hash"], false),
-        "debug_storageRangeAt" | "debug_intermediateRoots" => {
-            (0, &["block_hash", "blockHash"], false)
-        }
-        "debug_executionWitness" => (0, &["block"], false),
+        "debug_executionWitnessByBlockHash" => Policy::Block(0, &["hash"], false),
+        "debug_intermediateRoots" => Policy::Block(0, &["block_hash", "blockHash"], false),
+        "debug_executionWitness" => Policy::Block(0, &["block"], false),
         "debug_accountAt"
         | "debug_accountInfoAt"
         | "trace_block"
         | "trace_replayBlockTransactions"
-        | "trace_blockOpcodeGas" => (0, &["block_id", "blockId"], false),
-        _ => return None,
-    })
-}
-
-/// Decorate only callbacks that can execute an EVM. Unreviewed debug/trace calls fail closed;
-/// storage and operational callbacks continue through the native handler unchanged.
-pub fn is_execution_method(method: &str) -> bool {
-    !stored_or_live_method(method)
-        && (matches!(
-            method,
-            "mev_simBundle"
-                | "reth_getBlockExecutionOutcome"
-                | "ots_getInternalOperations"
-                | "ots_getTransactionError"
-                | "ots_traceTransaction"
-                | "ots_getContractCreator"
-        ) || (["debug_", "trace_", "eth_", "tempo_"]
-            .iter()
-            .any(|prefix| method.starts_with(prefix))
-            && !matches!(
-                method,
-                "debug_subscribe" | "debug_unsubscribe" | "eth_subscribe" | "eth_unsubscribe"
-            )))
-}
-
-/// Unknown execution namespaces fail closed until their selector semantics have been reviewed.
-fn stored_or_live_method(method: &str) -> bool {
-    if [
-        "net_",
-        "web3_",
-        "rpc_",
-        "txpool_",
-        "admin_",
-        "operator_",
-        "consensus_",
-    ]
-    .iter()
-    .any(|prefix| method.starts_with(prefix))
-    {
-        return true;
-    }
-    matches!(
-        method,
+        | "trace_blockOpcodeGas" => Policy::Block(0, &["block_id", "blockId"], false),
         "eth_protocolVersion"
             | "eth_syncing"
             | "eth_coinbase"
@@ -923,6 +806,20 @@ fn stored_or_live_method(method: &str) -> bool {
             | "debug_standardTraceBadBlockToFile"
             | "debug_standardTraceBlockToFile"
             | "debug_storageRangeAt"
-            | "debug_stateRootWithUpdates"
+            | "debug_stateRootWithUpdates" => Policy::Native,
+        "ots_getContractCreator" => Policy::Unsupported,
+        _ if ["net_", "web3_", "rpc_", "txpool_", "admin_", "operator_", "consensus_"]
+            .iter().any(|prefix| method.starts_with(prefix)) => Policy::Native,
+        _ if ["debug_", "trace_", "eth_", "tempo_"]
+            .iter().any(|prefix| method.starts_with(prefix)) => Policy::Unsupported,
+        _ => Policy::Unrouted,
+    }
+}
+
+/// Decorate execution callbacks and reject unreviewed execution methods before native execution.
+pub fn is_execution_method(method: &str) -> bool {
+    !matches!(
+        policy(method),
+        Policy::Native | Policy::TraceSubscription | Policy::Unrouted
     )
 }

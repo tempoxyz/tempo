@@ -5,6 +5,9 @@ node runs in-process; an execution-independent library decorates its registered 
 starts frozen read-only workers lazily for historical execution. The library has no Tempo execution,
 Reth, or database dependencies.
 
+One method policy drives both native callback decoration and standalone routing. Both resolve
+block metadata through the live node's header RPCs; native routing uses an internal eth module.
+
 ```mermaid
 flowchart LR
     RPC[Native HTTP / WebSocket / IPC] --> Node[tempo node]
@@ -44,8 +47,8 @@ Missing historical state fails through the worker's ordinary storage behavior.
 
 - Stored blocks, receipts, logs, proofs, state queries, and live transaction operations stay native.
 - Execution requests resolve blocks or transactions through the live node and choose an era by
-  timestamp. Tags are pinned; explicit hashes and `requireCanonical` are preserved. Positional
-  and named parameters are supported. Simulations select their generated child blocks' eras,
+  timestamp. Historical forwarding pins tags; explicit hashes and `requireCanonical` are preserved.
+  Positional and named parameters are supported. Simulations select their generated child blocks' eras,
   including gap fillers; the base state may belong to an older era.
 - Requests crossing eras return `-32004`, including trace filters, multi-block simulations, call
   bundles, and timestamp overrides. Split ranges rather than transferring speculative state

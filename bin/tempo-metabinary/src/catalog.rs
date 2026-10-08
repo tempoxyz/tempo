@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use eyre::{Context, ensure};
 use serde::{Deserialize, Serialize};
 
-use crate::manifest::{resolve_path, validate_hash, validate_schedule};
+use crate::manifest::{parse_quantity, resolve_path, validate_hash, validate_schedule};
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -70,7 +70,7 @@ impl Catalog {
 
     pub fn for_chain(&self, chain_id: u64, genesis_hash: &str) -> Option<&ChainEras> {
         self.chains.iter().find(|chain| {
-            u64::from_str_radix(chain.chain_id.trim_start_matches("0x"), 16).ok() == Some(chain_id)
+            parse_quantity(&chain.chain_id).ok() == Some(chain_id)
                 && chain.genesis_hash.eq_ignore_ascii_case(genesis_hash)
         })
     }
@@ -78,10 +78,7 @@ impl Catalog {
 
 impl ChainEras {
     pub fn validate(&self) -> eyre::Result<()> {
-        ensure!(
-            self.chain_id.starts_with("0x") && u64::from_str_radix(&self.chain_id[2..], 16).is_ok(),
-            "invalid era chain ID"
-        );
+        parse_quantity(&self.chain_id).wrap_err("invalid era chain ID")?;
         validate_hash(&self.genesis_hash).wrap_err("invalid era genesis hash")?;
         validate_schedule(
             self.eras
@@ -134,6 +131,9 @@ mod tests {
         for (timestamp, era) in [(0, 0), (99, 0), (100, 1), (u64::MAX, 1)] {
             assert_eq!(chain.era_for_timestamp(timestamp), era);
         }
+        catalog.chains[0].chain_id = "0x01".into();
+        assert!(catalog.validate().is_err());
+        catalog.chains[0].chain_id = "0x1".into();
         catalog.chains[0].eras[1].start_timestamp = 0;
         assert!(catalog.validate().is_err());
     }

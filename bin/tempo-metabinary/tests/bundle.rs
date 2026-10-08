@@ -29,22 +29,23 @@ impl Backend for Blocks {
                 ("eth_getTransactionByHash", _) => {
                     return Ok(json!({"blockHash":hash(if selector == "old" {1} else {3})}));
                 }
-                ("eth_getBlockByHash", _) => match u64::from_str_radix(&selector[2..], 16).unwrap()
-                {
-                    1 => (1, 50),
-                    3 => (3, 110),
-                    // The side-chain timestamp differs, but Reth replays canonical height 2.
-                    5 => (2, 150),
-                    _ => panic!("unexpected hash {selector}"),
-                },
-                ("eth_getBlockByNumber", "0x0") => (0, 0),
-                ("eth_getBlockByNumber", "safe" | "0x1") => (1, 50),
-                ("eth_getBlockByNumber", "0x2") => (2, 99),
-                ("eth_getBlockByNumber", "latest" | "0x3") => (3, 110),
-                ("eth_getBlockByNumber", "0x4") => (4, u64::MAX),
+                ("eth_getHeaderByHash", _) => {
+                    match u64::from_str_radix(&selector[2..], 16).unwrap() {
+                        1 => (1, 50),
+                        3 => (3, 110),
+                        // The side-chain timestamp differs, but Reth replays canonical height 2.
+                        5 => (2, 150),
+                        _ => panic!("unexpected hash {selector}"),
+                    }
+                }
+                ("eth_getHeaderByNumber", "0x0") => (0, 0),
+                ("eth_getHeaderByNumber", "safe" | "0x1") => (1, 50),
+                ("eth_getHeaderByNumber", "0x2") => (2, 99),
+                ("eth_getHeaderByNumber", "latest" | "0x3") => (3, 110),
+                ("eth_getHeaderByNumber", "0x4") => (4, u64::MAX),
                 _ => panic!("unexpected {method} {selector}"),
             };
-            let hash = if method == "eth_getBlockByHash" {
+            let hash = if method == "eth_getHeaderByHash" {
                 selector.to_owned()
             } else {
                 hash(number)

@@ -21,10 +21,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     catalog::ReleaseEra,
-    handshake::{WorkerIdentity, wait_for_worker},
+    handshake::{ExecutionInfo, WorkerIdentity, wait_for_worker},
     manifest::{parse_quantity, validate_hash},
     process::{shutdown_children, spawn_child},
-    routing::{ExecutionInfo, RpcParams, unsupported, upstream_error},
+    routing::{RpcParams, unsupported, upstream_error},
 };
 
 /// Resolved from the ordinary node's chain and data-directory configuration.

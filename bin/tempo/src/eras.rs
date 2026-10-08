@@ -218,7 +218,7 @@ mod tests {
         )
         .unwrap();
         let mut resolver = jsonrpsee::RpcModule::new(());
-        resolver.register_method("eth_getBlockByNumber", |_, _, _| json!({"number":"0x1", "hash":format!("0x{}", "11".repeat(32)), "timestamp":"0x64"})).unwrap();
+        resolver.register_method("eth_getHeaderByNumber", |_, _, _| json!({"number":"0x1", "hash":format!("0x{}", "11".repeat(32)), "timestamp":"0x64"})).unwrap();
         let mut debug = jsonrpsee::RpcModule::new(());
         debug
             .register_method("debug_traceCall", |_, _, _| "native")

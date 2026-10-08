@@ -1,20 +1,29 @@
 //! Exercise the public JSON-RPC transport against distinct era backends. These tests check
 //! routing semantics and policy, rather than a second implementation of EVM execution.
-use std::sync::Arc;
+use std::{
+    collections::HashSet,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
+use futures::future::BoxFuture;
 use jsonrpsee::{
     RpcModule,
     core::{
+        RpcResult,
         client::{ClientT, Error as ClientError},
         params::BatchRequestBuilder,
     },
     http_client::{HttpClient, HttpClientBuilder},
     server::{ServerBuilder, ServerHandle},
+    types::ErrorObjectOwned,
 };
 use serde_json::{Value, json};
 use tempo_metabinary::{
-    manifest::Manifest,
-    routing::{Router, RpcParams},
+    catalog::{ChainEras, ReleaseEra},
+    routing::{Backend, Router, RpcParams, upstream_error},
     server::{self, ServerOptions},
 };
 
@@ -30,6 +39,25 @@ fn block(number: u64) -> Value {
 struct Fixture {
     router: Arc<Router>,
     handles: Vec<ServerHandle>,
+    resolutions: Arc<AtomicUsize>,
+}
+
+struct HttpBackend(Vec<Option<HttpClient>>);
+
+impl Backend for HttpBackend {
+    fn request<'a>(
+        &'a self,
+        era: usize,
+        method: &'a str,
+        params: RpcParams,
+    ) -> BoxFuture<'a, RpcResult<Value>> {
+        Box::pin(async move {
+            let client = self.0[era].as_ref().ok_or_else(|| {
+                ErrorObjectOwned::owned(-32004, "historical execution is disabled", None::<()>)
+            })?;
+            client.request(method, params).await.map_err(upstream_error)
+        })
+    }
 }
 
 impl Fixture {
@@ -56,18 +84,24 @@ impl Fixture {
             "eth_getBlockAccessList",
             "eth_getBlockAccessListRaw",
             "debug_getRawBlockAccessList",
+            "debug_storageRangeAt",
+            "debug_standardTraceBlockToFile",
         ];
         let mut handles = vec![];
         let mut clients = vec![];
         let mut eras = vec![];
-        let mut metadata = vec![];
+        let mut live_methods = HashSet::new();
+        let resolutions = Arc::new(AtomicUsize::new(0));
         for index in 0..count {
             let mut module = RpcModule::new(());
             let latest = if count == 2 { 4 } else { 7 };
-            for method in ["eth_getBlockByNumber", "eth_getBlockByHash"] {
+            // Deliberately expose headers without block-body RPCs. Resolution must not need them.
+            for method in ["eth_getHeaderByNumber", "eth_getHeaderByHash"] {
+                let resolutions = resolutions.clone();
                 module
                     .register_method(method, move |params, _, _| {
-                        let (selector, _): (String, bool) = params.parse().unwrap();
+                        resolutions.fetch_add(1, Ordering::SeqCst);
+                        let (selector,): (String,) = params.parse().unwrap();
                         let n = match selector.as_str() {
                             "latest" | "safe" | "finalized" => latest,
                             "earliest" => 0,
@@ -99,32 +133,33 @@ impl Fixture {
                     })
                     .unwrap();
             }
-            let names: Vec<_> = module.method_names().map(str::to_owned).collect();
+            live_methods = module.method_names().map(str::to_owned).collect();
             let server = ServerBuilder::default().build("127.0.0.1:0").await.unwrap();
             let address = server.local_addr().unwrap();
             handles.push(server.start(module));
-            clients.push(
+            clients.push((index + 1 == count || history).then(|| {
                 HttpClientBuilder::default()
                     .build(format!("http://{address}"))
-                    .unwrap(),
-            );
-            eras.push(json!({"name":format!("era{index}"), "binary":"/fake/tempo",
-                "start_timestamp":index * 100, "rpc_port":address.port()}));
-            metadata.push((index + 1 == count || history).then(|| {
-                serde_json::from_value(json!({
-                    "protocolVersion":1, "chainId":"0xa410", "genesisHash":hash(0),
-                    "readOnly":index + 1 != count, "processId":std::process::id(), "methods":names
-                }))
-                .unwrap()
+                    .unwrap()
             }));
+            eras.push(ReleaseEra {
+                name: format!("era{index}"),
+                start_timestamp: (index * 100) as u64,
+                binary: (index + 1 != count).then(|| "/fake/tempo".into()),
+            });
         }
-        let manifest: Manifest =
-            serde_json::from_value(json!({"chain":"test", "datadir":"/fake/data",
-            "chain_id":"0xa410", "genesis_hash":hash(0), "eras":eras}))
-            .unwrap();
+        let schedule = ChainEras {
+            chain_id: "0xa410".into(),
+            genesis_hash: hash(0),
+            eras,
+        };
         Self {
-            router: Arc::new(Router::new(Arc::new(manifest), clients, metadata).unwrap()),
+            router: Arc::new(
+                Router::with_backend(schedule, Arc::new(HttpBackend(clients)), live_methods)
+                    .unwrap(),
+            ),
             handles,
+            resolutions,
         }
     }
 
@@ -163,6 +198,24 @@ impl Fixture {
         let expected = json!({"era":era, "params":expected});
         assert_eq!(self.call(method, params).await, expected, "{method}");
     }
+}
+
+#[tokio::test]
+async fn resolution_uses_headers_and_shares_trace_filter_defaults() {
+    let f = Fixture::new().await;
+    f.call("trace_filter", json!([{}])).await;
+    assert_eq!(f.resolutions.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn native_stubs_do_not_resolve_or_rewrite_execution_selectors() {
+    let f = Fixture::new().await;
+    for method in ["debug_storageRangeAt", "debug_standardTraceBlockToFile"] {
+        // Selector validity belongs to the native stub, not the era router.
+        let params = json!(["unavailable"]);
+        f.check(method, params.clone(), 1, params).await;
+    }
+    assert_eq!(f.resolutions.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
