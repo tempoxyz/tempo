@@ -458,8 +458,9 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         };
         self.deduct_gas(gas.cost(previous)?)?;
         if gas == ConfigCommitmentWriteGas::Migration && empty {
-            // Protocol-nonce creation has already made this account nonempty. A
-            // 2D nonce slot or expiring nonce does not pay for this new account leaf.
+            // A nonce-zero protocol or 2D transaction already paid this charge
+            // intrinsically and uses MigrationCreationPaid. Expiring nonces and
+            // nonzero 2D nonces still need to pay for an empty account leaf here.
             self.deduct_gas(
                 self.gas_params
                     .get(revm::context_interface::cfg::GasId::new_account_cost()),

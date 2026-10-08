@@ -29,6 +29,7 @@ pub struct NativeMultisig {
     directly_authorized_account: Address,
     migration_root: Address,
     migration_only_call: bool,
+    migration_creation_paid: bool,
 }
 
 impl NativeMultisig {
@@ -121,9 +122,15 @@ impl NativeMultisig {
     }
 
     /// Handler-only transaction context; all fields are reset before each execution.
-    pub fn set_migration_authority(&mut self, root: Address, only_call: bool) -> Result<()> {
+    pub fn set_migration_authority(
+        &mut self,
+        root: Address,
+        only_call: bool,
+        creation_paid: bool,
+    ) -> Result<()> {
         self.migration_root.t_write(root)?;
-        self.migration_only_call.t_write(only_call)
+        self.migration_only_call.t_write(only_call)?;
+        self.migration_creation_paid.t_write(creation_paid)
     }
 
     /// Journaled in-place migration authorized only by a direct primitive root.
@@ -182,8 +189,12 @@ impl NativeMultisig {
         if hash.is_zero() {
             return Err(NativeMultisigError::invalid_config().into());
         }
-        self.storage
-            .set_config_commitment(sender, hash, ConfigCommitmentWriteGas::Migration)?;
+        let gas = if self.migration_creation_paid.t_read()? {
+            ConfigCommitmentWriteGas::MigrationCreationPaid
+        } else {
+            ConfigCommitmentWriteGas::Migration
+        };
+        self.storage.set_config_commitment(sender, hash, gas)?;
         self.emit_event(NativeMultisigEvent::account_upgraded(
             sender, hash, salt, threshold, owners,
         ))?;

@@ -44,6 +44,8 @@ pub enum ConfigCommitmentWriteGas {
     Precompile,
     /// Migration creates a leaf if needed, separately from nonce-key storage.
     Migration,
+    /// Migration's leaf creation was already paid by the sender's nonce-zero intrinsic.
+    MigrationCreationPaid,
 }
 
 impl ConfigCommitmentWriteGas {
@@ -53,8 +55,10 @@ impl ConfigCommitmentWriteGas {
             Self::Intrinsic => Err(TempoPrecompileError::InvalidConfigCommitmentWrite),
             Self::Precompile if previous.is_zero() => Ok(20_000),
             Self::Precompile => Ok(5_000),
-            Self::Migration if previous.is_zero() => Ok(20_000),
-            Self::Migration => Err(TempoPrecompileError::InvalidConfigCommitmentWrite),
+            Self::Migration | Self::MigrationCreationPaid if previous.is_zero() => Ok(20_000),
+            Self::Migration | Self::MigrationCreationPaid => {
+                Err(TempoPrecompileError::InvalidConfigCommitmentWrite)
+            }
         }
     }
 }

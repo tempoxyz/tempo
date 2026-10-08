@@ -442,7 +442,11 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                             && aa.aa_calls[0].to
                                 == tempo_contracts::precompiles::NATIVE_MULTISIG_ADDRESS.into()
                     });
-                    NativeMultisig::new().set_migration_authority(root, only_call)?;
+                    NativeMultisig::new().set_migration_authority(
+                        root,
+                        only_call,
+                        pays_nonce_zero_account_gas(&ctx.tx, ctx.cfg.spec),
+                    )?;
                 }
 
                 if let Some(channel_open_context_hash) = channel_open_context_hash {

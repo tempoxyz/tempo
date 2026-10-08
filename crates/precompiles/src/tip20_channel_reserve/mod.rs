@@ -848,7 +848,9 @@ impl TIP20ChannelReserve {
         if signer != self.expected_signer(descriptor) {
             return Err(TIP20ChannelReserveError::invalid_signature().into());
         }
-        crate::native_multisig::ensure_root_key_active(signer)?;
+        // Opening a funded channel commits this signer as a bounded channel
+        // authority, not as current account authority. Migration must not let
+        // the payer revoke vouchers and reclaim funds owed to the fixed payee.
         Ok(())
     }
 
@@ -941,7 +943,7 @@ mod tests {
     }
 
     #[test]
-    fn migration_rejects_presigned_vouchers_for_payer_and_explicit_signer() -> eyre::Result<()> {
+    fn migration_preserves_presigned_vouchers_for_payer_and_explicit_signer() -> eyre::Result<()> {
         let signer = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x55)).unwrap();
         for explicit in [false, true] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14)
@@ -975,17 +977,133 @@ mod tests {
                     B256::repeat_byte(0x55),
                     crate::storage::ConfigCommitmentWriteGas::Intrinsic,
                 )?;
-                assert_eq!(
-                    reserve.validate_voucher(&descriptor, channel_id, cumulative, &signature),
-                    Err(
-                        tempo_contracts::precompiles::NativeMultisigError::root_key_retired(
-                            signer.address()
-                        )
-                        .into()
-                    )
-                );
+                reserve.validate_voucher(&descriptor, channel_id, cumulative, &signature)?;
                 Ok::<_, eyre::Error>(())
             })?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn migration_funded_vouchers_settle_and_close_with_committed_channel_bounds() -> eyre::Result<()>
+    {
+        for explicit in [false, true] {
+            for close in [false, true] {
+                let signer = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x55)).unwrap();
+                let payer = if explicit {
+                    Address::repeat_byte(0x33)
+                } else {
+                    signer.address()
+                };
+                let payee = Address::repeat_byte(0x44);
+                let salt = B256::repeat_byte(0x77);
+                let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14)
+                    .with_account_migration_enabled(true);
+                StorageCtx::enter(&mut storage, || {
+                    let token = TIP20Setup::path_usd(payer)
+                        .with_issuer(payer)
+                        .with_mint(payer, U256::from(1_000))
+                        .apply()?;
+                    let mut reserve = TIP20ChannelReserve::new();
+                    reserve.initialize()?;
+                    let nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
+                    let authorized_signer = if explicit {
+                        signer.address()
+                    } else {
+                        Address::ZERO
+                    };
+                    let channel_id = reserve.open(
+                        payer,
+                        open_call(
+                            payee,
+                            Address::ZERO,
+                            token.address(),
+                            300,
+                            salt,
+                            authorized_signer,
+                        ),
+                    )?;
+                    let descriptor = descriptor(
+                        payer,
+                        payee,
+                        Address::ZERO,
+                        token.address(),
+                        salt,
+                        authorized_signer,
+                        nonce_hash,
+                    );
+                    let cumulative = U96::from(120);
+                    let digest = reserve.get_voucher_digest_inner(channel_id, cumulative)?;
+                    let signature = Bytes::from(signer.sign_hash_sync(&digest)?.as_bytes());
+                    for account in [payer, signer.address()] {
+                        if StorageCtx.config_commitment(account)?.is_zero() {
+                            StorageCtx.set_config_commitment(
+                                account,
+                                B256::repeat_byte(0x55),
+                                crate::storage::ConfigCommitmentWriteGas::Intrinsic,
+                            )?;
+                        }
+                    }
+                    reserve.request_close(
+                        payer,
+                        ITIP20ChannelReserve::requestCloseCall {
+                            descriptor: descriptor.clone(),
+                        },
+                    )?;
+                    let settle = ITIP20ChannelReserve::settleCall {
+                        descriptor: descriptor.clone(),
+                        cumulativeAmount: cumulative,
+                        signature: signature.clone(),
+                    };
+                    assert_eq!(
+                        reserve.settle(Address::repeat_byte(0x99), settle.clone()),
+                        Err(TIP20ChannelReserveError::not_payee_or_operator().into())
+                    );
+                    let mut redirected = settle.clone();
+                    redirected.descriptor.payee = Address::repeat_byte(0x99);
+                    assert_eq!(
+                        reserve.settle(redirected.descriptor.payee, redirected),
+                        Err(TIP20ChannelReserveError::channel_not_found().into())
+                    );
+                    let mut excessive = settle.clone();
+                    excessive.cumulativeAmount = U96::from(301);
+                    assert_eq!(
+                        reserve.settle(payee, excessive),
+                        Err(TIP20ChannelReserveError::amount_exceeds_deposit().into())
+                    );
+                    if close {
+                        reserve.close(
+                            payee,
+                            ITIP20ChannelReserve::closeCall {
+                                descriptor,
+                                cumulativeAmount: cumulative,
+                                captureAmount: cumulative,
+                                signature,
+                            },
+                        )?;
+                        assert!(!reserve.channel_states[channel_id].read()?.exists());
+                    } else {
+                        reserve.settle(payee, settle.clone())?;
+                        assert_eq!(
+                            reserve.settle(payee, settle),
+                            Err(TIP20ChannelReserveError::amount_not_increasing().into())
+                        );
+                        assert_eq!(
+                            reserve.channel_states[channel_id].read()?.settled,
+                            cumulative
+                        );
+                    }
+                    assert_eq!(
+                        token.balance_of(ITIP20::balanceOfCall { account: payee })?,
+                        U256::from(120)
+                    );
+                    assert_eq!(
+                        token.balance_of(ITIP20::balanceOfCall { account: payer })?,
+                        U256::from(if close { 880 } else { 700 })
+                    );
+                    Ok::<_, eyre::Error>(())
+                })?;
+            }
         }
         Ok(())
     }

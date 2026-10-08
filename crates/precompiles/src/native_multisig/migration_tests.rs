@@ -25,7 +25,9 @@ fn owners() -> Vec<INativeMultisig::MultisigOwner> {
 
 fn authorize(native: &mut NativeMultisig, root: Address, only_call: bool) {
     native.set_authority(root, Address::ZERO).unwrap();
-    native.set_migration_authority(root, only_call).unwrap();
+    native
+        .set_migration_authority(root, only_call, false)
+        .unwrap();
 }
 
 #[test]
@@ -90,7 +92,7 @@ fn migration_activation_and_transaction_authority_are_fail_closed() {
             let mut native = NativeMultisig::new();
             native.set_authority(root, Address::ZERO).unwrap();
             native
-                .set_migration_authority(authorized, only_call)
+                .set_migration_authority(authorized, only_call, false)
                 .unwrap();
             assert_eq!(
                 native.upgrade_account(root, 1, owners()),

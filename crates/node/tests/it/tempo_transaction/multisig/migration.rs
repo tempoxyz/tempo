@@ -3,8 +3,9 @@ use super::*;
 use crate::tempo_transaction::helpers::{create_transfer_call, sign_fee_payer};
 use alloy::{eips::BlockNumberOrTag, primitives::keccak256, sol_types::SolEvent};
 use tempo_contracts::precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN, IAccountKeychain, ITIP20,
+    ACCOUNT_KEYCHAIN_ADDRESS, AccountKeychainError, DEFAULT_FEE_TOKEN, IAccountKeychain, ITIP20,
 };
+use tempo_precompiles::error::TempoPrecompileError;
 use tempo_primitives::transaction::{KeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, TokenLimit};
 
 fn upgrade(config: &MultisigConfig) -> Call {
@@ -363,12 +364,13 @@ async fn migration_rpc_preserves_outgoing_grants_and_spent_limits() -> eyre::Res
     );
     let signature = TempoSignature::Primitive(root.sign(tx.signature_hash())?);
     account.submit(&mut env, tx, signature, true).await?;
+    let account_address = account.address;
     let delegate_signature = |tx: &TempoTransaction| -> eyre::Result<TempoSignature> {
         Ok(TempoSignature::Keychain(KeychainSignature::new(
-            account.address,
+            account_address,
             delegate.sign(KeychainSignature::signing_hash(
                 tx.signature_hash(),
-                account.address,
+                account_address,
             ))?,
         )))
     };
@@ -645,7 +647,13 @@ async fn migration_rpc_incoming_grants_preserve_limits_scopes_and_revocation() -
         sign_fee_payer(&mut tx, parent.address, &env.funder_signer)?;
         let signature = delegate.as_delegate(&tx, parent.address, false)?;
         let error = reject(&env, tx, signature).await?;
-        insta::assert_snapshot!("migration_revoked_incoming_grant", error);
+        let reason = TempoPrecompileError::from(AccountKeychainError::key_already_revoked());
+        assert_eq!(
+            error,
+            format!(
+                "server returned an error response: error code -32003: invalid transaction: keychain validation failed: {reason:?}"
+            )
+        );
     }
     Ok(())
 }
