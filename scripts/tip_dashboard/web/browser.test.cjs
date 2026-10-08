@@ -39,6 +39,7 @@ const {pathToFileURL} = require('node:url');
     await page.locator('#search').fill(linked.id);
     const card = page.locator('#results > section > details').filter({has:page.locator(':scope > summary',{hasText:linked.id+' —'})}).first();
     await card.locator(':scope > summary').click();
+    await card.locator('.people-details > summary').click();
     if (linked.people?.status === 'complete' || linked.people?.status === 'partial') {
       const visible = await card.locator('.github-people').innerText();
       for (const scope of ['spec', 'implementation']) {
@@ -62,6 +63,10 @@ const {pathToFileURL} = require('node:url');
     assert.ok(text.includes(req.implementations[0].gate));
     if(req.assertions.length) assert.ok(text.includes(req.assertions[0].test));
     assert.match(text,/Assertion-linked cases:/);
+    if (req.statement.includes('`')) {
+      assert.ok(await detail.locator('.statement code').count() > 0, 'spec inline code renders');
+      assert.doesNotMatch(await detail.locator('.statement').innerText(), /`/);
+    }
     if(req.review?.reviewer_kind === 'agent') {
       const automated=detail.locator('.automated-provenance');
       assert.equal(await automated.getAttribute('open'),null);
@@ -70,6 +75,7 @@ const {pathToFileURL} = require('node:url');
       assert.match(await automated.innerText(),/agent/);
       await automated.locator('summary').click();
     }
+    await card.locator('.people-details > summary').click();
     await page.screenshot({path:path.join(out,'showcase-evidence.png'),fullPage:true});
     await page.locator('#search').fill('definitely-no-such-tip');
     assert.match(await page.locator('#results').innerText(),/No TIPs match/);
@@ -110,6 +116,7 @@ const {pathToFileURL} = require('node:url');
     await page.waitForFunction(()=>document.querySelector('#load-status').textContent.includes('Read-only'));
     const fixtureCard=page.locator('#results .tip').first();
     await fixtureCard.locator(':scope > summary').click();
+    await fixtureCard.locator('.people-details > summary').click();
     const people=fixtureCard.locator('.github-people');
     const visible=await people.innerText();
     for(const expected of ['GitHub people','Reviews on spec PRs','@spec-author','@bot-fixture · Bot','committer','Unmapped contributor','unmapped GitHub identity','DISMISSED','Deleted reviewer','Implementation · unavailable']) assert.ok(visible.includes(expected),expected);
@@ -128,6 +135,30 @@ const {pathToFileURL} = require('node:url');
     assert.match(await page.locator('#snapshot').innerText(),/vs main b{12}/);
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'people mobile overflow');
     await page.screenshot({path:path.join(out,'people-main-fixture.png'),fullPage:true});
+    // Exercise spacing that the text-only DOM tests cannot detect.
+    t.main_comparison.inventory={status:'reviewed',count:2};
+    t.main_comparison.coverage={total:2,linked:1,reviewed:0,verified:0};
+    reportBody=JSON.stringify(fixture);
+    await page.reload();
+    await page.waitForFunction(()=>document.querySelector('#load-status').textContent.includes('Read-only'));
+    await page.locator('#results .tip > summary').click();
+    await page.locator('.people-details > summary').click();
+    for (const width of [320,390,768,1440]) {
+      await page.setViewportSize({width,height:900});
+      const metrics=await page.locator('#results .counts').evaluate(el=>({
+        gap:parseFloat(getComputedStyle(el).columnGap),
+        boxes:[...el.children].map(e=>{const r=e.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom};})
+      }));
+      assert.ok(metrics.gap>=12,'coverage has explicit spacing');
+      for(let i=1;i<metrics.boxes.length;i++) {
+        const a=metrics.boxes[i-1],b=metrics.boxes[i];
+        assert.ok(b.top>=a.bottom || b.left>=a.right+12,'coverage values do not run together');
+      }
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,`expanded overflow at ${width}px`);
+    }
+    await page.emulateMedia({colorScheme:'dark'});
+    await page.screenshot({path:path.join(out,'formatting-dark-fixture.png'),fullPage:true});
+    await page.emulateMedia({colorScheme:'light'});
     fixture.main_comparison.status='unavailable';t.people.spec.status='unavailable';t.people.spec.pull_requests=[];
     reportBody=JSON.stringify(fixture);await page.reload();
     await page.waitForFunction(()=>document.querySelector('#load-status').textContent.includes('Read-only'));
@@ -135,9 +166,10 @@ const {pathToFileURL} = require('node:url');
     assert.match(await page.locator('#snapshot').innerText(),/vs main unavailable/);
     assert.match(await page.locator('#results .main-comparison').innerText(),/presence and coverage unknown/);
     assert.doesNotMatch(await page.locator('#results .main-comparison').innerText(),/TIP present/);
+    await page.locator('.people-details > summary').click();
     assert.match(await page.locator('.github-people').innerText(),/PR association \/ review data incomplete or unavailable/);
     assert.deepEqual(errors,[]);
-    const result = {status:'passed',revision:real.revision,drilldown:{tip:linked.id,requirement:req.id},checks:['read-only controls','latest upgrades','empty configured fork','optional hosted selector','short source SHA','source/guard/assertion drilldown','search','mobile overflow','schema/network failure clears stale evidence','portable bundled dashboard','GitHub people and escaped names','latest submitted review and dismissed old-head history','main coverage scope and unavailable comparison'],limitations:'Browser checks supplied report evidence, not live network activation.'};
+    const result = {status:'passed',revision:real.revision,drilldown:{tip:linked.id,requirement:req.id},checks:['read-only controls','latest upgrades','empty configured fork','optional hosted selector','short source SHA','source/guard/assertion drilldown','search','mobile overflow','schema/network failure clears stale evidence','portable bundled dashboard','GitHub people and escaped names','latest submitted review and dismissed old-head history','main coverage scope and unavailable comparison','inline spec code','coverage spacing and expanded layout at 320/390/768/1440px','dark mode rendering'],limitations:'Browser checks supplied report evidence, not live network activation.'};
     fs.writeFileSync(path.join(out,'browser-results.json'),JSON.stringify(result,null,2)+'\n');
     console.log(JSON.stringify(result));
   } finally { await browser.close(); }

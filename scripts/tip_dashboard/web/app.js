@@ -67,6 +67,37 @@
       if (url) { n.href = url; n.target = '_blank'; n.rel = 'noopener noreferrer'; }
       return n;
     }
+    function shortIdentity(value) {
+      const text = str(value, 'unknown');
+      const code = node('code', /^[a-f0-9]{40,64}$/i.test(text) ? text.slice(0, 12) : text);
+      code.title = text;
+      return code;
+    }
+    function observationTime(value) {
+      const raw = str(value, 'unknown'), date = new Date(raw);
+      const display = Number.isNaN(date.getTime()) ? raw : date.toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+      const time = node('time', display); time.title = raw;
+      return time;
+    }
+    function inlineText(value) {
+      const text = str(value), result = node('p', undefined, 'statement');
+      // Only recognize inline code and emphasis; all content stays text nodes.
+      const pattern = /(`[^`\n]+`|\*\*[^*\n]+\*\*)/g;
+      let start = 0;
+      for (const match of text.matchAll(pattern)) {
+        if (match.index > start) result.append(node('span', text.slice(start, match.index)));
+        const code = match[0].startsWith('`');
+        result.append(node(code ? 'code' : 'strong', match[0].slice(code ? 1 : 2, code ? -1 : -2)));
+        start = match.index + match[0].length;
+      }
+      if (start < text.length) result.append(node('span', text.slice(start)));
+      return result;
+    }
+    function disclosure(parent, title, content, cls) {
+      const detail = node('details', undefined, cls || 'evidence-detail');
+      detail.append(node('summary', title), content);
+      parent.append(detail);
+    }
     function meta(parent, values) {
       const dl = node('dl', undefined, 'meta');
       for (const [key, value] of values) { dl.append(node('dt', key), node('dd', str(value))); }
@@ -122,8 +153,15 @@
       return link(a.url, label + (a.account_type === 'Bot' ? ' · Bot' : ''));
     }
     function reviewRow(value) {
-      const r = obj(value), row = node('p');
-      row.append(account(r.author), node('span', ' · '), link(r.url, str(r.state)), node('span', ` · ${str(r.submitted_at, 'Submission time unavailable')} · Commit ${str(r.commit_sha, 'unknown')} · ${r.on_current_head === true ? 'current PR head' : r.on_current_head === false ? 'older / different PR head' : 'head context unknown'}`));
+      const r = obj(value), row = node('div', undefined, 'review-row');
+      const who = node('div', undefined, 'review-author');
+      who.append(account(r.author), node('span', ' · '), link(r.url, str(r.state)));
+      const context = node('p', undefined, 'review-context');
+      const timestamp = str(r.submitted_at, 'Submission time unavailable');
+      const date = node('span', /^\d{4}-\d{2}-\d{2}T/.test(timestamp) ? timestamp.slice(0, 10) : timestamp);
+      date.title = timestamp;
+      context.append(date, node('span', ' · Commit '), shortIdentity(r.commit_sha), node('span', ` · ${r.on_current_head === true ? 'current PR head' : r.on_current_head === false ? 'older / different PR head' : 'head context unknown'}`));
+      row.append(who, context);
       return row;
     }
     function peopleScope(parent, label, value) {
@@ -131,10 +169,10 @@
       section.append(node('h4', `${label} · ${str(scope.status, 'unavailable')}`));
       section.append(node('p', label === 'Specification' ? 'Spec file contributors: commit authors / committers at selected revision' : 'Contributors: associated implementation PR commits (authors / committers)', 'muted'));
       for (const value of arr(scope.contributors)) {
-        const c = obj(value), row = node('div');
+        const c = obj(value), row = node('div', undefined, 'contributor');
         row.append(account(c), node('span', ` · ${arr(c.roles).map(v => str(v)).join(', ') || 'role unavailable'}`));
         if (arr(c.commits).length) {
-          const commits = node('details'); commits.append(node('summary', `${c.commits.length} associated commits`));
+          const commits = node('details'); commits.append(node('summary', `${c.commits.length} associated commit${c.commits.length === 1 ? '' : 's'}`));
           for (const commit of c.commits) { const p = node('p'); p.append(link(obj(commit).url, str(obj(commit).sha))); commits.append(p); }
           row.append(commits);
         }
@@ -171,9 +209,12 @@
       const p = obj(tip.people), section = node('section', undefined, 'github-people');
       section.append(node('h3', 'GitHub people'));
       section.append(node('p', `Declared spec authors: ${str(tip.declared_authors, 'Unavailable')}`));
-      section.append(node('p', `GitHub data: ${str(p.status, 'unavailable')} · Observed ${str(p.observed_at, 'unknown')}`, 'muted'));
+      const observed = node('p', `GitHub data: ${str(p.status, 'unavailable')} · Observed `, 'muted');
+      observed.append(observationTime(p.observed_at)); section.append(observed);
       section.append(node('p', 'Submitted PR reviews describe their recorded commit context; they do not establish approval of this exact specification or implementation. Requested reviewers are not submitted reviews.', 'muted'));
-      peopleScope(section, 'Specification', p.spec); peopleScope(section, 'Implementation', p.implementation);
+      const scopes = node('div', undefined, 'people-scopes');
+      peopleScope(scopes, 'Specification', p.spec); peopleScope(scopes, 'Implementation', p.implementation);
+      disclosure(section, 'Contributors and submitted reviews', scopes, 'people-details');
       warnings(section, p.warnings);
       const provenance = node('details'); provenance.append(node('summary', 'People data provenance'), evidenceValue({revision:p.revision, observed_at:p.observed_at})); section.append(provenance);
       parent.append(section);
@@ -195,20 +236,17 @@
     function requirement(value) {
       const r = obj(value), d = node('details');
       d.append(node('summary', `${str(r.id)} · ${str(r.implementation_status)} · ${str(r.verification_status)}`));
-      d.append(node('p', str(r.statement)));
+      d.append(inlineText(r.statement));
       if (r.spec) d.append(link(r.spec.url, `Specification: ${str(r.spec.path)}:${str(r.spec.line)}`));
-      d.append(node('h4', 'Applicability / supersession'));
-      d.append(r.applicability ? evidenceValue(r.applicability) : node('p', 'Scope not recorded.'));
+      disclosure(d, 'Applicability / supersession', r.applicability ? evidenceValue(r.applicability) : node('p', 'Scope not recorded.'));
       meta(d, [['Kind', r.kind], ['Required cases', arr(r.cases).map(v => str(v)).join(', ') || 'None recorded']]);
       d.append(node('p', caseLabel(caseCoverage(r)), 'case-coverage'));
       automatedReview(d, r.review || r.reviews);
       warnings(d, r.warnings);
       sourceList(d, 'Implementation / code gates', r.implementations, false);
       sourceList(d, 'Assertions', r.assertions, true);
-      d.append(node('h4', 'Test attempts'));
-      d.append(arr(r.test_attempts).length ? evidenceValue(r.test_attempts) : node('p', 'No matching test attempt recorded.'));
-      d.append(node('h4', 'Execution evidence / CI provenance'));
-      d.append(arr(r.evidence).length ? evidenceValue(r.evidence) : node('p', 'No execution evidence recorded.'));
+      disclosure(d, `Test attempts (${arr(r.test_attempts).length})`, arr(r.test_attempts).length ? evidenceValue(r.test_attempts) : node('p', 'No matching test attempt recorded.'));
+      disclosure(d, `Execution evidence / CI provenance (${arr(r.evidence).length})`, arr(r.evidence).length ? evidenceValue(r.evidence) : node('p', 'No execution evidence recorded.'));
       return d;
     }
     function tipCard(tip) {
@@ -286,7 +324,11 @@
             box.append(reportLink);
           }
         }
-        warnings(box, main.warnings);
+        if (arr(main.warnings).length) {
+          const notices = node('div', undefined, 'report-notices');
+          notices.append(node('p', 'Main evidence warnings', 'notice-title'));
+          warnings(notices, main.warnings); box.append(notices);
+        }
         const provenance = node('details');
         provenance.append(node('summary', 'Provenance'), evidenceValue({repository:data.repository, revision, main_comparison:main, generated_at:data.generated_at, collection:data.collection})); box.append(provenance);
         el('load-status').textContent = 'Read-only report snapshot';
