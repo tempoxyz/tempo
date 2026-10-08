@@ -65,16 +65,18 @@ fn preverify_zk_signatures(transactions: &[TempoTxEnvelope]) {
         .iter()
         .filter_map(TempoTxEnvelope::as_aa)
         .flat_map(|tx| {
-            let signature = tx
-                .signature()
-                .as_zk()
-                .map(|signature| (signature, tx.signature_hash()));
-            let key_authorization = tx.tx().key_authorization.as_ref().and_then(|auth| {
-                auth.signature
-                    .as_zk()
-                    .map(|signature| (signature, auth.signature_hash()))
-            });
-            signature.into_iter().chain(key_authorization)
+            let mut signatures = tx.signature().zk_signatures(tx.signature_hash());
+            if let Some(authorization) = &tx.tx().key_authorization {
+                signatures.extend(
+                    authorization
+                        .signature
+                        .zk_signatures(authorization.signature_hash()),
+                );
+            }
+            if signatures.len() > tempo_primitives::transaction::MAX_ZK_SIGNATURES_PER_TX {
+                return Vec::new();
+            }
+            signatures
         })
         .collect();
     if !items.is_empty() {
@@ -157,6 +159,8 @@ mod tests {
     use alloy_consensus::{BlockHeader, Signed, TxLegacy, transaction::TxHashRef};
     use alloy_primitives::{B256, Bytes, Signature, TxKind, U256};
     use alloy_rlp::{Encodable, bytes::BytesMut};
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
     use rayon::iter::{IntoParallelIterator, ParallelIterator};
     use reth_chainspec::EthChainSpec;
     use reth_evm::{ConfigureEngineEvm, ConvertTx, ExecutableTxTuple};
@@ -164,19 +168,17 @@ mod tests {
     use std::sync::Arc;
     use tempo_chainspec::{TempoChainSpec, spec::MODERATO};
     use tempo_primitives::{
-        BlockBody, SubBlockMetadata, TempoHeader, transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
+        BlockBody, SubBlockMetadata, TempoHeader,
+        transaction::{
+            MultisigConfig, MultisigOwner, MultisigSignature, PrimitiveSignature, TempoSignature,
+            TempoTransaction, ZkProof, ZkSignature, envelope::TEMPO_SYSTEM_TX_SIGNATURE,
+            multisig_digest, tempo_transaction::Call,
+        },
     };
+    use tempo_zk::{SignatureStatement, test_utils::install_test_verifying_key};
 
     #[test]
     fn preverifies_zk_signatures_before_execution() {
-        use alloy_signer::SignerSync;
-        use alloy_signer_local::PrivateKeySigner;
-        use tempo_primitives::transaction::{
-            PrimitiveSignature, TempoSignature, TempoTransaction, ZkProof, ZkSignature,
-            tempo_transaction::Call,
-        };
-        use tempo_zk::{SignatureStatement, test_utils::install_test_verifying_key};
-
         let trapdoor = install_test_verifying_key(1);
         let access_key = PrivateKeySigner::random();
         let tx = TempoTransaction {
@@ -219,12 +221,38 @@ mod tests {
         let mut broken = signature.clone();
         broken.proof.0[5] ^= 1;
 
+        let config = MultisigConfig {
+            salt: B256::ZERO,
+            version: 0,
+            threshold: 1,
+            owners: vec![MultisigOwner {
+                owner: signature.address().unwrap(),
+                weight: 1,
+            }],
+        };
+        let account = config.derive_account(Address::repeat_byte(0x71)).unwrap();
+        let native_tx = TempoTransaction {
+            nonce: 2,
+            ..tx.clone()
+        };
+        let digest = multisig_digest(native_tx.signature_hash(), account, 0);
+        let mut owner = signature.clone();
+        owner.access_key_signature = PrimitiveSignature::Secp256k1(
+            access_key
+                .sign_hash_sync(&owner.signing_hash(&digest))
+                .unwrap(),
+        );
+        let native_signature =
+            MultisigSignature::try_new_with_owner_signatures(account, config, vec![owner.into()])
+                .unwrap();
+
         let transactions = vec![
             create_legacy_tx(),
             TempoTxEnvelope::AA(tx.clone().into_signed(TempoSignature::from(signature))),
             TempoTxEnvelope::AA(
                 TempoTransaction { nonce: 1, ..tx }.into_signed(TempoSignature::from(broken)),
             ),
+            TempoTxEnvelope::AA(native_tx.into_signed(TempoSignature::Multisig(native_signature))),
         ];
         preverify_zk_signatures(&transactions);
 
@@ -237,6 +265,12 @@ mod tests {
         };
         assert_eq!(cached(&transactions[1]), Some(Some(access_key.address())));
         assert_eq!(cached(&transactions[2]), Some(None));
+        let native = transactions[3].as_aa().unwrap();
+        let signatures = native.signature().zk_signatures(native.signature_hash());
+        assert_eq!(
+            signatures[0].0.cached_verification(&signatures[0].1),
+            Some(Some(access_key.address()))
+        );
     }
 
     fn create_legacy_tx() -> TempoTxEnvelope {
