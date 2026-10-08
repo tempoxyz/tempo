@@ -56,6 +56,8 @@ impl ConfigCommitmentWriteGas {
 }
 
 /// Rejects commitment writes that are zero, pre-T14, or in a static context.
+///
+/// Call it before any account load or gas charge, so rejected writes are never charged.
 fn ensure_config_commitment_writable(
     spec: TempoHardfork,
     is_static: bool,
