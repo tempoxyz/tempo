@@ -4,7 +4,7 @@ use std::{cell::RefCell, hash::Hash, marker::PhantomData, ptr::NonNull};
 const CACHE_THRESHOLD: usize = 100;
 
 #[derive(Debug)]
-pub(crate) struct LinearCache<K, H> {
+struct LinearCache<K, H> {
     // Singleton caches need no backing vector. Handler allocations remain stable
     // when the cache grows or promotes to a map.
     first: Option<(K, CachedHandler<H>)>,
@@ -33,7 +33,7 @@ impl<K: Eq + Clone, H> LinearCache<K, H> {
             .iter()
             .chain(self.entries.iter())
             .find(|(candidate, _)| candidate == key)
-            .map(|(_, boxed)| boxed.as_ptr().cast_const())
+            .map(|(_, handler)| handler.as_ptr().cast_const())
     }
 
     #[inline]
@@ -42,7 +42,7 @@ impl<K: Eq + Clone, H> LinearCache<K, H> {
             .iter_mut()
             .chain(self.entries.iter_mut())
             .find(|(candidate, _)| candidate == key)
-            .map(|(_, boxed)| boxed.as_ptr())
+            .map(|(_, handler)| handler.as_ptr())
     }
 
     #[inline]
@@ -53,7 +53,7 @@ impl<K: Eq + Clone, H> LinearCache<K, H> {
     #[inline]
     fn insert_mut(&mut self, key: &K, f: impl FnOnce() -> H) -> *mut H {
         let entry = (key.clone(), CachedHandler::new(f()));
-        let boxed = if self.first.is_none() {
+        let handler = if self.first.is_none() {
             &mut self.first.insert(entry).1
         } else {
             self.entries.push(entry);
@@ -63,12 +63,12 @@ impl<K: Eq + Clone, H> LinearCache<K, H> {
                 .expect("just pushed handler cache entry")
                 .1
         };
-        boxed.as_ptr()
+        handler.as_ptr()
     }
 }
 
 #[derive(Debug)]
-pub(crate) struct MapCache<K, H> {
+struct MapCache<K, H> {
     entries: HashMap<K, usize>,
     // Keep ownership append-only even if cloning or hashing a key panics.
     handlers: LinearCache<K, H>,
@@ -85,10 +85,13 @@ impl<K: Hash + Eq + Clone, H> MapCache<K, H> {
         let index = if let Some(index) = self.entries.get(key) {
             *index
         } else {
-            let index = self.handlers.len();
-            self.handlers.insert_mut(key, f);
-            self.entries.insert(key.clone(), index);
-            index
+            // Finish any existing-key rehashing before initializing a handler.
+            self.entries.reserve(1);
+            *self.entries.entry(key.clone()).or_insert_with(|| {
+                let index = self.handlers.len();
+                self.handlers.insert_mut(key, f);
+                index
+            })
         };
         if index == 0 {
             self.handlers
@@ -213,11 +216,10 @@ impl<K, H, const THRESHOLD: usize> Clone for HandlerCache<K, H, THRESHOLD> {
 }
 
 /// Owns a handler allocation while allowing outstanding references across owner moves.
-///
-/// Moving a `Box<H>` can invalidate references to `H` under Rust's aliasing rules.
-/// Keep the allocation as a raw pointer until the cache is dropped instead.
 #[derive(Debug)]
 struct CachedHandler<H> {
+    // Moving a Box can retag the pointee and invalidate outstanding references.
+    // Keep raw ownership until drop so moves preserve those references.
     ptr: NonNull<H>,
     ownership: PhantomData<Box<H>>,
 }
