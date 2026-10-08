@@ -31,6 +31,7 @@ mod follow;
 mod overrides;
 pub mod p2p_proxy;
 pub mod regenesis;
+pub mod rpc_only;
 pub mod shadow_replay;
 mod snapshot_download;
 mod snapshot_manifest;
@@ -591,6 +592,14 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                         ctx.modules.merge_configured(consensus_rpc.into_rpc())
                             .wrap_err("failed to register consensus rpc module")?;
                     }
+
+                    let chain_spec = ctx.config().chain.clone();
+                    tempo_node::rpc::execution_info::install_execution_info(
+                        ctx.modules,
+                        chain_spec.chain().id(),
+                        chain_spec.genesis_hash(),
+                        false,
+                    )?;
 
                     Ok(())
                 })

@@ -13453,6 +13453,7 @@ dependencies = [
  "eyre",
  "futures",
  "jiff",
+ "jsonrpsee",
  "nix 0.30.1",
  "opentelemetry-otlp",
  "pyroscope",
@@ -13479,6 +13480,7 @@ dependencies = [
  "reth-primitives-traits",
  "reth-provider",
  "reth-prune-types",
+ "reth-rpc-eth-api",
  "reth-rpc-server-types",
  "reth-static-file-types",
  "reth-storage-api",
@@ -13857,6 +13859,24 @@ dependencies = [
  "paste",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "tempo-metabinary"
+version = "1.16.0"
+dependencies = [
+ "alloy-chains",
+ "clap",
+ "eyre",
+ "futures",
+ "jsonrpsee",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
