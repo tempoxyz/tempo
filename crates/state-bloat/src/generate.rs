@@ -250,7 +250,7 @@ impl GenerateStateBloat {
         }
 
         pb.finish_with_message("done");
-        write_nonce_ring(&mut writer, nonce_ring_hardfork)?;
+        write_nonce_ring(&mut writer, 0..capacity)?;
         writer.flush()?;
 
         let file_size = std::fs::metadata(&out)?.len();
@@ -265,13 +265,16 @@ impl GenerateStateBloat {
 }
 
 /// Populate both mappings so the first transaction evicts an existing, expired nonce.
-fn write_nonce_ring(writer: &mut impl Write, hardfork: TempoHardfork) -> eyre::Result<()> {
-    let capacity = hardfork.expiring_nonce_set_capacity();
+fn write_nonce_ring(writer: &mut impl Write, indices: std::ops::Range<u32>) -> eyre::Result<()> {
     let manager = NonceManager::new();
-    write_header(writer, NONCE_PRECOMPILE_ADDRESS, u64::from(capacity) * 2)?;
+    write_header(
+        writer,
+        NONCE_PRECOMPILE_ADDRESS,
+        u64::from(indices.end - indices.start) * 2,
+    )?;
     let mut input = *b"tempo-state-bloat-nonce\0\0\0\0";
     let index_start = input.len() - size_of::<u32>();
-    for index in 0..capacity {
+    for index in indices {
         input[index_start..].copy_from_slice(&index.to_be_bytes());
         let hash = keccak256(input);
         // Compute keys without caching millions of mapping handlers.
@@ -349,21 +352,23 @@ mod tests {
             let mut file = tempfile::tempfile()?;
             {
                 let mut writer = BufWriter::new(&mut file);
-                write_nonce_ring(&mut writer, hardfork)?;
+                // Exercise real fork boundaries without writing millions of entries per test.
+                write_nonce_ring(&mut writer, 0..1)?;
+                write_nonce_ring(&mut writer, capacity - 1..capacity)?;
                 writer.flush()?;
             }
-            assert_eq!(file.metadata()?.len(), 40 + u64::from(capacity) * 128);
+            assert_eq!(file.metadata()?.len(), 2 * (40 + 128));
             file.rewind()?;
 
             let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
             storage.set_timestamp(U256::from(1000));
-            let mut entry = 0;
+            let mut entry = 0u32;
             let mut old_hash = B256::ZERO;
             let manager = NonceManager::new();
             let count = crate::read_dump(BufReader::new(file), |address, slot, value| {
                 assert_eq!(address, NONCE_PRECOMPILE_ADDRESS);
-                let index = entry / 2;
-                if entry % 2 == 0 {
+                let index = if entry < 2 { 0 } else { capacity - 1 };
+                if entry.is_multiple_of(2) {
                     assert_eq!(
                         U256::from_be_bytes(slot.0),
                         index.mapping_slot(manager.expiring_nonce_ring.slot())
@@ -377,14 +382,11 @@ mod tests {
                     );
                     assert_eq!(value, U256::ONE);
                 }
-                // Keep just the boundary entries in memory to exercise eviction and wraparound.
-                if index == 0 || index == capacity - 1 {
-                    storage.sstore(address, U256::from_be_bytes(slot.0), value)?;
-                }
+                storage.sstore(address, U256::from_be_bytes(slot.0), value)?;
                 entry += 1;
                 Ok(())
             })?;
-            assert_eq!(count, u64::from(capacity) * 2);
+            assert_eq!(count, 4);
 
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
                 let mut manager = NonceManager::new();
