@@ -56,6 +56,7 @@ pub(crate) struct TestExecutorBuilder {
     pub(crate) extra_data: Bytes,
     // Test state to seed into the executor after creation
     pub(crate) initial_section: Option<BlockSection>,
+    pub(crate) record_actions: bool,
 }
 
 impl Default for TestExecutorBuilder {
@@ -71,6 +72,7 @@ impl Default for TestExecutorBuilder {
             spec: TempoHardfork::default(),
             extra_data: Bytes::new(),
             initial_section: None,
+            record_actions: false,
         }
     }
 }
@@ -119,6 +121,11 @@ impl TestExecutorBuilder {
         self
     }
 
+    pub(crate) fn with_actions(mut self) -> Self {
+        self.record_actions = true;
+        self
+    }
+
     pub(crate) fn build<'a, DB: StateDB>(
         self,
         db: DB,
@@ -128,7 +135,7 @@ impl TestExecutorBuilder {
         cfg_env.enable_amsterdam_eip8037 = self.amsterdam_eip8037_enabled;
         cfg_env.spec = self.spec;
 
-        let evm = TempoEvm::new(
+        let mut evm = TempoEvm::new(
             db,
             EvmEnv {
                 cfg_env,
@@ -145,6 +152,9 @@ impl TestExecutorBuilder {
                 },
             },
         );
+        if self.record_actions {
+            evm = evm.with_actions();
+        }
 
         let ctx = TempoBlockExecutionCtx {
             inner: EthBlockExecutionCtx {

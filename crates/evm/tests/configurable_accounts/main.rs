@@ -187,4 +187,5 @@ impl Fixture {
     }
 }
 
+mod migration;
 mod tests;

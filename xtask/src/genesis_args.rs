@@ -171,6 +171,10 @@ pub(crate) struct GenesisArgs {
     /// Development recovery factory used to derive configurable accounts.
     #[arg(long)]
     multisig_recovery_factory: Option<Address>,
+
+    /// Enable in-place account migration at this timestamp, no earlier than T14.
+    #[arg(long)]
+    account_migration_time: Option<u64>,
 }
 
 /// Parses `<scheme>=<hex>` into a scheme byte and a valid 576-byte Groth16 verifying key.
@@ -530,6 +534,19 @@ impl GenesisArgs {
                 .extra_fields
                 .insert_value("zkVerifyingKeys".to_string(), keys)?;
         }
+        if let Some(time) = self.account_migration_time {
+            eyre::ensure!(
+                self.multisig_recovery_factory.is_some()
+                    && self
+                        .hardforks
+                        .fork_time(TempoHardfork::T14)
+                        .is_some_and(|t14| time >= t14),
+                "account migration requires a recovery factory and must not precede T14"
+            );
+            chain_config
+                .extra_fields
+                .insert_value("accountMigrationTime".to_string(), time)?;
+        }
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
@@ -588,6 +605,9 @@ impl GenesisArgs {
         self.multisig_recovery_factory = self
             .multisig_recovery_factory
             .or(dev.multisig_recovery_factory());
+        self.account_migration_time = self
+            .account_migration_time
+            .or(self.hardforks.fork_time(TempoHardfork::T14));
         self
     }
 }
@@ -1145,7 +1165,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn devnet_genesis_enables_oidc_and_configurable_accounts() {
+    async fn devnet_genesis_enables_oidc_configurable_accounts_and_migration() {
         let genesis = parse("")
             .unwrap()
             .with_dev_signer_config()
@@ -1159,12 +1179,17 @@ mod tests {
         );
         let spec = tempo_chainspec::TempoChainSpec::from_genesis(genesis);
         assert_eq!(spec.info.fork_time(TempoHardfork::T14), Some(0));
+        assert!(spec.info.account_migration_enabled(0));
         assert_eq!(
             spec.info.multisig_recovery_factory(),
             Some(Address::repeat_byte(0x71))
         );
         let standalone = generate("").await;
         assert_eq!(standalone.config.extra_fields.get("zkVerifyingKeys"), None);
+        assert_eq!(
+            standalone.config.extra_fields.get("accountMigrationTime"),
+            None
+        );
         assert_eq!(
             standalone
                 .config
@@ -1187,6 +1212,61 @@ mod tests {
         let args = args.with_dev_signer_config();
         assert_eq!(args.zk_verifying_keys, vec![(1, override_key)]);
         assert_eq!(args.multisig_recovery_factory, Some(factory));
+    }
+
+    #[tokio::test]
+    async fn devnet_migration_respects_fork_schedule_and_explicit_activation() {
+        for (flags, expected) in [
+            ("--t14-time 20", Some(20)),
+            ("--t14-time 20 --account-migration-time 30", Some(30)),
+            ("--hardfork t13", None),
+        ] {
+            let genesis = parse(flags)
+                .unwrap()
+                .with_dev_signer_config()
+                .generate_genesis()
+                .await
+                .unwrap()
+                .0;
+            let spec = tempo_chainspec::TempoChainSpec::from_genesis(genesis);
+            assert_eq!(spec.info.account_migration_time, expected);
+            assert!(!spec.info.account_migration_enabled(19));
+            assert_eq!(
+                spec.info.account_migration_enabled(20),
+                expected == Some(20)
+            );
+            assert_eq!(spec.info.account_migration_enabled(30), expected.is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn genesis_rejects_invalid_migration_activation() {
+        for flags in [
+            "--account-migration-time 0",
+            "--multisig-recovery-factory 0x7171717171717171717171717171717171717171 --t14-time 20 --account-migration-time 10",
+            "--multisig-recovery-factory 0x7171717171717171717171717171717171717171 --hardfork t13 --account-migration-time 0",
+        ] {
+            assert_eq!(
+                parse(flags)
+                    .unwrap()
+                    .generate_genesis()
+                    .await
+                    .unwrap_err()
+                    .to_string(),
+                "account migration requires a recovery factory and must not precede T14"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn standalone_genesis_explicitly_enables_migration() {
+        let genesis = generate(
+            "--multisig-recovery-factory 0x7171717171717171717171717171717171717171 --account-migration-time 0",
+        )
+        .await;
+        let spec = tempo_chainspec::TempoChainSpec::from_genesis(genesis);
+        assert!(spec.info.account_migration_enabled(0));
+        assert_eq!(spec.info.zk_verifying_keys().count(), 0);
     }
 
     #[tokio::test]

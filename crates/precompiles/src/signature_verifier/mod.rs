@@ -4,7 +4,7 @@ use crate::{
     SIGNATURE_VERIFIER_ADDRESS,
     account_keychain::AccountKeychain,
     error::{Result, TempoPrecompileError},
-    native_multisig::{initial_account_proof_gas, keccak_cost, valid_account},
+    native_multisig::{initial_account_proof_gas, keccak_cost, root_key_retired, valid_account},
 };
 use alloy::{
     primitives::{Address, B256, Bytes},
@@ -118,6 +118,9 @@ impl SignatureVerifier {
         signature_type: u8,
         require_admin: bool,
     ) -> Result<bool> {
+        if root_key_retired(key_id)? {
+            return Ok(false);
+        }
         // The root is implicitly admin without a stored access-key grant.
         if require_admin && key_id == account {
             return Ok(true);

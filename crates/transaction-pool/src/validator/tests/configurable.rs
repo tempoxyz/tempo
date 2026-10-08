@@ -3,6 +3,7 @@ use crate::{
     AA2dPool, TempoTransactionPool, maintain::maintain_tempo_pool_with_events,
     ordering::TempoTipOrdering,
 };
+use alloy_eips::eip7702::Authorization;
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use reth_primitives_traits::{AccountExtension, Recovered, RecoveredBlock};
@@ -16,12 +17,69 @@ use std::time::Duration;
 use tempo_primitives::{
     account::encode_config_commitment,
     transaction::{
-        AASigned, MultisigConfig, MultisigOwner, MultisigSignature, TempoSignature, multisig_digest,
+        AASigned, MultisigConfig, MultisigOwner, MultisigSignature, TempoSignature,
+        TempoSignedAuthorization, multisig_digest,
     },
 };
 use tempo_revm::{gas_params::tempo_gas_params, native_multisig::NativeMultisigError};
 
 const FACTORY: Address = Address::repeat_byte(0x71);
+
+#[tokio::test]
+async fn retired_root_authorizations_do_not_reserve_pool_delegation_slots() {
+    for migration_enabled in [false, true] {
+        let signer = PrivateKeySigner::random();
+        let authority = signer.address();
+        let authorization = Authorization {
+            chain_id: U256::ONE,
+            nonce: 0,
+            address: Address::repeat_byte(0x44),
+        };
+        let signature = signer
+            .sign_hash_sync(&authorization.signature_hash())
+            .unwrap();
+        let transaction = TxBuilder::aa(Address::random())
+            .fee_token(PATH_USD_ADDRESS)
+            .authorization_list(vec![TempoSignedAuthorization::new_unchecked(
+                authorization,
+                signature.into(),
+            )])
+            .build();
+        let validator = setup_validator(&transaction, 1).with_disable_fee_amm_check(true);
+        validator.client().add_account(
+            authority,
+            ExtendedAccount::new(0, U256::ZERO).with_extension(AccountExtension::copy_from_slice(
+                &encode_config_commitment(B256::repeat_byte(1)),
+            )),
+        );
+        validator
+            .active_hardfork
+            .store(TempoHardfork::T14.variant_index(), Ordering::Relaxed);
+        {
+            let mut env = validator.cached_evm_env.write();
+            env.cfg_env = env
+                .cfg_env
+                .clone()
+                .with_spec_and_gas_params(TempoHardfork::T14, tempo_gas_params(TempoHardfork::T14));
+            env.block_env.account_migration_enabled = migration_enabled;
+            env.block_env.multisig_recovery_factory = Some(FACTORY);
+        }
+        let result = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+        let TransactionValidationOutcome::Valid { authorities, .. } = result else {
+            panic!("expected a valid transaction: {result:?}");
+        };
+        assert_eq!(
+            authorities.unwrap(),
+            if migration_enabled {
+                vec![]
+            } else {
+                vec![authority]
+            }
+        );
+    }
+}
 
 #[tokio::test]
 async fn reorg_and_rotation_revalidate_native_transaction() {

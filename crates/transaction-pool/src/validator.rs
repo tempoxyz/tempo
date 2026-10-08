@@ -40,7 +40,7 @@ use tempo_chainspec::{
 use tempo_evm::{TempoEvmConfig, TempoPoolValidationEvm};
 use tempo_precompiles::{
     nonce::{INonce, NonceManager},
-    storage::StorageActions,
+    storage::{StorageActions, StorageCtx},
 };
 use tempo_primitives::{
     Block, TempoHeader, TempoPrimitives,
@@ -195,6 +195,24 @@ where
     /// Returns the configured client
     pub fn client(&self) -> &Client {
         self.inner.client()
+    }
+
+    /// Computes the migration gate from the same environment as execution and RPC.
+    pub(crate) fn account_migration_enabled(&self, header: &TempoHeader) -> bool {
+        self.inner
+            .evm_config()
+            .evm_env(header)
+            .expect("invalid block in migration activation check")
+            .block_env
+            .account_migration_enabled
+    }
+
+    /// The gate at the pool's currently cached canonical head.
+    pub(crate) fn cached_account_migration_enabled(&self) -> bool {
+        self.cached_evm_env
+            .read()
+            .block_env
+            .account_migration_enabled
     }
 
     /// Pool-only time-bound admission checks.
@@ -640,6 +658,36 @@ where
                                 existing_authorities.append(&mut recovered_aa_authorities)
                             }
                             None => authorities = Some(recovered_aa_authorities),
+                        }
+                    }
+                }
+
+                // Execution ignores retired-root EIP-7702 authorizations. Do not let those
+                // ignored authorizations reserve delegation slots in the local pool either.
+                if spec.is_t14()
+                    && evm.block().account_migration_enabled
+                    && let Some(recovered) = authorities.take()
+                {
+                    let active = evm.db_mut().with_read_only_storage_ctx(
+                        spec,
+                        StorageActions::disabled(),
+                        || {
+                            let mut active = Vec::with_capacity(recovered.len());
+                            for authority in recovered {
+                                if StorageCtx.config_commitment(authority)?.is_zero() {
+                                    active.push(authority);
+                                }
+                            }
+                            Ok::<_, tempo_precompiles::error::TempoPrecompileError>(active)
+                        },
+                    );
+                    match active {
+                        Ok(active) => authorities = Some(active),
+                        Err(error) => {
+                            return TransactionValidationOutcome::Error(
+                                *transaction.hash(),
+                                Box::new(error),
+                            );
                         }
                     }
                 }

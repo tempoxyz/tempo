@@ -555,6 +555,7 @@ pub(crate) async fn maintain_tempo_pool_with_events<Client, EvmConfig>(
 
     let amm_cache = pool.amm_liquidity_cache();
     let (tip_updates, tip_receiver) = tokio::sync::watch::channel((0, B256::ZERO));
+    let mut migration_enabled = pool.cached_account_migration_enabled();
 
     // Process all maintenance operations on new block commit or reorg.
     while let Some(event) = chain_events.next().await {
@@ -578,6 +579,10 @@ pub(crate) async fn maintain_tempo_pool_with_events<Client, EvmConfig>(
         tip_updates.send_replace((tip.tip().number(), tip.tip().hash()));
         let bundle_state = tip.execution_outcome().state().state();
         let tip_timestamp = tip.tip().header().timestamp();
+        let next_migration_enabled = pool.account_migration_enabled(tip.tip().header());
+        let migration_activation_changed = migration_enabled != next_migration_enabled;
+        let retire_primitives = migration_enabled || next_migration_enabled;
+        migration_enabled = next_migration_enabled;
 
         // Removed transactions are collected here and dropped at the end of the
         // iteration: deallocating them (input data, signatures, allocator work) is
@@ -616,15 +621,18 @@ pub(crate) async fn maintain_tempo_pool_with_events<Client, EvmConfig>(
         let mut removed_this_iteration: B256Set = tip.transaction_hashes().copied().collect();
 
         let changed = changed_commitments(bundle_state);
-        if reorg || !changed.is_empty() {
+        if reorg || migration_activation_changed || !changed.is_empty() {
             let hashes: Vec<TxHash> = {
                 let all_txs = all_txs.get_or_insert_with(|| pool.all_transactions());
                 all_txs
                     .iter()
                     .filter(|tx| !removed_this_iteration.contains(tx.hash()))
                     .filter(|tx| {
-                        tx.transaction
-                            .needs_configurable_revalidation(&changed, reorg)
+                        tx.transaction.needs_configurable_revalidation(
+                            &changed,
+                            reorg || migration_activation_changed,
+                            retire_primitives,
+                        )
                     })
                     .map(|tx| *tx.hash())
                     .collect()
