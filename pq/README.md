@@ -5,7 +5,8 @@ migration. It implements an experimental proof scheme, not a production protocol
 
 * Scheme and address namespace `0x80`: ML-DSA-65 JWT verification in a RISC Zero guest.
 * Primitive signature `0x80 || public_key[1952] || signature[3309]`, pure FIPS 204
-  ML-DSA-65 with empty context. Access-key algorithm is **4**; algorithm 3 is multisig.
+  ML-DSA-65 with empty context, matching [RFC 9964](https://www.rfc-editor.org/rfc/rfc9964.html)
+  for JWS. Access-key algorithm is **4**; algorithm 3 is multisig.
 * Native composite STARK receipts only: fake, Groth16, unresolved assumptions, wrong
   images, and mismatched journals are rejected. SDK/verifier version is pinned to 3.0.5.
 * Private inputs: token, identity salt and nonce blinding. Public journal: scheme,
