@@ -9,7 +9,6 @@ use super::{
 };
 use alloc::vec::Vec;
 use alloy_primitives::{Address, B256, Bytes, Signature, U256, keccak256, uint};
-use alloy_rlp::Encodable;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
 
@@ -608,10 +607,7 @@ impl AccountSignature {
     pub fn encode_bytes_into(&self, out: &mut dyn alloy_rlp::BufMut) {
         match self {
             Self::Primitive(signature) => signature.encode_bytes_into(out),
-            Self::Multisig(signature) => {
-                out.put_u8(SIGNATURE_TYPE_MULTISIG);
-                signature.encode(out);
-            }
+            Self::Multisig(signature) => signature.encode_bytes_into(out),
         }
     }
 
@@ -619,7 +615,7 @@ impl AccountSignature {
     pub fn encoded_length(&self) -> usize {
         match self {
             Self::Primitive(signature) => signature.encoded_length(),
-            Self::Multisig(signature) => 1 + signature.length(),
+            Self::Multisig(signature) => signature.encoded_length(),
         }
     }
 
@@ -856,10 +852,7 @@ impl TempoSignature {
                 out.put_slice(keychain_sig.user_address.as_slice());
                 keychain_sig.signature.encode_bytes_into(out);
             }
-            Self::Multisig(multisig_sig) => {
-                out.put_u8(SIGNATURE_TYPE_MULTISIG);
-                multisig_sig.encode(out);
-            }
+            Self::Multisig(multisig_sig) => multisig_sig.encode_bytes_into(out),
         }
     }
 
@@ -872,7 +865,7 @@ impl TempoSignature {
         match self {
             Self::Primitive(primitive_sig) => primitive_sig.encoded_length(),
             Self::Keychain(keychain_sig) => 1 + 20 + keychain_sig.signature.encoded_length(),
-            Self::Multisig(multisig_sig) => 1 + multisig_sig.length(),
+            Self::Multisig(multisig_sig) => multisig_sig.encoded_length(),
         }
     }
 
@@ -1275,10 +1268,6 @@ mod tests {
         let pub_key_x = B256::from_slice(encoded_point.x().unwrap().as_ref());
         let pub_key_y = B256::from_slice(encoded_point.y().unwrap().as_ref());
         (signing_key, pub_key_x, pub_key_y)
-    }
-
-    fn valid_multisig_owner_signature() -> PrimitiveSignature {
-        PrimitiveSignature::Secp256k1(Signature::test_signature())
     }
 
     /// Sign a message hash with P256, normalize s, return (r, s)
@@ -2307,7 +2296,7 @@ mod tests {
             MultisigSignature::try_new(
                 Address::repeat_byte(0x11),
                 config,
-                vec![valid_multisig_owner_signature()],
+                vec![PrimitiveSignature::default()],
             )
             .unwrap(),
         );
@@ -2367,7 +2356,7 @@ mod tests {
         let account = config.derive_account(Address::repeat_byte(0x99)).unwrap();
         let inner_hash = B256::repeat_byte(0x24);
         let signature = TempoSignature::Multisig(
-            MultisigSignature::try_new(account, config, vec![valid_multisig_owner_signature()])
+            MultisigSignature::try_new(account, config, vec![PrimitiveSignature::default()])
                 .unwrap(),
         );
 
