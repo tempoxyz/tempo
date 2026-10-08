@@ -6,7 +6,7 @@ use super::{
 };
 use alloy_evm::FromRecoveredTx;
 use alloy_primitives::Bytes;
-use ml_dsa::{MlDsa65, Seed, SigningKey};
+use ml_dsa::{Keypair as _, MlDsa65, Seed, SigningKey};
 use revm::context::result::EVMError;
 use std::{fs, str::FromStr};
 use tempo_contracts::precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, IAccountKeychain, authorizeKeyCall};
@@ -36,6 +36,8 @@ fn migration_runtime_real_pq_owner_retires_secp_root_and_rejects_bad_proof() {
 
     let mut f = fixture();
     f.evm.ctx_mut().block.timestamp = U256::from(1500);
+    f.evm.ctx_mut().block.gas_limit = 500_000_000;
+    f.evm.ctx_mut().cfg.tx_gas_limit_cap = Some(200_000_000);
     let publisher_id = StorageCtx::enter_ctx(f.evm.ctx_mut(), StorageActions::disabled(), || {
         let mut publisher = KeyPublisher::new();
         publisher.initialize()?;

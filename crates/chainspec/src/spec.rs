@@ -53,6 +53,9 @@ macro_rules! tempo_genesis_info {
                 /// byte. Only development chains set these.
                 #[serde(skip_serializing_if = "Option::is_none")]
                 zk_verifying_keys: Option<BTreeMap<u8, Bytes>>,
+                /// Explicit development-only transaction cap for native PQ receipts.
+                #[serde(skip_serializing_if = "Option::is_none")]
+                experimental_pq_tx_gas_limit: Option<u64>,
                 $(
                     #[doc = concat!("Activation timestamp for the ", stringify!($variant), " hardfork.")]
                     #[serde(skip_serializing_if = "Option::is_none")]
@@ -114,6 +117,14 @@ impl TempoGenesisInfo {
             .iter()
             .flatten()
             .map(|(scheme, key)| (*scheme, key))
+    }
+
+    /// Returns the explicit PQ development cap only when scheme 0x80 has an image ID.
+    pub fn experimental_pq_tx_gas_limit(&self) -> Option<u64> {
+        self.zk_verifying_keys()
+            .any(|(scheme, key)| scheme == 0x80 && key.len() == 32)
+            .then_some(self.experimental_pq_tx_gas_limit)
+            .flatten()
     }
 }
 

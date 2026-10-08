@@ -27,12 +27,15 @@ prerequisites. From this repository:
 cargo test --manifest-path pq/Cargo.toml --features verify
 cargo run --manifest-path pq/methods/Cargo.toml --bin export -- guest.elf pq-genesis.json
 cargo build --bin tempo
-cargo run --bin tempo -- node --dev --chain ./pq-genesis.json --http --http.port 8545 --rpc.max-request-size 20 --rpc.max-response-size 20 --txpool.max-tx-input-bytes 17000000
+cargo run --bin tempo -- node --dev --chain ./pq-genesis.json --http --http.port 8545 --rpc.max-request-size 20 --rpc.max-response-size 20 --txpool.max-tx-input-bytes 17000000 --txpool.max-tx-gas-limit 200000000
 ```
 
 The export command prints the image ID and writes a development genesis with it in
 `config.zkVerifyingKeys["128"]`. It also enables `accountMigrationTime=0` and reserves
-the development recovery factory required by TIP1113. Use that same ELF/image in the prover and demo.
+the development recovery factory required by TIP1113. Native receipts use an explicit
+`experimentalPqTxGasLimit=200000000` and `generalGasLimit=400000000` in this
+genesis. The transaction override requires both T14 and a configured scheme 0x80
+image; other chain configurations retain the ordinary transaction cap. Use that same ELF/image in the prover and demo.
 The chain activates ML-DSA and scheme `0x80` only when this image is configured and
 T14 is active. Never reuse an existing chain database with a different genesis.
 

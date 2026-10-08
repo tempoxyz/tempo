@@ -202,7 +202,12 @@ impl ConfigureEvm for TempoEvmConfig {
             spec,
             tempo_gas_params_with_amsterdam(spec, amsterdam_eip8037_enabled),
         );
-        cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
+        cfg_env.tx_gas_limit_cap = self
+            .chain_spec()
+            .info
+            .experimental_pq_tx_gas_limit()
+            .filter(|_| spec.is_t14())
+            .or_else(|| spec.tx_gas_limit_cap());
 
         Ok(EvmEnv {
             cfg_env,
@@ -262,7 +267,12 @@ impl ConfigureEvm for TempoEvmConfig {
             spec,
             tempo_gas_params_with_amsterdam(spec, amsterdam_eip8037_enabled),
         );
-        cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
+        cfg_env.tx_gas_limit_cap = self
+            .chain_spec()
+            .info
+            .experimental_pq_tx_gas_limit()
+            .filter(|_| spec.is_t14())
+            .or_else(|| spec.tx_gas_limit_cap());
 
         Ok(EvmEnv {
             cfg_env,

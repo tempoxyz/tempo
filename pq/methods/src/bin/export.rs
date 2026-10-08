@@ -8,6 +8,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "../../../../crates/chainspec/src/genesis/dev.json"
         ))?;
         genesis["config"]["accountMigrationTime"] = 0.into();
+        genesis["config"]["experimentalPqTxGasLimit"] = 200_000_000.into();
+        genesis["config"]["generalGasLimit"] = 400_000_000.into();
         genesis["config"]["multisigRecoveryFactory"] =
             "0x7171717171717171717171717171717171717171".into();
         genesis["config"]["zkVerifyingKeys"]["128"] = format!(
