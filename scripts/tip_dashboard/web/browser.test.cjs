@@ -33,7 +33,9 @@ const {pathToFileURL} = require('node:url');
     assert.ok(!headerText.includes(real.revision.sha.slice(0,12)),'raw commit metadata is secondary');
     assert.match(headerText,/This page is a work in progress\./);
     await page.locator('.snapshot-details > summary').click();
-    assert.ok((await page.locator('.snapshot-details').innerText()).includes(real.revision.sha),'selected commit remains accessible');
+    assert.equal(await page.locator('.snapshot-details code').first().getAttribute('title'),real.revision.sha,'full selected commit remains accessible');
+    assert.equal(await page.locator('.snapshot-details dt').count(),4,'snapshot summary stays concise');
+    assert.doesNotMatch(await page.locator('.snapshot-details').innerText(),/source digest|manifest digest|Malformed|invalid_evidence/);
     await page.locator('.snapshot-details > summary').click();
     const {upgradeForks} = require('./app.js');
     assert.equal(await page.locator('#results > section').count(),upgradeForks(real).length);
@@ -49,7 +51,7 @@ const {pathToFileURL} = require('node:url');
     await card.locator(':scope > summary').click();
     await card.locator('.people-details > summary').click();
     if (linked.people?.status === 'complete' || linked.people?.status === 'partial') {
-      const visible = await card.locator('.github-people').innerText();
+      const visible = await card.locator('.github-people').textContent();
       for (const scope of ['spec', 'implementation']) {
         for (const pr of linked.people[scope]?.pull_requests || []) {
           if (pr.author?.login) assert.ok(visible.includes('@' + pr.author.login), 'real PR author');
@@ -59,6 +61,7 @@ const {pathToFileURL} = require('node:url');
         }
       }
     }
+    await page.screenshot({path:path.join(out,'real-github-approvals.png'),fullPage:true});
     if (real.main_comparison?.status === 'available') {
       assert.ok((await page.locator('#snapshot').textContent()).includes(real.main_comparison.revision.sha.slice(0,12)), 'real main commit');
       if (!linked.main_comparison?.inventory?.count) assert.match(await card.locator('.main-comparison').innerText(), /Coverage unknown/);
@@ -127,20 +130,22 @@ const {pathToFileURL} = require('node:url');
     await fixtureCard.locator('.people-details > summary').click();
     const people=fixtureCard.locator('.github-people');
     const visible=await people.innerText();
-    for(const expected of ['GitHub people','Reviews on spec PRs','@spec-author','@bot-fixture · Bot','committer','Unmapped contributor','unmapped GitHub identity','DISMISSED','Deleted reviewer','Implementation · unavailable']) assert.ok(visible.includes(expected),expected);
-    assert.doesNotMatch(visible,/APPROVED|requested-only/);
+    for(const expected of ['GitHub handles','Reviews on spec PRs','@spec-author','@bot-fixture · Bot','committer','Unmapped contributor','unmapped GitHub identity','Approved by','None recorded.','Implementation · unavailable']) assert.ok(visible.includes(expected),expected);
+    assert.doesNotMatch(visible,/APPROVED|DISMISSED|Deleted reviewer|requested-only/);
     assert.equal(await people.locator('img').count(),0);
     assert.equal(await page.evaluate(()=>window.fixtureXSS),undefined);
     assert.equal(await people.locator('a[href^="javascript:"]').count(),0);
-    assert.equal(await people.locator('a[href="https://github.com/test/review/new"]:visible').count(),1);
+    assert.equal(await people.locator('a[href="https://github.com/test/review/new"]:visible').count(),0);
     const history=people.locator('.review-history');
     assert.equal(await history.getAttribute('open'),null);
     await history.locator('summary').click();
     assert.match(await history.innerText(),/APPROVED/);
+    assert.match(await history.innerText(),/DISMISSED/);
+    assert.match(await history.innerText(),/Deleted reviewer/);
     assert.match(await history.innerText(),/older \/ different PR head/);
     assert.match(await fixtureCard.locator('.main-comparison').innerText(),/TIP present[\s\S]*Spec: changed/);
     assert.match(await fixtureCard.locator('.main-comparison').innerText(),/Main inventory missing · Coverage unknown/);
-    assert.match(await page.locator('#snapshot').textContent(),/vs main b{12}/);
+    assert.equal(await page.locator('.snapshot-details dd').nth(1).textContent(),'b'.repeat(12));
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'people mobile overflow');
     await page.screenshot({path:path.join(out,'people-main-fixture.png'),fullPage:true});
     // Exercise spacing that the text-only DOM tests cannot detect.
@@ -171,13 +176,13 @@ const {pathToFileURL} = require('node:url');
     reportBody=JSON.stringify(fixture);await page.reload();
     await page.waitForFunction(()=>document.querySelector('#load-status').textContent.includes('Read-only'));
     await page.locator('#results .tip > summary').click();
-    assert.match(await page.locator('#snapshot').textContent(),/vs main unavailable/);
+    assert.equal(await page.locator('.snapshot-details dd').nth(1).textContent(),'Unavailable');
     assert.match(await page.locator('#results .main-comparison').innerText(),/presence and coverage unknown/);
     assert.doesNotMatch(await page.locator('#results .main-comparison').innerText(),/TIP present/);
     await page.locator('.people-details > summary').click();
     assert.match(await page.locator('.github-people').innerText(),/PR association \/ review data incomplete or unavailable/);
     assert.deepEqual(errors,[]);
-    const result = {status:'passed',revision:real.revision,drilldown:{tip:linked.id,requirement:req.id},checks:['read-only controls','latest upgrades','empty configured fork','optional hosted selector','short source SHA','source/guard/assertion drilldown','search','mobile overflow','schema/network failure clears stale evidence','portable bundled dashboard','GitHub people and escaped names','latest submitted review and dismissed old-head history','main coverage scope and unavailable comparison','inline spec code','coverage spacing and expanded layout at 320/390/768/1440px','dark mode rendering','concise header with optional provenance'],limitations:'Browser checks supplied report evidence, not live network activation.'};
+    const result = {status:'passed',revision:real.revision,drilldown:{tip:linked.id,requirement:req.id},checks:['read-only controls','latest upgrades','empty configured fork','optional hosted selector','short source SHA','source/guard/assertion drilldown','search','mobile overflow','schema/network failure clears stale evidence','portable bundled dashboard','GitHub handles and escaped names','explicit PR approvals and dismissed review history','main coverage scope and unavailable comparison','inline spec code','coverage spacing and expanded layout at 320/390/768/1440px','dark mode rendering','concise header with optional provenance'],limitations:'Browser checks supplied report evidence, not live network activation.'};
     fs.writeFileSync(path.join(out,'browser-results.json'),JSON.stringify(result,null,2)+'\n');
     console.log(JSON.stringify(result));
   } finally { await browser.close(); }

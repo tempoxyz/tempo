@@ -43,8 +43,9 @@ test('compact rows preserve separate counts and safe optional evidence drilldown
   const d=dom(), app=mount(d,null,'file:'), r=report();
   r.tips[0].requirements[0].review={reviewer_kind:'agent',reviewer:'specialist'};
   app.showReport(JSON.stringify(r));
-  assert.match(d.elements.snapshot.textContent,/Source a{12}/);
-  assert.match(d.elements.snapshot.textContent,/Provenance.*a{40}/);
+  assert.match(d.elements.snapshot.textContent,/Inspected commit a{12}/);
+  assert.ok(d.elements.snapshot.all('code').some(e=>e.title==='a'.repeat(40)));
+  assert.doesNotMatch(d.elements.snapshot.textContent,/source digest|manifest digest|Collection:/);
   const text=d.elements.results.textContent;
   for(const value of ['Linked 1/1','Reviewed 0/1','Assertions 1/1','Missing links 0','Scheduled T13','Actual guards: spec.is_t13()','agent','specialist','selector','assertion-hash','candidate sha']) assert.ok(text.includes(value),value);
   assert.equal(d.elements.results.all('img').length,0);
@@ -76,7 +77,7 @@ test('hosted index is optional; selection loads exact revision and failures clea
   let fail=false;
   const fetcher=async(url,options)=>{assert.equal(options.cache,'no-store'); if(fail) throw Error('offline');return {ok:true,text:async()=>JSON.stringify(url==='index.json'?index:url==='two.json'?other:report())};};
   await mount(d,fetcher,'https:').load(); assert.equal(d.elements['report-picker'].hidden,false);
-  d.elements.reports.value='1';await d.elements.reports.fire('change');assert.match(d.elements.snapshot.textContent,/Source b{12}/);
+  d.elements.reports.value='1';await d.elements.reports.fire('change');assert.match(d.elements.snapshot.textContent,/Inspected commit b{12}/);
   fail=true;d.elements.reports.value='0';await d.elements.reports.fire('change');
   assert.match(d.elements['load-status'].textContent,/offline/);assert.equal(d.elements.results.textContent,'');
 });
@@ -119,7 +120,7 @@ function peopleFixture() {
   r.tips[0].inventory.review={reviewer:'Codex parent independent specialist'};
   return r;
 }
-test('GitHub identities and latest submitted review stay distinct from automated checks',()=>{
+test('GitHub approvals exclude dismissed reviews and retain history',()=>{
   const d=dom(); mount(d,null,'file:').showReport(JSON.stringify(peopleFixture()));
   const result=d.elements.results, people=result.all('section').find(e=>e.className==='github-people');
   assert.match(people.textContent,/Declared spec authors: <img/);
@@ -134,8 +135,9 @@ test('GitHub identities and latest submitted review stay distinct from automated
   assert.equal(history.open,undefined);
   const pr=people.all('div').find(e=>e.className==='card');
   const latest=pr.children.filter(e=>e.tagName!=='details').map(e=>e.textContent).join(' ');
-  assert.match(latest,/DISMISSED.*current PR head/); assert.doesNotMatch(latest,/APPROVED/);
-  assert.match(latest,/Deleted reviewer · unmapped GitHub identity/);
+  assert.match(latest,/Approved by None recorded/); assert.doesNotMatch(latest,/DISMISSED|APPROVED|Deleted reviewer/);
+  assert.match(history.textContent,/DISMISSED.*current PR head/);
+  assert.match(history.textContent,/Deleted reviewer · unmapped GitHub identity/);
   const automated=result.all('details').find(e=>e.className==='automated-provenance' && e.textContent.includes('Codex parent'));
   assert.equal(automated.open,undefined); assert.match(automated.textContent,/not GitHub approval/);
   assert.equal(result.all('img').length,0);
@@ -144,7 +146,7 @@ test('GitHub identities and latest submitted review stay distinct from automated
 test('main summary is scoped to main inventory and cannot inherit current or PR approval counts',()=>{
   const d=dom(), app=mount(d,null,'file:'), r=peopleFixture();
   app.showReport(JSON.stringify(r));
-  assert.match(d.elements.snapshot.textContent,/Current revision a{12} vs main b{12}/);
+  assert.match(d.elements.snapshot.textContent,/Inspected commit a{12} Main commit b{12}/);
   let main=d.elements.results.all('div').find(e=>e.className==='main-comparison');
   assert.match(main.textContent,/TIP present.*Spec: changed from current.*Scheduled T12/);
   assert.match(main.textContent,/Main inventory missing · Coverage unknown/); assert.doesNotMatch(main.textContent,/Linked: 1|Verified: 0/);
@@ -153,7 +155,7 @@ test('main summary is scoped to main inventory and cannot inherit current or PR 
   main=d.elements.results.all('div').find(e=>e.className==='main-comparison');
   assert.match(main.textContent,/Requirements: 2 Linked: 0/);
   r.main_comparison.status='unavailable';app.showReport(JSON.stringify(r));
-  assert.match(d.elements.snapshot.textContent,/vs main unavailable/);
+  assert.match(d.elements.snapshot.textContent,/Main commit Unavailable/);
   main=d.elements.results.all('div').find(e=>e.className==='main-comparison');
   assert.match(main.textContent,/presence and coverage unknown/);assert.doesNotMatch(main.textContent,/TIP present/);
   r.main_comparison.status='available';r.tips[0].main_comparison.status='absent';app.showReport(JSON.stringify(r));
@@ -185,7 +187,7 @@ test('main-only inventory links are safe and User accounts are not inferred huma
   r.main_comparison.only_on_main=['TIP-ONLY-MAIN','<img src=x onerror=alert(1)>'];
   r.tips[0].people.spec.contributors=[{login:'tempoxyz-bot',account_type:'User',roles:['committer']}];
   app.showReport(JSON.stringify(r));
-  assert.match(d.elements.snapshot.textContent,/Only on main: 2 TIPs.*TIP-ONLY-MAIN/);
+  assert.match(d.elements.snapshot.textContent,/Only on main: 2 TIPs/);
   assert.equal(d.elements.snapshot.all('img').length,0);
   assert.ok(d.elements.snapshot.all('a').some(a=>a.href==='main/report.json'));
   const contributor=d.elements.results.all('section').find(e=>e.className==='people-scope');
@@ -194,4 +196,22 @@ test('main-only inventory links are safe and User accounts are not inferred huma
   assert.ok(d.elements.snapshot.all('a').every(a=>!a.href.startsWith('javascript:')));
   r.main_comparison.status='unavailable';app.showReport(JSON.stringify(r));
   assert.doesNotMatch(d.elements.snapshot.children.filter(e=>e.tagName!=='details').map(e=>e.textContent).join(' '),/Only on main|Main report · full inventory/);
+});
+
+test('comments preserve approvals, decisions replace them, and incomplete history stays qualified',()=>{
+  const r=peopleFixture(), d=dom(), app=mount(d,null,'file:');
+  const pr=r.tips[0].people.spec.pull_requests[0], author={login:'approver',url:'https://github.com/approver'};
+  pr.reviews=[{author,state:'APPROVED',submitted_at:'2026-01-01',url:'https://github.com/review/approved'},
+    {author,state:'COMMENTED',submitted_at:'2026-01-02'}];
+  const approvals=()=>d.elements.results.all('div').find(e=>e.className==='pr-approvals');
+  app.showReport(JSON.stringify(r));
+  assert.match(approvals().textContent,/Approved by @approver.*APPROVED/);
+  assert.ok(approvals().all('a').some(a=>a.href==='https://github.com/review/approved'));
+  pr.reviews.push({author,state:'CHANGES_REQUESTED',submitted_at:'2026-01-03'});
+  app.showReport(JSON.stringify(r)); assert.match(approvals().textContent,/None recorded/);
+  pr.reviews.push({author,state:'APPROVED',submitted_at:'2026-01-04'});
+  app.showReport(JSON.stringify(r)); assert.match(approvals().textContent,/@approver.*APPROVED/);
+  pr.status='partial'; app.showReport(JSON.stringify(r));
+  assert.match(approvals().textContent,/Recorded approvals · review data incomplete.*@approver/);
+  pr.reviews=[]; app.showReport(JSON.stringify(r)); assert.match(approvals().textContent,/Unknown/);
 });

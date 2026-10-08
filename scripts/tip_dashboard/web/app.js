@@ -185,17 +185,23 @@
         box.append(link(pr.url, `PR #${str(pr.number, '?')} · ${str(pr.title, '')}`), node('p', `${str(pr.state)} · Review data: ${str(pr.status, 'unavailable')} · Decision: ${str(pr.review_decision, 'unavailable')}`));
         const author = node('p', 'PR author: '); author.append(account(pr.author)); box.append(author);
         const reviews = arr(pr.reviews).filter(r => obj(r).submitted_at && obj(r).state !== 'PENDING');
-        // Sort by submission time and show the latest submitted record per mapped account.
-        // Unmapped identities remain separate: names alone do not establish an account.
-        const latest = new Map();
+        // Comments do not replace an approval. Keep the latest decision record
+        // per account; dismissed / changes-requested decisions are not approvals.
+        // Unmapped identities remain separate. GitHub owns the aggregate decision.
+        const decisions = new Map();
         reviews.forEach((r, i) => {
-          const key = obj(r.author).login || `unmapped:${i}`, previous = latest.get(key);
-          if (!previous || str(r.submitted_at, '') >= str(previous.submitted_at, '')) latest.set(key, r);
+          if (!['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'].includes(r.state)) return;
+          const key = obj(r.author).login || `unmapped:${i}`, previous = decisions.get(key);
+          if (!previous || str(r.submitted_at, '') >= str(previous.submitted_at, '')) decisions.set(key, r);
         });
-        box.append(node('p', 'Latest submitted review per account', 'muted'));
-        for (const r of latest.values()) box.append(reviewRow(r));
+        const approvals = node('div', undefined, 'pr-approvals');
+        approvals.append(node('p', pr.status === 'complete' ? 'Approved by' : 'Recorded approvals · review data incomplete', 'muted'));
+        const approved = [...decisions.values()].filter(r => r.state === 'APPROVED');
+        for (const r of approved) approvals.append(reviewRow(r));
+        if (!approved.length) approvals.append(node('p', pr.status === 'complete' ? 'None recorded.' : 'Unknown.'));
+        box.append(approvals);
         if (!reviews.length) box.append(node('p', pr.status === 'complete' ? 'No submitted reviews recorded.' : 'Submitted review data incomplete or unavailable.'));
-        if (reviews.length > latest.size) {
+        if (reviews.length) {
           const history = node('details', undefined, 'review-history'); history.append(node('summary', `All submitted reviews (${reviews.length})`));
           for (const r of reviews) history.append(reviewRow(r));
           box.append(history);
@@ -207,14 +213,13 @@
     }
     function people(parent, tip) {
       const p = obj(tip.people), section = node('section', undefined, 'github-people');
-      section.append(node('h3', 'GitHub people'));
+      section.append(node('h3', 'GitHub handles'));
       section.append(node('p', `Declared spec authors: ${str(tip.declared_authors, 'Unavailable')}`));
       const observed = node('p', `GitHub data: ${str(p.status, 'unavailable')} · Observed `, 'muted');
       observed.append(observationTime(p.observed_at)); section.append(observed);
-      section.append(node('p', 'Submitted PR reviews describe their recorded commit context; they do not establish approval of this exact specification or implementation. Requested reviewers are not submitted reviews.', 'muted'));
       const scopes = node('div', undefined, 'people-scopes');
       peopleScope(scopes, 'Specification', p.spec); peopleScope(scopes, 'Implementation', p.implementation);
-      disclosure(section, 'Contributors and submitted reviews', scopes, 'people-details');
+      disclosure(section, 'Contributors and PR approvals', scopes, 'people-details');
       warnings(section, p.warnings);
       const provenance = node('details'); provenance.append(node('summary', 'People data provenance'), evidenceValue({revision:p.revision, observed_at:p.observed_at})); section.append(provenance);
       parent.append(section);
@@ -318,17 +323,25 @@
         const provenance = node('details', undefined, 'snapshot-details');
         provenance.append(node('summary', 'Snapshot details'));
         const context = node('div', undefined, 'snapshot-context');
-        context.append(node('p', `Source ${str(revision.sha)}${revision.dirty === true ? ' · local changes included' : ''} · ${str(revision.requested)}`));
-        context.append(node('p', `Current revision ${str(revision.sha).slice(0, 12)} vs main ${main.status === 'available' ? str(mainRevision.sha).slice(0, 12) : 'unavailable'}`));
+        const metadata = node('dl', undefined, 'meta');
+        const mainCoverage = main.status !== 'available' ? 'Unavailable' : mainWarnings.some(w => obj(w).code === 'empty_inventory') ? 'Not tracked yet' : mainWarnings.length ? 'Incomplete evidence' : 'See TIP details';
+        for (const [label, value] of [
+          ['Inspected commit', shortIdentity(revision.sha)],
+          ['Main commit', main.status === 'available' ? shortIdentity(mainRevision.sha) : node('span', 'Unavailable')],
+          ['Updated', observationTime(data.generated_at)],
+          ['Main coverage', node('span', mainCoverage)]
+        ]) {
+          const dd = node('dd'); dd.append(value); metadata.append(node('dt', label), dd);
+        }
+        context.append(metadata);
+        if (revision.dirty === true) context.append(node('p', 'Includes local changes.', 'muted'));
+        const only = main.status === 'available' ? arr(main.only_on_main).filter(id => typeof id === 'string') : [];
+        if (only.length) context.append(node('p', `Only on main: ${only.length} TIPs`));
         if (main.status === 'available' && reportURL(main.url)) {
           const reportLink = node('a', 'Main report JSON');
           reportLink.href = main.url; reportLink.target = '_blank'; reportLink.rel = 'noopener noreferrer';
           context.append(reportLink);
         }
-        const only = main.status === 'available' ? arr(main.only_on_main).filter(id => typeof id === 'string') : [];
-        if (only.length) context.append(node('p', `Only on main: ${only.length} TIPs · ${only.join(', ')}`));
-        warnings(context, mainWarnings);
-        context.append(node('h4', 'Provenance'), evidenceValue({repository:data.repository, revision, main_comparison:main, generated_at:data.generated_at, collection:data.collection}));
         provenance.append(context); summary.append(provenance); box.append(summary);
         el('load-status').className = 'sr-only';
         el('load-status').textContent = 'Read-only report snapshot';
