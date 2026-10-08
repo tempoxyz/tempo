@@ -150,8 +150,8 @@ pub(crate) fn gen_constructor(
 
             #[inline(always)]
             fn __new(address: ::alloy::primitives::Address) -> Self {
-                // Run collision detection checks in debug builds
-                #[cfg(debug_assertions)]
+                // Run collision detection checks in debug builds outside DST.
+                #[cfg(all(debug_assertions, not(feature = "dst")))]
                 {
                     slots::__check_all_collisions();
                 }
@@ -255,7 +255,7 @@ fn gen_collision_checks(allocated_fields: &[LayoutField<'_>]) -> proc_macro2::To
     // Generate a module initializer that calls all check functions
     // Always generate the function, even if empty, so the constructor can call it
     generated.extend(quote! {
-        #[cfg(debug_assertions)]
+        #[cfg(all(debug_assertions, not(feature = "dst")))]
         #[inline(always)]
         pub(super) fn __check_all_collisions() {
             #(#check_fn_calls();)*
