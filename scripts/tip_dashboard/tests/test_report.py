@@ -368,6 +368,20 @@ assert_eq!(after, true);
             (e if where == 'envelope' else e['attempts'][0])['errors'] = ['collection failed']
             self.assertEqual(self.req(self.build(evidence=e))['verification_status'], 'unknown')
 
+    def test_collection_failure_is_unavailable_not_malformed_or_passing(self):
+        e = self.envelope()
+        e['attempts'] = []
+        e['errors'] = ['No annotated assertions in this revision; execution evidence is unavailable.']
+        result = self.build(evidence=e)
+        self.assertEqual(self.req(result)['verification_status'], 'unknown')
+        codes = [w['code'] for w in result['collection']['warnings']]
+        self.assertIn('evidence_unavailable', codes)
+        self.assertNotIn('invalid_evidence', codes)
+        self.assertIn('No annotated assertions', str(result['collection']['warnings']))
+        self.assertEqual(result['summary']['verified'], 0)
+        e['attempts'] = self.envelope()['attempts']
+        self.assertEqual(self.build(evidence=e)['summary']['verified'], 0)
+
     def test_clean_head_and_worktree_are_same_evidence_identity(self):
         self.review()
         self.run_git('add', '.')

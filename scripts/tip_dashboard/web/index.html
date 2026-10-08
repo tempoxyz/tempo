@@ -11,15 +11,14 @@
 <body>
   <a class="skip" href="#results">Skip to upgrades</a>
   <main>
-    <header><p class="eyebrow">Tempo / protocol evidence</p><h1>Network upgrades</h1></header>
+    <header><p class="eyebrow">Tempo</p><h1>Network upgrades</h1></header>
     <div class="controls">
-      <label>Upgrades<select id="scope"><option value="latest">Latest upgrades</option><option value="all">All upgrades</option></select></label>
-      <label>Search<input id="search" type="search" placeholder="TIP, title or evidence"></label>
-      <label id="report-picker" hidden>Source report<select id="reports"></select></label>
+      <label>View<select id="scope"><option value="latest">Latest upgrades</option><option value="all">All upgrades</option></select></label>
+      <label class="search-control">Search<input id="search" type="search" placeholder="Search TIPs"></label>
+      <label id="report-picker" hidden>Revision<select id="reports"></select></label>
     </div>
-    <p id="load-status" role="status" aria-live="polite">Loading report…</p>
+    <p class="sr-only" id="load-status" role="status" aria-live="polite">Loading report…</p>
     <div id="snapshot"></div>
-    <p class="muted">Expand a TIP to inspect implementation, activation rules and test evidence.</p>
     <p id="result-count" role="status" aria-live="polite"></p>
     <div id="results" tabindex="-1"></div>
   </main>

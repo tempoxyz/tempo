@@ -390,6 +390,16 @@ def apply_evidence(tips, envelope, ctx, warnings):
             for marker in attempt['markers']:
                 if not isinstance(marker, dict) or any(not isinstance(marker.get(k), str) or not marker[k] for k in ('requirement', 'case', 'test', 'fork')) or marker['test'] != attempt['test']:
                     valid = False
+    errors = envelope.get('errors', [])
+    error = envelope.get('error')
+    collection_failed = (isinstance(errors, list) and all(isinstance(e, str) for e in errors)
+                         and (not error or isinstance(error, str)) and bool(errors or error))
+    if collection_failed:
+        reasons = errors + ([error] if error else [])
+        warnings.append(warning('evidence_unavailable', 'Execution evidence unavailable: ' + '; '.join(reasons)))
+        for r in requirements:
+            r['verification_status'] = 'unknown'
+        return
     if not valid:
         warnings.append(warning('invalid_evidence', 'Malformed or contradictory attempt envelope.'))
         for r in requirements:

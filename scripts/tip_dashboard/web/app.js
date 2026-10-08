@@ -281,7 +281,7 @@
       const keys = upgradeForks(active, el('scope').value === 'all');
       const search = el('search').value.trim();
       const tips = active.tips.filter(t => keys.includes(fork(t)) && matches(t, {search}));
-      el('result-count').textContent = `${tips.length} of ${active.tips.length} TIPs shown`;
+      el('result-count').textContent = `${tips.length} TIP${tips.length === 1 ? '' : 's'}${search ? ' matching “' + search + '”' : el('scope').value === 'all' ? ' · All upgrades' : ' · Latest upgrades'}`;
       if (search && !tips.length) container.append(node('p', 'No TIPs match this search.', 'empty'));
       for (const key of keys) {
         const scheduled = active.tips.filter(t => fork(t) === key), rows = tips.filter(t => fork(t) === key);
@@ -299,6 +299,7 @@
       el('snapshot').replaceChildren();
       el('results').replaceChildren();
       el('result-count').textContent = '';
+      el('load-status').className = '';
       el('load-status').textContent = `Report unavailable: ${error.message || error}`;
     }
     function showReport(text, expectedSHA) {
@@ -308,29 +309,36 @@
         if (['error', 'failed'].includes(obj(data.collection).status)) throw new Error('Report collection failed; no coverage established.');
         active = data;
         const revision = obj(data.revision), box = el('snapshot'); box.replaceChildren();
-        box.append(node('p', `Source ${str(revision.sha).slice(0, 12)}${revision.dirty === true ? ' · local changes included' : ''} · ${str(revision.requested)} · Collection: ${str(obj(data.collection).status)}`, 'source'));
         const main = obj(data.main_comparison), mainRevision = obj(main.revision);
-        box.append(node('p', `Current revision ${str(revision.sha).slice(0, 12)}${revision.dirty === true ? ' + local changes' : ''} vs main ${main.status === 'available' ? str(mainRevision.sha).slice(0, 12) : 'unavailable'}`, 'main-comparison'));
-        if (main.status === 'available') {
-          const only = arr(main.only_on_main).filter(id => typeof id === 'string');
-          if (only.length) {
-            const mainOnly = node('details');
-            mainOnly.append(node('summary', `Only on main: ${only.length} TIPs`), node('p', only.join(', ')));
-            box.append(mainOnly);
-          }
-          if (reportURL(main.url)) {
-            const reportLink = node('a', 'Main report · full inventory');
-            reportLink.href = main.url; reportLink.target = '_blank'; reportLink.rel = 'noopener noreferrer';
-            box.append(reportLink);
-          }
+        const summary = node('div', undefined, 'snapshot-summary');
+        const status = node('div', undefined, 'snapshot-status');
+        const mainWarnings = arr(main.warnings), codes = mainWarnings.map(w => obj(w).code);
+        if (main.status === 'available' && codes.includes('empty_inventory')) {
+          status.append(node('strong', 'Main not yet verifiable'), node('p', 'Requirements on main haven’t been labelled yet.', 'muted'));
+        } else if (main.status === 'available' && mainWarnings.length) {
+          status.append(node('strong', 'Main evidence incomplete'), node('p', 'Some checks are missing or unavailable. See snapshot details.', 'muted'));
+        } else if (main.status === 'available') {
+          status.append(node('strong', 'Compared with main'), node('p', 'Main coverage is shown inside each TIP.', 'muted'));
+        } else {
+          status.append(node('strong', 'Main comparison unavailable'), node('p', 'Showing the inspected revision only.', 'muted'));
         }
-        if (arr(main.warnings).length) {
-          const notices = node('div', undefined, 'report-notices');
-          notices.append(node('p', 'Main evidence warnings', 'notice-title'));
-          warnings(notices, main.warnings); box.append(notices);
+        summary.append(status);
+        const provenance = node('details', undefined, 'snapshot-details');
+        provenance.append(node('summary', 'Snapshot details'));
+        const context = node('div', undefined, 'snapshot-context');
+        context.append(node('p', `Source ${str(revision.sha)}${revision.dirty === true ? ' · local changes included' : ''} · ${str(revision.requested)}`));
+        context.append(node('p', `Current revision ${str(revision.sha).slice(0, 12)} vs main ${main.status === 'available' ? str(mainRevision.sha).slice(0, 12) : 'unavailable'}`));
+        if (main.status === 'available' && reportURL(main.url)) {
+          const reportLink = node('a', 'Main report JSON');
+          reportLink.href = main.url; reportLink.target = '_blank'; reportLink.rel = 'noopener noreferrer';
+          context.append(reportLink);
         }
-        const provenance = node('details');
-        provenance.append(node('summary', 'Provenance'), evidenceValue({repository:data.repository, revision, main_comparison:main, generated_at:data.generated_at, collection:data.collection})); box.append(provenance);
+        const only = main.status === 'available' ? arr(main.only_on_main).filter(id => typeof id === 'string') : [];
+        if (only.length) context.append(node('p', `Only on main: ${only.length} TIPs · ${only.join(', ')}`));
+        warnings(context, mainWarnings);
+        context.append(node('h4', 'Provenance'), evidenceValue({repository:data.repository, revision, main_comparison:main, generated_at:data.generated_at, collection:data.collection}));
+        provenance.append(context); summary.append(provenance); box.append(summary);
+        el('load-status').className = 'sr-only';
         el('load-status').textContent = 'Read-only report snapshot';
         renderTips();
         return data;

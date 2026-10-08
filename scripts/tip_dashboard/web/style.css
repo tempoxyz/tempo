@@ -11,10 +11,20 @@ p { margin: 8px 0; }
 .eyebrow,.muted,#load-status,#result-count { color: var(--muted); }
 .eyebrow { margin: 0 0 6px; }
 .controls { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; }
+.search-control { flex: 1 1 240px; }
 label { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 input,select { width: 100%; max-width: 100%; min-height: 40px; font: inherit; color: inherit; background: var(--surface); border: 1px solid var(--line); border-radius: 5px; padding: 8px; }
-#load-status { margin-top: 14px; }
-#snapshot { margin: 16px 0 20px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+#load-status:not(.sr-only) { margin-top: 14px; }
+#snapshot { margin: 18px 0; }
+.snapshot-summary { display: flex; align-items: start; flex-wrap: wrap; justify-content: space-between; gap: 12px 24px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+.snapshot-status p { margin: 3px 0 0; }
+.snapshot-details { margin-left: auto; min-width: 0; }
+.snapshot-details[open] { flex: 1 1 100%; margin-left: 0; }
+.snapshot-details > summary { color: var(--muted); }
+.snapshot-context { margin-top: 14px; padding-top: 8px; border-top: 1px solid var(--line); }
+#result-count { margin: 18px 0 0; font-size: 13px; }
+#results > .upgrade:first-child > h2 { margin-top: 16px; }
 .source { font-weight: 600; }
 summary { cursor: pointer; overflow-wrap: anywhere; }
 .tip { border: 1px solid var(--line); border-radius: 6px; background: var(--surface); margin: 8px 0; padding: 14px 16px; min-width: 0; }

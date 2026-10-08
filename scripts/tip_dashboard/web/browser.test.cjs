@@ -26,7 +26,15 @@ const {pathToFileURL} = require('node:url');
     await page.waitForFunction(()=>document.querySelector('#load-status').textContent.includes('Read-only'));
     assert.equal(await page.locator('input[type=file]').count(),0);
     assert.equal(await page.locator('#report-picker').isVisible(),false);
-    assert.match(await page.locator('#snapshot').innerText(),new RegExp(real.revision.sha.slice(0,12)));
+    assert.match(await page.locator('#snapshot').textContent(),new RegExp(real.revision.sha.slice(0,12)));
+    assert.equal(await page.locator('.snapshot-details').getAttribute('open'),null,'technical details default closed');
+    const headerText = await page.locator('#snapshot').innerText();
+    assert.doesNotMatch(headerText,/Collection:|Current revision|invalid_evidence|Malformed|empty_inventory|Read-only/);
+    assert.ok(!headerText.includes(real.revision.sha.slice(0,12)),'raw commit metadata is secondary');
+    if(real.main_comparison?.warnings?.some(w=>w.code==='empty_inventory')) assert.match(headerText,/Main not yet verifiable/);
+    await page.locator('.snapshot-details > summary').click();
+    assert.ok((await page.locator('.snapshot-details').innerText()).includes(real.revision.sha),'selected commit remains accessible');
+    await page.locator('.snapshot-details > summary').click();
     const {upgradeForks} = require('./app.js');
     assert.equal(await page.locator('#results > section').count(),upgradeForks(real).length);
     const next = page.locator('#results > section').filter({has:page.locator('h2',{hasText:real.next_fork})}).first();
@@ -52,7 +60,7 @@ const {pathToFileURL} = require('node:url');
       }
     }
     if (real.main_comparison?.status === 'available') {
-      assert.ok((await page.locator('#snapshot').innerText()).includes(real.main_comparison.revision.sha.slice(0,12)), 'real main commit');
+      assert.ok((await page.locator('#snapshot').textContent()).includes(real.main_comparison.revision.sha.slice(0,12)), 'real main commit');
       if (!linked.main_comparison?.inventory?.count) assert.match(await card.locator('.main-comparison').innerText(), /Coverage unknown/);
     }
     const req = linked.requirements.find(r=>r.implementations.length);
@@ -89,7 +97,7 @@ const {pathToFileURL} = require('node:url');
     await page.locator('#reports').selectOption('1');
     await page.waitForFunction(()=>document.querySelector('#load-status').textContent.includes('Report unavailable'));
     assert.equal(await page.locator('#results details').count(),0);
-    assert.equal(await page.locator('#snapshot').innerText(),'');
+    assert.equal(await page.locator('#snapshot').textContent(),'');
     await page.screenshot({path:path.join(out,'error-dashboard.png'),fullPage:true});
     reportBody = JSON.stringify(real);
     await page.locator('#reports').selectOption('0');
@@ -101,7 +109,7 @@ const {pathToFileURL} = require('node:url');
     assert.equal(await page.locator('#results details').count(),0);
     await page.goto(pathToFileURL(path.join(path.dirname(reportPath),'dashboard.html')).href);
     await page.waitForFunction(()=>document.querySelector('#load-status').textContent.includes('Read-only'));
-    assert.ok((await page.locator('#snapshot').innerText()).includes(real.revision.sha.slice(0,12)));
+    assert.ok((await page.locator('#snapshot').textContent()).includes(real.revision.sha.slice(0,12)));
     assert.equal(await page.locator('input[type=file]').count(),0);
     // Synthetic fixtures independently exercise identities, history, trust boundaries and main scope.
     const fixture=JSON.parse(JSON.stringify(real));
@@ -132,7 +140,7 @@ const {pathToFileURL} = require('node:url');
     assert.match(await history.innerText(),/older \/ different PR head/);
     assert.match(await fixtureCard.locator('.main-comparison').innerText(),/TIP present[\s\S]*Spec: changed/);
     assert.match(await fixtureCard.locator('.main-comparison').innerText(),/Main inventory missing · Coverage unknown/);
-    assert.match(await page.locator('#snapshot').innerText(),/vs main b{12}/);
+    assert.match(await page.locator('#snapshot').textContent(),/vs main b{12}/);
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'people mobile overflow');
     await page.screenshot({path:path.join(out,'people-main-fixture.png'),fullPage:true});
     // Exercise spacing that the text-only DOM tests cannot detect.
@@ -163,13 +171,13 @@ const {pathToFileURL} = require('node:url');
     reportBody=JSON.stringify(fixture);await page.reload();
     await page.waitForFunction(()=>document.querySelector('#load-status').textContent.includes('Read-only'));
     await page.locator('#results .tip > summary').click();
-    assert.match(await page.locator('#snapshot').innerText(),/vs main unavailable/);
+    assert.match(await page.locator('#snapshot').textContent(),/vs main unavailable/);
     assert.match(await page.locator('#results .main-comparison').innerText(),/presence and coverage unknown/);
     assert.doesNotMatch(await page.locator('#results .main-comparison').innerText(),/TIP present/);
     await page.locator('.people-details > summary').click();
     assert.match(await page.locator('.github-people').innerText(),/PR association \/ review data incomplete or unavailable/);
     assert.deepEqual(errors,[]);
-    const result = {status:'passed',revision:real.revision,drilldown:{tip:linked.id,requirement:req.id},checks:['read-only controls','latest upgrades','empty configured fork','optional hosted selector','short source SHA','source/guard/assertion drilldown','search','mobile overflow','schema/network failure clears stale evidence','portable bundled dashboard','GitHub people and escaped names','latest submitted review and dismissed old-head history','main coverage scope and unavailable comparison','inline spec code','coverage spacing and expanded layout at 320/390/768/1440px','dark mode rendering'],limitations:'Browser checks supplied report evidence, not live network activation.'};
+    const result = {status:'passed',revision:real.revision,drilldown:{tip:linked.id,requirement:req.id},checks:['read-only controls','latest upgrades','empty configured fork','optional hosted selector','short source SHA','source/guard/assertion drilldown','search','mobile overflow','schema/network failure clears stale evidence','portable bundled dashboard','GitHub people and escaped names','latest submitted review and dismissed old-head history','main coverage scope and unavailable comparison','inline spec code','coverage spacing and expanded layout at 320/390/768/1440px','dark mode rendering','concise header with optional provenance'],limitations:'Browser checks supplied report evidence, not live network activation.'};
     fs.writeFileSync(path.join(out,'browser-results.json'),JSON.stringify(result,null,2)+'\n');
     console.log(JSON.stringify(result));
   } finally { await browser.close(); }
