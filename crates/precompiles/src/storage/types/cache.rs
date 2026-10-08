@@ -5,6 +5,9 @@ const CACHE_THRESHOLD: usize = 100;
 
 #[derive(Debug)]
 pub(crate) struct LinearCache<K, H> {
+    // Singleton caches need no backing vector. Keep handlers boxed so their addresses
+    // remain stable when the cache grows or promotes to a map.
+    first: Option<(K, Box<H>)>,
     entries: Vec<(K, Box<H>)>,
 }
 
@@ -12,6 +15,7 @@ impl<K, H> Default for LinearCache<K, H> {
     #[inline]
     fn default() -> Self {
         Self {
+            first: None,
             entries: Vec::new(),
         }
     }
@@ -20,43 +24,46 @@ impl<K, H> Default for LinearCache<K, H> {
 impl<K: Eq + Clone, H> LinearCache<K, H> {
     #[inline]
     fn len(&self) -> usize {
-        self.entries.len()
+        usize::from(self.first.is_some()) + self.entries.len()
     }
 
     #[inline]
     fn find(&self, key: &K) -> Option<*const H> {
-        self.entries
+        self.first
             .iter()
+            .chain(self.entries.iter())
             .find(|(candidate, _)| candidate == key)
             .map(|(_, boxed)| boxed.as_ref() as *const H)
     }
 
     #[inline]
     fn find_mut(&mut self, key: &K) -> Option<*mut H> {
-        self.entries
+        self.first
             .iter_mut()
+            .chain(self.entries.iter_mut())
             .find(|(candidate, _)| candidate == key)
             .map(|(_, boxed)| boxed.as_mut() as *mut H)
     }
 
     #[inline]
     fn insert(&mut self, key: &K, f: impl FnOnce() -> H) -> *const H {
-        self.entries.push((key.clone(), Box::new(f())));
-        self.entries
-            .last()
-            .expect("just pushed handler cache entry")
-            .1
-            .as_ref() as *const H
+        self.insert_mut(key, f).cast_const()
     }
 
     #[inline]
     fn insert_mut(&mut self, key: &K, f: impl FnOnce() -> H) -> *mut H {
-        self.entries.push((key.clone(), Box::new(f())));
-        self.entries
-            .last_mut()
-            .expect("just pushed handler cache entry")
-            .1
-            .as_mut() as *mut H
+        let entry = (key.clone(), Box::new(f()));
+        let boxed = if self.first.is_none() {
+            &mut self.first.insert(entry).1
+        } else {
+            self.entries.push(entry);
+            &mut self
+                .entries
+                .last_mut()
+                .expect("just pushed handler cache entry")
+                .1
+        };
+        boxed.as_mut() as *mut H
     }
 
     #[inline]
@@ -64,6 +71,9 @@ impl<K: Eq + Clone, H> LinearCache<K, H> {
     where
         K: Hash,
     {
+        if let Some((key, value)) = self.first.take() {
+            map.insert_boxed(key, value);
+        }
         for (key, value) in self.entries.drain(..) {
             map.insert_boxed(key, value);
         }
@@ -216,5 +226,48 @@ impl<K, H, const THRESHOLD: usize> Clone for HandlerCache<K, H, THRESHOLD> {
     /// Creates a new empty cache (cached handlers are not cloned).
     fn clone(&self) -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn handlers_remain_valid_across_growth_and_promotion() {
+        let cache = HandlerCache::<usize, usize, 3>::new();
+        let first = cache.get_or_insert(&0, || 42);
+        let second = cache.get_or_insert(&1, || 43);
+        for key in 2..200 {
+            assert_eq!(*cache.get_or_insert(&key, || key + 42), key + 42);
+            assert_eq!(*first, 42);
+            assert_eq!(*second, 43);
+        }
+        assert!(std::ptr::eq(
+            first,
+            cache.get_or_insert(&0, || unreachable!())
+        ));
+        assert!(std::ptr::eq(
+            second,
+            cache.get_or_insert(&1, || unreachable!())
+        ));
+    }
+
+    #[test]
+    fn mutable_handlers_are_initialized_once_across_promotion() {
+        let mut cache = HandlerCache::<usize, usize, 3>::new();
+        let initialized = Cell::new(0);
+        for round in 0..3 {
+            for key in 0..200 {
+                let value = cache.get_or_insert_mut(&key, || {
+                    initialized.set(initialized.get() + 1);
+                    key
+                });
+                assert_eq!(*value, key + round);
+                *value += 1;
+            }
+        }
+        assert_eq!(initialized.get(), 200);
     }
 }
