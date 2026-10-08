@@ -181,8 +181,8 @@ pub enum GenesisKeyError {
     /// The scheme has a protocol verifying key, which genesis cannot replace.
     #[error("ZK signature scheme {0} has a protocol verifying key")]
     ProtocolKey(u8),
-    /// The key is not 576 bytes.
-    #[error("verifying key for ZK signature scheme {scheme} is {length} bytes, expected 576")]
+    /// The key has the wrong length for its scheme.
+    #[error("verifying key for ZK signature scheme {scheme} has unsupported length {length} bytes")]
     Length {
         /// The scheme byte.
         scheme: u8,

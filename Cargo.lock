@@ -1153,6 +1153,7 @@ dependencies = [
  "smallvec",
  "thiserror 2.0.18",
  "tracing",
+ "triomphe",
 ]
 
 [[package]]
@@ -12624,9 +12625,9 @@ dependencies = [
 
 [[package]]
 name = "risc0-zkvm"
-version = "3.0.3"
+version = "3.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3fcce11648a9ff60b8e7af2f0ce7fbf8d25275ab6d414cc91b9da69ee75bc978"
+checksum = "22b7eafb5d85be59cbd9da83f662cf47d834f1b836e14f675d1530b12c666867"
 dependencies = [
  "anyhow",
  "borsh",
@@ -14164,6 +14165,7 @@ dependencies = [
  "reth-network-peers",
  "serde",
  "serde_json",
+ "tempo-contracts",
  "tempo-dkg-onchain-artifacts",
  "tempo-hardfork",
  "tempo-primitives",
@@ -14366,14 +14368,19 @@ dependencies = [
  "reth-consensus",
  "reth-consensus-common",
  "reth-ethereum-consensus",
+ "reth-ethereum-primitives",
  "reth-evm",
  "reth-evm-ethereum",
  "reth-execution-cache",
+ "reth-execution-types",
  "reth-primitives-traits",
+ "reth-provider",
  "reth-revm",
  "reth-rpc-eth-api",
+ "reth-stages",
  "reth-storage-api",
  "reth-trie",
+ "reth-trie-db",
  "revm",
  "serde_json",
  "tempo-chainspec",
@@ -14647,6 +14654,7 @@ dependencies = [
  "tempo-precompiles-macros",
  "tempo-primitives",
  "tempo-revm",
+ "tempo-zk",
  "thiserror 2.0.18",
  "tracing",
  "x509-cert",

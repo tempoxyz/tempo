@@ -40,7 +40,7 @@ use tempo_chainspec::{
 use tempo_evm::{TempoEvmConfig, TempoPoolValidationEvm};
 use tempo_precompiles::{
     nonce::{INonce, NonceManager},
-    storage::StorageActions,
+    storage::{StorageActions, StorageCtx},
 };
 use tempo_primitives::{
     Block, TempoHeader, TempoPrimitives,
@@ -195,6 +195,24 @@ where
     /// Returns the configured client
     pub fn client(&self) -> &Client {
         self.inner.client()
+    }
+
+    /// Computes the migration gate from the same environment as execution and RPC.
+    pub(crate) fn account_migration_enabled(&self, header: &TempoHeader) -> bool {
+        self.inner
+            .evm_config()
+            .evm_env(header)
+            .expect("invalid block in migration activation check")
+            .block_env
+            .account_migration_enabled
+    }
+
+    /// The gate at the pool's currently cached canonical head.
+    pub(crate) fn cached_account_migration_enabled(&self) -> bool {
+        self.cached_evm_env
+            .read()
+            .block_env
+            .account_migration_enabled
     }
 
     /// Pool-only time-bound admission checks.
@@ -644,6 +662,36 @@ where
                     }
                 }
 
+                // Execution ignores retired-root EIP-7702 authorizations. Do not let those
+                // ignored authorizations reserve delegation slots in the local pool either.
+                if spec.is_t14()
+                    && evm.block().account_migration_enabled
+                    && let Some(recovered) = authorities.take()
+                {
+                    let active = evm.db_mut().with_read_only_storage_ctx(
+                        spec,
+                        StorageActions::disabled(),
+                        || {
+                            let mut active = Vec::with_capacity(recovered.len());
+                            for authority in recovered {
+                                if StorageCtx.config_commitment(authority)?.is_zero() {
+                                    active.push(authority);
+                                }
+                            }
+                            Ok::<_, tempo_precompiles::error::TempoPrecompileError>(active)
+                        },
+                    );
+                    match active {
+                        Ok(active) => authorities = Some(active),
+                        Err(error) => {
+                            return TransactionValidationOutcome::Error(
+                                *transaction.hash(),
+                                Box::new(error),
+                            );
+                        }
+                    }
+                }
+
                 // Additional nonce validations for non-protocol nonce keys
                 if let Some(nonce_key) = transaction.transaction().nonce_key()
                     && !nonce_key.is_zero()
@@ -828,11 +876,7 @@ where
     DB: DatabaseRef<Error = ProviderError>,
 {
     fn basic_account(&self, address: &Address) -> ProviderResult<Option<Account>> {
-        Ok(self.db.basic_ref(*address)?.map(|account| Account {
-            nonce: account.nonce,
-            balance: account.balance,
-            bytecode_hash: (!account.is_empty_code_hash()).then_some(account.code_hash),
-        }))
+        Ok(self.db.basic_ref(*address)?.map(Account::from))
     }
 }
 
@@ -900,13 +944,15 @@ where
 
 #[cfg(test)]
 mod tests {
+    mod configurable;
+
     use super::*;
     use crate::{test_utils::TxBuilder, transaction::TempoPoolTransactionError};
     use alloy_consensus::{Header, Signed, Transaction, TxLegacy};
     use alloy_primitives::{Address, B256, Bytes, TxKind, U256, address, uint};
     use alloy_signer::Signature;
     use reth_chainspec::EthChainSpec;
-    use reth_primitives_traits::{Account, Bytecode, SignedTransaction};
+    use reth_primitives_traits::{Account, AccountExtension, Bytecode, SignedTransaction};
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_revm::cached::CachedReads;
     use reth_storage_api::{AccountReader, BlockNumReader, BytecodeReader};
@@ -986,6 +1032,7 @@ mod tests {
             nonce: 7,
             balance: U256::from(42),
             bytecode_hash: Some(code_hash),
+            extension: AccountExtension::copy_from_slice(&[0x42; 32]),
         };
         let bytecode = revm::bytecode::Bytecode::default();
         let account_reads = Arc::new(AtomicUsize::new(0));
@@ -993,12 +1040,7 @@ mod tests {
         let provider = CountingDatabaseRef {
             address,
             code_hash,
-            account: revm::state::AccountInfo::new(
-                account.balance,
-                account.nonce,
-                code_hash,
-                bytecode.clone(),
-            ),
+            account: account.clone().into(),
             bytecode: bytecode.clone(),
             account_reads: account_reads.clone(),
             bytecode_reads: bytecode_reads.clone(),
@@ -1006,7 +1048,10 @@ mod tests {
         let mut cached_reads = CachedReads::default();
         let cached = CachedAccountInfoReader::new(cached_reads.as_db(provider));
 
-        assert_eq!(cached.basic_account(&address).unwrap(), Some(account));
+        assert_eq!(
+            cached.basic_account(&address).unwrap(),
+            Some(account.clone())
+        );
         assert_eq!(cached.basic_account(&address).unwrap(), Some(account));
         assert_eq!(account_reads.load(Ordering::Relaxed), 1);
 

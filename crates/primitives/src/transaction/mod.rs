@@ -1,5 +1,7 @@
 pub mod envelope;
 pub mod key_authorization;
+pub mod multisig;
+pub use multisig::*;
 pub mod tempo_transaction;
 pub mod tt_authorization;
 pub mod tt_signature;
@@ -9,8 +11,8 @@ pub mod zk_signature;
 pub use tt_authorization::{MAGIC, RecoveredTempoAuthorization, TempoSignedAuthorization};
 // Re-export Authorization from alloy for convenience
 pub use tt_signature::{
-    KeychainSignature, KeychainVersion, KeychainVersionError, PrimitiveSignature, TempoSignature,
-    derive_p256_address,
+    AccountSignature, KeychainSignature, KeychainVersion, KeychainVersionError, PrimitiveSignature,
+    TempoSignature, derive_p256_address,
 };
 
 pub use crate::address::TIP20_TOKEN_PREFIX as TIP20_PAYMENT_PREFIX;

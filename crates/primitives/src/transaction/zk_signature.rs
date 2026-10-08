@@ -512,7 +512,7 @@ mod tests {
 
         // Too large.
         assert_eq!(
-            ZkSignature::from_bytes(&vec![SIGNATURE_TYPE_ZK; MAX_ZK_SIGNATURE_SIZE + 1]),
+            ZkSignature::from_bytes(&vec![SIGNATURE_TYPE_ZK; MAX_PQ_ZK_SIGNATURE_SIZE + 1]),
             Err("ZK signature too large")
         );
     }

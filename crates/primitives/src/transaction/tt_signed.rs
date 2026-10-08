@@ -407,8 +407,8 @@ impl alloy_consensus::transaction::SignerRecoverable for AASigned {
     fn recover_signer_unchecked(
         &self,
     ) -> Result<alloy_primitives::Address, alloy_consensus::crypto::RecoveryError> {
-        // For Tempo transactions, verified and unverified recovery are the same
-        // since signature verification happens during recover_signer
+        // Both paths identify the sender. Multisig and keychain authority
+        // require separate stateful validation.
         self.recover_signer()
     }
 }

@@ -3,6 +3,7 @@ pub mod address_registry;
 pub mod common_errors;
 pub mod current_committee;
 pub mod key_publisher;
+pub mod native_multisig;
 pub mod nonce;
 pub mod receive_policy_guard;
 pub mod signature_verifier;
@@ -23,6 +24,7 @@ pub use address_registry::*;
 pub use common_errors::*;
 pub use current_committee::*;
 pub use key_publisher::*;
+pub use native_multisig::*;
 pub use nonce::*;
 pub use receive_policy_guard::*;
 pub use signature_verifier::*;
@@ -65,9 +67,11 @@ pub const STORAGE_CREDITS_ADDRESS: Address = address!("0x10600000000000000000000
 pub const CURRENT_COMMITTEE_ADDRESS: Address =
     address!("0xC077E00000000000000000000000000000000000");
 pub const KEY_PUBLISHER_ADDRESS: Address = address!("0x1132000000000000000000000000000000000000");
+pub const NATIVE_MULTISIG_ADDRESS: Address = address!("AACC000000000000000000000000000000000000");
 
 /// Fixed system precompile addresses and corresponding activation hardfork
 pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[
+    (NATIVE_MULTISIG_ADDRESS, TempoHardfork::T14),
     (TIP403_REGISTRY_ADDRESS, TempoHardfork::Genesis),
     (TIP_FEE_MANAGER_ADDRESS, TempoHardfork::Genesis),
     (STABLECOIN_DEX_ADDRESS, TempoHardfork::Genesis),

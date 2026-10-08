@@ -6,6 +6,6 @@ edition = "2024"
 [workspace]
 
 [dependencies]
-risc0-zkvm = { version = "=3.0.3", default-features = false, features = ["std"] }
+risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std"] }
 tempo-pq-oidc = { path = "../protocol" }
 

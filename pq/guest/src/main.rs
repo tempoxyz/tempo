@@ -1,5 +1,7 @@
 //! Proves an ML-DSA OIDC sign-in without publishing the token or identity.
 
+#![no_main]
+
 use risc0_zkvm::guest::env;
 
 risc0_zkvm::guest::entry!(main);

@@ -1,5 +1,5 @@
 [workspace]
 members = ["protocol"]
-exclude = ["guest"]
+exclude = ["guest", "methods"]
 resolver = "3"
 

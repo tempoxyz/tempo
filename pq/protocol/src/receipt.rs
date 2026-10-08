@@ -11,7 +11,8 @@ pub fn verify(proof: &[u8], image: [u32; 8], statement: &Statement) -> bool {
     let Ok(receipt) = serde_json::from_slice::<Receipt>(proof) else {
         return false;
     };
-    if !matches!(receipt.inner, InnerReceipt::Composite(_)) {
+    if !matches!(&receipt.inner, InnerReceipt::Composite(composite) if composite.assumption_receipts.is_empty())
+    {
         return false;
     }
     receipt.journal.bytes == statement.journal() && receipt.verify(image).is_ok()
