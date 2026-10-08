@@ -69,7 +69,7 @@ struct Process {
 
 enum State {
     Dormant,
-    Running(Process),
+    Running(Box<Process>),
     Failed(String),
 }
 
@@ -146,7 +146,7 @@ impl HistoricalWorkers {
         }
         let result = async {
             if matches!(*state, State::Dormant) {
-                *state = State::Running(spawn(&self.inner.context, era)?);
+                *state = State::Running(Box::new(spawn(&self.inner.context, era)?));
             }
             let State::Running(process) = &mut *state else {
                 unreachable!("spawned or failed")
@@ -172,7 +172,7 @@ impl HistoricalWorkers {
                     // Keep this child owned while waiting. Cancellation falls back to kill_on_drop.
                     let _ = process.child.kill().await;
                 }
-                bail!("{message}")
+                bail!("{message}");
             }
         }
     }
@@ -292,7 +292,7 @@ async fn ready(
         },
     );
     let info = tokio::select! {
-        _ = inner.shutdown.notified() => bail!("historical workers are shutting down"),
+        _ = inner.shutdown.notified() => { bail!("historical workers are shutting down"); },
         info = handshake => info?,
     };
     tracing::debug!(era = %era.name, pid, "Historical RPC worker ready");
