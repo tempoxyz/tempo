@@ -1,14 +1,14 @@
 use alloy_primitives::map::HashMap;
-use std::{cell::RefCell, hash::Hash};
+use std::{cell::RefCell, hash::Hash, marker::PhantomData, ptr::NonNull};
 
 const CACHE_THRESHOLD: usize = 100;
 
 #[derive(Debug)]
 pub(crate) struct LinearCache<K, H> {
-    // Singleton caches need no backing vector. Keep handlers boxed so their addresses
-    // remain stable when the cache grows or promotes to a map.
-    first: Option<(K, Box<H>)>,
-    entries: Vec<(K, Box<H>)>,
+    // Singleton caches need no backing vector. Handler allocations remain stable
+    // when the cache grows or promotes to a map.
+    first: Option<(K, CachedHandler<H>)>,
+    entries: Vec<(K, CachedHandler<H>)>,
 }
 
 impl<K, H> Default for LinearCache<K, H> {
@@ -33,7 +33,7 @@ impl<K: Eq + Clone, H> LinearCache<K, H> {
             .iter()
             .chain(self.entries.iter())
             .find(|(candidate, _)| candidate == key)
-            .map(|(_, boxed)| boxed.as_ref() as *const H)
+            .map(|(_, boxed)| boxed.as_ptr().cast_const())
     }
 
     #[inline]
@@ -42,7 +42,7 @@ impl<K: Eq + Clone, H> LinearCache<K, H> {
             .iter_mut()
             .chain(self.entries.iter_mut())
             .find(|(candidate, _)| candidate == key)
-            .map(|(_, boxed)| boxed.as_mut() as *mut H)
+            .map(|(_, boxed)| boxed.as_ptr())
     }
 
     #[inline]
@@ -52,7 +52,7 @@ impl<K: Eq + Clone, H> LinearCache<K, H> {
 
     #[inline]
     fn insert_mut(&mut self, key: &K, f: impl FnOnce() -> H) -> *mut H {
-        let entry = (key.clone(), Box::new(f()));
+        let entry = (key.clone(), CachedHandler::new(f()));
         let boxed = if self.first.is_none() {
             &mut self.first.insert(entry).1
         } else {
@@ -63,69 +63,42 @@ impl<K: Eq + Clone, H> LinearCache<K, H> {
                 .expect("just pushed handler cache entry")
                 .1
         };
-        boxed.as_mut() as *mut H
-    }
-
-    #[inline]
-    fn drain_into_map(&mut self, map: &mut MapCache<K, H>)
-    where
-        K: Hash,
-    {
-        if let Some((key, value)) = self.first.take() {
-            map.insert_boxed(key, value);
-        }
-        for (key, value) in self.entries.drain(..) {
-            map.insert_boxed(key, value);
-        }
+        boxed.as_ptr()
     }
 }
 
 #[derive(Debug)]
 pub(crate) struct MapCache<K, H> {
-    entries: HashMap<K, Box<H>>,
-}
-
-impl<K, H> Default for MapCache<K, H> {
-    #[inline]
-    fn default() -> Self {
-        Self {
-            entries: HashMap::default(),
-        }
-    }
+    entries: HashMap<K, usize>,
+    // Keep ownership append-only even if cloning or hashing a key panics.
+    handlers: LinearCache<K, H>,
 }
 
 impl<K: Hash + Eq + Clone, H> MapCache<K, H> {
     #[inline]
-    fn reserve(&mut self, additional: usize) {
-        self.entries.reserve(additional);
-    }
-
-    #[inline]
-    fn insert_boxed(&mut self, key: K, value: Box<H>) {
-        self.entries.insert(key, value);
-    }
-
-    #[inline]
     fn get_or_insert(&mut self, key: &K, f: impl FnOnce() -> H) -> *const H {
-        if let Some(boxed) = self.entries.get(key) {
-            boxed.as_ref() as *const H
-        } else {
-            self.entries
-                .entry(key.clone())
-                .or_insert_with(|| Box::new(f()))
-                .as_ref() as *const H
-        }
+        self.get_or_insert_mut(key, f).cast_const()
     }
 
     #[inline]
     fn get_or_insert_mut(&mut self, key: &K, f: impl FnOnce() -> H) -> *mut H {
-        if let Some(boxed) = self.entries.get_mut(key) {
-            boxed.as_mut() as *mut H
+        let index = if let Some(index) = self.entries.get(key) {
+            *index
         } else {
-            self.entries
-                .entry(key.clone())
-                .or_insert_with(|| Box::new(f()))
-                .as_mut() as *mut H
+            let index = self.handlers.len();
+            self.handlers.insert_mut(key, f);
+            self.entries.insert(key.clone(), index);
+            index
+        };
+        if index == 0 {
+            self.handlers
+                .first
+                .as_ref()
+                .expect("cached first handler")
+                .1
+                .as_ptr()
+        } else {
+            self.handlers.entries[index - 1].1.as_ptr()
         }
     }
 }
@@ -164,10 +137,16 @@ where
 {
     #[inline]
     fn promote_to_map(linear: &mut LinearCache<K, H>) -> MapCache<K, H> {
-        let mut map = MapCache::default();
-        map.reserve(THRESHOLD * 2);
-        linear.drain_into_map(&mut map);
-        map
+        let mut entries = HashMap::default();
+        entries.reserve(THRESHOLD * 2);
+        for (index, (key, _)) in linear.first.iter().chain(linear.entries.iter()).enumerate() {
+            entries.insert(key.clone(), index);
+        }
+        // Do all potentially panicking key operations before moving ownership.
+        MapCache {
+            entries,
+            handlers: std::mem::take(linear),
+        }
     }
 
     /// Returns a reference to a lazily initialized handler for the given key.
@@ -191,7 +170,8 @@ where
             }
             HandlerCacheState::Mapped(map) => map.get_or_insert(key, f),
         };
-        // SAFETY: Box provides stable heap address. Cache is append-only.
+        // SAFETY: CachedHandler owns a stable allocation without retagging it on moves.
+        // The cache is append-only, and the returned reference cannot outlive it.
         unsafe { &*ptr }
     }
 
@@ -217,7 +197,9 @@ where
             }
             HandlerCacheState::Mapped(map) => map.get_or_insert_mut(key, f),
         };
-        // SAFETY: Box provides stable heap address. Cache is append-only. `&mut self` ensures exclusive access.
+        // SAFETY: CachedHandler owns a stable allocation without retagging it on moves.
+        // The cache is append-only, and the returned reference cannot outlive it.
+        // `&mut self` ensures exclusive access.
         unsafe { &mut *ptr }
     }
 }
@@ -229,10 +211,48 @@ impl<K, H, const THRESHOLD: usize> Clone for HandlerCache<K, H, THRESHOLD> {
     }
 }
 
+/// Owns a handler allocation while allowing outstanding references across owner moves.
+///
+/// Moving a `Box<H>` can invalidate references to `H` under Rust's aliasing rules.
+/// Keep the allocation as a raw pointer until the cache is dropped instead.
+#[derive(Debug)]
+struct CachedHandler<H> {
+    ptr: NonNull<H>,
+    ownership: PhantomData<Box<H>>,
+}
+
+impl<H> CachedHandler<H> {
+    #[inline]
+    fn new(handler: H) -> Self {
+        Self {
+            ptr: NonNull::from(Box::leak(Box::new(handler))),
+            ownership: PhantomData,
+        }
+    }
+
+    #[inline]
+    fn as_ptr(&self) -> *mut H {
+        self.ptr.as_ptr()
+    }
+}
+
+impl<H> Drop for CachedHandler<H> {
+    fn drop(&mut self) {
+        // SAFETY: The pointer comes from exactly one leaked Box and this owner is
+        // never cloned. Cache references cannot outlive the owning cache.
+        unsafe { drop(Box::from_raw(self.ptr.as_ptr())) }
+    }
+}
+
+// SAFETY: This is an owning allocation with the same Send/Sync requirements as Box<H>.
+unsafe impl<H: Send> Send for CachedHandler<H> {}
+// SAFETY: Shared ownership never grants mutable access to the allocation.
+unsafe impl<H: Sync> Sync for CachedHandler<H> {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
+    use std::{cell::Cell, rc::Rc};
 
     #[test]
     fn handlers_remain_valid_across_growth_and_promotion() {
@@ -269,5 +289,52 @@ mod tests {
             }
         }
         assert_eq!(initialized.get(), 200);
+    }
+
+    #[test]
+    fn handlers_are_dropped_once_after_promotion() {
+        struct Counted(Rc<Cell<usize>>);
+
+        impl Drop for Counted {
+            fn drop(&mut self) {
+                self.0.set(self.0.get() + 1);
+            }
+        }
+
+        let dropped = Rc::new(Cell::new(0));
+        {
+            let cache = HandlerCache::<usize, Counted, 3>::new();
+            for key in 0..200 {
+                cache.get_or_insert(&key, || Counted(dropped.clone()));
+            }
+            assert_eq!(dropped.get(), 0);
+        }
+        assert_eq!(dropped.get(), 200);
+    }
+
+    #[test]
+    fn handlers_survive_a_panicking_key_hash_during_promotion() {
+        #[derive(Clone, PartialEq, Eq)]
+        struct Key(usize, Rc<Cell<bool>>);
+
+        impl Hash for Key {
+            fn hash<S: std::hash::Hasher>(&self, state: &mut S) {
+                assert!(!self.1.get(), "injected hash panic");
+                self.0.hash(state);
+            }
+        }
+
+        let panic = Rc::new(Cell::new(false));
+        let cache = HandlerCache::<Key, usize, 1>::new();
+        let first = cache.get_or_insert(&Key(0, panic.clone()), || 42);
+        panic.set(true);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            cache.get_or_insert(&Key(1, panic.clone()), || 43);
+        }));
+        assert!(result.is_err());
+        assert_eq!(*first, 42);
+        panic.set(false);
+        assert_eq!(*cache.get_or_insert(&Key(1, panic.clone()), || 43), 43);
+        assert_eq!(*first, 42);
     }
 }

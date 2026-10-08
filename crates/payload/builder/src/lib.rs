@@ -438,8 +438,7 @@ where
 
         debug!("building new payload");
 
-        let roots_parent = Span::current();
-        let mut roots_task = None;
+        let (roots_tx, roots_rx) = self.spawn_roots_task();
 
         if is_osaka && estimated_rlp_block_size > MAX_RLP_BLOCK_SIZE {
             return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
@@ -708,8 +707,6 @@ where
             if !receipt.success {
                 reverted_transactions += 1;
             }
-            let (roots_tx, _) =
-                roots_task.get_or_insert_with(|| self.spawn_roots_task(&roots_parent));
             let _ = roots_tx.send((tx, receipt));
         };
 
@@ -765,11 +762,8 @@ where
 
         let builder_finish_start = Instant::now();
 
-        // Empty blocks need no roots worker. Closing a nonempty stream triggers finalization.
-        let roots_rx = roots_task.map(|(roots_tx, roots_rx)| {
-            drop(roots_tx);
-            roots_rx
-        });
+        // Drop the roots task handle to trigger finalization
+        drop(roots_tx);
 
         let (evm, execution_result) = executor.finish()?;
         let evm_env = evm.into_env();
@@ -856,13 +850,9 @@ where
             transactions,
             senders,
             encoded_block_transactions,
-        } = if let Some(roots_rx) = roots_rx {
-            roots_rx
-                .blocking_recv()
-                .map_err(PayloadBuilderError::other)?
-        } else {
-            RootsTaskResult::empty()
-        };
+        } = roots_rx
+            .blocking_recv()
+            .map_err(PayloadBuilderError::other)?;
 
         let block = self.evm_config.block_assembler.assemble_block(
             BlockAssemblerInput::new(
@@ -1063,7 +1053,6 @@ where
 
     fn spawn_roots_task(
         &self,
-        parent: &Span,
     ) -> (
         Sender<(BestTransaction, TempoReceipt)>,
         oneshot::Receiver<RootsTaskResult>,
@@ -1071,7 +1060,7 @@ where
         let (transactions_tx, transactions_rx) =
             crossbeam_channel::unbounded::<(BestTransaction, TempoReceipt)>();
         let (result_tx, result_rx) = oneshot::channel();
-        let parent = parent.clone();
+        let parent = Span::current();
 
         self.executor
             .spawn_blocking_named("builder-roots-task", move || {
@@ -1192,19 +1181,6 @@ pub(crate) struct RootsTaskResult {
     /// Since roots task already encodes every transaction for the transaction trie,
     /// we can reuse those bytes for the [`ExecutionBlockEncoder`].
     encoded_block_transactions: EncodedBlockTransactionList,
-}
-
-impl RootsTaskResult {
-    fn empty() -> Self {
-        Self {
-            transactions_root: alloy_consensus::constants::EMPTY_ROOT_HASH,
-            receipts_root: alloy_consensus::constants::EMPTY_ROOT_HASH,
-            receipts_bloom: Bloom::ZERO,
-            transactions: Vec::new(),
-            senders: Vec::new(),
-            encoded_block_transactions: EncodedBlockTransactionsBuilder::default().finish(),
-        }
-    }
 }
 
 #[cfg(test)]
