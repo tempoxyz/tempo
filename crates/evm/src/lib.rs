@@ -694,4 +694,37 @@ mod tests {
             Some(B256::repeat_byte(0x05))
         );
     }
+
+    #[test]
+    fn experimental_pq_gas_cap_requires_image_and_t14() {
+        for (image, t14_time, expected) in [
+            (Some(format!("0x{}", "11".repeat(32))), 0, 200_000_000),
+            (None, 0, 30_000_000),
+            (Some("0x11".to_owned()), 0, 30_000_000),
+            (Some(format!("0x{}", "11".repeat(32))), 2000, 30_000_000),
+        ] {
+            let mut genesis = serde_json::json!({
+                "config": { "chainId": 1337, "t1Time": 0, "t1aTime": 0,
+                    "t14Time": t14_time, "experimentalPqTxGasLimit": 200_000_000 },
+                "alloc": {}
+            });
+            if let Some(image) = image {
+                genesis["config"]["zkVerifyingKeys"] = serde_json::json!({ "128": image });
+            }
+            let chainspec = TempoChainSpec::from_genesis(serde_json::from_value(genesis).unwrap());
+            let config = TempoEvmConfig::new(Arc::new(chainspec));
+            let header = TempoHeader {
+                inner: alloy_consensus::Header {
+                    timestamp: 1000,
+                    gas_limit: 500_000_000,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            assert_eq!(
+                config.evm_env(&header).unwrap().cfg_env.tx_gas_limit_cap,
+                Some(expected)
+            );
+        }
+    }
 }
