@@ -1,7 +1,7 @@
 //! The wrapper's only knowledge of execution history: ordered binaries and activation times.
 
 use alloy_primitives::B256;
-use eyre::{Context, Result, bail, ensure};
+use eyre::{Context, OptionExt, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
@@ -239,7 +239,7 @@ fn reject_reserved(args: &[String]) -> Result<()> {
 pub fn parse_quantity(value: &str) -> Result<u64> {
     let digits = value
         .strip_prefix("0x")
-        .ok_or_else(|| eyre::eyre!("expected 0x-prefixed quantity"))?;
+        .ok_or_eyre("expected 0x-prefixed quantity")?;
     ensure!(!digits.is_empty(), "quantity must contain hex digits");
     ensure!(
         digits.len() == 1 || !digits.starts_with('0'),

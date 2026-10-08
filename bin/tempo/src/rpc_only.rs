@@ -108,7 +108,7 @@ impl RpcOnly {
         );
         let evm = TempoEvmConfig::new(chain_spec.clone());
         let pool = NoopTransactionPool::<TempoPooledTransaction>::new();
-        let network = NoopNetwork::default().with_chain_id(chain_spec.chain().id());
+        let network = NoopNetwork::default().with_chain_id(chain_spec.chain_id());
         let eth_api =
             EthApiBuilder::new(provider.clone(), pool.clone(), network.clone(), evm.clone())
                 // Keep this mapping aligned with the SDK's EthApiCtx::eth_api_builder. The
@@ -188,7 +188,7 @@ impl RpcOnly {
         }
         install_execution_info(
             &mut modules,
-            chain_spec.chain().id(),
+            chain_spec.chain_id(),
             chain_spec.genesis_hash(),
             true,
         )?;
@@ -269,7 +269,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let runtime = Runtime::test();
         let cmd = command(dir.path());
-        let chain_id = cmd.env.chain.chain().id();
+        let chain_id = cmd.env.chain.chain_id();
         let genesis_hash = cmd.env.chain.genesis_hash();
         let environment = cmd
             .env

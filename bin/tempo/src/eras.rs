@@ -47,7 +47,7 @@ pub(crate) fn release_catalog() -> eyre::Result<Catalog> {
 pub(crate) fn supports_release_catalog(spec: &TempoChainSpec) -> bool {
     use tempo_chainspec::spec::{DEV, MODERATO, PRESTO};
     [&**PRESTO, &**MODERATO, &**DEV].into_iter().any(|known| {
-        spec.chain().id() == known.chain().id()
+        spec.chain_id() == known.chain_id()
             && spec.genesis().config == known.genesis().config
             && spec.inner.hardforks == known.inner.hardforks
             && spec.info == known.info
@@ -90,7 +90,7 @@ impl EraRuntime {
                 static_files_path,
                 rocksdb_path,
                 rpc_config: Some(rpc_config_file.path().to_owned()),
-                chain_id: format!("0x{:x}", chain.chain().id()),
+                chain_id: format!("0x{:x}", chain.chain_id()),
                 genesis_hash: chain.genesis_hash().to_string(),
                 startup_timeout: Duration::from_secs(120),
             },
@@ -213,7 +213,7 @@ mod tests {
         let chain = &*tempo_chainspec::spec::DEV;
         let runtime = EraRuntime::new(
             ChainEras {
-                chain_id: format!("0x{:x}", chain.chain().id()),
+                chain_id: format!("0x{:x}", chain.chain_id()),
                 genesis_hash: chain.genesis_hash().to_string(),
                 eras: vec![
                     ReleaseEra {

@@ -14,7 +14,7 @@ use std::{
     time::Duration,
 };
 
-use eyre::{Context, Result, bail, ensure};
+use eyre::{Context, OptionExt, Result, bail, ensure};
 use jsonrpsee::{
     core::{RpcResult, client::ClientT},
     http_client::{HttpClient, HttpClientBuilder},
@@ -226,7 +226,7 @@ impl HistoricalWorkers {
 fn spawn(context: &WorkerContext, era: &WorkerEra) -> Result<Process> {
     let deadline = Instant::now()
         .checked_add(context.startup_timeout)
-        .ok_or_else(|| eyre::eyre!("historical worker startup timeout exceeds the clock range"))?;
+        .ok_or_eyre("historical worker startup timeout exceeds the clock range")?;
     // Reserve a loopback port until immediately before spawn. The worker binds independently;
     // its PID handshake detects the small remaining bind race and prevents misrouting.
     let reservation = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
@@ -270,7 +270,7 @@ async fn ready(
     let pid = process
         .child
         .id()
-        .ok_or_else(|| eyre::eyre!("historical worker exited before handshake"))?;
+        .ok_or_eyre("historical worker exited before handshake")?;
     let handshake = wait_for_worker(
         &process.client,
         WorkerIdentity {
