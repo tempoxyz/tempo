@@ -19,6 +19,9 @@ use tempo_revm::{ExecutionContext, TempoBatchCallEnv, TempoTxEnv};
 pub(super) const RPC_SIMULATION_UNIQUE_TX_IDENTIFIER: B256 =
     B256::new(*b"TEMPO_RPC_SIMULATION_MPP_CONTEXT");
 
+/// Largest WebAuthn data modeled for a native owner approval (excludes r, s, and the public key).
+const MAX_OWNER_WEBAUTHN_DATA_LEN: usize = MAX_WEBAUTHN_SIGNATURE_LENGTH - 128;
+
 impl TempoTransactionRequest {
     /// Applies this request's Tempo-specific fields to a normalized simulation transaction env.
     ///
@@ -26,7 +29,7 @@ impl TempoTransactionRequest {
     /// nonce, and call defaults). This method owns Tempo AA simulation semantics, including mock
     /// signatures, access-key identity, sponsorship, authorizations, and expiring nonces.
     pub fn try_into_tempo_tx_env(
-        self,
+        mut self,
         mut tx_env: TempoTxEnv,
         is_t1c: bool,
     ) -> Result<TempoTxEnv, ValueError<Self>> {
@@ -53,7 +56,7 @@ impl TempoTransactionRequest {
             return Err(ValueError::new(self, "empty calls list"));
         }
 
-        let mock_signature = if let Some(signature) = self.multisig_simulation_signature.clone() {
+        let mock_signature = if let Some(signature) = self.multisig_simulation_signature.take() {
             Some(if self.key_id.is_some() {
                 TempoSignature::Keychain(KeychainSignature::new(caller_addr, signature))
             } else {
@@ -161,7 +164,7 @@ impl MultisigSimulationSpec {
             .map(|approval| {
                 let signature = match approval.key_type {
                     None => PrimitiveSignature::WebAuthn(WebAuthnSignature {
-                        webauthn_data: Bytes::from(vec![0xff; MAX_WEBAUTHN_SIGNATURE_LENGTH - 128]),
+                        webauthn_data: Bytes::from(vec![0xff; MAX_OWNER_WEBAUTHN_DATA_LEN]),
                         r: B256::ZERO,
                         s: B256::ZERO,
                         pub_key_x: B256::ZERO,
@@ -170,7 +173,7 @@ impl MultisigSimulationSpec {
                     Some(key_type) => create_mock_primitive_signature_with_webauthn_limit(
                         &key_type,
                         approval.key_data.clone(),
-                        MAX_WEBAUTHN_SIGNATURE_LENGTH - 128,
+                        MAX_OWNER_WEBAUTHN_DATA_LEN,
                     )
                     .ok_or("multisig owners must use primitive signatures")?,
                 };
