@@ -14,6 +14,9 @@ const KEYCHAIN_VALIDATION_GAS: u64 = COLD_SLOAD_COST + 900;
 /// - Secp256k1: 0 (already included in base 21k)
 /// - P256: 5000 gas
 /// - WebAuthn: 5000 gas + calldata cost for `webauthn_data`
+///
+/// This is the full primitive cost minus the ecrecover baseline already included in ordinary
+/// intrinsic gas; see `tempo_precompiles`' `primitive_verification_gas` for the full cost.
 #[inline]
 pub(crate) fn primitive_signature_verification_gas(signature: &PrimitiveSignature) -> u64 {
     primitive_verification_gas(signature) - ECRECOVER_GAS

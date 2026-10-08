@@ -179,6 +179,9 @@ pub fn multisig_verification_gas(signature: &MultisigSignature) -> u64 {
 }
 
 /// Full primitive verification cost, including WebAuthn data calldata.
+///
+/// Unlike `tempo_revm`'s `primitive_signature_verification_gas`, this does not subtract the
+/// ecrecover baseline already covered by ordinary intrinsic gas.
 pub fn primitive_verification_gas(signature: &PrimitiveSignature) -> u64 {
     let webauthn_data_gas = match signature {
         PrimitiveSignature::WebAuthn(sig) => {

@@ -160,6 +160,25 @@ mod tests {
         assert_eq!(block.epoch(100), 100);
     }
 
+    #[test]
+    fn configured_multisig_recovery_factory_treats_zero_as_unset() {
+        let factory = Address::repeat_byte(0x11);
+        let with = |multisig_recovery_factory| TempoBlockEnv {
+            multisig_recovery_factory,
+            ..Default::default()
+        };
+
+        assert_eq!(with(None).configured_multisig_recovery_factory(), None);
+        assert_eq!(
+            with(Some(Address::ZERO)).configured_multisig_recovery_factory(),
+            None
+        );
+        assert_eq!(
+            with(Some(factory)).configured_multisig_recovery_factory(),
+            Some(factory)
+        );
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(500))]
 
