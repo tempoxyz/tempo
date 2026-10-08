@@ -2,6 +2,79 @@
 use super::*;
 
 #[test]
+fn test_aa_authorizations_validate_current_state_in_list_order() {
+    for spec in [
+        TempoHardfork::Genesis,
+        TempoHardfork::T0,
+        TempoHardfork::T1,
+        TempoHardfork::T14,
+    ] {
+        let mut evm = test_evm(spec);
+        let signer = PrivateKeySigner::random();
+        let wrong_chain = PrivateKeySigner::random();
+        let wrong_nonce = PrivateKeySigner::random();
+        let contract = PrivateKeySigner::random();
+        let code = Bytecode::new_legacy(Bytes::from_static(&[0x00]));
+        evm.overlay_db_mut().insert_account_info(
+            &contract.address(),
+            evm2::evm::AccountInfo::default().with_code(code.clone()),
+        );
+        let sign = |signer: &PrivateKeySigner, chain_id: u64, nonce, address| {
+            let auth = alloy_eips::eip7702::Authorization {
+                chain_id: U256::from(chain_id),
+                address,
+                nonce,
+            };
+            let signature = signer.sign_hash_sync(&auth.signature_hash()).unwrap();
+            TempoSignedAuthorization::new_unchecked(
+                auth,
+                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
+            )
+        };
+        let target = Address::repeat_byte(0x33);
+        let authorizations = [
+            sign(&wrong_chain, 2, 0, target),
+            sign(&wrong_chain, 1, u64::MAX, target),
+            sign(&wrong_nonce, 1, 1, target),
+            sign(&contract, 1, 0, target),
+            sign(&signer, 1, 0, target),
+            // This stale entry must be skipped, allowing the following clear to use nonce 1.
+            sign(&signer, 1, 0, Address::repeat_byte(0x44)),
+            sign(&signer, 0, 1, Address::ZERO),
+        ];
+        let refunds = apply_authorization_list(&mut evm, &authorizations, spec).unwrap();
+        // Only the clear sees an existing authority; T1 and later have no auth refund.
+        assert_eq!(
+            refunds,
+            (0, if spec.is_t1() { 0 } else { 12_500 }),
+            "{spec:?}"
+        );
+        let mut account = evm.state_mut().account(&signer.address()).unwrap();
+        assert_eq!(account.nonce(), 2);
+        assert!(account.load_code().unwrap().is_empty());
+        drop(account);
+
+        // Chain mismatches and overflowing nonces are rejected before account access.
+        // State-dependent rejections warm the authority without changing its nonce or code.
+        assert!(
+            !evm.state_mut()
+                .account(&wrong_chain.address())
+                .unwrap()
+                .is_warm()
+        );
+        let mut account = evm.state_mut().account(&wrong_nonce.address()).unwrap();
+        assert!(account.is_warm());
+        assert_eq!(account.nonce(), 0);
+        assert!(account.load_code().unwrap().is_empty());
+        drop(account);
+        let mut account = evm.state_mut().account(&contract.address()).unwrap();
+        assert!(account.is_warm());
+        assert_eq!(account.nonce(), 0);
+        assert_eq!(account.load_code().unwrap(), code);
+    }
+}
+
+#[test]
 fn test_resolve_fee_context_warms_balance_without_fee_collection() {
     use tempo_precompiles::{
         storage::{PrecompileStorageProvider, evm::EvmPrecompileStorageProvider},

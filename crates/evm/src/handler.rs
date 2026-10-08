@@ -14,12 +14,13 @@ use crate::{
         calldata_tokens, primitive_signature_verification_gas, tempo_signature_verification_gas,
     },
 };
+use alloy_eips::eip7702::{RecoveredAuthority, RecoveredAuthorization};
 use alloy_primitives::{Address, KECCAK256_EMPTY, TxKind, U256};
 use evm2::{
     Evm, EvmFeatures, TxResult, Version,
     env::TxEnv,
     ethereum::{
-        access_list_counts, execute_initial_frame, initial_gas_and_reservoir,
+        access_list_counts, eip7702, execute_initial_frame, initial_gas_and_reservoir,
         prepare_initial_frame, validate_block_gas_limit, validate_chain_id,
         validate_create_initcode, validate_execution_gas_limit_cap, validate_floor_gas,
         validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow,
@@ -942,60 +943,43 @@ fn apply_key_authorization(
     Ok(gas_used)
 }
 
-#[derive(Clone, Copy, Debug)]
-struct AppliedAuthorization {
-    refund_eligible: bool,
-}
-
-fn apply_one_authorization(
-    host: &mut Evm<'_, TempoEvmTypes>,
-    authorization: &tempo_primitives::transaction::TempoSignedAuthorization,
-) -> HandlerResult<Option<AppliedAuthorization>> {
-    if !authorization.chain_id.is_zero()
-        && authorization.chain_id != U256::from(host.version().chain_id)
-    {
-        return Ok(None);
-    }
-    if authorization.nonce == u64::MAX {
-        return Ok(None);
-    }
-    let Ok(authority) = authorization.recover_authority() else {
-        return Ok(None);
-    };
-    let mut account = host.state_mut().account(&authority)?;
-    account.warm();
-    // Historically, the sender was touched before authorization processing, making even an
-    // initially absent sender eligible for the pre-T1 refund when authorizing itself.
-    let refund_eligible = account.exists() || account.is_touched();
-    let nonce = account.nonce();
-    let code = account.load_code()?;
-    let delegated_now = !code.is_empty();
-    if delegated_now && !code.is_eip7702() {
-        return Ok(None);
-    }
-    if authorization.nonce != nonce {
-        return Ok(None);
-    }
-    account.set_delegation(authorization.address);
-    Ok(Some(AppliedAuthorization { refund_eligible }))
-}
-
 fn apply_authorization_list(
     host: &mut Evm<'_, TempoEvmTypes>,
     authorizations: &[tempo_primitives::transaction::TempoSignedAuthorization],
     spec: TempoHardfork,
 ) -> HandlerResult<(u64, u64)> {
+    let chain_id = host.version().chain_id;
     let regular_per_auth = u64::from(host.version().gas_params.get(GasId::TxEip7702AuthRefund));
     let mut regular_refund = 0u64;
     for authorization in authorizations
         .iter()
         .filter(|authorization| !(spec.is_t0() && authorization.signature().is_keychain()))
     {
-        if let Some(applied) = apply_one_authorization(host, authorization)?
-            && applied.refund_eligible
+        // Keep cheap rejections ahead of Tempo's signature recovery. The shared validator
+        // handles account warming, code eligibility, and the current account nonce.
+        if (!authorization.chain_id.is_zero() && authorization.chain_id != U256::from(chain_id))
+            || authorization.nonce == u64::MAX
         {
+            continue;
+        }
+        let Ok(authority) = authorization.recover_authority() else {
+            continue;
+        };
+        let recovered = RecoveredAuthorization::new_unchecked(
+            authorization.inner().clone(),
+            RecoveredAuthority::Valid(authority),
+        )
+        .into();
+        let Some((authority, _)) = eip7702::validate_one_auth(host, chain_id, &recovered)? else {
+            continue;
+        };
+        let mut account = host.state_mut().account(&authority)?;
+        // Historically, an initially absent sender touched before authorization processing
+        // was eligible for the pre-T1 refund when authorizing itself.
+        if account.exists() || account.is_touched() {
             regular_refund = regular_refund.saturating_add(regular_per_auth);
         }
+        account.set_delegation(authorization.address);
     }
     // TIP-1016 prices every authorization, including redelegations, upfront.
     // These state changes survive failure of the subsequent execution batch.
