@@ -155,10 +155,13 @@ fn migration_runtime_real_pq_owner_retires_secp_root_and_rejects_bad_proof() {
         key.signature = signature.encode().to_vec().into();
     }
     let bad = tx.into_signed(wrap(credential));
-    assert!(
+    assert_eq!(
         f.evm
             .transact(TempoTxEnv::from_recovered_tx(&bad, f.account))
-            .is_err()
+            .unwrap_err(),
+        EVMError::Transaction(TempoInvalidTransaction::ZkSignature(
+            tempo_revm::zk::ZkSignatureError::Invalid
+        ))
     );
 
     f.evm.db_mut().commit(granted_state);
