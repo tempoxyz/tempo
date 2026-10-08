@@ -106,7 +106,8 @@ impl<K: Hash + Eq + Clone, H> MapCache<K, H> {
 #[derive(Debug)]
 enum HandlerCacheState<K, H> {
     Linear(LinearCache<K, H>),
-    Mapped(MapCache<K, H>),
+    // Keep the uncommon map state out of the common linear cache footprint.
+    Mapped(Box<MapCache<K, H>>),
 }
 
 /// Hybrid linear/map cache for lazily computed handlers with stable references.
@@ -136,17 +137,17 @@ where
     K: Eq + Hash + Clone,
 {
     #[inline]
-    fn promote_to_map(linear: &mut LinearCache<K, H>) -> MapCache<K, H> {
+    fn promote_to_map(linear: &mut LinearCache<K, H>) -> Box<MapCache<K, H>> {
         let mut entries = HashMap::default();
         entries.reserve(THRESHOLD * 2);
         for (index, (key, _)) in linear.first.iter().chain(linear.entries.iter()).enumerate() {
             entries.insert(key.clone(), index);
         }
         // Do all potentially panicking key operations before moving ownership.
-        MapCache {
+        Box::new(MapCache {
             entries,
             handlers: std::mem::take(linear),
-        }
+        })
     }
 
     /// Returns a reference to a lazily initialized handler for the given key.
