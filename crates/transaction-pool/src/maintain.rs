@@ -654,9 +654,7 @@ pub(crate) async fn maintain_tempo_pool_with_events<Client, EvmConfig>(
                 let removed_txs = pool.remove_transactions(hashes);
                 let count = removed_txs.len();
 
-                for tx in &removed_txs {
-                    removed_this_iteration.insert(*tx.hash());
-                }
+                removed_this_iteration.extend(removed_txs.iter().map(|tx| *tx.hash()));
 
                 counter.increment(count as u64);
 
