@@ -396,9 +396,10 @@ fn migration_simulation_checks_overridden_delegate_without_recovering_mock() {
     let (mut tx, mut block) = fixture();
     block.account_migration_enabled = true;
     let delegate = Address::repeat_byte(0x49);
+    let caller = tx.caller;
     let aa = tx.tempo_tx_env.as_mut().unwrap();
     aa.signature = TempoSignature::Keychain(KeychainSignature::new(
-        tx.caller,
+        caller,
         PrimitiveSignature::Secp256k1(Signature::new(
             alloy_primitives::U256::ZERO,
             alloy_primitives::U256::ZERO,
