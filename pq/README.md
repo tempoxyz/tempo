@@ -59,6 +59,13 @@ charge plus 16 gas per proof byte; ML-DSA verification is charged 100,000 gas pl
 16 gas per public-key/signature byte. These are prototype bounds, not calibrated
 production pricing. RPC and txpool limits must accommodate the proof.
 
+The public fixed-seed regression measured 8,570,757 guest cycles, nine segments
+(9,437,184 padded proving cycles), and a 6,504,399-byte JSON receipt. Proving took
+1,555 seconds on an `f4-metal-small` CPU box; this is a development-fixture
+measurement, not a latency guarantee. The native receipt passed the production
+migration handler, retired-root rejection, malformed-proof rejection and a
+subsequent ML-DSA access-key transaction.
+
 See the sibling `oidc-prover/pq/README.md` and `oidc-demo/README.md` for the service
 and browser setup. Run on a disposable chain ID 1337; the demo blocks other chains.
 
