@@ -19,7 +19,7 @@ use tempo_revm::{
     ExecutionContext, TempoInvalidTransaction, TempoTxEnv, native_multisig::NativeMultisigError,
 };
 
-fn fixture() -> Fixture {
+pub(super) fn fixture() -> Fixture {
     let mut f = Fixture::with_parent(false);
     f.evm.ctx_mut().block.account_migration_enabled = true;
     f.config.version = 1;
@@ -28,7 +28,7 @@ fn fixture() -> Fixture {
     f
 }
 
-fn upgrade(f: &Fixture) -> Call {
+pub(super) fn upgrade(f: &Fixture) -> Call {
     Call {
         to: NATIVE_MULTISIG_ADDRESS.into(),
         value: U256::ZERO,
@@ -49,7 +49,7 @@ fn upgrade(f: &Fixture) -> Call {
     }
 }
 
-fn root_signed(f: &Fixture, nonce: u64, gas_limit: u64, calls: Vec<Call>) -> AASigned {
+pub(super) fn root_signed(f: &Fixture, nonce: u64, gas_limit: u64, calls: Vec<Call>) -> AASigned {
     let tx = TempoTransaction {
         chain_id: 1,
         nonce,

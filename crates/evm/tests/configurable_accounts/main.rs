@@ -188,4 +188,5 @@ impl Fixture {
 }
 
 mod migration;
+mod pq_migration;
 mod tests;

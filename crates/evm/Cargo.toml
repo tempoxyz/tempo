@@ -82,6 +82,8 @@ tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempo-primitives = { workspace = true, features = ["arbitrary", "test-utils"] }
 tempo-zk = { workspace = true, features = ["test-utils"] }
 tikv-jemallocator = "0.6.1"
+ml-dsa = { version = "=0.1.1", default-features = false, features = ["alloc"] }
+tempo-pq-oidc = { path = "../../pq/protocol" }
 
 [features]
 default = ["rpc", "engine"]

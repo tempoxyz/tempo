@@ -492,6 +492,10 @@ impl<'a> arbitrary::Arbitrary<'a> for MultisigSignature {
         let mut signatures = Vec::new();
         for _ in 0..len {
             let mut signature = PrimitiveSignature::arbitrary(u)?;
+            // Keep legacy generator bounds; ML-DSA and ZK owner cases use targeted fixtures.
+            if matches!(signature, PrimitiveSignature::Mldsa65(_)) {
+                signature = PrimitiveSignature::default();
+            }
             if let PrimitiveSignature::WebAuthn(signature) = &mut signature {
                 // Standalone primitive generation is unbounded; an owner approval is not.
                 let len = signature

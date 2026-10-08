@@ -636,7 +636,10 @@ impl<'a> arbitrary::Arbitrary<'a> for KeychainSignature {
             signature: if version == KeychainVersion::V1 {
                 AccountSignature::Primitive(u.arbitrary()?)
             } else {
-                u.arbitrary()?
+                match u.arbitrary()? {
+                    AccountSignature::Zk(_) => AccountSignature::default(),
+                    signature => signature,
+                }
             },
             version,
             cached_key_id: OnceLock::new(), // Always start with empty cache
