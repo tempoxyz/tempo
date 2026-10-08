@@ -347,10 +347,15 @@ fn validate_primitive_authority<J: JournalTr>(
         } else if let Some(key) = aa.signature.as_keychain()
             && key.signature.as_multisig().is_none()
         {
-            keys.push(
+            let key_id = if matches!(tx.execution_context, ExecutionContext::Simulation)
+                && let Some(key_id) = aa.override_key_id
+            {
+                key_id
+            } else {
                 key.key_id(&aa.signature_hash)
-                    .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?,
-            );
+                    .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
+            };
+            keys.push(key_id);
         }
         if let Some(auth) = &aa.key_authorization
             && auth.signature.as_multisig().is_none()

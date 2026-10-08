@@ -1259,6 +1259,17 @@ mod tests {
             )),
         );
         assert!(primitive_keychain.needs_configurable_revalidation(&changed(parent), false, true));
+        let primitive_delegate = primitive_keychain.keychain_subject().unwrap().key_id;
+        assert!(primitive_keychain.needs_configurable_revalidation(
+            &changed(primitive_delegate),
+            false,
+            true
+        ));
+        assert!(!primitive_keychain.needs_configurable_revalidation(
+            &changed(primitive_delegate),
+            false,
+            false
+        ));
         assert!(primitive_keychain.needs_configurable_revalidation(&none, true, true));
         assert!(!primitive_keychain.needs_configurable_revalidation(&none, true, false));
 

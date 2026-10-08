@@ -1,5 +1,8 @@
 use super::*;
-use crate::storage::{PrecompileStorageProvider, hashmap::HashMapStorageProvider};
+use crate::{
+    Precompile,
+    storage::{PrecompileStorageProvider, hashmap::HashMapStorageProvider},
+};
 use alloy::{
     primitives::{address, keccak256},
     sol_types::SolCall,
@@ -187,7 +190,7 @@ fn migration_abi_and_journal_rollback_preserve_original_state() {
             .unwrap();
         assert_eq!(output.status, PrecompileStatus::Success);
         assert!(!native.get_config_commitment(root).unwrap().is_zero());
-        StorageCtx.checkpoint_revert(checkpoint);
+        drop(checkpoint);
         assert_eq!(native.get_config_commitment(root).unwrap(), B256::ZERO);
         assert!(!root_key_retired(root).unwrap());
     });

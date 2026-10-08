@@ -100,7 +100,7 @@ fn migration_runtime_out_of_gas_rolls_back_commitment_and_event_not_nonce() {
         .transact(TempoTxEnv::from_recovered_tx(&tx, probe.account))
         .unwrap();
     assert!(output.result.is_success());
-    let used = output.result.gas_used();
+    let used = output.result.tx_gas_used();
     let mut f = fixture();
     let tx = root_signed(&f, 3, used - 1, vec![upgrade(&f)]);
     let output = f

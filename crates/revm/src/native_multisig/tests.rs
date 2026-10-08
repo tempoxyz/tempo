@@ -392,6 +392,59 @@ fn migration_gate_does_not_retire_explicit_owner_approvals() {
 }
 
 #[test]
+fn migration_simulation_checks_overridden_delegate_without_recovering_mock() {
+    let (mut tx, mut block) = fixture();
+    block.account_migration_enabled = true;
+    let delegate = Address::repeat_byte(0x49);
+    let aa = tx.tempo_tx_env.as_mut().unwrap();
+    aa.signature = TempoSignature::Keychain(KeychainSignature::new(
+        tx.caller,
+        PrimitiveSignature::Secp256k1(Signature::new(
+            alloy_primitives::U256::ZERO,
+            alloy_primitives::U256::ZERO,
+            false,
+        )),
+    ));
+    aa.override_key_id = Some(delegate);
+    let gas = tempo_gas_params(TempoHardfork::T14);
+    for retired in [false, true] {
+        let mut journal: Journal<CacheDB<EmptyDB>> = Journal::new(CacheDB::new(EmptyDB::default()));
+        journal.load_account(delegate).unwrap();
+        if retired {
+            journal.state.get_mut(&delegate).unwrap().info.extension =
+                encode_config_commitment(B256::repeat_byte(0x55)).into();
+        }
+        tx.execution_context = ExecutionContext::Simulation;
+        let result =
+            validate_primitive_authority(&mut journal, &tx, &block, TempoHardfork::T14, &gas);
+        if retired {
+            assert_eq!(
+                result,
+                Err(EVMError::Transaction(
+                    TempoInvalidTransaction::NativeMultisig(NativeMultisigError::RootKeyRetired {
+                        account: delegate
+                    })
+                ))
+            );
+        } else {
+            assert!(result.is_ok());
+        }
+        // Signed transactions must recover their actual key, never trust a simulation override.
+        tx.execution_context = ExecutionContext::Transaction {
+            tx_hash: B256::ZERO,
+        };
+        let result =
+            validate_primitive_authority(&mut journal, &tx, &block, TempoHardfork::T14, &gas);
+        assert!(matches!(
+            result,
+            Err(EVMError::Transaction(
+                TempoInvalidTransaction::AccessKeyRecoveryFailed
+            ))
+        ));
+    }
+}
+
+#[test]
 fn migration_envelope_rejects_all_sidecar_forms_before_execution() {
     let (mut tx, mut block) = fixture();
     block.account_migration_enabled = true;
