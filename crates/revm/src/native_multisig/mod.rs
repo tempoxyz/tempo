@@ -340,9 +340,14 @@ fn validate_primitive_authority<J: JournalTr>(
     if !spec.is_t14() || !block.account_migration_enabled || tx.is_system_tx {
         return Ok(0);
     }
+    // An unsigned RPC sender is a simulated caller, not a claim that its old
+    // primitive key still controls the account. Explicit delegate, grant and
+    // fee-payer roles remain checked below; only noncommitting simulations
+    // may omit the caller's primitive-authority check.
+    let simulation = matches!(tx.execution_context, ExecutionContext::Simulation);
     let mut keys = Vec::with_capacity(3);
     if let Some(aa) = &tx.tempo_tx_env {
-        if matches!(aa.signature, TempoSignature::Primitive(_)) {
+        if matches!(aa.signature, TempoSignature::Primitive(_)) && !simulation {
             keys.push(tx.caller);
         } else if let Some(key) = aa.signature.as_keychain()
             && key.signature.as_multisig().is_none()
@@ -366,7 +371,7 @@ fn validate_primitive_authority<J: JournalTr>(
                 })?,
             );
         }
-    } else {
+    } else if !simulation {
         keys.push(tx.caller);
     }
     if tx.has_fee_payer_signature() {

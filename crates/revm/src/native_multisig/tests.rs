@@ -537,3 +537,56 @@ fn native_approvals_reject_invalid_quorums(threshold: u8) {
         assert!(result.is_err(), "{result:?}");
     }
 }
+
+#[test]
+fn migration_unsigned_simulations_do_not_claim_primitive_caller_authority() {
+    let gas = tempo_gas_params(TempoHardfork::T14);
+    for aa_mock in [false, true] {
+        let (mut tx, mut block) = fixture();
+        block.account_migration_enabled = true;
+        if aa_mock {
+            tx.tempo_tx_env.as_mut().unwrap().signature = TempoSignature::Primitive(
+                PrimitiveSignature::Secp256k1(Signature::test_signature()),
+            );
+        } else {
+            tx.tempo_tx_env = None;
+        }
+        let mut db = CacheDB::new(EmptyDB::default());
+        db.insert_account_info(
+            tx.caller,
+            revm::state::AccountInfo {
+                extension: encode_config_commitment(B256::repeat_byte(0x99)).into(),
+                ..Default::default()
+            },
+        );
+        let mut journal = Journal::<CacheDB<EmptyDB>>::new(db);
+        for context in [
+            ExecutionContext::Unspecified,
+            ExecutionContext::Transaction {
+                tx_hash: B256::ZERO,
+            },
+            ExecutionContext::Simulation,
+        ] {
+            tx.execution_context = context;
+            let result =
+                validate_primitive_authority(&mut journal, &tx, &block, TempoHardfork::T14, &gas);
+            if matches!(context, ExecutionContext::Simulation) {
+                assert_eq!(result.unwrap(), 0);
+            } else {
+                assert!(matches!(result,
+                    Err(EVMError::Transaction(TempoInvalidTransaction::NativeMultisig(
+                        NativeMultisigError::RootKeyRetired { account }
+                    ))) if account == tx.caller));
+            }
+        }
+        // An explicitly signed fee-payer role is not an unsigned caller claim.
+        tx.execution_context = ExecutionContext::Simulation;
+        tx.fee_payer = Some(Some(tx.caller));
+        let result =
+            validate_primitive_authority(&mut journal, &tx, &block, TempoHardfork::T14, &gas);
+        assert!(matches!(result,
+            Err(EVMError::Transaction(TempoInvalidTransaction::NativeMultisig(
+                NativeMultisigError::RootKeyRetired { account }
+            ))) if account == tx.caller));
+    }
+}

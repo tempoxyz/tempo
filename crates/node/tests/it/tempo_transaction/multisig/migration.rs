@@ -783,3 +783,60 @@ async fn migration_rpc_retired_root_cannot_delegate_code_or_sponsor() -> eyre::R
     insta::assert_snapshot!(error.replace(&account.address.to_string(), "ACCOUNT"), @"server returned an error response: error code -32003: invalid transaction: primitive root key retired for account ACCOUNT");
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn migration_rpc_unsigned_calls_from_configurable_accounts_are_noncommitting()
+-> eyre::Result<()> {
+    let mut env = environment_with_migration(true).await?;
+    let root = OwnerKey::new(0xa1, SignatureType::Secp256k1);
+    let mut account = NativeAccount::new(0x21, 1);
+    migration_config(&mut account, root.address());
+    env.fund_account(account.address).await?;
+    let tx = account.transaction(&env, vec![upgrade(&account.config)]);
+    let signature = TempoSignature::Primitive(root.sign(tx.signature_hash())?);
+    account.submit(&mut env, tx, signature, true).await?;
+    let expected = account.config.commitment().unwrap();
+    let input = INativeMultisig::getConfigCommitmentCall {
+        account: account.address,
+    }
+    .abi_encode();
+    for aa in [false, true] {
+        let mut request = serde_json::json!({
+            "from": account.address,
+            "to": NATIVE_MULTISIG_ADDRESS,
+            "input": Bytes::from(input.clone()),
+        });
+        if aa {
+            request["type"] = serde_json::json!("0x76");
+            request["calls"] = serde_json::json!([{
+                "to": NATIVE_MULTISIG_ADDRESS,
+                "input": Bytes::from(input.clone()),
+            }]);
+        }
+        let output: Bytes = env
+            .provider()
+            .raw_request("eth_call".into(), (request.clone(), "latest"))
+            .await?;
+        assert_eq!(
+            INativeMultisig::getConfigCommitmentCall::abi_decode_returns(&output)?,
+            expected
+        );
+        let gas: U256 = env
+            .provider()
+            .raw_request("eth_estimateGas".into(), [request])
+            .await?;
+        assert!(!gas.is_zero());
+        assert_eq!(commitment(&env, account.address).await?, expected);
+        assert_eq!(
+            env.provider()
+                .get_transaction_count(account.address)
+                .await?,
+            account.nonce
+        );
+    }
+    let tx = account.transaction(&env, vec![noop()]);
+    let signature = TempoSignature::Primitive(root.sign(tx.signature_hash())?);
+    let error = reject(&env, tx, signature).await?;
+    insta::assert_snapshot!(error.replace(&account.address.to_string(), "ACCOUNT"), @"server returned an error response: error code -32003: invalid transaction: primitive root key retired for account ACCOUNT");
+    Ok(())
+}

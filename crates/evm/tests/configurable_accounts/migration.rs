@@ -359,3 +359,46 @@ fn migration_runtime_presigned_funded_voucher_remains_redeemable() {
     assert_eq!(received, U256::from(120));
     assert_eq!(f.commitment(), f.config.commitment().unwrap());
 }
+
+#[test]
+fn migration_runtime_unsigned_simulations_preserve_state_and_signed_root_retirement() {
+    let mut f = fixture();
+    let tx = root_signed(&f, 3, 1_000_000, vec![upgrade(&f)]);
+    let output = f
+        .evm
+        .transact(TempoTxEnv::from_recovered_tx(&tx, f.account))
+        .unwrap();
+    assert!(output.result.is_success());
+    f.evm.db_mut().commit(output.state);
+    let expected = f.config.commitment().unwrap();
+    for aa_mock in [false, true] {
+        let tx = root_signed(&f, 4, 1_000_000, vec![f.getter()]);
+        let mut env = TempoTxEnv::from_recovered_tx(&tx, f.account);
+        env.execution_context = ExecutionContext::Simulation;
+        if !aa_mock {
+            env.tempo_tx_env = None;
+            env.inner.tx_type = 0;
+        }
+        let output = f.evm.transact(env).unwrap();
+        assert!(output.result.is_success(), "{:?}", output.result);
+        assert_eq!(
+            INativeMultisig::getConfigCommitmentCall::abi_decode_returns(
+                output.result.output().unwrap()
+            )
+            .unwrap(),
+            expected
+        );
+        // Discard the simulated state, exactly as RPC does.
+        assert_eq!(f.evm.db_mut().basic(f.account).unwrap().unwrap().nonce, 4);
+        assert_eq!(f.commitment(), expected);
+    }
+    let tx = root_signed(&f, 4, 1_000_000, vec![f.getter()]);
+    assert_eq!(
+        f.evm
+            .transact(TempoTxEnv::from_recovered_tx(&tx, f.account))
+            .unwrap_err(),
+        EVMError::Transaction(TempoInvalidTransaction::NativeMultisig(
+            NativeMultisigError::RootKeyRetired { account: f.account }
+        ))
+    );
+}
