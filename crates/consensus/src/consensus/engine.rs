@@ -82,11 +82,12 @@ pub struct Builder<TBlocker, TPeerManager> {
     /// Leader inactivity window after which a view is skipped early. Must
     /// exceed `time_to_collect_notarizations` and `time_to_retry_nullify_broadcast`.
     pub inactive_time_before_leader_skip: Duration,
-    /// Local proposal return budget after reserving network propagation time.
+    /// Shared proposal budget estimator.
     ///
-    /// The leader uses this window for proposal preparation, payload building,
-    /// and pacing after commonware has fetched the parent.
-    pub proposal_return_budget: Duration,
+    /// Owns the target block time, the learned network reservation and the
+    /// validation and build feedback. The payload builder must be given the
+    /// same handle so both sides pace the same proposal window.
+    pub estimator: tempo_payload_types::Estimator,
     pub fcu_heartbeat_interval: Duration,
 
     pub feed_state: crate::feed::FeedStateHandle,
@@ -288,7 +289,7 @@ where
                 node: execution_node.clone(),
                 executed_state: self.executed_state.clone(),
             },
-            proposal_return_budget: self.proposal_return_budget,
+            estimator: self.estimator.clone(),
             epoch_strategy: epoch_strategy.clone(),
         });
         let application = application::Marshaled::new(
