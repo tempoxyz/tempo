@@ -495,7 +495,7 @@ async fn test_dev_provisioner_replays_initial_token_event() -> eyre::Result<()> 
 /// 8. Wait for the batch to be submitted and the withdrawal to be processed on L1.
 ///
 /// NOTE: This test requires the Foundry-compiled shared runtime artifacts.
-/// Run `forge build` in `crates/contracts/` first.
+/// Run `forge build` in `crates/zones/contracts/` first.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_deposit_via_real_l1() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -1277,7 +1277,7 @@ async fn test_queued_callback_bounces_after_gateway_revocation() -> eyre::Result
 ///    |<-- deposit 0.2 ----|                 |
 /// ```
 ///
-/// NOTE: Requires `forge build` in `crates/contracts/` for shared runtime and router artifacts.
+/// NOTE: Requires `forge build` in `crates/zones/contracts/` for shared runtime and router artifacts.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_cross_zone_withdrawal() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -1877,7 +1877,7 @@ async fn test_swap_and_deposit_into_same_zone_bounces_back_with_explicit_payload
 ///    |<-- withdraw ZoneUSD --------|  ✓ ZoneUSD burned
 /// ```
 ///
-/// NOTE: Requires `forge build` in `crates/contracts/` for shared runtime artifacts.
+/// NOTE: Requires `forge build` in `crates/zones/contracts/` for shared runtime artifacts.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_multiasset_deposit_withdrawal() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -2032,7 +2032,7 @@ async fn test_multiasset_deposit_withdrawal() -> eyre::Result<()> {
 ///   │            → tokens to L1              │
 /// ```
 ///
-/// NOTE: Requires `forge build` in `crates/contracts/` for shared runtime artifacts.
+/// NOTE: Requires `forge build` in `crates/zones/contracts/` for shared runtime artifacts.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_deposit_and_withdrawal() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();

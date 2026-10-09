@@ -1,4 +1,4 @@
-name: Release
+name: Zones Release
 # Adapted from Reth's release workflow
 # https://github.com/paradigmxyz/reth/blob/main/.github/workflows/release.yml
 
@@ -33,11 +33,14 @@ env:
   RUST_BACKTRACE: full
 
 jobs:
+  # Tempo and Zones tags share the v*.*.* namespace. Keep every job inert here until release
+  # ownership and the Zones tag scheme are settled (zones/MIGRATION.md).
   get-version:
     permissions:
       contents: read
       id-token: write
     name: Get Version
+    if: github.repository == 'tempoxyz/zones'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.get_version.outputs.version }}
@@ -62,7 +65,7 @@ jobs:
     name: check version
     runs-on: ubuntu-latest
     needs: get-version
-    if: ${{ github.event.inputs.dry_run != 'true' }}
+    if: ${{ github.repository == 'tempoxyz/zones' && github.event.inputs.dry_run != 'true' }}
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
@@ -90,6 +93,7 @@ jobs:
       id-token: write
     name: Build Release Binaries
     needs: get-version
+    if: github.repository == 'tempoxyz/zones'
     runs-on: ${{ matrix.platform.os }}
     strategy:
       fail-fast: false
@@ -192,7 +196,7 @@ jobs:
   create-release:
     name: Create Release
     needs: [get-version, build-release]
-    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false) }}
+    if: ${{ github.repository == 'tempoxyz/zones' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false)) }}
     runs-on: depot-ubuntu-latest
     permissions:
       id-token: write

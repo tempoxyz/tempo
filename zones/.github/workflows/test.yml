@@ -57,10 +57,13 @@ jobs:
         working-directory: earn
         # PropAMM is private and only needed by Earn's integration tests.
         run: git submodule update --init lib/forge-std lib/openzeppelin-contracts lib/openzeppelin-contracts-upgradeable
-      # Share the root Rust setup and its reviewed action pins.
-      - uses: ./.github/actions/setup-rust-ci
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
         with:
           toolchain: stable
+      - uses: tempoxyz/gh-actions/actions/setup-mold@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        with:
+          version: v0.15.0
       - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
         with:
           tool: nextest@0.9.124

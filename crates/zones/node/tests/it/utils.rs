@@ -180,15 +180,14 @@ fn enabled_deposits_active_token_config() -> B256 {
     B256::new(value)
 }
 
-/// Read a Foundry artifact from `crates/contracts/out` and return its deployment bytecode.
+/// Read a Foundry artifact from `crates/zones/contracts/out` and return its deployment bytecode.
 ///
-/// Requires `forge build` to have been run in `crates/contracts`.
+/// Requires `forge build` to have been run in `crates/zones/contracts`.
 pub(crate) fn forge_bytecode(contract: &str) -> eyre::Result<alloy_primitives::Bytes> {
-    let specs_dir =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates/contracts/out");
+    let specs_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../contracts/out");
     let path = specs_dir.join(format!("{contract}.sol/{contract}.json"));
     let json = std::fs::read_to_string(&path).wrap_err_with(|| {
-        format!("{contract} artifact not found – run `forge build` in crates/contracts")
+        format!("{contract} artifact not found – run `forge build` in crates/zones/contracts")
     })?;
     let artifact: serde_json::Value = serde_json::from_str(&json)?;
     let hex_str = artifact["bytecode"]["object"]

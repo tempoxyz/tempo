@@ -170,8 +170,8 @@ const INTERFACES: &[InterfaceSpec] = &[
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct CheckAbi {
-    /// Foundry output directory produced from `crates/contracts`.
-    #[arg(long, default_value = "crates/contracts/out")]
+    /// Foundry output directory produced from `crates/zones/contracts`.
+    #[arg(long, default_value = "crates/zones/contracts/out")]
     artifacts: PathBuf,
 }
 
@@ -209,7 +209,8 @@ mod tests {
     #[test]
     fn rust_bindings_match_solidity_artifacts() {
         CheckAbi {
-            artifacts: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../crates/contracts/out"),
+            artifacts: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../crates/zones/contracts/out"),
         }
         .run()
         .unwrap();

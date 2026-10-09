@@ -33,11 +33,14 @@ publication coverage:
   behavior. Their legacy paths, repository guards, tag/release ownership, and
   external event/STS/AWS consumers need a coordinated migration. The Zones
   Docker build is gated to `tempoxyz/zones` until then, since its recipe still
-  expects `docker/`, `crates/contracts`, and the Zones Cargo workspace. In particular,
-  Tempo and Zones release workflows currently share `v*.*.*` triggers: settle
-  release ownership before publishing tags from the integrated branch.
+  expects `docker/`, `crates/contracts`, and the Zones Cargo workspace. The Zones
+  release workflow is gated the same way because Tempo and Zones tags share the
+  `v*.*.*` namespace. Tempo already has `v0.1.0`, `v0.2.0`, and `v0.3.0`, so Zones
+  releases need their own tag scheme before that gate is lifted.
 - Zones reproducible builds have a separate concurrency group so they cannot
-  cancel Tempo builds. Their recipe/script and Cargo layout still need migration.
+  cancel Tempo builds, and are gated to `tempoxyz/zones` because the shared recipe
+  would run Tempo's `scripts/reproducible-build.sh`. Their recipe/script and Cargo
+  layout still need migration.
 
 The root Dependabot configuration also needs the final workspace layout before
 retiring the imported dependency configuration.
