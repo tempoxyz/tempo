@@ -3,13 +3,6 @@
 //! Manages whitelist, blacklist, and compound transfer policies that TIP-20
 //! tokens reference to gate sender/recipient authorization.
 //!
-//! From T13, an add-only access key can use a call scope targeting
-//! [`TIP403_REGISTRY_ADDRESS`] with only the `addPolicyWhitelist(uint64,address)` selector
-//! and an empty recipient list. Set `allowAnyCalls = false` when authorizing the key.
-//! The account must still administer the policy. This permits additions to any whitelist
-//! administered by the account; it does not restrict the key to a particular policy ID.
-//! A freeze-only key uses `addPolicyBlacklist(uint64,address)` the same way.
-//!
 //! [TIP-403]: <https://docs.tempo.xyz/protocol/tip403>
 
 pub mod dispatch;
