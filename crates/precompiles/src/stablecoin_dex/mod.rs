@@ -1865,21 +1865,24 @@ fn is_authorized_for_token(token: Address, address: Address, role: AuthRole) -> 
 mod tests {
     use alloy::{
         primitives::{FixedBytes, IntoLogData},
-        sol_types::{SolEvent, SolInterface},
+        sol_types::{SolEvent, SolInterface, SolValue},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::TIP20Error;
+    use tempo_contracts::precompiles::{IReceivePolicyGuard::ClaimReceiptV1, TIP20Error};
 
     use crate::{
         error::TempoPrecompileError,
+        receive_policy_guard::{InboundKind, ReceivePolicyGuard},
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
         tip20::PAUSE_ROLE,
-        tip403_registry::{ITIP403Registry, TIP403Registry},
+        tip403_registry::{
+            ALLOW_ALL_POLICY_ID, ITIP403Registry, REJECT_ALL_POLICY_ID, TIP403Registry,
+        },
     };
 
     use super::*;
-    use crate::STABLECOIN_DEX_ADDRESS;
+    use crate::{RECEIVE_POLICY_GUARD_ADDRESS, STABLECOIN_DEX_ADDRESS};
     use proptest::prelude::*;
 
     fn setup_test_tokens(
@@ -3158,6 +3161,119 @@ mod tests {
                 result,
                 Err(StablecoinDEXError::insufficient_balance().into())
             );
+
+            Ok(())
+        })
+    }
+
+    /// Sets a receive policy on `receiver` that rejects every sender, including the DEX.
+    fn block_all_senders(receiver: Address, recovery_authority: Address) -> Result<()> {
+        TIP403Registry::new().set_receive_policy(
+            receiver,
+            ITIP403Registry::setReceivePolicyCall {
+                senderPolicyId: REJECT_ALL_POLICY_ID,
+                tokenFilterId: ALLOW_ALL_POLICY_ID,
+                recoveryAuthority: recovery_authority,
+            },
+        )
+    }
+
+    /// A withdrawal to a receiver whose policy blocks the DEX under originator recovery would be
+    /// guarded with the DEX as originator, and the DEX can never claim. From T13 the withdrawal
+    /// reverts and the DEX ledger is untouched; before T13 the funds still land in the guard.
+    #[test]
+    fn test_withdraw_blocked_by_receive_policy_with_originator_recovery() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T12, TempoHardfork::T13] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || {
+                let mut exchange = StablecoinDEX::new();
+                exchange.initialize()?;
+
+                let admin = Address::random();
+                let alice = Address::random();
+                let amount = MIN_ORDER_AMOUNT;
+                let token = TIP20Setup::path_usd(admin)
+                    .with_issuer(admin)
+                    .with_mint(exchange.address, U256::from(amount))
+                    .apply()?;
+                exchange.set_balance(alice, token.address(), amount)?;
+                block_all_senders(alice, Address::ZERO)?;
+
+                // A failed precompile call reverts its frame; the checkpoint models that here.
+                let frame = StorageCtx.checkpoint();
+                let result = exchange.withdraw(alice, token.address(), amount);
+                let balance_of = |account| token.balance_of(ITIP20::balanceOfCall { account });
+
+                if spec.is_t13() {
+                    drop(frame);
+                    assert_eq!(result, Err(TIP20Error::policy_forbids().into()));
+                    assert_eq!(exchange.balance_of(alice, token.address())?, amount);
+                    assert_eq!(balance_of(exchange.address)?, U256::from(amount));
+                    assert_eq!(balance_of(RECEIVE_POLICY_GUARD_ADDRESS)?, U256::ZERO);
+                } else {
+                    frame.commit();
+                    result?;
+                    // Legacy: the DEX ledger is debited and the guard holds an unclaimable receipt.
+                    assert_eq!(exchange.balance_of(alice, token.address())?, 0);
+                    assert_eq!(balance_of(exchange.address)?, U256::ZERO);
+                    assert_eq!(
+                        balance_of(RECEIVE_POLICY_GUARD_ADDRESS)?,
+                        U256::from(amount)
+                    );
+                }
+                assert_eq!(balance_of(alice)?, U256::ZERO);
+
+                Ok::<(), TempoPrecompileError>(())
+            })?;
+        }
+
+        Ok(())
+    }
+
+    /// With a claimable recovery authority the T13 withdrawal is still guarded, and the receiver
+    /// recovers the funds by claiming the receipt.
+    #[test]
+    fn test_withdraw_blocked_by_receive_policy_with_receiver_recovery_is_claimable()
+    -> eyre::Result<()> {
+        let blocked_at = 1_728_000u64;
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
+        storage.set_timestamp(U256::from(blocked_at));
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let admin = Address::random();
+            let alice = Address::random();
+            let amount = MIN_ORDER_AMOUNT;
+            let token = TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_mint(exchange.address, U256::from(amount))
+                .apply()?;
+            exchange.set_balance(alice, token.address(), amount)?;
+            block_all_senders(alice, alice)?;
+
+            exchange.withdraw(alice, token.address(), amount)?;
+            let balance_of = |account| token.balance_of(ITIP20::balanceOfCall { account });
+            assert_eq!(exchange.balance_of(alice, token.address())?, 0);
+            assert_eq!(
+                balance_of(RECEIVE_POLICY_GUARD_ADDRESS)?,
+                U256::from(amount)
+            );
+
+            let receipt = ClaimReceiptV1::new(
+                token.address(),
+                alice,
+                exchange.address,
+                alice,
+                blocked_at,
+                1,
+                ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8,
+                InboundKind::TRANSFER,
+                B256::ZERO,
+            );
+            ReceivePolicyGuard::new().claim(alice, alice, receipt.abi_encode().into())?;
+            assert_eq!(balance_of(RECEIVE_POLICY_GUARD_ADDRESS)?, U256::ZERO);
+            assert_eq!(balance_of(alice)?, U256::from(amount));
 
             Ok(())
         })
