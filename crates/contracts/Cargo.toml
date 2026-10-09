@@ -32,7 +32,6 @@ tempo-hardfork.workspace = true
 alloy-primitives = { workspace = true, features = ["rand"] }
 alloy-provider = { workspace = true, features = ["reqwest", "reqwest-rustls-tls"] }
 alloy-transport.workspace = true
-const-hex.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [features]

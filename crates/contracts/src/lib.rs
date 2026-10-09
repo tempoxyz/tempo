@@ -7,8 +7,6 @@
 #![allow(clippy::too_many_arguments)]
 
 extern crate alloc;
-#[cfg(test)]
-extern crate std;
 
 pub use tempo_hardfork::TempoHardfork;
 

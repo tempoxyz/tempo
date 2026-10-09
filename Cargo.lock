@@ -13723,7 +13723,6 @@ dependencies = [
  "alloy-rpc-types-eth",
  "alloy-sol-types",
  "alloy-transport",
- "const-hex",
  "k256",
  "serde",
  "tempo-hardfork",
