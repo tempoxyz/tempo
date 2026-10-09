@@ -1,0 +1,60 @@
+[package]
+name = "zone-l1"
+description = "Tempo Zone L1 subscription, deposit queue, and L1 state cache"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# zones
+tempo-zone-contracts = { workspace = true, features = ["std", "serde", "rpc"] }
+zone-precompiles = { workspace = true, features = ["std"] }
+zone-primitives = { workspace = true }
+
+# tempo
+tempo-alloy.workspace = true
+tempo-contracts.workspace = true
+tempo-primitives.workspace = true
+
+# reth
+reth-metrics.workspace = true
+reth-primitives-traits.workspace = true
+reth-provider.workspace = true
+reth-storage-api.workspace = true
+
+# alloy
+alloy-consensus.workspace = true
+alloy-eips.workspace = true
+alloy-network.workspace = true
+alloy-primitives = { workspace = true, features = ["k256"] }
+alloy-provider = { workspace = true, features = ["ws"] }
+alloy-rpc-client.workspace = true
+alloy-rpc-types-eth.workspace = true
+alloy-sol-types.workspace = true
+alloy-transport.workspace = true
+
+# misc
+derive_more = { workspace = true, features = ["deref"] }
+eyre.workspace = true
+futures.workspace = true
+k256.workspace = true
+metrics.workspace = true
+parking_lot.workspace = true
+rayon.workspace = true
+schnellru.workspace = true
+serde = { workspace = true, features = ["derive"] }
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+url = "2"
+
+[dev-dependencies]
+alloy-rlp.workspace = true
+const-hex.workspace = true
+reth-provider = { workspace = true, features = ["test-utils"] }
+serde_json.workspace = true

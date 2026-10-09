@@ -172,7 +172,8 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
     pending_acknowledgements: VecDeque<FinalizedBlockRequest>,
 
     /// New-payload requests the execution layer may have executed since the
-    /// last successful forkchoice update, see [`DELIVERIES_PER_FORKCHOICE_UPDATE`].
+    /// last successful or stale-skipped forkchoice update, see
+    /// [`DELIVERIES_PER_FORKCHOICE_UPDATE`].
     deliveries_since_forkchoice: usize,
 
     /// The newest round observed through build and verify contexts or
@@ -256,15 +257,15 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
 #[derive(Clone)]
 struct Metrics {
     /// Number of finalized blocks whose proposer matches this node's public key.
-    finalized_blocks_proposed_by_self: commonware_runtime::telemetry::metrics::Registered<Counter>,
+    finalized_blocks_proposed_by_self: commonware_runtime::telemetry::metrics::Counter,
     /// Height distance from the locally canonicalized finalized tip up to
     /// the network's finalized tip: the undelivered finalized backlog.
-    finalization_lag: commonware_runtime::telemetry::metrics::Registered<Gauge>,
+    finalization_lag: commonware_runtime::telemetry::metrics::Gauge,
     /// Height distance from the execution layer's head to the pending head:
     /// the convergence backlog. Negative when consensus re-anchored below
     /// the head; holds its last value while the pending head's height is
     /// unknown (its body has not arrived yet).
-    convergence_depth: commonware_runtime::telemetry::metrics::Registered<Gauge>,
+    convergence_depth: commonware_runtime::telemetry::metrics::Gauge,
 }
 
 impl Metrics {
@@ -377,7 +378,7 @@ where
         };
         let finalized_round = if finalized.1 == finalized_tip.2 {
             finalized_tip.0
-        } else if finalized.0 == Height::zero() {
+        } else if finalized.0.is_zero() {
             Round::zero()
         } else {
             execution_node
@@ -719,7 +720,7 @@ where
         if !walk.awaits(digest) {
             return Ok(());
         }
-        if status == PayloadStatusEnum::Syncing && digest == self.pending_head.digest {
+        if status.is_syncing() && digest == self.pending_head.digest {
             self.pending_head.executed = None;
         }
         let (_, finalized_height, finalized_digest) = self.network_finalized_tip;
@@ -872,19 +873,6 @@ where
         build: Option<(Span, oneshot::Sender<TempoBuiltPayload>)>,
         response: Option<eyre::Result<ForkchoiceUpdated>>,
     ) -> eyre::Result<()> {
-        let Some(response) = response else {
-            // No update was submitted because the execution layer is ahead
-            // of tracked finality. Advance the tracked state for replay and
-            // acknowledgements; a skipped update cannot register a build.
-            if build.is_some() {
-                // Dropping the build's response channel signals the failure
-                // to the subscriber.
-                info!("tracked finality is below the execution layer's; dropping the build");
-            }
-            self.local_state = target;
-            self.acknowledge_finalized();
-            return Ok(());
-        };
         let diverged = || {
             format!(
                 "forkchoice update onto head `{}` at height `{}` and finalized block `{}` at \
@@ -893,19 +881,39 @@ where
                 target.head.1, target.head.0, target.finalized.1, target.finalized.0,
             )
         };
-        let response = response.wrap_err_with(diverged)?;
-        if !response.is_valid() {
-            return Err(Report::msg(response.payload_status)).wrap_err_with(diverged);
-        }
+        let accepted = match response {
+            // No update was submitted because the execution layer is ahead
+            // of tracked finality.
+            None => None,
+            Some(Ok(updated)) if updated.is_valid() => Some(updated),
+            Some(Ok(updated)) => {
+                return Err(Report::msg(updated.payload_status)).wrap_err_with(diverged);
+            }
+            Some(Err(error)) => return Err(error).wrap_err_with(diverged),
+        };
 
+        // A skipped update settles the deliveries like an accepted one: an
+        // update forced by a full batch would be skipped just the same, and
+        // with the count left full it would be rescheduled ahead of the
+        // mailbox forever.
         self.deliveries_since_forkchoice = 0;
         self.local_state = target;
         self.acknowledge_finalized();
 
         // Dropping the build's response channel signals the failure to the
         // subscriber.
-        match (build, response.payload_id) {
-            (Some((cause, response)), Some(payload_id)) => {
+        match (build, accepted) {
+            (None, _) => {}
+            (Some(_dropped_to_signal_failure), None) => {
+                info!("tracked finality is below the execution layer's; dropping the build");
+            }
+            (
+                Some((cause, response)),
+                Some(ForkchoiceUpdated {
+                    payload_id: Some(payload_id),
+                    ..
+                }),
+            ) => {
                 let job = StartPayloadJob {
                     cause,
                     payload_id,
@@ -914,10 +922,9 @@ where
                 self.payload_jobs
                     .push(run_payload_job(self.execution_node.clone(), job).boxed());
             }
-            (Some(_dropped_to_signal_failure), None) => {
+            (Some(_dropped_to_signal_failure), Some(_)) => {
                 warn!("execution layer did not return a payload id for the build request");
             }
-            (None, _) => {}
         }
         Ok(())
     }
@@ -2358,7 +2365,7 @@ async fn execute_build(
         Ok(status) => status,
         Err(error) => return BuildOutcome::ParentDeliveryFailed(error),
     };
-    if status != PayloadStatusEnum::Valid {
+    if !status.is_valid() {
         warn!(%status, "build parent was not VALID");
         return BuildOutcome::Aborted {
             delivery_attempted: true,
@@ -2467,12 +2474,9 @@ async fn deliver_block(
     execution_node: &impl ExecutionLayer,
     block: Arc<Block>,
 ) -> eyre::Result<PayloadStatusEnum> {
-    let (block, block_access_list) = Arc::unwrap_or_clone(block).into_parts();
+    let block = Arc::unwrap_or_clone(block).into_execution_block();
     let payload_status = execution_node
-        .new_payload(TempoExecutionData {
-            block,
-            block_access_list,
-        })
+        .new_payload(TempoExecutionData { block })
         .await
         .wrap_err("failed sending new-payload request to execution layer")?;
     if payload_status.is_valid() {
@@ -2581,11 +2585,9 @@ async fn run_payload_job(
             }
             // The application received the block and may propose it; hand
             // the body to the actor loop for a later build on this proposal.
-            let (execution_block, block_access_list, _) =
-                retained.into_consensus_execution_payload();
+            let (execution_block, _) = retained.into_consensus_execution_payload();
             Some(Arc::new(Block::from_execution_block_unchecked(
                 execution_block,
-                block_access_list,
             )))
         }
         Some(Err(error)) => {

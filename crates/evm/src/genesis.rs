@@ -12,7 +12,7 @@ use reth_evm::{
     Evm as _, EvmEnv, EvmFactory as _,
     revm::{
         DatabaseCommit as _,
-        database::{CacheDB, EmptyDB},
+        database::InMemoryDB,
         state::{AccountInfo, Bytecode},
     },
 };
@@ -25,7 +25,7 @@ use tempo_precompiles::storage::{StorageActions, StorageCtx};
 use tempo_revm::TempoBlockEnv;
 
 /// In-memory EVM used to build genesis state.
-pub type GenesisEvm = TempoEvm<CacheDB<EmptyDB>>;
+pub type GenesisEvm = TempoEvm<InMemoryDB>;
 
 /// Returns the EVM environment used for genesis initialization: timestamp zero and `chain_id`.
 ///
@@ -39,7 +39,7 @@ pub fn genesis_evm_env(chain_id: u64) -> EvmEnv<TempoHardfork, TempoBlockEnv> {
 
 /// Creates an empty in-memory genesis EVM.
 pub fn create_genesis_evm(env: EvmEnv<TempoHardfork, TempoBlockEnv>) -> GenesisEvm {
-    TempoEvmFactory::default().create_evm(CacheDB::default(), env)
+    TempoEvmFactory::default().create_evm(InMemoryDB::default(), env)
 }
 
 /// Runs `f` with precompile storage bound to the genesis EVM, with storage actions disabled.
@@ -176,7 +176,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(genesis_account(&info, []).storage, None);
-        let account = genesis_account(&info, [(U256::from(1), U256::from(2))]);
+        let account = genesis_account(&info, [(U256::ONE, U256::from(2))]);
         assert_eq!(account.nonce, Some(3));
         assert_eq!(account.storage.unwrap().len(), 1);
     }

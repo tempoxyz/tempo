@@ -613,30 +613,34 @@ async fn fetch_and_cache_headers(
     cache: &mut BlockCache,
     numbers: &[u64],
 ) -> HashMap<u64, TempoHeader> {
-    let missing_numbers: Vec<u64> = numbers
-        .iter()
-        .copied()
-        .filter(|number| cache.get_by_number(*number).is_none())
-        .collect();
+    let mut headers = HashMap::with_capacity(numbers.len());
+    let mut missing_numbers = Vec::new();
+    for &number in numbers {
+        match cache.get_by_number(number) {
+            Some(block) => {
+                headers.insert(number, block.header.clone());
+            }
+            None => missing_numbers.push(number),
+        }
+    }
 
-    let mut fetched = HashMap::with_capacity(missing_numbers.len());
     for chunk in missing_numbers.chunks(HEADER_RPC_BATCH_SIZE) {
         match fetch_and_cache_header_batch(provider, cache, chunk).await {
-            Ok(headers) => {
-                fetched.extend(headers.into_iter().map(|header| (header.number(), header)));
+            Ok(fetched) => {
+                headers.extend(fetched.into_iter().map(|header| (header.number(), header)));
             }
             Err(_) => {
                 for &number in chunk {
                     if let Ok(header) =
                         fetch_and_cache_header_by_number(provider, cache, number).await
                     {
-                        fetched.insert(number, header);
+                        headers.insert(number, header);
                     }
                 }
             }
         }
     }
-    fetched
+    headers
 }
 
 async fn resolve_start_block_number(
@@ -696,15 +700,11 @@ async fn resolve_headers(
     };
 
     let requested_numbers = requested_header_numbers(start_num, request);
-    let mut fetched = fetch_and_cache_headers(provider, cache, &requested_numbers).await;
+    let mut available = fetch_and_cache_headers(provider, cache, &requested_numbers).await;
 
     let mut headers = Vec::with_capacity(requested_numbers.len());
     for number in requested_numbers {
-        let Some(header) = fetched.remove(&number).or_else(|| {
-            cache
-                .get_by_number(number)
-                .map(|block| block.header.clone())
-        }) else {
+        let Some(header) = available.remove(&number) else {
             break;
         };
         headers.push(header);
@@ -791,6 +791,10 @@ mod tests {
 
     fn cached_body_with_min_size(min_size: usize) -> tempo_primitives::BlockBody {
         let mut body = tempo_primitives::BlockBody::default();
+        // Start one ommer short of the size so the loop below, which re-encodes the whole
+        // body per push, only adds the last few.
+        let ommer_size = TempoHeader::default().length();
+        body.ommers = vec![TempoHeader::default(); (min_size / ommer_size).saturating_sub(1)];
         while body.length() < min_size {
             body.ommers.push(TempoHeader::default());
         }

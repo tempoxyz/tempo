@@ -1,18 +1,13 @@
-use crate::utils::{TEST_MNEMONIC, TestNodeBuilder};
+use crate::utils::{TestNodeBuilder, t1_account};
 use alloy::{
-    consensus::{SignableTransaction, Transaction, TxEip1559, TxEnvelope},
-    network::{EthereumWallet, NetworkTransactionBuilder},
+    consensus::Transaction,
     primitives::{Address, B256, U256, aliases::U96},
-    providers::{Provider, ProviderBuilder},
-    signers::local::{MnemonicBuilder, PrivateKeySigner},
+    providers::Provider,
     sol_types::SolEvent,
 };
-use alloy_eips::eip2718::Encodable2718;
-use alloy_network::{Ethereum, ReceiptResponse, TxSignerSync};
-use alloy_primitives::Bytes;
-use alloy_rpc_types_eth::TransactionRequest;
+use alloy_network::ReceiptResponse;
+use reth_e2e_test_utils::wallet::{TestAccount, Wallet};
 use reth_node_api::BuiltPayload;
-use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::{
     IFeeManager, IRolesAuth, ITIP20, ITIP20ChannelReserve, ITIP20Factory, ITIPFeeAMM,
 };
@@ -27,51 +22,25 @@ use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
 async fn setup_token_manual<P>(
     node: &mut reth_e2e_test_utils::NodeHelperType<TempoNode>,
     provider: &P,
-    sender: &alloy::signers::local::PrivateKeySigner,
-    chain_id: u64,
+    sender: &mut TestAccount,
 ) -> eyre::Result<ITIP20::ITIP20Instance<P>>
 where
     P: Provider + Clone,
 {
-    setup_token_manual_with_quote_and_nonce(node, provider, sender, chain_id, PATH_USD_ADDRESS, 0)
-        .await
+    setup_token_manual_with_quote(node, provider, sender, PATH_USD_ADDRESS).await
 }
 
-async fn setup_token_manual_with_quote_and_nonce<P>(
+async fn setup_token_manual_with_quote<P>(
     node: &mut reth_e2e_test_utils::NodeHelperType<TempoNode>,
     provider: &P,
-    sender: &alloy::signers::local::PrivateKeySigner,
-    chain_id: u64,
+    sender: &mut TestAccount,
     quote_token: Address,
-    nonce_start: u64,
 ) -> eyre::Result<ITIP20::ITIP20Instance<P>>
 where
     P: Provider + Clone,
 {
     let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
     let sender_address = sender.address();
-    let signer = EthereumWallet::from(sender.clone());
-
-    // Helper to sign and encode a transaction
-    let sign_and_encode = |mut tx_req: TransactionRequest, nonce: u64| {
-        let signer_clone = signer.clone();
-        async move {
-            tx_req.nonce = Some(nonce);
-            tx_req.chain_id = Some(chain_id);
-            tx_req.gas = tx_req.gas.or(Some(5_000_000));
-            tx_req.max_fee_per_gas = tx_req.max_fee_per_gas.or(Some(TEMPO_T1_BASE_FEE as u128));
-            tx_req.max_priority_fee_per_gas = tx_req
-                .max_priority_fee_per_gas
-                .or(Some(TEMPO_T1_BASE_FEE as u128));
-
-            let signed = <TransactionRequest as NetworkTransactionBuilder<Ethereum>>::build(
-                tx_req,
-                &signer_clone,
-            )
-            .await?;
-            Ok::<Bytes, eyre::Error>(signed.encoded_2718().into())
-        }
-    };
 
     // Create token
     let salt = B256::random();
@@ -83,37 +52,26 @@ where
         sender_address,
         salt,
     );
-    let create_bytes = sign_and_encode(create_tx.into_transaction_request(), nonce_start).await?;
-    node.rpc.inject_tx(create_bytes).await?;
-    node.advance_block().await?;
+    let create_bytes = sender
+        .call(TIP20_FACTORY_ADDRESS, create_tx.calldata().clone())
+        .await;
+    let mined = node.mine([create_bytes]).await?;
 
     // Get token address from logs
-    let latest_block = provider.get_block_number().await?;
-    let receipts = provider
-        .get_block_receipts(latest_block.into())
-        .await?
-        .unwrap();
-    let token_create_receipt = receipts
-        .iter()
-        .find(|r| !r.inner.logs().is_empty())
-        .ok_or_else(|| eyre::eyre!("No receipt with logs found"))?;
-    let event =
-        ITIP20Factory::TokenCreated::decode_log(&token_create_receipt.inner.logs()[1].inner)?;
+    let event = ITIP20Factory::TokenCreated::decode_log(&mined.receipts[0].logs()[1].inner)?;
     let token_addr = event.token;
 
     // Grant issuer role
     let roles = IRolesAuth::new(token_addr, provider.clone());
     let grant_tx = roles.grantRole(ISSUER_ROLE, sender_address);
-    let grant_bytes = sign_and_encode(grant_tx.into_transaction_request(), nonce_start + 1).await?;
-    node.rpc.inject_tx(grant_bytes).await?;
-    node.advance_block().await?;
+    let grant_bytes = sender.call(token_addr, grant_tx.calldata().clone()).await;
+    node.inject_and_advance(grant_bytes).await?;
 
     // Mint tokens
     let token = ITIP20::ITIP20Instance::new(token_addr, provider.clone());
     let mint_tx = token.mint(sender_address, U256::from(1_000_000));
-    let mint_bytes = sign_and_encode(mint_tx.into_transaction_request(), nonce_start + 2).await?;
-    node.rpc.inject_tx(mint_bytes).await?;
-    node.advance_block().await?;
+    let mint_bytes = sender.call(token_addr, mint_tx.calldata().clone()).await;
+    node.inject_and_advance(mint_bytes).await?;
 
     Ok(token)
 }
@@ -133,27 +91,14 @@ async fn inject_non_payment_txs(
     count: usize,
     start_index: u32,
 ) -> eyre::Result<()> {
-    for i in 0..count {
-        let wallet_signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-            .index(start_index + i as u32)?
-            .build()?;
-        let mut tx = TxEip1559 {
-            chain_id,
-            gas_limit: 2_000_000,
-            to: Address::ZERO.into(),
-            max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-            max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-            ..Default::default()
-        };
-        let signature = wallet_signer.sign_transaction_sync(&mut tx).unwrap();
-
-        node.rpc
-            .inject_tx(
-                TxEnvelope::Eip1559(tx.into_signed(signature))
-                    .encoded_2718()
-                    .into(),
-            )
-            .await?;
+    let wallet = Wallet::default().with_chain_id(chain_id);
+    for i in 0..count as u32 {
+        let tx_bytes = t1_account(&wallet, start_index + i)
+            .tx()
+            .to(Address::ZERO)
+            .gas_limit(2_000_000)
+            .await;
+        node.rpc.inject_tx(tx_bytes).await?;
     }
     Ok(())
 }
@@ -161,69 +106,43 @@ async fn inject_non_payment_txs(
 /// Helper to inject payment transactions from a single sender
 async fn inject_payment_txs_from_sender<P>(
     node: &mut reth_e2e_test_utils::NodeHelperType<TempoNode>,
-    provider: &P,
-    sender: &alloy::signers::local::PrivateKeySigner,
+    sender: &mut TestAccount,
     token: &ITIP20::ITIP20Instance<P>,
-    chain_id: u64,
     count: usize,
 ) -> eyre::Result<()>
 where
     P: Provider + Clone,
 {
-    let current_nonce = provider.get_transaction_count(sender.address()).await?;
-    let signer = EthereumWallet::from(sender.clone());
-
     for i in 0..count {
-        let transfer_tx = token.transfer(sender.address(), U256::from((i + 1) as u64));
-        let mut tx_request = transfer_tx.into_transaction_request();
-        tx_request.nonce = Some(current_nonce + i as u64);
-        tx_request.chain_id = Some(chain_id);
-        tx_request.gas = Some(1_000_000);
-        tx_request.max_fee_per_gas = Some(TEMPO_T1_BASE_FEE as u128);
-        tx_request.max_priority_fee_per_gas = Some(TEMPO_T1_BASE_FEE as u128);
-
-        let signed_tx =
-            <TransactionRequest as NetworkTransactionBuilder<Ethereum>>::build(tx_request, &signer)
-                .await?;
-        let tx_bytes: Bytes = signed_tx.encoded_2718().into();
+        let tx = token
+            .transfer(sender.address(), U256::from((i + 1) as u64))
+            .into_transaction_request()
+            .gas_limit(1_000_000);
+        let tx_bytes = sender.sign_tx_bytes(tx).await;
         node.rpc.inject_tx(tx_bytes).await?;
     }
     Ok(())
-}
-
-async fn sign_and_inject(
-    node: &mut reth_e2e_test_utils::NodeHelperType<TempoNode>,
-    signer: &alloy::signers::local::PrivateKeySigner,
-    chain_id: u64,
-    mut tx_request: TransactionRequest,
-    nonce: u64,
-) -> eyre::Result<B256> {
-    let signer_wallet = EthereumWallet::from(signer.clone());
-    tx_request.nonce = Some(nonce);
-    tx_request.chain_id = Some(chain_id);
-    tx_request.gas = tx_request.gas.or(Some(5_000_000));
-    tx_request.max_fee_per_gas = tx_request
-        .max_fee_per_gas
-        .or(Some(TEMPO_T1_BASE_FEE as u128));
-    tx_request.max_priority_fee_per_gas = tx_request
-        .max_priority_fee_per_gas
-        .or(Some(TEMPO_T1_BASE_FEE as u128));
-
-    let signed_tx = <TransactionRequest as NetworkTransactionBuilder<Ethereum>>::build(
-        tx_request,
-        &signer_wallet,
-    )
-    .await?;
-    let tx_hash = *signed_tx.tx_hash();
-    let tx_bytes: Bytes = signed_tx.encoded_2718().into();
-    node.rpc.inject_tx(tx_bytes).await?;
-    Ok(tx_hash)
 }
 
 /// Helper to count payment and non-payment transactions
 fn count_transaction_types(transactions: &[TempoTxEnvelope]) -> (usize, usize) {
     let payment_count = transactions.iter().filter(|tx| tx.is_payment_v2()).count();
     (payment_count, transactions.len() - payment_count)
+}
+
+/// Advances the node until the pool has no pending transactions, returning the user transactions
+/// of the built blocks.
+async fn drained_user_txs(
+    node: &mut reth_e2e_test_utils::NodeHelperType<TempoNode>,
+) -> eyre::Result<Vec<TempoTxEnvelope>> {
+    Ok(node
+        .advance_until_pool_drained()
+        .await?
+        .iter()
+        .flat_map(|payload| {
+            extract_user_txs(payload.block().body().transactions().cloned().collect())
+        })
+        .collect())
 }
 
 /// Test with only a few mixed payment and non-payment transactions
@@ -235,20 +154,12 @@ async fn test_block_building_few_mixed_txs() -> eyre::Result<()> {
         .build_with_node_access()
         .await?;
 
-    let payment_sender = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
-    let payment_wallet = EthereumWallet::from(payment_sender.clone());
-
-    let http_url = setup.node.rpc_url();
-    let provider = ProviderBuilder::new()
-        .wallet(payment_wallet.clone())
-        .connect_http(http_url.clone());
+    let provider = setup.node.rpc_provider();
 
     let chain_id = provider.get_chain_id().await?;
+    let mut payment_sender = t1_account(&Wallet::default().with_chain_id(chain_id), 0);
 
-    let payment_token =
-        setup_token_manual(&mut setup.node, &provider, &payment_sender, chain_id).await?;
+    let payment_token = setup_token_manual(&mut setup.node, &provider, &mut payment_sender).await?;
 
     // Inject a few mixed transactions
     let num_payment_txs: usize = 3;
@@ -264,10 +175,8 @@ async fn test_block_building_few_mixed_txs() -> eyre::Result<()> {
     // Inject payment transactions
     inject_payment_txs_from_sender(
         &mut setup.node,
-        &provider,
-        &payment_sender,
+        &mut payment_sender,
         &payment_token,
-        chain_id,
         num_payment_txs,
     )
     .await?;
@@ -320,21 +229,13 @@ async fn test_block_building_only_payment_txs() -> eyre::Result<()> {
         .build_with_node_access()
         .await?;
 
-    let payment_sender = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
-    let payment_wallet = EthereumWallet::from(payment_sender.clone());
-
-    let http_url = setup.node.rpc_url();
-    let provider = ProviderBuilder::new()
-        .wallet(payment_wallet.clone())
-        .connect_http(http_url.clone());
+    let provider = setup.node.rpc_provider();
 
     let chain_id = provider.get_chain_id().await?;
+    let mut payment_sender = t1_account(&Wallet::default().with_chain_id(chain_id), 0);
 
     // Setup payment token
-    let payment_token =
-        setup_token_manual(&mut setup.node, &provider, &payment_sender, chain_id).await?;
+    let payment_token = setup_token_manual(&mut setup.node, &provider, &mut payment_sender).await?;
 
     let num_payment_txs: usize = 10;
     println!("Injecting {num_payment_txs} payment transactions into pool...");
@@ -342,10 +243,8 @@ async fn test_block_building_only_payment_txs() -> eyre::Result<()> {
     // Inject only payment transactions
     inject_payment_txs_from_sender(
         &mut setup.node,
-        &provider,
-        &payment_sender,
+        &mut payment_sender,
         &payment_token,
-        chain_id,
         num_payment_txs,
     )
     .await?;
@@ -388,8 +287,7 @@ async fn test_block_building_only_non_payment_txs() -> eyre::Result<()> {
         .build_with_node_access()
         .await?;
 
-    let http_url = setup.node.rpc_url();
-    let provider = ProviderBuilder::new().connect_http(http_url.clone());
+    let provider = setup.node.rpc_provider();
 
     let chain_id = provider.get_chain_id().await?;
 
@@ -397,28 +295,7 @@ async fn test_block_building_only_non_payment_txs() -> eyre::Result<()> {
 
     println!("Injecting {num_non_payment_txs} non-payment transactions into pool...");
 
-    // Use reth_e2e_test_utils Wallet for funded accounts
-    use reth_e2e_test_utils::wallet::Wallet;
-    let wallets = Wallet::new(num_non_payment_txs)
-        .with_chain_id(chain_id)
-        .wallet_gen();
-    for wallet_signer in wallets {
-        let raw_tx = {
-            let mut tx = TxEip1559 {
-                chain_id,
-                gas_limit: 2_000_000,
-                to: Address::ZERO.into(),
-                max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-                max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-                ..Default::default()
-            };
-            let signature = wallet_signer.sign_transaction_sync(&mut tx).unwrap();
-            TxEnvelope::Eip1559(tx.into_signed(signature))
-                .encoded_2718()
-                .into()
-        };
-        setup.node.rpc.inject_tx(raw_tx).await?;
-    }
+    inject_non_payment_txs(&mut setup.node, chain_id, num_non_payment_txs, 0).await?;
 
     println!("Building block...");
     let payload = setup.node.advance_block().await?;
@@ -463,8 +340,7 @@ async fn test_block_building_more_txs_than_fit() -> eyre::Result<()> {
         .build_with_node_access()
         .await?;
 
-    let http_url = setup.node.rpc_url();
-    let provider = ProviderBuilder::new().connect_http(http_url.clone());
+    let provider = setup.node.rpc_provider();
 
     let chain_id = provider.get_chain_id().await?;
 
@@ -483,37 +359,19 @@ async fn test_block_building_more_txs_than_fit() -> eyre::Result<()> {
     let mut payment_senders = Vec::new();
     let mut payment_tokens = Vec::new();
 
+    let wallet = Wallet::default().with_chain_id(chain_id);
     for sender_idx in 0..num_payment_senders {
-        let sender = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-            .index(sender_idx as u32)?
-            .build()?;
-
-        let sender_provider = ProviderBuilder::new()
-            .wallet(EthereumWallet::from(sender.clone()))
-            .connect_http(http_url.clone());
-
-        let token =
-            setup_token_manual(&mut setup.node, &sender_provider, &sender, chain_id).await?;
+        let mut sender = t1_account(&wallet, sender_idx as u32);
+        let token = setup_token_manual(&mut setup.node, &provider, &mut sender).await?;
 
         payment_senders.push(sender);
         payment_tokens.push(token);
     }
 
     // Inject payment transactions from multiple senders
-    for (sender, token) in payment_senders.iter().zip(payment_tokens.iter()) {
-        let sender_provider = ProviderBuilder::new()
-            .wallet(EthereumWallet::from(sender.clone()))
-            .connect_http(http_url.clone());
-
-        inject_payment_txs_from_sender(
-            &mut setup.node,
-            &sender_provider,
-            sender,
-            token,
-            chain_id,
-            payment_txs_per_sender,
-        )
-        .await?;
+    for (sender, token) in payment_senders.iter_mut().zip(payment_tokens.iter()) {
+        inject_payment_txs_from_sender(&mut setup.node, sender, token, payment_txs_per_sender)
+            .await?;
     }
 
     // Inject non-payment transactions
@@ -542,33 +400,18 @@ async fn test_block_building_more_txs_than_fit() -> eyre::Result<()> {
 
     // Keep building blocks until all transactions are processed
     let mut all_blocks_user_txs = vec![first_user_txs];
-    let mut block_num = 2;
-
-    loop {
-        println!("Building block {block_num}...");
-        let payload = setup.node.advance_block().await?;
+    for payload in setup.node.advance_until_pool_drained().await? {
         let block = payload.block();
         let all_txs: Vec<_> = block.body().transactions().cloned().collect();
         let user_txs = extract_user_txs(all_txs.clone());
-
-        println!(
-            "Block {}: {} total transactions, {} user transactions",
-            block_num,
-            all_txs.len(),
-            user_txs.len()
-        );
-
-        if user_txs.is_empty() {
-            break;
-        }
-
         let (payment_count, non_payment_count) = count_transaction_types(&user_txs);
         println!(
-            "Block {block_num}: {payment_count} payment, {non_payment_count} non-payment transactions"
+            "Block {}: {} total transactions, {payment_count} payment, {non_payment_count} non-payment transactions",
+            block.header().inner.number,
+            all_txs.len(),
         );
 
         all_blocks_user_txs.push(user_txs);
-        block_num += 1;
     }
 
     // Calculate total transactions across all blocks
@@ -604,93 +447,66 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
         .build_with_node_access()
         .await?;
 
-    let user_signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
-    let user_address = user_signer.address();
-    let user_provider = ProviderBuilder::new()
-        .wallet(EthereumWallet::from(user_signer.clone()))
-        .connect_http(setup.node.rpc_url());
+    let user_provider = setup.node.rpc_provider();
     let chain_id = user_provider.get_chain_id().await?;
+    let mut user = t1_account(&Wallet::default().with_chain_id(chain_id), 1);
+    let user_address = user.address();
 
     let fee_beneficiary = Address::ZERO;
 
     // Create a two-hop fee route: user_fee_token -> hop_fee_token -> PATH_USD.
-    let mut nonce = 0u64;
-    let hop_fee_token = setup_token_manual_with_quote_and_nonce(
+    let hop_fee_token =
+        setup_token_manual_with_quote(&mut setup.node, &user_provider, &mut user, PATH_USD_ADDRESS)
+            .await?;
+    let user_fee_token = setup_token_manual_with_quote(
         &mut setup.node,
         &user_provider,
-        &user_signer,
-        chain_id,
-        PATH_USD_ADDRESS,
-        nonce,
-    )
-    .await?;
-    nonce += 3; // setup_token_manual uses 3 txs (create, grantRole, mint)
-    let user_fee_token = setup_token_manual_with_quote_and_nonce(
-        &mut setup.node,
-        &user_provider,
-        &user_signer,
-        chain_id,
+        &mut user,
         *hop_fee_token.address(),
-        nonce,
     )
     .await?;
-    nonce += 3;
 
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, user_provider.clone());
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, user_provider.clone());
 
     // Seed AMM liquidity for user_token <-> hop_token <-> PATH_USD.
     let liquidity = U256::from(500_000u64);
-    sign_and_inject(
-        &mut setup.node,
-        &user_signer,
-        chain_id,
-        fee_amm
-            .mint(
-                *user_fee_token.address(),
-                *hop_fee_token.address(),
-                liquidity,
-                user_address,
-            )
-            .into_transaction_request(),
-        nonce,
-    )
-    .await?;
-    nonce += 1;
-    setup.node.advance_block().await?;
-    sign_and_inject(
-        &mut setup.node,
-        &user_signer,
-        chain_id,
-        fee_amm
-            .mint(
-                *hop_fee_token.address(),
-                PATH_USD_ADDRESS,
-                liquidity,
-                user_address,
-            )
-            .into_transaction_request(),
-        nonce,
-    )
-    .await?;
-    nonce += 1;
-    setup.node.advance_block().await?;
+    let mint_tx = user
+        .sign_tx_bytes(
+            fee_amm
+                .mint(
+                    *user_fee_token.address(),
+                    *hop_fee_token.address(),
+                    liquidity,
+                    user_address,
+                )
+                .into_transaction_request(),
+        )
+        .await;
+    setup.node.inject_and_advance(mint_tx).await?;
+    let mint_tx = user
+        .sign_tx_bytes(
+            fee_amm
+                .mint(
+                    *hop_fee_token.address(),
+                    PATH_USD_ADDRESS,
+                    liquidity,
+                    user_address,
+                )
+                .into_transaction_request(),
+        )
+        .await;
+    setup.node.inject_and_advance(mint_tx).await?;
 
     // Set the user's fee token preference to the custom token
-    sign_and_inject(
-        &mut setup.node,
-        &user_signer,
-        chain_id,
-        fee_manager
-            .setUserToken(*user_fee_token.address())
-            .into_transaction_request(),
-        nonce,
-    )
-    .await?;
-    nonce += 1;
-    setup.node.advance_block().await?;
+    let set_user_token_tx = user
+        .sign_tx_bytes(
+            fee_manager
+                .setUserToken(*user_fee_token.address())
+                .into_transaction_request(),
+        )
+        .await;
+    setup.node.inject_and_advance(set_user_token_tx).await?;
 
     // Record collected fees before the attack block
     let collected_before = fee_manager
@@ -699,25 +515,19 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
         .await?;
 
     // Submit a transaction that pays fees in user_fee_token and settles through the two-hop route.
-    let attack_tx_hash = sign_and_inject(
-        &mut setup.node,
-        &user_signer,
-        chain_id,
-        ITIP20::new(PATH_USD_ADDRESS, user_provider.clone())
-            .transfer(Address::random(), U256::from(1))
-            .into_transaction_request(),
-        nonce,
-    )
-    .await?;
+    let attack_tx = user
+        .sign_tx_bytes(
+            ITIP20::new(PATH_USD_ADDRESS, user_provider.clone())
+                .transfer(Address::random(), U256::ONE)
+                .into_transaction_request(),
+        )
+        .await;
 
     // Build and commit the block
-    let payload = setup.node.advance_block().await?;
-    let payload_fees = payload.fees();
+    let mined = setup.node.mine([attack_tx]).await?;
+    let payload_fees = mined.payload.fees();
 
-    let attack_receipt = user_provider
-        .get_transaction_receipt(attack_tx_hash)
-        .await?
-        .expect("attack tx receipt must exist");
+    let attack_receipt = &mined.receipts[0];
     let nominal_spending = calc_gas_balance_spending(
         attack_receipt.gas_used,
         attack_receipt.effective_gas_price(),
@@ -756,44 +566,21 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
 /// Fund `user` with PATH_USD.
 async fn fund_path_usd(
     node: &mut reth_e2e_test_utils::NodeHelperType<TempoNode>,
-    funder: &PrivateKeySigner,
-    user: &PrivateKeySigner,
-    chain_id: u64,
-    funder_nonce: u64,
+    funder: &mut TestAccount,
+    user: Address,
 ) -> eyre::Result<()> {
-    let provider = ProviderBuilder::new()
-        .wallet(EthereumWallet::from(funder.clone()))
-        .connect_http(node.rpc_url());
-    let token = ITIP20::new(PATH_USD_ADDRESS, provider);
+    let token = ITIP20::new(PATH_USD_ADDRESS, node.rpc_provider());
 
-    sign_and_inject(
-        node,
-        funder,
-        chain_id,
-        token
-            .transfer(user.address(), U256::from(20_000_000u64))
-            .into_transaction_request(),
-        funder_nonce,
-    )
-    .await?;
-    node.advance_block().await?;
+    let transfer_tx = funder
+        .sign_tx_bytes(
+            token
+                .transfer(user, U256::from(20_000_000u64))
+                .into_transaction_request(),
+        )
+        .await;
+    node.inject_and_advance(transfer_tx).await?;
 
     Ok(())
-}
-
-/// Decode the first `ChannelOpened` event from the latest block.
-async fn decode_channel_opened(
-    node: &reth_e2e_test_utils::NodeHelperType<TempoNode>,
-) -> eyre::Result<ITIP20ChannelReserve::ChannelOpened> {
-    let provider = ProviderBuilder::new().connect_http(node.rpc_url());
-    let latest = provider.get_block_number().await?;
-    let receipts = provider.get_block_receipts(latest.into()).await?.unwrap();
-    receipts
-        .iter()
-        .flat_map(|r| r.inner.logs())
-        .find_map(|log| ITIP20ChannelReserve::ChannelOpened::decode_log(&log.inner).ok())
-        .map(|log| log.data)
-        .ok_or_else(|| eyre::eyre!("ChannelOpened event not found"))
 }
 
 fn descriptor_from(
@@ -815,59 +602,50 @@ fn descriptor_from(
 /// `requestClose` remain in the pool for the caller to drain/count.
 async fn inject_reserve_payment_txs(
     node: &mut reth_e2e_test_utils::NodeHelperType<TempoNode>,
-    sender: &PrivateKeySigner,
-    chain_id: u64,
-    start_nonce: u64,
+    sender: &mut TestAccount,
 ) -> eyre::Result<()> {
-    let provider = ProviderBuilder::new()
-        .wallet(EthereumWallet::from(sender.clone()))
-        .connect_http(node.rpc_url());
-    let reserve = ITIP20ChannelReserve::new(TIP20_CHANNEL_RESERVE_ADDRESS, provider);
+    let reserve = ITIP20ChannelReserve::new(TIP20_CHANNEL_RESERVE_ADDRESS, node.rpc_provider());
 
     // open (payment)
-    sign_and_inject(
-        node,
-        sender,
-        chain_id,
-        reserve
-            .open(
-                Address::random(),
-                Address::ZERO,
-                PATH_USD_ADDRESS,
-                U96::from(1_000u64),
-                B256::random(),
-                Address::ZERO,
-            )
-            .into_transaction_request(),
-        start_nonce,
-    )
-    .await?;
-    node.advance_block().await?;
+    let open_tx = sender
+        .sign_tx_bytes(
+            reserve
+                .open(
+                    Address::random(),
+                    Address::ZERO,
+                    PATH_USD_ADDRESS,
+                    U96::from(1_000u64),
+                    B256::random(),
+                    Address::ZERO,
+                )
+                .into_transaction_request(),
+        )
+        .await;
+    let mined = node.mine([open_tx]).await?;
 
-    let opened = decode_channel_opened(node).await?;
+    let opened = mined.receipts[0]
+        .logs()
+        .iter()
+        .find_map(|log| ITIP20ChannelReserve::ChannelOpened::decode_log(&log.inner).ok())
+        .map(|log| log.data)
+        .ok_or_else(|| eyre::eyre!("ChannelOpened event not found"))?;
     let desc = descriptor_from(&opened);
 
     // topUp (payment)
-    sign_and_inject(
-        node,
-        sender,
-        chain_id,
-        reserve
-            .topUp(desc.clone(), U96::from(500u64))
-            .into_transaction_request(),
-        start_nonce + 1,
-    )
-    .await?;
+    let top_up_tx = sender
+        .sign_tx_bytes(
+            reserve
+                .topUp(desc.clone(), U96::from(500u64))
+                .into_transaction_request(),
+        )
+        .await;
+    node.rpc.inject_tx(top_up_tx).await?;
 
     // requestClose (payment)
-    sign_and_inject(
-        node,
-        sender,
-        chain_id,
-        reserve.requestClose(desc).into_transaction_request(),
-        start_nonce + 2,
-    )
-    .await?;
+    let request_close_tx = sender
+        .sign_tx_bytes(reserve.requestClose(desc).into_transaction_request())
+        .await;
+    node.rpc.inject_tx(request_close_tx).await?;
 
     Ok(())
 }
@@ -879,33 +657,18 @@ async fn test_block_building_channel_reserve_payment_v2() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let funder = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
-    let payer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
-
-    let provider = ProviderBuilder::new()
-        .wallet(EthereumWallet::from(payer.clone()))
-        .connect_http(setup.node.rpc_url());
+    let provider = setup.node.rpc_provider();
     let chain_id = provider.get_chain_id().await?;
+    let wallet = Wallet::default().with_chain_id(chain_id);
+    let mut funder = t1_account(&wallet, 0);
+    let mut payer = t1_account(&wallet, 1);
 
-    fund_path_usd(&mut setup.node, &funder, &payer, chain_id, 0).await?;
+    fund_path_usd(&mut setup.node, &mut funder, payer.address()).await?;
 
-    let payer_nonce = provider.get_transaction_count(payer.address()).await?;
-    inject_reserve_payment_txs(&mut setup.node, &payer, chain_id, payer_nonce).await?;
+    inject_reserve_payment_txs(&mut setup.node, &mut payer).await?;
 
-    // Drain pool — topUp + requestClose may already have been consumed by the dev-mode block timer.
-    let mut all_user_txs = Vec::new();
-    loop {
-        let payload = setup.node.advance_block().await?;
-        let user = extract_user_txs(payload.block().body().transactions().cloned().collect());
-        if user.is_empty() {
-            break;
-        }
-        all_user_txs.extend(user);
-    }
+    // Drain pool
+    let all_user_txs = drained_user_txs(&mut setup.node).await?;
     let (payment, non_payment) = count_transaction_types(&all_user_txs);
     assert_eq!(payment, 2);
     assert_eq!(non_payment, 0);
@@ -919,69 +682,28 @@ async fn test_block_building_mixed_tip20_and_reserve_payments() -> eyre::Result<
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let funder = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
-    let tip20_sender = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
-    let reserve_sender = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(2)?
-        .build()?;
-
-    let tip20_provider = ProviderBuilder::new()
-        .wallet(EthereumWallet::from(tip20_sender.clone()))
-        .connect_http(setup.node.rpc_url());
+    let tip20_provider = setup.node.rpc_provider();
     let chain_id = tip20_provider.get_chain_id().await?;
+    let wallet = Wallet::default().with_chain_id(chain_id);
+    let mut funder = t1_account(&wallet, 0);
+    let mut tip20_sender = t1_account(&wallet, 1);
+    let mut reserve_sender = t1_account(&wallet, 2);
 
     let payment_token =
-        setup_token_manual(&mut setup.node, &tip20_provider, &tip20_sender, chain_id).await?;
+        setup_token_manual(&mut setup.node, &tip20_provider, &mut tip20_sender).await?;
 
-    let funder_nonce = ProviderBuilder::new()
-        .wallet(EthereumWallet::from(funder.clone()))
-        .connect_http(setup.node.rpc_url())
-        .get_transaction_count(funder.address())
-        .await?;
-    fund_path_usd(
-        &mut setup.node,
-        &funder,
-        &reserve_sender,
-        chain_id,
-        funder_nonce,
-    )
-    .await?;
+    fund_path_usd(&mut setup.node, &mut funder, reserve_sender.address()).await?;
 
     // open is committed in its own setup block; topUp + requestClose are queued as payment txs.
-    let reserve_nonce = ProviderBuilder::new()
-        .wallet(EthereumWallet::from(reserve_sender.clone()))
-        .connect_http(setup.node.rpc_url())
-        .get_transaction_count(reserve_sender.address())
-        .await?;
-    inject_reserve_payment_txs(&mut setup.node, &reserve_sender, chain_id, reserve_nonce).await?;
+    inject_reserve_payment_txs(&mut setup.node, &mut reserve_sender).await?;
 
     // Inject after reserve setup so they're still in the pool for the drain loop 3 TIP-20 transfers
-    inject_payment_txs_from_sender(
-        &mut setup.node,
-        &tip20_provider,
-        &tip20_sender,
-        &payment_token,
-        chain_id,
-        3,
-    )
-    .await?;
+    inject_payment_txs_from_sender(&mut setup.node, &mut tip20_sender, &payment_token, 3).await?;
     // 3 self-sends (non-payment)
     inject_non_payment_txs(&mut setup.node, chain_id, 3, 10).await?;
 
     // Drain pool
-    let mut all_user_txs = Vec::new();
-    loop {
-        let payload = setup.node.advance_block().await?;
-        let user = extract_user_txs(payload.block().body().transactions().cloned().collect());
-        if user.is_empty() {
-            break;
-        }
-        all_user_txs.extend(user);
-    }
+    let all_user_txs = drained_user_txs(&mut setup.node).await?;
 
     let (payment, non_payment) = count_transaction_types(&all_user_txs);
     assert_eq!(payment, 5);

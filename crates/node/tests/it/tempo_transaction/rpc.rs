@@ -17,7 +17,9 @@ use alloy::{
     },
 };
 use alloy_eips::Encodable2718;
+use reth_e2e_test_utils::wait::{PollOpts, poll_until_with};
 use reth_primitives_traits::transaction::TxHashRef;
+use std::time::Duration;
 use tempo_chainspec::{
     hardfork::{TempoHardfork, TempoHardforks},
     spec::{DEV, MODERATO, PRESTO},
@@ -26,8 +28,14 @@ use tempo_primitives::{TempoTxEnvelope, transaction::tempo_transaction::Call};
 
 use super::helpers::*;
 
-/// Maximum number of 1-second poll iterations when waiting for RPC state to settle.
-const RPC_POLL_RETRIES: usize = 30;
+/// Polls RPC state every 250ms for up to 30 seconds while waiting for it to settle.
+///
+/// The interval stays under the ~0.6s block time: the matrices wait for a few hundred
+/// receipts one after another, so a coarser interval adds up to minutes per run.
+const RPC_POLL: PollOpts = PollOpts {
+    timeout: Duration::from_secs(30),
+    interval: Duration::from_millis(250),
+};
 
 /// Sends a raw transaction with duplicate-submission handling.
 ///
@@ -69,13 +77,18 @@ impl RpcEnv {
     async fn connect(rpc_url: &str) -> eyre::Result<Self> {
         reth_tracing::init_test_tracing();
 
-        // Extend the default rate-limit policy to also retry connection errors.
+        // Extend the default rate-limit policy to also retry connection errors and
+        // gateway errors from the proxy in front of the node.
         let policy =
             RateLimitRetryPolicy::default().or(|err: &alloy::transports::TransportError| {
                 let msg = err.to_string();
                 msg.contains("connection error")
                     || msg.contains("SendRequest")
                     || msg.contains("error sending request")
+                    || err
+                        .as_transport_err()
+                        .and_then(TransportErrorKind::as_http_error)
+                        .is_some_and(|http| matches!(http.status, 502 | 504))
             });
         let retry = RetryBackoffLayer::new_with_policy(4, 100, 330, policy);
         let client = alloy::rpc::client::RpcClient::builder()
@@ -203,14 +216,15 @@ impl super::types::TestEnv for RpcEnv {
         }
 
         let expected = start_nonce + count;
-        let mut final_nonce = 0;
-        for _ in 0..RPC_POLL_RETRIES {
-            final_nonce = self.provider.get_transaction_count(signer_addr).await?;
-            if final_nonce >= expected {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        }
+        let final_nonce = poll_until_with(
+            RPC_POLL,
+            format!("protocol nonce of {signer_addr} to reach {expected}"),
+            || async {
+                let nonce = self.provider.get_transaction_count(signer_addr).await?;
+                Ok((nonce >= expected).then_some(nonce))
+            },
+        )
+        .await?;
         assert_eq!(final_nonce, expected, "Protocol nonce should have bumped");
         Ok(())
     }
@@ -290,14 +304,10 @@ async fn wait_for_receipt(
     provider: &impl Provider,
     tx_hash: B256,
 ) -> eyre::Result<serde_json::Value> {
-    for _ in 0..RPC_POLL_RETRIES {
-        let receipt: Option<serde_json::Value> = provider
+    poll_until_with(RPC_POLL, format!("receipt {tx_hash}"), || async {
+        Ok(provider
             .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
-            .await?;
-        if let Some(receipt) = receipt {
-            return Ok(receipt);
-        }
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    }
-    Err(eyre::eyre!("timed out waiting for receipt {tx_hash}"))
+            .await?)
+    })
+    .await
 }

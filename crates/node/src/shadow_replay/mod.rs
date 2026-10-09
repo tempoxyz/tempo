@@ -809,7 +809,7 @@ mod tests {
         let address = Address::ZERO;
         let created_address = Address::repeat_byte(1);
         let destroyed_address = Address::repeat_byte(2);
-        let slot = U256::from(1);
+        let slot = U256::ONE;
         let original = AccountInfo {
             balance: U256::from(10),
             ..Default::default()
@@ -822,7 +822,7 @@ mod tests {
         );
         account.mark_touch();
         let mut created = Account::new_not_existing(TransactionId::ZERO);
-        created.info.balance = U256::from(1);
+        created.info.balance = U256::ONE;
         created.mark_touch();
         created.mark_created();
         let mut destroyed = Account::from(original.clone());

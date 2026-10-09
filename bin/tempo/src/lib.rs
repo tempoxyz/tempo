@@ -132,10 +132,7 @@ fn set_zone_factory_genesis_owner(genesis: &mut Genesis, owner: Address) -> eyre
         .storage
         .as_mut()
         .ok_or_eyre("DEV ZoneFactory is missing storage")?;
-    storage.insert(
-        B256::ZERO,
-        B256::from(initial_zone_factory_config(owner).to_be_bytes()),
-    );
+    storage.insert(B256::ZERO, B256::from(initial_zone_factory_config(owner)));
     Ok(())
 }
 
@@ -531,7 +528,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         } else {
             None
         };
-        let chain_id = builder.config().chain.chain().id();
+        let chain_id = builder.config().chain.chain_id();
 
         #[cfg(feature = "custom-pcrs")]
         if let Some(policy) = args.custom_pcrs.clone() {
@@ -777,8 +774,8 @@ mod tests {
         };
         let filter = node_cmd.ext.node_args.txpool_filter.as_ref().unwrap();
         assert_eq!(filter.len(), 2);
-        assert!(filter.contains(&address!("0000000000000000000000000000000000000001")));
-        assert!(filter.contains(&address!("0000000000000000000000000000000000000002")));
+        assert!(filter.contains(&Address::with_last_byte(1)));
+        assert!(filter.contains(&Address::with_last_byte(2)));
 
         let file = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(
@@ -802,9 +799,9 @@ mod tests {
         };
         let filter = node_cmd.ext.node_args.txpool_filter.as_ref().unwrap();
         assert_eq!(filter.len(), 3);
-        assert!(filter.contains(&address!("0000000000000000000000000000000000000003")));
-        assert!(filter.contains(&address!("0000000000000000000000000000000000000004")));
-        assert!(filter.contains(&address!("0000000000000000000000000000000000000005")));
+        assert!(filter.contains(&Address::with_last_byte(3)));
+        assert!(filter.contains(&Address::with_last_byte(4)));
+        assert!(filter.contains(&Address::with_last_byte(5)));
     }
 
     #[test]
@@ -858,7 +855,7 @@ mod tests {
             code: Some(Bytes::from_static(&[0xef])),
             storage: Some(BTreeMap::from([(
                 B256::ZERO,
-                B256::from(initial_zone_factory_config(owner).to_be_bytes()),
+                B256::from(initial_zone_factory_config(owner)),
             )])),
             ..Default::default()
         };

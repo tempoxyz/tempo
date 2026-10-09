@@ -696,8 +696,7 @@ mod tests {
             TIP20Setup::path_usd(sender).apply()?;
 
             // Create an address with TIP20 prefix but no code
-            let non_existent_tip20 =
-                Address::from(alloy::hex!("20C0000000000000000000000000000000009999"));
+            let non_existent_tip20 = address!("20C0000000000000000000000000000000009999");
             let invalid_call = createTokenCall {
                 name: "Test Token".to_string(),
                 symbol: "TEST".to_string(),
