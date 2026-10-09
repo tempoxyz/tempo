@@ -23,7 +23,7 @@ use crate::{
     catalog::ReleaseEra,
     handshake::{ExecutionInfo, WorkerIdentity, wait_for_worker},
     manifest::{parse_quantity, validate_hash},
-    process::{shutdown_children, spawn_child},
+    process::{check_child_alive, shutdown_children, spawn_child},
     routing::{RpcParams, unsupported, upstream_error},
 };
 
@@ -123,16 +123,14 @@ impl HistoricalWorkers {
         if let State::Failed(error) = &*state {
             bail!("{error}");
         }
-        let result = async {
+        let result: Result<_> = async {
             if matches!(*state, State::Dormant) {
                 *state = State::Running(Box::new(spawn(&self.context, era)?));
             }
             let State::Running(process) = &mut *state else {
                 unreachable!("spawned or failed")
             };
-            if let Some(status) = process.child.try_wait()? {
-                bail!("historical era {} exited with {status}", era.name);
-            }
+            check_child_alive(&mut process.child, &era.name)?;
             if let Some(worker) = &process.ready {
                 return Ok(worker.clone());
             }
@@ -262,10 +260,7 @@ async fn ready(
                 !workers.shutdown.is_cancelled(),
                 "historical workers are shutting down"
             );
-            if let Some(status) = process.child.try_wait()? {
-                bail!("historical worker exited with {status}");
-            }
-            Ok(())
+            check_child_alive(&mut process.child, &era.name)
         },
     );
     let info = tokio::select! {

@@ -118,13 +118,7 @@ impl ProcessGroup {
     /// An unexpected exit must stop the public server and the remaining workers.
     pub fn check_alive(&mut self) -> Result<()> {
         for worker in &mut self.workers {
-            if let Some(status) = worker
-                .child
-                .try_wait()
-                .wrap_err_with(|| format!("checking {}", worker.name))?
-            {
-                bail!("worker {} exited with {status}", worker.name);
-            }
+            check_child_alive(&mut worker.child, &worker.name)?;
         }
         Ok(())
     }
@@ -154,6 +148,15 @@ impl ProcessGroup {
         });
         Ok(())
     }
+}
+
+/// Check an owned child, retaining its name in process errors.
+pub(crate) fn check_child_alive(child: &mut Child, name: &str) -> Result<()> {
+    let result = child.try_wait();
+    if let Some(status) = result.wrap_err_with(|| format!("checking {name}"))? {
+        bail!("worker {name} exited with {status}");
+    }
+    Ok(())
 }
 
 /// Every supervised child uses the same I/O and cancellation fallback.
