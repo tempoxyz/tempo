@@ -5,11 +5,7 @@ node runs in-process; an execution-independent library decorates its registered 
 starts frozen read-only workers lazily for historical execution. The library has no Tempo execution,
 Reth, or database dependencies.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/execution-routing.svg">
-  <source media="(prefers-color-scheme: light)" srcset="assets/execution-routing-light.svg">
-  <img alt="Tempo metabinary routing: native transports enter the live node. Historical execution uses frozen read-only era workers over shared chain storage." src="assets/execution-routing-light.svg">
-</picture>
+![Tempo metabinary routing: native transports enter the live node. Historical execution uses frozen read-only era workers over shared chain storage.](assets/execution-routing.svg)
 
 ## Release configuration
 

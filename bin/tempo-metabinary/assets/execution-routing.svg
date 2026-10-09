@@ -1,6 +1,18 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080" role="img" aria-labelledby="title description">
   <title id="title">Tempo metabinary historical execution routing</title>
   <desc id="description">HTTP, WebSocket, and IPC requests enter tempo node's native RPC registry. Other requests use original callbacks. With execution routing enabled, the era router selects an era using native metadata and the release catalog, tempo-eras.json. Live-era execution uses original callbacks. Historical execution goes over private loopback HTTP to an on-demand frozen rpc-only worker for Era A or Era B. Idle workers shut down. The live node is the only storage writer. Both frozen workers read shared chain storage to reexecute historical state.</desc>
+  <!-- Embedded images inherit the page's color scheme. Static SVG renderers retain the dark palette. -->
+  <style>
+    @media (prefers-color-scheme: light) {
+      [fill="#000000"] { fill: #f0f0f0; }
+      [fill="#141414"] { fill: #ffffff; }
+      [fill="#ffffff"] { fill: #000000; }
+      [fill="#8f8f8f"] { fill: #707070; }
+      [stroke="#ffffff"] { stroke: #000000; }
+      [stroke="#3d3d3d"] { stroke: #c4c4c4; }
+      [stroke="#333333"] { stroke: #d6d6d6; }
+    }
+  </style>
   <!-- Tempo visualizer palette and typography. Labels are outlined for portable rendering;
        each label retains its source text in an accessible group title. No font files are embedded. -->
   <defs>
