@@ -42,6 +42,7 @@ reth-provider.workspace = true
 reth-revm.workspace = true
 reth-transaction-pool.workspace = true
 reth-evm.workspace = true
+reth-engine-tree.workspace = true
 reth-network-api.workspace = true
 reth-rpc.workspace = true
 reth-rpc-api.workspace = true

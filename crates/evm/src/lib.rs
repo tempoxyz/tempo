@@ -21,7 +21,11 @@ pub mod consensus;
 #[cfg(feature = "engine")]
 mod engine;
 #[cfg(feature = "engine")]
+mod validation;
+#[cfg(feature = "engine")]
 use rayon as _;
+#[cfg(feature = "engine")]
+pub use validation::TempoValidationStrategy;
 mod error;
 pub use error::TempoEvmError;
 pub mod evm;

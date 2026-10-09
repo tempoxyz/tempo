@@ -106,6 +106,10 @@ pub struct TempoNodeArgs {
     #[arg(long = "builder.parallel", default_value_t = false, hide = true)]
     pub builder_parallel: bool,
 
+    /// Enable experimental STM validation. Replay conflicts reject the block.
+    #[arg(long = "engine.parallel", default_value_t = false, hide = true)]
+    pub engine_parallel: bool,
+
     /// Disable sharing the execution cache with the payload builder.
     #[arg(
         long = "engine.disable-execution-cache-sharing-with-builder",
@@ -145,6 +149,7 @@ impl Default for TempoNodeArgs {
             builder_disable_prewarming: false,
             builder_enable_prewarming: true,
             builder_parallel: false,
+            engine_parallel: false,
             engine_disable_execution_cache_sharing_with_builder: false,
             builder_build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
             shadow_replay: None,
@@ -248,6 +253,8 @@ pub struct TempoNode {
     network_builder: TempoNetworkBuilder,
     /// Filled with the engine's in-memory overlay when the node launches.
     executed_state: ExecutedState,
+    /// Whether the engine validates using speculative action replay.
+    parallel_validation: bool,
 }
 
 impl TempoNode {
@@ -259,6 +266,7 @@ impl TempoNode {
             validator_key,
             network_builder: TempoNetworkBuilder::default(),
             executed_state: ExecutedState::default(),
+            parallel_validation: args.engine_parallel,
         }
     }
 
@@ -382,12 +390,21 @@ where
     ///
     /// `executed_state` is filled when reth launches the engine.
     pub fn new(validator_key: Option<B256>, executed_state: ExecutedState) -> Self {
+        Self::with_parallel_validation(validator_key, executed_state, false)
+    }
+
+    fn with_parallel_validation(
+        validator_key: Option<B256>,
+        executed_state: ExecutedState,
+        parallel_validation: bool,
+    ) -> Self {
         Self {
             inner: RpcAddOns::new(
                 TempoEthApiBuilder::default(),
                 TempoEngineValidatorBuilder,
                 NoopEngineApiBuilder::default(),
-                TempoEngineTreeValidatorBuilder::new(executed_state),
+                TempoEngineTreeValidatorBuilder::new(executed_state)
+                    .with_parallel_validation(parallel_validation),
                 Identity::default(),
                 Default::default(),
             ),
@@ -489,7 +506,11 @@ where
     }
 
     fn add_ons(&self) -> Self::AddOns {
-        TempoAddOns::new(self.validator_key, self.executed_state.clone())
+        TempoAddOns::with_parallel_validation(
+            self.validator_key,
+            self.executed_state.clone(),
+            self.parallel_validation,
+        )
     }
 }
 
