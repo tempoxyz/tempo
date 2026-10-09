@@ -270,6 +270,14 @@ impl PrimitiveSignature {
         }
     }
 
+    /// Returns verification gas before any WebAuthn data charge.
+    pub const fn base_verification_gas(&self) -> u64 {
+        match self {
+            Self::Secp256k1(_) => 3_000,
+            Self::P256(_) | Self::WebAuthn(_) => 8_000,
+        }
+    }
+
     /// Get the in-memory size of the signature
     pub fn size(&self) -> usize {
         size_of::<Self>()
@@ -1268,6 +1276,31 @@ mod tests {
         let pub_key_x = B256::from_slice(encoded_point.x().unwrap().as_ref());
         let pub_key_y = B256::from_slice(encoded_point.y().unwrap().as_ref());
         (signing_key, pub_key_x, pub_key_y)
+    }
+
+    #[test]
+    fn primitive_base_verification_gas() {
+        let p256 = P256SignatureWithPreHash {
+            r: B256::ZERO,
+            s: B256::ZERO,
+            pub_key_x: B256::ZERO,
+            pub_key_y: B256::ZERO,
+            pre_hash: false,
+        };
+        let webauthn = WebAuthnSignature {
+            r: B256::ZERO,
+            s: B256::ZERO,
+            pub_key_x: B256::ZERO,
+            pub_key_y: B256::ZERO,
+            webauthn_data: Bytes::new(),
+        };
+        for (signature, expected) in [
+            (PrimitiveSignature::default(), 3_000),
+            (PrimitiveSignature::P256(p256), 8_000),
+            (PrimitiveSignature::WebAuthn(webauthn), 8_000),
+        ] {
+            assert_eq!(signature.base_verification_gas(), expected);
+        }
     }
 
     /// Sign a message hash with P256, normalize s, return (r, s)
