@@ -22,30 +22,6 @@ pub struct Manifest {
     pub eras: Vec<Era>,
 }
 
-/// An era's executable, activation timestamp, and optional bootstrap plan.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Era {
-    pub name: String,
-    /// Inclusive activation timestamp; the next era's activation is the exclusive end.
-    pub start_timestamp: u64,
-    pub binary: PathBuf,
-    /// Optional sequential genesis bootstrap from canonical block files.
-    #[serde(default)]
-    pub bootstrap: Option<Bootstrap>,
-}
-
-/// A finite import command and the canonical checkpoint it must reach.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Bootstrap {
-    /// Starts with `import`. The wrapper adds shared storage and validation flags.
-    pub args: Vec<String>,
-    /// Operator-pinned last canonical block owned by this era.
-    pub terminal_block_number: u64,
-    pub terminal_block_hash: B256,
-}
-
 impl Manifest {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
@@ -54,11 +30,7 @@ impl Manifest {
         let mut manifest: Self = serde_json::from_slice(&bytes)
             .wrap_err_with(|| format!("invalid manifest {}", path.display()))?;
         manifest.validate()?;
-        let parent = path
-            .canonicalize()?
-            .parent()
-            .expect("manifest has parent")
-            .to_owned();
+        let parent = path.canonicalize()?.with_file_name("");
         resolve_path(&parent, &mut manifest.datadir);
         for era in &mut manifest.eras {
             resolve_path(&parent, &mut era.binary);
@@ -116,6 +88,30 @@ impl Manifest {
     }
 }
 
+/// An era's executable, activation timestamp, and optional bootstrap plan.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Era {
+    pub name: String,
+    /// Inclusive activation timestamp; the next era's activation is the exclusive end.
+    pub start_timestamp: u64,
+    pub binary: PathBuf,
+    /// Optional sequential genesis bootstrap from canonical block files.
+    #[serde(default)]
+    pub bootstrap: Option<Bootstrap>,
+}
+
+/// A finite import command and the canonical checkpoint it must reach.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Bootstrap {
+    /// Starts with `import`. The wrapper adds shared storage and validation flags.
+    pub args: Vec<String>,
+    /// Operator-pinned last canonical block owned by this era.
+    pub terminal_block_number: u64,
+    pub terminal_block_hash: B256,
+}
+
 impl Bootstrap {
     fn validate(&self) -> Result<()> {
         ensure!(
@@ -126,17 +122,17 @@ impl Bootstrap {
         for arg in &self.args[1..] {
             let key = arg.split('=').next().unwrap_or(arg);
             ensure!(
-                !matches!(key, "--" | "--chain" | "--datadir") && !key.starts_with("--datadir."),
+                !matches!(
+                    key,
+                    "--" | "--chain"
+                        | "--datadir"
+                        | "--debug.max-block"
+                        | "--debug.terminate"
+                        | "--fail-on-invalid-block"
+                ) && !key.starts_with("--datadir."),
                 "bootstrap owns flag {key}"
             );
             ensure!(key != "--no-state", "bootstrap import must execute state");
-            ensure!(
-                !matches!(
-                    key,
-                    "--debug.max-block" | "--debug.terminate" | "--fail-on-invalid-block"
-                ),
-                "bootstrap owns flag {key}"
-            );
         }
         Ok(())
     }
@@ -180,28 +176,26 @@ pub(crate) mod tests {
     #[test]
     fn rejects_invalid_eras_and_bootstrap_options() {
         let mut manifest = manifest();
-        manifest.eras[0].start_timestamp = 1;
-        assert!(manifest.validate().is_err());
-        manifest.eras[0].start_timestamp = 0;
-        manifest.eras[1].start_timestamp = 0;
-        assert!(manifest.validate().is_err());
-        manifest.eras[1].start_timestamp = 100;
-        manifest.eras[0].bootstrap.as_mut().unwrap().args = vec!["node".into()];
-        assert!(manifest.validate().is_err());
-        for flag in [
-            "--chain=other",
-            "--datadir",
-            "--datadir.static-files=other",
-            "--",
-            "--no-state",
-            "--no-state=true",
-            "--no-state=false",
-            "--debug.max-block=42",
-            "--fail-on-invalid-block=false",
+        for (era, timestamp) in [(0, 1), (1, 0)] {
+            let mut invalid = manifest.clone();
+            invalid.eras[era].start_timestamp = timestamp;
+            assert!(invalid.validate().is_err());
+        }
+        for args in [
+            "node",
+            "import --chain=other blocks.rlp",
+            "import --datadir blocks.rlp",
+            "import --datadir.static-files=other blocks.rlp",
+            "import -- blocks.rlp",
+            "import --no-state blocks.rlp",
+            "import --no-state=true blocks.rlp",
+            "import --no-state=false blocks.rlp",
+            "import --debug.max-block=42 blocks.rlp",
+            "import --fail-on-invalid-block=false blocks.rlp",
         ] {
             manifest.eras[0].bootstrap.as_mut().unwrap().args =
-                vec!["import".into(), flag.into(), "blocks.rlp".into()];
-            assert!(manifest.validate().is_err(), "accepted {flag}");
+                args.split_whitespace().map(str::to_owned).collect();
+            assert!(manifest.validate().is_err(), "accepted {args}");
         }
         manifest.eras[0].bootstrap.as_mut().unwrap().args = vec![
             "import".into(),

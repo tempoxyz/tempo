@@ -61,9 +61,9 @@ pub fn decorate(methods: Methods, router: Arc<Router>) -> Result<Methods, Regist
                         Ok(params) => router.route(name, params).await,
                         Err(error) => Err(error),
                     };
-                    match target {
+                    let error = match target {
                         Ok(target) if target.era == live => {
-                            native(
+                            return native(
                                 id,
                                 params,
                                 sink,
@@ -74,26 +74,22 @@ pub fn decorate(methods: Methods, router: Arc<Router>) -> Result<Methods, Regist
                                 },
                                 extensions,
                             )
-                            .await
+                            .await;
                         }
-                        target => {
-                            let error = match target {
-                                Err(error) => error,
-                                Ok(_) => unsupported(
-                                    "historical chain tracing subscriptions are unsupported",
-                                ),
-                            };
-                            let response = MethodResponse::subscription_response(
-                                id,
-                                Err::<Value, _>(error).into_response(),
-                                sink.max_response_size() as usize,
-                            )
-                            .with_extensions(extensions);
-                            // Subscription callbacks deliver their own response through the sink.
-                            let _ = sink.send(response.to_json()).await;
-                            response
+                        Err(error) => error,
+                        Ok(_) => {
+                            unsupported("historical chain tracing subscriptions are unsupported")
                         }
-                    }
+                    };
+                    let response = MethodResponse::subscription_response(
+                        id,
+                        Err::<Value, _>(error).into_response(),
+                        sink.max_response_size() as usize,
+                    )
+                    .with_extensions(extensions);
+                    // Subscription callbacks deliver their own response through the sink.
+                    let _ = sink.send(response.to_json()).await;
+                    response
                 }
                 .boxed()
             }))
@@ -110,30 +106,29 @@ pub fn decorate(methods: Methods, router: Arc<Router>) -> Result<Methods, Regist
                             Ok(params) => router.route(name, params).await,
                             Err(error) => Err(error),
                         };
-                        match target {
-                            Ok(target) if target.era == live => match native {
-                                MethodCallback::Sync(callback) => {
-                                    callback(id, params, max_response, extensions)
-                                }
-                                MethodCallback::Async(callback) => {
-                                    callback(id, params, connection, max_response, extensions).await
-                                }
-                                _ => unreachable!("only ordinary callbacks are decorated"),
-                            },
-                            target => {
-                                let result = match target {
-                                    Ok(target) => {
-                                        router
-                                            .backend
-                                            .forward(target.era, name, target.params)
+                        let result = match target {
+                            Ok(target) if target.era == live => {
+                                return match native {
+                                    MethodCallback::Sync(callback) => {
+                                        callback(id, params, max_response, extensions)
+                                    }
+                                    MethodCallback::Async(callback) => {
+                                        callback(id, params, connection, max_response, extensions)
                                             .await
                                     }
-                                    Err(error) => Err(error),
+                                    _ => unreachable!("only ordinary callbacks are decorated"),
                                 };
-                                MethodResponse::response(id, result.into_response(), max_response)
-                                    .with_extensions(extensions)
                             }
-                        }
+                            Ok(target) => {
+                                router
+                                    .backend
+                                    .forward(target.era, name, target.params)
+                                    .await
+                            }
+                            Err(error) => Err(error),
+                        };
+                        MethodResponse::response(id, result.into_response(), max_response)
+                            .with_extensions(extensions)
                     }
                     .boxed()
                 },
@@ -149,10 +144,7 @@ pub fn decorate(methods: Methods, router: Arc<Router>) -> Result<Methods, Regist
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        catalog::ChainEras,
-        routing::{Backend, BlockMetadata},
-    };
+    use crate::routing::{Backend, BlockMetadata};
     use futures::future::BoxFuture;
     use jsonrpsee::{
         Extensions, RpcModule,
@@ -218,7 +210,7 @@ mod tests {
         timestamp: RpcResult<u64>,
         response: Option<RpcResult<Box<RawValue>>>,
     ) -> Arc<Router> {
-        let schedule: ChainEras = serde_json::from_value(json!({
+        let schedule = serde_json::from_value(json!({
             "chain_id":"0x1", "genesis_hash":format!("0x{}", "00".repeat(32)),
             "eras":[
                 {"name":"old", "start_timestamp":0, "binary":"/unused/frozen"},
@@ -345,8 +337,7 @@ mod tests {
                 assert_eq!(value["id"], 7);
                 assert_eq!(extensions.get::<u32>(), Some(&42));
                 match code {
-                    None if historical => assert!(value["result"].is_object()),
-                    None => assert_eq!(value["result"], "native"),
+                    None if !historical => assert_eq!(value["result"], "native"),
                     Some(-32004) => {
                         assert_eq!(value["error"], serde_json::to_value(&error).unwrap())
                     }

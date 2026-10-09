@@ -30,6 +30,7 @@ use reth_rpc_eth_api::{
     RpcConverter,
     helpers::config::{EthConfigApiServer, EthConfigHandler},
 };
+use reth_rpc_server_types::constants::DEFAULT_HTTP_RPC_PORT;
 use tempo_chainspec::spec::TempoChainSpecParser;
 use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_node::{
@@ -51,7 +52,7 @@ pub struct RpcOnly {
     env: EnvironmentArgs<TempoChainSpecParser>,
 
     /// Loopback HTTP port. Zero selects an unused port.
-    #[arg(long, alias = "http.port", default_value_t = 8545)]
+    #[arg(long, alias = "http.port", default_value_t = DEFAULT_HTTP_RPC_PORT)]
     port: u16,
 
     /// Execution settings resolved from the parent node's existing RPC arguments.
@@ -109,13 +110,11 @@ impl RpcOnly {
             "rpc-only chain specification does not match the database genesis"
         );
         let evm = TempoEvmConfig::new(chain_spec.clone());
-        let pool = NoopTransactionPool::<TempoPooledTransaction>::new();
-        let network = NoopNetwork::default().with_chain_id(chain_spec.chain_id());
         let eth_config = EthConfigHandler::new(provider.clone(), evm.clone());
         let module_builder = RpcModuleBuilder::default()
             .with_provider(provider.clone())
-            .with_pool(pool)
-            .with_network(network)
+            .with_pool(NoopTransactionPool::<TempoPooledTransaction>::new())
+            .with_network(NoopNetwork::default().with_chain_id(chain_spec.chain_id()))
             .with_executor(runtime.clone())
             .with_evm_config(evm)
             .with_consensus(TempoConsensus::new(chain_spec.clone()));
@@ -193,7 +192,6 @@ impl RpcOnly {
             true,
         )?;
 
-        let address = SocketAddr::from(([127, 0, 0, 1], self.port));
         // This transport is private. The ordinary node's existing public servers enforce the
         // operator's request, response, and batch limits after routing; avoid imposing a second,
         // smaller default limit between the node and its worker.
@@ -203,7 +201,7 @@ impl RpcOnly {
                 .max_response_body_size(u32::MAX)
                 .max_connections(u32::MAX),
         )
-        .with_http_address(address)
+        .with_http_address(SocketAddr::from(([127, 0, 0, 1], self.port)))
         .start(&modules)
         .await?;
         info!(endpoint = ?handle.http_url(), "Serving private read-only RPC");
@@ -271,8 +269,11 @@ mod tests {
             if gas_cap.is_some() {
                 let error = result.unwrap_err();
                 assert!(
-                    matches!(error, jsonrpsee::core::client::Error::Call(ref error)
-                    if error.message().to_ascii_lowercase().contains("gas")),
+                    matches!(
+                        error,
+                        jsonrpsee::core::client::Error::Call(ref error)
+                            if error.message().to_ascii_lowercase().contains("gas")
+                    ),
                     "{error}"
                 );
             } else {
@@ -317,10 +318,12 @@ mod tests {
                     .await
                     .unwrap();
                 assert_eq!(trace["type"], "CALL");
-                assert!(
-                    matches!(client.request::<Value, _>("eth_sendRawTransaction", rpc_params!["0x00"]).await,
-                    Err(jsonrpsee::core::client::Error::Call(error)) if error.code() == -32601)
-                );
+                assert!(matches!(
+                    client
+                        .request::<Value, _>("eth_sendRawTransaction", rpc_params!["0x00"])
+                        .await,
+                    Err(jsonrpsee::core::client::Error::Call(error)) if error.code() == -32601
+                ));
             }
             drop(worker);
             tokio::time::timeout(std::time::Duration::from_secs(5), async {
