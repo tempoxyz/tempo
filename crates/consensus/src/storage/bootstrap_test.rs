@@ -29,7 +29,8 @@ fn bootstrap_anchor_requires_authenticated_epoch_boundary() {
                 boundary,
             )
         };
-        verify(&floor, &boundary).unwrap();
+        let (_, certificate) = verify(&floor, &boundary).unwrap();
+        assert_eq!(certificate.unwrap().proposal.payload.get(), boundary.digest);
 
         let mut wrong_epoch = trusted.outcome.clone();
         wrong_epoch.epoch = 2;

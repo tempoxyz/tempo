@@ -113,7 +113,7 @@ pub async fn bootstrap(
         } else {
             client.get_finalization(Query::Height(height)).await?
         };
-        let certificate = verify_anchor(
+        let (certificate, boundary_certificate) = verify_anchor(
             &mut context,
             identity.clone(),
             epochs.clone(),
@@ -129,9 +129,17 @@ pub async fn bootstrap(
                 .await?;
         }
         blocks = blocks.sync().await?;
-        certificates = certificates
-            .put(floor.number(), floor.digest(), certificate.clone())
-            .await?;
+        // Retain the boundary certificate for downstream bootstrap.
+        for (block, certificate) in [
+            (&floor, Some(certificate)),
+            (&boundary, boundary_certificate),
+        ] {
+            if let Some(certificate) = certificate {
+                certificates = certificates
+                    .put(block.number(), block.digest(), certificate)
+                    .await?;
+            }
+        }
         certificates = certificates.sync().await?;
         (floor, boundary)
     };
@@ -256,18 +264,18 @@ fn verify_anchor(
     epochs: FixedEpocher,
     floor: &CertifiedBlock,
     boundary: &CertifiedBlock,
-) -> eyre::Result<Certificate> {
+) -> eyre::Result<(Certificate, Option<Certificate>)> {
     let verifier = FinalizationVerifier::new(identity, epochs.clone());
     let certificate = verifier.decode_and_verify(context, floor)?;
     ensure!(
         boundary.block.number() == boundary_height(&epochs, floor.block.number()),
         "bootstrap boundary height mismatch"
     );
-    if boundary.block.number() != 0 {
-        verifier.decode_and_verify(context, boundary)?;
-    }
+    let boundary_certificate = (boundary.block.number() != 0)
+        .then(|| verifier.decode_and_verify(context, boundary))
+        .transpose()?;
     verify_boundary(context, &certificate, boundary.block.header())?;
-    Ok(certificate)
+    Ok((certificate, boundary_certificate))
 }
 
 fn verify_boundary(
