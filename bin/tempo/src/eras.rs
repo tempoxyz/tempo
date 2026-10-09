@@ -2,24 +2,31 @@
 
 use std::{sync::Arc, time::Duration};
 
-use alloy_primitives::{Bytes, U64};
+use alloy::eips::{BlockId, BlockNumberOrTag};
+use alloy_consensus::BlockHeader as _;
+use alloy_primitives::{B256, Bytes, U64};
 use alloy_rlp::Decodable;
 use futures::future::BoxFuture;
-use jsonrpsee::core::{
-    RpcResult,
-    server::{Methods, MethodsError},
-};
+use jsonrpsee::{core::RpcResult, types::ErrorObjectOwned};
 use reth_ethereum::{
     chainspec::EthChainSpec as _,
-    rpc::{builder::TransportRpcModules, eth::EthConfig},
+    rpc::{
+        builder::TransportRpcModules,
+        eth::{EthConfig, TransactionSource},
+    },
 };
-use reth_rpc_server_types::result::internal_rpc_err;
+use reth_rpc_eth_api::{
+    FromEthApiError,
+    helpers::{FullEthApi, LoadTransaction},
+};
+use reth_storage_api::BlockReaderIdExt as _;
+use serde::Deserialize;
 use serde_json::{Value, value::RawValue};
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_metabinary::{
     catalog::{Catalog, ChainEras},
     decorate::decorate,
-    routing::{Backend, Router, RpcParams, invalid},
+    routing::{Backend, BlockMetadata, Router, RpcParams, invalid},
     workers::{HistoricalWorkers, WorkerContext},
 };
 
@@ -99,15 +106,15 @@ impl EraRuntime {
         }))
     }
 
-    pub(crate) fn install(
+    pub(crate) fn install<E: FullEthApi>(
         self: &Arc<Self>,
         modules: &mut TransportRpcModules,
-        resolver: Methods,
+        eth_api: E,
     ) -> eyre::Result<()> {
         let router = Arc::new(Router::new(
             self.schedule.clone(),
             Arc::new(NativeBackend {
-                resolver,
+                eth_api,
                 runtime: self.clone(),
             }),
         )?);
@@ -129,25 +136,63 @@ impl EraRuntime {
     }
 }
 
-struct NativeBackend {
-    resolver: Methods,
+struct NativeBackend<E> {
+    eth_api: E,
     runtime: Arc<EraRuntime>,
 }
 
-impl Backend for NativeBackend {
-    fn resolve<'a>(
-        &'a self,
-        method: &'a str,
-        params: RpcParams,
-    ) -> BoxFuture<'a, RpcResult<Value>> {
+impl<E: FullEthApi> Backend for NativeBackend<E> {
+    fn block<'a>(&'a self, selector: &'a Value) -> BoxFuture<'a, RpcResult<BlockMetadata>> {
         Box::pin(async move {
-            self.resolver
-                .call(method, params)
+            // Match native RPC resolution; canonicality belongs to the original execution params.
+            let id: BlockId =
+                if let Some(hash) = selector.get("blockHash").filter(|hash| hash.is_string()) {
+                    B256::deserialize(hash).map(BlockId::from)
+                } else if let Some(number) = selector.get("blockNumber") {
+                    BlockNumberOrTag::deserialize(number).map(BlockId::Number)
+                } else {
+                    BlockId::deserialize(selector)
+                }
+                .map_err(|error| invalid(error.to_string()))?;
+            let header = if id.is_pending() {
+                self.eth_api
+                    .recovered_block(id)
+                    .await
+                    .map(|block| block.map(|block| block.clone_sealed_header()))
+            } else {
+                self.eth_api
+                    .spawn_blocking_io(move |api| {
+                        api.provider()
+                            .sealed_header_by_id(id)
+                            .map_err(E::Error::from_eth_err)
+                    })
+                    .await
+            }
+            .map_err(Into::<ErrorObjectOwned>::into)?
+            .ok_or_else(|| ErrorObjectOwned::owned(-32001, "unknown block", None::<()>))?;
+            Ok(BlockMetadata {
+                number: header.number(),
+                hash: header.hash(),
+                timestamp: header.timestamp(),
+            })
+        })
+    }
+
+    fn transaction_timestamp<'a>(
+        &'a self,
+        hash: &'a Value,
+    ) -> BoxFuture<'a, RpcResult<Option<u64>>> {
+        Box::pin(async move {
+            let hash = B256::deserialize(hash).map_err(|error| invalid(error.to_string()))?;
+            LoadTransaction::transaction_by_hash(&self.eth_api, hash)
                 .await
-                .map_err(|error| match error {
-                    MethodsError::JsonRpc(error) => error,
-                    error => internal_rpc_err(error.to_string()),
+                .map(|source| match source {
+                    Some(TransactionSource::Block {
+                        block_timestamp, ..
+                    }) => Some(block_timestamp),
+                    _ => None,
                 })
+                .map_err(Into::into)
         })
     }
 
@@ -160,28 +205,29 @@ impl Backend for NativeBackend {
         Box::pin(self.runtime.workers.request(era, method, params))
     }
 
-    fn raw_block_timestamp<'a>(&'a self, params: &'a RpcParams) -> BoxFuture<'a, RpcResult<u64>> {
-        Box::pin(async move {
-            let value = match &params.0 {
-                Value::Array(values) => values.first(),
-                Value::Object(values) => values.get("rlp_block").or_else(|| values.get("rlpBlock")),
-                _ => None,
-            }
-            .ok_or_else(|| invalid("missing raw block"))?;
-            let bytes: Bytes = serde::Deserialize::deserialize(value)
-                .map_err(|error| invalid(error.to_string()))?;
-            let mut raw = bytes.as_ref();
-            let mut payload = alloy_rlp::Header::decode_bytes(&mut raw, true)
-                .map_err(|error| invalid(error.to_string()))?;
-            // The selected executor validates the body using its era's transaction codec.
-            let header = tempo_primitives::TempoHeader::decode(&mut payload)
-                .map_err(|error| invalid(error.to_string()))?;
-            if !raw.is_empty() {
-                return Err(invalid("trailing raw block data"));
-            }
-            Ok(header.inner.timestamp)
-        })
+    fn raw_block_timestamp(&self, params: &RpcParams) -> RpcResult<u64> {
+        raw_block_timestamp(params)
     }
+}
+
+fn raw_block_timestamp(params: &RpcParams) -> RpcResult<u64> {
+    let value = match &params.0 {
+        Value::Array(values) => values.first(),
+        Value::Object(values) => values.get("rlp_block").or_else(|| values.get("rlpBlock")),
+        _ => None,
+    }
+    .ok_or_else(|| invalid("missing raw block"))?;
+    let bytes = Bytes::deserialize(value).map_err(|error| invalid(error.to_string()))?;
+    let mut raw = bytes.as_ref();
+    let mut payload = alloy_rlp::Header::decode_bytes(&mut raw, true)
+        .map_err(|error| invalid(error.to_string()))?;
+    // The selected executor validates the body using its era's transaction codec.
+    let header = tempo_primitives::TempoHeader::decode(&mut payload)
+        .map_err(|error| invalid(error.to_string()))?;
+    if !raw.is_empty() {
+        return Err(invalid("trailing raw block data"));
+    }
+    Ok(header.inner.timestamp)
 }
 
 #[cfg(test)]
@@ -203,85 +249,26 @@ mod tests {
         assert!(!supports_release_catalog(&custom));
     }
 
-    #[tokio::test]
-    async fn native_registry_routes_with_eth_disabled_and_decodes_tempo_blocks() {
+    #[test]
+    fn raw_block_routing_decodes_only_tempo_headers() {
         let chain = &*tempo_chainspec::spec::DEV;
-        let runtime = EraRuntime::new(
-            serde_json::from_value(json!({
-                "chain_id": format!("0x{:x}", chain.chain_id()),
-                "genesis_hash": chain.genesis_hash().to_string(),
-                "eras": [
-                    {"name":"old", "start_timestamp":0, "binary":"/missing/frozen-tempo"},
-                    {"name":"live", "start_timestamp":100}
-                ]
-            }))
-            .unwrap(),
-            chain,
-            "/unused".into(),
-            None,
-            None,
-            EthConfig::default(),
-        )
-        .unwrap();
-        let mut resolver = jsonrpsee::RpcModule::new(());
-        resolver.register_method("eth_getBlockByNumber", |_, _, _| json!({"number":"0x1", "hash":format!("0x{}", "11".repeat(32)), "timestamp":"0x64"})).unwrap();
-        let mut debug = jsonrpsee::RpcModule::new(());
-        debug
-            .register_method("debug_traceCall", |_, _, _| "native")
-            .unwrap();
-        let mut modules = TransportRpcModules::default().with_http(debug);
-        runtime.install(&mut modules, resolver.into()).unwrap();
-        let methods = modules.http_methods(|_| true).unwrap();
-        assert!(methods.method("eth_getBlockByNumber").is_none());
-        let value: String = methods
-            .call(
-                "debug_traceCall",
-                jsonrpsee::rpc_params![json!({}), "latest"],
-            )
-            .await
-            .unwrap();
-        assert_eq!(value, "native");
-        let backend = NativeBackend {
-            resolver: Methods::new(),
-            runtime,
-        };
+        let decode =
+            |bytes: &[u8]| raw_block_timestamp(&RpcParams(json!([Bytes::copy_from_slice(bytes)])));
         let mut header = chain.genesis_header().clone();
         header.inner.timestamp = 123;
         let block = tempo_primitives::Block::new(header, Default::default());
         let mut bytes = alloy_rlp::encode(block);
-        assert_eq!(
-            backend
-                .raw_block_timestamp(&RpcParams(json!([Bytes::copy_from_slice(&bytes)])))
-                .await
-                .unwrap(),
-            123
-        );
+        assert_eq!(decode(&bytes).unwrap(), 123);
         // Routing must not validate the body with the current release's codec.
         let mut opaque_body = bytes.clone();
         *opaque_body.last_mut().unwrap() = 0xff;
         assert!(tempo_primitives::Block::decode(&mut opaque_body.as_slice()).is_err());
-        assert_eq!(
-            backend
-                .raw_block_timestamp(&RpcParams(json!([Bytes::from(opaque_body)])))
-                .await
-                .unwrap(),
-            123
-        );
+        assert_eq!(decode(&opaque_body).unwrap(), 123);
         for malformed in [vec![0xc0], bytes[..bytes.len() - 1].to_vec()] {
-            assert_eq!(
-                backend
-                    .raw_block_timestamp(&RpcParams(json!([Bytes::from(malformed)])))
-                    .await
-                    .unwrap_err()
-                    .code(),
-                -32602
-            );
+            assert_eq!(decode(&malformed).unwrap_err().code(), -32602);
         }
         bytes.push(0);
-        let error = backend
-            .raw_block_timestamp(&RpcParams(json!([Bytes::from(bytes)])))
-            .await
-            .unwrap_err();
+        let error = decode(&bytes).unwrap_err();
         assert_eq!(error.code(), -32602);
         assert_eq!(error.message(), "trailing raw block data");
     }

@@ -623,14 +623,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     )?;
 
                     if let Some(runtime) = rpc_era_runtime {
-                        // Resolution uses an internal eth registry even on transports exposing
-                        // only debug or trace. It never adds eth methods to those transports.
-                        let resolver = ctx.registry.module_for(
-                            &reth_ethereum::rpc::builder::RpcModuleSelection::from([
-                                reth_ethereum::rpc::builder::RethRpcModule::Eth,
-                            ]),
-                        );
-                        runtime.install(ctx.modules, resolver.into())?;
+                        runtime.install(ctx.modules, ctx.registry.eth_api().clone())?;
                     }
 
                     Ok(())

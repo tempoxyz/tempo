@@ -9,7 +9,7 @@ use jsonrpsee::core::RpcResult;
 use serde_json::{Value, json};
 use tempo_metabinary::{
     handshake::EXECUTION_INFO_METHOD,
-    routing::{Backend, Router, RpcParams, is_execution_method},
+    routing::{Backend, BlockMetadata, Router, RpcParams, is_execution_method},
 };
 
 fn hash(number: u64) -> String {
@@ -22,41 +22,54 @@ struct Blocks {
 }
 
 impl Backend for Blocks {
-    fn resolve<'a>(
-        &'a self,
-        method: &'a str,
-        params: RpcParams,
-    ) -> BoxFuture<'a, RpcResult<Value>> {
+    fn block<'a>(&'a self, selector: &'a Value) -> BoxFuture<'a, RpcResult<BlockMetadata>> {
         Box::pin(async move {
-            let selector = params.0[0].as_str().unwrap();
-            let value = if method == "eth_getTransactionByHash" {
-                json!({"blockHash":hash(if selector == "live" {3} else {1})})
-            } else {
-                self.resolutions.fetch_add(1, Ordering::Relaxed);
-                let number = match selector {
-                    "earliest" => 0,
-                    "safe" | "finalized" => 1,
-                    "latest" => {
-                        if self.live == 1 {
-                            3
-                        } else {
-                            7
-                        }
+            let selector = selector
+                .get("blockHash")
+                .or_else(|| selector.get("blockNumber"))
+                .unwrap_or(selector)
+                .as_str()
+                .unwrap();
+            self.resolutions.fetch_add(1, Ordering::Relaxed);
+            let number = match selector {
+                "earliest" => 0,
+                "safe" | "finalized" => 1,
+                "latest" => {
+                    if self.live == 1 {
+                        3
+                    } else {
+                        7
                     }
-                    other => u64::from_str_radix(&other[2..], 16).unwrap(),
-                };
-                // Reth replay by hash uses canonical height, even if the side-chain timestamp differs.
-                let (height, timestamp) = if method == "eth_getBlockByHash" && number == 5 {
-                    (2, 150)
-                } else {
-                    (
-                        number,
-                        [0, 50, 99, 110, u64::MAX, 150, 200, 210][number as usize],
-                    )
-                };
-                json!({"number":format!("0x{height:x}"), "hash":hash(number), "timestamp":format!("0x{timestamp:x}")})
+                }
+                other => u64::from_str_radix(&other[2..], 16).unwrap(),
             };
-            Ok(value)
+            // Reth replay by hash uses canonical height, even if the side-chain timestamp differs.
+            let (height, timestamp) = if selector.len() == 66 && number == 5 {
+                (2, 150)
+            } else {
+                (
+                    number,
+                    [0, 50, 99, 110, u64::MAX, 150, 200, 210][number as usize],
+                )
+            };
+            Ok(BlockMetadata {
+                number: height,
+                hash: hash(number).parse().unwrap(),
+                timestamp,
+            })
+        })
+    }
+
+    fn transaction_timestamp<'a>(
+        &'a self,
+        hash: &'a Value,
+    ) -> BoxFuture<'a, RpcResult<Option<u64>>> {
+        Box::pin(async move {
+            Ok(match hash.as_str().unwrap() {
+                "missing" | "pending" => None,
+                "live" => Some(110),
+                _ => Some(50),
+            })
         })
     }
 }
@@ -203,7 +216,12 @@ async fn ots_transaction_methods_resolve_the_replayed_transaction() {
         "ots_getTransactionError",
         "ots_traceTransaction",
     ] {
-        for (params, era) in [(json!({"tx_hash":"old"}), 0), (json!(["live"]), 1)] {
+        for (params, era) in [
+            (json!({"tx_hash":"old"}), 0),
+            (json!(["live"]), 1),
+            (json!(["pending"]), 1),
+            (json!(["missing"]), 1),
+        ] {
             assert_eq!(routed(&router, method, params.clone(), era).await, params);
         }
     }

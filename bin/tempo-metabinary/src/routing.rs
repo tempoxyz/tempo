@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use alloy_primitives::B256;
 use futures::future::BoxFuture;
 use jsonrpsee::{
     core::{RpcResult, client::Error as ClientError, traits::ToRpcParams},
@@ -105,27 +106,13 @@ pub fn quantity(value: &Value) -> RpcResult<u64> {
 }
 
 #[derive(Debug)]
-struct Block {
-    number: u64,
-    hash: String,
-    timestamp: u64,
+pub struct BlockMetadata {
+    pub number: u64,
+    pub hash: B256,
+    pub timestamp: u64,
 }
 
-impl Block {
-    fn parse(value: Value) -> RpcResult<Self> {
-        if value.is_null() {
-            return Err(ErrorObjectOwned::owned(-32001, "unknown block", None::<()>));
-        }
-        Ok(Self {
-            number: quantity(&value["number"])?,
-            timestamp: quantity(&value["timestamp"])?,
-            hash: value["hash"]
-                .as_str()
-                .ok_or_else(|| invalid("block has no hash"))?
-                .into(),
-        })
-    }
-
+impl BlockMetadata {
     fn id(&self) -> Value {
         json!({"blockHash": self.hash})
     }
@@ -145,9 +132,14 @@ impl Block {
 
 /// Execution-independent adapter for live RPC resolution and frozen worker forwarding.
 pub trait Backend: Send + Sync {
-    /// Resolve identifiers through the live RPC implementation.
-    fn resolve<'a>(&'a self, method: &'a str, params: RpcParams)
-    -> BoxFuture<'a, RpcResult<Value>>;
+    /// Resolve only the header metadata needed for era selection.
+    fn block<'a>(&'a self, selector: &'a Value) -> BoxFuture<'a, RpcResult<BlockMetadata>>;
+
+    /// Missing and pool transactions remain on the native live path.
+    fn transaction_timestamp<'a>(
+        &'a self,
+        hash: &'a Value,
+    ) -> BoxFuture<'a, RpcResult<Option<u64>>>;
 
     /// Execution results are opaque to the router.
     fn forward<'a>(
@@ -160,12 +152,10 @@ pub trait Backend: Send + Sync {
     }
 
     /// Only the chain-specific adapter knows the raw block encoding.
-    fn raw_block_timestamp<'a>(&'a self, _params: &'a RpcParams) -> BoxFuture<'a, RpcResult<u64>> {
-        Box::pin(async {
-            Err(unsupported(
-                "raw-block tracing requires a chain-specific decoder; use debug_traceBlockByHash or debug_traceBlockByNumber",
-            ))
-        })
+    fn raw_block_timestamp(&self, _params: &RpcParams) -> RpcResult<u64> {
+        Err(unsupported(
+            "raw-block tracing requires a chain-specific decoder; use debug_traceBlockByHash or debug_traceBlockByNumber",
+        ))
     }
 }
 
@@ -177,7 +167,7 @@ pub struct Route {
 /// Resolve identifiers through the live node. Frozen workers receive pinned historical IDs.
 pub struct Router {
     schedule: ChainEras,
-    backend: Arc<dyn Backend>,
+    pub(crate) backend: Arc<dyn Backend>,
 }
 
 impl Router {
@@ -193,38 +183,6 @@ impl Router {
         self.schedule.era_for_timestamp(timestamp)
     }
 
-    async fn block(&self, selector: &Value) -> RpcResult<Block> {
-        let hash = selector
-            .get("blockHash")
-            .and_then(Value::as_str)
-            .or_else(|| {
-                selector
-                    .as_str()
-                    .filter(|s| s.len() == 66 && s.starts_with("0x"))
-            });
-        let (method, selector) = match hash {
-            Some(hash) => ("eth_getBlockByHash", json!(hash)),
-            None => (
-                "eth_getBlockByNumber",
-                selector.get("blockNumber").unwrap_or(selector).clone(),
-            ),
-        };
-        Block::parse(
-            self.backend
-                .resolve(method, RpcParams(json!([selector, false])))
-                .await?,
-        )
-    }
-
-    pub async fn forward(
-        &self,
-        era: usize,
-        method: &str,
-        params: RpcParams,
-    ) -> RpcResult<Box<RawValue>> {
-        self.backend.forward(era, method, params).await
-    }
-
     pub async fn route(&self, method: &str, mut params: RpcParams) -> RpcResult<Route> {
         if !params.0.is_null() && !params.0.is_array() && !params.0.is_object() {
             return Err(invalid("params must be an array or an object"));
@@ -236,6 +194,7 @@ impl Router {
                     live
                 } else {
                     let start = self
+                        .backend
                         .block(
                             params
                                 .get(1, &["start_exclusive", "startExclusive"])
@@ -243,6 +202,7 @@ impl Router {
                         )
                         .await?;
                     let end = self
+                        .backend
                         .block(
                             params
                                 .get(2, &["end_inclusive", "endInclusive"])
@@ -251,6 +211,7 @@ impl Router {
                         .await?;
                     if start.number < end.number {
                         let first = self
+                            .backend
                             .block(&json!(format!("0x{:x}", start.number + 1)))
                             .await?;
                         if self.era(first.timestamp) != live || self.era(end.timestamp) != live {
@@ -268,7 +229,7 @@ impl Router {
             "reth_getBlockExecutionOutcome" => self.execution_outcome(&mut params).await?,
             "eth_callMany" | "debug_traceCallMany" => self.bundles(method, &mut params).await?,
             "trace_filter" => self.filter(&mut params).await?,
-            "debug_traceBlock" => self.era(self.backend.raw_block_timestamp(&params).await?),
+            "debug_traceBlock" => self.era(self.backend.raw_block_timestamp(&params)?),
             "debug_traceTransaction"
             | "trace_transaction"
             | "trace_get"
@@ -280,15 +241,10 @@ impl Router {
                 let hash = params
                     .get(0, &["tx_hash", "txHash", "hash", "transaction"])
                     .ok_or_else(|| invalid("missing transaction hash"))?;
-                let tx = self
-                    .backend
-                    .resolve("eth_getTransactionByHash", RpcParams(json!([hash])))
-                    .await?;
-                match tx.get("blockHash").filter(|v| !v.is_null()) {
-                    Some(hash) => self.era(self.block(hash).await?.timestamp),
-                    // The native implementation defines missing/pending transaction behavior.
-                    None => live,
-                }
+                self.backend
+                    .transaction_timestamp(hash)
+                    .await?
+                    .map_or(live, |timestamp| self.era(timestamp))
             }
             _ => {
                 if let Some((index, names, number_only)) = block_argument(method) {
@@ -303,7 +259,7 @@ impl Router {
                         self.check_overrides(method, &params, live)?;
                         live
                     } else {
-                        let block = self.block(&selector).await?;
+                        let block = self.backend.block(&selector).await?;
                         let era = self.era(block.timestamp);
                         self.check_overrides(method, &params, era)?;
                         // Preserve explicit hashes and EIP-1898 requireCanonical. Pin tags/numbers.
@@ -358,11 +314,11 @@ impl Router {
             .get("toBlock")
             .filter(|v| !v.is_null())
             .unwrap_or(&latest);
-        let from = self.block(from_selector).await?;
+        let from = self.backend.block(from_selector).await?;
         let to = if from_selector == to_selector {
             None
         } else {
-            Some(self.block(to_selector).await?)
+            Some(self.backend.block(to_selector).await?)
         };
         let to = to.as_ref().unwrap_or(&from);
         let era = self.era(from.timestamp);
@@ -405,7 +361,7 @@ impl Router {
             // The native pending environment supplies its own timestamp and remains live.
             return Ok(live);
         }
-        let parent = self.block(&json!(selector)).await?;
+        let parent = self.backend.block(&json!(selector)).await?;
         let era = self.era(parent.timestamp);
         let timestamp = match timestamp {
             Some(timestamp) => timestamp,
@@ -439,7 +395,7 @@ impl Router {
             self.check_time(live, Some(overrides))?;
             return Ok(live);
         }
-        let parent = self.block(&selector).await?;
+        let parent = self.backend.block(&selector).await?;
         let era = self.era(parent.timestamp);
         // Native cfg is selected for parent + 12 before flattened block overrides are applied.
         if self.era(parent.timestamp.saturating_add(12)) != era {
@@ -466,12 +422,12 @@ impl Router {
         if selector == "pending" {
             return Ok(self.live_index());
         }
-        let mut first = self.block(&selector).await?;
+        let mut first = self.backend.block(&selector).await?;
         if selector.get("blockHash").is_some()
             || selector.as_str().is_some_and(|value| value.len() == 66)
         {
             // Native replay resolves a hash to a height, then executes canonical blocks by height.
-            first = self.block(&first.number_id()).await?;
+            first = self.backend.block(&first.number_id()).await?;
         }
         // The native method returns an empty execution outcome for genesis without executing.
         if first.number == 0 {
@@ -484,10 +440,10 @@ impl Router {
             .ok_or_else(|| invalid("block number overflow"))?;
         if count > 1 {
             // Native replay stops at the first absent block when a range extends past the head.
-            let head = self.block(&json!("latest")).await?;
+            let head = self.backend.block(&json!("latest")).await?;
             let last = last.min(head.number);
             if last > first.number {
-                let end = self.block(&json!(format!("0x{last:x}"))).await?;
+                let end = self.backend.block(&json!(format!("0x{last:x}"))).await?;
                 if self.era(end.timestamp) != era {
                     return Err(unsupported("block execution outcome spans multiple eras"));
                 }
@@ -515,7 +471,7 @@ impl Router {
         } else {
             selector.clone()
         };
-        let block = self.block(&policy_selector).await?;
+        let block = self.backend.block(&policy_selector).await?;
         let era = if pending {
             self.live_index()
         } else {
@@ -583,7 +539,7 @@ impl Router {
             }
             return Ok(era);
         }
-        let base = self.block(&selector).await?;
+        let base = self.backend.block(&selector).await?;
         let chain_id = self.schedule.chain_id.to::<u64>();
         let step = alloy_chains::Chain::from(chain_id)
             .average_blocktime_hint()

@@ -123,7 +123,10 @@ pub fn decorate(methods: Methods, router: Arc<Router>) -> Result<Methods, Regist
                             target => {
                                 let result = match target {
                                     Ok(target) => {
-                                        router.forward(target.era, name, target.params).await
+                                        router
+                                            .backend
+                                            .forward(target.era, name, target.params)
+                                            .await
                                     }
                                     Err(error) => Err(error),
                                 };
@@ -147,7 +150,10 @@ pub fn decorate(methods: Methods, router: Arc<Router>) -> Result<Methods, Regist
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{catalog::ChainEras, routing::Backend};
+    use crate::{
+        catalog::ChainEras,
+        routing::{Backend, BlockMetadata},
+    };
     use futures::future::BoxFuture;
     use jsonrpsee::{
         Extensions, RpcModule,
@@ -169,16 +175,23 @@ mod tests {
     }
 
     impl Backend for FakeBackend {
-        fn resolve<'a>(
-            &'a self,
-            method: &'a str,
-            params: RpcParams,
-        ) -> BoxFuture<'a, RpcResult<Value>> {
+        fn block<'a>(&'a self, selector: &'a Value) -> BoxFuture<'a, RpcResult<BlockMetadata>> {
             async move {
-                assert!(matches!(method, "eth_getBlockByNumber" | "eth_getBlockByHash"));
-                let number = if params.0[0] == "0x1" { 1 } else { 2 };
-                Ok(json!({"number":number, "hash":format!("0x{:064x}", number), "timestamp":self.timestamp.clone()?}))
-            }.boxed()
+                let number = if selector == "0x1" { 1 } else { 2 };
+                Ok(BlockMetadata {
+                    number,
+                    hash: format!("0x{number:064x}").parse().unwrap(),
+                    timestamp: self.timestamp.clone()?,
+                })
+            }
+            .boxed()
+        }
+
+        fn transaction_timestamp<'a>(
+            &'a self,
+            _: &'a Value,
+        ) -> BoxFuture<'a, RpcResult<Option<u64>>> {
+            async { unreachable!("no transaction lookups in this fixture") }.boxed()
         }
 
         fn forward<'a>(
