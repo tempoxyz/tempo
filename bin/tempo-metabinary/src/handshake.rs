@@ -5,6 +5,7 @@ use eyre::{Result, bail, ensure};
 use jsonrpsee::{
     core::client::{ClientT, Error as ClientError},
     http_client::HttpClient,
+    types::error::METHOD_NOT_FOUND_CODE,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -13,6 +14,8 @@ use tokio::time::Instant;
 /// Private discovery method and wire protocol shared by workers and their launchers.
 pub const EXECUTION_INFO_METHOD: &str = "tempo_executionInfo";
 pub const EXECUTION_INFO_PROTOCOL_VERSION: u32 = 1;
+pub(crate) const MAX_RPC_METHODS: usize = 1024;
+pub(crate) const MAX_RPC_METHOD_NAME_LEN: usize = 256;
 
 /// The actual private transport's registered methods, not a global RPC catalogue.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -24,14 +27,6 @@ pub struct ExecutionInfo {
     pub read_only: bool,
     pub process_id: u32,
     pub methods: Vec<String>,
-}
-
-/// Expected chain and access mode for a supervised worker.
-#[derive(Clone, Copy)]
-pub struct WorkerIdentity {
-    pub chain_id: U64,
-    pub genesis_hash: B256,
-    pub read_only: bool,
 }
 
 impl ExecutionInfo {
@@ -58,15 +53,25 @@ impl ExecutionInfo {
             "private endpoint belongs to another process"
         );
         ensure!(
-            self.methods.len() <= 1024,
+            self.methods.len() <= MAX_RPC_METHODS,
             "worker reports too many RPC methods"
         );
         ensure!(
-            self.methods.iter().all(|method| method.len() <= 256),
+            self.methods
+                .iter()
+                .all(|method| method.len() <= MAX_RPC_METHOD_NAME_LEN),
             "worker method name too long"
         );
         Ok(())
     }
+}
+
+/// Expected chain and access mode for a supervised worker.
+#[derive(Clone, Copy)]
+pub struct WorkerIdentity {
+    pub chain_id: U64,
+    pub genesis_hash: B256,
+    pub read_only: bool,
 }
 
 /// Retry transport failures until the original startup deadline, checking child ownership each time.
@@ -91,7 +96,7 @@ pub async fn wait_for_worker(
                 info.validate(identity, process_id)?;
                 return Ok(info);
             }
-            Ok(Err(ClientError::Call(error))) if error.code() == -32601 => {
+            Ok(Err(ClientError::Call(error))) if error.code() == METHOD_NOT_FOUND_CODE => {
                 bail!(
                     "executable lacks {EXECUTION_INFO_METHOD}; it needs the private RPC worker protocol"
                 );

@@ -5,6 +5,8 @@ use eyre::{Context, Result};
 use std::{process::Stdio, time::Duration};
 use tokio::process::{Child, Command};
 
+const SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(10);
+
 /// Start a canonical-file import from a validated manifest. The caller reaps this sole writer before opening a
 /// read-only checkpoint worker or starting another import; cancellation falls back to kill-on-drop.
 pub fn spawn_bootstrap(manifest: &Manifest, era: &Era, bootstrap: &Bootstrap) -> Result<Child> {
@@ -47,19 +49,17 @@ pub async fn shutdown_children<'a>(
             let _ = child.start_kill();
         }
     }
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    for result in futures::future::join_all(children.into_iter().map(|(name, child)| async move {
-        wait_for_exit(child, deadline)
-            .await
-            .wrap_err_with(|| format!("reaping {name}"))
-    }))
-    .await
-    {
-        if let Err(error) = result {
-            first_error.get_or_insert(error);
-        }
-    }
-    first_error.map_or(Ok(()), Err)
+    let deadline = tokio::time::Instant::now() + SHUTDOWN_GRACE_PERIOD;
+    let reap_error =
+        futures::future::join_all(children.into_iter().map(|(name, child)| async move {
+            wait_for_exit(child, deadline)
+                .await
+                .wrap_err_with(|| format!("reaping {name}"))
+        }))
+        .await
+        .into_iter()
+        .find_map(Result::err);
+    first_error.or(reap_error).map_or(Ok(()), Err)
 }
 
 fn request_termination(child: &mut Child) -> Result<()> {
@@ -84,13 +84,10 @@ fn request_termination(child: &mut Child) -> Result<()> {
 }
 
 async fn wait_for_exit(child: &mut Child, deadline: tokio::time::Instant) -> Result<()> {
-    match tokio::time::timeout_at(deadline, child.wait()).await {
-        Ok(result) => {
-            result?;
-        }
-        Err(_) => {
-            child.kill().await?;
-        }
+    if let Ok(result) = tokio::time::timeout_at(deadline, child.wait()).await {
+        result?;
+    } else {
+        child.kill().await?;
     }
     Ok(())
 }
