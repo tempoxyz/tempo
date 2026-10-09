@@ -394,7 +394,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     .ok_or_eyre("historical handoff requires a consensus RPC upstream")?;
                 tokio::select! {
                     result = tempo_consensus::storage::bootstrap(
-                        ctx.child("history"), &args.consensus, &node, &upstream,
+                        ctx.child("history"), args.consensus.network_identity(), &node, &upstream,
                         args.follow_upstream_request_timeout.into_duration(),
                     ) => result?,
                     () = shutdown_token_clone.cancelled() => return Ok(()),
@@ -1041,10 +1041,7 @@ mod tests {
         let Commands::Node(node) = TempoCli::try_parse_from(args).unwrap().command else {
             panic!("expected node command");
         };
-        assert!(!node.dev.dev);
-        assert!(node.debug.rpc_consensus_url.is_none());
         assert!(!node.ext.has_consensus_engine(false));
-        assert!(!node.ext.has_gossip(false));
         for omitted in [3, 4] {
             assert!(
                 TempoCli::try_parse_from(

@@ -20,7 +20,7 @@ fn bootstrap_anchor_requires_authenticated_epoch_boundary() {
         };
         let floor = certified(12, None, 1, &trusted);
         let boundary = certified(9, Some(&trusted.outcome), 0, &trusted);
-        let mut verify = |floor, boundary| {
+        let mut verify = |floor: &CertifiedBlock, boundary: &CertifiedBlock| {
             verify_anchor(
                 &mut context,
                 identity.clone(),

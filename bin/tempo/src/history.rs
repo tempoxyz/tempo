@@ -105,8 +105,11 @@ fn durable_head(
         .init::<TempoNode>(AccessRights::RO, runtime)?
         .provider_factory;
     let provider = factory.provider()?;
+    let Some(genesis) = provider.block_hash(0)? else {
+        return Ok(None);
+    };
     ensure!(
-        provider.block_hash(0)? == Some(environment.chain.genesis_hash()),
+        genesis == environment.chain.genesis_hash(),
         "chain specification does not match the database genesis"
     );
     let number = provider.best_block_number()?;
