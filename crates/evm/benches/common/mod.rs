@@ -117,7 +117,7 @@ impl ExecutionFixture {
 
 impl AccountReader for InMemoryStateProvider {
     fn basic_account(&self, address: &Address) -> ProviderResult<Option<RethAccount>> {
-        Ok(self.accounts.get(address).copied())
+        Ok(self.accounts.get(address).cloned())
     }
 }
 impl StateProvider for InMemoryStateProvider {
@@ -374,14 +374,12 @@ fn insert_account(
     address: Address,
     account: &DbAccount,
 ) {
-    let info = account.info.clone();
-    let bytecode_hash = info.code_hash;
     let account = RethAccount {
-        nonce: info.nonce,
-        balance: info.balance,
-        bytecode_hash: Some(bytecode_hash),
+        // Keep `Some` even for empty code, unlike `RethAccount::from`.
+        bytecode_hash: Some(account.info.code_hash),
+        ..RethAccount::from(&account.info)
     };
-    cache.insert_account(address, Some(account));
+    cache.insert_account(address, Some(account.clone()));
     accounts.insert(address, account);
 }
 
