@@ -1813,9 +1813,6 @@ where
         let tx = &evm.inner.tx;
 
         if let Some(aa_env) = tx.tempo_tx_env.as_ref() {
-            if tempo_primitives::subblock::has_sub_block_nonce_key_prefix(&aa_env.nonce_key) {
-                return Err(TempoInvalidTransaction::SubblockTransactionsDisabled.into());
-            }
             // Validate AA transaction structure (calls list, CREATE rules)
             validate_calls(
                 &aa_env.aa_calls,

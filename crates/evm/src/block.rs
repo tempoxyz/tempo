@@ -420,18 +420,14 @@ where
 
     /// Pre-validate a transaction before execution.
     ///
-    /// Reject reserved subblock nonces and restrict system transactions to explicitly
-    /// allowed actions, since they bypass regular block gas limit checks.
+    /// Restrict system transactions to explicitly allowed actions, since they bypass
+    /// regular block gas limit checks.
     pub(crate) fn validate_tx_pre_execution(
         &self,
         tx: &TempoTxEnvelope,
     ) -> Result<Option<BlockSection>, BlockValidationError> {
         if tx.is_system_tx() {
             self.validate_system_tx(tx).map(Some)
-        } else if tx.has_sub_block_nonce_key_prefix() {
-            Err(BlockValidationError::msg(
-                "subblock transactions are not supported",
-            ))
         } else {
             Ok(None)
         }
@@ -460,10 +456,6 @@ where
         // Start with processing of transaction kinds that require specific sections.
         if tx.is_system_tx() {
             self.validate_system_tx(tx)
-        } else if tx.has_sub_block_nonce_key_prefix() {
-            Err(BlockValidationError::msg(
-                "subblock transactions are not supported",
-            ))
         } else {
             match self.section {
                 BlockSection::StartOfBlock | BlockSection::NonShared => {
@@ -768,7 +760,7 @@ mod tests {
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
     use tempo_primitives::{
         SubBlockMetadata, TempoSignature, TempoTransaction, TempoTxType,
-        subblock::{SubBlockVersion, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
+        subblock::SubBlockVersion,
         transaction::{Call, envelope::TEMPO_SYSTEM_TX_SIGNATURE},
     };
 
@@ -1404,9 +1396,9 @@ mod tests {
         assert_eq!(result.unwrap(), BlockSection::NonShared);
     }
 
-    fn create_subblock_tx() -> TempoTxEnvelope {
+    fn create_former_subblock_nonce_tx() -> TempoTxEnvelope {
         let mut nonce_bytes = [0u8; 32];
-        nonce_bytes[0] = TEMPO_SUBBLOCK_NONCE_KEY_PREFIX;
+        nonce_bytes[0] = 0x5b;
         nonce_bytes[1..16].fill(0xff);
 
         let tx = TempoTransaction {
@@ -1428,26 +1420,25 @@ mod tests {
     }
 
     #[test]
-    fn test_subblock_nonce_rejected_before_execution_and_commit() {
+    fn test_former_subblock_nonce_key_accepted_before_execution_and_commit() {
         let chainspec = DEV.clone();
-        for spec in [TempoHardfork::T3, TempoHardfork::T4, TempoHardfork::T11] {
+        for spec in [
+            TempoHardfork::T3,
+            TempoHardfork::T4,
+            TempoHardfork::T12,
+            TempoHardfork::T13,
+        ] {
             let mut db = State::builder().with_bundle_update().build();
-            let mut executor = TestExecutorBuilder::default()
+            let executor = TestExecutorBuilder::default()
                 .with_spec(spec)
                 .build(&mut db, &chainspec);
-            let tx = create_subblock_tx();
+            let tx = create_former_subblock_nonce_tx();
+            assert_eq!(executor.validate_tx_pre_execution(&tx).unwrap(), None);
             // Precomputed execution results must pass the same transaction-kind validation.
             assert_eq!(
-                executor.validate_tx(&tx, 21_000).unwrap_err().to_string(),
-                "subblock transactions are not supported"
+                executor.validate_tx(&tx, 21_000).unwrap(),
+                BlockSection::NonShared
             );
-            let recovered = Recovered::new_unchecked(tx, Address::ZERO);
-            let err = executor.execute_transaction(&recovered).unwrap_err();
-            assert!(
-                matches!(&err, BlockExecutionError::Validation(_)),
-                "{err:?}"
-            );
-            assert_eq!(err.to_string(), "subblock transactions are not supported");
         }
     }
 

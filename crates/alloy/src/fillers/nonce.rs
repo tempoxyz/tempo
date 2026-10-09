@@ -13,9 +13,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use tempo_contracts::precompiles::{INonce, NONCE_PRECOMPILE_ADDRESS};
-use tempo_primitives::{
-    subblock::has_sub_block_nonce_key_prefix, transaction::TEMPO_EXPIRING_NONCE_KEY,
-};
+use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
 
 /// A [`TxFiller`] that populates the [`TempoTransaction`](`tempo_primitives::TempoTransaction`) transaction with a random `nonce_key`, and `nonce` set to `0`.
 ///
@@ -44,14 +42,7 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for R
         if let Some(builder) = tx.as_mut_builder()
             && !Self::is_filled(builder)
         {
-            let nonce_key = loop {
-                let key = U256::random();
-                // We need to ensure that it doesn't use the subblock nonce key prefix
-                if !has_sub_block_nonce_key_prefix(&key) {
-                    break key;
-                }
-            };
-            builder.set_nonce_key(nonce_key);
+            builder.set_nonce_key(U256::random());
             builder.set_nonce(0);
         }
     }
