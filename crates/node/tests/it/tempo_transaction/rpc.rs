@@ -28,10 +28,13 @@ use tempo_primitives::{TempoTxEnvelope, transaction::tempo_transaction::Call};
 
 use super::helpers::*;
 
-/// Polls RPC state every second for up to 30 seconds while waiting for it to settle.
+/// Polls RPC state every 250ms for up to 30 seconds while waiting for it to settle.
+///
+/// The interval stays under the ~0.6s block time: the matrices wait for a few hundred
+/// receipts one after another, so a coarser interval adds up to minutes per run.
 const RPC_POLL: PollOpts = PollOpts {
     timeout: Duration::from_secs(30),
-    interval: Duration::from_secs(1),
+    interval: Duration::from_millis(250),
 };
 
 /// Sends a raw transaction with duplicate-submission handling.
@@ -74,13 +77,18 @@ impl RpcEnv {
     async fn connect(rpc_url: &str) -> eyre::Result<Self> {
         reth_tracing::init_test_tracing();
 
-        // Extend the default rate-limit policy to also retry connection errors.
+        // Extend the default rate-limit policy to also retry connection errors and
+        // gateway errors from the proxy in front of the node.
         let policy =
             RateLimitRetryPolicy::default().or(|err: &alloy::transports::TransportError| {
                 let msg = err.to_string();
                 msg.contains("connection error")
                     || msg.contains("SendRequest")
                     || msg.contains("error sending request")
+                    || err
+                        .as_transport_err()
+                        .and_then(TransportErrorKind::as_http_error)
+                        .is_some_and(|http| matches!(http.status, 502 | 504))
             });
         let retry = RetryBackoffLayer::new_with_policy(4, 100, 330, policy);
         let client = alloy::rpc::client::RpcClient::builder()

@@ -1064,44 +1064,52 @@ mod tests {
         let iterations = 512;
         let (sender, receiver) = mpsc::channel();
 
-        for iteration in 0..iterations {
-            let synced_address = Address::repeat_byte(0x22);
-            let static_dir = tempfile::tempdir().unwrap();
+        // Committing the changesets syncs them to disk, which was about half of every
+        // iteration. Write them once and give every iteration a fresh copy.
+        let synced_address = Address::repeat_byte(0x22);
+        let template_dir = tempfile::tempdir().unwrap();
+        {
+            let provider: StaticFileProvider<TempoPrimitives> =
+                StaticFileProviderBuilder::read_write(template_dir.path())
+                    .build()
+                    .unwrap();
             {
-                let provider: StaticFileProvider<TempoPrimitives> =
-                    StaticFileProviderBuilder::read_write(static_dir.path())
-                        .build()
-                        .unwrap();
-                {
-                    let mut writer = provider
-                        .get_writer(0, StaticFileSegment::AccountChangeSets)
-                        .unwrap();
-                    writer
-                        .append_account_changeset(
-                            vec![AccountBeforeTx {
-                                address: synced_address,
-                                info: None,
-                            }],
-                            0,
-                        )
-                        .unwrap();
-                }
-                {
-                    let mut writer = provider
-                        .get_writer(0, StaticFileSegment::StorageChangeSets)
-                        .unwrap();
-                    writer
-                        .append_storage_changeset(
-                            vec![StorageBeforeTx {
-                                address: synced_address,
-                                key: B256::repeat_byte(0x33),
-                                value: U256::ZERO,
-                            }],
-                            0,
-                        )
-                        .unwrap();
-                }
-                provider.commit().unwrap();
+                let mut writer = provider
+                    .get_writer(0, StaticFileSegment::AccountChangeSets)
+                    .unwrap();
+                writer
+                    .append_account_changeset(
+                        vec![AccountBeforeTx {
+                            address: synced_address,
+                            info: None,
+                        }],
+                        0,
+                    )
+                    .unwrap();
+            }
+            {
+                let mut writer = provider
+                    .get_writer(0, StaticFileSegment::StorageChangeSets)
+                    .unwrap();
+                writer
+                    .append_storage_changeset(
+                        vec![StorageBeforeTx {
+                            address: synced_address,
+                            key: B256::repeat_byte(0x33),
+                            value: U256::ZERO,
+                        }],
+                        0,
+                    )
+                    .unwrap();
+            }
+            provider.commit().unwrap();
+        }
+
+        for iteration in 0..iterations {
+            let static_dir = tempfile::tempdir().unwrap();
+            for entry in std::fs::read_dir(template_dir.path()).unwrap() {
+                let entry = entry.unwrap();
+                std::fs::copy(entry.path(), static_dir.path().join(entry.file_name())).unwrap();
             }
 
             // A fresh provider has an empty jar cache with a fresh hasher seed, matching a
