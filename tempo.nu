@@ -14,6 +14,7 @@ const BENCH_WORKTREES_DIR = ".bench-worktrees"
 const BENCH_RESULTS_DIR = "bench-results"
 const MINIO_BUCKET = "minio/tempo-binaries"
 const BENCH_META_SUBDIR = ".bench-meta"
+const BLOAT_VERSION = 1
 const LOCALNET_SIGNING_KEY_SECRET = "tempo-localnet-signing-key-secret"
 
 # TIP20 token IDs created by localnet genesis (pathUSD, AlphaUSD, BetaUSD, ThetaUSD)
@@ -144,33 +145,37 @@ def find-tempo-pids [] {
 # 1. Run `tempo init` to create the database
 # 2. Generate state bloat binary file
 # 3. Run `tempo init-from-binary-dump` to load the bloat
-def recorded-bloat-size [marker: string] {
-    if not ($marker | path exists) { return (-1) }
-    try { open $marker | str trim | into int } catch { -1 }
+def bloat-matches [marker: any, size: int, hardfork: string] {
+    (
+        $marker != null
+        and ($marker | get -o bloat_version | default 0) == $BLOAT_VERSION
+        and ($marker | get -o bloat_mib | default (-1)) == $size
+        and ($marker | get -o nonce_ring_hardfork | default "") == $hardfork
+    )
 }
 
-# Reuse the bloat file only when its recorded size matches the request.
+# Reuse bloat only when its contents and nonce ring capacity match the request.
 def generate-bloat-file [bloat_size: int, profile: string, skip_build: bool] {
     let bloat_file = $"($LOCALNET_DIR)/state_bloat.bin"
-    let size_marker = $"($LOCALNET_DIR)/state_bloat.mib"
-    if ($bloat_file | path exists) and (recorded-bloat-size $size_marker) == $bloat_size {
+    let size_marker = $"($LOCALNET_DIR)/state_bloat.json"
+    if ($bloat_file | path exists) and (bloat-matches (try { open $size_marker } catch { null }) $bloat_size (latest-tempo-hardfork)) {
         print $"State bloat file already exists \(($bloat_size) MiB\)"
         return
     }
     print $"Generating state bloat \(($bloat_size) MiB\)..."
     let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-    run-tempo-xtask $profile $skip_build ["generate-state-bloat" "--size" $"($bloat_size)" "--out" $bloat_file ...$token_args]
-    $bloat_size | into string | save -f $size_marker
+    run-tempo-xtask $profile $skip_build ["generate-state-bloat" "--size" $"($bloat_size)" "--nonce-ring-hardfork" (latest-tempo-hardfork) "--out" $bloat_file ...$token_args]
+    { bloat_version: $BLOAT_VERSION, bloat_mib: $bloat_size, nonce_ring_hardfork: (latest-tempo-hardfork) } | to json | save -f $size_marker
 }
 
 # Load the bloat file into a single node's database
 def load-bloat-into-node [tempo_bin: string, genesis_path: string, datadir: string, bloat_size: int] {
     let bloat_file = $"($LOCALNET_DIR)/state_bloat.bin"
     let db_path = $"($datadir)/db"
-    let size_marker = $"($datadir)/state_bloat.mib"
+    let size_marker = $"($datadir)/state_bloat.json"
 
     if ($db_path | path exists) {
-        if (recorded-bloat-size $size_marker) == $bloat_size {
+        if (bloat-matches (try { open $size_marker } catch { null }) $bloat_size (latest-tempo-hardfork)) {
             print $"State bloat already loaded into ($datadir | path basename)"
             return
         }
@@ -194,7 +199,7 @@ def load-bloat-into-node [tempo_bin: string, genesis_path: string, datadir: stri
 
     print $"Loading state bloat into ($datadir | path basename)..."
     run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis_path "--datadir" $datadir $bloat_file
-    $bloat_size | into string | save -f $size_marker
+    { bloat_version: $BLOAT_VERSION, bloat_mib: $bloat_size, nonce_ring_hardfork: (latest-tempo-hardfork) } | to json | save -f $size_marker
 }
 
 # ============================================================================
@@ -1395,6 +1400,7 @@ def generate-summary [
             ok: $total_ok
             err: $total_err
             total_gas: $total_gas
+            block_composition: ($report | get -o block_composition.summary | default null)
             block_time_mean: $block_time_mean
             builder_latency_p50: $run_builder.p50
             builder_latency_p90: $run_builder.p90
@@ -2400,6 +2406,7 @@ def "main bench-init" [
     }
     let meta_dir = $"($datadir)/($BENCH_META_SUBDIR)"
     let genesis_accounts = ([$accounts 3] | math max) + 1
+    let bloat_hardfork = (latest-tempo-hardfork)
 
     # Mount schelk first so we can read the marker from the datadir
     bench-mount
@@ -2408,7 +2415,7 @@ def "main bench-init" [
     if not $force {
         let marker = (read-bench-marker $datadir)
         if $marker != null {
-            if ($marker.bloat_mib | into int) == $bloat and ($marker.accounts | into int) == $genesis_accounts and ($marker | get -o txgen_mnemonic | default "") == (txgen-account-mnemonic) {
+            if (bloat-matches $marker $bloat $bloat_hardfork) and ($marker.accounts | into int) == $genesis_accounts and ($marker | get -o txgen_mnemonic | default "") == (txgen-account-mnemonic) {
                 if ($"($datadir)/db" | path exists) and ($"($meta_dir)/genesis.json" | path exists) {
                     print $"Virgin snapshot already initialized \(bloat=($bloat) MiB, accounts=($genesis_accounts)\). Use --force to re-initialize."
                     return
@@ -2434,14 +2441,16 @@ def "main bench-init" [
     if $bloat > 0 {
         print $"Generating state bloat \(($bloat) MiB\)..."
         let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --nonce-ring-hardfork $bloat_hardfork --out $bloat_file ...$token_args
     }
 
     bench-clean-datadir $datadir
     bench-init-db $tempo_bin $genesis_path $datadir $bloat $bloat_file
 
     bench-save-and-promote $datadir $meta_dir {
-        bloat_mib: $bloat,
+        bloat_mib: $bloat
+        bloat_version: $BLOAT_VERSION
+        nonce_ring_hardfork: $bloat_hardfork
         accounts: $genesis_accounts,
         bench_datadir: $datadir,
         txgen_mnemonic: (txgen-account-mnemonic)
@@ -2589,6 +2598,7 @@ def "main bench" [
         }
     }
     let dual_hardfork = $baseline_hardfork != "" and $feature_hardfork != ""
+    let bloat_hardfork = if $dual_hardfork { highest-hardfork [$baseline_hardfork $feature_hardfork] } else { latest-tempo-hardfork }
 
     if $baseline != "" and $feature != "" {
         # ================================================================
@@ -2712,7 +2722,7 @@ def "main bench" [
             let snapshot_ready = (
                 not $force
                 and $marker != null
-                and ($marker.bloat_mib | into int) == $bloat
+                and (bloat-matches $marker $bloat $bloat_hardfork)
                 and ($marker.accounts | into int) == $genesis_accounts
                 and ($marker | get -o baseline_hardfork | default "") == ($baseline_hardfork | str upcase)
                 and ($marker | get -o feature_hardfork | default "") == ($feature_hardfork | str upcase)
@@ -2763,18 +2773,11 @@ def "main bench" [
                 cp $"($feature_genesis_dir)/genesis.json" $feature_genesis_path
                 rm -rf $feature_genesis_dir
 
-                # Generate bloat file (shared, fork-agnostic)
+                # Share one dump, filling the ring for the higher hardfork on both sides.
                 if $bloat > 0 {
                     print $"Generating state bloat \(($bloat) MiB\)..."
                     let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-                    if $baseline == "local" {
-                        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
-                    } else {
-                        do {
-                            cd $baseline_wt
-                            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
-                        }
-                    }
+                    cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --nonce-ring-hardfork $bloat_hardfork --out $bloat_file ...$token_args
                 }
 
                 # Initialize both datadirs
@@ -2789,6 +2792,8 @@ def "main bench" [
 
                 bench-save-and-promote $datadir $meta_dir {
                     bloat_mib: $bloat
+                    bloat_version: $BLOAT_VERSION
+                    nonce_ring_hardfork: $bloat_hardfork
                     accounts: $genesis_accounts
                     bench_datadir: $datadir
                     baseline_hardfork: ($baseline_hardfork | str upcase)
@@ -2810,7 +2815,7 @@ def "main bench" [
             let snapshot_ready = (
                 not $force
                 and $marker != null
-                and ($marker.bloat_mib | into int) == $bloat
+                and (bloat-matches $marker $bloat $bloat_hardfork)
                 and ($marker.accounts | into int) == $genesis_accounts
                 and ($marker | get -o gas_limit | default "") == $gas_limit
                 and ($marker | get -o general_gas_limit | default "") == $general_gas_limit
@@ -2839,23 +2844,18 @@ def "main bench" [
                 }
 
                 if $bloat > 0 {
-                    print $"Generating state bloat \(($bloat) MiB\) from baseline..."
+                    print $"Generating state bloat \(($bloat) MiB\)..."
                     let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-                    if $baseline == "local" {
-                        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
-                    } else {
-                        do {
-                            cd $baseline_wt
-                            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
-                        }
-                    }
+                    cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --nonce-ring-hardfork $bloat_hardfork --out $bloat_file ...$token_args
                 }
 
                 bench-clean-datadir $datadir
                 bench-init-db $baseline_tempo $genesis_path_std $datadir $bloat $bloat_file
 
                 bench-save-and-promote $datadir $meta_dir {
-                    bloat_mib: $bloat,
+                    bloat_mib: $bloat
+                    bloat_version: $BLOAT_VERSION
+                    nonce_ring_hardfork: $bloat_hardfork
                     accounts: $genesis_accounts,
                     bench_datadir: $datadir,
                     gas_limit: $gas_limit,

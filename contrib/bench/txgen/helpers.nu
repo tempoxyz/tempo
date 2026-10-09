@@ -691,9 +691,9 @@ def txgen-prepare-vault-preset [spec_path: string, accounts: int, chain_id: int]
     $output
 }
 
-# Only public-mix needs category metadata; other presets keep their existing metadata.
+# Only public-mix needs category metadata; all presets use gas weighting.
 def txgen-workload-metadata-args [preset_name: string, spec_path: string] {
-    if $preset_name != "public-mix" { return [] }
+    if $preset_name != "public-mix" { return ["-m" "workload_mix_weighting=gas"] }
 
     # Read only the prepared file's mix, not its included setup/template specs.
     # Pin the jq-compatible Python yq, rather than relying on a system yq variant.
@@ -708,7 +708,7 @@ def txgen-workload-metadata-args [preset_name: string, spec_path: string] {
     if $result.exit_code != 0 {
         error make {msg: $"Failed to extract public-mix metadata: ($result.stderr)"}
     }
-    ["-m" "workload_mix_version=1" "-m" $"workload_mix_weights=($result.stdout | str trim)"]
+    ["-m" "workload_mix_version=1" "-m" "workload_mix_weighting=gas" "-m" $"workload_mix_weights=($result.stdout | str trim)"]
 }
 
 def txgen-run-preset-pipeline [
@@ -881,34 +881,27 @@ def txgen-run-preset-pipeline [
 
     let bench_env_export = if $bench_env != "" { $"export ($bench_env) && " } else { "" }
     let txgen_extra_args = (txgen-parse-bench-args $bench_args)
-    let use_two_phase_setup = $is_vault or (txgen-spec-has-keychain-setup $spec_path)
-    let txgen_cmd_str = (txgen-shell-join ($txgen_cmd | append $txgen_extra_args))
-    let bench_cmd = if $use_two_phase_setup { $bench_cmd | append "--skip-setup" } else { $bench_cmd }
+    let setup_state_path = $"($report_path).setup.json"
+    let gas_mix_args = ["--gas-weighted-mix" "--setup-state-in" $setup_state_path]
+    let workload_extra_args = ($txgen_extra_args | where { |arg| $arg != "--gas-weighted-mix" })
+    let txgen_cmd_str = (txgen-shell-join ($txgen_cmd | append $workload_extra_args | append $gas_mix_args))
+    let bench_cmd = $bench_cmd | append "--skip-setup"
     let bench_cmd = if $is_vault { $bench_cmd | append ["--drain-timeout" "300"] } else { $bench_cmd }
     let bench_cmd_str = (txgen-shell-join $bench_cmd)
     let pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_cmd_str) | ($bench_cmd_str)"
 
-    if $use_two_phase_setup {
-        let txgen_setup_cmd_str = (txgen-shell-join ($txgen_setup_cmd | append $txgen_extra_args))
-        let bench_setup_cmd_str = (txgen-shell-join ($bench_send_base_cmd | append ["--drain-timeout" 0]))
-        let setup_pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_setup_cmd_str) | ($bench_setup_cmd_str)"
+    let setup_state_args = ["--setup-state-out" $setup_state_path]
+    let txgen_setup_cmd_str = (txgen-shell-join ($txgen_setup_cmd | append $workload_extra_args | append $setup_state_args))
+    let bench_setup_cmd_str = (txgen-shell-join ($bench_send_base_cmd | append ["--drain-timeout" 0]))
+    let setup_pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_setup_cmd_str) | ($bench_setup_cmd_str)"
 
-        if $is_vault {
-            print "  Streaming vault setup transactions into bench send..."
-        } else {
-            print "  Streaming keychain setup transactions into bench send..."
-        }
-        let setup_result = (bash -lc $setup_pipeline | complete)
-        if $setup_result.stdout != "" { print $setup_result.stdout }
-        if $setup_result.stderr != "" { print $setup_result.stderr }
+    print "  Confirming setup before gas sampling..."
+    let setup_result = (bash -lc $setup_pipeline | complete)
+    if $setup_result.stdout != "" { print $setup_result.stdout }
+    if $setup_result.stderr != "" { print $setup_result.stderr }
 
-        if $setup_result.exit_code != 0 {
-            return { ok: false, exit_code: $setup_result.exit_code, report_path: $report_path }
-        }
-        if $is_vault {
-            # Setup is complete. Do not reserve its nonces again when generating the workload.
-            open $spec_path | reject append | insert setup {steps: []} | to yaml | save -f $spec_path
-        }
+    if $setup_result.exit_code != 0 {
+        return { ok: false, exit_code: $setup_result.exit_code, report_path: $report_path }
     }
 
     if $is_vault or $preset_name == "zones" {

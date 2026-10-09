@@ -16,7 +16,7 @@ use revm::{
         CfgEnv, ContextTr, TxEnv,
         result::{ExecutionResult, HaltReason},
     },
-    database::{CacheDB, EmptyDB},
+    database::InMemoryDB,
     handler::system_call::SystemCallEvm,
     inspector::{CountInspector, InspectSystemCallEvm},
     state::{AccountInfo, Bytecode},
@@ -54,15 +54,13 @@ use revm::context::result::InvalidTransaction;
 const DEFAULT_BALANCE: u128 = 1_000_000_000_000_000_000;
 
 /// Identity precompile address (0x04)
-const IDENTITY_PRECOMPILE: Address = Address::new([
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04,
-]);
+const IDENTITY_PRECOMPILE: Address = Address::with_last_byte(4);
 
 // ==================== Test Utility Functions ====================
 
 /// Create an empty EVM instance with default settings and no inspector.
-fn create_evm() -> TempoEvm<CacheDB<EmptyDB>, ()> {
-    let db = CacheDB::new(EmptyDB::new());
+fn create_evm() -> TempoEvm<InMemoryDB, ()> {
+    let db = InMemoryDB::default();
     let ctx = Context::mainnet()
         .with_db(db)
         .with_block(Default::default())
@@ -72,8 +70,8 @@ fn create_evm() -> TempoEvm<CacheDB<EmptyDB>, ()> {
 }
 
 /// Create an EVM instance with a specific block timestamp.
-fn create_evm_with_timestamp(timestamp: u64) -> TempoEvm<CacheDB<EmptyDB>, ()> {
-    let db = CacheDB::new(EmptyDB::new());
+fn create_evm_with_timestamp(timestamp: u64) -> TempoEvm<InMemoryDB, ()> {
+    let db = InMemoryDB::default();
     let mut block = TempoBlockEnv::default();
     block.inner.timestamp = U256::from(timestamp);
 
@@ -87,12 +85,12 @@ fn create_evm_with_timestamp(timestamp: u64) -> TempoEvm<CacheDB<EmptyDB>, ()> {
 }
 
 /// Fund an account with the default balance (1 ETH).
-fn fund_account(evm: &mut TempoEvm<CacheDB<EmptyDB>, ()>, address: Address) {
+fn fund_account(evm: &mut TempoEvm<InMemoryDB, ()>, address: Address) {
     fund_account_with_nonce(evm, address, 0);
 }
 
 /// Fund an account with the default balance and a specific nonce.
-fn fund_account_with_nonce(evm: &mut TempoEvm<CacheDB<EmptyDB>, ()>, address: Address, nonce: u64) {
+fn fund_account_with_nonce(evm: &mut TempoEvm<InMemoryDB, ()>, address: Address, nonce: u64) {
     evm.ctx.db_mut().insert_account_info(
         address,
         AccountInfo {
@@ -104,7 +102,7 @@ fn fund_account_with_nonce(evm: &mut TempoEvm<CacheDB<EmptyDB>, ()>, address: Ad
 }
 
 /// Create an EVM with a funded account at the given address.
-fn create_funded_evm(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
+fn create_funded_evm(address: Address) -> TempoEvm<InMemoryDB, ()> {
     let mut evm = create_evm();
     fund_account(&mut evm, address);
     evm
@@ -112,8 +110,8 @@ fn create_funded_evm(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
 
 /// Create an EVM with T1C hardfork enabled and a funded account.
 /// This applies TIP-1000 gas params via `tempo_gas_params()`.
-fn create_funded_evm_t1(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
-    let db = CacheDB::new(EmptyDB::new());
+fn create_funded_evm_t1(address: Address) -> TempoEvm<InMemoryDB, ()> {
+    let db = InMemoryDB::default();
     let mut cfg = CfgEnv::<TempoHardfork>::default();
     cfg.spec = TempoHardfork::T1C;
     // Apply TIP-1000 gas params for T1C hardfork
@@ -131,8 +129,8 @@ fn create_funded_evm_t1(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
 }
 
 /// Create an EVM with T3 hardfork enabled and a funded account.
-fn create_funded_evm_t3(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
-    let db = CacheDB::new(EmptyDB::new());
+fn create_funded_evm_t3(address: Address) -> TempoEvm<InMemoryDB, ()> {
+    let db = InMemoryDB::default();
     let mut cfg = CfgEnv::<TempoHardfork>::default();
     cfg.spec = TempoHardfork::T3;
     cfg.gas_params = tempo_gas_params(TempoHardfork::T3);
@@ -149,8 +147,8 @@ fn create_funded_evm_t3(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
 }
 
 /// Create an EVM with T4 hardfork enabled and a funded account.
-fn create_funded_evm_t4(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
-    let db = CacheDB::new(EmptyDB::new());
+fn create_funded_evm_t4(address: Address) -> TempoEvm<InMemoryDB, ()> {
+    let db = InMemoryDB::default();
     let mut cfg = CfgEnv::<TempoHardfork>::default();
     cfg.spec = TempoHardfork::T4;
     cfg.gas_params = tempo_gas_params(TempoHardfork::T4);
@@ -170,8 +168,8 @@ fn create_funded_evm_t4(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
 /// Create an EVM with T4 hardfork, the TIP-1016 regular/state gas split
 /// enabled (`enable_amsterdam_eip8037` plus the matching gas table), and a
 /// funded account.
-fn create_funded_evm_t4_amsterdam(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
-    let db = CacheDB::new(EmptyDB::new());
+fn create_funded_evm_t4_amsterdam(address: Address) -> TempoEvm<InMemoryDB, ()> {
+    let db = InMemoryDB::default();
     let mut cfg = CfgEnv::<TempoHardfork>::default();
     cfg.spec = TempoHardfork::T4;
     cfg.gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
@@ -191,8 +189,8 @@ fn create_funded_evm_t4_amsterdam(address: Address) -> TempoEvm<CacheDB<EmptyDB>
 /// Creates a T7-enabled EVM with a funded account.
 /// This activates the TIP-1060 SSTORE storage credits hook while keeping the
 /// TIP-1016 state-gas split disabled to match production.
-fn create_funded_evm_t7(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
-    let db = CacheDB::new(EmptyDB::new());
+fn create_funded_evm_t7(address: Address) -> TempoEvm<InMemoryDB, ()> {
+    let db = InMemoryDB::default();
     let mut cfg = CfgEnv::<TempoHardfork>::default();
     cfg.spec = TempoHardfork::T7;
     cfg.gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T7, false);
@@ -213,8 +211,8 @@ fn create_funded_evm_t7(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
 fn create_funded_evm_t7_with_timestamp(
     address: Address,
     timestamp: u64,
-) -> TempoEvm<CacheDB<EmptyDB>, ()> {
-    let db = CacheDB::new(EmptyDB::new());
+) -> TempoEvm<InMemoryDB, ()> {
+    let db = InMemoryDB::default();
     let mut cfg = CfgEnv::<TempoHardfork>::default();
     cfg.spec = TempoHardfork::T7;
     cfg.gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T7, false);
@@ -239,8 +237,8 @@ fn create_funded_evm_at_spec_with_timestamp(
     address: Address,
     timestamp: u64,
     spec: TempoHardfork,
-) -> TempoEvm<CacheDB<EmptyDB>, ()> {
-    let db = CacheDB::new(EmptyDB::new());
+) -> TempoEvm<InMemoryDB, ()> {
+    let db = InMemoryDB::default();
     let mut cfg = CfgEnv::<TempoHardfork>::default();
     cfg.spec = spec;
     cfg.gas_params = tempo_gas_params_with_amsterdam(spec, false);
@@ -260,10 +258,7 @@ fn create_funded_evm_at_spec_with_timestamp(
 }
 
 /// Create an EVM with a specific timestamp and a funded account.
-fn create_funded_evm_with_timestamp(
-    address: Address,
-    timestamp: u64,
-) -> TempoEvm<CacheDB<EmptyDB>, ()> {
+fn create_funded_evm_with_timestamp(address: Address, timestamp: u64) -> TempoEvm<InMemoryDB, ()> {
     let mut evm = create_evm_with_timestamp(timestamp);
     fund_account(&mut evm, address);
     evm
@@ -273,8 +268,8 @@ fn create_funded_evm_with_timestamp(
 fn create_funded_evm_t1_with_timestamp(
     address: Address,
     timestamp: u64,
-) -> TempoEvm<CacheDB<EmptyDB>, ()> {
-    let db = CacheDB::new(EmptyDB::new());
+) -> TempoEvm<InMemoryDB, ()> {
+    let db = InMemoryDB::default();
     let mut cfg = CfgEnv::<TempoHardfork>::default();
     cfg.spec = TempoHardfork::T1;
     cfg.gas_params = tempo_gas_params(TempoHardfork::T1);
@@ -294,8 +289,8 @@ fn create_funded_evm_t1_with_timestamp(
 }
 
 /// Create an EVM instance with a custom inspector.
-fn create_evm_with_inspector<I>(inspector: I) -> TempoEvm<CacheDB<EmptyDB>, I> {
-    let db = CacheDB::new(EmptyDB::new());
+fn create_evm_with_inspector<I>(inspector: I) -> TempoEvm<InMemoryDB, I> {
+    let db = InMemoryDB::default();
     let ctx = Context::mainnet()
         .with_db(db)
         .with_block(Default::default())
@@ -375,7 +370,7 @@ impl P256KeyPair {
         delegate_address: Address,
     ) -> eyre::Result<TempoSignedAuthorization> {
         let auth = Authorization {
-            chain_id: U256::from(1),
+            chain_id: U256::ONE,
             address: delegate_address,
             nonce: 0,
         };
@@ -563,7 +558,7 @@ impl TxBuilder {
 #[test_case::test_case(TempoHardfork::T1)]
 #[test_case::test_case(TempoHardfork::T1C)]
 fn test_access_millis_timestamp(spec: TempoHardfork) -> eyre::Result<()> {
-    let db = CacheDB::new(EmptyDB::new());
+    let db = InMemoryDB::default();
 
     let mut ctx = Context::mainnet()
         .with_db(db)
@@ -995,7 +990,7 @@ fn test_tempo_tx() -> eyre::Result<()> {
         .db()
         .storage_ref(NONCE_PRECOMPILE_ADDRESS, nonce_slot)
         .unwrap_or_default();
-    assert_eq!(stored_nonce, U256::from(1));
+    assert_eq!(stored_nonce, U256::ONE);
 
     // Test second 2D nonce transaction
     let tx_2d_2 = TxBuilder::new()
@@ -1097,7 +1092,7 @@ fn test_t3_key_authorization_accepts_empty_recipient_allowlist_as_unconstrained(
     let transfer_to = Address::repeat_byte(0xaa);
     let transfer_input = ITIP20::transferCall {
         to: transfer_to,
-        amount: U256::from(1_u64),
+        amount: U256::ONE,
     }
     .abi_encode();
 
@@ -1402,14 +1397,13 @@ fn test_validate_aa_initial_tx_gas_errors() -> eyre::Result<()> {
     let caller = key_pair.address;
 
     // Helper to create EVM with signed transaction
-    let create_evm_with_tx =
-        |tx: TempoTransaction| -> eyre::Result<TempoEvm<CacheDB<EmptyDB>, ()>> {
-            let signed_tx = key_pair.sign_tx(tx)?;
-            let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
-            let mut evm = create_funded_evm(caller);
-            evm.ctx.tx = tx_env;
-            Ok(evm)
-        };
+    let create_evm_with_tx = |tx: TempoTransaction| -> eyre::Result<TempoEvm<InMemoryDB, ()>> {
+        let signed_tx = key_pair.sign_tx(tx)?;
+        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+        let mut evm = create_funded_evm(caller);
+        evm.ctx.tx = tx_env;
+        Ok(evm)
+    };
 
     let handler = TempoEvmHandler::default();
 
@@ -1674,7 +1668,7 @@ fn test_aa_tx_gas_sstore_warm_slot() -> eyre::Result<()> {
     // Pre-populate storage slot 0 with a non-zero value
     evm.ctx
         .db_mut()
-        .insert_account_storage(contract, U256::ZERO, U256::from(1))
+        .insert_account_storage(contract, U256::ZERO, U256::ONE)
         .unwrap();
 
     // T1 costs: new account (250k) + SSTORE reset (not new slot) + base costs
@@ -1751,11 +1745,7 @@ fn test_aa_tx_gas_multiple_sstores() -> eyre::Result<()> {
 /// Seed the TIP-1060 persistent storage credit balance for `owner` directly into the storage
 /// credits contract's storage. Storage creation mode is transient and must be selected inside
 /// each transaction with `setMode`.
-fn seed_storage_credit_balance(
-    evm: &mut TempoEvm<CacheDB<EmptyDB>, ()>,
-    owner: Address,
-    balance: u64,
-) {
+fn seed_storage_credit_balance(evm: &mut TempoEvm<InMemoryDB, ()>, owner: Address, balance: u64) {
     // The storage credits contract account must exist before we can write storage to it.
     evm.ctx
         .db_mut()
@@ -1767,7 +1757,7 @@ fn seed_storage_credit_balance(
         .unwrap();
 }
 
-fn storage_credit_word(evm: &TempoEvm<CacheDB<EmptyDB>, ()>, owner: Address) -> U256 {
+fn storage_credit_word(evm: &TempoEvm<InMemoryDB, ()>, owner: Address) -> U256 {
     let slot = StorageCredits::slot(owner);
     evm.ctx
         .db()
@@ -1776,7 +1766,7 @@ fn storage_credit_word(evm: &TempoEvm<CacheDB<EmptyDB>, ()>, owner: Address) -> 
 }
 
 /// Read back the TIP-1060 storage credit balance stored for `owner` from the storage credits contract.
-fn storage_credit_balance(evm: &TempoEvm<CacheDB<EmptyDB>, ()>, owner: Address) -> u64 {
+fn storage_credit_balance(evm: &TempoEvm<InMemoryDB, ()>, owner: Address) -> u64 {
     u64::from_word(storage_credit_word(evm, owner)).unwrap()
 }
 
@@ -1863,7 +1853,7 @@ fn run_tx_on_tip1060_contract(
     mode: CreditMode,
     contract: Address,
     bytecode: &[u8],
-) -> eyre::Result<(u64, TempoEvm<CacheDB<EmptyDB>, ()>)> {
+) -> eyre::Result<(u64, TempoEvm<InMemoryDB, ()>)> {
     run_tx_on_tip1060_contract_with_setup(mode, contract, bytecode, |_, _| Ok(()))
 }
 
@@ -1871,8 +1861,8 @@ fn run_tx_on_tip1060_contract_with_setup(
     mode: CreditMode,
     contract: Address,
     bytecode: &[u8],
-    setup: impl FnOnce(&mut TempoEvm<CacheDB<EmptyDB>, ()>, Address) -> eyre::Result<()>,
-) -> eyre::Result<(u64, TempoEvm<CacheDB<EmptyDB>, ()>)> {
+    setup: impl FnOnce(&mut TempoEvm<InMemoryDB, ()>, Address) -> eyre::Result<()>,
+) -> eyre::Result<(u64, TempoEvm<InMemoryDB, ()>)> {
     let key_pair = P256KeyPair::random();
     let caller = key_pair.address;
     let mut evm = create_funded_evm_t7(caller);
@@ -1898,7 +1888,7 @@ fn run_tx_on_tip1060_contract_with_setup(
 }
 
 fn mint_storage_credits_with_clears(
-    evm: &mut TempoEvm<CacheDB<EmptyDB>, ()>,
+    evm: &mut TempoEvm<InMemoryDB, ()>,
     key_pair: &P256KeyPair,
     caller: Address,
     contract: Address,
@@ -2589,11 +2579,10 @@ fn test_tip1060_spec_transition_classes_credit_accounting_table() -> eyre::Resul
 /// recreation costs 245k) before the Direct phase runs, so the transaction reverts.
 #[test]
 fn test_tip1060_preserve_churn_attack() -> eyre::Result<()> {
-    use alloy_primitives::{Address, Bytes, TxKind, U256, hex};
+    use alloy_primitives::{Address, TxKind, U256};
     use revm::{
         Context, Database, ExecuteCommitEvm, MainContext,
         context::{CfgEnv, TxEnv},
-        database::{CacheDB, EmptyDB},
         state::AccountInfo,
     };
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -2605,17 +2594,14 @@ fn test_tip1060_preserve_churn_attack() -> eyre::Result<()> {
     //   constructor: SSTORE(0, 1)
     //   runtime: setMode(Preserve); 500x clear/restore slot0; setMode(Direct); 500x create
     // Selector 0x21175b4a = setMode(uint8); precompile = 0x1060...0000.
-    let init = Bytes::from(
-        hex!(
-            "60016000556100a660136000396100a66000f3\
+    let init = bytes!(
+        "60016000556100a660136000396100a66000f3\
                 60216000536017600153605b600253604a6003536001602353\
                 6000600060246000600073106000000000000000000000000000000000000\
                 05af1506101f45b60006000556002600055600190038061003e5750\
                 60216000536017600153605b600253604a6003536002602353\
                 6000600060246000600073106000000000000000000000000000000000000\
                 05af1506101f45b8061010001600190556001900380610091575000"
-        )
-        .to_vec(),
     );
 
     let caller = Address::repeat_byte(0x11);
@@ -2626,7 +2612,7 @@ fn test_tip1060_preserve_churn_attack() -> eyre::Result<()> {
     let mut block = TempoBlockEnv::default();
     block.inner.gas_limit = GAS_LIMIT;
     let ctx = Context::mainnet()
-        .with_db(CacheDB::new(EmptyDB::new()))
+        .with_db(InMemoryDB::default())
         .with_block(block)
         .with_cfg(cfg)
         .with_tx(Default::default());
@@ -2726,7 +2712,7 @@ fn test_tip1060_preserve_churn_mints_one_credit_per_clear() -> eyre::Result<()> 
     // Slot 0 starts non-zero.
     evm.ctx
         .db_mut()
-        .insert_account_storage(contract, U256::ZERO, U256::from(1))
+        .insert_account_storage(contract, U256::ZERO, U256::ONE)
         .unwrap();
     seed_storage_credit_balance(&mut evm, contract, 0);
 
@@ -2781,7 +2767,7 @@ fn test_tip1060_dirty_restore_after_direct_spend_repays_credit_value() -> eyre::
     );
     evm.ctx
         .db_mut()
-        .insert_account_storage(contract, U256::ZERO, U256::from(1))
+        .insert_account_storage(contract, U256::ZERO, U256::ONE)
         .unwrap();
     seed_storage_credit_balance(&mut evm, contract, 0);
 
@@ -2797,8 +2783,8 @@ fn test_tip1060_dirty_restore_after_direct_spend_repays_credit_value() -> eyre::
 
     // The fresh slot exists, the original slot is restored, and the credit balance nets to zero.
     assert_eq!(
-        evm.ctx.db().storage_ref(contract, U256::from(1)).unwrap(),
-        U256::from(1),
+        evm.ctx.db().storage_ref(contract, U256::ONE).unwrap(),
+        U256::ONE,
         "the genuinely new slot must be created"
     );
     assert_eq!(
@@ -3279,7 +3265,7 @@ fn test_tip1060_same_tx_create_before_delete_different_slots() -> eyre::Result<(
     );
     evm.ctx
         .db_mut()
-        .insert_account_storage(contract, U256::from(1), U256::ONE)?;
+        .insert_account_storage(contract, U256::ONE, U256::ONE)?;
     seed_storage_credit_balance(&mut evm, contract, 0);
 
     let tx = TxBuilder::new()
@@ -4298,7 +4284,7 @@ fn test_create_nonce_replay_regression() -> eyre::Result<()> {
         let key_pair = P256KeyPair::random();
         let caller = key_pair.address;
 
-        let db = CacheDB::new(EmptyDB::new());
+        let db = InMemoryDB::default();
         let mut cfg = CfgEnv::<TempoHardfork>::default();
         cfg.spec = spec;
         cfg.gas_params = tempo_gas_params(spec);
@@ -4452,7 +4438,7 @@ fn test_double_charge_key_authorization_regression() -> eyre::Result<()> {
         let key_pair = P256KeyPair::random();
         let caller = key_pair.address;
 
-        let db = CacheDB::new(EmptyDB::new());
+        let db = InMemoryDB::default();
         let mut cfg = CfgEnv::<TempoHardfork>::default();
         cfg.spec = spec;
         cfg.gas_params = tempo_gas_params(spec);

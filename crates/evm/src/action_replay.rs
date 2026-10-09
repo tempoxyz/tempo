@@ -12,10 +12,7 @@ use alloy_primitives::{
 use reth_evm::block::InternalBlockExecutionError;
 use reth_revm::{
     Database as _, Inspector, State,
-    context::{
-        Transaction as _,
-        result::{ExecutionResult, HaltReason},
-    },
+    context::result::{ExecutionResult, HaltReason},
     state::{Account, EvmState, EvmStorageSlot, TransactionId},
 };
 use tempo_precompiles::{
@@ -39,7 +36,6 @@ where
         tx: impl ExecutableTx<Self>,
         replay: StorageActionReplay,
         result_closure: impl FnOnce(&TempoTxResult),
-        commit_reads: bool,
     ) -> Result<(), BlockExecutionError> {
         let (tx_env, recovered) = tx.into_parts();
 
@@ -57,12 +53,7 @@ where
         }
 
         let state = self
-            .replay_actions(
-                tx_env.caller(),
-                actions.drain(..),
-                commit_reads,
-                expiring_nonce,
-            )
+            .replay_actions(actions.drain(..), expiring_nonce)
             .inspect_err(|_| {
                 self.replay_state.reset_tx_changes();
             })?;
@@ -97,9 +88,7 @@ where
 
     fn replay_actions(
         &mut self,
-        sender: Address,
         actions: impl IntoIterator<Item = StorageAction>,
-        commit_reads: bool,
         expiring_nonce: Option<ExpiringNonceReplay>,
     ) -> Result<EvmState, BlockExecutionError> {
         let block_timestamp = self.inner.evm.block().timestamp.to::<u64>();
@@ -183,19 +172,9 @@ where
 
         let mut state = EvmState::default();
 
-        if commit_reads {
-            let account = db
-                .basic(sender)
-                .map_err(BlockExecutionError::other)?
-                .unwrap_or_default();
-            let mut account = Account::from(account);
-            account.mark_touch();
-            state.insert(sender, account);
-        }
-
         for (address, slots) in self.replay_state.tx_changes.iter() {
             for (slot, change) in slots {
-                if !change.written && !commit_reads {
+                if !change.written {
                     continue;
                 }
 
@@ -606,7 +585,7 @@ impl ExpiringNonceReplayState {
 mod tests {
     use super::*;
     use revm::{
-        database::{CacheDB, EmptyDB},
+        database::{EmptyDB, InMemoryDB},
         state::AccountInfo,
     };
 
@@ -640,7 +619,7 @@ mod tests {
     fn recorded_sload_uses_recorded_value_when_slot_is_not_cached() {
         let address = Address::repeat_byte(0x42);
         let slot = U256::from(7);
-        let mut cache_db = CacheDB::new(EmptyDB::default());
+        let mut cache_db = InMemoryDB::default();
         cache_db.insert_account_info(
             address,
             AccountInfo {
@@ -674,7 +653,7 @@ mod tests {
     fn current_sload_uses_recorded_value_when_slot_is_not_cached() {
         let address = Address::repeat_byte(0x42);
         let slot = U256::from(7);
-        let mut cache_db = CacheDB::new(EmptyDB::default());
+        let mut cache_db = InMemoryDB::default();
         cache_db.insert_account_info(
             address,
             AccountInfo {

@@ -7,7 +7,6 @@ use alloy::{
     sol_types::SolEvent,
 };
 use alloy_eips::BlockNumberOrTag;
-use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::TransactionRequest;
 use eyre::WrapErr;
 use futures::TryFutureExt;
@@ -596,7 +595,7 @@ async fn test_payment_lane_gas_limits() -> eyre::Result<()> {
     println!("\nSending payment transactions (should succeed despite non-payment gas usage)...");
     for i in 0..3 {
         // Send valid TIP20 transfer transactions
-        let transfer_tx = token.transfer(caller, U256::from(1));
+        let transfer_tx = token.transfer(caller, U256::ONE);
         let tx = transfer_tx
             .into_transaction_request()
             .from(caller)
@@ -715,7 +714,7 @@ async fn test_payment_lane_gas_limits_channel_reserve() -> eyre::Result<()> {
         .await?;
     let sig = payer.sign_hash_sync(&digest)?;
     let settle_r = reserve
-        .settle(desc, settle_amount, Bytes::copy_from_slice(&sig.as_bytes()))
+        .settle(desc, settle_amount, sig.as_bytes().into())
         .gas(5_000_000)
         .max_fee_per_gas(TEMPO_T1_BASE_FEE as u128)
         .max_priority_fee_per_gas(0)

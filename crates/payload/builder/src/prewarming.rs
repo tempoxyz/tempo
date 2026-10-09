@@ -979,12 +979,8 @@ mod tests {
         pool.init::<PrewarmEvmState>(|_| context.evm_for_ctx());
 
         pool.install_fn(|| {
-            let failed_action = StorageAction::Sstore(
-                Address::random(),
-                U256::from(1),
-                U256::from(2),
-                U256::from(3),
-            );
+            let failed_action =
+                StorageAction::Sstore(Address::random(), U256::ONE, U256::from(2), U256::from(3));
             WorkerPool::with_worker_mut(|worker| {
                 let evm = worker
                     .get_mut::<PrewarmEvmState>()

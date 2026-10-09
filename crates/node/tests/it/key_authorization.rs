@@ -11,11 +11,7 @@ use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIP20};
 use tempo_primitives::{
     TempoTransaction, TempoTxEnvelope,
-    transaction::{
-        KeyAuthorization,
-        tempo_transaction::Call,
-        tt_signature::{PrimitiveSignature, TempoSignature},
-    },
+    transaction::{KeyAuthorization, tempo_transaction::Call, tt_signature::PrimitiveSignature},
 };
 
 /// Build a CREATE+KeyAuthorization tx with configurable priority fee.
@@ -58,11 +54,7 @@ fn build_create_key_auth_tx(
     };
 
     let tx_sig = signer.sign_hash_sync(&tx.signature_hash())?;
-    let envelope: TempoTxEnvelope = tx
-        .into_signed(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            tx_sig,
-        )))
-        .into();
+    let envelope: TempoTxEnvelope = tx.into_signed(tx_sig.into()).into();
 
     Ok(envelope.encoded_2718())
 }
@@ -99,10 +91,8 @@ async fn test_post_t1b_keyauth_oog_fixed() -> eyre::Result<()> {
         TEMPO_T1_BASE_FEE as u128,
     )?;
 
-    let _ = provider.send_raw_transaction(&encoded).await?;
-
-    // Block MUST be produced.
-    setup.node.advance_block().await?;
+    // Block MUST be produced, with the transaction.
+    setup.node.mine([encoded.clone().into()]).await?;
 
     // Fees burned.
     let balance_after = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)

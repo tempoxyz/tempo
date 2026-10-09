@@ -229,7 +229,10 @@ pub enum PolicyError {
 mod tests {
     use super::*;
     use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
-    use alloy::{primitives::Bytes, sol_types::SolCall};
+    use alloy::{
+        primitives::{Bytes, b256},
+        sol_types::SolCall,
+    };
 
     const BLOCK_TIMESTAMP: u64 = attestation::tests::BLOCK_TIMESTAMP;
 
@@ -269,15 +272,11 @@ mod tests {
         );
         assert_eq!(
             keccak256(NitroBatchAttestation::eip712_encode_type().as_bytes()),
-            B256::from(alloy::primitives::hex!(
-                "b6f39555cba9bf38842c669ea0c90bca6aad793881d75a0034e33352fbecb25e"
-            ))
+            b256!("b6f39555cba9bf38842c669ea0c90bca6aad793881d75a0034e33352fbecb25e")
         );
         assert_eq!(
             batch_commitment(42_431, &call()),
-            B256::from(alloy::primitives::hex!(
-                "1a703e80dd395e4720d1c88c877ed9f7d77c03052a985133b25cbf3e2b745b9d"
-            ))
+            b256!("1a703e80dd395e4720d1c88c877ed9f7d77c03052a985133b25cbf3e2b745b9d")
         );
     }
 
