@@ -204,7 +204,13 @@ impl Inner {
         // most one bounded step. A build that fails after this point has
         // still stepped the reservation. Give the builder only what remains
         // of the window when payload construction is requested.
-        let proposal_budget = self.estimator.start_proposal(window_opened);
+        // The peers' proposal timeout started before the preparation above,
+        // so a long one shortens the window: it closes no later than one
+        // target block time after the proposal started.
+        let proposal_budget = self
+            .estimator
+            .start_proposal(window_opened)
+            .after_preparation(window_opened.saturating_duration_since(propose_start));
         let build_budget = proposal_budget
             .return_budget
             .saturating_sub(window_opened.elapsed());
@@ -238,23 +244,6 @@ impl Inner {
                 "executor dropped the payload channel: the build failed (the \
                 executor logs the cause) or the executor shut down",
             )?;
-
-        // If this node also proposed the parent, the start of this build
-        // (`epoch_millis`, the header timestamp) is what the chain waited for
-        // and completes that proposal's network sample; the estimator ignores
-        // parents this node did not propose. Children built by other leaders
-        // reach the estimator through `verify()`, which consensus does not
-        // run for a node's own proposal. Under deferred verification such a
-        // sample contains no execution (peers notarize on receipt and the
-        // parent is already executed here), so it lands near the floor and
-        // the window percentile discards it. This runs only once the payload
-        // is built, so a failed build never becomes a sample.
-        self.estimator.on_child_block_built(
-            Instant::now(),
-            (round.epoch().get(), parent_view.get()),
-            round.view().get(),
-            epoch_millis,
-        );
 
         let payload_build_elapsed = payload_build_start.elapsed();
         let payload_validation_work_elapsed = payload.validation_work_duration();
@@ -309,6 +298,7 @@ impl Inner {
         // two late, and dropping them would drop nearly every sample taken
         // while the pool is dry.
         let returned_at = Instant::now();
+        let returned_unix_ms = runtime.current().epoch_millis();
         if overran {
             debug!(
                 proposal.digest = %proposal.digest(),
@@ -319,6 +309,7 @@ impl Inner {
             self.estimator.on_proposal_returned(
                 returned_at,
                 window_opened_unix_ms,
+                returned_unix_ms,
                 (round.epoch().get(), round.view().get()),
                 proposal_budget.return_budget,
             );
@@ -628,7 +619,7 @@ where
         // Only a boundary block carries a DKG outcome. Compare it after
         // `verify_block`: our outcome reads the parent's state, which the
         // engine has only once it has executed the block.
-        let accepted = match proposed_outcome {
+        match proposed_outcome {
             None => true,
             Some(outcome) => {
                 let (parent, ceremony) =
@@ -637,33 +628,7 @@ where
                     .await
                     .is_ok()
             }
-        };
-
-        // If this node proposed the parent, the child's timestamp is when the
-        // next leader could build on it: the network sample for that
-        // proposal. The sample completes immediately before the verdict, so
-        // an execution-valid child with a rejected DKG outcome, or a
-        // verification cancelled during the timestamp wait, never becomes a
-        // sample. The DKG check matters here because a boundary block built
-        // on one of our own proposals is in the same epoch as its parent:
-        // unlike the first block of the next epoch, it does match the
-        // pending proposal. The header check above ensured that the parent
-        // view the child claims is the one consensus handed us for this
-        // round.
-        if accepted {
-            let now = Instant::now();
-            if let Some(ctx) = block.header().consensus_context {
-                self.estimator.on_child_block_built(
-                    now,
-                    (ctx.epoch, ctx.parent_view),
-                    ctx.view,
-                    block.timestamp_millis(),
-                );
-            }
-            self.metrics
-                .observe_estimator(&self.estimator.snapshot(now));
         }
-        accepted
     }
 }
 
@@ -671,7 +636,24 @@ impl Reporter for Inner {
     type Activity = Update<Block>;
 
     fn report(&mut self, update: Self::Activity) -> Feedback {
-        if let Update::Block(_, ack) = update {
+        if let Update::Block(block, ack) = update {
+            // If this node proposed the parent, the finalized child's
+            // timestamp completes that proposal's network sample; the
+            // estimator ignores parents this node did not propose. Taking it
+            // from finalized blocks makes the child that counts the canonical
+            // one, never one that was verified but not certified, and covers
+            // this node's own children as well as other leaders'.
+            if let Some(ctx) = block.header().consensus_context {
+                let now = Instant::now();
+                self.estimator.on_child_block_built(
+                    now,
+                    (ctx.epoch, ctx.parent_view),
+                    ctx.view,
+                    block.timestamp_millis(),
+                );
+                self.metrics
+                    .observe_estimator(&self.estimator.snapshot(now));
+            }
             ack.acknowledge();
         }
         Feedback::Ok

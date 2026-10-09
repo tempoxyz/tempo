@@ -580,18 +580,32 @@ impl Estimator {
     /// `child_timestamp_ms - window_opened_unix_ms - return_budget`, which is
     /// this node's own block time minus its return budget. A proposal that
     /// [overran](ProposalBudget::overran) its return budget must not be
-    /// recorded at all. `window_opened_unix_ms` must come from the same clock
-    /// that block header timestamps use.
+    /// recorded at all.
+    ///
+    /// `returned_unix_ms` is when the proposal left this node. No honest
+    /// successor can stamp a child before it, so a child stamped earlier
+    /// takes no sample, see [`Self::on_child_block_built`].
+    ///
+    /// Both timestamps must come from the same clock that block header
+    /// timestamps use.
     pub fn on_proposal_returned(
         &self,
         now: Instant,
         window_opened_unix_ms: u64,
+        returned_unix_ms: u64,
         key: ProposalKey,
         return_budget: Duration,
     ) {
-        self.state()
-            .network
-            .proposal_returned(now, window_opened_unix_ms, key, return_budget);
+        self.state().network.proposal_returned(
+            now,
+            PendingProposal {
+                key,
+                returned_at: now,
+                window_opened_unix_ms,
+                returned_unix_ms,
+                return_budget,
+            },
+        );
     }
 
     /// Records the header timestamp of a block built on top of `parent`,
@@ -600,12 +614,14 @@ impl Estimator {
     ///
     /// `parent` is the child's `(epoch, parent_view)` from its consensus
     /// context. Only proposals this node returned itself produce a sample;
-    /// other parents are ignored, so this can be fed every block the node
-    /// verifies or builds, and it must be fed the node's own builds too,
-    /// since consensus does not run `verify()` for a node's own proposal.
-    /// Feed it only children that passed every check before the vote, so
-    /// that an invalid child, a rejected boundary outcome or a failed build
-    /// never becomes a sample.
+    /// other parents are ignored, so this can be fed every finalized block,
+    /// the node's own included. Feed it finalized blocks only: a pending
+    /// proposal completes with the first child reported for it, so a child
+    /// that was verified but never certified, for example one of two blocks
+    /// an equivocating successor sent, must not be the one that takes the
+    /// sample. Only the timestamps decide the sample, so the finalization
+    /// lag does not change it; it only has to stay within the pending
+    /// proposal's 10 s.
     ///
     /// No sample is taken for a child that:
     ///
@@ -618,8 +634,19 @@ impl Estimator {
     /// - is the first block of an epoch, which names the re-proposed boundary
     ///   block by its view in the new epoch and so matches no pending
     ///   proposal;
+    /// - was stamped before the parent left this node, which no honest
+    ///   successor can do: it is clock skew or a backdated timestamp;
     /// - was stamped more than 5 s after the parent's window closed, which is
     ///   clock skew or a stall unrelated to propagation.
+    ///
+    /// A successor still chooses its header timestamp, anywhere from this
+    /// node's return to when it really started building, so a byzantine one
+    /// can report a faster network than there was, but only for the one
+    /// sample it is the successor of. With fewer than a third of the
+    /// validators byzantine they follow fewer than a third of this node's
+    /// proposals on average, which keeps the window's 75th percentile at
+    /// about the 62nd percentile of the honest samples or above, and the
+    /// reservation never drops below the configured network budget.
     ///
     /// The sample moves the target of the network reservation; the
     /// reservation itself only follows it with the next own proposal, see
@@ -786,9 +813,10 @@ pub struct ProposalBudget {
     /// until the next leader stamps the header of the block built on top of
     /// this one.
     pub network_reserve: Duration,
-    /// Local proposal return budget: `target_block_time - network_reserve`,
-    /// counted from when the proposal window opens, the clock reading the
-    /// header timestamp is taken from.
+    /// Local proposal return budget, counted from when the proposal window
+    /// opens, the clock reading the header timestamp is taken from:
+    /// `target_block_time - network_reserve`, or less after a long
+    /// preparation, see [`Self::after_preparation`].
     pub return_budget: Duration,
     /// How far the proposal may run past `return_budget` and still take a
     /// network sample, see [`EstimatorConfig::return_budget_overrun_tolerance`].
@@ -811,6 +839,24 @@ impl ProposalBudget {
     /// take a network sample.
     pub fn with_overrun_tolerance(mut self, overrun_tolerance: Duration) -> Self {
         self.overrun_tolerance = overrun_tolerance;
+        self
+    }
+
+    /// The budget of a proposal whose window opened `preparation` after the
+    /// proposal started.
+    ///
+    /// The window opens at the header stamp, so preparation before it is
+    /// not charged against the return budget: it belongs to the previous
+    /// block's interval. That must not delay the proposal without bound,
+    /// though, since the peers' proposal timeout started when they entered
+    /// the view, before any of it. So the window closes no later than one
+    /// target block time after the proposal started: a preparation longer
+    /// than the network reservation shortens the return budget to what is
+    /// left of the target, and one longer than the target leaves none.
+    pub fn after_preparation(mut self, preparation: Duration) -> Self {
+        self.return_budget = self
+            .return_budget
+            .min(self.target_block_time.saturating_sub(preparation));
         self
     }
 
@@ -1301,6 +1347,10 @@ impl BoundedFollower {
 ///   the first block of an epoch refers to the re-proposed boundary block by
 ///   its view in the new epoch, so it never matches. That is intended: the
 ///   gap spans the epoch transition.
+/// - A child stamped before the proposal left this node, which no honest
+///   successor can do: it is clock skew or a backdated timestamp. What a
+///   byzantine successor can still do within the plausible range is bounded
+///   in the [`Estimator::on_child_block_built`] docs.
 /// - A child more than [`MAX_NETWORK_SAMPLE`] after the window closed, which
 ///   is clock skew or a stall unrelated to propagation.
 /// - A proposal that overran its return budget by more than the configured
@@ -1369,24 +1419,13 @@ impl NetworkTracker {
         });
     }
 
-    fn proposal_returned(
-        &mut self,
-        now: Instant,
-        window_opened_unix_ms: u64,
-        key: ProposalKey,
-        return_budget: Duration,
-    ) {
+    fn proposal_returned(&mut self, now: Instant, proposal: PendingProposal) {
         self.prune(now);
-        self.pending.retain(|pending| pending.key != key);
+        self.pending.retain(|pending| pending.key != proposal.key);
         if self.pending.len() == MAX_PENDING_PROPOSALS {
             self.pending.pop_front();
         }
-        self.pending.push_back(PendingProposal {
-            key,
-            returned_at: now,
-            window_opened_unix_ms,
-            return_budget,
-        });
+        self.pending.push_back(proposal);
     }
 
     /// Completes a pending proposal with the header timestamp of the block
@@ -1409,6 +1448,9 @@ impl NetworkTracker {
             .position(|pending| pending.key == parent)?;
         let pending = self.pending.remove(index)?;
         if child_view != parent.1.saturating_add(1) {
+            return None;
+        }
+        if child_timestamp_ms < pending.returned_unix_ms {
             return None;
         }
         let network =
@@ -1476,6 +1518,8 @@ struct PendingProposal {
     /// Wall-clock time the proposal window opened, on the same clock the
     /// child block's header timestamp is taken from.
     window_opened_unix_ms: u64,
+    /// Wall-clock time the proposal left this node, on the same clock.
+    returned_unix_ms: u64,
     /// The window the proposal used; the chain's wait after it closed is
     /// the sample.
     return_budget: Duration,
@@ -1533,7 +1577,7 @@ mod tests {
         let returned = start + Duration::from_secs(view);
         let closed_ms = 1_800_000_000_000 + view * 1000;
         // A window that opens as it closes: only the gap after it counts.
-        estimator.on_proposal_returned(returned, closed_ms, (0, view), Duration::ZERO);
+        estimator.on_proposal_returned(returned, closed_ms, closed_ms, (0, view), Duration::ZERO);
         let built = returned + network;
         estimator.on_child_block_built(
             built,
@@ -1693,7 +1737,7 @@ mod tests {
         let estimator = Estimator::new(EstimatorConfig::fixed(ms(300), ms(50))).unwrap();
         let now = Instant::now();
         let built = now + ms(400);
-        estimator.on_proposal_returned(now, 1_000_000, (0, 1), Duration::ZERO);
+        estimator.on_proposal_returned(now, 1_000_000, 1_000_000, (0, 1), Duration::ZERO);
         estimator.on_child_block_built(built, (0, 1), 2, 1_000_400);
         assert_eq!(estimator.snapshot(built).network_samples, 1);
         // The next own proposal keeps the pinned window although the sample
@@ -1701,6 +1745,22 @@ mod tests {
         let budget = estimator.start_proposal(built);
         assert_eq!(budget.return_budget, ms(300));
         assert_eq!(budget.network_reserve, ms(50));
+    }
+
+    #[test]
+    fn proposal_budget_closes_within_one_target_of_the_proposal_start() {
+        let budget = ProposalBudget::new(ms(550), ms(150));
+        // Preparation up to the network reservation is not charged.
+        assert_eq!(budget.after_preparation(Duration::ZERO), budget);
+        assert_eq!(budget.after_preparation(ms(150)).return_budget, ms(400));
+        // Beyond it the window closes one target after the proposal started.
+        let late = budget.after_preparation(ms(400));
+        assert_eq!(late.return_budget, ms(150));
+        assert_eq!(late.network_reserve, ms(150));
+        assert_eq!(
+            budget.after_preparation(ms(800)).return_budget,
+            Duration::ZERO
+        );
     }
 
     #[test]
@@ -2140,6 +2200,7 @@ mod tests {
             estimator.on_proposal_returned(
                 opened + ms(260),
                 opened_ms,
+                opened_ms + 260,
                 (0, view),
                 budget.return_budget,
             );
@@ -2174,7 +2235,7 @@ mod tests {
         // Faster than the floor: the next own proposal, the first of the
         // loop below, stays at the floor.
         assert_eq!(reserve_at(&estimator, now), ms(50));
-        estimator.on_proposal_returned(now, base_ms, (0, 1), return_budget);
+        estimator.on_proposal_returned(now, base_ms, base_ms, (0, 1), return_budget);
         estimator.on_child_block_built(now + ms(210), (0, 1), 2, base_ms + 210);
 
         // Slower than the cap: the reservation climbs to the cap one step per
@@ -2184,7 +2245,13 @@ mod tests {
             let returned = now + ms(view * 1000);
             let returned_ms = base_ms + view * 1000;
             reserves.push(reserve_at(&estimator, returned));
-            estimator.on_proposal_returned(returned, returned_ms, (0, view), return_budget);
+            estimator.on_proposal_returned(
+                returned,
+                returned_ms,
+                returned_ms,
+                (0, view),
+                return_budget,
+            );
             estimator.on_child_block_built(
                 returned + ms(700),
                 (0, view),
@@ -2206,7 +2273,7 @@ mod tests {
         // as here where view 10 extends view 8.
         let orphan = now + ms(10_000);
         let orphan_ms = base_ms + 10_000;
-        estimator.on_proposal_returned(orphan, orphan_ms, (0, 9), return_budget);
+        estimator.on_proposal_returned(orphan, orphan_ms, orphan_ms, (0, 9), return_budget);
         estimator.on_child_block_built(orphan + ms(300), (0, 8), 10, orphan_ms + 300);
         let snapshot = estimator.snapshot(orphan + ms(300));
         assert_eq!(snapshot.network_samples, 6);
@@ -2216,7 +2283,7 @@ mod tests {
         // `PENDING_PROPOSAL_TTL` later drops it.
         let next = orphan + PENDING_PROPOSAL_TTL + ms(1);
         let next_ms = orphan_ms + PENDING_PROPOSAL_TTL.as_millis() as u64 + 1;
-        estimator.on_proposal_returned(next, next_ms, (0, 11), return_budget);
+        estimator.on_proposal_returned(next, next_ms, next_ms, (0, 11), return_budget);
         let snapshot = estimator.snapshot(next);
         assert_eq!(snapshot.network_samples, 6);
         assert_eq!(
@@ -2233,16 +2300,43 @@ mod tests {
         assert_eq!(snapshot.pending_proposals, 0);
 
         // Nor an implausibly late child, which is clock skew or a stall.
-        estimator.on_proposal_returned(now + ms(30_000), base_ms + 30_000, (0, 14), return_budget);
+        estimator.on_proposal_returned(
+            now + ms(30_000),
+            base_ms + 30_000,
+            base_ms + 30_000,
+            (0, 14),
+            return_budget,
+        );
         estimator.on_child_block_built(now + ms(36_000), (0, 14), 15, base_ms + 36_000);
         assert_eq!(estimator.snapshot(now + ms(36_000)).network_samples, 6);
 
-        // Clock skew that puts the child before the window closed, here even
-        // before it opened, counts as zero network time rather than being
-        // dropped.
-        estimator.on_proposal_returned(now + ms(40_000), base_ms + 40_000, (0, 16), return_budget);
-        estimator.on_child_block_built(now + ms(40_100), (0, 16), 17, base_ms + 39_990);
-        assert_eq!(estimator.snapshot(now + ms(40_100)).network_samples, 7);
+        // Nor a child stamped before the proposal left this node, which no
+        // honest successor can do: clock skew or a backdated timestamp, such
+        // as one just after the parent's own header.
+        estimator.on_proposal_returned(
+            now + ms(40_000),
+            base_ms + 39_800,
+            base_ms + 40_000,
+            (0, 16),
+            return_budget,
+        );
+        estimator.on_child_block_built(now + ms(40_100), (0, 16), 17, base_ms + 39_801);
+        let snapshot = estimator.snapshot(now + ms(40_100));
+        assert_eq!(snapshot.network_samples, 6);
+        assert_eq!(snapshot.pending_proposals, 0);
+
+        // A child stamped after the return but before the window closed
+        // counts as zero network time: the chain was faster than what the
+        // window left for it.
+        estimator.on_proposal_returned(
+            now + ms(50_000),
+            base_ms + 50_000,
+            base_ms + 50_000,
+            (0, 18),
+            return_budget,
+        );
+        estimator.on_child_block_built(now + ms(50_100), (0, 18), 19, base_ms + 50_100);
+        assert_eq!(estimator.snapshot(now + ms(50_100)).network_samples, 7);
     }
 
     #[test]
@@ -2257,7 +2351,7 @@ mod tests {
         // sample, which is taken at `now`.
         let learned = || {
             let estimator = Estimator::new(config()).unwrap();
-            estimator.on_proposal_returned(now, base_ms, (0, 1), return_budget);
+            estimator.on_proposal_returned(now, base_ms, base_ms, (0, 1), return_budget);
             estimator.on_child_block_built(now, (0, 1), 2, base_ms + 250);
             assert_eq!(reserve_at(&estimator, now), ms(150));
             assert_eq!(reserve_at(&estimator, now), ms(250));
@@ -2281,7 +2375,7 @@ mod tests {
         let estimator = learned();
         let later = now + NETWORK_SAMPLE_TTL + ms(1000);
         let later_ms = base_ms + NETWORK_SAMPLE_TTL.as_millis() as u64 + 1000;
-        estimator.on_proposal_returned(later, later_ms, (0, 2), return_budget);
+        estimator.on_proposal_returned(later, later_ms, later_ms, (0, 2), return_budget);
         estimator.on_child_block_built(later + ms(40), (0, 2), 3, later_ms + 40);
         let snapshot = estimator.snapshot(later + ms(40));
         assert_eq!(snapshot.network_samples, 1);
@@ -2709,7 +2803,10 @@ mod tests {
             // The view starts now; the window opens at the header stamp.
             self.now += self.preparation;
             let header_ms = self.unix_ms();
-            let budget = self.estimator.start_proposal(self.now);
+            let budget = self
+                .estimator
+                .start_proposal(self.now)
+                .after_preparation(self.preparation);
             // The builder's stop decision reserves the projected finish and
             // the validators' replay, the latter capped at the builder's own
             // projected work.
@@ -2738,8 +2835,13 @@ mod tests {
                 .saturating_sub(validation);
             self.now += return_delay;
             if !budget.overran(build.total_work + return_delay) {
-                self.estimator
-                    .on_proposal_returned(self.now, header_ms, key, budget.return_budget);
+                self.estimator.on_proposal_returned(
+                    self.now,
+                    header_ms,
+                    self.unix_ms(),
+                    key,
+                    budget.return_budget,
+                );
             }
 
             // The next leader stamps its header once a quorum has replayed

@@ -3,9 +3,9 @@
 //! The harness pins every node's network reservation
 //! (`EstimatorConfig::fixed`), but completed own proposals are still pushed
 //! into the window as network samples, so counting them shows that the hooks
-//! ran: `build()` records each own proposal's return and completes the sample
-//! when the node builds the child itself, and `verify()` completes it when
-//! another leader built the child.
+//! ran: `build()` records each own proposal's return, and the finalized child
+//! completes the sample, whether the node built that child itself or another
+//! leader did.
 
 use std::time::{Duration, Instant};
 
@@ -48,13 +48,13 @@ fn every_node_completes_a_network_sample(signers: u32) {
 #[test_traced]
 fn a_lone_signer_samples_the_children_it_builds() {
     // A lone signer leads every view, so the child of each of its proposals
-    // is its own next build: the sample completes in `build()`.
+    // is its own next build.
     every_node_completes_a_network_sample(1);
 }
 
 #[test_traced]
-fn signers_sample_the_children_they_verify() {
+fn signers_sample_the_children_other_leaders_build() {
     // With four signers the child of a node's proposal usually comes from
-    // another leader, so the sample completes in `verify()`.
+    // another leader.
     every_node_completes_a_network_sample(4);
 }
