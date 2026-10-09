@@ -29,7 +29,7 @@ use commonware_parallel::Strategy;
 use commonware_runtime::{BufferPooler, Clock, Metrics, ReadOptions, buffer::paged::CacheRef};
 use commonware_storage::{journal::segmented, metadata};
 use commonware_utils::{N3f1, NZU16, NZU32, NZUsize, futures::rebind, ordered};
-use eyre::{OptionExt, WrapErr as _, bail};
+use eyre::{OptionExt, WrapErr as _, bail, ensure};
 use tempo_primitives::TempoHeader;
 use tracing::{debug, info, instrument, warn};
 
@@ -954,9 +954,10 @@ impl Dealer {
     where
         TContext: BufferPooler + commonware_runtime::Storage + Clock + Metrics,
     {
-        if !self.unsent.contains_key(&player) {
-            bail!("already received an ack from `{player}`");
-        }
+        ensure!(
+            self.unsent.contains_key(&player),
+            "already received an ack from `{player}`"
+        );
         let Some(dealer) = &mut self.dealer else {
             bail!("dealer was already finalized, dropping ack of player `{player}`");
         };

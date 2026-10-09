@@ -737,9 +737,7 @@ fn read_generated_validator_config_v2_storage(
                 slot.clone(),
                 value
                     .as_str()
-                    .ok_or_else(|| {
-                        eyre!("generated ValidatorConfigV2 storage value is not a string")
-                    })?
+                    .ok_or_eyre("generated ValidatorConfigV2 storage value is not a string")?
                     .to_string(),
             ))
         })
@@ -905,7 +903,7 @@ where
         })?;
     let highest_header = static_file_provider
         .get_highest_static_file_block(StaticFileSegment::Headers)
-        .ok_or_else(|| eyre!("execution static files contain no headers"))?;
+        .ok_or_eyre("execution static files contain no headers")?;
     ensure!(
         highest_header == block_number,
         "shadow fork bootstrap can only patch a local execution datadir whose tip is the fork block. static files tip is `{highest_header}`, expected `{block_number}`. Stop the source node at the fork block or rerun generate-shadowfork against this datadir before bootstrapping.",

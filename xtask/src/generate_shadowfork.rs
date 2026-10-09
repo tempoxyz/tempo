@@ -368,9 +368,7 @@ fn extract_validator_config_v2_storage(
                 slot.clone(),
                 value
                     .as_str()
-                    .ok_or_else(|| {
-                        eyre!("generated ValidatorConfigV2 storage value is not a string")
-                    })?
+                    .ok_or_eyre("generated ValidatorConfigV2 storage value is not a string")?
                     .to_string(),
             ))
         })
@@ -429,7 +427,7 @@ impl BlockTarget {
                 })?;
         let highest_header = static_file_provider
             .get_highest_static_file_block(StaticFileSegment::Headers)
-            .ok_or_else(|| eyre!("execution static files contain no headers"))?;
+            .ok_or_eyre("execution static files contain no headers")?;
 
         let block_number = match self {
             Self::Latest => highest_header,

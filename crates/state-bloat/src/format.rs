@@ -3,7 +3,7 @@
 use std::io::Read;
 
 use alloy_primitives::{Address, B256, U256};
-use eyre::{Context as _, ensure};
+use eyre::{Context as _, OptionExt, ensure};
 
 /// Visit every storage entry without buffering an entire dump.
 ///
@@ -18,9 +18,7 @@ pub fn read_dump(
         for _ in 0..pairs {
             let (slot, value) = read_entry(&mut reader)?;
             visit(address, slot, value)?;
-            count = count
-                .checked_add(1)
-                .ok_or_else(|| eyre::eyre!("entry count overflow"))?;
+            count = count.checked_add(1).ok_or_eyre("entry count overflow")?;
         }
     }
     ensure!(count > 0, "empty state dump");

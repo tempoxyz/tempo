@@ -247,7 +247,7 @@ where
 
         height = height
             .checked_add(1)
-            .ok_or_else(|| eyre!("tip finalization height cannot exceed u64::MAX"))?;
+            .ok_or_eyre("tip finalization height cannot exceed u64::MAX")?;
     }
 
     Ok(())
@@ -299,7 +299,7 @@ where
 {
     let tip_height = finalizations
         .last_index()
-        .ok_or_else(|| eyre!("no finalization certificates found"))?;
+        .ok_or_eyre("no finalization certificates found")?;
     let tip_finalization = finalizations
         .get(Identifier::Index(tip_height))
         .await

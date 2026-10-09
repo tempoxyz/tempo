@@ -85,9 +85,10 @@ pub fn deploy_permit2(evm: &mut GenesisEvm) -> eyre::Result<()> {
 
     let result =
         evm.transact_system_call(Address::ZERO, ARACHNID_CREATE2_FACTORY_ADDRESS, calldata)?;
-    if !result.result.is_success() {
-        eyre::bail!("Permit2 deployment failed: {result:?}");
-    }
+    eyre::ensure!(
+        result.result.is_success(),
+        "Permit2 deployment failed: {result:?}"
+    );
     evm.db_mut().commit(result.state);
 
     println!("Permit2 deployed successfully at {PERMIT2_ADDRESS}");

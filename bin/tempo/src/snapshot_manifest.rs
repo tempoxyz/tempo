@@ -399,7 +399,7 @@ fn output_files_size(output_files: &[OutputFileChecksum]) -> eyre::Result<u64> {
     for output_file in output_files {
         size = size
             .checked_add(output_file.size)
-            .ok_or_else(|| eyre::eyre!("consensus archive plain-output size exceeds u64::MAX"))?;
+            .ok_or_eyre("consensus archive plain-output size exceeds u64::MAX")?;
     }
     Ok(size)
 }

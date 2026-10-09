@@ -16,7 +16,7 @@ use commonware_cryptography::{
 };
 use commonware_math::algebra::Random as _;
 use commonware_utils::{N3f1, TryFromIterator as _, ordered};
-use eyre::{WrapErr as _, eyre};
+use eyre::{WrapErr as _, ensure, eyre};
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 use itertools::Itertools;
 use rand::SeedableRng as _;
@@ -321,11 +321,10 @@ impl GenesisArgs {
                 (None, None, None)
             };
 
-        if self.deployment_gas_token && self.deployment_gas_token_admin.is_none() {
-            eyre::bail!(
-                "--deployment-gas-token-admin is required when --deployment-gas-token is set"
-            );
-        }
+        ensure!(
+            !self.deployment_gas_token || self.deployment_gas_token_admin.is_some(),
+            "--deployment-gas-token-admin is required when --deployment-gas-token is set"
+        );
 
         let deployment_gas_token = {
             if self.deployment_gas_token {

@@ -10,7 +10,7 @@ use alloy::{
     providers::ProviderBuilder,
     signers::local::MnemonicBuilder,
 };
-use eyre::Context;
+use eyre::{Context, OptionExt};
 use rand_distr::{Distribution, Exp, Zipf};
 use reqwest::Url;
 use tempo_precompiles::{TIP_FEE_MANAGER_ADDRESS, tip_fee_manager::IFeeManager, tip20::ITIP20};
@@ -127,7 +127,5 @@ fn zipf_vec_sample<'a, T>(
     items: &'a [T],
 ) -> eyre::Result<&'a T> {
     let index = zipf.sample(rng) as u32 - 1;
-    items
-        .get(index as usize)
-        .ok_or_else(|| eyre::eyre!("zipf out of bounds"))
+    items.get(index as usize).ok_or_eyre("zipf out of bounds")
 }

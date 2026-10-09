@@ -132,11 +132,10 @@ impl ShadowReplay {
                 "Skipped blocks where the candidate hardfork was already canonical"
             );
         }
-        if self.fail_on_findings && (findings > 0 || inconclusive > 0) {
-            eyre::bail!(
-                "historical shadow replay needs review: {findings} blocks with unexplained differences, {inconclusive} inconclusive blocks"
-            );
-        }
+        ensure!(
+            !self.fail_on_findings || findings == 0 && inconclusive == 0,
+            "historical shadow replay needs review: {findings} blocks with unexplained differences, {inconclusive} inconclusive blocks"
+        );
         Ok(())
     }
 }
