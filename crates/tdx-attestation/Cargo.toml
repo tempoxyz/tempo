@@ -1,0 +1,22 @@
+[package]
+name = "tempo-tdx-attestation"
+description = "Bounded offline Intel TDX evidence verification for experimental Zone devnets"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+alloy-primitives = { workspace = true, features = ["serde"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["std"] }
+thiserror.workspace = true
+dcap-qvl = { version = "=0.6.5", default-features = false, features = ["std", "rustcrypto", "default-x509"] }
+parity-scale-codec = { version = "3.7.5", default-features = false }
+
+[features]
+# Collateral collection belongs to off-chain clients, never validator execution.
+client = ["dcap-qvl/report"]

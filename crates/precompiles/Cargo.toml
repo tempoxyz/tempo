@@ -30,6 +30,7 @@ keccak-const.workspace = true
 revm.workspace = true
 paste.workspace = true
 bitflags.workspace = true
+tempo-tdx-attestation = { workspace = true, optional = true }
 tempo-nitro-attestation = { workspace = true, features = ["aws-lc"] }
 
 commonware-cryptography.workspace = true
@@ -95,6 +96,8 @@ serde = [
 ]
 # Devnet-only: allow `ZoneVerifier::verify` to use PCRs supplied at startup.
 custom-pcrs = []
+# Experimental verifier activation and measurements supplied identically to every devnet validator.
+custom-tdx = ["dep:tempo-tdx-attestation"]
 
 [[test]]
 name = "storage"

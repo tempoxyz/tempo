@@ -539,6 +539,21 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                 .map_err(|_| eyre::eyre!("zone verifier PCRs were already set"))?;
         }
 
+        #[cfg(feature = "custom-tdx")]
+        if let Some(path) = &args.tdx_policy {
+            let bytes = std::fs::read(path)?;
+            eyre::ensure!(bytes.len() <= 64 * 1024, "TDX policy file too large");
+            let measurements: tempo_tdx_attestation::Policy = serde_json::from_slice(&bytes)?;
+            let policy = tempo_precompiles::zone_verifier::tdx::DevPolicy {
+                activation: args.tdx_activation,
+                measurements,
+            };
+            policy.validate(chain_id).map_err(eyre::Report::msg)?;
+            warn!(?policy.activation, "enabling experimental TDX Zone settlement on a development chain");
+            tempo_precompiles::zone_verifier::tdx::CUSTOM_TDX.set(policy)
+                .map_err(|_| eyre::eyre!("TDX verifier policy was already configured"))?;
+        }
+
         // Resolve the bootnodes endpoint:
         // --tempo.bootnodes-endpoint=none -> disabled
         // otherwise -> use the provided/default URL
