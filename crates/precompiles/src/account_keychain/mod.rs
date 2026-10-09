@@ -1493,10 +1493,26 @@ impl AccountKeychain {
         // Legacy pre-T3 rows only persisted `remaining`, so migrated keys deserialize with
         // `max = 0`. Preserve that legacy behavior and only clamp rows that were configured
         // with a real T3 max.
-        limit_state.remaining = if limit_state.max == 0 {
-            refunded
-        } else {
+        //
+        // (+T13) A cap explicitly set to zero also stores `max = 0`, but unlike a migrated row
+        // it has nothing left to restore. A row that already read as zero is treated as a
+        // configured cap so a same-transaction refund cannot re-open a key that was just cut
+        // off; migrated rows still carry their pre-T3 `remaining` and stay unclamped.
+        let is_periodic = limit_state.period != 0;
+        let was_zero = limit_state.remaining.is_zero()
+            || (self.storage.spec().is_t7()
+                && is_periodic
+                && limit_state.remaining == ZERO_PERIODIC_REMAINING_SENTINEL);
+        limit_state.remaining = if limit_state.max != 0 {
             refunded.min(U256::from(limit_state.max))
+        } else if self.storage.spec().is_t13() && was_zero {
+            if self.storage.spec().is_t7() && is_periodic {
+                ZERO_PERIODIC_REMAINING_SENTINEL
+            } else {
+                U256::ZERO
+            }
+        } else {
+            refunded
         };
 
         self.spending_limits[limit_key][token].write(limit_state)
@@ -4160,6 +4176,119 @@ mod tests {
             assert_eq!(
                 after_refund, original_limit,
                 "refund should not restore more than the configured max"
+            );
+
+            Ok(())
+        })
+    }
+
+    /// A limit an admin explicitly set to zero stores `max = 0` like a migrated pre-T3 row.
+    /// Before T13 the refund path treats both alike and a same-transaction refund re-opens the
+    /// key; from T13 the zeroed cap holds.
+    #[test]
+    fn test_refund_spending_limit_keeps_explicit_zero_cap_from_t13() -> eyre::Result<()> {
+        for (spec, expected) in [
+            (TempoHardfork::T12, U256::from(50)),
+            (TempoHardfork::T13, U256::ZERO),
+        ] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            let eoa = Address::random();
+            let access_key = Address::random();
+            let token = Address::random();
+
+            StorageCtx::enter(&mut storage, || {
+                let mut keychain = AccountKeychain::new();
+                keychain.initialize()?;
+                keychain.set_transaction_key(Address::ZERO)?;
+                keychain.set_tx_origin(eoa)?;
+
+                authorize_key(
+                    &mut keychain,
+                    eoa,
+                    authorizeKeyCall {
+                        keyId: access_key,
+                        signatureType: SignatureType::Secp256k1,
+                        config: KeyRestrictions {
+                            expiry: u64::MAX,
+                            enforceLimits: true,
+                            limits: vec![TokenLimit {
+                                token,
+                                amount: U256::from(1_000),
+                                period: 0,
+                            }],
+                            allowAnyCalls: true,
+                            allowedCalls: vec![],
+                        },
+                    },
+                )?;
+                keychain.update_spending_limit(
+                    eoa,
+                    updateSpendingLimitCall {
+                        keyId: access_key,
+                        token,
+                        newLimit: U256::ZERO,
+                    },
+                )?;
+
+                keychain.set_transaction_key(access_key)?;
+                keychain.set_tx_origin(eoa)?;
+                keychain.refund_spending_limit(eoa, token, U256::from(50))?;
+
+                let remaining = keychain.get_remaining_limit(getRemainingLimitCall {
+                    account: eoa,
+                    keyId: access_key,
+                    token,
+                })?;
+                assert_eq!(remaining, expected, "{spec:?}");
+
+                Ok::<(), TempoPrecompileError>(())
+            })?;
+        }
+
+        Ok(())
+    }
+
+    /// The T13 rule uses the periodic zero encoding so a zeroed periodic cap keeps its slot.
+    #[test]
+    fn test_t13_refund_spending_limit_keeps_zero_periodic_cap_encoded() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
+        storage.set_timestamp(U256::from(1_000));
+        let eoa = Address::random();
+        let access_key = Address::random();
+        let token = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            let limit_key = AccountKeychain::spending_limit_key(eoa, access_key);
+            keychain.keys[eoa][access_key].write(AuthorizedKey {
+                signature_type: StoredSignatureType::Secp256k1,
+                expiry: u64::MAX,
+                enforce_limits: true,
+                is_revoked: false,
+                is_admin: false,
+            })?;
+            keychain.spending_limits[limit_key][token].write(SpendingLimitState {
+                remaining: ZERO_PERIODIC_REMAINING_SENTINEL,
+                max: 0,
+                period: 3_600,
+                period_end: 4_600,
+            })?;
+
+            keychain.set_transaction_key(access_key)?;
+            keychain.set_tx_origin(eoa)?;
+            keychain.refund_spending_limit(eoa, token, U256::from(10))?;
+
+            let stored = keychain.spending_limits[limit_key][token].read()?;
+            assert_eq!(stored.remaining, ZERO_PERIODIC_REMAINING_SENTINEL);
+            assert_eq!(
+                keychain.get_remaining_limit(getRemainingLimitCall {
+                    account: eoa,
+                    keyId: access_key,
+                    token,
+                })?,
+                U256::ZERO
             );
 
             Ok(())
