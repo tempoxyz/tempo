@@ -402,7 +402,8 @@ impl EstimatorConfig {
     }
 
     /// Checks that the reservations leave room for a proposal and that the
-    /// learning knobs are in range.
+    /// learning knobs are in range. [`Estimator::new`] rejects a
+    /// configuration that fails this.
     pub fn validate(&self) -> Result<(), String> {
         if self.network_budget >= self.target_block_time {
             return Err(format!(
@@ -477,16 +478,15 @@ struct EstimatorInner {
     state: Mutex<State>,
 }
 
-impl Default for Estimator {
-    fn default() -> Self {
-        Self::new(EstimatorConfig::default())
-    }
-}
-
 impl Estimator {
-    /// Creates an estimator with no observations.
-    pub fn new(config: EstimatorConfig) -> Self {
-        Self {
+    /// Creates an estimator with no observations, or returns why `config` is
+    /// invalid, see [`EstimatorConfig::validate`].
+    ///
+    /// Only a valid configuration is accepted, so the estimator runs with
+    /// exactly the values [`Self::config`] reports; nothing adjusts them.
+    pub fn new(config: EstimatorConfig) -> Result<Self, String> {
+        config.validate()?;
+        Ok(Self {
             inner: Arc::new(EstimatorInner {
                 config,
                 state: Mutex::new(State {
@@ -495,10 +495,11 @@ impl Estimator {
                     network: NetworkTracker::new(&config),
                 }),
             }),
-        }
+        })
     }
 
-    /// The configuration this estimator was created with.
+    /// The configuration this estimator was created with, which passed
+    /// [`EstimatorConfig::validate`].
     pub fn config(&self) -> EstimatorConfig {
         self.inner.config
     }
@@ -738,10 +739,10 @@ impl Estimator {
 /// Converts a human-readable build-work multiplier into the fixed-point
 /// representation, within the range the multiplier is learned in.
 ///
-/// Configurations are validated before they reach this, see
-/// [`EstimatorConfig::validate`], so the mapping of values outside that
-/// range only guards an unvalidated multiplier: a non-finite one maps to
-/// 1.0, and the result is clamped to 1.0 to 1.7.
+/// An estimator's initial multiplier is validated when the estimator is
+/// created, see [`Estimator::new`], so values outside that range only reach
+/// this through [`BuildPlan::new`], which takes any multiplier: a non-finite
+/// one maps to 1.0, and the result is clamped to 1.0 to 1.7.
 fn scaled_build_time_multiplier(multiplier: f64) -> u64 {
     if !multiplier.is_finite() {
         return MIN_BUILD_TIME_MULTIPLIER_SCALED;
@@ -1090,9 +1091,8 @@ impl BuildTimeTracker {
     /// Starts at the configured initial multiplier and without a dry build
     /// finish.
     ///
-    /// [`scaled_build_time_multiplier`] keeps the multiplier within the range
-    /// it is learned in. That is defensive: [`EstimatorConfig::validate`]
-    /// rejects initial values outside it.
+    /// The multiplier comes from a validated configuration, so it is already
+    /// within the range it is learned in.
     fn new(initial_multiplier: f64) -> Self {
         Self {
             multiplier: BoundedFollower::new(
@@ -1339,16 +1339,18 @@ struct NetworkTracker {
 }
 
 impl NetworkTracker {
+    /// Starts with no samples and the reservation at the floor.
+    ///
+    /// `config` is validated, see [`Estimator::new`], so the floor is at most
+    /// the cap, which [`Self::target`] relies on, and the percentile is in
+    /// range.
     fn new(config: &EstimatorConfig) -> Self {
         Self {
             samples: SampleWindow::new(NETWORK_SAMPLE_WINDOW, NETWORK_SAMPLE_TTL),
             pending: VecDeque::with_capacity(MAX_PENDING_PROPOSALS),
             floor: config.network_budget,
-            cap: config.network_budget_max.max(config.network_budget),
-            percentile: config.network_reserve_percentile.clamp(
-                MIN_NETWORK_RESERVE_PERCENTILE,
-                MAX_NETWORK_RESERVE_PERCENTILE,
-            ),
+            cap: config.network_budget_max,
+            percentile: config.network_reserve_percentile,
             fast_rise: config.network_reserve_fast_rise,
             applied: config.network_budget,
         }
@@ -1662,18 +1664,33 @@ mod tests {
         let too_large = config().with_build_time_multiplier(2.0);
         let err = too_large.validate().unwrap_err();
         assert!(err.contains("at most 1.7"), "{err}");
-        // An estimator built from the unvalidated configuration anyway still
-        // stays within the range it learns in.
-        let estimator = Estimator::new(too_large);
-        assert_eq!(
-            permille(estimator.build_time_multiplier(Instant::now())),
-            1700
-        );
+        // The estimator refuses it rather than running at 1.7.
+        assert_eq!(Estimator::new(too_large).unwrap_err(), err);
+    }
+
+    #[test]
+    fn estimator_rejects_configurations_that_fail_validation() {
+        assert!(Estimator::new(config()).is_ok());
+        for invalid in [
+            // No proposal window would be left.
+            EstimatorConfig::new(ms(550), ms(550)),
+            EstimatorConfig::new(ms(550), ms(600)),
+            config().with_network_budget_max(ms(550)),
+            // A cap below the floor.
+            config().with_network_budget_max(ms(40)),
+            config().with_network_reserve_percentile(49),
+            config().with_network_reserve_percentile(101),
+            config().with_build_time_multiplier(0.9),
+            config().with_build_time_multiplier(f64::NAN),
+        ] {
+            let reason = invalid.validate().unwrap_err();
+            assert_eq!(Estimator::new(invalid).unwrap_err(), reason, "{invalid:?}");
+        }
     }
 
     #[test]
     fn fixed_config_pins_the_return_budget() {
-        let estimator = Estimator::new(EstimatorConfig::fixed(ms(300), ms(50)));
+        let estimator = Estimator::new(EstimatorConfig::fixed(ms(300), ms(50))).unwrap();
         let now = Instant::now();
         let built = now + ms(400);
         estimator.on_proposal_returned(now, 1_000_000, (0, 1), Duration::ZERO);
@@ -1708,18 +1725,20 @@ mod tests {
     fn the_overrun_tolerance_follows_the_configuration() {
         let now = Instant::now();
         // A configured tolerance reaches the budget of every own proposal.
-        let estimator = Estimator::new(config().with_return_budget_overrun_tolerance(ms(40)));
+        let estimator =
+            Estimator::new(config().with_return_budget_overrun_tolerance(ms(40))).unwrap();
         let budget = estimator.start_proposal(now);
         assert_eq!(budget.overrun_tolerance, ms(40));
         assert!(!budget.overran(budget.return_budget + ms(40)));
         assert!(budget.overran(budget.return_budget + ms(41)));
         // A fixed reservation records every proposal, however late.
-        let estimator = Estimator::new(EstimatorConfig::fixed(ms(300), ms(50)));
+        let estimator = Estimator::new(EstimatorConfig::fixed(ms(300), ms(50))).unwrap();
         let budget = estimator.start_proposal(now);
         assert!(!budget.overran(ms(300) + Duration::from_secs(10)));
         // The default is the builder's pacing precision.
         assert_eq!(
             Estimator::new(config())
+                .unwrap()
                 .start_proposal(now)
                 .overrun_tolerance,
             DEFAULT_RETURN_BUDGET_OVERRUN_TOLERANCE
@@ -1743,8 +1762,9 @@ mod tests {
     #[test]
     fn scaled_build_time_multiplier_stays_within_the_learned_range() {
         assert_eq!(scaled_build_time_multiplier(1.15), 1_150_000);
-        // Configurations are validated before they get here; an embedder's
-        // unvalidated value still maps into the range instead of panicking.
+        // An estimator's configuration is validated when it is created;
+        // `BuildPlan::new` takes any multiplier, which still maps into the
+        // range instead of panicking.
         for (multiplier, scaled) in [
             (f64::NAN, 1_000_000),
             (f64::INFINITY, 1_000_000),
@@ -1786,7 +1806,7 @@ mod tests {
 
     #[test]
     fn build_time_multiplier_rises_in_capped_steps_and_follows_the_window_down() {
-        let estimator = Estimator::new(config());
+        let estimator = Estimator::new(config()).unwrap();
         let now = Instant::now();
         assert!(
             (estimator.build_time_multiplier(now) - DEFAULT_BUILD_TIME_MULTIPLIER).abs() < 1e-9
@@ -1853,7 +1873,7 @@ mod tests {
 
     #[test]
     fn build_time_multiplier_rises_only_on_a_build_slower_than_itself() {
-        let estimator = Estimator::new(config());
+        let estimator = Estimator::new(config()).unwrap();
         let now = Instant::now();
         // One slow finish (ratio 1.7) into an empty window, then fast ones
         // (ratio 1.0). The window's p75 is the slow finish until the window
@@ -1872,7 +1892,7 @@ mod tests {
         // the outlier's one step, a build at 1.31 takes the multiplier to
         // 1.31 rather than a full step toward 1.70, and a fast build after
         // it leaves the multiplier there.
-        let estimator = Estimator::new(config());
+        let estimator = Estimator::new(config()).unwrap();
         let trace: Vec<u64> = [1700, 1000, 1310, 1000]
             .into_iter()
             .map(|ratio| finish_build(&estimator, now, ratio))
@@ -1882,7 +1902,7 @@ mod tests {
 
     #[test]
     fn build_time_multiplier_recovers_in_capped_steps() {
-        let estimator = Estimator::new(config());
+        let estimator = Estimator::new(config()).unwrap();
         let now = Instant::now();
         // Sixteen slow finishes (ratio 1.7) fill the window and take the
         // multiplier from 1.15 to its cap.
@@ -1907,7 +1927,7 @@ mod tests {
 
     #[test]
     fn build_time_multiplier_never_drops_below_one() {
-        let estimator = Estimator::new(config());
+        let estimator = Estimator::new(config()).unwrap();
         let now = Instant::now();
         estimator.on_build_finished(
             now,
@@ -1933,7 +1953,7 @@ mod tests {
     #[test]
     fn build_time_multiplier_returns_to_the_initial_value_without_builds() {
         let initial = 1.25;
-        let estimator = Estimator::new(config().with_build_time_multiplier(initial));
+        let estimator = Estimator::new(config().with_build_time_multiplier(initial)).unwrap();
         let now = Instant::now();
         // Three slow finishes (ratio 1.7) step the multiplier up to its cap.
         let trace: Vec<u64> = (0..3)
@@ -1964,7 +1984,7 @@ mod tests {
 
     #[test]
     fn build_time_multiplier_ignores_partial_expiry_until_the_next_build() {
-        let estimator = Estimator::new(config());
+        let estimator = Estimator::new(config()).unwrap();
         let now = Instant::now();
         // Four slow finishes (ratio 1.7) take the multiplier to its cap, and
         // four fast ones (ratio 1.05) half a minute later leave the window's
@@ -2007,7 +2027,7 @@ mod tests {
 
     #[test]
     fn dry_builds_leave_the_multiplier_to_the_busy_builds_after_them() {
-        let estimator = Estimator::new(config());
+        let estimator = Estimator::new(config()).unwrap();
         let now = Instant::now();
         // A quiet period fills the window with sixteen dry builds, each with
         // 1 ms of work before the cutoff and 1 ms after it: a ratio of 2.
@@ -2043,7 +2063,7 @@ mod tests {
 
     #[test]
     fn dry_builds_reserve_the_finish_of_earlier_dry_builds() {
-        let estimator = Estimator::new(config());
+        let estimator = Estimator::new(config()).unwrap();
         let now = Instant::now();
         let workload = ValidationLatencyWorkload::new(1_000_000, 10);
         assert_eq!(estimator.dry_build_finish(now), Duration::ZERO);
@@ -2080,7 +2100,7 @@ mod tests {
 
     #[test]
     fn dry_build_finish_takes_one_step_for_a_lone_slow_finish() {
-        let estimator = Estimator::new(config());
+        let estimator = Estimator::new(config()).unwrap();
         let now = Instant::now();
         // One dry finish waits 150 ms on a persistence commit while the
         // window is still sparse, so its p75 is the outlier. It raises the
@@ -2097,7 +2117,7 @@ mod tests {
 
     #[test]
     fn network_reserve_starts_at_the_floor_and_learns_from_own_proposals() {
-        let estimator = Estimator::new(config());
+        let estimator = Estimator::new(config()).unwrap();
         let now = Instant::now();
         let base_ms = 1_800_000_000_000u64;
 
@@ -2146,7 +2166,7 @@ mod tests {
 
     #[test]
     fn network_reserve_is_clamped_and_pending_proposals_expire() {
-        let estimator = Estimator::new(config());
+        let estimator = Estimator::new(config()).unwrap();
         let now = Instant::now();
         let base_ms = 1_800_000_000_000u64;
         // Every window opens at the return and closes 200 ms later.
@@ -2236,7 +2256,7 @@ mod tests {
         // the unix millisecond timestamps alone; the `Instant` only ages the
         // sample, which is taken at `now`.
         let learned = || {
-            let estimator = Estimator::new(config());
+            let estimator = Estimator::new(config()).unwrap();
             estimator.on_proposal_returned(now, base_ms, (0, 1), return_budget);
             estimator.on_child_block_built(now, (0, 1), 2, base_ms + 250);
             assert_eq!(reserve_at(&estimator, now), ms(150));
@@ -2282,7 +2302,8 @@ mod tests {
                 config()
                     .with_network_reserve_percentile(percentile)
                     .with_network_reserve_fast_rise(false),
-            );
+            )
+            .unwrap();
             let now = Instant::now();
             // Each proposal is started once, as `build()` does. All
             // percentiles of these samples lie within one step of each
@@ -2302,7 +2323,8 @@ mod tests {
     #[test]
     fn network_reserve_follows_a_sparse_window_one_step_per_proposal() {
         for fast_rise in [true, false] {
-            let estimator = Estimator::new(config().with_network_reserve_fast_rise(fast_rise));
+            let estimator =
+                Estimator::new(config().with_network_reserve_fast_rise(fast_rise)).unwrap();
             let now = Instant::now();
             // The reservation of the own proposal started `view` seconds
             // after `now`, once as `build()` does.
@@ -2354,7 +2376,8 @@ mod tests {
     #[test]
     fn network_reserve_climbs_one_step_per_proposal_when_good_samples_age_out() {
         for fast_rise in [true, false] {
-            let estimator = Estimator::new(config().with_network_reserve_fast_rise(fast_rise));
+            let estimator =
+                Estimator::new(config().with_network_reserve_fast_rise(fast_rise)).unwrap();
             let now = Instant::now();
             // Sixteen own proposals at 150 ms fill the window, each started
             // once as `build()` does, and the reservation settles at 150 ms.
@@ -2397,8 +2420,8 @@ mod tests {
 
     #[test]
     fn network_reserve_fast_rise_needs_two_slow_samples_in_a_row() {
-        let plain = Estimator::new(config().with_network_reserve_fast_rise(false));
-        let fast = Estimator::new(config().with_network_reserve_fast_rise(true));
+        let plain = Estimator::new(config().with_network_reserve_fast_rise(false)).unwrap();
+        let fast = Estimator::new(config().with_network_reserve_fast_rise(true)).unwrap();
         let now = Instant::now();
         // Own proposals start once each, when they return `view` seconds
         // after `now`.
@@ -2448,7 +2471,7 @@ mod tests {
 
     #[test]
     fn network_reserve_fast_rise_is_step_bounded_capped_and_expires_with_the_window() {
-        let estimator = Estimator::new(config().with_network_reserve_fast_rise(true));
+        let estimator = Estimator::new(config().with_network_reserve_fast_rise(true)).unwrap();
         let now = Instant::now();
         // The reservation of the own proposal started at `at`, once as
         // `build()` does.
@@ -2559,7 +2582,7 @@ mod tests {
 
     #[test]
     fn build_plan_carries_the_validation_estimate() {
-        let estimator = Estimator::new(config());
+        let estimator = Estimator::new(config()).unwrap();
         let workload = ValidationLatencyWorkload::new(1_000_000, 10);
         assert_eq!(
             estimator
@@ -2748,7 +2771,7 @@ mod tests {
         // proposer in one of four regions: three nearby, five in the other
         // regions close by, and two far away.
         let successors = [50, 55, 60, 90, 95, 100, 105, 110, 230, 250];
-        let mut network = SimulatedNetwork::new(Estimator::new(config()), &successors);
+        let mut network = SimulatedNetwork::new(Estimator::new(config()).unwrap(), &successors);
         let own = network.run(6_000);
         assert!(
             own.iter()
@@ -2779,8 +2802,8 @@ mod tests {
         // proposal starts instead would charge both, and own block times
         // would settle 100 ms under the target.
         let successors = [50, 55, 60, 90, 95, 100];
-        let mut network =
-            SimulatedNetwork::new(Estimator::new(config()), &successors).with_preparation(ms(100));
+        let mut network = SimulatedNetwork::new(Estimator::new(config()).unwrap(), &successors)
+            .with_preparation(ms(100));
         let own = network.run(6_000);
         let p75 = p75_block_time(&own[20..]);
         assert!(
@@ -2795,7 +2818,7 @@ mod tests {
         // chain waits less beyond the return budget than the configured
         // floor, so the reservation never leaves it, and every own block
         // finishes within the target.
-        let mut network = SimulatedNetwork::new(Estimator::new(config()), &[10, 20]);
+        let mut network = SimulatedNetwork::new(Estimator::new(config()).unwrap(), &[10, 20]);
         let own = network.run(600);
         assert!(own.iter().all(|p| p.budget.network_reserve == ms(50)));
         assert!(own.iter().all(|p| p.block_time <= ms(550)));

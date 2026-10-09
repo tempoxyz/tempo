@@ -869,7 +869,8 @@ pub struct TempoPayloadBuilderBuilder {
     /// Initial estimate of total replayable payload build work divided by work
     /// at transaction cutoff.
     ///
-    /// Only used when no shared `estimator` is provided.
+    /// Only used when no shared `estimator` is provided. Building the payload
+    /// builder fails unless it is between 1.0 and 1.7.
     pub build_time_multiplier: f64,
     /// Proposal budget estimator shared with consensus, if the node runs one.
     pub estimator: Option<Estimator>,
@@ -911,11 +912,15 @@ where
 
         // Without a handle shared with consensus, the builder paces against an
         // estimator of its own.
-        let estimator = self.estimator.unwrap_or_else(|| {
-            Estimator::new(
+        let estimator = match self.estimator {
+            Some(estimator) => estimator,
+            None => Estimator::new(
                 EstimatorConfig::default().with_build_time_multiplier(self.build_time_multiplier),
             )
-        });
+            .map_err(|reason| {
+                eyre::eyre!("invalid payload builder build time multiplier: {reason}")
+            })?,
+        };
         Ok(TempoPayloadBuilder::new(
             pool,
             ctx.provider().clone(),
@@ -937,8 +942,8 @@ where
 /// Parses `--builder.build-time-multiplier`, rejecting values the estimator
 /// would reject.
 ///
-/// Validating here covers every mode: `--dev` and `--follow` never reach
-/// the consensus stack's validation of the estimator configuration.
+/// Validating here rejects a bad value at parse time, with an error that
+/// names the flag, before anything builds an estimator from it.
 fn parse_build_time_multiplier(value: &str) -> Result<f64, String> {
     let multiplier = value
         .parse::<f64>()
@@ -1015,8 +1020,8 @@ mod tests {
                 .builder_build_time_multiplier;
             assert_eq!(multiplier, value.parse::<f64>().unwrap());
         }
-        // Rejected by the parser itself, so modes that never validate the
-        // estimator configuration (`--dev`, `--follow`) reject them too.
+        // Rejected by the parser itself, before an estimator is built from
+        // them in any mode.
         for value in ["2.0", "0.5", "nan"] {
             let err = parse(value)
                 .err()

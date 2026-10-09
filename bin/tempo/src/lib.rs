@@ -551,10 +551,11 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
         // One proposal budget estimator is shared by the payload builder and
         // the consensus engine so both pace against the same learned window.
-        let estimator = tempo_node::Estimator::new(
-            args.consensus
-                .estimator_config(args.node_args.builder_build_time_multiplier),
-        );
+        // Built before the node launches, ahead of the consensus stack's own
+        // flag validation, so invalid proposal budget flags fail startup here.
+        let estimator = args
+            .consensus
+            .estimator(args.node_args.builder_build_time_multiplier)?;
         let tempo_node = overrides.apply_tempo_node({
             let node = TempoNode::new(&args.node_args, validator_key);
             match gossip_protocol_handler {
