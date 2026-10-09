@@ -2,6 +2,11 @@
 
 pub use crate::zones::IZoneVerifier;
 
+/// Canonical one-byte configuration selecting the first Nitro-backed verifier policy.
+pub const NITRO_VERIFIER_CONFIG_V1: &[u8] = &[1];
+/// Canonical one-byte configuration selecting temporary proofless fallback settlement.
+pub const NO_PROOF_FALLBACK_VERIFIER: &[u8] = &[2];
+
 crate::sol! {
     /// EIP-712 statement committed to a Nitro attestation's `user_data`.
     #[derive(Debug, PartialEq, Eq)]

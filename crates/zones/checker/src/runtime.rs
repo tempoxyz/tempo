@@ -15,6 +15,7 @@ use reth_storage_api::{BlockHashReader as _, BlockNumReader, StateProviderFactor
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::TempoHardforks;
 use tempo_primitives::{TempoPrimitives, TempoReceipt};
+use zone_primitives::constants::MAX_WS_FRAME_AND_MESSAGE_SIZE;
 
 use crate::{
     AttemptError, CheckerConfig,
@@ -34,7 +35,6 @@ const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
 const MAX_STATE_ATTEMPTS: u32 = 30;
 /// Retry bound for Tempo acquisition.
 const MAX_L1_ATTEMPTS: u32 = 10;
-const MAX_WS_FRAME_AND_MESSAGE_SIZE: usize = 128 * 1024 * 1024;
 
 /// Bootstrap or open durable state, recover from its verified tip, and follow notifications.
 pub(crate) async fn run<Node>(

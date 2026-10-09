@@ -60,6 +60,7 @@ use alloy_rpc_client::{ConnectionConfig, WebSocketConfig};
 use tempo_contracts::zones::{IZoneInbox, ZONE_INBOX_ADDRESS, ZONE_TOKEN_ADDRESS, ZonePortal};
 use zone_evm::ZoneEvmConfig;
 use zone_p2p::{LeadershipSchedule, PeerTip, ZoneManifest};
+use zone_primitives::constants::MAX_WS_FRAME_AND_MESSAGE_SIZE;
 use zone_rpc::{
     auth::AuthContext,
     types::{
@@ -671,7 +672,6 @@ where
 
 type RpcBlock = Block<alloy_rpc_types_eth::Transaction<TempoTxEnvelope>, TempoHeaderResponse>;
 const FILTER_OWNER_PRUNE_INTERVAL: Duration = Duration::from_secs(60);
-const MAX_WS_FRAME_AND_MESSAGE_SIZE: usize = 128 * 1024 * 1024;
 
 fn filter_not_found_error() -> JsonRpcError {
     JsonRpcError::invalid_params("filter not found")
@@ -1598,7 +1598,6 @@ pub(crate) fn rpc_connection_config(retry_connection_interval: Duration) -> Conn
         .with_retry_interval(retry_connection_interval)
         .with_ws_config(
             WebSocketConfig::default()
-                // Large blocks can exceed tungstenite's default 16 MiB frame limit.
                 .max_frame_size(Some(MAX_WS_FRAME_AND_MESSAGE_SIZE))
                 .max_message_size(Some(MAX_WS_FRAME_AND_MESSAGE_SIZE)),
         )

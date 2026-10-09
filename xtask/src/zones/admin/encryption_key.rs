@@ -15,7 +15,10 @@ use zeroize::Zeroizing;
 use zone_sequencer::{encryption_key_identity, prove_encryption_key_possession};
 
 use super::{
-    config::{ExpectedEncryptionKey, SharedAdminArgs, format_duration, parse_nonzero_duration},
+    config::{
+        DEFAULT_FINALITY_TIMEOUT, ExpectedEncryptionKey, FINALITY_POLL, SharedAdminArgs,
+        format_duration, parse_nonzero_duration,
+    },
     invariants::{
         ensure_invariants, evaluate_base_invariants, portal_sequencer_coverage_invariant,
         required_decryption_keys_invariant,
@@ -29,8 +32,6 @@ use super::{
 
 const NEW_SHARED_KEY_FILE: &str = "new-shared.key";
 const DEPOSIT_DECRYPTION_KEYS_FILE: &str = "deposit-decryption-keys";
-const DEFAULT_FINALITY_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-const FINALITY_POLL: Duration = Duration::from_millis(500);
 
 #[derive(Debug, clap::Parser)]
 pub(crate) struct EncryptionKey {

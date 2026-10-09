@@ -13,9 +13,7 @@ use tempo_contracts::zones::{
 };
 use zone_primitives::constants::zone_chain_id;
 
-use crate::zone_utils::normalize_http_rpc;
-
-const LOG_QUERY_BLOCK_CHUNK: u64 = 5_000;
+use crate::zone_utils::{LOG_QUERY_BLOCK_CHUNK, normalize_http_rpc};
 
 #[derive(Clone, Copy)]
 struct EventRanges {

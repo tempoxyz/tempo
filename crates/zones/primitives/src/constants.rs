@@ -9,6 +9,9 @@ pub use tempo_contracts::zones::{
 use alloy_primitives::Address;
 use tempo_hardfork::constants::{mainnet::MAINNET_CHAIN_ID, moderato::MODERATO_CHAIN_ID};
 
+/// Large blocks can exceed tungstenite's default 16 MiB frame limit.
+pub const MAX_WS_FRAME_AND_MESSAGE_SIZE: usize = 128 * 1024 * 1024;
+
 /// Maximum number of Tempo headers authenticated by one checkpoint-only Zone block.
 pub const MAX_TEMPO_HEADERS_PER_ZONE_BLOCK: usize = 1024;
 
@@ -90,9 +93,9 @@ pub fn zone_chain_id(parent_chain_id: u64, zone_id: u32) -> Result<u64, ZoneChai
     validate_chain_id(parent_chain_id, zone_id)?;
 
     let chain_id = match parent_chain_id {
-        MAINNET_CHAIN_ID => ZONE_CHAIN_ID_BASE + zone_id as u64,
-        MODERATO_CHAIN_ID => ZONE_CHAIN_ID_BASE_TESTNET + zone_id as u64,
-        _ => (parent_chain_id << 32) | zone_id as u64,
+        MAINNET_CHAIN_ID => ZONE_CHAIN_ID_BASE + u64::from(zone_id),
+        MODERATO_CHAIN_ID => ZONE_CHAIN_ID_BASE_TESTNET + u64::from(zone_id),
+        _ => (parent_chain_id << 32) | u64::from(zone_id),
     };
 
     Ok(chain_id)
@@ -134,8 +137,9 @@ fn validate_chain_id(parent_chain_id: u64, zone_id: u32) -> Result<(), ZoneChain
         return Err(ZoneChainIdError::InvalidParentChainId(parent_chain_id));
     }
 
-    if (parent_chain_id == MAINNET_CHAIN_ID && zone_id as u64 >= ZONE_CHAIN_ID_RANGE)
-        || (parent_chain_id == MODERATO_CHAIN_ID && zone_id as u64 >= ZONE_CHAIN_ID_RANGE_TESTNET)
+    if (parent_chain_id == MAINNET_CHAIN_ID && u64::from(zone_id) >= ZONE_CHAIN_ID_RANGE)
+        || (parent_chain_id == MODERATO_CHAIN_ID
+            && u64::from(zone_id) >= ZONE_CHAIN_ID_RANGE_TESTNET)
     {
         return Err(ZoneChainIdError::ZoneIdOutOfRange {
             parent_chain_id,

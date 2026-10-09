@@ -14,7 +14,10 @@ use tempo_chainspec::{
     hardfork::TempoHardfork,
 };
 pub use tempo_contracts::precompiles::IZoneVerifier;
-use tempo_contracts::precompiles::{NitroBatchAttestation, ZONE_VERIFIER_ADDRESS};
+use tempo_contracts::precompiles::{
+    NITRO_VERIFIER_CONFIG_V1 as MODE_NITRO_V1, NO_PROOF_FALLBACK_VERIFIER as MODE_NO_PROOF,
+    NitroBatchAttestation, ZONE_VERIFIER_ADDRESS,
+};
 use tempo_nitro_attestation::AWS_NITRO_ROOT_DER;
 use tempo_precompiles_macros::contract;
 
@@ -22,8 +25,6 @@ pub use self::pcr::PcrError;
 use self::{attestation::verify_attestation_with_root, pcr::parse_pcrs};
 use crate::{error::Result, zone_factory::portal_address};
 
-const MODE_NITRO_V1: &[u8] = &[1];
-const MODE_NO_PROOF: &[u8] = &[2];
 const MAX_FUTURE_SKEW_MILLIS: u64 = 300_000;
 
 /// PCR0/1/2 policy changes. Each entry takes effect at its hardfork and remains in effect until a

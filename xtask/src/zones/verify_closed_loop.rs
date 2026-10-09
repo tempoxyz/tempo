@@ -12,9 +12,7 @@ use tempo_contracts::zones::{
     ZONE_FACTORY_ADDRESS, ZoneFactory, ZonePortal, ZonePortal::Role as PortalRole,
 };
 
-use crate::zone_utils::{find_zone_deployment_block, normalize_http_rpc};
-
-const LOG_QUERY_BLOCK_CHUNK: u64 = 5_000;
+use crate::zone_utils::{LOG_QUERY_BLOCK_CHUNK, find_zone_deployment_block, normalize_http_rpc};
 
 alloy::sol! {
     #[sol(rpc)]

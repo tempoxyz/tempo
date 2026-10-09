@@ -2,6 +2,7 @@ use alloy_primitives::{B256, Bytes};
 use alloy_sol_types::SolStruct as _;
 use keccak_const::Keccak256;
 use serde::{Deserialize, Serialize};
+pub use tempo_contracts::precompiles::{NITRO_VERIFIER_CONFIG_V1, NO_PROOF_FALLBACK_VERIFIER};
 pub use tempo_contracts::zones::NitroBatchAttestation;
 use tempo_contracts::zones::ZONE_VERIFIER_ADDRESS;
 use zone_spf::{BatchOutput, BatchWitness, PublicInputs};
@@ -9,13 +10,9 @@ use zone_spf::{BatchOutput, BatchWitness, PublicInputs};
 /// Current version of the prover request and response wire format.
 pub const PROTOCOL_VERSION: u16 = 1;
 
-/// Canonical one-byte configuration selecting the first Nitro-backed verifier policy.
-pub const NITRO_VERIFIER_CONFIG_V1: &[u8] = &[1];
 /// Compile-time Keccak-256 hash of [`NITRO_VERIFIER_CONFIG_V1`].
 pub const NITRO_VERIFIER_CONFIG_V1_HASH: B256 =
     B256::new(Keccak256::new().update(NITRO_VERIFIER_CONFIG_V1).finalize());
-/// Canonical one-byte configuration selecting temporary proofless fallback settlement.
-pub const NO_PROOF_FALLBACK_VERIFIER: &[u8] = &[2];
 /// Compile-time Keccak-256 hash of [`NO_PROOF_FALLBACK_VERIFIER`].
 pub const NO_PROOF_FALLBACK_VERIFIER_HASH: B256 = B256::new(
     Keccak256::new()

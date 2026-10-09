@@ -15,13 +15,13 @@ use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
 use alloy_rlp::Decodable as _;
 use alloy_sol_types::SolError;
 use revm::precompile::PrecompileResult;
+use tempo_contracts::zones::{StaticCallNotAllowed, TempoState as TempoStateAbi, TempoStateError};
 use tempo_precompiles::{
     EncodePrecompileResult, charge_input_cost, dispatch, error::TempoPrecompileError,
     storage::Handler, view,
 };
 use tempo_precompiles_macros::contract;
 use tempo_primitives::TempoHeader;
-use tempo_contracts::zones::{StaticCallNotAllowed, TempoState as TempoStateAbi, TempoStateError};
 use zone_primitives::constants::{
     MAX_TEMPO_HEADERS_PER_ZONE_BLOCK, TEMPO_STATE_ADDRESS, ZONE_INBOX_ADDRESS,
 };
@@ -33,7 +33,7 @@ pub struct TempoState {
 }
 
 /// Storage slot containing the finalized Tempo block number in Zone state.
-pub const TEMPO_BLOCK_NUMBER_SLOT: alloy_primitives::U256 = slots::TEMPO_BLOCK_NUMBER;
+pub use slots::TEMPO_BLOCK_NUMBER as TEMPO_BLOCK_NUMBER_SLOT;
 
 impl TempoState {
     /// Creates the direct-call-only `TempoState` precompile with checkpoint storage.
@@ -221,8 +221,8 @@ mod tests {
     use alloy_primitives::address;
     use alloy_sol_types::SolCall;
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_precompiles::storage::StorageCtx;
     use tempo_contracts::zones::{finalizeTempoCall, legacyFinalizeTempoCall};
+    use tempo_precompiles::storage::StorageCtx;
 
     struct TempoStateHarness {
         ctx: TestContext,

@@ -20,5 +20,5 @@ thiserror = { version = "2", default-features = false }
 
 [features]
 default = ["std", "serde"]
-std = ["tempo-contracts/std", "alloy-primitives/std", "thiserror/std"]
-serde = ["dep:alloy-rlp", "dep:serde", "alloy-primitives/serde"]
+std = ["tempo-contracts/std", "alloy-primitives/std", "alloy-rlp?/std", "serde?/std", "tempo-hardfork/std", "thiserror/std"]
+serde = ["dep:alloy-rlp", "dep:serde", "alloy-primitives/serde", "tempo-contracts/serde", "tempo-hardfork/serde"]

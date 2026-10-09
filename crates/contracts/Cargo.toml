@@ -46,4 +46,4 @@ rpc = [
     "dep:k256",
     "alloy-primitives/k256",
 ]
-serde = ["dep:serde", "alloy-primitives/serde", "tempo-hardfork/serde"]
+serde = ["dep:serde", "alloy-primitives/serde", "k256?/serde", "tempo-hardfork/serde"]

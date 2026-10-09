@@ -6,6 +6,7 @@ use alloy_sol_types::{SolCall, SolError, SolValue};
 use revm::precompile::PrecompileResult;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::UnknownFunctionSelector;
+use tempo_contracts::zones::{MAX_UNPROCESSED_DEPOSITS, MAX_UNPROCESSED_TOKEN_ENABLEMENTS};
 use tempo_precompiles::{
     PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, TIP403_REGISTRY_ADDRESS,
     receive_policy_guard::ReceivePolicyGuard,
@@ -341,10 +342,9 @@ fn failed_deposit_gas(deposits: usize, token_enablements: usize) -> eyre::Result
 #[test]
 fn max_portal_deposit_block_fits_system_gas_budget() -> eyre::Result<()> {
     const BUFFERED_GAS_LIMIT: u64 = 200_000_000;
-    const MAX_DEPOSITS_PER_TEMPO_BLOCK: usize = 230;
 
-    for deposits in [640, MAX_DEPOSITS_PER_TEMPO_BLOCK] {
-        let should_fit = deposits <= MAX_DEPOSITS_PER_TEMPO_BLOCK;
+    for deposits in [640, MAX_UNPROCESSED_DEPOSITS] {
+        let should_fit = deposits <= MAX_UNPROCESSED_DEPOSITS;
         let gas_used = failed_deposit_gas(deposits, 0)?;
         eprintln!("{deposits} portal deposit block: {gas_used} gas");
         assert_eq!(
@@ -359,13 +359,8 @@ fn max_portal_deposit_block_fits_system_gas_budget() -> eyre::Result<()> {
 #[test]
 fn max_portal_deposit_and_token_block_fits_system_gas_budget() -> eyre::Result<()> {
     const COMBINED_BUFFERED_GAS_LIMIT: u64 = 225_000_000;
-    const MAX_DEPOSITS_PER_TEMPO_BLOCK: usize = 230;
-    const MAX_TOKENS_ENABLED_PER_TEMPO_BLOCK: usize = 8;
 
-    let gas_used = failed_deposit_gas(
-        MAX_DEPOSITS_PER_TEMPO_BLOCK,
-        MAX_TOKENS_ENABLED_PER_TEMPO_BLOCK,
-    )?;
+    let gas_used = failed_deposit_gas(MAX_UNPROCESSED_DEPOSITS, MAX_UNPROCESSED_TOKEN_ENABLEMENTS)?;
     eprintln!("max portal deposit and token block: {gas_used} gas");
     assert!(
         gas_used <= COMBINED_BUFFERED_GAS_LIMIT,
