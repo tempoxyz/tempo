@@ -101,6 +101,11 @@ debug = "line-tables-only"
 strip = "none"
 incremental = true
 
+[profile.dst]
+inherits = "profiling"
+debug-assertions = true
+overflow-checks = true
+
 [profile.bench]
 inherits = "maxperf"
 debug = "line-tables-only"
