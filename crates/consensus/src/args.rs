@@ -213,60 +213,43 @@ pub struct Args {
 
     /// Largest network reservation the proposal budget estimator may learn.
     ///
-    /// The estimator measures how long after its own proposal windows close
-    /// the next leader starts building on them, and reserves a recent
-    /// percentile of that (`--consensus.network-reserve-percentile`): never
-    /// less than `--consensus.network-budget`, never more than this.
-    /// The reservation follows that percentile by at most 100ms per own
-    /// proposal, so a single outlier cannot take it to this cap at once.
-    /// The builder reserves at most its own projected work for the
-    /// validators' replay, so replay beyond that is learned as network time
-    /// and bounded by this cap as well.
-    /// Set it equal to `--consensus.network-budget` for a fixed reservation.
-    /// It must stay below `--consensus.target-block-time`.
+    /// The estimator measures how long after its own proposal windows close the
+    /// next leader starts building on them and reserves a recent percentile of that
+    /// (`--consensus.network-reserve-percentile`), moving by at most 100ms per own
+    /// proposal, never below `--consensus.network-budget` and never above this. Set
+    /// it equal to `--consensus.network-budget` for a fixed reservation; it must
+    /// stay below `--consensus.target-block-time`.
     ///
-    /// Defaults to `network-budget + (target-block-time - network-budget) / 2`,
-    /// at most 300ms and never below `--consensus.network-budget`: 300ms with
-    /// the default 550ms target and 50ms network budget.
+    /// Defaults to `network-budget + (target-block-time - network-budget) / 2`, at
+    /// most 300ms: 300ms with the default 550ms target and 50ms network budget.
     #[arg(long = "consensus.network-budget-max")]
     pub network_budget_max: Option<PositiveDuration>,
 
     /// Percentile of recent own-proposal network times the proposal budget
     /// estimator reserves, from 50 to 100.
     ///
-    /// A sample is this node's block time minus its proposal window, so about
-    /// this share of its own blocks finish at or under
-    /// `--consensus.target-block-time`, and their median lands below it by
-    /// the window's spread from its median to this percentile: 40 to 80ms
-    /// per node on the 10 validator benchmark. A median at the target takes
-    /// 50 with `--consensus.network-reserve-fast-rise=false`.
-    ///
-    /// A higher percentile leaves fewer proposals whose network time exceeds
-    /// the reservation, at the cost of a smaller return budget and therefore
-    /// smaller blocks.
+    /// A sample is this node's block time minus its proposal window, so about this
+    /// share of its own blocks finish within `--consensus.target-block-time`. A
+    /// higher percentile leaves fewer late blocks and smaller ones. A median at the
+    /// target takes 50 with `--consensus.network-reserve-fast-rise=false`.
     #[arg(
         long = "consensus.network-reserve-percentile",
         default_value_t = tempo_payload_types::DEFAULT_NETWORK_RESERVE_PERCENTILE
     )]
     pub network_reserve_percentile: u8,
 
-    /// Let the two most recent own-proposal network times lift the
-    /// reservation above the window percentile.
+    /// Let the two most recent own-proposal network times lift the reservation
+    /// above the window percentile.
     ///
-    /// The percentile over the last 16 own proposals lags a network that is
-    /// getting slower, for example while blocks grow, so proposals made
-    /// during the rise exceed their reservation far more often than the
-    /// percentile implies. With fast rise the smaller network time of two
-    /// slow proposals in a row becomes what the reservation moves toward,
-    /// starting with the very next proposal: like every change of the
-    /// reservation by at most 100ms per own proposal, and still capped by
-    /// `--consensus.network-budget-max`. One slow proposal alone lifts
-    /// nothing, since each own proposal's successor is an independent draw.
-    /// The next faster proposal hands the reservation back to the window
-    /// percentile, again by at most 100ms per own proposal.
+    /// The percentile over the last 16 own proposals lags a network that is getting
+    /// slower, for example while blocks grow. With fast rise the smaller network
+    /// time of two slow proposals in a row becomes what the reservation moves
+    /// toward, still by at most 100ms per own proposal and capped by
+    /// `--consensus.network-budget-max`; one slow proposal alone lifts nothing, and
+    /// the next faster one hands the reservation back to the percentile.
     ///
-    /// On by default; pass `--consensus.network-reserve-fast-rise=false` to
-    /// reserve the window percentile alone.
+    /// On by default; pass `--consensus.network-reserve-fast-rise=false` to reserve
+    /// the window percentile alone.
     #[arg(
         long = "consensus.network-reserve-fast-rise",
         value_name = "BOOL",
@@ -277,15 +260,13 @@ pub struct Args {
     )]
     pub network_reserve_fast_rise: bool,
 
-    /// How far an own proposal may run past its return budget and still
-    /// teach the network reservation.
+    /// How far an own proposal may run past its return budget and still teach the
+    /// network reservation.
     ///
-    /// A proposal that overruns its return budget by more than this takes no
-    /// network sample. The default is the builder's pacing precision on a
-    /// build whose pool ran dry, a millisecond or two. A machine whose dry
-    /// builds vary more needs a larger value, or most proposals made while the
-    /// pool is dry take no sample and the reservation ages back to
-    /// `--consensus.network-budget` until load returns.
+    /// The default is the builder's pacing precision on a build whose pool ran dry,
+    /// a millisecond or two. A machine whose dry builds vary more needs a larger
+    /// value, or most proposals made while the pool is dry take no sample and the
+    /// reservation ages back to `--consensus.network-budget`.
     #[arg(
         long = "consensus.return-budget-overrun-tolerance",
         default_value = "5ms"
@@ -531,11 +512,9 @@ impl FromStr for PositiveDuration {
 }
 
 impl Args {
-    /// The largest network reservation the proposal budget estimator may
-    /// learn: `--consensus.network-budget-max` if given, otherwise
-    /// [`tempo_payload_types::EstimatorConfig::default_network_budget_max`],
-    /// which stays valid for any target block time and network budget where a
-    /// fixed default would not.
+    /// `--consensus.network-budget-max`, or
+    /// [`tempo_payload_types::EstimatorConfig::default_network_budget_max`] when
+    /// none is given.
     pub fn network_budget_max(&self) -> Duration {
         if let Some(network_budget_max) = self.network_budget_max {
             return network_budget_max.into_duration();
