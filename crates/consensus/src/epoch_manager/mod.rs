@@ -1,11 +1,21 @@
+//! Epoch logic used by tempo.
+//!
+//! All logic is written with the assumption that there are at least 3 heights
+//! per epoch. Having less heights per epoch will not immediately break the
+//! logic, but it might lead to strange behavior and is not supported.
+//!
+//! Note that either way, 3 blocks per epoch is a highly unreasonable number.
+
 mod actor;
-pub(super) mod ingress;
+mod ingress;
+mod scheme_provider;
 
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
 pub(crate) use actor::Actor;
 use commonware_cryptography::ed25519::PublicKey;
 pub(crate) use ingress::Mailbox;
+pub(crate) use scheme_provider::SchemeProvider;
 
 use commonware_consensus::types::{FixedEpocher, ViewDelta};
 use commonware_p2p::Blocker;
@@ -15,9 +25,7 @@ use commonware_runtime::{
 use rand_core::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
 
-use crate::{
-    VerificationMode, consensus::application::Application, epoch::scheme_provider::SchemeProvider,
-};
+use crate::{VerificationMode, consensus::application::Application};
 
 pub(crate) struct Config<TContext, TBlocker>
 where

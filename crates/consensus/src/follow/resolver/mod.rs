@@ -40,7 +40,7 @@ use tracing::{debug, error, instrument, warn};
 use crate::consensus::{Block, Digest};
 
 #[cfg(test)]
-mod test;
+mod tests;
 
 const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(250);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);

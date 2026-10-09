@@ -18,7 +18,7 @@ use super::{
 };
 use crate::{
     consensus::Digest,
-    epoch::SchemeProvider,
+    epoch_manager::SchemeProvider,
     gossip::Certificate,
     test_utils::{DkgFixture, dkg_fixture, make_certificate},
 };

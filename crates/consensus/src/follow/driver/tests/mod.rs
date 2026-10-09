@@ -16,7 +16,7 @@ use tempo_node::rpc::consensus::Event;
 
 use super::{Config, try_init};
 use crate::{
-    epoch::SchemeProvider,
+    epoch_manager::SchemeProvider,
     follow::test_utils::{
         DkgFixture, EPOCH_LENGTH, StubExecutionProvider, StubMarshal, dkg_fixture, make_block,
         make_certified_block, make_finalization,

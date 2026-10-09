@@ -12,7 +12,7 @@ pub(crate) mod actor;
 mod ingress;
 mod metrics;
 #[cfg(test)]
-mod test;
+mod tests;
 
 pub(crate) use actor::Actor;
 pub(crate) use ingress::Mailbox;

@@ -31,7 +31,7 @@ use tracing::{instrument, warn};
 use crate::finalization_verifier::{Error as VerificationError, FinalizationVerifier};
 
 #[cfg(test)]
-mod test;
+mod tests;
 
 const DEFAULT_FETCH_CONCURRENCY: usize = 32;
 const DEFAULT_CHUNK_SIZE: u64 = 1_024;

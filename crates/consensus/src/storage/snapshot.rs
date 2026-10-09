@@ -453,7 +453,7 @@ mod tests {
         PRUNABLE_ITEMS_PER_SECTION,
         hybrid::{
             Prunable,
-            test::utils::{fresh_page_cache, fresh_prunable_with_section_size, make_chain},
+            tests::utils::{fresh_page_cache, fresh_prunable_with_section_size, make_chain},
         },
         init_finalizations_archive,
     };

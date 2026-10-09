@@ -112,7 +112,7 @@ use tracing::{info, instrument};
 use crate::consensus::{Digest, block::Block};
 
 #[cfg(test)]
-pub(in crate::storage) mod test;
+pub(in crate::storage) mod tests;
 
 /// Narrow view of reth that [`Hybrid`] needs: a finalized watermark and
 /// block and header reads by height or hash.

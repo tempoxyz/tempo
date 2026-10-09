@@ -29,7 +29,7 @@ use crate::{
     VerificationMode, alias, config,
     consensus::application,
     dkg,
-    epoch::{self, SchemeProvider},
+    epoch_manager::{self, SchemeProvider},
     network::limit_channel,
     peer_manager, storage,
 };
@@ -256,11 +256,11 @@ where
             })
             .unzip();
 
-        let (dkg_manager, dkg_manager_mailbox) = dkg::manager::init(
+        let (dkg_manager, dkg_manager_mailbox) = dkg::init(
             context.child("dkg_manager"),
-            dkg::manager::Config {
+            dkg::Config {
                 epoch_strategy: epoch_strategy.clone(),
-                execution_node: dkg::manager::TempoExecutionLayer {
+                execution_node: dkg::TempoExecutionLayer {
                     node: execution_node.clone(),
                 },
                 initial_share: self.share.clone(),
@@ -299,7 +299,7 @@ where
             self.verification_mode,
         );
 
-        let epoch_manager_config = epoch::manager::Config {
+        let epoch_manager_config = epoch_manager::Config {
             application,
             verification_mode: self.verification_mode,
             execution_node: execution_node.clone(),
@@ -369,8 +369,8 @@ where
     broadcast: buffered::Engine<TContext, PublicKey, Block, peer_manager::Mailbox>,
     broadcast_mailbox: buffered::Mailbox<PublicKey, Block>,
 
-    dkg_manager: dkg::manager::Actor<TContext>,
-    dkg_manager_mailbox: dkg::manager::Mailbox,
+    dkg_manager: dkg::Actor<TContext>,
+    dkg_manager_mailbox: dkg::Mailbox,
 
     /// Responsible for keeping the consensus layer state and execution layer
     /// states in sync. Drives the chain state of the execution layer by sending
@@ -385,7 +385,7 @@ where
     /// local node.
     marshal: crate::alias::marshal::Actor<TContext>,
 
-    epoch_manager_config: epoch::manager::Config<TContext, TBlocker>,
+    epoch_manager_config: epoch_manager::Config<TContext, TBlocker>,
 
     peer_manager: peer_manager::Actor<TContext, TPeerManager, TempoFullNode>,
     peer_manager_mailbox: peer_manager::Mailbox,
@@ -551,7 +551,7 @@ where
             self.broadcast_mailbox,
             resolver,
         );
-        let (epoch_manager, epoch_manager_mailbox) = epoch::manager::init(
+        let (epoch_manager, epoch_manager_mailbox) = epoch_manager::init(
             self.context.child("epoch_manager"),
             self.epoch_manager_config,
         );

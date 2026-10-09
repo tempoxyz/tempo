@@ -20,10 +20,10 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::consensus::validate_body_against_header;
 use tempo_node::rpc::consensus::CertifiedBlock;
 
-use crate::{config::NAMESPACE, consensus::Digest, epoch::SchemeProvider};
+use crate::{config::NAMESPACE, consensus::Digest, epoch_manager::SchemeProvider};
 
 #[cfg(test)]
-mod test;
+mod tests;
 
 /// Verifies finalization certificates against a trusted network identity.
 ///

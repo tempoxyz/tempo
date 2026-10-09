@@ -8,7 +8,7 @@ mod args;
 pub(crate) mod config;
 pub mod consensus;
 pub(crate) mod dkg;
-pub(crate) mod epoch;
+pub(crate) mod epoch_manager;
 pub(crate) mod executor;
 pub mod feed;
 pub mod finalization_verifier;
