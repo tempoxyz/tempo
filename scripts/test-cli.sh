@@ -11,8 +11,12 @@ dump_log() { echo "--- output ---"; cat "$1"; echo "---"; }
 run_ok() {
     local label="$1"; shift
     echo "--- Test: $label"
-    OUT=$("$@" 2>&1) || { fail "$label exited with non-zero status"; return; }
+    OUT=$("$@" 2>&1) || { fail "$label exited with non-zero status"; printf '%s\n' "$OUT"; return; }
     echo "PASS"
+}
+
+check_snapshot_download() {
+    node "$REPO_ROOT/scripts/test-cli-download.mjs" "$TEMPO" "$@"
 }
 
 TEMPO="${1:-$REPO_ROOT/target/debug/tempo}"
@@ -22,12 +26,25 @@ if [[ ! -x "$TEMPO" ]]; then
 fi
 echo "Testing: $TEMPO"
 
+run_ok "snapshot HTTPS proxy protocol tests" node --test "$REPO_ROOT/scripts/cli-download-proxy.test.mjs"
 run_ok "tempo --version" "$TEMPO" --version
 run_ok "tempo --help" "$TEMPO" --help
 run_ok "tempo node --help" "$TEMPO" node --help
 if ! grep -A 2 -- '--consensus.message-backlog' <<<"$OUT" | grep -q 'Deprecated:'; then
     fail "message-backlog help must mark the flag as deprecated"
 fi
+run_ok "tempo download testnet snapshot (42431) via discovery" check_snapshot_download 42431 --chain testnet
+run_ok "tempo download mainnet snapshot (4217) via discovery" check_snapshot_download 4217 --chain mainnet
+run_ok "tempo download default-chain snapshot (4217) via discovery" check_snapshot_download 4217
+for chain in testnet mainnet; do
+    CHAIN_ID=42431
+    if [[ "$chain" == mainnet ]]; then CHAIN_ID=4217; fi
+    MANIFEST_URL="https://snapshots.tempoxyz.dev/$CHAIN_ID/manifest.json"
+    run_ok "tempo download $chain snapshot ($CHAIN_ID) with explicit source and chain" \
+        check_snapshot_download "$CHAIN_ID" --manifest-url "$MANIFEST_URL" --chain "$chain"
+    run_ok "tempo download $chain snapshot ($CHAIN_ID) with explicit source, without --chain" \
+        check_snapshot_download "$CHAIN_ID" --manifest-url "$MANIFEST_URL"
+done
 
 # --- node --follow: verify it stays alive for 15s with no crashes ---
 echo "--- Test: tempo node --follow (no crash)"
