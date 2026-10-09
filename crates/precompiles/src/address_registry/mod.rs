@@ -19,7 +19,7 @@ use alloy::{
 use tempo_chainspec::hardfork::TempoHardfork;
 pub use tempo_contracts::precompiles::{
     AddrRegistryError, AddrRegistryEvent, IAddressRegistry, STABLECOIN_DEX_ADDRESS,
-    TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, ZONE_OUTBOX_ADDRESS,
 };
 use tempo_precompiles_macros::{Storable, contract};
 pub use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
@@ -35,14 +35,21 @@ pub const IMPLICIT_APPROVAL_LIST: &[Address] = &[
     TIP20_CHANNEL_RESERVE_ADDRESS,
 ];
 
-/// Returns `true` iff `addr` is on the [`IMPLICIT_APPROVAL_LIST`] for the given hardfork.
+/// [TIP-1144] additions to the Implicit Approval List, active from `TempoHardfork::T13`.
 ///
-/// Before `TempoHardfork::T5` (TIP-1035 activation), returns `false` for all addresses.
+/// [TIP-1144]: <https://docs.tempo.xyz/protocol/tip1144>
+pub const T13_IMPLICIT_APPROVAL_LIST: &[Address] = &[ZONE_OUTBOX_ADDRESS];
+
+/// Returns `true` iff `addr` is on the Implicit Approval List for the given hardfork.
+///
+/// Before `TempoHardfork::T5` (TIP-1035 activation), returns `false` for all addresses. From
+/// `TempoHardfork::T13`, the list also includes [`T13_IMPLICIT_APPROVAL_LIST`].
 pub fn is_implicitly_approved(addr: Address, hardfork: TempoHardfork) -> bool {
     if !hardfork.is_t5() {
         return false;
     }
     IMPLICIT_APPROVAL_LIST.contains(&addr)
+        || (hardfork.is_t13() && T13_IMPLICIT_APPROVAL_LIST.contains(&addr))
 }
 
 /// [TIP-1022] virtual address registry contract.
@@ -217,9 +224,29 @@ mod tests {
             assert!(registry.is_implicitly_approved(TIP_FEE_MANAGER_ADDRESS));
             assert!(registry.is_implicitly_approved(STABLECOIN_DEX_ADDRESS));
             assert!(registry.is_implicitly_approved(TIP20_CHANNEL_RESERVE_ADDRESS));
+            assert!(!registry.is_implicitly_approved(ZONE_OUTBOX_ADDRESS));
             assert!(!registry.is_implicitly_approved(Address::random()));
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_is_implicitly_approved_zone_outbox_gated_on_t13() -> eyre::Result<()> {
+        for (hardfork, outbox_listed) in [(TempoHardfork::T12, false), (TempoHardfork::T13, true)] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
+            StorageCtx::enter(&mut storage, || {
+                let registry = AddressRegistry::new();
+                assert_eq!(
+                    registry.is_implicitly_approved(ZONE_OUTBOX_ADDRESS),
+                    outbox_listed
+                );
+                assert!(registry.is_implicitly_approved(TIP_FEE_MANAGER_ADDRESS));
+                assert!(registry.is_implicitly_approved(STABLECOIN_DEX_ADDRESS));
+                assert!(registry.is_implicitly_approved(TIP20_CHANNEL_RESERVE_ADDRESS));
+                eyre::Ok(())
+            })?;
+        }
+        Ok(())
     }
 
     #[test]
