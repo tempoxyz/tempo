@@ -36,7 +36,7 @@ use std::{
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::{TempoChainSpec, chain_value_parser};
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope};
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, SemaphorePermit};
 use tracing::{debug, info};
 
 /// Tempo-specific network primitives for the proxy node.
@@ -60,6 +60,8 @@ const MAX_CONCURRENT_REQUESTS: usize = 256;
 /// can't hold all of [`MAX_CONCURRENT_REQUESTS`]. reth keeps at most one request of each kind in
 /// flight per peer, so honest peers stay within this.
 const MAX_CONCURRENT_REQUESTS_PER_PEER: usize = 2;
+/// Maximum number of RPC fetches in flight across all requests.
+const MAX_CONCURRENT_RPC_FETCHES: usize = 8;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -123,9 +125,10 @@ impl P2pProxyArgs {
         };
         info!(number = head.number, hash = %head.hash, "fetched latest head");
 
-        let cache = Arc::new(Mutex::new(BlockCache::new(
-            self.cache_blocks.unwrap_or(CACHE_CAPACITY),
-        )));
+        let fetcher = Arc::new(BlockFetcher::new(
+            provider.erased(),
+            BlockCache::new(self.cache_blocks.unwrap_or(CACHE_CAPACITY)),
+        ));
 
         // Resolve the P2P secret key: load from file (creating if needed), or ephemeral
         let secret_key = match &self.p2p_secret_key {
@@ -141,7 +144,7 @@ impl P2pProxyArgs {
             max_concurrent_inbound: self.max_concurrent_inbound,
             head,
         };
-        run_p2p_network(chain_spec, net_cfg, provider.erased(), cache, secret_key).await
+        run_p2p_network(chain_spec, net_cfg, fetcher, secret_key).await
     }
 }
 
@@ -285,13 +288,12 @@ struct CachedBlock {
 
 /// Launch the P2P network and handle incoming eth requests.
 ///
-/// Each header and body request is resolved in its own task against the shared `cache`, so a
+/// Each header and body request is resolved in its own task by the shared `fetcher`, so a
 /// request that needs many RPC round-trips doesn't hold up other peers' requests.
 async fn run_p2p_network(
     chain_spec: Arc<TempoChainSpec>,
     cfg: NetConfig,
-    provider: DynProvider<TempoNetwork>,
-    cache: Arc<Mutex<BlockCache>>,
+    fetcher: Arc<BlockFetcher<DynProvider<TempoNetwork>>>,
     secret_key: secp256k1::SecretKey,
 ) -> Result<()> {
     let peers_config = PeersConfig::default()
@@ -411,12 +413,11 @@ async fn run_p2p_network(
                     .acquire_owned()
                     .await
                     .expect("semaphore is never closed");
-                let provider = provider.clone();
-                let cache = Arc::clone(&cache);
+                let fetcher = Arc::clone(&fetcher);
                 let stats = Arc::clone(&stats);
                 tokio::spawn(async move {
                     let _permits = (permit, peer_permit);
-                    let headers = resolve_headers(&provider, &cache, &request).await;
+                    let headers = fetcher.resolve_headers(&request).await;
                     let headers_served = headers.len() as u64;
                     if response.send(Ok(headers.into())).is_ok() {
                         stats
@@ -441,12 +442,11 @@ async fn run_p2p_network(
                     .acquire_owned()
                     .await
                     .expect("semaphore is never closed");
-                let provider = provider.clone();
-                let cache = Arc::clone(&cache);
+                let fetcher = Arc::clone(&fetcher);
                 let stats = Arc::clone(&stats);
                 tokio::spawn(async move {
                     let _permits = (permit, peer_permit);
-                    let bodies = resolve_bodies(&provider, &cache, &request.0).await;
+                    let bodies = fetcher.resolve_bodies(&request.0).await;
                     let bodies_served = bodies.len() as u64;
                     if response.send(Ok(bodies.into())).is_ok() {
                         stats
@@ -486,190 +486,322 @@ async fn run_p2p_network(
     Ok(())
 }
 
-/// Fetch a single block by number and insert it into the cache.
-#[cfg(test)]
-async fn fetch_and_cache_block(
-    provider: &impl Provider<TempoNetwork>,
-    cache: &Mutex<BlockCache>,
-    number: u64,
-) -> Result<()> {
-    let block = provider
-        .get_block_by_number(number.into())
-        .full()
-        .await
-        .context("rpc request failed")?
-        .ok_or_else(|| eyre::eyre!("block {number} not found"))?;
-
-    let hash = block.header.hash();
-    let header: TempoHeader = block.header.inner.inner.clone();
-    let body = tempo_primitives::BlockBody {
-        transactions: block
-            .transactions
-            .into_transactions()
-            .map(|tx| tx.into_inner())
-            .collect(),
-        ommers: vec![],
-        withdrawals: block.withdrawals,
-    };
-
-    cache.lock().insert_block(number, hash, header, body);
-    Ok(())
+/// Resolves header and body requests from the cache, fetching missing blocks over RPC.
+struct BlockFetcher<P> {
+    provider: P,
+    cache: Mutex<BlockCache>,
+    /// Bounds the RPC fetches in flight across all requests.
+    rpc_permits: Semaphore,
 }
 
-async fn fetch_and_cache_header_by_hash(
-    provider: &impl Provider<TempoNetwork>,
-    cache: &Mutex<BlockCache>,
-    hash: B256,
-) -> Result<u64> {
-    let block = provider
-        .get_block_by_hash(hash)
-        .await
-        .context("rpc request failed")?
-        .ok_or_else(|| eyre::eyre!("block {hash} not found"))?;
-
-    let number = block.header.number();
-    let header: TempoHeader = block.header.inner.inner.clone();
-    cache
-        .lock()
-        .insert_header(number, block.header.hash(), header);
-    Ok(number)
-}
-
-async fn fetch_and_cache_header_by_number(
-    provider: &impl Provider<TempoNetwork>,
-    cache: &Mutex<BlockCache>,
-    number: u64,
-) -> Result<TempoHeader> {
-    let block = provider
-        .get_block_by_number(number.into())
-        .await
-        .context("rpc request failed")?
-        .ok_or_else(|| eyre::eyre!("block {number} not found"))?;
-
-    let header: TempoHeader = block.header.inner.inner.clone();
-    cache
-        .lock()
-        .insert_header(block.header.number(), block.header.hash(), header.clone());
-    Ok(header)
-}
-
-/// Fetches `numbers` in one batch, returning headers in order up to the first one that's
-/// unavailable.
-async fn fetch_and_cache_header_batch(
-    provider: &impl Provider<TempoNetwork>,
-    cache: &Mutex<BlockCache>,
-    numbers: &[u64],
-) -> Result<Vec<TempoHeader>> {
-    let mut batch = BatchRequest::new(provider.client());
-    let mut waiters = Vec::with_capacity(numbers.len());
-
-    for &number in numbers {
-        let waiter = batch.add_call::<_, Option<TempoRpcBlock>>(
-            "eth_getBlockByNumber",
-            &(BlockNumberOrTag::Number(number), false),
-        )?;
-        waiters.push((number, waiter));
-    }
-
-    batch.send().await.context("failed to fetch header batch")?;
-
-    let mut headers = Vec::with_capacity(numbers.len());
-    for (number, waiter) in waiters {
-        match waiter.await {
-            Ok(Some(block)) => {
-                let header: TempoHeader = block.header.inner.inner.clone();
-                cache.lock().insert_header(
-                    block.header.number(),
-                    block.header.hash(),
-                    header.clone(),
-                );
-                headers.push(header);
-            }
-            Ok(None) => {
-                debug!(number, "header batch returned no block");
-                break;
-            }
-            Err(err) => {
-                debug!(number, %err, "header batch waiter failed; falling back to single request");
-                match fetch_and_cache_header_by_number(provider, cache, number).await {
-                    Ok(header) => headers.push(header),
-                    Err(_) => break,
-                }
-            }
+impl<P: Provider<TempoNetwork>> BlockFetcher<P> {
+    fn new(provider: P, cache: BlockCache) -> Self {
+        Self {
+            provider,
+            cache: Mutex::new(cache),
+            rpc_permits: Semaphore::new(MAX_CONCURRENT_RPC_FETCHES),
         }
     }
 
-    Ok(headers)
-}
+    async fn rpc_permit(&self) -> SemaphorePermit<'_> {
+        self.rpc_permits
+            .acquire()
+            .await
+            .expect("semaphore is never closed")
+    }
 
-/// Fetches the headers missing from the cache and returns them by number.
-///
-/// Stops at the first header that's unavailable, since headers are only served up to it.
-///
-/// Headers older than everything cached are evicted as soon as they're inserted into a full
-/// cache, so callers can't rely on reading them back from it.
-async fn fetch_and_cache_headers(
-    provider: &impl Provider<TempoNetwork>,
-    cache: &Mutex<BlockCache>,
-    numbers: &[u64],
-) -> HashMap<u64, TempoHeader> {
-    let mut headers = HashMap::with_capacity(numbers.len());
-    let mut missing_numbers = Vec::new();
-    {
-        let cache = cache.lock();
-        for &number in numbers {
-            match cache.get_by_number(number) {
+    /// Returns `cached()`, or fetches it under an RPC permit. The cache is checked again once the
+    /// permit is held, since another request may have fetched the same block in the meantime.
+    async fn cached_or_fetch<T>(
+        &self,
+        cached: impl Fn() -> Option<T>,
+        fetch: impl Future<Output = Option<T>>,
+    ) -> Option<T> {
+        if let Some(value) = cached() {
+            return Some(value);
+        }
+        let _permit = self.rpc_permit().await;
+        match cached() {
+            Some(value) => Some(value),
+            None => fetch.await,
+        }
+    }
+
+    fn cached_header_by_hash(&self, hash: &B256) -> Option<TempoHeader> {
+        self.cache
+            .lock()
+            .get_by_hash(hash)
+            .map(|block| block.header.clone())
+    }
+
+    fn cached_body(&self, hash: &B256) -> Option<tempo_primitives::BlockBody> {
+        self.cache
+            .lock()
+            .get_by_hash(hash)
+            .and_then(|block| block.body.clone())
+    }
+
+    /// Adds the cached headers among `numbers` to `headers`, returning the numbers that aren't
+    /// cached.
+    fn take_cached_headers(
+        &self,
+        numbers: &[u64],
+        headers: &mut HashMap<u64, TempoHeader>,
+    ) -> Vec<u64> {
+        let cache = self.cache.lock();
+        numbers
+            .iter()
+            .copied()
+            .filter(|&number| match cache.get_by_number(number) {
                 Some(block) => {
                     headers.insert(number, block.header.clone());
+                    false
                 }
-                None => missing_numbers.push(number),
-            }
-        }
+                None => true,
+            })
+            .collect()
     }
 
-    for chunk in missing_numbers.chunks(HEADER_RPC_BATCH_SIZE) {
-        let fetched = match fetch_and_cache_header_batch(provider, cache, chunk).await {
-            Ok(fetched) => fetched,
-            Err(_) => {
-                let mut fetched = Vec::with_capacity(chunk.len());
-                for &number in chunk {
-                    match fetch_and_cache_header_by_number(provider, cache, number).await {
-                        Ok(header) => fetched.push(header),
+    /// Fetch a single block by number and insert it into the cache.
+    #[cfg(test)]
+    async fn fetch_and_cache_block(&self, number: u64) -> Result<()> {
+        let block = self
+            .provider
+            .get_block_by_number(number.into())
+            .full()
+            .await
+            .context("rpc request failed")?
+            .ok_or_else(|| eyre::eyre!("block {number} not found"))?;
+
+        let hash = block.header.hash();
+        let header: TempoHeader = block.header.inner.inner.clone();
+        let body = tempo_primitives::BlockBody {
+            transactions: block
+                .transactions
+                .into_transactions()
+                .map(|tx| tx.into_inner())
+                .collect(),
+            ommers: vec![],
+            withdrawals: block.withdrawals,
+        };
+
+        self.cache.lock().insert_block(number, hash, header, body);
+        Ok(())
+    }
+
+    async fn fetch_and_cache_header_by_hash(&self, hash: B256) -> Result<TempoHeader> {
+        let block = self
+            .provider
+            .get_block_by_hash(hash)
+            .await
+            .context("rpc request failed")?
+            .ok_or_else(|| eyre::eyre!("block {hash} not found"))?;
+
+        let header: TempoHeader = block.header.inner.inner.clone();
+        self.cache
+            .lock()
+            .insert_header(block.header.number(), block.header.hash(), header.clone());
+        Ok(header)
+    }
+
+    async fn fetch_and_cache_header_by_number(&self, number: u64) -> Result<TempoHeader> {
+        let block = self
+            .provider
+            .get_block_by_number(number.into())
+            .await
+            .context("rpc request failed")?
+            .ok_or_else(|| eyre::eyre!("block {number} not found"))?;
+
+        let header: TempoHeader = block.header.inner.inner.clone();
+        self.cache
+            .lock()
+            .insert_header(block.header.number(), block.header.hash(), header.clone());
+        Ok(header)
+    }
+
+    /// Fetches `numbers` in one batch, returning headers in order up to the first one that's
+    /// unavailable.
+    async fn fetch_and_cache_header_batch(&self, numbers: &[u64]) -> Result<Vec<TempoHeader>> {
+        let mut batch = BatchRequest::new(self.provider.client());
+        let mut waiters = Vec::with_capacity(numbers.len());
+
+        for &number in numbers {
+            let waiter = batch.add_call::<_, Option<TempoRpcBlock>>(
+                "eth_getBlockByNumber",
+                &(BlockNumberOrTag::Number(number), false),
+            )?;
+            waiters.push((number, waiter));
+        }
+
+        batch.send().await.context("failed to fetch header batch")?;
+
+        let mut headers = Vec::with_capacity(numbers.len());
+        for (number, waiter) in waiters {
+            match waiter.await {
+                Ok(Some(block)) => {
+                    let header: TempoHeader = block.header.inner.inner.clone();
+                    self.cache.lock().insert_header(
+                        block.header.number(),
+                        block.header.hash(),
+                        header.clone(),
+                    );
+                    headers.push(header);
+                }
+                Ok(None) => {
+                    debug!(number, "header batch returned no block");
+                    break;
+                }
+                Err(err) => {
+                    debug!(number, %err, "header batch waiter failed; falling back to single request");
+                    match self.fetch_and_cache_header_by_number(number).await {
+                        Ok(header) => headers.push(header),
                         Err(_) => break,
                     }
                 }
-                fetched
             }
-        };
-        let complete = fetched.len() == chunk.len();
-        headers.extend(fetched.into_iter().map(|header| (header.number(), header)));
-        if !complete {
-            break;
+        }
+
+        Ok(headers)
+    }
+
+    /// Fetches the headers missing from the cache and returns them by number.
+    ///
+    /// Stops at the first header that's unavailable, since headers are only served up to it.
+    ///
+    /// Headers older than everything cached are evicted as soon as they're inserted into a full
+    /// cache, so callers can't rely on reading them back from it.
+    async fn fetch_and_cache_headers(&self, numbers: &[u64]) -> HashMap<u64, TempoHeader> {
+        let mut headers = HashMap::with_capacity(numbers.len());
+        let missing_numbers = self.take_cached_headers(numbers, &mut headers);
+
+        for chunk in missing_numbers.chunks(HEADER_RPC_BATCH_SIZE) {
+            let _permit = self.rpc_permit().await;
+            // Another request may have fetched some of these while this one waited.
+            let chunk = self.take_cached_headers(chunk, &mut headers);
+            if chunk.is_empty() {
+                continue;
+            }
+
+            let fetched = match self.fetch_and_cache_header_batch(&chunk).await {
+                Ok(fetched) => fetched,
+                Err(_) => {
+                    let mut fetched = Vec::with_capacity(chunk.len());
+                    for &number in &chunk {
+                        match self.fetch_and_cache_header_by_number(number).await {
+                            Ok(header) => fetched.push(header),
+                            Err(_) => break,
+                        }
+                    }
+                    fetched
+                }
+            };
+            let complete = fetched.len() == chunk.len();
+            headers.extend(fetched.into_iter().map(|header| (header.number(), header)));
+            if !complete {
+                break;
+            }
+        }
+        headers
+    }
+
+    /// Resolves the block number a request starts at, along with the start header when the
+    /// request names it by hash.
+    async fn resolve_start_block(
+        &self,
+        start_block: BlockHashOrNumber,
+    ) -> Option<(u64, Option<TempoHeader>)> {
+        match start_block {
+            BlockHashOrNumber::Number(number) => Some((number, None)),
+            BlockHashOrNumber::Hash(hash) => {
+                let header = self
+                    .cached_or_fetch(|| self.cached_header_by_hash(&hash), async {
+                        self.fetch_and_cache_header_by_hash(hash).await.ok()
+                    })
+                    .await?;
+                Some((header.number(), Some(header)))
+            }
         }
     }
-    headers
-}
 
-async fn resolve_start_block_number(
-    provider: &impl Provider<TempoNetwork>,
-    cache: &Mutex<BlockCache>,
-    start_block: BlockHashOrNumber,
-) -> Option<u64> {
-    match start_block {
-        BlockHashOrNumber::Number(number) => Some(number),
-        BlockHashOrNumber::Hash(hash) => {
-            let cached = cache
-                .lock()
-                .get_by_hash(&hash)
-                .map(|block| block.header.number());
-            if cached.is_some() {
-                return cached;
-            }
+    /// Resolve a GetBlockHeaders request from cache, fetching missing blocks from RPC as needed.
+    async fn resolve_headers(
+        &self,
+        request: &reth_eth_wire_types::GetBlockHeaders,
+    ) -> Vec<TempoHeader> {
+        let Some((start_num, start_header)) = self.resolve_start_block(request.start_block).await
+        else {
+            return Vec::new();
+        };
 
-            fetch_and_cache_header_by_hash(provider, cache, hash)
-                .await
-                .ok()
+        let requested_numbers = requested_header_numbers(start_num, request);
+        // A request that starts at a hash must start with that block, which a concurrent request
+        // or eviction may have since removed from the cache.
+        let fetch_from = usize::from(start_header.is_some()).min(requested_numbers.len());
+        let mut available = self
+            .fetch_and_cache_headers(&requested_numbers[fetch_from..])
+            .await;
+        available.extend(start_header.map(|header| (start_num, header)));
+
+        let mut headers = Vec::with_capacity(requested_numbers.len());
+        for number in requested_numbers {
+            let Some(header) = available.remove(&number) else {
+                break;
+            };
+            headers.push(header);
         }
+
+        headers
+    }
+
+    async fn fetch_body_by_hash(&self, hash: B256) -> Option<tempo_primitives::BlockBody> {
+        let block = self
+            .provider
+            .get_block_by_hash(hash)
+            .full()
+            .await
+            .ok()
+            .flatten()?;
+        let number = block.header.number();
+        let header: TempoHeader = block.header.inner.inner.clone();
+        let body = tempo_primitives::BlockBody {
+            transactions: block
+                .transactions
+                .into_transactions()
+                .map(|tx| tx.into_inner())
+                .collect(),
+            ommers: vec![],
+            withdrawals: block.withdrawals,
+        };
+
+        self.cache
+            .lock()
+            .insert_block(number, hash, header, body.clone());
+        Some(body)
+    }
+
+    /// Resolve a GetBlockBodies request from cache, fetching missing blocks from RPC as needed.
+    async fn resolve_bodies(&self, hashes: &[B256]) -> Vec<tempo_primitives::BlockBody> {
+        let mut bodies = Vec::new();
+        let mut total_bytes = 0usize;
+
+        for &hash in hashes.iter().take(MAX_BODIES_SERVE) {
+            let Some(body) = self
+                .cached_or_fetch(|| self.cached_body(&hash), self.fetch_body_by_hash(hash))
+                .await
+            else {
+                break;
+            };
+
+            // At least one body is served as they can be up to ~8MiB.
+            total_bytes = total_bytes.saturating_add(body.length());
+            bodies.push(body);
+
+            if total_bytes >= SOFT_BODY_RESPONSE_SIZE_LIMIT {
+                break;
+            }
+        }
+
+        bodies
     }
 }
 
@@ -699,95 +831,6 @@ fn requested_header_numbers(
     numbers
 }
 
-/// Resolve a GetBlockHeaders request from cache, fetching missing blocks from RPC as needed.
-async fn resolve_headers(
-    provider: &impl Provider<TempoNetwork>,
-    cache: &Mutex<BlockCache>,
-    request: &reth_eth_wire_types::GetBlockHeaders,
-) -> Vec<TempoHeader> {
-    let Some(start_num) = resolve_start_block_number(provider, cache, request.start_block).await
-    else {
-        return Vec::new();
-    };
-
-    let requested_numbers = requested_header_numbers(start_num, request);
-    let mut available = fetch_and_cache_headers(provider, cache, &requested_numbers).await;
-
-    let mut headers = Vec::with_capacity(requested_numbers.len());
-    for number in requested_numbers {
-        let Some(header) = available.remove(&number) else {
-            break;
-        };
-        headers.push(header);
-    }
-
-    headers
-}
-
-async fn fetch_body_by_hash(
-    provider: &impl Provider<TempoNetwork>,
-    cache: &Mutex<BlockCache>,
-    hash: B256,
-) -> Option<tempo_primitives::BlockBody> {
-    let block = provider
-        .get_block_by_hash(hash)
-        .full()
-        .await
-        .ok()
-        .flatten()?;
-    let number = block.header.number();
-    let header: TempoHeader = block.header.inner.inner.clone();
-    let body = tempo_primitives::BlockBody {
-        transactions: block
-            .transactions
-            .into_transactions()
-            .map(|tx| tx.into_inner())
-            .collect(),
-        ommers: vec![],
-        withdrawals: block.withdrawals,
-    };
-
-    cache
-        .lock()
-        .insert_block(number, hash, header, body.clone());
-    Some(body)
-}
-
-/// Resolve a GetBlockBodies request from cache, fetching missing blocks from RPC as needed.
-async fn resolve_bodies(
-    provider: &impl Provider<TempoNetwork>,
-    cache: &Mutex<BlockCache>,
-    hashes: &[B256],
-) -> Vec<tempo_primitives::BlockBody> {
-    let mut bodies = Vec::new();
-    let mut total_bytes = 0usize;
-
-    for &hash in hashes.iter().take(MAX_BODIES_SERVE) {
-        // Bound to a local so the lock isn't held across the fetch below.
-        let cached = cache
-            .lock()
-            .get_by_hash(&hash)
-            .and_then(|block| block.body.clone());
-        let body = match cached {
-            Some(body) => body,
-            None => match fetch_body_by_hash(provider, cache, hash).await {
-                Some(body) => body,
-                None => break,
-            },
-        };
-
-        // At least one body is served as they can be up to ~8MiB.
-        total_bytes = total_bytes.saturating_add(body.length());
-        bodies.push(body);
-
-        if total_bytes >= SOFT_BODY_RESPONSE_SIZE_LIMIT {
-            break;
-        }
-    }
-
-    bodies
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -797,6 +840,7 @@ mod tests {
         providers::mock::Asserter,
         rpc::types::BlockTransactions,
     };
+    use futures::FutureExt;
     use reth_eth_wire_types::GetBlockHeaders;
     use tempo_alloy::rpc::TempoHeaderResponse;
 
@@ -877,7 +921,7 @@ mod tests {
         let asserter = Asserter::new();
         let provider = ProviderBuilder::<_, _, TempoNetwork>::default()
             .connect_mocked_client(asserter.clone());
-        let cache = Mutex::new(BlockCache::new(100));
+        let fetcher = BlockFetcher::new(&provider, BlockCache::new(100));
 
         // The first batch finds the tip and nothing past it.
         asserter.push_success(&Some(rpc_block(10)));
@@ -893,11 +937,72 @@ mod tests {
             skip: 0,
             direction: HeadersDirection::Rising,
         };
-        let headers = resolve_headers(&provider, &cache, &request).await;
+        let headers = fetcher.resolve_headers(&request).await;
 
         assert_eq!(headers.len(), 1);
         assert_eq!(headers[0].number(), 10);
         assert_eq!(asserter.read_q().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn resolve_headers_starts_with_requested_hash_after_eviction() {
+        let asserter = Asserter::new();
+        let provider = ProviderBuilder::<_, _, TempoNetwork>::default()
+            .connect_mocked_client(asserter.clone());
+        // A full cache of newer blocks evicts the start header as soon as it's inserted.
+        let mut cache = BlockCache::new(2);
+        insert_test_header(&mut cache, 1 << 40);
+        insert_test_header(&mut cache, (1 << 40) + 1);
+        let fetcher = BlockFetcher::new(&provider, cache);
+
+        // Only the hash lookup and the batch for the remaining header are answered, so
+        // reading the start header back by number would come up short.
+        asserter.push_success(&Some(rpc_block(5)));
+        asserter.push_success(&Some(rpc_block(4)));
+
+        let request = GetBlockHeaders {
+            start_block: BlockHashOrNumber::Hash(numbered_hash(5)),
+            limit: 2,
+            skip: 0,
+            direction: HeadersDirection::Falling,
+        };
+        let headers = fetcher.resolve_headers(&request).await;
+
+        assert_eq!(
+            headers
+                .iter()
+                .map(|header| header.number())
+                .collect::<Vec<_>>(),
+            [5, 4]
+        );
+        assert!(asserter.read_q().is_empty());
+    }
+
+    #[tokio::test]
+    async fn resolve_bodies_rechecks_cache_after_waiting_for_rpc_permit() {
+        // No responses are queued, so any RPC call fails.
+        let provider =
+            ProviderBuilder::<_, _, TempoNetwork>::default().connect_mocked_client(Asserter::new());
+        let fetcher = BlockFetcher::new(&provider, BlockCache::new(10));
+        let hashes = [numbered_hash(1)];
+
+        let permits = fetcher
+            .rpc_permits
+            .acquire_many(MAX_CONCURRENT_RPC_FETCHES as u32)
+            .await
+            .unwrap();
+        let request = fetcher.resolve_bodies(&hashes);
+        tokio::pin!(request);
+        assert!(request.as_mut().now_or_never().is_none());
+
+        // Another request fetches the block while this one waits for a permit.
+        fetcher
+            .cache
+            .lock()
+            .insert_block(1, hashes[0], TempoHeader::default(), Default::default());
+        drop(permits);
+
+        assert_eq!(request.await.len(), 1);
     }
 
     #[test]
@@ -954,7 +1059,7 @@ mod tests {
         for number in 1..=1_000 {
             insert_test_header(&mut cache, number);
         }
-        let cache = Mutex::new(cache);
+        let fetcher = BlockFetcher::new(&provider, cache);
 
         let request = GetBlockHeaders {
             start_block: BlockHashOrNumber::Number(1),
@@ -962,7 +1067,7 @@ mod tests {
             skip: 0,
             direction: HeadersDirection::Rising,
         };
-        let headers = resolve_headers(&provider, &cache, &request).await;
+        let headers = fetcher.resolve_headers(&request).await;
 
         assert_eq!(headers.len(), 1_000);
         assert_eq!(headers[0].number(), 1);
@@ -981,10 +1086,11 @@ mod tests {
         cache.insert_block(1, first_hash, TempoHeader::default(), body.clone());
         cache.insert_block(2, second_hash, TempoHeader::default(), body.clone());
         cache.insert_block(3, third_hash, TempoHeader::default(), body);
-        let cache = Mutex::new(cache);
+        let fetcher = BlockFetcher::new(&provider, cache);
 
-        let bodies =
-            resolve_bodies(&provider, &cache, &[first_hash, second_hash, third_hash]).await;
+        let bodies = fetcher
+            .resolve_bodies(&[first_hash, second_hash, third_hash])
+            .await;
         assert_eq!(bodies.len(), 2);
     }
 
@@ -998,9 +1104,9 @@ mod tests {
 
         cache.insert_block(1, first_hash, TempoHeader::default(), body.clone());
         cache.insert_block(2, second_hash, TempoHeader::default(), body);
-        let cache = Mutex::new(cache);
+        let fetcher = BlockFetcher::new(&provider, cache);
 
-        let bodies = resolve_bodies(&provider, &cache, &[first_hash, second_hash]).await;
+        let bodies = fetcher.resolve_bodies(&[first_hash, second_hash]).await;
         assert_eq!(bodies.len(), 1);
         assert!(bodies[0].length() > SOFT_BODY_RESPONSE_SIZE_LIMIT);
     }
@@ -1019,16 +1125,16 @@ mod tests {
                 tempo_primitives::BlockBody::default(),
             );
         }
-        let cache = Mutex::new(cache);
+        let fetcher = BlockFetcher::new(&provider, cache);
 
-        let bodies = resolve_bodies(&provider, &cache, &hashes).await;
+        let bodies = fetcher.resolve_bodies(&hashes).await;
         assert_eq!(bodies.len(), MAX_BODIES_SERVE);
     }
 
     #[tokio::test]
     async fn fetch_headers_and_bodies() {
         let provider = moderato_provider();
-        let cache = Mutex::new(BlockCache::new(100));
+        let fetcher = BlockFetcher::new(&provider, BlockCache::new(100));
 
         let latest = provider.get_block_number().await.unwrap();
         let start = latest.saturating_sub(4);
@@ -1040,7 +1146,7 @@ mod tests {
             skip: 0,
             direction: HeadersDirection::Rising,
         };
-        let headers = resolve_headers(&provider, &cache, &request).await;
+        let headers = fetcher.resolve_headers(&request).await;
         assert_eq!(headers.len(), 5);
         for (i, header) in headers.iter().enumerate() {
             assert_eq!(header.number(), start + i as u64);
@@ -1052,29 +1158,27 @@ mod tests {
 
         // Fetch bodies for the cached blocks
         let hashes: Vec<B256> = (start..=latest)
-            .map(|n| cache.lock().get_by_number(n).unwrap().hash)
+            .map(|n| fetcher.cache.lock().get_by_number(n).unwrap().hash)
             .collect();
-        let bodies = resolve_bodies(&provider, &cache, &hashes).await;
+        let bodies = fetcher.resolve_bodies(&hashes).await;
         assert_eq!(bodies.len(), 5);
     }
 
     #[tokio::test]
     async fn fetch_body_by_hash_from_rpc() {
         let provider = moderato_provider();
-        let cache = Mutex::new(BlockCache::new(100));
+        let fetcher = BlockFetcher::new(&provider, BlockCache::new(100));
 
         // Learn a hash, then clear cache to force RPC fetch
         let latest = provider.get_block_number().await.unwrap();
-        fetch_and_cache_block(&provider, &cache, latest)
-            .await
-            .unwrap();
-        let hash = cache.lock().get_by_number(latest).unwrap().hash;
-        *cache.lock() = BlockCache::new(100);
+        fetcher.fetch_and_cache_block(latest).await.unwrap();
+        let hash = fetcher.cache.lock().get_by_number(latest).unwrap().hash;
+        *fetcher.cache.lock() = BlockCache::new(100);
 
-        let bodies = resolve_bodies(&provider, &cache, &[hash]).await;
+        let bodies = fetcher.resolve_bodies(&[hash]).await;
         assert_eq!(bodies.len(), 1);
         assert!(
-            cache.lock().get_by_hash(&hash).is_some(),
+            fetcher.cache.lock().get_by_hash(&hash).is_some(),
             "should be cached after fetch"
         );
     }
@@ -1082,7 +1186,7 @@ mod tests {
     #[tokio::test]
     async fn fetch_headers_by_hash_from_rpc_when_not_cached() {
         let provider = moderato_provider();
-        let cache = Mutex::new(BlockCache::new(100));
+        let fetcher = BlockFetcher::new(&provider, BlockCache::new(100));
 
         let latest = provider.get_block_number().await.unwrap();
         let start = latest.saturating_sub(2);
@@ -1099,12 +1203,12 @@ mod tests {
             skip: 0,
             direction: HeadersDirection::Rising,
         };
-        let headers = resolve_headers(&provider, &cache, &request).await;
+        let headers = fetcher.resolve_headers(&request).await;
 
         assert_eq!(headers.len(), 3);
         assert_eq!(headers[0].number(), start);
         assert_eq!(headers[0].hash_slow(), start_hash);
-        assert!(cache.lock().get_by_hash(&start_hash).is_some());
+        assert!(fetcher.cache.lock().get_by_hash(&start_hash).is_some());
     }
 
     #[tokio::test]
@@ -1115,7 +1219,7 @@ mod tests {
         // A full cache of newer blocks evicts each fetched header as soon as it's inserted.
         insert_test_header(&mut cache, 1 << 40);
         insert_test_header(&mut cache, (1 << 40) + 1);
-        let cache = Mutex::new(cache);
+        let fetcher = BlockFetcher::new(&provider, cache);
 
         let request = GetBlockHeaders {
             start_block: BlockHashOrNumber::Number(1),
@@ -1123,7 +1227,7 @@ mod tests {
             skip: 0,
             direction: HeadersDirection::Rising,
         };
-        let headers = resolve_headers(&provider, &cache, &request).await;
+        let headers = fetcher.resolve_headers(&request).await;
 
         assert_eq!(headers.len(), 3);
         assert_eq!(headers[0].number(), 1);
