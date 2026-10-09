@@ -27,6 +27,9 @@ use crate::{
     routing::{RpcParams, unsupported, upstream_error},
 };
 
+const IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(30);
+
 /// Resolved from the ordinary node's chain and data-directory configuration.
 #[derive(Clone, Debug)]
 pub struct WorkerContext {
@@ -41,7 +44,8 @@ pub struct WorkerContext {
     pub startup_timeout: Duration,
 }
 
-/// RPC client and verified execution metadata for a ready historical worker.
+/// RPC client and verified execution metadata. Retain this handle while using its client to
+/// protect the worker from idle shutdown.
 #[derive(Debug)]
 pub struct HistoricalWorker {
     pub client: HttpClient,
@@ -53,6 +57,7 @@ struct Process {
     client: HttpClient,
     ready: Option<Arc<HistoricalWorker>>,
     deadline: Instant,
+    idle_since: Option<Instant>,
 }
 
 enum State {
@@ -64,7 +69,8 @@ enum State {
 /// Clones share one process per era. Startup is serialized independently for each era.
 ///
 /// A cancelled request leaves a starting child owned by its state, so another request can finish
-/// the handshake. Explicit shutdown reaps every child; final drop kills children as a fallback.
+/// the handshake. Unleased workers are stopped after five idle minutes and restarted on demand.
+/// Explicit shutdown reaps every child; final drop kills children as a fallback.
 pub struct HistoricalWorkers {
     context: WorkerContext,
     eras: Vec<ReleaseEra>,
@@ -101,12 +107,30 @@ impl HistoricalWorkers {
             );
         }
         let states = eras.iter().map(|_| Mutex::new(State::Dormant)).collect();
-        Ok(Arc::new(Self {
+        let runtime = tokio::runtime::Handle::try_current()
+            .wrap_err("historical workers require a Tokio runtime")?;
+        let workers = Arc::new(Self {
             context,
             eras,
             states,
             shutdown: CancellationToken::new(),
-        }))
+        });
+        let weak = Arc::downgrade(&workers);
+        let shutdown = workers.shutdown.clone();
+        runtime.spawn(async move {
+            tokio::select! {
+                biased;
+                _ = shutdown.cancelled() => {},
+                _ = async {
+                    loop {
+                        tokio::time::sleep(IDLE_CHECK_INTERVAL).await;
+                        let Some(workers) = weak.upgrade() else { break };
+                        workers.reap_idle().await;
+                    }
+                } => {},
+            }
+        });
+        Ok(workers)
     }
 
     pub async fn get(&self, index: usize) -> Result<Arc<HistoricalWorker>> {
@@ -132,6 +156,7 @@ impl HistoricalWorkers {
             if let Some(status) = process.child.try_wait()? {
                 bail!("historical era {} exited with {status}", era.name);
             }
+            process.idle_since = None;
             if let Some(worker) = &process.ready {
                 return Ok(worker.clone());
             }
@@ -176,11 +201,42 @@ impl HistoricalWorkers {
                 self.eras[index].name
             )));
         }
-        worker
-            .client
-            .request(method, params)
+        let method = method.to_owned();
+        // A cancelled caller may leave execution running in the child. Keep the lease until its
+        // private response completes, so cancelled requests cannot make a busy worker look idle.
+        tokio::spawn(async move { worker.client.request(&method, params).await })
             .await
+            .map_err(|error| ErrorObjectOwned::owned(-32000, error.to_string(), None::<()>))?
             .map_err(upstream_error)
+    }
+
+    async fn reap_idle(&self) {
+        for (era, state) in self.eras.iter().zip(&self.states) {
+            let Ok(mut state) = state.try_lock() else {
+                continue;
+            };
+            let State::Running(process) = &mut *state else {
+                continue;
+            };
+            if process.ready.as_ref().map_or(0, Arc::strong_count) > 1 {
+                process.idle_since = None;
+                continue;
+            }
+            let now = Instant::now();
+            if now.duration_since(*process.idle_since.get_or_insert(now)) < IDLE_TIMEOUT {
+                continue;
+            }
+            // Preserve sticky failure diagnostics for workers that exited unexpectedly.
+            if !matches!(process.child.try_wait(), Ok(None)) {
+                continue;
+            }
+            if let Err(error) = shutdown_children([(era.name.as_str(), &mut process.child)]).await {
+                tracing::warn!(era = %era.name, %error, "Failed to reap idle historical worker");
+                continue;
+            }
+            *state = State::Dormant;
+            tracing::debug!(era = %era.name, "Stopped idle historical RPC worker");
+        }
     }
 
     pub async fn shutdown(&self) -> Result<()> {
@@ -244,6 +300,7 @@ fn spawn(context: &WorkerContext, era: &ReleaseEra) -> Result<Process> {
         client,
         ready: None,
         deadline,
+        idle_since: None,
     })
 }
 
@@ -291,6 +348,7 @@ async fn ready(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use futures::FutureExt as _;
     use jsonrpsee::{RpcModule, server::ServerBuilder};
     use serde_json::{Value, json};
     use std::os::unix::fs::PermissionsExt;
@@ -412,35 +470,71 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn starts_lazily_and_coalesces_concurrent_requests() {
+    async fn workers_start_lazily_coalesce_and_restart_after_idle() {
         let fixture = Fixture::new("", 0);
+        let workers = &fixture.workers;
         assert!(!fixture.starts.exists());
-        let (first, second) = tokio::join!(fixture.workers.get(0), fixture.workers.get(0));
+        let (first, second) = tokio::join!(workers.get(0), workers.get(0));
         let first = first.unwrap();
         second.unwrap();
-        assert_eq!(fixture.pids(), [first.info.process_id]);
+        let pid = first.info.process_id;
+        assert_eq!(fixture.pids(), [pid]);
         let params = json!({"request": {"to": "0x1234"}, "blockId": "0x1"});
+        let response = workers
+            .request(0, "eth_call", RpcParams(params.clone()))
+            .await
+            .unwrap();
+        assert_eq!(response.get(), params.to_string());
         assert_eq!(
-            fixture
-                .workers
-                .request(0, "eth_call", RpcParams(params.clone()))
-                .await
-                .unwrap()
-                .get(),
-            params.to_string()
-        );
-        assert_eq!(
-            fixture
-                .workers
+            workers
                 .request(0, "debug_unknown", RpcParams(Value::Null))
                 .await
                 .unwrap_err()
                 .code(),
             -32004
         );
-        fixture.workers.shutdown().await.unwrap();
-        assert_reaped(first.info.process_id);
-        assert!(fixture.workers.get(0).await.is_err());
+
+        tokio::time::pause();
+        tokio::time::advance(IDLE_TIMEOUT + IDLE_CHECK_INTERVAL).await;
+        workers.reap_idle().await;
+        assert!(matches!(*workers.states[0].lock().await, State::Running(_)));
+        drop(first);
+        workers.reap_idle().await;
+        tokio::time::advance(IDLE_TIMEOUT - IDLE_CHECK_INTERVAL).await;
+        assert!(matches!(*workers.states[0].lock().await, State::Running(_)));
+        tokio::time::advance(IDLE_CHECK_INTERVAL * 2).await;
+        tokio::time::resume();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !matches!(*workers.states[0].lock().await, State::Dormant) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_reaped(pid);
+        let worker = workers.get(0).await.unwrap();
+        workers.shutdown().await.unwrap();
+        assert_reaped(worker.info.process_id);
+        assert!(workers.get(0).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn cancelled_calls_do_not_trigger_idle_shutdown() {
+        let fixture = Fixture::new("", 0);
+        let workers = &fixture.workers;
+        let pid = workers.get(0).await.unwrap().info.process_id;
+        let call = workers.request(0, "eth_call", RpcParams(json!([])));
+        assert!(call.now_or_never().is_none());
+        {
+            let mut state = workers.states[0].lock().await;
+            let State::Running(process) = &mut *state else {
+                unreachable!()
+            };
+            process.idle_since = Some(Instant::now() - IDLE_TIMEOUT);
+        }
+        workers.reap_idle().await;
+        assert_eq!(workers.get(0).await.unwrap().info.process_id, pid);
+        workers.shutdown().await.unwrap();
     }
 
     #[tokio::test]
@@ -489,6 +583,7 @@ mod tests {
             } else {
                 request.abort();
                 let _ = request.await;
+                fixture.workers.reap_idle().await;
                 assert_eq!(fixture.workers.get(0).await.unwrap().info.process_id, pid);
                 fixture.workers.shutdown().await.unwrap();
             }

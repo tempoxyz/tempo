@@ -60,6 +60,8 @@ Missing historical state fails through the worker's ordinary storage behavior.
   bad-block cache resolution and whole-history deployment searches are not implemented.
 
 Workers are coalesced per era and verified by protocol, chain, genesis, read-only mode, and PID.
+Workers shut down after five idle minutes, checked every 30 seconds, and restart on demand.
+Active private RPC calls retain their worker, including when the public caller cancels.
 Shutdown reaps owned children. A failed or missing worker affects historical requests for its era;
 live RPC stays available.
 
