@@ -937,7 +937,7 @@ where
             epoch = %round.epoch(),
             %from,
             bytes = message.len()),
-        err)]
+        err(level = Level::WARN))]
     #[expect(
         clippy::too_many_arguments,
         reason = "easiest way to express this for now"
