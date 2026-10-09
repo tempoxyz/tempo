@@ -791,6 +791,10 @@ mod tests {
 
     fn cached_body_with_min_size(min_size: usize) -> tempo_primitives::BlockBody {
         let mut body = tempo_primitives::BlockBody::default();
+        // Start one ommer short of the size so the loop below, which re-encodes the whole
+        // body per push, only adds the last few.
+        let ommer_size = TempoHeader::default().length();
+        body.ommers = vec![TempoHeader::default(); (min_size / ommer_size).saturating_sub(1)];
         while body.length() < min_size {
             body.ommers.push(TempoHeader::default());
         }

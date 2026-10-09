@@ -1,0 +1,68 @@
+version: 1
+
+chains:
+  l1:
+    network: tempo
+    rpc_url: "${L1_RPC_URL}"
+    query_rpc_url: "${ZONES_BENCH_L1_QUERY_RPC_URL}"
+    observation:
+      mode: auto
+      websocket_url: "${L1_WS_RPC_URL}"
+      poll_interval: 50ms
+    chain_id: ${ZONES_BENCH_EXPECTED_L1_CHAIN_ID}
+    workload: ./l1-onramp.yml
+
+scenario:
+  name: neobank-rewards-funding-setup
+  execution: dag
+  timeout: 10m
+
+  bindings:
+    control:
+      account: { pool: control, select: lease }
+
+  steps:
+    - id: approval
+      submit:
+        chain: l1
+        template: reward_approval
+        with:
+          from: { var: control.ref }
+          call:
+            args:
+              - "${ZONES_BENCH_EARN_CONTRIBUTION_CONTROLLER}"
+              - "${ZONES_BENCH_REWARD_FUND_AMOUNT}"
+        await: receipt
+      save: approval
+
+    - id: funding
+      depends_on: [approval]
+      submit:
+        chain: l1
+        template: reward_fund
+        with:
+          from: { var: control.ref }
+          call:
+            args:
+              - { var: control.address }
+              - "${ZONES_BENCH_REWARD_FUND_AMOUNT}"
+              - "${ZONES_BENCH_REWARD_MAX_EARN_SHARE_SUPPLY}"
+        await: receipt
+      save: funding
+
+    - id: funded
+      depends_on: [funding]
+      wait_log:
+        chain: l1
+        transaction_hash: { var: funding.tx_hash }
+        sender: { var: funding.sender }
+        address: "${ZONES_BENCH_EARN_CONTRIBUTION_CONTROLLER}"
+        abi: EarnContributionController
+        event: Funded
+        where:
+          funder: { var: control.address }
+          requestedAssets: "${ZONES_BENCH_REWARD_FUND_AMOUNT}"
+          fundedAssets: "${ZONES_BENCH_REWARD_FUND_AMOUNT}"
+        max_block_range: 1000
+      timeout: 45s
+      save: funded

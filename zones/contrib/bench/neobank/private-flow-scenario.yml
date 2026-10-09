@@ -1,0 +1,171 @@
+version: 1
+
+include:
+  - ./neobank-scenario-fragments.yml
+
+chains:
+  l1:
+    network: tempo
+    rpc_url: "${L1_RPC_URL}"
+    query_rpc_url: "${ZONES_BENCH_L1_QUERY_RPC_URL}"
+    observation:
+      mode: auto
+      websocket_url: "${L1_WS_RPC_URL}"
+      poll_interval: 50ms
+    chain_id: ${ZONES_BENCH_EXPECTED_L1_CHAIN_ID}
+    workload: ./l1-onramp.yml
+
+  zone:
+    network: tempo
+    rpc_url: "${ZONE_REDACTED_RPC_URL}"
+    query_rpc_url: "${ZONE_RPC_URL}"
+    observation:
+      mode: auto
+      websocket_url: "${ZONE_WS_RPC_URL}"
+      poll_interval: 50ms
+    request_auth:
+      sender_header:
+        name: X-Authorization-Token
+        map: "${ZONES_BENCH_ZONE_AUTH_MAP}"
+        reload_interval: 1s
+    chain_id: ${ZONES_BENCH_EXPECTED_ZONE_CHAIN_ID}
+    workload: ./zone-flow.yml
+
+scenario:
+  name: neobank-private-zone-flow
+  execution: dag
+  timeout: 10m
+
+  bindings:
+    account:
+      account: { pool: users, select: lease }
+    onramp_action_id:
+      bytes32: { random_bytes: 32 }
+    earn_deposit_action_id:
+      bytes32: { random_bytes: 32 }
+    earn_redeem_action_id:
+      bytes32: { random_bytes: 32 }
+    offramp_action_id:
+      bytes32: { random_bytes: 32 }
+
+  steps:
+    - use: encrypted-zone-entry
+      as: onramp
+      with:
+        sender: { var: account.ref }
+        sender_address: { var: account.address }
+        recipient: { var: account.address }
+        token: "${ZONES_BENCH_DLUSD}"
+        fee_token: "${ZONES_BENCH_DLUSD}"
+        amount: ${ZONES_BENCH_DEPOSIT_AMOUNT}
+        memo: { var: onramp_action_id }
+
+    - use: earn-deposit-and-return
+      as: earn_deposit
+      depends_on: [onramp.zone_deposit.processed]
+      with:
+        sender: { var: account.ref }
+        sender_address: { var: account.address }
+        recipient: { var: account.address }
+        input_token: "${ZONES_BENCH_DLUSD}"
+        fee_token: "${ZONES_BENCH_DLUSD}"
+        amount: ${ZONES_BENCH_WITHDRAWAL_AMOUNT}
+        min_vault_assets: ${ZONES_BENCH_WITHDRAWAL_AMOUNT}
+        min_vault_shares: ${ZONES_BENCH_WITHDRAWAL_AMOUNT}
+        action_id: { var: earn_deposit_action_id }
+        fallback_recipient: { var: account.address }
+        refund_recipient: { var: account.address }
+
+    - use: earn-redeem-and-return
+      as: earn_redeem
+      depends_on: [earn_deposit.zone_return.processed]
+      with:
+        sender: { var: account.ref }
+        sender_address: { var: account.address }
+        recipient: { var: account.address }
+        output_token: "${ZONES_BENCH_DLUSD}"
+        fee_token: "${ZONES_BENCH_DLUSD}"
+        amount: { var: earn_deposit.zone_return.processed.args.amount }
+        min_vault_assets: ${ZONES_BENCH_WITHDRAWAL_AMOUNT}
+        min_output_amount: ${ZONES_BENCH_WITHDRAWAL_AMOUNT}
+        action_id: { var: earn_redeem_action_id }
+        fallback_recipient: { var: account.address }
+        refund_recipient: { var: account.address }
+
+    - id: l1_before_offramp
+      depends_on: [earn_redeem.zone_return.processed]
+      checkpoint: { chain: l1 }
+      save: l1_before_offramp
+
+    - id: offramp
+      depends_on: [l1_before_offramp, earn_redeem.zone_return.processed]
+      submit:
+        chain: zone
+        template: offramp
+        with:
+          from: { var: account.ref }
+          fee_token: "${ZONES_BENCH_DLUSD}"
+          call:
+            args:
+              - "${ZONES_BENCH_DLUSD}"
+              - "${ZONES_BENCH_BRIDGE_WALLET}"
+              - { var: earn_redeem.zone_return.processed.args.amount }
+              - { var: offramp_action_id }
+              - 0
+              - { var: account.address }
+              - "0x"
+              - "0x"
+      save: offramp
+
+    - id: offramp_result
+      depends_on: [earn_redeem.zone_return.processed, offramp]
+      wait_log:
+        chain: zone
+        from_block: { var: earn_redeem.zone_return.processed.block_number }
+        transaction_hash: { var: offramp.tx_hash }
+        sender: { var: offramp.sender }
+        address: "${ZONES_BENCH_OUTBOX}"
+        abi: ZoneOutbox
+        event: WithdrawalRequested
+        where:
+          sender: { var: account.address }
+          token: "${ZONES_BENCH_DLUSD}"
+          to: "${ZONES_BENCH_BRIDGE_WALLET}"
+          amount: { var: earn_redeem.zone_return.processed.args.amount }
+          fee: 0
+          memo: { var: offramp_action_id }
+          gasLimit: 0
+          data: "0x"
+          revealTo: "0x"
+        max_block_range: 1000
+      timeout: 45s
+      save: offramp_result
+
+    - id: offramp_processed
+      depends_on: [l1_before_offramp, offramp, offramp_result]
+      wait_log:
+        chain: l1
+        from_block: { var: l1_before_offramp.block_number }
+        address: "${L1_PORTAL_ADDRESS}"
+        abi: ZonePortal
+        event: WithdrawalProcessed
+        where:
+          to: "${ZONES_BENCH_BRIDGE_WALLET}"
+          senderTag:
+            keccak256_packed:
+              types: [address, bytes32, uint64]
+              values:
+                - { var: account.address }
+                - { var: offramp.tx_hash }
+                - { var: offramp_result.args.fallbackNonce }
+          token: "${ZONES_BENCH_DLUSD}"
+          amount: { var: earn_redeem.zone_return.processed.args.amount }
+          callbackSuccess: true
+        max_block_range: 1000
+      save: offramp_processed
+
+    - id: journey_complete
+      depends_on:
+        - offramp_result
+        - offramp_processed
+      checkpoint: { chain: l1 }
