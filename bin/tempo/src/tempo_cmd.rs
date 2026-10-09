@@ -1369,14 +1369,31 @@ struct InfoOutput {
 
 #[derive(Debug, clap::Args)]
 pub struct Info {
-    /// RPC URL to query. Takes precedence over the chain spec's default RPC URL.
-    /// Defaults to the mainnet RPC URL when neither --rpc-url nor --chain is set.
-    #[arg(long)]
+    /// RPC URL to query; overrides --chain's default RPC URL.
+    /// If omitted, uses --chain's default RPC URL (errors if none).
+    /// With neither option, queries mainnet.
+    #[arg(
+        long,
+        next_line_help = true,
+        verbatim_doc_comment,
+        default_value = tempo_chainspec::spec::PRESTO
+            .default_follow_url()
+            .expect("mainnet chain spec has a default RPC URL"),
+        default_value_if("chain", clap::builder::ArgPredicate::IsPresent, None)
+    )]
     rpc_url: Option<String>,
 
     /// Chain spec (mainnet, testnet, or path to chainspec file).
-    /// Resolved automatically from the RPC chain id when omitted.
-    #[arg(long, short, value_parser = tempo_chainspec::spec::chain_value_parser)]
+    /// If omitted, detects the chain from the RPC chain ID; unknown chains require --chain.
+    /// If provided, the RPC chain ID must match or the command fails.
+    /// [default: detected from RPC chain ID]
+    #[arg(
+        long,
+        short,
+        next_line_help = true,
+        verbatim_doc_comment,
+        value_parser = tempo_chainspec::spec::chain_value_parser
+    )]
     chain: Option<Arc<TempoChainSpec>>,
 }
 
@@ -1587,7 +1604,7 @@ fn key_from_file<P: AsRef<Path>>(p: P) -> eyre::Result<PrivateKeySigner> {
 mod tests {
     use super::*;
     use alloy::transports::mock::Asserter;
-    use clap::Parser;
+    use clap::{Args, Parser};
     use reth_ethereum_cli::Cli;
     use reth_rpc_server_types::{RethRpcModule, RpcModuleSelection, RpcModuleValidator};
     use tempo_chainspec::spec::TempoChainSpecParser;
@@ -2112,5 +2129,97 @@ mod tests {
         assert_eq!(requested_url.as_deref(), Some("wss://rpc.presto.tempo.xyz"));
         assert_eq!(err.to_string(), "failed to get latest block number");
         assert!(asserter.read_q().is_empty());
+    }
+
+    #[test]
+    fn info_rpc_url_defaults_depend_on_chain() {
+        for (args, expected_rpc_url, expected_chain_id) in [
+            (vec![], Some("wss://rpc.presto.tempo.xyz"), None),
+            (vec!["--chain", "mainnet"], None, Some(4217)),
+            (vec!["--chain", "testnet"], None, Some(42431)),
+            (vec!["-c", "testnet"], None, Some(42431)),
+            (
+                vec!["--rpc-url", "http://localhost:8545"],
+                Some("http://localhost:8545"),
+                None,
+            ),
+            (
+                vec!["--chain", "testnet", "--rpc-url", "http://localhost:8545"],
+                Some("http://localhost:8545"),
+                Some(42431),
+            ),
+            (
+                vec!["--rpc-url", "http://localhost:8545", "--chain", "mainnet"],
+                Some("http://localhost:8545"),
+                Some(4217),
+            ),
+        ] {
+            let cli =
+                TempoCli::try_parse_from(["tempo", "consensus", "info"].into_iter().chain(args))
+                    .unwrap();
+            let info = match cli.command {
+                reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
+                    ConsensusSubcommand::Info(info),
+                )) => info,
+                other => panic!("expected Info, got `{other:?}`"),
+            };
+
+            assert_eq!(info.rpc_url.as_deref(), expected_rpc_url);
+            assert_eq!(
+                info.chain.map(|chain| chain.chain().id()),
+                expected_chain_id
+            );
+        }
+    }
+
+    #[test]
+    fn info_help_documents_conditional_defaults() {
+        let mut command = Info::augment_args(clap::Command::new("tempo consensus info"));
+
+        assert_eq!(
+            command.render_help().to_string(),
+            "\
+Usage: tempo consensus info [OPTIONS]
+
+Options:
+      --rpc-url <RPC_URL>
+          RPC URL to query; overrides --chain's default RPC URL.
+          If omitted, uses --chain's default RPC URL (errors if none).
+          With neither option, queries mainnet. [default: wss://rpc.presto.tempo.xyz]
+  -c, --chain <CHAIN>
+          Chain spec (mainnet, testnet, or path to chainspec file).
+          If omitted, detects the chain from the RPC chain ID; unknown chains require --chain.
+          If provided, the RPC chain ID must match or the command fails.
+          [default: detected from RPC chain ID]
+  -h, --help
+          Print help
+"
+        );
+        assert_eq!(
+            command
+                .render_long_help()
+                .to_string()
+                .replace("\n          \n", "\n\n"),
+            "\
+Usage: tempo consensus info [OPTIONS]
+
+Options:
+      --rpc-url <RPC_URL>
+          RPC URL to query; overrides --chain's default RPC URL.
+          If omitted, uses --chain's default RPC URL (errors if none).
+          With neither option, queries mainnet.
+
+          [default: wss://rpc.presto.tempo.xyz]
+
+  -c, --chain <CHAIN>
+          Chain spec (mainnet, testnet, or path to chainspec file).
+          If omitted, detects the chain from the RPC chain ID; unknown chains require --chain.
+          If provided, the RPC chain ID must match or the command fails.
+          [default: detected from RPC chain ID]
+
+  -h, --help
+          Print help
+"
+        );
     }
 }
