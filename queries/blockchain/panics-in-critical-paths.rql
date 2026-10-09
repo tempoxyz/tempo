@@ -1,0 +1,8 @@
+; Panic-prone calls in block decoding, DKG, follower sync, and EVM validation.
+; Test modules are excluded, but inspect other matches for proven invariants.
+(result-detail full
+  (limit 1000
+    (language rust
+      (where "crates/consensus/src/consensus/block.rs" "crates/consensus/src/dkg/manager/actor/mod.rs" "crates/consensus/src/follow/driver/actor.rs" "crates/consensus/src/follow/resolver/mod.rs" "crates/evm/src/consensus/mod.rs" "crates/evm/src/block.rs"
+        (not-inside (module :name "tests")
+          (call :callee (name/regex "^(unwrap|expect|panic|assert|unreachable|todo|unimplemented)$")))))))

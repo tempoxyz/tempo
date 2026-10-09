@@ -1,0 +1,6 @@
+; A block reconstructed without its BAL sidecar must not be encoded under the bal feature.
+; Trace each result to an encoding/broadcast path; constructor use alone is not a flaw.
+(result-detail full
+  (language rust
+    (where "crates/consensus/src/**/*.rs"
+      (call :callee (name "from_execution_block_unchecked")))))

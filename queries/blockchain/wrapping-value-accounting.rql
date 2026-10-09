@@ -1,0 +1,5 @@
+; Intentional storage-key modulo arithmetic and unwanted monetary wrap look identical here.
+(result-detail full
+  (language rust
+    (where "crates/precompiles/src/**/*.rs" "crates/evm/src/**/*.rs" "crates/transaction-pool/src/**/*.rs"
+      (call :callee (name/regex "^(wrapping|unchecked)_(add|sub|mul|div)$")))))

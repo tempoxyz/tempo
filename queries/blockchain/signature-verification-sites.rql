@@ -1,0 +1,7 @@
+; Crypto verification/recovery sites; this query does not prove results are unchecked.
+(result-detail full
+  (limit 1000
+    (language rust
+      (where "crates/consensus/src/finalization_verifier/mod.rs" "crates/consensus/src/consensus/application/impl.rs" "crates/precompiles/src/validator_config_v2/mod.rs" "crates/precompiles/src/zone_verifier/**/*.rs" "crates/primitives/src/transaction/tt_signature.rs"
+        (not-inside (module :name "tests")
+          (call :callee (name/regex "^(verify|verify_signature|verify_signatures|recover|recover_signer|is_valid_signature)$")))))))

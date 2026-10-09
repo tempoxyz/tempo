@@ -1,0 +1,6 @@
+; Repeated decode/parse in loops may allow disproportionate work for attacker-controlled input.
+(result-detail full
+  (language rust
+    (where "crates/consensus/src/**/*.rs" "crates/precompiles/src/**/*.rs" "crates/evm/src/**/*.rs" "crates/primitives/src/transaction/**/*.rs"
+      (inside-decl (loop)
+        (call :callee (name/regex "^(decode|abi_decode|deserialize|from_slice|from_str|parse)$"))))))

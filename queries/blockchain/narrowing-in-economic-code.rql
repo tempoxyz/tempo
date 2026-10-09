@@ -1,0 +1,6 @@
+; Syntactic numeric narrowing: inspect types, input limits, and conversion guards manually.
+(result-detail full
+  (language rust
+    (where "crates/precompiles/src/**/*.rs" "crates/evm/src/**/*.rs" "crates/transaction-pool/src/**/*.rs"
+      (not-inside (module :name "tests")
+        (assignment (text/regex "\\bas\\s+u(8|16|32|64)\\b"))))))
