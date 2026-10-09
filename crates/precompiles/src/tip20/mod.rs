@@ -26,7 +26,7 @@ use crate::{
     address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
     receive_policy_guard::{InboundKind, ReceivePolicyGuard, RecoveryMode},
-    storage::{Handler, Mapping},
+    storage::{Handler, Mapping, StorageAction},
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
     tip403_registry::{ALLOW_ALL_POLICY_ID, AuthRole, ITIP403Registry, TIP403Registry},
@@ -589,9 +589,17 @@ impl TIP20Token {
             return Err(TIP20Error::supply_cap_exceeded().into());
         }
 
+        self.storage.actions().record(StorageAction::SupplyCapCheck(
+            self.address,
+            self.total_supply.slot(),
+            total_supply,
+            amount,
+            supply_cap,
+        ));
+
         self.handle_rewards_on_mint(to.target, amount)?;
 
-        self.set_total_supply(new_supply)?;
+        self.total_supply.sinc(amount)?;
         self.increment_balance(to.target, amount)?;
 
         self.emit_event(to.build_transfer_event(Address::ZERO, amount))
@@ -1226,7 +1234,8 @@ impl TIP20Token {
     ) -> Result<Option<(U256, Recipient)>> {
         let to = Recipient::resolve(to)?;
         self.check_role(msg_sender, ISSUER_ROLE)?;
-        let total_supply = self.total_supply()?;
+        // The mint records a semantic supply-cap check instead of an exact supply read.
+        let total_supply = self.storage.actions().unrecorded(|| self.total_supply())?;
 
         if self.storage.spec().is_t3() {
             self.check_not_paused()?;
@@ -5727,6 +5736,70 @@ pub(crate) mod tests {
                 Ok::<_, TempoPrecompileError>(())
             })?;
         }
+        Ok(())
+    }
+
+    #[test]
+    fn test_mint_records_semantic_supply_increment() -> eyre::Result<()> {
+        let admin = Address::repeat_byte(0x11);
+        let recipient = Address::repeat_byte(0x22);
+        let mut cfg = CfgEnv::default();
+        cfg.set_spec_and_mainnet_gas_params(TempoHardfork::T12);
+        let mut evm = TempoEvm::new(
+            InMemoryDB::default(),
+            EvmEnv {
+                cfg_env: cfg,
+                block_env: TempoBlockEnv::default(),
+            },
+        );
+        let mut token = StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+            TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(admin, U256::from(10))
+                .apply()
+        })?;
+        let setup_state = evm.ctx_mut().journaled_state.finalize();
+        evm.db_mut().commit(setup_state);
+
+        let actions = StorageActions::enabled();
+        StorageCtx::enter_ctx(evm.ctx_mut(), actions.clone(), || {
+            token.mint(
+                admin,
+                ITIP20::mintCall {
+                    to: recipient,
+                    amount: U256::ONE,
+                },
+            )
+        })?;
+
+        let slot = token.total_supply.slot();
+        let supply_actions = actions
+            .take()
+            .unwrap()
+            .into_iter()
+            .filter(|action| match action {
+                StorageAction::Sload(address, key, ..)
+                | StorageAction::Sstore(address, key, ..)
+                | StorageAction::Sinc(address, key, ..)
+                | StorageAction::SupplyCapCheck(address, key, ..) => {
+                    *address == token.address && *key == slot
+                }
+                _ => false,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            supply_actions,
+            vec![
+                StorageAction::SupplyCapCheck(
+                    token.address,
+                    slot,
+                    U256::from(10),
+                    U256::ONE,
+                    U128_MAX
+                ),
+                StorageAction::Sinc(token.address, slot, U256::from(10), U256::ONE),
+            ]
+        );
         Ok(())
     }
 }
