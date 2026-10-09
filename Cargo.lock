@@ -13902,6 +13902,7 @@ name = "tempo-metabinary"
 version = "1.16.0"
 dependencies = [
  "alloy-chains",
+ "alloy-eips",
  "alloy-primitives",
  "clap",
  "eyre",

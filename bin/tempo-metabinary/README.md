@@ -103,11 +103,15 @@ era timestamp, and exact head. Subsequent imports verify the predecessor and fir
 No pipeline checkpoints or handoff markers are rewritten. An import failure may leave partial
 progress; use the ordinary Tempo recovery workflow.
 
-The active binary executes T10+ only; start from a T10+ snapshot or bootstrap older blocks through
-frozen binaries. Native genesis sync stops at the execution floor. Bootstrap does not download files
-or switch peer-to-peer writers. Production network-sync handoff still needs a bounded sync interface
-that also gates consensus payloads and fork choice; Reth's pipeline `--debug.max-block` alone does not
-supply that contract.
+The active binary executes T10+ only. On mainnet and Moderato, ordinary `tempo node` startup runs
+the bundled frozen writer through its pinned terminal T10 block, verifies the durable checkpoint,
+and reaps it before launching live execution. Interrupted sync resumes from Reth's saved progress.
+Before starting consensus, the live node verifies a recent finalization and its epoch boundary
+through the configured follow upstream or the chain's default consensus RPC. It saves the existing
+consensus archives and syncs execution to that certified tip. The executed canonical prefix is
+finalized durably, allowing either follower or validator mode to continue without replaying older eras.
+Custom fork schedules retain their native startup path. Canonical-file bootstrap remains available
+for offline imports.
 Historical validator-config reads already use storage without constructing an EVM.
 
 Frozen artifacts need this `rpc-only` discovery protocol and hidden `--rpc-config` interface,

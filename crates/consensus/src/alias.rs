@@ -8,7 +8,7 @@ pub(crate) mod marshal {
     use commonware_codec::ReadExt as _;
     use commonware_consensus::{
         Epochable as _,
-        marshal::{self, core, standard::Standard},
+        marshal::{self, core, standard::Standard, store::Blocks as _},
         simplex::scheme::bls12381_threshold::vrf::Scheme,
         types::{Epoch, Epocher as _, FixedEpocher, Height, Round, ViewDelta},
     };
@@ -287,6 +287,17 @@ pub(crate) mod marshal {
             first != 0,
             "genesis must not have a finalization certificate"
         );
+
+        // A newer floor may skip delivery only when execution and its cache cover the whole path.
+        let first = if blocks
+            .next_gap(execution_finalized_point(execution_node).0)
+            .0
+            .is_some_and(|height| height.get() >= last)
+        {
+            last
+        } else {
+            first
+        };
 
         let floor_certificate = certificates
             .get(Identifier::Index(first))

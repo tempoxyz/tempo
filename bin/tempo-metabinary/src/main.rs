@@ -7,7 +7,7 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 use tempo_metabinary::{
     catalog::ReleaseEra,
     manifest::{Bootstrap, Manifest},
-    process::{shutdown_children, spawn_bootstrap},
+    process::{shutdown_children, shutdown_signal, spawn_bootstrap},
     workers::{DEFAULT_STARTUP_TIMEOUT_SECS, HistoricalWorkers, WorkerContext},
 };
 use tokio::process::Child;
@@ -171,6 +171,7 @@ async fn bootstrap(
                 name: era.name.clone(),
                 start_timestamp: era.start_timestamp,
                 binary: Some(era.binary.clone()),
+                checkpoint: None,
             }],
         )?);
         let worker = workers.get(0).await?;
@@ -202,21 +203,6 @@ async fn bootstrap(
         *readers = None;
     }
     info!("historical bootstrap complete; start the live era with tempo node");
-    Ok(())
-}
-
-async fn shutdown_signal() -> Result<()> {
-    #[cfg(unix)]
-    {
-        let mut terminate =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-        tokio::select! {
-            result = tokio::signal::ctrl_c() => result?,
-            _ = terminate.recv() => {}
-        }
-    }
-    #[cfg(not(unix))]
-    tokio::signal::ctrl_c().await?;
     Ok(())
 }
 

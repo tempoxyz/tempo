@@ -1,6 +1,7 @@
 //! Release metadata. Runtime node options remain owned by Tempo's ordinary CLI.
 
 use crate::manifest::{resolve_path, validate_schedule};
+use alloy_eips::BlockNumHash;
 use alloy_primitives::{B256, U64};
 use eyre::{Context, ensure};
 use serde::{Deserialize, Serialize};
@@ -106,6 +107,9 @@ pub struct ReleaseEra {
     /// Frozen executable, resolved relative to the release catalog.
     #[serde(default)]
     pub binary: Option<PathBuf>,
+    /// Last canonical block to execute before handing storage to the next era.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<BlockNumHash>,
 }
 
 #[cfg(test)]

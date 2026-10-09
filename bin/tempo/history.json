@@ -1,9 +1,9 @@
 {
   "repository": "https://github.com/tempoxyz/tempo-history.git",
-  "ref": "history/genesis-t10",
-  "revision": "04b553cc6ea0c5a4e9b45c34500a7e85ec59b3c6",
+  "ref": "rus/tempo-era-handoff",
+  "revision": "73828f5d5c3c1a227c49d984aa10c26cfed2f09f",
   "era": "genesis-t10",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "upstream_revision": "4e14416db157271526e90d70a68b132c3b3a4123",
-  "era_sha256": "a80b6da652952e06c27f0daf25bc7662a8318f03b4e9731457891dd818431d6a"
+  "era_sha256": "26c04a2c1a7c5c05531ba5d0e69fe5ea73d60f4ce79ffc64c87dd26af3914b2c"
 }
