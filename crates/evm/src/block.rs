@@ -826,13 +826,12 @@ mod tests {
             AccountInfo,
             BUILDER_DEPOSIT_REQUEST_ADDRESS as BUILDER_DEPOSIT_REQUEST_PREDEPLOY_ADDRESS,
             BUILDER_EXIT_REQUEST_ADDRESS as BUILDER_EXIT_REQUEST_PREDEPLOY_ADDRESS,
-            DynDatabase as _, InMemoryDB, StateChangeSource as _,
+            DynDatabase as _, InMemoryDB,
         },
         interpreter::Host as _,
     };
     use rand::SeedableRng as _;
     use reth_chainspec::{EthChainSpec, EthereumHardfork, ForkCondition};
-    use reth_execution_types::{EvmState, TransactionChanges};
     use std::{
         iter::repeat_with,
         sync::{Arc, Mutex},
@@ -861,13 +860,6 @@ mod tests {
             .hardforks
             .insert(EthereumHardfork::Amsterdam, ForkCondition::Timestamp(0));
         Arc::new(spec)
-    }
-
-    /// Rebuilds the revm state a streamed state update describes, for assertions.
-    fn evm_state(state: &StateUpdate) -> EvmState {
-        let mut changes = TransactionChanges::default();
-        let Ok(()) = state.visit(&mut changes);
-        changes.state
     }
 
     #[test]
@@ -902,8 +894,7 @@ mod tests {
 
             let streamed = Arc::new(Mutex::new(Vec::new()));
             let hook_states = streamed.clone();
-            executor
-                .set_state_hook(move |state| hook_states.lock().unwrap().push(evm_state(&state)));
+            executor.set_state_hook(move |state| hook_states.lock().unwrap().push(state));
             executor.apply_pre_execution_changes().unwrap();
             let output = executor.finish().unwrap();
             db.commit_source(&reth_execution_types::BundleSource(&output.state));
@@ -914,7 +905,7 @@ mod tests {
                     .lock()
                     .unwrap()
                     .iter()
-                    .any(|state| state.contains_key(&HISTORY_STORAGE_ADDRESS))
+                    .any(|state| state.account(&HISTORY_STORAGE_ADDRESS).is_some())
             );
 
             assert_eq!(
@@ -2261,10 +2252,9 @@ mod tests {
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
 
-        let hook_calls: Arc<Mutex<Vec<EvmState>>> = Arc::new(Mutex::new(Vec::new()));
+        let hook_calls: Arc<Mutex<Vec<StateUpdate>>> = Arc::new(Mutex::new(Vec::new()));
         let hook_calls_clone = hook_calls.clone();
-        executor
-            .set_state_hook(move |state| hook_calls_clone.lock().unwrap().push(evm_state(&state)));
+        executor.set_state_hook(move |state| hook_calls_clone.lock().unwrap().push(state));
 
         let addr = Address::with_last_byte(0xff);
         executor.deploy_precompile_at_boundary(addr, &[]).unwrap();
@@ -2282,11 +2272,16 @@ mod tests {
         let calls = hook_calls.lock().unwrap();
         assert_eq!(calls.len(), 1, "state hook should be called exactly once");
         assert!(
-            calls[0].contains_key(&addr),
+            calls[0].account(&addr).is_some(),
             "state hook should contain the deployed address"
         );
         assert_eq!(
-            calls[0][&addr].original_info(),
+            calls[0]
+                .account(&addr)
+                .unwrap()
+                .original
+                .clone()
+                .unwrap_or_default(),
             Default::default(),
             "state hook account should preserve original_info"
         );
@@ -2310,17 +2305,21 @@ mod tests {
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
 
-        let hook_calls: Arc<Mutex<Vec<EvmState>>> = Arc::new(Mutex::new(Vec::new()));
+        let hook_calls: Arc<Mutex<Vec<StateUpdate>>> = Arc::new(Mutex::new(Vec::new()));
         let hook_calls_clone = hook_calls.clone();
-        executor
-            .set_state_hook(move |state| hook_calls_clone.lock().unwrap().push(evm_state(&state)));
+        executor.set_state_hook(move |state| hook_calls_clone.lock().unwrap().push(state));
 
         executor.deploy_precompile_at_boundary(addr, &[]).unwrap();
 
         let calls = hook_calls.lock().unwrap();
         assert_eq!(calls.len(), 1, "state hook should be called exactly once");
         assert_eq!(
-            calls[0][&addr].original_info(),
+            calls[0]
+                .account(&addr)
+                .unwrap()
+                .original
+                .clone()
+                .unwrap_or_default(),
             reth_execution_types::revm_account(&original_info),
             "state hook account should preserve existing original_info"
         );
@@ -2482,10 +2481,9 @@ mod tests {
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
 
-        let hook_calls: Arc<Mutex<Vec<EvmState>>> = Arc::new(Mutex::new(Vec::new()));
+        let hook_calls: Arc<Mutex<Vec<StateUpdate>>> = Arc::new(Mutex::new(Vec::new()));
         let hook_calls_clone = hook_calls.clone();
-        executor
-            .set_state_hook(move |state| hook_calls_clone.lock().unwrap().push(evm_state(&state)));
+        executor.set_state_hook(move |state| hook_calls_clone.lock().unwrap().push(state));
 
         executor.deploy_zone_factory_at_boundary().unwrap();
         executor.deploy_zone_factory_at_boundary().unwrap();
@@ -2534,18 +2532,18 @@ mod tests {
             3,
             "T10 installation and T13 replacement must each dispatch an update"
         );
-        assert!(calls[0].contains_key(&ZONE_FACTORY_ADDRESS));
+        assert!(calls[0].account(&ZONE_FACTORY_ADDRESS).is_some());
         for address in [
             ZONE_PORTAL_IMPL_ADDRESS,
             ZONE_VERIFIER_ADDRESS,
             ZONE_MESSENGER_ADDRESS,
         ] {
             assert!(
-                calls[1].contains_key(&address),
+                calls[1].account(&address).is_some(),
                 "shared runtime must be installed in the runtime state hook"
             );
             assert!(
-                calls[2].contains_key(&address),
+                calls[2].account(&address).is_some(),
                 "T13 runtime must be installed in the runtime state hook"
             );
         }
