@@ -1,3 +1,22 @@
 [[IgnoredVulns]]
 id = "RUSTSEC-2021-0127"
 reason = "Accept serde_cbor's unmaintained advisory while aws-nitro-enclaves-nsm-api depends on it; track replacement at https://github.com/aws/aws-nitro-enclaves-nsm-api/issues/19."
+
+# The Zones lockfile is inactive until the workspace integration. These are the
+# same versions the root Cargo.lock already carries and the scan baselines there;
+# root deny.toml ignores the bincode, paste, and proc-macro-error2 advisories too.
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0141"
+reason = "bincode is unmaintained; transitive via upstream crates, same version as root Cargo.lock."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0388"
+reason = "derivative is unmaintained; transitive via upstream crates, same version as root Cargo.lock."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0436"
+reason = "paste is unmaintained; transitive via upstream crates, same version as root Cargo.lock."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0173"
+reason = "proc-macro-error2 is unmaintained; transitive via upstream crates with no safe upgrade, same version as root Cargo.lock."
