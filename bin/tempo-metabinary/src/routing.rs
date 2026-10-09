@@ -248,8 +248,9 @@ impl Router {
                     .await?
                     .map_or(live, |timestamp| self.era(timestamp))
             }
-            _ => {
-                if let Some((index, names, number_only)) = block_argument(method) {
+            _ => match policy(method) {
+                Policy::Block(index, names, number_only)
+                | Policy::NativeBlock(index, names, number_only) => {
                     let selector = params.get(index, names).cloned().unwrap_or_else(|| {
                         json!(if method == "eth_estimateGas" {
                             "pending"
@@ -269,12 +270,12 @@ impl Router {
                         params.set(index, names, id);
                         era
                     }
-                } else if stored_or_live_method(method) {
-                    live
-                } else {
+                }
+                Policy::Native => live,
+                Policy::Execution | Policy::Unrouted => {
                     return Err(unsupported(format!("{method} has no era routing policy")));
                 }
-            }
+            },
         };
         Ok(Route { era, params })
     }
@@ -614,75 +615,43 @@ fn ensure_same_era(era: &mut Option<usize>, next: usize) -> RpcResult<()> {
     Ok(())
 }
 
-fn block_argument(method: &str) -> Option<(usize, &'static [&'static str], bool)> {
-    Some(match method {
+/// One classification controls selector routing and native callback decoration.
+enum Policy {
+    Native,
+    Block(usize, &'static [&'static str], bool),
+    // Native stubs keep their callbacks and their existing direct block-routing behavior.
+    NativeBlock(usize, &'static [&'static str], bool),
+    Execution,
+    Unrouted,
+}
+
+fn policy(method: &str) -> Policy {
+    match method {
+        "debug_subscribe" | "eth_subscribe" | "eth_unsubscribe" | "debug_unsubscribe" => Policy::Unrouted,
         "eth_call" | "eth_estimateGas" | "eth_createAccessList" => {
-            (1, &["block_number", "blockNumber"], false)
+            Policy::Block(1, &["block_number", "blockNumber"], false)
         }
-        "debug_traceCall" => (1, &["block_id", "blockId"], false),
-        "trace_call" | "trace_rawTransaction" => (2, &["block_id", "blockId"], false),
-        "trace_callMany" => (1, &["block_id", "blockId"], false),
-        "debug_traceBlockByNumber" | "debug_standardTraceBlockToFile" => (0, &["block"], true),
-        "debug_traceBlockByHash" => (0, &["block"], false),
-        "eth_getBlockAccessListByBlockHash" => (0, &["hash"], false),
-        "eth_getBlockAccessListByBlockNumber" => (0, &["number"], true),
-        "eth_getBlockAccessList" => (0, &["block_id", "blockId"], false),
+        "debug_traceCall" => Policy::Block(1, &["block_id", "blockId"], false),
+        "trace_call" | "trace_rawTransaction" => Policy::Block(2, &["block_id", "blockId"], false),
+        "trace_callMany" => Policy::Block(1, &["block_id", "blockId"], false),
+        "debug_traceBlockByNumber" => Policy::Block(0, &["block"], true),
+        "debug_standardTraceBlockToFile" => Policy::NativeBlock(0, &["block"], true),
+        "debug_traceBlockByHash" => Policy::Block(0, &["block"], false),
+        "eth_getBlockAccessListByBlockHash" => Policy::Block(0, &["hash"], false),
+        "eth_getBlockAccessListByBlockNumber" => Policy::Block(0, &["number"], true),
+        "eth_getBlockAccessList" => Policy::Block(0, &["block_id", "blockId"], false),
         "eth_getBlockAccessListRaw" | "debug_getRawBlockAccessList" => {
-            (0, &["block", "block_id", "blockId"], false)
+            Policy::Block(0, &["block", "block_id", "blockId"], false)
         }
-        "debug_executionWitnessByBlockHash" => (0, &["hash"], false),
-        "debug_storageRangeAt" | "debug_intermediateRoots" => {
-            (0, &["block_hash", "blockHash"], false)
-        }
-        "debug_executionWitness" => (0, &["block"], false),
+        "debug_executionWitnessByBlockHash" => Policy::Block(0, &["hash"], false),
+        "debug_storageRangeAt" => Policy::NativeBlock(0, &["block_hash", "blockHash"], false),
+        "debug_intermediateRoots" => Policy::Block(0, &["block_hash", "blockHash"], false),
+        "debug_executionWitness" => Policy::Block(0, &["block"], false),
         "debug_accountAt"
         | "debug_accountInfoAt"
         | "trace_block"
         | "trace_replayBlockTransactions"
-        | "trace_blockOpcodeGas" => (0, &["block_id", "blockId"], false),
-        _ => return None,
-    })
-}
-
-/// Decorate only callbacks that can execute an EVM. Unreviewed debug/trace calls fail closed;
-/// storage and operational callbacks continue through the native handler unchanged.
-pub fn is_execution_method(method: &str) -> bool {
-    !stored_or_live_method(method)
-        && (matches!(
-            method,
-            "mev_simBundle"
-                | "reth_getBlockExecutionOutcome"
-                | "ots_getInternalOperations"
-                | "ots_getTransactionError"
-                | "ots_traceTransaction"
-                | "ots_getContractCreator"
-        ) || (["debug_", "trace_", "eth_", "tempo_"]
-            .iter()
-            .any(|prefix| method.starts_with(prefix))
-            && !matches!(
-                method,
-                "debug_subscribe" | "debug_unsubscribe" | "eth_subscribe" | "eth_unsubscribe"
-            )))
-}
-
-/// Unknown execution namespaces fail closed until their selector semantics have been reviewed.
-fn stored_or_live_method(method: &str) -> bool {
-    if [
-        "net_",
-        "web3_",
-        "rpc_",
-        "txpool_",
-        "admin_",
-        "operator_",
-        "consensus_",
-    ]
-    .iter()
-    .any(|prefix| method.starts_with(prefix))
-    {
-        return true;
-    }
-    matches!(
-        method,
+        | "trace_blockOpcodeGas" => Policy::Block(0, &["block_id", "blockId"], false),
         "eth_protocolVersion"
             | "eth_syncing"
             | "eth_coinbase"
@@ -782,8 +751,21 @@ fn stored_or_live_method(method: &str) -> bool {
             | "debug_setTrieFlushInterval"
             // These APIs are currently non-executing stubs in the pinned native backend.
             | "debug_standardTraceBadBlockToFile"
-            | "debug_standardTraceBlockToFile"
-            | "debug_storageRangeAt"
-            | "debug_stateRootWithUpdates"
+            | "debug_stateRootWithUpdates" => Policy::Native,
+        "mev_simBundle" | "reth_getBlockExecutionOutcome" | "ots_getInternalOperations"
+        | "ots_getTransactionError" | "ots_traceTransaction" | "ots_getContractCreator" => Policy::Execution,
+        _ if ["net_", "web3_", "rpc_", "txpool_", "admin_", "operator_", "consensus_"]
+            .iter().any(|prefix| method.starts_with(prefix)) => Policy::Native,
+        _ if ["debug_", "trace_", "eth_", "tempo_"]
+            .iter().any(|prefix| method.starts_with(prefix)) => Policy::Execution,
+        _ => Policy::Unrouted,
+    }
+}
+
+/// Decorate execution callbacks and fail closed for unreviewed execution methods.
+pub fn is_execution_method(method: &str) -> bool {
+    !matches!(
+        policy(method),
+        Policy::Native | Policy::NativeBlock(..) | Policy::Unrouted
     )
 }

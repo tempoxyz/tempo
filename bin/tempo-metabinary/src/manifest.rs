@@ -83,38 +83,33 @@ impl Manifest {
                 .iter()
                 .map(|era| (era.name.as_str(), era.start_timestamp)),
         )?;
+        let mut previous_checkpoint = None;
         for (index, era) in self.eras.iter().enumerate() {
             ensure!(
                 !era.binary.as_os_str().is_empty(),
                 "era {} has no binary",
                 era.name
             );
-            if index + 1 == self.eras.len() {
+            let Some(bootstrap) = &era.bootstrap else {
                 ensure!(
-                    era.bootstrap.is_none(),
-                    "active era must be started with tempo node, not bootstrap"
-                );
-            } else {
-                ensure!(
-                    era.bootstrap.is_some(),
+                    index + 1 == self.eras.len(),
                     "era {} needs a bootstrap command/checkpoint",
                     era.name
                 );
-            }
-            if let Some(bootstrap) = &era.bootstrap {
-                bootstrap
-                    .validate()
-                    .wrap_err_with(|| format!("invalid bootstrap for {}", era.name))?;
-            }
-        }
-        let mut previous_checkpoint = None;
-        for bootstrap in self.eras.iter().filter_map(|era| era.bootstrap.as_ref()) {
-            if let Some(previous) = previous_checkpoint {
-                ensure!(
-                    previous < bootstrap.terminal_block_number,
-                    "bootstrap terminal block numbers must strictly increase"
-                );
-            }
+                continue;
+            };
+            ensure!(
+                index + 1 < self.eras.len(),
+                "active era must be started with tempo node, not bootstrap"
+            );
+            bootstrap
+                .validate()
+                .wrap_err_with(|| format!("invalid bootstrap for {}", era.name))?;
+            ensure!(
+                previous_checkpoint
+                    .is_none_or(|previous| previous < bootstrap.terminal_block_number),
+                "bootstrap terminal block numbers must strictly increase"
+            );
             previous_checkpoint = Some(bootstrap.terminal_block_number);
         }
         Ok(())
@@ -208,6 +203,13 @@ pub(crate) mod tests {
                 vec!["import".into(), flag.into(), "blocks.rlp".into()];
             assert!(manifest.validate().is_err(), "accepted {flag}");
         }
+        manifest.eras[0].bootstrap.as_mut().unwrap().args = vec![
+            "import".into(),
+            "--chunk-len=67108864".into(),
+            "--db.max-size=8TB".into(),
+            "blocks.rlp".into(),
+        ];
+        manifest.validate().unwrap();
         manifest.eras[0].bootstrap = None;
         assert!(manifest.validate().is_err());
         let value = serde_json::to_value(&manifest).unwrap();

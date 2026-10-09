@@ -72,7 +72,7 @@ struct Header {
     timestamp: U64,
 }
 
-async fn verify_successor(client: &HttpClient, checkpoint: &Bootstrap, start: u64) -> Result<bool> {
+async fn verify_successor(client: &HttpClient, checkpoint: &Bootstrap, start: u64) -> Result<()> {
     let first_number = checkpoint
         .terminal_block_number
         .checked_add(1)
@@ -83,7 +83,7 @@ async fn verify_successor(client: &HttpClient, checkpoint: &Bootstrap, start: u6
             (format!("0x{first_number:x}"), false),
         )
         .await?;
-    let Some(first) = first else { return Ok(false) };
+    let first = first.ok_or_eyre("successor header is missing after bootstrap")?;
     ensure!(
         first.parent_hash == checkpoint.terminal_block_hash,
         "successor does not extend the pinned handoff block"
@@ -92,7 +92,7 @@ async fn verify_successor(client: &HttpClient, checkpoint: &Bootstrap, start: u6
         first.timestamp.to::<u64>() >= start,
         "bootstrap ended before the successor era boundary"
     );
-    Ok(true)
+    Ok(())
 }
 
 async fn verify_checkpoint(
@@ -149,11 +149,11 @@ async fn bootstrap(
         genesis_hash: manifest.genesis_hash,
         startup_timeout: timeout,
     };
-    for index in 0..manifest.eras.len() - 1 {
-        let era = &manifest.eras[index];
+    for (index, eras) in manifest.eras.windows(2).enumerate() {
+        let era = &eras[0];
         let checkpoint = era.bootstrap.as_ref().expect("validated bootstrap");
         info!(era = %era.name, block = checkpoint.terminal_block_number, "running bounded bootstrap");
-        *import = Some(spawn_bootstrap(manifest, index)?);
+        *import = Some(spawn_bootstrap(manifest, era, checkpoint)?);
         let status = import
             .as_mut()
             .expect("owned bootstrap import")
@@ -181,7 +181,7 @@ async fn bootstrap(
             &worker.client,
             checkpoint,
             era.start_timestamp,
-            manifest.eras[index + 1].start_timestamp,
+            eras[1].start_timestamp,
             true,
         )
         .await
@@ -199,10 +199,7 @@ async fn bootstrap(
                 false,
             )
             .await?;
-            ensure!(
-                verify_successor(&worker.client, previous, era.start_timestamp).await?,
-                "successor header is missing after bootstrap"
-            );
+            verify_successor(&worker.client, previous, era.start_timestamp).await?;
         }
         workers.shutdown().await?;
         *readers = None;
@@ -303,18 +300,18 @@ mod tests {
         }
         let mut wrong_parent = header(3, 100);
         wrong_parent["parentHash"] = json!(hash(42));
-        for (block, expected) in [
-            (Value::Null, Ok(false)),
-            (header(3, 99), Err(())),
-            (wrong_parent, Err(())),
-            (header(3, 100), Ok(true)),
+        for (block, valid) in [
+            (Value::Null, false),
+            (header(3, 99), false),
+            (wrong_parent, false),
+            (header(3, 100), true),
         ] {
             storage.put("0x3", block);
             assert_eq!(
                 verify_successor(&storage.client, checkpoint, 100)
                     .await
-                    .map_err(|_| ()),
-                expected
+                    .is_ok(),
+                valid
             );
         }
     }

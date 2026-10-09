@@ -42,7 +42,7 @@ pub fn decorate(methods: Methods, router: Arc<Router>) -> Result<Methods, Regist
         .filter(|name| *name == "debug_subscribe" || is_execution_method(name))
         .collect();
     for name in names {
-        let native = registry.method(name).expect("registered method").clone();
+        let native = registry.remove_method(name).expect("registered method");
         let callback = if name == "debug_subscribe"
             && let MethodCallback::Subscription(callback) = &native
         {
@@ -139,9 +139,8 @@ pub fn decorate(methods: Methods, router: Arc<Router>) -> Result<Methods, Regist
                 },
             ))
         } else {
-            continue;
+            native
         };
-        registry.remove_method(name);
         registry.verify_and_insert(name, callback)?;
     }
     Ok(registry.into())

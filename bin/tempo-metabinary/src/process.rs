@@ -1,21 +1,13 @@
 //! Shared child ownership and cleanup for finite imports and private historical workers.
 
-use crate::manifest::Manifest;
+use crate::manifest::{Bootstrap, Era, Manifest};
 use eyre::{Context, Result};
 use std::{process::Stdio, time::Duration};
 use tokio::process::{Child, Command};
 
 /// Start a canonical-file import from a validated manifest. The caller reaps this sole writer before opening a
 /// read-only checkpoint worker or starting another import; cancellation falls back to kill-on-drop.
-pub fn spawn_bootstrap(manifest: &Manifest, index: usize) -> Result<Child> {
-    let era = manifest
-        .eras
-        .get(index)
-        .ok_or_else(|| eyre::eyre!("unknown era index {index}"))?;
-    let bootstrap = era
-        .bootstrap
-        .as_ref()
-        .ok_or_else(|| eyre::eyre!("era {} has no bootstrap", era.name))?;
+pub fn spawn_bootstrap(manifest: &Manifest, era: &Era, bootstrap: &Bootstrap) -> Result<Child> {
     spawn_child(
         Command::new(&era.binary)
             .args(&bootstrap.args)
@@ -151,7 +143,8 @@ pub(crate) mod tests {
         manifest.eras[0].binary = binary;
         manifest.eras[0].bootstrap.as_mut().unwrap().args =
             vec!["import".into(), "canonical-blocks.rlp".into()];
-        let mut child = spawn_bootstrap(&manifest, 0).unwrap();
+        let era = &manifest.eras[0];
+        let mut child = spawn_bootstrap(&manifest, era, era.bootstrap.as_ref().unwrap()).unwrap();
         let pid = child.id().unwrap();
         assert!(child.wait().await.unwrap().success());
         let actual = std::fs::read_to_string(output).unwrap();
