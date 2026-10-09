@@ -4,15 +4,17 @@ use std::sync::{Arc, RwLock};
 
 use alloy_primitives::{Address, B256};
 use eyre::{OptionExt as _, WrapErr as _};
+use reth_engine_tree::tree::BasicEngineValidator;
 use reth_node_api::{AddOnsContext, FullNodeComponents, PrimitivesTy, TreeConfig};
 use reth_node_builder::rpc::{BasicEngineValidatorBuilder, EngineValidatorBuilder};
 use reth_storage_api::{
     AccountReader as _, DatabaseProviderROFactory, StateProvider, StateProviderBox,
 };
 use reth_storage_overlay::{OverlayManager, OverlayStateProviderFactory};
+use tempo_evm::{TempoEvmConfig, TempoValidationStrategy};
 use tempo_primitives::TempoPrimitives;
 
-use crate::{TempoNode, node::TempoEngineValidatorBuilder};
+use crate::{TempoNode, engine::TempoEngineValidator, node::TempoEngineValidatorBuilder};
 
 /// Reads the post-state of blocks that the engine has executed, including
 /// blocks on forks.
@@ -90,6 +92,7 @@ impl ExecutedState {
 pub struct TempoEngineTreeValidatorBuilder {
     inner: BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>,
     executed_state: ExecutedState,
+    parallel_validation: bool,
 }
 
 impl TempoEngineTreeValidatorBuilder {
@@ -99,19 +102,35 @@ impl TempoEngineTreeValidatorBuilder {
         Self {
             inner: BasicEngineValidatorBuilder::default(),
             executed_state,
+            parallel_validation: false,
         }
+    }
+
+    /// Enables experimental conflict-rejecting STM validation.
+    pub fn with_parallel_validation(mut self, enabled: bool) -> Self {
+        self.parallel_validation = enabled;
+        self
     }
 }
 
 impl<Node> EngineValidatorBuilder<Node> for TempoEngineTreeValidatorBuilder
 where
-    Node: FullNodeComponents<Types = TempoNode>,
-    BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>: EngineValidatorBuilder<Node>,
-{
-    type EngineValidator =
-        <BasicEngineValidatorBuilder<TempoEngineValidatorBuilder> as EngineValidatorBuilder<
+    Node: FullNodeComponents<Types = TempoNode, Evm = TempoEvmConfig>,
+    BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>: EngineValidatorBuilder<
             Node,
-        >>::EngineValidator;
+            EngineValidator = BasicEngineValidator<
+                Node::Provider,
+                TempoEvmConfig,
+                TempoEngineValidator,
+            >,
+        >,
+{
+    type EngineValidator = BasicEngineValidator<
+        Node::Provider,
+        TempoEvmConfig,
+        TempoEngineValidator,
+        TempoValidationStrategy,
+    >;
 
     async fn build_tree_validator(
         self,
@@ -120,8 +139,11 @@ where
         overlay_manager: OverlayManager<PrimitivesTy<Node::Types>>,
     ) -> eyre::Result<Self::EngineValidator> {
         self.executed_state.set(overlay_manager.clone());
-        self.inner
+        let validator = self
+            .inner
             .build_tree_validator(ctx, tree_config, overlay_manager)
-            .await
+            .await?;
+        Ok(validator
+            .with_execution_strategy(TempoValidationStrategy::new(self.parallel_validation)))
     }
 }
