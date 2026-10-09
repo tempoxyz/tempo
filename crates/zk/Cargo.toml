@@ -1,0 +1,36 @@
+[package]
+name = "tempo-zk"
+description = "Proof verification for Tempo ZK signatures"
+
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+alloy-primitives.workspace = true
+ark-bn254 = { workspace = true, features = ["std"] }
+ark-ec = { workspace = true, features = ["std"] }
+ark-ff = { workspace = true, features = ["std"] }
+rayon.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[features]
+test-utils = []
+
+[[bench]]
+name = "verify"
+harness = false
+required-features = ["test-utils"]

@@ -4,6 +4,7 @@ pub mod tempo_transaction;
 pub mod tt_authorization;
 pub mod tt_signature;
 pub mod tt_signed;
+pub mod zk_signature;
 
 pub use tt_authorization::{MAGIC, RecoveredTempoAuthorization, TempoSignedAuthorization};
 // Re-export Authorization from alloy for convenience
@@ -16,8 +17,8 @@ pub use crate::address::TIP20_TOKEN_PREFIX as TIP20_PAYMENT_PREFIX;
 pub use alloy_eips::eip7702::Authorization;
 pub use envelope::{TempoTxEnvelope, TempoTxType, TempoTypedTransaction};
 pub use key_authorization::{
-    CallScope, KeyAuthorization, KeyAuthorizationChainIdError, SelectorRule,
-    SignedKeyAuthorization, TokenLimit,
+    CallScope, KeyAuthorization, KeyAuthorizationChainIdError, KeyAuthorizationSignature,
+    SelectorRule, SignedKeyAuthorization, TokenLimit,
 };
 pub use tempo_transaction::{
     Call, FEE_PAYER_SIGNATURE_MARKER, InvalidValidAfter, InvalidValidBefore,
@@ -25,6 +26,11 @@ pub use tempo_transaction::{
     SignatureType, TEMPO_EXPIRING_NONCE_KEY, TEMPO_TX_TYPE_ID, TempoTransaction, validate_calls,
 };
 pub use tt_signed::AASigned;
+pub use zk_signature::{
+    BN254_SCALAR_FIELD, MAX_ZK_SIGNATURE_SIZE, MAX_ZK_SIGNATURES_PER_TX, SIGNATURE_TYPE_ZK,
+    ZK_NAMESPACE_OIDC, ZK_PROOF_LENGTH, ZK_SCHEME_OIDC_RS256_V1, ZkProof, ZkSignature,
+    ZkVerification, zk_address, zk_namespace,
+};
 
 use alloc::vec::Vec;
 use alloy_consensus::SignableTransaction;

@@ -19,11 +19,13 @@ pub mod handler;
 mod instructions;
 mod signature_gas;
 mod tx;
+pub mod zk;
 
 pub use error::TempoInvalidTransaction;
 pub use evm::TempoEvm;
 pub use fee_manager::{FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, TempoFeeManager};
 pub use handler::{ValidationContext, calculate_aa_batch_intrinsic_gas};
 pub use revm::interpreter::instructions::utility::IntoAddress;
+pub use signature_gas::ZK_VERIFY_GAS;
 pub use tempo_primitives::TempoBlockEnv;
 pub use tx::{ExecutionContext, TempoBatchCallEnv, TempoTxEnv};

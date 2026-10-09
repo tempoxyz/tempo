@@ -365,13 +365,18 @@ impl TempoPooledTransaction {
         self.key_expiry.get().copied().flatten()
     }
 
-    /// Returns whether the transaction or its signing key expires by `cutoff`.
+    /// Returns whether the transaction, its signing key, or one of its ZK signatures expires by
+    /// `cutoff`.
     pub fn is_expired_by(&self, cutoff: u64) -> bool {
-        [self.inner().valid_before(), self.key_expiry()]
-            .into_iter()
-            .flatten()
-            .min()
-            .is_some_and(|expiry| expiry <= cutoff)
+        [
+            self.inner().valid_before(),
+            self.key_expiry(),
+            self.inner().zk_signature_expiry(),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+        .is_some_and(|expiry| expiry <= cutoff)
     }
 
     /// Caches the effective fee token determined during transaction validation.
