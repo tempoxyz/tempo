@@ -20,7 +20,7 @@ use reth_evm::{
     execute::{map_database_error, map_handler_error},
 };
 use reth_evm_ethereum::{EthBlockExecutor, EthTransactionResultWithState};
-use reth_execution_types::EvmState;
+use reth_execution_types::StateUpdate;
 use std::sync::Arc;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
@@ -751,7 +751,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         self.inner.evm()
     }
 
-    fn set_state_hook(&mut self, hook: impl FnMut(EvmState) + Send + 'static) -> bool {
+    fn set_state_hook(&mut self, hook: impl FnMut(StateUpdate) + Send + 'static) -> bool {
         self.inner.set_state_hook(hook);
         true
     }
@@ -826,12 +826,13 @@ mod tests {
             AccountInfo,
             BUILDER_DEPOSIT_REQUEST_ADDRESS as BUILDER_DEPOSIT_REQUEST_PREDEPLOY_ADDRESS,
             BUILDER_EXIT_REQUEST_ADDRESS as BUILDER_EXIT_REQUEST_PREDEPLOY_ADDRESS,
-            DynDatabase as _, InMemoryDB,
+            DynDatabase as _, InMemoryDB, StateChangeSource as _,
         },
         interpreter::Host as _,
     };
     use rand::SeedableRng as _;
     use reth_chainspec::{EthChainSpec, EthereumHardfork, ForkCondition};
+    use reth_execution_types::{EvmState, TransactionChanges};
     use std::{
         iter::repeat_with,
         sync::{Arc, Mutex},
@@ -860,6 +861,13 @@ mod tests {
             .hardforks
             .insert(EthereumHardfork::Amsterdam, ForkCondition::Timestamp(0));
         Arc::new(spec)
+    }
+
+    /// Rebuilds the revm state a streamed state update describes, for assertions.
+    fn evm_state(state: &StateUpdate) -> EvmState {
+        let mut changes = TransactionChanges::default();
+        let Ok(()) = state.visit(&mut changes);
+        changes.state
     }
 
     #[test]
@@ -894,7 +902,8 @@ mod tests {
 
             let streamed = Arc::new(Mutex::new(Vec::new()));
             let hook_states = streamed.clone();
-            executor.set_state_hook(move |state| hook_states.lock().unwrap().push(state));
+            executor
+                .set_state_hook(move |state| hook_states.lock().unwrap().push(evm_state(&state)));
             executor.apply_pre_execution_changes().unwrap();
             let output = executor.finish().unwrap();
             db.commit_source(&reth_execution_types::BundleSource(&output.state));
@@ -2254,7 +2263,8 @@ mod tests {
 
         let hook_calls: Arc<Mutex<Vec<EvmState>>> = Arc::new(Mutex::new(Vec::new()));
         let hook_calls_clone = hook_calls.clone();
-        executor.set_state_hook(move |state| hook_calls_clone.lock().unwrap().push(state));
+        executor
+            .set_state_hook(move |state| hook_calls_clone.lock().unwrap().push(evm_state(&state)));
 
         let addr = Address::with_last_byte(0xff);
         executor.deploy_precompile_at_boundary(addr, &[]).unwrap();
@@ -2302,7 +2312,8 @@ mod tests {
 
         let hook_calls: Arc<Mutex<Vec<EvmState>>> = Arc::new(Mutex::new(Vec::new()));
         let hook_calls_clone = hook_calls.clone();
-        executor.set_state_hook(move |state| hook_calls_clone.lock().unwrap().push(state));
+        executor
+            .set_state_hook(move |state| hook_calls_clone.lock().unwrap().push(evm_state(&state)));
 
         executor.deploy_precompile_at_boundary(addr, &[]).unwrap();
 
@@ -2473,7 +2484,8 @@ mod tests {
 
         let hook_calls: Arc<Mutex<Vec<EvmState>>> = Arc::new(Mutex::new(Vec::new()));
         let hook_calls_clone = hook_calls.clone();
-        executor.set_state_hook(move |state| hook_calls_clone.lock().unwrap().push(state));
+        executor
+            .set_state_hook(move |state| hook_calls_clone.lock().unwrap().push(evm_state(&state)));
 
         executor.deploy_zone_factory_at_boundary().unwrap();
         executor.deploy_zone_factory_at_boundary().unwrap();

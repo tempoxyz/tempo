@@ -308,7 +308,7 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
         let updates = Arc::new(Mutex::new(Vec::new()));
         executor.set_state_hook({
             let updates = Arc::clone(&updates);
-            move |state| updates.lock().push(state)
+            move |state| updates.lock().push(evm_state(&state))
         });
         let mut real = Evidence::default();
         if let Err(e) = executor.apply_pre_execution_changes() {
@@ -393,7 +393,7 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
         let updates = Arc::new(Mutex::new(Vec::new()));
         executor.set_state_hook({
             let updates = Arc::clone(&updates);
-            move |state| updates.lock().push(state)
+            move |state| updates.lock().push(evm_state(&state))
         });
         let mut shadow = Evidence::default();
         if let Err(e) = executor.apply_pre_execution_changes() {
@@ -504,6 +504,13 @@ fn restore_pre_block_info(cache: &mut Cache, saved: Vec<SavedPreBlockInfo>) {
         }
         cache.accounts.insert(address, Some(candidate));
     }
+}
+
+/// Rebuilds the revm state a streamed state update describes.
+fn evm_state(state: &PendingState) -> EvmState {
+    let mut changes = TransactionChanges::default();
+    let Ok(()) = state.visit(&mut changes);
+    changes.state
 }
 
 fn take_updates(updates: &Mutex<Vec<EvmState>>) -> TransitionState {
@@ -813,7 +820,7 @@ mod tests {
         let updates = Arc::new(Mutex::new(Vec::new()));
         executor.set_state_hook({
             let updates = Arc::clone(&updates);
-            move |state| updates.lock().push(state)
+            move |state| updates.lock().push(evm_state(&state))
         });
         executor.apply_pre_execution_changes().unwrap();
         let pre_block = take_updates(&updates);
