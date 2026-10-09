@@ -50,3 +50,37 @@ fn jump_and_taken_jumpi_enter_replacement_prefix_through_tempo() {
         assert_eq!(U256::from_be_slice(&result.output), U256::from(42));
     }
 }
+
+#[test]
+fn generated_and_split_rjump_execute_through_tempo() {
+    const STRIDE: usize = 24_541;
+    let contract = Address::repeat_byte(0x84);
+    for boundary in [&[0x60, 0xab, 0x50][..], &[0xe0, 0x80, 0x80][..]] {
+        let mut raw = vec![0; STRIDE - 1];
+        raw[..4].copy_from_slice(&[0x61, 0x5f, 0xdb, 0x56]);
+        raw[STRIDE - 2] = 0x5b;
+        raw.extend_from_slice(boundary);
+        raw.extend_from_slice(&[0x60, 42, 0x5f, 0x52, 0x60, 32, 0x5f, 0xf3]);
+        let code = Bytecode::new_legacy(Bytes::from(raw.clone()));
+        let info = AccountInfo {
+            code_metadata: code_metadata(&raw).unwrap(),
+            ..AccountInfo::default().with_code(code)
+        };
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(&contract, info);
+        let spec = TempoHardfork::T13;
+        let version = crate::tempo_execution_config(spec, 1)
+            .version()
+            .with_tip1143(true);
+        let mut evm = TempoEvmConfig::moderato().evm_with_env(
+            db,
+            TempoEvmEnv::new_with_version(spec, TempoBlockEnv::default(), version),
+        );
+        let result = evm
+            .system_call(SystemTx::new(contract, Bytes::new()))
+            .unwrap()
+            .discard();
+        assert!(result.status, "{boundary:?}: {:?}", result.stop);
+        assert_eq!(U256::from_be_slice(&result.output), U256::from(42));
+    }
+}
