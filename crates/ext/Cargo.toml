@@ -16,10 +16,20 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Release signing (`tempo-sign`). Off by default so the launcher only links verification.
+sign = ["dep:minisign"]
+
+[[bin]]
+name = "tempo-sign"
+path = "src/bin/tempo-sign.rs"
+required-features = ["sign"]
+
 [dependencies]
 clap.workspace = true
 dirs-next.workspace = true
 semver.workspace = true
+minisign = { workspace = true, optional = true }
 minisign-verify.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
 serde = { workspace = true, features = ["std"] }
@@ -32,3 +42,5 @@ url.workspace = true
 
 [dev-dependencies]
 minisign.workspace = true
+# Run the signer-to-installer tests without `--features sign`.
+tempo-ext = { path = ".", features = ["sign"] }

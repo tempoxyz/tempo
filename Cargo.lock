@@ -13857,6 +13857,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+ "tempo-ext",
  "thiserror 2.0.18",
  "tracing",
  "url",
