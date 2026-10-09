@@ -176,7 +176,7 @@ impl ReplayTransactions {
     fn publish(&self, index: usize, replay: Option<StorageActionReplay>) {
         let mut slots = self.slots.lock().unwrap_or_else(|error| error.into_inner());
         if let Some(slot @ ReplaySlot::Pending) = slots.get_mut(index) {
-            *slot = ReplaySlot::Ready(replay);
+            *slot = ReplaySlot::Ready(replay.map(Box::new));
             self.ready.notify_one();
         }
     }
@@ -190,7 +190,7 @@ impl ReplayTransactions {
                 .unwrap_or_else(|error| error.into_inner());
         }
         match std::mem::replace(&mut slots[index], ReplaySlot::Consumed) {
-            ReplaySlot::Ready(replay) => replay,
+            ReplaySlot::Ready(replay) => replay.map(|replay| *replay),
             ReplaySlot::Pending | ReplaySlot::Consumed => None,
         }
     }
@@ -200,7 +200,7 @@ impl ReplayTransactions {
 #[derive(Debug)]
 enum ReplaySlot {
     Pending,
-    Ready(Option<StorageActionReplay>),
+    Ready(Option<Box<StorageActionReplay>>),
     Consumed,
 }
 
