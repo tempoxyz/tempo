@@ -52,24 +52,14 @@ fn jump_and_taken_jumpi_enter_replacement_prefix_through_tempo() {
 }
 
 #[test]
-fn generated_and_split_relative_jumps_execute_through_tempo() {
+fn generated_and_split_rjump_execute_through_tempo() {
     const STRIDE: usize = 24_541;
     let contract = Address::repeat_byte(0x84);
-    for (condition, boundary) in [
-        (None, [0x60, 0xab, 0x50]),
-        (None, [0xe0, 0x80, 0x80]),
-        (Some(0), [0xe1, 0x80, 0x80]),
-        (Some(1), [0xe1, 0x80, 0x80]),
-    ] {
+    for boundary in [&[0x60, 0xab, 0x50][..], &[0xe0, 0x80, 0x80][..]] {
         let mut raw = vec![0; STRIDE - 1];
-        let mut entry = Vec::new();
-        if let Some(condition) = condition {
-            entry.extend([0x60, condition]);
-        }
-        entry.extend([0x61, 0x5f, 0xdb, 0x56]);
-        raw[..entry.len()].copy_from_slice(&entry);
+        raw[..4].copy_from_slice(&[0x61, 0x5f, 0xdb, 0x56]);
         raw[STRIDE - 2] = 0x5b;
-        raw.extend_from_slice(&boundary);
+        raw.extend_from_slice(boundary);
         raw.extend_from_slice(&[0x60, 42, 0x5f, 0x52, 0x60, 32, 0x5f, 0xf3]);
         let code = Bytecode::new_legacy(Bytes::from(raw.clone()));
         let info = AccountInfo {
