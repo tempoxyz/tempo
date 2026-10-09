@@ -14,7 +14,7 @@ flowchart TB
         Registry -->|"Execution with routing enabled"| Router["Era router<br/>Select era using native metadata"]
         Router -->|"Live era"| Native
     end
-    Router -->|"Historical era / private loopback HTTP"| Frozen["Frozen rpc-only workers<br/>One per era, started lazily<br/>Read-only execution"]
+    Router -->|"Historical era / private loopback HTTP"| Frozen["Frozen rpc-only workers<br/>One per era, read-only<br/>Awakened on demand<br/>Shut down when idle"]
     Native --> DB[("Shared chain storage")]
     Frozen -->|"Read state to reexecute"| DB
 ```
