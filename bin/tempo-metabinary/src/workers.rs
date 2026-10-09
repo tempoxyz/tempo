@@ -5,13 +5,14 @@
 
 use std::{collections::HashSet, net::TcpListener, path::PathBuf, sync::Arc, time::Duration};
 
+use alloy_primitives::{B256, U64};
 use eyre::{Context, OptionExt, Result, bail, ensure};
 use jsonrpsee::{
     core::{RpcResult, client::ClientT},
     http_client::{HttpClient, HttpClientBuilder},
     types::ErrorObjectOwned,
 };
-use serde_json::Value;
+use serde_json::value::RawValue;
 use tokio::{
     process::{Child, Command},
     sync::Mutex,
@@ -21,10 +22,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     catalog::ReleaseEra,
-    handshake::{WorkerIdentity, wait_for_worker},
-    manifest::{parse_quantity, validate_hash},
+    handshake::{ExecutionInfo, WorkerIdentity, wait_for_worker},
     process::{shutdown_children, spawn_child},
-    routing::{ExecutionInfo, RpcParams, unsupported, upstream_error},
+    routing::{RpcParams, unsupported, upstream_error},
 };
 
 /// Resolved from the ordinary node's chain and data-directory configuration.
@@ -36,8 +36,8 @@ pub struct WorkerContext {
     pub rocksdb_path: Option<PathBuf>,
     /// Private execution configuration produced by the node, without duplicating its CLI.
     pub rpc_config: Option<PathBuf>,
-    pub chain_id: String,
-    pub genesis_hash: String,
+    pub chain_id: U64,
+    pub genesis_hash: B256,
     pub startup_timeout: Duration,
 }
 
@@ -81,8 +81,6 @@ impl HistoricalWorkers {
             !context.datadir.as_os_str().is_empty(),
             "historical worker datadir must not be empty"
         );
-        parse_quantity(&context.chain_id).wrap_err("invalid historical worker chain ID")?;
-        validate_hash(&context.genesis_hash).wrap_err("invalid historical worker genesis hash")?;
         ensure!(
             !context.startup_timeout.is_zero(),
             "historical worker startup timeout must be positive"
@@ -156,12 +154,22 @@ impl HistoricalWorkers {
         }
     }
 
-    pub async fn request(&self, index: usize, method: &str, params: RpcParams) -> RpcResult<Value> {
+    pub async fn request(
+        &self,
+        index: usize,
+        method: &str,
+        params: RpcParams,
+    ) -> RpcResult<Box<RawValue>> {
         let worker = self
             .get(index)
             .await
             .map_err(|error| ErrorObjectOwned::owned(-32000, error.to_string(), None::<()>))?;
-        if !worker.info.methods.iter().any(|name| name == method) {
+        if worker
+            .info
+            .methods
+            .binary_search_by(|name| name.as_str().cmp(method))
+            .is_err()
+        {
             return Err(unsupported(format!(
                 "{method} is unavailable in historical era {}",
                 self.eras[index].name
@@ -176,23 +184,22 @@ impl HistoricalWorkers {
 
     pub async fn shutdown(&self) -> Result<()> {
         self.shutdown.cancel();
-        let processes = futures::future::join_all(self.states.iter().zip(&self.eras).map(
-            |(slot, era)| async {
-                let mut state = slot.lock().await;
-                match std::mem::replace(&mut *state, State::Dormant) {
-                    State::Running(process) => Some((era.name.as_str(), process)),
-                    _ => None,
-                }
-            },
-        ))
-        .await;
-        let mut processes: Vec<_> = processes.into_iter().flatten().collect();
+        let mut states = futures::future::join_all(self.states.iter().map(Mutex::lock)).await;
+        // Retain children in their states so cancelled shutdown can be retried and reaped.
         shutdown_children(
-            processes
+            states
                 .iter_mut()
-                .map(|(name, process)| (*name, &mut process.child)),
+                .zip(&self.eras)
+                .filter_map(|(state, era)| match &mut **state {
+                    State::Running(process) => Some((era.name.as_str(), &mut process.child)),
+                    _ => None,
+                }),
         )
-        .await
+        .await?;
+        for state in &mut states {
+            **state = State::Dormant;
+        }
+        Ok(())
     }
 }
 
@@ -251,8 +258,8 @@ async fn ready(
     let handshake = wait_for_worker(
         &process.client,
         WorkerIdentity {
-            chain_id: &workers.context.chain_id,
-            genesis_hash: &workers.context.genesis_hash,
+            chain_id: workers.context.chain_id,
+            genesis_hash: workers.context.genesis_hash,
             read_only: true,
         },
         pid,
@@ -268,10 +275,11 @@ async fn ready(
             Ok(())
         },
     );
-    let info = tokio::select! {
+    let mut info = tokio::select! {
         _ = workers.shutdown.cancelled() => { bail!("historical workers are shutting down"); },
         info = handshake => info?,
     };
+    info.methods.sort_unstable();
     tracing::debug!(era = %era.name, pid, "Historical RPC worker ready");
     Ok(Arc::new(HistoricalWorker {
         client: process.client.clone(),
@@ -283,7 +291,7 @@ async fn ready(
 mod tests {
     use super::*;
     use jsonrpsee::{RpcModule, server::ServerBuilder};
-    use serde_json::json;
+    use serde_json::{Value, json};
     use std::os::unix::fs::PermissionsExt;
 
     use crate::{handshake::EXECUTION_INFO_METHOD, process::tests::assert_reaped};
@@ -362,8 +370,8 @@ mod tests {
                     static_files_path: Some(directory.path().join("custom static files")),
                     rocksdb_path: Some(directory.path().join("custom rocksdb")),
                     rpc_config: None,
-                    chain_id: "0x1".into(),
-                    genesis_hash: format!("0x{}", "00".repeat(32)),
+                    chain_id: U64::from(1),
+                    genesis_hash: B256::ZERO,
                     startup_timeout: Duration::from_secs(if mode == "stalled" { 2 } else { 5 }),
                 },
                 vec![ReleaseEra {
@@ -416,8 +424,9 @@ mod tests {
                 .workers
                 .request(0, "eth_call", RpcParams(params.clone()))
                 .await
-                .unwrap(),
-            params
+                .unwrap()
+                .get(),
+            params.to_string()
         );
         assert_eq!(
             fixture

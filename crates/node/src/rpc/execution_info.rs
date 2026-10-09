@@ -34,7 +34,7 @@ fn info_module(
     let mut module = RpcModule::new(ExecutionInfo {
         protocol_version: EXECUTION_INFO_PROTOCOL_VERSION,
         process_id: std::process::id(),
-        chain_id: format!("0x{chain_id:x}"),
+        chain_id: alloy_primitives::U64::from(chain_id),
         genesis_hash,
         read_only,
         methods: names,
@@ -98,7 +98,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(http_info.methods, ["eth_chainId", EXECUTION_INFO_METHOD]);
-        assert_eq!(http_info.chain_id, "0x1");
+        assert_eq!(http_info.chain_id, alloy_primitives::U64::from(1));
         assert!(!http_info.read_only);
         assert_eq!(http_info.process_id, std::process::id());
         let ws_info: ExecutionInfo = modules

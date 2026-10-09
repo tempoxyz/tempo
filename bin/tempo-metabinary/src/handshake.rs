@@ -1,6 +1,6 @@
-//! Identity validation and readiness polling shared by eager and lazy workers.
+//! Identity validation and readiness polling for supervised RPC workers.
 
-use alloy_primitives::B256;
+use alloy_primitives::{B256, U64};
 use eyre::{Result, bail, ensure};
 use jsonrpsee::{
     core::client::{ClientT, Error as ClientError},
@@ -19,34 +19,34 @@ pub const EXECUTION_INFO_PROTOCOL_VERSION: u32 = 1;
 #[serde(rename_all = "camelCase")]
 pub struct ExecutionInfo {
     pub protocol_version: u32,
-    pub chain_id: String,
+    pub chain_id: U64,
     pub genesis_hash: B256,
     pub read_only: bool,
     pub process_id: u32,
     pub methods: Vec<String>,
 }
 
-/// Expected chain and access mode, independent of either launcher's configuration.
+/// Expected chain and access mode for a supervised worker.
 #[derive(Clone, Copy)]
-pub struct WorkerIdentity<'a> {
-    pub chain_id: &'a str,
-    pub genesis_hash: &'a str,
+pub struct WorkerIdentity {
+    pub chain_id: U64,
+    pub genesis_hash: B256,
     pub read_only: bool,
 }
 
 impl ExecutionInfo {
-    /// Startup checks the owned child's PID; router construction can recheck metadata without it.
-    pub fn validate(&self, identity: WorkerIdentity<'_>, process_id: Option<u32>) -> Result<()> {
+    /// Verify chain, access mode, and the owned child's PID before accepting its endpoint.
+    pub fn validate(&self, identity: WorkerIdentity, process_id: u32) -> Result<()> {
         ensure!(
             self.protocol_version == EXECUTION_INFO_PROTOCOL_VERSION,
             "unsupported worker protocol"
         );
         ensure!(
-            self.chain_id.eq_ignore_ascii_case(identity.chain_id),
+            self.chain_id == identity.chain_id,
             "worker chain ID mismatch"
         );
         ensure!(
-            self.genesis_hash == identity.genesis_hash.parse::<B256>()?,
+            self.genesis_hash == identity.genesis_hash,
             "worker genesis mismatch"
         );
         ensure!(
@@ -54,7 +54,7 @@ impl ExecutionInfo {
             "worker read-only mode mismatch"
         );
         ensure!(
-            process_id.is_none_or(|pid| self.process_id == pid),
+            self.process_id == process_id,
             "private endpoint belongs to another process"
         );
         ensure!(
@@ -73,7 +73,7 @@ impl ExecutionInfo {
 /// A valid response with the wrong identity or a missing protocol fails immediately.
 pub async fn wait_for_worker(
     client: &HttpClient,
-    identity: WorkerIdentity<'_>,
+    identity: WorkerIdentity,
     process_id: u32,
     deadline: Instant,
     mut check_alive: impl FnMut() -> Result<()>,
@@ -88,7 +88,7 @@ pub async fn wait_for_worker(
         .await;
         match response {
             Ok(Ok(info)) => {
-                info.validate(identity, Some(process_id))?;
+                info.validate(identity, process_id)?;
                 return Ok(info);
             }
             Ok(Err(ClientError::Call(error))) if error.code() == -32601 => {

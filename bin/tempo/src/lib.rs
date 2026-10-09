@@ -472,7 +472,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         let catalog = eras::release_catalog()?;
         let chain = &builder.config().chain;
         let era_runtime = catalog
-            .for_chain(chain.chain_id(), &chain.genesis_hash().to_string())
+            .for_chain(chain.chain_id(), chain.genesis_hash())
             .filter(|schedule| schedule.eras.len() > 1 && eras::supports_release_catalog(chain))
             .map(|schedule| {
                 let datadir = &builder.config().datadir;

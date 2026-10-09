@@ -2,7 +2,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use alloy_primitives::Bytes;
+use alloy_primitives::{Bytes, U64};
 use alloy_rlp::Decodable;
 use futures::future::BoxFuture;
 use jsonrpsee::core::{
@@ -14,7 +14,7 @@ use reth_ethereum::{
     rpc::{builder::TransportRpcModules, eth::EthConfig},
 };
 use reth_rpc_server_types::result::internal_rpc_err;
-use serde_json::Value;
+use serde_json::{Value, value::RawValue};
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_metabinary::{
     catalog::{Catalog, ChainEras},
@@ -85,8 +85,8 @@ impl EraRuntime {
                 static_files_path,
                 rocksdb_path,
                 rpc_config: Some(rpc_config_file.path().to_owned()),
-                chain_id: format!("0x{:x}", chain.chain_id()),
-                genesis_hash: chain.genesis_hash().to_string(),
+                chain_id: U64::from(chain.chain_id()),
+                genesis_hash: chain.genesis_hash(),
                 startup_timeout: Duration::from_secs(120),
             },
             eras,
@@ -104,13 +104,12 @@ impl EraRuntime {
         modules: &mut TransportRpcModules,
         resolver: Methods,
     ) -> eyre::Result<()> {
-        let router = Arc::new(Router::with_backend(
+        let router = Arc::new(Router::new(
             self.schedule.clone(),
             Arc::new(NativeBackend {
                 resolver,
                 runtime: self.clone(),
             }),
-            Default::default(),
         )?);
         // Replace callbacks in-place, retaining the existing server configuration and transports.
         if let Some(methods) = modules.http_methods(|_| true) {
@@ -136,25 +135,29 @@ struct NativeBackend {
 }
 
 impl Backend for NativeBackend {
-    fn request<'a>(
+    fn resolve<'a>(
         &'a self,
-        era: usize,
         method: &'a str,
         params: RpcParams,
     ) -> BoxFuture<'a, RpcResult<Value>> {
         Box::pin(async move {
-            if era + 1 == self.runtime.schedule.eras.len() {
-                self.resolver
-                    .call(method, params)
-                    .await
-                    .map_err(|error| match error {
-                        MethodsError::JsonRpc(error) => error,
-                        error => internal_rpc_err(error.to_string()),
-                    })
-            } else {
-                self.runtime.workers.request(era, method, params).await
-            }
+            self.resolver
+                .call(method, params)
+                .await
+                .map_err(|error| match error {
+                    MethodsError::JsonRpc(error) => error,
+                    error => internal_rpc_err(error.to_string()),
+                })
         })
+    }
+
+    fn forward<'a>(
+        &'a self,
+        era: usize,
+        method: &'a str,
+        params: RpcParams,
+    ) -> BoxFuture<'a, RpcResult<Box<RawValue>>> {
+        Box::pin(self.runtime.workers.request(era, method, params))
     }
 
     fn raw_block_timestamp<'a>(&'a self, params: &'a RpcParams) -> BoxFuture<'a, RpcResult<u64>> {
@@ -165,15 +168,18 @@ impl Backend for NativeBackend {
                 _ => None,
             }
             .ok_or_else(|| invalid("missing raw block"))?;
-            let bytes: Bytes = serde_json::from_value(value.clone())
+            let bytes: Bytes = serde::Deserialize::deserialize(value)
                 .map_err(|error| invalid(error.to_string()))?;
             let mut raw = bytes.as_ref();
-            let block = tempo_primitives::Block::decode(&mut raw)
+            let mut payload = alloy_rlp::Header::decode_bytes(&mut raw, true)
+                .map_err(|error| invalid(error.to_string()))?;
+            // The selected executor validates the body using its era's transaction codec.
+            let header = tempo_primitives::TempoHeader::decode(&mut payload)
                 .map_err(|error| invalid(error.to_string()))?;
             if !raw.is_empty() {
                 return Err(invalid("trailing raw block data"));
             }
-            Ok(block.header.inner.timestamp)
+            Ok(header.inner.timestamp)
         })
     }
 }
@@ -250,6 +256,27 @@ mod tests {
                 .unwrap(),
             123
         );
+        // Routing must not validate the body with the current release's codec.
+        let mut opaque_body = bytes.clone();
+        *opaque_body.last_mut().unwrap() = 0xff;
+        assert!(tempo_primitives::Block::decode(&mut opaque_body.as_slice()).is_err());
+        assert_eq!(
+            backend
+                .raw_block_timestamp(&RpcParams(json!([Bytes::from(opaque_body)])))
+                .await
+                .unwrap(),
+            123
+        );
+        for malformed in [vec![0xc0], bytes[..bytes.len() - 1].to_vec()] {
+            assert_eq!(
+                backend
+                    .raw_block_timestamp(&RpcParams(json!([Bytes::from(malformed)])))
+                    .await
+                    .unwrap_err()
+                    .code(),
+                -32602
+            );
+        }
         bytes.push(0);
         let error = backend
             .raw_block_timestamp(&RpcParams(json!([Bytes::from(bytes)])))

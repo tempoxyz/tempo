@@ -1,24 +1,13 @@
-use std::{collections::HashSet, sync::Arc};
+use std::sync::Arc;
 
 use futures::future::BoxFuture;
 use jsonrpsee::{
-    core::{
-        RpcResult,
-        client::{ClientT, Error as ClientError},
-        traits::ToRpcParams,
-    },
-    http_client::HttpClient,
+    core::{RpcResult, client::Error as ClientError, traits::ToRpcParams},
     types::ErrorObjectOwned,
 };
 use serde_json::{Value, json, value::RawValue};
 
-use crate::{
-    catalog::{ChainEras, ReleaseEra},
-    handshake::{EXECUTION_INFO_METHOD, WorkerIdentity},
-    manifest::Manifest,
-};
-
-pub use crate::handshake::ExecutionInfo;
+use crate::{catalog::ChainEras, handshake::EXECUTION_INFO_METHOD};
 
 /// JSON-RPC supports both positional and named params. Keep that representation when forwarding.
 #[derive(Debug, Clone)]
@@ -48,6 +37,18 @@ impl RpcParams {
         match &self.0 {
             Value::Array(a) => a.get(index),
             Value::Object(o) => names.iter().find_map(|n| o.get(*n)),
+            _ => None,
+        }
+        .filter(|v| !v.is_null())
+    }
+
+    fn get_mut(&mut self, index: usize, names: &[&str]) -> Option<&mut Value> {
+        match &mut self.0 {
+            Value::Array(a) => a.get_mut(index),
+            Value::Object(o) => names
+                .iter()
+                .find(|n| o.contains_key(**n))
+                .and_then(|n| o.get_mut(*n)),
             _ => None,
         }
         .filter(|v| !v.is_null())
@@ -142,15 +143,21 @@ impl Block {
     }
 }
 
-/// Execution-independent request adapter. The live adapter may invoke native RPC callbacks
-/// directly; historical adapters may start a frozen worker lazily.
+/// Execution-independent adapter for live RPC resolution and frozen worker forwarding.
 pub trait Backend: Send + Sync {
-    fn request<'a>(
+    /// Resolve identifiers through the live RPC implementation.
+    fn resolve<'a>(&'a self, method: &'a str, params: RpcParams)
+    -> BoxFuture<'a, RpcResult<Value>>;
+
+    /// Execution results are opaque to the router.
+    fn forward<'a>(
         &'a self,
-        era: usize,
-        method: &'a str,
-        params: RpcParams,
-    ) -> BoxFuture<'a, RpcResult<Value>>;
+        _era: usize,
+        _method: &'a str,
+        _params: RpcParams,
+    ) -> BoxFuture<'a, RpcResult<Box<RawValue>>> {
+        Box::pin(async { Err(unsupported("historical execution is unavailable")) })
+    }
 
     /// Only the chain-specific adapter knows the raw block encoding.
     fn raw_block_timestamp<'a>(&'a self, _params: &'a RpcParams) -> BoxFuture<'a, RpcResult<u64>> {
@@ -158,37 +165,6 @@ pub trait Backend: Send + Sync {
             Err(unsupported(
                 "raw-block tracing requires a chain-specific decoder; use debug_traceBlockByHash or debug_traceBlockByNumber",
             ))
-        })
-    }
-}
-
-struct HttpBackend {
-    manifest: Arc<Manifest>,
-    clients: Vec<HttpClient>,
-    methods: Vec<Option<HashSet<String>>>,
-}
-
-impl Backend for HttpBackend {
-    fn request<'a>(
-        &'a self,
-        era: usize,
-        method: &'a str,
-        params: RpcParams,
-    ) -> BoxFuture<'a, RpcResult<Value>> {
-        Box::pin(async move {
-            let methods = self.methods[era].as_ref().ok_or_else(|| {
-                unsupported("historical execution is disabled; start serve with --history")
-            })?;
-            if !methods.contains(method) {
-                return Err(unsupported(format!(
-                    "{method} is unavailable in era {}",
-                    self.manifest.eras[era].name
-                )));
-            }
-            self.clients[era]
-                .request(method, params)
-                .await
-                .map_err(upstream_error)
         })
     }
 }
@@ -202,82 +178,14 @@ pub struct Route {
 pub struct Router {
     schedule: ChainEras,
     backend: Arc<dyn Backend>,
-    live_methods: HashSet<String>,
 }
 
 impl Router {
-    pub fn new(
-        manifest: Arc<Manifest>,
-        clients: Vec<HttpClient>,
-        info: Vec<Option<ExecutionInfo>>,
-    ) -> eyre::Result<Self> {
-        manifest.validate()?;
-        eyre::ensure!(
-            clients.len() == manifest.eras.len() && info.len() == clients.len(),
-            "one worker per era is required"
-        );
-        let live = clients.len() - 1;
-        eyre::ensure!(info[live].is_some(), "the live worker is required");
-        for (index, metadata) in info.iter().enumerate() {
-            if let Some(metadata) = metadata {
-                metadata.validate(
-                    WorkerIdentity {
-                        chain_id: &manifest.chain_id,
-                        genesis_hash: &manifest.genesis_hash,
-                        read_only: index != live,
-                    },
-                    None,
-                )?;
-            }
-        }
-        let live_methods = info[live]
-            .as_ref()
-            .expect("validated live worker")
-            .methods
-            .iter()
-            .cloned()
-            .collect();
-        let schedule = ChainEras {
-            chain_id: manifest.chain_id.clone(),
-            genesis_hash: manifest.genesis_hash.clone(),
-            eras: manifest
-                .eras
-                .iter()
-                .enumerate()
-                .map(|(index, era)| ReleaseEra {
-                    name: era.name.clone(),
-                    start_timestamp: era.start_timestamp,
-                    binary: (index != live).then(|| era.binary.clone()),
-                })
-                .collect(),
-        };
-        let backend = Arc::new(HttpBackend {
-            manifest,
-            clients,
-            methods: info
-                .into_iter()
-                .map(|i| i.map(|i| i.methods.into_iter().collect()))
-                .collect(),
-        });
-        Self::with_backend(schedule, backend, live_methods)
-    }
-
-    pub fn with_backend(
-        schedule: ChainEras,
-        backend: Arc<dyn Backend>,
-        live_methods: HashSet<String>,
-    ) -> eyre::Result<Self> {
+    pub fn new(schedule: ChainEras, backend: Arc<dyn Backend>) -> eyre::Result<Self> {
         schedule.validate()?;
-        Ok(Self {
-            schedule,
-            backend,
-            live_methods,
-        })
+        Ok(Self { schedule, backend })
     }
 
-    pub fn live_methods(&self) -> &HashSet<String> {
-        &self.live_methods
-    }
     pub fn live_index(&self) -> usize {
         self.schedule.eras.len() - 1
     }
@@ -302,22 +210,19 @@ impl Router {
             ),
         };
         Block::parse(
-            self.forward(
-                self.live_index(),
-                method,
-                RpcParams(json!([selector, false])),
-            )
-            .await?,
+            self.backend
+                .resolve(method, RpcParams(json!([selector, false])))
+                .await?,
         )
     }
 
-    pub async fn forward(&self, era: usize, method: &str, params: RpcParams) -> RpcResult<Value> {
-        self.backend.request(era, method, params).await
-    }
-
-    pub async fn call(&self, method: &str, params: RpcParams) -> RpcResult<Value> {
-        let route = self.route(method, params).await?;
-        self.forward(route.era, method, route.params).await
+    pub async fn forward(
+        &self,
+        era: usize,
+        method: &str,
+        params: RpcParams,
+    ) -> RpcResult<Box<RawValue>> {
+        self.backend.forward(era, method, params).await
     }
 
     pub async fn route(&self, method: &str, mut params: RpcParams) -> RpcResult<Route> {
@@ -375,8 +280,9 @@ impl Router {
                 let hash = params
                     .get(0, &["tx_hash", "txHash", "hash", "transaction"])
                     .ok_or_else(|| invalid("missing transaction hash"))?;
-                let tx: Value = self
-                    .forward(live, "eth_getTransactionByHash", RpcParams(json!([hash])))
+                let tx = self
+                    .backend
+                    .resolve("eth_getTransactionByHash", RpcParams(json!([hash])))
                     .await?;
                 match tx.get("blockHash").filter(|v| !v.is_null()) {
                     Some(hash) => self.era(self.block(hash).await?.timestamp),
@@ -439,43 +345,41 @@ impl Router {
     }
 
     async fn filter(&self, params: &mut RpcParams) -> RpcResult<usize> {
-        let mut filter = params
-            .get(0, &["filter"])
-            .cloned()
+        let filter = params
+            .get_mut(0, &["filter"])
+            .filter(|filter| filter.is_object())
             .ok_or_else(|| invalid("missing trace filter"))?;
-        let from_selector = filter.get("fromBlock").filter(|v| !v.is_null());
-        let to_selector = filter.get("toBlock").filter(|v| !v.is_null());
-        let latest = if from_selector.is_none() || to_selector.is_none() {
-            Some(self.block(&json!("latest")).await?.id())
-        } else {
+        let latest = json!("latest");
+        let from_selector = filter
+            .get("fromBlock")
+            .filter(|v| !v.is_null())
+            .unwrap_or(&latest);
+        let to_selector = filter
+            .get("toBlock")
+            .filter(|v| !v.is_null())
+            .unwrap_or(&latest);
+        let from = self.block(from_selector).await?;
+        let to = if from_selector == to_selector {
             None
+        } else {
+            Some(self.block(to_selector).await?)
         };
-        let from = self
-            .block(from_selector.or(latest.as_ref()).expect("resolved default"))
-            .await?;
-        let to = self
-            .block(to_selector.or(latest.as_ref()).expect("resolved default"))
-            .await?;
+        let to = to.as_ref().unwrap_or(&from);
         let era = self.era(from.timestamp);
         if era != self.era(to.timestamp) {
             return Err(unsupported(
                 "trace_filter spans multiple eras; split the block range",
             ));
         }
-        if !filter.is_object() {
-            return Err(invalid("trace filter must be an object"));
-        }
         filter["fromBlock"] = from.number_id();
         filter["toBlock"] = to.number_id();
-        params.set(0, &["filter"], filter);
         Ok(era)
     }
 
     async fn call_bundle(&self, params: &mut RpcParams) -> RpcResult<usize> {
-        let mut request = params
-            .get(0, &["request"])
+        let request = params
+            .get_mut(0, &["request"])
             .filter(|value| value.is_object())
-            .cloned()
             .ok_or_else(|| invalid("missing bundle request"))?;
         // Unlike BlockId, the native bundle API accepts only a block number or tag here.
         let selector = request
@@ -516,16 +420,14 @@ impl Router {
             return Err(unsupported("bundle timestamp crosses an era boundary"));
         }
         request["stateBlockNumber"] = parent.number_id();
-        params.set(0, &["request"], request);
         Ok(era)
     }
 
     async fn mev_bundle(&self, params: &mut RpcParams) -> RpcResult<usize> {
         let names = &["sim_overrides", "simOverrides"];
-        let mut overrides = params
-            .get(1, names)
+        let overrides = params
+            .get_mut(1, names)
             .filter(|value| value.is_object())
-            .cloned()
             .ok_or_else(|| invalid("missing bundle simulation overrides"))?;
         let selector = overrides
             .get("parentBlock")
@@ -534,7 +436,7 @@ impl Router {
             .unwrap_or_else(|| json!("latest"));
         if selector == "pending" {
             let live = self.live_index();
-            self.check_time(live, Some(&overrides))?;
+            self.check_time(live, Some(overrides))?;
             return Ok(live);
         }
         let parent = self.block(&selector).await?;
@@ -543,9 +445,8 @@ impl Router {
         if self.era(parent.timestamp.saturating_add(12)) != era {
             return Err(unsupported("bundle simulation crosses an era boundary"));
         }
-        self.check_time(era, Some(&overrides))?;
+        self.check_time(era, Some(overrides))?;
         overrides["parentBlock"] = parent.pin(selector, false);
-        params.set(1, names, overrides);
         Ok(era)
     }
 
@@ -601,12 +502,10 @@ impl Router {
             .get(0, &["bundles"])
             .and_then(Value::as_array)
             .ok_or_else(|| invalid("missing bundles"))?;
-        let mut context = params
-            .get(1, &["state_context", "stateContext"])
-            .cloned()
-            .unwrap_or_else(|| json!({}));
+        let names = &["state_context", "stateContext"];
+        let context = params.get(1, names);
         let selector = context
-            .get("blockNumber")
+            .and_then(|context| context.get("blockNumber"))
             .filter(|v| !v.is_null())
             .cloned()
             .unwrap_or_else(|| json!("latest"));
@@ -641,11 +540,15 @@ impl Router {
             self.check_time(era, bundle.get("blockOverride"))?;
         }
         if !pending {
-            if !context.is_object() {
+            if context.is_some_and(|context| !context.is_object()) {
                 return Err(invalid("state context must be an object"));
             }
-            context["blockNumber"] = block.pin(selector, false);
-            params.set(1, &["state_context", "stateContext"], context);
+            let block = block.pin(selector, false);
+            if let Some(context) = params.get_mut(1, names) {
+                context["blockNumber"] = block;
+            } else {
+                params.set(1, names, json!({"blockNumber":block}));
+            }
         }
         Ok(era)
     }
@@ -681,7 +584,7 @@ impl Router {
             return Ok(era);
         }
         let base = self.block(&selector).await?;
-        let chain_id = quantity(&json!(self.schedule.chain_id))?;
+        let chain_id = self.schedule.chain_id.to::<u64>();
         let step = alloy_chains::Chain::from(chain_id)
             .average_blocktime_hint()
             .map(|d| d.as_secs().saturating_add(u64::from(d.subsec_nanos() > 0)))

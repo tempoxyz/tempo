@@ -1,7 +1,7 @@
-//! The wrapper's only knowledge of execution history: ordered binaries and activation times.
+//! Ordered binaries and bounded imports for bootstrapping shared execution storage.
 
-use alloy_primitives::B256;
-use eyre::{Context, OptionExt, Result, bail, ensure};
+use alloy_primitives::{B256, U64};
+use eyre::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
@@ -15,9 +15,9 @@ pub struct Manifest {
     pub chain: String,
     /// Shared data directory. Binary and datadir paths are manifest-relative.
     pub datadir: PathBuf,
-    /// Expected Ethereum quantity, checked against every worker before serving.
-    pub chain_id: String,
-    pub genesis_hash: String,
+    /// Expected identity, checked against each era's storage before advancing.
+    pub chain_id: U64,
+    pub genesis_hash: B256,
     pub eras: Vec<Era>,
 }
 
@@ -28,14 +28,6 @@ pub struct Era {
     /// Inclusive activation timestamp; the next era's activation is the exclusive end.
     pub start_timestamp: u64,
     pub binary: PathBuf,
-    /// Ordinary node arguments. Only the live era may have these.
-    #[serde(default)]
-    pub node_args: Vec<String>,
-    /// Private HTTP endpoint used only by the wrapper.
-    pub rpc_port: u16,
-    /// Optional private WebSocket endpoint for live subscriptions.
-    #[serde(default)]
-    pub ws_port: Option<u16>,
     /// Optional sequential genesis bootstrap from canonical block files.
     #[serde(default)]
     pub bootstrap: Option<Bootstrap>,
@@ -48,7 +40,7 @@ pub struct Bootstrap {
     pub args: Vec<String>,
     /// Operator-pinned last canonical block owned by this era.
     pub terminal_block_number: u64,
-    pub terminal_block_hash: String,
+    pub terminal_block_hash: B256,
 }
 
 impl Manifest {
@@ -83,55 +75,29 @@ impl Manifest {
             !self.datadir.as_os_str().is_empty(),
             "datadir must not be empty"
         );
-        parse_quantity(&self.chain_id).wrap_err("invalid chain_id")?;
-        validate_hash(&self.genesis_hash).wrap_err("invalid genesis_hash")?;
         validate_schedule(
             self.eras
                 .iter()
                 .map(|era| (era.name.as_str(), era.start_timestamp)),
         )?;
-        let mut ports = HashSet::new();
         for (index, era) in self.eras.iter().enumerate() {
             ensure!(
                 !era.binary.as_os_str().is_empty(),
                 "era {} has no binary",
                 era.name
             );
-            ensure!(
-                era.rpc_port != 0,
-                "era {} needs a nonzero private RPC port",
-                era.name
-            );
-            ensure!(
-                ports.insert(era.rpc_port),
-                "duplicate private RPC port: {}",
-                era.rpc_port
-            );
-            if let Some(port) = era.ws_port {
+            if index + 1 == self.eras.len() {
                 ensure!(
-                    port != 0 && ports.insert(port),
-                    "invalid or duplicate private WebSocket port: {port}"
-                );
-            }
-            if index + 1 < self.eras.len() {
-                ensure!(
-                    era.node_args.is_empty(),
-                    "historical era {} cannot have node_args",
-                    era.name
-                );
-                ensure!(
-                    era.ws_port.is_none(),
-                    "historical era {} cannot have ws_port",
-                    era.name
+                    era.bootstrap.is_none(),
+                    "active era must be started with tempo node, not bootstrap"
                 );
             } else {
                 ensure!(
-                    era.bootstrap.is_none(),
-                    "live era must be started with serve, not bootstrap"
+                    era.bootstrap.is_some(),
+                    "era {} needs a bootstrap command/checkpoint",
+                    era.name
                 );
             }
-            reject_reserved(&era.node_args)
-                .wrap_err_with(|| format!("invalid node_args for {}", era.name))?;
             if let Some(bootstrap) = &era.bootstrap {
                 bootstrap
                     .validate()
@@ -150,37 +116,21 @@ impl Manifest {
         }
         Ok(())
     }
-
-    pub fn validate_bootstrap(&self) -> Result<()> {
-        self.validate()?;
-        for era in &self.eras[..self.eras.len() - 1] {
-            ensure!(
-                era.bootstrap.is_some(),
-                "era {} has no bootstrap command/checkpoint",
-                era.name
-            );
-        }
-        Ok(())
-    }
-
-    pub fn live(&self) -> &Era {
-        self.eras
-            .last()
-            .expect("validated manifest contains an era")
-    }
 }
 
 impl Bootstrap {
     fn validate(&self) -> Result<()> {
-        validate_hash(&self.terminal_block_hash).wrap_err("invalid terminal_block_hash")?;
         ensure!(
             self.args.first().map(String::as_str) == Some("import"),
             "bootstrap args must start with import"
         );
-        reject_reserved(&self.args[1..])?;
         // Import must execute state, validate blocks, and stop at the pinned file boundary.
         for arg in &self.args[1..] {
             let key = arg.split('=').next().unwrap_or(arg);
+            ensure!(
+                !matches!(key, "--" | "--chain" | "--datadir") && !key.starts_with("--datadir."),
+                "bootstrap owns flag {key}"
+            );
             ensure!(key != "--no-state", "bootstrap import must execute state");
             ensure!(
                 !matches!(
@@ -218,42 +168,6 @@ pub(crate) fn resolve_path(parent: &Path, path: &mut PathBuf) {
     }
 }
 
-/// Reject flags that could bypass the wrapper's private transport or shared database.
-fn reject_reserved(args: &[String]) -> Result<()> {
-    for arg in args {
-        let key = arg.split('=').next().unwrap_or(arg);
-        if matches!(
-            key,
-            "--" | "--chain" | "--datadir" | "--http" | "--ws" | "--ipcdisable" | "--ipcpath"
-        ) || key.starts_with("--datadir.")
-            || key.starts_with("--http.")
-            || key.starts_with("--ws.")
-            || key == "--authrpc.addr"
-        {
-            bail!("wrapper owns flag {key}");
-        }
-    }
-    Ok(())
-}
-
-pub fn parse_quantity(value: &str) -> Result<u64> {
-    let digits = value
-        .strip_prefix("0x")
-        .ok_or_eyre("expected 0x-prefixed quantity")?;
-    ensure!(!digits.is_empty(), "quantity must contain hex digits");
-    ensure!(
-        digits.len() == 1 || !digits.starts_with('0'),
-        "quantity must not have leading zeros"
-    );
-    Ok(u64::from_str_radix(digits, 16)?)
-}
-
-pub(crate) fn validate_hash(value: &str) -> Result<()> {
-    ensure!(value.starts_with("0x"), "expected 0x-prefixed hash");
-    value.parse::<B256>()?;
-    Ok(())
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -266,32 +180,21 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn rejects_invalid_eras_and_worker_options() {
-        let mut schedule = manifest();
-        schedule.eras[0].start_timestamp = 1;
-        assert!(schedule.validate().is_err());
-        schedule.eras[0].start_timestamp = 0;
-        schedule.eras[1].start_timestamp = 0;
-        assert!(schedule.validate().is_err());
-        schedule.eras[1].start_timestamp = 100;
-        schedule.eras[1].rpc_port = schedule.eras[0].rpc_port;
-        assert!(schedule.validate().is_err());
+    fn rejects_invalid_eras_and_bootstrap_options() {
+        let mut manifest = manifest();
+        manifest.eras[0].start_timestamp = 1;
+        assert!(manifest.validate().is_err());
+        manifest.eras[0].start_timestamp = 0;
+        manifest.eras[1].start_timestamp = 0;
+        assert!(manifest.validate().is_err());
+        manifest.eras[1].start_timestamp = 100;
+        manifest.eras[0].bootstrap.as_mut().unwrap().args = vec!["node".into()];
+        assert!(manifest.validate().is_err());
         for flag in [
-            "--http.addr=0.0.0.0",
-            "--http.port",
-            "--ws",
             "--chain=other",
             "--datadir",
-            "--ipcpath",
-        ] {
-            let mut manifest = manifest();
-            manifest.eras[1].node_args = vec![flag.into()];
-            assert!(manifest.validate().is_err(), "accepted {flag}");
-        }
-        let mut manifest = manifest();
-        manifest.eras[0].bootstrap.as_mut().unwrap().args = vec!["node".into()];
-        assert!(manifest.validate_bootstrap().is_err());
-        for flag in [
+            "--datadir.static-files=other",
+            "--",
             "--no-state",
             "--no-state=true",
             "--no-state=false",
@@ -300,11 +203,19 @@ pub(crate) mod tests {
         ] {
             manifest.eras[0].bootstrap.as_mut().unwrap().args =
                 vec!["import".into(), flag.into(), "blocks.rlp".into()];
-            assert!(manifest.validate_bootstrap().is_err(), "accepted {flag}");
+            assert!(manifest.validate().is_err(), "accepted {flag}");
         }
         manifest.eras[0].bootstrap = None;
-        manifest.validate().unwrap();
-        assert!(manifest.validate_bootstrap().is_err());
+        assert!(manifest.validate().is_err());
+        let value = serde_json::to_value(&manifest).unwrap();
+        for (field, malformed) in [
+            ("chain_id", "0x10000000000000000"),
+            ("genesis_hash", "0x01"),
+        ] {
+            let mut invalid = value.clone();
+            invalid[field] = serde_json::json!(malformed);
+            assert!(serde_json::from_value::<Manifest>(invalid).is_err());
+        }
     }
 
     #[test]

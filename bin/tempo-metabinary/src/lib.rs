@@ -5,5 +5,4 @@ pub mod handshake;
 pub mod manifest;
 pub mod process;
 pub mod routing;
-pub mod server;
 pub mod workers;

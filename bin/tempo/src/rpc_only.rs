@@ -214,7 +214,7 @@ impl RpcOnly {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::Address;
+    use alloy_primitives::{Address, U64};
     use alloy_rpc_types_eth::TransactionRequest;
     use jsonrpsee::{core::client::ClientT, rpc_params};
     use serde_json::{Value, json};
@@ -283,11 +283,11 @@ mod tests {
                     .unwrap();
                 info.validate(
                     WorkerIdentity {
-                        chain_id: &format!("0x{:x}", chain.chain_id()),
-                        genesis_hash: &chain.genesis_hash().to_string(),
+                        chain_id: U64::from(chain.chain_id()),
+                        genesis_hash: chain.genesis_hash(),
                         read_only: true,
                     },
-                    Some(std::process::id()),
+                    std::process::id(),
                 )
                 .unwrap();
                 for method in [

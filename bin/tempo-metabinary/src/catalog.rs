@@ -2,10 +2,11 @@
 
 use std::path::{Path, PathBuf};
 
+use alloy_primitives::{B256, U64};
 use eyre::{Context, ensure};
 use serde::{Deserialize, Serialize};
 
-use crate::manifest::{resolve_path, validate_hash, validate_schedule};
+use crate::manifest::{resolve_path, validate_schedule};
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -16,8 +17,8 @@ pub struct Catalog {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChainEras {
-    pub chain_id: String,
-    pub genesis_hash: String,
+    pub chain_id: U64,
+    pub genesis_hash: B256,
     /// Includes the active era as the last entry, with no executable path.
     pub eras: Vec<ReleaseEra>,
 }
@@ -56,33 +57,26 @@ impl Catalog {
         for (index, chain) in self.chains.iter().enumerate() {
             chain.validate()?;
             ensure!(
-                !self.chains[..index].iter().any(|previous| previous
-                    .chain_id
-                    .eq_ignore_ascii_case(&chain.chain_id)
-                    && previous
-                        .genesis_hash
-                        .eq_ignore_ascii_case(&chain.genesis_hash)),
+                !self.chains[..index]
+                    .iter()
+                    .any(|previous| previous.chain_id == chain.chain_id
+                        && previous.genesis_hash == chain.genesis_hash),
                 "duplicate chain identity in era catalog"
             );
         }
         Ok(())
     }
 
-    pub fn for_chain(&self, chain_id: u64, genesis_hash: &str) -> Option<&ChainEras> {
-        self.chains.iter().find(|chain| {
-            u64::from_str_radix(chain.chain_id.trim_start_matches("0x"), 16).ok() == Some(chain_id)
-                && chain.genesis_hash.eq_ignore_ascii_case(genesis_hash)
-        })
+    pub fn for_chain(&self, chain_id: u64, genesis_hash: B256) -> Option<&ChainEras> {
+        let chain_id = U64::from(chain_id);
+        self.chains
+            .iter()
+            .find(|chain| chain.chain_id == chain_id && chain.genesis_hash == genesis_hash)
     }
 }
 
 impl ChainEras {
     pub fn validate(&self) -> eyre::Result<()> {
-        ensure!(
-            self.chain_id.starts_with("0x") && u64::from_str_radix(&self.chain_id[2..], 16).is_ok(),
-            "invalid era chain ID"
-        );
-        validate_hash(&self.genesis_hash).wrap_err("invalid era genesis hash")?;
         validate_schedule(
             self.eras
                 .iter()
@@ -127,14 +121,21 @@ mod tests {
         }))
         .unwrap();
         catalog.validate().unwrap();
-        assert!(catalog.for_chain(1, &format!("0x{:064x}", 2)).is_none());
+        assert!(catalog.for_chain(1, B256::ZERO).is_none());
         let chain = catalog
-            .for_chain(1, &catalog.chains[0].genesis_hash)
+            .for_chain(1, catalog.chains[0].genesis_hash)
             .unwrap();
         for (timestamp, era) in [(0, 0), (99, 0), (100, 1), (u64::MAX, 1)] {
             assert_eq!(chain.era_for_timestamp(timestamp), era);
         }
         catalog.chains[0].eras[1].start_timestamp = 0;
+        assert!(catalog.validate().is_err());
+        catalog.chains[0].eras[1].start_timestamp = 100;
+        let mut duplicate = serde_json::to_value(&catalog.chains[0]).unwrap();
+        duplicate["chain_id"] = serde_json::json!("0x01");
+        catalog
+            .chains
+            .push(serde_json::from_value(duplicate).unwrap());
         assert!(catalog.validate().is_err());
     }
 }

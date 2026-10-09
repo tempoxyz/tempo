@@ -8,7 +8,6 @@
       "name": "genesis-to-t10",
       "start_timestamp": 0,
       "binary": "./tempo-frozen",
-      "rpc_port": 18545,
       "bootstrap": {
         "args": ["import", "/absolute/path/to/genesis-through-era-boundary.rlp"],
         "terminal_block_number": 100,
@@ -18,10 +17,7 @@
     {
       "name": "t11-live",
       "start_timestamp": 1800000000,
-      "binary": "./tempo-live",
-      "rpc_port": 18546,
-      "ws_port": 18547,
-      "node_args": []
+      "binary": "./tempo-live"
     }
   ]
 }

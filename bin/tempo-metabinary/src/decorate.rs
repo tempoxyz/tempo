@@ -157,7 +157,7 @@ mod tests {
         },
         types::{ErrorObjectOwned, Id, Params, error::OVERSIZED_RESPONSE_CODE},
     };
-    use serde_json::json;
+    use serde_json::{json, value::RawValue};
     use std::{
         collections::BTreeSet,
         sync::atomic::{AtomicBool, Ordering},
@@ -165,35 +165,47 @@ mod tests {
 
     struct FakeBackend {
         timestamp: RpcResult<u64>,
-        response: Option<Value>,
+        response: Option<RpcResult<Box<RawValue>>>,
     }
 
     impl Backend for FakeBackend {
-        fn request<'a>(
+        fn resolve<'a>(
             &'a self,
-            era: usize,
             method: &'a str,
             params: RpcParams,
         ) -> BoxFuture<'a, RpcResult<Value>> {
             async move {
-                match method {
-                    "eth_getBlockByNumber" | "eth_getBlockByHash" => {
-                        assert_eq!(era, 1);
-                        let number = if params.0[0] == "0x1" { 1 } else { 2 };
-                        Ok(json!({"number":number, "hash":format!("0x{:064x}", number), "timestamp":self.timestamp.clone()?}))
-                    }
-                    "eth_call" => {
-                        assert_eq!(era, 0);
-                        assert_eq!(params.0, json!({"block":"latest", "block_number":{"blockHash":format!("0x{:064x}", 2)}}));
-                        Ok(self.response.clone().expect("unexpected historical forwarding"))
-                    }
-                    _ => panic!("unexpected method {method}"),
-                }
+                assert!(matches!(method, "eth_getBlockByNumber" | "eth_getBlockByHash"));
+                let number = if params.0[0] == "0x1" { 1 } else { 2 };
+                Ok(json!({"number":number, "hash":format!("0x{:064x}", number), "timestamp":self.timestamp.clone()?}))
             }.boxed()
+        }
+
+        fn forward<'a>(
+            &'a self,
+            era: usize,
+            method: &'a str,
+            params: RpcParams,
+        ) -> BoxFuture<'a, RpcResult<Box<RawValue>>> {
+            async move {
+                assert_eq!(era, 0);
+                assert_eq!(method, "eth_call");
+                assert_eq!(
+                    params.0,
+                    json!({"block":"latest", "block_number":{"blockHash":format!("0x{:064x}", 2)}})
+                );
+                self.response
+                    .clone()
+                    .expect("unexpected historical forwarding")
+            }
+            .boxed()
         }
     }
 
-    fn router(timestamp: RpcResult<u64>, response: Option<Value>) -> Arc<Router> {
+    fn router(
+        timestamp: RpcResult<u64>,
+        response: Option<RpcResult<Box<RawValue>>>,
+    ) -> Arc<Router> {
         let schedule: ChainEras = serde_json::from_value(json!({
             "chain_id":"0x1", "genesis_hash":format!("0x{}", "00".repeat(32)),
             "eras":[
@@ -206,7 +218,7 @@ mod tests {
             timestamp,
             response,
         });
-        Arc::new(Router::with_backend(schedule, backend, Default::default()).unwrap())
+        Arc::new(Router::new(schedule, backend).unwrap())
     }
 
     async fn invoke(methods: &Methods) -> MethodResponse {
@@ -281,6 +293,7 @@ mod tests {
     #[tokio::test]
     async fn execution_preserves_native_context_errors_and_response_limits() {
         let error = ErrorObjectOwned::owned(-32004, "cross-era request", Some(json!({"era":0})));
+        let raw = RawValue::from_string(r#"{"n":1.00e+3,"escaped":"\u0061"}"#.into()).unwrap();
         for native in [
             MethodCallback::Sync(Arc::new(native_response)),
             MethodCallback::Async(Arc::new(|id, params, connection, limit, extensions| {
@@ -288,25 +301,39 @@ mod tests {
                 async move { native_response(id, params, limit, extensions) }.boxed()
             })),
         ] {
-            for code in [None, Some(OVERSIZED_RESPONSE_CODE), Some(-32004)] {
-                let timestamp = match code {
-                    None => Ok(110),
-                    Some(-32004) => Err(error.clone()),
-                    _ => Ok(50),
-                };
+            for (timestamp, result, code) in [
+                (Ok(110), None, None),
+                (Ok(50), Some(Ok(raw.clone())), None),
+                (
+                    Ok(50),
+                    Some(Ok(
+                        serde_json::value::to_raw_value(&"x".repeat(1024)).unwrap()
+                    )),
+                    Some(OVERSIZED_RESPONSE_CODE),
+                ),
+                (Ok(50), Some(Err(error.clone())), Some(-32004)),
+                (Err(error.clone()), None, Some(-32004)),
+            ] {
+                let historical = timestamp == Ok(50);
                 let mut methods = Methods::new();
                 methods
                     .verify_and_insert("eth_call", native.clone())
                     .unwrap();
-                let decorated =
-                    decorate(methods, router(timestamp, Some(json!("x".repeat(1024))))).unwrap();
+                let decorated = decorate(methods, router(timestamp, result)).unwrap();
                 let response = invoke(&decorated).await;
                 assert_eq!(response.as_error_code(), code);
                 let (value, _, extensions) = response.into_parts();
+                if code.is_none() && historical {
+                    assert!(
+                        value.get().contains(raw.get()),
+                        "historical result was reserialized"
+                    );
+                }
                 let value: Value = serde_json::from_str(value.get()).unwrap();
                 assert_eq!(value["id"], 7);
                 assert_eq!(extensions.get::<u32>(), Some(&42));
                 match code {
+                    None if historical => assert!(value["result"].is_object()),
                     None => assert_eq!(value["result"], "native"),
                     Some(-32004) => {
                         assert_eq!(value["error"], serde_json::to_value(&error).unwrap())

@@ -1,159 +1,35 @@
-//! Ordinary Tempo processes supervised by the wrapper. No database code belongs here.
+//! Shared child ownership and cleanup for finite imports and private historical workers.
 
-use crate::manifest::{Era, Manifest};
-use eyre::{Context, Result, bail, ensure};
-use std::{ffi::OsString, process::Stdio, time::Duration};
+use crate::manifest::Manifest;
+use eyre::{Context, Result};
+use std::{process::Stdio, time::Duration};
 use tokio::process::{Child, Command};
 
-struct Worker {
-    name: String,
-    child: Child,
-}
-
-/// Owns every child, including temporary bootstrap commands.
-///
-/// Call [`Self::shutdown`] to terminate and reap children cleanly. `kill_on_drop` is a
-/// cancellation fallback so a failed startup cannot leave a live writer behind.
-#[derive(Default)]
-pub struct ProcessGroup {
-    workers: Vec<Worker>,
-}
-
-impl ProcessGroup {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn worker_pid(&self, name: &str) -> Option<u32> {
-        self.workers
-            .iter()
-            .find(|worker| worker.name == name)
-            .and_then(|worker| worker.child.id())
-    }
-
-    /// Start the sole database writer. Wait for its RPC readiness before starting readers.
-    pub fn spawn_live(&mut self, manifest: &Manifest) -> Result<()> {
-        manifest.validate()?;
-        let era = manifest.live();
-        let mut args = vec![OsString::from("node")];
-        args.extend(era.node_args.iter().map(OsString::from));
-        shared_args(manifest, &mut args);
-        args.extend([
-            "--http".into(),
-            "--http.addr".into(),
-            "127.0.0.1".into(),
-            "--http.port".into(),
-            era.rpc_port.to_string().into(),
-            "--http.api".into(),
-            "all".into(),
-            "--ipcdisable".into(),
-        ]);
-        if let Some(port) = era.ws_port {
-            args.extend([
-                "--ws".into(),
-                "--ws.addr".into(),
-                "127.0.0.1".into(),
-                "--ws.port".into(),
-                port.to_string().into(),
-                "--ws.api".into(),
-                "all".into(),
-            ]);
-        }
-        self.spawn(era, &args, &era.name)
-    }
-
-    pub fn spawn_history(&mut self, manifest: &Manifest) -> Result<()> {
-        manifest.validate()?;
-        for index in 0..manifest.eras.len() - 1 {
-            self.spawn_reader(manifest, index)?;
-        }
-        Ok(())
-    }
-
-    /// Start a read-only RPC worker, also used to inspect storage after a bootstrap phase.
-    pub fn spawn_reader(&mut self, manifest: &Manifest, index: usize) -> Result<()> {
-        manifest.validate()?;
-        let era = manifest
-            .eras
-            .get(index)
-            .ok_or_else(|| eyre::eyre!("unknown era index {index}"))?;
-        let mut args = vec![OsString::from("rpc-only")];
-        shared_args(manifest, &mut args);
-        args.extend(["--port".into(), era.rpc_port.to_string().into()]);
-        self.spawn(era, &args, &era.name)
-    }
-
-    /// Run one era's canonical block import. Only one writer may run at a time.
-    /// The caller must verify its pinned checkpoint via `spawn_reader` before advancing.
-    pub async fn run_bootstrap(&mut self, manifest: &Manifest, index: usize) -> Result<()> {
-        manifest.validate_bootstrap()?;
-        ensure!(
-            self.workers.is_empty(),
-            "stop all workers before running bootstrap"
-        );
-        let era = manifest
-            .eras
-            .get(index)
-            .ok_or_else(|| eyre::eyre!("unknown era index {index}"))?;
-        let bootstrap = era
-            .bootstrap
-            .as_ref()
-            .ok_or_else(|| eyre::eyre!("era {} has no bootstrap", era.name))?;
-        let mut args: Vec<OsString> = bootstrap.args.iter().map(OsString::from).collect();
-        shared_args(manifest, &mut args);
-        args.push("--fail-on-invalid-block".into());
-        self.spawn(era, &args, &format!("{} bootstrap", era.name))?;
-        let result = self.workers[0].child.wait().await;
-        // Remove only after wait has completed: cancellation keeps the child owned and killed.
-        let status = result.wrap_err_with(|| format!("waiting for {} bootstrap", era.name))?;
-        self.workers.clear();
-        ensure!(
-            status.success(),
-            "{} bootstrap exited with {status}",
-            era.name
-        );
-        Ok(())
-    }
-
-    /// An unexpected exit must stop the public server and the remaining workers.
-    pub fn check_alive(&mut self) -> Result<()> {
-        for worker in &mut self.workers {
-            if let Some(status) = worker
-                .child
-                .try_wait()
-                .wrap_err_with(|| format!("checking {}", worker.name))?
-            {
-                bail!("worker {} exited with {status}", worker.name);
-            }
-        }
-        Ok(())
-    }
-
-    pub async fn shutdown(&mut self) -> Result<()> {
-        let mut workers = std::mem::take(&mut self.workers);
-        // Readers are launched after the writer, so signal them first.
-        shutdown_children(
-            workers
-                .iter_mut()
-                .rev()
-                .map(|worker| (worker.name.as_str(), &mut worker.child)),
+/// Start a canonical-file import from a validated manifest. The caller reaps this sole writer before opening a
+/// read-only checkpoint worker or starting another import; cancellation falls back to kill-on-drop.
+pub fn spawn_bootstrap(manifest: &Manifest, index: usize) -> Result<Child> {
+    let era = manifest
+        .eras
+        .get(index)
+        .ok_or_else(|| eyre::eyre!("unknown era index {index}"))?;
+    let bootstrap = era
+        .bootstrap
+        .as_ref()
+        .ok_or_else(|| eyre::eyre!("era {} has no bootstrap", era.name))?;
+    spawn_child(
+        Command::new(&era.binary)
+            .args(&bootstrap.args)
+            .args(["--chain", &manifest.chain, "--datadir"])
+            .arg(&manifest.datadir)
+            .arg("--fail-on-invalid-block"),
+    )
+    .wrap_err_with(|| {
+        format!(
+            "starting {} bootstrap from {}",
+            era.name,
+            era.binary.display()
         )
-        .await
-    }
-
-    fn spawn(&mut self, era: &Era, args: &[OsString], name: &str) -> Result<()> {
-        ensure!(
-            !self.workers.iter().any(|worker| worker.name == name),
-            "worker {name} already running"
-        );
-        let child = spawn_child(Command::new(&era.binary).args(args))
-            .wrap_err_with(|| format!("starting {name} from {}", era.binary.display()))?;
-        self.workers.push(Worker {
-            name: name.to_owned(),
-            child,
-        });
-        Ok(())
-    }
+    })
 }
 
 /// Every supervised child uses the same I/O and cancellation fallback.
@@ -168,7 +44,7 @@ pub(crate) fn spawn_child(command: &mut Command) -> std::io::Result<Child> {
 
 /// Signal all owned children before concurrently reaping them under one grace period.
 /// Callers retain ownership across this await so cancellation still triggers `kill_on_drop`.
-pub(crate) async fn shutdown_children<'a>(
+pub async fn shutdown_children<'a>(
     children: impl IntoIterator<Item = (&'a str, &'a mut Child)>,
 ) -> Result<()> {
     let mut children: Vec<_> = children.into_iter().collect();
@@ -192,15 +68,6 @@ pub(crate) async fn shutdown_children<'a>(
         }
     }
     first_error.map_or(Ok(()), Err)
-}
-
-fn shared_args(manifest: &Manifest, args: &mut Vec<OsString>) {
-    args.extend([
-        "--chain".into(),
-        manifest.chain.clone().into(),
-        "--datadir".into(),
-        manifest.datadir.as_os_str().to_owned(),
-    ]);
 }
 
 fn request_termination(child: &mut Child) -> Result<()> {
@@ -253,31 +120,19 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn failed_spawn_and_shutdown_reap_every_child() {
-        let mut group = ProcessGroup::new();
-        let mut era = manifest().eras.remove(0);
-        era.binary = "/bin/sh".into();
-        for (name, command) in [
-            ("running", "exec sleep 60"),
-            ("forced", "exec sleep 60"),
-            ("exited", "exit 7"),
-        ] {
-            group
-                .spawn(&era, &["-c".into(), command.into()], name)
-                .unwrap();
-        }
-        let pids: Vec<_> = group
-            .workers
-            .iter()
-            .map(|worker| worker.child.id().unwrap())
+        let mut children: Vec<_> = ["exec sleep 60", "exec sleep 60", "exit 7"]
+            .into_iter()
+            .map(|command| spawn_child(Command::new("/bin/sh").args(["-c", command])).unwrap())
             .collect();
-        era.binary = "/nonexistent-tempo-test".into();
-        assert!(group.spawn(&era, &[], "failed").is_err());
-        group.workers[2].child.wait().await.unwrap();
-        assert!(group.check_alive().is_err());
-        wait_for_exit(&mut group.workers[1].child, tokio::time::Instant::now())
+        let pids: Vec<_> = children.iter().map(|child| child.id().unwrap()).collect();
+        assert!(spawn_child(&mut Command::new("/nonexistent-tempo-test")).is_err());
+        children[2].wait().await.unwrap();
+        wait_for_exit(&mut children[1], tokio::time::Instant::now())
             .await
             .unwrap();
-        group.shutdown().await.unwrap();
+        shutdown_children(children.iter_mut().map(|child| ("test worker", child)))
+            .await
+            .unwrap();
         for pid in pids {
             assert_reaped(pid);
         }
@@ -296,8 +151,9 @@ pub(crate) mod tests {
         manifest.eras[0].binary = binary;
         manifest.eras[0].bootstrap.as_mut().unwrap().args =
             vec!["import".into(), "canonical-blocks.rlp".into()];
-        let mut group = ProcessGroup::new();
-        group.run_bootstrap(&manifest, 0).await.unwrap();
+        let mut child = spawn_bootstrap(&manifest, 0).unwrap();
+        let pid = child.id().unwrap();
+        assert!(child.wait().await.unwrap().success());
         let actual = std::fs::read_to_string(output).unwrap();
         assert_eq!(
             actual.lines().collect::<Vec<_>>(),
@@ -311,6 +167,6 @@ pub(crate) mod tests {
                 "--fail-on-invalid-block",
             ]
         );
-        assert!(group.workers.is_empty());
+        assert_reaped(pid);
     }
 }

@@ -1,28 +1,25 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
-use clap::{Args, Parser, Subcommand};
+use alloy_primitives::{B256, U64};
+use clap::{Parser, Subcommand};
 use eyre::{Context, OptionExt, Result, ensure};
-use jsonrpsee::{
-    core::client::ClientT,
-    http_client::{HttpClient, HttpClientBuilder},
-    ws_client::WsClientBuilder,
-};
-use serde_json::Value;
+use jsonrpsee::{core::client::ClientT, http_client::HttpClient};
+use serde::Deserialize;
 use tempo_metabinary::{
-    handshake::{EXECUTION_INFO_METHOD, WorkerIdentity, wait_for_worker},
+    catalog::ReleaseEra,
     manifest::{Bootstrap, Manifest},
-    process::ProcessGroup,
-    routing::{ExecutionInfo, Router, quantity},
-    server::{self, ServerOptions},
+    process::{shutdown_children, spawn_bootstrap},
+    workers::{HistoricalWorkers, WorkerContext},
 };
+use tokio::process::Child;
 use tracing::info;
 
 #[derive(Debug, Parser)]
-#[command(about = "Launch ordinary Tempo binaries and route execution RPCs by era")]
+#[command(about = "Replay canonical block files through frozen Tempo execution eras")]
 struct Cli {
     #[arg(long)]
     manifest: PathBuf,
-    /// Time allowed for each worker to become ready.
+    /// Time allowed for each checkpoint worker to become ready.
     #[arg(long, global = true, default_value_t = 120)]
     startup_timeout_secs: u64,
     #[command(subcommand)]
@@ -31,19 +28,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Serve RPC with one live node and optional historical workers.
-    Serve(Serve),
     /// Replay canonical block files from genesis through the historical eras.
     Bootstrap,
-}
-
-#[derive(Debug, Args)]
-struct Serve {
-    /// Start frozen read-only workers to serve historical execution RPCs.
-    #[arg(long)]
-    history: bool,
-    #[command(flatten)]
-    server: ServerOptions,
 }
 
 #[tokio::main]
@@ -54,159 +40,36 @@ async fn main() -> Result<()> {
         )
         .init();
     let cli = Cli::parse();
-    let manifest = Arc::new(Manifest::load(&cli.manifest)?);
-    let timeout = Duration::from_secs(cli.startup_timeout_secs);
-    let mut processes = ProcessGroup::new();
+    let manifest = Manifest::load(&cli.manifest)?;
+    let mut import = None;
+    let mut readers = None;
     let result = tokio::select! {
-        result = async {
-            match cli.command {
-                Command::Serve(options) => serve(manifest, options, timeout, &mut processes).await,
-                Command::Bootstrap => bootstrap(&manifest, timeout, &mut processes).await,
-            }
-        } => result,
+        result = bootstrap(
+            &manifest,
+            Duration::from_secs(cli.startup_timeout_secs),
+            &mut import,
+            &mut readers,
+        ) => result,
         result = shutdown_signal() => result,
     };
-    let shutdown = processes.shutdown().await;
+    let shutdown = match readers {
+        Some(readers) => readers.shutdown().await,
+        None => Ok(()),
+    };
+    let shutdown = match import {
+        Some(mut child) => shutdown.and(shutdown_children([("bootstrap", &mut child)]).await),
+        None => shutdown,
+    };
     result.and(shutdown)
 }
 
-fn client(port: u16, max_response: u32) -> Result<HttpClient> {
-    Ok(HttpClientBuilder::default()
-        .max_response_size(max_response)
-        .request_timeout(Duration::from_secs(30))
-        .build(format!("http://127.0.0.1:{port}"))?)
-}
-
-async fn ready(
-    client: &HttpClient,
-    manifest: &Manifest,
-    index: usize,
-    processes: &mut ProcessGroup,
-    timeout: Duration,
-    read_only: bool,
-) -> Result<ExecutionInfo> {
-    let era = &manifest.eras[index];
-    let expected_pid = processes
-        .worker_pid(&era.name)
-        .expect("worker was launched");
-    let deadline = tokio::time::Instant::now()
-        .checked_add(timeout)
-        .ok_or_eyre("worker startup timeout exceeds the clock range")?;
-    wait_for_worker(
-        client,
-        WorkerIdentity {
-            chain_id: &manifest.chain_id,
-            genesis_hash: &manifest.genesis_hash,
-            read_only,
-        },
-        expected_pid,
-        deadline,
-        || processes.check_alive(),
-    )
-    .await
-    .wrap_err_with(|| format!("waiting for era {}", era.name))
-}
-
-async fn serve(
-    manifest: Arc<Manifest>,
-    options: Serve,
-    timeout: Duration,
-    processes: &mut ProcessGroup,
-) -> Result<()> {
-    let live = manifest.eras.len() - 1;
-    let clients: Vec<_> = manifest
-        .eras
-        .iter()
-        .map(|e| client(e.rpc_port, options.server.max_response_bytes))
-        .collect::<Result<_>>()?;
-    // Before starting a binary whose old execution may have been deleted, establish that storage
-    // is already in its era or at the explicitly pinned predecessor handoff.
-    if live > 0 {
-        processes.spawn_reader(&manifest, live)?;
-        ready(&clients[live], &manifest, live, processes, timeout, true).await?;
-        let head: Value = clients[live]
-            .request("eth_getBlockByNumber", ("latest", false))
-            .await?;
-        let in_live_era = quantity(&head["timestamp"])? >= manifest.live().start_timestamp;
-        let predecessor = manifest.eras[live - 1].bootstrap.as_ref();
-        let at_handoff = predecessor.is_some_and(|b| {
-            head["hash"]
-                .as_str()
-                .is_some_and(|h| h.eq_ignore_ascii_case(&b.terminal_block_hash))
-                && quantity(&head["number"]).ok() == Some(b.terminal_block_number)
-        });
-        ensure!(
-            in_live_era || at_handoff,
-            "database precedes the live era; run bootstrap or use a snapshot"
-        );
-        processes.shutdown().await?;
-    }
-    processes.spawn_live(&manifest)?;
-    let live_info = ready(&clients[live], &manifest, live, processes, timeout, false).await?;
-    if options.history {
-        processes.spawn_history(&manifest)?;
-    }
-    let mut metadata = Vec::with_capacity(clients.len());
-    for (index, client) in clients.iter().enumerate().take(live) {
-        metadata.push(if options.history {
-            Some(ready(client, &manifest, index, processes, timeout, true).await?)
-        } else {
-            None
-        });
-    }
-    metadata.push(Some(live_info));
-    let ws = if let Some(port) = manifest.live().ws_port {
-        let expected_pid = processes
-            .worker_pid(&manifest.live().name)
-            .ok_or_eyre("live worker exited before WebSocket handshake")?;
-        let ws = Arc::new(
-            WsClientBuilder::default()
-                .max_response_size(options.server.max_response_bytes)
-                .build(format!("ws://127.0.0.1:{port}"))
-                .await?,
-        );
-        let metadata: ExecutionInfo = ws
-            .request(EXECUTION_INFO_METHOD, jsonrpsee::rpc_params![])
-            .await?;
-        metadata.validate(
-            WorkerIdentity {
-                chain_id: &manifest.chain_id,
-                genesis_hash: &manifest.genesis_hash,
-                read_only: false,
-            },
-            Some(expected_pid),
-        )?;
-        Some(ws)
-    } else {
-        None
-    };
-    let mut boundary_verified = verify_live_boundary(&clients[live], &manifest).await?;
-    let router = Arc::new(Router::new(manifest.clone(), clients.clone(), metadata)?);
-    let (address, handle) = server::start(router, options.server, ws).await?;
-    info!(%address, "era RPC router ready");
-    let mut tick = tokio::time::interval(Duration::from_millis(250));
-    loop {
-        tokio::select! {
-            _ = handle.clone().stopped() => return Ok(()),
-            _ = tick.tick() => {
-                processes.check_alive()?;
-                if !boundary_verified { boundary_verified = verify_live_boundary(&clients[live], &manifest).await?; }
-            }
-        }
-    }
-}
-
-/// Check the first successor header as soon as it is available. Checkpoints are operator pins,
-/// but a truncated bootstrap must never silently keep the writer running in an older era.
-async fn verify_live_boundary(client: &HttpClient, manifest: &Manifest) -> Result<bool> {
-    let live = manifest.eras.len() - 1;
-    let Some(checkpoint) = live
-        .checked_sub(1)
-        .and_then(|index| manifest.eras[index].bootstrap.as_ref())
-    else {
-        return Ok(true);
-    };
-    verify_successor(client, checkpoint, manifest.live().start_timestamp).await
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Header {
+    number: U64,
+    hash: B256,
+    parent_hash: B256,
+    timestamp: U64,
 }
 
 async fn verify_successor(client: &HttpClient, checkpoint: &Bootstrap, start: u64) -> Result<bool> {
@@ -214,23 +77,19 @@ async fn verify_successor(client: &HttpClient, checkpoint: &Bootstrap, start: u6
         .terminal_block_number
         .checked_add(1)
         .ok_or_eyre("terminal block number overflows")?;
-    let first: Value = client
+    let first: Option<Header> = client
         .request(
             "eth_getBlockByNumber",
             (format!("0x{first_number:x}"), false),
         )
         .await?;
-    if first.is_null() {
-        return Ok(false);
-    }
+    let Some(first) = first else { return Ok(false) };
     ensure!(
-        first["parentHash"]
-            .as_str()
-            .is_some_and(|h| h.eq_ignore_ascii_case(&checkpoint.terminal_block_hash)),
+        first.parent_hash == checkpoint.terminal_block_hash,
         "successor does not extend the pinned handoff block"
     );
     ensure!(
-        quantity(&first["timestamp"])? >= start,
+        first.timestamp.to::<u64>() >= start,
         "bootstrap ended before the successor era boundary"
     );
     Ok(true)
@@ -243,33 +102,31 @@ async fn verify_checkpoint(
     end: u64,
     exact_head: bool,
 ) -> Result<()> {
-    let block: Value = client
+    let block: Option<Header> = client
         .request(
             "eth_getBlockByNumber",
             (format!("0x{:x}", checkpoint.terminal_block_number), false),
         )
         .await?;
+    let block = block.ok_or_eyre("bootstrap checkpoint is missing")?;
     ensure!(
-        quantity(&block["number"])? == checkpoint.terminal_block_number,
+        block.number.to::<u64>() == checkpoint.terminal_block_number,
         "bootstrap checkpoint is missing"
     );
     ensure!(
-        block["hash"]
-            .as_str()
-            .is_some_and(|h| h.eq_ignore_ascii_case(&checkpoint.terminal_block_hash)),
+        block.hash == checkpoint.terminal_block_hash,
         "bootstrap canonical checkpoint hash mismatch"
     );
-    let timestamp = quantity(&block["timestamp"])?;
     ensure!(
-        (start..end).contains(&timestamp),
+        (start..end).contains(&block.timestamp.to::<u64>()),
         "bootstrap checkpoint is outside its era"
     );
     if exact_head {
-        let head: Value = client
+        let head: Header = client
             .request("eth_getBlockByNumber", ("latest", false))
             .await?;
         ensure!(
-            head["hash"] == block["hash"],
+            head.hash == block.hash,
             "bootstrap did not stop at its pinned checkpoint"
         );
     }
@@ -279,19 +136,49 @@ async fn verify_checkpoint(
 async fn bootstrap(
     manifest: &Manifest,
     timeout: Duration,
-    processes: &mut ProcessGroup,
+    import: &mut Option<Child>,
+    readers: &mut Option<Arc<HistoricalWorkers>>,
 ) -> Result<()> {
-    manifest.validate_bootstrap()?;
+    let context = WorkerContext {
+        chain: manifest.chain.clone(),
+        datadir: manifest.datadir.clone(),
+        static_files_path: None,
+        rocksdb_path: None,
+        rpc_config: None,
+        chain_id: manifest.chain_id,
+        genesis_hash: manifest.genesis_hash,
+        startup_timeout: timeout,
+    };
     for index in 0..manifest.eras.len() - 1 {
         let era = &manifest.eras[index];
         let checkpoint = era.bootstrap.as_ref().expect("validated bootstrap");
         info!(era = %era.name, block = checkpoint.terminal_block_number, "running bounded bootstrap");
-        processes.run_bootstrap(manifest, index).await?;
-        processes.spawn_reader(manifest, index)?;
-        let client = client(era.rpc_port, 25 * 1024 * 1024)?;
-        ready(&client, manifest, index, processes, timeout, true).await?;
+        *import = Some(spawn_bootstrap(manifest, index)?);
+        let status = import
+            .as_mut()
+            .expect("owned bootstrap import")
+            .wait()
+            .await
+            .wrap_err_with(|| format!("waiting for {} bootstrap", era.name))?;
+        // Clear only after reaping: cancellation retains ownership for shutdown.
+        *import = None;
+        ensure!(
+            status.success(),
+            "{} bootstrap exited with {status}",
+            era.name
+        );
+        *readers = Some(HistoricalWorkers::new(
+            context.clone(),
+            vec![ReleaseEra {
+                name: era.name.clone(),
+                start_timestamp: era.start_timestamp,
+                binary: Some(era.binary.clone()),
+            }],
+        )?);
+        let workers = readers.as_ref().expect("owned checkpoint worker");
+        let worker = workers.get(0).await?;
         verify_checkpoint(
-            &client,
+            &worker.client,
             checkpoint,
             era.start_timestamp,
             manifest.eras[index + 1].start_timestamp,
@@ -305,7 +192,7 @@ async fn bootstrap(
                 .as_ref()
                 .expect("validated bootstrap");
             verify_checkpoint(
-                &client,
+                &worker.client,
                 previous,
                 manifest.eras[index - 1].start_timestamp,
                 era.start_timestamp,
@@ -313,13 +200,14 @@ async fn bootstrap(
             )
             .await?;
             ensure!(
-                verify_successor(&client, previous, era.start_timestamp).await?,
+                verify_successor(&worker.client, previous, era.start_timestamp).await?,
                 "successor header is missing after bootstrap"
             );
         }
-        processes.shutdown().await?;
+        workers.shutdown().await?;
+        *readers = None;
     }
-    info!("historical bootstrap complete; serve will start the live era");
+    info!("historical bootstrap complete; start the live era with tempo node");
     Ok(())
 }
 
@@ -342,7 +230,7 @@ mod tests {
         RpcModule,
         server::{ServerBuilder, ServerHandle},
     };
-    use serde_json::json;
+    use serde_json::{Value, json};
     use std::sync::Mutex;
 
     fn hash(n: u64) -> String {
@@ -367,7 +255,9 @@ mod tests {
                 })
                 .unwrap();
             let server = ServerBuilder::default().build("127.0.0.1:0").await.unwrap();
-            let client = super::client(server.local_addr().unwrap().port(), 10_000).unwrap();
+            let client = jsonrpsee::http_client::HttpClientBuilder::default()
+                .build(format!("http://{}", server.local_addr().unwrap()))
+                .unwrap();
             Self {
                 headers,
                 client,
@@ -385,7 +275,7 @@ mod tests {
         manifest.eras[1].start_timestamp = 100;
         let checkpoint = manifest.eras[0].bootstrap.as_mut().unwrap();
         checkpoint.terminal_block_number = 2;
-        checkpoint.terminal_block_hash = hash(2);
+        checkpoint.terminal_block_hash = hash(2).parse().unwrap();
         manifest
     }
 
@@ -421,7 +311,7 @@ mod tests {
         ] {
             storage.put("0x3", block);
             assert_eq!(
-                verify_live_boundary(&storage.client, &manifest)
+                verify_successor(&storage.client, checkpoint, 100)
                     .await
                     .map_err(|_| ()),
                 expected
