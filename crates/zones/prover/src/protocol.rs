@@ -2,8 +2,8 @@ use alloy_primitives::{B256, Bytes};
 use alloy_sol_types::SolStruct as _;
 use keccak_const::Keccak256;
 use serde::{Deserialize, Serialize};
-pub use tempo_zone_contracts::NitroBatchAttestation;
-use tempo_zone_contracts::ZONE_VERIFIER_ADDRESS;
+pub use tempo_contracts::zones::NitroBatchAttestation;
+use tempo_contracts::zones::ZONE_VERIFIER_ADDRESS;
 use zone_spf::{BatchOutput, BatchWitness, PublicInputs};
 
 /// Current version of the prover request and response wire format.

@@ -18,8 +18,8 @@ use tempo_alloy::{
     rpc::{TempoCallBuilderExt as _, TempoTransactionRequest},
 };
 use tempo_contracts::precompiles::{IRolesAuth, ITIP20, ITIP20Factory};
+use tempo_contracts::zones::{ZonePortal, ZonePortal::Role as PortalRole};
 use tempo_precompiles::TIP20_FACTORY_ADDRESS;
-use tempo_zone_contracts::{ZonePortal, ZonePortal::Role as PortalRole};
 
 use crate::zone_utils::{check, parse_private_key};
 

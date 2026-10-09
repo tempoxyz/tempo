@@ -7,7 +7,7 @@
 use crate::execution::{CallCheck, CallRules};
 use alloy_primitives::Address;
 use alloy_sol_types::SolError;
-pub use tempo_zone_contracts::OnlyPrecompiles;
+pub use tempo_contracts::zones::OnlyPrecompiles;
 
 /// Restricts EVM calls to the registry.
 ///

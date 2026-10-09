@@ -35,7 +35,7 @@ use tempo_primitives::TempoHeader;
 use tracing::{debug, error, info, instrument, warn};
 
 pub mod abi {
-    pub use tempo_zone_contracts::*;
+    pub use tempo_contracts::zones::*;
 }
 
 pub mod ext;

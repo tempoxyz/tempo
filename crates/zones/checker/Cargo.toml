@@ -37,13 +37,12 @@ alloy-transport.workspace = true
 # tempo
 tempo-alloy.workspace = true
 tempo-chainspec = { workspace = true, features = ["reth"] }
-tempo-contracts.workspace = true
+tempo-contracts = { workspace = true, features = ["rpc", "std"] }
 tempo-precompiles.workspace = true
 tempo-primitives.workspace = true
 tempo-revm = { workspace = true, features = ["reth"] }
 
 # zones
-tempo-zone-contracts = { workspace = true, features = ["rpc", "std"] }
 zone-precompiles.workspace = true
 zone-primitives.workspace = true
 zone-l1.workspace = true

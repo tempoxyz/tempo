@@ -21,7 +21,7 @@ use k256::{
     },
 };
 use tempo_precompiles::storage::StorageCtx;
-use tempo_zone_contracts::ChaumPedersenProof;
+use tempo_contracts::zones::ChaumPedersenProof;
 
 /// Gas cost for Chaum-Pedersen proof verification (two EC muls + hashing).
 const CP_VERIFY_GAS: u64 = 6_000;

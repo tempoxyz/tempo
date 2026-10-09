@@ -25,7 +25,7 @@ use tempo_precompiles::{
     tip403_registry::AuthRole,
 };
 use tempo_primitives::transaction::Call;
-use tempo_zone_contracts::{DepositPayload, ZONE_OUTBOX_ADDRESS, ZonePortal};
+use tempo_contracts::zones::{DepositPayload, ZONE_OUTBOX_ADDRESS, ZonePortal};
 
 const AMOUNT: u128 = 1_000_000;
 const REWARD_AMOUNT: u128 = AMOUNT / 10;

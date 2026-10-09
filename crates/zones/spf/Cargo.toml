@@ -11,7 +11,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-tempo-zone-contracts = { workspace = true, features = ["std"] }
+tempo-contracts = { workspace = true, features = ["std"] }
 zone-chainspec.workspace = true
 zone-evm.workspace = true
 zone-precompiles = { workspace = true, features = ["std"] }
@@ -46,6 +46,6 @@ default = ["serde"]
 serde = [
     "dep:serde",
     "alloy-primitives/serde",
-    "tempo-zone-contracts/serde",
+    "tempo-contracts/serde",
     "zone-primitives/serde",
 ]

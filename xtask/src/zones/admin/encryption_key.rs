@@ -10,7 +10,7 @@ use alloy::{
 use eyre::{Context as _, ensure, eyre};
 use serde::Serialize;
 use tempo_alloy::TempoNetwork;
-use tempo_zone_contracts::ZonePortal;
+use tempo_contracts::zones::ZonePortal;
 use zeroize::Zeroizing;
 use zone_sequencer::{encryption_key_identity, prove_encryption_key_possession};
 

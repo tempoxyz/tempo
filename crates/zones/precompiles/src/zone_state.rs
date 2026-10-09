@@ -6,7 +6,7 @@
 
 use alloy_primitives::{Address, B256};
 use tempo_precompiles::error::Result;
-use tempo_zone_contracts::IZoneOutbox;
+use tempo_contracts::zones::IZoneOutbox;
 
 use crate::{TempoState, ZoneFeeManager, ZoneInbox, ZoneOutbox};
 

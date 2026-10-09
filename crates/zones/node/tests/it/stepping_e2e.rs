@@ -13,7 +13,7 @@ use alloy::providers::Provider;
 use alloy_eips::eip2935::HISTORY_SERVE_WINDOW;
 use alloy_rpc_types_eth::BlockId;
 use std::time::Duration;
-use tempo_zone_contracts::{
+use tempo_contracts::zones::{
     IZoneOutbox, TEMPO_STATE_ADDRESS, TempoState, ZONE_OUTBOX_ADDRESS, ZonePortal,
 };
 use zone_sequencer::BatchAnchorConfig;

@@ -29,7 +29,7 @@ use tempo_precompiles::{
     tip403_registry::TIP403Registry,
 };
 use tempo_precompiles_macros::contract;
-use tempo_zone_contracts::{
+use tempo_contracts::zones::{
     DecryptionData, Deposit, DepositType, EnabledToken, IZoneInbox, IZoneOutbox,
     LegacyTempoAdvanced, QueuedDeposit, TempoAdvanced, WithdrawalBounceBackDeposit, ZoneInboxError,
     ZoneInboxEvent,
@@ -398,7 +398,7 @@ impl ZoneInbox {
         if msg_sender != owner
             && !l1.has_portal_role(
                 msg_sender,
-                tempo_zone_contracts::ZonePortal::Role::Sequencer,
+                tempo_contracts::zones::ZonePortal::Role::Sequencer,
             )?
         {
             return Err(ZonePrecompileError::Inbox(ZoneInboxError::Unauthorized(

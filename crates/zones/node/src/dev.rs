@@ -13,7 +13,7 @@ use alloy_provider::{PendingTransactionBuilder, Provider, ProviderBuilder};
 use alloy_signer_local::PrivateKeySigner;
 use tempo_alloy::TempoNetwork;
 use tempo_contracts::precompiles::{ITIP20, PATH_USD_ADDRESS};
-use tempo_zone_contracts::{ZONE_FACTORY_ADDRESS, ZoneFactory};
+use tempo_contracts::zones::{ZONE_FACTORY_ADDRESS, ZoneFactory};
 use zone_primitives::constants::zone_chain_id;
 use zone_sequencer::register_encryption_key;
 

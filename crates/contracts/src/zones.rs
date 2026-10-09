@@ -1,4 +1,4 @@
-//! Shared Zone contract bindings and canonical runtimes.
+//! Zone contract bindings and runtimes.
 
 pub mod common;
 pub mod constants;
@@ -6,18 +6,18 @@ pub mod messenger;
 pub mod outbox;
 pub mod swap_and_deposit_router;
 pub mod tempo_state;
-pub mod zone_factory;
 pub mod zone_inbox;
 pub mod zone_portal;
 
-pub use crate::precompiles::zone_verifier::NitroBatchAttestation;
+pub use crate::precompiles::{
+    IZoneFactory as ZoneFactory, zone_factory::*, zone_verifier::NitroBatchAttestation,
+};
 pub use common::*;
 pub use constants::*;
 pub use messenger::*;
 pub use outbox::*;
 pub use swap_and_deposit_router::*;
 pub use tempo_state::*;
-pub use zone_factory::*;
 pub use zone_inbox::*;
 pub use zone_portal::*;
 

@@ -1,6 +1,6 @@
 use crate::utils::{L1TestNode, ZoneAccount, ZoneTestNode};
 use alloy::{primitives::U256, providers::ProviderBuilder};
-use tempo_zone_contracts::ZONE_TOKEN_ADDRESS;
+use tempo_contracts::zones::ZONE_TOKEN_ADDRESS;
 
 /// Longer timeout for real L1 tests.
 const L1_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);

@@ -15,7 +15,7 @@ use reth_tasks::{TaskExecutor, cancel::ManualCancel};
 use std::{error::Error, sync::Arc};
 use tempo_evm::TempoNextBlockEnvAttributes;
 use tempo_primitives::TempoHeader;
-use tempo_zone_contracts::DepositType;
+use tempo_contracts::zones::DepositType;
 use zone_evm::ZoneEvmConfig;
 use zone_l1::PreparedL1Block;
 

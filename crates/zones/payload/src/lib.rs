@@ -4,7 +4,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod abi {
-    pub use tempo_zone_contracts::*;
+    pub use tempo_contracts::zones::*;
 }
 
 mod attrs;

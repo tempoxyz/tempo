@@ -3,7 +3,7 @@
 use alloy_primitives::{Address, B256, U256};
 use revm::precompile::PrecompileResult;
 use tempo_precompiles::{charge_input_cost, dispatch, storage::Handler, view};
-use tempo_zone_contracts::IZoneOutbox;
+use tempo_contracts::zones::IZoneOutbox;
 use zone_primitives::constants::MAX_WITHDRAWAL_GAS_LIMIT;
 
 use crate::{

@@ -233,6 +233,9 @@ mod tests {
         primitives::{Bytes, b256},
         sol_types::SolCall,
     };
+    use tempo_contracts::zones::{
+        BlockTransition, DepositQueueTransition, TokenEnablementTransition,
+    };
 
     const BLOCK_TIMESTAMP: u64 = attestation::tests::BLOCK_TIMESTAMP;
 
@@ -244,17 +247,17 @@ mod tests {
             anchorBlockHash: B256::with_last_byte(11),
             expectedWithdrawalBatchIndex: 13,
             nextZoneHeight: U256::from(14),
-            blockTransition: IZoneVerifier::BlockTransition {
+            blockTransition: BlockTransition {
                 prevBlockHash: B256::with_last_byte(1),
                 nextBlockHash: B256::with_last_byte(2),
             },
-            depositQueueTransition: IZoneVerifier::DepositQueueTransition {
+            depositQueueTransition: DepositQueueTransition {
                 prevProcessedHash: B256::with_last_byte(3),
                 nextProcessedHash: B256::with_last_byte(4),
                 prevDepositNumber: 5,
                 nextDepositNumber: 6,
             },
-            tokenEnablementTransition: IZoneVerifier::TokenEnablementTransition {
+            tokenEnablementTransition: TokenEnablementTransition {
                 prevProcessedTokenCount: 7,
                 nextProcessedTokenCount: 8,
             },

@@ -19,7 +19,7 @@ use reth_revm::{Inspector, context::result::ResultAndState};
 use tempo_evm::{TempoBlockExecutionCtx, TempoReceiptBuilder};
 use tempo_primitives::{TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tempo_revm::evm::TempoContext;
-use tempo_zone_contracts::{IZoneOutbox, TempoAdvanced};
+use tempo_contracts::zones::{IZoneOutbox, TempoAdvanced};
 use zone_chainspec::ZoneChainSpec;
 use zone_l1::state::L1StateProvider;
 use zone_precompiles::{ADVANCE_TEMPO_HEADERS_SELECTOR, ADVANCE_TEMPO_SELECTOR, L1StorageReader};
@@ -342,7 +342,7 @@ mod tests {
         },
     };
     use tempo_revm::{TempoBatchCallEnv, TempoTxEnv};
-    use tempo_zone_contracts::{
+    use tempo_contracts::zones::{
         ChaumPedersenProof, DecryptionData, IZoneInbox, IZoneOutbox, LegacyTempoAdvanced,
         TempoAdvanced,
     };

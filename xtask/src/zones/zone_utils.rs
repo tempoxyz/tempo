@@ -15,7 +15,7 @@ use std::{
 };
 use tempo_alloy::TempoNetwork;
 use tempo_contracts::precompiles::ITIP20 as TIP20Token;
-use tempo_zone_contracts::{IZoneInbox, ZONE_FACTORY_ADDRESS, ZoneFactory, ZonePortal};
+use tempo_contracts::zones::{IZoneInbox, ZONE_FACTORY_ADDRESS, ZoneFactory, ZonePortal};
 
 /// Write a file that may contain key material with owner-only permissions on Unix.
 ///
@@ -257,7 +257,7 @@ pub(crate) async fn wait_for_token_enabled<P: Provider<TempoNetwork>>(
     token: Address,
 ) -> eyre::Result<u64> {
     let filter = Filter::new()
-        .address(tempo_zone_contracts::ZONE_INBOX_ADDRESS)
+        .address(tempo_contracts::zones::ZONE_INBOX_ADDRESS)
         .event_signature(IZoneInbox::TokenEnabled::SIGNATURE_HASH)
         .from_block(from_block);
 
@@ -284,7 +284,7 @@ pub(crate) async fn wait_for_deposit_processed<P: Provider<TempoNetwork>>(
     token: Address,
 ) -> eyre::Result<u64> {
     let filter = Filter::new()
-        .address(tempo_zone_contracts::ZONE_INBOX_ADDRESS)
+        .address(tempo_contracts::zones::ZONE_INBOX_ADDRESS)
         .event_signature(IZoneInbox::DepositProcessed::SIGNATURE_HASH)
         .from_block(from_block);
 

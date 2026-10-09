@@ -11,7 +11,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-tempo-zone-contracts = { workspace = true, features = ["std"] }
+tempo-contracts = { workspace = true, features = ["std"] }
 zone-spf.workspace = true
 
 tempo-chainspec.workspace = true

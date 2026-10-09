@@ -12,7 +12,6 @@ members = [
   "bin/prover/enclave",
   "bin/tempo-zone",
   "crates/chainspec",
-  "crates/contracts",
   "crates/evm",
   "crates/exithatch",
   "crates/l1",
@@ -121,7 +120,6 @@ tempo-revm = { git = "https://github.com/tempoxyz/tempo", rev = "446e948e60db00b
 tempo-transaction-pool = { git = "https://github.com/tempoxyz/tempo", rev = "446e948e60db00b99b6152a69351ff6dac59e67b", default-features = false }
 
 # zones
-tempo-zone-contracts = { path = "crates/contracts", default-features = false }
 zone-chainspec = { path = "crates/chainspec" }
 zone-evm = { path = "crates/evm" }
 zone-l1 = { path = "crates/l1" }

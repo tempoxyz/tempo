@@ -11,7 +11,7 @@ use alloy_sol_types::SolValue as _;
 use eyre::OptionExt as _;
 use parking_lot::Mutex;
 use tempo_alloy::TempoNetwork;
-use tempo_zone_contracts::ZonePortal;
+use tempo_contracts::zones::ZonePortal;
 use tokio::sync::mpsc;
 use tracing::info;
 use zone_chainspec::ZoneChainSpec;

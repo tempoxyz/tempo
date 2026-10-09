@@ -12,7 +12,7 @@ workspace = true
 
 [dependencies]
 # zones
-tempo-zone-contracts = { workspace = true, features = ["std", "serde", "rpc"] }
+tempo-contracts = { workspace = true, features = ["std", "serde", "rpc"] }
 zone-chainspec.workspace = true
 zone-l1.workspace = true
 zone-primitives.workspace = true

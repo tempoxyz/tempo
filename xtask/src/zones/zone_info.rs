@@ -1,7 +1,7 @@
 use alloy::{primitives::Address, providers::ProviderBuilder};
 use eyre::eyre;
 use tempo_alloy::TempoNetwork;
-use tempo_zone_contracts::{ZONE_MESSENGER_ADDRESS, ZoneFactory};
+use tempo_contracts::zones::{ZONE_MESSENGER_ADDRESS, ZoneFactory};
 
 use crate::{
     admin::{PortalSnapshot, read_portal_snapshot},

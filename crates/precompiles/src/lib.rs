@@ -473,7 +473,10 @@ mod tests {
     };
     use tempo_contracts::{
         precompiles::{ITIP20, IZoneVerifier, UnknownFunctionSelector},
-        zones::T13_ZONE_VERIFIER_RUNTIME,
+        zones::{
+            BlockTransition, DepositQueueTransition, T13_ZONE_VERIFIER_RUNTIME,
+            TokenEnablementTransition,
+        },
     };
     use tempo_evm::{TempoBlockEnv, TempoEvmFactory};
     use tempo_revm::TempoTxEnv;
@@ -1233,17 +1236,17 @@ mod tests {
             anchorBlockHash: B256::ZERO,
             expectedWithdrawalBatchIndex: 0,
             nextZoneHeight: U256::ZERO,
-            blockTransition: IZoneVerifier::BlockTransition {
+            blockTransition: BlockTransition {
                 prevBlockHash: B256::ZERO,
                 nextBlockHash: B256::ZERO,
             },
-            depositQueueTransition: IZoneVerifier::DepositQueueTransition {
+            depositQueueTransition: DepositQueueTransition {
                 prevProcessedHash: B256::ZERO,
                 nextProcessedHash: B256::ZERO,
                 prevDepositNumber: 0,
                 nextDepositNumber: 0,
             },
-            tokenEnablementTransition: IZoneVerifier::TokenEnablementTransition {
+            tokenEnablementTransition: TokenEnablementTransition {
                 prevProcessedTokenCount: 0,
                 nextProcessedTokenCount: 0,
             },

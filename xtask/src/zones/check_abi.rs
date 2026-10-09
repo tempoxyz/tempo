@@ -2,8 +2,12 @@
 
 use std::{collections::BTreeMap, path::PathBuf};
 
-use alloy::json_abi::{Error, Event, Function, JsonAbi};
+use alloy::{
+    json_abi::{Error, Event, Function, JsonAbi},
+    sol_types::JsonAbiExt,
+};
 use eyre::{WrapErr, bail, ensure};
+use tempo_contracts::zones::{self, IZoneInbox, IZoneOutbox, TempoState, ZoneFactory, ZonePortal};
 use tempo_precompiles::test_util::{
     abi_conformance::{AbiSurface, compare_abi},
     foundry_artifact_path,
@@ -23,11 +27,7 @@ macro_rules! interface {
             name: stringify!($name),
             artifact_name: $artifact,
             source: "IZone.sol",
-            rust: || {
-                Ok(AbiSurface::from_abi(
-                    &tempo_zone_contracts::$name::abi::contract(),
-                ))
-            },
+            rust: || Ok(AbiSurface::from_abi(&$name::abi::contract())),
             ignored_functions: &[],
         }
     };
@@ -117,25 +117,30 @@ fn error_key(error: &Error) -> String {
 
 fn tempo_state_t13_surface() -> eyre::Result<AbiSurface> {
     let abi = AbiProjection {
-        retired: tempo_zone_contracts::TempoStatePreT13Retired::abi::contract(),
+        retired: JsonAbi::from_iter([zones::legacyFinalizeTempoCall::abi().into()]),
     }
-    .apply(tempo_zone_contracts::TempoState::abi::contract())?;
+    .apply(TempoState::abi::contract())?;
     Ok(AbiSurface::from_abi(&abi))
 }
 
 fn zone_inbox_t13_surface() -> eyre::Result<AbiSurface> {
     let abi = AbiProjection {
-        retired: tempo_zone_contracts::IZoneInboxPreT13Retired::abi::contract(),
+        retired: JsonAbi::from_iter([zones::LegacyTempoAdvanced::abi().into()]),
     }
-    .apply(tempo_zone_contracts::IZoneInbox::abi::contract())?;
+    .apply(IZoneInbox::abi::contract())?;
     Ok(AbiSurface::from_abi(&abi))
 }
 
 fn zone_portal_t13_surface() -> eyre::Result<AbiSurface> {
     let abi = AbiProjection {
-        retired: tempo_zone_contracts::ZonePortalPreT13Retired::abi::contract(),
+        retired: JsonAbi::from_iter([
+            zones::LegacyBatchSubmitted::abi().into(),
+            ZonePortal::MAX_DEPOSITS_PER_TEMPO_BLOCKCall::abi().into(),
+            ZonePortal::MAX_TOKENS_ENABLED_PER_TEMPO_BLOCKCall::abi().into(),
+            zones::legacySubmitBatchCall::abi().into(),
+        ]),
     }
-    .apply(tempo_zone_contracts::ZonePortal::abi::contract())?;
+    .apply(ZonePortal::abi::contract())?;
     Ok(AbiSurface::from_abi(&abi))
 }
 

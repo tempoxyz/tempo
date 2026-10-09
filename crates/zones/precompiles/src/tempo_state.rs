@@ -21,7 +21,7 @@ use tempo_precompiles::{
 };
 use tempo_precompiles_macros::contract;
 use tempo_primitives::TempoHeader;
-use tempo_zone_contracts::{StaticCallNotAllowed, TempoState as TempoStateAbi, TempoStateError};
+use tempo_contracts::zones::{StaticCallNotAllowed, TempoState as TempoStateAbi, TempoStateError};
 use zone_primitives::constants::{
     MAX_TEMPO_HEADERS_PER_ZONE_BLOCK, TEMPO_STATE_ADDRESS, ZONE_INBOX_ADDRESS,
 };
@@ -222,7 +222,7 @@ mod tests {
     use alloy_sol_types::SolCall;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_precompiles::storage::StorageCtx;
-    use tempo_zone_contracts::{finalizeTempoCall, legacyFinalizeTempoCall};
+    use tempo_contracts::zones::{finalizeTempoCall, legacyFinalizeTempoCall};
 
     struct TempoStateHarness {
         ctx: TestContext,

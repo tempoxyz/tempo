@@ -13,7 +13,7 @@ use reth_provider::HeaderProvider;
 use reth_storage_api::ReceiptProvider;
 use tempo_alloy::TempoNetwork;
 use tempo_primitives::TempoHeader;
-use tempo_zone_contracts::{
+use tempo_contracts::zones::{
     IZoneOutbox, LegacyTempoAdvanced, TempoAdvanced, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
     ZonePortal,
 };

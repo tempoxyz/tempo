@@ -10,7 +10,7 @@ use alloy::{primitives::U256, providers::Provider as _};
 use alloy_network::ReceiptResponse as _;
 use tempo_precompiles::PATH_USD_ADDRESS;
 use tempo_primitives::transaction::calc_gas_balance_spending;
-use tempo_zone_contracts::{IZoneOutbox, ZONE_OUTBOX_ADDRESS, ZONE_TOKEN_ADDRESS, ZonePortal};
+use tempo_contracts::zones::{IZoneOutbox, ZONE_OUTBOX_ADDRESS, ZONE_TOKEN_ADDRESS, ZonePortal};
 
 use crate::utils::{
     RealP2pCluster, TcpChaosProxy, ZoneAccount, batch_count, poll_until,

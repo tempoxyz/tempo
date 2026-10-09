@@ -19,8 +19,7 @@ tempo-precompiles.workspace = true
 tempo-primitives.workspace = true
 tempo-transaction-pool.workspace = true
 tempo-alloy.workspace = true
-tempo-contracts.workspace = true
-tempo-zone-contracts = { workspace = true, features = ["std", "serde", "rpc"] }
+tempo-contracts = { workspace = true, features = ["std", "serde", "rpc"] }
 zone-chainspec.workspace = true
 zone-evm.workspace = true
 zone-l1.workspace = true

@@ -11,12 +11,6 @@ pub use IZoneFactory::{
     IZoneFactoryErrors as ZoneFactoryError, IZoneFactoryEvents as ZoneFactoryEvent,
 };
 
-/// Compatibility path for the portal bindings used by native initialization.
-#[allow(non_snake_case)]
-pub mod IZonePortal {
-    pub use crate::zones::ZonePortal::{ZonePortalEvents as IZonePortalEvents, *};
-}
-
 /// Maximum number of sequencers in a Zone's active sequencer set.
 pub const MAX_SEQUENCERS: usize = 8;
 
@@ -149,9 +143,6 @@ crate::sol! {
             address verifier
         );
 
-        // Client-facing errors retained for compatibility.
-        error DuplicateAllowedAccount();
-        error DuplicateZoneGateway();
         error InvalidToken();
         error TokenTransferPolicyNotSet();
         error InvalidClosedLoopConfig();

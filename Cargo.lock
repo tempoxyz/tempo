@@ -14347,13 +14347,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tempo-zone-contracts"
-version = "1.16.0"
-dependencies = [
- "tempo-contracts",
-]
-
-[[package]]
 name = "test-case"
 version = "3.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -14,7 +14,7 @@ use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_storage_api::{BlockNumReader, StateProviderFactory};
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::TempoHardforks;
-use tempo_zone_contracts::{ZONE_FACTORY_ADDRESS, ZoneFactory};
+use tempo_contracts::zones::{ZONE_FACTORY_ADDRESS, ZoneFactory};
 
 use crate::{
     AttemptError, CheckerConfig,

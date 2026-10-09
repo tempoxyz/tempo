@@ -12,13 +12,12 @@ workspace = true
 
 [dependencies]
 # zones
-tempo-zone-contracts = { workspace = true, features = ["std", "serde", "rpc"] }
 zone-precompiles = { workspace = true, features = ["std"] }
 zone-primitives = { workspace = true }
 
 # tempo
 tempo-alloy.workspace = true
-tempo-contracts.workspace = true
+tempo-contracts = { workspace = true, features = ["std", "serde", "rpc"] }
 tempo-primitives.workspace = true
 
 # reth

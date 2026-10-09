@@ -38,7 +38,7 @@ mod tests {
     use alloy_primitives::{Address, U256};
     use alloy_sol_types::{SolCall, SolError};
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_zone_contracts::Unauthorized;
+    use tempo_contracts::zones::Unauthorized;
 
     use crate::{
         storage::StorageCtx,

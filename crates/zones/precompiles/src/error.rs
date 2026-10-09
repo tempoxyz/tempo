@@ -3,7 +3,7 @@
 use alloy_sol_types::SolInterface;
 use revm::precompile::{PrecompileOutput, PrecompileResult};
 use tempo_precompiles::IntoPrecompileResult;
-use tempo_zone_contracts::{TempoStateError, ZoneInboxError, ZoneOutboxError, ZonePortalError};
+use tempo_contracts::zones::{TempoStateError, ZoneInboxError, ZoneOutboxError, ZonePortalError};
 
 use crate::storage::L1StateError;
 
@@ -64,7 +64,7 @@ mod tests {
     use alloy_primitives::{Address, B256, U256};
     use alloy_sol_types::SolError;
     use revm::precompile::PrecompileHalt;
-    use tempo_zone_contracts::IZoneOutbox;
+    use tempo_contracts::zones::IZoneOutbox;
 
     #[test]
     fn outbox_errors_revert_with_exact_abi_data() {

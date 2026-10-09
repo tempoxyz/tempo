@@ -17,7 +17,7 @@ use futures::StreamExt as _;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tempo_alloy::TempoNetwork;
-use tempo_zone_contracts::ZonePortal;
+use tempo_contracts::zones::ZonePortal;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info};
 use zone_rpc::{ZoneDebugApi, types::ZoneExecutionWitness};

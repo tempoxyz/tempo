@@ -10,10 +10,10 @@ use tempo_contracts::precompiles::{
     IRolesAuth, IStablecoinDEX as StablecoinDEX, ITIP20 as TIP20Token,
     ITIP20Factory as TIP20Factory,
 };
-use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::ISSUER_ROLE};
-use tempo_zone_contracts::{
+use tempo_contracts::zones::{
     DepositPayload, IZoneOutbox, SwapAndDepositRouterCallback, ZONE_OUTBOX_ADDRESS, ZonePortal,
 };
+use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::ISSUER_ROLE};
 use zone_precompiles::ecies::encrypt_deposit;
 use zone_sequencer::{encryption_key_identity, register_encryption_key};
 

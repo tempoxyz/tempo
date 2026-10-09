@@ -57,7 +57,7 @@ use tokio::{
 use zone_l1::{TempoStateExt as _, state::EnabledTokenRegistry};
 
 use alloy_rpc_client::{ConnectionConfig, WebSocketConfig};
-use tempo_zone_contracts::{IZoneInbox, ZONE_INBOX_ADDRESS, ZONE_TOKEN_ADDRESS, ZonePortal};
+use tempo_contracts::zones::{IZoneInbox, ZONE_INBOX_ADDRESS, ZONE_TOKEN_ADDRESS, ZonePortal};
 use zone_evm::ZoneEvmConfig;
 use zone_p2p::{LeadershipSchedule, PeerTip, ZoneManifest};
 use zone_rpc::{

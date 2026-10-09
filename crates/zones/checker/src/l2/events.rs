@@ -4,7 +4,7 @@ use alloy_consensus::{TxReceipt, transaction::TxHashRef};
 use alloy_primitives::{Address, B256, Log, U256};
 use alloy_sol_types::SolEvent;
 use tempo_precompiles::tip20::{ITIP20, TIP20Token};
-use tempo_zone_contracts::{
+use tempo_contracts::zones::{
     IZoneInbox, IZoneOutbox, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS, ZonePortal,
 };
 
@@ -884,7 +884,7 @@ mod tests {
     #[test]
     fn checkpoint_only_blocks_require_the_exact_event_and_transaction_shape() {
         use alloy_sol_types::SolCall;
-        use tempo_zone_contracts::{TEMPO_STATE_ADDRESS, TempoState};
+        use tempo_contracts::zones::{TEMPO_STATE_ADDRESS, TempoState};
 
         let header = tempo_primitives::TempoHeader {
             inner: alloy_consensus::Header {

@@ -80,7 +80,7 @@ use tempo_transaction_pool::{
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
     validator::{DEFAULT_MAX_TEMPO_AUTHORIZATIONS, TempoTransactionValidator},
 };
-use tempo_zone_contracts::{
+use tempo_contracts::zones::{
     LegacyTempoAdvanced, TempoAdvanced, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
     ZonePortal::{self},
 };

@@ -27,16 +27,3 @@ crate::sol! {
         function finalizeTempo(bytes[] calldata headers) external;
     }
 }
-
-/// TempoState entries retired by the T13 hardfork.
-mod pre_t13_retired {
-    crate::sol! {
-        #[sol(abi)]
-        contract TempoStatePreT13Retired {
-            function finalizeTempo(bytes header) external;
-        }
-    }
-}
-
-#[doc(hidden)]
-pub use pre_t13_retired::TempoStatePreT13Retired;

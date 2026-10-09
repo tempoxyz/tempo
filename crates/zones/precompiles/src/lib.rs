@@ -105,8 +105,8 @@ use tempo_precompiles::{
     tip403_registry::TIP403Registry,
 };
 #[cfg(feature = "std")]
-use tempo_zone_contracts::ZONE_OUTBOX_ADDRESS;
-use tempo_zone_contracts::{TEMPO_STATE_ADDRESS, ZONE_INBOX_ADDRESS};
+use tempo_contracts::zones::ZONE_OUTBOX_ADDRESS;
+use tempo_contracts::zones::{TEMPO_STATE_ADDRESS, ZONE_INBOX_ADDRESS};
 
 /// Returns every precompile that is available to a Zone EVM.
 ///

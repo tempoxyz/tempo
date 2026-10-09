@@ -14,7 +14,7 @@ use tempo_precompiles::{
     tip20::{ITIP20, TIP20Error, TIP20Token},
 };
 use tempo_precompiles_macros::{Storable, contract};
-use tempo_zone_contracts::{
+use tempo_contracts::zones::{
     IZoneOutbox, Withdrawal, ZoneOutboxError, ZoneOutboxEvent, ZonePortal::Role, ZonePortalError,
 };
 use zone_primitives::constants::{

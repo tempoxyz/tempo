@@ -35,7 +35,6 @@ members = [
   "crates/precompiles-macros",
   "crates/primitives",
   "crates/contracts",
-  "crates/zones/contracts",
   "crates/zones/primitives",
   "crates/telemetry-util",
   "crates/transaction-pool",
@@ -161,7 +160,6 @@ tempo-precompiles = { path = "crates/precompiles", default-features = false }
 tempo-precompiles-macros = { path = "crates/precompiles-macros" }
 tempo-primitives = { path = "crates/primitives", default-features = false }
 tempo-contracts = { path = "crates/contracts", default-features = false, features = ["serde"] }
-tempo-zone-contracts = { path = "crates/zones/contracts", default-features = false }
 zone-primitives = { path = "crates/zones/primitives", default-features = false }
 tempo-telemetry-util = { path = "crates/telemetry-util", default-features = false }
 tempo-transaction-pool = { path = "crates/transaction-pool", default-features = false }

@@ -11,7 +11,7 @@ use alloy::{
 use eyre::{Context as _, ensure, eyre};
 use serde::Serialize;
 use tempo_alloy::TempoNetwork;
-use tempo_zone_contracts::ZonePortal;
+use tempo_contracts::zones::ZonePortal;
 use zone_p2p::ZoneManifest;
 
 use super::{

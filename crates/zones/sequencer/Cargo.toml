@@ -14,10 +14,9 @@ workspace = true
 # tempo
 tempo-alloy.workspace = true
 tempo-chainspec.workspace = true
-tempo-contracts.workspace = true
+tempo-contracts = { workspace = true, features = ["std", "serde", "rpc"] }
 tempo-precompiles.workspace = true
 tempo-primitives.workspace = true
-tempo-zone-contracts = { workspace = true, features = ["std", "serde", "rpc"] }
 zone-chainspec.workspace = true
 zone-l1.workspace = true
 zone-p2p.workspace = true

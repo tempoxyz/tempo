@@ -2,7 +2,7 @@
 
 use alloy_primitives::Address;
 use alloy_sol_types::SolError;
-use tempo_zone_contracts::Unauthorized;
+use tempo_contracts::zones::Unauthorized;
 
 use crate::execution::CallCheck;
 

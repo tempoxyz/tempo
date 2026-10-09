@@ -16,9 +16,9 @@ use eyre::{Context as _, eyre};
 use std::{collections::BTreeMap, num::NonZeroU64, time::Instant};
 use tempo_alloy::TempoNetwork;
 use tempo_contracts::precompiles::ITIP20;
+use tempo_contracts::zones::{DepositPayload, ZonePortal};
 use tempo_precompiles::PATH_USD_ADDRESS;
 use tempo_primitives::transaction::Call;
-use tempo_zone_contracts::{DepositPayload, ZonePortal};
 use zone_precompiles::ecies::encrypt_deposit;
 
 use crate::zone_utils::parse_private_key;

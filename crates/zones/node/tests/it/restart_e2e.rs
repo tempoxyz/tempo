@@ -10,7 +10,7 @@
 use crate::utils::{L1TestNode, ZoneAccount, ZoneTestNode, batch_count, spawn_sequencer};
 use alloy::primitives::{Address, U256};
 use tempo_precompiles::PATH_USD_ADDRESS;
-use tempo_zone_contracts::{IZoneOutbox, ZONE_OUTBOX_ADDRESS, ZONE_TOKEN_ADDRESS, ZonePortal};
+use tempo_contracts::zones::{IZoneOutbox, ZONE_OUTBOX_ADDRESS, ZONE_TOKEN_ADDRESS, ZonePortal};
 
 /// Longer timeout for real L1 tests.
 const L1_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);

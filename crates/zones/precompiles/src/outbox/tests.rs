@@ -9,7 +9,7 @@ use tempo_precompiles::{
     test_util::TIP20Setup,
     zone_factory::portal::{self, ZonePortalStorage},
 };
-use tempo_zone_contracts::IZoneOutbox as ZoneOutboxAbi;
+use tempo_contracts::zones::IZoneOutbox as ZoneOutboxAbi;
 use zone_primitives::constants::TEMPO_STATE_ADDRESS;
 
 use crate::{

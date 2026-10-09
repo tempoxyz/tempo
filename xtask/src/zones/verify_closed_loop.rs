@@ -8,7 +8,7 @@ use alloy_rpc_types_eth::BlockId;
 use eyre::{WrapErr as _, ensure};
 use std::collections::{BTreeMap, BTreeSet};
 use tempo_alloy::TempoNetwork;
-use tempo_zone_contracts::{
+use tempo_contracts::zones::{
     ZONE_FACTORY_ADDRESS, ZoneFactory, ZonePortal, ZonePortal::Role as PortalRole,
 };
 

@@ -7,7 +7,10 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
 use std::hint::black_box;
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::IZoneVerifier;
+use tempo_contracts::{
+    precompiles::IZoneVerifier,
+    zones::{BlockTransition, DepositQueueTransition, TokenEnablementTransition},
+};
 use tempo_nitro_attestation::parse_attestation;
 use tempo_precompiles::{
     Precompile,
@@ -69,17 +72,17 @@ fn signature_verification(c: &mut Criterion) {
         anchorBlockHash: B256::ZERO,
         expectedWithdrawalBatchIndex: 0,
         nextZoneHeight: U256::ZERO,
-        blockTransition: IZoneVerifier::BlockTransition {
+        blockTransition: BlockTransition {
             prevBlockHash: B256::ZERO,
             nextBlockHash: B256::ZERO,
         },
-        depositQueueTransition: IZoneVerifier::DepositQueueTransition {
+        depositQueueTransition: DepositQueueTransition {
             prevProcessedHash: B256::ZERO,
             nextProcessedHash: B256::ZERO,
             prevDepositNumber: 0,
             nextDepositNumber: 0,
         },
-        tokenEnablementTransition: IZoneVerifier::TokenEnablementTransition {
+        tokenEnablementTransition: TokenEnablementTransition {
             prevProcessedTokenCount: 0,
             nextProcessedTokenCount: 0,
         },

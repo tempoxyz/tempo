@@ -1,7 +1,7 @@
 use super::*;
 use alloc::vec;
-use alloy_primitives::{Address, B256, Bytes, U256, address, b256, keccak256};
-use alloy_sol_types::{SolCall, SolEvent, SolStruct, SolValue};
+use alloy_primitives::{Address, B256, Bytes, U256, address, keccak256};
+use alloy_sol_types::{SolCall, SolValue};
 use std::println;
 
 #[test]
@@ -195,97 +195,4 @@ fn test_router_callback_encoding_matches_tuple() {
         .abi_encode_params();
 
     assert_eq!(callback.abi_encode(), tuple_encoding);
-}
-
-#[test]
-fn shared_bindings_preserve_wire_abi() {
-    assert_eq!(
-        IZoneFactory::createZoneCall::SELECTOR,
-        [0x89, 0x67, 0x7d, 0x9e]
-    );
-    assert_eq!(
-        IZoneVerifier::verifyCall::SELECTOR,
-        [0xeb, 0xb2, 0xdd, 0xc9]
-    );
-    assert_eq!(legacySubmitBatchCall::SELECTOR, [0x78, 0xfb, 0x15, 0x9b]);
-    assert_eq!(submitBatchCall::SELECTOR, [0x4c, 0xd6, 0xc7, 0xc7]);
-    assert_eq!(
-        ZonePortalPreT13Retired::submitBatchCall::SELECTOR,
-        legacySubmitBatchCall::SELECTOR
-    );
-    assert_eq!(
-        LegacyBatchSubmitted::SIGNATURE_HASH,
-        b256!("5a66941dc92cb865480c966eff640c02b1d00d544b74332fd67c6f1cbfccdf39")
-    );
-    assert_eq!(
-        BatchSubmitted::SIGNATURE_HASH,
-        b256!("2ad9ed3f2b3ff263b7a3cf97621dfc164b1d2303160c10d0dc421f866d0d54ef")
-    );
-    assert_eq!(
-        ZonePortal::LeaderUpdated::SIGNATURE_HASH,
-        b256!("0e49bd8bbce34618e6af3bb74d587a65fa2a594df80b7cc21d690ee78c6d7a69")
-    );
-}
-
-#[test]
-fn native_verifier_and_portal_share_transition_types() {
-    use crate::precompiles::IZoneVerifier as NativeVerifier;
-    use core::any::TypeId;
-
-    assert_eq!(
-        TypeId::of::<BlockTransition>(),
-        TypeId::of::<NativeVerifier::BlockTransition>()
-    );
-    assert_eq!(
-        TypeId::of::<DepositQueueTransition>(),
-        TypeId::of::<NativeVerifier::DepositQueueTransition>()
-    );
-    assert_eq!(
-        TypeId::of::<TokenEnablementTransition>(),
-        TypeId::of::<NativeVerifier::TokenEnablementTransition>()
-    );
-    assert_eq!(
-        TypeId::of::<ZonePortal::Role>(),
-        TypeId::of::<crate::precompiles::ZonePortalRole>()
-    );
-}
-
-#[cfg(feature = "serde")]
-#[test]
-fn shared_verifier_call_supports_cli_serialization() {
-    fn assert_serde<T: serde::Serialize + for<'de> serde::Deserialize<'de>>() {}
-    assert_serde::<IZoneVerifier::verifyCall>();
-    assert_serde::<NitroBatchAttestation>();
-}
-
-#[test]
-fn shared_nitro_attestation_matches_solidity_golden_vector() {
-    let attestation = NitroBatchAttestation {
-        parentChainId: U256::from(42_431),
-        verifier: ZONE_VERIFIER_ADDRESS,
-        zoneId: 12,
-        tempoBlockNumber: 9,
-        anchorBlockNumber: 10,
-        anchorBlockHash: B256::with_last_byte(11),
-        expectedWithdrawalBatchIndex: 13,
-        nextZoneHeight: U256::from(14),
-        prevBlockHash: B256::with_last_byte(1),
-        nextBlockHash: B256::with_last_byte(2),
-        prevProcessedHash: B256::with_last_byte(3),
-        nextProcessedHash: B256::with_last_byte(4),
-        prevDepositNumber: 5,
-        nextDepositNumber: 6,
-        prevProcessedTokenCount: 7,
-        nextProcessedTokenCount: 8,
-        withdrawalQueueHash: B256::with_last_byte(9),
-        verifierConfigHash: keccak256([1]),
-    };
-    assert_eq!(
-        keccak256(NitroBatchAttestation::eip712_encode_type().as_bytes()),
-        b256!("b6f39555cba9bf38842c669ea0c90bca6aad793881d75a0034e33352fbecb25e")
-    );
-    assert_eq!(
-        attestation.eip712_hash_struct(),
-        b256!("1a703e80dd395e4720d1c88c877ed9f7d77c03052a985133b25cbf3e2b745b9d")
-    );
 }

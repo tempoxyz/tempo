@@ -17,6 +17,7 @@ use tempo_chainspec::{cli::TempoHardforkArgs, spec::TEMPO_T0_BASE_FEE};
 use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, SAFE_DEPLOYER_ADDRESS,
     contracts::{CreateX, Multicall3, SafeDeployer},
+    zones::{TEMPO_STATE_ADDRESS, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS, ZonePortal},
 };
 use tempo_evm::genesis::{
     GenesisEvm, create_genesis_evm, deploy_arachnid_create2_factory, deploy_permit2,
@@ -35,9 +36,6 @@ use tempo_precompiles::{
     tip403_registry::TIP403Registry,
 };
 use tempo_primitives::TempoHeader;
-use tempo_zone_contracts::{
-    TEMPO_STATE_ADDRESS, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS, ZonePortal,
-};
 use zone_precompiles::{
     TempoState as NativeTempoState, ZoneFeeManager, ZoneInbox as NativeZoneInbox,
     ZoneOutbox as NativeZoneOutbox,

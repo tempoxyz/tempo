@@ -207,7 +207,7 @@ impl<P: L1StorageReader> L1State<P> {
     pub fn has_portal_role(
         &self,
         account: Address,
-        expected: tempo_zone_contracts::ZonePortal::Role,
+        expected: tempo_contracts::zones::ZonePortal::Role,
     ) -> tempo_precompiles::Result<bool> {
         Ok(self.read_portal(|portal| &portal.role[account])? == u8::from(expected))
     }

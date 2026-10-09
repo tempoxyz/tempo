@@ -70,11 +70,11 @@ use tempo_contracts::precompiles::{
     IRolesAuth, ITIP20 as TIP20Token, ITIP20Factory as TIP20Factory,
     ITIP403Registry as TIP403Registry,
 };
+use tempo_contracts::zones::{
+    DepositPayload, IZoneInbox, IZoneOutbox, ZONE_OUTBOX_ADDRESS, ZonePortal,
+};
 use tempo_precompiles::{
     PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, tip20::ISSUER_ROLE,
-};
-use tempo_zone_contracts::{
-    DepositPayload, IZoneInbox, IZoneOutbox, ZONE_OUTBOX_ADDRESS, ZonePortal,
 };
 use zone_precompiles::ecies::encrypt_deposit;
 
@@ -737,11 +737,11 @@ async fn wait_for_deposit_result<P: Provider<TempoNetwork>>(
     to: Address,
 ) -> eyre::Result<bool> {
     let processed_filter = Filter::new()
-        .address(tempo_zone_contracts::ZONE_INBOX_ADDRESS)
+        .address(tempo_contracts::zones::ZONE_INBOX_ADDRESS)
         .event_signature(IZoneInbox::DepositProcessed::SIGNATURE_HASH)
         .from_block(from_block);
     let failed_filter = Filter::new()
-        .address(tempo_zone_contracts::ZONE_INBOX_ADDRESS)
+        .address(tempo_contracts::zones::ZONE_INBOX_ADDRESS)
         .event_signature(IZoneInbox::DepositFailed::SIGNATURE_HASH)
         .from_block(from_block);
     for _ in 0..120 {

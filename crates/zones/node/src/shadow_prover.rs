@@ -10,7 +10,7 @@ use alloy_transport::{RpcError, TransportError, TransportErrorKind};
 use eyre::{OptionExt as _, Result, WrapErr as _, ensure};
 use tempo_alloy::TempoNetwork;
 use tempo_primitives::TempoTxEnvelope;
-use tempo_zone_contracts::{
+use tempo_contracts::zones::{
     BatchSubmitted, TokenEnablementTransition, legacySubmitBatchCall, submitBatchCall,
 };
 use tokio::sync::mpsc::Receiver;
@@ -378,7 +378,7 @@ mod tests {
     #[test]
     fn submission_match_binds_t13_token_cursor() {
         use alloy_primitives::{B256, U256};
-        use tempo_zone_contracts::{BlockTransition, DepositQueueTransition};
+        use tempo_contracts::zones::{BlockTransition, DepositQueueTransition};
 
         let call = submitBatchCall {
             tempoBlockNumber: 10,

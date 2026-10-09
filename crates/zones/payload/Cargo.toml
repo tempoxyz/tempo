@@ -18,7 +18,7 @@ tempo-payload-types.workspace = true
 tempo-primitives.workspace = true
 tempo-revm.workspace = true
 tempo-transaction-pool.workspace = true
-tempo-zone-contracts = { workspace = true, features = ["std", "serde", "rpc"] }
+tempo-contracts = { workspace = true, features = ["std", "serde", "rpc"] }
 zone-chainspec.workspace = true
 zone-evm.workspace = true
 zone-l1.workspace = true

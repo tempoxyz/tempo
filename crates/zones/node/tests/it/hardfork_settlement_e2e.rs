@@ -20,7 +20,7 @@ use tempo_precompiles::{
     },
 };
 use tempo_primitives::TempoHeader;
-use tempo_zone_contracts::{
+use tempo_contracts::zones::{
     IZoneInbox, IZoneOutbox, TEMPO_STATE_ADDRESS, TempoState, ZONE_INBOX_ADDRESS,
     ZONE_OUTBOX_ADDRESS, ZonePortal,
 };

@@ -4,7 +4,7 @@ use alloy_network::ReceiptResponse as _;
 use alloy_primitives::{Address, B256, Log};
 use alloy_sol_types::SolEvent;
 use tempo_alloy::rpc::TempoTransactionReceipt;
-use tempo_zone_contracts::ZonePortal;
+use tempo_contracts::zones::ZonePortal;
 
 use crate::decode_event;
 

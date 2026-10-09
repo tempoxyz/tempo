@@ -26,7 +26,7 @@ use tempo_primitives::{
     TempoHeader, TempoReceipt, TempoTxEnvelope,
     transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
 };
-use tempo_zone_contracts::{
+use tempo_contracts::zones::{
     IZoneInbox, IZoneOutbox, TempoState, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
 };
 use zone_evm::{L1OverlayDB, ZoneBlockExecutor, ZoneEvmConfig};
@@ -234,9 +234,9 @@ pub(crate) fn next_block_execution_context(
 fn execute_advance_tempo<'a, 'db, I>(
     executor: &mut WitnessExecutor<'a, 'db, I>,
     header: &Bytes,
-    deposits: &[tempo_zone_contracts::QueuedDeposit],
-    decryptions: &[tempo_zone_contracts::DecryptionData],
-    enabled_tokens: &[tempo_zone_contracts::EnabledToken],
+    deposits: &[tempo_contracts::zones::QueuedDeposit],
+    decryptions: &[tempo_contracts::zones::DecryptionData],
+    enabled_tokens: &[tempo_contracts::zones::EnabledToken],
     block_index: usize,
     chain_id: u64,
 ) -> Result<TempoTxEnvelope, Error>

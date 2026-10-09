@@ -38,7 +38,7 @@ use tempo_primitives::{
     TempoTxEnvelope,
     transaction::{Call, TempoTransaction},
 };
-use tempo_zone_contracts::{
+use tempo_contracts::zones::{
     IZoneInbox, TEMPO_STATE_ADDRESS, TempoState, Unauthorized, ZONE_INBOX_ADDRESS,
     ZONE_TOKEN_ADDRESS,
 };

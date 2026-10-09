@@ -1283,8 +1283,8 @@ mod tests {
                 tempo_import: TempoImport::Full {
                     header_rlp: Bytes::from([0x01]),
                     deposits: vec![
-                        tempo_zone_contracts::QueuedDeposit {
-                            depositType: tempo_zone_contracts::DepositType::Deposit,
+                        tempo_contracts::zones::QueuedDeposit {
+                            depositType: tempo_contracts::zones::DepositType::Deposit,
                             depositData: Bytes::new(),
                             rejected: false,
                         };
@@ -1292,7 +1292,7 @@ mod tests {
                     ],
                     decryptions: Vec::new(),
                     enabled_tokens: vec![
-                        tempo_zone_contracts::EnabledToken {
+                        tempo_contracts::zones::EnabledToken {
                             token: Address::ZERO,
                             name: String::new(),
                             symbol: String::new(),

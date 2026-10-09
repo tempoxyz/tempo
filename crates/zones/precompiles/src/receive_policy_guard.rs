@@ -16,7 +16,7 @@ use tempo_precompiles::{
     address_registry::AddressRegistry,
     dispatch::{abi_decoder_config_for_spec, selector_from_calldata},
 };
-use tempo_zone_contracts::Unauthorized;
+use tempo_contracts::zones::Unauthorized;
 
 /// Stakeholder-only admission for receipt balance lookups.
 pub(crate) struct ReceivePolicyGuardRules;

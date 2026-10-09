@@ -56,7 +56,6 @@ use tempo_primitives::{
     Block, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope, TempoTxType,
 };
 use tempo_revm::TempoTxEnv;
-use tempo_zone_contracts as _;
 use zone_chainspec::ZoneChainSpec;
 use zone_l1::state::{L1StateCache, L1StateProvider, L1StateProviderConfig};
 
@@ -479,7 +478,7 @@ mod tests {
         TIP403_REGISTRY_ADDRESS, storage::StorageKey, tip403_registry::tip403_registry_slots,
         zone_factory::ZonePortalStorage,
     };
-    use tempo_zone_contracts::IZoneInbox;
+    use tempo_contracts::zones::IZoneInbox;
     use zone_precompiles::{
         tempo_state::{TEMPO_BLOCK_NUMBER_SLOT, slots::TEMPO_BLOCK_HASH},
         test_utils::MockL1Reader,

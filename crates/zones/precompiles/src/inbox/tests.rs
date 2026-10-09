@@ -302,7 +302,7 @@ fn failed_deposit_gas(deposits: usize, token_enablements: usize) -> eyre::Result
         amount: 1,
         tempoRefundRecipient: ALICE,
         keyIndex: fixture.key_index,
-        encrypted: tempo_zone_contracts::DepositPayload {
+        encrypted: tempo_contracts::zones::DepositPayload {
             ephemeralPubkeyX: fixture.eph_pub_x,
             ephemeralPubkeyYParity: fixture.eph_pub_y_parity,
             ciphertext: ciphertext.into(),
@@ -693,7 +693,7 @@ fn non_canonical_deposits_are_rejected() {
         amount: 0,
         tempoRefundRecipient: Address::ZERO,
         keyIndex: U256::ZERO,
-        encrypted: tempo_zone_contracts::DepositPayload {
+        encrypted: tempo_contracts::zones::DepositPayload {
             ephemeralPubkeyX: B256::ZERO,
             ephemeralPubkeyYParity: 0,
             ciphertext: Bytes::new(),
@@ -760,7 +760,7 @@ fn deposit_uses_child_anchor_key_and_mints_plaintext_recipient() -> eyre::Result
         amount: 900,
         tempoRefundRecipient: ALICE,
         keyIndex: fixture.key_index,
-        encrypted: tempo_zone_contracts::DepositPayload {
+        encrypted: tempo_contracts::zones::DepositPayload {
             ephemeralPubkeyX: fixture.eph_pub_x,
             ephemeralPubkeyYParity: fixture.eph_pub_y_parity,
             ciphertext: ciphertext.into(),
@@ -844,7 +844,7 @@ fn receive_policy_blocked_deposit_enqueues_bounce_back() -> eyre::Result<()> {
         amount: 500,
         tempoRefundRecipient: ALICE,
         keyIndex: fixture.key_index,
-        encrypted: tempo_zone_contracts::DepositPayload {
+        encrypted: tempo_contracts::zones::DepositPayload {
             ephemeralPubkeyX: fixture.eph_pub_x,
             ephemeralPubkeyYParity: fixture.eph_pub_y_parity,
             ciphertext: ciphertext.into(),
@@ -904,7 +904,7 @@ fn invalid_encrypted_proof_bounces_without_mint() -> eyre::Result<()> {
         amount: 333,
         tempoRefundRecipient: BOB,
         keyIndex: fixture.key_index,
-        encrypted: tempo_zone_contracts::DepositPayload {
+        encrypted: tempo_contracts::zones::DepositPayload {
             ephemeralPubkeyX: fixture.eph_pub_x,
             ephemeralPubkeyYParity: fixture.eph_pub_y_parity,
             ciphertext: fixture.ciphertext.into(),
@@ -928,7 +928,7 @@ fn invalid_encrypted_proof_bounces_without_mint() -> eyre::Result<()> {
                 vec![DecryptionData {
                     sharedSecret: B256::ZERO,
                     sharedSecretYParity: 2,
-                    cpProof: tempo_zone_contracts::ChaumPedersenProof {
+                    cpProof: tempo_contracts::zones::ChaumPedersenProof {
                         s: B256::ZERO,
                         c: B256::ZERO,
                     },
@@ -951,7 +951,7 @@ fn missing_and_extra_decryption_data_revert() -> eyre::Result<()> {
         amount: 1,
         tempoRefundRecipient: BOB,
         keyIndex: fixture.key_index,
-        encrypted: tempo_zone_contracts::DepositPayload {
+        encrypted: tempo_contracts::zones::DepositPayload {
             ephemeralPubkeyX: fixture.eph_pub_x,
             ephemeralPubkeyYParity: fixture.eph_pub_y_parity,
             ciphertext: fixture.ciphertext.into(),
@@ -992,7 +992,7 @@ fn missing_and_extra_decryption_data_revert() -> eyre::Result<()> {
                 vec![DecryptionData {
                     sharedSecret: B256::ZERO,
                     sharedSecretYParity: 2,
-                    cpProof: tempo_zone_contracts::ChaumPedersenProof {
+                    cpProof: tempo_contracts::zones::ChaumPedersenProof {
                         s: B256::ZERO,
                         c: B256::ZERO,
                     },

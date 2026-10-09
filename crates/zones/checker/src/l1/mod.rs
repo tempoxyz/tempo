@@ -345,7 +345,7 @@ mod tests {
     use alloy_sol_types::SolEvent;
     use tempo_alloy::rpc::TempoHeaderResponse;
     use tempo_primitives::TempoHeader;
-    use tempo_zone_contracts::ZonePortal;
+    use tempo_contracts::zones::ZonePortal;
 
     const BLOCK: u64 = 100;
     const HASH: B256 = B256::repeat_byte(0x10);
