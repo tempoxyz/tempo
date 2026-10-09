@@ -44,8 +44,8 @@ Missing historical state fails through the worker's ordinary storage behavior.
 
 - Stored blocks, receipts, logs, proofs, state queries, and live transaction operations stay native.
 - Execution requests read native headers and transaction metadata to choose an era by timestamp.
-  Tags other than `pending` are pinned; explicit hashes and `requireCanonical` are preserved.
-  Pool and missing transactions stay native. Positional and named parameters are supported.
+  Historical forwarding pins tags other than `pending`; explicit hashes and `requireCanonical` are
+  preserved. Pool and missing transactions stay native. Positional and named parameters are supported.
   Simulations select their generated child blocks' eras,
   including gap fillers; the base state may belong to an older era.
 - Requests crossing eras return `-32004`, including trace filters, multi-block simulations, call
