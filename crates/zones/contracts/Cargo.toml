@@ -1,6 +1,6 @@
 [package]
 name = "tempo-zone-contracts"
-description = "Tempo Zone contract bindings and ABI definitions"
+description = "Compatibility exports for Tempo Zone contract bindings"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,41 +11,10 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-# zones
-zone-primitives = { workspace = true, default-features = false }
-
-# alloy
-alloy-primitives = { workspace = true, default-features = false }
-alloy-sol-types = { workspace = true, default-features = false, features = ["json"] }
-alloy-contract = { workspace = true, optional = true }
-alloy-network = { workspace = true, optional = true }
-alloy-provider = { workspace = true, optional = true }
-alloy-rpc-types-eth = { workspace = true, optional = true }
-alloy-transport = { workspace = true, optional = true }
-tokio = { workspace = true, optional = true }
-serde = { workspace = true, optional = true }
-k256 = { workspace = true, optional = true }
-
-[dev-dependencies]
-alloy-transport.workspace = true
-const-hex.workspace = true
+tempo-contracts = { path = "../../contracts", default-features = false }
 
 [features]
 default = ["std", "serde", "rpc"]
-std = [
-    "alloy-primitives/std",
-    "alloy-sol-types/std",
-    "serde?/std",
-    "zone-primitives/std",
-]
-serde = ["dep:serde", "alloy-primitives/serde"]
-rpc = [
-    "alloy-primitives/k256",
-    "dep:alloy-contract",
-    "dep:alloy-network",
-    "dep:alloy-provider",
-    "dep:alloy-rpc-types-eth",
-    "dep:alloy-transport",
-    "dep:k256",
-    "dep:tokio",
-]
+std = ["tempo-contracts/std"]
+serde = ["tempo-contracts/serde"]
+rpc = ["tempo-contracts/rpc"]

@@ -7,12 +7,7 @@
 use crate::execution::{CallCheck, CallRules};
 use alloy_primitives::Address;
 use alloy_sol_types::SolError;
-
-alloy_sol_types::sol! {
-    /// Returned when a nonzero caller accesses the registry through its EVM interface.
-    #[derive(Debug, PartialEq, Eq)]
-    error OnlyPrecompiles();
-}
+pub use tempo_zone_contracts::OnlyPrecompiles;
 
 /// Restricts EVM calls to the registry.
 ///

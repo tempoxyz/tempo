@@ -2,15 +2,26 @@ use crate::zones::{
     T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
     ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
 };
-use alloy_primitives::{Address, Bytes, U256, address};
+use alloy_primitives::{Address, Bytes, FixedBytes, U256, address, fixed_bytes};
 
+pub use crate::zones::ZonePortal::{
+    Capability as ZonePortalCapability, Role as ZonePortalRole, ZonePortalEvents as ZonePortalEvent,
+};
 pub use IZoneFactory::{
     IZoneFactoryErrors as ZoneFactoryError, IZoneFactoryEvents as ZoneFactoryEvent,
 };
-pub use IZonePortal::{
-    Capability as ZonePortalCapability, IZonePortalEvents as ZonePortalEvent,
-    Role as ZonePortalRole,
-};
+
+/// Compatibility path for the portal bindings used by native initialization.
+#[allow(non_snake_case)]
+pub mod IZonePortal {
+    pub use crate::zones::ZonePortal::{ZonePortalEvents as IZonePortalEvents, *};
+}
+
+/// Maximum number of sequencers in a Zone's active sequencer set.
+pub const MAX_SEQUENCERS: usize = 8;
+
+/// Prefix of protocol-managed ZonePortal addresses.
+pub const ZONE_PORTAL_PREFIX: FixedBytes<12> = fixed_bytes!("5AD000000000000000000000");
 
 /// Native TIP-1091 ZoneFactory precompile address.
 pub const ZONE_FACTORY_ADDRESS: Address = address!("0x5AF2000000000000000000000000000000000000");
@@ -138,6 +149,9 @@ crate::sol! {
             address verifier
         );
 
+        // Client-facing errors retained for compatibility.
+        error DuplicateAllowedAccount();
+        error DuplicateZoneGateway();
         error InvalidToken();
         error TokenTransferPolicyNotSet();
         error InvalidClosedLoopConfig();
@@ -155,34 +169,5 @@ crate::sol! {
         function nextZoneId() external view returns (uint32);
         function zones(uint32 id) external view returns (ZoneInfo memory info);
         function isZonePortal(address portal) external view returns (bool);
-    }
-
-    /// Minimal portal ABI needed for constructor-equivalent native initialization.
-    #[derive(Debug, PartialEq, Eq)]
-    #[sol(abi)]
-    interface IZonePortal {
-        enum Role {
-            None,
-            Sequencer,
-            Account,
-            CallbackGateway,
-            PauseGuardian
-        }
-
-        enum Capability {
-            PausePortal,
-            AccessPolicy
-        }
-
-        event SequencerSetUpdated(uint64 indexed nonce, uint8 threshold, address[] sequencers);
-        event TokenEnabled(address indexed token, string name, string symbol, string currency);
-        event RoleUpdated(address indexed account, Role prev, Role next);
-        event EnforcementModesUpdated(bool accessMode, bool gatewayMode);
-        event LeaderUpdated(
-            address indexed previousLeader,
-            address indexed newLeader,
-            uint64 indexed leaderEpoch,
-            uint64 leaderActivationTempoBlock
-        );
     }
 }

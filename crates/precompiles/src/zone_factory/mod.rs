@@ -31,9 +31,9 @@ pub use portal::{ZONE_PORTAL_PROXY_RUNTIME, ZonePortalStorage};
 pub const ZONE_CREATION_GAS: u64 = 15_000_000;
 
 /// Maximum number of equal sequencers in a zone settlement set.
-pub const MAX_SEQUENCERS: usize = 8;
+pub use tempo_contracts::precompiles::MAX_SEQUENCERS;
 /// Maximum UTF-8 byte length of enabled token metadata strings.
-const MAX_TOKEN_METADATA_BYTES: usize = 31;
+use tempo_contracts::zones::MAX_TOKEN_METADATA_BYTES;
 
 /// Native ZoneFactory storage.
 ///

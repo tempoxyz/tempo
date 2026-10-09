@@ -382,7 +382,12 @@ mod tests {
         precompiles::{
             IZoneFactory, ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
         },
-        zones::{ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME},
+        zones::{
+            BlockTransition, DepositQueueTransition,
+            SwapAndDepositRouter as TestWithdrawalReceiver, ZONE_MESSENGER_RUNTIME,
+            ZONE_PORTAL_RUNTIME, ZoneMessenger as IZoneMessenger, ZonePortal as IZonePortal,
+            legacySubmitBatchCall,
+        },
     };
     use tempo_precompiles::{
         NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
@@ -407,85 +412,6 @@ mod tests {
     use tempo_revm::{TempoBatchCallEnv, gas_params::tempo_gas_params_with_amsterdam};
 
     use super::*;
-
-    alloy_sol_types::sol! {
-        enum TestZonePortalRole {
-            None,
-            Sequencer,
-            Account,
-            CallbackGateway,
-            PauseGuardian
-        }
-
-        enum TestZonePortalCapability {
-            PausePortal,
-            AccessPolicy
-        }
-
-        struct TestBlockTransition {
-            bytes32 prevBlockHash;
-            bytes32 nextBlockHash;
-        }
-
-        struct TestDepositQueueTransition {
-            bytes32 prevProcessedHash;
-            bytes32 nextProcessedHash;
-            uint64 prevDepositNumber;
-            uint64 nextDepositNumber;
-        }
-
-        interface TestZonePortal {
-            error InvalidProof();
-
-            function enableToken(address token) external;
-            function tokenEnablementHash() external view returns (bytes32);
-            function hasRole(address account, TestZonePortalRole role) external view returns (bool);
-            function isSequencer(address account) external view returns (bool);
-            function setAllowedAccount(address account, bool allowed) external;
-            function paused() external view returns (bool);
-            function pauseExpiry() external view returns (uint64);
-            function abdicationEffectiveAt(TestZonePortalCapability capability)
-                external
-                view
-                returns (uint64);
-            function pause() external;
-            function resume() external;
-            function submitBatch(
-                uint64 tempoBlockNumber,
-                uint64 recentTempoBlockNumber,
-                TestBlockTransition calldata blockTransition,
-                TestDepositQueueTransition calldata depositQueueTransition,
-                bytes32 withdrawalQueueHash,
-                bytes calldata verifierConfig,
-                bytes calldata proof,
-                uint256 nextZoneHeight,
-                bytes[] calldata signatures
-            ) external;
-        }
-
-        interface TestZoneMessenger {
-            function relayMessage(
-                uint32 zoneId,
-                address token,
-                bytes32 senderTag,
-                address target,
-                uint128 amount,
-                uint64 gasLimit,
-                bytes calldata data
-            ) external;
-        }
-
-        interface TestWithdrawalReceiver {
-            function onWithdrawalReceived(
-                uint32 zoneId,
-                address portal,
-                bytes32 senderTag,
-                address token,
-                uint128 amount,
-                bytes calldata data
-            ) external returns (bytes4);
-        }
-    }
 
     fn runtime_returning_selector(selector: [u8; 4]) -> Bytecode {
         const SELECTOR_SHIFT_BITS: u8 = 224;
@@ -821,7 +747,7 @@ mod tests {
             .transact_system_call(
                 Address::ZERO,
                 created.portal,
-                TestZonePortal::isSequencerCall { account: sequencer }
+                IZonePortal::isSequencerCall { account: sequencer }
                     .abi_encode()
                     .into(),
             )
@@ -833,14 +759,14 @@ mod tests {
             } => output,
             result => panic!("isSequencer failed: {result:?}"),
         };
-        assert!(TestZonePortal::isSequencerCall::abi_decode_returns(&output).unwrap());
+        assert!(IZonePortal::isSequencerCall::abi_decode_returns(&output).unwrap());
 
         let account = Address::repeat_byte(0x55);
         let set_account = evm
             .transact_system_call(
                 admin,
                 created.portal,
-                TestZonePortal::setAllowedAccountCall {
+                IZonePortal::setAllowedAccountCall {
                     account,
                     allowed: true,
                 }
@@ -859,9 +785,9 @@ mod tests {
             .transact_system_call(
                 Address::ZERO,
                 created.portal,
-                TestZonePortal::hasRoleCall {
+                IZonePortal::hasRoleCall {
                     account,
-                    role: TestZonePortalRole::Account,
+                    role: IZonePortal::Role::Account,
                 }
                 .abi_encode()
                 .into(),
@@ -874,13 +800,13 @@ mod tests {
             } => output,
             result => panic!("hasRole failed: {result:?}"),
         };
-        assert!(TestZonePortal::hasRoleCall::abi_decode_returns(&output).unwrap());
+        assert!(IZonePortal::hasRoleCall::abi_decode_returns(&output).unwrap());
 
         for call in [
-            TestZonePortal::pausedCall {}.abi_encode(),
-            TestZonePortal::pauseExpiryCall {}.abi_encode(),
-            TestZonePortal::abdicationEffectiveAtCall {
-                capability: TestZonePortalCapability::PausePortal,
+            IZonePortal::pausedCall {}.abi_encode(),
+            IZonePortal::pauseExpiryCall {}.abi_encode(),
+            IZonePortal::abdicationEffectiveAtCall {
+                capability: IZonePortal::Capability::PausePortal,
             }
             .abi_encode(),
         ] {
@@ -901,7 +827,7 @@ mod tests {
             .transact_system_call(
                 sequencer,
                 created.portal,
-                TestZonePortal::pauseCall {}.abi_encode().into(),
+                IZonePortal::pauseCall {}.abi_encode().into(),
             )
             .unwrap();
         assert!(
@@ -915,14 +841,14 @@ mod tests {
             .transact_system_call(
                 sequencer,
                 created.portal,
-                TestZonePortal::submitBatchCall {
+                legacySubmitBatchCall {
                     tempoBlockNumber: 0,
                     recentTempoBlockNumber: 0,
-                    blockTransition: TestBlockTransition {
+                    blockTransition: BlockTransition {
                         prevBlockHash: B256::repeat_byte(1),
                         nextBlockHash: B256::ZERO,
                     },
-                    depositQueueTransition: TestDepositQueueTransition {
+                    depositQueueTransition: DepositQueueTransition {
                         prevProcessedHash: B256::ZERO,
                         nextProcessedHash: B256::ZERO,
                         prevDepositNumber: 0,
@@ -940,7 +866,7 @@ mod tests {
             .unwrap();
         match submit.result {
             ExecutionResult::Revert { output, .. } => {
-                assert_eq!(output.as_ref(), TestZonePortal::InvalidProof::SELECTOR)
+                assert_eq!(output.as_ref(), IZonePortal::InvalidProof::SELECTOR)
             }
             result => panic!("paused submitBatch should reach proof validation: {result:?}"),
         }
@@ -949,7 +875,7 @@ mod tests {
             .transact_system_call(
                 admin,
                 created.portal,
-                TestZonePortal::resumeCall {}.abi_encode().into(),
+                IZonePortal::resumeCall {}.abi_encode().into(),
             )
             .unwrap();
         assert!(
@@ -963,7 +889,7 @@ mod tests {
             .transact_system_call(
                 Address::ZERO,
                 created.portal,
-                TestZonePortal::pausedCall {}.abi_encode().into(),
+                IZonePortal::pausedCall {}.abi_encode().into(),
             )
             .unwrap();
         let output = match paused.result {
@@ -979,7 +905,7 @@ mod tests {
             .transact_system_call(
                 admin,
                 created.portal,
-                TestZonePortal::enableTokenCall {
+                IZonePortal::enableTokenCall {
                     token: second_token,
                 }
                 .abi_encode()
@@ -997,9 +923,7 @@ mod tests {
             .transact_system_call(
                 Address::ZERO,
                 created.portal,
-                TestZonePortal::tokenEnablementHashCall {}
-                    .abi_encode()
-                    .into(),
+                IZonePortal::tokenEnablementHashCall {}.abi_encode().into(),
             )
             .unwrap();
         let output = match commitment.result {
@@ -1009,7 +933,7 @@ mod tests {
             } => output,
             result => panic!("tokenEnablementHash failed: {result:?}"),
         };
-        let actual = TestZonePortal::tokenEnablementHashCall::abi_decode_returns(&output).unwrap();
+        let actual = IZonePortal::tokenEnablementHashCall::abi_decode_returns(&output).unwrap();
         let initial = keccak256(
             (B256::ZERO, PATH_USD_ADDRESS, "pathUSD", "pathUSD", "USD").abi_encode_params(),
         );
@@ -1097,7 +1021,7 @@ mod tests {
             .transact_system_call(
                 created.portal,
                 ZONE_MESSENGER_ADDRESS,
-                TestZoneMessenger::relayMessageCall {
+                IZoneMessenger::relayMessageCall {
                     zoneId: created.zoneId,
                     token: PATH_USD_ADDRESS,
                     senderTag: B256::ZERO,

@@ -11,7 +11,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-tempo-zone-contracts = { workspace = true, features = ["std"] }
+tempo-zone-contracts = { workspace = true, features = ["std", "serde"] }
 zone-chainspec = { workspace = true, features = ["cli"] }
 zone-evm.workspace = true
 zone-precompiles = { workspace = true, features = ["std"] }

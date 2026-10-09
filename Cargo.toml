@@ -35,6 +35,8 @@ members = [
   "crates/precompiles-macros",
   "crates/primitives",
   "crates/contracts",
+  "crates/zones/contracts",
+  "crates/zones/primitives",
   "crates/telemetry-util",
   "crates/transaction-pool",
   "crates/revm",
@@ -159,6 +161,8 @@ tempo-precompiles = { path = "crates/precompiles", default-features = false }
 tempo-precompiles-macros = { path = "crates/precompiles-macros" }
 tempo-primitives = { path = "crates/primitives", default-features = false }
 tempo-contracts = { path = "crates/contracts", default-features = false, features = ["serde"] }
+tempo-zone-contracts = { path = "crates/zones/contracts", default-features = false }
+zone-primitives = { path = "crates/zones/primitives", default-features = false }
 tempo-telemetry-util = { path = "crates/telemetry-util", default-features = false }
 tempo-transaction-pool = { path = "crates/transaction-pool", default-features = false }
 tempo-validator-config = { path = "crates/validator-config", default-features = false }
@@ -304,6 +308,7 @@ insta = { version = "1", features = ["yaml"] }
 itertools = "0.14.0"
 jiff = { version = "0.2.18", default-features = false }
 jsonrpsee = { version = "0.26.0", features = ["server", "client", "macros"] }
+k256 = { version = "0.13.4", features = ["arithmetic", "ecdh"] }
 keccak-const = "0.2.0"
 metrics = "0.24.3"
 minisign = "0.8"

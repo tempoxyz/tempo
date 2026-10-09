@@ -1,29 +1,19 @@
 //! Zone protocol constants shared between host and guest.
 
-use alloy_primitives::{Address, U256, address};
+pub use tempo_contracts::zones::{
+    MAX_UNPROCESSED_DEPOSITS, MAX_UNPROCESSED_TOKEN_ENABLEMENTS, MAX_WITHDRAWAL_GAS_LIMIT,
+    NO_QUEUE_INDEX, TEMPO_STATE_ADDRESS, ZONE_FEE_MANAGER_ADDRESS, ZONE_INBOX_ADDRESS,
+    ZONE_OUTBOX_ADDRESS, ZONE_TOKEN_ADDRESS,
+};
+
+use alloy_primitives::Address;
 use tempo_hardfork::constants::{mainnet::MAINNET_CHAIN_ID, moderato::MODERATO_CHAIN_ID};
-
-/// Sentinel emitted as `BatchSubmitted.withdrawalQueueIndex` when a batch carried no
-/// withdrawals and therefore consumed no queue index (`NO_QUEUE_INDEX` in Solidity).
-pub const NO_QUEUE_INDEX: U256 = U256::MAX;
-
-/// Maximum callback gas a withdrawal may request.
-///
-/// The L1 processor adds fixed overhead, so this value keeps the outer
-/// keeps the outer `processWithdrawals` transaction well below a 30M gas block.
-pub const MAX_WITHDRAWAL_GAS_LIMIT: u64 = 10_000_000;
 
 /// Maximum number of Tempo headers authenticated by one checkpoint-only Zone block.
 pub const MAX_TEMPO_HEADERS_PER_ZONE_BLOCK: usize = 1024;
 
-/// Maximum deposit entries that may remain outstanding on a ZonePortal.
-pub const MAX_UNPROCESSED_DEPOSITS: usize = 230;
-
 /// Capacity reserved for one maximum-size withdrawal batch to bounce back.
 pub const WITHDRAWAL_BOUNCEBACK_RESERVE: usize = 20;
-
-/// Maximum token enablements that may remain outstanding on a ZonePortal.
-pub const MAX_UNPROCESSED_TOKEN_ENABLEMENTS: usize = 8;
 
 /// Maximum RLP-encoded block size.
 ///
@@ -31,28 +21,10 @@ pub const MAX_UNPROCESSED_TOKEN_ENABLEMENTS: usize = 8;
 /// `reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE`.
 pub const MAX_RLP_BLOCK_SIZE: usize = 8_388_608;
 
-/// TempoState predeploy address on Zone L2.
-pub const TEMPO_STATE_ADDRESS: Address = address!("0x1c00000000000000000000000000000000000000");
-
-/// ZoneInbox predeploy address on Zone L2.
-pub const ZONE_INBOX_ADDRESS: Address = address!("0x1c00000000000000000000000000000000000001");
-
-/// ZoneOutbox predeploy address on Zone L2.
-pub const ZONE_OUTBOX_ADDRESS: Address = address!("0x1c00000000000000000000000000000000000002");
-
 /// Protocol-level contract deployers permitted to create contracts on Zones.
 ///
 /// WARNING: Updating this list is a consensus change.
 pub const CONTRACT_DEPLOYER_ALLOWLIST: &[Address] = &[];
-
-/// Zone-native fee manager precompile address.
-///
-/// This is adjacent to, but distinct from, Tempo L1's fee manager at `0xfeec...0000`.
-pub const ZONE_FEE_MANAGER_ADDRESS: Address =
-    address!("0xfeec000000000000000000000000000000000001");
-
-/// Default zone token address (pathUSD TIP-20).
-pub const ZONE_TOKEN_ADDRESS: Address = address!("0x20C0000000000000000000000000000000000000");
 
 /// Base offset for deriving **mainnet** zone chain IDs.
 ///

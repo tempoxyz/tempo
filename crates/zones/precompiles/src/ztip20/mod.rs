@@ -14,6 +14,7 @@ use tempo_precompiles::{
     dispatch::abi_decoder_config_for_spec,
     tip20::{IRolesAuth, ITIP20},
 };
+pub use tempo_zone_contracts::InsufficientBalance;
 use tempo_zone_contracts::Unauthorized;
 
 use crate::{
@@ -21,11 +22,6 @@ use crate::{
     privacy::check_caller,
     storage::StorageCtx,
 };
-
-alloy_sol_types::sol! {
-    /// Returned instead of the upstream balance error that reveal the user balance to the spender.
-    error InsufficientBalance();
-}
 
 /// Fixed gas charged for TIP20 transfer and approval selectors on the zone.
 ///

@@ -5,50 +5,11 @@ use alloy_network::Ethereum;
 use alloy_primitives::{Address, Bytes};
 use alloy_provider::EthCallParams;
 use alloy_rpc_types_eth::{TransactionInput, TransactionRequest};
-use alloy_sol_types::{SolCall, sol};
+use alloy_sol_types::SolCall;
 use eyre::{Context, Result, bail};
 use serde_json::{Value, json};
 use tempo_precompiles::zone_factory::portal_address;
-use tempo_zone_contracts::ZONE_VERIFIER_ADDRESS;
-
-// Keep the verifier wire ABI independent of the local STF schema, just like `prove`.
-sol! {
-    #[derive(serde::Serialize, serde::Deserialize)]
-    struct BlockTransition {
-        bytes32 prevBlockHash;
-        bytes32 nextBlockHash;
-    }
-
-    #[derive(serde::Serialize, serde::Deserialize)]
-    struct DepositQueueTransition {
-        bytes32 prevProcessedHash;
-        bytes32 nextProcessedHash;
-        uint64 prevDepositNumber;
-        uint64 nextDepositNumber;
-    }
-
-    #[derive(serde::Serialize, serde::Deserialize)]
-    struct TokenEnablementTransition {
-        uint64 prevProcessedTokenCount;
-        uint64 nextProcessedTokenCount;
-    }
-
-    #[derive(serde::Serialize, serde::Deserialize)]
-    function verify(
-        uint32 zoneId,
-        uint64 tempoBlockNumber,
-        uint64 anchorBlockNumber,
-        bytes32 anchorBlockHash,
-        uint64 expectedWithdrawalBatchIndex,
-        uint256 nextZoneHeight,
-        BlockTransition blockTransition,
-        DepositQueueTransition depositQueueTransition,
-        TokenEnablementTransition tokenEnablementTransition,
-        bytes32 withdrawalQueueHash,
-        bytes verifierConfig,
-        bytes proof
-    ) external view returns (bool);
-}
+use tempo_zone_contracts::{IZoneVerifier::verifyCall, ZONE_VERIFIER_ADDRESS};
 
 pub(super) struct VerifierRequest {
     pub chain_id: u64,

@@ -1,7 +1,8 @@
 use alloy_primitives::{B256, Bytes};
-use alloy_sol_types::{SolStruct as _, sol};
+use alloy_sol_types::SolStruct as _;
 use keccak_const::Keccak256;
 use serde::{Deserialize, Serialize};
+pub use tempo_zone_contracts::NitroBatchAttestation;
 use tempo_zone_contracts::ZONE_VERIFIER_ADDRESS;
 use zone_spf::{BatchOutput, BatchWitness, PublicInputs};
 
@@ -103,31 +104,6 @@ pub enum VerifierModeError {
     /// The proof is empty for Nitro or non-empty for proofless fallback.
     #[error("proof shape does not match verifier configuration")]
     InvalidProofShape,
-}
-
-sol! {
-    /// Data placed in the Nitro attestation document's `user_data` field.
-    #[derive(Debug, PartialEq, Eq)]
-    struct NitroBatchAttestation {
-        uint256 parentChainId;
-        address verifier;
-        uint32 zoneId;
-        uint64 tempoBlockNumber;
-        uint64 anchorBlockNumber;
-        bytes32 anchorBlockHash;
-        uint64 expectedWithdrawalBatchIndex;
-        uint256 nextZoneHeight;
-        bytes32 prevBlockHash;
-        bytes32 nextBlockHash;
-        bytes32 prevProcessedHash;
-        bytes32 nextProcessedHash;
-        uint64 prevDepositNumber;
-        uint64 nextDepositNumber;
-        uint64 prevProcessedTokenCount;
-        uint64 nextProcessedTokenCount;
-        bytes32 withdrawalQueueHash;
-        bytes32 verifierConfigHash;
-    }
 }
 
 /// Proof material returned by an attesting prover.
