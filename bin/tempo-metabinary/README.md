@@ -6,6 +6,7 @@ starts frozen read-only workers lazily for historical execution. The library has
 Reth, or database dependencies.
 
 ```mermaid
+%%{init: {"flowchart": {"subGraphTitleMargin": {"bottom": 24}}}}%%
 flowchart TB
     RPC["HTTP / WebSocket / IPC"] --> Registry
     Catalog["Release catalog<br/>tempo-eras.json"] -.-> Router
@@ -14,9 +15,15 @@ flowchart TB
         Registry -->|"Execution with routing enabled"| Router["Era router<br/>Select era using native metadata"]
         Router -->|"Live era"| Native
     end
-    Router -->|"Historical era / private loopback HTTP"| Frozen["Frozen rpc-only workers<br/>Read-only, one per era<br/>On-demand startup / idle shutdown"]
+    Router -->|"Era A / private loopback HTTP"| EraA
+    Router -->|"Era B / private loopback HTTP"| EraB
+    subgraph Frozen["Frozen rpc-only workers: read-only<br/>On-demand startup / idle shutdown"]
+        direction LR
+        EraA["Era A"]
+        EraB["Era B"]
+    end
     Native --> DB[("Shared chain storage")]
-    Frozen -->|"Read state to reexecute"| DB
+    EraA & EraB -->|"Read state to reexecute"| DB
 ```
 
 ## Release configuration
