@@ -1,7 +1,0 @@
-* text=auto
-.gitattributes !filter !diff
-
-.env.example linguist-language=Dotenv
-docker/Dockerfile.chef linguist-language=Dockerfile
-docker/Dockerfile.reproducible linguist-language=Dockerfile
-biome.json linguist-language=JSON-with-Comments
