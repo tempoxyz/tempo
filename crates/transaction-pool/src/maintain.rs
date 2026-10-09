@@ -494,6 +494,10 @@ where
     while let Some(event) = chain_events.next().await {
         let new = match event {
             CanonStateNotification::Reorg { old: _, new } => {
+                // Recent 2D nonce slot values may come from orphaned blocks. Clear them before
+                // the new chain's state is applied below, which repopulates the cache.
+                pool.clear_recent_aa_nonce_slots();
+
                 // Repopulate AMM liquidity cache from the new canonical chain
                 // to invalidate stale entries from orphaned blocks.
                 if let Err(err) = amm_cache.repopulate(pool.client()) {

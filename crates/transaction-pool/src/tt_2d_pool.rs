@@ -20,6 +20,7 @@ use reth_transaction_pool::{
     },
 };
 use revm::database::BundleAccount;
+use schnellru::{ByLength, LruMap};
 use std::{
     borrow::Borrow,
     collections::{
@@ -102,6 +103,15 @@ pub struct AA2dPool {
     /// Both mappings share one index so the state-update scan needs a single lookup per changed
     /// slot; see [`NonceSlotEntry`].
     slot_to_nonce_entry: U256Map<NonceSlotEntry>,
+    /// Recently observed values of `NonceManager` storage slots, keyed by slot.
+    ///
+    /// Insertion applies the `on_chain_nonce` captured during asynchronous validation, which can
+    /// predate state updates the pool has already processed. `slot_to_nonce_entry` only tracks
+    /// lanes that currently have pooled transactions, so a lane that was just emptied by a mined
+    /// block is forgotten. This cache keeps the latest value of every recently changed slot,
+    /// tracked or not, so a late insert can raise its stale nonce. See
+    /// [`Self::on_chain_nonce_floor`].
+    recent_nonce_slots: LruMap<U256, u64>,
     /// Settings for this sub-pool.
     config: AA2dPoolConfig,
     /// Metrics for tracking pool statistics
@@ -151,6 +161,7 @@ impl AA2dPool {
             state_update_nonce_changes: Default::default(),
             state_update_included_expiring_nonce_hashes: Default::default(),
             slot_to_nonce_entry: Default::default(),
+            recent_nonce_slots: LruMap::new(ByLength::new(RECENT_NONCE_SLOTS_CAPACITY)),
             config,
             metrics: AA2dPoolMetrics::default(),
             pending_eviction_order: Default::default(),
@@ -255,6 +266,9 @@ impl AA2dPool {
             .transaction
             .aa_transaction_id()
             .expect("Transaction added to AA2D pool must be an AA transaction");
+
+        // The nonce was read during validation and may predate state updates applied since.
+        let on_chain_nonce = self.on_chain_nonce_floor(&transaction.transaction, on_chain_nonce);
 
         if transaction.nonce() < on_chain_nonce {
             // outdated transaction
@@ -1487,6 +1501,36 @@ impl AA2dPool {
         }
     }
 
+    /// Returns `on_chain_nonce`, raised to the most recently observed value of the transaction's
+    /// lane nonce slot, if the slot changed recently.
+    ///
+    /// Canonical nonces only increase along a chain, so the larger value is the fresher one.
+    /// [`Self::clear_recent_nonce_slots`] must be called on reorgs, because the new chain can
+    /// hold lower nonces than the cached values.
+    fn on_chain_nonce_floor(
+        &self,
+        transaction: &TempoPooledTransaction,
+        on_chain_nonce: u64,
+    ) -> u64 {
+        if !transaction.is_aa_2d() {
+            return on_chain_nonce;
+        }
+        let Some(slot) = transaction.nonce_key_slot() else {
+            return on_chain_nonce;
+        };
+        self.recent_nonce_slots
+            .peek(&slot)
+            .map_or(on_chain_nonce, |recent| on_chain_nonce.max(*recent))
+    }
+
+    /// Forgets all recently observed nonce slot values.
+    ///
+    /// Must be called when the canonical chain reorgs, before the new chain's state updates are
+    /// applied, so the cache is repopulated only with values of the new chain.
+    pub(crate) fn clear_recent_nonce_slots(&mut self) {
+        self.recent_nonce_slots.clear();
+    }
+
     /// Removes a tracked nonce slot, keeping it if it no longer tracks `expected`.
     fn remove_nonce_slot_entry(&mut self, slot: U256, expected: NonceSlotEntry) {
         let hash_map::Entry::Occupied(entry) = self.slot_to_nonce_entry.entry(slot) else {
@@ -1521,6 +1565,17 @@ impl AA2dPool {
         // Process known nonce slot changes. A slot tracks either a 2D nonce lane or an expiring
         // nonce transaction, so one lookup per changed slot is enough.
         for (slot, value) in nonce_state.storage.iter() {
+            // Remember the new value of every changed slot, including lanes without pooled
+            // transactions, for inserts that were validated against older state. Lane nonces are
+            // never reset to zero and always fit a `u64`, so other writes to this precompile
+            // (cleared `expiring_nonce_seen` entries, ring buffer hashes) are skipped to keep them
+            // from evicting lane entries.
+            if let Ok(nonce) = u64::try_from(value.present_value)
+                && nonce != 0
+            {
+                self.recent_nonce_slots.insert(*slot, nonce);
+            }
+
             match self.slot_to_nonce_entry.get(slot) {
                 Some(NonceSlotEntry::Sequence(seq_id)) => {
                     changes.insert(*seq_id, value.present_value.saturating_to());
@@ -1998,6 +2053,14 @@ enum NonceSlotEntry {
     /// `expiring_nonce_seen[hash]`, identifying the expiring nonce transaction it tracks.
     ExpiringNonce(B256),
 }
+
+/// Number of recently changed `NonceManager` storage slots the AA 2D pool remembers.
+///
+/// Only needs to cover the validation latency of a transaction, i.e. a few blocks. Expiring
+/// nonce activity also lands in this cache (`expiring_nonce_seen` is written with a non-zero
+/// expiry), so the capacity leaves room for several blocks of it. At roughly 100 bytes per entry
+/// this bounds the cache to a few MiB.
+const RECENT_NONCE_SLOTS_CAPACITY: u32 = 32_768;
 
 /// Default maximum number of transactions per sender in the AA 2D pool.
 ///
@@ -8122,5 +8185,233 @@ mod tests {
         assert!(first.is_some(), "should yield the expiring nonce tx");
         assert_eq!(*first.unwrap().hash(), tx_hash);
         assert!(best.next().is_none());
+    }
+
+    // ============================================
+    // recent nonce slot cache tests
+    // ============================================
+
+    /// Builds a nonce precompile state update that sets each slot to the given value.
+    fn nonce_slot_update(slots: &[(U256, U256)]) -> AddressMap<BundleAccount> {
+        use revm::database::{AccountStatus, states::StorageSlot};
+
+        let storage = slots
+            .iter()
+            .map(|(slot, value)| (*slot, StorageSlot::new_changed(U256::ZERO, *value)))
+            .collect();
+        let mut state = AddressMap::default();
+        state.insert(
+            NONCE_PRECOMPILE_ADDRESS,
+            BundleAccount::new(None, None, storage, AccountStatus::Changed),
+        );
+        state
+    }
+
+    /// Inserts a transaction for `(sender, nonce_key, nonce)` with the given validation nonce.
+    fn add_with_state_nonce(
+        pool: &mut AA2dPool,
+        sender: Address,
+        nonce_key: U256,
+        nonce: u64,
+        state_nonce: u64,
+    ) -> (B256, PoolResult<AddedTransaction<TempoPooledTransaction>>) {
+        let tx = TxBuilder::aa(sender)
+            .nonce_key(nonce_key)
+            .nonce(nonce)
+            .build();
+        let hash = *tx.hash();
+        let result = pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+            state_nonce,
+            TempoHardfork::T1,
+        );
+        (hash, result)
+    }
+
+    #[test]
+    fn stale_state_nonce_insert_after_lane_emptied_is_rejected() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+        let nonce_key = U256::from(1);
+
+        let (a_hash, a) = add_with_state_nonce(&mut pool, sender, nonce_key, 0, 0);
+        assert!(matches!(a.unwrap(), AddedTransaction::Pending(_)));
+        let slot = pool
+            .by_hash
+            .get(&a_hash)
+            .unwrap()
+            .transaction
+            .nonce_key_slot()
+            .unwrap();
+
+        // A is mined: the lane is emptied and no longer tracked by the pool.
+        let (_, mined, _) = pool.on_state_updates(&nonce_slot_update(&[(slot, U256::from(1))]));
+        assert_eq!(mined.len(), 1);
+        assert!(pool.by_id.is_empty());
+        assert!(!pool.slot_to_nonce_entry.contains_key(&slot));
+
+        // B competed with A for nonce 0 and was validated before the block was applied.
+        let (b_hash, b) = add_with_state_nonce(&mut pool, sender, nonce_key, 0, 0);
+        let err = b.unwrap_err();
+        assert_eq!(err.hash, b_hash);
+        assert!(
+            matches!(
+                err.kind,
+                PoolErrorKind::InvalidTransaction(InvalidPoolTransactionError::Consensus(
+                    InvalidTransactionError::NonceNotConsistent { tx: 0, state: 1 }
+                ))
+            ),
+            "unexpected error: {:?}",
+            err.kind
+        );
+        assert!(!pool.contains(&b_hash));
+        assert_eq!(pool.pending_and_queued_txn_count(), (0, 0));
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn stale_state_nonce_insert_uses_recent_nonce_of_emptied_lane() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+        let nonce_key = U256::from(1);
+
+        let (a_hash, a) = add_with_state_nonce(&mut pool, sender, nonce_key, 0, 0);
+        a.unwrap();
+        let slot = pool
+            .by_hash
+            .get(&a_hash)
+            .unwrap()
+            .transaction
+            .nonce_key_slot()
+            .unwrap();
+        pool.on_state_updates(&nonce_slot_update(&[(slot, U256::from(1))]));
+        assert!(pool.by_id.is_empty());
+
+        // The next nonce is executable, even though it was validated against nonce 0.
+        let (c_hash, c) = add_with_state_nonce(&mut pool, sender, nonce_key, 1, 0);
+        assert!(matches!(c.unwrap(), AddedTransaction::Pending(_)));
+        assert_eq!(pool.pending_and_queued_txn_count(), (1, 0));
+        assert!(
+            pool.independent_transactions
+                .values()
+                .any(|tx| tx.transaction.hash() == &c_hash)
+        );
+
+        // A gapped nonce is still queued relative to the raised on-chain nonce.
+        let (_, d) = add_with_state_nonce(&mut pool, sender, nonce_key, 3, 0);
+        assert!(matches!(d.unwrap(), AddedTransaction::Parked { .. }));
+        assert_eq!(pool.pending_and_queued_txn_count(), (1, 1));
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn recent_nonce_slots_do_not_lower_fresh_state_nonce() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+        let nonce_key = U256::from(1);
+
+        let (a_hash, a) = add_with_state_nonce(&mut pool, sender, nonce_key, 0, 0);
+        a.unwrap();
+        let slot = pool
+            .by_hash
+            .get(&a_hash)
+            .unwrap()
+            .transaction
+            .nonce_key_slot()
+            .unwrap();
+        pool.on_state_updates(&nonce_slot_update(&[(slot, U256::from(1))]));
+
+        // Validation observed a newer nonce than the cache: the validated nonce wins.
+        let (e_hash, e) = add_with_state_nonce(&mut pool, sender, nonce_key, 5, 5);
+        assert!(matches!(e.unwrap(), AddedTransaction::Pending(_)));
+        assert!(
+            pool.independent_transactions
+                .values()
+                .any(|tx| tx.transaction.hash() == &e_hash)
+        );
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn clearing_recent_nonce_slots_restores_state_nonce() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+        let nonce_key = U256::from(1);
+
+        let (a_hash, a) = add_with_state_nonce(&mut pool, sender, nonce_key, 0, 0);
+        a.unwrap();
+        let slot = pool
+            .by_hash
+            .get(&a_hash)
+            .unwrap()
+            .transaction
+            .nonce_key_slot()
+            .unwrap();
+        pool.on_state_updates(&nonce_slot_update(&[(slot, U256::from(1))]));
+        assert!(
+            add_with_state_nonce(&mut pool, sender, nonce_key, 0, 0)
+                .1
+                .is_err()
+        );
+
+        // Reorg: the nonce observed on the orphaned chain no longer applies.
+        pool.clear_recent_nonce_slots();
+        assert!(pool.recent_nonce_slots.is_empty());
+
+        let (b_hash, b) = add_with_state_nonce(&mut pool, sender, nonce_key, 0, 0);
+        assert!(matches!(b.unwrap(), AddedTransaction::Pending(_)));
+        assert!(
+            pool.independent_transactions
+                .values()
+                .any(|tx| tx.transaction.hash() == &b_hash)
+        );
+
+        // The new chain's state updates repopulate the cache.
+        pool.on_state_updates(&nonce_slot_update(&[(slot, U256::from(1))]));
+        assert_eq!(pool.recent_nonce_slots.peek(&slot), Some(&1));
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn recent_nonce_slots_only_record_lane_like_values() {
+        let mut pool = AA2dPool::default();
+        let slots = [
+            (U256::from(10), U256::from(7)),
+            // Cleared `expiring_nonce_seen` entry.
+            (U256::from(11), U256::ZERO),
+            // Ring buffer entry holding a transaction hash.
+            (U256::from(12), U256::MAX),
+        ];
+        pool.on_state_updates(&nonce_slot_update(&slots));
+
+        assert_eq!(pool.recent_nonce_slots.len(), 1);
+        assert_eq!(pool.recent_nonce_slots.peek(&U256::from(10)), Some(&7));
+
+        // Later values for the same slot replace earlier ones.
+        pool.on_state_updates(&nonce_slot_update(&[(U256::from(10), U256::from(8))]));
+        assert_eq!(pool.recent_nonce_slots.peek(&U256::from(10)), Some(&8));
+    }
+
+    #[test]
+    fn recent_nonce_slots_are_bounded() {
+        let mut pool = AA2dPool::default();
+        let capacity = RECENT_NONCE_SLOTS_CAPACITY as usize;
+        let update = |range: std::ops::RangeInclusive<usize>| {
+            let slots: Vec<_> = range.map(|i| (U256::from(i), U256::from(1))).collect();
+            nonce_slot_update(&slots)
+        };
+
+        // Fill the cache, then push in more slots. The storage of one update is unordered, so
+        // use separate updates to make the eviction order deterministic.
+        pool.on_state_updates(&update(1..=capacity));
+        assert_eq!(pool.recent_nonce_slots.len(), capacity);
+
+        pool.on_state_updates(&update(capacity + 1..=capacity + 1_000));
+        assert_eq!(pool.recent_nonce_slots.len(), capacity);
+        assert!(
+            pool.recent_nonce_slots
+                .peek(&U256::from(capacity + 1_000))
+                .is_some()
+        );
     }
 }

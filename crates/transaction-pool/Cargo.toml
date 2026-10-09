@@ -52,6 +52,7 @@ parking_lot.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 thiserror.workspace = true
 metrics.workspace = true
+schnellru.workspace = true
 
 [features]
 default = []

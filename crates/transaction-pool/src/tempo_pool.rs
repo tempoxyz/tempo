@@ -124,6 +124,14 @@ where
         mined
     }
 
+    /// Forgets the recently observed 2D nonce slot values of the AA pool.
+    ///
+    /// Must be called on canonical chain reorgs, before the new chain's state updates are applied
+    /// via [`Self::notify_aa_pool_on_state_updates`].
+    pub(crate) fn clear_recent_aa_nonce_slots(&self) {
+        self.aa_2d_pool.write().clear_recent_nonce_slots();
+    }
+
     /// Evicts transactions that are no longer valid due to on-chain events.
     ///
     /// This performs a single scan of all pooled transactions and checks for:
@@ -2990,5 +2998,61 @@ mod tests {
             10,
             TempoHardfork::T3,
         ));
+    }
+
+    #[test]
+    fn stale_state_nonce_aa_2d_insert_rejected_until_reorg() {
+        use crate::test_utils::TxBuilder;
+        use revm::database::{AccountStatus, BundleAccount, states::StorageSlot};
+        use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
+
+        let pool = create_test_pool(create_provider_with_tip());
+        let sender = Address::random();
+        let nonce_key = U256::from(1);
+        let mined = TxBuilder::aa(sender).nonce_key(nonce_key).build();
+        let nonce_slot = mined.nonce_key_slot().unwrap();
+        add_validated(&pool, mined);
+
+        // The mined transaction empties its lane.
+        let mut storage = alloy_primitives::map::HashMap::default();
+        storage.insert(
+            nonce_slot,
+            StorageSlot::new_changed(U256::ZERO, U256::from(1)),
+        );
+        let mut state = AddressMap::default();
+        state.insert(
+            NONCE_PRECOMPILE_ADDRESS,
+            BundleAccount::new(None, None, storage, AccountStatus::Changed),
+        );
+        assert_eq!(pool.notify_aa_pool_on_state_updates(&state).len(), 1);
+        assert!(pool.pool_size().total == 0);
+
+        // A competing transaction was validated against the nonce before the block.
+        let add_stale = |pooled: TempoPooledTransaction| {
+            let validated = TransactionValidationOutcome::Valid {
+                balance: *pooled.cost(),
+                state_nonce: 0,
+                bytecode_hash: None,
+                transaction: ValidTransaction::new(pooled, None),
+                propagate: true,
+                authorities: None,
+            };
+            pool.add_validated_transaction(TransactionOrigin::External, validated)
+        };
+        let stale = TxBuilder::aa(sender)
+            .nonce_key(nonce_key)
+            .gas_limit(500_000)
+            .build();
+        assert!(add_stale(stale).is_err());
+        assert_eq!(pool.pool_size().total, 0);
+
+        // After a reorg the cache is cleared, so the validated nonce is trusted again.
+        pool.clear_recent_aa_nonce_slots();
+        let replacement = TxBuilder::aa(sender)
+            .nonce_key(nonce_key)
+            .gas_limit(500_001)
+            .build();
+        add_stale(replacement).unwrap();
+        assert_eq!(pool.pool_size().pending, 1);
     }
 }
