@@ -271,14 +271,10 @@ impl TempoStateAccess<((), ())> for &mut dyn DynDatabase {
 impl<T: reth_storage_api::StateProvider> TempoStateAccess<((), (), ())> for T {
     fn basic(&mut self, address: Address) -> Result<AccountInfo, DatabaseError> {
         self.basic_account(&address)
+            .map_err(|error| DatabaseError::new(error, true))?
+            .map(|account| reth_execution_types::native_provider_account(&account))
+            .transpose()
             .map(Option::unwrap_or_default)
-            .map(|account| AccountInfo {
-                balance: account.balance,
-                nonce: account.nonce,
-                code_hash: account.get_bytecode_hash(),
-                code: None,
-                _non_exhaustive: (),
-            })
             .map_err(|error| DatabaseError::new(error, true))
     }
 

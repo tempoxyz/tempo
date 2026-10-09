@@ -152,7 +152,7 @@ where
         let mut slot = self
             .evm
             .state_mut()
-            .storage(&address)
+            .storage(&address)?
             .into_slot_with_skip(key, skip_cold_load)?;
         let is_cold = self.version.feature(EvmFeatures::EIP2929) && slot.warm();
         Ok(SLoad {
@@ -176,7 +176,7 @@ where
         let mut slot = self
             .evm
             .state_mut()
-            .storage(&address)
+            .storage(&address)?
             .into_slot_with_skip(key, skip_cold_load)?;
         let is_cold = self.version.feature(EvmFeatures::EIP2929) && slot.warm();
         let (original_value, present_value) = slot.write(value);
@@ -2040,7 +2040,7 @@ mod tests {
                             assert_eq!(
                                 evm.evm
                                     .state_mut()
-                                    .storage(&address)
+                                    .storage(&address)?
                                     .into_slot(U256::from(slot))?
                                     .current(),
                                 value

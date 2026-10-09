@@ -618,6 +618,21 @@ impl DynDatabase for FailingStorageDb {
         Ok(Bytecode::default())
     }
 
+    fn get_code_kind_by_hash(
+        &mut self,
+        _hash: &B256,
+    ) -> Result<evm2::bytecode::BytecodeKind, DatabaseError> {
+        Ok(evm2::bytecode::BytecodeKind::Legacy)
+    }
+
+    fn get_code_chunk_by_hash(
+        &mut self,
+        _hash: &B256,
+        _index: u32,
+    ) -> Result<Option<evm2::bytecode::CodeChunk>, DatabaseError> {
+        Ok(None)
+    }
+
     fn get_storage(&mut self, address: &Address, _key: &U256) -> Result<U256, DatabaseError> {
         if *address == self.address {
             if self.successful_reads == 0 {
