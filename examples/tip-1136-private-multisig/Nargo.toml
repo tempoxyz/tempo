@@ -1,0 +1,8 @@
+[package]
+name = "private_multisig"
+type = "bin"
+authors = ["TIP-1136"]
+
+[dependencies]
+poseidon = { tag = "v0.4.0", git = "https://github.com/noir-lang/poseidon" }
+sha256 = { tag = "v0.3.0", git = "https://github.com/noir-lang/sha256" }
