@@ -44,8 +44,9 @@ Missing historical state fails through the worker's ordinary storage behavior.
 
 - Stored blocks, receipts, logs, proofs, state queries, and live transaction operations stay native.
 - Execution requests read native headers and transaction metadata to choose an era by timestamp.
-  Tags are pinned; explicit hashes and `requireCanonical` are preserved. Positional and named
-  parameters are supported. Simulations select their generated child blocks' eras,
+  Tags other than `pending` are pinned; explicit hashes and `requireCanonical` are preserved.
+  Pool and missing transactions stay native. Positional and named parameters are supported.
+  Simulations select their generated child blocks' eras,
   including gap fillers; the base state may belong to an older era.
 - Requests crossing eras return `-32004`, including trace filters, multi-block simulations, call
   bundles, and timestamp overrides. Split ranges rather than transferring speculative state
@@ -55,8 +56,8 @@ Missing historical state fails through the worker's ordinary storage behavior.
   Live debug trace subscriptions stay native; historical debug trace subscriptions are rejected.
 - Raw-block tracing decodes only the Tempo header to select its execution era; the selected
   executor validates the body with its own transaction codec.
-  Bad-block tracing and `ots_getContractCreator` remain unsupported with era routing because
-  choosing an executor requires native cache access or a whole-history deployment search.
+  Bad-block tracing and `ots_getContractCreator` remain unsupported with era routing:
+  bad-block cache resolution and whole-history deployment searches are not implemented.
 
 Workers are coalesced per era and verified by protocol, chain, genesis, read-only mode, and PID.
 Shutdown reaps owned children. A failed or missing worker affects historical requests for its era;
@@ -68,7 +69,7 @@ live RPC stays available.
 ordinary `tempo node` entrypoint afterward for public RPC and live execution.
 
 ```sh
-cargo build --release -p tempo --bin tempo -p tempo-metabinary
+cargo build --release -p tempo -p tempo-metabinary --bin tempo --bin tempo-metabinary
 
 tempo-metabinary --manifest /path/to/bootstrap.json bootstrap
 ```
