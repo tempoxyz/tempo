@@ -11,7 +11,10 @@ use reth_primitives_traits::NodePrimitives;
 use crate::{Block, BlockBody, TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 
 mod account;
-pub use account::{CODE_CHUNK_SIZE, TempoAccountExtension, TempoAccountExtensionError};
+pub use account::{
+    CODE_CHUNK_SIZE, TempoAccountExtension, TempoAccountExtensionError,
+    TempoAccountExtensionVersion,
+};
 
 /// Tempo receipt.
 ///
