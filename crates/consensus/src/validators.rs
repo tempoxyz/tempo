@@ -1,45 +1,48 @@
 use std::{
     collections::HashMap,
     net::{IpAddr, SocketAddr},
+    num::NonZeroU64,
 };
 
 use alloy_consensus::BlockHeader;
-use alloy_primitives::{Address, B256};
+use alloy_primitives::{Address, B256, U256};
 use commonware_codec::DecodeExt as _;
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_p2p::Ingress;
 use commonware_utils::{TryFromIterator, ordered};
 use eyre::{OptionExt as _, WrapErr as _};
-use reth_ethereum::evm::revm::{State, database::StateProviderDatabase};
-use reth_node_builder::ConfigureEvm as _;
+use reth_ethereum::{
+    chainspec::EthChainSpec as _,
+    evm::revm::{
+        Journal,
+        context::{BlockEnv, CfgEnv, JournalTr as _, TxEnv},
+        database::StateProviderDatabase,
+    },
+};
 use reth_provider::{
     EvmStateProviderBox, HeaderProvider as _, StateProvider as _, StateProviderFactory as _,
 };
-use tempo_node::{TempoFullNode, evm::evm::TempoEvm};
+use tempo_chainspec::{TempoChainSpec, TempoHardforks as _};
+use tempo_node::TempoFullNode;
 use tempo_precompiles::{
     storage::{StorageActions, StorageCtx},
     validator_config_v2::{IValidatorConfigV2, ValidatorConfigV2},
 };
-use tempo_primitives::TempoHeader;
+use tempo_primitives::{TempoBlockEnv, TempoHeader};
 
 use tracing::{Level, debug, instrument, warn};
 
 /// Minimal execution-node interface needed to read validator config state.
 ///
 /// Production code uses [`TempoFullNode`]. This trait exists so unit tests can
-/// use a mock that only provides a historical state provider and an EVM
-/// configured for the corresponding block, while still exercising the same
-/// validator config reader used in production.
+/// use a mock that only provides historical state and its chain schedule.
+/// Reading storage does not require the node to support execution of the block.
 pub(crate) trait ExecutionNode {
     fn header(&self, block_hash: B256) -> eyre::Result<TempoHeader>;
 
     fn state_by_block_hash(&self, block_hash: B256) -> eyre::Result<EvmStateProviderBox>;
 
-    fn evm_for_block(
-        &self,
-        db: State<StateProviderDatabase<EvmStateProviderBox>>,
-        header: &TempoHeader,
-    ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<EvmStateProviderBox>>>>;
+    fn chain_spec(&self) -> &TempoChainSpec;
 }
 
 impl ExecutionNode for TempoFullNode {
@@ -58,14 +61,8 @@ impl ExecutionNode for TempoFullNode {
         Ok(Box::new(provider.into_evm_state_provider()))
     }
 
-    fn evm_for_block(
-        &self,
-        db: State<StateProviderDatabase<EvmStateProviderBox>>,
-        header: &TempoHeader,
-    ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<EvmStateProviderBox>>>> {
-        self.evm_config
-            .evm_for_block(db, header)
-            .map_err(eyre::Report::new)
+    fn chain_spec(&self) -> &TempoChainSpec {
+        self.evm_config.chain_spec()
     }
 }
 
@@ -81,12 +78,8 @@ where
         (*self).state_by_block_hash(block_hash)
     }
 
-    fn evm_for_block(
-        &self,
-        db: State<StateProviderDatabase<EvmStateProviderBox>>,
-        header: &TempoHeader,
-    ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<EvmStateProviderBox>>>> {
-        (*self).evm_for_block(db, header)
+    fn chain_spec(&self) -> &TempoChainSpec {
+        (*self).chain_spec()
     }
 }
 
@@ -152,20 +145,29 @@ pub(crate) fn read_validator_config_with_state<C, T>(
 where
     C: Default,
 {
-    let db = State::builder()
-        .with_database(StateProviderDatabase::new(state))
-        .build();
-
-    let mut evm = node
-        .evm_for_block(db, header)
-        .wrap_err("failed instantiating evm for block")?;
-
-    let ctx = evm.ctx_mut();
+    let chain_spec = node.chain_spec();
+    let cfg = CfgEnv::new_with_spec(chain_spec.tempo_hardfork_at(header.timestamp()))
+        .with_chain_id(chain_spec.chain_id());
+    let block = TempoBlockEnv {
+        inner: BlockEnv {
+            number: U256::from(header.number()),
+            timestamp: U256::from(header.timestamp()),
+            ..Default::default()
+        },
+        timestamp_millis_part: header.timestamp_millis_part,
+        epoch_length: chain_spec.info.epoch_length().unwrap_or(NonZeroU64::MIN),
+        proposer_public_key: header.consensus_context.map(|ctx| ctx.proposer),
+    };
+    let mut journal = Journal::<_>::new(StateProviderDatabase::new(state));
+    journal.set_spec_id(cfg.spec.into());
+    // Install a storage context without creating an executor or invoking any
+    // EVM/precompile dispatch. Historical state remains readable even when the
+    // binary no longer executes the hardfork that produced it.
     let res = StorageCtx::enter_evm(
-        &mut ctx.journaled_state,
-        &ctx.block,
-        &ctx.cfg,
-        &ctx.tx,
+        &mut journal,
+        &block,
+        &cfg,
+        &TxEnv::default(),
         StorageActions::disabled(),
         || read_fn(&C::default()),
     )?;
@@ -238,5 +240,91 @@ impl std::fmt::Display for DecodedValidatorV2 {
             self.index,
             self.address
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy_consensus::{Header, Sealable as _};
+    use alloy_primitives::map::AddressMap;
+    use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
+    use tempo_chainspec::{
+        TempoHardfork, constants::moderato::MODERATO_T11_TIMESTAMP, spec::MODERATO,
+    };
+    use tempo_precompiles::storage::hashmap::HashMapStorageProvider;
+
+    use super::*;
+
+    struct HistoricalState {
+        header: TempoHeader,
+        provider: MockEthProvider,
+    }
+
+    impl ExecutionNode for HistoricalState {
+        fn header(&self, hash: B256) -> eyre::Result<TempoHeader> {
+            assert_eq!(hash, self.header.hash_slow());
+            Ok(self.header.clone())
+        }
+
+        fn state_by_block_hash(&self, hash: B256) -> eyre::Result<EvmStateProviderBox> {
+            assert_eq!(hash, self.header.hash_slow());
+            Ok(Box::new(self.provider.clone().into_evm_state_provider()))
+        }
+
+        fn chain_spec(&self) -> &TempoChainSpec {
+            &MODERATO
+        }
+    }
+
+    #[test]
+    fn reads_historical_validator_state_without_an_executor() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(42431, TempoHardfork::T10);
+        let owner = Address::repeat_byte(0xAA);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut config = ValidatorConfigV2::new();
+            config.initialize(owner)?;
+            config.set_network_identity_rotation_epoch(
+                owner,
+                IValidatorConfigV2::setNetworkIdentityRotationEpochCall { epoch: 42 },
+            )?;
+            Ok(())
+        })?;
+
+        let mut accounts = AddressMap::<Vec<_>>::default();
+        for (address, slot, value) in storage.into_storage() {
+            accounts
+                .entry(address)
+                .or_default()
+                .push((B256::from(slot), value));
+        }
+        let provider = MockEthProvider::new();
+        for (address, storage) in accounts {
+            provider.add_account(
+                address,
+                ExtendedAccount::new(0, U256::ZERO).extend_storage(storage),
+            );
+        }
+        let node = HistoricalState {
+            header: TempoHeader {
+                inner: Header {
+                    number: 123,
+                    timestamp: MODERATO_T11_TIMESTAMP - 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            provider,
+        };
+        let hash = node.header.hash_slow();
+        let (height, returned_hash, rotation_epoch) =
+            read_validator_config_at_block_hash(&node, hash, |config: &ValidatorConfigV2| {
+                let storage = StorageCtx::default();
+                assert_eq!(storage.spec(), TempoHardfork::T10);
+                assert_eq!(storage.chain_id(), 42431);
+                assert_eq!(storage.block_number(), 123);
+                Ok(config.get_next_network_identity_rotation_epoch()?)
+            })?;
+        assert_eq!((height, returned_hash, rotation_epoch), (123, hash, 42));
+        Ok(())
     }
 }

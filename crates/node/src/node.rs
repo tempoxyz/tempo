@@ -29,7 +29,7 @@ use reth_node_builder::{
     },
 };
 use reth_primitives_traits::SealedHeader;
-use reth_provider::providers::ProviderFactoryBuilder;
+use reth_provider::{ChainSpecProvider as _, providers::ProviderFactoryBuilder};
 use reth_rpc_builder::{Identity, RethRpcModule};
 use reth_rpc_eth_api::{
     RpcNodeCore,
@@ -436,6 +436,13 @@ where
                 )?;
                 modules.merge_if_module_configured(RethRpcModule::Admin, admin.into_rpc())?;
                 modules.merge_if_module_configured(RethRpcModule::Eth, eth_config.into_rpc())?;
+                let chain_spec = registry.eth_api().provider().chain_spec();
+                crate::rpc::execution_info::install_execution_info(
+                    modules,
+                    chain_spec.chain_id(),
+                    chain_spec.genesis_hash(),
+                    false,
+                )?;
 
                 Ok(())
             })

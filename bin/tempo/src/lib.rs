@@ -27,10 +27,12 @@ use opentelemetry_otlp as _;
 
 pub mod cli;
 mod defaults;
+mod eras;
 mod follow;
 mod overrides;
 pub mod p2p_proxy;
 pub mod regenesis;
+pub mod rpc_only;
 pub mod shadow_replay;
 mod snapshot_download;
 mod snapshot_manifest;
@@ -61,7 +63,9 @@ use futures::{
     future::{Either, FusedFuture as _},
 };
 use reth_cli_runner::CliRunner;
-use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
+use reth_ethereum::{
+    chainspec::EthChainSpec as _, cli::Commands, rpc::builder::config::RethRpcServerConfig as _,
+};
 use reth_network_api::Peers;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
 use std::{sync::Arc, thread};
@@ -465,6 +469,23 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         |spec: Arc<TempoChainSpec>| (TempoEvmConfig::new(spec.clone()), TempoConsensus::new(spec));
 
     cli.run_with_components::<TempoNode>(components, async move |builder, args| {
+        let catalog = eras::release_catalog()?;
+        let chain = &builder.config().chain;
+        let era_runtime = catalog
+            .for_chain(chain.chain_id(), chain.genesis_hash())
+            .filter(|schedule| schedule.eras.len() > 1 && eras::supports_release_catalog(chain))
+            .map(|schedule| {
+                let datadir = &builder.config().datadir;
+                eras::EraRuntime::new(
+                    schedule.clone(),
+                    chain,
+                    builder.config().datadir().data_dir().to_owned(),
+                    datadir.static_files_path.clone(),
+                    datadir.rocksdb_path.clone(),
+                    builder.config().rpc.eth_config(),
+                )
+            })
+            .transpose()?;
         if let Some(value) = args.consensus.message_backlog {
             warn!(
                 flag = "--consensus.message-backlog",
@@ -555,6 +576,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             }
         });
         let executed_state = tempo_node.executed_state();
+        let rpc_era_runtime = era_runtime.clone();
 
         let NodeHandle {
             node,
@@ -590,6 +612,18 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                         let consensus_rpc = TempoConsensusRpc::new(cl_feed_state);
                         ctx.modules.merge_configured(consensus_rpc.into_rpc())
                             .wrap_err("failed to register consensus rpc module")?;
+                    }
+
+                    let chain_spec = ctx.config().chain.clone();
+                    tempo_node::rpc::execution_info::install_execution_info(
+                        ctx.modules,
+                        chain_spec.chain_id(),
+                        chain_spec.genesis_hash(),
+                        false,
+                    )?;
+
+                    if let Some(runtime) = rpc_era_runtime {
+                        runtime.install(ctx.modules, ctx.registry.eth_api().clone())?;
                     }
 
                     Ok(())
@@ -671,6 +705,12 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             _ = tokio::signal::ctrl_c() => {
                 tracing::info!("received shutdown signal");
             }
+        }
+
+        if let Some(runtime) = era_runtime
+            && let Err(error) = runtime.shutdown().await
+        {
+            warn!(%error, "failed to reap historical RPC workers");
         }
 
         #[cfg(feature = "pyroscope")]

@@ -83,6 +83,9 @@ pub enum TempoSubcommand {
     /// Replay historical canonical blocks under candidate hardfork rules.
     ShadowReplay(Box<shadow_replay::ShadowReplay>),
 
+    /// Serve private RPC over an existing database without running a node.
+    RpcOnly(Box<crate::rpc_only::RpcOnly>),
+
     /// Install an extension (e.g., `tempo add wallet`).
     #[command(
         override_usage = "tempo add <EXT> [VERSION]",
@@ -132,6 +135,11 @@ impl ExtendedCommand for TempoSubcommand {
                 Ok(())
             }
             Self::ShadowReplay(cmd) => {
+                let runtime = runner.runtime();
+                runner.run_blocking_until_ctrl_c(cmd.execute(runtime))?;
+                Ok(())
+            }
+            Self::RpcOnly(cmd) => {
                 let runtime = runner.runtime();
                 runner.run_blocking_until_ctrl_c(cmd.execute(runtime))?;
                 Ok(())

@@ -55,6 +55,18 @@ pub trait TempoTransactionPoolExt: TransactionPool {
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>>;
 }
 
+impl TempoTransactionPoolExt
+    for reth_transaction_pool::noop::NoopTransactionPool<TempoPooledTransaction>
+{
+    fn get_pending_transactions_by_address_and_nonce_key(
+        &self,
+        _address: Address,
+        _nonce_key: U256,
+    ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
+        Vec::new()
+    }
+}
+
 /// Tempo transaction pool that routes based on nonce_key
 pub struct TempoTransactionPool<Client, EvmConfig = TempoEvmConfig> {
     /// Vanilla pool for all standard transactions and AA transactions with regular nonce.
