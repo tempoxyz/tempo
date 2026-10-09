@@ -257,15 +257,15 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
 #[derive(Clone)]
 struct Metrics {
     /// Number of finalized blocks whose proposer matches this node's public key.
-    finalized_blocks_proposed_by_self: commonware_runtime::telemetry::metrics::Registered<Counter>,
+    finalized_blocks_proposed_by_self: commonware_runtime::telemetry::metrics::Counter,
     /// Height distance from the locally canonicalized finalized tip up to
     /// the network's finalized tip: the undelivered finalized backlog.
-    finalization_lag: commonware_runtime::telemetry::metrics::Registered<Gauge>,
+    finalization_lag: commonware_runtime::telemetry::metrics::Gauge,
     /// Height distance from the execution layer's head to the pending head:
     /// the convergence backlog. Negative when consensus re-anchored below
     /// the head; holds its last value while the pending head's height is
     /// unknown (its body has not arrived yet).
-    convergence_depth: commonware_runtime::telemetry::metrics::Registered<Gauge>,
+    convergence_depth: commonware_runtime::telemetry::metrics::Gauge,
 }
 
 impl Metrics {
@@ -378,7 +378,7 @@ where
         };
         let finalized_round = if finalized.1 == finalized_tip.2 {
             finalized_tip.0
-        } else if finalized.0 == Height::zero() {
+        } else if finalized.0.is_zero() {
             Round::zero()
         } else {
             execution_node
@@ -720,7 +720,7 @@ where
         if !walk.awaits(digest) {
             return Ok(());
         }
-        if status == PayloadStatusEnum::Syncing && digest == self.pending_head.digest {
+        if status.is_syncing() && digest == self.pending_head.digest {
             self.pending_head.executed = None;
         }
         let (_, finalized_height, finalized_digest) = self.network_finalized_tip;
@@ -2365,7 +2365,7 @@ async fn execute_build(
         Ok(status) => status,
         Err(error) => return BuildOutcome::ParentDeliveryFailed(error),
     };
-    if status != PayloadStatusEnum::Valid {
+    if !status.is_valid() {
         warn!(%status, "build parent was not VALID");
         return BuildOutcome::Aborted {
             delivery_attempted: true,
@@ -2474,12 +2474,9 @@ async fn deliver_block(
     execution_node: &impl ExecutionLayer,
     block: Arc<Block>,
 ) -> eyre::Result<PayloadStatusEnum> {
-    let (block, block_access_list) = Arc::unwrap_or_clone(block).into_parts();
+    let block = Arc::unwrap_or_clone(block).into_execution_block();
     let payload_status = execution_node
-        .new_payload(TempoExecutionData {
-            block,
-            block_access_list,
-        })
+        .new_payload(TempoExecutionData { block })
         .await
         .wrap_err("failed sending new-payload request to execution layer")?;
     if payload_status.is_valid() {
@@ -2588,11 +2585,9 @@ async fn run_payload_job(
             }
             // The application received the block and may propose it; hand
             // the body to the actor loop for a later build on this proposal.
-            let (execution_block, block_access_list, _) =
-                retained.into_consensus_execution_payload();
+            let (execution_block, _) = retained.into_consensus_execution_payload();
             Some(Arc::new(Block::from_execution_block_unchecked(
                 execution_block,
-                block_access_list,
             )))
         }
         Some(Err(error)) => {

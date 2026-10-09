@@ -745,7 +745,7 @@ async fn test_tip20_name_state_override_no_oom() -> eyre::Result<()> {
     let tx = TransactionRequest::default()
         .to(PATH_USD_ADDRESS)
         .input(TransactionInput::new(ITIP20::nameCall::SELECTOR.into()));
-    let name_slot = B256::from(U256::from(2)); // slot 2 in TIP20Token layout
+    let name_slot = B256::with_last_byte(2); // slot 2 in TIP20Token layout
 
     // -- overflow: decoded len > u32::MAX → Panic(UnderOverflow) revert --
     // 0x0008000000000001 → LSB=1 (long string), decoded len = 0x0004000000000000

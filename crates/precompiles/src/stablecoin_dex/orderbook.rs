@@ -434,7 +434,7 @@ impl Orderbook {
 
     /// Returns true if this orderbook is initialized
     pub fn is_initialized(&self) -> bool {
-        self.base != Address::ZERO
+        !self.base.is_zero()
     }
 
     /// Returns true if the base and quote tokens match the provided base and quote token options.
@@ -505,7 +505,7 @@ impl OrderbookHandler {
 
         // Use bitwise AND to get lower 8 bits correctly for both positive and negative ticks
         let bit_index = (tick & 0xFF) as usize;
-        let mask = U256::from(1u8) << bit_index;
+        let mask = U256::ONE << bit_index;
 
         // Set the bit
         bitmap.write(current_word | mask)
@@ -528,7 +528,7 @@ impl OrderbookHandler {
 
         // Use bitwise AND to get lower 8 bits correctly for both positive and negative ticks
         let bit_index = (tick & 0xFF) as usize;
-        let mask = !(U256::from(1u8) << bit_index);
+        let mask = !(U256::ONE << bit_index);
 
         // Set the bit
         bitmap.write(current_word & mask)
@@ -551,9 +551,9 @@ impl OrderbookHandler {
 
         // Use bitwise AND to get lower 8 bits correctly for both positive and negative ticks
         let bit_index = (tick & 0xFF) as usize;
-        let mask = U256::from(1u8) << bit_index;
+        let mask = U256::ONE << bit_index;
 
-        Ok((word & mask) != U256::ZERO)
+        Ok(!(word & mask).is_zero())
     }
 
     /// Finds the next initialized tick with liquidity. Searches downward for bids, upward for asks.
@@ -596,7 +596,7 @@ impl OrderbookHandler {
             };
             let masked_word = word & mask;
 
-            if masked_word != U256::ZERO {
+            if !masked_word.is_zero() {
                 // Find the lowest set bit position using trailing_zeros
                 let lowest_bit = masked_word.trailing_zeros();
                 let found_tick = (word_index << 8) | (lowest_bit as i16);
@@ -646,7 +646,7 @@ impl OrderbookHandler {
             };
             let masked_word = word & mask;
 
-            if masked_word != U256::ZERO {
+            if !masked_word.is_zero() {
                 // Find the highest set bit position using leading_zeros
                 // U256 is 256 bits, so highest bit index = 255 - leading_zeros
                 let leading = masked_word.leading_zeros();
@@ -718,6 +718,7 @@ pub fn validate_tick_spacing(tick: i16) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::{
         error::TempoPrecompileError,
@@ -725,8 +726,6 @@ mod tests {
     };
     use rand_08::Rng;
     use tempo_chainspec::hardfork::TempoHardfork;
-
-    use alloy::primitives::address;
 
     #[test]
     fn test_walk_settles_before_accumulation_overflow() {
@@ -828,8 +827,8 @@ mod tests {
 
     #[test]
     fn test_orderbook_creation() {
-        let base = address!("0x1111111111111111111111111111111111111111");
-        let quote = address!("0x2222222222222222222222222222222222222222");
+        let base = Address::repeat_byte(0x11);
+        let quote = Address::repeat_byte(0x22);
         let book = Orderbook::new(base, quote);
 
         assert_eq!(book.base, base);
@@ -930,8 +929,8 @@ mod tests {
 
     #[test]
     fn test_compute_book_key() {
-        let base = address!("0x1111111111111111111111111111111111111111");
-        let quote = address!("0x2222222222222222222222222222222222222222");
+        let base = Address::repeat_byte(0x11);
+        let quote = Address::repeat_byte(0x22);
 
         let key_bq = compute_book_key(base, quote);
         let key_qb = compute_book_key(quote, base);

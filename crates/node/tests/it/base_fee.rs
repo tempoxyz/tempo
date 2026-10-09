@@ -27,11 +27,11 @@ async fn test_base_fee() -> eyre::Result<()> {
     let wallet = test_signer(0);
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
-    // Get initial block to check base fee
+    // Check the genesis fee: dev mining may already have advanced the latest block.
     let block = provider
-        .get_block_by_number(BlockNumberOrTag::Latest)
+        .get_block_by_number(BlockNumberOrTag::Number(0))
         .await?
-        .expect("Could not get latest block");
+        .expect("Could not get genesis block");
 
     let base_fee = block
         .header
@@ -206,8 +206,8 @@ async fn test_t7_floor_base_fee_transaction_succeeds_after_low_activity() -> eyr
 async fn test_t7_floor_transaction_queued_through_base_fee_spike() -> eyre::Result<()> {
     use alloy::{consensus::BlockHeader, primitives::address, signers::SignerSync};
     use alloy_eips::eip2718::Encodable2718;
-    use alloy_rpc_types_eth::TransactionRequest;
     use reth_e2e_test_utils::wallet::Wallet;
+    use reth_node_api::BuiltPayload;
     use tempo_chainspec::constants::gas::TEMPO_T7_BASE_FEE_GAS_TARGET;
     use tempo_primitives::{
         TempoTxEnvelope,
@@ -230,44 +230,30 @@ async fn test_t7_floor_transaction_queued_through_base_fee_spike() -> eyre::Resu
     let chain_id = provider.get_chain_id().await?;
     let mut account = Wallet::default().with_chain_id(chain_id).account(0);
 
-    let burn_tx = TransactionRequest::default()
+    let raw = account
+        .tx()
         .to(burner)
         .gas_limit(25_000_000)
-        .max_fee_per_gas(u128::from(TEMPO_T1_BASE_FEE))
-        .max_priority_fee_per_gas(0);
-    let raw = account.sign_tx_bytes(burn_tx).await;
-    let burn_hash = *provider.send_raw_transaction(&raw).await?.tx_hash();
-    setup.node.advance_block().await?;
-    let receipt = provider
-        .get_transaction_receipt(burn_hash)
-        .await?
-        .expect("burner mined");
-    assert!(!receipt.status());
-    let busy = provider
-        .get_block_by_number(BlockNumberOrTag::Latest)
-        .await?
-        .unwrap();
-    assert!(busy.header.gas_used() > TEMPO_T7_BASE_FEE_GAS_TARGET);
-    assert_eq!(
-        busy.header.base_fee_per_gas(),
-        Some(TEMPO_T7_BASE_FEE_FLOOR)
-    );
+        .fees(u128::from(TEMPO_T1_BASE_FEE), 0)
+        .await;
+    let burn = setup.node.mine([raw]).await?;
+    assert!(!burn.receipts[0].status());
+    let busy = burn.block().header();
+    assert!(busy.gas_used() > TEMPO_T7_BASE_FEE_GAS_TARGET);
+    assert_eq!(busy.base_fee_per_gas(), Some(TEMPO_T7_BASE_FEE_FLOOR));
 
     // The busy parent raises this block's fee. Submit only once that elevated fee is the tip.
-    setup.node.advance_block().await?;
-    let elevated = provider
-        .get_block_by_number(BlockNumberOrTag::Latest)
-        .await?
-        .unwrap();
-    assert!(elevated.header.base_fee_per_gas().unwrap() > TEMPO_T7_BASE_FEE_FLOOR);
-    assert_eq!(elevated.header.gas_used(), 0);
+    let elevated = setup.node.advance_block().await?;
+    let elevated = elevated.block().header();
+    assert!(elevated.base_fee_per_gas().unwrap() > TEMPO_T7_BASE_FEE_FLOOR);
+    assert_eq!(elevated.gas_used(), 0);
 
-    let floor_tx = TransactionRequest::default()
+    let raw = account
+        .tx()
         .to(Address::ZERO)
         .gas_limit(100_000)
-        .max_fee_per_gas(u128::from(TEMPO_T7_BASE_FEE_FLOOR))
-        .max_priority_fee_per_gas(0);
-    let raw = account.sign_tx_bytes(floor_tx).await;
+        .fees(u128::from(TEMPO_T7_BASE_FEE_FLOOR), 0)
+        .await;
     let floor_hash = *provider.send_raw_transaction(&raw).await?.tx_hash();
     // Exercise the separate AA 2D-nonce pool alongside the protocol-nonce pool.
     let aa_tx = TempoTransaction {
@@ -289,23 +275,20 @@ async fn test_t7_floor_transaction_queued_through_base_fee_spike() -> eyre::Resu
         .send_raw_transaction(&aa_tx.encoded_2718())
         .await?
         .tx_hash();
-    let mut parent_fee = elevated.header.base_fee_per_gas().unwrap();
-    let mut parent_gas = elevated.header.gas_used();
+    let mut parent_fee = elevated.base_fee_per_gas().unwrap();
+    let mut parent_gas = elevated.gas_used();
     for _ in 0..32 {
         let expected_fee = tempo_t7_next_block_base_fee(parent_fee, parent_gas);
-        setup.node.advance_block().await?;
-        let block = provider
-            .get_block_by_number(BlockNumberOrTag::Latest)
-            .await?
-            .unwrap();
-        assert_eq!(block.header.base_fee_per_gas(), Some(expected_fee));
+        let payload = setup.node.advance_block().await?;
+        let block = payload.block().header();
+        assert_eq!(block.base_fee_per_gas(), Some(expected_fee));
         for hash in [floor_hash, aa_hash] {
             let receipt = provider.get_transaction_receipt(hash).await?;
             if expected_fee == TEMPO_T7_BASE_FEE_FLOOR {
                 let receipt = receipt
                     .expect("queued transaction must be included in the first floor-priced block");
                 assert!(receipt.status());
-                assert_eq!(receipt.block_number, Some(block.header.number()));
+                assert_eq!(receipt.block_number, Some(block.number()));
                 assert_eq!(
                     receipt.effective_gas_price(),
                     u128::from(TEMPO_T7_BASE_FEE_FLOOR)
@@ -321,12 +304,12 @@ async fn test_t7_floor_transaction_queued_through_base_fee_spike() -> eyre::Resu
             return Ok(());
         }
         assert_eq!(
-            block.header.gas_used(),
+            block.gas_used(),
             0,
             "mine empty blocks while the transaction waits"
         );
         parent_fee = expected_fee;
-        parent_gas = block.header.gas_used();
+        parent_gas = block.gas_used();
     }
     panic!("base fee did not decay to the floor");
 }

@@ -1,6 +1,6 @@
 //! State bloat generation tool for generating large TIP20 storage state files.
 //!
-//! Generates a binary file containing TIP20 storage slots (total_supply + balances)
+//! Generates a binary file containing TIP20 storage slots and a filled expiring nonce ring
 //! that can be loaded during genesis initialization to create a bloated state.
 //!
 //! Uses chunked streaming to keep memory bounded regardless of target file size.
@@ -23,7 +23,10 @@ use std::{
     path::PathBuf,
     sync::Arc,
 };
-use tempo_precompiles::{storage::StorageKey, tip20::tip20_slots};
+use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_precompiles::{
+    NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager, storage::StorageKey, tip20::tip20_slots,
+};
 use tempo_primitives::transaction::TIP20_PAYMENT_PREFIX;
 
 /// Magic bytes for the state bloat binary format (8 bytes)
@@ -50,9 +53,13 @@ pub struct GenerateStateBloat {
     #[arg(long, value_name = "PATH", conflicts_with = "mnemonic")]
     mnemonic_file: Option<PathBuf>,
 
-    /// Target file size in MiB
+    /// Target TIP20 storage size in MiB (the filled nonce ring is additional)
     #[arg(short, long, default_value = "1024")]
     size: u64,
+
+    /// Hardfork determining nonce ring capacity (defaults to the latest known fork).
+    #[arg(long, default_value_t = *TempoHardfork::VARIANTS.last().unwrap())]
+    nonce_ring_hardfork: TempoHardfork,
 
     /// Token IDs to generate storage for (can be specified multiple times)
     /// Uses reserved TIP20 addresses: 0x20C0...{token_id}
@@ -84,6 +91,7 @@ impl GenerateStateBloat {
             mnemonic,
             mnemonic_file,
             size,
+            nonce_ring_hardfork,
             token: tokens,
             out,
             balance,
@@ -143,7 +151,12 @@ impl GenerateStateBloat {
         println!("  Target size: {size} MiB");
         println!("  Tokens: {num_tokens}");
         println!("  Accounts per token: {accounts_per_token}");
-        println!("  Estimated file size: {estimated_size_mib:.2} MiB");
+        println!("  Estimated TIP20 size: {estimated_size_mib:.2} MiB");
+        let capacity = nonce_ring_hardfork.expiring_nonce_set_capacity();
+        println!(
+            "  Nonce ring: {capacity} entries ({nonce_ring_hardfork}), {:.2} MiB additional",
+            f64::from(capacity) * 128.0 / (1024.0 * 1024.0)
+        );
         println!("  Chunk size: {chunk_size} entries ({num_chunks} chunks)");
         println!("  Output: {out_display}");
 
@@ -236,8 +249,9 @@ impl GenerateStateBloat {
             is_first_chunk = false;
         }
 
-        writer.flush()?;
         pb.finish_with_message("done");
+        write_nonce_ring(&mut writer, 0..capacity)?;
+        writer.flush()?;
 
         let file_size = std::fs::metadata(&out)?.len();
         println!(
@@ -248,6 +262,31 @@ impl GenerateStateBloat {
 
         Ok(())
     }
+}
+
+/// Populate both mappings so the first transaction evicts an existing, expired nonce.
+fn write_nonce_ring(writer: &mut impl Write, indices: std::ops::Range<u32>) -> eyre::Result<()> {
+    let manager = NonceManager::new();
+    write_header(
+        writer,
+        NONCE_PRECOMPILE_ADDRESS,
+        u64::from(indices.end - indices.start) * 2,
+    )?;
+    let mut input = *b"tempo-state-bloat-nonce\0\0\0\0";
+    let index_start = input.len() - size_of::<u32>();
+    for index in indices {
+        input[index_start..].copy_from_slice(&index.to_be_bytes());
+        let hash = keccak256(input);
+        // Compute keys without caching millions of mapping handlers.
+        let ring_slot = index.mapping_slot(manager.expiring_nonce_ring.slot());
+        let seen_slot = hash.mapping_slot(manager.expiring_nonce_seen.slot());
+        writer.write_all(&ring_slot.to_be_bytes::<32>())?;
+        writer.write_all(hash.as_slice())?;
+        writer.write_all(&seen_slot.to_be_bytes::<32>())?;
+        writer.write_all(&U256::ONE.to_be_bytes::<32>())?;
+    }
+    // The default zero pointer is the next position after filling the whole ring.
+    Ok(())
 }
 
 /// Compute a reserved TIP20 token address from a token ID.
@@ -268,7 +307,7 @@ fn derive_address_fast(seed: &[u8; 32], index: u64) -> Address {
     buf[32..].copy_from_slice(&index.to_be_bytes());
     let hash = keccak256(buf);
     // Take last 20 bytes of hash as address
-    Address::from_slice(&hash[12..])
+    Address::from_word(hash)
 }
 
 /// Derive the parent key for BIP44 Ethereum path: m/44'/60'/0'/0
@@ -299,25 +338,89 @@ fn write_header(writer: &mut impl Write, address: Address, pair_count: u64) -> e
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy::primitives::{B256, address};
     use clap::Parser;
+    use std::io::{BufReader, Seek};
+    use tempo_precompiles::storage::{
+        Handler, PrecompileStorageProvider, StorageCtx, hashmap::HashMapStorageProvider,
+    };
+
+    #[test]
+    fn filled_nonce_ring_evicts_and_wraps() -> eyre::Result<()> {
+        for hardfork in [TempoHardfork::T10, TempoHardfork::T11] {
+            let capacity = hardfork.expiring_nonce_set_capacity();
+            let mut file = tempfile::tempfile()?;
+            {
+                let mut writer = BufWriter::new(&mut file);
+                // Exercise real fork boundaries without writing millions of entries per test.
+                write_nonce_ring(&mut writer, 0..1)?;
+                write_nonce_ring(&mut writer, capacity - 1..capacity)?;
+                writer.flush()?;
+            }
+            assert_eq!(file.metadata()?.len(), 2 * (40 + 128));
+            file.rewind()?;
+
+            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
+            storage.set_timestamp(U256::from(1000));
+            let mut entry = 0u32;
+            let mut old_hash = B256::ZERO;
+            let manager = NonceManager::new();
+            let count = crate::read_dump(BufReader::new(file), |address, slot, value| {
+                assert_eq!(address, NONCE_PRECOMPILE_ADDRESS);
+                let index = if entry < 2 { 0 } else { capacity - 1 };
+                if entry.is_multiple_of(2) {
+                    assert_eq!(
+                        U256::from_be_bytes(slot.0),
+                        index.mapping_slot(manager.expiring_nonce_ring.slot())
+                    );
+                    assert!(!value.is_zero());
+                    old_hash = B256::from(value);
+                } else {
+                    assert_eq!(
+                        U256::from_be_bytes(slot.0),
+                        old_hash.mapping_slot(manager.expiring_nonce_seen.slot())
+                    );
+                    assert_eq!(value, U256::ONE);
+                }
+                storage.sstore(address, U256::from_be_bytes(slot.0), value)?;
+                entry += 1;
+                Ok(())
+            })?;
+            assert_eq!(count, 4);
+
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let mut manager = NonceManager::new();
+                assert_eq!(manager.expiring_nonce_ring_ptr.read()?, 0);
+                for index in [0, capacity - 1] {
+                    if index != 0 {
+                        manager.expiring_nonce_ring_ptr.write(index)?;
+                    }
+                    let old_hash = manager.expiring_nonce_ring[index].read()?;
+                    assert!(!old_hash.is_zero());
+                    assert_eq!(manager.expiring_nonce_seen[old_hash].read()?, 1);
+                    let hash = keccak256(index.to_be_bytes());
+                    manager.check_and_mark_expiring_nonce(hash, 1020)?;
+                    assert_eq!(manager.expiring_nonce_seen[old_hash].read()?, 0);
+                    assert_eq!(manager.expiring_nonce_ring[index].read()?, hash);
+                    assert_eq!(manager.expiring_nonce_seen[hash].read()?, 1020);
+                    assert_eq!(
+                        manager.expiring_nonce_ring_ptr.read()?,
+                        (index + 1) % capacity
+                    );
+                }
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
 
     #[test]
     fn test_token_address() {
         let addr = token_address(0);
-        assert_eq!(
-            addr,
-            "0x20C0000000000000000000000000000000000000"
-                .parse::<Address>()
-                .unwrap()
-        );
+        assert_eq!(addr, address!("0x20C0000000000000000000000000000000000000"));
 
         let addr = token_address(1);
-        assert_eq!(
-            addr,
-            "0x20C0000000000000000000000000000000000001"
-                .parse::<Address>()
-                .unwrap()
-        );
+        assert_eq!(addr, address!("0x20C0000000000000000000000000000000000001"));
     }
 
     #[test]
@@ -350,7 +453,7 @@ mod tests {
     #[test]
     fn test_entry_size() {
         let slot = U256::ZERO.to_be_bytes::<32>();
-        let value = U256::from(1).to_be_bytes::<32>();
+        let value = B256::with_last_byte(1);
         assert_eq!(slot.len() + value.len(), 64);
     }
 
@@ -373,6 +476,8 @@ mod tests {
             "1",
             "--signable-count",
             "1",
+            "--nonce-ring-hardfork",
+            "T10",
             "--out",
             output.to_str().unwrap(),
         ];
@@ -382,6 +487,14 @@ mod tests {
             .await
             .unwrap();
         let expected = std::fs::read(&output).unwrap();
+        let mut nonce_entries = 0;
+        let entries = crate::read_dump(expected.as_slice(), |address, _, _| {
+            nonce_entries += u64::from(address == NONCE_PRECOMPILE_ADDRESS);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(nonce_entries, 600_000);
+        assert_eq!(entries - nonce_entries, 16_383); // 1 MiB of TIP20 state is preserved.
         let file_args = || {
             GeneratorCli::parse_from(
                 args.into_iter()

@@ -104,7 +104,7 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         StorageCtx::enter(&mut storage, || {
             let signer = PrivateKeySigner::random();
-            let hash = B256::from([0xAA; 32]);
+            let hash = B256::repeat_byte(0xAA);
             let sig = signer.sign_hash_sync(&hash)?;
             let sig_bytes = sig.as_bytes().to_vec();
             assert_eq!(sig_bytes.len(), 65);
@@ -131,7 +131,7 @@ mod tests {
                 B256::from_slice(encoded.y().ok_or_else(|| eyre::eyre!("missing y coord"))?);
             let expected_address = derive_p256_address(&pub_key_x, &pub_key_y);
 
-            let hash = B256::from([0xBB; 32]);
+            let hash = B256::repeat_byte(0xBB);
             let (signature, _) = signing_key.sign_prehash_recoverable(hash.as_slice())?;
             let r = B256::from_slice(&signature.r().to_bytes());
             let s =

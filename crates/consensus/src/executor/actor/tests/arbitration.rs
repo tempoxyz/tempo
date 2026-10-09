@@ -48,7 +48,7 @@ fn queued_verification_runs_after_a_newer_build() {
             .expect("active validation should still be gated");
         assert!(active.await.unwrap().is_some());
         let payload = build.await.expect("the build should complete");
-        let (block, _) = payload.into_execution_payload();
+        let block = payload.into_execution_payload();
         assert_eq!(Digest(block.hash()), proposal_digest);
         assert!(queued.await.unwrap().is_some());
         assert_eq!(
@@ -96,7 +96,7 @@ fn a_newer_verification_leaves_a_queued_build_alone() {
             .await
             .expect("the finalized parent should be acknowledged");
         let payload = build.await.expect("the queued build should complete");
-        let (block, _) = payload.into_execution_payload();
+        let block = payload.into_execution_payload();
         assert_eq!(Digest(block.hash()), proposal.digest());
         assert!(verify.await.unwrap().is_some());
         assert_eq!(
@@ -191,7 +191,7 @@ fn same_round_verification_waits_for_an_active_build() {
         h.deliver_finalized(b1)
             .await
             .expect("the deferred parent should be acknowledged");
-        let (block, _) = payload.into_execution_payload();
+        let block = payload.into_execution_payload();
         assert_eq!(Digest(block.hash()), proposal.digest());
         assert!(
             h.execution

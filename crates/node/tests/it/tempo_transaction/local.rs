@@ -14,12 +14,13 @@ use alloy::{
     sol_types::SolCall,
 };
 use alloy_eips::Encodable2718;
+use eyre::WrapErr;
 use reth_e2e_test_utils::wallet::test_signer;
 use reth_ethereum::network::{NetworkSyncUpdater, SyncState};
 use reth_node_api::BuiltPayload;
 use reth_primitives_traits::transaction::TxHashRef;
 use reth_transaction_pool::TransactionPool;
-use tempo_alloy::{TempoNetwork, provider::TempoProviderBuilderExt};
+use tempo_alloy::{TempoNetwork, provider::TempoProviderBuilderExt, rpc::TempoTransactionReceipt};
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{
     DEFAULT_FEE_TOKEN,
@@ -39,14 +40,13 @@ use tempo_primitives::{
         KeyAuthorization, SignedKeyAuthorization,
         tempo_transaction::Call,
         tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature, WebAuthnSignature},
-        tt_signed::AASigned,
     },
 };
 
 use super::helpers::*;
 
 fn test_secp256k1_access_key_signature() -> TempoSignature {
-    TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()))
+    Signature::test_signature().into()
 }
 
 fn create_admin_key_authorization(
@@ -84,7 +84,7 @@ pub(crate) struct Localnet {
     pub setup: SingleNodeSetup,
     pub provider: alloy::providers::RootProvider,
     pub chain_id: u64,
-    pub funder_signer: alloy::signers::local::LocalSigner<alloy::signers::k256::ecdsa::SigningKey>,
+    pub funder_signer: PrivateKeySigner,
     pub funder_addr: Address,
 }
 
@@ -110,6 +110,27 @@ impl Localnet {
             funder_signer,
             funder_addr,
         })
+    }
+
+    /// Mines the encoded transaction alone in the next block and returns its receipt.
+    async fn mine_tx(
+        &mut self,
+        encoded: Vec<u8>,
+        tx_hash: B256,
+    ) -> eyre::Result<TempoTransactionReceipt> {
+        let receipt = self
+            .setup
+            .node
+            .mine([encoded.into()])
+            .await?
+            .receipts
+            .remove(0);
+        eyre::ensure!(
+            receipt.transaction_hash == tx_hash,
+            "mined transaction {} instead of {tx_hash}",
+            receipt.transaction_hash
+        );
+        Ok(receipt)
     }
 }
 
@@ -174,19 +195,9 @@ impl super::types::TestEnv for Localnet {
         encoded: Vec<u8>,
         tx_hash: B256,
     ) -> eyre::Result<serde_json::Value> {
-        self.setup.node.inject_and_advance(encoded.into()).await?;
-
-        let raw: Option<serde_json::Value> = self
-            .provider
-            .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
-            .await?;
-        let receipt =
-            raw.ok_or_else(|| eyre::eyre!("Transaction receipt not found for {tx_hash}"))?;
-        let status = receipt["status"]
-            .as_str()
-            .ok_or_else(|| eyre::eyre!("Receipt missing status field"))?;
-        assert_eq!(status, "0x1", "Receipt status mismatch for {tx_hash}");
-        Ok(receipt)
+        let receipt = self.mine_tx(encoded, tx_hash).await?;
+        assert!(receipt.status(), "Receipt status mismatch for {tx_hash}");
+        Ok(serde_json::to_value(receipt)?)
     }
 
     async fn bump_protocol_nonce(
@@ -212,17 +223,9 @@ impl super::types::TestEnv for Localnet {
 
             let signature = sign_aa_tx_secp256k1(&tx, signer)?;
             let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
-            let (tx_hash, _) = self
-                .setup
-                .node
-                .inject_and_advance(envelope.encoded_2718().into())
-                .await?;
-            wait_until_pool_not_contains(
-                &self.setup.node.inner.pool,
-                &tx_hash,
-                "bump_protocol_nonce",
-            )
-            .await?;
+            let tx_hash = *envelope.tx_hash();
+            self.mine_tx(envelope.encoded_2718(), tx_hash).await?;
+            self.setup.node.wait_for_pool_removal([tx_hash]).await?;
         }
 
         let final_nonce = self.provider.get_transaction_count(signer_addr).await?;
@@ -249,11 +252,7 @@ impl super::types::TestEnv for Localnet {
         encoded: Vec<u8>,
         tx_hash: B256,
     ) -> eyre::Result<serde_json::Value> {
-        self.setup.node.rpc.inject_tx(encoded.into()).await?;
-
-        // The tx may not be pending in the first block if pool maintenance hasn't processed the
-        // previous block yet.
-        let receipt = self.setup.node.advance_until_receipt(tx_hash).await?;
+        let receipt = self.mine_tx(encoded, tx_hash).await?;
         Ok(serde_json::to_value(receipt)?)
     }
 
@@ -350,23 +349,14 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
         );
     }
 
-    // Mine block
-    let payload1 = setup.node.advance_block().await?;
-    let block1_txs = &payload1.block().body().transactions;
+    // Mine block, which fails unless it includes all submitted transactions
+    let mined1 = setup.node.mine_pooled(sent.iter().copied()).await?;
 
     println!(
         "\n  Block {} mined with {} transactions",
-        payload1.block().inner.number,
-        block1_txs.len()
+        mined1.block().inner.number,
+        mined1.block().body().transactions.len()
     );
-
-    // Verify all submitted transactions were included in the block
-    for tx_hash in &sent {
-        assert!(
-            block1_txs.iter().any(|tx| tx.tx_hash() == tx_hash),
-            "Submitted tx {tx_hash} should be in the block"
-        );
-    }
 
     // Verify protocol nonce incremented
     let protocol_nonce_after = provider.get_transaction_count(alice_addr).await?;
@@ -377,9 +367,11 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
     );
     println!("  ✓ Protocol nonce: {initial_nonce} → {protocol_nonce_after}",);
 
-    for tx_hash in &sent {
-        wait_until_pool_not_contains(&setup.node.inner.pool, tx_hash, "scenario 1").await?;
-    }
+    setup
+        .node
+        .wait_for_pool_removal(sent.iter().copied())
+        .await
+        .wrap_err("scenario 1 transactions did not leave the pool")?;
     println!("  ✓ All 3 transactions from different pools included in block");
 
     // ===========================================================================
@@ -438,13 +430,13 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
         );
     }
 
-    // Mine block
-    let payload2 = setup.node.advance_block().await?;
-    let block2_txs = &payload2.block().body().transactions;
+    // Mine block, which fails unless it includes all submitted transactions
+    let mined2 = setup.node.mine_pooled(sent.iter().copied()).await?;
+    let block2_txs = &mined2.block().body().transactions;
 
     println!(
         "\n  Block {} mined with {} transactions",
-        payload2.block().inner.number,
+        mined2.block().inner.number,
         block2_txs.len()
     );
 
@@ -453,14 +445,6 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
         initial_nonce + 2,
         "Protocol nonce should have incremented twice"
     );
-
-    // Verify all submitted transactions were included in the block
-    for tx_hash in &sent {
-        assert!(
-            block2_txs.iter().any(|tx| tx.tx_hash() == tx_hash),
-            "Submitted tx {tx_hash} should be in the block"
-        );
-    }
 
     // Extract priority fees in block order, filtered to only our submitted txs
     let priority_fees: Vec<u128> = block2_txs
@@ -488,9 +472,11 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
     );
     println!("  ✓ All transactions included and ordered by descending priority fee");
 
-    for tx_hash in &sent {
-        wait_until_pool_not_contains(&setup.node.inner.pool, tx_hash, "scenario 2").await?;
-    }
+    setup
+        .node
+        .wait_for_pool_removal(sent.iter().copied())
+        .await
+        .wrap_err("scenario 2 transactions did not leave the pool")?;
 
     // ===========================================================================
     // Scenario 3: Nonce Gap Handling
@@ -643,14 +629,11 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
     );
     println!("  ✓ Both nonce=1 and nonce=2 included");
 
-    wait_until_pool_not_contains(&setup.node.inner.pool, &pending, "scenario 3 pending").await?;
-    wait_until_pool_not_contains(&setup.node.inner.pool, &queued, "scenario 3 queued").await?;
-    wait_until_pool_not_contains(
-        &setup.node.inner.pool,
-        &new_pending,
-        "scenario 3 new_pending",
-    )
-    .await?;
+    setup
+        .node
+        .wait_for_pool_removal([pending, queued, new_pending])
+        .await
+        .wrap_err("scenario 3 transactions did not leave the pool")?;
 
     Ok(())
 }
@@ -971,7 +954,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     println!("✓ Signature recovery correctly failed with wrong public key");
 
     // Also verify pool rejects the transaction
-    let signed_tx1 = AASigned::new_unhashed(tx1, aa_signature1);
+    let signed_tx1 = tx1.into_signed(aa_signature1);
     let envelope1: TempoTxEnvelope = signed_tx1.into();
     let mut encoded1 = Vec::new();
     envelope1.encode_2718(&mut encoded1);
@@ -1033,7 +1016,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     );
     println!("✓ Signature recovery correctly failed with wrong private key");
 
-    let signed_tx2 = AASigned::new_unhashed(tx2, aa_signature2);
+    let signed_tx2 = tx2.into_signed(aa_signature2);
     let envelope2: TempoTxEnvelope = signed_tx2.into();
     let mut encoded2 = Vec::new();
     envelope2.encode_2718(&mut encoded2);
@@ -1056,7 +1039,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     let mut authenticator_data3 = vec![0u8; 37];
     authenticator_data3[32] = 0x01; // UP flag set
 
-    let wrong_challenge = B256::from([0xFF; 32]); // Different hash
+    let wrong_challenge = B256::repeat_byte(0xFF); // Different hash
     let wrong_challenge_b64url = URL_SAFE_NO_PAD.encode(wrong_challenge.as_slice());
     let client_data_json3 = format!(
         r#"{{"type":"webauthn.get","challenge":"{wrong_challenge_b64url}","origin":"https://example.com","crossOrigin":false}}"#
@@ -1095,7 +1078,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     );
     println!("✓ Signature recovery correctly failed with wrong challenge");
 
-    let signed_tx3 = AASigned::new_unhashed(tx3, aa_signature3);
+    let signed_tx3 = tx3.into_signed(aa_signature3);
     let envelope3: TempoTxEnvelope = signed_tx3.into();
     let mut encoded3 = Vec::new();
     envelope3.encode_2718(&mut encoded3);
@@ -1156,7 +1139,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     );
     println!("✓ Signature recovery correctly failed with wrong authenticator data");
 
-    let signed_tx4 = AASigned::new_unhashed(tx4, aa_signature4);
+    let signed_tx4 = tx4.into_signed(aa_signature4);
     let envelope4: TempoTxEnvelope = signed_tx4.into();
     let mut encoded4 = Vec::new();
     envelope4.encode_2718(&mut encoded4);
@@ -1180,7 +1163,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     let mut bad_auth_data = vec![0u8; 37];
     bad_auth_data[32] = 0x01;
 
-    let wrong_challenge = B256::from([0xAA; 32]);
+    let wrong_challenge = B256::repeat_byte(0xAA);
     let wrong_challenge_b64 = URL_SAFE_NO_PAD.encode(wrong_challenge.as_slice());
     let bad_client_data = format!(
         r#"{{"type":"webauthn.get","challenge":"{wrong_challenge_b64}","origin":"https://example.com","crossOrigin":false}}"#
@@ -1210,7 +1193,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
             pub_key_y: correct_pub_key_y,
         }));
 
-    let signed_bad_tx = AASigned::new_unhashed(bad_tx, bad_tempo_signature);
+    let signed_bad_tx = bad_tx.into_signed(bad_tempo_signature);
     let bad_envelope: TempoTxEnvelope = signed_bad_tx.into();
     let mut encoded_bad = Vec::new();
     bad_envelope.encode_2718(&mut encoded_bad);
@@ -1272,10 +1255,7 @@ async fn test_propagate_2d_transactions() -> eyre::Result<()> {
 
     let sig_hash = tx.signature_hash();
     let signature = wallet.sign_hash_sync(&sig_hash)?;
-    let signed_tx = AASigned::new_unhashed(
-        tx,
-        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
-    );
+    let signed_tx = tx.into_signed(signature.into());
     let envelope: TempoTxEnvelope = signed_tx.into();
     let encoded = envelope.encoded_2718();
 
@@ -1439,7 +1419,7 @@ async fn test_key_authorization_witness_burn_evicts_pending_replay() -> eyre::Re
         }],
         2_000_000,
     );
-    burn_tx.nonce_key = U256::from(1);
+    burn_tx.nonce_key = U256::ONE;
     let burn_sig = sign_aa_tx_secp256k1(&burn_tx, &root_signer)?;
     submit_and_mine_aa_tx(&mut setup, burn_tx, burn_sig).await?;
 
@@ -1452,12 +1432,7 @@ async fn test_key_authorization_witness_burn_evicts_pending_replay() -> eyre::Re
     );
 
     setup.node.advance_block().await?;
-    wait_until_pool_not_contains(
-        &setup.node.inner.pool,
-        &delayed_hash,
-        "key authorization nonce eviction",
-    )
-    .await?;
+    setup.node.wait_for_pool_removal([delayed_hash]).await?;
 
     Ok(())
 }
@@ -1793,7 +1768,7 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
         2_000_000,
     );
     revoke_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
-    revoke_tx.nonce_key = U256::from(1); // Use a different nonce key so it's independent
+    revoke_tx.nonce_key = U256::ONE; // Use a different nonce key so it's independent
 
     let revoke_sig = sign_aa_tx_secp256k1(&revoke_tx, &root_signer)?;
     submit_and_mine_aa_tx(&mut setup, revoke_tx, revoke_sig).await?;
@@ -1812,12 +1787,7 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
     // Advance another block to trigger the commit notification
     setup.node.advance_block().await?;
 
-    wait_until_pool_not_contains(
-        &setup.node.inner.pool,
-        &delayed_tx_hash,
-        "keychain eviction",
-    )
-    .await?;
+    setup.node.wait_for_pool_removal([delayed_tx_hash]).await?;
 
     // ========================================
     // STEP 4: Verify transaction is evicted from the pool
@@ -1890,7 +1860,7 @@ async fn test_expiring_nonce_discriminators_across_t12(
         .with_expiring_nonces()
         .wallet(funder_signer)
         .connect_http(setup.node.rpc_url());
-    let mut accepted_hashes = Vec::new();
+    let mut accepted = Vec::new();
 
     for (discriminator, should_accept) in [0, 1, u64::MAX].into_iter().zip(expected_admission) {
         let mut tx = create_expiring_nonce_tx(chain_id, valid_before, recipient);
@@ -1901,7 +1871,7 @@ async fn test_expiring_nonce_discriminators_across_t12(
 
         let submission = tempo_provider.send_transaction(request).await;
         if should_accept {
-            accepted_hashes.push(*submission?.tx_hash());
+            accepted.push(submission?);
         } else {
             assert!(
                 submission.is_err(),
@@ -1911,15 +1881,16 @@ async fn test_expiring_nonce_discriminators_across_t12(
     }
 
     assert!(
-        accepted_hashes
+        accepted
             .iter()
-            .all(|hash| setup.node.inner.pool.contains(hash)),
+            .all(|tx| setup.node.inner.pool.contains(tx.tx_hash())),
         "{hardfork:?} accepted discriminators must coexist in the pool"
     );
-    setup.node.advance_block().await?;
-    for hash in accepted_hashes {
-        assert_receipt_status(&provider, hash, true).await?;
-    }
+    setup
+        .node
+        .mine_pooled(accepted.iter().map(|tx| *tx.tx_hash()))
+        .await?
+        .ensure_success()?;
     assert_eq!(
         provider.get_transaction_count(funder_addr).await?,
         protocol_nonce,
@@ -1968,10 +1939,9 @@ async fn test_aa_expiring_nonce_replay_protection() -> eyre::Result<()> {
     // First submission should succeed
     setup
         .node
-        .inject_and_advance(encoded.clone().into())
-        .await?;
-
-    assert_receipt_status(&provider, tx_hash, true).await?;
+        .mine([encoded.clone().into()])
+        .await?
+        .ensure_success()?;
     println!("✓ First submission succeeded");
 
     // Second submission with SAME encoded tx (same hash) should fail
@@ -2152,7 +2122,7 @@ async fn test_aa_keychain_spending_limit_toctou_dos() -> eyre::Result<()> {
         2_000_000,
     );
     update_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
-    update_tx.nonce_key = U256::from(1); // Use a different nonce key so it's independent
+    update_tx.nonce_key = U256::ONE; // Use a different nonce key so it's independent
 
     let update_sig = sign_aa_tx_secp256k1(&update_tx, &root_signer)?;
     submit_and_mine_aa_tx(&mut setup, update_tx, update_sig).await?;
@@ -2164,12 +2134,7 @@ async fn test_aa_keychain_spending_limit_toctou_dos() -> eyre::Result<()> {
     // Advance another block to trigger the commit notification
     setup.node.advance_block().await?;
 
-    wait_until_pool_not_contains(
-        &setup.node.inner.pool,
-        &delayed_tx_hash,
-        "spending limit eviction",
-    )
-    .await?;
+    setup.node.wait_for_pool_removal([delayed_tx_hash]).await?;
 
     // ========================================
     // STEP 4: Verify transaction is evicted from the pool
@@ -2258,7 +2223,7 @@ async fn test_v1_keychain_in_auth_list_rejected_post_t1c() -> eyre::Result<()> {
     tx.tempo_authorization_list = vec![auth_signed];
 
     let outer_sig = sign_aa_tx_secp256k1(&tx, &sender_signer)?;
-    let envelope: TempoTxEnvelope = AASigned::new_unhashed(tx, outer_sig).into();
+    let envelope: TempoTxEnvelope = tx.into_signed(outer_sig).into();
 
     setup
         .node
@@ -2307,11 +2272,7 @@ async fn test_v2_keychain_blocks_cross_account_replay() -> eyre::Result<()> {
     .await?;
     nonce_alice += 1;
 
-    let secp_mock = || {
-        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            alloy_primitives::Signature::test_signature(),
-        ))
-    };
+    let secp_mock = || TempoSignature::from(Signature::test_signature());
     let p256_mock = || create_mock_p256_sig(pub_x, pub_y);
 
     // Authorize both keys on Alice and Bob
@@ -2372,7 +2333,7 @@ async fn test_v2_keychain_blocks_cross_account_replay() -> eyre::Result<()> {
     );
     let inner = alice_sig.as_keychain().unwrap().signature.clone();
     let replay_sig = TempoSignature::Keychain(KeychainSignature::new(bob_addr, inner));
-    let replay_tx: TempoTxEnvelope = AASigned::new_unhashed(bob_tx, replay_sig).into();
+    let replay_tx: TempoTxEnvelope = bob_tx.into_signed(replay_sig).into();
     setup
         .node
         .rpc
@@ -2405,7 +2366,7 @@ async fn test_v2_keychain_blocks_cross_account_replay() -> eyre::Result<()> {
     );
     let inner = alice_sig.as_keychain().unwrap().signature.clone();
     let replay_sig = TempoSignature::Keychain(KeychainSignature::new(bob_addr, inner));
-    let replay_env: TempoTxEnvelope = AASigned::new_unhashed(bob_tx, replay_sig).into();
+    let replay_env: TempoTxEnvelope = bob_tx.into_signed(replay_sig).into();
     setup
         .node
         .rpc
@@ -2484,12 +2445,9 @@ async fn test_aa_keychain_v2_signature() -> eyre::Result<()> {
     assert!(!v2_sig.is_legacy_keychain());
     assert!(v2_sig.is_keychain());
 
-    let tx_hash = submit_and_mine_aa_tx(&mut setup, transfer_tx, v2_sig).await?;
-    let receipt = provider
-        .get_transaction_receipt(tx_hash)
-        .await?
-        .expect("receipt must exist");
-    assert!(receipt.status(), "V2 keychain transfer must succeed");
+    submit_and_mine_aa_tx(&mut setup, transfer_tx, v2_sig)
+        .await
+        .wrap_err("V2 keychain transfer must succeed")?;
     println!("✓ V2 keychain signature accepted and transfer succeeded");
 
     // Step 3: V1 signature should be rejected at pool level (post-T1C)
@@ -2507,7 +2465,7 @@ async fn test_aa_keychain_v2_signature() -> eyre::Result<()> {
 
     assert!(v1_sig.is_legacy_keychain());
 
-    let signed_v1 = AASigned::new_unhashed(v1_tx, v1_sig);
+    let signed_v1 = v1_tx.into_signed(v1_sig);
     let envelope_v1: TempoTxEnvelope = signed_v1.into();
     let inject_result = setup
         .node
