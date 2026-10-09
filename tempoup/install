@@ -51,6 +51,10 @@ install_bin() {
 }
 
 main() {
+    local first_install=true
+    if [[ -x "$BIN_DIR/tempo" || -x "$BIN_DIR/tempo.exe" ]]; then
+        first_install=false
+    fi
     echo "Installing tempoup..."
     echo ""
 
@@ -107,6 +111,7 @@ ENVEOF
             local output
             if output="$("$tempo_bin" --version 2>&1)"; then
                 info "Tempo ready: $(printf '%s\n' "$output" | head -n 1)"
+                report_docs_install "$first_install"
             else
                 echo "$output" >&2
                 echo "error: tempo failed to launch after installation" >&2
@@ -201,6 +206,26 @@ configure_shell() {
 
     if [[ $modified -eq 0 ]]; then
         info "Tempo is already in your shell config"
+    fi
+}
+
+# Only explicitly attributed docs commands report a verified installation.
+# Do not send wallet, machine, or user identifiers; telemetry is best effort.
+report_docs_install() {
+    [[ "${DO_NOT_TRACK:-0}" != 1 && "${TEMPO_TELEMETRY_DISABLED:-0}" != 1 ]] || return 0
+    case "${TEMPO_INSTALL_SOURCE:-}" in
+        tempo-docs-cli|tempo-docs-wallet|tempo-docs-foundry-mpp|tempo-docs-node) ;;
+        *) return 0 ;;
+    esac
+    local event_id
+    event_id="$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')" || return 0
+    [[ "$event_id" =~ ^[a-f0-9]{32}$ ]] || return 0
+    local payload
+    payload="{\"source\":\"$TEMPO_INSTALL_SOURCE\",\"first_install\":$1,\"event_id\":\"$event_id\"}"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsS --connect-timeout 2 --max-time 3 \
+            -H 'Content-Type: application/json' -d "$payload" \
+            https://tempo.xyz/developers/api/install-event >/dev/null 2>&1 || true
     fi
 }
 

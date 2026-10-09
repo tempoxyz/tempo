@@ -248,6 +248,54 @@ run_install '
 '
 ok "bootstrap verification gating"
 
+run_install '
+    calls=0
+    curl() { calls=$((calls + 1)); [[ "$*" == *"tempo-docs-wallet"* ]]; return 7; }
+    TEMPO_INSTALL_SOURCE=tempo-docs-wallet
+    report_docs_install true
+    [[ "$calls" == 1 ]]
+    DO_NOT_TRACK=1 report_docs_install true
+    TEMPO_TELEMETRY_DISABLED=1 report_docs_install true
+    TEMPO_INSTALL_SOURCE=unknown report_docs_install true
+    TEMPO_INSTALL_SOURCE= report_docs_install true
+    [[ "$calls" == 1 ]]
+'
+ok "docs install telemetry is bounded, opt-out aware, and ignores capture failures"
+
+for bootstrap_case in fresh reinstall help failed-launch; do
+    case_dir="$TMP_ROOT/bootstrap-$bootstrap_case"
+    mkdir -p "$case_dir/bin"
+    if [[ "$bootstrap_case" == reinstall ]]; then
+        printf '#!/usr/bin/env bash\nexit 0\n' > "$case_dir/bin/tempo"
+        chmod +x "$case_dir/bin/tempo"
+    fi
+    version_exit=0
+    [[ "$bootstrap_case" != failed-launch ]] || version_exit=1
+    if output="$(TEMPO_DIR="$case_dir" VERSION_EXIT="$version_exit" \
+        BOOTSTRAP_CASE="$bootstrap_case" run_install '
+        configure_shell() { :; }
+        curl() { :; }
+        install_bin() {
+            printf "#!/usr/bin/env bash\nexit 0\n" > "$2"
+            chmod +x "$2"
+            printf "#!/usr/bin/env bash\nprintf tempo-test\\\\n\nexit %s\n" "$VERSION_EXIT" > "$BIN_DIR/tempo"
+            chmod +x "$BIN_DIR/tempo"
+        }
+        report_docs_install() { printf "%s\n" "$1" >> "$TEMPO_DIR/reports"; }
+        if [[ "$BOOTSTRAP_CASE" == help ]]; then main --help; else main; fi
+    ' 2>&1)"; then
+        [[ "$bootstrap_case" != failed-launch ]] || fail "failed launch returned success"
+    else
+        [[ "$bootstrap_case" == failed-launch ]] || fail "$bootstrap_case failed: $output"
+    fi
+    case "$bootstrap_case" in
+        fresh) [[ "$(cat "$case_dir/reports")" == true ]] || fail "fresh install attribution" ;;
+        reinstall) [[ "$(cat "$case_dir/reports")" == false ]] || fail "reinstall attribution" ;;
+        *) [[ ! -e "$case_dir/reports" ]] || fail "$bootstrap_case reported a completion" ;;
+    esac
+done
+ok "bootstrap reports only verified installs and separates reinstalls"
+
 ROLLBACK_DIR="$TMP_ROOT/rollback-upgrade"
 mkdir -p "$ROLLBACK_DIR"
 printf 'old tempo\n' > "$ROLLBACK_DIR/tempo"
