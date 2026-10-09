@@ -5,10 +5,11 @@ use alloy_primitives::{Address, map::AddressSet};
 use reth_transaction_pool::PoolTransaction;
 use std::str::FromStr;
 
-/// Addresses checked against transaction senders and direct call targets.
+/// Addresses checked against transaction senders, fee payers and direct call targets.
 ///
 /// Ordinary Ethereum-style transactions have at most one direct call target. Tempo
-/// transactions may contain multiple calls, so every direct target is checked.
+/// transactions may contain multiple calls, so every direct target is checked, and a
+/// sponsored transaction is also checked against the account paying its fees.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AddressFilter {
     addresses: AddressSet,
@@ -37,7 +38,11 @@ impl AddressFilter {
         self.addresses.contains(address)
     }
 
-    /// Checks the recovered sender and every direct call target in the transaction.
+    /// Checks the recovered sender, the fee payer and every direct call target in the
+    /// transaction.
+    ///
+    /// A fee payer that cannot be recovered is left to signature validation, which rejects
+    /// the transaction on its own.
     pub fn check(
         &self,
         transaction: &TempoPooledTransaction,
@@ -49,6 +54,13 @@ impl AddressFilter {
         let matched = self
             .contains(transaction.sender_ref())
             .then_some(*transaction.sender_ref())
+            .or_else(|| {
+                transaction
+                    .is_aa()
+                    .then(|| transaction.fee_payer().ok())
+                    .flatten()
+                    .filter(|fee_payer| self.contains(fee_payer))
+            })
             .or_else(|| {
                 transaction
                     .inner()
@@ -106,16 +118,61 @@ impl FromStr for AddressFilter {
 #[cfg(test)]
 mod tests {
     use super::AddressFilter;
-    use crate::{test_utils::TxBuilder, transaction::TempoPoolTransactionError};
-    use alloy_primitives::{Address, Bytes, TxKind, U256};
+    use crate::{
+        test_utils::TxBuilder,
+        transaction::{TempoPoolTransactionError, TempoPooledTransaction},
+    };
+    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
+    use reth_primitives_traits::Recovered;
     use reth_transaction_pool::PoolTransaction;
-    use tempo_primitives::transaction::tempo_transaction::Call;
+    use tempo_primitives::{TempoTxEnvelope, transaction::tempo_transaction::Call};
 
     fn assert_address_check(result: Result<(), TempoPoolTransactionError>, expected: Address) {
         assert!(matches!(
             result,
             Err(TempoPoolTransactionError::AddressCheck { address }) if address == expected
         ));
+    }
+
+    /// Builds a sponsored AA transaction whose fee payer is `sponsor`.
+    fn sponsored_transaction(
+        sender: Address,
+        sponsor: &PrivateKeySigner,
+    ) -> TempoPooledTransaction {
+        let envelope = TxBuilder::aa(sender).build().inner().clone().into_inner();
+        let TempoTxEnvelope::AA(mut signed) = envelope else {
+            panic!("expected AA transaction");
+        };
+
+        signed.tx_mut().fee_payer_signature = Some(Signature::new(U256::ZERO, U256::ZERO, false));
+        let fee_payer_hash = signed.tx().fee_payer_signature_hash(sender);
+        signed.tx_mut().fee_payer_signature = Some(
+            sponsor
+                .sign_hash_sync(&fee_payer_hash)
+                .expect("fee payer signing should succeed"),
+        );
+
+        TempoPooledTransaction::new(Recovered::new_unchecked(
+            TempoTxEnvelope::AA(signed),
+            sender,
+        ))
+    }
+
+    #[test]
+    fn checks_fee_payer() {
+        let sender = Address::with_last_byte(7);
+        let sponsor = PrivateKeySigner::random();
+        let transaction = sponsored_transaction(sender, &sponsor);
+        let filter = AddressFilter::new([sponsor.address()]);
+
+        assert_address_check(filter.check(&transaction), sponsor.address());
+        assert!(
+            AddressFilter::new([Address::with_last_byte(8)])
+                .check(&transaction)
+                .is_ok()
+        );
     }
 
     #[test]
