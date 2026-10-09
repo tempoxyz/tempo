@@ -27,7 +27,7 @@ use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
     InitialZoneFactoryAccount, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
     STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
-    initial_zone_factory_state, t13_zone_factory_state,
+    initial_zone_factory_state, t13_zone_factory_state, t14_zone_factory_state,
 };
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tempo_revm::{ExecutionContext, evm::TempoContext};
@@ -276,13 +276,47 @@ where
     /// Exercises the shared runtime upgrade path at T13.
     fn upgrade_zone_runtimes_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
         let [_, portal, verifier, messenger] = t13_zone_factory_state(INITIAL_FACTORY_OWNER);
+        let [_, t14_portal, _, _] = t14_zone_factory_state(INITIAL_FACTORY_OWNER);
+        let t14_portal_hash = Bytecode::new_legacy(t14_portal.code).hash_slow();
+        let portal_is_already_t14 = self
+            .inner
+            .evm
+            .db_mut()
+            .basic(portal.address)
+            .map_err(BlockExecutionError::other)?
+            .is_some_and(|info| info.code_hash == t14_portal_hash);
+        if portal_is_already_t14 {
+            return self.install_zone_runtimes_at_boundary([verifier, messenger]);
+        }
         self.install_zone_runtimes_at_boundary([portal, verifier, messenger])
     }
 
+    /// Installs the T14 fast-authority Portal runtime without touching proxy storage.
+    fn upgrade_zone_portal_at_t14_boundary(&mut self) -> Result<(), BlockExecutionError> {
+        let [_, portal, _, _] = t14_zone_factory_state(INITIAL_FACTORY_OWNER);
+        let db = self.inner.evm.db_mut();
+        let destination = portal.address;
+        let code = Bytecode::new_legacy(portal.code);
+        let code_hash = code.hash_slow();
+        let info = db
+            .basic(destination)
+            .map_err(BlockExecutionError::other)?
+            .unwrap_or_default();
+        if info.code_hash == code_hash {
+            return Ok(());
+        }
+        let mut account = Account::from(info);
+        account.info.code_hash = code_hash;
+        account.info.code = Some(code);
+        account.mark_touch();
+        db.commit(EvmState::from_iter([(destination, account)]));
+        Ok(())
+    }
+
     /// Installs shared Zone runtimes without modifying their existing storage.
-    fn install_zone_runtimes_at_boundary(
+    fn install_zone_runtimes_at_boundary<const N: usize>(
         &mut self,
-        runtimes: [InitialZoneFactoryAccount; 3],
+        runtimes: [InitialZoneFactoryAccount; N],
     ) -> Result<(), BlockExecutionError> {
         let db = self.inner.evm.db_mut();
         let mut state = EvmState::default();
@@ -553,6 +587,16 @@ where
         {
             self.upgrade_zone_runtimes_at_boundary()?;
         }
+        // As with T13, a chain starting at T14 receives the runtime in genesis. Only chains
+        // crossing the boundary during execution perform the replacement here.
+        if self.inner.spec.is_t14_active_at_timestamp(timestamp)
+            && !self
+                .inner
+                .spec
+                .is_t14_active_at_timestamp(self.inner.spec.genesis().timestamp)
+        {
+            self.upgrade_zone_portal_at_t14_boundary()?;
+        }
 
         Ok(())
     }
@@ -762,7 +806,8 @@ mod tests {
         },
         zones::{
             T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-            ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
+            T14_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
+            ZONE_VERIFIER_RUNTIME,
         },
     };
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -2233,6 +2278,69 @@ mod tests {
                     .unwrap();
                 assert_eq!(installed.original_bytes(), expected);
             }
+        }
+    }
+
+    #[test]
+    fn t14_upgrade_replaces_only_portal_and_preserves_storage() {
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let mut db = State::builder().with_bundle_update().build();
+        for (address, code) in [
+            (ZONE_PORTAL_IMPL_ADDRESS, T13_ZONE_PORTAL_RUNTIME),
+            (ZONE_VERIFIER_ADDRESS, T13_ZONE_VERIFIER_RUNTIME),
+            (ZONE_MESSENGER_ADDRESS, T13_ZONE_MESSENGER_RUNTIME),
+        ] {
+            let bytecode = Bytecode::new_legacy(code);
+            db.insert_account_with_storage(
+                address,
+                AccountInfo {
+                    code_hash: bytecode.hash_slow(),
+                    code: Some(bytecode),
+                    ..Default::default()
+                },
+                [(U256::from(9), U256::from(123))].into_iter().collect(),
+            );
+        }
+
+        let mut executor = TestExecutorBuilder::default()
+            .with_spec(TempoHardfork::T14)
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+        executor.upgrade_zone_portal_at_t14_boundary().unwrap();
+        executor.upgrade_zone_portal_at_t14_boundary().unwrap();
+        // The cumulative T13 activation predicate still runs after T14. It must never
+        // transiently or permanently downgrade the Portal while checking its other runtimes.
+        executor.upgrade_zone_runtimes_at_boundary().unwrap();
+        drop(executor);
+
+        assert_eq!(
+            db.load_cache_account(ZONE_PORTAL_IMPL_ADDRESS)
+                .unwrap()
+                .account_info()
+                .unwrap()
+                .code
+                .unwrap()
+                .original_bytes(),
+            T14_ZONE_PORTAL_RUNTIME
+        );
+        assert_eq!(
+            revm::Database::storage(&mut db, ZONE_PORTAL_IMPL_ADDRESS, U256::from(9)).unwrap(),
+            U256::from(123)
+        );
+        for (address, expected) in [
+            (ZONE_VERIFIER_ADDRESS, T13_ZONE_VERIFIER_RUNTIME),
+            (ZONE_MESSENGER_ADDRESS, T13_ZONE_MESSENGER_RUNTIME),
+        ] {
+            assert_eq!(
+                db.load_cache_account(address)
+                    .unwrap()
+                    .account_info()
+                    .unwrap()
+                    .code
+                    .unwrap()
+                    .original_bytes(),
+                expected
+            );
         }
     }
 

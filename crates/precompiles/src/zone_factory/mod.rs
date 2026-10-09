@@ -7,26 +7,32 @@ use crate::{
     ZONE_FACTORY_ADDRESS,
     error::{Result, TempoPrecompileError},
     has_duplicates_metered,
+    signature_verifier::SignatureVerifier,
     storage::{Handler, Mapping},
     tip20::TIP20Token,
     tip20_factory::TIP20Factory,
     tip403_registry::TIP403Registry,
 };
 use alloy::{
-    primitives::{Address, B256, IntoLogData, keccak256},
+    primitives::{Address, B256, Bytes, IntoLogData, U256, keccak256},
     sol_types::SolValue,
 };
 use std::collections::{HashMap, HashSet};
 use tempo_contracts::precompiles::{
-    IZoneFactory, ZONE_MESSENGER_ADDRESS, ZONE_VERIFIER_ADDRESS, ZoneFactoryError,
-    ZoneFactoryEvent, ZoneInfo, ZonePortalEvent, ZonePortalRole,
+    FAST_EMPTY_UNRESOLVED_ROOT, FAST_PROOF_MODE_OPERATOR_ATTESTED, FAST_PROOF_MODE_REQUIRED,
+    FAST_PROTOCOL_NATIVE_PIN, IZoneFactory, T13_PROTOTYPE_VERIFIER_CODE_HASH,
+    ZONE_MESSENGER_ADDRESS, ZONE_VERIFIER_ADDRESS, ZoneFactoryError, ZoneFactoryEvent, ZoneInfo,
+    ZonePortalEvent, ZonePortalRole,
 };
 use tempo_precompiles_macros::{Storable, contract};
 use tempo_primitives::TempoAddressExt;
 
 /// Generated storage slots for ZonePortal accounts.
 pub use portal::slots as zone_portal_slots;
-pub use portal::{ZONE_PORTAL_PROXY_RUNTIME, ZonePortalStorage};
+pub use portal::{
+    PortalAcceptedPrefix, PortalFastEpochConfig, PortalFastPeerBarrier, ZONE_PORTAL_PROXY_RUNTIME,
+    ZonePortalStorage,
+};
 /// Minimum gas consumed by a successful zone creation.
 pub const ZONE_CREATION_GAS: u64 = 15_000_000;
 
@@ -34,6 +40,13 @@ pub const ZONE_CREATION_GAS: u64 = 15_000_000;
 pub const MAX_SEQUENCERS: usize = 8;
 /// Maximum UTF-8 byte length of enabled token metadata strings.
 const MAX_TOKEN_METADATA_BYTES: usize = 31;
+const FAST_MEMBER_COUNT: usize = 3;
+const FAST_THRESHOLD: u8 = 2;
+const FAST_PEER_COUNT: usize = 9;
+const FAST_BARRIER_DOMAIN: &str = "TEMPO_ZONE_FAST_BARRIER_T14_V1";
+const FAST_BARRIER_RESOLUTION_DOMAIN: &str = "TEMPO_ZONE_FAST_BARRIER_RESOLUTION_T14_V1";
+const FAST_FINAL_SETTLEMENT_DOMAIN: &str = "TEMPO_ZONE_FAST_FINAL_SETTLEMENT_T14_V1";
+const FAST_CHECKPOINT_DOMAIN: &str = "TEMPO_ZONE_FAST_CHECKPOINT_T14_V1";
 
 /// Native ZoneFactory storage.
 ///
@@ -77,6 +90,84 @@ impl From<ZoneInfoStorage> for ZoneInfo {
 }
 
 impl ZoneFactory {
+    fn verify_signers(
+        &self,
+        digest: B256,
+        signatures: &[Bytes],
+        is_member: impl Fn(Address) -> Result<bool>,
+    ) -> Result<()> {
+        if signatures.len() != FAST_THRESHOLD as usize {
+            return Err(ZoneFactoryError::invalid_fast_certificate().into());
+        }
+        let verifier = SignatureVerifier::new();
+        let mut recovered = [Address::ZERO; FAST_THRESHOLD as usize];
+        for (index, signature) in signatures.iter().enumerate() {
+            let signer = verifier
+                .recover(digest, signature.clone())
+                .map_err(|_| ZoneFactoryError::invalid_fast_certificate())?;
+            if !is_member(signer)? || recovered[..index].contains(&signer) {
+                return Err(ZoneFactoryError::invalid_fast_certificate().into());
+            }
+            recovered[index] = signer;
+        }
+        Ok(())
+    }
+
+    fn verify_historical_quorum(
+        &self,
+        portal: Address,
+        epoch: u64,
+        digest: B256,
+        signatures: &[Bytes],
+    ) -> Result<()> {
+        let portal = ZonePortalStorage::new(portal);
+        let config = portal.fast_epochs[epoch].read()?;
+        if epoch == 0 || config.threshold != FAST_THRESHOLD || config.roster_hash == B256::ZERO {
+            return Err(ZoneFactoryError::invalid_fast_certificate().into());
+        }
+        self.verify_signers(digest, signatures, |signer| {
+            portal.is_fast_epoch_member[epoch][signer].read()
+        })
+    }
+
+    fn verify_next_roster_quorum(
+        &self,
+        members: &[Address],
+        digest: B256,
+        signatures: &[Bytes],
+    ) -> Result<()> {
+        if members.len() != FAST_MEMBER_COUNT
+            || members.iter().any(|member| member.is_zero())
+            || members[0] == members[1]
+            || members[0] == members[2]
+            || members[1] == members[2]
+        {
+            return Err(ZoneFactoryError::invalid_fast_certificate().into());
+        }
+        self.verify_signers(digest, signatures, |signer| Ok(members.contains(&signer)))
+    }
+
+    fn require_owner(&self, msg_sender: Address) -> Result<()> {
+        if msg_sender != self.owner()? {
+            return Err(ZoneFactoryError::not_owner().into());
+        }
+        Ok(())
+    }
+
+    fn require_fast_protocol(&self) -> Result<()> {
+        if !self.storage.spec().is_t14() {
+            return Err(ZoneFactoryError::fast_protocol_unavailable().into());
+        }
+        Ok(())
+    }
+
+    fn require_portal(&self, portal: Address) -> Result<()> {
+        if !self.is_zone_portal(portal)? {
+            return Err(ZoneFactoryError::invalid_fast_epoch().into());
+        }
+        Ok(())
+    }
+
     /// Returns the configured factory owner.
     pub fn owner(&self) -> Result<Address> {
         self.owner.read()
@@ -255,6 +346,493 @@ impl ZoneFactory {
         })
     }
 
+    /// Installs a three-member, two-signature authority and its exact peer roster.
+    pub fn configure_fast_epoch(
+        &mut self,
+        msg_sender: Address,
+        call: IZoneFactory::configureFastEpochCall,
+    ) -> Result<()> {
+        self.require_fast_protocol()?;
+        self.require_owner(msg_sender)?;
+        self.require_portal(call.portal)?;
+        if call.epoch == 0
+            || call.protocolVersion == 0
+            || !matches!(
+                call.proofMode,
+                FAST_PROOF_MODE_OPERATOR_ATTESTED | FAST_PROOF_MODE_REQUIRED
+            )
+            || call.expectedVerifierCodeHash == B256::ZERO
+            || call.expectedVerifierConfigHash == B256::ZERO
+            || call.members.len() != FAST_MEMBER_COUNT
+            || call.peerPortals.len() != FAST_PEER_COUNT
+            || call.rosterHash == B256::ZERO
+            || call.members.iter().any(|address| address.is_zero())
+            || call.peerPortals.iter().any(|address| address.is_zero())
+            || has_duplicates_metered(&mut self.storage, call.members.iter().copied())?
+            || has_duplicates_metered(&mut self.storage, call.peerPortals.iter().copied())?
+            || call.peerPortals.contains(&call.portal)
+        {
+            return Err(ZoneFactoryError::invalid_fast_epoch().into());
+        }
+        let (actual_verifier_code_hash, _) = self.storage.account_code(ZONE_VERIFIER_ADDRESS)?;
+        if actual_verifier_code_hash != call.expectedVerifierCodeHash
+            || (call.proofMode == FAST_PROOF_MODE_REQUIRED
+                && actual_verifier_code_hash == T13_PROTOTYPE_VERIFIER_CODE_HASH)
+        {
+            return Err(ZoneFactoryError::invalid_fast_proof_configuration().into());
+        }
+        for peer in &call.peerPortals {
+            if !self.is_zone_portal(*peer)? {
+                return Err(ZoneFactoryError::invalid_fast_peer(*peer).into());
+            }
+        }
+
+        let expected_roster_hash = keccak256(
+            (
+                keccak256("TEMPO_ZONE_FAST_ROSTER_T14_V1"),
+                call.portal,
+                call.epoch,
+                call.protocolVersion,
+                U256::from(FAST_THRESHOLD),
+                U256::from(call.proofMode),
+                call.expectedVerifierCodeHash,
+                call.expectedVerifierConfigHash,
+                call.members.clone(),
+                call.peerPortals.clone(),
+            )
+                .abi_encode(),
+        );
+        if call.rosterHash != expected_roster_hash {
+            return Err(ZoneFactoryError::invalid_fast_epoch().into());
+        }
+        let peers_hash = keccak256(call.peerPortals.abi_encode());
+        let mut portal = ZonePortalStorage::new(call.portal);
+        let previous = portal.fast_epoch.read()?;
+        if call.epoch <= previous {
+            return Err(ZoneFactoryError::invalid_fast_epoch().into());
+        }
+        if previous != 0 {
+            let prior = portal.fast_epochs[previous].read()?;
+            if !prior.retired {
+                return Err(ZoneFactoryError::fast_epoch_active(previous).into());
+            }
+            if prior.next_epoch != call.epoch {
+                return Err(ZoneFactoryError::invalid_fast_epoch().into());
+            }
+            if prior.next_roster_hash != call.rosterHash || prior.checkpoint_hash == B256::ZERO {
+                return Err(ZoneFactoryError::invalid_fast_certificate().into());
+            }
+        }
+
+        portal.fast_epoch_members[call.epoch].write(call.members.clone())?;
+        for member in &call.members {
+            portal.is_fast_epoch_member[call.epoch][*member].write(true)?;
+        }
+        portal.fast_epoch_peers[call.epoch].write(call.peerPortals.clone())?;
+        for peer in &call.peerPortals {
+            portal.is_fast_epoch_peer[call.epoch][*peer].write(true)?;
+        }
+        portal.fast_epochs[call.epoch].write(PortalFastEpochConfig {
+            protocol_version: call.protocolVersion,
+            threshold: FAST_THRESHOLD,
+            proof_mode: call.proofMode,
+            closed: false,
+            retired: false,
+            expected_peer_barriers: FAST_PEER_COUNT as u16,
+            recorded_peer_barriers: 0,
+            finalized_peer_barriers: 0,
+            activated_at_tempo_block: self.storage.block_number(),
+            roster_hash: call.rosterHash,
+            peers_hash,
+            expected_verifier_code_hash: call.expectedVerifierCodeHash,
+            expected_verifier_config_hash: call.expectedVerifierConfigHash,
+            closure_hash: B256::ZERO,
+            final_settlement_height: U256::ZERO,
+            final_settlement_block_hash: B256::ZERO,
+            final_settlement_withdrawal_batch_index: 0,
+            barriers_hash: B256::ZERO,
+            final_settlement_hash: B256::ZERO,
+            next_epoch: 0,
+            next_roster_hash: B256::ZERO,
+            checkpoint_log_term: 0,
+            checkpoint_log_index: 0,
+            checkpoint_height: U256::ZERO,
+            checkpoint_block_hash: B256::ZERO,
+            checkpoint_state_root: B256::ZERO,
+            checkpoint_hash: B256::ZERO,
+        })?;
+        portal.fast_epoch.write(call.epoch)?;
+        self.storage.emit_event(
+            call.portal,
+            ZonePortalEvent::fast_epoch_activated(
+                call.epoch,
+                call.protocolVersion,
+                call.rosterHash,
+                peers_hash,
+                call.proofMode,
+                call.expectedVerifierCodeHash,
+                call.expectedVerifierConfigHash,
+                call.members,
+                call.peerPortals,
+            )
+            .into_log_data(),
+        )
+    }
+
+    pub fn close_fast_epoch(
+        &mut self,
+        msg_sender: Address,
+        call: IZoneFactory::closeFastEpochCall,
+    ) -> Result<()> {
+        self.require_fast_protocol()?;
+        self.require_owner(msg_sender)?;
+        self.require_portal(call.portal)?;
+        let mut portal = ZonePortalStorage::new(call.portal);
+        let mut config = portal.fast_epochs[call.epoch].read()?;
+        if call.epoch == 0
+            || portal.fast_epoch.read()? != call.epoch
+            || config.closed
+            || config.retired
+            || call.closureHash == B256::ZERO
+        {
+            return Err(ZoneFactoryError::invalid_fast_epoch().into());
+        }
+        config.closed = true;
+        config.closure_hash = call.closureHash;
+        portal.fast_epochs[call.epoch].write(config)?;
+        self.storage.emit_event(
+            call.portal,
+            ZonePortalEvent::fast_epoch_closed(call.epoch, call.closureHash).into_log_data(),
+        )
+    }
+
+    pub fn record_fast_peer_barrier(
+        &mut self,
+        msg_sender: Address,
+        call: IZoneFactory::recordFastPeerBarrierCall,
+    ) -> Result<()> {
+        self.require_fast_protocol()?;
+        self.require_owner(msg_sender)?;
+        self.require_portal(call.portal)?;
+        let statement = &call.statement;
+        let mut portal = ZonePortalStorage::new(call.portal);
+        let mut config = portal.fast_epochs[statement.destinationEpoch].read()?;
+        if statement.destinationPortal != call.portal
+            || statement.destinationEpoch == 0
+            || portal.fast_epoch.read()? != statement.destinationEpoch
+            || !config.closed
+            || config.retired
+            || statement.closureHash != config.closure_hash
+            || statement.sourcePortal == call.portal
+            || statement.sourceEpoch == 0
+            || statement.importedAnchorHash == B256::ZERO
+            || statement.blockHash == B256::ZERO
+            || statement.stateRoot == B256::ZERO
+            || statement.completeLockRoot == B256::ZERO
+            || (statement.unresolvedCount == 0
+                && statement.unresolvedRoot != FAST_EMPTY_UNRESOLVED_ROOT)
+            || (statement.unresolvedCount != 0
+                && (statement.unresolvedRoot == B256::ZERO
+                    || statement.unresolvedRoot == FAST_EMPTY_UNRESOLVED_ROOT))
+        {
+            return Err(ZoneFactoryError::invalid_fast_epoch().into());
+        }
+        if !portal.is_fast_epoch_peer[statement.destinationEpoch][statement.sourcePortal].read()? {
+            return Err(ZoneFactoryError::invalid_fast_peer(statement.sourcePortal).into());
+        }
+        let barrier =
+            portal.fast_peer_barriers[statement.destinationEpoch][statement.sourcePortal].read()?;
+        if barrier.recorded {
+            return Err(ZoneFactoryError::fast_peer_barrier_already_recorded(
+                statement.sourcePortal,
+            )
+            .into());
+        }
+        let barrier_hash = keccak256(
+            (
+                keccak256(FAST_BARRIER_DOMAIN),
+                U256::from(self.storage.chain_id()),
+                statement.clone(),
+            )
+                .abi_encode(),
+        );
+        self.verify_historical_quorum(
+            statement.sourcePortal,
+            statement.sourceEpoch,
+            barrier_hash,
+            &call.signatures,
+        )?;
+        portal.fast_peer_barriers[statement.destinationEpoch][statement.sourcePortal].write(
+            PortalFastPeerBarrier {
+                recorded: true,
+                finalized: false,
+                source_epoch: statement.sourceEpoch,
+                imported_anchor_number: statement.importedAnchorNumber,
+                imported_anchor_hash: statement.importedAnchorHash,
+                log_term: statement.logTerm,
+                log_index: statement.logIndex,
+                block_height: statement.blockHeight,
+                block_hash: statement.blockHash,
+                state_root: statement.stateRoot,
+                lock_log_watermark: statement.lockLogWatermark,
+                complete_lock_root: statement.completeLockRoot,
+                unresolved_root: statement.unresolvedRoot,
+                unresolved_count: statement.unresolvedCount,
+                barrier_hash,
+                terminal_root: B256::ZERO,
+                disposition_root: B256::ZERO,
+                resolved_count: 0,
+                remaining_unresolved_root: B256::ZERO,
+                remaining_unresolved_count: 0,
+                resolution_hash: B256::ZERO,
+            },
+        )?;
+        config.recorded_peer_barriers += 1;
+        portal.fast_epochs[statement.destinationEpoch].write(config)?;
+        self.storage.emit_event(
+            call.portal,
+            ZonePortalEvent::fast_peer_barrier_recorded(
+                statement.destinationEpoch,
+                statement.sourcePortal,
+                statement.sourceEpoch,
+                statement.lockLogWatermark,
+                barrier_hash,
+                statement.completeLockRoot,
+                statement.unresolvedRoot,
+                statement.unresolvedCount,
+            )
+            .into_log_data(),
+        )
+    }
+
+    pub fn finalize_fast_peer_barrier(
+        &mut self,
+        msg_sender: Address,
+        call: IZoneFactory::finalizeFastPeerBarrierCall,
+    ) -> Result<()> {
+        self.require_fast_protocol()?;
+        self.require_owner(msg_sender)?;
+        self.require_portal(call.portal)?;
+        let mut portal = ZonePortalStorage::new(call.portal);
+        let mut config = portal.fast_epochs[call.epoch].read()?;
+        if !config.closed || config.retired {
+            return Err(ZoneFactoryError::invalid_fast_epoch().into());
+        }
+        let mut barrier = portal.fast_peer_barriers[call.epoch][call.peerPortal].read()?;
+        if !barrier.recorded {
+            return Err(ZoneFactoryError::fast_peer_barrier_not_recorded(call.peerPortal).into());
+        }
+        if barrier.finalized {
+            return Err(
+                ZoneFactoryError::fast_peer_barrier_already_finalized(call.peerPortal).into(),
+            );
+        }
+        if call.resolution.barrierHash != barrier.barrier_hash
+            || call.resolution.terminalRoot == B256::ZERO
+            || call.resolution.dispositionRoot == B256::ZERO
+            || call.resolution.resolvedCount != barrier.unresolved_count
+            || call.resolution.remainingUnresolvedRoot != FAST_EMPTY_UNRESOLVED_ROOT
+            || call.resolution.remainingUnresolvedCount != 0
+        {
+            return Err(ZoneFactoryError::invalid_fast_certificate().into());
+        }
+        let resolution_hash = keccak256(
+            (
+                keccak256(FAST_BARRIER_RESOLUTION_DOMAIN),
+                U256::from(self.storage.chain_id()),
+                call.portal,
+                call.epoch,
+                call.peerPortal,
+                call.resolution.clone(),
+            )
+                .abi_encode(),
+        );
+        self.verify_historical_quorum(
+            call.peerPortal,
+            barrier.source_epoch,
+            resolution_hash,
+            &call.signatures,
+        )?;
+        barrier.finalized = true;
+        barrier.terminal_root = call.resolution.terminalRoot;
+        barrier.disposition_root = call.resolution.dispositionRoot;
+        barrier.resolved_count = call.resolution.resolvedCount;
+        barrier.remaining_unresolved_root = call.resolution.remainingUnresolvedRoot;
+        barrier.remaining_unresolved_count = call.resolution.remainingUnresolvedCount;
+        barrier.resolution_hash = resolution_hash;
+        portal.fast_peer_barriers[call.epoch][call.peerPortal].write(barrier)?;
+        config.finalized_peer_barriers += 1;
+        portal.fast_epochs[call.epoch].write(config)?;
+        self.storage.emit_event(
+            call.portal,
+            ZonePortalEvent::fast_peer_barrier_finalized(
+                call.epoch,
+                call.peerPortal,
+                resolution_hash,
+                call.resolution.terminalRoot,
+                call.resolution.dispositionRoot,
+            )
+            .into_log_data(),
+        )
+    }
+
+    pub fn record_fast_final_settlement(
+        &mut self,
+        msg_sender: Address,
+        call: IZoneFactory::recordFastFinalSettlementCall,
+    ) -> Result<()> {
+        self.require_fast_protocol()?;
+        self.require_owner(msg_sender)?;
+        self.require_portal(call.portal)?;
+        let mut portal = ZonePortalStorage::new(call.portal);
+        let mut config = portal.fast_epochs[call.epoch].read()?;
+        if !config.closed
+            || config.retired
+            || config.recorded_peer_barriers != config.expected_peer_barriers
+            || config.finalized_peer_barriers != config.expected_peer_barriers
+            || config.final_settlement_hash != B256::ZERO
+            || portal.zone_height.read()? != call.zoneHeight
+            || portal.block_hash.read()? != call.blockHash
+            || portal.withdrawal_batch_index.read()? != call.withdrawalBatchIndex
+        {
+            return Err(ZoneFactoryError::fast_epoch_not_drained(call.epoch).into());
+        }
+        let peers = portal.fast_epoch_peers[call.epoch].read()?;
+        let mut barriers_hash = keccak256("TEMPO_ZONE_FAST_BARRIERS_T14_V1");
+        for peer in peers {
+            let barrier = portal.fast_peer_barriers[call.epoch][peer].read()?;
+            if !barrier.finalized || barrier.resolution_hash == B256::ZERO {
+                return Err(ZoneFactoryError::fast_epoch_not_drained(call.epoch).into());
+            }
+            barriers_hash = keccak256(
+                (
+                    barriers_hash,
+                    peer,
+                    barrier.barrier_hash,
+                    barrier.resolution_hash,
+                )
+                    .abi_encode(),
+            );
+        }
+        let settlement_hash = keccak256(
+            (
+                keccak256(FAST_FINAL_SETTLEMENT_DOMAIN),
+                U256::from(self.storage.chain_id()),
+                call.portal,
+                call.epoch,
+                config.roster_hash,
+                config.closure_hash,
+                call.zoneHeight,
+                call.blockHash,
+                call.withdrawalBatchIndex,
+                barriers_hash,
+            )
+                .abi_encode(),
+        );
+        self.verify_historical_quorum(call.portal, call.epoch, settlement_hash, &call.signatures)?;
+        config.final_settlement_height = call.zoneHeight;
+        config.final_settlement_block_hash = call.blockHash;
+        config.final_settlement_withdrawal_batch_index = call.withdrawalBatchIndex;
+        config.barriers_hash = barriers_hash;
+        config.final_settlement_hash = settlement_hash;
+        portal.fast_epochs[call.epoch].write(config)?;
+        self.storage.emit_event(
+            call.portal,
+            ZonePortalEvent::fast_final_settlement_recorded(
+                call.epoch,
+                call.zoneHeight,
+                call.blockHash,
+                call.withdrawalBatchIndex,
+                settlement_hash,
+            )
+            .into_log_data(),
+        )
+    }
+
+    pub fn install_fast_checkpoint(
+        &mut self,
+        msg_sender: Address,
+        call: IZoneFactory::installFastCheckpointCall,
+    ) -> Result<()> {
+        self.require_fast_protocol()?;
+        self.require_owner(msg_sender)?;
+        self.require_portal(call.portal)?;
+        let mut portal = ZonePortalStorage::new(call.portal);
+        let statement = &call.statement;
+        let mut config = portal.fast_epochs[statement.oldEpoch].read()?;
+        if config.final_settlement_hash == B256::ZERO
+            || config.checkpoint_hash != B256::ZERO
+            || statement.portal != call.portal
+            || statement.oldEpoch == 0
+            || statement.nextEpoch <= statement.oldEpoch
+            || statement.nextRosterHash == B256::ZERO
+            || statement.finalZoneHeight != config.final_settlement_height
+            || statement.finalBlockHash != config.final_settlement_block_hash
+            || statement.finalWithdrawalBatchIndex != config.final_settlement_withdrawal_batch_index
+            || statement.finalSettlementHash != config.final_settlement_hash
+            || statement.checkpointLogIndex == 0
+            || statement.checkpointHeight != config.final_settlement_height
+            || statement.checkpointBlockHash != config.final_settlement_block_hash
+            || statement.checkpointStateRoot == B256::ZERO
+        {
+            return Err(ZoneFactoryError::fast_epoch_not_drained(statement.oldEpoch).into());
+        }
+        let checkpoint_hash = keccak256(
+            (
+                keccak256(FAST_CHECKPOINT_DOMAIN),
+                U256::from(self.storage.chain_id()),
+                statement.clone(),
+            )
+                .abi_encode(),
+        );
+        self.verify_next_roster_quorum(&call.nextMembers, checkpoint_hash, &call.signatures)?;
+        config.next_epoch = statement.nextEpoch;
+        config.next_roster_hash = statement.nextRosterHash;
+        config.checkpoint_log_term = statement.checkpointLogTerm;
+        config.checkpoint_log_index = statement.checkpointLogIndex;
+        config.checkpoint_height = statement.checkpointHeight;
+        config.checkpoint_block_hash = statement.checkpointBlockHash;
+        config.checkpoint_state_root = statement.checkpointStateRoot;
+        config.checkpoint_hash = checkpoint_hash;
+        portal.fast_epochs[statement.oldEpoch].write(config)?;
+        self.storage.emit_event(
+            call.portal,
+            ZonePortalEvent::fast_checkpoint_installed(
+                statement.oldEpoch,
+                statement.nextEpoch,
+                checkpoint_hash,
+            )
+            .into_log_data(),
+        )
+    }
+
+    pub fn retire_fast_epoch(
+        &mut self,
+        msg_sender: Address,
+        call: IZoneFactory::retireFastEpochCall,
+    ) -> Result<()> {
+        self.require_fast_protocol()?;
+        self.require_owner(msg_sender)?;
+        self.require_portal(call.portal)?;
+        let mut portal = ZonePortalStorage::new(call.portal);
+        let mut config = portal.fast_epochs[call.epoch].read()?;
+        if !config.closed
+            || config.retired
+            || config.recorded_peer_barriers != config.expected_peer_barriers
+            || config.finalized_peer_barriers != config.expected_peer_barriers
+            || config.final_settlement_hash == B256::ZERO
+            || config.checkpoint_hash == B256::ZERO
+        {
+            return Err(ZoneFactoryError::fast_epoch_not_drained(call.epoch).into());
+        }
+        config.retired = true;
+        portal.fast_epochs[call.epoch].write(config)?;
+        self.storage.emit_event(
+            call.portal,
+            ZonePortalEvent::fast_epoch_retired(call.epoch).into_log_data(),
+        )
+    }
+
     /// Returns the next zone ID to assign.
     pub fn next_zone_id(&self) -> Result<u32> {
         self.next_zone_id.read()
@@ -271,7 +849,11 @@ impl ZoneFactory {
             return Ok(false);
         };
 
-        Ok(zone_id < u64::from(self.next_zone_id()?))
+        Ok(zone_id != 0 && zone_id < u64::from(self.next_zone_id()?))
+    }
+
+    pub const fn fast_protocol_native_pin(&self) -> B256 {
+        FAST_PROTOCOL_NATIVE_PIN
     }
 }
 
@@ -358,12 +940,15 @@ mod tests {
         test_util::TIP20Setup,
     };
     use alloy::{
-        primitives::{B256, U256, address, keccak256},
+        primitives::{B256, Bytes, U256, address, keccak256},
         sol_types::SolValue,
     };
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
     use portal::PortalTokenConfig;
+    use revm::state::Bytecode;
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::ZonePortalCapability;
+    use tempo_contracts::{precompiles::ZonePortalCapability, zones::T13_ZONE_VERIFIER_RUNTIME};
 
     const OWNER: Address = Address::with_last_byte(0x11);
     const ADMIN: Address = Address::with_last_byte(0x22);
@@ -392,6 +977,121 @@ mod tests {
         factory.next_zone_id.write(1)?;
         factory.owner.write(owner)?;
         Ok(factory)
+    }
+
+    fn fast_signers() -> [PrivateKeySigner; FAST_MEMBER_COUNT] {
+        std::array::from_fn(|_| PrivateKeySigner::random())
+    }
+
+    fn signer_addresses(signers: &[PrivateKeySigner; FAST_MEMBER_COUNT]) -> Vec<Address> {
+        signers.iter().map(PrivateKeySigner::address).collect()
+    }
+
+    fn sign_fast(
+        signers: &[PrivateKeySigner; FAST_MEMBER_COUNT],
+        digest: B256,
+    ) -> eyre::Result<Vec<Bytes>> {
+        signers[..FAST_THRESHOLD as usize]
+            .iter()
+            .map(|signer| {
+                signer
+                    .sign_hash_sync(&digest)
+                    .map(|signature| Bytes::copy_from_slice(&signature.as_bytes()))
+                    .map_err(Into::into)
+            })
+            .collect()
+    }
+
+    fn sign_pair(
+        first: &PrivateKeySigner,
+        second: &PrivateKeySigner,
+        digest: B256,
+    ) -> eyre::Result<Vec<Bytes>> {
+        [first, second]
+            .into_iter()
+            .map(|signer| {
+                signer
+                    .sign_hash_sync(&digest)
+                    .map(|signature| Bytes::copy_from_slice(&signature.as_bytes()))
+                    .map_err(Into::into)
+            })
+            .collect()
+    }
+
+    fn install_prototype_verifier() -> Result<()> {
+        StorageCtx.set_code(
+            ZONE_VERIFIER_ADDRESS,
+            Bytecode::new_legacy(T13_ZONE_VERIFIER_RUNTIME),
+        )
+    }
+
+    fn fast_roster_hash(
+        portal: Address,
+        epoch: u64,
+        protocol_version: u32,
+        proof_mode: u8,
+        verifier_config_hash: B256,
+        members: &[Address],
+        peers: &[Address],
+    ) -> B256 {
+        keccak256(
+            (
+                keccak256("TEMPO_ZONE_FAST_ROSTER_T14_V1"),
+                portal,
+                epoch,
+                protocol_version,
+                U256::from(FAST_THRESHOLD),
+                U256::from(proof_mode),
+                T13_PROTOTYPE_VERIFIER_CODE_HASH,
+                verifier_config_hash,
+                members.to_vec(),
+                peers.to_vec(),
+            )
+                .abi_encode(),
+        )
+    }
+
+    fn configure_call(
+        portal: Address,
+        epoch: u64,
+        members: &[Address],
+        peers: &[Address],
+    ) -> IZoneFactory::configureFastEpochCall {
+        let verifier_config_hash = keccak256([]);
+        IZoneFactory::configureFastEpochCall {
+            portal,
+            epoch,
+            protocolVersion: 1,
+            proofMode: FAST_PROOF_MODE_OPERATOR_ATTESTED,
+            expectedVerifierCodeHash: T13_PROTOTYPE_VERIFIER_CODE_HASH,
+            expectedVerifierConfigHash: verifier_config_hash,
+            rosterHash: fast_roster_hash(
+                portal,
+                epoch,
+                1,
+                FAST_PROOF_MODE_OPERATOR_ATTESTED,
+                verifier_config_hash,
+                members,
+                peers,
+            ),
+            members: members.to_vec(),
+            peerPortals: peers.to_vec(),
+        }
+    }
+
+    fn create_ten_zones(factory: &mut ZoneFactory) -> Result<Vec<Address>> {
+        (0..10)
+            .map(|_| {
+                factory
+                    .create_zone(
+                        OWNER,
+                        IZoneFactory::createZoneCall {
+                            params: create_params(PATH_USD_ADDRESS),
+                        },
+                    )
+                    .map(|created| created.portal)
+            })
+            .collect()
     }
 
     #[test]
@@ -915,6 +1615,518 @@ mod tests {
             );
             assert_eq!(factory.next_zone_id()?, 1);
 
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn fast_epoch_is_t14_only_and_requires_exact_distinct_rosters() -> eyre::Result<()> {
+        std::thread::Builder::new()
+            .name("fast-epoch-configuration".to_string())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(fast_epoch_is_t14_only_and_requires_exact_distinct_rosters_impl)?
+            .join()
+            .expect("fast epoch configuration test thread panicked")
+    }
+
+    fn fast_epoch_is_t14_only_and_requires_exact_distinct_rosters_impl() -> eyre::Result<()> {
+        for hardfork in [TempoHardfork::T13, TempoHardfork::T14] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                TIP20Setup::path_usd(ADMIN).apply()?;
+                install_prototype_verifier()?;
+                let mut factory = factory_with_owner(OWNER)?;
+                let portals = create_ten_zones(&mut factory)?;
+                let portal = portals[0];
+                let peers = portals[1..].to_vec();
+                let members = signer_addresses(&fast_signers());
+                let call = configure_call(portal, 1, &members, &peers);
+
+                if hardfork == TempoHardfork::T13 {
+                    assert_eq!(
+                        factory.configure_fast_epoch(OWNER, call).unwrap_err(),
+                        ZoneFactoryError::fast_protocol_unavailable().into()
+                    );
+                    return Ok(());
+                }
+
+                assert_eq!(
+                    factory
+                        .configure_fast_epoch(ADMIN, call.clone())
+                        .unwrap_err(),
+                    ZoneFactoryError::not_owner().into()
+                );
+                assert_eq!(
+                    factory
+                        .configure_fast_epoch(
+                            OWNER,
+                            IZoneFactory::configureFastEpochCall {
+                                proofMode: 0,
+                                ..call.clone()
+                            },
+                        )
+                        .unwrap_err(),
+                    ZoneFactoryError::invalid_fast_epoch().into()
+                );
+                assert_eq!(
+                    factory
+                        .configure_fast_epoch(
+                            OWNER,
+                            IZoneFactory::configureFastEpochCall {
+                                proofMode: FAST_PROOF_MODE_REQUIRED,
+                                ..call.clone()
+                            },
+                        )
+                        .unwrap_err(),
+                    ZoneFactoryError::invalid_fast_proof_configuration().into()
+                );
+                assert_eq!(
+                    factory
+                        .configure_fast_epoch(
+                            OWNER,
+                            IZoneFactory::configureFastEpochCall {
+                                expectedVerifierCodeHash: B256::repeat_byte(0xff),
+                                ..call.clone()
+                            },
+                        )
+                        .unwrap_err(),
+                    ZoneFactoryError::invalid_fast_proof_configuration().into()
+                );
+                let mut duplicate_members = members.clone();
+                duplicate_members[2] = duplicate_members[0];
+                assert_eq!(
+                    factory
+                        .configure_fast_epoch(
+                            OWNER,
+                            IZoneFactory::configureFastEpochCall {
+                                rosterHash: configure_call(portal, 1, &duplicate_members, &peers,)
+                                    .rosterHash,
+                                members: duplicate_members,
+                                ..call.clone()
+                            },
+                        )
+                        .unwrap_err(),
+                    ZoneFactoryError::invalid_fast_epoch().into()
+                );
+                let mut duplicate_peers = peers.clone();
+                duplicate_peers[8] = duplicate_peers[0];
+                assert_eq!(
+                    factory
+                        .configure_fast_epoch(
+                            OWNER,
+                            IZoneFactory::configureFastEpochCall {
+                                rosterHash: configure_call(portal, 1, &members, &duplicate_peers,)
+                                    .rosterHash,
+                                peerPortals: duplicate_peers,
+                                ..call.clone()
+                            },
+                        )
+                        .unwrap_err(),
+                    ZoneFactoryError::invalid_fast_epoch().into()
+                );
+
+                factory.configure_fast_epoch(OWNER, call)?;
+                let portal_state = ZonePortalStorage::new(portal);
+                assert_eq!(portal_state.fast_epoch.slot(), U256::from(28));
+                assert_eq!(portal_state.fast_epochs.slot(), U256::from(29));
+                assert_eq!(portal_state.fast_epoch_members.slot(), U256::from(30));
+                assert_eq!(portal_state.is_fast_epoch_member.slot(), U256::from(31));
+                assert_eq!(portal_state.fast_epoch_peers.slot(), U256::from(32));
+                assert_eq!(portal_state.is_fast_epoch_peer.slot(), U256::from(33));
+                assert_eq!(portal_state.fast_peer_barriers.slot(), U256::from(34));
+                assert_eq!(portal_state.fast_epoch.read()?, 1);
+                assert_eq!(portal_state.fast_epoch_members[1].read()?, members);
+                assert_eq!(portal_state.fast_epoch_peers[1].read()?, peers);
+                assert_eq!(portal_state.fast_epochs[1].read()?.threshold, 2);
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn fast_epoch_retirement_requires_every_exact_peer_and_checkpoint() -> eyre::Result<()> {
+        std::thread::Builder::new()
+            .name("fast-epoch-retirement".to_string())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(fast_epoch_retirement_requires_every_exact_peer_and_checkpoint_impl)?
+            .join()
+            .expect("fast epoch retirement test thread panicked")
+    }
+
+    fn fast_epoch_retirement_requires_every_exact_peer_and_checkpoint_impl() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            TIP20Setup::path_usd(ADMIN).apply()?;
+            install_prototype_verifier()?;
+            let mut factory = factory_with_owner(OWNER)?;
+            let portals = create_ten_zones(&mut factory)?;
+            let portal = portals[0];
+            let peers = portals[1..].to_vec();
+            let signers = fast_signers();
+            let members = signer_addresses(&signers);
+            for (index, configured_portal) in portals.iter().copied().enumerate() {
+                let configured_peers = portals
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .filter_map(|(peer_index, peer)| (peer_index != index).then_some(peer))
+                    .collect::<Vec<_>>();
+                factory.configure_fast_epoch(
+                    OWNER,
+                    configure_call(configured_portal, 7, &members, &configured_peers),
+                )?;
+            }
+            factory.close_fast_epoch(
+                OWNER,
+                IZoneFactory::closeFastEpochCall {
+                    portal,
+                    epoch: 7,
+                    closureHash: B256::repeat_byte(0x11),
+                },
+            )?;
+
+            let statement_for =
+                |peer: Address, lock_root: B256| IZoneFactory::FastBarrierStatement {
+                    destinationPortal: portal,
+                    destinationEpoch: 7,
+                    closureHash: B256::repeat_byte(0x11),
+                    sourcePortal: peer,
+                    sourceEpoch: 7,
+                    importedAnchorNumber: 90,
+                    importedAnchorHash: B256::repeat_byte(0x12),
+                    logTerm: 3,
+                    logIndex: 99,
+                    blockHeight: U256::from(98),
+                    blockHash: B256::repeat_byte(0x13),
+                    stateRoot: B256::repeat_byte(0x14),
+                    lockLogWatermark: 97,
+                    completeLockRoot: lock_root,
+                    unresolvedRoot: FAST_EMPTY_UNRESOLVED_ROOT,
+                    unresolvedCount: 0,
+                };
+            let barrier_digest = |statement: IZoneFactory::FastBarrierStatement| {
+                keccak256((keccak256(FAST_BARRIER_DOMAIN), U256::from(1), statement).abi_encode())
+            };
+
+            let first_statement = statement_for(peers[0], B256::repeat_byte(0x20));
+            assert_eq!(
+                factory
+                    .record_fast_peer_barrier(
+                        OWNER,
+                        IZoneFactory::recordFastPeerBarrierCall {
+                            portal,
+                            statement: first_statement.clone(),
+                            signatures: Vec::new(),
+                        },
+                    )
+                    .unwrap_err(),
+                ZoneFactoryError::invalid_fast_certificate().into()
+            );
+            let first_digest = barrier_digest(first_statement.clone());
+            let wrong_domain_digest = keccak256(
+                (
+                    keccak256("WRONG_FAST_BARRIER_DOMAIN"),
+                    U256::from(1),
+                    first_statement.clone(),
+                )
+                    .abi_encode(),
+            );
+            assert_eq!(
+                factory
+                    .record_fast_peer_barrier(
+                        OWNER,
+                        IZoneFactory::recordFastPeerBarrierCall {
+                            portal,
+                            statement: first_statement.clone(),
+                            signatures: sign_fast(&signers, wrong_domain_digest)?,
+                        },
+                    )
+                    .unwrap_err(),
+                ZoneFactoryError::invalid_fast_certificate().into()
+            );
+            let outsider = PrivateKeySigner::random();
+            assert_eq!(
+                factory
+                    .record_fast_peer_barrier(
+                        OWNER,
+                        IZoneFactory::recordFastPeerBarrierCall {
+                            portal,
+                            statement: first_statement.clone(),
+                            signatures: sign_pair(&signers[0], &outsider, first_digest)?,
+                        },
+                    )
+                    .unwrap_err(),
+                ZoneFactoryError::invalid_fast_certificate().into()
+            );
+            let mut fabricated = first_statement;
+            fabricated.completeLockRoot = B256::repeat_byte(0xff);
+            assert_eq!(
+                factory
+                    .record_fast_peer_barrier(
+                        OWNER,
+                        IZoneFactory::recordFastPeerBarrierCall {
+                            portal,
+                            statement: fabricated,
+                            signatures: sign_fast(&signers, first_digest)?,
+                        },
+                    )
+                    .unwrap_err(),
+                ZoneFactoryError::invalid_fast_certificate().into()
+            );
+
+            for (index, peer) in peers.iter().copied().enumerate() {
+                let statement = statement_for(peer, B256::repeat_byte(0x40 + index as u8));
+                let digest = barrier_digest(statement.clone());
+                let barrier_call = IZoneFactory::recordFastPeerBarrierCall {
+                    portal,
+                    statement,
+                    signatures: sign_fast(&signers, digest)?,
+                };
+                factory.record_fast_peer_barrier(OWNER, barrier_call.clone())?;
+                assert_eq!(
+                    factory
+                        .record_fast_peer_barrier(OWNER, barrier_call)
+                        .unwrap_err(),
+                    ZoneFactoryError::fast_peer_barrier_already_recorded(peer).into()
+                );
+                let barrier = ZonePortalStorage::new(portal).fast_peer_barriers[7][peer].read()?;
+                let resolution = IZoneFactory::FastBarrierResolution {
+                    barrierHash: barrier.barrier_hash,
+                    terminalRoot: B256::repeat_byte(0x60 + index as u8),
+                    dispositionRoot: B256::repeat_byte(0x70 + index as u8),
+                    resolvedCount: 0,
+                    remainingUnresolvedRoot: FAST_EMPTY_UNRESOLVED_ROOT,
+                    remainingUnresolvedCount: 0,
+                };
+                let resolution_digest = keccak256(
+                    (
+                        keccak256(FAST_BARRIER_RESOLUTION_DOMAIN),
+                        U256::from(1),
+                        portal,
+                        7_u64,
+                        peer,
+                        resolution.clone(),
+                    )
+                        .abi_encode(),
+                );
+                if index == 0 {
+                    let mut incomplete = resolution.clone();
+                    incomplete.remainingUnresolvedCount = 1;
+                    assert_eq!(
+                        factory
+                            .finalize_fast_peer_barrier(
+                                OWNER,
+                                IZoneFactory::finalizeFastPeerBarrierCall {
+                                    portal,
+                                    epoch: 7,
+                                    peerPortal: peer,
+                                    resolution: incomplete,
+                                    signatures: sign_fast(&signers, resolution_digest)?,
+                                },
+                            )
+                            .unwrap_err(),
+                        ZoneFactoryError::invalid_fast_certificate().into()
+                    );
+                }
+                factory.finalize_fast_peer_barrier(
+                    OWNER,
+                    IZoneFactory::finalizeFastPeerBarrierCall {
+                        portal,
+                        epoch: 7,
+                        peerPortal: peer,
+                        resolution,
+                        signatures: sign_fast(&signers, resolution_digest)?,
+                    },
+                )?;
+            }
+
+            assert_eq!(
+                factory
+                    .retire_fast_epoch(
+                        OWNER,
+                        IZoneFactory::retireFastEpochCall { portal, epoch: 7 },
+                    )
+                    .unwrap_err(),
+                ZoneFactoryError::fast_epoch_not_drained(7).into()
+            );
+            let mut accepted = ZonePortalStorage::new(portal);
+            accepted.zone_height.write(U256::from(100))?;
+            accepted.block_hash.write(B256::repeat_byte(0x77))?;
+            let config = accepted.fast_epochs[7].read()?;
+            let mut barriers_hash = keccak256("TEMPO_ZONE_FAST_BARRIERS_T14_V1");
+            for peer in &peers {
+                let barrier = accepted.fast_peer_barriers[7][*peer].read()?;
+                barriers_hash = keccak256(
+                    (
+                        barriers_hash,
+                        *peer,
+                        barrier.barrier_hash,
+                        barrier.resolution_hash,
+                    )
+                        .abi_encode(),
+                );
+            }
+            let settlement_hash = keccak256(
+                (
+                    keccak256(FAST_FINAL_SETTLEMENT_DOMAIN),
+                    U256::from(1),
+                    portal,
+                    7_u64,
+                    config.roster_hash,
+                    config.closure_hash,
+                    U256::from(100),
+                    B256::repeat_byte(0x77),
+                    0_u64,
+                    barriers_hash,
+                )
+                    .abi_encode(),
+            );
+            assert_eq!(
+                factory
+                    .record_fast_final_settlement(
+                        OWNER,
+                        IZoneFactory::recordFastFinalSettlementCall {
+                            portal,
+                            epoch: 7,
+                            zoneHeight: U256::from(100),
+                            blockHash: B256::repeat_byte(0x77),
+                            withdrawalBatchIndex: 0,
+                            signatures: Vec::new(),
+                        },
+                    )
+                    .unwrap_err(),
+                ZoneFactoryError::invalid_fast_certificate().into()
+            );
+            factory.record_fast_final_settlement(
+                OWNER,
+                IZoneFactory::recordFastFinalSettlementCall {
+                    portal,
+                    epoch: 7,
+                    zoneHeight: U256::from(100),
+                    blockHash: B256::repeat_byte(0x77),
+                    withdrawalBatchIndex: 0,
+                    signatures: sign_fast(&signers, settlement_hash)?,
+                },
+            )?;
+            let next_signers = fast_signers();
+            let next_members = signer_addresses(&next_signers);
+            let next_call = configure_call(portal, 8, &next_members, &peers);
+            let settled = ZonePortalStorage::new(portal).fast_epochs[7].read()?;
+            let checkpoint_statement = IZoneFactory::FastCheckpointStatement {
+                portal,
+                oldEpoch: 7,
+                nextEpoch: 8,
+                nextRosterHash: next_call.rosterHash,
+                finalZoneHeight: settled.final_settlement_height,
+                finalBlockHash: settled.final_settlement_block_hash,
+                finalWithdrawalBatchIndex: settled.final_settlement_withdrawal_batch_index,
+                finalSettlementHash: settled.final_settlement_hash,
+                checkpointLogTerm: 4,
+                checkpointLogIndex: 101,
+                checkpointHeight: U256::from(100),
+                checkpointBlockHash: B256::repeat_byte(0x77),
+                checkpointStateRoot: B256::repeat_byte(0x88),
+            };
+            let checkpoint_hash = keccak256(
+                (
+                    keccak256(FAST_CHECKPOINT_DOMAIN),
+                    U256::from(1),
+                    checkpoint_statement.clone(),
+                )
+                    .abi_encode(),
+            );
+            assert_eq!(
+                factory
+                    .install_fast_checkpoint(
+                        OWNER,
+                        IZoneFactory::installFastCheckpointCall {
+                            portal,
+                            statement: checkpoint_statement.clone(),
+                            nextMembers: next_members.clone(),
+                            signatures: Vec::new(),
+                        },
+                    )
+                    .unwrap_err(),
+                ZoneFactoryError::invalid_fast_certificate().into()
+            );
+
+            let checkpoint_digest = |statement: &IZoneFactory::FastCheckpointStatement| {
+                keccak256(
+                    (
+                        keccak256(FAST_CHECKPOINT_DOMAIN),
+                        U256::from(1),
+                        statement.clone(),
+                    )
+                        .abi_encode(),
+                )
+            };
+            let mut later_head = checkpoint_statement.clone();
+            later_head.checkpointHeight = U256::from(101);
+            later_head.checkpointBlockHash = B256::repeat_byte(0x99);
+            let mut substituted_hash = checkpoint_statement.clone();
+            substituted_hash.checkpointBlockHash = B256::repeat_byte(0x99);
+            let mut substituted_height = checkpoint_statement.clone();
+            substituted_height.checkpointHeight = U256::from(99);
+            let mut empty_log_prefix = checkpoint_statement.clone();
+            empty_log_prefix.checkpointLogIndex = 0;
+            for invalid_statement in [
+                later_head,
+                substituted_hash,
+                substituted_height,
+                empty_log_prefix,
+            ] {
+                let digest = checkpoint_digest(&invalid_statement);
+                assert_eq!(
+                    factory
+                        .install_fast_checkpoint(
+                            OWNER,
+                            IZoneFactory::installFastCheckpointCall {
+                                portal,
+                                statement: invalid_statement,
+                                nextMembers: next_members.clone(),
+                                signatures: sign_fast(&next_signers, digest)?,
+                            },
+                        )
+                        .unwrap_err(),
+                    ZoneFactoryError::fast_epoch_not_drained(7).into()
+                );
+                assert_eq!(
+                    ZonePortalStorage::new(portal).fast_epochs[7].read()?,
+                    settled,
+                    "invalid checkpoint must not mutate epoch state"
+                );
+            }
+            factory.install_fast_checkpoint(
+                OWNER,
+                IZoneFactory::installFastCheckpointCall {
+                    portal,
+                    statement: checkpoint_statement,
+                    nextMembers: next_members,
+                    signatures: sign_fast(&next_signers, checkpoint_hash)?,
+                },
+            )?;
+            factory.retire_fast_epoch(
+                OWNER,
+                IZoneFactory::retireFastEpochCall { portal, epoch: 7 },
+            )?;
+            factory.configure_fast_epoch(OWNER, next_call)?;
+
+            let state = ZonePortalStorage::new(portal);
+            let config = state.fast_epochs[7].read()?;
+            assert!(config.retired);
+            assert_eq!(config.recorded_peer_barriers, 9);
+            assert_eq!(config.finalized_peer_barriers, 9);
+            assert_eq!(config.checkpoint_log_index, 101);
+            assert_eq!(config.checkpoint_height, config.final_settlement_height);
+            assert_eq!(
+                config.checkpoint_block_hash,
+                config.final_settlement_block_hash
+            );
+            assert_eq!(state.fast_epoch_members[7].read()?, members);
+            assert_eq!(state.fast_epoch_peers[7].read()?, peers);
+            assert!(state.fast_peer_barriers[7][portals[1]].read()?.finalized);
+            assert_eq!(state.fast_epoch.read()?, 8);
             Ok(())
         })
     }
