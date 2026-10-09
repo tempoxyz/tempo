@@ -8,7 +8,7 @@ Reth, or database dependencies.
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/execution-routing.svg">
   <source media="(prefers-color-scheme: light)" srcset="assets/execution-routing-light.svg">
-  <img alt="Tempo metabinary routing: native transports enter the live node; historical execution uses frozen read-only era workers over shared chain storage." src="assets/execution-routing-light.svg">
+  <img alt="Tempo metabinary routing: native transports enter the live node. Historical execution uses frozen read-only era workers over shared chain storage." src="assets/execution-routing-light.svg">
 </picture>
 
 ## Release configuration
