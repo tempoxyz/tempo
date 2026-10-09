@@ -4,11 +4,12 @@ use std::sync::{
     mpsc::{self, Receiver, Sender},
 };
 
+use alloy_consensus::transaction::Recovered;
 use alloy_primitives::B256;
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
-use reth_evm::{Evm, EvmEnvFor};
-use reth_revm::database::StateProviderDatabase;
-use reth_storage_api::{EvmStateProviderBox, StateProvider, StateProviderFactory};
+use reth_evm::{BlockExecutorFactory, EvmEnv, EvmEnvFor, database::StateProviderDatabase};
+use reth_evm_ethereum::EvmFactory as _;
+use reth_storage_api::{EvmStateProviderBox, StateProvider as _, StateProviderFactory};
 use reth_tasks::{TaskExecutor, WorkerPool};
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
@@ -17,7 +18,7 @@ use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::T
 use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
 use tracing::{instrument, trace};
 
-pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<EvmStateProviderBox>>>;
+pub(crate) type PrewarmEvmState = Option<TempoEvm<'static>>;
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
@@ -192,15 +193,14 @@ impl BestTransactionsPrewarming {
             }
 
             let mut tx_env = tx.transaction.clone_tx_env();
-            if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
-                tempo_tx_env.expiring_nonce_idx = expiring_nonce_offset;
-            }
+            tx_env.set_expiring_nonce_idx(expiring_nonce_offset);
+            let tx_env = Recovered::new_unchecked(tx_env, tx.transaction.sender());
 
-            let result = match evm.transact_raw(tx_env) {
-                Ok(result) => result.result,
+            let result = match evm.transact(&tx_env).map(|executed| executed.detach()) {
+                Ok(executed) => executed,
                 Err(err) => {
                     // Discard actions recorded by the failed transaction before reusing this worker.
-                    evm.clear_actions();
+                    evm.ext().actions.clear();
                     trace!(
                         target: "payload_builder",
                         %err,
@@ -217,12 +217,12 @@ impl BestTransactionsPrewarming {
                 return None;
             }
 
-            let actions = evm.take_actions()?;
+            let actions = evm.ext().actions.take()?;
             let expiring_nonce = tx
                 .transaction
                 .is_expiring_nonce()
                 .then(|| {
-                    let valid_before = tx.transaction.inner().valid_before()?;
+                    let valid_before = tx.transaction.inner().as_aa()?.tx().valid_before?.get();
                     Some(ExpiringNonceReplay {
                         hash: tx.transaction.expiring_nonce_hash()?,
                         valid_before,
@@ -238,9 +238,9 @@ impl BestTransactionsPrewarming {
             );
 
             Some(Box::new(StorageActionReplay {
-                result,
+                validator_fee: result.result.ext.validator_fee,
+                result: result.result,
                 actions,
-                validator_fee: evm.validator_fee(),
                 expiring_nonce,
             }))
         });
@@ -354,6 +354,7 @@ pub(crate) struct PrewarmingExecutionContext<Provider> {
     parent_hash: B256,
     cache: Option<SavedCache>,
     evm_env: EvmEnvFor<TempoEvmConfig>,
+    evm_config: TempoEvmConfig,
     stop: Arc<AtomicBool>,
     parallel: bool,
 }
@@ -368,6 +369,7 @@ where
         cache: Option<SavedCache>,
         parent_hash: B256,
         evm_env: EvmEnvFor<TempoEvmConfig>,
+        evm_config: TempoEvmConfig,
         parallel: bool,
     ) -> Self {
         Self {
@@ -376,6 +378,7 @@ where
             parent_hash,
             cache,
             evm_env,
+            evm_config,
             stop: Arc::new(AtomicBool::new(false)),
             parallel,
         }
@@ -409,15 +412,19 @@ where
         let mut evm_env = self.evm_env.clone();
 
         if !self.parallel {
-            evm_env.cfg_env.disable_nonce_check = true;
-            evm_env.cfg_env.disable_balance_check = true;
+            evm_env = evm_env
+                .with_nonce_check_disabled()
+                .with_balance_check_disabled();
         }
 
-        let mut evm = TempoEvm::new(state_provider, evm_env);
+        let mut evm = self.evm_config.evm_with_database(state_provider, evm_env);
 
         // Record storage actions for future replay
         if self.parallel {
-            evm = evm.with_actions();
+            evm.ext_mut().actions.enable();
+            // Enabling replaces the disabled recorder, so reconnect native precompiles
+            // to the same action buffer used by protocol nonce and fee operations.
+            BlockExecutorFactory::evm_factory(&self.evm_config).configure_evm(&mut evm);
         }
 
         Some(evm)
@@ -744,9 +751,32 @@ mod tests {
             parent_hash: parent_header.hash(),
             cache: None,
             evm_env,
+            evm_config,
             stop: Arc::default(),
             parallel,
         }
+    }
+
+    #[test]
+    fn parallel_prewarming_preserves_custom_precompiles_builder() {
+        static BUILDER_STATES: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
+        let factory = tempo_evm::TempoEvmFactory::new_with_precompiles(|env, ext| {
+            BUILDER_STATES.fetch_or(
+                if ext.actions.is_enabled() { 2 } else { 1 },
+                Ordering::Relaxed,
+            );
+            Box::new(tempo_precompiles::TempoPrecompiles::new(
+                env.spec,
+                ext.actions.clone(),
+                ext.non_creditable_slots.clone(),
+            ))
+        });
+        let mut context = prewarming_context(TaskExecutor::test(), true);
+        context.evm_config = context.evm_config.with_evm_factory(factory);
+        let evm = context.evm_for_ctx().expect("prewarming EVM");
+        assert!(evm.ext().actions.is_enabled());
+        assert_eq!(BUILDER_STATES.load(Ordering::Relaxed), 3);
     }
 
     fn wait_until(mut condition: impl FnMut() -> bool) {
@@ -970,10 +1000,109 @@ mod tests {
     }
 
     #[test]
+    fn prewarming_clears_worker_state_after_completion() {
+        let executor = TaskExecutor::test();
+        let pool = executor.prewarming_pool();
+
+        let sender = Address::random();
+        let txs = vec![test_tx(sender, 0)];
+        let log = Arc::new(Mutex::new(TestLog::default()));
+        let mut prewarming = prewarming_with_executor(executor.clone(), txs, log);
+
+        assert!(prewarming.next().is_some());
+        drop(prewarming);
+
+        pool.init::<PrewarmEvmState>(|existing| {
+            assert!(existing.is_none());
+            None
+        });
+        pool.clear();
+    }
+
+    #[test]
+    fn parallel_prewarm_records_native_transfer_balance_changes() {
+        use tempo_precompiles::{
+            PATH_USD_ADDRESS,
+            storage::{StorageCtx, StorageKey},
+            tip20::{ITIP20, TIP20Token, tip20_slots},
+        };
+
+        let mut context = prewarming_context(TaskExecutor::test(), true);
+        context.evm_env.block.basefee = U256::ZERO;
+        let mut evm = context.evm_for_ctx().expect("prewarm EVM");
+        let sender = Address::repeat_byte(0x31);
+        let recipient = Address::repeat_byte(0x32);
+        StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
+            let mut token = TIP20Token::from_address(PATH_USD_ADDRESS).unwrap();
+            token
+                .initialize(sender, "pathUSD", "pathUSD", "USD", Address::ZERO, sender)
+                .unwrap();
+            token.increment_balance(sender, U256::from(1000)).unwrap();
+        });
+        evm.state_mut().commit_transaction();
+        evm.state_mut().clear_transaction_state();
+        evm.ext().actions.clear();
+
+        // transfer(address,uint256), matching a payment transaction eligible for replay.
+        let mut input = vec![0xa9, 0x05, 0x9c, 0xbb];
+        input.extend_from_slice(&recipient.into_word().0);
+        input.extend_from_slice(&U256::from(100).to_be_bytes::<32>());
+        let tx = TempoTransaction {
+            chain_id: 42431,
+            fee_token: Some(PATH_USD_ADDRESS),
+            gas_limit: 1_000_000,
+            calls: vec![Call {
+                to: TxKind::Call(PATH_USD_ADDRESS),
+                value: U256::ZERO,
+                input: input.into(),
+            }],
+            nonce_key: U256::ONE,
+            ..Default::default()
+        };
+        let envelope = TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()));
+        let tx = tempo_evm::TempoTxEnv::from(Recovered::new_unchecked(envelope, sender));
+        let result = evm
+            .transact(&Recovered::new_unchecked(tx, sender))
+            .expect("transfer transaction")
+            .commit();
+        assert!(result.status, "native transfer failed: {result:?}");
+        let actions = evm.ext().actions.take().expect("enabled recorder");
+        let sender_slot = sender.mapping_slot(tip20_slots::BALANCES);
+        let recipient_slot = recipient.mapping_slot(tip20_slots::BALANCES);
+        assert!(actions.contains(&StorageAction::Sstore(
+            PATH_USD_ADDRESS,
+            sender_slot,
+            U256::from(1000),
+            U256::from(900),
+        )));
+        assert!(actions.contains(&StorageAction::Sstore(
+            PATH_USD_ADDRESS,
+            recipient_slot,
+            U256::ZERO,
+            U256::from(100),
+        )));
+        StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
+            let token = TIP20Token::from_address(PATH_USD_ADDRESS).unwrap();
+            assert_eq!(
+                token
+                    .balance_of(ITIP20::balanceOfCall { account: sender })
+                    .unwrap(),
+                U256::from(900)
+            );
+            assert_eq!(
+                token
+                    .balance_of(ITIP20::balanceOfCall { account: recipient })
+                    .unwrap(),
+                U256::from(100)
+            );
+        });
+    }
+
+    #[test]
     fn failed_prewarm_clears_actions_before_same_worker_is_reused() {
         let executor = TaskExecutor::test();
         let mut context = prewarming_context(executor, true);
-        context.evm_env.block_env.basefee = 0;
+        context.evm_env.block.basefee = U256::ZERO;
 
         let pool = WorkerPool::new(1, "prewarm-actions-test");
         pool.init::<PrewarmEvmState>(|_| context.evm_for_ctx());
@@ -987,7 +1116,10 @@ mod tests {
                     .as_mut()
                     .expect("prewarm EVM");
                 // Model an action recorded before the failed execution returned an error.
-                assert_eq!(evm.replace_actions(vec![failed_action]), Some(Vec::new()));
+                assert_eq!(
+                    evm.ext().actions.replace(vec![failed_action]),
+                    Some(Vec::new())
+                );
             });
 
             let sender = Address::random();
@@ -1002,7 +1134,7 @@ mod tests {
                     .get_mut::<PrewarmEvmState>()
                     .as_mut()
                     .expect("prewarm EVM");
-                assert_eq!(evm.take_actions(), Some(Vec::new()));
+                assert_eq!(evm.ext().actions.take(), Some(Vec::new()));
             });
 
             let successful = BestTransactionsPrewarming::prewarm_transaction(

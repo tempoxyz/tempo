@@ -1,5 +1,5 @@
-use alloy_evm::eth::EthBlockExecutionCtx;
 use reth_evm::NextBlockEnvAttributes;
+use reth_evm_ethereum::EthBlockExecutionCtx;
 use tempo_primitives::TempoConsensusContext;
 
 /// Execution context for Tempo block.

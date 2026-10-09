@@ -7,11 +7,11 @@ use alloy_primitives::Address;
 use alloy_rpc_types_eth::simulate::SimulatedBlock;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
 use parking_lot::Mutex;
-use reth_ethereum::evm::revm::database::StateProviderDatabase;
+use reth_evm::database::StateProviderDatabase;
 use reth_node_api::FullNodeTypes;
 use reth_node_builder::NodeAdapter;
 use reth_primitives_traits::AlloyBlockHeader as _;
-use reth_provider::ChainSpecProvider;
+use reth_provider::{ChainSpecProvider, StateProvider as _};
 use reth_rpc_eth_api::{
     RpcBlock, RpcNodeCore,
     helpers::{EthCall, LoadBlock, LoadState, SpawnBlocking},
@@ -211,7 +211,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoSimulate<N> {
                 let _permit = permit;
                 let state = this.state_at_block_id(block).await?;
                 let spec = this.provider().chain_spec().tempo_hardfork_at(timestamp);
-                let mut db = StateProviderDatabase::new(state);
+                let mut db = StateProviderDatabase::new(state.into_evm_state_provider());
 
                 let resolved =
                     db.with_read_only_storage_ctx(spec, StorageActions::disabled(), || {

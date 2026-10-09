@@ -99,10 +99,9 @@ fn signature_verification(c: &mut Criterion) {
                 let output = verifier
                     .call(black_box(&calldata), portal)
                     .expect("Zone verifier call completes");
-                assert!(output.is_success());
                 // Unset production PCRs reject the proof after attestation verification.
                 assert!(
-                    !IZoneVerifier::verifyCall::abi_decode_returns(&output.bytes)
+                    !IZoneVerifier::verifyCall::abi_decode_returns(output.bytes())
                         .expect("Zone verifier returns a bool")
                 );
             });

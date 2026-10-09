@@ -291,11 +291,7 @@ const T12_SSTORE_SENTRY: Expectation = Expectation {
         let (real, shadow) = ctx.observed_txs()?;
         if real.outcome != TxOutcome::Success
             || shadow.outcome != TxOutcome::Halt
-            || ctx
-                .tx?
-                .gas_limit()
-                .checked_sub(real.gas.total_gas_spent())?
-                > CALL_STIPEND
+            || ctx.tx?.gas_limit().checked_sub(real.gas.total_gas_spent)? > CALL_STIPEND
             || field.name == "execution"
         {
             return None;
@@ -344,8 +340,8 @@ mod tests {
     };
     use crate::shadow_replay::analysis::{MAX_SAMPLES, Report};
     use alloy::primitives::Signature;
+    use evm2::evm::TxResultExt;
     use reth_revm::{
-        context::result::ResultGas,
         db::states::{StorageSlot, TransitionAccount},
         state::AccountInfo,
     };
@@ -436,7 +432,10 @@ mod tests {
                 .map(|&gas_used| {
                     Ok(ObservedTx {
                         outcome: TxOutcome::Success,
-                        gas: ResultGas::default().with_total_gas_spent(gas_used),
+                        gas: TxResultExt {
+                            total_gas_spent: gas_used,
+                            ..Default::default()
+                        },
                         ..Default::default()
                     })
                 })
@@ -660,9 +659,11 @@ mod tests {
         let mut real = evidence(&[32_366, 21_000]);
         let mut shadow = evidence(&[35_212, 21_000]);
         // Refunds lower receipt gas used, but do not increase gas available during execution.
-        tx_mut(&mut real, 0).gas = ResultGas::default()
-            .with_total_gas_spent(35_166)
-            .with_refunded(2_800);
+        tx_mut(&mut real, 0).gas = TxResultExt {
+            total_gas_spent: 35_166,
+            refunded: 2_800,
+            ..Default::default()
+        };
         let halted = tx_mut(&mut shadow, 0);
         halted.outcome = TxOutcome::Halt;
         halted.receipt_logs_hash = B256::repeat_byte(1);
@@ -677,20 +678,20 @@ mod tests {
         assert_eq!(report.expected, [(T12_SSTORE_SENTRY.id, 4)].into());
 
         for gas_spent in [35_212 - CALL_STIPEND, 35_212] {
-            tx_mut(&mut real, 0).gas.set_total_gas_spent(gas_spent);
+            tx_mut(&mut real, 0).gas.total_gas_spent = gas_spent;
             assert_eq!(
                 Report::analyze(&real, &shadow, &rules, &block).outcome(&shadow),
                 ReplayOutcome::Expected
             );
         }
         for gas_spent in [35_212 - CALL_STIPEND - 1, 35_213] {
-            tx_mut(&mut real, 0).gas.set_total_gas_spent(gas_spent);
+            tx_mut(&mut real, 0).gas.total_gas_spent = gas_spent;
             assert_eq!(
                 Report::analyze(&real, &shadow, &rules, &block).unexplained,
                 4
             );
         }
-        tx_mut(&mut real, 0).gas.set_total_gas_spent(35_166);
+        tx_mut(&mut real, 0).gas.total_gas_spent = 35_166;
         for outcome in [TxOutcome::Success, TxOutcome::Revert] {
             tx_mut(&mut shadow, 0).outcome = outcome;
             assert!(Report::analyze(&real, &shadow, &rules, &block).unexplained > 0);

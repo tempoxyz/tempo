@@ -1037,10 +1037,7 @@ mod tests {
 
         Arc::new(Chain::new(
             blocks,
-            ExecutionOutcome {
-                receipts,
-                ..Default::default()
-            },
+            ExecutionOutcome::default().with_receipts(receipts),
             Default::default(),
         ))
     }

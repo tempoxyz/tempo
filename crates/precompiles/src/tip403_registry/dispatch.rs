@@ -6,7 +6,7 @@ use crate::{
     view,
 };
 use alloy::primitives::Address;
-use revm::precompile::PrecompileResult;
+use evm2::precompiles::PrecompileResult;
 use tempo_contracts::precompiles::ITIP403Registry;
 
 impl Precompile for TIP403Registry {
@@ -79,7 +79,7 @@ mod tests {
     use super::*;
     use crate::{
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
+        test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage, revert_bytes},
         tip403_registry::{ALLOW_ALL_POLICY_ID, ITIP403Registry},
     };
     use alloy::{
@@ -106,7 +106,7 @@ mod tests {
             assert!(result.is_ok());
             let output = result.unwrap();
             let decoded: bool =
-                ITIP403Registry::isAuthorizedCall::abi_decode_returns(&output.bytes).unwrap();
+                ITIP403Registry::isAuthorizedCall::abi_decode_returns(output.bytes()).unwrap();
             assert!(decoded);
 
             Ok(())
@@ -130,7 +130,7 @@ mod tests {
             assert!(result.is_ok());
             let output = result.unwrap();
             let decoded: u64 =
-                ITIP403Registry::createPolicyCall::abi_decode_returns(&output.bytes).unwrap();
+                ITIP403Registry::createPolicyCall::abi_decode_returns(output.bytes()).unwrap();
             assert_eq!(decoded, 2); // First created policy ID
 
             Ok(())
@@ -148,7 +148,7 @@ mod tests {
             let counter_call = ITIP403Registry::policyIdCounterCall {};
             let calldata = counter_call.abi_encode();
             let result = registry.call(&calldata, sender).unwrap();
-            let counter = u64::abi_decode(&result.bytes).unwrap();
+            let counter = u64::abi_decode(result.bytes()).unwrap();
             assert_eq!(counter, 2); // Counter starts at 2 (policies 0 and 1 are reserved)
 
             Ok(())
@@ -175,7 +175,7 @@ mod tests {
             let result = registry.call(&calldata, admin).unwrap();
 
             let policy_id: u64 =
-                ITIP403Registry::createPolicyWithAccountsCall::abi_decode_returns(&result.bytes)
+                ITIP403Registry::createPolicyWithAccountsCall::abi_decode_returns(result.bytes())
                     .unwrap();
             assert_eq!(policy_id, 2);
 
@@ -186,7 +186,7 @@ mod tests {
             };
             let calldata = is_auth_call.abi_encode();
             let result = registry.call(&calldata, admin).unwrap();
-            let is_authorized = bool::abi_decode(&result.bytes).unwrap();
+            let is_authorized = bool::abi_decode(result.bytes()).unwrap();
             assert!(is_authorized);
 
             let is_auth_call = ITIP403Registry::isAuthorizedCall {
@@ -195,7 +195,7 @@ mod tests {
             };
             let calldata = is_auth_call.abi_encode();
             let result = registry.call(&calldata, admin).unwrap();
-            let is_authorized = bool::abi_decode(&result.bytes).unwrap();
+            let is_authorized = bool::abi_decode(result.bytes()).unwrap();
             assert!(is_authorized);
 
             // Check that other accounts are not authorized
@@ -205,7 +205,7 @@ mod tests {
             };
             let calldata = is_auth_call.abi_encode();
             let result = registry.call(&calldata, admin).unwrap();
-            let is_authorized = bool::abi_decode(&result.bytes).unwrap();
+            let is_authorized = bool::abi_decode(result.bytes()).unwrap();
             assert!(!is_authorized);
 
             Ok(())
@@ -229,7 +229,7 @@ mod tests {
             let calldata = call.abi_encode();
             let result = registry.call(&calldata, admin).unwrap();
             let policy_id: u64 =
-                ITIP403Registry::createPolicyCall::abi_decode_returns(&result.bytes).unwrap();
+                ITIP403Registry::createPolicyCall::abi_decode_returns(result.bytes()).unwrap();
 
             // Initially, all accounts should be authorized (empty blacklist)
             let is_auth_call = ITIP403Registry::isAuthorizedCall {
@@ -238,7 +238,7 @@ mod tests {
             };
             let calldata = is_auth_call.abi_encode();
             let result = registry.call(&calldata, admin).unwrap();
-            let is_authorized = bool::abi_decode(&result.bytes).unwrap();
+            let is_authorized = bool::abi_decode(result.bytes()).unwrap();
             assert!(is_authorized);
 
             // Add account to blacklist
@@ -257,7 +257,7 @@ mod tests {
             };
             let calldata = is_auth_call.abi_encode();
             let result = registry.call(&calldata, admin).unwrap();
-            let is_authorized = bool::abi_decode(&result.bytes).unwrap();
+            let is_authorized = bool::abi_decode(result.bytes()).unwrap();
             assert!(!is_authorized);
 
             // Other accounts should still be authorized
@@ -267,7 +267,7 @@ mod tests {
             };
             let calldata = is_auth_call.abi_encode();
             let result = registry.call(&calldata, admin).unwrap();
-            let is_authorized = bool::abi_decode(&result.bytes).unwrap();
+            let is_authorized = bool::abi_decode(result.bytes()).unwrap();
             assert!(is_authorized);
 
             // Remove account from blacklist
@@ -286,7 +286,7 @@ mod tests {
             };
             let calldata = is_auth_call.abi_encode();
             let result = registry.call(&calldata, admin).unwrap();
-            let is_authorized = bool::abi_decode(&result.bytes).unwrap();
+            let is_authorized = bool::abi_decode(result.bytes()).unwrap();
             assert!(is_authorized);
 
             Ok(())
@@ -310,7 +310,7 @@ mod tests {
             let calldata = call.abi_encode();
             let result = registry.call(&calldata, admin).unwrap();
             let policy_id: u64 =
-                ITIP403Registry::createPolicyCall::abi_decode_returns(&result.bytes).unwrap();
+                ITIP403Registry::createPolicyCall::abi_decode_returns(result.bytes()).unwrap();
 
             // Add multiple accounts to whitelist
             let modify_call1 = ITIP403Registry::modifyPolicyWhitelistCall {
@@ -336,7 +336,7 @@ mod tests {
             };
             let calldata = is_auth_call.abi_encode();
             let result = registry.call(&calldata, admin).unwrap();
-            let is_authorized = bool::abi_decode(&result.bytes).unwrap();
+            let is_authorized = bool::abi_decode(result.bytes()).unwrap();
             assert!(is_authorized);
 
             let is_auth_call = ITIP403Registry::isAuthorizedCall {
@@ -345,7 +345,7 @@ mod tests {
             };
             let calldata = is_auth_call.abi_encode();
             let result = registry.call(&calldata, admin).unwrap();
-            let is_authorized = bool::abi_decode(&result.bytes).unwrap();
+            let is_authorized = bool::abi_decode(result.bytes()).unwrap();
             assert!(is_authorized);
 
             // Remove one account from whitelist
@@ -364,7 +364,7 @@ mod tests {
             };
             let calldata = is_auth_call.abi_encode();
             let result = registry.call(&calldata, admin).unwrap();
-            let is_authorized = bool::abi_decode(&result.bytes).unwrap();
+            let is_authorized = bool::abi_decode(result.bytes()).unwrap();
             assert!(!is_authorized);
 
             let is_auth_call = ITIP403Registry::isAuthorizedCall {
@@ -373,7 +373,7 @@ mod tests {
             };
             let calldata = is_auth_call.abi_encode();
             let result = registry.call(&calldata, admin).unwrap();
-            let is_authorized = bool::abi_decode(&result.bytes).unwrap();
+            let is_authorized = bool::abi_decode(result.bytes()).unwrap();
             assert!(is_authorized);
 
             Ok(())
@@ -396,7 +396,7 @@ mod tests {
             let calldata = call.abi_encode();
             let result = registry.call(&calldata, admin).unwrap();
             let policy_id: u64 =
-                ITIP403Registry::createPolicyCall::abi_decode_returns(&result.bytes).unwrap();
+                ITIP403Registry::createPolicyCall::abi_decode_returns(result.bytes()).unwrap();
 
             // Get initial policy data
             let policy_data_call = ITIP403Registry::policyDataCall {
@@ -405,7 +405,7 @@ mod tests {
             let calldata = policy_data_call.abi_encode();
             let result = registry.call(&calldata, admin).unwrap();
             let policy_data =
-                ITIP403Registry::policyDataCall::abi_decode_returns(&result.bytes).unwrap();
+                ITIP403Registry::policyDataCall::abi_decode_returns(result.bytes()).unwrap();
             assert_eq!(policy_data.admin, admin);
 
             // Change policy admin
@@ -423,7 +423,7 @@ mod tests {
             let calldata = policy_data_call.abi_encode();
             let result = registry.call(&calldata, admin).unwrap();
             let policy_data =
-                ITIP403Registry::policyDataCall::abi_decode_returns(&result.bytes).unwrap();
+                ITIP403Registry::policyDataCall::abi_decode_returns(result.bytes()).unwrap();
             assert_eq!(policy_data.admin, new_admin);
 
             Ok(())
@@ -441,14 +441,14 @@ mod tests {
             let is_auth_call = ITIP403Registry::isAuthorizedCall { policyId: 0, user };
             let calldata = is_auth_call.abi_encode();
             let result = registry.call(&calldata, Address::ZERO).unwrap();
-            let is_authorized = bool::abi_decode(&result.bytes).unwrap();
+            let is_authorized = bool::abi_decode(result.bytes()).unwrap();
             assert!(!is_authorized);
 
             // Test policy 1 (always allow)
             let is_auth_call = ITIP403Registry::isAuthorizedCall { policyId: 1, user };
             let calldata = is_auth_call.abi_encode();
             let result = registry.call(&calldata, Address::ZERO).unwrap();
-            let is_authorized = bool::abi_decode(&result.bytes).unwrap();
+            let is_authorized = bool::abi_decode(result.bytes()).unwrap();
             assert!(is_authorized);
 
             Ok(())
@@ -465,13 +465,13 @@ mod tests {
             let mut registry = TIP403Registry::new();
 
             let invalid_data = vec![0x12, 0x34, 0x56, 0x78];
-            let result = registry.call(&invalid_data, sender)?;
-            assert!(result.is_revert());
+            let result = registry.call(&invalid_data, sender);
+            assert!(matches!(result, Err(evm2::PrecompileError::Revert(_))));
 
             // T1: insufficient data also returns reverted output
             let short_data = vec![0x12, 0x34];
-            let result = registry.call(&short_data, sender)?;
-            assert!(result.is_revert());
+            let result = registry.call(&short_data, sender);
+            assert!(matches!(result, Err(evm2::PrecompileError::Revert(_))));
 
             Ok(())
         })?;
@@ -483,8 +483,7 @@ mod tests {
 
             let short_data = vec![0x12, 0x34];
             let result = registry.call(&short_data, sender);
-            let output = result.expect("expected Ok(halt) for short calldata");
-            assert!(output.is_halt());
+            assert!(matches!(result, Err(evm2::PrecompileError::Halt(_))));
 
             Ok(())
         })
@@ -505,7 +504,7 @@ mod tests {
             let calldata = whitelist_call.abi_encode();
             let result = registry.call(&calldata, admin).unwrap();
             let whitelist_id: u64 =
-                ITIP403Registry::createPolicyCall::abi_decode_returns(&result.bytes).unwrap();
+                ITIP403Registry::createPolicyCall::abi_decode_returns(result.bytes()).unwrap();
 
             let blacklist_call = ITIP403Registry::createPolicyCall {
                 admin,
@@ -514,7 +513,7 @@ mod tests {
             let calldata = blacklist_call.abi_encode();
             let result = registry.call(&calldata, admin).unwrap();
             let blacklist_id: u64 =
-                ITIP403Registry::createPolicyCall::abi_decode_returns(&result.bytes).unwrap();
+                ITIP403Registry::createPolicyCall::abi_decode_returns(result.bytes()).unwrap();
 
             // Verify IDs are sequential
             assert_eq!(whitelist_id, 2);
@@ -524,7 +523,7 @@ mod tests {
             let counter_call = ITIP403Registry::policyIdCounterCall {};
             let calldata = counter_call.abi_encode();
             let result = registry.call(&calldata, admin).unwrap();
-            let counter = u64::abi_decode(&result.bytes).unwrap();
+            let counter = u64::abi_decode(result.bytes()).unwrap();
             assert_eq!(counter, 4);
 
             Ok(())
@@ -576,11 +575,8 @@ mod tests {
             let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
                 let mut registry = TIP403Registry::new();
-                let result = registry
-                    .call(calldata, account)
-                    .map_err(|err| eyre::eyre!("{err:?}"))?;
-                assert!(result.is_revert());
-                assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
+                let result = registry.call(calldata, account);
+                assert!(UnknownFunctionSelector::abi_decode(revert_bytes(&result)).is_ok());
                 Ok(())
             })?;
         }
@@ -593,10 +589,9 @@ mod tests {
                 validate_receive_policy.as_slice(),
                 set_receive_policy.as_slice(),
             ] {
-                let result = registry
+                registry
                     .call(calldata, account)
                     .map_err(|err| eyre::eyre!("{err:?}"))?;
-                assert!(!result.is_revert());
             }
             Ok(())
         })
@@ -617,9 +612,8 @@ mod tests {
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut registry = TIP403Registry::new();
             for calldata in &calls {
-                let result = registry.call(calldata, Address::ZERO)?;
-                assert!(result.is_revert());
-                assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
+                let result = registry.call(calldata, Address::ZERO);
+                assert!(UnknownFunctionSelector::abi_decode(revert_bytes(&result)).is_ok());
             }
             Ok(())
         })?;
@@ -628,9 +622,8 @@ mod tests {
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut registry = TIP403Registry::new();
             // The lookup selector is active, but an undeployed token is rejected.
-            let result = registry.call(&calls[0], Address::ZERO)?;
-            assert!(result.is_revert());
-            assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_err());
+            let result = registry.call(&calls[0], Address::ZERO);
+            assert!(UnknownFunctionSelector::abi_decode(revert_bytes(&result)).is_err());
 
             // A registered token returns the binding state and policy ID together.
             let token = TIP20Setup::create("Token", "TKN", Address::random()).apply()?;
@@ -639,16 +632,14 @@ mod tests {
             }
             .abi_encode();
             let result = registry.call(&lookup, Address::ZERO)?;
-            assert!(result.status.is_success());
             let lookup =
-                ITIP403Registry::tokenTransferPolicyIdCall::abi_decode_returns(&result.bytes)?;
+                ITIP403Registry::tokenTransferPolicyIdCall::abi_decode_returns(result.bytes())?;
             assert!(lookup.isSet);
             assert_eq!(lookup.policyId, ALLOW_ALL_POLICY_ID);
 
             // Batch migration recognizes the selector and skips the invalid token.
             let result = registry.call(&calls[1], Address::random())?;
-            assert!(result.status.is_success());
-            assert_eq!(U256::abi_decode(&result.bytes)?, U256::ZERO);
+            assert_eq!(U256::abi_decode(result.bytes())?, U256::ZERO);
             Ok(())
         })
     }

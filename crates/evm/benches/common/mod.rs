@@ -1,22 +1,19 @@
 //! Shared microbenchmark helpers for EVM execution benches.
 
 use alloy_consensus::transaction::{Recovered, SignerRecoverable};
-use alloy_evm::{
-    EvmEnv, EvmFactory,
-    block::{BlockExecutor, BlockExecutorFactory, StateDB, TxResult},
-    eth::EthBlockExecutionCtx,
-};
 use alloy_primitives::{
     Address, B256, Bytes, TxKind, U256,
     map::{AddressMap, B256Map, HashMap},
 };
 use alloy_signer::SignerSync;
 use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner};
+use evm2::evm::{AccountInfo, InMemoryDB};
+use reth_evm::{BlockExecutor, BlockExecutorFactory, database::StateProviderDatabase};
+use reth_evm_ethereum::EthBlockExecutionCtx;
 use reth_execution_cache::{
     CachedStateMetrics, CachedStateMetricsSource, CachedStateProvider, ExecutionCache,
 };
 use reth_primitives_traits::{Account as RethAccount, Bytecode as RethBytecode};
-use reth_revm::{State, database::StateProviderDatabase, db::InMemoryDB};
 use reth_storage_api::{
     AccountReader, BlockHashReader, BytecodeReader, EvmStateProviderAdapter,
     HashedPostStateProvider, StateProofProvider, StateProvider, StateRootProvider,
@@ -27,10 +24,6 @@ use reth_trie::{
     AccountProof, DecodedMultiProofV2, HashedPostState, HashedStorage, MultiProof,
     MultiProofTargets, MultiProofTargetsV2, StorageMultiProof, StorageProof, TrieInput,
     updates::TrieUpdates,
-};
-use revm::{
-    context::{BlockEnv, CfgEnv},
-    database::DbAccount,
 };
 use std::{
     num::NonZeroU64,
@@ -43,7 +36,8 @@ use tempo_chainspec::{
     spec::TEMPO_T1_BASE_FEE,
 };
 use tempo_evm::{
-    TempoBlockEnv, TempoBlockExecutionCtx, TempoEvmConfig, TempoEvmFactory, evm::TempoEvm,
+    TempoBlockEnv, TempoBlockExecutionCtx, TempoEvm, TempoEvmConfig, TempoEvmEnv, TempoTxEnv,
+    tempo_execution_config,
 };
 use tempo_precompiles::{
     ADDRESS_REGISTRY_ADDRESS, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
@@ -51,10 +45,9 @@ use tempo_precompiles::{
     VALIDATOR_CONFIG_V2_ADDRESS,
 };
 use tempo_primitives::{
-    TempoTransaction, TempoTxEnvelope,
+    TempoBlockExt, TempoTransaction, TempoTxEnvelope,
     transaction::{Call, TEMPO_EXPIRING_NONCE_KEY},
 };
-use tempo_revm::gas_params::tempo_gas_params_with_amsterdam;
 
 pub(crate) const CHAIN_ID: u64 = 1337;
 pub(crate) const TXGEN_MNEMONIC: &str =
@@ -84,23 +77,34 @@ pub(crate) struct ExecutionFixture {
     provider: InMemoryStateProvider,
     cache: ExecutionCache,
     metrics: CachedStateMetrics,
+    tx_envs: Vec<Recovered<TempoTxEnv>>,
 }
 
-pub(crate) type FixedCacheDb = State<
-    StateProviderDatabase<CachedStateProvider<EvmStateProviderAdapter<InMemoryStateProvider>>>,
->;
+/// Fresh execution state and prepared transactions, constructed outside benchmark timing.
+pub(crate) struct FixedCacheDb {
+    db: StateProviderDatabase<CachedStateProvider<EvmStateProviderAdapter<InMemoryStateProvider>>>,
+    tx_envs: Vec<Recovered<TempoTxEnv>>,
+}
 
 impl ExecutionFixture {
+    pub(crate) fn with_transactions(mut self, txs: &[Recovered<TempoTxEnvelope>]) -> Self {
+        self.tx_envs = txs
+            .iter()
+            .map(|tx| Recovered::new_unchecked(TempoTxEnv::from(tx.clone()), tx.signer()))
+            .collect();
+        self
+    }
+
     pub(crate) fn state_db(&self) -> FixedCacheDb {
         let provider = CachedStateProvider::new(
             self.provider.clone().into_evm_state_provider(),
             self.cache.clone(),
             Some(self.metrics.clone()),
         );
-        State::builder()
-            .with_database(StateProviderDatabase::new(provider))
-            .with_bundle_update()
-            .build()
+        FixedCacheDb {
+            db: StateProviderDatabase::new(provider),
+            tx_envs: self.tx_envs.clone(),
+        }
     }
 
     pub(crate) fn prewarm_state_db(&self) -> FixedCacheDb {
@@ -108,10 +112,10 @@ impl ExecutionFixture {
             self.provider.clone().into_evm_state_provider(),
             self.cache.clone(),
         );
-        State::builder()
-            .with_database(StateProviderDatabase::new(provider))
-            .with_bundle_update()
-            .build()
+        FixedCacheDb {
+            db: StateProviderDatabase::new(provider),
+            tx_envs: self.tx_envs.clone(),
+        }
     }
 }
 
@@ -218,7 +222,7 @@ impl StateProofProvider for InMemoryStateProvider {
 impl HashedPostStateProvider for InMemoryStateProvider {
     fn hashed_post_state(
         &self,
-        _bundle_state: &reth_revm::db::BundleState,
+        _bundle_state: &reth_evm::BundleState,
     ) -> ProviderResult<HashedPostState> {
         Ok(HashedPostState::default())
     }
@@ -246,32 +250,40 @@ pub(crate) fn hardfork_bench_cases() -> Vec<(&'static str, TempoHardfork)> {
     cases
 }
 
-pub(crate) fn bench_env(
-    hardfork: TempoHardfork,
-    block_timestamp: u64,
-) -> EvmEnv<TempoHardfork, TempoBlockEnv> {
-    let spec = hardfork;
-    let amsterdam_eip8037_enabled = false;
-    let mut cfg_env = CfgEnv::default();
-    cfg_env.chain_id = CHAIN_ID;
-    cfg_env.spec = spec;
-    cfg_env.gas_params = tempo_gas_params_with_amsterdam(spec, amsterdam_eip8037_enabled);
-    cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
-
-    EvmEnv {
-        cfg_env,
-        block_env: TempoBlockEnv {
-            inner: BlockEnv {
-                number: U256::ONE,
-                beneficiary: Address::repeat_byte(0x42),
-                timestamp: U256::from(block_timestamp),
-                basefee: TEMPO_T1_BASE_FEE,
-                gas_limit: 10_000_000_000,
-                ..Default::default()
-            },
-            timestamp_millis_part: 0,
+pub(crate) fn bench_env(hardfork: TempoHardfork, block_timestamp: u64) -> TempoEvmEnv {
+    let mut version = *tempo_execution_config(hardfork, CHAIN_ID).version();
+    version.tx_gas_limit_cap = hardfork.tx_gas_limit_cap().unwrap_or(u64::MAX);
+    TempoEvmEnv {
+        spec: hardfork,
+        version,
+        block: TempoBlockEnv {
+            number: U256::ONE,
+            beneficiary: Address::repeat_byte(0x42),
+            timestamp: U256::from(block_timestamp),
+            basefee: U256::from(TEMPO_T1_BASE_FEE),
+            gas_limit: U256::from(10_000_000_000u64),
+            ext: TempoBlockExt::default(),
             ..Default::default()
         },
+    }
+}
+
+pub(crate) fn bench_evm(
+    db: InMemoryDB,
+    hardfork: TempoHardfork,
+    timestamp: u64,
+) -> TempoEvm<'static> {
+    BlockExecutorFactory::evm_with_env(
+        &TempoEvmConfig::moderato(),
+        db,
+        bench_env(hardfork, timestamp),
+    )
+}
+
+pub(crate) fn seeded_db(evm: &TempoEvm<'_>) -> InMemoryDB {
+    InMemoryDB {
+        cache: evm.overlay_db().cache.clone(),
+        ..Default::default()
     }
 }
 
@@ -329,13 +341,19 @@ pub(crate) fn fixture_from_seeded_db(seeded: InMemoryDB) -> ExecutionFixture {
     let mut contracts = B256Map::default();
     let mut block_hashes = HashMap::default();
     for (hash, bytecode) in state_cache.contracts {
-        let bytecode = RethBytecode(bytecode);
+        let bytecode = RethBytecode(reth_execution_types::revm_bytecode(&bytecode));
         execution_cache.insert_code(hash, Some(bytecode.clone()));
         contracts.insert(hash, bytecode);
     }
     for (address, account) in state_cache.accounts {
-        insert_account(&execution_cache, &mut accounts, address, &account);
-        for (slot, value) in account.storage {
+        if let Some(account) = account {
+            insert_account(&execution_cache, &mut accounts, address, &account);
+        } else {
+            execution_cache.insert_account(address, None);
+        }
+    }
+    for (address, account_storage) in state_cache.storage {
+        for (slot, value) in account_storage.slots {
             let storage_key = B256::from(slot);
             execution_cache.insert_storage(address, storage_key, Some(value));
             storage.insert((address, storage_key), value);
@@ -365,6 +383,7 @@ pub(crate) fn fixture_from_seeded_db(seeded: InMemoryDB) -> ExecutionFixture {
         },
         cache: execution_cache,
         metrics: CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
+        tx_envs: Vec::new(),
     }
 }
 
@@ -372,9 +391,9 @@ fn insert_account(
     cache: &ExecutionCache,
     accounts: &mut AddressMap<RethAccount>,
     address: Address,
-    account: &DbAccount,
+    account: &AccountInfo,
 ) {
-    let info = account.info.clone();
+    let info = account;
     let bytecode_hash = info.code_hash;
     let account = RethAccount {
         nonce: info.nonce,
@@ -385,18 +404,15 @@ fn insert_account(
     accounts.insert(address, account);
 }
 
-pub(crate) fn execute_txs<DB>(
+pub(crate) fn execute_txs(
     config: &TempoEvmConfig,
-    db: DB,
+    db: FixedCacheDb,
     txs: &[Recovered<TempoTxEnvelope>],
     block_timestamp: u64,
     hardfork: TempoHardfork,
-) -> ExecutionStats
-where
-    DB: StateDB,
-{
-    let evm: TempoEvm<_, _> =
-        TempoEvmFactory::default().create_evm(db, bench_env(hardfork, block_timestamp));
+) -> ExecutionStats {
+    let FixedCacheDb { db, tx_envs } = db;
+    let evm = config.evm_with_database(db, bench_env(hardfork, block_timestamp));
     let ctx = TempoBlockExecutionCtx {
         inner: EthBlockExecutionCtx {
             parent_hash: B256::ZERO,
@@ -416,22 +432,26 @@ where
         .apply_pre_execution_changes()
         .expect("failed to apply pre-execution changes");
     let mut stats = ExecutionStats::default();
-    for tx in txs {
+    assert_eq!(txs.len(), tx_envs.len());
+    for (tx, tx_env) in txs.iter().zip(tx_envs) {
         assert!(
             tx.inner().is_aa(),
             "execution bench expects Tempo AA transactions"
         );
         let output = executor
-            .execute_transaction_without_commit(tx)
+            .execute_transaction_without_commit((tx_env, tx))
             .expect("transaction execution failed");
         assert!(
-            output.result().result.is_success(),
+            output.result().status,
             "transaction reverted: {:?}",
-            output.result().result
+            output.result()
         );
-        stats.gas_used = stats
-            .gas_used
-            .saturating_add(executor.commit_transaction(output).tx_gas_used());
+        stats.gas_used = stats.gas_used.saturating_add(
+            executor
+                .commit_transaction(output)
+                .expect("commit failed")
+                .tx_gas_used(),
+        );
         stats.txs += 1;
     }
     stats
