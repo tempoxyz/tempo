@@ -556,6 +556,9 @@ where
     type EVM = TempoEvmConfig;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
+        // Before the pool or executor verifies a ZK signature.
+        tempo_evm::set_zk_verifying_keys(&ctx.chain_spec())
+            .map_err(|error| eyre::eyre!("invalid zkVerifyingKeys in genesis: {error}"))?;
         let mut evm_config = TempoEvmConfig::new(ctx.chain_spec());
         if let Some(cache) = ctx.sender_recovery_cache() {
             evm_config = evm_config.with_sender_recovery_cache(cache.clone());

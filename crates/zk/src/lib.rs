@@ -14,7 +14,9 @@ pub mod groth16;
 pub mod poseidon;
 
 mod scheme;
-pub use scheme::{NAMESPACE_OIDC, SCHEME_OIDC_RS256_V1, Scheme, scheme};
+pub use scheme::{
+    GenesisKeyError, NAMESPACE_OIDC, SCHEME_OIDC_RS256_V1, Scheme, scheme, set_genesis_keys,
+};
 
 mod statement;
 pub use statement::{MESSAGE_TAG, MessageStatement, SignatureStatement};
