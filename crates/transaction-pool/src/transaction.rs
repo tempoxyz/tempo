@@ -427,7 +427,7 @@ impl TempoPooledTransaction {
             .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN))
     }
 
-    /// Returns the `(fee_token, balance_slot)` pair for this transaction's fee payer,
+    /// Returns the `(storage_address, balance_slot)` pair for this transaction's fee payer,
     /// lazily computed and cached on first access.
     pub fn fee_balance_slot(&self) -> Option<(Address, U256)> {
         *self.fee_balance_slot.get_or_init(|| {
@@ -435,8 +435,9 @@ impl TempoPooledTransaction {
                 .resolved_fee_token()
                 .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN));
             let fee_payer = self.fee_payer().ok()?;
-            let slot = TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
-            Some((fee_token, slot))
+            let token = TIP20Token::from_address_unchecked(fee_token);
+            let slot = &token.balances[fee_payer];
+            Some((slot.address(), slot.slot()))
         })
     }
 
@@ -1775,5 +1776,21 @@ mod tests {
                 vec![sender.mapping_slot(tip20_slots::BALANCES)],
             );
         }
+    }
+
+    #[test]
+    fn fee_balance_cache_uses_physical_storage_address() {
+        let sender = Address::repeat_byte(0x81);
+        let transaction = TxBuilder::aa(sender).build();
+        let token = TIP20Token::from_address_unchecked(transaction.effective_fee_token());
+        let balance = &token.balances[sender];
+        assert_eq!(
+            transaction.fee_balance_slot(),
+            Some((balance.address(), balance.slot()))
+        );
+        assert_eq!(
+            transaction.fee_balance_slot(),
+            Some((balance.address(), balance.slot()))
+        );
     }
 }

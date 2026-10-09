@@ -661,8 +661,13 @@ mod tests {
 
         // Set up CacheDB with balance
         let mut db = InMemoryDB::default();
-        let balance_slot = TIP20Token::from_address(token_address)?.balances[account].slot();
-        db.insert_account_storage(token_address, balance_slot, expected_balance)?;
+        let token = TIP20Token::from_address(token_address)?;
+        let balance_slot = &token.balances[account];
+        db.insert_account_storage(
+            balance_slot.address(),
+            balance_slot.slot(),
+            expected_balance,
+        )?;
 
         // Read balance using typed storage
         let balance = db.get_token_balance(

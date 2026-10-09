@@ -94,6 +94,7 @@ serde = [
 ]
 # Devnet-only: allow `ZoneVerifier::verify` to use PCRs supplied at startup.
 custom-pcrs = []
+holder-first-balances = []
 
 [[test]]
 name = "storage"

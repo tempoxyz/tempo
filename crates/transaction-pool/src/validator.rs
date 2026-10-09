@@ -1088,23 +1088,31 @@ mod tests {
         let transfer_policy_id_packed =
             uint!(0x0000000000000000000000010000000000000000000000000000000000000000_U256);
         // Compute the balance slot for the sender in the PATH_USD token
-        let balance_slot = TIP20Token::from_address(PATH_USD_ADDRESS)
-            .expect("PATH_USD_ADDRESS is a valid TIP20 token")
-            .balances[transaction.sender()]
-        .slot();
+        let token = TIP20Token::from_address(PATH_USD_ADDRESS)
+            .expect("PATH_USD_ADDRESS is a valid TIP20 token");
+        let balance_slot = &token.balances[transaction.sender()];
         // Give the sender enough balance to cover the transaction cost
         let fee_payer_balance = U256::from(1_000_000_000_000u64); // 1M USD in 6 decimals
-        provider.add_account(
-            PATH_USD_ADDRESS,
-            ExtendedAccount::new(0, U256::ZERO).extend_storage([
-                (tip20_slots::CURRENCY.into(), usd_currency_value),
-                (
-                    tip20_slots::TRANSFER_POLICY_ID.into(),
-                    transfer_policy_id_packed,
-                ),
-                (balance_slot.into(), fee_payer_balance),
-            ]),
-        );
+        let token_account = ExtendedAccount::new(0, U256::ZERO).extend_storage([
+            (tip20_slots::CURRENCY.into(), usd_currency_value),
+            (
+                tip20_slots::TRANSFER_POLICY_ID.into(),
+                transfer_policy_id_packed,
+            ),
+        ]);
+        if balance_slot.address() == PATH_USD_ADDRESS {
+            provider.add_account(
+                PATH_USD_ADDRESS,
+                token_account.extend_storage([(balance_slot.slot().into(), fee_payer_balance)]),
+            );
+        } else {
+            provider.add_account(PATH_USD_ADDRESS, token_account);
+            provider.add_account(
+                balance_slot.address(),
+                ExtendedAccount::new(0, U256::ZERO)
+                    .extend_storage([(balance_slot.slot().into(), fee_payer_balance)]),
+            );
+        }
 
         let inner =
             EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::moderato())

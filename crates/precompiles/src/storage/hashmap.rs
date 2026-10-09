@@ -46,6 +46,7 @@ pub struct HashMapStorageProvider {
 struct Snapshot {
     internals: HashMap<(Address, U256), U256>,
     transient: HashMap<(Address, U256), U256>,
+    accounts: HashMap<Address, AccountInfo>,
     events: HashMap<Address, Vec<LogData>>,
 }
 
@@ -253,6 +254,7 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         self.snapshots.push(Snapshot {
             internals: self.internals.clone(),
             transient: self.transient.clone(),
+            accounts: self.accounts.clone(),
             events: self.events.clone(),
         });
         JournalCheckpoint {
@@ -280,6 +282,7 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         if let Some(snapshot) = self.snapshots.drain(checkpoint.journal_i..).next() {
             self.internals = snapshot.internals;
             self.transient = snapshot.transient;
+            self.accounts = snapshot.accounts;
             self.events = snapshot.events;
         }
     }

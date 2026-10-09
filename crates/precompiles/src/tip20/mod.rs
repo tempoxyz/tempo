@@ -8,6 +8,7 @@
 //! [TIP-403]: <https://docs.tempo.xyz/protocol/tip403>
 //! [TIP-1022]: <https://docs.tempo.xyz/protocol/tip1022>
 
+pub mod balances;
 pub mod dispatch;
 pub mod rewards;
 pub mod roles;
@@ -27,7 +28,7 @@ use crate::{
     error::{Result, TempoPrecompileError},
     receive_policy_guard::{InboundKind, ReceivePolicyGuard, RecoveryMode},
     storage::{Handler, Mapping},
-    tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
+    tip20::{balances::TokenBalances, rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
     tip403_registry::{ALLOW_ALL_POLICY_ID, AuthRole, ITIP403Registry, TIP403Registry},
 };
@@ -95,7 +96,7 @@ pub struct TIP20Token {
 
     // TIP20 Token
     total_supply: U256,
-    balances: Mapping<Address, U256>,
+    balances: TokenBalances,
     allowances: Mapping<Address, Mapping<Address, U256>>,
     permit_nonces: Mapping<Address, U256>,
     paused: bool,

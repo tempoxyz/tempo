@@ -12,7 +12,7 @@ use reth_transaction_pool::{
     error::InvalidPoolTransactionError,
 };
 use std::sync::Arc;
-use tempo_precompiles::tip20::is_tip20_prefix;
+use tempo_precompiles::tip20::{balances::HOLDER_FIRST_BALANCES, is_tip20_prefix};
 
 pub type BestTransaction = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 type BestTransactionWithPriority = (BestTransaction, Priority<u64>);
@@ -137,7 +137,7 @@ impl BestTransactions for MergeBestTransactions {
 /// included transactions.
 pub struct StateAwareBestTransactions<I> {
     inner: I,
-    /// Tracks decreased TIP20 balance slots: `(token_address, slot) -> new_balance`.
+    /// Tracks decreased TIP20 balance slots: `(storage_address, slot) -> new_balance`.
     /// Updated after each executed transaction. Used to check if a candidate
     /// transaction's fee payer can still cover its fee cost.
     decreased_balances: HashMap<(Address, U256), U256>,
@@ -160,7 +160,7 @@ where
     /// state changes that might affect other transactions validity.
     pub fn on_new_result(&mut self, result: &impl TxResult) {
         for (&address, account) in &result.result().state {
-            if !is_tip20_prefix(address) {
+            if !HOLDER_FIRST_BALANCES && !is_tip20_prefix(address) {
                 continue;
             }
 

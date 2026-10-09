@@ -90,3 +90,7 @@ harness = false
 [[bench]]
 name = "dex_execution"
 harness = false
+
+[[bench]]
+name = "tip20_balance_layout"
+harness = false
