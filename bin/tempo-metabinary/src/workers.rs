@@ -41,6 +41,7 @@ pub struct WorkerContext {
     pub startup_timeout: Duration,
 }
 
+/// RPC client and verified execution metadata for a ready historical worker.
 #[derive(Debug)]
 pub struct HistoricalWorker {
     pub client: HttpClient,

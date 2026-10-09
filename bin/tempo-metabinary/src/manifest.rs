@@ -8,6 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Ordered era executables and bounded imports for a chain's shared storage.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
@@ -21,6 +22,7 @@ pub struct Manifest {
     pub eras: Vec<Era>,
 }
 
+/// An era's executable, activation timestamp, and optional bootstrap plan.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Era {
@@ -33,6 +35,7 @@ pub struct Era {
     pub bootstrap: Option<Bootstrap>,
 }
 
+/// A finite import command and the canonical checkpoint it must reach.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Bootstrap {

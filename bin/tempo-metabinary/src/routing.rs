@@ -105,6 +105,7 @@ pub fn quantity(value: &Value) -> RpcResult<u64> {
         .ok_or_else(|| invalid("expected a hexadecimal quantity"))
 }
 
+/// Header metadata used to select an execution era and pin block selectors.
 #[derive(Debug)]
 pub struct BlockMetadata {
     pub number: u64,
@@ -159,6 +160,7 @@ pub trait Backend: Send + Sync {
     }
 }
 
+/// Selected execution era and parameters prepared for its RPC implementation.
 pub struct Route {
     pub era: usize,
     pub params: RpcParams,

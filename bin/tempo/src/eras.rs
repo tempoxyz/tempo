@@ -62,6 +62,7 @@ pub(crate) fn supports_release_catalog(spec: &TempoChainSpec) -> bool {
     })
 }
 
+/// Installs era routing on native RPC transports and owns the historical workers' configuration.
 pub(crate) struct EraRuntime {
     schedule: ChainEras,
     workers: Arc<HistoricalWorkers>,

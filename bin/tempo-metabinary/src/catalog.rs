@@ -8,12 +8,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::manifest::{resolve_path, validate_schedule};
 
+/// Release era schedules and frozen executables indexed by chain identity.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Catalog {
     pub chains: Vec<ChainEras>,
 }
 
+/// Ordered release eras for a chain identified by its chain ID and genesis hash.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChainEras {
@@ -23,6 +25,7 @@ pub struct ChainEras {
     pub eras: Vec<ReleaseEra>,
 }
 
+/// An era's activation timestamp and optional frozen executable.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReleaseEra {
