@@ -47,6 +47,7 @@ pub(crate) mod types;
 use types::TestEnv;
 
 mod local;
+mod multisig;
 mod rpc;
 
 /// Run all matrix tests and scenario runners against a single environment.
