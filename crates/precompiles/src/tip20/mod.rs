@@ -2902,6 +2902,93 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn test_system_transfer_from_zone_outbox_listed_from_t13() -> eyre::Result<()> {
+        let outbox = crate::address_registry::ZONE_OUTBOX_ADDRESS;
+        for hardfork in [TempoHardfork::T12, TempoHardfork::T13] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
+            let admin = Address::random();
+            let from = Address::random();
+            let amount = U256::from(1000);
+
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("Test", "TST", admin)
+                    .with_issuer(admin)
+                    .with_mint(from, amount)
+                    .apply()?;
+
+                let result = token.system_transfer_from(outbox, from, amount);
+                if hardfork.is_t13() {
+                    assert!(result.is_ok());
+                    assert_eq!(
+                        token.balance_of(ITIP20::balanceOfCall { account: outbox })?,
+                        amount
+                    );
+                } else {
+                    assert!(matches!(
+                        result,
+                        Err(TempoPrecompileError::TIP20(TIP20Error::Unauthorized(_)))
+                    ));
+                }
+                eyre::Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_system_transfer_from_zone_outbox_enforces_spending_limit() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
+        let admin = Address::random();
+        let user = Address::random();
+        let access_key = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(user, U256::from(1000))
+                .apply()?;
+
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(user)?;
+            keychain.authorize_key(
+                user,
+                access_key,
+                SignatureType::Secp256k1,
+                KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![TokenLimit {
+                        token: token.address,
+                        amount: U256::from(100),
+                        period: 0,
+                    }],
+                    allowAnyCalls: true,
+                    allowedCalls: vec![],
+                },
+                None,
+            )?;
+            keychain.set_transaction_key(access_key)?;
+
+            let outbox = crate::address_registry::ZONE_OUTBOX_ADDRESS;
+            assert!(matches!(
+                token.system_transfer_from(outbox, user, U256::from(101)),
+                Err(TempoPrecompileError::AccountKeychainError(
+                    AccountKeychainError::SpendingLimitExceeded(_)
+                ))
+            ));
+            assert!(
+                token
+                    .system_transfer_from(outbox, user, U256::from(100))
+                    .is_ok()
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_initialize_sets_next_quote_token() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
