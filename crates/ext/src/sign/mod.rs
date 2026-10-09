@@ -9,7 +9,7 @@ mod error;
 
 use std::{
     collections::BTreeMap,
-    io::Cursor,
+    io::{Cursor, Write},
     path::{Path, PathBuf},
 };
 
@@ -42,8 +42,12 @@ pub struct ManifestOptions {
     pub skill_file: Option<PathBuf>,
 }
 
-/// Generates an unencrypted minisign keypair, writes the secret key box to
-/// `path` (mode 0600 on Unix), and returns the base64 public key.
+/// Generates an unencrypted minisign keypair, writes the secret key box to a
+/// new file at `path`, and returns the base64 public key.
+///
+/// The file is created with mode 0600 on Unix, so the secret is never
+/// readable by other users. Fails if `path` already exists (including a
+/// symlink) rather than replacing a key.
 pub fn generate_key(path: &Path) -> Result<String, SignError> {
     let KeyPair { pk, sk } = KeyPair::generate_unencrypted_keypair()
         .map_err(|err| SignError::crypto("generate keypair", err))?;
@@ -51,15 +55,17 @@ pub fn generate_key(path: &Path) -> Result<String, SignError> {
         .to_box(None)
         .map_err(|err| SignError::crypto("box secret key", err))?;
 
-    std::fs::write(path, sk_box.to_string())
-        .map_err(|err| SignError::io("write key file", path, err))?;
-
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-            .map_err(|err| SignError::io("set key file permissions", path, err))?;
-    }
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+
+    let mut file = options
+        .open(path)
+        .map_err(|err| SignError::io("create key file", path, err))?;
+    file.write_all(sk_box.to_string().as_bytes())
+        .and_then(|()| file.sync_all())
+        .map_err(|err| SignError::io("write key file", path, err))?;
 
     Ok(pk.to_base64())
 }
@@ -83,10 +89,17 @@ pub fn public_key(sk: &SecretKey) -> Result<String, SignError> {
 
 /// Signs every binary in `options.artifacts_dir` and returns the release
 /// manifest the installer reads.
+///
+/// `skill` and `skill_file` must be set together: the installer needs both
+/// the URL and the signature to install a skill.
 pub fn build_manifest(
     options: &ManifestOptions,
     sk: &SecretKey,
 ) -> Result<serde_json::Value, SignError> {
+    if options.skill.is_some() != options.skill_file.is_some() {
+        return Err(SignError::IncompleteSkill);
+    }
+
     let base_url = options.base_url.trim_end_matches('/');
     let version = if options.version.starts_with('v') {
         options.version.clone()
@@ -211,6 +224,65 @@ mod tests {
             "https://cli.tempo.xyz/extensions/tempo-x/v1.2.3/tempo-x-linux-amd64"
         );
         assert_eq!(binary["sha256"], sha256_hex(b"bin"));
+    }
+
+    #[test]
+    fn manifest_rejects_skill_file_without_url() {
+        let tmp = tempfile::tempdir().unwrap();
+        let key = tmp.path().join("release.key");
+        generate_key(&key).unwrap();
+        let sk = load_secret_key(&key).unwrap();
+        let skill = tmp.path().join("SKILL.md");
+        std::fs::write(&skill, "# skill\n").unwrap();
+
+        let options = ManifestOptions {
+            artifacts_dir: tmp.path().to_path_buf(),
+            version: "1.0.0".into(),
+            base_url: "https://cli.tempo.xyz/extensions/tempo-x".into(),
+            description: None,
+            skill: None,
+            skill_sha256: None,
+            skill_file: Some(skill),
+        };
+        assert!(matches!(
+            build_manifest(&options, &sk),
+            Err(SignError::IncompleteSkill)
+        ));
+
+        let options = ManifestOptions {
+            skill: Some("https://cli.tempo.xyz/extensions/tempo-x/v1.0.0/SKILL.md".into()),
+            skill_file: None,
+            ..options
+        };
+        assert!(matches!(
+            build_manifest(&options, &sk),
+            Err(SignError::IncompleteSkill)
+        ));
+    }
+
+    #[test]
+    fn generate_key_refuses_to_replace_existing_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let key = tmp.path().join("release.key");
+        std::fs::write(&key, "EXISTING-PRODUCTION-KEY").unwrap();
+
+        assert!(generate_key(&key).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&key).unwrap(),
+            "EXISTING-PRODUCTION-KEY"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn generate_key_does_not_follow_symlinks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("target");
+        let link = tmp.path().join("release.key");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        assert!(generate_key(&link).is_err());
+        assert!(!target.exists());
     }
 
     #[cfg(unix)]

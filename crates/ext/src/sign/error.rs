@@ -21,6 +21,11 @@ pub enum SignError {
         #[source]
         source: minisign::PError,
     },
+    /// `skill` and `skill_file` must be given together.
+    #[error(
+        "skill URL and skill file must be set together; without both the installer skips the skill"
+    )]
+    IncompleteSkill,
     /// Manifest serialization error.
     #[error("failed to serialize manifest: {0}")]
     Serialization(#[from] serde_json::Error),

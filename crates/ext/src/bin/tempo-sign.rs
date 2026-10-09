@@ -43,13 +43,13 @@ enum Command {
         #[arg(long)]
         description: Option<String>,
         /// URL for the SKILL.md file
-        #[arg(long)]
+        #[arg(long, requires = "skill_file")]
         skill: Option<String>,
         /// SHA256 hash of the SKILL.md file
         #[arg(long)]
         skill_sha256: Option<String>,
         /// Local path to the SKILL.md file for signing
-        #[arg(long)]
+        #[arg(long, requires = "skill")]
         skill_file: Option<PathBuf>,
         /// Output path for the manifest JSON
         #[arg(long, default_value = "manifest.json")]

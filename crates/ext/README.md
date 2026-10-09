@@ -88,6 +88,8 @@ tempo-sign sign \
   --version 0.1.0 \
   --base-url https://cli.tempo.xyz/extensions/tempo-wallet \
   --description "Manage your Tempo Wallet" \
+  --skill https://cli.tempo.xyz/extensions/tempo-wallet/v0.1.0/SKILL.md \
+  --skill-sha256 "$(sha256sum SKILL.md | cut -d' ' -f1)" \
   --skill-file SKILL.md \
   --output manifest.json
 ```
