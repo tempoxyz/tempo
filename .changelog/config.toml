@@ -30,6 +30,11 @@ ignore = [
     "tempo-xtask",
 ]
 
+# Release PR runs never upload to crates.io (publish.yml does), so track the SDK
+# crates by git tag instead of registry state. Otherwise a failed crates.io
+# publish makes every later run re-create the existing release tags.
+private = ["tempo-alloy", "tempo-chainspec", "tempo-contracts", "tempo-hardfork", "tempo-primitives"]
+
 [changelog]
 format = "per-crate"
 
