@@ -2,6 +2,7 @@
 
 use alloy_primitives::{Address, B256, U256, map::DefaultHashBuilder};
 use dashmap::DashMap;
+use evm2::bytecode::{BytecodeKind, CodeChunk};
 use reth_evm::{
     Database,
     cached::{AccountInfo, Bytecode},
@@ -25,6 +26,9 @@ pub(crate) struct StateCache {
     storage: DashMap<(Address, U256), U256, DefaultHashBuilder>,
     /// Cached bytecode keyed by code hash.
     contracts: DashMap<B256, Bytecode, DefaultHashBuilder>,
+    /// Contextual execution chunks; global hash and index preserve PUSH preparation.
+    chunks: DashMap<(B256, u32), CodeChunk, DefaultHashBuilder>,
+    chunk_count: AtomicUsize,
     /// Approximate entry counts for cap enforcement; `DashMap::len` locks every shard and is
     /// too expensive for the insert path. Racing inserts may overshoot the caps slightly.
     account_count: AtomicUsize,
@@ -97,6 +101,40 @@ impl<DB: Database> Database for StateCacheDb<'_, DB> {
         Ok(code)
     }
 
+    fn get_code_kind_by_hash(&mut self, code_hash: &B256) -> Result<BytecodeKind, Self::Error> {
+        self.db.get_code_kind_by_hash(code_hash)
+    }
+
+    fn discard_code_chunk(&mut self, code_hash: &B256, index: u32) {
+        if self.cache.chunks.remove(&(*code_hash, index)).is_some() {
+            self.cache.chunk_count.fetch_sub(1, Ordering::Relaxed);
+        }
+        self.db.discard_code_chunk(code_hash, index);
+    }
+
+    fn get_code_chunk_by_hash(
+        &mut self,
+        code_hash: &B256,
+        index: u32,
+    ) -> Result<Option<CodeChunk>, Self::Error> {
+        if let Some(code) = self.cache.chunks.get(&(*code_hash, index)) {
+            return Ok(Some(code.clone()));
+        }
+        let code = self.db.get_code_chunk_by_hash(code_hash, index)?;
+        if let Some(code) = &code {
+            if self.cache.chunk_count.load(Ordering::Relaxed) < StateCache::MAX_CONTRACTS
+                && self
+                    .cache
+                    .chunks
+                    .insert((*code_hash, index), code.clone())
+                    .is_none()
+            {
+                self.cache.chunk_count.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        Ok(code)
+    }
+
     fn get_storage(&mut self, address: &Address, index: &U256) -> Result<U256, Self::Error> {
         if let Some(value) = self.cache.storage.get(&(*address, *index)) {
             return Ok(*value);
@@ -145,6 +183,23 @@ mod tests {
             Ok(Bytecode::default())
         }
 
+        fn get_code_kind_by_hash(
+            &mut self,
+            _code_hash: &B256,
+        ) -> Result<BytecodeKind, Self::Error> {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            Ok(BytecodeKind::Legacy)
+        }
+
+        fn get_code_chunk_by_hash(
+            &mut self,
+            _code_hash: &B256,
+            index: u32,
+        ) -> Result<Option<CodeChunk>, Self::Error> {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            Ok((index < 2).then(|| CodeChunk::new(vec![index as u8].into())))
+        }
+
         fn get_storage(&mut self, _address: &Address, _index: &U256) -> Result<U256, Self::Error> {
             self.reads.fetch_add(1, Ordering::Relaxed);
             Ok(U256::from(42))
@@ -153,6 +208,32 @@ mod tests {
         fn get_block_hash(&mut self, _number: &U256) -> Result<B256, Self::Error> {
             Ok(B256::ZERO)
         }
+    }
+
+    #[test]
+    fn chunk_cache_preserves_context_and_does_not_cache_absence() {
+        let cache = StateCache::default();
+        let mut inner = CountingDb::default();
+        let hash = B256::repeat_byte(1);
+        {
+            let mut db = StateCacheDb::new(&cache, &mut inner);
+            assert!(db.get_code_chunk_by_hash(&hash, 0).unwrap().is_some());
+            assert!(db.get_code_chunk_by_hash(&hash, 1).unwrap().is_some());
+            assert!(db.get_code_chunk_by_hash(&hash, 2).unwrap().is_none());
+        }
+        assert_eq!(inner.reads.load(Ordering::Relaxed), 3);
+        {
+            let mut db = StateCacheDb::new(&cache, &mut inner);
+            assert!(db.get_code_chunk_by_hash(&hash, 0).unwrap().is_some());
+            assert!(db.get_code_chunk_by_hash(&hash, 1).unwrap().is_some());
+            assert!(db.get_code_chunk_by_hash(&hash, 2).unwrap().is_none());
+            assert!(
+                db.get_code_chunk_by_hash(&B256::repeat_byte(2), 0)
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        assert_eq!(inner.reads.load(Ordering::Relaxed), 5);
     }
 
     #[test]

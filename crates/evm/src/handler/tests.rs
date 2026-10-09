@@ -1735,7 +1735,6 @@ fn test_t3_scope_validation_moves_to_execution(gas_limit: u64, expected_stop: In
     impl evm2::InterpreterRunner<TempoEvmTypes> for Runner {
         fn run<'frame, 'host>(
             &self,
-            _config: &ExecutionConfig<TempoEvmTypes>,
             interpreter: &mut evm2::interpreter::Interpreter<'frame, 'host, TempoEvmTypes>,
             _host: &mut Evm<'host, TempoEvmTypes>,
         ) -> Option<InstrStop> {
@@ -1951,7 +1950,6 @@ fn test_t3_scope_validation_returns_call_not_allowed_revert_data() {
     impl evm2::InterpreterRunner<TempoEvmTypes> for Runner {
         fn run<'frame, 'host>(
             &self,
-            _config: &ExecutionConfig<TempoEvmTypes>,
             _interpreter: &mut evm2::interpreter::Interpreter<'frame, 'host, TempoEvmTypes>,
             _host: &mut Evm<'host, TempoEvmTypes>,
         ) -> Option<InstrStop> {
@@ -2065,7 +2063,6 @@ fn test_multicall_gas_refund_accounting() {
     impl evm2::InterpreterRunner<TempoEvmTypes> for Runner {
         fn run<'frame, 'host>(
             &self,
-            _config: &ExecutionConfig<TempoEvmTypes>,
             interpreter: &mut evm2::interpreter::Interpreter<'frame, 'host, TempoEvmTypes>,
             _host: &mut Evm<'host, TempoEvmTypes>,
         ) -> Option<InstrStop> {
@@ -4384,7 +4381,6 @@ fn test_state_gas_batch_create_accounting() {
     impl evm2::InterpreterRunner<TempoEvmTypes> for Runner {
         fn run<'frame, 'host>(
             &self,
-            _config: &ExecutionConfig<TempoEvmTypes>,
             interpreter: &mut evm2::interpreter::Interpreter<'frame, 'host, TempoEvmTypes>,
             _host: &mut Evm<'host, TempoEvmTypes>,
         ) -> Option<InstrStop> {

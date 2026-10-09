@@ -5,8 +5,8 @@ use crate::{
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 
-use alloy_consensus::{Transaction, constants::KECCAK_EMPTY, transaction::Recovered};
-use alloy_primitives::{Address, B256, U256};
+use alloy_consensus::{Transaction, transaction::Recovered};
+use alloy_primitives::{Address, B256, U256, map::B256Map};
 use evm2::{EvmFeatures, evm::DynDatabase, registry::HandlerError};
 use parking_lot::RwLock;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
@@ -815,12 +815,15 @@ where
 /// expected by the inner ETH transaction validator.
 struct CachedAccountInfoReader<DB> {
     db: RefCell<DB>,
+    /// Inline markers observed while reading accounts need no bytecode lookup.
+    inline_code: RefCell<B256Map<Bytecode>>,
 }
 
 impl<DB> CachedAccountInfoReader<DB> {
-    const fn new(db: DB) -> Self {
+    fn new(db: DB) -> Self {
         Self {
             db: RefCell::new(db),
+            inline_code: RefCell::new(B256Map::default()),
         }
     }
 }
@@ -835,11 +838,15 @@ where
             .borrow_mut()
             .get_account(address)
             .map_err(ProviderError::other)?
-            .map(|account| Account {
-                nonce: account.nonce,
-                balance: account.balance,
-                bytecode_hash: (!account.code_hash.is_zero() && account.code_hash != KECCAK_EMPTY)
-                    .then_some(account.code_hash),
+            .map(|account| {
+                if let Some(target) = account.inline_delegation {
+                    let marker = evm2::bytecode::Bytecode::new_eip7702(target);
+                    self.inline_code.borrow_mut().insert(
+                        account.code_hash,
+                        Bytecode(reth_execution_types::revm_bytecode(&marker)),
+                    );
+                }
+                reth_execution_types::revm_account(&account).into()
             }))
     }
 }
@@ -849,6 +856,9 @@ where
     DB: DynDatabase,
 {
     fn bytecode_by_hash(&self, code_hash: &B256) -> ProviderResult<Option<Bytecode>> {
+        if let Some(code) = self.inline_code.borrow().get(code_hash) {
+            return Ok(Some(code.clone()));
+        }
         Ok(Some(Bytecode(reth_execution_types::revm_bytecode(
             &self
                 .db
@@ -957,6 +967,23 @@ mod tests {
             })
         }
 
+        fn get_code_kind_by_hash(
+            &mut self,
+            _code_hash: &B256,
+        ) -> Result<evm2::bytecode::BytecodeKind, Self::Error> {
+            Ok(self.bytecode.kind())
+        }
+
+        fn get_code_chunk_by_hash(
+            &mut self,
+            code_hash: &B256,
+            index: u32,
+        ) -> Result<Option<evm2::bytecode::CodeChunk>, Self::Error> {
+            self.bytecode_reads.fetch_add(1, Ordering::Relaxed);
+            Ok((*code_hash == self.code_hash && index == 0)
+                .then(|| evm2::bytecode::CodeChunk::from_bytecode(&self.bytecode)))
+        }
+
         fn get_storage(&mut self, _address: &Address, _index: &U256) -> Result<U256, Self::Error> {
             Ok(U256::ZERO)
         }
@@ -974,6 +1001,7 @@ mod tests {
             nonce: 7,
             balance: U256::from(42),
             bytecode_hash: Some(code_hash),
+            ..Default::default()
         };
         let bytecode = EvmBytecode::default();
         let account_reads = Arc::new(AtomicUsize::new(0));
@@ -994,7 +1022,10 @@ mod tests {
         let cache = StateCache::default();
         let cached = CachedAccountInfoReader::new(Db::new(StateCacheDb::new(&cache, provider)));
 
-        assert_eq!(cached.basic_account(&address).unwrap(), Some(account));
+        assert_eq!(
+            cached.basic_account(&address).unwrap(),
+            Some(account.clone())
+        );
         assert_eq!(cached.basic_account(&address).unwrap(), Some(account));
         assert_eq!(account_reads.load(Ordering::Relaxed), 1);
 
@@ -1007,6 +1038,41 @@ mod tests {
             Some(Bytecode(reth_execution_types::revm_bytecode(&bytecode)))
         );
         assert_eq!(bytecode_reads.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn inline_delegation_survives_pool_account_conversion_without_marker_reads() {
+        let address = Address::repeat_byte(0x82);
+        let target = Address::repeat_byte(0x83);
+        let marker = EvmBytecode::new_eip7702(target);
+        let hash = marker.hash_slow();
+        let bytecode_reads = Arc::new(AtomicUsize::new(0));
+        let reader = CachedAccountInfoReader::new(Db::new(CountingDatabase {
+            address,
+            code_hash: hash,
+            account: AccountInfo {
+                code_hash: hash,
+                inline_delegation: Some(target),
+                extension: evm2::evm::AccountExtension::copy_from_slice(&[0xfe, 1]),
+                ..Default::default()
+            },
+            bytecode: marker.clone(),
+            account_reads: Arc::new(AtomicUsize::new(0)),
+            bytecode_reads: bytecode_reads.clone(),
+        }));
+        let account = reader.basic_account(&address).unwrap().unwrap();
+        let restored = reth_execution_types::native_provider_account(&account).unwrap();
+        assert_eq!(restored.inline_delegation, Some(target));
+        assert_eq!(restored.extension.as_ref(), &[0xfe, 1]);
+        assert_eq!(
+            reader
+                .bytecode_by_hash(&hash)
+                .unwrap()
+                .unwrap()
+                .original_bytes(),
+            marker.original_bytes()
+        );
+        assert_eq!(bytecode_reads.load(Ordering::Relaxed), 0);
     }
 
     /// Helper to create a mock sealed block with the given timestamp.

@@ -19,6 +19,8 @@ mod instructions;
 mod signature_gas;
 #[cfg(test)]
 mod test_utils;
+#[cfg(test)]
+mod tip1143_tests;
 mod transaction;
 pub mod transaction_error;
 
@@ -72,6 +74,8 @@ pub struct TempoEvmConfig {
     chain_spec: Arc<TempoChainSpec>,
     evm_factory: TempoEvmFactory,
     sender_recovery_cache: Option<SenderRecoveryCache>,
+    /// Explicit draft switch; never inferred from a scheduled hardfork.
+    tip1143: bool,
     /// Block assembler used by payload construction.
     pub block_assembler: TempoBlockAssembler,
 }
@@ -98,9 +102,19 @@ impl TempoEvmConfig {
         Self {
             evm_factory: TempoEvmFactory::default(),
             sender_recovery_cache: None,
+            tip1143: false,
             block_assembler: TempoBlockAssembler::new(chain_spec.clone()),
             chain_spec,
         }
+    }
+
+    /// Enables draft TIP-1143 execution for a local, explicitly configured chain.
+    ///
+    /// The persistent provider must use the matching account and chunk format. This
+    /// switch does not schedule a hardfork or migrate existing accounts.
+    pub const fn with_tip1143(mut self, enabled: bool) -> Self {
+        self.tip1143 = enabled;
+        self
     }
 
     /// Uses the provided sender recovery cache.
@@ -137,12 +151,10 @@ impl TempoEvmConfig {
         blob_params: Option<BlobParams>,
     ) -> TempoEvmEnv {
         let config = tempo_execution_config(tempo_spec, self.chain_spec.chain().id());
-        let mut version = *config.version();
+        let mut version = config.version().with_tip1143(self.tip1143);
         version.tx_gas_limit_cap = tempo_spec.tx_gas_limit_cap().unwrap_or(u64::MAX);
         if let Some(blob_params) = blob_params {
             version.max_blobs_per_tx = blob_params.max_blobs_per_tx as usize;
-            version.blob_base_fee_update_fraction =
-                u64::try_from(blob_params.update_fraction).unwrap_or(u64::MAX);
         }
         TempoEvmEnv::new_with_version(tempo_spec, block, version)
     }
@@ -349,6 +361,37 @@ mod tests {
         BlockBody, SubBlockMetadata, TempoConsensusContext, TempoTxEnvelope, ed25519::PublicKey,
         subblock::SubBlockVersion, transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
     };
+
+    #[test]
+    fn tip1143_is_explicit_and_unscheduled() {
+        let config = TempoEvmConfig::new(test_chainspec());
+        let header = TempoHeader::default();
+        let original = config.evm_env(&header).unwrap();
+        assert!(!original.version.feature(evm2::EvmFeatures::TIP1143));
+        let enabled = config.clone().with_tip1143(true).evm_env(&header).unwrap();
+        assert!(enabled.version.feature(evm2::EvmFeatures::TIP1143));
+        assert_eq!(enabled.version.max_code_size, 981_640);
+        assert_eq!(enabled.version.max_initcode_size, 1_966_080);
+        assert_eq!(enabled.version.chain_id, original.version.chain_id);
+        assert_eq!(
+            enabled.version.tx_gas_limit_cap,
+            original.version.tx_gas_limit_cap
+        );
+        let disabled = config
+            .with_tip1143(true)
+            .with_tip1143(false)
+            .evm_env(&header)
+            .unwrap();
+        assert_eq!(
+            disabled.version.max_code_size,
+            original.version.max_code_size
+        );
+        assert_eq!(
+            disabled.version.max_initcode_size,
+            original.version.max_initcode_size
+        );
+        assert!(!disabled.version.feature(evm2::EvmFeatures::TIP1143));
+    }
 
     #[test]
     fn test_evm_config_can_query_tempo_hardforks() {
