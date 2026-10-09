@@ -22,14 +22,19 @@ impl Catalog {
             .wrap_err_with(|| format!("invalid era catalog {}", path.display()))?;
         catalog.validate()?;
         let parent = path.canonicalize()?.with_file_name("");
-        for chain in &mut catalog.chains {
-            for era in &mut chain.eras {
-                if let Some(binary) = &mut era.binary {
-                    resolve_path(&parent, binary);
-                }
-            }
-        }
+        catalog.resolve_binaries(&parent);
         Ok(catalog)
+    }
+
+    pub fn resolve_binaries(&mut self, parent: &Path) {
+        for binary in self
+            .chains
+            .iter_mut()
+            .flat_map(|chain| &mut chain.eras)
+            .filter_map(|era| era.binary.as_mut())
+        {
+            resolve_path(parent, binary);
+        }
     }
 
     pub fn validate(&self) -> eyre::Result<()> {

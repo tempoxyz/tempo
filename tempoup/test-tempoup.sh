@@ -248,21 +248,42 @@ run_install '
 '
 ok "bootstrap verification gating"
 
-ROLLBACK_DIR="$TMP_ROOT/rollback-upgrade"
-mkdir -p "$ROLLBACK_DIR"
-printf 'old tempo\n' > "$ROLLBACK_DIR/tempo"
-if output="$(ROLLBACK_DIR="$ROLLBACK_DIR" run_tempoup '
-    TEMPOUP_INSTALL_TARGET="$ROLLBACK_DIR/tempo"
-    TEMPOUP_OLD_BINARY="$TEMPOUP_INSTALL_TARGET.old"
-    TEMPOUP_HAD_OLD_BINARY=1
-    mv -f "$TEMPOUP_INSTALL_TARGET" "$TEMPOUP_OLD_BINARY"
-    trap rollback_tempo_install EXIT
-    printf "new tempo\n" > "$TEMPOUP_INSTALL_TARGET"
-    false
-' 2>&1)"; then
-    printf '%s\n' "$output" >&2
-    fail "failed upgrade rollback succeeded"
-fi
-[[ "$(cat "$ROLLBACK_DIR/tempo")" == "old tempo" ]] || fail "failed upgrade did not restore old tempo"
-[[ ! -e "$ROLLBACK_DIR/tempo.old" ]] || fail "failed upgrade left backup behind"
-ok "failed upgrade restores old tempo"
+for mode in bundle rollback legacy fresh-failure incomplete; do
+    destination="$TMP_ROOT/install-$mode"
+    package="$TMP_ROOT/package-$mode"
+    expected="$TMP_ROOT/expected-$mode"
+    mkdir -p "$destination" "$package"
+    if [[ "$mode" != fresh-failure ]]; then
+        for file in tempo eras/tempo-genesis-t10 tempo-eras.json history/genesis-t10/era.json; do
+            mkdir -p "$destination/$(dirname "$file")"
+            printf 'old %s\n' "$file" > "$destination/$file"
+        done
+    fi
+    cp -R "$destination" "$expected"
+    cp "$GOOD_TEMPO" "$package/tempo-release"
+    if [[ "$mode" != legacy ]]; then
+        mkdir -p "$package/eras" "$package/history/genesis-t10"
+        cp "$GOOD_TEMPO" "$package/eras/tempo-genesis-t10"
+        for file in tempo-eras.json history/genesis-t10/{era.json,build-info.json,verification.json,SHA256SUMS}; do
+            printf 'new %s\n' "$file" > "$package/$file"
+        done
+    fi
+    case "$mode" in
+        rollback|fresh-failure) cp "$BAD_TEMPO" "$package/eras/tempo-genesis-t10" ;;
+        incomplete) rm "$package/history/genesis-t10/verification.json" ;;
+        *)
+            rm -rf "$expected"
+            cp -R "$package" "$expected"
+            mv "$expected/tempo-release" "$expected/tempo"
+            ;;
+    esac
+    mkdir -p "$expected/history"
+    if output="$(TEMPO_BIN_DIR="$destination" PLATFORM=linux PACKAGE="$package" run_tempoup \
+        'install_tempo_bundle "$PACKAGE/tempo-release" tempo' 2>&1)"; then
+        [[ "$mode" == bundle || "$mode" == legacy ]] || fail "$mode install succeeded"
+    else
+        [[ "$mode" != bundle && "$mode" != legacy ]] || fail "$mode install failed: $output"
+    fi
+    diff -r "$expected" "$destination" || fail "$mode install left incorrect files"
+    ok "bundle installation: $mode"
+done

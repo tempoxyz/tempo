@@ -2,5 +2,6 @@
 contrib/
 docs/
 localnet/
-scripts/
+scripts/*
+!scripts/bundle-history.py
 target/
