@@ -13,7 +13,7 @@ use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS, STORAGE_CREDITS_ADDRESS,
     account_keychain::AccountKeychain,
     error::{Result, TempoPrecompileError},
-    storage::{Handler, LayoutCtx, StorableType, StorageCtx},
+    storage::{Handler, LayoutCtx, StorableType},
     tip20::TIP20Token,
 };
 use alloy::primitives::{Address, U256};
@@ -141,10 +141,6 @@ impl StorageCredits {
         account: Address,
         f: impl FnOnce() -> Result<T>,
     ) -> Result<(T, u64)> {
-        if !StorageCtx.spec().is_t7() {
-            return f().map(|value| (value, 0));
-        }
-
         let before = self.balance_of(account)?;
         let value = f()?;
         let after = self.balance_of(account)?;
@@ -226,10 +222,6 @@ impl StorageCredits {
         limit: u64,
         f: impl FnOnce() -> Result<T>,
     ) -> Result<(T, i128)> {
-        if !StorageCtx.spec().is_t7() {
-            return f().map(|value| (value, 0));
-        }
-
         if limit == 0 {
             let before = self.balance_of(credit_owner)?;
             let value = f()?;

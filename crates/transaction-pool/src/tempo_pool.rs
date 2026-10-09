@@ -35,7 +35,6 @@ use std::{sync::Arc, time::Instant};
 use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
 use tempo_evm::TempoEvmConfig;
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
     error::Result as TempoPrecompileResult,
     storage::{Handler, StorageActions},
@@ -208,30 +207,6 @@ where
         // For compound policies (TIP-1015), the cache stores all sub-policy IDs
         // so eviction matches events emitted with sub-policy IDs.
         let mut policy_cache: AddressMap<Vec<u64>> = AddressMap::default();
-
-        // Pre-T8 fee collection checked TIP_FEE_MANAGER_ADDRESS as the fee-token recipient.
-        // TIP-1042 exempts that recipient side, so T8+ invalidation only tracks fee-payer sender
-        // authorization.
-        let is_t8 = spec.is_t8();
-        // NOTE: We can remove this logic after T8 activation
-        let (fee_manager_blacklisted, fee_manager_unwhitelisted): (Vec<u64>, Vec<u64>) = if !is_t8 {
-            (
-                updates
-                    .blacklist_additions
-                    .iter()
-                    .filter(|(_, account)| *account == TIP_FEE_MANAGER_ADDRESS)
-                    .map(|(policy_id, _)| *policy_id)
-                    .collect(),
-                updates
-                    .whitelist_removals
-                    .iter()
-                    .filter(|(_, account)| *account == TIP_FEE_MANAGER_ADDRESS)
-                    .map(|(policy_id, _)| *policy_id)
-                    .collect(),
-            )
-        } else {
-            (Vec::new(), Vec::new())
-        };
 
         // Re-check liquidity for all pooled txs when an active validator changes token.
         // Leverages the per-tx `has_enough_liquidity` check, which passes if ANY validator pair has
@@ -455,15 +430,7 @@ where
                     }
                 }
 
-                // Check if the fee manager (recipient) was blacklisted on this token's
-                // recipient policy — the tx would fail at execution since the fee
-                // transfer to TIP_FEE_MANAGER_ADDRESS would be rejected.
-                let recipient_evicted = !sender_evicted
-                    && !fee_manager_blacklisted.is_empty()
-                    && get_recipient_policy_ids(provider, fee_token, spec)
-                        .is_some_and(|ids| fee_manager_blacklisted.iter().any(|p| ids.contains(p)));
-
-                if sender_evicted || recipient_evicted {
+                if sender_evicted {
                     to_remove.push(*tx.hash());
                     blacklisted_count += 1;
                 }
@@ -499,15 +466,7 @@ where
                     }
                 }
 
-                // Check if the fee manager (recipient) was un-whitelisted on this
-                // token's recipient policy.
-                let recipient_evicted = !sender_evicted
-                    && !fee_manager_unwhitelisted.is_empty()
-                    && get_recipient_policy_ids(provider, fee_token, spec).is_some_and(|ids| {
-                        fee_manager_unwhitelisted.iter().any(|p| ids.contains(p))
-                    });
-
-                if sender_evicted || recipient_evicted {
+                if sender_evicted {
                     to_remove.push(*tx.hash());
                     unwhitelisted_count += 1;
                 }
@@ -589,14 +548,8 @@ where
                             .map(|auths| self.protocol_pool.inner().get_sender_ids(auths)),
                     };
 
-                    // Get the active Tempo hardfork for expiring nonce handling
-                    let hardfork = self.protocol_pool.validator().validator().active_hardfork();
-
                     let tx = Arc::new(tx);
-                    let added =
-                        self.aa_2d_pool
-                            .write()
-                            .add_transaction(tx, state_nonce, hardfork)?;
+                    let added = self.aa_2d_pool.write().add_transaction(tx, state_nonce)?;
                     let hash = *added.hash();
                     if let Some(pending) = added.as_pending() {
                         if pending.discarded.iter().any(|tx| *tx.hash() == hash) {
@@ -1436,46 +1389,6 @@ fn get_sender_policy_ids(
     })
 }
 
-/// Returns the set of policy IDs that can affect recipient authorization for a token.
-///
-/// For simple (non-compound) policies, the transfer policy applies symmetrically to both
-/// sender and recipient, so the set contains just the policy ID. For compound policies
-/// (TIP-1015) it contains both the compound root and the recipient sub-policy, since
-/// pre-T8 fee transfer authorization checks the fee manager via `AuthRole::Recipient`.
-/// T8+ fee collection exempts the FeeManager recipient side, so this returns `None`.
-///
-/// Unlike `get_sender_policy_ids` this is uncached — it's only called on the rare path
-/// where the fee manager itself is blacklisted or un-whitelisted.
-fn get_recipient_policy_ids(
-    provider: &mut impl StateProvider,
-    fee_token: Address,
-    spec: TempoHardfork,
-) -> Option<Vec<u64>> {
-    if spec.is_t8() {
-        return None;
-    }
-
-    provider.with_read_only_storage_ctx(spec, StorageActions::disabled(), || {
-        let policy_id = TIP20Token::from_address(fee_token)
-            .and_then(|t| t.transfer_policy_id())
-            .ok()
-            .filter(|&id| id != REJECT_ALL_POLICY_ID)?;
-
-        let mut ids = vec![policy_id];
-
-        let registry = TIP403Registry::new();
-        if let Ok(data) = registry.policy_records[policy_id].base.read()
-            && data.is_compound()
-            && let Ok(compound) = registry.policy_records[policy_id].compound.read()
-            && compound.recipient_policy_id != REJECT_ALL_POLICY_ID
-        {
-            ids.push(compound.recipient_policy_id);
-        }
-
-        Some(ids)
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1499,6 +1412,7 @@ mod tests {
     };
     use tempo_chainspec::{
         TempoChainSpec,
+        constants::moderato::MODERATO_T10_TIMESTAMP,
         hardfork::TempoHardfork,
         spec::{MODERATO, TEMPO_T1_TX_GAS_LIMIT_CAP},
     };
@@ -1641,10 +1555,12 @@ mod tests {
     fn create_test_pool(
         provider: MockEthProvider<TempoPrimitives, TempoChainSpec>,
     ) -> TempoTransactionPool<MockEthProvider<TempoPrimitives, TempoChainSpec>> {
-        let inner =
-            EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::mainnet())
-                .disable_balance_check()
-                .build(InMemoryBlobStore::default());
+        let inner = EthTransactionValidatorBuilder::new(
+            provider.clone(),
+            TempoEvmConfig::new(provider.chain_spec()),
+        )
+        .disable_balance_check()
+        .build(InMemoryBlobStore::default());
         let amm_cache =
             AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
         let validator = TempoTransactionValidator::new(
@@ -1688,6 +1604,7 @@ mod tests {
             Block {
                 header: TempoHeader {
                     inner: Header {
+                        timestamp: MODERATO_T10_TIMESTAMP,
                         gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
                         ..Default::default()
                     },
@@ -1720,11 +1637,7 @@ mod tests {
         for tx in txs {
             pool.aa_2d_pool
                 .write()
-                .add_transaction(
-                    Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
-                    0,
-                    TempoHardfork::T1,
-                )
+                .add_transaction(Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)), 0)
                 .unwrap();
         }
 
@@ -1755,6 +1668,7 @@ mod tests {
         let new_tip = SealedBlock::seal_slow(Block {
             header: TempoHeader {
                 inner: Header {
+                    timestamp: MODERATO_T10_TIMESTAMP,
                     gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
                     base_fee_per_gas: Some(initial_base_fee),
                     excess_blob_gas: Some(0),
@@ -2066,6 +1980,7 @@ mod tests {
             Block {
                 header: TempoHeader {
                     inner: Header {
+                        timestamp: MODERATO_T10_TIMESTAMP,
                         gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
                         ..Default::default()
                     },
@@ -2078,10 +1993,12 @@ mod tests {
         let initial_balance = pooled.fee_token_cost() + U256::ONE;
         set_fee_token_balance(&provider, PATH_USD_ADDRESS, fee_payer, initial_balance);
 
-        let inner =
-            EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::mainnet())
-                .disable_balance_check()
-                .build(InMemoryBlobStore::default());
+        let inner = EthTransactionValidatorBuilder::new(
+            provider.clone(),
+            TempoEvmConfig::new(provider.chain_spec()),
+        )
+        .disable_balance_check()
+        .build(InMemoryBlobStore::default());
         let amm_cache =
             AmmLiquidityCache::new(provider.clone()).expect("failed to setup AmmLiquidityCache");
         let validator = TempoTransactionValidator::new(
@@ -2152,6 +2069,7 @@ mod tests {
             Block {
                 header: TempoHeader {
                     inner: Header {
+                        timestamp: MODERATO_T10_TIMESTAMP,
                         gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
                         ..Default::default()
                     },
@@ -2191,6 +2109,7 @@ mod tests {
             Block {
                 header: TempoHeader {
                     inner: Header {
+                        timestamp: MODERATO_T10_TIMESTAMP,
                         gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
                         ..Default::default()
                     },
@@ -2230,6 +2149,7 @@ mod tests {
             Block {
                 header: TempoHeader {
                     inner: Header {
+                        timestamp: MODERATO_T10_TIMESTAMP,
                         gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
                         ..Default::default()
                     },
@@ -2239,7 +2159,8 @@ mod tests {
             },
         );
 
-        let inner = EthTransactionValidatorBuilder::new(provider, TempoEvmConfig::mainnet())
+        let evm_config = TempoEvmConfig::new(provider.chain_spec());
+        let inner = EthTransactionValidatorBuilder::new(provider, evm_config)
             .disable_balance_check()
             .build(InMemoryBlobStore::default());
         let amm_cache = AmmLiquidityCache::with_unique_validators(vec![validator_address]);
@@ -2309,6 +2230,7 @@ mod tests {
             Block {
                 header: TempoHeader {
                     inner: Header {
+                        timestamp: MODERATO_T10_TIMESTAMP,
                         gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
                         ..Default::default()
                     },
@@ -2318,10 +2240,12 @@ mod tests {
             },
         );
 
-        let inner =
-            EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::mainnet())
-                .disable_balance_check()
-                .build(InMemoryBlobStore::default());
+        let inner = EthTransactionValidatorBuilder::new(
+            provider.clone(),
+            TempoEvmConfig::new(provider.chain_spec()),
+        )
+        .disable_balance_check()
+        .build(InMemoryBlobStore::default());
         let amm_cache =
             AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
         let validator = TempoTransactionValidator::new(
@@ -2400,6 +2324,7 @@ mod tests {
             Block {
                 header: TempoHeader {
                     inner: Header {
+                        timestamp: MODERATO_T10_TIMESTAMP,
                         gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
                         ..Default::default()
                     },
@@ -2409,10 +2334,12 @@ mod tests {
             },
         );
 
-        let inner =
-            EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::mainnet())
-                .disable_balance_check()
-                .build(InMemoryBlobStore::default());
+        let inner = EthTransactionValidatorBuilder::new(
+            provider.clone(),
+            TempoEvmConfig::new(provider.chain_spec()),
+        )
+        .disable_balance_check()
+        .build(InMemoryBlobStore::default());
         let amm_cache =
             AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
         let validator = TempoTransactionValidator::new(
@@ -2487,6 +2414,7 @@ mod tests {
             Block {
                 header: TempoHeader {
                     inner: Header {
+                        timestamp: MODERATO_T10_TIMESTAMP,
                         gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
                         ..Default::default()
                     },
@@ -2496,10 +2424,12 @@ mod tests {
             },
         );
 
-        let inner =
-            EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::mainnet())
-                .disable_balance_check()
-                .build(InMemoryBlobStore::default());
+        let inner = EthTransactionValidatorBuilder::new(
+            provider.clone(),
+            TempoEvmConfig::new(provider.chain_spec()),
+        )
+        .disable_balance_check()
+        .build(InMemoryBlobStore::default());
         let amm_cache =
             AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
         let validator = TempoTransactionValidator::new(
@@ -2717,127 +2647,6 @@ mod tests {
         );
     }
 
-    /// Pre-T8, `get_recipient_policy_ids` returns the compound root and recipient sub-policy.
-    #[test]
-    fn recipient_policy_ids_includes_recipient_sub_policy_pre_t8() {
-        let fee_token = address!("20C0000000000000000000000000000000000001");
-        let compound_policy_id: u64 = 5;
-        let sender_sub: u64 = 3;
-        let recipient_sub: u64 = 4;
-
-        let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
-            tempo_chainspec::spec::MODERATO.clone(),
-        ));
-
-        let transfer_policy_id_packed =
-            U256::from(compound_policy_id) << (tip20_slots::TRANSFER_POLICY_ID_OFFSET * 8);
-        provider.add_account(
-            fee_token,
-            ExtendedAccount::new(0, U256::ZERO).extend_storage([(
-                tip20_slots::TRANSFER_POLICY_ID.into(),
-                transfer_policy_id_packed,
-            )]),
-        );
-
-        provider
-            .setup_storage(TempoHardfork::default(), || {
-                let mut registry = TIP403Registry::new();
-                registry.policy_records[compound_policy_id]
-                    .base
-                    .write(PolicyData {
-                        policy_type: ITIP403Registry::PolicyType::COMPOUND as u8,
-                        admin: Address::ZERO,
-                    })?;
-                registry.policy_records[compound_policy_id]
-                    .compound
-                    .write(CompoundPolicyData {
-                        sender_policy_id: sender_sub,
-                        recipient_policy_id: recipient_sub,
-                        mint_recipient_policy_id: 0,
-                    })
-            })
-            .unwrap();
-
-        let mut state = provider.latest().unwrap();
-        let ids = get_recipient_policy_ids(&mut state, fee_token, TempoHardfork::T7)
-            .expect("should resolve policy IDs");
-
-        assert!(
-            ids.contains(&compound_policy_id),
-            "should contain compound policy ID"
-        );
-        assert!(
-            ids.contains(&recipient_sub),
-            "should contain recipient sub-policy"
-        );
-        assert!(
-            !ids.contains(&sender_sub),
-            "recipient policy IDs should not contain sender sub-policy"
-        );
-    }
-
-    /// For simple (non-compound) policies, pre-T8 `get_recipient_policy_ids` returns just the root.
-    #[test]
-    fn recipient_policy_ids_simple_policy_pre_t8() {
-        let fee_token = address!("20C0000000000000000000000000000000000001");
-        let simple_policy_id: u64 = 7;
-
-        let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
-            tempo_chainspec::spec::MODERATO.clone(),
-        ));
-
-        let transfer_policy_id_packed =
-            U256::from(simple_policy_id) << (tip20_slots::TRANSFER_POLICY_ID_OFFSET * 8);
-        provider.add_account(
-            fee_token,
-            ExtendedAccount::new(0, U256::ZERO).extend_storage([(
-                tip20_slots::TRANSFER_POLICY_ID.into(),
-                transfer_policy_id_packed,
-            )]),
-        );
-
-        provider
-            .setup_storage(TempoHardfork::default(), || {
-                let mut registry = TIP403Registry::new();
-                registry.policy_records[simple_policy_id]
-                    .base
-                    .write(PolicyData {
-                        policy_type: ITIP403Registry::PolicyType::BLACKLIST as u8,
-                        admin: Address::ZERO,
-                    })
-            })
-            .unwrap();
-
-        let mut state = provider.latest().unwrap();
-        let ids = get_recipient_policy_ids(&mut state, fee_token, TempoHardfork::T7)
-            .expect("should resolve policy IDs");
-
-        assert_eq!(ids, vec![simple_policy_id]);
-    }
-
-    #[test]
-    fn recipient_policy_ids_exempt_on_t8() {
-        let fee_token = address!("20C0000000000000000000000000000000000001");
-        let simple_policy_id: u64 = 7;
-
-        let provider = MockEthProvider::default().with_chain_spec(std::sync::Arc::unwrap_or_clone(
-            tempo_chainspec::spec::MODERATO.clone(),
-        ));
-
-        let transfer_policy_id_packed =
-            U256::from(simple_policy_id) << (tip20_slots::TRANSFER_POLICY_ID_OFFSET * 8);
-        provider.add_account(
-            fee_token,
-            ExtendedAccount::new(0, U256::ZERO).extend_storage([(
-                tip20_slots::TRANSFER_POLICY_ID.into(),
-                transfer_policy_id_packed,
-            )]),
-        );
-
-        let mut state = provider.latest().unwrap();
-        assert!(get_recipient_policy_ids(&mut state, fee_token, TempoHardfork::T8).is_none());
-    }
-
     #[test]
     fn exceeds_spending_limit_returns_true_when_cost_exceeds_remaining() {
         let account = Address::random();
@@ -2985,7 +2794,7 @@ mod tests {
                 period: 60,
                 period_end: 10,
             },
-            TempoHardfork::T3,
+            TempoHardfork::T10,
         );
 
         assert!(!exceeds_spending_limit(
@@ -2993,14 +2802,14 @@ mod tests {
             &subject,
             alloy_primitives::U256::from(50),
             10,
-            TempoHardfork::T3,
+            TempoHardfork::T10,
         ));
         assert!(exceeds_spending_limit(
             &mut state,
             &subject,
             alloy_primitives::U256::from(150),
             10,
-            TempoHardfork::T3,
+            TempoHardfork::T10,
         ));
     }
 }

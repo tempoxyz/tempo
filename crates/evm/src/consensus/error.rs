@@ -1,4 +1,4 @@
-use alloy_primitives::{Address, B256};
+use alloy_primitives::B256;
 use reth_consensus::ConsensusError;
 
 /// Tempo-specific consensus errors.
@@ -19,14 +19,6 @@ pub enum TempoConsensusError {
     /// A system transaction in the block is invalid.
     #[error("invalid system transaction: {tx_hash}")]
     InvalidSystemTransaction { tx_hash: B256 },
-
-    /// Block does not contain the required end-of-block system transactions.
-    #[error("block must contain {expected} end-of-block system txs, found {actual}")]
-    MissingEndOfBlockSystemTxs { expected: usize, actual: usize },
-
-    /// End-of-block system transactions are in the wrong order.
-    #[error("invalid end-of-block system tx order: expected {expected}, got {actual}")]
-    InvalidEndOfBlockSystemTxOrder { expected: Address, actual: Address },
 }
 
 impl From<TempoConsensusError> for ConsensusError {

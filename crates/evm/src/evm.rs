@@ -91,9 +91,7 @@ impl<DB: Database> TempoEvm<DB> {
         input: EvmEnv<TempoHardfork, TempoBlockEnv>,
         builder: PrecompilesBuilder<DB>,
     ) -> Self {
-        // TIP-1016 (EIP-8037 state gas split) is gated by `cfg_env.enable_amsterdam_eip8037`
-        // and is independent of the T4 hardfork. The caller is responsible for setting the
-        // flag on the input `EvmEnv`; here we pass it through unchanged.
+        // Pass through the independent TIP-1016 state-gas flag.
         let ctx = Context::mainnet()
             .with_db(db)
             .with_block(input.block_env)
@@ -543,11 +541,21 @@ mod tests {
 
     #[test]
     fn test_transact_raw() {
-        let mut evm = test_evm_with_basefee(EmptyDB::default(), 0);
+        let caller = Address::repeat_byte(0x01);
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            caller,
+            AccountInfo {
+                nonce: 1,
+                ..Default::default()
+            },
+        );
+        let mut evm = test_evm_with_basefee(db, 0);
 
         let tx = TempoTxEnv {
             inner: TxEnv {
-                caller: Address::repeat_byte(0x01),
+                caller,
+                nonce: 1,
                 gas_price: 0,
                 gas_limit: 21000,
                 kind: TxKind::Call(Address::repeat_byte(0x02)),
@@ -1408,8 +1416,8 @@ mod tests {
     #[test]
     fn test_tip20_full_evm_storage_actions() {
         for hardfork in TempoHardfork::VARIANTS {
-            // skip pre-T5 hardforks to avoid clutter
-            if !hardfork.is_t5() {
+            // Historical binaries cover older execution rules.
+            if *hardfork < TempoHardfork::MINIMUM_SUPPORTED {
                 continue;
             }
 
@@ -1767,7 +1775,7 @@ mod tests {
     #[test]
     fn test_tempo_evm_applies_gas_params() {
         // Create EVM with T1 hardfork to get TIP-1000 gas params
-        let evm = TempoEvm::new(EmptyDB::default(), evm_env_with_spec(TempoHardfork::T1));
+        let evm = TempoEvm::new(EmptyDB::default(), evm_env_with_spec(TempoHardfork::T10));
 
         // Verify gas params were applied (check a known T1 override)
         // T1 has tx_eip7702_per_empty_account_cost = 12,500
@@ -1786,44 +1794,16 @@ mod tests {
     /// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
     #[test]
     fn test_tempo_evm_respects_gas_cap() {
-        let mut env = evm_env_with_spec(TempoHardfork::T1);
-        env.cfg_env.tx_gas_limit_cap = TempoHardfork::T1.tx_gas_limit_cap();
+        let mut env = evm_env_with_spec(TempoHardfork::T10);
+        env.cfg_env.tx_gas_limit_cap = TempoHardfork::T10.tx_gas_limit_cap();
 
         let evm = TempoEvm::new(EmptyDB::default(), env);
 
         // Verify gas limit cap is preserved
         assert_eq!(
             evm.ctx().cfg.tx_gas_limit_cap,
-            TempoHardfork::T1.tx_gas_limit_cap(),
+            TempoHardfork::T10.tx_gas_limit_cap(),
             "TempoEvm should preserve the gas limit cap from input"
-        );
-    }
-
-    /// Test that gas params differ between T0 and T1 hardforks.
-    #[test]
-    fn test_tempo_evm_gas_params_differ_t0_vs_t1() {
-        // Create T0 and T1 EVMs
-        let t0_evm = TempoEvm::new(EmptyDB::default(), evm_env_with_spec(TempoHardfork::T0));
-        let t1_evm = TempoEvm::new(EmptyDB::default(), evm_env_with_spec(TempoHardfork::T1));
-
-        // T0 should have default EIP-7702 cost (25,000)
-        // T1 should have reduced cost (12,500)
-        let t0_eip7702_cost = t0_evm
-            .ctx()
-            .cfg
-            .gas_params
-            .tx_eip7702_per_empty_account_cost();
-        let t1_eip7702_cost = t1_evm
-            .ctx()
-            .cfg
-            .gas_params
-            .tx_eip7702_per_empty_account_cost();
-
-        assert_eq!(t0_eip7702_cost, 25_000, "T0 should have default 25,000");
-        assert_eq!(t1_eip7702_cost, 12_500, "T1 should have reduced 12,500");
-        assert_ne!(
-            t0_eip7702_cost, t1_eip7702_cost,
-            "Gas params should differ between T0 and T1"
         );
     }
 
@@ -1832,14 +1812,14 @@ mod tests {
     fn test_tempo_evm_t1_state_creation_costs() {
         use revm::context_interface::cfg::GasId;
 
-        let evm = TempoEvm::new(EmptyDB::default(), evm_env_with_spec(TempoHardfork::T1));
+        let evm = TempoEvm::new(EmptyDB::default(), evm_env_with_spec(TempoHardfork::T10));
         let gas_params = &evm.ctx().cfg.gas_params;
 
         // Verify TIP-1000 state creation cost increases
         assert_eq!(
             gas_params.get(GasId::sstore_set_without_load_cost()),
-            250_000,
-            "T1 SSTORE set cost should be 250,000"
+            5_000,
+            "storage credits leave a 5,000 gas residual"
         );
         assert_eq!(
             gas_params.get(GasId::tx_create_cost()),

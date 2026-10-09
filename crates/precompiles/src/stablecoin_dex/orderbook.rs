@@ -780,13 +780,7 @@ mod tests {
         let legacy = TickLevel::with_values(11, 22, 33);
         let updated = TickLevel::with_values(44, 55, 0);
 
-        for spec in [
-            TempoHardfork::T0,
-            TempoHardfork::T3,
-            TempoHardfork::T10,
-            TempoHardfork::T11,
-            TempoHardfork::T12,
-        ] {
+        for spec in [TempoHardfork::T10, TempoHardfork::T11, TempoHardfork::T12] {
             let is_t12 = spec.is_t12();
             let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
             StorageCtx::enter(&mut storage, || {
@@ -805,7 +799,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 TickLevelHandler::new(slot, address).write(updated)
             })?;
-            assert_eq!(storage.counter_sload(), if spec.is_t4() { 0 } else { 2 });
+            assert_eq!(storage.counter_sload(), { 0 });
             assert_eq!(storage.counter_sstore(), if is_t12 { 1 } else { 2 });
 
             storage.reset_counters();

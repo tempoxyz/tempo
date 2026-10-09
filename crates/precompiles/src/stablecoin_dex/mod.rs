@@ -95,7 +95,7 @@ impl StablecoinDEX {
 
     /// Adds reusable-order storage credits for `user`.
     fn credit_dex_storage_slots(&mut self, user: Address, slots: u64) -> Result<()> {
-        if slots == 0 || !self.storage.spec().is_t7() {
+        if slots == 0 {
             return Ok(());
         }
 
@@ -289,22 +289,12 @@ impl StablecoinDEX {
 
     /// Transfer tokens from user, accounting for pathUSD
     fn transfer_from(&mut self, token: Address, sender: Address, amount: u128) -> Result<()> {
-        if self.storage.spec().is_t5() {
-            TIP20Token::from_address(token)?.system_transfer_from(
-                self.address,
-                sender,
-                U256::from(amount),
-            )?;
-        } else {
-            TIP20Token::from_address(token)?.transfer_from(
-                self.address,
-                ITIP20::transferFromCall {
-                    from: sender,
-                    to: self.address,
-                    amount: U256::from(amount),
-                },
-            )?;
-        }
+        TIP20Token::from_address(token)?.system_transfer_from(
+            self.address,
+            sender,
+            U256::from(amount),
+        )?;
+
         Ok(())
     }
 
@@ -329,7 +319,7 @@ impl StablecoinDEX {
         if user_balance >= amount {
             // When fully covered by internal balance, TIP-20 transferFrom won't run,
             // so we must check the pause state ourselves (spec: T4+).
-            if check_pause && self.storage.spec().is_t4() {
+            if check_pause {
                 tip20.check_not_paused()?;
             }
             self.sub_balance(sender, token, amount)
@@ -570,9 +560,7 @@ impl StablecoinDEX {
     /// # Errors
     /// - `InvalidTick` — tick is not aligned to [`TICK_SPACING`] (T2+ only)
     pub fn tick_to_price(&self, tick: i16) -> Result<u32> {
-        if self.storage.spec().is_t2() {
-            orderbook::validate_tick_spacing(tick)?;
-        }
+        orderbook::validate_tick_spacing(tick)?;
 
         Ok(orderbook::tick_to_price(tick))
     }
@@ -585,9 +573,7 @@ impl StablecoinDEX {
     pub fn price_to_tick(&self, price: u32) -> Result<i16> {
         let tick = orderbook::price_to_tick(price)?;
 
-        if self.storage.spec().is_t2() {
-            orderbook::validate_tick_spacing(tick)?;
-        }
+        orderbook::validate_tick_spacing(tick)?;
 
         Ok(tick)
     }
@@ -616,11 +602,7 @@ impl StablecoinDEX {
             return Err(StablecoinDEXError::pair_already_exists().into());
         }
 
-        let book = if self.storage.spec().is_t8() {
-            Orderbook::new_with_index(base, quote, self.book_keys.len()? as u32)
-        } else {
-            Orderbook::new(base, quote)
-        };
+        let book = Orderbook::new_with_index(base, quote, self.book_keys.len()? as u32);
         self.books[book_key].write(book)?;
         self.book_keys.push(book_key)?;
 
@@ -694,9 +676,8 @@ impl StablecoinDEX {
         // On T4+, reject if the non-escrow token is paused. When this order fills, the
         // non-escrow token may be moved via internal-balance updates that bypass TIP-20's
         // pause check, so we enforce it at placement.
-        if self.storage.spec().is_t4() {
-            non_escrow_tip20.check_not_paused()?;
-        }
+
+        non_escrow_tip20.check_not_paused()?;
 
         // Debit from user's balance or transfer from wallet
         self.decrement_balance_or_transfer_from(sender, escrow_token, escrow_amount, true)?;
@@ -750,13 +731,8 @@ impl StablecoinDEX {
             }
         } else {
             // Update previous tail's next pointer.
-            if self.storage.spec().is_t8() {
-                self.orders[prev_tail].next()?.write(order.order_id())?;
-            } else {
-                let mut prev_order = self.orders[prev_tail].read_in_book(order.book_key())?;
-                prev_order.next = order.order_id();
-                self.orders[prev_tail].write_in_book(prev_order, book_id)?;
-            }
+
+            self.orders[prev_tail].next()?.write(order.order_id())?;
 
             // Set current order's prev pointer
             order.prev = prev_tail;
@@ -774,26 +750,18 @@ impl StablecoinDEX {
             .tick_level_handler_mut(order.tick(), order.is_bid())
             .write(level)?;
 
-        match (charge_credits, self.storage.spec()) {
-            // User placements: T7+ can spend maker credits for new reusable order storage.
-            (true, spec) if spec.is_t7() => {
-                self.write_order_spending_dex_storage_credits(order, book_id)
-            }
-            // T8+ flip rewrites credit deleted order slots without spending maker credits.
-            (false, spec) if spec.is_t8() => {
-                let (maker, credits) = (order.maker(), self.rewrite_order(order, book_id)?);
-                self.credit_dex_storage_slots(maker, credits)
-            }
-            // Pre-T7 has no DEX credits; T7 non-charged writes never change credits behavior.
-            _ => self.orders[order.order_id()].write_in_book(order, book_id),
+        if charge_credits {
+            self.write_order_spending_dex_storage_credits(order, book_id)
+        } else {
+            let (maker, credits) = (order.maker(), self.rewrite_order(order, book_id)?);
+            self.credit_dex_storage_slots(maker, credits)
         }
     }
 
     /// Places a flip order that auto-reverses to the opposite side when
     /// fully filled, acting as perpetual liquidity. Escrows tokens via
     /// [`TIP20Token`] and enforces compliance via [`TIP403Registry`].
-    /// Pre-T5: for bids `flip_tick` must be > `tick`; for asks, < `tick`.
-    /// T5+ (TIP-1030): for bids `flip_tick >= tick`; for asks `flip_tick <= tick`.
+    /// Bid flips require `flip_tick >= tick`; ask flips require `flip_tick <= tick`.
     ///
     /// # Errors
     /// - `InvalidBaseToken` — token address does not have a valid TIP-20 prefix
@@ -851,10 +819,7 @@ impl StablecoinDEX {
         // NOTE: `Order::new_flip` performs the same check defensively below; the early
         // check here is preserved to keep error semantics backwards-compatible
         // (invalid flip_tick fails with `invalid_flip_tick` before any escrow logic).
-        if (flip_tick == tick && !self.storage.spec().is_t5())
-            || (is_bid && flip_tick < tick)
-            || (!is_bid && flip_tick > tick)
-        {
+        if (is_bid && flip_tick < tick) || (!is_bid && flip_tick > tick) {
             return Err(StablecoinDEXError::invalid_flip_tick().into());
         }
 
@@ -882,9 +847,8 @@ impl StablecoinDEX {
         // On T4+, reject if the non-escrow token is paused. When this order fills, the
         // non-escrow token may be moved via internal-balance updates that bypass TIP-20's
         // pause check, so we enforce it at placement.
-        if self.storage.spec().is_t4() {
-            non_escrow_tip20.check_not_paused()?;
-        }
+
+        non_escrow_tip20.check_not_paused()?;
 
         // Debit from user's balance only. This is set to true after a flip order is filled and the
         // subsequent flip order is being placed.
@@ -893,9 +857,9 @@ impl StablecoinDEX {
             tip20.ensure_transfer_authorized(sender, self.address)?;
             // Internal-balance-only path bypasses TIP-20 transferFrom,
             // so we must check the pause state ourselves (spec: T4+).
-            if self.storage.spec().is_t4() {
-                tip20.check_not_paused()?;
-            }
+
+            tip20.check_not_paused()?;
+
             let user_balance = self.balance_of(sender, escrow_token)?;
             if user_balance < escrow_amount {
                 return Err(StablecoinDEXError::insufficient_balance().into());
@@ -907,25 +871,14 @@ impl StablecoinDEX {
 
         // Create the flip order
         let order_id = self.next_order_id()?;
-        let order = Order::new_flip(
-            order_id,
-            sender,
-            book_key,
-            amount,
-            tick,
-            is_bid,
-            flip_tick,
-            self.storage.spec(),
-        )
-        .map_err(|_| StablecoinDEXError::invalid_flip_tick())?;
+        let order = Order::new_flip(order_id, sender, book_key, amount, tick, is_bid, flip_tick)
+            .map_err(|_| StablecoinDEXError::invalid_flip_tick())?;
 
         // Commit the flip order
-        if self.storage.spec().is_t1c() {
-            // PERF: skip 1 redundant SLOAD
-            self.next_order_id.write(order_id + 1)?;
-        } else {
-            self.increment_next_order_id()?;
-        }
+
+        // PERF: skip 1 redundant SLOAD
+        self.next_order_id.write(order_id + 1)?;
+
         self.commit_order_to_book(order, true)?;
 
         // Emit OrderPlaced event for flip order
@@ -1087,44 +1040,24 @@ impl StablecoinDEX {
             // Bid becomes Ask, Ask becomes Bid.
             // The current tick becomes the new flip_tick, and flip_tick becomes the new tick.
             // Uses internal balance only, does not transfer from wallet.
-            let res = if self.storage.spec().is_t5() {
-                // Post T5: flip the order in place, without creating a new one.
-                self.flip_in_place(order, orderbook.base, orderbook.quote)
-            } else {
-                self.place_flip(
-                    order.maker(),
-                    orderbook.base,
-                    order.amount(),
-                    !order.is_bid(),
-                    order.flip_tick(),
-                    order.tick(),
-                    true,
-                )
-                .map(|_| ())
-            };
+            let res = self.flip_in_place(order, orderbook.base, orderbook.quote);
 
             // Business logic errors are ignored so that flip failure does not block the swap.
             // System errors (OOG, DB errors, panics) propagate because state may be inconsistent.
             if let Err(err) = &res {
-                if err.is_system_error() && self.storage.spec().is_t1a() {
+                if err.is_system_error() {
                     return Err(res.unwrap_err());
                 }
 
-                if self.storage.spec().is_t5() {
-                    self.emit_event(StablecoinDEXEvents::flip_failed(
-                        order.order_id(),
-                        order.maker(),
-                        err.selector(),
-                    ))?;
-                }
+                self.emit_event(StablecoinDEXEvents::flip_failed(
+                    order.order_id(),
+                    order.maker(),
+                    err.selector(),
+                ))?;
             }
 
-            // T5+: a successful `flip_in_place` already rewrote the order
-            // record under the same `orderId` (TIP-1056). In every other case
-            // (pre-T5, or T5 with a swallowed flip failure) the filled order
-            // record must be deleted to avoid leaving an orphan in storage.
-            let keep_record = self.storage.spec().is_t5() && res.is_ok();
-            if !keep_record {
+            // Successful flips rewrote the same order; delete the record after a failed flip.
+            if res.is_err() {
                 self.delete_order_and_track_deltas(storage_credits, order)?;
             }
         } else {
@@ -1463,11 +1396,7 @@ impl StablecoinDEX {
             return Ok(false);
         }
 
-        if self.storage.spec().is_t4() {
-            is_authorized_for_token(token_out, order.maker(), AuthRole::recipient())
-        } else {
-            Ok(true)
-        }
+        is_authorized_for_token(token_out, order.maker(), AuthRole::recipient())
     }
 
     /// Withdraws `amount` from the caller's DEX balance, transferring
@@ -1704,9 +1633,8 @@ impl StablecoinDEX {
 
                 // Ensure that the token is not paused (spec: T3+)
                 // Necessary because TIP20 transfer checks don't cover internal DEX balance updates
-                if self.storage.spec().is_t3() {
-                    token_in_tip20.check_not_paused()?;
-                }
+
+                token_in_tip20.check_not_paused()?;
 
                 if token_in_tip20.quote_token()? == token_out {
                     (token_in, token_out)
@@ -1907,7 +1835,7 @@ mod tests {
 
     #[test]
     fn test_t8_book_index_state_is_one_based() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
@@ -2062,7 +1990,7 @@ mod tests {
 
     #[test]
     fn test_t8_book_index_rejects_uninitialized_book_key() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
@@ -2297,7 +2225,7 @@ mod tests {
 
     #[test]
     fn test_dex_storage_credits_cancel_then_reuse_t7() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
@@ -2327,8 +2255,8 @@ mod tests {
     }
 
     #[test]
-    fn test_dex_storage_credits_non_tail_cancel_credits_order_maker_t7() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
+    fn test_dex_storage_credits_non_tail_cancel_credits_order_makers() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
@@ -2365,15 +2293,17 @@ mod tests {
             let alice_credits = exchange.storage_credits(alice)?;
             let alice_order_slots = <Order as crate::storage::StorableType>::SLOTS as u64;
             assert!(alice_credits > 0 && alice_credits <= alice_order_slots);
-            assert_eq!(exchange.storage_credits(bob)?, 0);
+            // The compact layout gives Bob a credit for clearing his prev pointer.
+            assert_eq!(exchange.orders[bob_order_id].prev()?.read()?, 0);
+            assert_eq!(exchange.storage_credits(bob)?, 1);
 
             Ok(())
         })
     }
 
     #[test]
-    fn test_dex_storage_credits_non_tail_fill_credits_order_maker_t7() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
+    fn test_dex_storage_credits_non_tail_fill_credits_order_makers() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
@@ -2414,7 +2344,8 @@ mod tests {
             let alice_credits = exchange.storage_credits(alice)?;
             let alice_order_slots = <Order as crate::storage::StorableType>::SLOTS as u64;
             assert!(alice_credits > 0 && alice_credits <= alice_order_slots);
-            assert_eq!(exchange.storage_credits(bob)?, 0);
+            assert_eq!(exchange.orders[bob_order_id].prev()?.read()?, 0);
+            assert_eq!(exchange.storage_credits(bob)?, 1);
 
             Ok(())
         })
@@ -2422,7 +2353,7 @@ mod tests {
 
     #[test]
     fn test_dex_storage_credits_tail_cancel_credits_predecessor_next_t7() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
@@ -2823,51 +2754,38 @@ mod tests {
         })
     }
 
-    /// TIP-1030: at the `place_flip` precompile entrypoint, `flip_tick == tick`
-    /// is rejected pre-T5 and accepted on T5+ (with the order stored verbatim).
+    /// Same-tick flips are stored verbatim.
     #[test]
-    fn test_place_flip_same_tick_per_hardfork() -> eyre::Result<()> {
-        for spec in [TempoHardfork::T4, TempoHardfork::T5] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
-            StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
+    fn test_place_flip_same_tick() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
 
-                let alice = Address::random();
-                let admin = Address::random();
-                let tick = 100i16;
+            let alice = Address::random();
+            let admin = Address::random();
+            let tick = 100i16;
 
-                let price = orderbook::tick_to_price(tick);
-                let escrow =
-                    (MIN_ORDER_AMOUNT * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
+            let price = orderbook::tick_to_price(tick);
+            let escrow =
+                (MIN_ORDER_AMOUNT * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
-                let (base_token, _) = setup_test_tokens(admin, alice, exchange.address, escrow)?;
-                exchange.create_pair(base_token)?;
+            let (base_token, _) = setup_test_tokens(admin, alice, exchange.address, escrow)?;
+            exchange.create_pair(base_token)?;
 
-                let result = exchange.place_flip(
-                    alice,
-                    base_token,
-                    MIN_ORDER_AMOUNT,
-                    true,
-                    tick,
-                    tick,
-                    false,
-                );
+            let result =
+                exchange.place_flip(alice, base_token, MIN_ORDER_AMOUNT, true, tick, tick, false);
 
-                if spec.is_t5() {
-                    let order_id = result.expect("same-tick flip should succeed on T5+");
-                    let stored = exchange.orders[order_id].read()?;
-                    assert_eq!(stored.tick(), tick);
-                    assert_eq!(stored.flip_tick(), tick);
-                    assert!(stored.is_bid());
-                    assert!(stored.is_flip());
-                } else {
-                    assert_eq!(result, Err(StablecoinDEXError::invalid_flip_tick().into()));
-                }
+            let order_id = result.expect("same-tick flip should succeed on T5+");
+            let stored = exchange.orders[order_id].read()?;
+            assert_eq!(stored.tick(), tick);
+            assert_eq!(stored.flip_tick(), tick);
+            assert!(stored.is_bid());
+            assert!(stored.is_flip());
 
-                Ok::<_, eyre::Report>(())
-            })?;
-        }
+            Ok::<_, eyre::Report>(())
+        })?;
+
         Ok(())
     }
 
@@ -2877,7 +2795,7 @@ mod tests {
     /// security boundary so we pin the behavior here too.
     #[test]
     fn test_place_flip_wrong_side_still_rejected_t5() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
@@ -2940,7 +2858,7 @@ mod tests {
     /// the backrunning case the spec flags under MEV implications.
     #[test]
     fn test_flip_same_tick_locked_book_t5() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
@@ -3446,19 +3364,14 @@ mod tests {
                 .set_balance(bob, base_token, amount)
                 .expect("Could not set balance");
 
+            let next_order_id_before = exchange.next_order_id()?;
             exchange
                 .swap_exact_amount_in(bob, base_token, quote_token, amount, 0)
                 .expect("Swap should succeed");
 
-            // Assert that the order has filled (remaining should be 0)
-            let filled_order = exchange.orders[flip_order_id].read()?;
-            assert_eq!(filled_order.remaining(), 0);
-
-            // The flipped order should be created with id = flip_order_id + 1
-            let new_order_id = exchange.next_order_id()? - 1;
-            assert_eq!(new_order_id, flip_order_id + 1);
-
-            let new_order = exchange.orders[new_order_id].read()?;
+            assert_eq!(exchange.next_order_id()?, next_order_id_before);
+            let new_order = exchange.orders[flip_order_id].read()?;
+            assert_eq!(new_order.order_id(), flip_order_id);
             assert_eq!(new_order.maker(), alice);
             assert_eq!(new_order.tick(), flip_tick);
             assert_eq!(new_order.flip_tick(), tick);
@@ -3477,7 +3390,7 @@ mod tests {
     /// just this case.
     #[test]
     fn test_flip_same_tick_execution_t5() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
@@ -3541,7 +3454,7 @@ mod tests {
     /// subsequent `cancel(orderId)` targets the flipped order.
     #[test]
     fn test_flip_in_place_keeps_order_id_t5() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || {
             let FlipOrderTestCtx {
                 mut exchange,
@@ -3621,7 +3534,7 @@ mod tests {
     /// `getOrder(orderId)` and `cancel(orderId)` would observe stale state.
     #[test]
     fn test_flip_in_place_failure_no_orphan_t5() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || {
             let FlipOrderTestCtx {
                 mut exchange,
@@ -5335,138 +5248,83 @@ mod tests {
 
     #[test]
     fn test_cancel_stale_order_with_invalid_policy_type() -> eyre::Result<()> {
-        // An order whose token references a legacy-invalid policy (e.g. COMPOUND stored pre-T2)
-        // should be cancellable as stale. The error returned by `policy_type()` changes at T2:
-        //   - Pre-T2:  Panic(UnderOverflow)
-        //   - T2+:     TIP403RegistryError::InvalidPolicyType
-        // Both must be treated as "policy gone → stale".
-        for spec in [TempoHardfork::T0, TempoHardfork::T1C, TempoHardfork::T2] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
+        // Legacy-invalid policy references must still be cancellable as stale.
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
 
-            let alice = Address::random();
-            let admin = Address::random();
+        let alice = Address::random();
+        let admin = Address::random();
 
-            let (order_id, base_token, invalid_policy_id) =
-                StorageCtx::enter(&mut storage, || {
-                    let mut exchange = StablecoinDEX::new();
-                    exchange.initialize()?;
+        let (order_id, base_token, invalid_policy_id) = StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
 
-                    let mut base = TIP20Setup::create("USDC", "USDC", admin)
-                        .with_issuer(admin)
-                        .with_mint(alice, U256::from(MIN_ORDER_AMOUNT * 2))
-                        .with_approval(alice, exchange.address, U256::from(MIN_ORDER_AMOUNT * 2))
-                        .apply()?;
+            let mut base = TIP20Setup::create("USDC", "USDC", admin)
+                .with_issuer(admin)
+                .with_mint(alice, U256::from(MIN_ORDER_AMOUNT * 2))
+                .with_approval(alice, exchange.address, U256::from(MIN_ORDER_AMOUNT * 2))
+                .apply()?;
 
-                    exchange.create_pair(base.address())?;
-                    let order_id =
-                        exchange.place(alice, base.address(), MIN_ORDER_AMOUNT, false, 0)?;
+            exchange.create_pair(base.address())?;
+            let order_id = exchange.place(alice, base.address(), MIN_ORDER_AMOUNT, false, 0)?;
 
-                    // Create an invalid policy (COMPOUND on T0 stores as __Invalid = 255)
-                    // and reassign the token to it, simulating a legacy-broken policy reference.
-                    let mut registry = TIP403Registry::new();
-                    let invalid_policy_id = registry.create_policy(
-                        admin,
-                        ITIP403Registry::createPolicyCall {
-                            admin,
-                            policyType: ITIP403Registry::PolicyType::COMPOUND,
-                        },
-                    )?;
-                    base.change_transfer_policy_id(
-                        admin,
-                        ITIP20::changeTransferPolicyIdCall {
-                            newPolicyId: invalid_policy_id,
-                        },
-                    )?;
+            // Seed a policy reference, then corrupt its stored type to model legacy state.
+            let mut registry = TIP403Registry::new();
+            let invalid_policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                },
+            )?;
+            base.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: invalid_policy_id,
+                },
+            )?;
 
-                    Ok::<_, TempoPrecompileError>((order_id, base.address(), invalid_policy_id))
+            crate::storage::Mapping::<u64, crate::tip403_registry::PolicyData>::new(
+                crate::tip403_registry::slots::POLICY_RECORDS,
+                crate::TIP403_REGISTRY_ADDRESS,
+            )[invalid_policy_id]
+                .write(crate::tip403_registry::PolicyData {
+                    policy_type: 255,
+                    admin,
                 })?;
 
-            // Upgrade to the target spec and attempt cancel
-            let mut storage = storage.with_spec(spec);
-            StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinDEX::new();
+            Ok::<_, TempoPrecompileError>((order_id, base.address(), invalid_policy_id))
+        })?;
 
-                // Sanity: the policy lookup itself fails
-                let registry = TIP403Registry::new();
-                let auth_result =
-                    registry.is_authorized_as(invalid_policy_id, alice, AuthRole::sender());
-                assert!(
-                    auth_result.is_err(),
-                    "[{spec:?}] is_authorized_as should fail for invalid policy type"
-                );
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
 
-                // cancel_stale_order must succeed — the domain error means "policy gone → stale"
-                exchange.cancel_stale_order(order_id)?;
+            // Sanity: the policy lookup itself fails
+            let registry = TIP403Registry::new();
+            let auth_result =
+                registry.is_authorized_as(invalid_policy_id, alice, AuthRole::sender());
+            assert!(
+                auth_result.is_err(),
+                "[T10] is_authorized_as should fail for invalid policy type"
+            );
 
-                assert_eq!(
-                    exchange.balance_of(alice, base_token)?,
-                    MIN_ORDER_AMOUNT,
-                    "[{spec:?}] alice should get her funds back"
-                );
+            // cancel_stale_order must succeed — the domain error means "policy gone → stale"
+            exchange.cancel_stale_order(order_id)?;
 
-                Ok::<_, eyre::Report>(())
-            })?;
-        }
+            assert_eq!(
+                exchange.balance_of(alice, base_token)?,
+                MIN_ORDER_AMOUNT,
+                "[T10] alice should get her funds back"
+            );
+
+            Ok::<_, eyre::Report>(())
+        })?;
+
         Ok(())
     }
 
     #[test]
-    fn test_cancel_stale_order_recipient_blacklisted_on_payout_token_pre_t4() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
-
-            let alice = Address::random();
-            let admin = Address::random();
-
-            let mut registry = TIP403Registry::new();
-            let policy_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                },
-            )?;
-
-            let (base_addr, quote_addr) =
-                setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT * 2)?;
-
-            exchange.create_pair(base_addr)?;
-            let order_id = exchange.place(alice, base_addr, MIN_ORDER_AMOUNT, false, 0)?;
-
-            let mut quote = TIP20Token::from_address(quote_addr)?;
-            quote.change_transfer_policy_id(
-                admin,
-                ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: policy_id,
-                },
-            )?;
-
-            registry.modify_policy_blacklist(
-                admin,
-                ITIP403Registry::modifyPolicyBlacklistCall {
-                    policyId: policy_id,
-                    account: alice,
-                    restricted: true,
-                },
-            )?;
-
-            // Pre-T4: recipient check on payout token is not performed, order is not stale
-            let result = exchange.cancel_stale_order(order_id);
-            assert!(result.is_err());
-            assert!(matches!(
-                result.unwrap_err(),
-                TempoPrecompileError::StablecoinDEX(StablecoinDEXError::OrderNotStale(_))
-            ));
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_cancel_stale_order_recipient_blacklisted_on_payout_token_t4() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
@@ -5649,7 +5507,7 @@ mod tests {
 
     #[test]
     fn test_compound_policy_non_escrow_token_direction() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
             exchange.initialize()?;
@@ -5894,134 +5752,126 @@ mod tests {
     #[test]
     fn test_flip_order_fill_ignores_business_logic_error() -> eyre::Result<()> {
         // Business logic errors during flip are silently ignored (always).
-        for spec in [TempoHardfork::T1, TempoHardfork::T1A, TempoHardfork::T2] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
-            StorageCtx::enter(&mut storage, || {
-                let FlipOrderTestCtx {
-                    mut exchange,
-                    alice,
-                    bob,
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
+        StorageCtx::enter(&mut storage, || {
+            let FlipOrderTestCtx {
+                mut exchange,
+                alice,
+                bob,
+                admin,
+                base_token,
+                quote_token,
+                book_key,
+                amount,
+                flip_tick,
+            } = setup_flip_order_test()?;
+
+            // Blacklist alice on the base token AFTER order placement.
+            // When the flip (ask) is placed during fill, ensure_transfer_authorized(alice, dex)
+            // on the base token will fail with PolicyForbids — a business logic error.
+            let mut registry = TIP403Registry::new();
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
                     admin,
-                    base_token,
-                    quote_token,
-                    book_key,
-                    amount,
-                    flip_tick,
-                } = setup_flip_order_test()?;
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
 
-                // Blacklist alice on the base token AFTER order placement.
-                // When the flip (ask) is placed during fill, ensure_transfer_authorized(alice, dex)
-                // on the base token will fail with PolicyForbids — a business logic error.
-                let mut registry = TIP403Registry::new();
-                let policy_id = registry.create_policy(
-                    admin,
-                    ITIP403Registry::createPolicyCall {
-                        admin,
-                        policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                    },
-                )?;
+            let mut base = TIP20Token::from_address(base_token)?;
+            base.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy_id,
+                },
+            )?;
 
-                let mut base = TIP20Token::from_address(base_token)?;
-                base.change_transfer_policy_id(
-                    admin,
-                    ITIP20::changeTransferPolicyIdCall {
-                        newPolicyId: policy_id,
-                    },
-                )?;
+            registry.modify_policy_blacklist(
+                admin,
+                ITIP403Registry::modifyPolicyBlacklistCall {
+                    policyId: policy_id,
+                    account: alice,
+                    restricted: true,
+                },
+            )?;
 
-                registry.modify_policy_blacklist(
-                    admin,
-                    ITIP403Registry::modifyPolicyBlacklistCall {
-                        policyId: policy_id,
-                        account: alice,
-                        restricted: true,
-                    },
-                )?;
+            // Fund bob to fill the order
+            exchange.set_balance(bob, base_token, amount)?;
 
-                // Fund bob to fill the order
-                exchange.set_balance(bob, base_token, amount)?;
+            // The swap must succeed — PolicyForbids is not a system error, so it's ignored
+            let result = exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0);
+            assert!(
+                result.is_ok(),
+                "[T10] Swap should succeed when flip hits a business logic error"
+            );
 
-                // The swap must succeed — PolicyForbids is not a system error, so it's ignored
-                let result = exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0);
-                assert!(
-                    result.is_ok(),
-                    "[{spec:?}] Swap should succeed when flip hits a business logic error"
-                );
+            // Alice keeps the fill proceeds (base tokens credited during fill, not escrowed)
+            assert_eq!(exchange.balance_of(alice, base_token)?, amount);
 
-                // Alice keeps the fill proceeds (base tokens credited during fill, not escrowed)
-                assert_eq!(exchange.balance_of(alice, base_token)?, amount);
+            // No flipped order exists — the ask tick level at flip_tick is empty
+            let level = exchange.books[book_key]
+                .tick_level_handler(flip_tick, false)
+                .read()?;
+            assert_eq!(
+                level.total_liquidity, 0,
+                "[T10] No flipped order should exist"
+            );
 
-                // No flipped order exists — the ask tick level at flip_tick is empty
-                let level = exchange.books[book_key]
-                    .tick_level_handler(flip_tick, false)
-                    .read()?;
-                assert_eq!(
-                    level.total_liquidity, 0,
-                    "[{spec:?}] No flipped order should exist"
-                );
+            Ok::<_, eyre::Report>(())
+        })?;
 
-                Ok::<_, eyre::Report>(())
-            })?;
-        }
         Ok(())
     }
 
     #[test]
     fn test_flip_order_fill_reverts_on_system_error_post_t1a() -> eyre::Result<()> {
-        // System errors during flip propagate only on T1A+. Pre-T1A all errors are ignored.
-        for spec in [TempoHardfork::T1, TempoHardfork::T1A, TempoHardfork::T2] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
-            StorageCtx::enter(&mut storage, || {
-                let FlipOrderTestCtx {
-                    mut exchange,
-                    alice,
-                    bob,
-                    base_token,
-                    quote_token,
-                    book_key,
-                    amount,
-                    flip_tick,
-                    ..
-                } = setup_flip_order_test()?;
+        // System errors during flip propagate.
 
-                let alice_quote_before = exchange.balance_of(alice, quote_token)?;
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
+        StorageCtx::enter(&mut storage, || {
+            let FlipOrderTestCtx {
+                mut exchange,
+                alice,
+                bob,
+                base_token,
+                quote_token,
+                book_key,
+                amount,
+                flip_tick,
+                ..
+            } = setup_flip_order_test()?;
 
-                // Poison the flip target tick so commit_order_to_book overflows on checked_add
-                let poisoned_level = TickLevel::with_values(0, 0, u128::MAX);
-                exchange.books[book_key]
-                    .tick_level_handler_mut(flip_tick, false)
-                    .write(poisoned_level)?;
+            let alice_quote_before = exchange.balance_of(alice, quote_token)?;
 
-                // Fund bob to fill the order
-                exchange.set_balance(bob, base_token, amount)?;
+            // Poison the flip target tick so commit_order_to_book overflows on checked_add
+            let poisoned_level = TickLevel::with_values(0, 0, u128::MAX);
+            exchange.books[book_key]
+                .tick_level_handler_mut(flip_tick, false)
+                .write(poisoned_level)?;
 
-                let result = exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0);
+            // Fund bob to fill the order
+            exchange.set_balance(bob, base_token, amount)?;
 
-                if spec.is_t1a() {
-                    // T1A+: system errors propagate — swap must revert
-                    assert!(
-                        result.is_err(),
-                        "Swap should revert when flip hits a system error"
-                    );
-                    assert!(
-                        result.unwrap_err().is_system_error(),
-                        "Error must be classified as a system error",
-                    );
+            let result = exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0);
 
-                    // Maker balance must be unchanged — no funds lost
-                    let alice_quote_after = exchange.balance_of(alice, quote_token)?;
-                    assert_eq!(alice_quote_before, alice_quote_after);
-                } else {
-                    // Pre-T1A: all flip errors are ignored — swap succeeds
-                    assert!(
-                        result.is_ok(),
-                        "[{spec:?}] Swap should succeed when system error is pre-T1A"
-                    );
-                }
+            // T1A+: system errors propagate — swap must revert
+            assert!(
+                result.is_err(),
+                "Swap should revert when flip hits a system error"
+            );
+            assert!(
+                result.unwrap_err().is_system_error(),
+                "Error must be classified as a system error",
+            );
 
-                Ok::<_, eyre::Report>(())
-            })?;
-        }
+            // Maker balance must be unchanged — no funds lost
+            let alice_quote_after = exchange.balance_of(alice, quote_token)?;
+            assert_eq!(alice_quote_before, alice_quote_after);
+
+            Ok::<_, eyre::Report>(())
+        })?;
+
         Ok(())
     }
 
@@ -6259,201 +6109,153 @@ mod tests {
     }
 
     #[test]
-    fn test_flip_checkpoint_reverts_partial_state_post_t1c() -> eyre::Result<()> {
-        // When commit_order_to_book fails inside place_flip:
-        // - T1C+: checkpoint reverts sub_balance + next_order_id
-        // - Pre-T1C: partial state leaks (balance debited, id bumped)
-        //
-        // All specs are T1A+ so system errors propagate and the swap itself fails.
-        for spec in [TempoHardfork::T1A, TempoHardfork::T1C] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
-            StorageCtx::enter(&mut storage, || {
-                let FlipOrderTestCtx {
-                    mut exchange,
-                    alice,
-                    bob,
-                    base_token,
-                    quote_token,
-                    book_key,
-                    amount,
-                    flip_tick,
-                    ..
-                } = setup_flip_order_test()?;
+    fn test_flip_checkpoint_reverts_partial_state() -> eyre::Result<()> {
+        // Failed flips revert their balance and next-order-ID changes.
 
-                let next_id_before = exchange.next_order_id()?;
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
+        StorageCtx::enter(&mut storage, || {
+            let FlipOrderTestCtx {
+                mut exchange,
+                alice,
+                bob,
+                base_token,
+                quote_token,
+                book_key,
+                amount,
+                flip_tick,
+                ..
+            } = setup_flip_order_test()?;
 
-                // Poison the flip target tick so commit_order_to_book
-                // overflows on checked_add — a system error.
-                let poisoned = TickLevel::with_values(0, 0, u128::MAX);
-                exchange.books[book_key]
-                    .tick_level_handler_mut(flip_tick, false)
-                    .write(poisoned)?;
+            let next_id_before = exchange.next_order_id()?;
 
-                // Fund bob to fill the order
-                exchange.set_balance(bob, base_token, amount)?;
+            // Poison the flip target tick so commit_order_to_book
+            // overflows on checked_add — a system error.
+            let poisoned = TickLevel::with_values(0, 0, u128::MAX);
+            exchange.books[book_key]
+                .tick_level_handler_mut(flip_tick, false)
+                .write(poisoned)?;
 
-                let result = exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0);
-                assert!(result.is_err(), "[{spec:?}] swap should fail");
+            // Fund bob to fill the order
+            exchange.set_balance(bob, base_token, amount)?;
 
-                // 1. `fill_order` credited alice `amount` base before `place_flip`
-                // 2. `sub_balance` debited it back
-                // 3. `commit_order_to_book` failed
-                let alice_base = exchange.balance_of(alice, base_token)?;
-                let next_id_after = exchange.next_order_id()?;
+            let result = exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0);
+            assert!(result.is_err(), "[T10] swap should fail");
 
-                if spec.is_t1c() {
-                    // Checkpoint reverts both sub_balance and order_id
-                    assert_eq!(alice_base, amount);
-                    assert_eq!(next_id_after, next_id_before);
-                } else {
-                    // No checkpoint — partial state leaks
-                    assert_eq!(alice_base, 0);
-                    assert_eq!(next_id_after, next_id_before + 1);
-                }
+            // 1. `fill_order` credited alice `amount` base before `place_flip`
+            // 2. `sub_balance` debited it back
+            // 3. `commit_order_to_book` failed
+            let alice_base = exchange.balance_of(alice, base_token)?;
+            let next_id_after = exchange.next_order_id()?;
 
-                // verify that `OrderPlaced` event was never emitted due to poisoned tick's revert
-                assert!(
-                    exchange.emitted_events().last().is_some_and(
-                        |e| e.topics()[0] != IStablecoinDEX::OrderPlaced::SIGNATURE_HASH
-                    )
-                );
+            // Checkpoint reverts both sub_balance and order_id
+            assert_eq!(alice_base, amount);
+            assert_eq!(next_id_after, next_id_before);
 
-                Ok::<_, eyre::Report>(())
-            })?;
-        }
+            // verify that `OrderPlaced` event was never emitted due to poisoned tick's revert
+            assert!(
+                exchange
+                    .emitted_events()
+                    .last()
+                    .is_some_and(|e| e.topics()[0] != IStablecoinDEX::OrderPlaced::SIGNATURE_HASH)
+            );
+
+            Ok::<_, eyre::Report>(())
+        })?;
+
         Ok(())
     }
 
     #[test]
-    fn test_swap_paused_token_allowed_pre_t3_blocked_on_t3() -> eyre::Result<()> {
-        for spec in [TempoHardfork::T2, TempoHardfork::T3] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
-            StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
+    fn test_swap_paused_token_rejected() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
 
-                let (alice, bob, admin) = (Address::random(), Address::random(), Address::random());
-                let amount_in = 500_000u128;
-                let tick = 10;
+            let (alice, bob, admin) = (Address::random(), Address::random(), Address::random());
+            let amount_in = 500_000u128;
+            let tick = 10;
 
-                let (base_token, quote_token) =
-                    setup_test_tokens(admin, alice, exchange.address, 500_000_000u128)?;
-                exchange.create_pair(base_token)?;
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, alice, exchange.address, 500_000_000u128)?;
+            exchange.create_pair(base_token)?;
 
-                // Alice places orders so Bob can swap base→quote (enough for both swaps)
-                exchange.place(alice, base_token, MIN_ORDER_AMOUNT * 2, true, tick)?;
+            // Alice places orders so Bob can swap base→quote (enough for both swaps)
+            exchange.place(alice, base_token, MIN_ORDER_AMOUNT * 2, true, tick)?;
 
-                // Give Bob internal DEX balance (enough for both swaps)
-                exchange.set_balance(bob, base_token, amount_in * 2)?;
+            // Give Bob internal DEX balance (enough for both swaps)
+            exchange.set_balance(bob, base_token, amount_in * 2)?;
 
-                // Pause the base token
-                let mut base_tip20 = TIP20Token::from_address(base_token)?;
-                base_tip20.grant_role_internal(admin, PAUSE_ROLE)?;
-                base_tip20.pause(admin, ITIP20::pauseCall {})?;
+            // Pause the base token
+            let mut base_tip20 = TIP20Token::from_address(base_token)?;
+            base_tip20.grant_role_internal(admin, PAUSE_ROLE)?;
+            base_tip20.pause(admin, ITIP20::pauseCall {})?;
 
-                let res_in =
-                    exchange.swap_exact_amount_in(bob, base_token, quote_token, amount_in, 0);
-                let res_out = exchange.swap_exact_amount_out(
-                    bob,
-                    base_token,
-                    quote_token,
-                    amount_in,
-                    u128::MAX,
-                );
+            let res_in = exchange.swap_exact_amount_in(bob, base_token, quote_token, amount_in, 0);
+            let res_out =
+                exchange.swap_exact_amount_out(bob, base_token, quote_token, amount_in, u128::MAX);
 
-                if spec.is_t3() {
-                    assert_eq!(res_in, res_out);
-                    assert_eq!(res_in.unwrap_err(), TIP20Error::contract_paused().into());
-                } else {
-                    assert!(res_in.is_ok());
-                    assert!(res_out.is_ok());
-                }
+            assert_eq!(res_in, res_out);
+            assert_eq!(res_in.unwrap_err(), TIP20Error::contract_paused().into());
 
-                Ok::<_, eyre::Report>(())
-            })?;
-        }
+            Ok::<_, eyre::Report>(())
+        })?;
+
         Ok(())
     }
 
-    /// Shared helper for paused-token order placement tests across T3 (no enforcement) and T4
-    /// (rejection). Pauses either the escrow or non-escrow side of the pair and asserts whether
-    /// `place_order` succeeds based on the pause side, internal balance, and active hardfork.
-    fn assert_paused_token_order<F>(
+    /// Paused tokens reject placement on either side, including orders funded by internal balance.
+    fn assert_paused_token_order(
         pause_escrow_side: bool,
         internal_balance_amount: u128,
         is_bid: bool,
-        mut place_order: F,
-    ) -> eyre::Result<()>
-    where
-        F: FnMut(&mut StablecoinDEX, Address, Address, u128) -> Result<u128>,
-    {
-        for spec in [TempoHardfork::T3, TempoHardfork::T4] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
-            StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
+        place_order: impl FnOnce(&mut StablecoinDEX, Address, Address, u128) -> Result<u128>,
+    ) -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
 
-                let (alice, admin) = (Address::random(), Address::random());
-                let amount = MIN_ORDER_AMOUNT;
+            let (alice, admin) = (Address::random(), Address::random());
+            let amount = MIN_ORDER_AMOUNT;
 
-                let (base_token, quote_token) =
-                    setup_test_tokens(admin, alice, exchange.address, 500_000_000u128)?;
-                exchange.create_pair(base_token)?;
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, alice, exchange.address, 500_000_000u128)?;
+            exchange.create_pair(base_token)?;
 
-                let escrow_token = if is_bid { quote_token } else { base_token };
-                let non_escrow_token = if is_bid { base_token } else { quote_token };
-                exchange.set_balance(alice, escrow_token, internal_balance_amount)?;
+            let escrow_token = if is_bid { quote_token } else { base_token };
+            let non_escrow_token = if is_bid { base_token } else { quote_token };
+            exchange.set_balance(alice, escrow_token, internal_balance_amount)?;
 
-                let token_to_pause = if pause_escrow_side {
-                    escrow_token
-                } else {
-                    non_escrow_token
-                };
-                let mut tip20 = TIP20Token::from_address(token_to_pause)?;
-                tip20.grant_role_internal(admin, PAUSE_ROLE)?;
-                tip20.pause(admin, ITIP20::pauseCall {})?;
+            let token_to_pause = if pause_escrow_side {
+                escrow_token
+            } else {
+                non_escrow_token
+            };
+            let mut tip20 = TIP20Token::from_address(token_to_pause)?;
+            tip20.grant_role_internal(admin, PAUSE_ROLE)?;
+            tip20.pause(admin, ITIP20::pauseCall {})?;
 
-                let next_order_id_before = exchange.next_order_id()?;
-                let escrow_balance_before = exchange.balance_of(alice, escrow_token)?;
-                let res = place_order(&mut exchange, alice, base_token, amount);
+            let next_order_id_before = exchange.next_order_id()?;
+            let escrow_balance_before = exchange.balance_of(alice, escrow_token)?;
+            let res = place_order(&mut exchange, alice, base_token, amount);
 
-                // Pre-T4: succeeds iff there's a debit path that doesn't touch the paused token.
-                // - escrow paused: only the internal-only fast path avoids it (requires
-                //   balance >= amount)
-                // - non-escrow paused: escrow itself is unpaused, so any debit path works
-                // T4: rejected regardless.
-                let should_succeed =
-                    !spec.is_t4() && (!pause_escrow_side || internal_balance_amount >= amount);
+            assert_eq!(res.unwrap_err(), TIP20Error::contract_paused().into());
+            assert_eq!(exchange.next_order_id()?, next_order_id_before);
+            assert_eq!(
+                exchange.balance_of(alice, escrow_token)?,
+                escrow_balance_before
+            );
 
-                if should_succeed {
-                    let order_id = res?;
-                    assert_eq!(order_id, next_order_id_before);
-                    assert_eq!(exchange.next_order_id()?, next_order_id_before + 1);
-                    assert_eq!(
-                        exchange.balance_of(alice, escrow_token)?,
-                        escrow_balance_before.saturating_sub(amount)
-                    );
-                } else {
-                    assert_eq!(res.unwrap_err(), TIP20Error::contract_paused().into());
-                    assert_eq!(exchange.next_order_id()?, next_order_id_before);
-                    assert_eq!(
-                        exchange.balance_of(alice, escrow_token)?,
-                        escrow_balance_before
-                    );
-                }
-
-                Ok::<_, eyre::Report>(())
-            })?;
-        }
-        Ok(())
+            Ok::<_, eyre::Report>(())
+        })
     }
 
     #[test]
     fn test_place_orders_on_paused_token_respects_internal_balance_path() -> eyre::Result<()> {
         let partial_internal_balance = MIN_ORDER_AMOUNT - 1;
 
-        // Full internal balance uses the internal-only path pre-T4, but T4 still rejects
-        // paused-token orders.
+        // Internal balances do not bypass pause checks.
         assert_paused_token_order(
             true,
             MIN_ORDER_AMOUNT,
@@ -6483,8 +6285,7 @@ mod tests {
             },
         )?;
 
-        // Partial internal balance: the fallback transferFrom hits the paused escrow token and
-        // fails on both T3 and T4 without consuming the partial balance.
+        // The fallback transferFrom fails without consuming the partial internal balance.
         assert_paused_token_order(
             true,
             partial_internal_balance,
@@ -6516,8 +6317,8 @@ mod tests {
     }
 
     #[test]
-    fn test_place_orders_on_paused_non_escrow_token_blocked_on_t4() -> eyre::Result<()> {
-        // place: ask + bid (transferFrom path, escrow is unpaused so this succeeds pre-T4)
+    fn test_place_orders_on_paused_non_escrow_token_blocked() -> eyre::Result<()> {
+        // place: ask + bid, with an unpaused escrow token.
         assert_paused_token_order(false, 0, false, |exchange, alice, base, amount| {
             exchange.place(alice, base, amount, false, 0)
         })?;
@@ -6553,77 +6354,71 @@ mod tests {
     }
 
     #[test]
-    fn test_swap_paused_intermediate_token_allowed_pre_t3_blocked_on_t3() -> eyre::Result<()> {
-        for spec in [TempoHardfork::T2, TempoHardfork::T3] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
-            StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinDEX::new();
-                exchange.initialize()?;
+    fn test_swap_paused_intermediate_token_rejected() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
 
-                let admin = Address::random();
-                let alice = Address::random();
-                let bob = Address::random();
+            let admin = Address::random();
+            let alice = Address::random();
+            let bob = Address::random();
 
-                let amount = MIN_ORDER_AMOUNT * 10;
-                let amount_u256 = U256::from(amount);
+            let amount = MIN_ORDER_AMOUNT * 10;
+            let amount_u256 = U256::from(amount);
 
-                // Setup: pathUSD <- USDC, pathUSD <- EURC
-                let path_usd = TIP20Setup::path_usd(admin)
-                    .with_issuer(admin)
-                    .with_mint(alice, amount_u256)
-                    .with_approval(alice, exchange.address, amount_u256)
-                    .apply()?;
+            // Setup: pathUSD <- USDC, pathUSD <- EURC
+            let path_usd = TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_mint(alice, amount_u256)
+                .with_approval(alice, exchange.address, amount_u256)
+                .apply()?;
 
-                let usdc = TIP20Setup::create("USDC", "USDC", admin)
-                    .with_issuer(admin)
-                    .with_mint(alice, amount_u256)
-                    .with_approval(alice, exchange.address, amount_u256)
-                    .with_mint(bob, amount_u256)
-                    .with_approval(bob, exchange.address, amount_u256)
-                    .apply()?;
+            let usdc = TIP20Setup::create("USDC", "USDC", admin)
+                .with_issuer(admin)
+                .with_mint(alice, amount_u256)
+                .with_approval(alice, exchange.address, amount_u256)
+                .with_mint(bob, amount_u256)
+                .with_approval(bob, exchange.address, amount_u256)
+                .apply()?;
 
-                let eurc = TIP20Setup::create("EURC", "EURC", admin)
-                    .with_issuer(admin)
-                    .with_mint(alice, amount_u256)
-                    .with_approval(alice, exchange.address, amount_u256)
-                    .apply()?;
+            let eurc = TIP20Setup::create("EURC", "EURC", admin)
+                .with_issuer(admin)
+                .with_mint(alice, amount_u256)
+                .with_approval(alice, exchange.address, amount_u256)
+                .apply()?;
 
-                // Alice provides liquidity on both books
-                exchange.place(alice, usdc.address(), MIN_ORDER_AMOUNT * 5, true, 0)?;
-                exchange.place(alice, eurc.address(), MIN_ORDER_AMOUNT * 5, false, 0)?;
+            // Alice provides liquidity on both books
+            exchange.place(alice, usdc.address(), MIN_ORDER_AMOUNT * 5, true, 0)?;
+            exchange.place(alice, eurc.address(), MIN_ORDER_AMOUNT * 5, false, 0)?;
 
-                // Pause pathUSD (the intermediate token)
-                let mut path_usd_tip20 = TIP20Token::from_address(path_usd.address())?;
-                path_usd_tip20.grant_role_internal(admin, PAUSE_ROLE)?;
-                path_usd_tip20.pause(admin, ITIP20::pauseCall {})?;
+            // Pause pathUSD (the intermediate token)
+            let mut path_usd_tip20 = TIP20Token::from_address(path_usd.address())?;
+            path_usd_tip20.grant_role_internal(admin, PAUSE_ROLE)?;
+            path_usd_tip20.pause(admin, ITIP20::pauseCall {})?;
 
-                // Bob tries multi-hop swap: USDC -> pathUSD -> EURC
-                let res_in = exchange.swap_exact_amount_in(
-                    bob,
-                    usdc.address(),
-                    eurc.address(),
-                    MIN_ORDER_AMOUNT,
-                    0,
-                );
-                let res_out = exchange.swap_exact_amount_out(
-                    bob,
-                    usdc.address(),
-                    eurc.address(),
-                    MIN_ORDER_AMOUNT,
-                    u128::MAX,
-                );
+            // Bob tries multi-hop swap: USDC -> pathUSD -> EURC
+            let res_in = exchange.swap_exact_amount_in(
+                bob,
+                usdc.address(),
+                eurc.address(),
+                MIN_ORDER_AMOUNT,
+                0,
+            );
+            let res_out = exchange.swap_exact_amount_out(
+                bob,
+                usdc.address(),
+                eurc.address(),
+                MIN_ORDER_AMOUNT,
+                u128::MAX,
+            );
 
-                if spec.is_t3() {
-                    assert_eq!(res_in, res_out);
-                    assert_eq!(res_in.unwrap_err(), TIP20Error::contract_paused().into());
-                } else {
-                    assert!(res_in.is_ok());
-                    assert!(res_out.is_ok());
-                }
+            assert_eq!(res_in, res_out);
+            assert_eq!(res_in.unwrap_err(), TIP20Error::contract_paused().into());
 
-                Ok::<_, eyre::Report>(())
-            })?;
-        }
+            Ok::<_, eyre::Report>(())
+        })?;
+
         Ok(())
     }
 

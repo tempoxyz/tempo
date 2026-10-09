@@ -590,7 +590,7 @@ mod tests {
 
     fn test_tx_with_gas_limit(sender: Address, nonce: u64, gas_limit: u64) -> BestTransaction {
         let tx = TxLegacy {
-            chain_id: Some(42431),
+            chain_id: Some(1337),
             nonce,
             gas_price: 20_000_000_000,
             gas_limit,
@@ -628,7 +628,7 @@ mod tests {
         let mut input = vec![0xa9, 0x05, 0x9c, 0xbb];
         input.resize(4 + 32 + 32, 0);
         let tx = TempoTransaction {
-            chain_id: 42431,
+            chain_id: 1337,
             fee_token: Some(token),
             gas_limit,
             calls: vec![Call {
@@ -703,7 +703,7 @@ mod tests {
         executor: TaskExecutor,
         parallel: bool,
     ) -> PrewarmingExecutionContext<NoopProvider<TempoChainSpec, TempoPrimitives>> {
-        let evm_config = TempoEvmConfig::moderato();
+        let evm_config = TempoEvmConfig::new(tempo_chainspec::spec::DEV.clone());
         let provider =
             NoopProvider::<TempoChainSpec, TempoPrimitives>::new(evm_config.chain_spec().clone());
         let parent_header = SealedHeader::seal_slow(TempoHeader {

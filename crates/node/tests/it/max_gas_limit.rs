@@ -1,7 +1,6 @@
 //! Tests for per-transaction gas limit caps across hardforks ([TIP-1000]/[TIP-1010]).
 //!
-//! Pre-T1A: EIP-7825 Osaka limit (16,777,216 gas).
-//! Post-T1A (TIP-1010): per-tx gas limit cap is 30M (`TEMPO_T1_TX_GAS_LIMIT_CAP`).
+//! TIP-1010 sets the per-tx gas limit cap to 30M (`TEMPO_T1_TX_GAS_LIMIT_CAP`).
 //!
 //! [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
 //! [TIP-1010]: <https://docs.tempo.xyz/protocol/tips/tip-1010>
@@ -91,7 +90,7 @@ async fn test_post_t1a_tx_exceeding_tempo_cap() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new()
-        .with_genesis(make_genesis_at(TempoHardfork::T3))
+        .with_genesis(make_genesis_at(TempoHardfork::T10))
         .build_with_node_access()
         .await?;
     let provider = setup.node.rpc_provider();
@@ -102,54 +101,6 @@ async fn test_post_t1a_tx_exceeding_tempo_cap() -> eyre::Result<()> {
     assert!(
         result.is_err(),
         "tx with gas_limit > 30M should be rejected post-T1A"
-    );
-
-    Ok(())
-}
-
-/// Pre-T1A (T0 only): tx at the Osaka limit (16M) should be accepted.
-#[tokio::test(flavor = "multi_thread")]
-async fn test_pre_t1a_tx_at_osaka_limit() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
-    let pre_t1a_genesis = make_genesis_at(tempo_chainspec::hardfork::TempoHardfork::T0);
-
-    let mut setup = TestNodeBuilder::new()
-        .with_genesis(pre_t1a_genesis)
-        .build_with_node_access()
-        .await?;
-    let provider = setup.node.rpc_provider();
-    let chain_id = provider.get_chain_id().await?;
-
-    let raw_tx = build_tx(chain_id, MAX_TX_GAS_LIMIT_OSAKA).await;
-    setup
-        .node
-        .mine([raw_tx])
-        .await
-        .wrap_err("pre-T1A should accept tx at Osaka limit (16M)")?;
-
-    Ok(())
-}
-
-/// Pre-T1A (T0 only): tx above the Osaka limit (16M) should be rejected.
-#[tokio::test(flavor = "multi_thread")]
-async fn test_pre_t1a_tx_above_osaka_limit() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
-    let pre_t1a_genesis = make_genesis_at(tempo_chainspec::hardfork::TempoHardfork::T0);
-
-    let setup = TestNodeBuilder::new()
-        .with_genesis(pre_t1a_genesis)
-        .build_with_node_access()
-        .await?;
-    let provider = setup.node.rpc_provider();
-    let chain_id = provider.get_chain_id().await?;
-
-    let raw_tx = build_tx(chain_id, MAX_TX_GAS_LIMIT_OSAKA + 1).await;
-    let result = provider.send_raw_transaction(&raw_tx).await;
-    assert!(
-        result.is_err(),
-        "pre-T1A should reject tx above Osaka limit (16M)"
     );
 
     Ok(())

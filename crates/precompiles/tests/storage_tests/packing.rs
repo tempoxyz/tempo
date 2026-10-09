@@ -804,8 +804,8 @@ fn test_fixed_bytes_multi_field_packing() {
 
 /// On T4, storing a struct with packed fields skips the SLOAD for the first packed slot
 /// (starts from `U256::ZERO` instead). This verifies both:
-/// - The SLOAD counter: T4 issues 0 SLOADs for the store, pre-T4 issues 1.
-/// - The slot contents: T4 zeroes unused bytes, pre-T4 preserves them from the SLOAD.
+/// - Packed stores issue no SLOADs.
+/// - Unused padding is cleared.
 #[test]
 fn test_t4_store_packed_struct_skips_sload() -> eyre::Result<()> {
     let garbage = U256::MAX;
@@ -823,30 +823,8 @@ fn test_t4_store_packed_struct_skips_sload() -> eyre::Result<()> {
         "0x1111111111111111111111111111111111111111", // offset 0 (20 bytes)
     ]);
 
-    // -- Pre-T4: SLOAD is performed, so unused bytes retain the garbage --
-    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
-    StorageCtx::enter(&mut storage, || {
-        // Pre-fill the slot with garbage
-        U256::handle(base_slot, LayoutCtx::FULL, address).write(garbage)?;
-        StorageCtx.reset_counters();
-
-        // Store the packed struct (SLOAD reads back the garbage first)
-        PackedTwo::handle(base_slot, LayoutCtx::FULL, address).write(packed.clone())?;
-
-        // 1 SLOAD (reads existing slot), 1 SSTORE
-        assert_eq!(StorageCtx.counter_sload(), 1);
-        assert_eq!(StorageCtx.counter_sstore(), 1);
-
-        // Unused 4 bytes at the top must retain the garbage — proves SLOAD happened
-        let slot = U256::handle(base_slot, LayoutCtx::FULL, address).read()?;
-        let expected_with_garbage = expected_field_bytes | (U256::MAX << 224);
-        assert_eq!(slot, expected_with_garbage);
-
-        Ok::<(), error::TempoPrecompileError>(())
-    })?;
-
     // -- T4: SLOAD is skipped, so unused bytes are zero (not garbage) --
-    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
+    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
     StorageCtx::enter(&mut storage, || {
         // Pre-fill the slot with garbage
         U256::handle(base_slot, LayoutCtx::FULL, address).write(garbage)?;
@@ -878,7 +856,7 @@ fn test_t4_store_packed_struct_skips_sload() -> eyre::Result<()> {
 #[test]
 fn test_t4_struct_store_preserves_neighbor_slots() -> eyre::Result<()> {
     let address = Address::random();
-    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
+    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
 
     StorageCtx::enter(&mut storage, || {
         let base_slot = U256::from(100);
@@ -949,37 +927,8 @@ fn test_t4_store_multi_slot_packed_skips_sload() -> eyre::Result<()> {
         c: 0x42,
     };
 
-    // -- Pre-T4: SLOADs are performed for each packed slot --
-    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
-    StorageCtx::enter(&mut storage, || {
-        // Pre-fill both slots with garbage
-        U256::handle(base_slot, LayoutCtx::FULL, address).write(garbage)?;
-        U256::handle(base_slot + U256::ONE, LayoutCtx::FULL, address).write(garbage)?;
-        StorageCtx.reset_counters();
-
-        Rule3TestPartial::handle(base_slot, LayoutCtx::FULL, address).write(value.clone())?;
-
-        // Pre-T4: 2 SLOADs (one per packed slot), 2 SSTOREs
-        assert_eq!(
-            StorageCtx.counter_sload(),
-            2,
-            "pre-T4 should SLOAD both packed slots"
-        );
-        assert_eq!(StorageCtx.counter_sstore(), 2);
-
-        // Slot 1 unused bytes (31 bytes unused) should retain garbage from the SLOAD
-        let slot1 = U256::handle(base_slot + U256::ONE, LayoutCtx::FULL, address).read()?;
-        assert_ne!(
-            slot1,
-            U256::from(0x42u8),
-            "pre-T4 should preserve garbage in unused bytes"
-        );
-
-        Ok::<(), error::TempoPrecompileError>(())
-    })?;
-
     // -- T4: SLOADs are skipped for both packed slots --
-    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
+    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
     StorageCtx::enter(&mut storage, || {
         // Pre-fill both slots with garbage
         U256::handle(base_slot, LayoutCtx::FULL, address).write(garbage)?;
@@ -1013,7 +962,7 @@ fn test_t4_store_multi_slot_packed_skips_sload() -> eyre::Result<()> {
 #[test]
 fn test_t4_multi_slot_packed_preserves_neighbor_slots() -> eyre::Result<()> {
     let address = Address::random();
-    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
+    let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
 
     StorageCtx::enter(&mut storage, || {
         let base_slot = U256::from(200);

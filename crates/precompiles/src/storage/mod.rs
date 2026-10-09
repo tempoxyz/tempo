@@ -159,7 +159,7 @@ pub trait PrecompileStorageProvider {
     /// or reverted ([`checkpoint_revert`](Self::checkpoint_revert)).
     ///
     /// Prefer [`StorageCtx::checkpoint`] which returns a [`CheckpointGuard`] that
-    /// auto-reverts on drop and is hardfork-aware (no-op pre-T1C).
+    /// auto-reverts on drop.
     fn checkpoint(&mut self) -> JournalCheckpoint;
 
     /// Commits all state changes since the given checkpoint.
@@ -174,9 +174,7 @@ pub trait PrecompileStorageProvider {
 
     /// Enables or disables TIP-1060 storage-credit accounting for subsequent storage writes.
     ///
-    /// Implementations that do not run TIP-1060 accounting may treat this as a no-op. Production
-    /// providers must still hardfork-gate enabling so calling this with `true` before T7 does not
-    /// activate storage credits early.
+    /// Implementations that do not run TIP-1060 accounting may treat this as a no-op.
     fn set_tip1060_storage_credits(&mut self, enabled: bool);
 
     /// Enables or disables minting new TIP-1060 storage credits for subsequent storage clears.

@@ -31,7 +31,6 @@
 pub mod constants;
 
 use crate::constants::gas;
-use alloy_eips::eip7825::MAX_TX_GAS_LIMIT_OSAKA;
 #[cfg(feature = "evm")]
 use alloy_evm::revm::primitives::hardfork::SpecId;
 use alloy_hardforks::hardfork;
@@ -183,7 +182,6 @@ tempo_hardfork!(
     TempoHardfork {
         /// Genesis hardfork.
         Genesis,
-        #[default]
         /// T0 hardfork.
         T0,
         /// T1 hardfork.
@@ -229,6 +227,7 @@ tempo_hardfork!(
         /// T10 hardfork.
         ///
         /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t10>.
+        #[default]
         T10,
         /// T11 hardfork.
         ///
@@ -250,6 +249,9 @@ tempo_hardfork!(
 );
 
 impl TempoHardfork {
+    /// Old execution rules are supplied by frozen era workers.
+    pub const MINIMUM_SUPPORTED: Self = Self::T10;
+
     /// Returns the position of this hardfork in [`Self::VARIANTS`].
     ///
     /// Useful for storing the hardfork in an atomic, see [`Self::from_variant_index`].
@@ -274,53 +276,32 @@ impl TempoHardfork {
         }
     }
 
-    /// Returns the fixed general gas limit for T1+, or None for pre-T1.
-    /// - Pre-T1: None
-    /// - T1+: 30M gas (fixed)
+    /// Returns the fixed general gas limit.
     pub const fn general_gas_limit(&self) -> Option<u64> {
-        if self.is_t1() {
-            return Some(gas::TEMPO_T1_GENERAL_GAS_LIMIT);
-        }
-        None
+        Some(gas::TEMPO_T1_GENERAL_GAS_LIMIT)
     }
 
     /// Returns the shared gas limit for the given block gas limit.
-    /// - T4+: 0 gas
-    /// - Pre-T4: block_gas_limit / 10
-    pub const fn shared_gas_limit(&self, block_gas_limit: u64) -> u64 {
-        if self.is_t4() {
-            0
-        } else {
-            block_gas_limit / 10
-        }
+    pub const fn shared_gas_limit(&self, _block_gas_limit: u64) -> u64 {
+        0
     }
 
     /// Returns the per-transaction gas limit cap.
-    /// - Pre-T1A: EIP-7825 Osaka limit (16,777,216 gas)
-    /// - T1A+: 30M gas (allows maximum-sized contract deployments under [TIP-1000] state creation)
+    /// Allows maximum-sized contract deployments under [TIP-1000] state creation.
     ///
     /// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
     pub const fn tx_gas_limit_cap(&self) -> Option<u64> {
-        if self.is_t1a() {
-            return Some(gas::TEMPO_T1_TX_GAS_LIMIT_CAP);
-        }
-        Some(MAX_TX_GAS_LIMIT_OSAKA)
+        Some(gas::TEMPO_T1_TX_GAS_LIMIT_CAP)
     }
 
     /// Gas cost for using an existing 2D nonce key
     pub const fn gas_existing_nonce_key(&self) -> u64 {
-        if self.is_t2() {
-            return gas::TEMPO_T2_EXISTING_NONCE_KEY_GAS;
-        }
-        gas::TEMPO_T1_EXISTING_NONCE_KEY_GAS
+        gas::TEMPO_T2_EXISTING_NONCE_KEY_GAS
     }
 
     /// Gas cost for using a new 2D nonce key
     pub const fn gas_new_nonce_key(&self) -> u64 {
-        if self.is_t2() {
-            return gas::TEMPO_T2_NEW_NONCE_KEY_GAS;
-        }
-        gas::TEMPO_T1_NEW_NONCE_KEY_GAS
+        gas::TEMPO_T2_NEW_NONCE_KEY_GAS
     }
 
     /// Returns the expiring nonce replay-protection capacity.

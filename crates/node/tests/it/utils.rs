@@ -86,7 +86,7 @@ impl ForkSchedule {
         let cases: Vec<_> = TempoHardfork::VARIANTS
             .iter()
             .copied()
-            .filter(|fork| *fork > active)
+            .filter(|fork| *fork >= TempoHardfork::T10 && *fork > active)
             .map(Self::DevnetAt)
             .collect();
 
@@ -198,6 +198,10 @@ impl ForkSchedule {
     /// The shared test genesis enables all declared Tempo forks; `DevnetAt` needs this clamp to
     /// exercise intermediate upcoming hardfork states instead of always running latest-devnet.
     fn apply_devnet(genesis: &mut serde_json::Value, last_active: TempoHardfork) {
+        assert!(
+            last_active >= TempoHardfork::T10,
+            "execution requires T10 or later"
+        );
         let config = genesis["config"]
             .as_object_mut()
             .expect("genesis must have config");
@@ -243,6 +247,10 @@ where
 /// This scales automatically when new hardforks are appended to
 /// `TempoHardfork` — no manual maintenance required.
 pub(crate) fn make_genesis_at(last_active: TempoHardfork) -> String {
+    assert!(
+        last_active >= TempoHardfork::T10,
+        "execution requires T10 or later"
+    );
     let mut genesis: serde_json::Value =
         serde_json::from_str(include_str!("../assets/test-genesis.json"))
             .expect("test-genesis.json must parse");

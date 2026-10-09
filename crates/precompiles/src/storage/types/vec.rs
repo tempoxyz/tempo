@@ -17,7 +17,7 @@ use std::ops::{Index, IndexMut};
 use crate::{
     error::{Result, TempoPrecompileError},
     storage::{
-        Handler, Layout, LayoutCtx, Storable, StorableType, StorageCtx, StorageOps,
+        Handler, Layout, LayoutCtx, Storable, StorableType, StorageOps,
         packing::{PackedSlot, calc_element_loc, calc_packed_slot_count},
         types::{HandlerCache, Slot},
     },
@@ -65,7 +65,7 @@ where
         let data_start = calc_data_slot(len_slot);
 
         // (T5+) Cleanup stale tail, if necessary.
-        if !ctx.skip_tail_cleanup() && StorageCtx.spec().is_t5() {
+        if !ctx.skip_tail_cleanup() {
             let (prev_len, new_len) = (load_checked_len(storage, len_slot)?, self.len());
             if prev_len > new_len {
                 clear_elements::<T, S>(storage, data_start, new_len, prev_len)?;

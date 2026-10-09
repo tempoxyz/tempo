@@ -87,10 +87,11 @@ era timestamp, and exact head. Subsequent imports verify the predecessor and fir
 No pipeline checkpoints or handoff markers are rewritten. An import failure may leave partial
 progress; use the ordinary Tempo recovery workflow.
 
-Genesis network sync remains native, and the active binary still supports old forks. Bootstrap does
-not download files or switch peer-to-peer writers. Removing historical execution branches requires
-frozen artifacts, execution-range guards, and a bounded sync interface that also gates consensus
-payloads and fork choice. Reth's pipeline `--debug.max-block` alone does not supply that contract.
+The active binary executes T10+ only; start from a T10+ snapshot or bootstrap older blocks through
+frozen binaries. Native genesis sync stops at the execution floor. Bootstrap does not download files
+or switch peer-to-peer writers. Production network-sync handoff still needs a bounded sync interface
+that also gates consensus payloads and fork choice; Reth's pipeline `--debug.max-block` alone does not
+supply that contract.
 Historical validator-config reads already use storage without constructing an EVM.
 
 Frozen artifacts need this `rpc-only` discovery protocol and hidden `--rpc-config` interface,

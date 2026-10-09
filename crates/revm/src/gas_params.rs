@@ -43,15 +43,14 @@ const T4_SSTORE_SET_REFUND: u64 = T4_SSTORE_SET_STATE + 17_800; // 230,000 + 17,
 /// Tempo gas params override.
 ///
 /// `amsterdam_eip8037_enabled` mirrors `CfgEnv::enable_amsterdam_eip8037` and gates the
-/// TIP-1016 regular/state gas split. When `false` on T1+, TIP-1000 (T1) costs are used,
-/// so TIP-1016 can be deferred independently of the T4 hardfork activation.
+/// TIP-1016 regular/state gas split. TIP-1016 is independent of the Tempo hardfork schedule.
 #[inline]
 pub fn tempo_gas_params_with_amsterdam(
-    spec: TempoHardfork,
+    _spec: TempoHardfork,
     amsterdam_eip8037_enabled: bool,
 ) -> GasParams {
     debug_assert!(
-        !(spec.is_t7() && amsterdam_eip8037_enabled),
+        !amsterdam_eip8037_enabled,
         "TODO(TIP-1016): generate combined TIP-1060 + EIP-8037 gas params before enabling both"
     );
 
@@ -60,53 +59,13 @@ pub fn tempo_gas_params_with_amsterdam(
         return TABLE.get_or_init(amsterdam_gas_params).clone();
     }
 
-    // TIP-1060 (T7+): the SSTORE creation cost drops to the 5k residual; the
-    // 245k creditable portion is handled by the storage-credit hook.
-    if spec.is_t7() {
-        static TABLE: OnceLock<GasParams> = OnceLock::new();
-        return TABLE.get_or_init(t7_gas_params).clone();
-    }
-
-    if spec.is_t1() {
-        static TABLE: OnceLock<GasParams> = OnceLock::new();
-        return TABLE.get_or_init(t1_gas_params).clone();
-    }
-
-    GasParams::new_spec(spec.into())
-}
-
-/// Builds the T7 gas table: TIP-1000 creation costs, but the SSTORE creation
-/// cost is lowered to the 5k residual (`SSTORE_SET_COST`) per TIP-1060.
-///
-/// revm charges this residual through `sstore_dynamic_gas` under the same
-/// `original == present == 0` condition as the upstream storage-set cost, so a
-/// dirty recreation (`x→0→y`) is charged neither the residual nor the base
-/// set cost. The 245k creditable portion is charged (or covered by a credit) by
-/// the storage-credit hook in `sstore_storage_credits`.
-fn t7_gas_params() -> GasParams {
-    // T7 starts from the TIP-1000 (T1) table so that every creation cost is inherited unchanged.
-    // TIP-1060 only touches the SSTORE creation, clear, and restore-to-original-zero refund
-    // entries overridden below; everything else (tx_create_cost, create, new_account_cost,
-    // code_deposit_cost, eip7702 costs, auth refund) is exactly as in `t1_gas_params`.
-    let mut gas_params = t1_gas_params();
-    gas_params.override_gas([
-        // SSTORE (zero -> non-zero): only the 5k residual; the 245k creditable portion is governed
-        // by the TIP-1060 storage-credit hook (T1 charged the full `SSTORE_CREATE_COST` here).
-        (GasId::sstore_set_without_load_cost(), SSTORE_SET_COST),
-        // Restore (non-zero -> zero) refund must not exceed the T7 residual. Important with
-        // TIP-1060 because the refund cap is removed. Otherwise, 0→x→0 could be refund-positive.
-        (GasId::sstore_set_refund(), SSTORE_SET_COST),
-        // TIP-1060: SSTORE_CLEARS_SCHEDULE = 0. The nonzero-to-zero clear is now handled by storage
-        // credit minting, so the legacy clearing refund is removed. Restore-to-original-nonzero
-        // refunds (sstore_reset_refund) remain at their upstream reset refund.
-        (GasId::sstore_clearing_slot_refund(), 0),
-    ]);
-    gas_params
+    static TABLE: OnceLock<GasParams> = OnceLock::new();
+    TABLE.get_or_init(tempo_gas_table).clone()
 }
 
 /// Builds the Amsterdam gas table with the TIP-1016 regular/state split.
 fn amsterdam_gas_params() -> GasParams {
-    let mut gas_params = GasParams::new_spec(TempoHardfork::T4.into());
+    let mut gas_params = GasParams::new_spec(TempoHardfork::T10.into());
     // TIP-1016: Split storage creation costs into regular gas + state gas.
     // Regular gas (computational overhead) = at least pre-TIP-1000 EVM cost.
     // State gas (permanent storage burden) = total - regular.
@@ -142,12 +101,15 @@ fn amsterdam_gas_params() -> GasParams {
     gas_params
 }
 
-/// Builds the T1+ gas table with TIP-1000 costs and no state gas split.
-fn t1_gas_params() -> GasParams {
-    let mut gas_params = GasParams::new_spec(TempoHardfork::T1.into());
+/// Builds TIP-1000 creation pricing with TIP-1060 storage credits.
+fn tempo_gas_table() -> GasParams {
+    let mut gas_params = GasParams::new_spec(TempoHardfork::T10.into());
     // TIP-1000: All storage creation costs in regular gas (no state gas split).
     gas_params.override_gas([
-        (GasId::sstore_set_without_load_cost(), SSTORE_CREATE_COST),
+        // Storage credits cover the creditable creation cost; the gas table charges the residual.
+        (GasId::sstore_set_without_load_cost(), SSTORE_SET_COST),
+        (GasId::sstore_set_refund(), SSTORE_SET_COST),
+        (GasId::sstore_clearing_slot_refund(), 0),
         (GasId::tx_create_cost(), CONTRACT_CREATE_COST),
         (GasId::create(), CONTRACT_CREATE_COST),
         (GasId::new_account_cost(), NEW_ACCOUNT_COST),
@@ -178,18 +140,11 @@ mod tests {
 
     #[test]
     fn test_tempo_override_gas_params_are_cached() {
-        let t1 = tempo_gas_params_with_amsterdam(TempoHardfork::T1, false);
-        let t5 = tempo_gas_params_with_amsterdam(TempoHardfork::T5, false);
+        let t1 = tempo_gas_params_with_amsterdam(TempoHardfork::T10, false);
+        let t5 = tempo_gas_params_with_amsterdam(TempoHardfork::T11, false);
         assert!(
             std::ptr::eq(t1.table(), t5.table()),
             "T1+ TIP-1000 gas params should share the cached table"
-        );
-
-        let amsterdam_t4 = tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
-        let amsterdam_t5 = tempo_gas_params_with_amsterdam(TempoHardfork::T5, true);
-        assert!(
-            std::ptr::eq(amsterdam_t4.table(), amsterdam_t5.table()),
-            "Amsterdam gas params should share the cached table"
         );
     }
 
@@ -198,7 +153,7 @@ mod tests {
     /// no TIP-1016 state-gas split (production T7 runs with EIP-8037 disabled).
     #[test]
     fn test_t7_gas_params_sstore_residual() {
-        let gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T7, false);
+        let gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T10, false);
 
         // SSTORE creation cost drops to the 5k residual; the 245k creditable
         // portion is charged by the storage-credit hook, not the gas function.
@@ -225,7 +180,7 @@ mod tests {
         assert_eq!(gas_params.get(GasId::code_deposit_cost()), 1_000);
 
         // No TIP-1016 state-gas split: state gas params stay at upstream defaults.
-        let upstream = GasParams::new_spec(TempoHardfork::T7.into());
+        let upstream = GasParams::new_spec(TempoHardfork::T10.into());
         assert_eq!(
             gas_params.get(GasId::sstore_set_state_gas()),
             upstream.get(GasId::sstore_set_state_gas()),
@@ -233,41 +188,10 @@ mod tests {
         );
 
         // T7+ shares the cached table.
-        let t8 = tempo_gas_params_with_amsterdam(TempoHardfork::T8, false);
+        let t8 = tempo_gas_params_with_amsterdam(TempoHardfork::T10, false);
         assert!(
             std::ptr::eq(gas_params.table(), t8.table()),
             "T7+ TIP-1060 gas params should share the cached table"
-        );
-    }
-
-    #[test]
-    fn test_t1_gas_params_no_state_gas_split() {
-        let gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T1, false);
-
-        // T1 has full 250k costs in regular gas, no state gas split
-        assert_eq!(
-            gas_params.get(GasId::sstore_set_without_load_cost()),
-            250_000
-        );
-        assert_eq!(gas_params.get(GasId::new_account_cost()), 250_000);
-        assert_eq!(gas_params.get(GasId::tx_create_cost()), 500_000);
-        assert_eq!(gas_params.get(GasId::create()), 500_000);
-        assert_eq!(gas_params.get(GasId::code_deposit_cost()), 1_000);
-
-        // State gas params should remain at upstream defaults (not Tempo-bumped)
-        let upstream = GasParams::new_spec(TempoHardfork::T1.into());
-        assert_eq!(
-            gas_params.get(GasId::sstore_set_state_gas()),
-            upstream.get(GasId::sstore_set_state_gas()),
-            "T1 should not override state gas params"
-        );
-        assert_eq!(
-            gas_params.get(GasId::new_account_state_gas()),
-            upstream.get(GasId::new_account_state_gas()),
-        );
-        assert_eq!(
-            gas_params.get(GasId::create_state_gas()),
-            upstream.get(GasId::create_state_gas()),
         );
     }
 
@@ -286,7 +210,7 @@ mod tests {
     /// + cold slot surcharge (2,100) + state gas (230,000) = 252,200.
     #[test]
     fn test_t4_gas_params_splits_storage_costs() {
-        let gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
+        let gas_params = amsterdam_gas_params();
 
         // T4 execution gas (regular/computational overhead)
         // SSTORE keeps revm's decomposed accounting: static(100) + sstore_set_without_load(20,000),
@@ -384,7 +308,7 @@ mod tests {
     /// T4 cold SSTORE = warm path + cold_slot_access(2,100) = 252,200.
     #[test]
     fn test_t4_totals_match_spec() {
-        let t4 = tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
+        let t4 = amsterdam_gas_params();
 
         // Warm SSTORE total: write component(20,000) + warm read(100) + state(230,000)
         let warm_sstore_regular =

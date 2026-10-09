@@ -275,14 +275,7 @@ impl StorageCtx {
     ///
     /// Panics if no storage context is set.
     pub fn checkpoint(&mut self) -> CheckpointGuard {
-        // spec: only available +T1C. Prior to that checkpoints are a no-op.
-        let checkpoint = Self::with_storage(|s| {
-            if s.spec().is_t1c() {
-                Some(s.checkpoint())
-            } else {
-                None
-            }
-        });
+        let checkpoint = Self::with_storage(|s| Some(s.checkpoint()));
 
         CheckpointGuard { checkpoint }
     }
@@ -348,14 +341,11 @@ impl StorageCtx {
 /// On drop, automatically reverts all state changes made since the checkpoint
 /// unless [`commit`](CheckpointGuard::commit) was called.
 ///
-/// # SPEC
-/// Only active +T1C, previously it is a no-op (no checkpoint is created).
-///
 /// # Examples
 ///
 /// ```ignore
 /// let guard = self.storage.checkpoint();
-/// self.sstore(addr, key, value)?;  // reverted on drop (T1C+)
+/// self.sstore(addr, key, value)?;  // reverted on drop
 /// self.emit_event(...)?;
 /// guard.commit();  // finalizes all mutations
 /// ```
@@ -594,8 +584,8 @@ mod tests {
     use alloy::primitives::U256;
     use tempo_chainspec::hardfork::TempoHardfork;
 
-    fn t1c_storage() -> HashMapStorageProvider {
-        HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C)
+    fn test_storage() -> HashMapStorageProvider {
+        HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10)
     }
 
     #[test]
@@ -613,7 +603,7 @@ mod tests {
 
     #[test]
     fn test_checkpoint_commit_and_revert() {
-        let mut storage = t1c_storage();
+        let mut storage = test_storage();
         let addr = Address::ZERO;
         let key = U256::ONE;
 
@@ -638,7 +628,7 @@ mod tests {
 
     #[test]
     fn test_nested_checkpoints_lifo() {
-        let mut storage = t1c_storage();
+        let mut storage = test_storage();
         let addr = Address::ZERO;
         let key = U256::ONE;
 
@@ -670,7 +660,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "out-of-order")]
     fn test_nested_checkpoints_out_of_order_commit_panics() {
-        let mut storage = t1c_storage();
+        let mut storage = test_storage();
 
         StorageCtx::enter(&mut storage, || {
             let mut ctx = StorageCtx;
@@ -680,26 +670,6 @@ mod tests {
 
             // Wrong order: committing outer while inner is still active
             outer.commit();
-        });
-    }
-
-    #[test]
-    fn test_checkpoint_noop_pre_t1c() {
-        let mut storage = HashMapStorageProvider::new(1); // default = T0
-        let addr = Address::ZERO;
-        let key = U256::ONE;
-
-        StorageCtx::enter(&mut storage, || {
-            let mut ctx = StorageCtx;
-
-            ctx.sstore(addr, key, U256::from(42)).unwrap();
-            {
-                let _guard = ctx.checkpoint(); // no-op pre-T1C
-                ctx.sstore(addr, key, U256::from(99)).unwrap();
-                // drop does nothing — no checkpoint was created
-            }
-            // state is NOT reverted because checkpoints are disabled pre-T1C
-            assert_eq!(ctx.sload(addr, key).unwrap(), U256::from(99));
         });
     }
 }

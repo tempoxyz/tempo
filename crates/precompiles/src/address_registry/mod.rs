@@ -16,7 +16,6 @@ use alloy::{
     primitives::{Address, FixedBytes, keccak256},
     sol_types::SolValue,
 };
-use tempo_chainspec::hardfork::TempoHardfork;
 pub use tempo_contracts::precompiles::{
     AddrRegistryError, AddrRegistryEvent, IAddressRegistry, STABLECOIN_DEX_ADDRESS,
     TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
@@ -28,20 +27,15 @@ pub use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
 ///
 /// Precompiles on this list are authorized to call
 /// [`crate::tip20::TIP20Token::system_transfer_from`], pulling TIP-20 tokens from a user without a
-/// prior `approve()`. The list is gated on `TempoHardfork::T5`; before activation it is empty.
+/// prior `approve()`.
 pub const IMPLICIT_APPROVAL_LIST: &[Address] = &[
     TIP_FEE_MANAGER_ADDRESS,
     STABLECOIN_DEX_ADDRESS,
     TIP20_CHANNEL_RESERVE_ADDRESS,
 ];
 
-/// Returns `true` iff `addr` is on the [`IMPLICIT_APPROVAL_LIST`] for the given hardfork.
-///
-/// Before `TempoHardfork::T5` (TIP-1035 activation), returns `false` for all addresses.
-pub fn is_implicitly_approved(addr: Address, hardfork: TempoHardfork) -> bool {
-    if !hardfork.is_t5() {
-        return false;
-    }
+/// Returns whether `addr` is on the [`IMPLICIT_APPROVAL_LIST`].
+pub fn is_implicitly_approved(addr: Address) -> bool {
     IMPLICIT_APPROVAL_LIST.contains(&addr)
 }
 
@@ -154,9 +148,6 @@ impl AddressRegistry {
     pub fn resolve_recipient(&self, to: Address) -> Result<Address> {
         // Explicit check because it isn't exclusively a view function.
         // It is also used by `tip20::Recipient`.
-        if !self.storage.spec().is_t3() {
-            return Ok(to);
-        }
 
         match to.decode_virtual() {
             None => Ok(to),
@@ -176,10 +167,9 @@ impl AddressRegistry {
         }
     }
 
-    /// Returns `true` iff `addr` is on the TIP-1035 [`IMPLICIT_APPROVAL_LIST`] for the active
-    /// hardfork. Returns `false` for all addresses before `TempoHardfork::T5`.
+    /// Returns whether `addr` is on the TIP-1035 [`IMPLICIT_APPROVAL_LIST`].
     pub fn is_implicitly_approved(&self, addr: Address) -> bool {
-        is_implicitly_approved(addr, self.storage.spec())
+        is_implicitly_approved(addr)
     }
 }
 
@@ -197,21 +187,8 @@ mod tests {
     use tempo_chainspec::hardfork::TempoHardfork;
 
     #[test]
-    fn test_is_implicitly_approved_pre_t5_returns_false() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
-        StorageCtx::enter(&mut storage, || {
-            let registry = AddressRegistry::new();
-            assert!(!registry.is_implicitly_approved(TIP_FEE_MANAGER_ADDRESS));
-            assert!(!registry.is_implicitly_approved(STABLECOIN_DEX_ADDRESS));
-            assert!(!registry.is_implicitly_approved(TIP20_CHANNEL_RESERVE_ADDRESS));
-            assert!(!registry.is_implicitly_approved(Address::random()));
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_is_implicitly_approved_t5_lists_initial_set() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || {
             let registry = AddressRegistry::new();
             assert!(registry.is_implicitly_approved(TIP_FEE_MANAGER_ADDRESS));
@@ -224,7 +201,7 @@ mod tests {
 
     #[test]
     fn test_register_virtual_master() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let (master, salt) = (VIRTUAL_MASTER, VIRTUAL_SALT.into());
 
         StorageCtx::enter(&mut storage, || {
@@ -243,7 +220,7 @@ mod tests {
 
     #[test]
     fn test_register_rejects_bad_pow() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let master = Address::random();
         let bad_salt = FixedBytes::<32>::ZERO;
 
@@ -265,7 +242,7 @@ mod tests {
 
     #[test]
     fn test_register_rejects_zero_address() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
 
         StorageCtx::enter(&mut storage, || {
             let mut registry = AddressRegistry::new();
@@ -287,7 +264,7 @@ mod tests {
 
     #[test]
     fn test_register_rejects_virtual_address_as_master() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
 
         StorageCtx::enter(&mut storage, || {
             let mut registry = AddressRegistry::new();
@@ -309,7 +286,7 @@ mod tests {
 
     #[test]
     fn test_register_rejects_tip20_address_as_master() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let tip20_addr = crate::PATH_USD_ADDRESS;
 
         StorageCtx::enter(&mut storage, || {
@@ -332,7 +309,7 @@ mod tests {
 
     #[test]
     fn test_register_duplicate_reverts_with_collision() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let (master, salt) = (VIRTUAL_MASTER, VIRTUAL_SALT.into());
 
         StorageCtx::enter(&mut storage, || {
@@ -379,7 +356,7 @@ mod tests {
 
     #[test]
     fn test_resolve_recipient_non_virtual() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let normal_addr = Address::random();
 
         StorageCtx::enter(&mut storage, || {
@@ -394,7 +371,7 @@ mod tests {
 
     #[test]
     fn test_resolve_recipient_virtual_unregistered_reverts() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let virtual_addr = Address::new_virtual(MasterId::ZERO, UserTag::ZERO);
 
         StorageCtx::enter(&mut storage, || {
@@ -414,7 +391,7 @@ mod tests {
 
     #[test]
     fn test_resolve_recipient_virtual_registered() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let (master, salt) = (VIRTUAL_MASTER, VIRTUAL_SALT.into());
 
         StorageCtx::enter(&mut storage, || {
@@ -436,7 +413,7 @@ mod tests {
 
     #[test]
     fn test_resolve_virtual_address_view() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let (master, salt) = (VIRTUAL_MASTER, VIRTUAL_SALT.into());
 
         StorageCtx::enter(&mut storage, || {
@@ -463,18 +440,6 @@ mod tests {
             let virtual_addr = Address::new_virtual(master_id, fixed_bytes!("aabbccddeeff"));
             assert_eq!(registry.resolve_virtual_address(virtual_addr)?, master);
 
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_resolve_recipient_pre_t3_returns_literal() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
-        let virtual_addr = Address::new_virtual(MasterId::ZERO, UserTag::ZERO);
-
-        StorageCtx::enter(&mut storage, || {
-            let registry = AddressRegistry::new();
-            assert_eq!(registry.resolve_recipient(virtual_addr)?, virtual_addr);
             Ok(())
         })
     }

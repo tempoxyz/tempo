@@ -102,6 +102,7 @@ where
         system_contract_address: Address,
         data: Bytes,
     ) -> Result<Self::ExecutionResult, Self::Error> {
+        self.ensure_supported_spec()?;
         let mut tx = TxEnv::new_system_tx_with_caller(caller, system_contract_address, data);
         tx.set_gas_limit(SYSTEM_CALL_GAS_LIMIT);
         self.inner.ctx.set_tx(tx.into());
@@ -121,6 +122,7 @@ where
         system_contract_address: Address,
         data: Bytes,
     ) -> Result<Self::ExecutionResult, Self::Error> {
+        self.ensure_supported_spec()?;
         let mut tx = TxEnv::new_system_tx_with_caller(caller, system_contract_address, data);
         tx.set_gas_limit(SYSTEM_CALL_GAS_LIMIT);
         self.inner.ctx.set_tx(tx.into());
@@ -155,5 +157,32 @@ mod tests {
 
         let exec_result = result.unwrap();
         assert!(exec_result.result.is_success());
+    }
+
+    #[test]
+    fn historical_execution_is_rejected() {
+        for spec in [
+            tempo_chainspec::TempoHardfork::Genesis,
+            tempo_chainspec::TempoHardfork::T9,
+        ] {
+            let mut evm = TempoEvm::new(
+                Context::mainnet()
+                    .with_db(EmptyDB::new())
+                    .with_block(TempoBlockEnv::default())
+                    .with_cfg(revm::context::CfgEnv::new_with_spec(spec))
+                    .with_tx(TempoTxEnv::default()),
+                revm::inspector::NoOpInspector,
+            );
+            for result in [
+                evm.transact_one(TempoTxEnv::default()),
+                evm.system_call_one_with_caller(Address::ZERO, Address::ZERO, Bytes::new()),
+                evm.inspect_one_tx(TempoTxEnv::default()),
+                evm.inspect_one_system_call_with_caller(Address::ZERO, Address::ZERO, Bytes::new()),
+            ] {
+                assert!(
+                    matches!(result, Err(EVMError::Custom(message)) if message.contains("historical binary"))
+                );
+            }
+        }
     }
 }

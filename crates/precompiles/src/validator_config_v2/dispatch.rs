@@ -13,9 +13,6 @@ impl Precompile for ValidatorConfigV2 {
         }
 
         // Pre-T2: behave like an empty contract (call succeeds, no execution)
-        if !self.storage.spec().is_t2() {
-            return Ok(self.storage.success_output(Default::default()));
-        }
 
         dispatch!(
             calldata,
@@ -69,57 +66,10 @@ mod tests {
     };
 
     #[test]
-    fn test_pre_t2_returns_empty_success() -> eyre::Result<()> {
-        let owner = Address::random();
-
-        // Pre-T2 (T1): calling the precompile should succeed with empty output
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
-        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-            let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
-
-            // Any call should succeed with empty bytes
-            let owner_call = IValidatorConfigV2::ownerCall {};
-            let calldata = owner_call.abi_encode();
-            let result = vc.call(&calldata, owner)?;
-
-            assert!(!result.is_revert(), "Pre-T2 call should not revert");
-            assert!(
-                result.bytes.is_empty(),
-                "Pre-T2 call should return empty bytes"
-            );
-
-            Ok(())
-        })?;
-
-        // Pre-T2 (T0): same behavior
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
-        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-            let mut vc = ValidatorConfigV2::new();
-            vc.initialize(owner)?;
-
-            let calldata = IValidatorConfigV2::ownerCall {}.abi_encode();
-            let result = vc.call(&calldata, owner)?;
-
-            assert!(!result.is_revert());
-            assert!(result.bytes.is_empty());
-
-            // Even empty calldata should succeed
-            let result = vc.call(&[], owner)?;
-            assert!(!result.is_revert());
-            assert!(result.bytes.is_empty());
-
-            Ok(())
-        })?;
-
-        Ok(())
-    }
-
-    #[test]
     fn test_t2_dispatch_works() -> eyre::Result<()> {
         let owner = Address::random();
 
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut vc = ValidatorConfigV2::new();
             vc.initialize(owner)?;
@@ -141,7 +91,7 @@ mod tests {
         use commonware_codec::Encode;
         use commonware_cryptography::{Signer, ed25519::PrivateKey};
 
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let owner = Address::random();
         let validator_addr = Address::random();
         StorageCtx::enter(&mut storage, || {
@@ -200,7 +150,7 @@ mod tests {
 
     #[test]
     fn test_unauthorized_add_validator_dispatch() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let owner = Address::random();
         let non_owner = Address::random();
         let validator_addr = Address::random();
@@ -231,7 +181,7 @@ mod tests {
         let owner = Address::random();
 
         // T2: invalid selector returns reverted output
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut vc = ValidatorConfigV2::new();
             vc.initialize(owner)?;
@@ -249,7 +199,7 @@ mod tests {
 
     #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
 
