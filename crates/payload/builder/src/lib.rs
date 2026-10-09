@@ -1053,8 +1053,9 @@ where
 
         self.executor
             .spawn_blocking_named("builder-roots-task", move || {
-                let _span = debug_span!(target: "payload_builder", parent: parent, "builder_roots")
-                    .entered();
+                let _span =
+                    debug_span!(target: "payload_builder", parent: &parent, "builder_roots")
+                        .entered();
                 let mut transactions = Vec::new();
                 let mut senders = Vec::new();
 

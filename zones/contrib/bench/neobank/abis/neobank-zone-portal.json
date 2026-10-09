@@ -1,0 +1,72 @@
+[
+  {
+    "type":"function", "name":"deposit", "stateMutability":"nonpayable",
+    "inputs":[
+      {"name":"token","type":"address"},
+      {"name":"amount","type":"uint128"},
+      {"name":"keyIndex","type":"uint256"},
+      {"name":"encrypted","type":"tuple","internalType":"struct DepositPayload","components":[
+        {"name":"ephemeralPubkeyX","type":"bytes32"},
+        {"name":"ephemeralPubkeyYParity","type":"uint8"},
+        {"name":"ciphertext","type":"bytes"},
+        {"name":"nonce","type":"bytes12"},
+        {"name":"tag","type":"bytes16"}
+      ]},
+      {"name":"tempoRefundRecipient","type":"address"}
+    ], "outputs":[{"name":"newCurrentDepositQueueHash","type":"bytes32"}]
+  },
+  {
+    "type":"function", "name":"depositEncrypted", "stateMutability":"nonpayable",
+    "inputs":[
+      {"name":"token","type":"address"},
+      {"name":"amount","type":"uint128"},
+      {"name":"keyIndex","type":"uint256"},
+      {"name":"encrypted","type":"tuple","internalType":"struct DepositPayload","components":[
+        {"name":"ephemeralPubkeyX","type":"bytes32"},
+        {"name":"ephemeralPubkeyYParity","type":"uint8"},
+        {"name":"ciphertext","type":"bytes"},
+        {"name":"nonce","type":"bytes12"},
+        {"name":"tag","type":"bytes16"}
+      ]},
+      {"name":"tempoRefundRecipient","type":"address"}
+    ], "outputs":[{"name":"newCurrentDepositQueueHash","type":"bytes32"}]
+  },
+  {
+    "type":"event", "name":"DepositMade", "anonymous":false,
+    "inputs":[
+      {"name":"newCurrentDepositQueueHash","type":"bytes32","indexed":true},
+      {"name":"sender","type":"address","indexed":true},
+      {"name":"token","type":"address","indexed":false},
+      {"name":"netAmount","type":"uint128","indexed":false},
+      {"name":"fee","type":"uint128","indexed":false},
+      {"name":"keyIndex","type":"uint256","indexed":false},
+      {"name":"ephemeralPubkeyX","type":"bytes32","indexed":false},
+      {"name":"ephemeralPubkeyYParity","type":"uint8","indexed":false},
+      {"name":"ciphertext","type":"bytes","indexed":false},
+      {"name":"nonce","type":"bytes12","indexed":false},
+      {"name":"tag","type":"bytes16","indexed":false},
+      {"name":"tempoRefundRecipient","type":"address","indexed":false},
+      {"name":"depositNumber","type":"uint64","indexed":false}
+    ]
+  },
+  {
+    "type":"event", "name":"WithdrawalProcessed", "anonymous":false,
+    "inputs":[
+      {"name":"to","type":"address","indexed":true},
+      {"name":"senderTag","type":"bytes32","indexed":true},
+      {"name":"token","type":"address","indexed":false},
+      {"name":"amount","type":"uint128","indexed":false},
+      {"name":"callbackSuccess","type":"bool","indexed":false}
+    ]
+  },
+  {
+    "type":"event", "name":"WithdrawalBounceBack", "anonymous":false,
+    "inputs":[
+      {"name":"newCurrentDepositQueueHash","type":"bytes32","indexed":true},
+      {"name":"fallbackNonce","type":"uint64","indexed":true},
+      {"name":"token","type":"address","indexed":false},
+      {"name":"amount","type":"uint128","indexed":false},
+      {"name":"depositNumber","type":"uint64","indexed":false}
+    ]
+  }
+]

@@ -541,11 +541,12 @@ impl TempoPayloadAttributesBuilder {
 impl PayloadAttributesBuilder<TempoPayloadAttributes, TempoHeader>
     for TempoPayloadAttributesBuilder
 {
-    fn build(&self, _parent: &SealedHeader<TempoHeader>) -> TempoPayloadAttributes {
+    fn build(&self, parent: &SealedHeader<TempoHeader>) -> TempoPayloadAttributes {
         let millis = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
+        let millis = millis.max(parent.timestamp_millis() + 1);
 
         let (timestamp, timestamp_millis_part) = (millis / 1000, millis % 1000);
         TempoPayloadAttributes::new(
@@ -974,14 +975,12 @@ fn parse_address_filter(value: &str) -> Result<AddressFilter, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        AddressFilter, TempoNode, TempoNodeArgs, TempoPayloadBuilderBuilder, TempoPoolBuilder,
-    };
+    use super::*;
     use alloy_primitives::Address;
+    use clap::Parser;
 
     #[test]
     fn lane_limit_cli_reaches_pool_builder() {
-        use clap::Parser;
         #[derive(Parser)]
         struct Args {
             #[command(flatten)]
@@ -1105,5 +1104,25 @@ mod tests {
         });
 
         assert!(node.payload_builder_builder.state_provider_metrics);
+    }
+
+    #[test_case::test_case(998; "same second")]
+    #[test_case::test_case(999; "next second")]
+    fn dev_payload_timestamp_advances_past_future_parent(timestamp_millis_part: u64) {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3600;
+        let mut header = TempoHeader {
+            timestamp_millis_part,
+            ..Default::default()
+        };
+        header.inner.timestamp = timestamp;
+        let parent = SealedHeader::new_unhashed(header);
+
+        let attributes = TempoPayloadAttributesBuilder::new().build(&parent);
+
+        assert_eq!(attributes.timestamp_millis(), parent.timestamp_millis() + 1);
     }
 }

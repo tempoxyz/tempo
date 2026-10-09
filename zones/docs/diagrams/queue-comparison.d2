@@ -1,0 +1,148 @@
+direction: down
+
+title: {
+  label: Queue Design Comparison
+  near: top-center
+  shape: text
+  style.font-size: 28
+  style.bold: true
+}
+
+subtitle: {
+  label: "Both FIFO • Both 2 Storage Slots • Inverted Requirements"
+  near: top-center
+  shape: text
+  style.font-size: 16
+  style.font-color: "#666"
+}
+
+comparison: {
+  style.fill: "#fafafa"
+  style.stroke: "#e0e0e0"
+
+  deposits: {
+    label: "DEPOSIT QUEUE"
+    style.fill: "#e3f2fd"
+    style.stroke: "#1976D2"
+    style.font-size: 18
+
+    model: {
+      label: "1 Queue + Cursor"
+      style.fill: "#bbdefb"
+      style.font-size: 14
+
+      desc: |md
+        `currentDepositsHash` — head (grows)
+        `checkpointedDepositsHash` — cursor (stable)
+      |
+    }
+
+    structure: {
+      label: "Newest Outermost"
+      style.fill: "#e3f2fd"
+
+      chain: |md
+        ```
+        hash(newest, hash(..., hash(oldest, 0)))
+        ```
+      |
+    }
+
+    onchain: {
+      label: "On-chain: ADD"
+      style.fill: "#c8e6c9"
+      style.stroke: "#4CAF50"
+      op: "Wrap outside O(1)"
+    }
+
+    zkp: {
+      label: "In ZKP: REMOVE"
+      style.fill: "#fff9c4"
+      style.stroke: "#FBC02D"
+      op: "Process from cursor"
+    }
+
+    advance: {
+      label: "After batch"
+      style.fill: "#f3e5f5"
+      style.stroke: "#9C27B0"
+      op: "cursor = head"
+    }
+
+    model -> structure
+    structure -> onchain
+    onchain -> zkp
+    zkp -> advance
+  }
+
+  withdrawals: {
+    label: "WITHDRAWAL QUEUE"
+    style.fill: "#fce4ec"
+    style.stroke: "#C2185B"
+    style.font-size: 18
+
+    model: {
+      label: "2 Separate Queues"
+      style.fill: "#f8bbd9"
+      style.font-size: 14
+
+      desc: |md
+        `withdrawalQueue1` — active (drains)
+        `withdrawalQueue2` — pending (fills)
+      |
+    }
+
+    structure: {
+      label: "Oldest Outermost"
+      style.fill: "#fce4ec"
+
+      chain: |md
+        ```
+        hash(oldest, hash(..., hash(newest, 0)))
+        ```
+      |
+    }
+
+    onchain: {
+      label: "On-chain: REMOVE"
+      style.fill: "#c8e6c9"
+      style.stroke: "#4CAF50"
+      op: "Unwrap outside O(1)"
+    }
+
+    zkp: {
+      label: "In ZKP: ADD"
+      style.fill: "#fff9c4"
+      style.stroke: "#FBC02D"
+      op: "Build queue O(N)"
+    }
+
+    swap: {
+      label: "When queue1 empty"
+      style.fill: "#f3e5f5"
+      style.stroke: "#9C27B0"
+      op: "queue1 = queue2, queue2 = 0"
+    }
+
+    model -> structure
+    structure -> onchain
+    onchain -> zkp
+    zkp -> swap
+  }
+}
+
+insight: {
+  label: "KEY INSIGHT"
+  shape: rectangle
+  style.fill: "#7c4dff"
+  style.font-color: "#fff"
+  style.font-size: 16
+  style.bold: true
+
+  text: |md
+    Structure the hash chain so the
+    **on-chain operation touches the outermost layer**
+  |
+}
+
+comparison -> insight

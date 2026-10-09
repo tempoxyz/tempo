@@ -1,0 +1,4 @@
+interface:
+  display_name: "Zones Deploy Debug"
+  short_description: "Deploy Tempo Zones and debug sync issues"
+  default_prompt: "Use $zones-deploy-debug to deploy a zone, validate router flows, or debug zone sync and portal issues."
