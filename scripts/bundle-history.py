@@ -116,8 +116,9 @@ def main():
     profile = "release" if args.profile == "profiling" else args.profile
     target = re.search(r"^host: (.+)$", run("rustc", "-vV"), re.MULTILINE).group(1)
     environment = {key: value for key, value in os.environ.items() if not key.startswith("VERGEN_GIT_")}
+    # Cargo can otherwise reuse live path-dependency artifacts for the frozen workspace.
     environment.update(CARGO_TARGET_DIR=str(Path(
-        os.environ.get("CARGO_TARGET_DIR", ROOT / "target")).resolve()),
+        os.environ.get("CARGO_TARGET_DIR", ROOT / "target")).resolve() / "history" / PIN["revision"]),
         VERGEN_GIT_SHA=PIN["revision"], VERGEN_GIT_SHA_SHORT=PIN["revision"][:7], VERGEN_GIT_DIRTY="false")
     with tempfile.TemporaryDirectory(prefix="tempo-history-") as temporary:
         package = args.package
