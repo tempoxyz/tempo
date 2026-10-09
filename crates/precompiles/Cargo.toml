@@ -95,6 +95,7 @@ serde = [
 ]
 # Devnet-only: allow `ZoneVerifier::verify` to use PCRs supplied at startup.
 custom-pcrs = []
+experimental-oidc = []
 
 [[test]]
 name = "storage"

@@ -1,0 +1,8 @@
+{
+  "name": "tempo-experimental-oidc",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test" },
+  "dependencies": { "poseidon-lite": "0.3.0", "ethers": "6.17.0" },
+  "engines": { "node": ">=24" }
+}
