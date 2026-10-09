@@ -67,7 +67,23 @@ impl Precompile for TIP403Registry {
                     modifyPolicyWhitelist(call) => mutate(call, msg_sender, |sender, c| self.modify_policy_whitelist(sender, c)),
                     modifyPolicyBlacklist(call) => mutate(call, msg_sender, |sender, c| self.modify_policy_blacklist(sender, c)),
                     #[schedule(since = T2)]
-                    createCompoundPolicy(call) => mutate(call, msg_sender, |sender, c| self.create_compound_policy(sender, c))
+                    createCompoundPolicy(call) => mutate(call, msg_sender, |sender, c| self.create_compound_policy(sender, c)),
+                    #[schedule(since = T13)]
+                    addPolicyWhitelist(call) => mutate(call, msg_sender, |sender, c| {
+                        self.modify_policy_whitelist(sender, ITIP403Registry::modifyPolicyWhitelistCall {
+                            policyId: c.policyId,
+                            account: c.account,
+                            allowed: true,
+                        })
+                    }),
+                    #[schedule(since = T13)]
+                    removePolicyWhitelist(call) => mutate(call, msg_sender, |sender, c| {
+                        self.modify_policy_whitelist(sender, ITIP403Registry::modifyPolicyWhitelistCall {
+                            policyId: c.policyId,
+                            account: c.account,
+                            allowed: false,
+                        })
+                    })
                 }
             }
         )
@@ -78,18 +94,23 @@ impl Precompile for TIP403Registry {
 mod tests {
     use super::*;
     use crate::{
+        account_keychain::{
+            AccountKeychain, CallScope, KeyRestrictions, SelectorRule, SignatureType,
+        },
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
         tip403_registry::{ALLOW_ALL_POLICY_ID, ITIP403Registry},
     };
     use alloy::{
-        primitives::U256,
-        sol_types::{SolCall, SolError, SolValue},
+        primitives::{TxKind, U256},
+        sol_types::{SolCall, SolError, SolEvent, SolInterface, SolValue},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
-        ITIP403Registry::ITIP403RegistryCalls, UnknownFunctionSelector,
+        AccountKeychainError, ITIP403Registry::ITIP403RegistryCalls, TIP403_REGISTRY_ADDRESS,
+        TIP403RegistryError, UnknownFunctionSelector,
     };
+    use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
 
     #[test]
     fn test_is_authorized_precompile() -> eyre::Result<()> {
@@ -533,8 +554,8 @@ mod tests {
 
     #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
-        // Use T9 to test all selectors, including TIP-1092 token policy lookups.
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
+        // Use T13 to include the separate whitelist add/remove selectors.
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
@@ -649,6 +670,247 @@ mod tests {
             let result = registry.call(&calls[1], Address::random())?;
             assert!(result.status.is_success());
             assert_eq!(U256::abi_decode(&result.bytes)?, U256::ZERO);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_whitelist_add_remove_are_t13_gated() -> eyre::Result<()> {
+        let account = Address::random();
+        let calls = [
+            ITIP403Registry::addPolicyWhitelistCall {
+                policyId: 2,
+                account,
+            }
+            .abi_encode(),
+            ITIP403Registry::removePolicyWhitelistCall {
+                policyId: 2,
+                account,
+            }
+            .abi_encode(),
+        ];
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+            for calldata in calls {
+                let output = registry.call(&calldata, account)?;
+                assert!(output.is_revert());
+                let error = UnknownFunctionSelector::abi_decode(&output.bytes)?;
+                assert_eq!(error.selector.as_slice(), &calldata[..4]);
+            }
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_whitelist_add_remove_preserve_checks_and_events() -> eyre::Result<()> {
+        let admin = Address::random();
+        let account = Address::random();
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
+        let policy_id = StorageCtx::enter(&mut storage, || -> eyre::Result<_> {
+            let mut registry = TIP403Registry::new();
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                },
+            )?;
+            let blacklist_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
+
+            // Both selectors retain all checks of modifyPolicyWhitelist.
+            for remove in [false, true] {
+                let encode = |policy_id, account| {
+                    if remove {
+                        ITIP403Registry::removePolicyWhitelistCall {
+                            policyId: policy_id,
+                            account,
+                        }
+                        .abi_encode()
+                    } else {
+                        ITIP403Registry::addPolicyWhitelistCall {
+                            policyId: policy_id,
+                            account,
+                        }
+                        .abi_encode()
+                    }
+                };
+                for (policy, member, caller, expected) in [
+                    (
+                        policy_id,
+                        account,
+                        Address::random(),
+                        TIP403RegistryError::unauthorized(),
+                    ),
+                    (
+                        blacklist_id,
+                        account,
+                        admin,
+                        TIP403RegistryError::incompatible_policy_type(),
+                    ),
+                    (
+                        u64::MAX,
+                        account,
+                        admin,
+                        TIP403RegistryError::policy_not_found(),
+                    ),
+                    (
+                        policy_id,
+                        Address::new_virtual(MasterId::ZERO, UserTag::ZERO),
+                        admin,
+                        TIP403RegistryError::virtual_address_not_allowed(),
+                    ),
+                ] {
+                    let output = registry.call(&encode(policy, member), caller)?;
+                    assert!(output.is_revert());
+                    assert_eq!(output.bytes.as_ref(), expected.abi_encode());
+                }
+            }
+
+            // Repeat each operation to preserve idempotence and event emission.
+            for allowed in [true, true, false, false] {
+                let calldata = if allowed {
+                    ITIP403Registry::addPolicyWhitelistCall {
+                        policyId: policy_id,
+                        account,
+                    }
+                    .abi_encode()
+                } else {
+                    ITIP403Registry::removePolicyWhitelistCall {
+                        policyId: policy_id,
+                        account,
+                    }
+                    .abi_encode()
+                };
+                let output = registry.call(&calldata, admin)?;
+                assert!(!output.is_revert());
+                assert!(output.bytes.is_empty());
+                assert_eq!(
+                    registry.is_authorized_as(policy_id, account, AuthRole::Transfer)?,
+                    allowed
+                );
+            }
+            Ok(policy_id)
+        })?;
+        let events = storage.get_events(TIP403_REGISTRY_ADDRESS);
+        let updates = &events[events.len() - 4..];
+        for (event, allowed) in updates.iter().zip([true, true, false, false]) {
+            assert_eq!(
+                ITIP403Registry::WhitelistUpdated::decode_log_data(event)?,
+                ITIP403Registry::WhitelistUpdated {
+                    policyId: policy_id,
+                    updater: admin,
+                    account,
+                    allowed
+                },
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_whitelist_add_only_access_key_scope() -> eyre::Result<()> {
+        let admin = Address::random();
+        let key_id = Address::random();
+        let account = Address::random();
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(admin)?;
+            keychain.authorize_key(
+                admin,
+                key_id,
+                SignatureType::Secp256k1,
+                KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: false,
+                    limits: vec![],
+                    allowAnyCalls: false,
+                    allowedCalls: vec![CallScope {
+                        target: TIP403_REGISTRY_ADDRESS,
+                        selectorRules: vec![SelectorRule {
+                            selector: ITIP403Registry::addPolicyWhitelistCall::SELECTOR.into(),
+                            recipients: vec![],
+                        }],
+                    }],
+                },
+                None,
+            )?;
+            let mut registry = TIP403Registry::new();
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                },
+            )?;
+            let target = TxKind::Call(TIP403_REGISTRY_ADDRESS);
+            keychain.set_transaction_key(key_id)?;
+            let add = ITIP403Registry::addPolicyWhitelistCall {
+                policyId: policy_id,
+                account,
+            }
+            .abi_encode();
+            keychain.validate_call_scope_for_transaction(admin, key_id, &target, &add)?;
+            assert!(!registry.call(&add, admin)?.is_revert());
+            assert!(registry.is_authorized_as(policy_id, account, AuthRole::Transfer)?);
+
+            for calldata in [
+                ITIP403Registry::removePolicyWhitelistCall {
+                    policyId: policy_id,
+                    account,
+                }
+                .abi_encode(),
+                ITIP403Registry::modifyPolicyWhitelistCall {
+                    policyId: policy_id,
+                    account,
+                    allowed: false,
+                }
+                .abi_encode(),
+                ITIP403Registry::modifyPolicyWhitelistCall {
+                    policyId: policy_id,
+                    account,
+                    allowed: true,
+                }
+                .abi_encode(),
+                ITIP403Registry::setPolicyAdminCall {
+                    policyId: policy_id,
+                    admin: account,
+                }
+                .abi_encode(),
+                ITIP403Registry::modifyPolicyBlacklistCall {
+                    policyId: policy_id,
+                    account,
+                    restricted: true,
+                }
+                .abi_encode(),
+            ] {
+                assert_eq!(
+                    keychain
+                        .validate_call_scope_for_transaction(admin, key_id, &target, &calldata)
+                        .unwrap_err(),
+                    AccountKeychainError::call_not_allowed().into(),
+                );
+            }
+            assert_eq!(
+                keychain
+                    .validate_call_scope_for_transaction(
+                        admin,
+                        key_id,
+                        &TxKind::Call(account),
+                        &add
+                    )
+                    .unwrap_err(),
+                AccountKeychainError::call_not_allowed().into(),
+            );
             Ok(())
         })
     }
