@@ -73,10 +73,16 @@ impl TempoSignedAuthorization {
 
     /// Recover the authority for the authorization.
     ///
+    /// ZK signatures never sign authorizations: their verification needs state, and entries are
+    /// recovered without it (TIP-1131), so they always fail here.
+    ///
     /// # Note
     ///
     /// Implementers should check that the authority has no code.
     pub fn recover_authority(&self) -> Result<Address, alloy_consensus::crypto::RecoveryError> {
+        if self.signature.is_zk() {
+            return Err(alloy_consensus::crypto::RecoveryError::new());
+        }
         let sig_hash = self.signature_hash();
         self.signature.recover_signer(&sig_hash)
     }

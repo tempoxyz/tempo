@@ -1,0 +1,9 @@
+{
+  "name": "tempo-experimental-oidc",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test" },
+  "devDependencies": { "@zk-email/circuits": "6.3.4", "circom2": "0.2.23", "circomlib": "2.0.5", "snarkjs": "0.7.6" },
+  "dependencies": { "poseidon-lite": "0.3.0", "ethers": "6.17.0" },
+  "engines": { "node": ">=24" }
+}

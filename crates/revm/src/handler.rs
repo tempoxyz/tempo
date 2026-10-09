@@ -64,8 +64,12 @@ use crate::{
     error::FeePaymentError,
     evm::TempoContext,
     gas_credits,
-    signature_gas::{primitive_signature_verification_gas, tempo_signature_verification_gas},
+    signature_gas::{key_authorization_signature_gas, tempo_signature_verification_gas},
+    zk::{self, ZkSignatureError},
 };
+
+#[cfg(test)]
+use crate::signature_gas::primitive_signature_verification_gas;
 
 /// Base gas for KeyAuthorization (22k storage + 5k buffer), signature gas added at runtime
 const KEY_AUTH_BASE_GAS: u64 = 27_000;
@@ -300,7 +304,7 @@ fn calculate_key_authorization_gas(
     // All signature types pay ECRECOVER_GAS (3k) as the baseline since
     // primitive_signature_verification_gas assumes ecrecover is already in base 21k.
     // For KeyAuthorization, we're doing an additional signature verification.
-    let sig_gas = ECRECOVER_GAS + primitive_signature_verification_gas(&key_auth.signature);
+    let sig_gas = ECRECOVER_GAS + key_authorization_signature_gas(&key_auth.signature);
 
     let num_limits = key_auth
         .authorization
@@ -1233,8 +1237,35 @@ where
         // balance if `cfg.is_balance_check_disabled()` is true.
         let gas_balance_spending = core::cmp::max(account_balance, new_balance) - new_balance;
 
-        // Note: Signature verification happens during recover_signer() before entering the pool
+        // Note: Signature verification happens during recover_signer() before entering the pool,
+        // except for ZK signatures, which are verified below.
         // Note: Transaction parameter validation (priority fee, time window) happens in validate_env()
+
+        // TIP-1131: read each ZK signature's issuer key at this position in the block, then verify
+        // its access key signature and proof. Both issuer keys are read before any curve
+        // operation. Verification is cached, so a signature already checked by the pool or ahead
+        // of execution is not checked again.
+        if let Some(aa_env) = tx.tempo_tx_env.as_ref() {
+            let zk_signatures = [
+                aa_env
+                    .signature
+                    .as_zk()
+                    .map(|signature| (signature, aa_env.signature_hash)),
+                aa_env.key_authorization.as_ref().and_then(|auth| {
+                    auth.signature
+                        .as_zk()
+                        .map(|signature| (signature, auth.signature_hash()))
+                }),
+            ];
+            let timestamp = block.timestamp().saturating_to::<u64>();
+            for (signature, _) in zk_signatures.iter().flatten() {
+                zk::check_issuer_key(journal, signature, timestamp)?
+                    .map_err(TempoInvalidTransaction::from)?;
+            }
+            for (signature, d) in zk_signatures.iter().flatten() {
+                zk::verify(signature, d).map_err(TempoInvalidTransaction::from)?;
+            }
+        }
 
         // For Keychain signatures, validate the acting access key before fee collection when it
         // already exists. Same-tx auth+use is the exception: that key is registered only after fees
@@ -1850,6 +1881,17 @@ where
                     .validate_version(cfg.spec().is_t1c())
                     .map_err(TempoInvalidTransaction::from)?;
             }
+
+            // TIP-1131: activation, scheme, and validity-window checks for ZK signatures. Their
+            // issuer keys and cryptography are checked against state in
+            // `validate_against_state_and_deduct_caller`.
+            validate_zk_signatures(
+                aa_env,
+                *cfg.spec(),
+                evm.ctx_ref().block().timestamp().saturating_to(),
+                tx.caller(),
+                cfg.chain_id(),
+            )?;
 
             if let Some(key_auth) = &aa_env.key_authorization {
                 // Check if this TX is using a Keychain signature (access key). Non-admin access
@@ -2520,6 +2562,55 @@ where
     } else {
         FrameResult::new_create_oog(gas_limit, 0)
     })
+}
+
+/// Checks the parts of an AA transaction's ZK signatures that need no state (TIP-1131).
+///
+/// A transaction carries at most two ZK signatures, its own and its key authorization's, so it
+/// always meets the TIP-1131 limit of two.
+fn validate_zk_signatures(
+    aa_env: &TempoBatchCallEnv,
+    spec: tempo_chainspec::hardfork::TempoHardfork,
+    timestamp: u64,
+    caller: Address,
+    chain_id: u64,
+) -> Result<(), TempoInvalidTransaction> {
+    // Authorization list entries are recovered without state, so they can never carry one.
+    if aa_env
+        .tempo_authorization_list
+        .iter()
+        .any(|auth| auth.signature().is_zk())
+    {
+        return Err(ZkSignatureError::NotAccepted.into());
+    }
+
+    let key_auth_signature = aa_env
+        .key_authorization
+        .as_ref()
+        .and_then(|auth| auth.signature.as_zk());
+    let mut signatures = aa_env
+        .signature
+        .as_zk()
+        .into_iter()
+        .chain(key_auth_signature)
+        .peekable();
+    if signatures.peek().is_none() {
+        return Ok(());
+    }
+    if !spec.is_t14() {
+        return Err(ZkSignatureError::NotActive.into());
+    }
+    for signature in signatures {
+        zk::check_scheme_and_time(signature, timestamp, chain_id)?;
+    }
+
+    // A ZK-signed key authorization is signed by the root account, which must be the sender.
+    if let Some(signature) = key_auth_signature
+        && signature.address() != Some(caller)
+    {
+        return Err(ZkSignatureError::SignerNotSender.into());
+    }
+    Ok(())
 }
 
 /// Validates time window for AA transactions
