@@ -1,0 +1,27 @@
+{
+  "name": "tempo-oidc-rs256-circuit",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "build": "mkdir -p build/main && circom circuits/main.circom --r1cs --wasm --O2 -l node_modules -o build/main",
+    "setup:dev": "node --max-old-space-size=12288 scripts/setup.ts build/main/main.r1cs build/ppot_0080_20.ptau build/dev",
+    "test": "node --test 'test/**/*.test.ts'",
+    "typecheck": "tsc",
+    "vectors": "node --max-old-space-size=12288 scripts/vectors.ts build/main/main_js/main.wasm build/dev/oidc_rs256.zkey build/dev/verification_key.json ../../crates/zk/testdata/oidc_rs256_v1_dev.json"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "circom_runtime": "0.1.28",
+    "circomlib": "2.0.5",
+    "poseidon-lite": "0.3.0",
+    "snarkjs": "0.7.6",
+    "typescript": "5.9.3"
+  },
+  "overrides": {
+    "underscore": "1.13.8"
+  }
+}
