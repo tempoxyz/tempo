@@ -1,170 +1,21 @@
-use std::sync::Arc;
-
-use alloy_primitives::B256;
+use crate::{catalog::ChainEras, handshake::EXECUTION_INFO_METHOD};
+use alloy_primitives::{B256, U64};
 use futures::future::BoxFuture;
 use jsonrpsee::{
     core::{RpcResult, client::Error as ClientError, traits::ToRpcParams},
-    types::ErrorObjectOwned,
+    types::{
+        ErrorObjectOwned,
+        error::{CALL_EXECUTION_FAILED_CODE, INVALID_PARAMS_CODE},
+    },
 };
 use serde_json::{Value, json, value::RawValue};
+use std::sync::Arc;
 
-use crate::{catalog::ChainEras, handshake::EXECUTION_INFO_METHOD};
-
-/// JSON-RPC supports both positional and named params. Keep that representation when forwarding.
-#[derive(Debug, Clone)]
-pub struct RpcParams(pub Value);
-
-impl ToRpcParams for RpcParams {
-    fn to_rpc_params(self) -> Result<Option<Box<RawValue>>, serde_json::Error> {
-        if self.0.is_null() {
-            Ok(None)
-        } else {
-            serde_json::value::to_raw_value(&self.0).map(Some)
-        }
-    }
-}
-
-impl RpcParams {
-    pub(crate) fn parse(params: &jsonrpsee::types::Params<'_>) -> RpcResult<Self> {
-        params
-            .as_str()
-            .map(serde_json::from_str::<Value>)
-            .transpose()
-            .map(|value| Self(value.unwrap_or(Value::Null)))
-            .map_err(|error| invalid(error.to_string()))
-    }
-
-    fn get(&self, index: usize, names: &[&str]) -> Option<&Value> {
-        match &self.0 {
-            Value::Array(a) => a.get(index),
-            Value::Object(o) => names.iter().find_map(|n| o.get(*n)),
-            _ => None,
-        }
-        .filter(|v| !v.is_null())
-    }
-
-    fn get_mut(&mut self, index: usize, names: &[&str]) -> Option<&mut Value> {
-        match &mut self.0 {
-            Value::Array(a) => a.get_mut(index),
-            Value::Object(o) => names
-                .iter()
-                .find(|n| o.contains_key(**n))
-                .and_then(|n| o.get_mut(*n)),
-            _ => None,
-        }
-        .filter(|v| !v.is_null())
-    }
-
-    fn set(&mut self, index: usize, names: &[&str], value: Value) {
-        if self.0.is_null() {
-            self.0 = json!([]);
-        }
-        match &mut self.0 {
-            Value::Array(a) => {
-                a.resize(a.len().max(index + 1), Value::Null);
-                a[index] = value;
-            }
-            Value::Object(o) => {
-                let key = names
-                    .iter()
-                    .find(|n| o.contains_key(**n))
-                    .copied()
-                    .unwrap_or(names[0]);
-                o.insert(key.into(), value);
-            }
-            _ => {}
-        }
-    }
-}
-
-pub fn upstream_error(error: ClientError) -> ErrorObjectOwned {
-    match error {
-        ClientError::Call(e) => e,
-        other => {
-            ErrorObjectOwned::owned(-32000, format!("era RPC unavailable: {other}"), None::<()>)
-        }
-    }
-}
-
-pub fn invalid(message: impl Into<String>) -> ErrorObjectOwned {
-    ErrorObjectOwned::owned(-32602, message.into(), None::<()>)
-}
-
-pub(crate) fn unsupported(message: impl Into<String>) -> ErrorObjectOwned {
-    ErrorObjectOwned::owned(-32004, message.into(), None::<()>)
-}
-
-pub fn quantity(value: &Value) -> RpcResult<u64> {
-    if let Some(n) = value.as_u64() {
-        return Ok(n);
-    }
-    value
-        .as_str()
-        .and_then(|s| s.strip_prefix("0x"))
-        .and_then(|s| u64::from_str_radix(s, 16).ok())
-        .ok_or_else(|| invalid("expected a hexadecimal quantity"))
-}
-
-/// Header metadata used to select an execution era and pin block selectors.
-#[derive(Debug)]
-pub struct BlockMetadata {
-    pub number: u64,
-    pub hash: B256,
-    pub timestamp: u64,
-}
-
-impl BlockMetadata {
-    fn id(&self) -> Value {
-        json!({"blockHash": self.hash})
-    }
-    fn pin(&self, selector: Value, number_only: bool) -> Value {
-        if selector.get("blockHash").is_some() || selector.as_str().is_some_and(|s| s.len() == 66) {
-            selector
-        } else if number_only {
-            self.number_id()
-        } else {
-            self.id()
-        }
-    }
-    fn number_id(&self) -> Value {
-        json!(format!("0x{:x}", self.number))
-    }
-}
-
-/// Execution-independent adapter for live RPC resolution and frozen worker forwarding.
-pub trait Backend: Send + Sync {
-    /// Resolve only the header metadata needed for era selection.
-    fn block<'a>(&'a self, selector: &'a Value) -> BoxFuture<'a, RpcResult<BlockMetadata>>;
-
-    /// Missing and pool transactions remain on the native live path.
-    fn transaction_timestamp<'a>(
-        &'a self,
-        hash: &'a Value,
-    ) -> BoxFuture<'a, RpcResult<Option<u64>>>;
-
-    /// Execution results are opaque to the router.
-    fn forward<'a>(
-        &'a self,
-        _era: usize,
-        _method: &'a str,
-        _params: RpcParams,
-    ) -> BoxFuture<'a, RpcResult<Box<RawValue>>> {
-        Box::pin(async { Err(unsupported("historical execution is unavailable")) })
-    }
-
-    /// Only the chain-specific adapter knows the raw block encoding.
-    fn raw_block_timestamp(&self, _params: &RpcParams) -> RpcResult<u64> {
-        Err(unsupported(
-            "raw-block tracing requires a chain-specific decoder; use debug_traceBlockByHash or debug_traceBlockByNumber",
-        ))
-    }
-}
-
-/// Selected execution era and parameters prepared for its RPC implementation.
-pub struct Route {
-    pub era: usize,
-    pub params: RpcParams,
-}
+const BLOCK_HASH_HEX_LEN: usize = 2 + 2 * B256::len_bytes();
+// Match Reth's generated bundle environments and its separate simulation fallback.
+const BUNDLE_TIMESTAMP_INCREMENT: u64 = 12;
+const SIMULATE_FALLBACK_TIMESTAMP_INCREMENT: u64 = 12;
+const MAX_EXECUTION_OUTCOME_BLOCKS: u64 = 128;
 
 /// Resolve identifiers through the live node. Frozen workers receive pinned historical IDs.
 pub struct Router {
@@ -214,7 +65,7 @@ impl Router {
                     if start.number < end.number {
                         let first = self
                             .backend
-                            .block(&json!(format!("0x{:x}", start.number + 1)))
+                            .block(&json!(U64::from(start.number + 1)))
                             .await?;
                         if self.era(first.timestamp) != live || self.era(end.timestamp) != live {
                             return Err(unsupported(
@@ -370,7 +221,7 @@ impl Router {
             Some(timestamp) => timestamp,
             None => parent
                 .timestamp
-                .checked_add(12)
+                .checked_add(BUNDLE_TIMESTAMP_INCREMENT)
                 .ok_or_else(|| invalid("timestamp overflow"))?,
         };
         // Reth selects its configuration from the state block before changing its timestamp.
@@ -400,8 +251,8 @@ impl Router {
         }
         let parent = self.backend.block(&selector).await?;
         let era = self.era(parent.timestamp);
-        // Native cfg is selected for parent + 12 before flattened block overrides are applied.
-        if self.era(parent.timestamp.saturating_add(12)) != era {
+        // Native cfg is selected for the generated child before applying block overrides.
+        if self.era(parent.timestamp.saturating_add(BUNDLE_TIMESTAMP_INCREMENT)) != era {
             return Err(unsupported("bundle simulation crosses an era boundary"));
         }
         self.check_time(era, Some(overrides))?;
@@ -415,8 +266,10 @@ impl Router {
             .map(quantity)
             .transpose()?
             .unwrap_or(1);
-        if !(1..=128).contains(&count) {
-            return Err(invalid("block count must be between 1 and 128"));
+        if !(1..=MAX_EXECUTION_OUTCOME_BLOCKS).contains(&count) {
+            return Err(invalid(format!(
+                "block count must be between 1 and {MAX_EXECUTION_OUTCOME_BLOCKS}"
+            )));
         }
         let selector = params
             .get(0, &["block_id", "blockId"])
@@ -427,7 +280,9 @@ impl Router {
         }
         let mut first = self.backend.block(&selector).await?;
         if selector.get("blockHash").is_some()
-            || selector.as_str().is_some_and(|value| value.len() == 66)
+            || selector
+                .as_str()
+                .is_some_and(|value| value.len() == BLOCK_HASH_HEX_LEN)
         {
             // Native replay resolves a hash to a height, then executes canonical blocks by height.
             first = self.backend.block(&first.number_id()).await?;
@@ -446,7 +301,7 @@ impl Router {
             let head = self.backend.block(&json!("latest")).await?;
             let last = last.min(head.number);
             if last > first.number {
-                let end = self.backend.block(&json!(format!("0x{last:x}"))).await?;
+                let end = self.backend.block(&json!(U64::from(last))).await?;
                 if self.era(end.timestamp) != era {
                     return Err(unsupported("block execution outcome spans multiple eras"));
                 }
@@ -486,7 +341,7 @@ impl Router {
                     .timestamp
                     .checked_add(
                         (i as u64)
-                            .checked_mul(12)
+                            .checked_mul(BUNDLE_TIMESTAMP_INCREMENT)
                             .ok_or_else(|| invalid("timestamp overflow"))?,
                     )
                     .ok_or_else(|| invalid("timestamp overflow"))?
@@ -513,15 +368,10 @@ impl Router {
     }
 
     async fn simulation(&self, method: &str, params: &mut RpcParams) -> RpcResult<usize> {
-        let payload_names: &[&str] = if method == "eth_simulateV1" {
-            &["opts"]
+        let (payload_names, block_names): (&[&str], &[&str]) = if method == "eth_simulateV1" {
+            (&["opts"], &["block_number", "blockNumber"])
         } else {
-            &["payload"]
-        };
-        let block_names: &[&str] = if method == "eth_simulateV1" {
-            &["block_number", "blockNumber"]
-        } else {
-            &["block"]
+            (&["payload"], &["block"])
         };
         let payload = params
             .get(0, payload_names)
@@ -548,7 +398,7 @@ impl Router {
             .average_blocktime_hint()
             .map(|d| d.as_secs().saturating_add(u64::from(d.subsec_nanos() > 0)))
             .filter(|s| *s > 0)
-            .unwrap_or(12);
+            .unwrap_or(SIMULATE_FALLBACK_TIMESTAMP_INCREMENT);
         let mut number = base.number;
         let mut time = base.timestamp;
         let mut era = None;
@@ -605,6 +455,159 @@ impl Router {
     }
 }
 
+/// JSON-RPC supports both positional and named params. Keep that representation when forwarding.
+#[derive(Debug, Clone)]
+pub struct RpcParams(pub Value);
+
+impl ToRpcParams for RpcParams {
+    fn to_rpc_params(self) -> Result<Option<Box<RawValue>>, serde_json::Error> {
+        (!self.0.is_null())
+            .then(|| serde_json::value::to_raw_value(&self.0))
+            .transpose()
+    }
+}
+
+impl RpcParams {
+    pub(crate) fn parse(params: &jsonrpsee::types::Params<'_>) -> RpcResult<Self> {
+        params
+            .as_str()
+            .map(serde_json::from_str::<Value>)
+            .transpose()
+            .map(|value| Self(value.unwrap_or(Value::Null)))
+            .map_err(|error| invalid(error.to_string()))
+    }
+
+    fn get(&self, index: usize, names: &[&str]) -> Option<&Value> {
+        match &self.0 {
+            Value::Array(a) => a.get(index),
+            Value::Object(o) => names.iter().find_map(|n| o.get(*n)),
+            _ => None,
+        }
+        .filter(|v| !v.is_null())
+    }
+
+    fn get_mut(&mut self, index: usize, names: &[&str]) -> Option<&mut Value> {
+        match &mut self.0 {
+            Value::Array(a) => a.get_mut(index),
+            Value::Object(o) => names
+                .iter()
+                .find(|n| o.contains_key(**n))
+                .and_then(|n| o.get_mut(*n)),
+            _ => None,
+        }
+        .filter(|v| !v.is_null())
+    }
+
+    fn set(&mut self, index: usize, names: &[&str], value: Value) {
+        if self.0.is_null() {
+            self.0 = json!([]);
+        }
+        match &mut self.0 {
+            Value::Array(a) => {
+                a.resize(a.len().max(index + 1), Value::Null);
+                a[index] = value;
+            }
+            Value::Object(o) => {
+                let key = names
+                    .iter()
+                    .find(|n| o.contains_key(**n))
+                    .copied()
+                    .unwrap_or(names[0]);
+                o.insert(key.into(), value);
+            }
+            _ => {}
+        }
+    }
+}
+
+pub fn upstream_error(error: ClientError) -> ErrorObjectOwned {
+    match error {
+        ClientError::Call(e) => e,
+        other => execution_error(format_args!("era RPC unavailable: {other}")),
+    }
+}
+
+pub(crate) fn execution_error(error: impl std::fmt::Display) -> ErrorObjectOwned {
+    ErrorObjectOwned::owned(CALL_EXECUTION_FAILED_CODE, error.to_string(), None::<()>)
+}
+
+pub fn invalid(message: impl Into<String>) -> ErrorObjectOwned {
+    ErrorObjectOwned::owned(INVALID_PARAMS_CODE, message.into(), None::<()>)
+}
+
+pub(crate) fn unsupported(message: impl Into<String>) -> ErrorObjectOwned {
+    ErrorObjectOwned::owned(-32004, message.into(), None::<()>)
+}
+
+pub fn quantity(value: &Value) -> RpcResult<u64> {
+    value
+        .as_u64()
+        .or_else(|| u64::from_str_radix(value.as_str()?.strip_prefix("0x")?, 16).ok())
+        .ok_or_else(|| invalid("expected a hexadecimal quantity"))
+}
+
+/// Header metadata used to select an execution era and pin block selectors.
+#[derive(Debug)]
+pub struct BlockMetadata {
+    pub number: u64,
+    pub hash: B256,
+    pub timestamp: u64,
+}
+
+impl BlockMetadata {
+    fn pin(&self, selector: Value, number_only: bool) -> Value {
+        if selector.get("blockHash").is_some()
+            || selector
+                .as_str()
+                .is_some_and(|s| s.len() == BLOCK_HASH_HEX_LEN)
+        {
+            selector
+        } else if number_only {
+            self.number_id()
+        } else {
+            json!({"blockHash": self.hash})
+        }
+    }
+    fn number_id(&self) -> Value {
+        json!(U64::from(self.number))
+    }
+}
+
+/// Execution-independent adapter for live RPC resolution and frozen worker forwarding.
+pub trait Backend: Send + Sync {
+    /// Resolve only the header metadata needed for era selection.
+    fn block<'a>(&'a self, selector: &'a Value) -> BoxFuture<'a, RpcResult<BlockMetadata>>;
+
+    /// Missing and pool transactions remain on the native live path.
+    fn transaction_timestamp<'a>(
+        &'a self,
+        hash: &'a Value,
+    ) -> BoxFuture<'a, RpcResult<Option<u64>>>;
+
+    /// Execution results are opaque to the router.
+    fn forward<'a>(
+        &'a self,
+        _era: usize,
+        _method: &'a str,
+        _params: RpcParams,
+    ) -> BoxFuture<'a, RpcResult<Box<RawValue>>> {
+        Box::pin(async { Err(unsupported("historical execution is unavailable")) })
+    }
+
+    /// Only the chain-specific adapter knows the raw block encoding.
+    fn raw_block_timestamp(&self, _params: &RpcParams) -> RpcResult<u64> {
+        Err(unsupported(
+            "raw-block tracing requires a chain-specific decoder; use debug_traceBlockByHash or debug_traceBlockByNumber",
+        ))
+    }
+}
+
+/// Selected execution era and parameters prepared for its RPC implementation.
+pub struct Route {
+    pub era: usize,
+    pub params: RpcParams,
+}
+
 fn ensure_same_era(era: &mut Option<usize>, next: usize) -> RpcResult<()> {
     if era.is_some_and(|previous| previous != next) {
         return Err(unsupported(
@@ -653,111 +656,125 @@ fn policy(method: &str) -> Policy {
         | "trace_replayBlockTransactions"
         | "trace_blockOpcodeGas" => Policy::Block(0, &["block_id", "blockId"], false),
         "eth_protocolVersion"
-            | "eth_syncing"
-            | "eth_coinbase"
-            | "eth_accounts"
-            | "eth_blockNumber"
-            | "eth_chainId"
-            | "eth_capabilities"
-            | "eth_getBlockByHash"
-            | "eth_getBlockByNumber"
-            | "eth_getBlockTransactionCountByHash"
-            | "eth_getBlockTransactionCountByNumber"
-            | "eth_getUncleCountByBlockHash"
-            | "eth_getUncleCountByBlockNumber"
-            | "eth_getBlockReceipts"
-            | "eth_getUncleByBlockHashAndIndex"
-            | "eth_getUncleByBlockNumberAndIndex"
-            | "eth_getRawTransactionByHash"
-            | "eth_getTransactionByHash"
-            | "eth_getRawTransactionByBlockHashAndIndex"
-            | "eth_getTransactionByBlockHashAndIndex"
-            | "eth_getRawTransactionByBlockNumberAndIndex"
-            | "eth_getTransactionByBlockNumberAndIndex"
-            | "eth_getTransactionBySenderAndNonce"
-            | "eth_pendingTransactions"
-            | "eth_getTransactionReceipt"
-            | "eth_getBalance"
-            | "eth_getStorageAt"
-            | "eth_getStorageValues"
-            | "eth_getTransactionCount"
-            | "eth_getCode"
-            | "eth_getHeaderByNumber"
-            | "eth_getHeaderByHash"
-            | "eth_gasPrice"
-            | "eth_getAccount"
-            | "eth_maxPriorityFeePerGas"
-            | "eth_baseFee"
-            | "eth_blobBaseFee"
-            | "eth_feeHistory"
-            | "eth_mining"
-            | "eth_hashrate"
-            | "eth_getWork"
-            | "eth_submitHashrate"
-            | "eth_submitWork"
-            | "eth_sendTransaction"
-            | "eth_sendRawTransaction"
-            | "eth_sendRawTransactionSync"
-            | "eth_sendRawTransactionConditional"
-            | "eth_sign"
-            | "eth_signTransaction"
-            | "eth_signTypedData"
-            | "eth_fillTransaction"
-            | "eth_getProof"
-            | "eth_getMultiProof"
-            | "eth_getAccountInfo"
-            | "eth_getLogs"
-            | "eth_newFilter"
-            | "eth_newBlockFilter"
-            | "eth_newPendingTransactionFilter"
-            | "eth_uninstallFilter"
-            | "eth_getFilterChanges"
-            | "eth_getFilterLogs"
-            | "eth_getTransactions"
-            | "eth_config"
-            | "token_getRoleHistory"
-            | "token_getTokens"
-            | "token_getTokensByAddress"
-            | "tempo_fundAddress"
-            | "tempo_forkSchedule"
-            | EXECUTION_INFO_METHOD
-            | "debug_getRawHeader"
-            | "debug_getRawBlock"
-            | "debug_getRawTransaction"
-            | "debug_getRawTransactions"
-            | "debug_getRawReceipts"
-            | "debug_getBadBlocks"
-            | "debug_clearTxpool"
-            | "debug_chaindbCompact"
-            | "debug_chainConfig"
-            | "debug_chaindbProperty"
-            | "debug_codeByHash"
-            | "debug_dbAncient"
-            | "debug_dbAncients"
-            | "debug_dbGet"
-            | "debug_dumpBlock"
-            | "debug_freeOSMemory"
-            | "debug_gcStats"
-            | "debug_getAccessibleState"
-            | "debug_accountRange"
-            | "debug_getModifiedAccountsByNumber"
-            | "debug_getModifiedAccountsByHash"
-            | "debug_memStats"
-            | "debug_preimage"
-            | "debug_printBlock"
-            | "debug_seedHash"
-            | "debug_setGCPercent"
-            | "debug_setHead"
-            | "debug_setTrieFlushInterval"
-            // These APIs are currently non-executing stubs in the pinned native backend.
-            | "debug_standardTraceBadBlockToFile"
-            | "debug_stateRootWithUpdates" => Policy::Native,
-        "mev_simBundle" | "reth_getBlockExecutionOutcome" | "ots_getInternalOperations"
-        | "ots_getTransactionError" | "ots_traceTransaction" | "ots_getContractCreator" => Policy::Execution,
+        | "eth_syncing"
+        | "eth_coinbase"
+        | "eth_accounts"
+        | "eth_blockNumber"
+        | "eth_chainId"
+        | "eth_capabilities"
+        | "eth_getBlockByHash"
+        | "eth_getBlockByNumber"
+        | "eth_getBlockTransactionCountByHash"
+        | "eth_getBlockTransactionCountByNumber"
+        | "eth_getUncleCountByBlockHash"
+        | "eth_getUncleCountByBlockNumber"
+        | "eth_getBlockReceipts"
+        | "eth_getUncleByBlockHashAndIndex"
+        | "eth_getUncleByBlockNumberAndIndex"
+        | "eth_getRawTransactionByHash"
+        | "eth_getTransactionByHash"
+        | "eth_getRawTransactionByBlockHashAndIndex"
+        | "eth_getTransactionByBlockHashAndIndex"
+        | "eth_getRawTransactionByBlockNumberAndIndex"
+        | "eth_getTransactionByBlockNumberAndIndex"
+        | "eth_getTransactionBySenderAndNonce"
+        | "eth_pendingTransactions"
+        | "eth_getTransactionReceipt"
+        | "eth_getBalance"
+        | "eth_getStorageAt"
+        | "eth_getStorageValues"
+        | "eth_getTransactionCount"
+        | "eth_getCode"
+        | "eth_getHeaderByNumber"
+        | "eth_getHeaderByHash"
+        | "eth_gasPrice"
+        | "eth_getAccount"
+        | "eth_maxPriorityFeePerGas"
+        | "eth_baseFee"
+        | "eth_blobBaseFee"
+        | "eth_feeHistory"
+        | "eth_mining"
+        | "eth_hashrate"
+        | "eth_getWork"
+        | "eth_submitHashrate"
+        | "eth_submitWork"
+        | "eth_sendTransaction"
+        | "eth_sendRawTransaction"
+        | "eth_sendRawTransactionSync"
+        | "eth_sendRawTransactionConditional"
+        | "eth_sign"
+        | "eth_signTransaction"
+        | "eth_signTypedData"
+        | "eth_fillTransaction"
+        | "eth_getProof"
+        | "eth_getMultiProof"
+        | "eth_getAccountInfo"
+        | "eth_getLogs"
+        | "eth_newFilter"
+        | "eth_newBlockFilter"
+        | "eth_newPendingTransactionFilter"
+        | "eth_uninstallFilter"
+        | "eth_getFilterChanges"
+        | "eth_getFilterLogs"
+        | "eth_getTransactions"
+        | "eth_config"
+        | "token_getRoleHistory"
+        | "token_getTokens"
+        | "token_getTokensByAddress"
+        | "tempo_fundAddress"
+        | "tempo_forkSchedule"
+        | EXECUTION_INFO_METHOD
+        | "debug_getRawHeader"
+        | "debug_getRawBlock"
+        | "debug_getRawTransaction"
+        | "debug_getRawTransactions"
+        | "debug_getRawReceipts"
+        | "debug_getBadBlocks"
+        | "debug_clearTxpool"
+        | "debug_chaindbCompact"
+        | "debug_chainConfig"
+        | "debug_chaindbProperty"
+        | "debug_codeByHash"
+        | "debug_dbAncient"
+        | "debug_dbAncients"
+        | "debug_dbGet"
+        | "debug_dumpBlock"
+        | "debug_freeOSMemory"
+        | "debug_gcStats"
+        | "debug_getAccessibleState"
+        | "debug_accountRange"
+        | "debug_getModifiedAccountsByNumber"
+        | "debug_getModifiedAccountsByHash"
+        | "debug_memStats"
+        | "debug_preimage"
+        | "debug_printBlock"
+        | "debug_seedHash"
+        | "debug_setGCPercent"
+        | "debug_setHead"
+        | "debug_setTrieFlushInterval"
+        // These APIs are currently non-executing stubs in the pinned native backend.
+        | "debug_standardTraceBadBlockToFile"
+        | "debug_stateRootWithUpdates" => {
+            Policy::Native
+        }
+        "mev_simBundle"
+        | "reth_getBlockExecutionOutcome"
+        | "ots_getInternalOperations"
+        | "ots_getTransactionError"
+        | "ots_traceTransaction"
+        | "ots_getContractCreator" => Policy::Execution,
         _ if ["net_", "web3_", "rpc_", "txpool_", "admin_", "operator_", "consensus_"]
-            .iter().any(|prefix| method.starts_with(prefix)) => Policy::Native,
+            .iter()
+            .any(|prefix| method.starts_with(prefix)) =>
+        {
+            Policy::Native
+        }
         _ if ["debug_", "trace_", "eth_", "tempo_"]
-            .iter().any(|prefix| method.starts_with(prefix)) => Policy::Execution,
+            .iter()
+            .any(|prefix| method.starts_with(prefix)) =>
+        {
+            Policy::Execution
+        }
         _ => Policy::Unrouted,
     }
 }

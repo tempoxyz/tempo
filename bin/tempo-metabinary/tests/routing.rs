@@ -1,19 +1,62 @@
 //! Routing policy and selector rewriting, using one execution-independent metadata fixture.
+use futures::future::BoxFuture;
+use jsonrpsee::core::RpcResult;
+use serde_json::{Value, json};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
-
-use futures::future::BoxFuture;
-use jsonrpsee::core::RpcResult;
-use serde_json::{Value, json};
 use tempo_metabinary::{
     handshake::EXECUTION_INFO_METHOD,
     routing::{Backend, BlockMetadata, Router, RpcParams, is_execution_method},
 };
 
-fn hash(number: u64) -> String {
-    format!("0x{number:064x}")
+struct Fixture {
+    router: Router,
+    backend: Arc<Blocks>,
+}
+
+impl Fixture {
+    fn new(count: usize) -> Self {
+        let backend = Arc::new(Blocks {
+            live: count - 1,
+            resolutions: AtomicUsize::new(0),
+        });
+        let eras: Vec<_> = (0..count)
+            .map(|index| {
+                json!({
+                    "name":format!("era{index}"), "start_timestamp":index * 100,
+                    "binary":if index + 1 == count { None } else { Some("/unused/frozen") }
+                })
+            })
+            .collect();
+        let router = Router::new(
+            serde_json::from_value(json!({"chain_id":"0x1", "genesis_hash":hash(0), "eras":eras}))
+                .unwrap(),
+            backend.clone(),
+        )
+        .unwrap();
+        Self { router, backend }
+    }
+
+    async fn era(&self, method: &str, params: Value) -> Result<usize, i32> {
+        self.router
+            .route(method, RpcParams(params))
+            .await
+            .map(|route| route.era)
+            .map_err(|error| error.code())
+    }
+
+    async fn check(&self, method: &str, params: Value, era: usize, expected: Value) {
+        assert!(is_execution_method(method), "{method}");
+        let route = self.router.route(method, RpcParams(params)).await.unwrap();
+        assert_eq!(route.era, era, "{method}");
+        assert_eq!(route.params.0, expected, "{method}");
+    }
+
+    async fn reject(&self, method: &str, params: Value, code: i32) {
+        assert_eq!(self.era(method, params).await, Err(code), "{method}");
+    }
 }
 
 struct Blocks {
@@ -74,69 +117,8 @@ impl Backend for Blocks {
     }
 }
 
-struct Fixture {
-    router: Router,
-    backend: Arc<Blocks>,
-}
-
-impl Fixture {
-    fn new() -> Self {
-        Self::with_eras(2)
-    }
-
-    fn with_eras(count: usize) -> Self {
-        let backend = Arc::new(Blocks {
-            live: count - 1,
-            resolutions: AtomicUsize::new(0),
-        });
-        let eras: Vec<_> = (0..count)
-            .map(|index| {
-                json!({
-                    "name":format!("era{index}"), "start_timestamp":index * 100,
-                    "binary":if index + 1 == count { None } else { Some("/unused/frozen") }
-                })
-            })
-            .collect();
-        let router = Router::new(
-            serde_json::from_value(json!({"chain_id":"0x1", "genesis_hash":hash(0), "eras":eras}))
-                .unwrap(),
-            backend.clone(),
-        )
-        .unwrap();
-        Self { router, backend }
-    }
-
-    async fn era(&self, method: &str, params: Value) -> usize {
-        self.router
-            .route(method, RpcParams(params))
-            .await
-            .unwrap()
-            .era
-    }
-
-    async fn check(&self, method: &str, params: Value, era: usize, expected: Value) {
-        assert_eq!(
-            routed(&self.router, method, params, era).await,
-            expected,
-            "{method}"
-        );
-    }
-}
-
-fn router() -> Router {
-    Fixture::new().router
-}
-
-async fn routed(router: &Router, method: &str, params: Value, era: usize) -> Value {
-    assert!(is_execution_method(method), "{method}");
-    let route = router.route(method, RpcParams(params)).await.unwrap();
-    assert_eq!(route.era, era, "{method}");
-    route.params.0
-}
-
-async fn reject(router: &Router, method: &str, params: Value, code: i32) {
-    let error = router.route(method, RpcParams(params)).await.err().unwrap();
-    assert_eq!(error.code(), code, "{method}");
+fn hash(number: u64) -> String {
+    format!("0x{number:064x}")
 }
 
 fn request(selector: &str) -> Value {
@@ -145,24 +127,24 @@ fn request(selector: &str) -> Value {
 
 #[tokio::test]
 async fn bundle_pins_numeric_state_and_rejects_invalid_or_crossing_timestamps() {
-    let router = router();
+    let f = Fixture::new(2);
     for (selector, pinned, era) in [
         ("safe", "0x1", 0),
         ("latest", "0x3", 1),
         ("pending", "pending", 1),
     ] {
-        assert_eq!(
-            routed(&router, "eth_callBundle", json!([request(selector)]), era).await,
-            json!([request(pinned)])
-        );
+        f.check(
+            "eth_callBundle",
+            json!([request(selector)]),
+            era,
+            json!([request(pinned)]),
+        )
+        .await;
     }
     let mut bundle = request("0x2");
     bundle["timestamp"] = json!("0x62");
     let named = json!({"request":bundle});
-    assert_eq!(
-        routed(&router, "eth_callBundle", named.clone(), 0).await,
-        named
-    );
+    f.check("eth_callBundle", named.clone(), 0, named).await;
 
     for (selector, timestamp, code) in [
         (json!("0x2"), None, -32004),
@@ -179,20 +161,20 @@ async fn bundle_pins_numeric_state_and_rejects_invalid_or_crossing_timestamps() 
         if let Some(timestamp) = timestamp {
             bundle["timestamp"] = json!(timestamp);
         }
-        reject(&router, "eth_callBundle", json!([bundle]), code).await;
+        f.reject("eth_callBundle", json!([bundle]), code).await;
     }
 }
 
 #[tokio::test]
 async fn optional_execution_methods_cannot_bypass_era_policy() {
-    let router = router();
+    let f = Fixture::new(2);
     for method in [
         "eth_futureExecution",
         "tempo_futureExecution",
         "ots_getContractCreator",
     ] {
         assert!(is_execution_method(method), "{method}");
-        reject(&router, method, json!([]), -32004).await;
+        f.reject(method, json!([]), -32004).await;
     }
     for method in [
         "debug_chainConfig",
@@ -210,7 +192,7 @@ async fn optional_execution_methods_cannot_bypass_era_policy() {
 
 #[tokio::test]
 async fn ots_transaction_methods_resolve_the_replayed_transaction() {
-    let router = router();
+    let f = Fixture::new(2);
     for method in [
         "ots_getInternalOperations",
         "ots_getTransactionError",
@@ -222,14 +204,14 @@ async fn ots_transaction_methods_resolve_the_replayed_transaction() {
             (json!(["pending"]), 1),
             (json!(["missing"]), 1),
         ] {
-            assert_eq!(routed(&router, method, params.clone(), era).await, params);
+            f.check(method, params.clone(), era, params).await;
         }
     }
 }
 
 #[tokio::test]
 async fn execution_ranges_use_canonical_heights_and_stop_at_the_head() {
-    let router = router();
+    let f = Fixture::new(2);
     let side_hash = json!({"blockHash":hash(5), "requireCanonical":true});
     for (params, era, pinned) in [
         (
@@ -246,25 +228,18 @@ async fn execution_ranges_use_canonical_heights_and_stop_at_the_head() {
         (json!(["0x0", "0x80"]), 1, json!(["0x0", "0x80"])),
         (json!(["pending", "0x80"]), 1, json!(["pending", "0x80"])),
     ] {
-        assert_eq!(
-            routed(&router, "reth_getBlockExecutionOutcome", params, era).await,
-            pinned
-        );
+        f.check("reth_getBlockExecutionOutcome", params, era, pinned)
+            .await;
     }
     for (count, code) in [("0x3", -32004), ("0x0", -32602), ("0x81", -32602)] {
-        reject(
-            &router,
-            "reth_getBlockExecutionOutcome",
-            json!(["0x1", count]),
-            code,
-        )
-        .await;
+        f.reject("reth_getBlockExecutionOutcome", json!(["0x1", count]), code)
+            .await;
     }
 }
 
 #[tokio::test]
 async fn mev_bundle_checks_generated_and_flattened_override_timestamps() {
-    let router = router();
+    let f = Fixture::new(2);
     for (params, era, pinned) in [
         (
             json!([{}, {"parentBlock":"safe", "time":"0x62"}]),
@@ -282,7 +257,7 @@ async fn mev_bundle_checks_generated_and_flattened_override_timestamps() {
             json!([{}, {"parentBlock":"pending"}]),
         ),
     ] {
-        assert_eq!(routed(&router, "mev_simBundle", params, era).await, pinned);
+        f.check("mev_simBundle", params, era, pinned).await;
     }
     for overrides in [
         json!({"parentBlock":"0x2"}),
@@ -290,12 +265,13 @@ async fn mev_bundle_checks_generated_and_flattened_override_timestamps() {
         json!({"parentBlock":"0x1", "timestamp":"0x64"}),
         json!({"parentBlock":"pending", "time":"0x63"}),
     ] {
-        reject(&router, "mev_simBundle", json!([{}, overrides]), -32004).await;
+        f.reject("mev_simBundle", json!([{}, overrides]), -32004)
+            .await;
     }
 }
 #[tokio::test]
 async fn debug_subscriptions_guard_the_included_range() {
-    let f = Fixture::new();
+    let f = Fixture::new(2);
     for (params, expected) in [
         // The exclusive start belongs to the predecessor; all included blocks are live.
         (json!(["traceChain", "0x2", "0x4"]), Ok(1)),
@@ -305,20 +281,13 @@ async fn debug_subscriptions_guard_the_included_range() {
         ),
         (json!(["native-invalid-subscription"]), Ok(1)),
     ] {
-        assert_eq!(
-            f.router
-                .route("debug_subscribe", RpcParams(params))
-                .await
-                .map(|route| route.era)
-                .map_err(|error| error.code()),
-            expected
-        );
+        assert_eq!(f.era("debug_subscribe", params).await, expected);
     }
 }
 
 #[tokio::test]
 async fn execution_routes_and_preserves_native_block_selectors() {
-    let f = Fixture::new();
+    let f = Fixture::new(2);
     f.check(
         "eth_call",
         json!([{}, "0x1"]),
@@ -365,13 +334,13 @@ async fn execution_routes_and_preserves_native_block_selectors() {
         ("trace_blockOpcodeGas", json!(["0x1"]), 0),
         ("debug_accountInfoAt", json!(["0x1", 0, "0x0"]), 0),
     ] {
-        assert_eq!(f.era(method, params).await, era, "{method}");
+        assert_eq!(f.era(method, params).await, Ok(era), "{method}");
     }
 }
 
 #[tokio::test]
 async fn simulations_ranges_and_overrides_stay_in_one_era() {
-    let f = Fixture::new();
+    let f = Fixture::new(2);
     // Base state is the last old block; the simulated child is in the new era.
     for (method, payload_name, block_name) in [
         ("eth_simulateV1", "opts", "blockNumber"),
@@ -414,7 +383,7 @@ async fn simulations_ranges_and_overrides_stay_in_one_era() {
             0,
         ),
     ] {
-        assert_eq!(f.era(method, params).await, era, "{method}");
+        assert_eq!(f.era(method, params).await, Ok(era), "{method}");
     }
     for (method, params) in [
         ("eth_call", json!([{}, "0x1", null, {"time":"0x64"}])),
@@ -434,18 +403,18 @@ async fn simulations_ranges_and_overrides_stay_in_one_era() {
         ),
         ("trace_filter", json!([{"fromBlock":"0x1"}])),
     ] {
-        reject(&f.router, method, params, -32004).await;
+        f.reject(method, params, -32004).await;
     }
 }
 
 #[tokio::test]
 async fn supports_three_eras() {
-    let f = Fixture::with_eras(3);
+    let f = Fixture::new(3);
     for (number, era) in [(1, 0), (3, 1), (6, 2)] {
         assert_eq!(
             f.era("eth_call", json!([{}, format!("0x{number:x}")]))
                 .await,
-            era
+            Ok(era)
         );
     }
 }

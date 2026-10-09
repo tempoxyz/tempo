@@ -1,14 +1,5 @@
 //! Test doubles and deterministic block construction for the follower executor.
 
-use std::{
-    collections::{HashMap, HashSet},
-    future::Future,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
-    },
-};
-
 use alloy_consensus::{BlockHeader as _, Header};
 use alloy_primitives::B256;
 use alloy_rpc_types_engine::{
@@ -20,6 +11,14 @@ use parking_lot::Mutex;
 use reth_engine_primitives::BeaconForkChoiceUpdateError;
 use reth_ethereum::rpc::eth::primitives::BlockNumHash;
 use reth_node_core::primitives::{SealedBlock, SealedHeader};
+use std::{
+    collections::{HashMap, HashSet},
+    future::Future,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    },
+};
 use tempo_node::TempoExecutionData;
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::{

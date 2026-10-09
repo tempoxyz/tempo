@@ -3,16 +3,14 @@
 //! The node remains the only writer and keeps its normal public RPC transports. These workers
 //! only open existing storage and are started when a historical execution request needs them.
 
-use std::{collections::HashSet, net::TcpListener, path::PathBuf, sync::Arc, time::Duration};
-
 use alloy_primitives::{B256, U64};
 use eyre::{Context, OptionExt, Result, bail, ensure};
 use jsonrpsee::{
     core::{RpcResult, client::ClientT},
     http_client::{HttpClient, HttpClientBuilder},
-    types::ErrorObjectOwned,
 };
 use serde_json::value::RawValue;
+use std::{collections::HashSet, net::TcpListener, path::PathBuf, sync::Arc, time::Duration};
 use tokio::{
     process::{Child, Command},
     sync::Mutex,
@@ -24,47 +22,14 @@ use crate::{
     catalog::ReleaseEra,
     handshake::{ExecutionInfo, WorkerIdentity, wait_for_worker},
     process::{shutdown_children, spawn_child},
-    routing::{RpcParams, unsupported, upstream_error},
+    routing::{RpcParams, execution_error, unsupported, upstream_error},
 };
+
+/// Default deadline for starting and validating a historical RPC worker.
+pub const DEFAULT_STARTUP_TIMEOUT_SECS: u64 = 120;
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(30);
-
-/// Resolved from the ordinary node's chain and data-directory configuration.
-#[derive(Clone, Debug)]
-pub struct WorkerContext {
-    pub chain: String,
-    pub datadir: PathBuf,
-    pub static_files_path: Option<PathBuf>,
-    pub rocksdb_path: Option<PathBuf>,
-    /// Private execution configuration produced by the node, without duplicating its CLI.
-    pub rpc_config: Option<PathBuf>,
-    pub chain_id: U64,
-    pub genesis_hash: B256,
-    pub startup_timeout: Duration,
-}
-
-/// RPC client and verified execution metadata. Retain this handle while using its client to
-/// protect the worker from idle shutdown.
-#[derive(Debug)]
-pub struct HistoricalWorker {
-    pub client: HttpClient,
-    pub info: ExecutionInfo,
-}
-
-struct Process {
-    child: Child,
-    client: HttpClient,
-    ready: Option<Arc<HistoricalWorker>>,
-    deadline: Instant,
-    idle_since: Option<Instant>,
-}
-
-enum State {
-    Dormant,
-    Running(Box<Process>),
-    Failed(String),
-}
 
 /// Clones share one process per era. Startup is serialized independently for each era.
 ///
@@ -186,10 +151,7 @@ impl HistoricalWorkers {
         method: &str,
         params: RpcParams,
     ) -> RpcResult<Box<RawValue>> {
-        let worker = self
-            .get(index)
-            .await
-            .map_err(|error| ErrorObjectOwned::owned(-32000, error.to_string(), None::<()>))?;
+        let worker = self.get(index).await.map_err(execution_error)?;
         if worker
             .info
             .methods
@@ -206,7 +168,7 @@ impl HistoricalWorkers {
         // private response completes, so cancelled requests cannot make a busy worker look idle.
         tokio::spawn(async move { worker.client.request(&method, params).await })
             .await
-            .map_err(|error| ErrorObjectOwned::owned(-32000, error.to_string(), None::<()>))?
+            .map_err(execution_error)?
             .map_err(upstream_error)
     }
 
@@ -258,6 +220,42 @@ impl HistoricalWorkers {
         }
         Ok(())
     }
+}
+
+/// Resolved from the ordinary node's chain and data-directory configuration.
+#[derive(Clone, Debug)]
+pub struct WorkerContext {
+    pub chain: String,
+    pub datadir: PathBuf,
+    pub static_files_path: Option<PathBuf>,
+    pub rocksdb_path: Option<PathBuf>,
+    /// Private execution configuration produced by the node, without duplicating its CLI.
+    pub rpc_config: Option<PathBuf>,
+    pub chain_id: U64,
+    pub genesis_hash: B256,
+    pub startup_timeout: Duration,
+}
+
+/// RPC client and verified execution metadata. Retain this handle while using its client to
+/// protect the worker from idle shutdown.
+#[derive(Debug)]
+pub struct HistoricalWorker {
+    pub client: HttpClient,
+    pub info: ExecutionInfo,
+}
+
+struct Process {
+    child: Child,
+    client: HttpClient,
+    ready: Option<Arc<HistoricalWorker>>,
+    deadline: Instant,
+    idle_since: Option<Instant>,
+}
+
+enum State {
+    Dormant,
+    Running(Box<Process>),
+    Failed(String),
 }
 
 fn spawn(context: &WorkerContext, era: &ReleaseEra) -> Result<Process> {
@@ -348,12 +346,17 @@ async fn ready(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::{
+        handshake::{
+            EXECUTION_INFO_METHOD, EXECUTION_INFO_PROTOCOL_VERSION, MAX_RPC_METHOD_NAME_LEN,
+            MAX_RPC_METHODS,
+        },
+        process::tests::assert_reaped,
+    };
     use futures::FutureExt as _;
     use jsonrpsee::{RpcModule, server::ServerBuilder};
     use serde_json::{Value, json};
     use std::os::unix::fs::PermissionsExt;
-
-    use crate::{handshake::EXECUTION_INFO_METHOD, process::tests::assert_reaped};
 
     /// Executed only as a child fixture, using this test binary as a real private RPC worker.
     #[tokio::test]
@@ -370,14 +373,14 @@ mod tests {
             .unwrap_or(0);
         tokio::time::sleep(Duration::from_millis(delay)).await;
         let info = json!({
-            "protocolVersion": 1 + u64::from(mode == "wrong-protocol"),
+            "protocolVersion": EXECUTION_INFO_PROTOCOL_VERSION + u32::from(mode == "wrong-protocol"),
             "processId": std::process::id() + u32::from(mode == "wrong-pid"),
             "chainId": if mode == "wrong-chain" { "0x2" } else { "0x1" },
             "genesisHash": format!("0x{}", if mode == "wrong-genesis" { "11" } else { "00" }.repeat(32)),
             "readOnly": mode != "writer",
             "methods": match mode.as_str() {
-                "too-many-methods" => vec!["eth_call".to_owned(); 1025],
-                "long-method" => vec!["x".repeat(257)],
+                "too-many-methods" => vec!["eth_call".to_owned(); MAX_RPC_METHODS + 1],
+                "long-method" => vec!["x".repeat(MAX_RPC_METHOD_NAME_LEN + 1)],
                 _ => vec![EXECUTION_INFO_METHOD.into(), "eth_call".into()],
             }
         });

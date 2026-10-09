@@ -14,8 +14,6 @@
 //! upstream, submit them to Reth as finalized payloads, and rely on Reth's sync machinery plus
 //! marshal gap repair to fill history.
 
-use std::{collections::VecDeque, sync::Arc, time::Duration};
-
 use alloy_rpc_types_engine::{ForkchoiceState, ForkchoiceUpdateError, PayloadStatus};
 use commonware_consensus::{
     Heightable as _,
@@ -27,6 +25,7 @@ use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
 use eyre::{Report, WrapErr as _, ensure, eyre};
 use futures::{FutureExt as _, StreamExt as _, channel::mpsc, future::BoxFuture};
 use reth_engine_primitives::BeaconForkChoiceUpdateError;
+use std::{collections::VecDeque, sync::Arc, time::Duration};
 use tempo_node::TempoExecutionData;
 use tracing::{Level, debug, error, instrument};
 

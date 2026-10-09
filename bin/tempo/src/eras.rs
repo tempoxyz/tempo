@@ -1,7 +1,5 @@
 //! Adapt the execution-independent era router to the ordinary Tempo node launcher.
 
-use std::{sync::Arc, time::Duration};
-
 use alloy::eips::{BlockId, BlockNumberOrTag};
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{B256, Bytes, U64};
@@ -22,12 +20,13 @@ use reth_rpc_eth_api::{
 use reth_storage_api::BlockReaderIdExt as _;
 use serde::Deserialize;
 use serde_json::{Value, value::RawValue};
+use std::{sync::Arc, time::Duration};
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_metabinary::{
     catalog::{Catalog, ChainEras},
     decorate::decorate,
     routing::{Backend, BlockMetadata, Router, RpcParams, invalid},
-    workers::{HistoricalWorkers, WorkerContext},
+    workers::{DEFAULT_STARTUP_TIMEOUT_SECS, HistoricalWorkers, WorkerContext},
 };
 
 /// Load chain-bound metadata bundled with the release. Development builds have no frozen eras.
@@ -85,7 +84,6 @@ impl EraRuntime {
         serde_json::to_writer(chain_file.as_file_mut(), chain.genesis())?;
         let mut rpc_config_file = tempfile::NamedTempFile::new()?;
         serde_json::to_writer(rpc_config_file.as_file_mut(), &rpc_config)?;
-        let eras = schedule.eras[..schedule.eras.len() - 1].to_vec();
         let workers = HistoricalWorkers::new(
             WorkerContext {
                 chain: chain_file.path().to_string_lossy().into_owned(),
@@ -95,9 +93,9 @@ impl EraRuntime {
                 rpc_config: Some(rpc_config_file.path().to_owned()),
                 chain_id: U64::from(chain.chain_id()),
                 genesis_hash: chain.genesis_hash(),
-                startup_timeout: Duration::from_secs(120),
+                startup_timeout: Duration::from_secs(DEFAULT_STARTUP_TIMEOUT_SECS),
             },
-            eras,
+            schedule.eras[..schedule.eras.len() - 1].to_vec(),
         )?;
         Ok(Arc::new(Self {
             schedule,

@@ -1,9 +1,3 @@
-use std::{
-    collections::HashMap,
-    net::{IpAddr, SocketAddr},
-    num::NonZeroU64,
-};
-
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{Address, B256, U256};
 use commonware_codec::DecodeExt as _;
@@ -21,6 +15,11 @@ use reth_ethereum::{
 };
 use reth_provider::{
     EvmStateProviderBox, HeaderProvider as _, StateProvider as _, StateProviderFactory as _,
+};
+use std::{
+    collections::HashMap,
+    net::{IpAddr, SocketAddr},
+    num::NonZeroU64,
 };
 use tempo_chainspec::{TempoChainSpec, TempoHardforks as _};
 use tempo_node::TempoFullNode;

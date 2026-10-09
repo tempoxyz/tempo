@@ -1,12 +1,13 @@
 //! Release metadata. Runtime node options remain owned by Tempo's ordinary CLI.
 
-use std::path::{Path, PathBuf};
-
+use crate::manifest::{resolve_path, validate_schedule};
 use alloy_primitives::{B256, U64};
 use eyre::{Context, ensure};
 use serde::{Deserialize, Serialize};
-
-use crate::manifest::{resolve_path, validate_schedule};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
 /// Release era schedules and frozen executables indexed by chain identity.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -15,37 +16,12 @@ pub struct Catalog {
     pub chains: Vec<ChainEras>,
 }
 
-/// Ordered release eras for a chain identified by its chain ID and genesis hash.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ChainEras {
-    pub chain_id: U64,
-    pub genesis_hash: B256,
-    /// Includes the active era as the last entry, with no executable path.
-    pub eras: Vec<ReleaseEra>,
-}
-
-/// An era's activation timestamp and optional frozen executable.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ReleaseEra {
-    pub name: String,
-    pub start_timestamp: u64,
-    /// Frozen executable, resolved relative to the release catalog.
-    #[serde(default)]
-    pub binary: Option<PathBuf>,
-}
-
 impl Catalog {
     pub fn load(path: &Path) -> eyre::Result<Self> {
         let mut catalog: Self = serde_json::from_slice(&std::fs::read(path)?)
             .wrap_err_with(|| format!("invalid era catalog {}", path.display()))?;
         catalog.validate()?;
-        let parent = path
-            .canonicalize()?
-            .parent()
-            .expect("catalog has parent")
-            .to_owned();
+        let parent = path.canonicalize()?.with_file_name("");
         for chain in &mut catalog.chains {
             for era in &mut chain.eras {
                 if let Some(binary) = &mut era.binary {
@@ -57,13 +33,11 @@ impl Catalog {
     }
 
     pub fn validate(&self) -> eyre::Result<()> {
-        for (index, chain) in self.chains.iter().enumerate() {
+        let mut identities = HashSet::new();
+        for chain in &self.chains {
             chain.validate()?;
             ensure!(
-                !self.chains[..index]
-                    .iter()
-                    .any(|previous| previous.chain_id == chain.chain_id
-                        && previous.genesis_hash == chain.genesis_hash),
+                identities.insert((chain.chain_id, chain.genesis_hash)),
                 "duplicate chain identity in era catalog"
             );
         }
@@ -78,6 +52,16 @@ impl Catalog {
     }
 }
 
+/// Ordered release eras for a chain identified by its chain ID and genesis hash.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChainEras {
+    pub chain_id: U64,
+    pub genesis_hash: B256,
+    /// Includes the active era as the last entry, with no executable path.
+    pub eras: Vec<ReleaseEra>,
+}
+
 impl ChainEras {
     pub fn validate(&self) -> eyre::Result<()> {
         validate_schedule(
@@ -85,21 +69,19 @@ impl ChainEras {
                 .iter()
                 .map(|era| (era.name.as_str(), era.start_timestamp)),
         )?;
-        for (index, era) in self.eras.iter().enumerate() {
-            if index + 1 == self.eras.len() {
-                ensure!(
-                    era.binary.is_none(),
-                    "active era uses the running Tempo binary"
-                );
-            } else {
-                ensure!(
-                    era.binary
-                        .as_ref()
-                        .is_some_and(|path| !path.as_os_str().is_empty()),
-                    "frozen era requires an executable"
-                );
-            }
+        let (active, frozen) = self.eras.split_last().expect("validated schedule");
+        for era in frozen {
+            ensure!(
+                era.binary
+                    .as_ref()
+                    .is_some_and(|path| !path.as_os_str().is_empty()),
+                "frozen era requires an executable"
+            );
         }
+        ensure!(
+            active.binary.is_none(),
+            "active era uses the running Tempo binary"
+        );
         Ok(())
     }
 
@@ -108,6 +90,17 @@ impl ChainEras {
             .partition_point(|era| era.start_timestamp <= timestamp)
             .saturating_sub(1)
     }
+}
+
+/// An era's activation timestamp and optional frozen executable.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReleaseEra {
+    pub name: String,
+    pub start_timestamp: u64,
+    /// Frozen executable, resolved relative to the release catalog.
+    #[serde(default)]
+    pub binary: Option<PathBuf>,
 }
 
 #[cfg(test)]

@@ -2,8 +2,8 @@
 
 mod utils;
 
-use std::{num::NonZeroU64, time::Duration};
-
+use super::{Config, init};
+use crate::consensus::Digest;
 use alloy_primitives::B256;
 use commonware_consensus::{
     Reporter as _,
@@ -13,9 +13,7 @@ use commonware_consensus::{
 use commonware_macros::test_traced;
 use commonware_runtime::{Clock as _, Runner as _, Supervisor as _, deterministic};
 use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
-
-use super::{Config, init};
-use crate::consensus::Digest;
+use std::{num::NonZeroU64, time::Duration};
 use utils::{StubExecutionProvider, StubMarshal, make_block, make_block_at_round};
 
 const EPOCH_LENGTH: NonZeroU64 = NonZeroU64::new(10).expect("epoch length is nonzero");

@@ -1,15 +1,14 @@
-use std::{path::PathBuf, sync::Arc, time::Duration};
-
 use alloy_primitives::{B256, U64};
 use clap::{Parser, Subcommand};
 use eyre::{Context, OptionExt, Result, ensure};
 use jsonrpsee::{core::client::ClientT, http_client::HttpClient};
 use serde::Deserialize;
+use std::{path::PathBuf, sync::Arc, time::Duration};
 use tempo_metabinary::{
     catalog::ReleaseEra,
     manifest::{Bootstrap, Manifest},
     process::{shutdown_children, spawn_bootstrap},
-    workers::{HistoricalWorkers, WorkerContext},
+    workers::{DEFAULT_STARTUP_TIMEOUT_SECS, HistoricalWorkers, WorkerContext},
 };
 use tokio::process::Child;
 use tracing::info;
@@ -20,7 +19,7 @@ struct Cli {
     #[arg(long)]
     manifest: PathBuf,
     /// Time allowed for each checkpoint worker to become ready.
-    #[arg(long, global = true, default_value_t = 120)]
+    #[arg(long, global = true, default_value_t = DEFAULT_STARTUP_TIMEOUT_SECS)]
     startup_timeout_secs: u64,
     #[command(subcommand)]
     command: Command,
@@ -78,10 +77,7 @@ async fn verify_successor(client: &HttpClient, checkpoint: &Bootstrap, start: u6
         .checked_add(1)
         .ok_or_eyre("terminal block number overflows")?;
     let first: Option<Header> = client
-        .request(
-            "eth_getBlockByNumber",
-            (format!("0x{first_number:x}"), false),
-        )
+        .request("eth_getBlockByNumber", (U64::from(first_number), false))
         .await?;
     let first = first.ok_or_eyre("successor header is missing after bootstrap")?;
     ensure!(
@@ -105,7 +101,7 @@ async fn verify_checkpoint(
     let block: Option<Header> = client
         .request(
             "eth_getBlockByNumber",
-            (format!("0x{:x}", checkpoint.terminal_block_number), false),
+            (U64::from(checkpoint.terminal_block_number), false),
         )
         .await?;
     let block = block.ok_or_eyre("bootstrap checkpoint is missing")?;
@@ -152,11 +148,13 @@ async fn bootstrap(
     for (index, eras) in manifest.eras.windows(2).enumerate() {
         let era = &eras[0];
         let checkpoint = era.bootstrap.as_ref().expect("validated bootstrap");
-        info!(era = %era.name, block = checkpoint.terminal_block_number, "running bounded bootstrap");
-        *import = Some(spawn_bootstrap(manifest, era, checkpoint)?);
+        info!(
+            era = %era.name,
+            block = checkpoint.terminal_block_number,
+            "running bounded bootstrap"
+        );
         let status = import
-            .as_mut()
-            .expect("owned bootstrap import")
+            .insert(spawn_bootstrap(manifest, era, checkpoint)?)
             .wait()
             .await
             .wrap_err_with(|| format!("waiting for {} bootstrap", era.name))?;
@@ -167,7 +165,7 @@ async fn bootstrap(
             "{} bootstrap exited with {status}",
             era.name
         );
-        *readers = Some(HistoricalWorkers::new(
+        let workers = readers.insert(HistoricalWorkers::new(
             context.clone(),
             vec![ReleaseEra {
                 name: era.name.clone(),
@@ -175,7 +173,6 @@ async fn bootstrap(
                 binary: Some(era.binary.clone()),
             }],
         )?);
-        let workers = readers.as_ref().expect("owned checkpoint worker");
         let worker = workers.get(0).await?;
         verify_checkpoint(
             &worker.client,
@@ -213,7 +210,10 @@ async fn shutdown_signal() -> Result<()> {
     {
         let mut terminate =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-        tokio::select! { result = tokio::signal::ctrl_c() => result?, _ = terminate.recv() => {} }
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result?,
+            _ = terminate.recv() => {}
+        }
     }
     #[cfg(not(unix))]
     tokio::signal::ctrl_c().await?;
@@ -223,10 +223,7 @@ async fn shutdown_signal() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jsonrpsee::{
-        RpcModule,
-        server::{ServerBuilder, ServerHandle},
-    };
+    use jsonrpsee::{RpcModule, server::ServerBuilder};
     use serde_json::{Value, json};
     use std::sync::Mutex;
 
@@ -234,53 +231,33 @@ mod tests {
         format!("0x{n:064x}")
     }
     fn header(n: u64, timestamp: u64) -> Value {
-        json!({"number":format!("0x{n:x}"), "hash":hash(n), "parentHash":hash(n.saturating_sub(1)), "timestamp":format!("0x{timestamp:x}")})
+        json!({
+            "number": format!("0x{n:x}"),
+            "hash": hash(n),
+            "parentHash": hash(n.saturating_sub(1)),
+            "timestamp": format!("0x{timestamp:x}")
+        })
     }
-    struct Storage {
-        headers: Arc<Mutex<Value>>,
-        client: HttpClient,
-        _server: ServerHandle,
-    }
-    impl Storage {
-        async fn new() -> Self {
-            let headers = Arc::new(Mutex::new(json!({})));
-            let mut module = RpcModule::from_arc(headers.clone());
-            module
-                .register_method("eth_getBlockByNumber", |params, headers, _| {
-                    let (number, _): (String, bool) = params.parse().unwrap();
-                    headers.lock().unwrap()[&number].clone()
-                })
-                .unwrap();
-            let server = ServerBuilder::default().build("127.0.0.1:0").await.unwrap();
-            let client = jsonrpsee::http_client::HttpClientBuilder::default()
-                .build(format!("http://{}", server.local_addr().unwrap()))
-                .unwrap();
-            Self {
-                headers,
-                client,
-                _server: server.start(module),
-            }
-        }
-        fn put(&self, id: &str, value: Value) {
-            self.headers.lock().unwrap()[id] = value;
-        }
-    }
-
-    fn manifest() -> Manifest {
-        let mut manifest: Manifest =
-            serde_json::from_str(include_str!("../examples/eras.json")).unwrap();
-        manifest.eras[1].start_timestamp = 100;
-        let checkpoint = manifest.eras[0].bootstrap.as_mut().unwrap();
-        checkpoint.terminal_block_number = 2;
-        checkpoint.terminal_block_hash = hash(2).parse().unwrap();
-        manifest
-    }
-
     #[tokio::test]
     async fn bootstrap_validates_checkpoint_and_successor() {
-        let storage = Storage::new().await;
-        let manifest = manifest();
-        let checkpoint = manifest.eras[0].bootstrap.as_ref().unwrap();
+        let headers = Arc::new(Mutex::new(json!({})));
+        let mut module = RpcModule::from_arc(headers.clone());
+        module
+            .register_method("eth_getBlockByNumber", |params, headers, _| {
+                let (number, _): (String, bool) = params.parse().unwrap();
+                headers.lock().unwrap()[&number].clone()
+            })
+            .unwrap();
+        let server = ServerBuilder::default().build("127.0.0.1:0").await.unwrap();
+        let client = jsonrpsee::http_client::HttpClientBuilder::default()
+            .build(format!("http://{}", server.local_addr().unwrap()))
+            .unwrap();
+        let _server = server.start(module);
+        let checkpoint = Bootstrap {
+            args: vec![],
+            terminal_block_number: 2,
+            terminal_block_hash: hash(2).parse().unwrap(),
+        };
         for (block, head, exact, valid) in [
             (Value::Null, Value::Null, true, false),
             (header(2, 99), header(2, 99), true, true),
@@ -289,14 +266,9 @@ mod tests {
             (header(20, 99), Value::Null, false, false),
             (header(2, 100), Value::Null, false, false),
         ] {
-            storage.put("0x2", block);
-            storage.put("latest", head);
-            assert_eq!(
-                verify_checkpoint(&storage.client, checkpoint, 0, 100, exact)
-                    .await
-                    .is_ok(),
-                valid
-            );
+            *headers.lock().unwrap() = json!({"0x2": block, "latest": head});
+            let result = verify_checkpoint(&client, &checkpoint, 0, 100, exact).await;
+            assert_eq!(result.is_ok(), valid, "{result:?}");
         }
         let mut wrong_parent = header(3, 100);
         wrong_parent["parentHash"] = json!(hash(42));
@@ -306,13 +278,9 @@ mod tests {
             (wrong_parent, false),
             (header(3, 100), true),
         ] {
-            storage.put("0x3", block);
-            assert_eq!(
-                verify_successor(&storage.client, checkpoint, 100)
-                    .await
-                    .is_ok(),
-                valid
-            );
+            headers.lock().unwrap()["0x3"] = block;
+            let result = verify_successor(&client, &checkpoint, 100).await;
+            assert_eq!(result.is_ok(), valid, "{result:?}");
         }
     }
 }

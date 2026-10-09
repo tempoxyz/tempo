@@ -734,21 +734,19 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        TempoArgs, TempoChainSpec, TempoCli, TempoHardfork, apply_tempo_cli_overrides, defaults,
+        follow::FollowMode, snapshot_download,
+    };
+    use alloy_genesis::GenesisAccount;
+    use alloy_primitives::{Address, B256, Bytes, address};
+    use clap::{CommandFactory, FromArgMatches, Parser};
+    use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
     use std::{
         collections::BTreeMap,
         sync::{Arc, Once},
         time::Duration,
     };
-
-    use alloy_genesis::GenesisAccount;
-    use alloy_primitives::{Address, B256, Bytes, address};
-    use clap::{CommandFactory, FromArgMatches, Parser};
-
-    use super::{
-        TempoArgs, TempoChainSpec, TempoCli, TempoHardfork, apply_tempo_cli_overrides, defaults,
-        follow::FollowMode, snapshot_download,
-    };
-    use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
     use tempo_contracts::precompiles::{
         ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
         ZONE_VERIFIER_ADDRESS, initial_zone_factory_config,

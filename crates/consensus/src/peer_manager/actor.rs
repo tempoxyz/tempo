@@ -1,10 +1,3 @@
-use std::{
-    collections::{HashMap, hash_map::Entry},
-    pin::Pin,
-    sync::Arc,
-    time::Duration,
-};
-
 use alloy_consensus::{BlockHeader as _, Sealable as _};
 use alloy_primitives::B256;
 use commonware_codec::ReadExt as _;
@@ -22,6 +15,12 @@ use commonware_runtime::{
 use commonware_utils::{Acknowledgement, ordered};
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::{StreamExt as _, channel::mpsc};
+use std::{
+    collections::{HashMap, hash_map::Entry},
+    pin::Pin,
+    sync::Arc,
+    time::Duration,
+};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
 use tempo_primitives::TempoHeader;
@@ -464,12 +463,6 @@ fn read_header_at_height(
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::HashMap,
-        net::{IpAddr, Ipv4Addr, SocketAddr},
-        sync::Mutex,
-    };
-
     use alloy_consensus::Header;
     use alloy_primitives::{Address as AlloyAddress, B256, Keccak256, U256};
     use commonware_actor::Feedback;
@@ -489,6 +482,11 @@ mod tests {
     use reth_provider::{
         EvmStateProviderBox, StateProvider as _,
         test_utils::{ExtendedAccount, MockEthProvider},
+    };
+    use std::{
+        collections::HashMap,
+        net::{IpAddr, Ipv4Addr, SocketAddr},
+        sync::Mutex,
     };
     use tempo_chainspec::{TempoChainSpec, spec::MODERATO};
     use tempo_precompiles::{
