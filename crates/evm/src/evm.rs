@@ -191,6 +191,15 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         self
     }
 
+    /// Records raw persistent precompile accesses, including accesses suppressed in the logical
+    /// scheduler stream. Intended for RPC access tracing; does not change execution semantics.
+    pub fn with_raw_actions(mut self) -> Self {
+        self.inner = self
+            .inner
+            .with_actions(tempo_precompiles::storage::StorageActions::enabled_raw());
+        self
+    }
+
     /// Replaces the recorded storage actions with an empty buffer, returning the previous actions.
     pub fn take_actions(&mut self) -> Option<Vec<StorageAction>> {
         self.inner.actions().take()

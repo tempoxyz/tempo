@@ -335,6 +335,13 @@ async fn execution_routes_and_preserves_native_block_selectors() {
         )
         .await;
     }
+    f.check(
+        "tempo_createAccessList",
+        json!({"tx":{}, "block":"earliest"}),
+        0,
+        json!({"tx":{}, "block":{"blockHash":hash(0)}}),
+    )
+    .await;
     let id = json!({"blockHash":hash(1), "requireCanonical":true});
     for (method, params, era) in [
         ("eth_call", json!([{}, id]), 0),
@@ -360,6 +367,8 @@ async fn execution_routes_and_preserves_native_block_selectors() {
         ("eth_getBlockAccessListRaw", json!(["0x1"]), 0),
         ("debug_getRawBlockAccessList", json!(["0x1"]), 0),
         ("eth_call", json!([{}, "0x3"]), 1),
+        ("tempo_createAccessList", json!([{}, "0x1"]), 0),
+        ("tempo_getTransactionAccessList", json!([hash(10)]), 0),
         ("eth_getBalance", json!(["0x0", "0x1"]), 1),
         ("trace_transactionOpcodeGas", json!([hash(10)]), 0),
         ("trace_blockOpcodeGas", json!(["0x1"]), 0),

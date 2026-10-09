@@ -233,6 +233,7 @@ impl Router {
             "trace_filter" => self.filter(&mut params).await?,
             "debug_traceBlock" => self.era(self.backend.raw_block_timestamp(&params)?),
             "debug_traceTransaction"
+            | "tempo_getTransactionAccessList"
             | "trace_transaction"
             | "trace_get"
             | "trace_replayTransaction"
@@ -619,6 +620,7 @@ fn block_argument(method: &str) -> Option<(usize, &'static [&'static str], bool)
         "eth_call" | "eth_estimateGas" | "eth_createAccessList" => {
             (1, &["block_number", "blockNumber"], false)
         }
+        "tempo_createAccessList" => (1, &["block"], false),
         "debug_traceCall" => (1, &["block_id", "blockId"], false),
         "trace_call" | "trace_rawTransaction" => (2, &["block_id", "blockId"], false),
         "trace_callMany" => (1, &["block_id", "blockId"], false),
