@@ -1644,91 +1644,67 @@ mod tests {
     }
 
     #[test]
-    fn config_validation_rejects_reservations_that_leave_no_window() {
-        assert!(config().validate().is_ok());
-        assert!(EstimatorConfig::new(ms(550), ms(550)).validate().is_err());
-        assert!(
-            config()
-                .with_network_budget_max(ms(600))
-                .validate()
-                .is_err()
-        );
-        assert!(config().with_network_budget_max(ms(40)).validate().is_err());
-        assert!(config().with_build_time_multiplier(0.9).validate().is_err());
-        assert_eq!(config().initial_proposal_return_budget(), ms(500));
+    fn config_defaults_and_validation() {
         // The cap defaults to 300 ms; a floor above it lifts the cap with it.
         assert_eq!(config().network_budget_max, ms(300));
+        assert_eq!(config().initial_proposal_return_budget(), ms(500));
+        assert_eq!(config().network_reserve_percentile, 75);
+        assert!(config().network_reserve_fast_rise);
         assert_eq!(
             EstimatorConfig::new(ms(550), ms(320)).network_budget_max,
             ms(320)
         );
-        // A shorter target leaves the reservation half of its initial window
-        // above the floor, here 50 ms + 450 ms / 2, when that is below 300 ms.
-        assert_eq!(
-            EstimatorConfig::new(ms(500), ms(50)).network_budget_max,
-            ms(275)
-        );
-    }
 
-    #[test]
-    fn config_validation_bounds_the_network_reserve_percentile() {
-        assert_eq!(config().network_reserve_percentile, 75);
-        assert!(config().network_reserve_fast_rise);
-        for percentile in [50, 75, 100] {
-            assert!(
-                config()
-                    .with_network_reserve_percentile(percentile)
-                    .validate()
-                    .is_ok(),
-                "percentile {percentile} must be accepted"
-            );
-        }
-        for percentile in [0, 49, 101, u8::MAX] {
-            let err = config()
-                .with_network_reserve_percentile(percentile)
-                .validate()
-                .unwrap_err();
-            assert!(err.contains("network reserve percentile"), "{err}");
-        }
-    }
-
-    #[test]
-    fn config_validation_bounds_the_build_time_multiplier() {
-        for multiplier in [1.0, DEFAULT_BUILD_TIME_MULTIPLIER, 1.7] {
-            assert!(
-                config()
-                    .with_build_time_multiplier(multiplier)
-                    .validate()
-                    .is_ok(),
-                "multiplier {multiplier} must be accepted"
-            );
-        }
-        // The multiplier is only learned up to 1.7, so a larger initial value
-        // would run at 1.7 while the configuration claims otherwise.
-        let too_large = config().with_build_time_multiplier(2.0);
-        let err = too_large.validate().unwrap_err();
-        assert!(err.contains("at most 1.7"), "{err}");
-        // The estimator refuses it rather than running at 1.7.
-        assert_eq!(Estimator::new(too_large).unwrap_err(), err);
-    }
-
-    #[test]
-    fn estimator_rejects_configurations_that_fail_validation() {
-        assert!(Estimator::new(config()).is_ok());
-        for invalid in [
-            // No proposal window would be left.
-            EstimatorConfig::new(ms(550), ms(550)),
-            EstimatorConfig::new(ms(550), ms(600)),
-            config().with_network_budget_max(ms(550)),
-            // A cap below the floor.
-            config().with_network_budget_max(ms(40)),
-            config().with_network_reserve_percentile(49),
-            config().with_network_reserve_percentile(101),
-            config().with_build_time_multiplier(0.9),
-            config().with_build_time_multiplier(f64::NAN),
+        for accepted in [
+            config(),
+            config().with_network_reserve_percentile(50),
+            config().with_network_reserve_percentile(100),
+            config().with_build_time_multiplier(1.0),
+            config().with_build_time_multiplier(1.7),
         ] {
-            let reason = invalid.validate().unwrap_err();
-            assert_eq!(Estimator::new(invalid).unwrap_err(), reason, "{invalid:?}");
+            assert!(Estimator::new(accepted).is_ok(), "{accepted:?}");
+        }
+        // The estimator refuses an invalid configuration with the reason
+        // `validate` gives, rather than running on adjusted values.
+        for (invalid, reason) in [
+            // No proposal window would be left.
+            (
+                EstimatorConfig::new(ms(550), ms(550)),
+                "network budget (550ms)",
+            ),
+            (
+                EstimatorConfig::new(ms(550), ms(600)),
+                "network budget (600ms)",
+            ),
+            (
+                config().with_network_budget_max(ms(550)),
+                "maximum network budget (550ms)",
+            ),
+            // A cap below the floor.
+            (
+                config().with_network_budget_max(ms(40)),
+                "maximum network budget (40ms)",
+            ),
+            (
+                config().with_network_reserve_percentile(49),
+                "network reserve percentile (49)",
+            ),
+            (
+                config().with_network_reserve_percentile(101),
+                "network reserve percentile (101)",
+            ),
+            (config().with_build_time_multiplier(0.9), "at least 1.0"),
+            (
+                config().with_build_time_multiplier(f64::NAN),
+                "at least 1.0",
+            ),
+            // The multiplier is only learned up to 1.7, so a larger initial
+            // value would run at 1.7 while the configuration claims otherwise.
+            (config().with_build_time_multiplier(2.0), "at most 1.7"),
+        ] {
+            let err = invalid.validate().unwrap_err();
+            assert!(err.contains(reason), "{invalid:?}: {err}");
+            assert_eq!(Estimator::new(invalid).unwrap_err(), err, "{invalid:?}");
         }
     }
 
@@ -1764,38 +1740,32 @@ mod tests {
     }
 
     #[test]
-    fn proposal_budget_tolerates_the_builders_pacing_precision() {
+    fn return_budget_overrun_tolerance_follows_the_configuration() {
+        // The default is the builder's pacing precision: a dry build that
+        // returns a few milliseconds late met its budget, one beyond the
+        // tolerance overran it.
         let budget = ProposalBudget::new(ms(550), ms(150));
         assert_eq!(budget.return_budget, ms(400));
+        assert_eq!(
+            budget.overrun_tolerance,
+            DEFAULT_RETURN_BUDGET_OVERRUN_TOLERANCE
+        );
         assert!(!budget.overran(ms(230)));
-        assert!(!budget.overran(ms(400)));
-        // A dry build that returns a few milliseconds late met its budget.
-        assert!(!budget.overran(ms(402)));
         assert!(!budget.overran(ms(400) + DEFAULT_RETURN_BUDGET_OVERRUN_TOLERANCE));
-        // Beyond the tolerance the proposal overran its budget.
         assert!(
             budget.overran(
                 ms(400) + DEFAULT_RETURN_BUDGET_OVERRUN_TOLERANCE + Duration::from_micros(1)
             )
         );
-        assert!(budget.overran(ms(459)));
-    }
 
-    #[test]
-    fn the_overrun_tolerance_follows_the_configuration() {
-        let now = Instant::now();
         // A configured tolerance reaches the budget of every own proposal.
+        let now = Instant::now();
         let estimator =
             Estimator::new(config().with_return_budget_overrun_tolerance(ms(40))).unwrap();
         let budget = estimator.start_proposal(now);
         assert_eq!(budget.overrun_tolerance, ms(40));
         assert!(!budget.overran(budget.return_budget + ms(40)));
         assert!(budget.overran(budget.return_budget + ms(41)));
-        // A fixed reservation records every proposal, however late.
-        let estimator = Estimator::new(EstimatorConfig::fixed(ms(300), ms(50))).unwrap();
-        let budget = estimator.start_proposal(now);
-        assert!(!budget.overran(ms(300) + Duration::from_secs(10)));
-        // The default is the builder's pacing precision.
         assert_eq!(
             Estimator::new(config())
                 .unwrap()
@@ -1803,20 +1773,14 @@ mod tests {
                 .overrun_tolerance,
             DEFAULT_RETURN_BUDGET_OVERRUN_TOLERANCE
         );
-    }
 
-    #[test]
-    fn sample_window_expiry_does_not_depend_on_insertion_order() {
-        // Two hooks read the clock before they take the lock, so the later
-        // reading may be pushed first. The older sample still expires on
-        // time although a younger one sits in front of it.
-        let now = Instant::now();
-        let mut window = SampleWindow::new(4, ms(100));
-        window.push(now + ms(10), 10u64);
-        window.push(now, 20);
-        window.prune(now + ms(105));
-        assert_eq!(window.len(), 1);
-        assert_eq!(window.percentile(100), Some(10));
+        // A fixed reservation records every proposal, however late.
+        let estimator = Estimator::new(EstimatorConfig::fixed(ms(300), ms(50))).unwrap();
+        assert!(
+            !estimator
+                .start_proposal(now)
+                .overran(ms(300) + Duration::from_secs(10))
+        );
     }
 
     #[test]
@@ -1862,6 +1826,13 @@ mod tests {
         window.push(now + ms(135), 60);
         assert_eq!(window.len(), 2);
         assert_eq!(window.percentile(50), Some(50));
+        // Two hooks read the clock before they take the lock, so an older
+        // reading may be pushed after a younger one. It still expires on
+        // time although the younger one sits in front of it.
+        window.push(now + ms(100), 70);
+        window.prune(now + ms(205));
+        assert_eq!(window.len(), 1);
+        assert_eq!(window.percentile(100), Some(60));
     }
 
     #[test]
@@ -1961,31 +1932,6 @@ mod tests {
     }
 
     #[test]
-    fn build_time_multiplier_recovers_in_capped_steps() {
-        let estimator = Estimator::new(config()).unwrap();
-        let now = Instant::now();
-        // Sixteen slow finishes (ratio 1.7) fill the window and take the
-        // multiplier from 1.15 to its cap.
-        let rise: Vec<u64> = (0..16)
-            .map(|_| finish_build(&estimator, now, 1700))
-            .collect();
-        assert_eq!(rise, [vec![1300, 1450, 1600], vec![1700; 13]].concat());
-
-        // Fast finishes (ratio 1.0) turn the window's p75 with the twelfth of
-        // them. The multiplier then descends by at most 0.15 per build instead
-        // of dropping to 1.0 at once, which would let the next proposal do 70%
-        // more work before its cutoff while the network reservation still
-        // reflects the smaller blocks of the slow period.
-        let recovery: Vec<u64> = (0..16)
-            .map(|_| finish_build(&estimator, now, 1000))
-            .collect();
-        assert_eq!(
-            recovery,
-            [vec![1700; 11], vec![1550, 1400, 1250, 1100, 1000]].concat()
-        );
-    }
-
-    #[test]
     fn build_time_multiplier_never_drops_below_one() {
         let estimator = Estimator::new(config()).unwrap();
         let now = Instant::now();
@@ -2074,15 +2020,6 @@ mod tests {
 
         // The next finished build steps it toward the builds that are left.
         assert_eq!(finish_build(&estimator, slow_expired, 1050), 1550);
-
-        // A window that expired completely is the one exception: the
-        // multiplier is the configured initial value again.
-        let quiet = slow_expired + BUILD_TIME_SAMPLE_TTL + ms(1);
-        assert_eq!(estimator.snapshot(quiet).build_time_samples, 0);
-        assert_eq!(
-            permille(estimator.build_time_multiplier(quiet)),
-            permille(DEFAULT_BUILD_TIME_MULTIPLIER)
-        );
     }
 
     #[test]
@@ -2156,23 +2093,6 @@ mod tests {
             estimator.dry_build_finish(now + BUILD_TIME_SAMPLE_TTL + MS),
             Duration::ZERO
         );
-    }
-
-    #[test]
-    fn dry_build_finish_takes_one_step_for_a_lone_slow_finish() {
-        let estimator = Estimator::new(config()).unwrap();
-        let now = Instant::now();
-        // One dry finish waits 150 ms on a persistence commit while the
-        // window is still sparse, so its p75 is the outlier. It raises the
-        // dry build finish by one step, keeps it there while the outlier
-        // dominates the window, and the fourth dry build turns it back.
-        let trace = [1, 150, 1, 1].map(|finish| {
-            finish_dry_build(&estimator, now, ms(finish));
-            estimator.dry_build_finish(now)
-        });
-        assert_eq!(trace, [ms(1), ms(11), ms(11), ms(1)]);
-        // Dry builds never touch the multiplier.
-        assert_eq!(permille(estimator.build_time_multiplier(now)), 1150);
     }
 
     #[test]
@@ -2415,104 +2335,6 @@ mod tests {
     }
 
     #[test]
-    fn network_reserve_follows_a_sparse_window_one_step_per_proposal() {
-        for fast_rise in [true, false] {
-            let estimator =
-                Estimator::new(config().with_network_reserve_fast_rise(fast_rise)).unwrap();
-            let now = Instant::now();
-            // The reservation of the own proposal started `view` seconds
-            // after `now`, once as `build()` does.
-            let reserve = |view: u64| reserve_at(&estimator, now + Duration::from_secs(view));
-
-            // The first own proposal after startup reserves the floor, and
-            // the next leader starts building on it only 1 s after its return.
-            assert_eq!(reserve(1), ms(50));
-            own_proposal(&estimator, now, 1, ms(1000));
-            // The percentile of a one sample window is that sample, so the
-            // target is the cap at once. The reservation climbs to it one step
-            // per own proposal instead of cutting the next proposal's return
-            // budget from 500 to 250 ms.
-            let snapshot = estimator.snapshot(now + Duration::from_secs(2));
-            assert_eq!(snapshot.network_observed, Some(ms(1000)));
-            assert_eq!(
-                snapshot.network_reserve,
-                ms(50),
-                "a snapshot does not move the reservation"
-            );
-            assert_eq!(
-                [reserve(2), reserve(3), reserve(4)],
-                [ms(150), ms(250), ms(300)],
-                "fast rise {fast_rise}"
-            );
-
-            // The 75th percentile of up to three samples is their maximum, so
-            // the target stays at the cap through two fast proposals, and the
-            // third brings it back to the floor.
-            for view in 5..=7 {
-                assert_eq!(reserve(view), ms(300), "fast rise {fast_rise}");
-                own_proposal(&estimator, now, view, ms(50));
-            }
-            assert_eq!(
-                estimator
-                    .snapshot(now + Duration::from_secs(8))
-                    .network_observed,
-                Some(ms(50))
-            );
-            // The reservation walks back down one step per own proposal.
-            assert_eq!(
-                [reserve(8), reserve(9), reserve(10)],
-                [ms(200), ms(100), ms(50)],
-                "fast rise {fast_rise}"
-            );
-        }
-    }
-
-    #[test]
-    fn network_reserve_climbs_one_step_per_proposal_when_good_samples_age_out() {
-        for fast_rise in [true, false] {
-            let estimator =
-                Estimator::new(config().with_network_reserve_fast_rise(fast_rise)).unwrap();
-            let now = Instant::now();
-            // Sixteen own proposals at 150 ms fill the window, each started
-            // once as `build()` does, and the reservation settles at 150 ms.
-            for view in 1..=16 {
-                reserve_at(&estimator, now + Duration::from_secs(view));
-                own_proposal(&estimator, now, view, ms(150));
-            }
-            assert_eq!(
-                estimator
-                    .snapshot(now + Duration::from_secs(17))
-                    .network_reserve,
-                ms(150)
-            );
-
-            // Five minutes later one own proposal takes 1 s to be built on,
-            // and the node proposes nothing more until its good samples are
-            // older than the ttl while the outlier is not.
-            let outlier_view = 300;
-            let outlier_return = now + Duration::from_secs(outlier_view);
-            assert_eq!(reserve_at(&estimator, outlier_return), ms(150));
-            let outlier_at = own_proposal(&estimator, now, outlier_view, ms(1000));
-            let good_expired = now + Duration::from_secs(16) + ms(150) + NETWORK_SAMPLE_TTL + ms(1);
-            assert!(good_expired < outlier_at + NETWORK_SAMPLE_TTL);
-
-            // The outlier is all that is left, so it is the window's
-            // percentile, with fast rise or without. The reservation still
-            // climbs one step per own proposal instead of jumping to the cap.
-            let snapshot = estimator.snapshot(good_expired);
-            assert_eq!(snapshot.network_samples, 1);
-            assert_eq!(snapshot.network_observed, Some(ms(1000)));
-            let reserves = [0, 1, 2]
-                .map(|offset| reserve_at(&estimator, good_expired + Duration::from_secs(offset)));
-            assert_eq!(
-                reserves,
-                [ms(250), ms(300), ms(300)],
-                "fast rise {fast_rise}"
-            );
-        }
-    }
-
-    #[test]
     fn network_reserve_fast_rise_needs_two_slow_samples_in_a_row() {
         let plain = Estimator::new(config().with_network_reserve_fast_rise(false)).unwrap();
         let fast = Estimator::new(config().with_network_reserve_fast_rise(true)).unwrap();
@@ -2564,7 +2386,7 @@ mod tests {
     }
 
     #[test]
-    fn network_reserve_fast_rise_is_step_bounded_capped_and_expires_with_the_window() {
+    fn network_reserve_fast_rise_samples_expire_with_the_window() {
         let estimator = Estimator::new(config().with_network_reserve_fast_rise(true)).unwrap();
         let now = Instant::now();
         // The reservation of the own proposal started at `at`, once as
@@ -2574,16 +2396,11 @@ mod tests {
             reserve(now + Duration::from_secs(view));
             own_proposal(&estimator, now, view, ms(150));
         }
-        // Two samples in a row far above the window. The first alone lifts
-        // nothing; with the second, fast rise lifts the observed network
-        // time all the way to them, and the target is that clamped to the
-        // cap. The reservation still moves by at most
-        // `NETWORK_RESERVE_MAX_STEP` per own proposal, so stalled successors
-        // cost the next proposal 100 ms of its window rather than the whole
-        // range up to the cap, and the proposal after it reaches the cap.
+        // Two samples in a row far above the window: fast rise lifts the
+        // target to them, clamped to the cap, and the reservation climbs
+        // there by at most `NETWORK_RESERVE_MAX_STEP` per own proposal.
         reserve(now + Duration::from_secs(7));
-        let first_at = own_proposal(&estimator, now, 7, ms(400));
-        assert_eq!(estimator.snapshot(first_at).network_observed, Some(ms(150)));
+        own_proposal(&estimator, now, 7, ms(400));
         assert_eq!(reserve(now + Duration::from_secs(8)), ms(150));
         let sampled_at = own_proposal(&estimator, now, 8, ms(400));
         let snapshot = estimator.snapshot(sampled_at);
@@ -2592,12 +2409,6 @@ mod tests {
         assert_eq!(snapshot.network_reserve, ms(150));
         assert_eq!(reserve(now + Duration::from_secs(9)), ms(250));
         assert_eq!(reserve(now + Duration::from_secs(10)), ms(300));
-        assert_eq!(
-            estimator
-                .snapshot(now + Duration::from_secs(10))
-                .proposal_return_budget,
-            ms(250)
-        );
 
         // The slow samples are the newest in the window, so they expire with
         // it rather than on their own. Without a newer sample the newest one

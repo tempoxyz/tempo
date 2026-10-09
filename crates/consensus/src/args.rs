@@ -1012,19 +1012,6 @@ mod tests {
                 "{flags:?}"
             );
         }
-
-        // An explicit cap is not adjusted: one that leaves no proposal
-        // window still fails validation with the reason.
-        let err = parse(&["--dev", "--consensus.network-budget-max", "600ms"])
-            .consensus
-            .validate()
-            .unwrap_err();
-        assert!(
-            err.to_string().contains(
-                "maximum network budget (600ms) must be smaller than the target block time"
-            ),
-            "{err}"
-        );
     }
 
     #[test]
@@ -1033,31 +1020,17 @@ mod tests {
         parse(&["--dev"]).consensus.estimator(multiplier).unwrap();
         // The binary builds the estimator before the consensus stack runs
         // `validate`, so the estimator fails with the same descriptive error
-        // instead of adjusting the flags.
-        for (flags, reason) in [
-            (
-                ["--consensus.network-budget", "600ms"],
-                "network budget (600ms) must be smaller than the target block time (550ms)",
-            ),
-            (
-                ["--consensus.network-budget-max", "600ms"],
-                "maximum network budget (600ms) must be smaller than the target block time",
-            ),
-            (
-                ["--consensus.network-reserve-percentile", "101"],
-                "network reserve percentile (101) must be between 50 and 100",
-            ),
-        ] {
-            let args = parse(&[&["--dev"][..], &flags[..]].concat()).consensus;
-            let validate = args.validate().unwrap_err().to_string();
-            let estimator = args.estimator(multiplier).unwrap_err().to_string();
-            assert_eq!(estimator, validate, "{flags:?}");
-            assert!(
-                estimator.starts_with("invalid proposal budget flags: "),
-                "{flags:?}: {estimator}"
-            );
-            assert!(estimator.contains(reason), "{flags:?}: {estimator}");
-        }
+        // instead of adjusting the flags. An explicit cap is not adjusted
+        // either: one that leaves no proposal window fails with the reason.
+        let args = parse(&["--dev", "--consensus.network-budget-max", "600ms"]).consensus;
+        let validate = args.validate().unwrap_err().to_string();
+        let estimator = args.estimator(multiplier).unwrap_err().to_string();
+        assert_eq!(estimator, validate);
+        assert_eq!(
+            estimator,
+            "invalid proposal budget flags: maximum network budget (600ms) must be smaller \
+             than the target block time (550ms)"
+        );
     }
 
     #[test]

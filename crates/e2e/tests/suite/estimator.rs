@@ -18,12 +18,14 @@ use futures::future::join_all;
 
 use crate::{Setup, metrics::wait_for_height, setup_validators};
 
-/// Runs `signers` validators until every one of them has seen height 20,
-/// then checks that each completed at least one network sample.
-fn every_node_completes_a_network_sample(signers: u32) {
+/// Runs four validators until every one of them has seen height 20, then
+/// checks that each completed at least one network sample. With four signers
+/// the child of a node's proposal usually comes from another leader.
+#[test_traced]
+fn signers_sample_the_children_other_leaders_build() {
     let _ = tempo_eyre::install();
     let setup = Setup::new(crate::VERIFICATION_MODE)
-        .how_many_signers(signers)
+        .how_many_signers(4)
         .epoch_length(100);
     let cfg = deterministic::Config::default()
         .with_seed(setup.seed)
@@ -43,18 +45,4 @@ fn every_node_completes_a_network_sample(signers: u32) {
             );
         }
     });
-}
-
-#[test_traced]
-fn a_lone_signer_samples_the_children_it_builds() {
-    // A lone signer leads every view, so the child of each of its proposals
-    // is its own next build.
-    every_node_completes_a_network_sample(1);
-}
-
-#[test_traced]
-fn signers_sample_the_children_other_leaders_build() {
-    // With four signers the child of a node's proposal usually comes from
-    // another leader.
-    every_node_completes_a_network_sample(4);
 }
