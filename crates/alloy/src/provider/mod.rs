@@ -4,6 +4,7 @@
 pub mod ext;
 pub mod keychain;
 pub mod receive_policy;
+pub mod relay;
 
 #[doc(inline)]
 pub use ext::{SponsoredProviderBuilder, TempoProviderBuilderExt, TempoProviderExt};
@@ -11,3 +12,6 @@ pub use ext::{SponsoredProviderBuilder, TempoProviderBuilderExt, TempoProviderEx
 pub use keychain::{CallScopeBuilder, KeyRestrictions, KeychainBuildError};
 #[doc(inline)]
 pub use receive_policy::BlockedTransfer;
+
+#[doc(inline)]
+pub use relay::TempoRelayProviderExt;

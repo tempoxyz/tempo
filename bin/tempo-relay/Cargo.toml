@@ -1,0 +1,26 @@
+[package]
+name = "tempo-relay-bin"
+description = "Tempo development relay sidecar"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "tempo-relay"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+tempo-relay = { workspace = true, features = ["storage"] }
+tempo-contracts.workspace = true
+alloy-primitives.workspace = true
+alloy-signer-local = { workspace = true, features = ["mnemonic"] }
+clap.workspace = true
+eyre.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
