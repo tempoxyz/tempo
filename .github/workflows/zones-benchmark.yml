@@ -507,7 +507,7 @@ jobs:
       ZONES_BENCH_CPUSET: 14-15,30-31
       ZONES_BENCH_OUTPUT: target/zones-benchmark/neobank-e2e
       ZONES_BENCH_REPORT: target/zones-benchmark/report-neobank-e2e.json
-      ZONES_BENCH_SPF_OUTPUT: target/zones-benchmark/spf-input.json
+      ZONES_BENCH_SPF_OUTPUT: target/zones-benchmark/spf-validation.json
       ZONES_BENCH_SPF_PROFILE: target/zones-benchmark/spf-profile.json.gz
       ZONES_BENCH_SPF_PROFILE_URL: target/zones-benchmark/spf-profile-url.txt
       ZONES_BENCH_SPF_REPORT: target/zones-benchmark/spf-report.txt
@@ -588,7 +588,7 @@ jobs:
 
       - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
         with:
-          toolchain: stable
+          toolchain: 1.98.0
       - uses: tempoxyz/gh-actions/actions/setup-mold@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
         with:
@@ -619,13 +619,6 @@ jobs:
             crates/contracts/out
             crates/contracts/benchmark-out
           key: forge-${{ runner.os }}-${{ steps.solidity-key.outputs.forge-sha }}-${{ steps.solidity-key.outputs.contracts-tree }}-${{ steps.solidity-key.outputs.earn-sha }}
-
-      - name: Add file-backed mnemonic support to pinned Tempo xtask
-        run: |
-          set -euo pipefail
-          patch=contrib/bench/patches/tempo-xtask-mnemonic-file.patch
-          git -C "$TEMPO_ROOT" apply --check "$GITHUB_WORKSPACE/$patch"
-          git -C "$TEMPO_ROOT" apply "$GITHUB_WORKSPACE/$patch"
 
       - name: Prepare persistent build directories
         env:
@@ -674,10 +667,10 @@ jobs:
             echo "::error::runner-local benchmark mnemonic must not be a symbolic link"
             exit 1
           fi
-          if [ ! -s "$mnemonic_file" ]; then
+          if [ ! -s "$mnemonic_file" ] || [ "$(cat "$mnemonic_file")" = null ]; then
             temporary="$(mktemp "$identity_root/.mnemonic.XXXXXX")"
             chmod 600 "$temporary"
-            mnemonic="$(cast wallet new-mnemonic --words 24 --accounts 0 --json | jq -r .mnemonic)"
+            mnemonic="$(cast wallet new-mnemonic --words 24 --accounts 0 --json | jq -er '(.data // .).mnemonic | select(type == "string" and length > 0)')"
             printf '%s\n' "$mnemonic" > "$temporary"
             mv -f -- "$temporary" "$mnemonic_file"
           else
@@ -701,17 +694,16 @@ jobs:
           set -euo pipefail
           cargo build --target-dir "$ZONES_BENCH_ZONES_TARGET_DIR" \
             --locked --profile profiling -p tempo-zone -p tempo-zone-prover-utils -p tempo-xtask
-          nu -c "source '$TEMPO_ROOT/tempo.nu'; build-in-worktree --no-default-features \
-            '$TEMPO_ROOT' '$ZONES_BENCH_TEMPO_REF' profiling \
-            'jemalloc,asm-keccak,keccak-cache-global,otlp' \
-            '$ZONES_BENCH_TEMPO_REF'"
+          cargo build --target-dir "$ZONES_BENCH_TEMPO_TARGET_DIR" \
+            --locked --manifest-path "$TEMPO_ROOT/Cargo.toml" --profile profiling \
+            --no-default-features --features jemalloc,asm-keccak,keccak-cache-global,otlp --bin tempo
           cargo build --target-dir "$ZONES_BENCH_TEMPO_TARGET_DIR" \
             --locked --manifest-path "$TEMPO_ROOT/Cargo.toml" --profile profiling -p tempo-xtask
           {
             echo "ZONE_BIN=$ZONES_BENCH_ZONES_TARGET_DIR/profiling/tempo-zone"
             echo "SPF_BIN=$ZONES_BENCH_ZONES_TARGET_DIR/profiling/tempo-zone-prover-utils"
             echo "ZONES_XTASK_BIN=$ZONES_BENCH_ZONES_TARGET_DIR/profiling/tempo-xtask"
-            echo "TEMPO_BIN=$TEMPO_ROOT/target/profiling/tempo"
+            echo "TEMPO_BIN=$ZONES_BENCH_TEMPO_TARGET_DIR/profiling/tempo"
             echo "TEMPO_XTASK_BIN=$ZONES_BENCH_TEMPO_TARGET_DIR/profiling/tempo-xtask"
           } >> "$GITHUB_ENV"
 
@@ -787,7 +779,7 @@ jobs:
           set -euo pipefail
           cargo install samply \
             --git https://github.com/DaniPopes/samply \
-            --rev 06f9075697ad144feaf3e15c2254a043b243fdbf \
+            --rev d1f783d139dfbda60cc0109df9d134135983c551 \
             --locked \
             --force
           samply_path="$(command -v samply)"
@@ -841,11 +833,6 @@ jobs:
           [[ "$ZONES_BENCH_SPF_FROM_BLOCK" =~ ^[0-9]+$ ]]
           [[ "$ZONES_BENCH_SPF_TO_BLOCK" =~ ^[0-9]+$ ]]
           (( ZONES_BENCH_SPF_FROM_BLOCK <= ZONES_BENCH_SPF_TO_BLOCK ))
-          private_key="$(cast wallet private-key \
-            --mnemonic "$ZONES_BENCH_MNEMONIC_FILE" \
-            --mnemonic-index 4)"
-          trap 'unset private_key' EXIT
-
           samply_args=(
             record
             --save-only
@@ -853,14 +840,17 @@ jobs:
             --share
             --output "$ZONES_BENCH_SPF_PROFILE"
           )
+          if ! ulimit -l unlimited; then
+            sudo -n prlimit --pid "$BASHPID" --memlock=unlimited:unlimited
+          fi
           set +e
-          PRIVATE_KEY="$private_key" samply "${samply_args[@]}" -- \
+          samply "${samply_args[@]}" -- \
             taskset --cpu-list "$ZONES_BENCH_CPUSET" \
-              "$SPF_BIN" generate-input \
+              python3 zones/contrib/bench/validate-spf-range.py --spf-bin "$SPF_BIN" \
+              --portal "$L1_PORTAL_ADDRESS" \
               --tempo-rpc-url "$ZONES_BENCH_L1_QUERY_RPC_URL" \
               --chain "$ZONES_BENCH_ZONE_GENESIS" \
-              --zone-private-rpc-url "$ZONE_PRIVATE_RPC_URL" \
-              --zone-unrestricted-rpc-url "$ZONE_RPC_URL" \
+              --zone-rpc-url "$ZONE_RPC_URL" \
               --from-block "$ZONES_BENCH_SPF_FROM_BLOCK" \
               --to-block "$ZONES_BENCH_SPF_TO_BLOCK" \
               --output "$ZONES_BENCH_SPF_OUTPUT" \
@@ -871,6 +861,15 @@ jobs:
           if (( spf_status == 0 )) && [[ ! -s "$ZONES_BENCH_SPF_PROFILE" ]]; then
             echo "Samply did not produce $ZONES_BENCH_SPF_PROFILE" \
               >> target/zones-benchmark/spf.log
+            spf_status=1
+          fi
+          # Samply may exit successfully even when its child fails. Require the
+          # manifest written only after every intersecting batch has validated.
+          if ! jq -e --argjson first "$ZONES_BENCH_SPF_FROM_BLOCK" \
+              --argjson last "$ZONES_BENCH_SPF_TO_BLOCK" \
+              '.status == "complete" and .from_block == $first and .to_block == $last and (.batches | length > 0)' \
+              "$ZONES_BENCH_SPF_OUTPUT" >/dev/null; then
+            echo "SPF validation did not cover the measured range" >> target/zones-benchmark/spf.log
             spf_status=1
           fi
           profile_url="$(sed -n \
