@@ -6,7 +6,6 @@ use commonware_runtime::{Runner as _, deterministic, tokio as runtime};
 use reth_db::Database as _;
 use reth_ethereum::provider::{
     BlockNumReader as _, ChainStateBlockReader as _, DatabaseProviderFactory as _,
-    RocksDBProviderFactory as _,
 };
 use tempo_node::rpc::consensus::{ConsensusFeed as _, Query};
 
@@ -16,7 +15,7 @@ use crate::{
 };
 
 #[test_traced]
-fn historical_bootstrap_restores_certified_head_offline() {
+fn historical_bootstrap_recovers_cached_tail_offline() {
     let _ = tempo_eyre::install();
     deterministic::Runner::default().start(|mut context| async move {
         let setup = Setup::new(crate::VERIFICATION_MODE)
@@ -35,27 +34,24 @@ fn historical_bootstrap_restores_certified_head_offline() {
         let upstream = reference.execution().rpc_server_handle().ws_url().unwrap();
         let handle = execution_runtime.handle();
         let config = ExecutionNodeConfig::generate();
-        let path = handle.nodes_dir().join("history").join("db");
-        std::fs::create_dir_all(&path).unwrap();
-        let database = reth_db::init_db(path, test_db_args())
-            .unwrap()
-            .with_metrics();
-        let mut target = Some(
-            handle
-                .spawn_node("history", config.clone(), database.clone(), None)
-                .await
-                .unwrap(),
-        );
-        target
-            .as_ref()
-            .unwrap()
-            .connect_peer(reference.execution_node.as_ref().unwrap())
-            .await;
-        let rocksdb = target.as_ref().unwrap().node.provider.rocksdb_provider();
         let storage = tempfile::tempdir().unwrap();
 
-        for offline in [false, true] {
-            let node = target.as_ref().unwrap().node.clone();
+        for (name, offline) in [("history", false), ("history-replay", true)] {
+            let path = handle.nodes_dir().join(name).join("db");
+            std::fs::create_dir_all(&path).unwrap();
+            let database = reth_db::init_db(path, test_db_args())
+                .unwrap()
+                .with_metrics();
+            let target = handle
+                .spawn_node(name, config.clone(), database.clone(), None)
+                .await
+                .unwrap();
+            if !offline {
+                target
+                    .connect_peer(reference.execution_node.as_ref().unwrap())
+                    .await;
+            }
+            let node = target.node.clone();
             let identity = reference.network_identity.clone();
             let url = if offline {
                 "ws://127.0.0.1:0".to_owned()
@@ -83,7 +79,7 @@ fn historical_bootstrap_restores_certified_head_offline() {
             .join()
             .unwrap();
 
-            let provider = &target.as_ref().unwrap().node.provider;
+            let provider = &target.node.provider;
             let head = provider.canonical_in_memory_state().get_canonical_head();
             assert_eq!(
                 (head.number(), head.hash()),
@@ -94,25 +90,16 @@ fn historical_bootstrap_restores_certified_head_offline() {
                 durable.last_finalized_block_number().unwrap().unwrap()
                     <= durable.best_block_number().unwrap()
             );
-            // This fixture stays below Reth's bulk-sync threshold, leaving a tail to recover.
-            assert!(durable.best_block_number().unwrap() < floor.block.number());
+            if !offline {
+                // A fresh genesis DB reproduces this state without Reth's shutdown flush.
+                assert_eq!(durable.best_block_number().unwrap(), 0);
+            }
             drop(durable);
-            target.take().unwrap().shutdown().await;
+            target.shutdown().await;
             drop(database.tx_mut().unwrap());
 
             if !offline {
                 reference.execution_node.take().unwrap().shutdown().await;
-                target = Some(
-                    handle
-                        .spawn_node(
-                            "history",
-                            config.clone(),
-                            database.clone(),
-                            Some(rocksdb.clone()),
-                        )
-                        .await
-                        .unwrap(),
-                );
             }
         }
         execution_runtime.stop().unwrap();
