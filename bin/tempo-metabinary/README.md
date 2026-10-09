@@ -5,26 +5,7 @@ node runs in-process; an execution-independent library decorates its registered 
 starts frozen read-only workers lazily for historical execution. The library has no Tempo execution,
 Reth, or database dependencies.
 
-```mermaid
-%%{init: {"flowchart": {"subGraphTitleMargin": {"bottom": 24}}}}%%
-flowchart TB
-    RPC["HTTP / WebSocket / IPC"] --> Registry
-    Catalog["Release catalog<br/>tempo-eras.json"] -.-> Router
-    subgraph Node["tempo node - only storage writer"]
-        Registry["Native RPC registry"] -->|"Other requests"| Native["Original callbacks"]
-        Registry -->|"Execution with routing enabled"| Router["Era router<br/>Select era using native metadata"]
-        Router -->|"Live era"| Native
-    end
-    Router -->|"Era A / private loopback HTTP"| EraA
-    Router -->|"Era B / private loopback HTTP"| EraB
-    subgraph Frozen["Frozen rpc-only workers: read-only<br/>On-demand startup / idle shutdown"]
-        direction LR
-        EraA["Era A"]
-        EraB["Era B"]
-    end
-    Native --> DB[("Shared chain storage")]
-    EraA & EraB -->|"Read state to reexecute"| DB
-```
+![Tempo metabinary routing: native transports enter the live node. Historical execution uses frozen read-only era workers over shared chain storage.](assets/execution-routing.svg)
 
 ## Release configuration
 
