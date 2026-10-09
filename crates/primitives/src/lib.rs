@@ -44,7 +44,9 @@ mod reth_compat;
 /// Tempo receipt.
 /// Implements reth trait bounds when the `reth` feature is enabled.
 #[cfg(feature = "reth")]
-pub use reth_compat::TempoReceipt;
+pub use reth_compat::{
+    CODE_CHUNK_SIZE, TempoAccountExtension, TempoAccountExtensionError, TempoReceipt,
+};
 #[cfg(not(feature = "reth"))]
 pub type TempoReceipt<L = alloy_primitives::Log> = alloy_consensus::EthereumReceipt<TempoTxType, L>;
 

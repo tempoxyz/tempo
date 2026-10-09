@@ -828,11 +828,7 @@ where
     DB: DatabaseRef<Error = ProviderError>,
 {
     fn basic_account(&self, address: &Address) -> ProviderResult<Option<Account>> {
-        Ok(self.db.basic_ref(*address)?.map(|account| Account {
-            nonce: account.nonce,
-            balance: account.balance,
-            bytecode_hash: (!account.is_empty_code_hash()).then_some(account.code_hash),
-        }))
+        Ok(self.db.basic_ref(*address)?.map(Account::from))
     }
 }
 
@@ -982,11 +978,7 @@ mod tests {
     fn cached_account_info_reader_uses_native_cached_reads() {
         let address = Address::random();
         let code_hash = B256::random();
-        let account = Account {
-            nonce: 7,
-            balance: U256::from(42),
-            bytecode_hash: Some(code_hash),
-        };
+        let account = Account::new(7, U256::from(42), Some(code_hash));
         let bytecode = revm::bytecode::Bytecode::default();
         let account_reads = Arc::new(AtomicUsize::new(0));
         let bytecode_reads = Arc::new(AtomicUsize::new(0));
@@ -1006,7 +998,10 @@ mod tests {
         let mut cached_reads = CachedReads::default();
         let cached = CachedAccountInfoReader::new(cached_reads.as_db(provider));
 
-        assert_eq!(cached.basic_account(&address).unwrap(), Some(account));
+        assert_eq!(
+            cached.basic_account(&address).unwrap(),
+            Some(account.clone())
+        );
         assert_eq!(cached.basic_account(&address).unwrap(), Some(account));
         assert_eq!(account_reads.load(Ordering::Relaxed), 1);
 

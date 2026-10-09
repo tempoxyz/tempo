@@ -10,6 +10,9 @@ use reth_primitives_traits::NodePrimitives;
 
 use crate::{Block, BlockBody, TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 
+mod account;
+pub use account::{CODE_CHUNK_SIZE, TempoAccountExtension, TempoAccountExtensionError};
+
 /// Tempo receipt.
 ///
 /// Re-export from `reth_ethereum_primitives` so that the rest of the workspace crates see a single
