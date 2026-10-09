@@ -7,33 +7,16 @@ Reth, or database dependencies.
 
 ```mermaid
 flowchart TB
-    Client["RPC client"] <-->|"Requests / responses"| RPC
-    subgraph Node["tempo node - ordinary live process"]
-        RPC["Native HTTP / WebSocket / IPC<br/>Existing auth, subscriptions and limits"]
-        Method{"Execution method<br/>with era routing enabled?"}
-        Native["Original native callbacks<br/>Stored data, state, transactions<br/>and live execution"]
-        Router["Decorated execution callbacks + era router<br/>Native headers / transaction metadata select the era"]
-        Workers["Worker manager<br/>One lazy child per closed era"]
-        Catalog["Loaded tempo-eras.json<br/>Chain identity, era schedule, frozen binaries"]
-        Config["Existing node configuration<br/>Genesis, storage paths, SDK execution settings"]
-        Engine["Normal sync and consensus<br/>Only storage writer while the node runs"]
-
-        RPC --> Method
-        Method -->|"No"| Native
-        Method -->|"Yes"| Router
-        Router -->|"Live / pending / pool or missing transaction"| Native
-        Router -->|"Historical era: pin block selectors"| Workers
-        Router -->|"Unsupported execution / span crosses eras"| Error["RPC error: -32004"]
-        Catalog -.->|"Matching chain + supported fork schedule"| Router
-        Config -.-> Workers
+    RPC["HTTP / WebSocket / IPC"] --> Registry
+    Catalog["Release catalog<br/>tempo-eras.json"] -.-> Router
+    subgraph Node["tempo node - only storage writer"]
+        Registry["Native RPC registry"] -->|"Other requests"| Native["Original callbacks"]
+        Registry -->|"Execution with routing enabled"| Router["Era router<br/>Select era using native metadata"]
+        Router -->|"Live era"| Native
     end
-
-    Workers <-->|"Private loopback HTTP<br/>Identity handshake, then RPC calls"| Frozen["Separate frozen era executable<br/>rpc-only: read-only historical execution"]
-    DB[("Shared chain storage<br/>Canonical blocks, state, static files")]
-    Router -.->|"Read metadata"| DB
-    Native -->|"Read"| DB
-    Engine -->|"Write"| DB
-    Frozen -->|"Read state to reexecute calls / traces / simulations"| DB
+    Router -->|"Historical era / private loopback HTTP"| Frozen["Frozen rpc-only workers<br/>One per era, started lazily<br/>Read-only execution"]
+    Native --> DB[("Shared chain storage")]
+    Frozen -->|"Read state to reexecute"| DB
 ```
 
 ## Release configuration
@@ -87,30 +70,8 @@ Active private RPC calls retain their worker, including when the public caller c
 Shutdown reaps owned children. A failed or missing worker affects historical requests for its era;
 live RPC stays available.
 
-The lifecycle below applies independently to each closed era. Concurrent startup requests share
-one handshake; ready workers can serve concurrent calls. Failed workers retain their error until
-the node restarts. A cancelled startup keeps its child so the next request can resume the handshake.
-
-```mermaid
-stateDiagram-v2
-    state "Node running" as Active {
-        state "No child" as Dormant
-        state "Spawn + identity handshake" as Starting
-        state "Ready: private calls hold leases" as Ready
-        state "Failed: error retained" as Failed
-
-        [*] --> Dormant
-        Dormant --> Starting: Request
-        Starting --> Ready: Handshake succeeds
-        Starting --> Failed: Startup / identity failure
-        Starting --> Dormant: Cancelled startup idle for five minutes then reap
-        Ready --> Dormant: Five idle minutes then stop and reap
-        Ready --> Failed: Unexpected exit detected on next request
-    }
-    [*] --> Active
-    Active --> Stopped: Node shutdown stops and reaps owned children
-    Stopped --> [*]
-```
+Cancelled startup keeps its child so the next request can resume the handshake. Startup failures
+and detected child exits remain unavailable until node restart.
 
 ## Canonical-file bootstrap
 
@@ -137,34 +98,6 @@ number/hash. Its file ends immediately before the successor's activation. The wr
 era timestamp, and exact head. Subsequent imports verify the predecessor and first successor.
 No pipeline checkpoints or handoff markers are rewritten. An import failure may leave partial
 progress; use the ordinary Tempo recovery workflow.
-
-Bootstrap runs before the ordinary node. The operator's bootstrap manifest supplies import files
-and trusted checkpoints; the release catalog above supplies the runtime RPC routing schedule.
-
-```mermaid
-sequenceDiagram
-    actor Operator
-    participant Wrapper as tempo-metabinary<br/>bootstrap
-    participant Import as Frozen era<br/>import process
-    participant Reader as Read-only<br/>checkpoint worker
-    participant DB as Shared<br/>chain storage
-
-    Operator->>Wrapper: Bootstrap manifest
-    loop Each closed era, in activation order
-        Wrapper->>Import: Import canonical files<br/>with shared chain + datadir
-        Import->>DB: Execute blocks and commit state
-        Import-->>Wrapper: Import exits successfully<br/>and writer is reaped
-        Wrapper->>Reader: Start rpc-only<br/>and verify identity
-        Wrapper->>Reader: Read checkpoint and head
-        Reader->>DB: Read canonical headers
-        DB-->>Reader: Header data
-        Reader-->>Wrapper: Headers for wrapper validation
-        Note over Wrapper,Reader: Verify checkpoint hash, era timestamp and exact head<br/>Later eras also verify predecessor and first successor
-        Wrapper->>Reader: Shut down and reap before next import
-    end
-    Wrapper-->>Operator: Complete, or stop on any failure
-    Note over Operator,DB: After successful bootstrap, start tempo node for normal sync and public RPC
-```
 
 Genesis network sync remains native, and the active binary still supports old forks. Bootstrap does
 not download files or switch peer-to-peer writers. Removing historical execution branches requires
