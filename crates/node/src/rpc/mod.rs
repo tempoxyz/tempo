@@ -1,3 +1,7 @@
+pub mod access_list;
+pub use access_list::{
+    TempoAccessList, TempoAccessListApiServer, TempoAccessListResponse, TempoStorageAccess,
+};
 pub mod admin;
 pub mod consensus;
 pub mod error;

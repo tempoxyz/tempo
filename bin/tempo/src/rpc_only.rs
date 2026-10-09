@@ -36,9 +36,10 @@ use tempo_node::{
     TempoPooledTransaction,
     node::TempoNode,
     rpc::{
-        TempoEthApi, TempoEthExt, TempoEthExtApiServer, TempoForkScheduleApiServer,
-        TempoForkScheduleRpc, TempoReceiptConverter, TempoSimulate, TempoSimulateApiServer,
-        TempoToken, TempoTokenApiServer, execution_info::install_execution_info,
+        TempoAccessList, TempoAccessListApiServer, TempoEthApi, TempoEthExt, TempoEthExtApiServer,
+        TempoForkScheduleApiServer, TempoForkScheduleRpc, TempoReceiptConverter, TempoSimulate,
+        TempoSimulateApiServer, TempoToken, TempoTokenApiServer,
+        execution_info::install_execution_info,
     },
 };
 use tracing::info;
@@ -160,6 +161,7 @@ impl RpcOnly {
         );
         modules.merge_http(TempoToken::new(eth_api.clone()).into_rpc())?;
         modules.merge_http(TempoEthExt::new(eth_api.clone()).into_rpc())?;
+        modules.merge_http(TempoAccessList::new(eth_api.clone()).into_rpc())?;
         modules.merge_http(TempoSimulate::new(eth_api).into_rpc())?;
         modules.merge_http(TempoForkScheduleRpc::new(provider).into_rpc())?;
         modules.merge_http(eth_config.into_rpc())?;
@@ -295,12 +297,33 @@ mod tests {
                     "debug_traceCall",
                     "trace_block",
                     "tempo_simulateV1",
+                    "tempo_createAccessList",
+                    "tempo_getTransactionAccessList",
                 ] {
                     assert!(
                         info.methods.iter().any(|name| name == method),
                         "missing {method}"
                     );
                 }
+                let access_list: tempo_node::rpc::TempoAccessListResponse = client
+                    .request(
+                        "tempo_createAccessList",
+                        rpc_params![json!({
+                            "to": "0x4242424242424242424242424242424242424242",
+                            "gas": "0xf4240"
+                        })],
+                    )
+                    .await
+                    .unwrap();
+                assert!(access_list.success, "{:?}", access_list.error);
+                let unknown: Option<tempo_node::rpc::TempoAccessListResponse> = client
+                    .request(
+                        "tempo_getTransactionAccessList",
+                        rpc_params![alloy_primitives::B256::repeat_byte(0xfe)],
+                    )
+                    .await
+                    .unwrap();
+                assert!(unknown.is_none());
                 assert!(!info.methods.iter().any(|name| name.starts_with("eth_send")));
                 assert_eq!(
                     client

@@ -142,6 +142,8 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
     ) -> Result<StateLoad<U256>, TempoPrecompileError> {
         let mut account = self.internals.load_account_mut(address)?;
         let val = account.sload(key, skip_cold_load)?;
+        self.actions
+            .record_raw(StorageAction::Sload(address, key, val.present_value));
         Ok(StateLoad::new(val.present_value, val.is_cold))
     }
 
@@ -155,10 +157,17 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         skip_cold_load: bool,
     ) -> Result<StateLoad<SStoreResult>, TempoPrecompileError> {
         self.ensure_not_static()?;
-        Ok(self
-            .internals
-            .load_account_mut(address)?
-            .sstore(key, value, skip_cold_load)?)
+        let result =
+            self.internals
+                .load_account_mut(address)?
+                .sstore(key, value, skip_cold_load)?;
+        self.actions.record_raw(StorageAction::Sstore(
+            address,
+            key,
+            result.data.present_value,
+            value,
+        ));
+        Ok(result)
     }
 
     /// Performs a metered precompile SLOAD, optionally recording the storage action.

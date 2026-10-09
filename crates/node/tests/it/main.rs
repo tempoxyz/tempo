@@ -1,5 +1,6 @@
 #![allow(clippy::cast_lossless)]
 
+mod access_list;
 mod backfill;
 mod base_fee;
 mod block_building;

@@ -4,10 +4,10 @@ use crate::{
     executed_state::{ExecutedState, TempoEngineTreeValidatorBuilder},
     gossip::GossipProtocol,
     rpc::{
-        TempoAdminApi, TempoAdminApiServer, TempoEthApi, TempoEthApiBuilder, TempoEthExt,
-        TempoEthExtApiServer, TempoForkScheduleApiServer, TempoForkScheduleRpc,
-        TempoOperatorApiServer, TempoOperatorRpc, TempoSimulate, TempoSimulateApiServer,
-        TempoToken, TempoTokenApiServer,
+        TempoAccessList, TempoAccessListApiServer, TempoAdminApi, TempoAdminApiServer, TempoEthApi,
+        TempoEthApiBuilder, TempoEthExt, TempoEthExtApiServer, TempoForkScheduleApiServer,
+        TempoForkScheduleRpc, TempoOperatorApiServer, TempoOperatorRpc, TempoSimulate,
+        TempoSimulateApiServer, TempoToken, TempoTokenApiServer,
     },
 };
 use alloy_primitives::B256;
@@ -420,6 +420,7 @@ where
                 let eth_api = registry.eth_api().clone();
                 let token = TempoToken::new(eth_api.clone());
                 let eth_ext = TempoEthExt::new(eth_api.clone());
+                let access_list = TempoAccessList::new(eth_api.clone());
                 let simulate = TempoSimulate::new(eth_api);
                 let admin = TempoAdminApi::new(self.validator_key);
                 let operator = TempoOperatorRpc::new(registry.admin_api());
@@ -429,6 +430,7 @@ where
                 modules.merge_configured(token.into_rpc())?;
                 modules.merge_configured(eth_ext.into_rpc())?;
                 modules.merge_if_module_configured(RethRpcModule::Eth, simulate.into_rpc())?;
+                modules.merge_if_module_configured(RethRpcModule::Eth, access_list.into_rpc())?;
                 modules.merge_configured(fork_schedule.into_rpc())?;
                 modules.merge_if_module_configured(
                     RethRpcModule::Other("operator".to_string()),

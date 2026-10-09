@@ -83,6 +83,8 @@ pub struct StorageActionsState {
     /// Allows for nesting multiple unrecorded scopes, while [`StorageActions::recorded`]
     /// can temporarily reset the depth to resume normal recording inside such a scope.
     unrecorded_depth: usize,
+    /// Also record raw journal accesses for RPC tracing, independently of logical scopes.
+    record_raw: bool,
 }
 
 impl StorageActions {
@@ -94,6 +96,25 @@ impl StorageActions {
     /// Returns an [`StorageActions`] instance with actions recording enabled.
     pub fn enabled() -> Self {
         Self::Enabled(Rc::default())
+    }
+
+    /// Enables logical actions and raw persistent journal accesses for RPC tracing.
+    /// Raw accesses are retained across reverted calls and unrecorded logical scopes.
+    pub fn enabled_raw() -> Self {
+        Self::Enabled(Rc::new(RefCell::new(StorageActionsState {
+            record_raw: true,
+            ..Default::default()
+        })))
+    }
+
+    /// Records a raw journal access only in the RPC tracing mode.
+    pub fn record_raw(&self, action: StorageAction) {
+        if let Self::Enabled(state) = self {
+            let mut state = state.borrow_mut();
+            if state.record_raw {
+                state.actions.push(action);
+            }
+        }
     }
 
     /// Enables actions recording.
@@ -223,6 +244,21 @@ impl Drop for RecordedStorageActionsGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raw_access_recording_does_not_change_logical_scopes() {
+        let action = StorageAction::Sload(Address::ZERO, U256::ONE, U256::ZERO);
+        for actions in [StorageActions::disabled(), StorageActions::enabled()] {
+            actions.record_raw(action);
+            assert!(actions.take().unwrap_or_default().is_empty());
+        }
+        let actions = StorageActions::enabled_raw();
+        actions.unrecorded(|| {
+            actions.record(action);
+            actions.record_raw(action);
+        });
+        assert_eq!(actions.take(), Some(vec![action]));
+    }
 
     #[test]
     fn test_unrecorded_record_always() {
