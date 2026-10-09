@@ -101,7 +101,9 @@ impl BestTransactionsPrewarming {
                 let parallel = ctx.prewarm.parallel;
                 let prewarm = ctx.prewarm.clone();
                 let commands_tx = ctx.commands_tx.clone();
-                let transactions_tx = ctx.transactions_tx.clone();
+                // Only parallel prewarming delivers from the task. Holding a sender otherwise
+                // would make the invalidation drain below wait for every in-flight prewarm.
+                let transactions_tx = parallel.then(|| ctx.transactions_tx.clone());
 
                 if !parallel {
                     let _ = ctx
@@ -111,7 +113,7 @@ impl BestTransactionsPrewarming {
 
                 scope.spawn(move |_| {
                     let tx = Self::prewarm_transaction(prewarm, tx, expiring_nonce_offset);
-                    if parallel {
+                    if let Some(transactions_tx) = transactions_tx {
                         let _ = transactions_tx.send(Some(tx));
                     }
                     let _ = commands_tx.send(BestTransactionsCommand::Advance);
@@ -513,7 +515,11 @@ mod tests {
     use std::{
         collections::VecDeque,
         num::NonZeroU64,
-        sync::{Arc, Mutex},
+        sync::{
+            Arc, Barrier, Mutex,
+            atomic::{AtomicUsize, Ordering},
+            mpsc,
+        },
         thread,
         time::{Duration, Instant},
     };
@@ -953,6 +959,63 @@ mod tests {
         assert_eq!(next.tx.hash(), tx3.hash());
         assert_ne!(next.tx.hash(), tx2.hash());
         wait_until(|| log.lock().unwrap().invalid == 1);
+    }
+
+    #[test]
+    fn mark_invalid_does_not_wait_for_in_flight_prewarms() {
+        let executor = TaskExecutor::test();
+        let pool = executor.prewarming_pool();
+        let threads = pool.current_num_threads();
+
+        // Park every prewarm worker so no prewarm task can finish until released.
+        let release = Arc::new(Barrier::new(threads + 1));
+        let parked = Arc::new(AtomicUsize::new(0));
+        for _ in 0..threads {
+            let release = release.clone();
+            let parked = parked.clone();
+            pool.spawn(move || {
+                parked.fetch_add(1, Ordering::SeqCst);
+                release.wait();
+            });
+        }
+        wait_until(|| parked.load(Ordering::SeqCst) == threads);
+
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        let releaser = thread::spawn(move || {
+            let timed_out = done_rx.recv_timeout(Duration::from_secs(5)).is_err();
+            release.wait();
+            timed_out
+        });
+
+        // More transactions than the eager window plus the first consumer advance, so the tail
+        // needs `Advance` commands that the coordinator handles only after the invalidation.
+        let txs = (0..threads * 2 + 3)
+            .map(|_| test_tx(Address::random(), 0))
+            .collect::<Vec<_>>();
+        let mut prewarming =
+            prewarming_with_executor(executor.clone(), txs.clone(), Arc::default());
+        assert_eq!(
+            prewarming.next().as_ref().map(|tx| tx.tx.hash()),
+            Some(txs[0].hash())
+        );
+
+        prewarming.mark_invalid(
+            &PrewarmedTransaction::without_replay(txs[0].clone()),
+            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
+        );
+        let rest = (1..txs.len())
+            .map(|_| *prewarming.next().expect("transaction").tx.hash())
+            .collect::<Vec<_>>();
+        let _ = done_tx.send(());
+
+        assert!(
+            !releaser.join().unwrap(),
+            "mark_invalid waited for in-flight prewarm tasks"
+        );
+        assert_eq!(
+            rest,
+            txs[1..].iter().map(|tx| *tx.hash()).collect::<Vec<_>>()
+        );
     }
 
     #[test]
