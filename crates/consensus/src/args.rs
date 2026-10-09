@@ -566,9 +566,10 @@ impl Args {
     /// Builds the shared proposal budget estimator from the consensus timing
     /// flags and the payload builder's initial multiplier.
     ///
-    /// The binary builds the estimator before the node launches, long before
-    /// [`Self::validate`] runs in the consensus stack, so invalid proposal
-    /// budget flags are reported here, with the same error.
+    /// This is where invalid proposal budget flags are reported: the binary
+    /// builds the estimator before the node launches, and an estimator only
+    /// exists for a valid configuration, so [`Self::validate`] does not check
+    /// them again.
     pub fn estimator(
         &self,
         build_time_multiplier: f64,
@@ -577,28 +578,10 @@ impl Args {
             .map_err(|reason| eyre::eyre!("invalid proposal budget flags: {reason}"))
     }
 
-    /// Checks that `estimator`, which the payload builder shares, was
-    /// configured from these flags, so that none of them is silently
-    /// ignored.
-    ///
-    /// The build time multiplier is the payload builder's flag, so it is
-    /// taken from the estimator rather than compared. The configuration
-    /// itself needs no check: an estimator only exists for a valid one.
-    pub fn check_estimator(&self, estimator: &tempo_payload_types::Estimator) -> eyre::Result<()> {
-        let config = estimator.config();
-        let expected = self.estimator_config(config.build_time_multiplier);
-        eyre::ensure!(
-            config == expected,
-            "proposal budget estimator was configured differently than the consensus flags: \
-             {config:?} vs {expected:?}",
-        );
-        Ok(())
-    }
-
     /// Rejects Simplex timing values that Commonware's `simplex::Config::assert`
-    /// would panic on when the first epoch is entered, and proposal budget
-    /// flags the estimator would reject, so a misconfiguration fails at
-    /// startup with a descriptive error instead.
+    /// would panic on when the first epoch is entered, so a misconfiguration
+    /// fails at startup with a descriptive error instead. Proposal budget
+    /// flags are checked by [`Self::estimator`].
     pub fn validate(&self) -> eyre::Result<()> {
         let wait_for_proposal = self.wait_for_proposal.into_duration();
         let wait_for_notarizations = self.wait_for_notarizations.into_duration();
@@ -611,9 +594,6 @@ impl Args {
             self.views_to_track > 0,
             "`--consensus.views-to-track` must be greater than zero",
         );
-        self.estimator_config(tempo_payload_types::DEFAULT_BUILD_TIME_MULTIPLIER)
-            .validate()
-            .map_err(|reason| eyre::eyre!("invalid proposal budget flags: {reason}"))?;
         let inactive_time_before_leader_skip =
             self.inactive_time_before_leader_skip.into_duration();
         let wait_to_rebroadcast_nullify = self.wait_to_rebroadcast_nullify.into_duration();
@@ -900,7 +880,7 @@ mod tests {
 
         // An explicit cap is used as given.
         let args = parse(&["--dev", "--consensus.network-budget-max", "320ms"]).consensus;
-        args.validate().unwrap();
+        args.estimator(multiplier).unwrap();
         assert_eq!(
             args.estimator_config(multiplier).network_budget_max,
             Duration::from_millis(320)
@@ -914,7 +894,7 @@ mod tests {
             "90",
         ])
         .consensus;
-        args.validate().unwrap();
+        args.estimator(multiplier).unwrap();
         let config = args.estimator_config(multiplier);
         assert_eq!(config.network_reserve_percentile, 90);
         assert!(config.network_reserve_fast_rise);
@@ -926,7 +906,7 @@ mod tests {
 
         // An explicit value turns it off.
         let args = parse(&["--dev", "--consensus.network-reserve-fast-rise=false"]).consensus;
-        args.validate().unwrap();
+        args.estimator(multiplier).unwrap();
         assert!(!args.estimator_config(multiplier).network_reserve_fast_rise);
 
         for percentile in ["49", "101"] {
@@ -936,7 +916,7 @@ mod tests {
                 percentile,
             ])
             .consensus
-            .validate()
+            .estimator(multiplier)
             .unwrap_err();
             assert!(
                 err.to_string().contains("network reserve percentile"),
@@ -949,41 +929,26 @@ mod tests {
     fn overrun_tolerance_flag_reaches_the_shared_estimator() {
         let multiplier = tempo_payload_types::DEFAULT_BUILD_TIME_MULTIPLIER;
         let now = std::time::Instant::now();
-        let default_args = parse(&["--dev"]).consensus;
         assert_eq!(
-            default_args
+            parse(&["--dev"])
+                .consensus
                 .estimator_config(multiplier)
                 .return_budget_overrun_tolerance,
             tempo_payload_types::DEFAULT_RETURN_BUDGET_OVERRUN_TOLERANCE
         );
 
-        // A custom tolerance passes the consistency check `run_consensus_stack`
-        // applies to the estimator the binary builds from the flags, and
-        // reaches every own proposal's budget.
+        // A custom tolerance reaches every own proposal's budget.
         let args = parse(&[
             "--dev",
             "--consensus.return-budget-overrun-tolerance",
             "40ms",
         ])
         .consensus;
-        args.validate().unwrap();
         let estimator = args.estimator(multiplier).unwrap();
-        args.check_estimator(&estimator).unwrap();
         assert_eq!(
             estimator.start_proposal(now).overrun_tolerance,
             Duration::from_millis(40)
         );
-
-        // The builder's multiplier is the estimator's own.
-        let estimator = args.estimator(1.3).unwrap();
-        args.check_estimator(&estimator).unwrap();
-
-        // An estimator configured apart from the flags is rejected.
-        let err = default_args
-            .check_estimator(&estimator)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("configured differently"), "{err}");
     }
 
     #[test]
@@ -999,8 +964,9 @@ mod tests {
             (["--consensus.network-budget", "350ms"], 350),
         ] {
             let args = parse(&[&["--dev"][..], &flags[..]].concat()).consensus;
-            args.validate()
-                .unwrap_or_else(|err| panic!("{flags:?}: {err}"));
+            if let Err(err) = args.estimator(multiplier) {
+                panic!("{flags:?}: {err}");
+            }
             assert_eq!(
                 args.network_budget_max(),
                 Duration::from_millis(cap),
@@ -1018,14 +984,12 @@ mod tests {
     fn estimator_reports_invalid_proposal_budget_flags() {
         let multiplier = tempo_payload_types::DEFAULT_BUILD_TIME_MULTIPLIER;
         parse(&["--dev"]).consensus.estimator(multiplier).unwrap();
-        // The binary builds the estimator before the consensus stack runs
-        // `validate`, so the estimator fails with the same descriptive error
-        // instead of adjusting the flags. An explicit cap is not adjusted
-        // either: one that leaves no proposal window fails with the reason.
+        // The binary builds the estimator before the node launches, so a flag
+        // the estimator rejects fails startup with the reason instead of being
+        // adjusted. An explicit cap is not adjusted either: one that leaves no
+        // proposal window fails with the reason.
         let args = parse(&["--dev", "--consensus.network-budget-max", "600ms"]).consensus;
-        let validate = args.validate().unwrap_err().to_string();
         let estimator = args.estimator(multiplier).unwrap_err().to_string();
-        assert_eq!(estimator, validate);
         assert_eq!(
             estimator,
             "invalid proposal budget flags: maximum network budget (600ms) must be smaller \

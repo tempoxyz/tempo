@@ -60,8 +60,7 @@ pub const MINIMAL_PEER_SYNC_FINALIZED_BLOCKS: u64 = 3 * MAINNET_TESTNET_EPOCH_LE
 /// `estimator` must be the handle the node's payload builder was given (see
 /// `TempoNode::with_estimator`), not merely one configured the same way:
 /// consensus feeds it the validation times and network samples the builder's
-/// stop decisions read, and reads back the builder's finished builds. Its
-/// configuration must match `config`, see [`Args::check_estimator`].
+/// stop decisions read, and reads back the builder's finished builds.
 pub async fn run_consensus_stack(
     context: commonware_runtime::tokio::Context,
     config: Args,
@@ -72,7 +71,6 @@ pub async fn run_consensus_stack(
     estimator: tempo_payload_types::Estimator,
 ) -> eyre::Result<()> {
     config.validate()?;
-    config.check_estimator(&estimator)?;
 
     let network_identity = config
         .network_identity()
