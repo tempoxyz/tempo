@@ -1,8 +1,7 @@
-use crate::monitor::{Monitor, prometheus_metrics};
+use crate::monitor::{Monitor, prometheus_metrics, register_metrics};
 use alloy::primitives::Address;
 use clap::Parser;
 use eyre::{Context, eyre};
-use metrics::{describe_counter, describe_gauge};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use poem::{EndpointExt, Route, Server, get, listener::TcpListener};
 use reqwest::Url;
@@ -55,19 +54,7 @@ impl MonitorArgs {
         .await
         .context("failed to initialize monitor")?;
 
-        describe_gauge!(
-            "tempo_fee_amm_user_reserves",
-            "User token reserves in the FeeAMM pool"
-        );
-        describe_gauge!(
-            "tempo_fee_amm_validator_reserves",
-            "Validator token reserves in the FeeAMM pool"
-        );
-
-        describe_counter!(
-            "tempo_fee_amm_errors",
-            "Number of errors encountered while fetching FeeAMM data"
-        );
+        register_metrics();
 
         let app = Route::new().at(
             "/metrics",
