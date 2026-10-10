@@ -1065,9 +1065,10 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
 
         // Committing the changesets syncs them to disk, which was about half of every
-        // iteration. Write them once and give every iteration a fresh copy.
+        // iteration. Write them once and give every iteration a fresh copy, on tmpfs where
+        // available since the call under test syncs as well.
         let synced_address = Address::repeat_byte(0x22);
-        let template_dir = tempfile::tempdir().unwrap();
+        let template_dir = crate::tmpfs_tempdir();
         {
             let provider: StaticFileProvider<TempoPrimitives> =
                 StaticFileProviderBuilder::read_write(template_dir.path())
@@ -1106,7 +1107,7 @@ mod tests {
         }
 
         for iteration in 0..iterations {
-            let static_dir = tempfile::tempdir().unwrap();
+            let static_dir = crate::tmpfs_tempdir();
             for entry in std::fs::read_dir(template_dir.path()).unwrap() {
                 let entry = entry.unwrap();
                 std::fs::copy(entry.path(), static_dir.path().join(entry.file_name())).unwrap();

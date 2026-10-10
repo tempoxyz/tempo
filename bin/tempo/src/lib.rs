@@ -692,6 +692,19 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
     Ok(())
 }
 
+/// Creates a temporary directory on tmpfs where available.
+///
+/// For tests whose runtime is dominated by fsync or syncfs latency on the CI disk, which is
+/// shared with node tests, rather than by the behavior they check.
+#[cfg(test)]
+pub(crate) fn tmpfs_tempdir() -> tempfile::TempDir {
+    #[cfg(target_os = "linux")]
+    if let Ok(dir) = tempfile::tempdir_in("/dev/shm") {
+        return dir;
+    }
+    tempfile::tempdir().unwrap()
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
