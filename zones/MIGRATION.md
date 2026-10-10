@@ -25,10 +25,6 @@ integration-test concurrency limits. Imported lint/test/build workflows are reti
 
 The remaining workflow and publication prerequisites are:
 
-- Zones reproducible builds have a separate concurrency group so they cannot
-  cancel Tempo builds, and are gated to `tempoxyz/zones` because the shared recipe
-  would run Tempo's `scripts/reproducible-build.sh`. Their recipe/script and Cargo
-  layout still need migration.
 
 The root Dependabot configuration also needs the final workspace layout before
 retiring the imported dependency configuration.
@@ -60,3 +56,9 @@ variable (each is disabled unless set to `true`):
 
 The gates deliberately separate repository changes from external cutover. These
 PRs do not deploy sensors, alter AWS/Depot trust, or enable publishing variables.
+
+The Zones reproducible workflow invokes `zones/scripts/reproducible-build.sh`
+with the root workspace as context. Its `zones-reproducible` profile preserves
+Zones' unwind behavior while Tempo's `reproducible` profile keeps abort behavior.
+The workflows retain separate concurrency groups. Independent Linux rebuilds are
+still required to establish byte-for-byte reproducibility after the import.
