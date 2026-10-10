@@ -25,14 +25,6 @@ integration-test concurrency limits. Imported lint/test/build workflows are reti
 
 The remaining workflow and publication prerequisites are:
 
-- Docker, release, benchmarks, and prover workflows retain distinct product
-  behavior. Their legacy paths, repository guards, tag/release ownership, and
-  external event/STS/AWS consumers need a coordinated migration. The Zones
-  Docker build is gated to `tempoxyz/zones` until then, since its recipe still
-  expects `docker/`, `crates/contracts`, and the Zones Cargo workspace. The Zones
-  release workflow is gated the same way because Tempo and Zones tags share the
-  `v*.*.*` namespace. Tempo already has `v0.1.0`, `v0.2.0`, and `v0.3.0`, so Zones
-  releases need their own tag scheme before that gate is lifted.
 - Zones reproducible builds have a separate concurrency group so they cannot
   cancel Tempo builds, and are gated to `tempoxyz/zones` because the shared recipe
   would run Tempo's `scripts/reproducible-build.sh`. Their recipe/script and Cargo
@@ -45,3 +37,26 @@ The root Test workflow builds Earn before Zones and distributes
 `crates/zones/contracts/out` to each Rust test shard. The merged
 [tempoxyz/earn#365](https://github.com/tempoxyz/earn/pull/365) authorizes Tempo
 through Earn’s `zones-read` STS policy.
+
+## Product workflow cutover
+
+Zones releases use `zones/vX.Y.Z` tags and keep version 0.3.5 in their manifests;
+Tempo keeps `vX.Y.Z` tags and the root workspace version. Zones release assets
+use the slash-free `vX.Y.Z` version and never become the repository's latest
+release. Docker recipes live under `zones/docker` and build the root workspace.
+The Zones tooling image keeps its `tempo-xtask` entrypoint but contains the
+`tempo-zone-xtask` executable.
+
+External consumers must be migrated before enabling the corresponding repository
+variable (each is disabled unless set to `true`):
+
+| Variable | Required external cutover |
+| --- | --- |
+| `ZONES_PUBLISH_ENABLED` | Authorize Tempo in Depot project `0c6tg19qsp`, transfer GHCR/Docker Hub package access and secrets, and verify the prover genesis/artifact consumers against the new workflow paths. |
+| `ZONES_EVENTS_ENABLED` | Transfer event credentials and update `registry_package` sensors to accept `repository: tempoxyz/tempo` and fetch Tempo commit SHAs. |
+| `ZONES_BENCHMARK_ENABLED` | Provision the benchmark runner and ClickHouse credentials for Tempo, and verify the imported benchmark helper paths. |
+| `ZONES_PROVER_BENCHMARK_ENABLED` | Update the benchmark repository's STS policy and AWS `benchmark-runner` trust, and migrate `scripts/zones_prover/run.sh` to Tempo checkouts, `crates/zones/contracts`, and `tempo-zone-xtask`. |
+| `ZONES_PROVER_E2E_ENABLED` | Deploy the prover event sensor and pinned templates for Tempo commit/status ownership, workflow filenames, and imported source paths; transfer event credentials. |
+
+The gates deliberately separate repository changes from external cutover. These
+PRs do not deploy sensors, alter AWS/Depot trust, or enable publishing variables.

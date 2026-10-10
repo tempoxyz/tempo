@@ -34,19 +34,19 @@ target "docker-metadata" {}
 
 # Base image with all dependencies pre-compiled
 target "chef" {
-  dockerfile = "docker/Dockerfile.chef"
+  dockerfile = "zones/docker/Dockerfile.chef"
   context = "."
   platforms = ["linux/amd64"]
   args = {
     RUST_PROFILE = "profiling"
     RUST_FEATURES = "jemalloc"
     CACHE_FAMILY = "node"
-    RUST_BINARIES = "tempo-zone tempo-xtask"
+    RUST_BINARIES = "tempo-zone tempo-zone-xtask"
   }
 }
 
 target "prover-chef" {
-  dockerfile = "docker/Dockerfile.chef"
+  dockerfile = "zones/docker/Dockerfile.chef"
   context = "."
   platforms = ["linux/amd64"]
   args = {
@@ -60,7 +60,7 @@ target "prover-chef" {
 # Utilities and enclave share the same release dependency graph.
 # Keep its layer and cache mounts reusable across both consumers.
 target "_common" {
-  dockerfile = "docker/Dockerfile"
+  dockerfile = "zones/docker/Dockerfile"
   context = "."
   contexts = {
     chef = "target:chef"
@@ -84,7 +84,7 @@ target "tempo-zone" {
 # verification workflow. This uses Dockerfile.reproducible's dedicated build
 # profile and flags, rather than the normal Dockerfile with a profile override.
 target "tempo-zone-reproducible" {
-  dockerfile = "docker/Dockerfile.reproducible"
+  dockerfile = "zones/docker/Dockerfile.reproducible"
   context = "."
   target = "tempo-zone-reproducible"
   args = {
@@ -100,7 +100,7 @@ target "tempo-zone-reproducible" {
 }
 
 target "tempo-zone-prover-enclave" {
-  dockerfile = "docker/Dockerfile.prover-enclave"
+  dockerfile = "zones/docker/Dockerfile.prover-enclave"
   context = "."
   contexts = {
     chef = "target:prover-chef"
@@ -115,7 +115,7 @@ target "tempo-zone-prover-enclave" {
 
 target "tempo-zone-prover-utils" {
   inherits = ["docker-metadata"]
-  dockerfile = "docker/Dockerfile.prover-utils"
+  dockerfile = "zones/docker/Dockerfile.prover-utils"
   context = "."
   contexts = {
     chef = "target:prover-chef"
@@ -140,7 +140,7 @@ target "nitro-enclaves-kernel" {
 }
 
 target "tempo-zone-prover-eif-builder" {
-  dockerfile = "docker/Dockerfile.prover-eif-builder"
+  dockerfile = "zones/docker/Dockerfile.prover-eif-builder"
   context = "."
   contexts = {
     nitro-kernel = "target:nitro-enclaves-kernel"
@@ -152,7 +152,7 @@ target "tempo-zone-prover-eif-builder" {
 # built because Nitro CLI requires access to a local Docker image store.
 target "tempo-zone-prover" {
   inherits = ["docker-metadata"]
-  dockerfile = "docker/Dockerfile.prover-host"
+  dockerfile = "zones/docker/Dockerfile.prover-host"
   context = "."
   contexts = {
     prover-eif = "${PROVER_EIF_CONTEXT}"

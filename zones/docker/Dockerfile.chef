@@ -32,7 +32,7 @@ ARG CACHE_FAMILY=node
 ARG RUST_PROFILE=profiling
 ARG RUST_FEATURES="jemalloc"
 ARG EXTRA_RUSTFLAGS=""
-ARG RUST_BINARIES="tempo-zone tempo-xtask"
+ARG RUST_BINARIES="tempo-zone tempo-zone-xtask"
 
 COPY --from=planner /app/recipe.json recipe.json
 

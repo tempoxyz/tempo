@@ -23,7 +23,7 @@ permissions:
 # Every main push gets its own full run; newer commits do not cancel ancestry.
 jobs:
   dispatch:
-    if: github.repository == 'tempoxyz/zones'
+    if: github.repository == 'tempoxyz/tempo' && vars.ZONES_PROVER_E2E_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -75,11 +75,15 @@ jobs:
           head: ${{ steps.candidate.outputs.sha }}
           filters: |
             prover:
-              - 'crates/sequencer/**'
-              - 'crates/prover/**'
-              - 'crates/precompiles/**'
-              - 'crates/spf/**'
-              - 'crates/evm/**'
+              - 'crates/zones/sequencer/**'
+              - 'crates/zones/prover/**'
+              - 'crates/zones/precompiles/**'
+              - 'crates/zones/spf/**'
+              - 'crates/zones/evm/**'
+              - 'bin/prover/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/zones-prover-e2e.yml'
       - name: Publish prover E2E event
         id: publish
         if: github.event_name != 'merge_group' || contains(fromJSON(steps.paths.outputs.changes || '[]'), 'prover')
@@ -99,7 +103,7 @@ jobs:
           printf '%s' "$EVENTS_CERT" > "$cert"
           payload=$(jq -cn --arg sha "$SHA" --arg run "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
             --arg trigger "$GITHUB_EVENT_NAME" --arg suite "$SUITE" --arg ref "$GITHUB_REF" \
-            '{repository:"tempoxyz/zones",event:"tempo_zone_prover_e2e",data:{sha:$sha,run:$run,trigger:$trigger,suite:$suite,ref:$ref}}')
+            '{repository:"tempoxyz/tempo",event:"tempo_zone_prover_e2e",data:{sha:$sha,run:$run,trigger:$trigger,suite:$suite,ref:$ref}}')
           mapfile -t events_args < <(python3 -c 'import os,shlex; print("\n".join(shlex.split(os.environ["EVENTS_ARGS"])))')
           [[ ${#events_args[@]} -gt 0 && -n "${events_args[0]}" ]]
           curl --fail-with-body --silent --show-error --connect-timeout 15 --max-time 60 \

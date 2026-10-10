@@ -15,13 +15,13 @@ OTHER_SHA = "b" * 40
 
 
 def run_step(job, name, *, actor="member", triggering_actor="member", members=None,
-             body=None, head=SHA, repo="tempoxyz/zones", event="issue_comment", feature_sha=""):
+             body=None, head=SHA, repo="tempoxyz/tempo", event="issue_comment", feature_sha=""):
     step = next(s for s in WORKFLOW["jobs"][job]["steps"] if s.get("name") == name)
     payload = {
         "script": step["with"]["script"],
         "context": {"actor": actor, "eventName": event,
                     "payload": {"comment": {"body": body if body is not None else f"derek bench {SHA}"}},
-                    "issue": {"number": 1507}, "repo": {"owner": "tempoxyz", "repo": "zones"}},
+                    "issue": {"number": 1507}, "repo": {"owner": "tempoxyz", "repo": "tempo"}},
         "members": members if members is not None else ["member", "other-member"],
         "head": {"sha": head, "repo": {"full_name": repo} if repo else None},
         "env": {"TRIGGERING_ACTOR": triggering_actor, "FEATURE_SHA": feature_sha},

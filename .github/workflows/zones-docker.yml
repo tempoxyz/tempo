@@ -5,7 +5,7 @@ on:
     branches:
       - main
     tags:
-      - "v*.*.*"
+      - "zones/v*.*.*"
   pull_request:
   merge_group:
   workflow_dispatch:
@@ -68,7 +68,8 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' &&
       inputs.reproducible_verify == true &&
-      github.repository == 'tempoxyz/zones' &&
+      github.repository == 'tempoxyz/tempo' &&
+      vars.ZONES_PUBLISH_ENABLED == 'true' &&
       github.ref == 'refs/heads/main'
     uses: tempoxyz/gh-actions/.github/workflows/reproducible-image-verify.yml@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
     permissions:
@@ -80,24 +81,23 @@ jobs:
       build-definitions-sha: ${{ github.workflow_sha }}
       build-definition-paths: |
         .dockerignore
-        docker/Dockerfile.reproducible
-        docker/docker-bake.hcl
-        scripts/reproducible-build.sh
+        zones/docker/Dockerfile.reproducible
+        zones/docker/docker-bake.hcl
+        zones/scripts/reproducible-build.sh
       depot-project: 0c6tg19qsp
       candidate-repository: ghcr.io/tempoxyz/tempo-zone-repro
-      bake-file: docker/docker-bake.hcl
+      bake-file: zones/docker/docker-bake.hcl
       bake-target: tempo-zone-reproducible
       binary-path: /usr/local/bin/tempo-zone
-      build-script: scripts/reproducible-build.sh
+      build-script: zones/scripts/reproducible-build.sh
       rebuild-output: out/tempo-zone
 
   build-and-push:
     name: Build and Push Docker Images
-    # The Docker recipe still targets the Zones repository layout (docker/,
-    # crates/contracts, zones/Cargo.toml). Keep it inert in Tempo until the
-    # Docker migration in zones/MIGRATION.md lands.
+    # Enable after Depot, registry access, and genesis consumers are migrated.
     if: >-
-      github.repository == 'tempoxyz/zones' &&
+      github.repository == 'tempoxyz/tempo' &&
+      vars.ZONES_PUBLISH_ENABLED == 'true' &&
       (github.event_name != 'workflow_dispatch' || inputs.reproducible_verify != true)
     runs-on: depot-ubuntu-latest-16
     permissions:
@@ -116,6 +116,15 @@ jobs:
 
       - uses: tempoxyz/gh-actions/vendor/depot/setup-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
 
+      - name: Resolve Zones image version
+        id: release-version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/zones/v* ]]; then
+            echo "version=${TAG#zones/}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Docker metadata for tempo-zone
         id: meta-tempo-zone
         uses: tempoxyz/gh-actions/vendor/docker/metadata-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
@@ -127,9 +136,9 @@ jobs:
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
+            type=semver,pattern={{version}},value=${{ steps.release-version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/zones/v') }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/zones/v') }}
+            type=semver,pattern={{major}},value=${{ steps.release-version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/zones/v') }}
             type=raw,value=stable,enable=${{ github.ref_type == 'tag' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
@@ -147,9 +156,9 @@ jobs:
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
+            type=semver,pattern={{version}},value=${{ steps.release-version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/zones/v') }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/zones/v') }}
+            type=semver,pattern={{major}},value=${{ steps.release-version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/zones/v') }}
             type=raw,value=stable,enable=${{ github.ref_type == 'tag' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
@@ -167,9 +176,9 @@ jobs:
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
+            type=semver,pattern={{version}},value=${{ steps.release-version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/zones/v') }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/zones/v') }}
+            type=semver,pattern={{major}},value=${{ steps.release-version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/zones/v') }}
             type=raw,value=stable,enable=${{ github.ref_type == 'tag' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
@@ -187,9 +196,9 @@ jobs:
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
+            type=semver,pattern={{version}},value=${{ steps.release-version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/zones/v') }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/zones/v') }}
+            type=semver,pattern={{major}},value=${{ steps.release-version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/zones/v') }}
             type=raw,value=stable,enable=${{ github.ref_type == 'tag' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
@@ -197,7 +206,7 @@ jobs:
             type=ref,event=pr
 
       - name: Log in to Container Registry
-        if: github.repository == 'tempoxyz/zones'
+        if: github.repository == 'tempoxyz/tempo'
         uses: tempoxyz/gh-actions/vendor/docker/login-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
         with:
           registry: ${{ env.REGISTRY }}
@@ -205,7 +214,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log in to Docker Hub
-        if: github.repository == 'tempoxyz/zones'
+        if: github.repository == 'tempoxyz/tempo'
         uses: tempoxyz/gh-actions/vendor/docker/login-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
         with:
           username: ${{ secrets.DOCKER_HUB_USER }}
@@ -216,7 +225,7 @@ jobs:
 
       - name: Configure persistent intermediate layer cache
         env:
-          WRITE_BUILD_CACHE: ${{ github.repository == 'tempoxyz/zones' && github.event_name != 'pull_request' && github.event_name != 'merge_group' }}
+          WRITE_BUILD_CACHE: ${{ github.repository == 'tempoxyz/tempo' && github.event_name != 'pull_request' && github.event_name != 'merge_group' }}
         run: |
           python3 - <<'PYTHON'
           import json, os
@@ -242,7 +251,7 @@ jobs:
         run: |
           set -euo pipefail
           # Include the pinned kernel source and CLI recipe in the cache identity.
-          key=$(cat docker/Dockerfile.prover-eif-builder docker/docker-bake.hcl | sha256sum | cut -d' ' -f1)
+          key=$(cat zones/docker/Dockerfile.prover-eif-builder zones/docker/docker-bake.hcl | sha256sum | cut -d' ' -f1)
           ref="$REGISTRY/tempo-zone-prover-eif-builder:inputs-$key"
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           if [[ "$REFRESH_BUILDER" != 'true' ]] && docker pull --platform linux/amd64 "$ref"; then
@@ -260,7 +269,7 @@ jobs:
         uses: tempoxyz/gh-actions/vendor/depot/bake-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
         with:
           files: |
-            docker/docker-bake.hcl
+            zones/docker/docker-bake.hcl
             ${{ runner.temp }}/zones-buildcache.json
             ${{ steps.meta-tempo-zone.outputs.bake-file }}
             ${{ steps.meta-tempo-zone-xtask.outputs.bake-file }}
@@ -273,9 +282,9 @@ jobs:
           set: |
             tempo-zone-prover-compiled.target=compiled
             tempo-zone-prover-compiled.output=type=local,dest=target/prover-compiled
-            tempo-zone.output=type=image,push=${{ github.repository == 'tempoxyz/zones' && github.event_name != 'pull_request' }}
-            tempo-zone-xtask.output=type=image,push=${{ github.repository == 'tempoxyz/zones' && github.event_name != 'pull_request' }}
-            tempo-zone-prover-utils.output=type=image,push=${{ github.repository == 'tempoxyz/zones' && github.event_name != 'pull_request' }}
+            tempo-zone.output=type=image,push=${{ github.repository == 'tempoxyz/tempo' && github.event_name != 'pull_request' && github.event_name != 'merge_group' }}
+            tempo-zone-xtask.output=type=image,push=${{ github.repository == 'tempoxyz/tempo' && github.event_name != 'pull_request' && github.event_name != 'merge_group' }}
+            tempo-zone-prover-utils.output=type=image,push=${{ github.repository == 'tempoxyz/tempo' && github.event_name != 'pull_request' && github.event_name != 'merge_group' }}
           # Scheduled builds refresh moving external tools and base images. All
           # commit/tag/manual builds can safely reuse Depot's content-addressed
           # layer cache and will still invalidate layers when inputs change.
@@ -334,12 +343,12 @@ jobs:
         uses: tempoxyz/gh-actions/vendor/depot/bake-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
         with:
           files: |
-            docker/docker-bake.hcl
+            zones/docker/docker-bake.hcl
             ${{ runner.temp }}/zones-buildcache.json
           targets: ${{ steps.eif_builder.outputs.hit == 'true' && 'tempo-zone-prover-enclave' || 'prover-eif-inputs' }}
           set: |
             tempo-zone-prover-enclave.tags=tempo-zone-prover-enclave:eif-source
-            tempo-zone-prover-enclave.dockerfile=docker/Dockerfile.prover-package
+            tempo-zone-prover-enclave.dockerfile=zones/docker/Dockerfile.prover-package
             tempo-zone-prover-enclave.contexts.chef=.
             tempo-zone-prover-enclave.contexts.prover-binary=target/prover-compiled
             tempo-zone-prover-enclave.args.PROVER_BINARY_SHA256=${{ steps.compiled.outputs.binary_sha }}
@@ -354,7 +363,7 @@ jobs:
       - name: Publish EIF builder cache
         if: >-
           steps.eif_builder.outputs.hit != 'true' &&
-          github.repository == 'tempoxyz/zones' &&
+          github.repository == 'tempoxyz/tempo' &&
           github.event_name != 'pull_request' && github.event_name != 'merge_group'
         env:
           BUILDER_REF: ${{ steps.eif_builder.outputs.ref }}
@@ -420,7 +429,7 @@ jobs:
         uses: tempoxyz/gh-actions/vendor/depot/bake-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
         with:
           files: |
-            docker/docker-bake.hcl
+            zones/docker/docker-bake.hcl
             ${{ runner.temp }}/zones-buildcache.json
             ${{ steps.meta-tempo-zone-prover.outputs.bake-file }}
           targets: tempo-zone-prover
@@ -431,7 +440,7 @@ jobs:
             tempo-zone-prover.args.NITRO_PCR2=${{ steps.prover_measurements.outputs.pcr2 }}
           project: 0c6tg19qsp
           push: >-
-            ${{ github.repository == 'tempoxyz/zones' &&
+            ${{ github.repository == 'tempoxyz/tempo' &&
                 github.event_name != 'pull_request' &&
                 github.event_name != 'merge_group' }}
           no-cache: ${{ github.event_name == 'schedule' }}
@@ -439,7 +448,8 @@ jobs:
 
       - name: Publish Zones CI event
         if: >-
-          github.repository == 'tempoxyz/zones' &&
+          vars.ZONES_EVENTS_ENABLED == 'true' &&
+          github.repository == 'tempoxyz/tempo' &&
           github.event_name == 'push' &&
           github.ref == 'refs/heads/main'
         shell: bash
@@ -476,7 +486,7 @@ jobs:
             --arg branch "$GITHUB_REF_NAME" \
             --arg digest "$digest" \
             '{
-              repository: "tempoxyz/zones",
+              repository: "tempoxyz/tempo",
               event: "registry_package",
               data: {
                 tag: $tag,
