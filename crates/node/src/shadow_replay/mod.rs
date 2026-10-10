@@ -37,7 +37,7 @@ use reth_evm::{
     BlockExecutor as _, BlockExecutorFactory as _, ConfigureEvm as _,
     database::StateProviderDatabase,
 };
-use reth_execution_types::TransactionChanges;
+use reth_execution_types::{StateUpdate, TransactionChanges};
 use reth_primitives_traits::RecoveredBlock;
 use reth_provider::{
     CanonStateSubscriptions, ChainSpecProvider, StateProvider, StateProviderFactory,
@@ -308,7 +308,7 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
         let updates = Arc::new(Mutex::new(Vec::new()));
         executor.set_state_hook({
             let updates = Arc::clone(&updates);
-            move |state| updates.lock().push(state)
+            move |state| updates.lock().push(evm_state(&state))
         });
         let mut real = Evidence::default();
         if let Err(e) = executor.apply_pre_execution_changes() {
@@ -393,7 +393,7 @@ impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
         let updates = Arc::new(Mutex::new(Vec::new()));
         executor.set_state_hook({
             let updates = Arc::clone(&updates);
-            move |state| updates.lock().push(state)
+            move |state| updates.lock().push(evm_state(&state))
         });
         let mut shadow = Evidence::default();
         if let Err(e) = executor.apply_pre_execution_changes() {
@@ -504,6 +504,45 @@ fn restore_pre_block_info(cache: &mut Cache, saved: Vec<SavedPreBlockInfo>) {
         }
         cache.accounts.insert(address, Some(candidate));
     }
+}
+
+/// Rebuilds the revm state a streamed state update describes.
+fn evm_state(state: &StateUpdate) -> EvmState {
+    state
+        .accounts
+        .iter()
+        .map(|update| {
+            let mut account =
+                reth_revm::state::Account::from(update.current.clone().unwrap_or_default());
+            *account.original_info_mut() = update.original.clone().unwrap_or_default();
+            account.mark_touch();
+            account.status.set(
+                reth_revm::state::AccountStatus::LoadedAsNotExisting,
+                update.original.is_none(),
+            );
+            if update.created {
+                account.mark_created();
+            }
+            if update.current.is_none() {
+                account.mark_selfdestruct();
+            }
+            account.storage = update
+                .storage
+                .iter()
+                .map(|(key, slot)| {
+                    (
+                        *key,
+                        reth_revm::state::EvmStorageSlot::new_changed(
+                            slot.previous_or_original_value,
+                            slot.present_value,
+                            reth_revm::state::TransactionId::ZERO,
+                        ),
+                    )
+                })
+                .collect();
+            (update.address, account)
+        })
+        .collect()
 }
 
 fn take_updates(updates: &Mutex<Vec<EvmState>>) -> TransitionState {
@@ -813,7 +852,7 @@ mod tests {
         let updates = Arc::new(Mutex::new(Vec::new()));
         executor.set_state_hook({
             let updates = Arc::clone(&updates);
-            move |state| updates.lock().push(state)
+            move |state| updates.lock().push(evm_state(&state))
         });
         executor.apply_pre_execution_changes().unwrap();
         let pre_block = take_updates(&updates);
