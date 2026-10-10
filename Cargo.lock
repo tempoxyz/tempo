@@ -1153,6 +1153,7 @@ dependencies = [
  "smallvec",
  "thiserror 2.0.18",
  "tracing",
+ "triomphe",
 ]
 
 [[package]]
