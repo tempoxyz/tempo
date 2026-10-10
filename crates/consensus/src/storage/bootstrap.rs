@@ -1,7 +1,5 @@
 //! Establish a certified consensus anchor before starting a node after historical sync.
 
-use std::time::Duration;
-
 use alloy_consensus::BlockHeader as _;
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_consensus::types::{Epocher as _, FixedEpocher, Height};
@@ -14,6 +12,7 @@ use reth_provider::{
     BlockHashReader as _, BlockNumReader as _, BlockReader as _, BlockSource,
     ChainStateBlockWriter as _, DBProvider as _, DatabaseProviderFactory as _,
 };
+use std::time::Duration;
 use tempo_chainspec::NetworkIdentity;
 use tempo_node::{
     TempoExecutionData, TempoFullNode,
@@ -81,7 +80,7 @@ pub async fn bootstrap(
             "bootstrap floor digest mismatch"
         );
         let boundary = blocks
-            .get(Identifier::Index(boundary_height(&epochs, height)))
+            .get(Identifier::Index(verifier.boundary_height(height)))
             .await?
             .ok_or_eyre("bootstrap boundary block is missing")?;
         verify_boundary(&mut context, &certificate, boundary.header())?;
@@ -92,7 +91,7 @@ pub async fn bootstrap(
             .build(upstream_url)
             .await?;
         let floor = client.get_finalization(Query::Latest).await?;
-        let height = boundary_height(&epochs, floor.block.number());
+        let height = verifier.boundary_height(floor.block.number());
         let boundary = if height == 0 {
             CertifiedBlock {
                 epoch: 0,
@@ -108,7 +107,7 @@ pub async fn bootstrap(
             client.get_finalization(Query::Height(height)).await?
         };
         let (certificate, boundary_certificate) =
-            verify_anchor(&mut context, &verifier, &epochs, &floor, &boundary)?;
+            verifier.verify_anchor(&mut context, &floor, &boundary)?;
         let floor = Block::try_from_execution_block(floor.block)?;
         let boundary = Block::try_from_execution_block(boundary.block)?;
         // A durable certificate is the commit marker: its blocks must survive a restart first.
@@ -228,31 +227,3 @@ pub async fn bootstrap(
     provider.commit()?;
     Ok(())
 }
-
-fn boundary_height(epochs: &FixedEpocher, height: u64) -> u64 {
-    let first = epochs.containing(Height::new(height)).unwrap().first();
-    first.previous().unwrap_or_default().get()
-}
-
-fn verify_anchor(
-    context: &mut impl rand_core::CryptoRng,
-    verifier: &FinalizationVerifier,
-    epochs: &FixedEpocher,
-    floor: &CertifiedBlock,
-    boundary: &CertifiedBlock,
-) -> eyre::Result<(Certificate, Option<Certificate>)> {
-    let certificate = verifier.decode_and_verify(context, floor)?;
-    ensure!(
-        boundary.block.number() == boundary_height(epochs, floor.block.number()),
-        "bootstrap boundary height mismatch"
-    );
-    let boundary_certificate = (boundary.block.number() != 0)
-        .then(|| verifier.decode_and_verify(context, boundary))
-        .transpose()?;
-    verify_boundary(context, &certificate, boundary.block.header())?;
-    Ok((certificate, boundary_certificate))
-}
-
-#[cfg(test)]
-#[path = "bootstrap_test.rs"]
-mod test;

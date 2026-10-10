@@ -1,7 +1,5 @@
 //! Verification of Tempo consensus finalization certificates.
 
-use std::sync::Arc;
-
 use alloy_consensus::BlockHeader as _;
 use commonware_codec::{DecodeExt as _, ReadExt as _};
 use commonware_consensus::{
@@ -16,6 +14,7 @@ use commonware_parallel::Sequential;
 use eyre::{WrapErr as _, ensure};
 use rand_core::CryptoRng;
 use reth_consensus::ConsensusError;
+use std::sync::Arc;
 use tempo_chainspec::NetworkIdentity;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::consensus::validate_body_against_header;
@@ -121,6 +120,35 @@ impl FinalizationVerifier {
         self.verify_certificate(rng, &finalization)?;
 
         Ok(finalization)
+    }
+
+    /// Verify a certified anchor and the boundary supplying its full DKG scheme.
+    pub(crate) fn verify_anchor(
+        &self,
+        rng: &mut impl CryptoRng,
+        floor: &CertifiedBlock,
+        boundary: &CertifiedBlock,
+    ) -> eyre::Result<(Certificate, Option<Certificate>)> {
+        let certificate = self.decode_and_verify(rng, floor)?;
+        ensure!(
+            boundary.block.number() == self.boundary_height(floor.block.number()),
+            "bootstrap boundary height mismatch"
+        );
+        let boundary_certificate = (boundary.block.number() != 0)
+            .then(|| self.decode_and_verify(rng, boundary))
+            .transpose()?;
+        verify_boundary(rng, &certificate, boundary.block.header())?;
+        Ok((certificate, boundary_certificate))
+    }
+
+    /// Return the boundary supplying the DKG outcome for a block's epoch.
+    pub(crate) fn boundary_height(&self, height: u64) -> u64 {
+        let first = self
+            .epoch_strategy
+            .containing(Height::new(height))
+            .expect("fixed epoch strategy supports every block height")
+            .first();
+        first.previous().unwrap_or_default().get()
     }
 
     /// Verify an already decoded certificate without requiring its block.
