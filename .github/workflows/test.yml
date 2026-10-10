@@ -126,6 +126,11 @@ jobs:
       - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
           tool: nextest@0.9.127
+      # Test temp dirs (node datadirs, static files) go to tmpfs: their fsyncs otherwise queue
+      # on the disk all concurrently running tests share. No test checks durability across a
+      # reboot.
+      - name: Show tmpfs capacity
+        run: df -h /dev/shm
       # Build and run tests WITH coverage (only when precompiles changed)
       - name: Build and compile tests with coverage
         if: needs.check-precompiles.outputs.coverage == 'true'
@@ -140,6 +145,7 @@ jobs:
         env:
           RUSTFLAGS: -C instrument-coverage
           LLVM_PROFILE_FILE: ${{ github.workspace }}/coverage/cargo-%p-%m.profraw
+          TMPDIR: /dev/shm
       # Build and run tests WITHOUT coverage (when precompiles not changed)
       - name: Build and compile tests
         if: needs.check-precompiles.outputs.coverage != 'true'
@@ -147,6 +153,8 @@ jobs:
       - name: Run tests
         if: needs.check-precompiles.outputs.coverage != 'true'
         run: cargo nextest run --profile ci -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2
+        env:
+          TMPDIR: /dev/shm
       - name: Generate precompiles coverage profdata
         if: needs.check-precompiles.outputs.coverage == 'true'
         run: |
@@ -205,8 +213,13 @@ jobs:
         run: uv run --no-project python -m unittest discover -s .github/scripts -p 'test_warn_flaky_e2e.py'
       - name: Build e2e tests
         run: cargo nextest run --profile ci -p tempo-e2e --partition slice:${{ matrix.partition }}/4 --no-run
+      # See the test job.
+      - name: Show tmpfs capacity
+        run: df -h /dev/shm
       - name: Run e2e tests
         run: cargo nextest run --profile ci -p tempo-e2e --partition slice:${{ matrix.partition }}/4
+        env:
+          TMPDIR: /dev/shm
       - name: Warn about flaky e2e tests
         if: ${{ !cancelled() }}
         continue-on-error: true
