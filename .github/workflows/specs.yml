@@ -194,7 +194,9 @@ jobs:
     name: ABI Alignment Check
     needs: check-specs-changes
     if: needs.check-specs-changes.outputs.should_run == 'true'
-    runs-on: ubuntu-latest
+    # Depot keeps the Rust cache out of the repository's 10 GB GitHub cache and
+    # gives sccache a shared backend.
+    runs-on: depot-ubuntu-latest-4
     permissions:
       id-token: write
       contents: read

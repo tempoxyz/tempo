@@ -133,7 +133,10 @@ jobs:
       contents: read
       id-token: write
     name: Forge Test & Coverage
-    runs-on: ubuntu-latest
+    # Depot keeps this job's multi-GB Rust cache out of the repository's 10 GB
+    # GitHub cache, where per-PR copies evicted every other cache, and gives
+    # sccache a shared backend for the forge rebuild.
+    runs-on: depot-ubuntu-latest-8
     env:
       RUSTC_WRAPPER: "sccache"
       MIN_LINES: "88"
