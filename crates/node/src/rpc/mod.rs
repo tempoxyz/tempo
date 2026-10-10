@@ -23,7 +23,10 @@ use std::{marker::PhantomData, sync::Arc};
 pub use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
 use tempo_evm::{FeeTokenResolver, TempoStateAccess};
-use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager, storage::StorageActions};
+use tempo_precompiles::{
+    NONCE_PRECOMPILE_ADDRESS, error::TempoPrecompileError, nonce::NonceManager,
+    storage::StorageActions, tip20::TIP20Error,
+};
 use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
 pub use token::{TempoToken, TempoTokenApiServer};
 
@@ -401,19 +404,22 @@ where
             .map_err(EVMError::<ProviderError, _>::from)?;
 
         let actions = StorageActions::disabled();
-        let fee_token = self
-            .evm_config()
-            .resolve_fee_token(
-                &mut db,
-                tx_env,
-                fee_payer,
-                evm_env.cfg_env.spec,
-                actions.clone(),
-            )
-            .map_err(ProviderError::other)?;
-        let fee_token_balance = db
-            .get_token_balance(fee_token, fee_payer, evm_env.cfg_env.spec, actions)
-            .map_err(ProviderError::other)?;
+        let fee_token_balance = match self.evm_config().resolve_fee_token(
+            &mut db,
+            tx_env,
+            fee_payer,
+            evm_env.cfg_env.spec,
+            actions.clone(),
+        ) {
+            Ok(fee_token) => db
+                .get_token_balance(fee_token, fee_payer, evm_env.cfg_env.spec, actions)
+                .map_err(ProviderError::other)?,
+            // No token covers the initial gas bound; cap it by the largest candidate balance.
+            Err(TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(error))) => {
+                error.available
+            }
+            Err(error) => return Err(ProviderError::other(error).into()),
+        };
 
         Ok(fee_token_balance
             // multiply by the scaling factor

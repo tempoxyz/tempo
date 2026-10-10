@@ -1150,6 +1150,21 @@ mod tests {
                     let key = (address, slot);
                     storage_state.apply_sload_value(key, value, "SLOAD", hardfork);
                 }
+                StorageAction::FeeTokenBalanceCheck(
+                    address,
+                    slot,
+                    balance,
+                    required,
+                    sufficient,
+                ) => {
+                    let current = storage_state.apply_sload_value(
+                        (address, slot),
+                        balance,
+                        "FeeTokenBalanceCheck",
+                        hardfork,
+                    );
+                    assert_eq!(current >= required, sufficient);
+                }
                 StorageAction::Sstore(address, slot, sload_value, value) => {
                     let key = (address, slot);
                     storage_state.apply_sload_value(key, sload_value, "SSTORE", hardfork);
@@ -1260,6 +1275,13 @@ mod tests {
                 StorageAction::Sload(address, slot, value) => {
                     format!(
                         "Sload({}, {}, {value})",
+                        labels.address(address),
+                        labels.slot(address, slot)
+                    )
+                }
+                StorageAction::FeeTokenBalanceCheck(address, slot, balance, required, sufficient) => {
+                    format!(
+                        "FeeTokenBalanceCheck({}, {}, {balance}, {required}, {sufficient})",
                         labels.address(address),
                         labels.slot(address, slot)
                     )

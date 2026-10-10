@@ -991,10 +991,24 @@ where
         let journal = &mut evm.inner.ctx.journaled_state;
 
         let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
+        let max_fee = if cfg.is_balance_check_disabled() {
+            U256::ZERO
+        } else {
+            calc_gas_balance_spending(tx.gas_limit(), tx.max_fee_per_gas())
+        };
         let fee_token = fee_manager
-            .get_fee_token(journal, tx, fee_payer, cfg.spec, actions.clone())
-            .map_err(|err| EVMError::Custom(err.to_string()))?;
-
+            .get_fee_token(journal, tx, fee_payer, max_fee, cfg.spec, actions.clone())
+            .map_err(|err| match err {
+                TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(err)) => {
+                    InvalidTransaction::LackOfFundForMaxFee {
+                        fee: err.required.into(),
+                        balance: err.available.into(),
+                    }
+                    .into()
+                }
+                TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
+                err => FeePaymentError::Other(err.to_string()).into(),
+            })?;
         evm.fee_token = Some(fee_token);
 
         // Always validate TIP20 prefix to prevent panics in get_token_balance.
