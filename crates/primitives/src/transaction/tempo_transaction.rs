@@ -1,9 +1,5 @@
-use crate::{
-    subblock::has_sub_block_nonce_key_prefix,
-    transaction::{
-        AASigned, TempoSignature, TempoSignedAuthorization,
-        key_authorization::SignedKeyAuthorization,
-    },
+use crate::transaction::{
+    AASigned, TempoSignature, TempoSignedAuthorization, key_authorization::SignedKeyAuthorization,
 };
 use alloc::vec::Vec;
 use alloy_consensus::{SignableTransaction, Transaction, crypto::RecoveryError};
@@ -647,11 +643,6 @@ impl TempoTransaction {
         tx.validate().map_err(alloy_rlp::Error::Custom)?;
 
         Ok(tx)
-    }
-
-    /// Returns true if the nonce key of this transaction has the [`TEMPO_SUBBLOCK_NONCE_KEY_PREFIX`](crate::subblock::TEMPO_SUBBLOCK_NONCE_KEY_PREFIX).
-    pub fn has_sub_block_nonce_key_prefix(&self) -> bool {
-        has_sub_block_nonce_key_prefix(&self.nonce_key)
     }
 }
 

@@ -44,7 +44,6 @@ use tempo_precompiles::{
 };
 use tempo_primitives::{
     Block, TempoHeader, TempoPrimitives,
-    subblock::has_sub_block_nonce_key_prefix,
     transaction::{TEMPO_EXPIRING_NONCE_KEY, TempoTransaction},
 };
 use tempo_revm::{
@@ -648,16 +647,6 @@ where
                 if let Some(nonce_key) = transaction.transaction().nonce_key()
                     && !nonce_key.is_zero()
                 {
-                    // ensure the nonce key isn't prefixed with the sub-block prefix
-                    if has_sub_block_nonce_key_prefix(&nonce_key) {
-                        return TransactionValidationOutcome::Invalid(
-                            transaction.into_transaction(),
-                            InvalidPoolTransactionError::other(
-                                TempoPoolTransactionError::SubblockNonceKey,
-                            ),
-                        );
-                    }
-
                     // Expiring nonces are only recognized once T1 is active at the tip.
                     if spec.is_t1() && nonce_key == TEMPO_EXPIRING_NONCE_KEY {
                         // Expiring nonce transactions are validated by the EVM
@@ -3339,5 +3328,35 @@ mod tests {
             "the valid root-signed AA transaction was rejected after the invalid transaction: {:?}",
             outcomes[1]
         );
+    }
+
+    #[tokio::test]
+    async fn test_former_subblock_nonce_key_pool_admission() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let former_prefix = U256::from(0x5b) << 248;
+        for nonce_key in [
+            former_prefix,
+            former_prefix + ((U256::ONE << 248) - U256::ONE),
+        ] {
+            for nonce in [0, 5] {
+                let transaction = TxBuilder::aa(Address::random())
+                    .nonce_key(nonce_key)
+                    .nonce(nonce)
+                    .fee_token(PATH_USD_ADDRESS)
+                    .build();
+                let validator = setup_validator(&transaction, current_time);
+                let outcome = validator
+                    .validate_transaction(TransactionOrigin::External, transaction)
+                    .await;
+                let TransactionValidationOutcome::Valid { state_nonce, .. } = outcome else {
+                    panic!("0x5b nonce keys must use ordinary 2D nonce validation: {outcome:?}");
+                };
+                // The empty 2D lane starts at zero even when the account's protocol nonce is five.
+                assert_eq!(state_nonce, 0);
+            }
+        }
     }
 }

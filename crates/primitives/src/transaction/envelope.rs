@@ -311,12 +311,6 @@ impl TempoTxEnvelope {
         }
     }
 
-    /// Returns whether this transaction uses the reserved subblock nonce prefix.
-    pub fn has_sub_block_nonce_key_prefix(&self) -> bool {
-        self.as_aa()
-            .is_some_and(|tx| tx.tx().has_sub_block_nonce_key_prefix())
-    }
-
     /// Returns the [`AASigned`] transaction if this is a Tempo transaction.
     pub fn as_aa(&self) -> Option<&AASigned> {
         match self {
@@ -1360,9 +1354,6 @@ mod tests {
         let calls: Vec<_> = system_tx.calls().collect();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, TxKind::Call(Address::ZERO));
-
-        // System transactions do not use the reserved subblock nonce prefix
-        assert!(!system_tx.has_sub_block_nonce_key_prefix());
 
         // AA-specific methods
         let aa_envelope = create_aa_envelope(Call {

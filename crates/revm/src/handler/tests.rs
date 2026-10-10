@@ -396,23 +396,27 @@ fn test_collect_fee_pre_tx_insufficient_liquidity_falls_back_when_pair_lookup_fa
 }
 
 #[test]
-fn test_reserved_subblock_nonce_rejected() {
-    for spec in [TempoHardfork::T3, TempoHardfork::T4, TempoHardfork::T11] {
+fn test_former_subblock_nonce_key_accepted() {
+    for spec in [
+        TempoHardfork::T3,
+        TempoHardfork::T4,
+        TempoHardfork::T12,
+        TempoHardfork::T13,
+    ] {
         let mut test = TestHandlerEvm::aa(
             spec,
             TempoBatchCallEnv {
-                nonce_key: U256::from(tempo_primitives::subblock::TEMPO_SUBBLOCK_NONCE_KEY_PREFIX)
-                    << 248,
+                nonce_key: U256::from(0x5b) << 248,
+                aa_calls: vec![Call {
+                    to: Address::ZERO.into(),
+                    value: U256::ZERO,
+                    input: Bytes::new(),
+                }],
                 ..Default::default()
             },
             |_| {},
         );
-        assert!(matches!(
-            test.validate_env(),
-            Err(EVMError::Transaction(
-                TempoInvalidTransaction::SubblockTransactionsDisabled
-            ))
-        ));
+        test.validate_env().unwrap();
     }
 }
 
