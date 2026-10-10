@@ -4,13 +4,7 @@ use std::time::Duration;
 
 use alloy_consensus::BlockHeader as _;
 use alloy_rpc_types_engine::ForkchoiceState;
-use commonware_codec::ReadExt as _;
-use commonware_consensus::{
-    Epochable as _,
-    simplex::scheme::bls12381_threshold::vrf::Scheme,
-    types::{Epocher as _, FixedEpocher, Height},
-};
-use commonware_parallel::Sequential;
+use commonware_consensus::types::{Epocher as _, FixedEpocher, Height};
 use commonware_runtime::{Clock as _, buffer::paged::CacheRef};
 use commonware_storage::archive::{Archive as _, Identifier};
 use eyre::{OptionExt as _, ensure};
@@ -21,20 +15,20 @@ use reth_provider::{
     ChainStateBlockWriter as _, DBProvider as _, DatabaseProviderFactory as _,
 };
 use tempo_chainspec::NetworkIdentity;
-use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{
     TempoExecutionData, TempoFullNode,
     rpc::consensus::{CertifiedBlock, Query, TempoConsensusApiClient},
 };
-use tempo_primitives::TempoHeader;
 
 use super::{
     BUFFER_POOL_CAPACITY, BUFFER_POOL_PAGE_SIZE, init_finalizations_archive,
     init_prunable_finalized_blocks_archive,
 };
 use crate::{
-    PARTITION_PREFIX, config::NAMESPACE, consensus::Block,
-    finalization_verifier::FinalizationVerifier, gossip::Certificate,
+    PARTITION_PREFIX,
+    consensus::Block,
+    finalization_verifier::{FinalizationVerifier, verify_boundary},
+    gossip::Certificate,
 };
 
 /// Seed a recent certified floor, sync execution to it, then durably establish finality.
@@ -56,6 +50,7 @@ pub async fn bootstrap(
     let identity = identity
         .or_else(|| chain.network_identity.clone())
         .ok_or_eyre("missing trusted network identity")?;
+    let verifier = FinalizationVerifier::new(identity, epochs.clone());
     let cache = CacheRef::from_pooler(&context, BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
     let mut certificates =
         init_finalizations_archive(&context, PARTITION_PREFIX, cache.clone(), &epochs).await?;
@@ -70,14 +65,13 @@ pub async fn bootstrap(
                 .unwrap()
                 .epoch()
                 .get()
-                >= identity.from_epoch
+                >= verifier.network_identity().from_epoch
     }) {
         let certificate: Certificate = certificates
             .get(Identifier::Index(height))
             .await?
             .ok_or_eyre("bootstrap floor certificate is missing")?;
-        FinalizationVerifier::new(identity.clone(), epochs.clone())
-            .verify_certificate(&mut context, &certificate)?;
+        verifier.verify_certificate(&mut context, &certificate)?;
         let floor = blocks
             .get(Identifier::Index(height))
             .await?
@@ -113,13 +107,8 @@ pub async fn bootstrap(
         } else {
             client.get_finalization(Query::Height(height)).await?
         };
-        let (certificate, boundary_certificate) = verify_anchor(
-            &mut context,
-            identity.clone(),
-            epochs.clone(),
-            &floor,
-            &boundary,
-        )?;
+        let (certificate, boundary_certificate) =
+            verify_anchor(&mut context, &verifier, &epochs, &floor, &boundary)?;
         let floor = Block::try_from_execution_block(floor.block)?;
         let boundary = Block::try_from_execution_block(boundary.block)?;
         // A durable certificate is the commit marker: its blocks must survive a restart first.
@@ -241,25 +230,20 @@ pub async fn bootstrap(
 }
 
 fn boundary_height(epochs: &FixedEpocher, height: u64) -> u64 {
-    epochs
-        .containing(Height::new(height))
-        .unwrap()
-        .epoch()
-        .previous()
-        .map_or(0, |epoch| epochs.last(epoch).unwrap().get())
+    let first = epochs.containing(Height::new(height)).unwrap().first();
+    first.previous().unwrap_or_default().get()
 }
 
 fn verify_anchor(
     context: &mut impl rand_core::CryptoRng,
-    identity: NetworkIdentity,
-    epochs: FixedEpocher,
+    verifier: &FinalizationVerifier,
+    epochs: &FixedEpocher,
     floor: &CertifiedBlock,
     boundary: &CertifiedBlock,
 ) -> eyre::Result<(Certificate, Option<Certificate>)> {
-    let verifier = FinalizationVerifier::new(identity, epochs.clone());
     let certificate = verifier.decode_and_verify(context, floor)?;
     ensure!(
-        boundary.block.number() == boundary_height(&epochs, floor.block.number()),
+        boundary.block.number() == boundary_height(epochs, floor.block.number()),
         "bootstrap boundary height mismatch"
     );
     let boundary_certificate = (boundary.block.number() != 0)
@@ -267,31 +251,6 @@ fn verify_anchor(
         .transpose()?;
     verify_boundary(context, &certificate, boundary.block.header())?;
     Ok((certificate, boundary_certificate))
-}
-
-fn verify_boundary(
-    context: &mut impl rand_core::CryptoRng,
-    certificate: &Certificate,
-    boundary: &TempoHeader,
-) -> eyre::Result<()> {
-    let outcome = OnchainDkgOutcome::read(&mut boundary.extra_data().as_ref())?;
-    ensure!(
-        outcome.epoch() == certificate.epoch(),
-        "bootstrap DKG epoch mismatch"
-    );
-    ensure!(
-        certificate.verify(
-            context,
-            &Scheme::verifier(
-                NAMESPACE,
-                outcome.players().clone(),
-                outcome.sharing().clone()
-            ),
-            &Sequential
-        ),
-        "bootstrap floor does not verify against its boundary"
-    );
-    Ok(())
 }
 
 #[cfg(test)]

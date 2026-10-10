@@ -1,12 +1,11 @@
+use super::{FinalizationVerifier, verify_anchor};
+use crate::follow::test_utils::{
+    DkgFixture, EPOCH_LENGTH, dkg_fixture, make_block, make_certified_block, make_finalization,
+};
 use commonware_consensus::types::{Epoch, FixedEpocher};
 use commonware_runtime::{Runner as _, deterministic::Runner};
 use tempo_chainspec::NetworkIdentity;
 use tempo_node::rpc::consensus::CertifiedBlock;
-
-use super::verify_anchor;
-use crate::follow::test_utils::{
-    DkgFixture, EPOCH_LENGTH, dkg_fixture, make_block, make_certified_block, make_finalization,
-};
 
 #[test]
 fn bootstrap_anchor_requires_authenticated_epoch_boundary() {
@@ -24,14 +23,10 @@ fn bootstrap_anchor_requires_authenticated_epoch_boundary() {
         };
         let floor = certified(12, None, 1, &trusted);
         let boundary = certified(9, Some(&trusted.outcome), 0, &trusted);
+        let epochs = FixedEpocher::new(EPOCH_LENGTH);
+        let verifier = FinalizationVerifier::new(identity, epochs.clone());
         let mut verify = |floor: &CertifiedBlock, boundary: &CertifiedBlock| {
-            verify_anchor(
-                &mut context,
-                identity.clone(),
-                FixedEpocher::new(EPOCH_LENGTH),
-                floor,
-                boundary,
-            )
+            verify_anchor(&mut context, &verifier, &epochs, floor, boundary)
         };
         let (_, certificate) = verify(&floor, &boundary).unwrap();
         assert_eq!(certificate.unwrap().proposal.payload.get(), boundary.digest);

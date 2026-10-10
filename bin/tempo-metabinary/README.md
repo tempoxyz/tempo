@@ -37,7 +37,7 @@ cargo build --locked --release --bin tempo
 python3 scripts/bundle-history.py --output target/release --profile release
 ```
 
-The helper fetches the pinned `history/genesis-t10` source, builds with its frozen feature, and
+The helper fetches the pinned frozen source, builds with its frozen feature, and
 verifies calls and traces before installation. Use `--source /path/to/tempo-history` for a clean
 local checkout at the pin, or `--package /path/to/extracted-bundle` for a trusted, already verified
 package matching the host and profile. The private source repository requires read access.
