@@ -25,10 +25,6 @@ publication coverage:
 - The inactive `zones/.github/workflows/{lint,test,build}.yml` remain as coverage
   references until that integration lands. Then extend the existing root jobs,
   preserve the Zones nextest concurrency limits, and retire these definitions.
-- Zones Rust tests need Earn artifacts built before Zones artifacts, plus artifact
-  paths remapped to `crates/zones/contracts/out`. Earn's `zones-read` STS policy
-  currently permits Zones repository identities, not Tempo; it needs an upstream
-  trust-policy update before those tests can authenticate here.
 - Docker, release, benchmarks, and prover workflows retain distinct product
   behavior. Their legacy paths, repository guards, tag/release ownership, and
   external event/STS/AWS consumers need a coordinated migration. The Zones
@@ -44,3 +40,8 @@ publication coverage:
 
 The root Dependabot configuration also needs the final workspace layout before
 retiring the imported dependency configuration.
+
+The root Test workflow builds Earn before Zones and distributes
+`crates/zones/contracts/out` to each Rust test shard. The merged
+[tempoxyz/earn#365](https://github.com/tempoxyz/earn/pull/365) authorizes Tempo
+through Earn’s `zones-read` STS policy.
