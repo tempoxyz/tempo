@@ -149,6 +149,10 @@ jobs:
           if [[ "$EVENT_NAME" != "pull_request" ]]; then
             echo "coverage=false" >> "$GITHUB_OUTPUT"
             echo "Skipping coverage: not a pull_request event (event: $EVENT_NAME)"
+          elif git diff --name-only origin/"$BASE_REF"...HEAD | grep -qx '.github/workflows/specs.yml'; then
+            # Exercise the coverage build when the workflow that defines it changes.
+            echo "coverage=true" >> "$GITHUB_OUTPUT"
+            echo "Running coverage: specs workflow changed"
           elif git diff --name-only origin/"$BASE_REF"...HEAD \
             | grep -qE '^(crates/(precompiles|contracts)/|tips/verify/)' \
             && ! git diff --name-only origin/"$BASE_REF"...HEAD \
@@ -299,11 +303,33 @@ jobs:
       - name: Patch foundry to use checked-out tempo crates
         run: tempo/scripts/foundry-patch.sh "$GITHUB_WORKSPACE/tempo" "$GITHUB_WORKSPACE/foundry"
 
-      # Build and run WITH coverage (only on PR when precompiles changed)
+      # Build and run WITH coverage (only on PR when precompiles changed). Only the Tempo
+      # crates are instrumented, since the report only covers Tempo sources; instrumenting
+      # revm, alloy and Foundry made the Forge tests run ~5x slower. The forge binary is
+      # instrumented too, or the profiler runtime isn't linked and no profile is written.
       - name: Build foundry forge with coverage instrumentation
         if: needs.check-precompiles.outputs.coverage == 'true'
         working-directory: foundry
-        run: RUSTFLAGS="-C instrument-coverage" cargo build --bin forge --profile release --no-default-features
+        run: |
+          wrapper="$RUNNER_TEMP/rustc-tempo-coverage"
+          cat > "$wrapper" <<'EOF'
+          #!/usr/bin/env bash
+          # cargo runs: <wrapper> <rustc> <args...>
+          name= type= prev=
+          for arg in "$@"; do
+            case "$prev" in
+              --crate-name) name=$arg ;;
+              --crate-type) type=$arg ;;
+            esac
+            prev=$arg
+          done
+          if [[ "$name" == tempo_* && "$type" != proc-macro ]] || [[ "$name" == forge && "$type" == bin ]]; then
+            exec sccache "$@" -C instrument-coverage
+          fi
+          exec sccache "$@"
+          EOF
+          chmod +x "$wrapper"
+          RUSTC_WRAPPER="$wrapper" cargo build --bin forge --profile release --no-default-features
 
       # Build WITHOUT coverage on main/merge-group runs.
       - name: Build foundry forge
