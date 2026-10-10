@@ -266,19 +266,6 @@ jobs:
           username: ${{ vars.DOCKER_HUB_USER }}
           password: ${{ secrets.DOCKER_HUB_TOKEN }}
 
-      - name: Fetch history token via STS
-        id: history-token
-        uses: tempoxyz/gh-actions/actions/github-sts@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
-        with:
-          scope: tempoxyz/tempo-history
-          policy: bench-e2e
-          ttl: 1h
-
-      - name: Check history repository access
-        env:
-          GH_TOKEN: ${{ steps.history-token.outputs.token }}
-        run: gh api repos/tempoxyz/tempo-history --silent
-
       - name: Build and push Docker images
         id: build-and-push
         uses: tempoxyz/gh-actions/vendor/depot/bake-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
@@ -292,12 +279,10 @@ jobs:
             ${{ steps.meta-tempo-xtask.outputs.bake-file }}
           targets: ${{ ((inputs.pr_number == '' && github.event_name == 'schedule') || github.event.inputs.nightly == 'true') && 'nightly' || 'default' }}
           project: 0c6tg19qsp
-          set: "*.secrets=id=history-token,env=TEMPO_HISTORY_TOKEN"
           push: true
           no-cache: ${{ inputs.pr_number == '' && startsWith(github.ref, 'refs/tags/v') }}
           pull: ${{ github.event_name != 'merge_group' }}
         env:
-          TEMPO_HISTORY_TOKEN: ${{ steps.history-token.outputs.token }}
           VERGEN_GIT_SHA: ${{ steps.source.outputs.sha }}
           VERGEN_GIT_SHA_SHORT: ${{ steps.source.outputs.short_sha }}
 

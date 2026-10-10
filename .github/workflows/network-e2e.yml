@@ -5,12 +5,6 @@ on:
   pull_request_target: # zizmor: ignore[dangerous-triggers]
     types: [opened, reopened, synchronize, ready_for_review]
   merge_group:
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: Open PR whose head branch is selected as the workflow ref
-        type: string
-        required: true
 
 permissions: {}
 
@@ -34,24 +28,10 @@ jobs:
       - name: Resolve exact revision
         id: target
         env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ inputs.pr_number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         run: |
-          set -euo pipefail
-          if [[ -n "$PR_NUMBER" ]]; then
-            [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || exit 1
-            IFS=$'\t' read -r HEAD_SHA BASE_SHA HEAD_REPO STATE < <(
-              gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" \
-                --jq '[.head.sha, .base.sha, .head.repo.full_name, .state] | @tsv'
-            )
-            [[ "$STATE" == open && "$HEAD_REPO" == "$GITHUB_REPOSITORY" && "$HEAD_SHA" == "$GITHUB_SHA" ]] || {
-              echo '::error::Select the current head branch of an open PR in this repository.'
-              exit 1
-            }
-          fi
-          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ && "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ && "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
           echo "sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
           echo "base=$BASE_SHA" >> "$GITHUB_OUTPUT"
       - name: Mark network tests pending
@@ -120,7 +100,7 @@ jobs:
       - name: Initialize status for this dispatch attempt
         env:
           GH_TOKEN: ${{ github.token }}
-          SHA: ${{ needs.detect.outputs.sha }}
+          SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
         run: |
           gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$SHA" \
             -f state=pending -f context='Tempo Network E2E' \
@@ -152,7 +132,7 @@ jobs:
         if: always()
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          SHA: ${{ needs.detect.outputs.sha }}
+          SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
           DETECT_RESULT: ${{ needs.detect.result }}
           REQUIRED: ${{ needs.detect.outputs.required }}
           SUBMIT_RESULT: ${{ steps.submit.outcome }}
