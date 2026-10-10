@@ -6,7 +6,7 @@ use reth_node_core::primitives::SealedBlock;
 use tempo_chainspec::NetworkIdentity;
 use tempo_primitives::{Block as TempoBlock, BlockBody, TempoHeader};
 
-use super::{Error, FinalizationVerifier};
+use super::{Error, FinalizationVerifier, verify_boundary};
 use crate::follow::test_utils::{
     DkgFixture, EPOCH_LENGTH, dkg_fixture, make_block, make_certified_block, make_finalization,
 };
@@ -49,16 +49,17 @@ fn tracks_and_authenticates_boundary_identity() {
 
         // Bootstrap starts with only the static network identity, without learned schemes.
         let verifier = verifier(&next);
-        let boundary = certified(boundary_height, Some(&next.outcome), 0, &next);
-        let (_, certificate) = verifier
-            .verify_anchor(&mut context, &floor, &boundary)
-            .expect("network identity should authenticate the anchor and its boundary");
-        assert_eq!(certificate.unwrap().proposal.payload.get(), boundary.digest);
+        let certificate = verifier
+            .decode_and_verify(&mut context, &floor)
+            .expect("network identity should authenticate the anchor");
+        let boundary = make_block(boundary_height, Some(&next.outcome));
+        verify_boundary(&mut context, &certificate, boundary.header())
+            .expect("authenticated boundary should supply the anchor's full scheme");
 
         let wrong_floor = certified(EPOCH_LENGTH.get(), None, 1, &current);
         assert!(
             verifier
-                .verify_anchor(&mut context, &wrong_floor, &boundary)
+                .decode_and_verify(&mut context, &wrong_floor)
                 .is_err(),
             "accepted invalid floor signature"
         );
@@ -67,27 +68,14 @@ fn tracks_and_authenticates_boundary_identity() {
         let mut wrong_sharing = current.outcome.clone();
         wrong_sharing.epoch = 1;
         for (name, boundary) in [
-            (
-                "boundary signature",
-                certified(boundary_height, Some(&next.outcome), 0, &current),
-            ),
-            (
-                "boundary height",
-                certified(boundary_height - 1, Some(&next.outcome), 0, &next),
-            ),
-            (
-                "DKG epoch",
-                certified(boundary_height, Some(&wrong_epoch), 0, &next),
-            ),
+            ("DKG epoch", make_block(boundary_height, Some(&wrong_epoch))),
             (
                 "DKG sharing",
-                certified(boundary_height, Some(&wrong_sharing), 0, &next),
+                make_block(boundary_height, Some(&wrong_sharing)),
             ),
         ] {
             assert!(
-                verifier
-                    .verify_anchor(&mut context, &floor, &boundary)
-                    .is_err(),
+                verify_boundary(&mut context, &certificate, boundary.header()).is_err(),
                 "accepted invalid {name}"
             );
         }

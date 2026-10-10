@@ -287,20 +287,24 @@ pub(crate) mod marshal {
             "genesis must not have a finalization certificate"
         );
 
-        // A newer floor may skip delivery only when execution and its cache cover the whole path.
-        let first = blocks
+        // Certificates may be sparse. Advance only to the archived tip, and only when
+        // execution and its cache cover every block through it.
+        let floor_height = blocks
             .next_gap(execution_finalized_point(execution_node).0)
             .0
             .filter(|height| height.get() >= last)
             .map_or(first, |_| last);
 
         let floor_certificate = certificates
-            .get(Identifier::Index(first))
+            .get(Identifier::Index(floor_height))
             .await
             .wrap_err("failed reading finalized floor certificate")?
             .ok_or_eyre("archive did not contain finalized floor certificate")?;
-        let floor = (Height::new(first), floor_certificate.proposal.payload);
-        let certificate = if first == last {
+        let floor = (
+            Height::new(floor_height),
+            floor_certificate.proposal.payload,
+        );
+        let certificate = if floor_height == last {
             floor_certificate
         } else {
             certificates

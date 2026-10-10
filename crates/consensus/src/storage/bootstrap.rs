@@ -1,22 +1,20 @@
 //! Establish a certified consensus anchor before starting a node after historical sync.
 
-use alloy_consensus::BlockHeader as _;
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_consensus::types::{Epocher as _, FixedEpocher, Height};
 use commonware_runtime::{Clock as _, buffer::paged::CacheRef};
 use commonware_storage::archive::{Archive as _, Identifier};
 use eyre::{OptionExt as _, ensure};
 use jsonrpsee::ws_client::WsClientBuilder;
-use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_provider::{
     BlockHashReader as _, BlockNumReader as _, BlockReader as _, BlockSource,
-    ChainStateBlockWriter as _, DBProvider as _, DatabaseProviderFactory as _,
+    ChainStateBlockWriter as _, DBProvider as _, DatabaseProviderFactory as _, HeaderProvider as _,
 };
 use std::time::Duration;
 use tempo_chainspec::NetworkIdentity;
 use tempo_node::{
     TempoExecutionData, TempoFullNode,
-    rpc::consensus::{CertifiedBlock, Query, TempoConsensusApiClient},
+    rpc::consensus::{Query, TempoConsensusApiClient},
 };
 
 use super::{
@@ -27,7 +25,6 @@ use crate::{
     PARTITION_PREFIX,
     consensus::Block,
     finalization_verifier::{FinalizationVerifier, verify_boundary},
-    gossip::Certificate,
 };
 
 /// Seed a recent certified floor, sync execution to it, then durably establish finality.
@@ -57,7 +54,7 @@ pub async fn bootstrap(
         init_prunable_finalized_blocks_archive(&context, PARTITION_PREFIX, cache).await?;
     let historical_tip = node.provider.database_provider_ro()?.best_block_number()?;
 
-    let (floor, boundary) = if let Some(height) = certificates.last_index().filter(|height| {
+    let (floor, certificate) = if let Some(height) = certificates.last_index().filter(|height| {
         *height >= historical_tip
             && epochs
                 .containing(Height::new(*height))
@@ -66,7 +63,7 @@ pub async fn bootstrap(
                 .get()
                 >= verifier.network_identity().from_epoch
     }) {
-        let certificate: Certificate = certificates
+        let certificate = certificates
             .get(Identifier::Index(height))
             .await?
             .ok_or_eyre("bootstrap floor certificate is missing")?;
@@ -79,55 +76,29 @@ pub async fn bootstrap(
             floor.number() == height && floor.digest() == certificate.proposal.payload,
             "bootstrap floor digest mismatch"
         );
-        let boundary = blocks
-            .get(Identifier::Index(verifier.boundary_height(height)))
-            .await?
-            .ok_or_eyre("bootstrap boundary block is missing")?;
-        verify_boundary(&mut context, &certificate, boundary.header())?;
-        (floor, boundary)
+        (floor, certificate)
     } else {
         let client = WsClientBuilder::default()
             .request_timeout(request_timeout)
             .build(upstream_url)
             .await?;
         let floor = client.get_finalization(Query::Latest).await?;
-        let height = verifier.boundary_height(floor.block.number());
-        let boundary = if height == 0 {
-            CertifiedBlock {
-                epoch: 0,
-                view: 0,
-                digest: chain.genesis_hash(),
-                certificate: String::new(),
-                block: node
-                    .provider
-                    .find_sealed_or_recovered_block(chain.genesis_hash(), BlockSource::Canonical)?
-                    .ok_or_eyre("genesis block is missing")?,
-            }
-        } else {
-            client.get_finalization(Query::Height(height)).await?
-        };
-        let (certificate, boundary_certificate) =
-            verifier.verify_anchor(&mut context, &floor, &boundary)?;
+        let certificate = verifier.decode_and_verify(&mut context, &floor)?;
         let floor = Block::try_from_execution_block(floor.block)?;
-        let boundary = Block::try_from_execution_block(boundary.block)?;
-        // A durable certificate is the commit marker: its blocks must survive a restart first.
-        for block in [&boundary, &floor] {
-            blocks = blocks
-                .put(block.number(), block.digest(), block.clone())
-                .await?;
-        }
+        // A durable certificate is the commit marker: its block must survive a restart first.
+        blocks = blocks
+            .put(floor.number(), floor.digest(), floor.clone())
+            .await?;
         blocks = blocks.sync().await?;
-        // Retain the boundary certificate for downstream bootstrap.
-        for (height, certificate) in [(floor.number(), certificate)]
-            .into_iter()
-            .chain(boundary_certificate.map(|certificate| (boundary.number(), certificate)))
-        {
-            certificates = certificates
-                .put(height, certificate.proposal.payload, certificate)
-                .await?;
-        }
+        certificates = certificates
+            .put(
+                floor.number(),
+                certificate.proposal.payload,
+                certificate.clone(),
+            )
+            .await?;
         certificates = certificates.sync().await?;
-        (floor, boundary)
+        (floor, certificate)
     };
     drop(certificates);
 
@@ -174,13 +145,17 @@ pub async fn bootstrap(
             update.payload_status
         );
         if update.is_valid() {
-            for block in [&floor, &boundary] {
-                ensure!(
-                    node.provider.block_hash(block.number())? == Some(block.hash()),
-                    "bootstrap block {} is not on the certified chain",
-                    block.number()
-                );
-            }
+            ensure!(
+                node.provider.block_hash(floor.number())? == Some(floor.hash()),
+                "bootstrap floor is not on the certified chain"
+            );
+            // RPC certificate archives may skip boundaries. Execution has now authenticated
+            // every ancestor of the certified floor, including the boundary's DKG outcome.
+            let boundary = node
+                .provider
+                .header_by_number(verifier.boundary_height(floor.number()))?
+                .ok_or_eyre("bootstrap boundary header is missing")?;
+            verify_boundary(&mut context, &certificate, &boundary)?;
             let provider = node.provider.database_provider_ro()?;
             let height = provider.best_block_number()?.min(floor.number());
             ensure!(
