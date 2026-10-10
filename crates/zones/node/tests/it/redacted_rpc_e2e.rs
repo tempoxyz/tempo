@@ -65,8 +65,8 @@ fn signed_sponsored_raw_transaction(
 ) -> eyre::Result<String> {
     let mut transaction = TempoTransaction {
         chain_id,
-        max_priority_fee_per_gas: TEMPO_T0_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_T0_BASE_FEE as u128,
+        max_priority_fee_per_gas: u128::from(TEMPO_T0_BASE_FEE),
+        max_fee_per_gas: u128::from(TEMPO_T0_BASE_FEE),
         gas_limit: 500_000,
         calls: vec![Call {
             to: TxKind::Call(signer.address()),
@@ -744,7 +744,7 @@ async fn test_tip20_eth_call_privacy() -> eyre::Result<()> {
         .connect_http(ctx.zone.http_url().clone());
     let approve_pending = ContractTip20::new(PATH_USD_ADDRESS, &owner_provider)
         .approve(spender, U256::from(allowance_amount))
-        .gas_price(TEMPO_T0_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
         .gas(TIP20_TX_GAS)
         .send()
         .await?;
@@ -1332,13 +1332,13 @@ async fn test_ws_logs_subscription_is_sender_scoped() -> eyre::Result<()> {
 
     let owner_pending = ContractTip20::new(PATH_USD_ADDRESS, &owner_provider)
         .approve(spender, U256::from(111u64))
-        .gas_price(TEMPO_T0_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
         .gas(TIP20_TX_GAS)
         .send()
         .await?;
     let outsider_pending = ContractTip20::new(PATH_USD_ADDRESS, &outsider_provider)
         .approve(spender, U256::from(222u64))
-        .gas_price(TEMPO_T0_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
         .gas(TIP20_TX_GAS)
         .send()
         .await?;

@@ -1,7 +1,7 @@
 [package]
 name = "zone-precompiles"
 description = "Zone-specific precompile implementations"
-version.workspace = true
+version = "0.3.5"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -21,7 +21,7 @@ tempo-chainspec = { workspace = true, default-features = false }
 tempo-contracts = { workspace = true, default-features = false }
 tempo-precompiles = { workspace = true, default-features = false }
 tempo-precompiles-macros.workspace = true
-tempo-primitives = { workspace = true, default-features = false }
+tempo-primitives = { workspace = true, default-features = false, features = ["reth", "reth-codec", "serde", "serde-bincode-compat"] }
 
 # alloy
 alloy-consensus = { workspace = true, default-features = false }
@@ -41,18 +41,22 @@ sha2 = { version = "0.10.9", default-features = false }
 rand = { version = "0.8.5", default-features = false }
 
 # misc
-derive_more.workspace = true
+derive_more = { workspace = true, default-features = true }
 paste = "1.0.15"
 thiserror.workspace = true
 
 [dev-dependencies]
 eyre.workspace = true
-serde.workspace = true
+serde = { workspace = true, features = ["alloc"] }
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
 
 [features]
+dst = ["tempo-precompiles/dst"]
 default = ["std"]
-test-utils = ["tempo-precompiles/test-utils"]
+test-utils = [
+    "tempo-precompiles/test-utils",
+    "tempo-primitives/test-utils",
+]
 std = [
     "tempo-zone-contracts/std",
     "zone-primitives/std",
@@ -67,6 +71,10 @@ std = [
     "k256/std",
     "sha2/std",
     "rand/std",
+    "alloy/std",
+    "serde/std",
+    "tempo-chainspec/std",
+    "tempo-contracts/std",
 ]
 
 [[test]]

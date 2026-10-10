@@ -1,7 +1,8 @@
 //! Zone-specific EVM configuration.
 //!
 //! Wraps [`TempoEvmConfig`] with a [`ZoneEvmFactory`] that installs the L1-anchored database,
-//! registers Zone-native precompiles, and preserves the original database at the [`Evm`] boundary.
+//! registers Zone-native precompiles, and preserves the original database at the
+//! [`Evm`](alloy_evm::Evm) boundary.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]

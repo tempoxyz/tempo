@@ -1,7 +1,7 @@
 [package]
 name = "zone-node"
 description = "Tempo Zone node assembly"
-version.workspace = true
+version = "0.3.5"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -13,21 +13,21 @@ workspace = true
 [dependencies]
 # tempo
 tempo-chainspec.workspace = true
-tempo-evm = { workspace = true, features = ["rpc", "engine"] }
+tempo-evm = { workspace = true, features = ["engine", "rpc"] }
 tempo-node.workspace = true
 tempo-precompiles.workspace = true
-tempo-primitives.workspace = true
+tempo-primitives = { workspace = true, features = ["reth", "reth-codec", "serde", "serde-bincode-compat"] }
 tempo-transaction-pool.workspace = true
 tempo-alloy.workspace = true
 tempo-contracts.workspace = true
-tempo-zone-contracts = { workspace = true, features = ["std", "serde", "rpc"] }
+tempo-zone-contracts = { workspace = true, features = ["rpc", "serde", "std"] }
 zone-chainspec.workspace = true
 zone-evm.workspace = true
 zone-l1.workspace = true
 zone-p2p.workspace = true
 zone-payload.workspace = true
 zone-precompiles = { workspace = true, features = ["std"] }
-zone-primitives = { workspace = true, features = ["std", "serde"] }
+zone-primitives = { workspace = true, features = ["serde", "std"] }
 zone-prover.workspace = true
 zone-rpc.workspace = true
 zone-sequencer.workspace = true
@@ -35,12 +35,9 @@ zone-checker = { workspace = true, optional = true }
 
 # reth
 reth-chain-state.workspace = true
-reth-chainspec.workspace = true
+reth-chainspec = { workspace = true, default-features = true }
 reth-eth-wire-types.workspace = true
-reth-ethereum = { workspace = true, features = [
-  "node",
-  "cli",
-], optional = true }
+reth-ethereum = { workspace = true, features = ["cli", "node"], optional = true }
 reth-evm.workspace = true
 reth-node-api.workspace = true
 reth-node-builder.workspace = true
@@ -59,7 +56,7 @@ reth-storage-api.workspace = true
 reth-tasks.workspace = true
 reth-tracing = { workspace = true, optional = true }
 reth-transaction-pool.workspace = true
-reth-trie-common.workspace = true
+reth-trie-common = { workspace = true, features = ["std"] }
 
 # alloy
 alloy-chains.workspace = true
@@ -70,7 +67,7 @@ alloy-network.workspace = true
 alloy-primitives.workspace = true
 alloy-provider = { workspace = true, features = ["ws"] }
 alloy-rlp.workspace = true
-alloy-rpc-client.workspace = true
+alloy-rpc-client = { workspace = true, default-features = true }
 alloy-rpc-types-engine.workspace = true
 alloy-rpc-types-eth.workspace = true
 alloy-signer-local.workspace = true
@@ -87,8 +84,8 @@ futures.workspace = true
 jsonrpsee.workspace = true
 k256.workspace = true
 metrics.workspace = true
-serde.workspace = true
-serde_json.workspace = true
+serde = { workspace = true, features = ["alloc"] }
+serde_json = { workspace = true, default-features = true }
 tokio.workspace = true
 tracing.workspace = true
 url = { version = "2", optional = true }
@@ -102,43 +99,44 @@ vergen-git2.workspace = true
 zone-chainspec = { workspace = true, features = ["test-utils"] }
 zone-node = { path = ".", features = ["test-utils"] }
 
-alloy = { workspace = true, features = [
-  "full",
-  "genesis",
-  "providers",
-  "signers",
-  "signer-local",
-  "signer-mnemonic-all-languages",
-  "rpc-types",
-] }
+alloy = { workspace = true, features = ["full", "genesis", "providers", "rpc-types", "signer-local", "signer-mnemonic-all-languages", "signers"] }
 alloy-contract.workspace = true
 alloy-evm.workspace = true
 alloy-signer.workspace = true
-base64.workspace = true
+base64 = { workspace = true, default-features = true }
 const-hex.workspace = true
 commonware-codec.workspace = true
-commonware-cryptography.workspace = true
-p256.workspace = true
-rand.workspace = true
+commonware-cryptography = { workspace = true, default-features = true }
+p256 = { workspace = true, features = ["ecdsa"] }
+rand = { version = "0.8.5" }
 reth-ethereum = { workspace = true, features = ["node", "test-utils"] }
 reth-tracing.workspace = true
-reth-trie-common.workspace = true
-reqwest.workspace = true
+reth-trie-common = { workspace = true, features = ["std"] }
+reqwest = { workspace = true, features = ["json", "rustls"] }
 revm.workspace = true
-serde = { workspace = true, features = ["derive"] }
-sha2.workspace = true
+serde = { workspace = true, features = ["alloc", "derive"] }
+sha2 = { workspace = true, default-features = true }
 tempo-payload-types.workspace = true
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempo-revm.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 tokio-tungstenite.workspace = true
 zone-spf.workspace = true
 url = "2"
 
 [features]
 default = []
-asm-keccak = ["alloy-primitives/asm-keccak"]
+asm-keccak = [
+  "alloy/asm-keccak",
+  "alloy-evm/asm-keccak",
+  "alloy-primitives/asm-keccak",
+  "reth-node-core/asm-keccak",
+  "revm/asm-keccak",
+  "tempo-alloy/asm-keccak",
+  "tempo-node/asm-keccak",
+  "zone-node/asm-keccak",
+]
 cli = [
   "dep:clap",
   "dep:reth-ethereum",
@@ -148,8 +146,19 @@ cli = [
   "dep:zone-checker",
   "zone-chainspec/cli",
 ]
-jemalloc = ["reth-ethereum?/jemalloc"]
-keccak-cache-global = ["alloy-primitives/keccak-cache-global"]
+jemalloc = [
+  "reth-ethereum?/jemalloc",
+  "reth-node-core/jemalloc",
+  "reth-provider/jemalloc",
+  "tempo-node/jemalloc",
+  "zone-node/jemalloc",
+]
+keccak-cache-global = [
+  "alloy-primitives/keccak-cache-global",
+  "reth-ethereum?/keccak-cache-global",
+  "reth-node-core/keccak-cache-global",
+  "zone-node/keccak-cache-global",
+]
 test-utils = [
   "reth-chainspec/test-utils",
   "reth-ethereum?/test-utils",
@@ -160,4 +169,13 @@ test-utils = [
   "reth-transaction-pool/test-utils",
   "tempo-precompiles/test-utils",
   "tempo-transaction-pool/test-utils",
+  "reth-chain-state/test-utils",
+  "reth-evm/test-utils",
+  "reth-revm/test-utils",
+  "reth-tasks/test-utils",
+  "reth-trie-common/test-utils",
+  "tempo-primitives/test-utils",
+  "zone-chainspec/test-utils",
+  "zone-node/test-utils",
+  "zone-precompiles/test-utils",
 ]

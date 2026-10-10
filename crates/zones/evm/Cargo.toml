@@ -1,7 +1,7 @@
 [package]
 name = "zone-evm"
 description = "Tempo Zone EVM configuration and block execution"
-version.workspace = true
+version = "0.3.5"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -12,7 +12,7 @@ workspace = true
 
 [dependencies]
 # zones
-tempo-zone-contracts = { workspace = true, features = ["std", "serde", "rpc"] }
+tempo-zone-contracts = { workspace = true, features = ["rpc", "serde", "std"] }
 zone-chainspec.workspace = true
 zone-l1.workspace = true
 zone-primitives.workspace = true
@@ -21,14 +21,14 @@ zone-precompiles = { workspace = true, features = ["std"] }
 # tempo
 tempo-alloy.workspace = true
 tempo-chainspec.workspace = true
-tempo-evm = { workspace = true, features = ["rpc", "engine"] }
+tempo-evm = { workspace = true, features = ["engine", "rpc"] }
 tempo-payload-types.workspace = true
 tempo-precompiles.workspace = true
-tempo-primitives.workspace = true
+tempo-primitives = { workspace = true, features = ["reth", "reth-codec", "serde", "serde-bincode-compat"] }
 tempo-revm.workspace = true
 
 # reth
-reth-chainspec.workspace = true
+reth-chainspec = { workspace = true, default-features = true }
 reth-evm.workspace = true
 reth-primitives-traits.workspace = true
 reth-revm.workspace = true
@@ -51,6 +51,6 @@ tokio.workspace = true
 alloy-genesis.workspace = true
 alloy-rlp.workspace = true
 eyre.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, default-features = true }
 zone-precompiles = { workspace = true, features = ["std", "test-utils"] }
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
