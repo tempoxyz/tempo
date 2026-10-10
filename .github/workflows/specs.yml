@@ -149,6 +149,10 @@ jobs:
           if [[ "$EVENT_NAME" != "pull_request" ]]; then
             echo "coverage=false" >> "$GITHUB_OUTPUT"
             echo "Skipping coverage: not a pull_request event (event: $EVENT_NAME)"
+          elif git diff --name-only origin/"$BASE_REF"...HEAD | grep -qx '.github/workflows/specs.yml'; then
+            # Exercise the coverage build when the workflow that defines it changes.
+            echo "coverage=true" >> "$GITHUB_OUTPUT"
+            echo "Running coverage: specs workflow changed"
           elif git diff --name-only origin/"$BASE_REF"...HEAD \
             | grep -qE '^(crates/(precompiles|contracts)/|tips/verify/)' \
             && ! git diff --name-only origin/"$BASE_REF"...HEAD \
