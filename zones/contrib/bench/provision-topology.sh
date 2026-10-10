@@ -9,7 +9,7 @@
 #   TEMPO_ROOT=/path/to/tempo
 #   TEMPO_BIN=/path/to/tempo/target/profiling/tempo
 #   TEMPO_XTASK_BIN=/path/to/tempo/target/profiling/tempo-xtask
-#   ZONES_XTASK_BIN=/path/to/zones/target/profiling/tempo-xtask
+#   ZONES_XTASK_BIN=/path/to/tempo/target/profiling/tempo-zone-xtask
 #   ZONE_BIN=/path/to/zones/target/profiling/tempo-zone
 #
 # `prepare-l1` builds the paired L1 baseline on a cache miss but deliberately
@@ -22,7 +22,7 @@
 set -Eeuo pipefail
 
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-readonly ZONES_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
+readonly ZONES_ROOT="$(cd -- "$SCRIPT_DIR/../../.." && pwd)"
 readonly ZONE_FACTORY="0x5aF2000000000000000000000000000000000000"
 readonly PATH_USD="0x20C0000000000000000000000000000000000000"
 readonly DLUSD="0x20C0000000000000000000000000000000000001"
@@ -136,7 +136,7 @@ verify_shared_runtimes() {
     do
         contract="${spec%%:*}" address="${spec#*:}"
         expected="$(jq -er '.deployedBytecode.object | sub("^0x"; "") | select(test("^([0-9a-fA-F]{2})+$"))' \
-            "$ZONES_ROOT/crates/contracts/out/$contract.sol/$contract.json")" \
+            "$ZONES_ROOT/crates/zones/contracts/out/$contract.sol/$contract.json")" \
             || die "invalid or missing $contract deployed bytecode artifact"
         observed="$(rpc "$url" eth_getCode "[\"$address\",\"$block\"]")" \
             || die "$label failed to read $contract runtime at $address"
@@ -554,7 +554,7 @@ provision_up() {
 
     TEMPO_BIN="${TEMPO_BIN:-$TEMPO_ROOT/target/profiling/tempo}"
     TEMPO_XTASK_BIN="${TEMPO_XTASK_BIN:-$TEMPO_ROOT/target/profiling/tempo-xtask}"
-    ZONES_XTASK_BIN="${ZONES_XTASK_BIN:-$ZONES_ROOT/target/profiling/tempo-xtask}"
+    ZONES_XTASK_BIN="${ZONES_XTASK_BIN:-$ZONES_ROOT/target/profiling/tempo-zone-xtask}"
     ZONE_BIN="${ZONE_BIN:-$ZONES_ROOT/target/profiling/tempo-zone}"
     require_executable "$TEMPO_BIN"
     require_executable "$TEMPO_XTASK_BIN"
@@ -1112,10 +1112,10 @@ provision_up() {
 usage() {
     cat <<'EOF'
 Usage:
-  contrib/bench/provision-topology.sh prepare-l1
-  contrib/bench/provision-topology.sh verify-l1
-  contrib/bench/provision-topology.sh up
-  contrib/bench/provision-topology.sh cleanup [PID_FILE]
+  zones/contrib/bench/provision-topology.sh prepare-l1
+  zones/contrib/bench/provision-topology.sh verify-l1
+  zones/contrib/bench/provision-topology.sh up
+  zones/contrib/bench/provision-topology.sh cleanup [PID_FILE]
 
 `prepare-l1` builds both L1 baselines on the restored Schelk scratch volumes;
 the caller promotes and restores them before `verify-l1`. `up` leaves the

@@ -57,7 +57,8 @@ concurrency:
 jobs:
   authorize:
     if: >-
-      github.repository == 'tempoxyz/zones' &&
+      github.repository == 'tempoxyz/tempo' &&
+      vars.ZONES_PROVER_BENCHMARK_ENABLED == 'true' &&
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'workflow_dispatch' ||
        (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
@@ -111,8 +112,8 @@ jobs:
               const sha = match[1];
               const number = context.issue.number;
               const {data: pr} = await github.rest.pulls.get({...context.repo, pull_number: number});
-              if (pr.head.repo?.full_name !== 'tempoxyz/zones') {
-                core.setFailed('Benchmark PR head must be in tempoxyz/zones');
+              if (pr.head.repo?.full_name !== 'tempoxyz/tempo') {
+                core.setFailed('Benchmark PR head must be in tempoxyz/tempo');
                 return;
               }
               if (pr.head.sha !== sha) {
@@ -192,7 +193,7 @@ jobs:
       - name: Check out baseline Zones
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: tempoxyz/zones
+          repository: tempoxyz/tempo
           ref: main
           path: baseline-zones
           submodules: recursive
@@ -200,7 +201,7 @@ jobs:
       - name: Check out feature Zones
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: tempoxyz/zones
+          repository: tempoxyz/tempo
           ref: ${{ needs.authorize.outputs.feature-sha }}
           path: feature-zones
           submodules: recursive

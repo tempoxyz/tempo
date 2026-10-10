@@ -7,7 +7,7 @@
 set -Eeuo pipefail
 
 readonly L1_SNAPSHOT_SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-readonly L1_SNAPSHOT_ZONES_ROOT="$(cd -- "$L1_SNAPSHOT_SCRIPT_DIR/../.." && pwd)"
+readonly L1_SNAPSHOT_ZONES_ROOT="$(cd -- "$L1_SNAPSHOT_SCRIPT_DIR/../../.." && pwd)"
 readonly L1_SNAPSHOT_SCHEMA=1
 readonly L1_SNAPSHOT_FUTURE_HARDFORK_TIME=4102444800
 readonly L1_SNAPSHOT_ZONE_FACTORY="0x5aF2000000000000000000000000000000000000"
@@ -129,7 +129,7 @@ l1_snapshot_derive_address() {
 
 l1_snapshot_artifact_hash() {
     local contract="$1"
-    local artifact="$L1_SNAPSHOT_ZONES_ROOT/crates/contracts/out/$contract.sol/$contract.json"
+    local artifact="$L1_SNAPSHOT_ZONES_ROOT/crates/zones/contracts/out/$contract.sol/$contract.json"
     l1_snapshot_require_file "$artifact"
     jq -cS '{deployedBytecode, storageLayout}' "$artifact" | sha256sum | awk '{print $1}'
 }
@@ -140,13 +140,13 @@ l1_snapshot_inputs_hash() {
         for relative in \
             Cargo.lock \
             xtask/Cargo.toml \
-            xtask/src/install_reference_zone_factory.rs \
-            crates/contracts/Cargo.toml \
-            crates/contracts/src/lib.rs \
-            crates/contracts/src/precompiles/zone_factory.rs \
-            crates/contracts/out/ZonePortal.sol/ZonePortal.json \
-            crates/contracts/out/Verifier.sol/Verifier.json \
-            crates/contracts/out/ZoneMessenger.sol/ZoneMessenger.json
+            xtask/src/zones/install_reference_zone_factory.rs \
+            crates/zones/contracts/Cargo.toml \
+            crates/zones/contracts/src/lib.rs \
+            crates/zones/contracts/src/precompiles/zone_factory.rs \
+            crates/zones/contracts/out/ZonePortal.sol/ZonePortal.json \
+            crates/zones/contracts/out/Verifier.sol/Verifier.json \
+            crates/zones/contracts/out/ZoneMessenger.sol/ZoneMessenger.json
         do
             path="$L1_SNAPSHOT_ZONES_ROOT/$relative"
             l1_snapshot_require_file "$path"
@@ -214,7 +214,7 @@ l1_snapshot_load_config() {
     [[ -n "${TEMPO_ROOT:-}" ]] || l1_snapshot_die "TEMPO_ROOT must be set"
     L1_SNAPSHOT_TEMPO_BIN="${TEMPO_BIN:-$TEMPO_ROOT/target/profiling/tempo}"
     L1_SNAPSHOT_TEMPO_XTASK_BIN="${TEMPO_XTASK_BIN:-$TEMPO_ROOT/target/profiling/tempo-xtask}"
-    L1_SNAPSHOT_ZONES_XTASK_BIN="${ZONES_XTASK_BIN:-$L1_SNAPSHOT_ZONES_ROOT/target/profiling/tempo-xtask}"
+    L1_SNAPSHOT_ZONES_XTASK_BIN="${ZONES_XTASK_BIN:-$L1_SNAPSHOT_ZONES_ROOT/target/profiling/tempo-zone-xtask}"
     l1_snapshot_require_executable "$L1_SNAPSHOT_TEMPO_BIN"
     l1_snapshot_require_executable "$L1_SNAPSHOT_TEMPO_XTASK_BIN"
     l1_snapshot_require_executable "$L1_SNAPSHOT_ZONES_XTASK_BIN"
@@ -279,17 +279,14 @@ l1_snapshot_load_config() {
 
 l1_snapshot_prepare_expectations() {
     echo "building native ZoneFactory shared runtime artifacts"
-    forge build --root "$L1_SNAPSHOT_ZONES_ROOT/crates/contracts" --skip test --no-lint >/dev/null
+    forge build --root "$L1_SNAPSHOT_ZONES_ROOT/crates/zones/contracts" --skip test --no-lint >/dev/null
 
-    local factory_hash portal_hash verifier_hash messenger_hash genesis_inputs_hash tempo_patch_hash
-    factory_hash="$(l1_snapshot_sha256 "$L1_SNAPSHOT_ZONES_ROOT/crates/contracts/src/precompiles/zone_factory.rs")"
+    local factory_hash portal_hash verifier_hash messenger_hash genesis_inputs_hash
+    factory_hash="$(l1_snapshot_sha256 "$L1_SNAPSHOT_ZONES_ROOT/crates/zones/contracts/src/precompiles/zone_factory.rs")"
     portal_hash="$(l1_snapshot_artifact_hash ZonePortal)"
     verifier_hash="$(l1_snapshot_artifact_hash Verifier)"
     messenger_hash="$(l1_snapshot_artifact_hash ZoneMessenger)"
     genesis_inputs_hash="$(l1_snapshot_inputs_hash)"
-    local tempo_patch="$L1_SNAPSHOT_ZONES_ROOT/contrib/bench/patches/tempo-xtask-mnemonic-file.patch"
-    l1_snapshot_require_file "$tempo_patch"
-    tempo_patch_hash="$(l1_snapshot_sha256 "$tempo_patch")"
 
     local tempo_revision="${ZONES_BENCH_TEMPO_REF:-}"
     if [[ -z "$tempo_revision" ]]; then
@@ -310,7 +307,6 @@ l1_snapshot_prepare_expectations() {
     L1_SNAPSHOT_EXPECTED_CONFIG="$(jq -cnS \
         --arg tempoRevision "${tempo_revision,,}" \
         --arg tempoHardfork "$L1_SNAPSHOT_HARDFORK" \
-        --arg tempoPatchSha256 "$tempo_patch_hash" \
         --arg genesisInputsSha256 "$genesis_inputs_hash" \
         --arg factoryArtifactSha256 "$factory_hash" \
         --arg portalArtifactSha256 "$portal_hash" \
@@ -332,8 +328,7 @@ l1_snapshot_prepare_expectations() {
           schema: $schema,
           tempo: {
             revision: $tempoRevision,
-            hardfork: $tempoHardfork,
-            mnemonicFilePatchSha256: $tempoPatchSha256
+            hardfork: $tempoHardfork
           },
           zonesGenesis: {
             inputsSha256: $genesisInputsSha256,
@@ -482,7 +477,7 @@ l1_snapshot_build() {
         --genesis "$L1_SNAPSHOT_RAW_GENESIS" \
         --output "$L1_SNAPSHOT_PATCHED_GENESIS" \
         --owner "$(l1_snapshot_derive_address 0)" \
-        --specs-out "$L1_SNAPSHOT_ZONES_ROOT/crates/contracts/out"
+        --specs-out "$L1_SNAPSHOT_ZONES_ROOT/crates/zones/contracts/out"
     [[ "$(jq -er '.config.chainId' "$L1_SNAPSHOT_PATCHED_GENESIS")" == "$L1_SNAPSHOT_CHAIN_ID" ]] \
         || l1_snapshot_die "patched genesis chain ID is incorrect"
     [[ "$(jq -er '.config.generalGasLimit' "$L1_SNAPSHOT_PATCHED_GENESIS")" == "$L1_SNAPSHOT_GENERAL_GAS_LIMIT" ]] \
@@ -582,8 +577,8 @@ l1_snapshot_verify() {
 l1_snapshot_usage() {
     cat <<'EOF'
 Usage:
-  contrib/bench/l1-snapshot.sh prepare
-  contrib/bench/l1-snapshot.sh verify
+  zones/contrib/bench/l1-snapshot.sh prepare
+  zones/contrib/bench/l1-snapshot.sh verify
 
 `prepare` validates the restored private Schelk copies and builds both L1
 baselines on a cache miss or when ZONES_BENCH_FORCE_BLOAT=1. The caller must

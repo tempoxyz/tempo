@@ -14,8 +14,8 @@ env:
 jobs:
   build-and-push:
     name: Build and Push Profiling Docker Images
-    # Same layout dependency as zones-docker.yml; see zones/MIGRATION.md.
-    if: github.repository == 'tempoxyz/zones'
+    # Enable after Depot and registry access are transferred to Tempo.
+    if: github.repository == 'tempoxyz/tempo' && vars.ZONES_PUBLISH_ENABLED == 'true'
     runs-on: depot-ubuntu-latest-16
     permissions:
       contents: read
@@ -56,8 +56,8 @@ jobs:
         uses: tempoxyz/gh-actions/vendor/depot/bake-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
         with:
           files: |
-            docker/docker-bake.hcl
-            docker/docker-bake-profiling.hcl
+            zones/docker/docker-bake.hcl
+            zones/docker/docker-bake-profiling.hcl
             ${{ steps.meta-tempo-zone.outputs.bake-file }}
           targets: tempo-zone
           project: 0c6tg19qsp
