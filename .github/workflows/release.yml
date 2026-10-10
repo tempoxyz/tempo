@@ -154,7 +154,6 @@ jobs:
         id: prepare
         shell: bash
         env:
-          TEMPO_HISTORY_TOKEN: ${{ secrets.TEMPO_GITHUB_PAT }}
           BUILD_PROFILE: ${{ steps.profile.outputs.profile }}
           TARGET: ${{ matrix.platform.target }}
           BIN_NAME: ${{ matrix.binary.name }}
