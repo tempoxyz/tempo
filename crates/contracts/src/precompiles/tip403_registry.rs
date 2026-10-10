@@ -42,6 +42,20 @@ crate::sol! {
         function setReceivePolicy(uint64 senderPolicyId, uint64 tokenFilterId, address recoveryAuthority) external;
         function migrateTransferPolicyIds(address[] calldata tokens) external returns (uint256 migrated);
 
+        /// Add an account to a whitelist policy. Admin-only; available from T13.
+        /// Scope an add-only access key to this selector instead of modifyPolicyWhitelist.
+        function addPolicyWhitelist(uint64 policyId, address account) external;
+
+        /// Remove an account from a whitelist policy. Admin-only; available from T13.
+        function removePolicyWhitelist(uint64 policyId, address account) external;
+
+        /// Add an account to a blacklist policy. Admin-only; available from T13.
+        /// Scope a freeze-only access key to this selector instead of modifyPolicyBlacklist.
+        function addPolicyBlacklist(uint64 policyId, address account) external;
+
+        /// Remove an account from a blacklist policy. Admin-only; available from T13.
+        function removePolicyBlacklist(uint64 policyId, address account) external;
+
         // Events
         event PolicyAdminUpdated(uint64 indexed policyId, address indexed updater, address indexed admin);
         event PolicyCreated(uint64 indexed policyId, address indexed updater, PolicyType policyType);
