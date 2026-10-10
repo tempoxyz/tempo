@@ -94,9 +94,10 @@ reaps it before launching live execution. Interrupted sync resumes from Reth's s
 The writer must support `--history-sync`, which bounds execution, consensus payloads, and fork
 choice to its era; the pipeline's `--debug.max-block` alone does not supply that contract.
 
-Before starting consensus, the live node verifies a recent finalization and its epoch boundary
-through the configured follow upstream or the chain's default consensus RPC. It saves the existing
-consensus archives and syncs execution to that certified tip. Cached executed blocks survive an
+Before starting consensus, the live node verifies a recent finalization through the configured
+follow upstream or the chain's default consensus RPC, syncs execution to that certified tip, and
+verifies its epoch boundary header from the authenticated chain. No boundary certificate is required.
+It persists the certified floor in the consensus archives. Cached executed blocks survive an
 interrupted handoff and can be replayed without an upstream. Finality is persisted only through
 the durable execution prefix. Custom fork schedules retain their native startup path, and
 canonical-file bootstrap remains available for offline imports. The active binary still supports

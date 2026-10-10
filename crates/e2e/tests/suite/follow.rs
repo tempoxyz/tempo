@@ -20,7 +20,10 @@ use commonware_runtime::{
     tokio as runtime,
 };
 use futures::{channel::oneshot, future::join_all};
-use jsonrpsee::{core::client::ClientT as _, http_client::HttpClientBuilder, rpc_params};
+use jsonrpsee::{
+    RpcModule, core::client::ClientT as _, http_client::HttpClientBuilder, rpc_params,
+    server::ServerBuilder, types::ErrorObjectOwned,
+};
 use rand_core::CryptoRng;
 use reth_db::Database as _;
 use reth_ethereum::provider::{
@@ -382,7 +385,7 @@ fn historical_bootstrap_recovers_cached_tail_offline() {
     deterministic::Runner::default().start(|mut context| async move {
         let setup = Setup::new(crate::VERIFICATION_MODE)
             .how_many_signers(1)
-            .epoch_length(100);
+            .epoch_length(EPOCH_LENGTH);
         let (mut validators, execution_runtime) = setup_validators(&mut context, setup).await;
         let reference = &mut validators[0];
         reference.start(&context).await;
@@ -393,7 +396,7 @@ fn historical_bootstrap_recovers_cached_tail_offline() {
             .get_finalization(Query::Latest)
             .await
             .unwrap();
-        let upstream = reference.execution().rpc_server_handle().ws_url().unwrap();
+        assert!(floor.epoch > 0, "exercise a non-genesis boundary");
         let handle = execution_runtime.handle();
         let config = ExecutionNodeConfig::generate();
         let storage = tempfile::tempdir().unwrap();
@@ -414,14 +417,31 @@ fn historical_bootstrap_recovers_cached_tail_offline() {
             }
             let node = target.node.clone();
             let identity = reference.network_identity.clone();
-            let url = if offline {
-                "ws://127.0.0.1:0".to_owned()
-            } else {
-                upstream.clone()
-            };
+            let anchor = floor.clone();
             let cfg = runtime::Config::default().with_storage_directory(storage.path());
             std::thread::spawn(move || {
                 runtime::Runner::new(cfg).start(|context| async move {
+                    let (url, _server) = if offline {
+                        ("ws://127.0.0.1:0".to_owned(), None)
+                    } else {
+                        let server = ServerBuilder::default().build("127.0.0.1:0").await.unwrap();
+                        let url = format!("ws://{}", server.local_addr().unwrap());
+                        let mut module = RpcModule::new(anchor);
+                        // RPC nodes may retain only scattered certificates, without boundaries.
+                        module
+                            .register_method("consensus_getFinalization", |params, anchor, _| {
+                                match params.one::<Query>()? {
+                                    Query::Latest => Ok(anchor.clone()),
+                                    Query::Height(_) => Err(ErrorObjectOwned::owned(
+                                        204,
+                                        "boundary certificate unavailable",
+                                        None::<()>,
+                                    )),
+                                }
+                            })
+                            .unwrap();
+                        (url, Some(server.start(module)))
+                    };
                     tokio::time::timeout(
                         Duration::from_secs(60),
                         tempo_consensus::storage::bootstrap(
