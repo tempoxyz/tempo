@@ -29,6 +29,7 @@ pub mod cli;
 mod defaults;
 mod eras;
 mod follow;
+mod history;
 mod overrides;
 pub mod p2p_proxy;
 pub mod regenesis;
@@ -250,6 +251,10 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
     apply_tempo_cli_overrides(&mut cli)?;
 
+    let std::ops::ControlFlow::Continue(needs_history_anchor) = history::prepare(&cli)? else {
+        return Ok(());
+    };
+
     if let Commands::Node(node_cmd) = &cli.command
         && node_cmd.engine.share_sparse_trie_with_payload_builder
         && node_cmd.builder.max_payload_tasks != 1
@@ -379,6 +384,22 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
         let runner = commonware_runtime::tokio::Runner::new(runtime_config);
         let ret = runner.start(async move |ctx| {
+            let node = Arc::new(node);
+            if needs_history_anchor {
+                let upstream = args
+                    .follow
+                    .as_ref()
+                    .unwrap_or(&follow::FollowMode::Auto)
+                    .resolve_url(&node.chain_spec())
+                    .ok_or_eyre("historical handoff requires a consensus RPC upstream")?;
+                tokio::select! {
+                    result = tempo_consensus::storage::bootstrap(
+                        ctx.child("history"), args.consensus.network_identity(), &node, &upstream,
+                        args.follow_upstream_request_timeout.into_duration(),
+                    ) => result?,
+                    () = shutdown_token_clone.cancelled() => return Ok(()),
+                }
+            }
             let mut metrics_server = tempo_consensus::metrics::install(
                 ctx.child("metrics"),
                 args.consensus.metrics_address,
@@ -416,7 +437,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     args.consensus,
                     follow_url,
                     args.follow_upstream_request_timeout.into_duration(),
-                    Arc::new(node),
+                    node,
                     cl_feed_state_clone,
                     gossip_transport,
                 ))
@@ -424,7 +445,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                 Either::Right(run_consensus_stack(
                     ctx.child("consensus"),
                     args.consensus,
-                    Arc::new(node),
+                    node,
                     executed_state,
                     cl_feed_state_clone,
                     gossip_transport,

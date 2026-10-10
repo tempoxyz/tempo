@@ -34,15 +34,14 @@ use tempo_metabinary::{
 /// release artifacts and activation times, never the operator's node configuration.
 pub(crate) fn release_catalog() -> eyre::Result<Catalog> {
     let executable = std::env::current_exe()?;
-    let path = executable
-        .parent()
-        .expect("executable has parent")
-        .join("tempo-eras.json");
+    let parent = executable.parent().expect("executable has parent");
+    let path = parent.join("tempo-eras.json");
     match std::fs::metadata(&path) {
         Ok(_) => Catalog::load(&path),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let catalog: Catalog = serde_json::from_str(include_str!("../eras.json"))?;
+            let mut catalog: Catalog = serde_json::from_str(include_str!("../eras.json"))?;
             catalog.validate()?;
+            catalog.resolve_binaries(parent);
             Ok(catalog)
         }
         Err(error) => Err(error.into()),

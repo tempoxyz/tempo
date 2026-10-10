@@ -87,10 +87,20 @@ era timestamp, and exact head. Subsequent imports verify the predecessor and fir
 No pipeline checkpoints or handoff markers are rewritten. An import failure may leave partial
 progress; use the ordinary Tempo recovery workflow.
 
-Genesis network sync remains native, and the active binary still supports old forks. Bootstrap does
-not download files or switch peer-to-peer writers. Removing historical execution branches requires
-frozen artifacts, execution-range guards, and a bounded sync interface that also gates consensus
-payloads and fork choice. Reth's pipeline `--debug.max-block` alone does not supply that contract.
+Genesis network sync remains native unless the release catalog supplies a `checkpoint` with the
+terminal block number and hash for one frozen era. With that checkpoint, ordinary `tempo node`
+startup runs the frozen writer through its terminal block, verifies the durable checkpoint, and
+reaps it before launching live execution. Interrupted sync resumes from Reth's saved progress.
+The writer must support `--history-sync`, which bounds execution, consensus payloads, and fork
+choice to its era; the pipeline's `--debug.max-block` alone does not supply that contract.
+
+Before starting consensus, the live node verifies a recent finalization and its epoch boundary
+through the configured follow upstream or the chain's default consensus RPC. It saves the existing
+consensus archives and syncs execution to that certified tip. Cached executed blocks survive an
+interrupted handoff and can be replayed without an upstream. Finality is persisted only through
+the durable execution prefix. Custom fork schedules retain their native startup path, and
+canonical-file bootstrap remains available for offline imports. The active binary still supports
+old forks; configuring and packaging a frozen replacement is a separate release change.
 Historical validator-config reads already use storage without constructing an EVM.
 
 Frozen artifacts need this `rpc-only` discovery protocol and hidden `--rpc-config` interface,

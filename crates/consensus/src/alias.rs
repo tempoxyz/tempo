@@ -5,10 +5,9 @@ pub(crate) mod marshal {
     use std::{num::NonZeroUsize, sync::Arc};
 
     use alloy_consensus::{BlockHeader as _, Sealable as _};
-    use commonware_codec::ReadExt as _;
     use commonware_consensus::{
         Epochable as _,
-        marshal::{self, core, standard::Standard},
+        marshal::{self, core, standard::Standard, store::Blocks as _},
         simplex::scheme::bls12381_threshold::vrf::Scheme,
         types::{Epoch, Epocher as _, FixedEpocher, Height, Round, ViewDelta},
     };
@@ -24,7 +23,6 @@ pub(crate) mod marshal {
     use reth_ethereum::{chainspec::EthChainSpec, provider::db::DatabaseEnv};
     use reth_node_builder::NodeTypesWithDBAdapter;
     use reth_provider::{BlockReader as _, providers::BlockchainProvider};
-    use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
     use tempo_node::{TempoFullNode, node::TempoNode};
     use tempo_primitives::TempoHeader;
     use tracing::{info, instrument};
@@ -32,6 +30,7 @@ pub(crate) mod marshal {
     use crate::{
         consensus::{Digest, block::Block},
         epoch::SchemeProvider,
+        finalization_verifier::verify_boundary,
         gossip::Certificate,
         storage::{self, Hybrid},
     };
@@ -288,6 +287,13 @@ pub(crate) mod marshal {
             "genesis must not have a finalization certificate"
         );
 
+        // A newer floor may skip delivery only when execution and its cache cover the whole path.
+        let first = blocks
+            .next_gap(execution_finalized_point(execution_node).0)
+            .0
+            .filter(|height| height.get() >= last)
+            .map_or(first, |_| last);
+
         let floor_certificate = certificates
             .get(Identifier::Index(first))
             .await
@@ -387,25 +393,7 @@ pub(crate) mod marshal {
                 eyre!("missing boundary header at height `{boundary}` in hybrid store")
             })?;
 
-        let onchain_outcome = OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
-            .wrap_err("failed to read DKG outcome from boundary header")?;
-        ensure!(
-            onchain_outcome.epoch() == epoch,
-            "boundary outcome is for epoch `{}`, expected finalization epoch `{epoch}`",
-            onchain_outcome.epoch,
-        );
-
-        let scheme = Scheme::verifier(
-            crate::config::NAMESPACE,
-            onchain_outcome.players().clone(),
-            onchain_outcome.sharing().clone(),
-        );
-
-        ensure!(
-            finalization.verify(context, &scheme, &Sequential),
-            "finalized floor failed verification"
-        );
-
+        let scheme = verify_boundary(context, finalization, &header)?;
         scheme_provider.register(epoch, scheme);
         Ok(())
     }

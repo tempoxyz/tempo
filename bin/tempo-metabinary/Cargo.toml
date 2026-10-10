@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 alloy-chains = "0.2.34"
+alloy-eips = { workspace = true, features = ["serde"] }
 alloy-primitives = { workspace = true, features = ["serde"] }
 clap.workspace = true
 eyre.workspace = true
