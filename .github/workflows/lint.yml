@@ -31,9 +31,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        targets: [runtime, tests]
+        include:
+          # Four jobs bounds clippy's peak memory (#7292).
+          - targets: runtime
+            build_jobs: 4
+          # Without the runtime pass before it, this leg re-checks every dependency and
+          # workspace lib, so it is the critical path.
+          - targets: tests
+            build_jobs: 8
     env:
-      CARGO_BUILD_JOBS: 4
+      CARGO_BUILD_JOBS: ${{ matrix.build_jobs }}
     permissions:
       id-token: write
       contents: read
