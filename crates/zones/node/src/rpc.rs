@@ -1500,7 +1500,9 @@ async fn set_leader(
             .setLeader(target, expected_epoch)
             .nonce_key(zone_sequencer::nonce_keys::ADMIN_OPS_NONCE_KEY)
             .nonce(nonce)
-            .max_fee_per_gas(tempo_chainspec::constants::gas::TEMPO_T1_BASE_FEE as u128)
+            .max_fee_per_gas(u128::from(
+                tempo_chainspec::constants::gas::TEMPO_T1_BASE_FEE,
+            ))
             .max_priority_fee_per_gas(0)
             .send_sync(),
     )

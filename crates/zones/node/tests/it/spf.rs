@@ -389,7 +389,7 @@ fn state_changing_transaction(recipient: Address) -> TransactionRequest {
         .to(recipient)
         .value(U256::ZERO)
         .gas_limit(TIP20_TX_GAS)
-        .gas_price(TEMPO_T0_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
 }
 
 fn funded_zone_genesis() -> Genesis {

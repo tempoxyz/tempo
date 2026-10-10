@@ -40,6 +40,25 @@ members = [
   "crates/revm",
   "crates/state-bloat",
   "xtask",
+  "bin/tempo-zone",
+  "bin/prover/enclave",
+  "bin/prover/utils",
+  "bin/prover/vsock-proxy",
+  "crates/zones/chainspec",
+  "crates/zones/checker",
+  "crates/zones/contracts",
+  "crates/zones/evm",
+  "crates/zones/exithatch",
+  "crates/zones/l1",
+  "crates/zones/node",
+  "crates/zones/p2p",
+  "crates/zones/payload",
+  "crates/zones/precompiles",
+  "crates/zones/primitives",
+  "crates/zones/prover",
+  "crates/zones/rpc",
+  "crates/zones/sequencer",
+  "crates/zones/spf",
 ]
 
 # Resolver 3 is available with edition 2024
@@ -137,6 +156,41 @@ panic = "abort"
 incremental = false
 
 [workspace.dependencies]
+# Zones
+tempo-zone-contracts = { path = "crates/zones/contracts", default-features = false }
+zone-chainspec = { path = "crates/zones/chainspec" }
+zone-evm = { path = "crates/zones/evm" }
+zone-l1 = { path = "crates/zones/l1" }
+zone-node = { path = "crates/zones/node" }
+zone-p2p = { path = "crates/zones/p2p" }
+zone-payload = { path = "crates/zones/payload" }
+zone-precompiles = { path = "crates/zones/precompiles", default-features = false }
+zone-primitives = { path = "crates/zones/primitives", default-features = false }
+zone-prover = { path = "crates/zones/prover" }
+zone-rpc = { path = "crates/zones/rpc" }
+zone-sequencer = { path = "crates/zones/sequencer" }
+zone-spf = { path = "crates/zones/spf" }
+zone-checker = { path = "crates/zones/checker" }
+aws-nitro-enclaves-nsm-api = "0.5.2"
+rcgen = { version = "0.14.7", default-features = false, features = ["crypto", "aws_lc_rs"] }
+tokio-rustls = { version = "0.26.4", default-features = false, features = ["aws_lc_rs"] }
+reth-chain-state = { git = "https://github.com/paradigmxyz/reth", rev = "17279c2" }
+reth-exex = { git = "https://github.com/paradigmxyz/reth", rev = "17279c2" }
+reth-trie-sparse = { git = "https://github.com/paradigmxyz/reth", rev = "17279c2", default-features = false, features = ["std"] }
+alloy-chains = "0.2.36"
+alloy-rpc-types-debug = "2.5.0"
+bincode = "1.3.3"
+minicbor = { version = "=2.3.0", default-features = false, features = ["alloc"] }
+minicbor-serde = { version = "=0.7.1", default-features = false, features = ["alloc"] }
+libc = "0.2.186"
+k256 = { version = "0.13.4", features = ["arithmetic", "ecdh"] }
+serde_bytes = "0.11"
+serde_yaml = "0.9.34"
+tokio-vsock = "0.7.2"
+toml = "0.9.12"
+vsock = "0.5.4"
+tokio-tungstenite = "0.28"
+
 tempo-state-bloat = { path = "crates/state-bloat" }
 aws-lc-rs = { version = "1.17.0", default-features = false, features = ["alloc", "non-fips", "ring-sig-verify"] }
 tempo-alloy = { path = "crates/alloy" }

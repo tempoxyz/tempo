@@ -1,7 +1,7 @@
 [package]
 name = "zone-payload"
 description = "Tempo Zone payload types and builder"
-version.workspace = true
+version = "0.3.5"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -15,10 +15,10 @@ workspace = true
 tempo-evm.workspace = true
 tempo-node.workspace = true
 tempo-payload-types.workspace = true
-tempo-primitives.workspace = true
+tempo-primitives = { workspace = true, features = ["reth", "reth-codec", "serde", "serde-bincode-compat"] }
 tempo-revm.workspace = true
 tempo-transaction-pool.workspace = true
-tempo-zone-contracts = { workspace = true, features = ["std", "serde", "rpc"] }
+tempo-zone-contracts = { workspace = true, features = ["rpc", "serde", "std"] }
 zone-chainspec.workspace = true
 zone-evm.workspace = true
 zone-l1.workspace = true
@@ -27,7 +27,7 @@ zone-precompiles = { workspace = true, features = ["std"] }
 
 # reth
 reth-basic-payload-builder.workspace = true
-reth-chainspec.workspace = true
+reth-chainspec = { workspace = true, default-features = true }
 reth-errors.workspace = true
 reth-evm.workspace = true
 reth-node-api.workspace = true
@@ -52,5 +52,5 @@ alloy-sol-types.workspace = true
 
 # misc
 eyre.workspace = true
-serde = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["alloc", "derive"] }
 tracing.workspace = true

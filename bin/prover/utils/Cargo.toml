@@ -1,7 +1,7 @@
 [package]
 name = "tempo-zone-prover-utils"
 description = "Prover development and input-generation utilities for Tempo Zones"
-version.workspace = true
+version = "0.3.5"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -22,7 +22,7 @@ zone-spf.workspace = true
 
 tempo-alloy.workspace = true
 tempo-precompiles.workspace = true
-tempo-primitives.workspace = true
+tempo-primitives = { workspace = true, features = ["reth", "reth-codec", "serde", "serde-bincode-compat"] }
 
 alloy-consensus.workspace = true
 alloy-eips.workspace = true
@@ -38,12 +38,12 @@ clap = { workspace = true, features = ["env"] }
 const-hex.workspace = true
 eyre.workspace = true
 futures.workspace = true
-reqwest.workspace = true
-serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
+reqwest = { workspace = true, features = ["json", "rustls"] }
+serde = { workspace = true, features = ["alloc", "derive"] }
+serde_json = { workspace = true, default-features = true }
 tokio.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [dev-dependencies]
 alloy-transport.workspace = true
@@ -52,5 +52,5 @@ tempo-chainspec.workspace = true
 [features]
 default = ["asm-keccak", "keccak-cache-global"]
 
-asm-keccak = ["alloy-primitives/asm-keccak"]
+asm-keccak = ["alloy-primitives/asm-keccak", "tempo-alloy/asm-keccak"]
 keccak-cache-global = ["alloy-primitives/keccak-cache-global"]

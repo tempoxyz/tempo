@@ -1,11 +1,11 @@
-# `tempo-xtask`
+# `tempo-zone-xtask`
 
 A polyfill to perform various operations on the codebase.
 
 Subcommands currently supported:
 
 - `admin`: read-only checks and guarded operational commands for deployed Zones.
-  See the [admin command documentation](src/admin/README.md).
+  See the [admin command documentation](../../xtask/src/zones/admin/README.md).
 - `create-zone`: creates a new Zone through Tempo's native TIP-1091 ZoneFactory, either
   signed by `ZONE_FACTORY_OWNER_KEY` or, for a Safe-owned factory, as a Safe Transaction
   Builder proposal (`--safe-address`) finished with `--creation-tx` after execution.

@@ -1,7 +1,7 @@
 [package]
 name = "tempo-zone-contracts"
 description = "Tempo Zone contract bindings and ABI definitions"
-version.workspace = true
+version = "0.3.5"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -23,7 +23,7 @@ alloy-provider = { workspace = true, optional = true }
 alloy-rpc-types-eth = { workspace = true, optional = true }
 alloy-transport = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
-serde = { workspace = true, optional = true }
+serde = { workspace = true, optional = true, features = ["alloc"] }
 k256 = { workspace = true, optional = true }
 
 [dev-dependencies]
@@ -38,7 +38,13 @@ std = [
     "serde?/std",
     "zone-primitives/std",
 ]
-serde = ["dep:serde", "alloy-primitives/serde"]
+serde = [
+    "dep:serde",
+    "alloy-primitives/serde",
+    "const-hex/serde",
+    "k256?/serde",
+    "zone-primitives/serde",
+]
 rpc = [
     "alloy-primitives/k256",
     "dep:alloy-contract",

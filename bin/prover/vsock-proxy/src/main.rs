@@ -1,3 +1,5 @@
+//! TCP-to-VSOCK proxy for connections to the Zones prover enclave.
+
 use std::{
     io,
     net::{Ipv4Addr, SocketAddrV4},

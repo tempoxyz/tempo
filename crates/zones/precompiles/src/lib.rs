@@ -18,10 +18,10 @@
 //!
 //! ## Policy/token precompiles
 //!
-//! - **NonceManager** ([`nonce`]) — upstream 2D nonces with account-scoped read rules.
-//! - **AccountKeychain** ([`account_keychain`]) — upstream key management with account-scoped
+//! - **NonceManager** (`nonce`) — upstream 2D nonces with account-scoped read rules.
+//! - **AccountKeychain** (`account_keychain`) — upstream key management with account-scoped
 //!   read rules.
-//! - **StorageCredits** ([`storage_credits`]) — upstream storage-credit accounting with
+//! - **StorageCredits** (`storage_credits`) — upstream storage-credit accounting with
 //!   account-scoped read rules.
 //! - **Zone Inbox** ([`inbox`]) — advances Tempo state and processes the deposit queue.
 //! - **TIP-403 Registry** ([`tip403_proxy`]) — upstream registry over finalized L1 state.

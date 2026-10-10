@@ -163,7 +163,7 @@ where
     let zone_token = ITIP20::new(PATH_USD_ADDRESS, provider);
     let approve_pending = zone_token
         .approve(ZONE_OUTBOX_ADDRESS, U256::MAX)
-        .gas_price(TEMPO_T0_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
         .gas(TIP20_TX_GAS)
         .send()
         .await?;

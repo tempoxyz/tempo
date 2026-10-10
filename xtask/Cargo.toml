@@ -1,5 +1,6 @@
 [package]
 name = "tempo-xtask"
+default-run = "tempo-xtask"
 
 version.workspace = true
 edition.workspace = true
@@ -16,7 +17,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-tempo-chainspec = { workspace = true, features = ["default"] }
+tempo-chainspec = { workspace = true, features = ["cli", "default"] }
 tempo-contracts.workspace = true
 tempo-primitives = { workspace = true, features = ["reth-codec"] }
 tempo-consensus-config.workspace = true
@@ -27,25 +28,13 @@ tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempo-revm.workspace = true
 tempo-state-bloat.workspace = true
 
-alloy = { workspace = true, features = [
-  "genesis",
-  "providers",
-  "provider-ws",
-  "reqwest",
-  "reqwest-rustls-tls",
-  "signers",
-  "signer-local",
-  "signer-mnemonic",
-  "rand",
-  "sol-types",
-  "getrandom",
-] }
+alloy = { workspace = true, features = ["contract", "genesis", "getrandom", "provider-ws", "providers", "rand", "reqwest", "reqwest-rustls-tls", "rpc-types", "signer-local", "signer-mnemonic", "signers", "sol-types"] }
 alloy-consensus.workspace = true
 alloy-eips.workspace = true
 alloy-json-abi.workspace = true
 alloy-primitives = { workspace = true, features = ["asm-keccak"] }
 bytes.workspace = true
-clap = { workspace = true, features = ["derive"] }
+clap = { workspace = true, features = ["derive", "env"] }
 commonware-codec.workspace = true
 commonware-consensus.workspace = true
 commonware-cryptography.workspace = true
@@ -72,5 +61,26 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 
+tempo-alloy.workspace = true
+
+tempo-zone-contracts = { workspace = true, features = ["std", "serde", "rpc"] }
+zone-primitives.workspace = true
+zone-precompiles = { workspace = true, features = ["std"] }
+zone-p2p.workspace = true
+zone-rpc.workspace = true
+zone-sequencer.workspace = true
+alloy-rlp.workspace = true
+alloy-rpc-types-eth.workspace = true
+futures.workspace = true
+serde_yaml.workspace = true
+toml.workspace = true
+zeroize.workspace = true
+rustls = { version = "0.23", features = ["aws-lc-rs"] }
+
 [dev-dependencies]
+zone-chainspec.workspace = true
 tempfile.workspace = true
+
+[[bin]]
+name = "tempo-zone-xtask"
+path = "src/zones/mod.rs"

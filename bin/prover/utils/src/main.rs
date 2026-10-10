@@ -1,3 +1,5 @@
+//! Development utilities for generating and verifying Tempo Zone prover inputs.
+
 use std::{
     collections::BTreeMap,
     path::PathBuf,

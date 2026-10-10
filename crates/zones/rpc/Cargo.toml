@@ -1,7 +1,7 @@
 [package]
 name = "zone-rpc"
 description = "Redacted zone RPC server — authenticated JSON-RPC with per-caller privacy redactions"
-version.workspace = true
+version = "0.3.5"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -17,7 +17,7 @@ zone-primitives = { workspace = true, features = ["serde"] }
 # tempo
 tempo-alloy.workspace = true
 tempo-contracts.workspace = true
-tempo-primitives.workspace = true
+tempo-primitives = { workspace = true, features = ["reth", "reth-codec", "serde", "serde-bincode-compat"] }
 
 # alloy
 alloy-consensus.workspace = true
@@ -40,19 +40,19 @@ eyre.workspace = true
 futures.workspace = true
 metrics.workspace = true
 parking_lot.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["json", "rustls"] }
 reth-metrics.workspace = true
-serde.workspace = true
-serde_json.workspace = true
+serde = { workspace = true, features = ["alloc"] }
+serde_json = { workspace = true, default-features = true }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 url = "2"
 
 [dev-dependencies]
-base64.workspace = true
-p256.workspace = true
-rand.workspace = true
-sha2.workspace = true
+base64 = { workspace = true, default-features = true }
+p256 = { workspace = true, features = ["ecdsa"] }
+rand = { version = "0.8.5" }
+sha2 = { workspace = true, default-features = true }
 tokio-tungstenite.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

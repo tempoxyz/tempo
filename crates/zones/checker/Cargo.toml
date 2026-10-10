@@ -1,7 +1,7 @@
 [package]
 name = "zone-checker"
 description = "Observe-only Zone L2 checker ExEx"
-version.workspace = true
+version = "0.3.5"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -14,7 +14,7 @@ workspace = true
 [dependencies]
 # reth
 reth-exex.workspace = true
-reth-chainspec.workspace = true
+reth-chainspec = { workspace = true, default-features = true }
 reth-codecs.workspace = true
 reth-db.workspace = true
 reth-node-api.workspace = true
@@ -29,7 +29,7 @@ alloy-eips.workspace = true
 alloy-network.workspace = true
 alloy-primitives.workspace = true
 alloy-provider = { workspace = true, features = ["ws"] }
-alloy-rpc-client.workspace = true
+alloy-rpc-client = { workspace = true, default-features = true }
 alloy-rpc-types-eth.workspace = true
 alloy-sol-types.workspace = true
 alloy-transport.workspace = true
@@ -39,7 +39,7 @@ tempo-alloy.workspace = true
 tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-contracts.workspace = true
 tempo-precompiles.workspace = true
-tempo-primitives.workspace = true
+tempo-primitives = { workspace = true, features = ["reth", "reth-codec", "serde", "serde-bincode-compat"] }
 tempo-revm = { workspace = true, features = ["reth"] }
 
 # zones
@@ -54,7 +54,7 @@ futures.workspace = true
 metrics.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
-serde.workspace = true
+serde = { workspace = true, features = ["alloc"] }
 bincode.workspace = true
 bytes.workspace = true
 tempfile.workspace = true
@@ -64,8 +64,8 @@ tokio = { workspace = true, features = ["time"] }
 alloy-consensus = { workspace = true, features = ["std"] }
 alloy-rlp.workspace = true
 alloy-rpc-types-eth.workspace = true
-reth-ethereum-primitives.workspace = true
+reth-ethereum-primitives = { workspace = true, default-features = true }
 reth-primitives-traits = { workspace = true, features = ["std", "test-utils"] }
 reth-provider = { workspace = true, features = ["test-utils"] }
-serde_json.workspace = true
+serde_json = { workspace = true, default-features = true }
 tokio = { workspace = true, features = ["macros", "rt"] }
