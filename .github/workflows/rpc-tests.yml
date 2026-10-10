@@ -9,11 +9,13 @@ on:
       - 'crates/node/**'
       - 'crates/primitives/**'
       - 'crates/revm/**'
+      - '.github/workflows/rpc-tests.yml'
   pull_request:
     paths:
       - 'crates/node/**'
       - 'crates/primitives/**'
       - 'crates/revm/**'
+      - '.github/workflows/rpc-tests.yml'
   merge_group:
 
 env:
@@ -57,12 +59,14 @@ jobs:
       - name: Build RPC tests
         id: build
         continue-on-error: ${{ matrix.allow_failure }}
-        run: cargo nextest run --profile ci-rpc -E 'package(tempo-node) & binary(it) & test(/test_matrices_${{ matrix.network }}/)' --no-run
+        # Build only the binary the filter selects; without -p/--test nextest builds every
+        # workspace test binary.
+        run: cargo nextest run -p tempo-node --test it --profile ci-rpc -E 'package(tempo-node) & binary(it) & test(/test_matrices_${{ matrix.network }}/)' --no-run
       - name: Run RPC tests
         id: run
         if: steps.build.outcome == 'success'
         continue-on-error: ${{ matrix.allow_failure }}
-        run: cargo nextest run --profile ci-rpc -E 'package(tempo-node) & binary(it) & test(/test_matrices_${{ matrix.network }}/)'
+        run: cargo nextest run -p tempo-node --test it --profile ci-rpc -E 'package(tempo-node) & binary(it) & test(/test_matrices_${{ matrix.network }}/)'
       - name: Report allowed devnet failure
         if: matrix.allow_failure && (steps.build.outcome == 'failure' || steps.run.outcome == 'failure')
         run: echo '::warning::Devnet RPC tests failed, but this check is allowed to fail so merge queue processing can continue.'
