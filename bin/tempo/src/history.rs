@@ -37,6 +37,9 @@ pub(crate) fn prepare(cli: &TempoCli) -> Result<ControlFlow<(), bool>> {
     let Some(schedule) = catalog.for_chain(node.chain.chain_id(), node.chain.genesis_hash()) else {
         return Ok(ControlFlow::Continue(false));
     };
+    if schedule.eras.iter().all(|era| era.checkpoint.is_none()) {
+        return Ok(ControlFlow::Continue(false));
+    }
     let [era, _] = schedule.eras.as_slice() else {
         bail!("network handoff requires one frozen era");
     };
