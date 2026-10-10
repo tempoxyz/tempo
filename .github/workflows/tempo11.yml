@@ -1,0 +1,40 @@
+name: tempo11
+
+permissions: {}
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "contrib/tempo11/**"
+      - ".github/workflows/tempo11.yml"
+  pull_request:
+    paths:
+      - "contrib/tempo11/**"
+      - ".github/workflows/tempo11.yml"
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: tempoxyz/gh-actions/vendor/astral-sh/setup-uv@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        with:
+          version: "0.12.16"
+          enable-cache: false
+      - name: Install GnuCOBOL
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y gnucobol3 build-essential
+      - name: Compile and test
+        working-directory: contrib/tempo11
+        run: make test
