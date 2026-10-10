@@ -1029,40 +1029,6 @@ mod tests {
     }
 
     #[test]
-    fn history_sync_is_bounded_without_consensus_or_local_mining() {
-        init_defaults_once();
-        let args = [
-            "tempo",
-            "node",
-            "--history-sync",
-            "--debug.tip=0x0000000000000000000000000000000000000000000000000000000000000001",
-            "--debug.max-block=1",
-        ];
-        let Commands::Node(node) = TempoCli::try_parse_from(args).unwrap().command else {
-            panic!("expected node command");
-        };
-        assert!(!node.ext.has_consensus_engine(false));
-        for omitted in [3, 4] {
-            assert!(
-                TempoCli::try_parse_from(
-                    args.iter()
-                        .enumerate()
-                        .filter_map(|(i, arg)| (i != omitted).then_some(*arg))
-                )
-                .is_err()
-            );
-        }
-        for flag in [
-            "--follow",
-            "--dev",
-            "--debug.etherscan",
-            "--debug.rpc-consensus-url=http://127.0.0.1:8545",
-        ] {
-            assert!(TempoCli::try_parse_from(args.into_iter().chain([flag])).is_err());
-        }
-    }
-
-    #[test]
     fn follow_certification_defaults() {
         init_defaults_once();
 

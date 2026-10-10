@@ -37,11 +37,10 @@ fn historical_bootstrap_recovers_cached_tail_offline() {
         let storage = tempfile::tempdir().unwrap();
 
         for (name, offline) in [("history", false), ("history-replay", true)] {
-            let path = handle.nodes_dir().join(name).join("db");
-            std::fs::create_dir_all(&path).unwrap();
-            let database = reth_db::init_db(path, test_db_args())
-                .unwrap()
-                .with_metrics();
+            let database =
+                reth_db::init_db(handle.nodes_dir().join(name).join("db"), test_db_args())
+                    .unwrap()
+                    .with_metrics();
             let target = handle
                 .spawn_node(name, config.clone(), database.clone(), None)
                 .await
@@ -86,13 +85,11 @@ fn historical_bootstrap_recovers_cached_tail_offline() {
                 (floor.block.number(), floor.digest)
             );
             let durable = provider.database_provider_ro().unwrap();
-            assert!(
-                durable.last_finalized_block_number().unwrap().unwrap()
-                    <= durable.best_block_number().unwrap()
-            );
+            let finish = durable.best_block_number().unwrap();
+            assert!(durable.last_finalized_block_number().unwrap().unwrap() <= finish);
             if !offline {
                 // A fresh genesis DB reproduces this state without Reth's shutdown flush.
-                assert_eq!(durable.best_block_number().unwrap(), 0);
+                assert_eq!(finish, 0);
             }
             drop(durable);
             target.shutdown().await;

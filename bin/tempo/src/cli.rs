@@ -40,15 +40,6 @@ impl RpcModuleValidator for TempoRpcModuleValidator {
 // TODO: migrate this to tempo_node eventually.
 #[derive(Debug, Clone, clap::Args)]
 pub struct TempoArgs {
-    /// Sync execution to a pinned historical checkpoint without Tempo consensus.
-    #[arg(
-        long,
-        hide = true,
-        requires_all = ["tip", "max_block"],
-        conflicts_with_all = ["follow", "dev", "etherscan", "rpc_consensus_url"]
-    )]
-    pub(crate) history_sync: bool,
-
     /// Run in follow mode from an upstream node.
     /// If provided without a value, defaults to the RPC URL for the selected chain.
     #[arg(long, value_name = "WEBSOCKET_URL", default_missing_value = "auto", num_args(0..=1), env = "TEMPO_FOLLOW")]
@@ -129,7 +120,7 @@ impl TempoArgs {
 
     /// Whether the consensus engine should be active.
     pub fn has_consensus_engine(&self, dev: bool) -> bool {
-        !dev && !self.history_sync && !self.is_following_uncertified()
+        !dev && !self.is_following_uncertified()
     }
 
     /// Whether the node should register the `tempo/1` subprotocol.

@@ -130,15 +130,13 @@ pub async fn bootstrap(
         }
         blocks = blocks.sync().await?;
         // Retain the boundary certificate for downstream bootstrap.
-        for (block, certificate) in [
-            (&floor, Some(certificate)),
-            (&boundary, boundary_certificate),
-        ] {
-            if let Some(certificate) = certificate {
-                certificates = certificates
-                    .put(block.number(), block.digest(), certificate)
-                    .await?;
-            }
+        for (height, certificate) in [(floor.number(), certificate)]
+            .into_iter()
+            .chain(boundary_certificate.map(|certificate| (boundary.number(), certificate)))
+        {
+            certificates = certificates
+                .put(height, certificate.proposal.payload, certificate)
+                .await?;
         }
         certificates = certificates.sync().await?;
         (floor, boundary)
@@ -152,16 +150,14 @@ pub async fn bootstrap(
 
     let engine = &node.add_ons_handle.beacon_engine_handle;
     // Replay a complete cached tail after a restart; fresh anchors use Reth's bulk sync.
-    let start = historical_tip.saturating_add(1).min(floor.number());
-    let start = if blocks
+    let mut start = historical_tip.saturating_add(1).min(floor.number());
+    if blocks
         .next_gap(start)
         .0
-        .is_some_and(|end| end >= floor.number())
+        .is_none_or(|end| end < floor.number())
     {
-        start
-    } else {
-        floor.number()
-    };
+        start = floor.number();
+    }
     for height in start..=floor.number() {
         let block = blocks
             .get(Identifier::Index(height))
@@ -180,27 +176,23 @@ pub async fn bootstrap(
     // Publish finality only after the restart path has reached disk.
     let state = ForkchoiceState {
         head_block_hash: floor.hash(),
-        safe_block_hash: Default::default(),
-        finalized_block_hash: Default::default(),
+        ..Default::default()
     };
     let durable_height = loop {
-        let status = engine
-            .fork_choice_updated(state, None)
-            .await?
-            .payload_status;
+        let update = engine.fork_choice_updated(state, None).await?;
         ensure!(
-            status.is_valid() || status.is_syncing(),
-            "bootstrap forkchoice rejected: {status}"
+            update.is_valid() || update.is_syncing(),
+            "bootstrap forkchoice rejected: {}",
+            update.payload_status
         );
-        if status.is_valid() {
-            ensure!(
-                node.provider.block_hash(floor.number())? == Some(floor.hash()),
-                "bootstrap canonical floor mismatch"
-            );
-            ensure!(
-                node.provider.block_hash(boundary.number())? == Some(boundary.hash()),
-                "bootstrap boundary is not on the certified chain"
-            );
+        if update.is_valid() {
+            for block in [&floor, &boundary] {
+                ensure!(
+                    node.provider.block_hash(block.number())? == Some(block.hash()),
+                    "bootstrap block {} is not on the certified chain",
+                    block.number()
+                );
+            }
             let provider = node.provider.database_provider_ro()?;
             let height = provider.best_block_number()?.min(floor.number());
             ensure!(
@@ -219,8 +211,8 @@ pub async fn bootstrap(
         context.sleep(Duration::from_secs(1)).await;
     };
 
-    // Preserve the executed tail before finalizing the durable prefix, so a restart can backfill
-    // from that prefix to the certified floor without depending on Reth's in-memory buffer.
+    // Cache the executed tail before finalizing its durable prefix, so restart backfill
+    // does not depend on Reth's in-memory buffer.
     for height in (durable_height..floor.number()).map(|height| height + 1) {
         let hash = node
             .provider
@@ -238,7 +230,6 @@ pub async fn bootstrap(
         engine
             .fork_choice_updated(ForkchoiceState::same_hash(floor.hash()), None)
             .await?
-            .payload_status
             .is_valid(),
         "bootstrap finality rejected"
     );

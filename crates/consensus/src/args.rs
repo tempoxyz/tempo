@@ -72,7 +72,7 @@ pub struct Args {
     /// startup using the passphrase read from the secret path.
     #[arg(
         long = "consensus.signing-key",
-        required_unless_present_any = ["follow", "dev", "history_sync"],
+        required_unless_present_any = ["follow", "dev"],
     )]
     signing_key: Option<PathBuf>,
 
@@ -638,10 +638,6 @@ mod tests {
         #[arg(long = "dev")]
         #[allow(dead_code)]
         dev: bool,
-        #[arg(long)]
-        #[allow(dead_code)]
-        history_sync: bool,
-
         #[command(flatten)]
         consensus: Args,
     }
