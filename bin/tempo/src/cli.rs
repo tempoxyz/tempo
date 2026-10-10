@@ -119,8 +119,6 @@ impl TempoArgs {
     }
 
     /// Whether the consensus engine should be active.
-    ///
-    /// The engine runs when not in dev mode and not following uncertified.
     pub fn has_consensus_engine(&self, dev: bool) -> bool {
         !dev && !self.is_following_uncertified()
     }

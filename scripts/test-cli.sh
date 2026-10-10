@@ -33,7 +33,17 @@ fi
 echo "--- Test: tempo node --follow (no crash)"
 DATADIR=$(mktemp -d)
 NODE_LOG=$(mktemp)
-$TEMPO node --chain moderato --follow --datadir "$DATADIR" --http --http.port 18545 >"$NODE_LOG" 2>&1 &
+# Use a local T10+ chain with a certified identity, without downloading network history.
+python3 - "$REPO_ROOT" "$DATADIR/chain.json" <<'PY'
+import json, sys
+from pathlib import Path
+root = Path(sys.argv[1]) / "crates/chainspec/src/genesis"
+chain = json.loads((root / "dev.json").read_text())
+chain["extraData"] = json.loads((root / "moderato.json").read_text())["extraData"]
+Path(sys.argv[2]).write_text(json.dumps(chain))
+PY
+$TEMPO node --chain "$DATADIR/chain.json" --follow ws://127.0.0.1:1 \
+    --datadir "$DATADIR" --http --http.port 18545 >"$NODE_LOG" 2>&1 &
 NODE_PID=$!
 trap 'kill "$NODE_PID" 2>/dev/null || true; wait "$NODE_PID" 2>/dev/null || true; rm -rf "$DATADIR" "$NODE_LOG"' EXIT
 

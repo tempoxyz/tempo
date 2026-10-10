@@ -631,20 +631,13 @@ mod tests {
 
     #[derive(Debug, clap::Parser)]
     struct TestCli {
-        // Stubs for the `required_unless_present_any = ["follow", "dev"]`
-        // gate on `--consensus.signing-key`. These args live in the outer
-        // binary's CLI struct; we re-declare them here just so clap can
-        // resolve the references during parse-time validation.
-        //
-        // NOTE(re #[allow(dead_code)]): those are explicitly allow(dead_code) due to the fact that
-        // those trigger rust-analyzer warnings otherwise.
+        // Node modes live in the outer CLI; Clap needs their IDs for the signing-key requirement.
         #[arg(long = "follow")]
         #[allow(dead_code)]
         follow: Option<String>,
         #[arg(long = "dev")]
         #[allow(dead_code)]
         dev: bool,
-
         #[command(flatten)]
         consensus: Args,
     }

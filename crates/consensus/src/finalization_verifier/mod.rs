@@ -1,7 +1,5 @@
 //! Verification of Tempo consensus finalization certificates.
 
-use std::sync::Arc;
-
 use alloy_consensus::BlockHeader as _;
 use commonware_codec::{DecodeExt as _, ReadExt as _};
 use commonware_consensus::{
@@ -13,14 +11,17 @@ use commonware_cryptography::{
     bls12381::primitives::variant::MinSig, certificate::Provider as _, ed25519::PublicKey,
 };
 use commonware_parallel::Sequential;
+use eyre::{WrapErr as _, ensure};
 use rand_core::CryptoRng;
 use reth_consensus::ConsensusError;
+use std::sync::Arc;
 use tempo_chainspec::NetworkIdentity;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::consensus::validate_body_against_header;
 use tempo_node::rpc::consensus::CertifiedBlock;
+use tempo_primitives::TempoHeader;
 
-use crate::{config::NAMESPACE, consensus::Digest, epoch::SchemeProvider};
+use crate::{config::NAMESPACE, consensus::Digest, epoch::SchemeProvider, gossip::Certificate};
 
 #[cfg(test)]
 mod test;
@@ -121,6 +122,35 @@ impl FinalizationVerifier {
         Ok(finalization)
     }
 
+    /// Verify a certified anchor and the boundary supplying its full DKG scheme.
+    pub(crate) fn verify_anchor(
+        &self,
+        rng: &mut impl CryptoRng,
+        floor: &CertifiedBlock,
+        boundary: &CertifiedBlock,
+    ) -> eyre::Result<(Certificate, Option<Certificate>)> {
+        let certificate = self.decode_and_verify(rng, floor)?;
+        ensure!(
+            boundary.block.number() == self.boundary_height(floor.block.number()),
+            "bootstrap boundary height mismatch"
+        );
+        let boundary_certificate = (boundary.block.number() != 0)
+            .then(|| self.decode_and_verify(rng, boundary))
+            .transpose()?;
+        verify_boundary(rng, &certificate, boundary.block.header())?;
+        Ok((certificate, boundary_certificate))
+    }
+
+    /// Return the boundary supplying the DKG outcome for a block's epoch.
+    pub(crate) fn boundary_height(&self, height: u64) -> u64 {
+        let first = self
+            .epoch_strategy
+            .containing(Height::new(height))
+            .expect("fixed epoch strategy supports every block height")
+            .first();
+        first.previous().unwrap_or_default().get()
+    }
+
     /// Verify an already decoded certificate without requiring its block.
     pub(crate) fn verify_certificate<R: CryptoRng>(
         &self,
@@ -157,6 +187,32 @@ impl FinalizationVerifier {
 
         Ok(())
     }
+}
+
+/// Verify a floor certificate against its boundary's DKG outcome and return the full scheme.
+pub(crate) fn verify_boundary(
+    rng: &mut impl CryptoRng,
+    certificate: &Certificate,
+    boundary: &TempoHeader,
+) -> eyre::Result<Scheme<PublicKey, MinSig>> {
+    let outcome = OnchainDkgOutcome::read(&mut boundary.extra_data().as_ref())
+        .wrap_err("failed to read DKG outcome from boundary header")?;
+    let epoch = certificate.epoch();
+    ensure!(
+        outcome.epoch() == epoch,
+        "boundary outcome is for epoch `{}`, expected finalization epoch `{epoch}`",
+        outcome.epoch,
+    );
+    let scheme = Scheme::verifier(
+        NAMESPACE,
+        outcome.players().clone(),
+        outcome.sharing().clone(),
+    );
+    ensure!(
+        certificate.verify(rng, &scheme, &Sequential),
+        "finalized floor failed verification"
+    );
+    Ok(scheme)
 }
 
 /// Why an already decoded certificate could not be verified.

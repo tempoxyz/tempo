@@ -27,13 +27,29 @@ pub fn spawn_bootstrap(manifest: &Manifest, era: &Era, bootstrap: &Bootstrap) ->
 }
 
 /// Every supervised child uses the same I/O and cancellation fallback.
-pub(crate) fn spawn_child(command: &mut Command) -> std::io::Result<Child> {
+pub fn spawn_child(command: &mut Command) -> std::io::Result<Child> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .kill_on_drop(true)
         .spawn()
+}
+
+/// Wait for a node shutdown signal.
+pub async fn shutdown_signal() -> Result<()> {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result?,
+            _ = terminate.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    tokio::signal::ctrl_c().await?;
+    Ok(())
 }
 
 /// Signal all owned children before concurrently reaping them under one grace period.

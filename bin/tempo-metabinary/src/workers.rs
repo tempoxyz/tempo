@@ -440,6 +440,7 @@ mod tests {
                     name: "frozen".into(),
                     start_timestamp: 0,
                     binary: Some(binary.clone()),
+                    checkpoint: None,
                 }],
             )
             .unwrap();

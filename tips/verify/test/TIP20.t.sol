@@ -13,9 +13,6 @@ interface ITIP20Protocol is ITIP20 {
 
 }
 
-/// forge-config: default.hardfork = "tempo:T2"
-/// forge-config: next.hardfork = "tempo:T2"
-/// forge-config: fuzz500.hardfork = "tempo:T2"
 contract TIP20Test is TempoTest {
 
     ITIP20Token token;
@@ -537,35 +534,7 @@ contract TIP20Test is TempoTest {
             assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
         }
 
-        // 6. systemTransferFrom - blocked from
-        // We skip this test on Tempo, as the systemTransferFrom function is not exposed via the ITIP20 interface
-        // it is just an internal function that is called by the fee manager precompile directly.
-
-        // 7. distributeReward - blocked sender
-        vm.prank(alice);
-        try token.distributeReward(100e18) {
-            revert CallShouldHaveReverted();
-        } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
-        }
-
-        // 8. setRewardRecipient - blocked sender
-        vm.prank(alice);
-        try token.setRewardRecipient(alice) {
-            revert CallShouldHaveReverted();
-        } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
-        }
-
-        // 9. setRewardRecipient - blocked recipient (bob sets alice as recipient)
-        vm.prank(bob);
-        try token.setRewardRecipient(alice) {
-            revert CallShouldHaveReverted();
-        } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
-        }
-
-        // 10. claimRewards - blocked sender
+        // 6. claimRewards - blocked recipient
         vm.prank(alice);
         try token.claimRewards() {
             revert CallShouldHaveReverted();
@@ -573,7 +542,7 @@ contract TIP20Test is TempoTest {
             assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
         }
 
-        // 11. burnBlocked - reverts if from IS authorized (opposite logic)
+        // 7. burnBlocked - reverts if from IS authorized (opposite logic)
         vm.startPrank(admin);
         token.grantRole(token.BURN_BLOCKED_ROLE(), admin);
         token.changeTransferPolicyId(1); // back to default where bob is authorized
@@ -1003,528 +972,69 @@ contract TIP20Test is TempoTest {
         assertEq(address(token.quoteToken()), address(anotherToken));
     }
 
-    /*//////////////////////////////////////////////////////////////
-                        REWARD DISTRIBUTION TESTS
-    //////////////////////////////////////////////////////////////*/
-
-    function testSetRewardRecipientOptIn() public {
-        vm.startPrank(alice);
-
-        token.setRewardRecipient(alice);
-
-        (address delegatedRecipient,,) = token.userRewardInfo(alice);
-        assertEq(delegatedRecipient, alice);
-        assertEq(token.optedInSupply(), 1000e18);
-
-        vm.stopPrank();
-    }
-
-    function testSetRewardRecipientOptOut() public {
-        // First opt in
-        vm.startPrank(alice);
-        token.setRewardRecipient(alice);
-
-        // Then opt out
-        token.setRewardRecipient(address(0));
-
-        (address delegatedRecipient,,) = token.userRewardInfo(alice);
-        assertEq(delegatedRecipient, address(0));
-        assertEq(token.optedInSupply(), 0);
-
-        vm.stopPrank();
-    }
-
-    function testSetRewardRecipientToDifferentAddress() public {
-        vm.startPrank(alice);
-
-        token.setRewardRecipient(bob);
-
-        (address delegatedRecipient,,) = token.userRewardInfo(alice);
-        assertEq(delegatedRecipient, bob);
-        assertEq(token.optedInSupply(), 1000e18);
-
-        vm.stopPrank();
-    }
-
-    function testRewardInjectionWithNoOptedIn() public {
-        // When no one has opted in, rewards are still allowed but get locked
-        vm.startPrank(admin);
-        token.mint(admin, 1000e18);
-
-        // Should revert with `NoOptedInSupply` if trying to start a timed reward
-        try token.distributeReward(100e18) {
-            revert CallShouldHaveReverted();
-        } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(ITIP20.NoOptedInSupply.selector));
-        }
-    }
-
-    function testRewardInjectionAndClaimBasic() public {
-        // Alice opts in
-        vm.prank(alice);
-        token.setRewardRecipient(alice);
-
-        // Admin injects rewards (immediate payout with seconds = 0)
-        vm.startPrank(admin);
-        token.mint(admin, 1000e18);
-
-        uint256 rewardAmount = 100e18;
-
-        token.distributeReward(rewardAmount);
-
-        vm.stopPrank();
-
-        assertEq(token.balanceOf(address(token)), rewardAmount);
-
-        // Claim the rewards
-        uint256 balanceBeforeClaim = token.balanceOf(alice);
-
-        vm.prank(alice);
-        uint256 rewardBalance = token.claimRewards();
-
-        assertEq(rewardBalance, 100e18);
-        assertEq(token.balanceOf(alice), balanceBeforeClaim + 100e18);
-        assertEq(token.balanceOf(address(token)), 0);
-    }
-
-    function testRewardsWithNothingToDistribute() public {
-        // Alice opts in but no rewards have been distributed
-        vm.prank(alice);
-        token.setRewardRecipient(alice);
-
-        uint256 balanceBefore = token.balanceOf(alice);
-
-        // No rewards to claim
-        vm.prank(alice);
-        token.claimRewards();
-
-        // Balance should be unchanged
-        assertEq(token.balanceOf(alice), balanceBefore);
-    }
-
-    function testRewardDistributionProRata() public {
-        // Alice (1000e18) and Bob (500e18) opt in
-        vm.prank(alice);
-        token.setRewardRecipient(alice);
-
-        vm.prank(bob);
-        token.setRewardRecipient(bob);
-
-        assertEq(token.optedInSupply(), 1500e18);
-
-        // Admin injects 300e18 rewards (immediate)
-        vm.startPrank(admin);
-        token.mint(admin, 1000e18);
-        token.distributeReward(300e18);
-        vm.stopPrank();
-
-        // Claim rewards for Alice and Bob
-        // Alice should get 200e18 (2/3 of rewards)
-        // Bob should get 100e18 (1/3 of rewards)
-        vm.prank(alice);
-        token.claimRewards();
-
-        vm.prank(bob);
-        token.claimRewards();
-
-        assertEq(token.balanceOf(alice), 1000e18 + 200e18);
-        assertEq(token.balanceOf(bob), 500e18 + 100e18);
-    }
-
-    function testRewardDistributionWithDelegation() public {
-        // Alice opts in but delegates rewards to Charlie
-        vm.prank(alice);
-        token.setRewardRecipient(charlie);
-
-        (address delegatedRecipient,,) = token.userRewardInfo(alice);
-        assertEq(delegatedRecipient, charlie);
-
-        // Admin injects rewards (immediate)
-        vm.startPrank(admin);
-        token.mint(admin, 1000e18);
-        token.distributeReward(100e18);
-        vm.stopPrank();
-
-        // Trigger reward accumulation by alice doing a balance-changing operation
-        vm.prank(alice);
-        token.transfer(alice, 0);
-
-        // Charlie claims the delegated rewards
-        vm.prank(charlie);
-        token.claimRewards();
-
-        assertEq(token.balanceOf(charlie), 100e18);
-    }
-
-    function testRewardAccountingOnTransfer() public {
-        // Alice and Bob opt in
-        vm.prank(alice);
-        token.setRewardRecipient(alice);
-
-        vm.prank(bob);
-        token.setRewardRecipient(bob);
-
-        // Inject rewards
-        vm.startPrank(admin);
-        token.mint(admin, 1000e18);
-        token.distributeReward(150e18);
-        vm.stopPrank();
-
-        // Alice transfers 200e18 to Bob
-        // This accumulates rewards during the transfer
-        vm.prank(alice);
-        token.transfer(bob, 200e18);
-
-        // Claim rewards
-        vm.prank(alice);
-        token.claimRewards();
-
-        vm.prank(bob);
-        token.claimRewards();
-
-        // Check that opted-in supply includes claimed rewards
-        assertEq(token.optedInSupply(), 1500e18 + 150e18);
-
-        // Alice should have 800e18 + 100e18 rewards (1000/1500 * 150)
-        // Bob should have 700e18 + 50e18 rewards (500/1500 * 150)
-        assertEq(token.balanceOf(alice), 800e18 + 100e18);
-        assertEq(token.balanceOf(bob), 700e18 + 50e18);
-    }
-
-    function testRewardAccountingOnMint() public {
-        // Alice opts in
-        vm.prank(alice);
-        token.setRewardRecipient(alice);
-
-        // Inject rewards
-        vm.startPrank(admin);
-        token.mint(admin, 1000e18);
-        token.distributeReward(100e18);
-        vm.stopPrank();
-
-        // Mint more tokens to Alice - this accumulates pending rewards
-        vm.prank(admin);
-        token.mint(alice, 500e18);
-
-        // Claim rewards
-        vm.prank(alice);
-        token.claimRewards();
-
-        // Check opted-in supply
-        assertEq(token.optedInSupply(), 1500e18 + 100e18);
-
-        // Alice should have received the 100e18 rewards after claiming
-        assertEq(token.balanceOf(alice), 1500e18 + 100e18);
-    }
-
-    function testRewardAccountingOnBurn() public {
-        // Alice opts in
-        vm.prank(alice);
-        token.setRewardRecipient(alice);
-
-        // Grant Alice _ISSUER_ROLE so she can burn
-        vm.startPrank(admin);
-        token.grantRole(_ISSUER_ROLE, alice);
-        vm.stopPrank();
-
-        // Inject rewards
-        vm.startPrank(admin);
-        token.mint(admin, 1000e18);
-        token.distributeReward(100e18);
-        vm.stopPrank();
-
-        // Alice burns some tokens - this accumulates pending rewards
-        vm.startPrank(alice);
-        token.burn(200e18);
-        vm.stopPrank();
-
-        // Claim rewards
-        vm.prank(alice);
-        token.claimRewards();
-
-        // Check opted-in supply
-        assertEq(token.optedInSupply(), 800e18 + 100e18);
-
-        // Alice should have received the full 100e18 rewards after claiming
-        assertEq(token.balanceOf(alice), 800e18 + 100e18);
-    }
-
-    function testMultipleRewardInjections() public {
-        // Alice opts in
-        vm.prank(alice);
-        token.setRewardRecipient(alice);
-
-        // Admin injects rewards multiple times
-        vm.startPrank(admin);
-        token.mint(admin, 1000e18);
-
-        token.distributeReward(50e18);
-        token.distributeReward(30e18);
-        token.distributeReward(20e18);
-
-        vm.stopPrank();
-
-        // Claim rewards
-        vm.prank(alice);
-        token.claimRewards();
-
-        assertEq(token.balanceOf(alice), 1000e18 + 100e18);
-    }
-
-    function testChangingRewardRecipient() public {
-        // Alice opts in with herself as recipient
-        vm.prank(alice);
-        token.setRewardRecipient(alice);
-
-        // Inject some rewards
-        vm.startPrank(admin);
-        token.mint(admin, 1000e18);
-        token.distributeReward(100e18);
-        vm.stopPrank();
-
-        // Alice changes recipient to Bob
-        // This accumulates any accrued rewards into Alice's rewardBalance
-        vm.prank(alice);
-        token.setRewardRecipient(bob);
-
-        // Alice claims her accumulated rewards
-        vm.prank(alice);
-        token.claimRewards();
-
-        // Alice should have received her rewards after claiming
-        assertEq(token.balanceOf(alice), 1000e18 + 100e18);
-
-        // Now bob is the recipient for future rewards
-        (address delegatedRecipient,,) = token.userRewardInfo(alice);
-        assertEq(delegatedRecipient, bob);
-    }
-
-    function testTransferToNonOptedInUser() public {
-        // Alice opts in
-        vm.prank(alice);
-        token.setRewardRecipient(alice);
-
-        // Bob does not opt in
-
-        // Inject rewards
-        vm.startPrank(admin);
-        token.mint(admin, 1000e18);
-        token.distributeReward(100e18);
-        vm.stopPrank();
-
-        // Alice transfers to Bob - rewards are accumulated
-        vm.prank(alice);
-        token.transfer(bob, 300e18);
-
-        // Claim rewards
-        vm.prank(alice);
-        token.claimRewards();
-
-        // Opted-in supply should decrease since Bob is not opted in, but includes Alice's claimed rewards
-        assertEq(token.optedInSupply(), 700e18 + 100e18);
-
-        // Alice should have received her rewards after claiming
-        assertEq(token.balanceOf(alice), 700e18 + 100e18);
-    }
-
-    function testTransferFromNonOptedInToOptedIn() public {
-        // Bob opts in
-        vm.prank(bob);
-        token.setRewardRecipient(bob);
-
-        // Alice does not opt in
-
-        // Inject rewards
-        vm.startPrank(admin);
-        token.mint(admin, 1000e18);
-        token.distributeReward(50e18);
-        vm.stopPrank();
-
-        // Alice transfers to Bob - rewards accumulated to Bob
-        vm.prank(alice);
-        token.transfer(bob, 200e18);
-
-        // Bob claims rewards
-        vm.prank(bob);
-        token.claimRewards();
-
-        // Opted-in supply should include Bob's claimed rewards
-        assertEq(token.optedInSupply(), 700e18 + 50e18);
-
-        // Bob should have received rewards for his original 500e18 after claiming
-        assertEq(token.balanceOf(bob), 700e18 + 50e18);
-    }
-
-    function testRewardWhenPaused() public {
-        // Alice opts in
-        vm.prank(alice);
-        token.setRewardRecipient(alice);
-
-        // Pause the contract
-        vm.startPrank(admin);
-        token.grantRole(_PAUSE_ROLE, admin);
-        token.pause();
-
-        token.mint(admin, 1000e18);
-        try token.distributeReward(100e18) {
-            revert CallShouldHaveReverted();
-        } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(ITIP20.ContractPaused.selector));
-        }
-
-        vm.stopPrank();
-    }
-
-    function testRewardDistributionWhenPaused() public {
-        // Alice opts in
-        vm.prank(alice);
-        token.setRewardRecipient(alice);
-
-        // Inject rewards
-        vm.startPrank(admin);
-        token.mint(admin, 1000e18);
-        token.distributeReward(100e18);
-
-        // Pause the contract
-        token.grantRole(_PAUSE_ROLE, admin);
-        token.pause();
-        vm.stopPrank();
-
-        // Alice tries to claim rewards - should fail because paused
-        vm.prank(alice);
-        try token.claimRewards() {
-            revert CallShouldHaveReverted();
-        } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(ITIP20.ContractPaused.selector));
-        }
-    }
-
-    function testSetRewardRecipientWhenPaused() public {
-        // Pause the contract
-        vm.startPrank(admin);
-        token.grantRole(_PAUSE_ROLE, admin);
-        token.pause();
-        vm.stopPrank();
-
-        // Alice tries to set reward recipient
-        vm.prank(alice);
-        try token.setRewardRecipient(alice) {
-            revert CallShouldHaveReverted();
-        } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(ITIP20.ContractPaused.selector));
-        }
-    }
-
-    function testFuzzRewardDistribution(
-        uint256 aliceBalance,
-        uint256 bobBalance,
-        uint256 rewardAmount
+    function testFuzz_DisabledRewardsPreserveSettledState(
+        uint128 amount,
+        address recipient
     )
         public
     {
-        // Bound inputs
-        aliceBalance = bound(aliceBalance, 1e18, 1000e18);
-        bobBalance = bound(bobBalance, 1e18, 1000e18);
-        rewardAmount = bound(rewardAmount, 1e18, 500e18);
+        _seedSettledRewards(token, alice, amount, 0);
+        uint256 supply = token.totalSupply();
+        uint256 balance = token.balanceOf(alice);
 
-        // Alice and bob already have balances from setUp (1000e18 and 500e18)
-        // We need to adjust them to the desired balances
         vm.startPrank(admin);
-
-        // Calculate how much to transfer to match desired balances
-        uint256 aliceCurrentBalance = token.balanceOf(alice);
-        uint256 bobCurrentBalance = token.balanceOf(bob);
-
-        if (aliceBalance > aliceCurrentBalance) {
-            token.mint(alice, aliceBalance - aliceCurrentBalance);
-        } else if (aliceBalance < aliceCurrentBalance) {
-            vm.stopPrank();
-            vm.prank(alice);
-            token.transfer(admin, aliceCurrentBalance - aliceBalance);
-            vm.startPrank(admin);
-        }
-
-        if (bobBalance > bobCurrentBalance) {
-            token.mint(bob, bobBalance - bobCurrentBalance);
-        } else if (bobBalance < bobCurrentBalance) {
-            vm.stopPrank();
-            vm.prank(bob);
-            token.transfer(admin, bobCurrentBalance - bobBalance);
-            vm.startPrank(admin);
-        }
-
-        // Mint tokens for rewards
-        token.mint(admin, rewardAmount);
+        token.grantRole(_PAUSE_ROLE, admin);
+        token.pause();
+        token.changeTransferPolicyId(0);
         vm.stopPrank();
 
-        // Both opt in
-        vm.prank(alice);
-        token.setRewardRecipient(alice);
+        vm.startPrank(alice);
+        token.setRewardRecipient(recipient);
+        token.distributeReward(amount);
+        vm.stopPrank();
 
-        vm.prank(bob);
-        token.setRewardRecipient(bob);
-
-        uint256 totalOptedIn = aliceBalance + bobBalance;
-
-        // Inject rewards
-        vm.prank(admin);
-        token.distributeReward(rewardAmount);
-
-        // Calculate expected rewards
-        uint256 aliceExpectedReward = (rewardAmount * aliceBalance) / totalOptedIn;
-        uint256 bobExpectedReward = (rewardAmount * bobBalance) / totalOptedIn;
-
-        // Claim rewards
-        vm.prank(alice);
-        token.claimRewards();
-
-        vm.prank(bob);
-        token.claimRewards();
-
-        // Check balances (allow for rounding error due to integer division)
-        assertApproxEqAbs(token.balanceOf(alice), aliceBalance + aliceExpectedReward, 1000);
-        assertApproxEqAbs(token.balanceOf(bob), bobBalance + bobExpectedReward, 1000);
+        (address storedRecipient, uint256 rewardPerToken, uint256 rewardBalance) =
+            token.userRewardInfo(alice);
+        assertEq(storedRecipient, address(0));
+        assertEq(rewardPerToken, 0);
+        assertEq(rewardBalance, amount);
+        assertEq(token.getPendingRewards(alice), amount);
+        assertEq(token.globalRewardPerToken(), 0);
+        assertEq(token.optedInSupply(), 0);
+        assertEq(token.totalSupply(), supply);
+        assertEq(token.balanceOf(alice), balance);
+        assertEq(token.balanceOf(address(token)), 0);
     }
 
-    /// @notice Zero amount should revert with InvalidAmount before checking duration
-    function test_Reward_RevertsWithZeroAmount() public {
-        vm.prank(admin);
-        try token.distributeReward(0) {
-            revert CallShouldHaveReverted();
-        } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(ITIP20.InvalidAmount.selector));
-        }
+    function testFuzz_ClaimSettledRewards(uint128 amount, uint128 funding) public {
+        _seedSettledRewards(token, alice, amount, funding);
+        uint256 balance = token.balanceOf(alice);
+        uint256 supply = token.totalSupply();
+        uint256 paid = funding < amount ? funding : amount;
 
-        vm.stopPrank();
+        vm.prank(alice);
+        assertEq(token.claimRewards(), paid);
+        assertEq(token.balanceOf(alice), balance + paid);
+        assertEq(token.balanceOf(address(token)), uint256(funding) - paid);
+        assertEq(token.getPendingRewards(alice), uint256(amount) - paid);
+        assertEq(token.totalSupply(), supply);
+
+        vm.prank(alice);
+        assertEq(token.claimRewards(), 0);
+        assertEq(token.getPendingRewards(alice), uint256(amount) - paid);
     }
 
-    function testTransferRewardsAfterClaim() public {
-        // Alice opts in
-        vm.prank(alice);
-        token.setRewardRecipient(alice);
-
-        // Admin injects rewards (immediate)
+    function test_ClaimRewards_RevertsWhenPaused() public {
+        _seedSettledRewards(token, alice, 100, 100);
         vm.startPrank(admin);
-        token.mint(admin, 1000e18);
-        token.distributeReward(100e18);
+        token.grantRole(_PAUSE_ROLE, admin);
+        token.pause();
         vm.stopPrank();
 
-        // Claim rewards - Alice receives 100e18 rewards
+        vm.expectRevert(ITIP20.ContractPaused.selector);
         vm.prank(alice);
         token.claimRewards();
-
-        // Verify Alice received the rewards
-        assertEq(token.balanceOf(alice), 1100e18);
-        assertEq(token.optedInSupply(), 1100e18);
-
-        // Alice should be able to transfer the rewards to Bob
-        vm.prank(alice);
-        token.transfer(bob, 100e18);
-
-        // Verify the transfer succeeded
-        assertEq(token.balanceOf(alice), 1000e18);
-        assertEq(token.balanceOf(bob), 600e18);
-        assertEq(token.optedInSupply(), 1000e18);
+        assertEq(token.getPendingRewards(alice), 100);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -1704,147 +1214,6 @@ contract TIP20Test is TempoTest {
         vm.stopPrank();
     }
 
-    function testFuzz_setRewardRecipient(address recipient) public {
-        vm.assume(recipient != address(0));
-        vm.assume((uint160(recipient) >> 64) != 0x20C000000000000000000000);
-
-        uint256 aliceBalance = token.balanceOf(alice);
-
-        vm.prank(alice);
-        token.setRewardRecipient(recipient);
-
-        (address storedRecipient,,) = token.userRewardInfo(alice);
-        assertEq(storedRecipient, recipient);
-        assertEq(token.optedInSupply(), aliceBalance);
-        assertLe(token.optedInSupply(), token.totalSupply());
-    }
-
-    function testFuzz_optInOptOut(address recipient, uint8 iterations) public {
-        vm.assume(recipient != address(0));
-        vm.assume((uint160(recipient) >> 64) != 0x20C000000000000000000000);
-        iterations = uint8(bound(iterations, 1, 10));
-
-        uint256 aliceBalance = token.balanceOf(alice);
-
-        for (uint256 i = 0; i < iterations; i++) {
-            vm.prank(alice);
-            token.setRewardRecipient(recipient);
-            assertEq(token.optedInSupply(), aliceBalance);
-
-            vm.prank(alice);
-            token.setRewardRecipient(address(0));
-            assertEq(token.optedInSupply(), 0);
-        }
-    }
-
-    function testFuzz_rewardDistributionAlt(
-        uint256 aliceBalance,
-        uint256 bobBalance,
-        uint256 rewardAmount
-    )
-        public
-    {
-        aliceBalance = bound(aliceBalance, 1e18, 1000e18);
-        bobBalance = bound(bobBalance, 1e18, 1000e18);
-        rewardAmount = bound(rewardAmount, 1e18, 500e18);
-
-        // Set balances
-        vm.startPrank(admin);
-        uint256 aliceCurrent = token.balanceOf(alice);
-        uint256 bobCurrent = token.balanceOf(bob);
-
-        if (aliceBalance > aliceCurrent) {
-            token.mint(alice, aliceBalance - aliceCurrent);
-        } else if (aliceBalance < aliceCurrent) {
-            vm.stopPrank();
-            vm.prank(alice);
-            token.transfer(admin, aliceCurrent - aliceBalance);
-            vm.startPrank(admin);
-        }
-
-        if (bobBalance > bobCurrent) {
-            token.mint(bob, bobBalance - bobCurrent);
-        } else if (bobBalance < bobCurrent) {
-            vm.stopPrank();
-            vm.prank(bob);
-            token.transfer(admin, bobCurrent - bobBalance);
-            vm.startPrank(admin);
-        }
-
-        token.mint(admin, rewardAmount);
-        vm.stopPrank();
-
-        // Opt in
-        vm.prank(alice);
-        token.setRewardRecipient(alice);
-
-        vm.prank(bob);
-        token.setRewardRecipient(bob);
-
-        uint256 totalOptedIn = aliceBalance + bobBalance;
-
-        // Distribute rewards
-        vm.prank(admin);
-        token.distributeReward(rewardAmount);
-
-        uint256 aliceExpected = (rewardAmount * aliceBalance) / totalOptedIn;
-        uint256 bobExpected = (rewardAmount * bobBalance) / totalOptedIn;
-
-        vm.prank(alice);
-        token.claimRewards();
-
-        vm.prank(bob);
-        token.claimRewards();
-
-        // Allow for rounding errors
-        assertApproxEqAbs(token.balanceOf(alice), aliceBalance + aliceExpected, 1000);
-        assertApproxEqAbs(token.balanceOf(bob), bobBalance + bobExpected, 1000);
-    }
-
-    function testFuzz_optedInSupplyConsistency(
-        uint256 aliceAmount,
-        uint256 bobAmount,
-        bool aliceOpts,
-        bool bobOpts
-    )
-        public
-    {
-        aliceAmount = bound(aliceAmount, 1e18, type(uint128).max / 4);
-        bobAmount = bound(bobAmount, 1e18, type(uint128).max / 4);
-
-        vm.startPrank(admin);
-        uint256 aliceExisting = token.balanceOf(alice);
-        uint256 bobExisting = token.balanceOf(bob);
-
-        if (aliceAmount > aliceExisting) {
-            token.mint(alice, aliceAmount - aliceExisting);
-        }
-        if (bobAmount > bobExisting) {
-            token.mint(bob, bobAmount - bobExisting);
-        }
-        vm.stopPrank();
-
-        uint256 actualAlice = token.balanceOf(alice);
-        uint256 actualBob = token.balanceOf(bob);
-
-        uint256 expectedOptedIn = 0;
-
-        if (aliceOpts) {
-            vm.prank(alice);
-            token.setRewardRecipient(alice);
-            expectedOptedIn += actualAlice;
-        }
-
-        if (bobOpts) {
-            vm.prank(bob);
-            token.setRewardRecipient(bob);
-            expectedOptedIn += actualBob;
-        }
-
-        assertEq(token.optedInSupply(), expectedOptedIn);
-        assertLe(token.optedInSupply(), token.totalSupply());
-    }
-
     function testFuzz_supplyCap(uint256 cap, uint256 mintAmount) public {
         cap = bound(cap, 1500e18, type(uint128).max);
         mintAmount = bound(mintAmount, 0, cap - token.totalSupply());
@@ -1900,47 +1269,9 @@ contract TIP20Test is TempoTest {
         assertEq(sumBalances, token.totalSupply(), "CRITICAL: Sum of balances != totalSupply");
     }
 
-    /// @notice INVARIANT: OptedInSupply never exceeds totalSupply
-    function test_INVARIANT_optedInSupplyBounds() public view {
-        assertLe(
-            token.optedInSupply(), token.totalSupply(), "CRITICAL: OptedInSupply > totalSupply"
-        );
-    }
-
     /// @notice INVARIANT: Total supply never exceeds supply cap
     function test_INVARIANT_supplyCapRespected() public view {
         assertLe(token.totalSupply(), token.supplyCap(), "CRITICAL: Total supply > supply cap");
-    }
-
-    /// @notice INVARIANT: GlobalRewardPerToken never decreases
-    /// @dev This test verifies the globalRewardPerToken is accessible and valid
-    function test_INVARIANT_rewardPerTokenMonotonic() public view {
-        // Try to call globalRewardPerToken - if it reverts, the precompile might not support it yet
-        try token.globalRewardPerToken() returns (uint256 current) {
-            // The value should always be >= 0 (this is always true for uint256, but validates the call succeeded)
-            assertGe(current, 0, "CRITICAL: GlobalRewardPerToken is invalid");
-        } catch {
-            // If the call fails, it might be a precompile limitation
-            // We skip the check in this case
-        }
-    }
-
-    /// @notice INVARIANT: Contract balance covers all claimable rewards
-    function test_INVARIANT_rewardPoolSolvency() public view {
-        address[] memory actors = new address[](4);
-        actors[0] = alice;
-        actors[1] = bob;
-        actors[2] = charlie;
-        actors[3] = admin;
-
-        uint256 totalClaimable = 0;
-        for (uint256 i = 0; i < actors.length; i++) {
-            (,, uint256 rewardBalance) = token.userRewardInfo(actors[i]);
-            totalClaimable += rewardBalance;
-        }
-
-        uint256 contractBalance = token.balanceOf(address(token));
-        assertGe(contractBalance, totalClaimable, "CRITICAL: Contract balance < claimable rewards");
     }
 
     function testBurnBlocked_RevertsIf_ProtectedAddress() public {
@@ -1962,173 +1293,6 @@ contract TIP20Test is TempoTest {
         }
 
         vm.stopPrank();
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                    SECTION: GET PENDING REWARDS TESTS
-    //////////////////////////////////////////////////////////////*/
-
-    function test_GetPendingRewards_ZeroBeforeRewards() public {
-        // Alice opts in
-        vm.prank(alice);
-        token.setRewardRecipient(alice);
-
-        // Before any rewards, pending should be 0
-        uint256 pending = token.getPendingRewards(alice);
-        assertEq(pending, 0);
-    }
-
-    function test_GetPendingRewards_ImmediateDistribution() public {
-        // Alice opts in
-        vm.prank(alice);
-        token.setRewardRecipient(alice);
-
-        // Admin injects immediate rewards
-        uint256 rewardAmount = 100e18;
-        vm.startPrank(admin);
-        token.mint(admin, rewardAmount);
-        token.distributeReward(rewardAmount);
-        vm.stopPrank();
-
-        // Alice should have pending rewards (she's the only opted-in holder)
-        uint256 pending = token.getPendingRewards(alice);
-        assertEq(pending, rewardAmount);
-
-        // Bob (not opted in) should have 0 pending
-        uint256 bobPending = token.getPendingRewards(bob);
-        assertEq(bobPending, 0);
-    }
-
-    function test_GetPendingRewards_IncludesStoredBalance() public {
-        // Alice opts in
-        vm.prank(alice);
-        token.setRewardRecipient(alice);
-
-        // First reward distribution
-        uint256 rewardAmount = 50e18;
-        vm.startPrank(admin);
-        token.mint(admin, rewardAmount);
-        token.distributeReward(rewardAmount);
-        vm.stopPrank();
-
-        // Trigger state update by transferring 0 (or any action that updates rewards)
-        vm.prank(alice);
-        token.transfer(alice, 0);
-
-        // Verify stored balance was updated
-        (,, uint256 storedBalance) = token.userRewardInfo(alice);
-        assertEq(storedBalance, rewardAmount);
-
-        // Second reward distribution
-        vm.startPrank(admin);
-        token.mint(admin, rewardAmount);
-        token.distributeReward(rewardAmount);
-        vm.stopPrank();
-
-        // getPendingRewards should return stored + new accrued
-        uint256 pending = token.getPendingRewards(alice);
-        assertEq(pending, rewardAmount * 2);
-    }
-
-    function test_GetPendingRewards_DoesNotModifyState() public {
-        // Alice opts in
-        vm.prank(alice);
-        token.setRewardRecipient(alice);
-
-        // Inject rewards
-        uint256 rewardAmount = 100e18;
-        vm.startPrank(admin);
-        token.mint(admin, rewardAmount);
-        token.distributeReward(rewardAmount);
-        vm.stopPrank();
-
-        // Get pending rewards
-        uint256 pending = token.getPendingRewards(alice);
-        assertEq(pending, rewardAmount);
-
-        // Verify state was not modified (reward balance should still be 0)
-        (,, uint256 storedBalance) = token.userRewardInfo(alice);
-        assertEq(storedBalance, 0, "getPendingRewards should not modify state");
-
-        // Call getPendingRewards again - should return same value
-        uint256 pendingAgain = token.getPendingRewards(alice);
-        assertEq(pendingAgain, pending);
-    }
-
-    function test_GetPendingRewards_NotOptedIn() public {
-        // Alice and Bob have tokens but neither is opted in initially
-        // Inject rewards
-        uint256 rewardAmount = 100e18;
-        vm.startPrank(admin);
-        token.mint(admin, rewardAmount);
-        vm.stopPrank();
-
-        // Alice opts in
-        vm.prank(alice);
-        token.setRewardRecipient(alice);
-
-        // Distribute rewards
-        vm.prank(admin);
-        token.distributeReward(rewardAmount);
-
-        // Alice should have pending rewards
-        uint256 alicePending = token.getPendingRewards(alice);
-        assertEq(alicePending, rewardAmount);
-
-        // Bob should have 0 pending (not opted in)
-        uint256 bobPending = token.getPendingRewards(bob);
-        assertEq(bobPending, 0);
-    }
-
-    function test_GetPendingRewards_DelegatedToOther() public {
-        // Alice delegates to bob
-        vm.prank(alice);
-        token.setRewardRecipient(bob);
-
-        // Inject rewards
-        uint256 rewardAmount = 100e18;
-        vm.startPrank(admin);
-        token.mint(admin, rewardAmount);
-        token.distributeReward(rewardAmount);
-        vm.stopPrank();
-
-        // Alice's pending should be 0 (delegated to bob)
-        uint256 alicePending = token.getPendingRewards(alice);
-        assertEq(alicePending, 0);
-
-        // Bob's pending is 0 until update_rewards is called for alice
-        uint256 bobPendingBefore = token.getPendingRewards(bob);
-        assertEq(bobPendingBefore, 0);
-
-        // Trigger update for alice (e.g., by transfer)
-        vm.prank(alice);
-        token.transfer(alice, 0);
-
-        // Now bob's stored balance should be updated
-        uint256 bobPendingAfter = token.getPendingRewards(bob);
-        assertEq(bobPendingAfter, rewardAmount);
-    }
-
-    function testFuzz_GetPendingRewards(uint256 rewardAmount) public {
-        rewardAmount = bound(rewardAmount, 1e18, 1000e18);
-
-        vm.prank(alice);
-        token.setRewardRecipient(alice);
-
-        vm.startPrank(admin);
-        token.mint(admin, rewardAmount);
-        token.distributeReward(rewardAmount);
-        vm.stopPrank();
-
-        uint256 pending = token.getPendingRewards(alice);
-        assertApproxEqAbs(pending, rewardAmount, 1000);
-
-        vm.prank(alice);
-        uint256 claimed = token.claimRewards();
-        assertApproxEqAbs(claimed, rewardAmount, 1000);
-
-        uint256 pendingAfterClaim = token.getPendingRewards(alice);
-        assertEq(pendingAfterClaim, 0);
     }
 
     function test_ClaimRewards_RevertsIf_UserUnauthorized() public {
