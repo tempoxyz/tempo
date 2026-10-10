@@ -24,9 +24,14 @@ env:
 
 jobs:
   clippy:
-    name: clippy
+    name: clippy (${{ matrix.targets }})
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 45
+    # Test targets lint on a second runner in parallel; dependencies come from sccache.
+    strategy:
+      fail-fast: false
+      matrix:
+        targets: [runtime, tests]
     env:
       CARGO_BUILD_JOBS: 4
     permissions:
@@ -48,14 +53,17 @@ jobs:
         with:
           version: v0.15.0
       - name: Run clippy on runtime targets
+        if: matrix.targets == 'runtime'
         run: cargo clippy --workspace --lib --bins --all-features --locked
         env:
           RUSTFLAGS: -D warnings
       - name: Run clippy on test targets
+        if: matrix.targets == 'tests'
         run: cargo clippy --workspace --tests --all-features --locked
         env:
           RUSTFLAGS: -D warnings
       - name: Run clippy on bench and example targets
+        if: matrix.targets == 'runtime'
         run: cargo clippy --workspace --benches --examples --all-features --locked
         env:
           RUSTFLAGS: -D warnings
