@@ -13,7 +13,7 @@ storage-layout compatibility check. The latter is now part of the contracts
 success gate. Root `.gitmodules` owns the imported Solidity dependencies. Tempo's
 `specs.yml` still tests `tips/verify` with its own Foundry/Tempo revisions.
 
-## Remaining migration prerequisites
+## Workspace and CI
 
 The root Cargo workspace now owns the imported Zones crates, prover binaries,
 and lockfile. `cargo zone-xtask` runs Zones tooling; `cargo xtask` continues to run
@@ -23,11 +23,9 @@ Root lint and test jobs cover the unified workspace. The build matrix includes
 Zones and prover binaries, and root nextest configuration preserves Zones’
 integration-test concurrency limits. Imported lint/test/build workflows are retired.
 
-The remaining workflow and publication prerequisites are:
-
-
-The root Dependabot configuration also needs the final workspace layout before
-retiring the imported dependency configuration.
+Root Dependabot covers the shared Cargo workspace and GitHub Actions workflows,
+plus Docker recipes at `/` and `/zones/docker`. The imported dependency
+configuration is retired.
 
 The root Test workflow builds Earn before Zones and distributes
 `crates/zones/contracts/out` to each Rust test shard. The merged
