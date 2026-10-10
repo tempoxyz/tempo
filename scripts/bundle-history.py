@@ -2,6 +2,7 @@
 """Build or install the pinned, verified Genesis–T10 worker beside Tempo."""
 
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -113,6 +114,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True, help="directory containing the active tempo binary")
     parser.add_argument("--profile", choices=["dev", "release", "maxperf", "profiling"], default="release")
     args = parser.parse_args()
+    token = os.environ.pop("TEMPO_HISTORY_TOKEN", "")
     profile = "release" if args.profile == "profiling" else args.profile
     target = re.search(r"^host: (.+)$", run("rustc", "-vV"), re.MULTILINE).group(1)
     environment = {key: value for key, value in os.environ.items() if not key.startswith("VERGEN_GIT_")}
@@ -127,8 +129,17 @@ def main():
             if source is None:
                 source = Path(temporary) / "source"
                 subprocess.run(["git", "init", str(source)], check=True)
+                fetch_environment = dict(os.environ)
+                if token:
+                    index = int(fetch_environment.get("GIT_CONFIG_COUNT", "0"))
+                    authorization = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+                    fetch_environment.update({
+                        "GIT_CONFIG_COUNT": str(index + 1),
+                        f"GIT_CONFIG_KEY_{index}": f"http.{PIN['repository']}.extraheader",
+                        f"GIT_CONFIG_VALUE_{index}": f"AUTHORIZATION: basic {authorization}",
+                    })
                 subprocess.run(["git", "fetch", "--depth=1", PIN["repository"], PIN["revision"]],
-                               cwd=source, check=True)
+                               cwd=source, env=fetch_environment, check=True)
                 subprocess.run(["git", "checkout", "--detach", "FETCH_HEAD"], cwd=source, check=True)
             source = source.resolve()
             require(run("git", "rev-parse", "HEAD", cwd=source) == PIN["revision"],

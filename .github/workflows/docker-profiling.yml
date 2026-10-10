@@ -125,10 +125,12 @@ jobs:
             ${{ steps.meta-tempo.outputs.bake-file }}
           targets: tempo
           project: 0c6tg19qsp
+          set: "*.secrets=id=history-token,env=TEMPO_HISTORY_TOKEN"
           push: true
           no-cache: true
           pull: true
         env:
+          TEMPO_HISTORY_TOKEN: ${{ secrets.TEMPO_GITHUB_PAT }}
           VERGEN_GIT_SHA: ${{ steps.source.outputs.sha }}
           VERGEN_GIT_SHA_SHORT: ${{ steps.source.outputs.short_sha }}
 

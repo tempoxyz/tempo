@@ -49,6 +49,7 @@ jobs:
         run: cargo build --bin ${{ matrix.binary }} --profile ${{ inputs.profile || 'dev' }}
       - name: Prepare artifact
         env:
+          TEMPO_HISTORY_TOKEN: ${{ secrets.TEMPO_GITHUB_PAT }}
           BUILD_PROFILE: ${{ inputs.profile || 'dev' }}
           BIN_NAME: ${{ matrix.binary }}
           CARGO_TARGET_DIR: ${{ github.workspace }}/target

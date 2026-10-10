@@ -28,10 +28,12 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-
        target/"$profile_dir"/tempo-sidecar target/"$profile_dir"/tempo-xtask dist/
 
 FROM builder AS history-builder
-RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-registry-${TARGETARCH} \
+RUN --mount=type=secret,id=history-token \
+    --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-registry-${TARGETARCH} \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked,id=cargo-git-${TARGETARCH} \
     --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=sccache-${TARGETARCH} \
     RUSTFLAGS="-C link-arg=-fuse-ld=mold ${EXTRA_RUSTFLAGS}" \
+    TEMPO_HISTORY_TOKEN="$(cat /run/secrets/history-token 2>/dev/null || true)" \
     python3 scripts/bundle-history.py --output dist --profile ${RUST_PROFILE}
 
 # Reuse the regular build artifacts, enabling custom PCRs only for the devnet binary.
