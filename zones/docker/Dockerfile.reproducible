@@ -41,6 +41,7 @@ COPY . .
 
 ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
     ZONE_GIT_SHA=${GIT_SHA} \
+    VERGEN_GIT_SHA=${GIT_SHA} \
     LC_ALL=C \
     TZ=UTC \
     JEMALLOC_OVERRIDE=/usr/lib/x86_64-linux-gnu/libjemalloc.a \
@@ -48,11 +49,11 @@ ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
 
 RUN cargo build --locked --bin tempo-zone \
         --features jemalloc \
-        --profile reproducible \
+        --profile zones-reproducible \
         --target x86_64-unknown-linux-gnu
 
 FROM scratch AS artifacts
-COPY --from=builder /app/target/x86_64-unknown-linux-gnu/reproducible/tempo-zone /tempo-zone
+COPY --from=builder /app/target/x86_64-unknown-linux-gnu/zones-reproducible/tempo-zone /tempo-zone
 
 # Runtime image used only by the reproducible-image verification pilot. The
 # binary is intentionally copied from the reproducible builder above rather
@@ -74,5 +75,5 @@ RUN echo "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/$
 WORKDIR /data
 
 FROM reproducible-runtime-base AS tempo-zone-reproducible
-COPY --from=builder /app/target/x86_64-unknown-linux-gnu/reproducible/tempo-zone /usr/local/bin/tempo-zone
+COPY --from=builder /app/target/x86_64-unknown-linux-gnu/zones-reproducible/tempo-zone /usr/local/bin/tempo-zone
 ENTRYPOINT ["/usr/local/bin/tempo-zone"]

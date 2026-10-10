@@ -31,7 +31,7 @@ echo "::group::Reproducible build inputs"
 printf '  commit              = %s\n' "$COMMIT"
 printf '  version             = %s\n' "$VERSION"
 printf '  SOURCE_DATE_EPOCH   = %s\n' "$SOURCE_DATE_EPOCH"
-printf '  Dockerfile          = docker/Dockerfile.reproducible\n'
+printf '  Dockerfile          = zones/docker/Dockerfile.reproducible\n'
 printf '  out_dir             = %s\n' "$OUT_DIR"
 [[ -n "$DEBIAN_SNAPSHOT" ]] && printf '  DEBIAN_SNAPSHOT     = %s (override)\n' "$DEBIAN_SNAPSHOT"
 [[ "$NO_CACHE" == "1" ]] && printf '  cache               = disabled\n'
@@ -57,7 +57,7 @@ docker build \
   --platform linux/amd64 \
   "${build_options[@]}" \
   "${build_args[@]}" \
-  -f docker/Dockerfile.reproducible \
+  -f zones/docker/Dockerfile.reproducible \
   --target artifacts \
   --output "type=local,dest=$OUT_DIR" \
   .

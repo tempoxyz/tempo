@@ -155,6 +155,11 @@ debug = "none"
 panic = "abort"
 incremental = false
 
+# Preserve Zones' existing unwind behavior independently of Tempo's abort profile.
+[profile.zones-reproducible]
+inherits = "reproducible"
+panic = "unwind"
+
 [workspace.dependencies]
 # Zones
 tempo-zone-contracts = { path = "crates/zones/contracts", default-features = false }
