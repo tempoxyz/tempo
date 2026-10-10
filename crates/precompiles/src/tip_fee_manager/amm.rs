@@ -223,11 +223,9 @@ impl TipFeeManager {
             .checked_sub(amount_out)
             .ok_or(TIPFeeAMMError::invalid_amount())?;
 
-        if self.storage.spec().is_t1c() {
-            let reserved = self.pending_fee_swap_reservation[pool_id].t_read()?;
-            if pool.reserve_validator_token < reserved {
-                return Err(TIPFeeAMMError::insufficient_liquidity().into());
-            }
+        let reserved = self.pending_fee_swap_reservation[pool_id].t_read()?;
+        if pool.reserve_validator_token < reserved {
+            return Err(TIPFeeAMMError::insufficient_liquidity().into());
         }
 
         self.pools[pool_id].write(pool)?;
@@ -299,14 +297,13 @@ impl TipFeeManager {
 
         let user_token = TIP20Token::from_address(user_token)?;
         let mut validator_token = TIP20Token::from_address(validator_token)?;
-        if self.storage.spec().is_t8() {
-            user_token.ensure_authorized_as(&[
-                (msg_sender, AuthRole::sender()),
-                (self.address, AuthRole::recipient()),
-                (to, AuthRole::recipient()),
-            ])?;
-            validator_token.ensure_authorized_as(&[(to, AuthRole::recipient())])?;
-        }
+
+        user_token.ensure_authorized_as(&[
+            (msg_sender, AuthRole::sender()),
+            (self.address, AuthRole::recipient()),
+            (to, AuthRole::recipient()),
+        ])?;
+        validator_token.ensure_authorized_as(&[(to, AuthRole::recipient())])?;
 
         let pool_id = self.pool_id(user_token.address(), validator_token.address());
         let mut pool = self.pools[pool_id].read()?;
@@ -439,10 +436,9 @@ impl TipFeeManager {
 
         let mut user_token = TIP20Token::from_address(user_token)?;
         let mut validator_token = TIP20Token::from_address(validator_token)?;
-        if self.storage.spec().is_t8() {
-            user_token.ensure_authorized_as(&[(msg_sender, AuthRole::sender())])?;
-            validator_token.ensure_authorized_as(&[(msg_sender, AuthRole::sender())])?;
-        }
+
+        user_token.ensure_authorized_as(&[(msg_sender, AuthRole::sender())])?;
+        validator_token.ensure_authorized_as(&[(msg_sender, AuthRole::sender())])?;
 
         let pool_id = self.pool_id(user_token.address(), validator_token.address());
         // Check user has sufficient liquidity
@@ -465,11 +461,10 @@ impl TipFeeManager {
             .reserve_validator_token
             .checked_sub(validator_amount)
             .ok_or(TIPFeeAMMError::insufficient_reserves())?;
-        if self.storage.spec().is_t1c() {
-            let reserved = self.pending_fee_swap_reservation[pool_id].t_read()?;
-            if available_after_burn < reserved {
-                return Err(TIPFeeAMMError::insufficient_liquidity().into());
-            }
+
+        let reserved = self.pending_fee_swap_reservation[pool_id].t_read()?;
+        if available_after_burn < reserved {
+            return Err(TIPFeeAMMError::insufficient_liquidity().into());
         }
 
         // Burn LP tokens
@@ -609,9 +604,6 @@ impl TipFeeManager {
             }
 
             // T5+: two-hop fallback through `userToken.quoteToken()`.
-            if !self.storage.spec().is_t5() {
-                return Ok((None, None, data));
-            }
 
             // TIP-20 token graph forbids self-quoting, so `intermediate == user_token` is unreachable.
             let mid_token =
@@ -912,7 +904,7 @@ mod tests {
 
     #[test]
     fn test_mint_requires_fee_manager_recipient_on_user_token() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let admin = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut user_token = TIP20Setup::create("UserToken", "UTK", admin).apply()?;
@@ -941,7 +933,7 @@ mod tests {
 
     #[test]
     fn test_mint_requires_caller_sender_on_user_token() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let admin = Address::random();
         let caller = Address::random();
         StorageCtx::enter(&mut storage, || {
@@ -972,7 +964,7 @@ mod tests {
 
     #[test]
     fn test_mint_requires_to_recipient_on_user_token() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let admin = Address::random();
         let to = Address::random();
         StorageCtx::enter(&mut storage, || {
@@ -1003,7 +995,7 @@ mod tests {
 
     #[test]
     fn test_mint_requires_to_recipient_on_validator_token() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let admin = Address::random();
         let to = Address::random();
         StorageCtx::enter(&mut storage, || {
@@ -1081,7 +1073,7 @@ mod tests {
 
     #[test]
     fn test_burn_requires_lp_sender_authorization_on_both_tokens() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let admin = Address::random();
         let lp = Address::random();
         let to = Address::random();
@@ -1124,7 +1116,7 @@ mod tests {
 
     #[test]
     fn test_burn_requires_lp_sender_authorization_on_validator_token() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let admin = Address::random();
         let lp = Address::random();
         let to = Address::random();
@@ -1785,7 +1777,7 @@ mod tests {
 
     #[test]
     fn test_t1c_reserve_pool_liquidity() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
@@ -1825,7 +1817,7 @@ mod tests {
 
     #[test]
     fn test_t1c_burn_respects_reservation() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let admin = Address::random();
         let recipient = Address::random();
 
@@ -1869,7 +1861,7 @@ mod tests {
 
     #[test]
     fn test_t1c_partial_burn_with_reservation() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let admin = Address::random();
         let recipient = Address::random();
 
@@ -1907,7 +1899,7 @@ mod tests {
 
     #[test]
     fn test_t1c_rebalance_swap_respects_reservation() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let admin = Address::random();
         let to = Address::random();
 
@@ -1938,70 +1930,6 @@ mod tests {
             let pool = amm.pools[pool_id].read()?;
             let reserved = amm.pending_fee_swap_reservation[pool_id].t_read()?;
             assert!(pool.reserve_validator_token >= reserved);
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_pre_t1c_rebalance_swap_skips_reservation() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1B);
-        let admin = Address::random();
-        let to = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mint_amount = uint!(100000000_U256);
-            let mut amm = TipFeeManager::new();
-            let amm_address = amm.address;
-            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
-                .with_issuer(admin)
-                .with_mint(admin, mint_amount)
-                .with_mint(amm_address, mint_amount)
-                .apply()?
-                .address();
-            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
-                .with_issuer(admin)
-                .with_mint(admin, mint_amount)
-                .apply()?
-                .address();
-
-            let liq = uint!(100000_U256);
-            setup_pool_with_liquidity(&mut amm, user_token, validator_token, liq, liq)?;
-            assert!(
-                amm.rebalance_swap(admin, user_token, validator_token, uint!(5000_U256), to)
-                    .is_ok()
-            );
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_pre_t1c_no_reservation() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1B);
-        let admin = Address::random();
-        let recipient = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mint_amount = uint!(100000000_U256);
-            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
-                .with_issuer(admin)
-                .with_mint(admin, mint_amount)
-                .apply()?
-                .address();
-            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
-                .with_issuer(admin)
-                .with_mint(admin, mint_amount)
-                .apply()?
-                .address();
-
-            let mut amm = TipFeeManager::new();
-
-            let deposit_amount = uint!(100000_U256);
-            let liquidity = amm.mint(admin, user_token, validator_token, deposit_amount, admin)?;
-
-            let result = amm.burn(admin, user_token, validator_token, liquidity, recipient);
-            assert!(result.is_ok());
 
             Ok(())
         })

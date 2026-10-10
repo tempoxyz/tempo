@@ -95,7 +95,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
         evm_env: &EvmEnv<TempoHardfork, TempoBlockEnv>,
     ) -> Result<TempoTxEnv, Self::Err> {
         let inner = self.inner.clone().try_into_tx_env(evm_env)?;
-        self.try_into_tempo_tx_env(TempoTxEnv::from(inner), evm_env.spec_id().is_t1c())
+        self.try_into_tempo_tx_env(TempoTxEnv::from(inner))
             .map_err(|err| EthApiError::InvalidParams(err.to_string()))
     }
 }

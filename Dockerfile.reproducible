@@ -13,6 +13,7 @@
 #
 # Output (with `--target artifacts -o type=local,dest=./out`):
 #   ./out/tempo                              the reproducible binary
+#   ./out/{eras,tempo-eras.json,history}      the frozen worker bundle
 #
 # Reproducibility-critical decisions:
 #   * Pinned base image digest (rust 1.96.0 on Debian Bookworm).
@@ -65,6 +66,7 @@ RUN apt-get -o Acquire::Check-Valid-Until=false update && \
         clang \
         libssl-dev \
         pkg-config \
+        python3 \
         mold && \
     rm -rf /var/lib/apt/lists/*
 
@@ -82,7 +84,13 @@ RUN cargo build --locked --bin tempo \
         --profile reproducible \
         --target x86_64-unknown-linux-gnu
 
-# `--target artifacts` extracts just the binary; `--target builder` (the
+RUN python3 scripts/bundle-history.py \
+        --output target/x86_64-unknown-linux-gnu/reproducible --profile release
+
+# `--target artifacts` extracts the bundle; `--target builder` (the
 # default) keeps the full Rust environment for debugging.
 FROM scratch AS artifacts
 COPY --from=builder /app/target/x86_64-unknown-linux-gnu/reproducible/tempo /tempo
+COPY --from=builder /app/target/x86_64-unknown-linux-gnu/reproducible/eras /eras
+COPY --from=builder /app/target/x86_64-unknown-linux-gnu/reproducible/tempo-eras.json /tempo-eras.json
+COPY --from=builder /app/target/x86_64-unknown-linux-gnu/reproducible/history /history

@@ -158,6 +158,7 @@ jobs:
           TARGET: ${{ matrix.platform.target }}
           BIN_NAME: ${{ matrix.binary.name }}
           VERSION: ${{ needs.get-version.outputs.version }}
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
         run: |
           PROFILE="$BUILD_PROFILE"
           if [ "$PROFILE" = "dev" ]; then
@@ -171,7 +172,12 @@ jobs:
           ARCHIVE_NAME="${BIN_NAME}-${VERSION}-${TARGET}.tar.gz"
 
           cp "$BINARY_PATH" "$BINARY_NAME"
-          tar czf "$ARCHIVE_NAME" "$BINARY_NAME"
+          archive_files=("$BINARY_NAME")
+          if [ "$BIN_NAME" = tempo ]; then
+            python3 scripts/bundle-history.py --output . --profile "$BUILD_PROFILE"
+            archive_files+=(eras tempo-eras.json history/genesis-t10)
+          fi
+          tar czf "$ARCHIVE_NAME" "${archive_files[@]}"
 
           {
             echo "archive_name=$ARCHIVE_NAME"

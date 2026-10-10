@@ -24,8 +24,24 @@ The release supplies `tempo-eras.json` beside the executable. There is no node `
 ```
 
 These values are illustrative. Closed eras name frozen executables, resolved relative to the
-catalog; the last era uses the running node. The built-in development catalog
-(`bin/tempo/eras.json`) is empty. Unmatched chains and custom fork schedules use the native path.
+catalog; the last era uses the running node. The built-in catalog (`bin/tempo/eras.json`) routes
+mainnet and Moderato execution through Genesis–T10 to `eras/tempo-genesis-t10`, with T11+ running
+in-process. Unmatched chains and custom fork schedules use the native path.
+
+Docker images, release archives, and `tempoup` install the worker beside the live executable.
+Source builds must bundle it explicitly; the pinned source and era metadata are recorded in
+`bin/tempo/history.json`:
+
+```sh
+cargo build --locked --release --bin tempo
+python3 scripts/bundle-history.py --output target/release --profile release
+```
+
+The helper fetches the pinned frozen source, builds with its frozen feature, and
+verifies calls and traces before installation. Use `--source /path/to/tempo-history` for a clean
+local checkout at the pin, or `--package /path/to/extracted-bundle` for a trusted, already verified
+package matching the host and profile.
+Installed checksums and build/smoke provenance live in `history/genesis-t10/`.
 
 Workers inherit the selected genesis, datadir, custom static-file/RocksDB paths, and resolved SDK
 `EthConfig` through private temporary files. Gas, simulation, memory, and tracing settings retain
@@ -100,8 +116,9 @@ verifies its epoch boundary header from the authenticated chain. No boundary cer
 It persists the certified floor in the consensus archives. Cached executed blocks survive an
 interrupted handoff and can be replayed without an upstream. Finality is persisted only through
 the durable execution prefix. Custom fork schedules retain their native startup path, and
-canonical-file bootstrap remains available for offline imports. The active binary still supports
-old forks; configuring and packaging a frozen replacement is a separate release change.
+canonical-file bootstrap remains available for offline imports.
+
+The active binary executes T10+ only; mainnet and Moderato use the bundled Genesis–T10 writer.
 Historical validator-config reads already use storage without constructing an EVM.
 
 Frozen artifacts need this `rpc-only` discovery protocol and hidden `--rpc-config` interface,

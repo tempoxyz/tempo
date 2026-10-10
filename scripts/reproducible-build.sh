@@ -14,12 +14,13 @@
 #
 # Inputs (env):
 #   VERSION       — informational tag baked into the build context (default: dev)
-#   OUT_DIR       — where the built binary lands (default: ./out)
+#   OUT_DIR       — where the node bundle lands (default: ./out)
 #   DEBIAN_SNAPSHOT — pin the Debian apt snapshot used inside the image
 #                     (default: the value baked into Dockerfile.reproducible)
 #
 # Output:
 #   $OUT_DIR/tempo   — the byte-deterministic binary
+#   $OUT_DIR/{eras,tempo-eras.json,history} — the frozen worker bundle
 #   stdout           — the inputs that determined this build, for audit logs
 set -euo pipefail
 

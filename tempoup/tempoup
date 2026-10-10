@@ -6,7 +6,7 @@ set -e
 
 # NOTE: if you make modifications to this script, please increment the version number.
 # WARNING: the SemVer pattern: major.minor.patch must be followed as we use it to determine if the script is up to date.
-TEMPOUP_INSTALLER_VERSION="0.0.15"
+TEMPOUP_INSTALLER_VERSION="0.0.16"
 
 REPO="tempoxyz/tempo"
 # GPG key fingerprint for release signing verification
@@ -173,19 +173,68 @@ $output"
 $output"
 }
 
+install_cmd() {
+    "$@" 2>/dev/null || sudo "$@"
+}
+
 rollback_tempo_install() {
     local status="$?"
     trap - EXIT
 
     if [[ "$status" -ne 0 ]]; then
-        if [[ "${TEMPOUP_HAD_OLD_BINARY:-0}" -eq 1 ]]; then
-            mv -f "$TEMPOUP_OLD_BINARY" "$TEMPOUP_INSTALL_TARGET" 2>/dev/null || true
-        elif [[ -n "${TEMPOUP_INSTALL_TARGET:-}" ]]; then
-            rm -f "$TEMPOUP_INSTALL_TARGET" 2>/dev/null || true
-        fi
+        local file
+        for file in "${TEMPOUP_CHANGED[@]}"; do
+            if ! install_cmd rm -rf "$BIN_DIR/$file" ||
+                { [[ -e "$TEMPOUP_STAGE/old/$file" || -L "$TEMPOUP_STAGE/old/$file" ]] &&
+                    ! install_cmd mv "$TEMPOUP_STAGE/old/$file" "$BIN_DIR/$file"; }; then
+                warn "Could not restore $BIN_DIR/$file; backup remains in $TEMPOUP_STAGE"
+                exit "$status"
+            fi
+        done
     fi
-
+    install_cmd rm -rf "$TEMPOUP_STAGE" || true
+    [[ -z "${TMP_DIR:-}" ]] || rm -rf "$TMP_DIR"
     exit "$status"
+}
+
+# Stage on the destination filesystem, then rename so running binaries remain mapped safely.
+install_tempo_bundle() {
+    local binary="$1" name="$2" package file
+    package="$(dirname "$binary")"
+    TEMPOUP_STAGE="$(mktemp -d "$BIN_DIR/.tempoup.XXXXXX" 2>/dev/null || sudo mktemp -d "$BIN_DIR/.tempoup.XXXXXX")"
+    TEMPOUP_CHANGED=()
+    trap rollback_tempo_install EXIT
+    install_cmd chmod 755 "$TEMPOUP_STAGE"
+    install_cmd mkdir -p "$TEMPOUP_STAGE/new" "$TEMPOUP_STAGE/old"
+    install_cmd cp "$binary" "$TEMPOUP_STAGE/new/$name"
+    install_cmd chmod 755 "$TEMPOUP_STAGE/new/$name"
+    if [[ -e "$package/eras" || -e "$package/tempo-eras.json" || -e "$package/history/genesis-t10" ]]; then
+        for file in eras/tempo-genesis-t10 tempo-eras.json history/genesis-t10/{era.json,build-info.json,verification.json,SHA256SUMS}; do
+            [[ -f "$package/$file" ]] || error "Incomplete history bundle: missing $file"
+        done
+        for file in eras tempo-eras.json history/genesis-t10; do
+            install_cmd mkdir -p "$TEMPOUP_STAGE/new/$(dirname "$file")"
+            install_cmd cp -R "$package/$file" "$TEMPOUP_STAGE/new/$file"
+        done
+        install_cmd chmod 755 "$TEMPOUP_STAGE/new/eras/tempo-genesis-t10"
+        ensure_runtime_dependencies "$PLATFORM" "$package/eras/tempo-genesis-t10"
+    fi
+    for file in "$name" eras tempo-eras.json history/genesis-t10; do
+        install_cmd mkdir -p "$TEMPOUP_STAGE/old/$(dirname "$file")" "$BIN_DIR/$(dirname "$file")"
+        if [[ -e "$BIN_DIR/$file" || -L "$BIN_DIR/$file" ]]; then
+            install_cmd mv "$BIN_DIR/$file" "$TEMPOUP_STAGE/old/$file"
+        fi
+        TEMPOUP_CHANGED+=("$file")
+        if [[ -e "$TEMPOUP_STAGE/new/$file" ]]; then
+            install_cmd mv "$TEMPOUP_STAGE/new/$file" "$BIN_DIR/$file"
+        fi
+    done
+    verify_tempo_binary "$BIN_DIR/$name"
+    if [[ -e "$BIN_DIR/eras/tempo-genesis-t10" ]]; then
+        verify_tempo_binary "$BIN_DIR/eras/tempo-genesis-t10"
+    fi
+    trap '[[ -z "${TMP_DIR:-}" ]] || rm -rf "$TMP_DIR"' EXIT
+    install_cmd rm -rf "$TEMPOUP_STAGE"
 }
 
 # Verifies the GitHub release attestation.
@@ -492,7 +541,7 @@ main() {
     preflight_dependencies
 
     # Ensure BIN_DIR exists
-    mkdir -p "$BIN_DIR"
+    install_cmd mkdir -p "$BIN_DIR"
 
     # Detect system
     PLATFORM=$(detect_platform)
@@ -616,34 +665,8 @@ main() {
         BINARY_NAME="tempo.exe"
     fi
 
-    # Install binary
-    # Move old binary out of the way to avoid ETXTBSY ("Text file busy") when
-    # overwriting a running executable (e.g. `tempo update` calls tempoup
-    # while the tempo binary is still mapped). If the script fails at any
-    # point after this, the trap restores the old binary.
     info "Installing to $BIN_DIR/$BINARY_NAME..."
-    TEMPOUP_INSTALL_TARGET="$BIN_DIR/$BINARY_NAME"
-    TEMPOUP_OLD_BINARY="$TEMPOUP_INSTALL_TARGET.old"
-    TEMPOUP_HAD_OLD_BINARY=0
-    if [[ -e "$TEMPOUP_INSTALL_TARGET" ]]; then
-        mv -f "$TEMPOUP_INSTALL_TARGET" "$TEMPOUP_OLD_BINARY" 2>/dev/null || true
-        TEMPOUP_HAD_OLD_BINARY=1
-    else
-        rm -f "$TEMPOUP_OLD_BINARY" 2>/dev/null || true
-    fi
-    trap rollback_tempo_install EXIT
-    if cp "$BINARY_PATH" "$TEMPOUP_INSTALL_TARGET" 2>/dev/null; then
-        chmod 755 "$TEMPOUP_INSTALL_TARGET"
-    elif sudo cp "$BINARY_PATH" "$TEMPOUP_INSTALL_TARGET" 2>/dev/null; then
-        sudo chmod 755 "$TEMPOUP_INSTALL_TARGET"
-    else
-        error "Failed to install to $BIN_DIR. Try running with sudo."
-    fi
-    verify_tempo_binary "$TEMPOUP_INSTALL_TARGET"
-
-    # Installation succeeded — remove backup and clear the trap
-    rm -f "$TEMPOUP_OLD_BINARY" 2>/dev/null || true
-    trap - EXIT
+    install_tempo_bundle "$BINARY_PATH" "$BINARY_NAME"
 
     # Success message
     echo ""

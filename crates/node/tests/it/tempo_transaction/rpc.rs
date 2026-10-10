@@ -101,6 +101,10 @@ impl RpcEnv {
             .await?
             .ok_or_else(|| eyre::eyre!("latest block missing"))?;
         let hardfork = chain_spec.tempo_hardfork_at(latest_block.header.timestamp());
+        eyre::ensure!(
+            hardfork >= TempoHardfork::T10,
+            "RPC tests require T10 or later, got {hardfork}"
+        );
 
         Ok(Self {
             provider,
@@ -137,10 +141,6 @@ impl super::types::TestEnv for RpcEnv {
 
     fn hardfork(&self) -> TempoHardfork {
         self.hardfork
-    }
-
-    fn supports_scoped_key_auth_rpc(&self) -> bool {
-        self.hardfork.is_t3()
     }
 
     async fn fund_account(&mut self, addr: Address) -> eyre::Result<U256> {

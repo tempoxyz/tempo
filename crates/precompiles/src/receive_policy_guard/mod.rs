@@ -307,7 +307,7 @@ mod tests {
                 (receiver, receiver, receiver, false),
                 (third_party, third_party, Address::random(), true),
             ] {
-                let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+                let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
                 storage.set_timestamp(U256::from(blocked_at));
 
                 StorageCtx::enter(&mut storage, || {
@@ -447,7 +447,7 @@ mod tests {
 
     #[test]
     fn test_burn_blocked_receipt_emits_receipt_burned() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let blocked_at = 1_728_010u64;
         storage.set_timestamp(U256::from(blocked_at));
 
@@ -535,7 +535,7 @@ mod tests {
 
     #[test]
     fn test_claim_rejects_when_token_paused() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let blocked_at = 1_728_000u64;
         storage.set_timestamp(U256::from(blocked_at));
 
@@ -582,7 +582,7 @@ mod tests {
 
     #[test]
     fn test_receive_policy_guard_balance_matches_open_receipts() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         storage.set_timestamp(U256::from(1_728_001u64));
 
         let admin = Address::random();
@@ -714,7 +714,7 @@ mod tests {
 
     #[test]
     fn test_receipt_rejects_bad_encoding() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
 
         StorageCtx::enter(&mut storage, || {
             let guard = ReceivePolicyGuard::new();
@@ -730,7 +730,7 @@ mod tests {
 
     #[test]
     fn test_store_rejects_invalid_metadata() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
@@ -764,7 +764,7 @@ mod tests {
 
     #[test]
     fn test_receipt_key_binds_receipt_fields() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         storage.set_timestamp(U256::from(1_728_002u64));
 
         let admin = Address::random();
@@ -920,7 +920,7 @@ mod tests {
 
     #[test]
     fn test_claim_rejects_missing_receipt() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         storage.set_timestamp(U256::from(1_728_003u64));
 
         let admin = Address::random();
@@ -965,7 +965,7 @@ mod tests {
 
     #[test]
     fn test_claim_requires_authorized_caller() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         storage.set_timestamp(U256::from(1_728_004u64));
 
         let admin = Address::random();
@@ -1043,7 +1043,7 @@ mod tests {
 
     #[test]
     fn test_claim_virtual_recipient() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         storage.set_timestamp(U256::from(1_728_009u64));
 
         let admin = Address::random();

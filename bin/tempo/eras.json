@@ -1,3 +1,42 @@
 {
-  "chains": []
+  "chains": [
+    {
+      "chain_id": "0x1079",
+      "genesis_hash": "0x49d7ec7085e77bf5a403d0fcb4cfc42a4084a89dfff60477579c5e09c9e03c54",
+      "eras": [
+        {
+          "name": "genesis-t10",
+          "start_timestamp": 0,
+          "binary": "eras/tempo-genesis-t10",
+          "checkpoint": {
+            "number": 38891820,
+            "hash": "0x420c51c9ce58d0775fff3039b1ca7d31b6c59815d5bc20a9e09ed1a6272d635e"
+          }
+        },
+        {
+          "name": "t11-live",
+          "start_timestamp": 1789048800
+        }
+      ]
+    },
+    {
+      "chain_id": "0xa5bf",
+      "genesis_hash": "0xba49153e6f3996a340f3fe3d69e7c0826b717ae672cb115cf0527cada0b78e9e",
+      "eras": [
+        {
+          "name": "genesis-t10",
+          "start_timestamp": 0,
+          "binary": "eras/tempo-genesis-t10",
+          "checkpoint": {
+            "number": 34557122,
+            "hash": "0x9ae15322bb005ed9157a6ee3847d3a6b73a9d667af91ec4522df1ca838e8e9db"
+          }
+        },
+        {
+          "name": "t11-live",
+          "start_timestamp": 1788962400
+        }
+      ]
+    }
+  ]
 }

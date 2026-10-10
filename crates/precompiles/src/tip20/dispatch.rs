@@ -19,7 +19,6 @@ impl Precompile for TIP20Token {
         // Ensure that the token is initialized (has bytecode)
         let initialized = match self.is_initialized() {
             Ok(v) => v,
-            Err(_) if !self.storage.spec().is_t4() => false,
             Err(e) => return self.storage.error_result(e),
         };
         if !initialized {
@@ -39,9 +38,7 @@ impl Precompile for TIP20Token {
                     supplyCap(call) => view(call, |_| self.supply_cap()),
                     transferPolicyId(call) => view(call, |_| self.transfer_policy_id()),
                     paused(call) => view(call, |_| self.paused()),
-                    #[schedule(since = T5)]
                     logoURI(call) => view(call, |_| self.logo_uri()),
-
                     // View functions
                     balanceOf(call) => view(call, |c| self.balance_of(c)),
                     allowance(call) => view(call, |c| self.allowance(c)),
@@ -53,7 +50,6 @@ impl Precompile for TIP20Token {
                     BURN_BLOCKED_ROLE(call) => view(call, |_| Ok(Self::burn_blocked_role())),
                     #[schedule(since = T12)]
                     BURN_AT_ROLE(call) => view(call, |_| Ok(Self::burn_at_role())),
-
                     // State changing functions
                     transferFrom(call) => mutate(call, msg_sender, |sender, c| self.transfer_from(sender, c)),
                     transfer(call) => mutate(call, msg_sender, |sender, c| self.transfer(sender, c)),
@@ -62,7 +58,6 @@ impl Precompile for TIP20Token {
                         self.change_transfer_policy_id(sender, c)
                     }),
                     setSupplyCap(call) => mutate(call, msg_sender, |sender, c| self.set_supply_cap(sender, c)),
-                    #[schedule(since = T5)]
                     setLogoURI(call) => mutate(call, msg_sender, |sender, c| self.set_logo_uri(sender, c)),
                     pause(call) => mutate(call, msg_sender, |sender, c| self.pause(sender, c)),
                     unpause(call) => mutate(call, msg_sender, |sender, c| self.unpause(sender, c)),
@@ -90,15 +85,10 @@ impl Precompile for TIP20Token {
                     optedInSupply(call) => view(call, |_| self.get_opted_in_supply()),
                     userRewardInfo(call) => view(call, |c| self.get_user_reward_info(c.account).map(|info| info.into())),
                     getPendingRewards(call) => view(call, |c| self.get_pending_rewards(c.account)),
-
-                    #[schedule(since = T2)]
                     permit(call) => mutate(call, msg_sender, |_, c| self.permit(c)),
-                    #[schedule(since = T2)]
                     nonces(call) => view(call, |c| self.nonces(c)),
-                    #[schedule(since = T2)]
                     DOMAIN_SEPARATOR(call) => view(call, |_| self.domain_separator())
                 }
-
                 IRolesAuth::IRolesAuthCalls {
                     // RolesAuth functions
                     hasRole(call) => view(call, |c| self.has_role(c)),
@@ -112,7 +102,6 @@ impl Precompile for TIP20Token {
         )
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,43 +113,29 @@ mod tests {
     };
     use alloy::{
         primitives::{B256, Bytes, U256, address},
-        sol_types::{SolCall, SolError, SolInterface, SolValue},
+        sol_types::{SolCall, SolInterface, SolValue},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{
-        IRolesAuth, RolesAuthError, TIP20Error, UnknownFunctionSelector,
-    };
+    use tempo_contracts::precompiles::{IRolesAuth, RolesAuthError, TIP20Error};
 
     #[test]
     fn test_function_selector_dispatch() -> eyre::Result<()> {
         let (_, sender) = setup_storage();
 
-        // T1: invalid selector returns reverted output
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut token = TIP20Setup::create("Test", "TST", sender).apply()?;
 
             let result = token.call(&Bytes::from([0x12, 0x34, 0x56, 0x78]), sender)?;
             assert!(result.is_revert());
 
-            // T1: insufficient calldata also returns reverted output
             let result = token.call(&Bytes::from([0x12, 0x34]), sender)?;
             assert!(result.is_revert());
 
             Ok(())
         })?;
 
-        // Pre-T1 (T0): insufficient calldata returns halt
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
-        StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("Test", "TST", sender).apply()?;
-
-            let result = token.call(&Bytes::from([0x12, 0x34]), sender);
-            let output = result.expect("expected Ok(halt) for short calldata");
-            assert!(output.is_halt());
-
-            Ok(())
-        })
+        Ok(())
     }
 
     #[test]
@@ -673,44 +648,13 @@ mod tests {
     }
 
     #[test]
-    fn test_logo_uri_selectors_gated_behind_t5() -> eyre::Result<()> {
-        // Pre-T5: logoURI/setLogoURI should return unknown selector.
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
-        let admin = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
-
-            // logoURI selector is gated
-            let logo_uri_calldata = ITIP20::logoURICall {}.abi_encode();
-            let result = token.call(&logo_uri_calldata, admin)?;
-            assert!(result.is_revert());
-            assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
-
-            // setLogoURI selector is gated
-            let set_logo_uri_calldata = ITIP20::setLogoURICall {
-                newLogoURI: "https://example.com/icon.svg".to_string(),
-            }
-            .abi_encode();
-            let result = token.call(&set_logo_uri_calldata, admin)?;
-            assert!(result.is_revert());
-            assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_logo_uri_pre_t5_deploy_post_t5_read_returns_empty() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
+    fn test_logo_uri_defaults_to_empty() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let admin = Address::random();
         let token_address = StorageCtx::enter(&mut storage, || -> eyre::Result<Address> {
             let token = TIP20Setup::create("Test", "TST", admin).apply()?;
             Ok(token.address())
         })?;
-
-        // Activate T5; the token deployed under T4 is now read under T5.
-        storage.set_spec(TempoHardfork::T5);
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Token::from_address(token_address)?;
@@ -724,49 +668,6 @@ mod tests {
             assert!(!result.is_revert(), "logoURI() must succeed post-T5");
             let decoded = ITIP20::logoURICall::abi_decode_returns(&result.bytes)?;
             assert_eq!(decoded, "");
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_permit_selectors_gated_behind_t2() -> eyre::Result<()> {
-        // Pre-T2: permit/nonces/DOMAIN_SEPARATOR should return unknown selector
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
-        let admin = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
-
-            // Test permit selector is gated
-            let permit_calldata = ITIP20::permitCall {
-                owner: Address::random(),
-                spender: Address::random(),
-                value: U256::ZERO,
-                deadline: U256::MAX,
-                v: 27,
-                r: alloy::primitives::B256::ZERO,
-                s: alloy::primitives::B256::ZERO,
-            }
-            .abi_encode();
-            let result = token.call(&permit_calldata, admin)?;
-            assert!(result.is_revert());
-            assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
-
-            // Test nonces selector is gated
-            let nonces_calldata = ITIP20::noncesCall {
-                owner: Address::random(),
-            }
-            .abi_encode();
-            let result = token.call(&nonces_calldata, admin)?;
-            assert!(result.is_revert());
-            assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
-
-            // Test DOMAIN_SEPARATOR selector is gated
-            let ds_calldata = ITIP20::DOMAIN_SEPARATORCall {}.abi_encode();
-            let result = token.call(&ds_calldata, admin)?;
-            assert!(result.is_revert());
-            assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
 
             Ok(())
         })

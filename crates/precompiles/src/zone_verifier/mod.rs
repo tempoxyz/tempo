@@ -474,7 +474,7 @@ mod tests {
         let bare = format!("{a},{b},0x{c}").parse::<PcrPolicy>().unwrap();
         assert_eq!(bare, PcrPolicy::from([[0x11; 48], [0x22; 48], [0x33; 48]]));
         assert_eq!(
-            bare.at(TempoHardfork::Genesis),
+            bare.at(TempoHardfork::T10),
             Some([[0x11; 48], [0x22; 48], [0x33; 48]])
         );
 

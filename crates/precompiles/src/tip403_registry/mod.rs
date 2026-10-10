@@ -10,10 +10,7 @@ pub mod dispatch;
 // Re-export the generated slots module for external access to storage slot constants.
 pub use slots as tip403_registry_slots;
 
-use crate::{
-    StorageCtx,
-    receive_policy_guard::{RECOVERY_ORIGINATOR, RecoveryMode},
-};
+use crate::receive_policy_guard::{RECOVERY_ORIGINATOR, RecoveryMode};
 pub use tempo_contracts::precompiles::{
     ITIP403Registry::{self, PolicyType},
     TIP403RegistryError, TIP403RegistryEvent,
@@ -28,7 +25,6 @@ use crate::{
     tip20_factory::TIP20Factory,
 };
 use alloy::primitives::{Address, U256};
-use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::TempoAddressExt;
 
 /// Built-in policy ID that always rejects authorization.
@@ -38,8 +34,7 @@ pub const REJECT_ALL_POLICY_ID: u64 = 0;
 pub const ALLOW_ALL_POLICY_ID: u64 = 1;
 
 /// System addresses that cannot be policed.
-pub const ALWAYS_AUTHORIZED: &[(TempoHardfork, &[Address])] =
-    &[(TempoHardfork::T6, &[RECEIVE_POLICY_GUARD_ADDRESS])];
+pub const ALWAYS_AUTHORIZED: &[Address] = &[RECEIVE_POLICY_GUARD_ADDRESS];
 
 /// Registry for [TIP-403] transfer policies. TIP20 tokens reference an ID from this registry
 /// to police transfers between sender and receiver addresses.
@@ -156,16 +151,8 @@ pub struct PolicyData {
 impl PolicyData {
     /// Decodes the raw `policy_type` u8 to a `PolicyType` enum.
     fn policy_type(&self) -> Result<PolicyType> {
-        let is_t2 = StorageCtx.spec().is_t2();
-
-        match PolicyType::try_from(self.policy_type) {
-            Ok(ty) if is_t2 || !ty.is_compound() => Ok(ty),
-            _ => Err(if is_t2 {
-                TIP403RegistryError::invalid_policy_type().into()
-            } else {
-                TempoPrecompileError::under_overflow()
-            }),
-        }
+        PolicyType::try_from(self.policy_type)
+            .map_err(|_| TIP403RegistryError::invalid_policy_type().into())
     }
 
     /// Returns `true` if the policy type is a simple policy (WHITELIST or BLACKLIST).
@@ -320,25 +307,16 @@ impl TIP403Registry {
         &self,
         call: ITIP403Registry::policyDataCall,
     ) -> Result<ITIP403Registry::policyDataReturn> {
-        if self.storage.spec().is_t2() {
-            // Built-in policies are virtual (not stored), and match the `PolicyType`:
-            //  - 0: REJECT_ALL_POLICY_ID → WHITELIST
-            //  - 1: ALLOW_ALL_POLICY_ID  → BLACKLIST
-            if self.builtin_authorization(call.policyId).is_some() {
-                return Ok(ITIP403Registry::policyDataReturn {
-                    policyType: (call.policyId as u8)
-                        .try_into()
-                        .map_err(|_| TIP403RegistryError::invalid_policy_type())?,
-                    admin: Address::ZERO,
-                });
-            }
-        } else {
-            // Check if policy exists before reading the data (spec: pre-T2)
-            if !self.policy_exists(ITIP403Registry::policyExistsCall {
-                policyId: call.policyId,
-            })? {
-                return Err(TIP403RegistryError::policy_not_found().into());
-            }
+        // Built-in policies are virtual (not stored), and match the `PolicyType`:
+        //  - 0: REJECT_ALL_POLICY_ID → WHITELIST
+        //  - 1: ALLOW_ALL_POLICY_ID  → BLACKLIST
+        if self.builtin_authorization(call.policyId).is_some() {
+            return Ok(ITIP403Registry::policyDataReturn {
+                policyType: (call.policyId as u8)
+                    .try_into()
+                    .map_err(|_| TIP403RegistryError::invalid_policy_type())?,
+                admin: Address::ZERO,
+            });
         }
 
         // Get policy data and verify that the policy id exists (spec: +T2)
@@ -543,8 +521,7 @@ impl TIP403Registry {
     ///
     /// # Errors
     /// - `UnderOverflow` — policy ID counter overflows
-    /// - `IncompatiblePolicyType` — `policyType` is not `WHITELIST` or `BLACKLIST` (T2+), or
-    ///   accounts are non-empty for compound/invalid types (pre-T2)
+    /// - `IncompatiblePolicyType` — `policyType` is not `WHITELIST` or `BLACKLIST`
     /// - `VirtualAddressNotAllowed` — virtual addresses are forbidden (T3+)
     pub fn create_policy_with_accounts(
         &mut self,
@@ -555,11 +532,9 @@ impl TIP403Registry {
         let policy_type = call.policyType.ensure_is_simple()?;
 
         // TIP-1022: reject virtual addresses in initial account set (spec T3+)
-        if self.storage.spec().is_t3() {
-            for account in call.accounts.iter() {
-                if account.is_virtual() {
-                    return Err(TIP403RegistryError::virtual_address_not_allowed().into());
-                }
+        for account in call.accounts.iter() {
+            if account.is_virtual() {
+                return Err(TIP403RegistryError::virtual_address_not_allowed().into());
             }
         }
 
@@ -575,8 +550,7 @@ impl TIP403Registry {
         // Store policy data
         self.set_policy_data(new_policy_id, PolicyData { policy_type, admin })?;
 
-        // Set initial accounts - only emit events for valid policy types
-        // Pre-T2 with invalid types: accounts are added but no events emitted (matches original)
+        // Set initial accounts and emit membership events.
         for account in call.accounts.iter() {
             self.set_policy_set(new_policy_id, *account, true)?;
 
@@ -598,7 +572,6 @@ impl TIP403Registry {
                     ))?;
                 }
                 ITIP403Registry::PolicyType::COMPOUND | ITIP403Registry::PolicyType::__Invalid => {
-                    // T2+: unreachable since `ensure_is_simple` already rejected
                     return Err(TIP403RegistryError::incompatible_policy_type().into());
                 }
             }
@@ -665,7 +638,7 @@ impl TIP403Registry {
         call: ITIP403Registry::modifyPolicyWhitelistCall,
     ) -> Result<()> {
         // TIP-1022: virtual addresses are forwarding aliases, not valid policy members (spec: T3+)
-        if self.storage.spec().is_t3() && call.account.is_virtual() {
+        if call.account.is_virtual() {
             return Err(TIP403RegistryError::virtual_address_not_allowed().into());
         }
 
@@ -704,7 +677,7 @@ impl TIP403Registry {
         call: ITIP403Registry::modifyPolicyBlacklistCall,
     ) -> Result<()> {
         // TIP-1022: virtual addresses are forwarding aliases, not valid policy members (spec: T3+)
-        if self.storage.spec().is_t3() && call.account.is_virtual() {
+        if call.account.is_virtual() {
             return Err(TIP403RegistryError::virtual_address_not_allowed().into());
         }
 
@@ -795,13 +768,8 @@ impl TIP403Registry {
     /// - `InvalidPolicyType` — stored type cannot be decoded
     /// - `IncompatiblePolicyType` — a compound policy was passed where a simple one is required
     pub fn is_authorized_as(&self, policy_id: u64, user: Address, role: AuthRole) -> Result<bool> {
-        let hardfork = self.storage.spec();
-
-        // (spec: +T6) some protocol addresses can't be policed and are always authorized.
-        if ALWAYS_AUTHORIZED
-            .iter()
-            .any(|(fork, addrs)| hardfork >= *fork && addrs.contains(&user))
-        {
+        // Protocol custody addresses are always authorized.
+        if ALWAYS_AUTHORIZED.contains(&user) {
             return Ok(true);
         }
 
@@ -827,7 +795,7 @@ impl TIP403Registry {
                     // (spec: +T2) short-circuit and skip recipient check if sender fails
                     let sender_auth =
                         self.is_authorized_simple(compound.sender_policy_id, user, None)?;
-                    if hardfork.is_t2() && !sender_auth {
+                    if !sender_auth {
                         return Ok(false);
                     }
                     let recipient_auth =
@@ -878,7 +846,6 @@ impl TIP403Registry {
         data: &PolicyData,
     ) -> Result<bool> {
         // NOTE: read `policy_set` BEFORE checking policy type to match original gas consumption.
-        // Pre-T1: the old code read policy_set first, then failed on invalid policy types.
         // This order must be preserved for block re-execution compatibility.
         let is_in_set = self.policy_set[policy_id][user].read()?;
 
@@ -928,7 +895,6 @@ impl TIP403Registry {
     }
 
     // Internal helper functions
-
     /// Returns policy data for the given policy ID.
     /// Errors with `PolicyNotFound` for invalid policy ids.
     fn get_policy_data(&self, policy_id: u64) -> Result<PolicyData> {
@@ -936,10 +902,7 @@ impl TIP403Registry {
 
         // Verify that the policy id exists (spec: +T2).
         // Skip the counter read (extra SLOAD) when policy data is non-default.
-        if self.storage.spec().is_t2()
-            && data.is_default()
-            && policy_id >= self.policy_id_counter()?
-        {
+        if data.is_default() && policy_id >= self.policy_id_counter()? {
             return Err(TIP403RegistryError::policy_not_found().into());
         }
 
@@ -960,47 +923,28 @@ impl TIP403Registry {
 }
 
 impl AuthRole {
-    #[inline]
-    fn transfer_or(t2_variant: Self) -> Self {
-        if StorageCtx.spec().is_t2() {
-            t2_variant
-        } else {
-            Self::Transfer
-        }
-    }
-
-    /// Hardfork-aware: always returns `Transfer`.
     pub fn transfer() -> Self {
         Self::Transfer
     }
 
-    /// Hardfork-aware: returns `Sender` for T2+, `Transfer` for pre-T2.
     pub fn sender() -> Self {
-        Self::transfer_or(Self::Sender)
+        Self::Sender
     }
 
-    /// Hardfork-aware: returns `Recipient` for T2+, `Transfer` for pre-T2.
     pub fn recipient() -> Self {
-        Self::transfer_or(Self::Recipient)
+        Self::Recipient
     }
 
-    /// Hardfork-aware: returns `MintRecipient` for T2+, `Transfer` for pre-T2.
     pub fn mint_recipient() -> Self {
-        Self::transfer_or(Self::MintRecipient)
+        Self::MintRecipient
     }
 }
 
 /// Returns `true` if the error indicates a failed policy lookup — the policy type is invalid
 /// or the policy doesn't exist.
 pub fn is_policy_lookup_error(e: &TempoPrecompileError) -> bool {
-    if StorageCtx.spec().is_t2() {
-        // T2+: typed TIP403 errors
-        *e == TIP403RegistryError::invalid_policy_type().into()
-            || *e == TIP403RegistryError::policy_not_found().into()
-    } else {
-        // Pre-T2: legacy Panic(UnderOverflow) sentinel
-        *e == TempoPrecompileError::under_overflow()
-    }
+    *e == TIP403RegistryError::invalid_policy_type().into()
+        || *e == TIP403RegistryError::policy_not_found().into()
 }
 
 /// Extension trait for [`PolicyType`] validation.
@@ -1010,19 +954,12 @@ trait PolicyTypeExt {
 }
 
 impl PolicyTypeExt for PolicyType {
-    /// Validates and returns the policy type to store, handling backward compatibility.
-    ///
-    /// Pre-T2: Converts `COMPOUND` and `__Invalid` to 255 to match original ABI decoding behavior.
-    /// T2+: Only allows `WHITELIST` and `BLACKLIST`.
+    /// Accepts only `WHITELIST` and `BLACKLIST`.
     fn ensure_is_simple(&self) -> Result<u8> {
         match self {
             Self::WHITELIST | Self::BLACKLIST => Ok(*self as u8),
             Self::COMPOUND | Self::__Invalid => {
-                if StorageCtx.spec().is_t2() {
-                    Err(TIP403RegistryError::incompatible_policy_type().into())
-                } else {
-                    Ok(Self::__Invalid as u8)
-                }
+                Err(TIP403RegistryError::incompatible_policy_type().into())
             }
         }
     }
@@ -1040,6 +977,7 @@ mod tests {
         sol_types::SolEvent,
     };
     use rand_08::Rng;
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         PATH_USD_ADDRESS, SYSTEM_PRECOMPILES, TIP403_REGISTRY_ADDRESS,
     };
@@ -1103,20 +1041,8 @@ mod tests {
         ];
         let admin = Address::random();
 
-        // pre-T6 the address is NOT protected
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
-        StorageCtx::enter(&mut storage, || {
-            let registry = TIP403Registry::new();
-            assert!(!registry.is_authorized_as(
-                REJECT_ALL_POLICY_ID,
-                RECEIVE_POLICY_GUARD_ADDRESS,
-                AuthRole::Transfer,
-            )?);
-            Ok::<(), TempoPrecompileError>(())
-        })?;
-
         // T6+ the address is protected
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
             let whitelist_id = registry.create_policy(
@@ -1264,40 +1190,26 @@ mod tests {
     }
 
     #[test]
-    fn test_policy_data_builtin_policies_boundary() -> eyre::Result<()> {
-        for (hardfork, expect_allow_all_type) in [
-            // Pre-T2: reads uninitialized storage → both builtins decode as WHITELIST
-            (TempoHardfork::T1C, ITIP403Registry::PolicyType::WHITELIST),
-            // T2: virtual builtins return correct types
-            (TempoHardfork::T2, ITIP403Registry::PolicyType::BLACKLIST),
-        ] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
-            StorageCtx::enter(&mut storage, || {
-                let registry = TIP403Registry::new();
-
-                // reject-all → WHITELIST on every fork (coincides with default storage)
-                let reject = registry.policy_data(ITIP403Registry::policyDataCall {
-                    policyId: REJECT_ALL_POLICY_ID,
-                })?;
-                assert_eq!(reject.policyType, ITIP403Registry::PolicyType::WHITELIST);
-                assert_eq!(reject.admin, Address::ZERO);
-
-                // allow-all → WHITELIST pre-T2 (wrong), BLACKLIST from T2 (correct)
-                let allow = registry.policy_data(ITIP403Registry::policyDataCall {
-                    policyId: ALLOW_ALL_POLICY_ID,
-                })?;
-                assert_eq!(allow.policyType, expect_allow_all_type);
-                assert_eq!(allow.admin, Address::ZERO);
-
-                Ok::<_, TempoPrecompileError>(())
-            })?;
-        }
-        Ok(())
+    fn test_policy_data_builtin_policies() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
+        StorageCtx::enter(&mut storage, || {
+            let registry = TIP403Registry::new();
+            for (id, policy_type) in [
+                (REJECT_ALL_POLICY_ID, PolicyType::WHITELIST),
+                (ALLOW_ALL_POLICY_ID, PolicyType::BLACKLIST),
+            ] {
+                let data =
+                    registry.policy_data(ITIP403Registry::policyDataCall { policyId: id })?;
+                assert_eq!(data.policyType, policy_type);
+                assert_eq!(data.admin, Address::ZERO);
+            }
+            Ok(())
+        })
     }
 
     #[test]
     fn test_receive_policy_defaults_to_none() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let account = Address::random();
         StorageCtx::enter(&mut storage, || {
             let registry = TIP403Registry::new();
@@ -1331,7 +1243,7 @@ mod tests {
 
     #[test]
     fn test_set_receive_policy_stores_config() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let account = Address::random();
         let recovery = Address::random();
         StorageCtx::enter(&mut storage, || {
@@ -1379,7 +1291,7 @@ mod tests {
 
     #[test]
     fn test_set_receive_policy_rejects_virtual_account() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
@@ -1404,7 +1316,7 @@ mod tests {
 
     #[test]
     fn test_set_receive_policy_rejects_invalid_recovery_address() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let account = Address::random();
         let virtual_addr = Address::new_virtual(MasterId::random(), UserTag::random());
 
@@ -1461,7 +1373,7 @@ mod tests {
 
     #[test]
     fn test_set_receive_policy_rejects_invalid_policy() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let account = Address::random();
         let creator = Address::random();
         StorageCtx::enter(&mut storage, || {
@@ -1511,7 +1423,7 @@ mod tests {
 
     #[test]
     fn test_validate_receive_policy_reports_token_filter_first() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let receiver = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
@@ -1535,7 +1447,7 @@ mod tests {
 
     #[test]
     fn test_validate_receive_policy_reports_sender_policy() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let receiver = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
@@ -1608,10 +1520,9 @@ mod tests {
     // =========================================================================
     //                      TIP-1015: Compound Policy Tests
     // =========================================================================
-
     #[test]
     fn test_create_compound_policy() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let admin = Address::random();
         let creator = Address::random();
         StorageCtx::enter(&mut storage, || {
@@ -1661,7 +1572,6 @@ mod tests {
             })?;
             assert_eq!(data.policyType, ITIP403Registry::PolicyType::COMPOUND);
             assert_eq!(data.admin, Address::ZERO); // Compound policies have no admin
-
             // Verify compound policy data
             let compound_data =
                 registry.compound_policy_data(ITIP403Registry::compoundPolicyDataCall {
@@ -1677,7 +1587,7 @@ mod tests {
 
     #[test]
     fn test_compound_policy_rejects_non_existent_refs() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let creator = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
@@ -1699,7 +1609,7 @@ mod tests {
 
     #[test]
     fn test_compound_policy_rejects_compound_refs() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let admin = Address::random();
         let creator = Address::random();
         StorageCtx::enter(&mut storage, || {
@@ -1741,7 +1651,7 @@ mod tests {
 
     #[test]
     fn test_compound_policy_sender_recipient_differentiation() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let admin = Address::random();
         let creator = Address::random();
         let alice = Address::random();
@@ -1815,7 +1725,7 @@ mod tests {
 
     #[test]
     fn test_compound_policy_is_authorized_behavior() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let admin = Address::random();
         let creator = Address::random();
         let user = Address::random();
@@ -1889,89 +1799,87 @@ mod tests {
         let creator = Address::random();
         let user = Address::random();
 
-        for hardfork in [TempoHardfork::T0, TempoHardfork::T1] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
 
-            StorageCtx::enter(&mut storage, || {
-                let mut registry = TIP403Registry::new();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
 
-                // Create sender and recipient whitelists
-                let sender_policy = registry.create_policy(
+            // Create sender and recipient whitelists
+            let sender_policy = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
                     admin,
-                    ITIP403Registry::createPolicyCall {
-                        admin,
-                        policyType: ITIP403Registry::PolicyType::WHITELIST,
-                    },
-                )?;
-                let recipient_policy = registry.create_policy(
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                },
+            )?;
+            let recipient_policy = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
                     admin,
-                    ITIP403Registry::createPolicyCall {
-                        admin,
-                        policyType: ITIP403Registry::PolicyType::WHITELIST,
-                    },
-                )?;
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                },
+            )?;
 
-                // Create compound policy
-                let compound_id = registry.create_compound_policy(
-                    creator,
-                    ITIP403Registry::createCompoundPolicyCall {
-                        senderPolicyId: sender_policy,
-                        recipientPolicyId: recipient_policy,
-                        mintRecipientPolicyId: 1,
-                    },
-                )?;
+            // Create compound policy
+            let compound_id = registry.create_compound_policy(
+                creator,
+                ITIP403Registry::createCompoundPolicyCall {
+                    senderPolicyId: sender_policy,
+                    recipientPolicyId: recipient_policy,
+                    mintRecipientPolicyId: 1,
+                },
+            )?;
 
-                // User not in sender whitelist, but in recipient whitelist
-                registry.modify_policy_whitelist(
-                    admin,
-                    ITIP403Registry::modifyPolicyWhitelistCall {
-                        policyId: recipient_policy,
-                        account: user,
-                        allowed: true,
-                    },
-                )?;
-                assert!(!registry.is_authorized_as(compound_id, user, AuthRole::Transfer)?);
+            // User not in sender whitelist, but in recipient whitelist
+            registry.modify_policy_whitelist(
+                admin,
+                ITIP403Registry::modifyPolicyWhitelistCall {
+                    policyId: recipient_policy,
+                    account: user,
+                    allowed: true,
+                },
+            )?;
+            assert!(!registry.is_authorized_as(compound_id, user, AuthRole::Transfer)?);
 
-                // User in sender whitelist, not in recipient whitelist
-                registry.modify_policy_whitelist(
-                    admin,
-                    ITIP403Registry::modifyPolicyWhitelistCall {
-                        policyId: sender_policy,
-                        account: user,
-                        allowed: true,
-                    },
-                )?;
-                registry.modify_policy_whitelist(
-                    admin,
-                    ITIP403Registry::modifyPolicyWhitelistCall {
-                        policyId: recipient_policy,
-                        account: user,
-                        allowed: false,
-                    },
-                )?;
-                assert!(!registry.is_authorized_as(compound_id, user, AuthRole::Transfer)?);
+            // User in sender whitelist, not in recipient whitelist
+            registry.modify_policy_whitelist(
+                admin,
+                ITIP403Registry::modifyPolicyWhitelistCall {
+                    policyId: sender_policy,
+                    account: user,
+                    allowed: true,
+                },
+            )?;
+            registry.modify_policy_whitelist(
+                admin,
+                ITIP403Registry::modifyPolicyWhitelistCall {
+                    policyId: recipient_policy,
+                    account: user,
+                    allowed: false,
+                },
+            )?;
+            assert!(!registry.is_authorized_as(compound_id, user, AuthRole::Transfer)?);
 
-                // User in both whitelists
-                registry.modify_policy_whitelist(
-                    admin,
-                    ITIP403Registry::modifyPolicyWhitelistCall {
-                        policyId: recipient_policy,
-                        account: user,
-                        allowed: true,
-                    },
-                )?;
-                assert!(registry.is_authorized_as(compound_id, user, AuthRole::Transfer)?);
+            // User in both whitelists
+            registry.modify_policy_whitelist(
+                admin,
+                ITIP403Registry::modifyPolicyWhitelistCall {
+                    policyId: recipient_policy,
+                    account: user,
+                    allowed: true,
+                },
+            )?;
+            assert!(registry.is_authorized_as(compound_id, user, AuthRole::Transfer)?);
 
-                Ok::<_, TempoPrecompileError>(())
-            })?;
-        }
+            Ok::<_, TempoPrecompileError>(())
+        })?;
 
         Ok(())
     }
 
     #[test]
     fn test_simple_policy_equivalence() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let admin = Address::random();
         let user = Address::random();
         StorageCtx::enter(&mut storage, || {
@@ -2012,7 +1920,7 @@ mod tests {
 
     #[test]
     fn test_compound_policy_with_builtin_policies() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let creator = Address::random();
         let user = Address::random();
         StorageCtx::enter(&mut storage, || {
@@ -2049,7 +1957,7 @@ mod tests {
 
     #[test]
     fn test_vendor_credits_use_case() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let admin = Address::random();
         let creator = Address::random();
         let vendor = Address::random();
@@ -2103,43 +2011,10 @@ mod tests {
     }
 
     #[test]
-    fn test_policy_data_rejects_compound_policy_on_pre_t1() -> eyre::Result<()> {
-        let creator = Address::random();
-
-        // First, create a compound policy on T1
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
-        let compound_id = StorageCtx::enter(&mut storage, || {
-            let mut registry = TIP403Registry::new();
-            registry.create_compound_policy(
-                creator,
-                ITIP403Registry::createCompoundPolicyCall {
-                    senderPolicyId: 1,
-                    recipientPolicyId: 1,
-                    mintRecipientPolicyId: 1,
-                },
-            )
-        })?;
-
-        // Now downgrade to T0 and try to read the compound policy data
-        let mut storage = storage.with_spec(TempoHardfork::T0);
-        StorageCtx::enter(&mut storage, || {
-            let registry = TIP403Registry::new();
-
-            let result = registry.policy_data(ITIP403Registry::policyDataCall {
-                policyId: compound_id,
-            });
-            assert!(result.is_err());
-            assert_eq!(result.unwrap_err(), TempoPrecompileError::under_overflow());
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_create_policy_rejects_non_simple_policy_types() -> eyre::Result<()> {
         let admin = Address::random();
 
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
@@ -2168,7 +2043,7 @@ mod tests {
 
     #[test]
     fn test_create_policy_with_accounts_rejects_non_simple_policy_types() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let admin = Address::random();
         let account = Address::random();
         StorageCtx::enter(&mut storage, || {
@@ -2201,269 +2076,9 @@ mod tests {
     // =========================================================================
     //                Pre-T1 Backward Compatibility Tests
     // =========================================================================
-
-    #[test]
-    fn test_pre_t1_create_policy_with_invalid_type_stores_255() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
-        let admin = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let mut registry = TIP403Registry::new();
-
-            // Pre-T1: COMPOUND and __Invalid should succeed but store as 255
-            for policy_type in [
-                ITIP403Registry::PolicyType::COMPOUND,
-                ITIP403Registry::PolicyType::__Invalid,
-            ] {
-                let policy_id = registry.create_policy(
-                    admin,
-                    ITIP403Registry::createPolicyCall {
-                        admin,
-                        policyType: policy_type,
-                    },
-                )?;
-
-                // Verify policy was created
-                assert!(registry.policy_exists(ITIP403Registry::policyExistsCall {
-                    policyId: policy_id
-                })?);
-
-                // Verify the stored policy_type is 255 (__Invalid)
-                let data = registry.get_policy_data(policy_id)?;
-                assert_eq!(data.policy_type, 255u8);
-            }
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_pre_t1_create_policy_with_valid_types_stores_correct_value() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
-        let admin = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let mut registry = TIP403Registry::new();
-
-            // WHITELIST should store as 0
-            let whitelist_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::WHITELIST,
-                },
-            )?;
-            let data = registry.get_policy_data(whitelist_id)?;
-            assert_eq!(data.policy_type, 0u8);
-
-            // BLACKLIST should store as 1
-            let blacklist_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                },
-            )?;
-            let data = registry.get_policy_data(blacklist_id)?;
-            assert_eq!(data.policy_type, 1u8);
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_pre_t1_create_policy_with_accounts_invalid_type_behavior() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
-        let (admin, account) = (Address::random(), Address::random());
-
-        StorageCtx::enter(&mut storage, || {
-            let mut registry = TIP403Registry::new();
-
-            // With non-empty accounts: reverts with IncompatiblePolicyType
-            for policy_type in [
-                ITIP403Registry::PolicyType::COMPOUND,
-                ITIP403Registry::PolicyType::__Invalid,
-            ] {
-                let result = registry.create_policy_with_accounts(
-                    admin,
-                    ITIP403Registry::createPolicyWithAccountsCall {
-                        admin,
-                        policyType: policy_type,
-                        accounts: vec![account],
-                    },
-                );
-                assert!(matches!(
-                    result.unwrap_err(),
-                    TempoPrecompileError::TIP403RegistryError(
-                        TIP403RegistryError::IncompatiblePolicyType(_)
-                    )
-                ));
-            }
-
-            // With empty accounts: succeeds (loop never enters revert path)
-            let policy_id = registry.create_policy_with_accounts(
-                admin,
-                ITIP403Registry::createPolicyWithAccountsCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::__Invalid,
-                    accounts: vec![],
-                },
-            )?;
-            let data = registry.get_policy_data(policy_id)?;
-            assert_eq!(data.policy_type, 255u8);
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_pre_t1_policy_data_reverts_for_any_policy_type_gte_2() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
-        let admin = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let mut registry = TIP403Registry::new();
-
-            // Create a policy with COMPOUND type (will be stored as 255)
-            let policy_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::COMPOUND,
-                },
-            )?;
-
-            // policy_data should revert for policy_type >= 2 on pre-T1
-            let result = registry.policy_data(ITIP403Registry::policyDataCall {
-                policyId: policy_id,
-            });
-            assert!(result.is_err());
-            assert_eq!(result.unwrap_err(), TempoPrecompileError::under_overflow());
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_pre_t1_is_authorized_reverts_for_invalid_policy_type() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
-        let admin = Address::random();
-        let user = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let mut registry = TIP403Registry::new();
-
-            // Create a policy with COMPOUND type (stored as 255)
-            let policy_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::COMPOUND,
-                },
-            )?;
-
-            // is_authorized should revert for policy_type >= 2 on pre-T1
-            let result = registry.is_authorized_as(policy_id, user, AuthRole::Transfer);
-            assert!(result.is_err());
-            assert_eq!(result.unwrap_err(), TempoPrecompileError::under_overflow());
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_pre_t2_to_t2_migration_invalid_policy_still_fails() -> eyre::Result<()> {
-        // Create a policy with invalid type on pre-T2
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
-        let admin = Address::random();
-        let user = Address::random();
-
-        let policy_id = StorageCtx::enter(&mut storage, || {
-            let mut registry = TIP403Registry::new();
-            registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::COMPOUND,
-                },
-            )
-        })?;
-
-        // Upgrade to T2 and try to use the policy
-        let mut storage = storage.with_spec(TempoHardfork::T2);
-        StorageCtx::enter(&mut storage, || {
-            let registry = TIP403Registry::new();
-
-            // policy_data should fail with InvalidPolicyType on T2
-            let result = registry.policy_data(ITIP403Registry::policyDataCall {
-                policyId: policy_id,
-            });
-            assert!(result.is_err());
-            assert_eq!(
-                result.unwrap_err(),
-                TIP403RegistryError::invalid_policy_type().into()
-            );
-
-            // is_authorized should also fail with InvalidPolicyType on T2
-            let result = registry.is_authorized_as(policy_id, user, AuthRole::Transfer);
-            assert!(result.is_err());
-            assert_eq!(
-                result.unwrap_err(),
-                TIP403RegistryError::invalid_policy_type().into()
-            );
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_t2_compound_policy_rejects_legacy_invalid_255_policy() -> eyre::Result<()> {
-        // Create a policy with invalid type on pre-T1 (stored as 255)
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
-        let admin = Address::random();
-        let creator = Address::random();
-
-        let invalid_policy_id = StorageCtx::enter(&mut storage, || {
-            let mut registry = TIP403Registry::new();
-            registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::__Invalid,
-                },
-            )
-        })?;
-
-        // Upgrade to T2 and create a valid simple policy
-        let mut storage = storage.with_spec(TempoHardfork::T2);
-        StorageCtx::enter(&mut storage, || {
-            let mut registry = TIP403Registry::new();
-
-            let valid_policy_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::WHITELIST,
-                },
-            )?;
-
-            // Attempting to create a compound policy referencing the legacy 255 policy should fail
-            let result = registry.create_compound_policy(
-                creator,
-                ITIP403Registry::createCompoundPolicyCall {
-                    senderPolicyId: invalid_policy_id,
-                    recipientPolicyId: valid_policy_id,
-                    mintRecipientPolicyId: valid_policy_id,
-                },
-            );
-            assert!(matches!(
-                result.unwrap_err(),
-                TempoPrecompileError::TIP403RegistryError(TIP403RegistryError::PolicyNotSimple(_))
-            ));
-
-            Ok(())
-        })
-    }
-
     #[test]
     fn test_t2_validate_policy_type_returns_correct_u8() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let admin = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
@@ -2492,145 +2107,11 @@ mod tests {
 
             Ok(())
         })
-    }
-
-    #[test]
-    fn test_is_authorized_simple_inner_errors_on_invalid_policy_type_t2() -> eyre::Result<()> {
-        // This test verifies that is_authorized_simple_inner explicitly errors for __Invalid
-        // rather than returning false. We need to manually create a policy
-        // with an invalid type to test this edge case.
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
-        let admin = Address::random();
-        let user = Address::random();
-
-        // Create policy with COMPOUND on pre-T2 (stores as 255)
-        let policy_id = StorageCtx::enter(&mut storage, || {
-            let mut registry = TIP403Registry::new();
-            registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::COMPOUND,
-                },
-            )
-        })?;
-
-        // Now on T2, is_authorized should error with InvalidPolicyType
-        let mut storage = storage.with_spec(TempoHardfork::T2);
-        StorageCtx::enter(&mut storage, || {
-            let registry = TIP403Registry::new();
-
-            let result = registry.is_authorized_as(policy_id, user, AuthRole::Transfer);
-            assert_eq!(
-                result.unwrap_err(),
-                TIP403RegistryError::invalid_policy_type().into()
-            );
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_pre_t1_whitelist_and_blacklist_work_normally() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
-        let admin = Address::random();
-        let user = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let mut registry = TIP403Registry::new();
-
-            // Create and test whitelist on pre-T1
-            let whitelist_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::WHITELIST,
-                },
-            )?;
-
-            // User not authorized initially
-            assert!(!registry.is_authorized_as(whitelist_id, user, AuthRole::Transfer)?);
-
-            // Add to whitelist
-            registry.modify_policy_whitelist(
-                admin,
-                ITIP403Registry::modifyPolicyWhitelistCall {
-                    policyId: whitelist_id,
-                    account: user,
-                    allowed: true,
-                },
-            )?;
-
-            // Now authorized
-            assert!(registry.is_authorized_as(whitelist_id, user, AuthRole::Transfer)?);
-
-            // Create and test blacklist on pre-T1
-            let blacklist_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                },
-            )?;
-
-            // User authorized initially (not in blacklist)
-            assert!(registry.is_authorized_as(blacklist_id, user, AuthRole::Transfer)?);
-
-            // Add to blacklist
-            registry.modify_policy_blacklist(
-                admin,
-                ITIP403Registry::modifyPolicyBlacklistCall {
-                    policyId: blacklist_id,
-                    account: user,
-                    restricted: true,
-                },
-            )?;
-
-            // Now not authorized
-            assert!(!registry.is_authorized_as(blacklist_id, user, AuthRole::Transfer)?);
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_pre_t1_create_policy_event_emits_invalid() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
-        let admin = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut registry = TIP403Registry::new();
-
-            let policy_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::COMPOUND,
-                },
-            )?;
-
-            let data = registry.get_policy_data(policy_id)?;
-            assert_eq!(data.policy_type, 255u8);
-
-            Ok::<_, TempoPrecompileError>(())
-        })?;
-
-        let events = storage.events.get(&TIP403_REGISTRY_ADDRESS).unwrap();
-        let policy_created_log = Log::new_unchecked(
-            TIP403_REGISTRY_ADDRESS,
-            events[0].topics().to_vec(),
-            events[0].data.clone(),
-        );
-        let decoded = ITIP403Registry::PolicyCreated::decode_log(&policy_created_log)?;
-
-        // should emit 255, not 2
-        assert_eq!(decoded.policyType, ITIP403Registry::PolicyType::__Invalid);
-
-        Ok(())
     }
 
     #[test]
     fn test_t2_create_policy_rejects_invalid_types() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
@@ -2661,7 +2142,7 @@ mod tests {
 
     #[test]
     fn test_t2_create_policy_emits_correct_type() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
@@ -2716,7 +2197,7 @@ mod tests {
 
     #[test]
     fn test_compound_policy_data_error_cases() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let admin = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
@@ -2752,64 +2233,51 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_policy_type() -> eyre::Result<()> {
-        // Create a policy with __Invalid type
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
-        let admin = Address::random();
-        let user = Address::random();
-
-        let policy_id = StorageCtx::enter(&mut storage, || {
+    fn test_legacy_invalid_policy_remains_invalid() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
+        let account = Address::random();
+        StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
-            registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::__Invalid,
+            registry.policy_id_counter.write(3)?;
+            registry.set_policy_data(
+                2,
+                PolicyData {
+                    policy_type: 255,
+                    admin: account,
                 },
-            )
-        })?;
-
-        // Pre-T2: should return under_overflow error
-        StorageCtx::enter(&mut storage, || {
-            let registry = TIP403Registry::new();
-
-            let result = registry.policy_data(ITIP403Registry::policyDataCall {
-                policyId: policy_id,
-            });
-            assert_eq!(result.unwrap_err(), TempoPrecompileError::under_overflow());
-
-            let result = registry.is_authorized_as(policy_id, user, AuthRole::Transfer);
-            assert_eq!(result.unwrap_err(), TempoPrecompileError::under_overflow());
-
-            Ok::<_, TempoPrecompileError>(())
-        })?;
-
-        // T2+: should return InvalidPolicyType error
-        let mut storage = storage.with_spec(TempoHardfork::T2);
-        StorageCtx::enter(&mut storage, || {
-            let registry = TIP403Registry::new();
-
-            let result = registry.policy_data(ITIP403Registry::policyDataCall {
-                policyId: policy_id,
-            });
+            )?;
             assert_eq!(
-                result.unwrap_err(),
+                registry
+                    .policy_data(ITIP403Registry::policyDataCall { policyId: 2 })
+                    .unwrap_err(),
                 TIP403RegistryError::invalid_policy_type().into()
             );
-
-            let result = registry.is_authorized_as(policy_id, user, AuthRole::Transfer);
             assert_eq!(
-                result.unwrap_err(),
+                registry
+                    .is_authorized_as(2, account, AuthRole::Transfer)
+                    .unwrap_err(),
                 TIP403RegistryError::invalid_policy_type().into()
             );
-
+            assert_eq!(
+                registry
+                    .create_compound_policy(
+                        account,
+                        ITIP403Registry::createCompoundPolicyCall {
+                            senderPolicyId: 2,
+                            recipientPolicyId: ALLOW_ALL_POLICY_ID,
+                            mintRecipientPolicyId: ALLOW_ALL_POLICY_ID,
+                        }
+                    )
+                    .unwrap_err(),
+                TIP403RegistryError::policy_not_simple().into()
+            );
             Ok(())
         })
     }
 
     #[test]
     fn test_initialize_sets_storage_state() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
@@ -2832,7 +2300,7 @@ mod tests {
 
     #[test]
     fn test_policy_exists_boundary_at_counter() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let admin = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
@@ -2871,21 +2339,10 @@ mod tests {
 
     #[test]
     fn test_nonexistent_policy_behavior() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let user = Address::random();
         let nonexistent_id = 999;
 
-        // Pre-T2: silently returns default data / false
-        StorageCtx::enter(&mut storage, || -> Result<()> {
-            let registry = TIP403Registry::new();
-            let data = registry.get_policy_data(nonexistent_id)?;
-            assert!(data.is_default());
-            assert!(!registry.is_authorized_as(nonexistent_id, user, AuthRole::Transfer)?);
-            Ok(())
-        })?;
-
-        // T2: reverts with `PolicyNotFound`
-        let mut storage = storage.with_spec(TempoHardfork::T2);
         StorageCtx::enter(&mut storage, || {
             let registry = TIP403Registry::new();
             assert_eq!(
@@ -2903,10 +2360,9 @@ mod tests {
     }
 
     // ────────────────── TIP-1022 Virtual Address Rejection ──────────────────
-
     #[test]
     fn test_modify_whitelist_rejects_virtual_address() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
@@ -2940,7 +2396,7 @@ mod tests {
 
     #[test]
     fn test_modify_blacklist_rejects_virtual_address() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
@@ -2974,7 +2430,7 @@ mod tests {
 
     #[test]
     fn test_create_policy_with_accounts_rejects_virtual_address() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {

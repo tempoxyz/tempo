@@ -126,7 +126,7 @@ where
 
 /// Helper to count payment and non-payment transactions
 fn count_transaction_types(transactions: &[TempoTxEnvelope]) -> (usize, usize) {
-    let payment_count = transactions.iter().filter(|tx| tx.is_payment_v2()).count();
+    let payment_count = transactions.iter().filter(|tx| tx.is_payment()).count();
     (payment_count, transactions.len() - payment_count)
 }
 
@@ -270,7 +270,7 @@ async fn test_block_building_only_payment_txs() -> eyre::Result<()> {
 
     for tx in &user_txs {
         assert!(
-            tx.is_payment_v2(),
+            tx.is_payment(),
             "All transactions should be payment transactions"
         );
     }
@@ -318,7 +318,7 @@ async fn test_block_building_only_non_payment_txs() -> eyre::Result<()> {
 
     for tx in &user_txs {
         assert!(
-            !tx.is_payment_v2(),
+            !tx.is_payment(),
             "All transactions should be non-payment transactions"
         );
     }
@@ -676,7 +676,7 @@ async fn test_block_building_channel_reserve_payment_v2() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Mixed TIP-20 transfers + channel reserve payments + plain txs are classified by `is_payment_v2`.
+/// Mixed TIP-20 transfers + channel reserve payments + plain txs are classified by `is_payment`.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_block_building_mixed_tip20_and_reserve_payments() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();

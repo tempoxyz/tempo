@@ -165,6 +165,13 @@ impl ConfigureEvm for TempoEvmConfig {
     }
 
     fn evm_env(&self, header: &TempoHeader) -> Result<EvmEnvFor<Self>, Self::Error> {
+        let spec = self.chain_spec().tempo_hardfork_at(header.timestamp());
+        if spec < TempoHardfork::MINIMUM_SUPPORTED {
+            return Err(TempoEvmError::InvalidEvmConfig(
+                "pre-T10 execution requires a historical binary".into(),
+            ));
+        }
+
         let EvmEnv { cfg_env, block_env } = EvmEnv::for_eth_block(
             header,
             self.chain_spec(),
@@ -173,19 +180,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 .blob_params_at_timestamp(header.timestamp()),
         );
 
-        let spec = self.chain_spec().tempo_hardfork_at(header.timestamp());
-
-        // Apply TIP-1000 gas params for T1 hardfork.
-        //
-        // TIP-1016 (EIP-8037 state gas split) is gated by `cfg_env.enable_amsterdam_eip8037`
-        // and is independent of the T4 hardfork. The flag is currently left at its default
-        // (`false`) so TIP-1016 is disabled even on T4; flipping it on enables the regular/
-        // state gas split everywhere it is checked downstream.
-        //
-        // TODO(TIP-1016): this is the place where we previously did
-        // `cfg_env.enable_amsterdam_eip8037 = spec.is_t4();`. When TIP-1016 is ready to
-        // ship, re-enable it here (or wire it through chain spec / cfg defaults) so the
-        // state gas split activates on the appropriate hardfork.
+        // TIP-1016 remains independent of the Tempo hardfork.
         let amsterdam_eip8037_enabled = cfg_env.enable_amsterdam_eip8037;
         let mut cfg_env = cfg_env.with_spec_and_gas_params(
             spec,
@@ -213,6 +208,13 @@ impl ConfigureEvm for TempoEvmConfig {
         parent: &TempoHeader,
         attributes: &Self::NextBlockEnvCtx,
     ) -> Result<EvmEnvFor<Self>, Self::Error> {
+        let spec = self.chain_spec().tempo_hardfork_at(attributes.timestamp);
+        if spec < TempoHardfork::MINIMUM_SUPPORTED {
+            return Err(TempoEvmError::InvalidEvmConfig(
+                "pre-T10 execution requires a historical binary".into(),
+            ));
+        }
+
         let EvmEnv { cfg_env, block_env } = EvmEnv::for_eth_next_block(
             parent,
             NextEvmEnvAttributes {
@@ -231,16 +233,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 .blob_params_at_timestamp(attributes.timestamp),
         );
 
-        let spec = self.chain_spec().tempo_hardfork_at(attributes.timestamp);
-
-        // Apply TIP-1000 gas params for T1 hardfork. TIP-1016 is gated by
-        // `cfg_env.enable_amsterdam_eip8037`, independent of the T4 hardfork
-        // (see `evm_env_for_block` for details).
-        //
-        // TODO(TIP-1016): this is the place where we previously did
-        // `cfg_env.enable_amsterdam_eip8037 = spec.is_t4();`. When TIP-1016 is ready to
-        // ship, re-enable it here (or wire it through chain spec / cfg defaults) so the
-        // state gas split activates on the appropriate hardfork.
+        // TIP-1016 remains independent of the Tempo hardfork.
         let amsterdam_eip8037_enabled = cfg_env.enable_amsterdam_eip8037;
         let mut cfg_env = cfg_env.with_spec_and_gas_params(
             spec,
@@ -395,14 +388,14 @@ mod tests {
     fn test_evm_env_t1_gas_cap() {
         use tempo_chainspec::spec::DEV;
 
-        // DEV chainspec has T1 activated at timestamp 0
+        // DEV activates current execution at genesis.
         let chainspec = DEV.clone();
         let evm_config = TempoEvmConfig::new(chainspec.clone());
 
         let header = TempoHeader {
             inner: alloy_consensus::Header {
                 number: 100,
-                timestamp: 1000, // After T1 activation
+                timestamp: 1000,
                 gas_limit: 30_000_000,
                 base_fee_per_gas: Some(1000),
                 ..Default::default()
@@ -413,8 +406,10 @@ mod tests {
             ..Default::default()
         };
 
-        // Verify we're in T1
-        assert!(chainspec.tempo_hardfork_at(header.timestamp()).is_t1());
+        // Verify the fixture supports current execution.
+        assert!(
+            chainspec.tempo_hardfork_at(header.timestamp()) >= TempoHardfork::MINIMUM_SUPPORTED
+        );
 
         let evm_env = evm_config.evm_env(&header).unwrap();
 
@@ -647,5 +642,48 @@ mod tests {
             context.inner.parent_beacon_block_root,
             Some(B256::repeat_byte(0x05))
         );
+    }
+    #[test]
+    fn historical_execution_envs_are_rejected() {
+        let config = TempoEvmConfig::moderato();
+        let boundary = TempoHardfork::T10.moderato_activation_timestamp().unwrap();
+        for timestamp in [boundary - 1, boundary] {
+            let parent = TempoHeader {
+                inner: alloy_consensus::Header {
+                    base_fee_per_gas: (timestamp == boundary)
+                        .then_some(tempo_chainspec::spec::TEMPO_T7_BASE_FEE_FLOOR),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let header = TempoHeader {
+                inner: alloy_consensus::Header {
+                    timestamp,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let attributes = TempoNextBlockEnvAttributes {
+                inner: NextBlockEnvAttributes {
+                    timestamp,
+                    suggested_fee_recipient: Address::ZERO,
+                    prev_randao: B256::ZERO,
+                    gas_limit: 0,
+                    parent_beacon_block_root: None,
+                    withdrawals: None,
+                    extra_data: Bytes::new(),
+                    slot_number: None,
+                },
+                general_gas_limit: 0,
+                shared_gas_limit: 0,
+                timestamp_millis_part: 0,
+                consensus_context: None,
+            };
+            assert_eq!(config.evm_env(&header).is_ok(), timestamp == boundary);
+            assert_eq!(
+                config.next_evm_env(&parent, &attributes).is_ok(),
+                timestamp == boundary
+            );
+        }
     }
 }

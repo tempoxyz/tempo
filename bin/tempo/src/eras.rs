@@ -29,7 +29,7 @@ use tempo_metabinary::{
     workers::{DEFAULT_STARTUP_TIMEOUT_SECS, HistoricalWorkers, WorkerContext},
 };
 
-/// Load chain-bound metadata bundled with the release. Development builds have no frozen eras.
+/// Load the bundled Genesis–T10 schedule, resolving workers beside the executable.
 /// A packaged catalog next to the executable supersedes the built-in catalog; it contains only
 /// release artifacts and activation times, never the operator's node configuration.
 pub(crate) fn release_catalog() -> eyre::Result<Catalog> {
@@ -232,6 +232,32 @@ fn raw_block_timestamp(params: &RpcParams) -> RpcResult<u64> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn bundled_history_matches_builtin_chains() {
+        let mut catalog: Catalog = serde_json::from_str(include_str!("../eras.json")).unwrap();
+        catalog.validate().unwrap();
+        catalog.resolve_binaries(std::path::Path::new("/tempo"));
+        for spec in [
+            &**tempo_chainspec::spec::PRESTO,
+            &**tempo_chainspec::spec::MODERATO,
+        ] {
+            let chain = catalog
+                .for_chain(spec.chain_id(), spec.genesis_hash())
+                .unwrap();
+            let boundary = spec
+                .info
+                .fork_time(tempo_chainspec::TempoHardfork::T11)
+                .unwrap();
+            assert_eq!(
+                chain.eras[0].binary.as_deref(),
+                Some(std::path::Path::new("/tempo/eras/tempo-genesis-t10"))
+            );
+            for (timestamp, era) in [(0, 0), (boundary - 1, 0), (boundary, 1)] {
+                assert_eq!(chain.era_for_timestamp(timestamp), era);
+            }
+        }
+    }
 
     #[test]
     fn custom_fork_schedule_does_not_inherit_builtin_eras() {

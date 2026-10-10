@@ -860,11 +860,16 @@ mod tests {
 
     #[test]
     fn create_zone_requires_initial_token_policy_binding() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             TIP20Setup::path_usd(ADMIN).apply()?;
             let mut factory = factory_with_owner(OWNER)?;
-            StorageCtx.set_spec(TempoHardfork::T10);
+            // Simulate a token awaiting migration to the registry-owned policy binding.
+            Mapping::<Address, crate::tip403_registry::TokenTransferPolicy>::new(
+                crate::tip403_registry::slots::TOKEN_TRANSFER_POLICIES,
+                crate::TIP403_REGISTRY_ADDRESS,
+            )[PATH_USD_ADDRESS]
+                .delete()?;
 
             let err = factory
                 .create_zone(

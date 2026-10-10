@@ -95,12 +95,11 @@ pub fn mutate<T: SolCall, R: Into<T::Return>>(
 /// Sets TIP-1060 storage creation mode to Preserve for the given storage-credit owner.
 #[inline]
 pub fn preserve_storage_credits(credit_owner: Address) -> Result<()> {
-    if StorageCtx.spec().is_t7() {
-        StorageCredits::new().set_mode(
-            credit_owner,
-            tempo_contracts::precompiles::IStorageCredits::Mode::Preserve,
-        )?;
-    }
+    StorageCredits::new().set_mode(
+        credit_owner,
+        tempo_contracts::precompiles::IStorageCredits::Mode::Preserve,
+    )?;
+
     Ok(())
 }
 
@@ -122,13 +121,10 @@ pub fn charge_input_cost(storage: &mut StorageCtx, calldata: &[u8]) -> Option<Pr
 /// When disabled, `state_gas_used` must remain 0 to avoid leaking into revm's reservoir
 /// accounting and corrupting `tx_gas_used()` via `handle_reservoir_remaining_gas`.
 ///
-/// SSTORE refund propagation is activated unconditionally at T4 so the
-/// `TempoPrecompileProvider` wrapper can apply refunds with `record_refund`. Pre-T4
-/// blocks were executed without refund propagation, so we cannot change their gas
-/// accounting.
+/// Successful SSTORE refunds propagate to `TempoPrecompileProvider::record_refund`.
 #[inline]
 fn fill_state_gas(output: &mut PrecompileOutput, storage: &StorageCtx) {
-    if storage.spec().is_t4() && output.is_success() {
+    if output.is_success() {
         output.gas_refunded = storage.gas_refunded();
     }
 
@@ -147,7 +143,7 @@ fn fill_state_gas(output: &mut PrecompileOutput, storage: &StorageCtx) {
 
 /// Decodes and classifies precompile calldata without executing the `decoded` call.
 ///
-/// Handles missing selectors (revert on T1+, error on earlier forks), unknown selectors
+/// Handles missing selectors (empty revert), unknown selectors
 /// (ABI-encoded `UnknownFunctionSelector`), and malformed ABI data (empty revert).
 #[inline]
 pub fn decode_call<T>(
@@ -262,13 +258,7 @@ pub fn selector_from_calldata(calldata: &[u8]) -> Option<[u8; 4]> {
 pub fn missing_selector_result() -> PrecompileResult {
     let storage = StorageCtx::default();
 
-    if storage.spec().is_t1() {
-        Ok(storage.revert_output(Bytes::new()))
-    } else {
-        Ok(storage.halt_output(PrecompileHalt::Other(
-            "Invalid input: missing function selector".into(),
-        )))
-    }
+    Ok(storage.revert_output(Bytes::new()))
 }
 
 #[inline]
@@ -343,7 +333,6 @@ mod tests {
         .abi_encode();
 
         for spec in [
-            TempoHardfork::Genesis,
             TempoHardfork::T10,
             TempoHardfork::T11,
             TempoHardfork::T12,
@@ -413,7 +402,7 @@ mod tests {
             ITestDispatch::getCall::abi_encode_returns(&U256::from(42))
         );
 
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut target = U256::ZERO;
             let output = typed::mutate(
@@ -486,7 +475,7 @@ mod tests {
         calldata.extend(B256::with_last_byte(32).0);
         calldata.extend(U256::from(ABI_DECODER_MEMORY_LIMIT as u64).to_be_bytes::<32>());
 
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let output = StorageCtx::enter(&mut storage, || {
             dispatch!(
                 &calldata,

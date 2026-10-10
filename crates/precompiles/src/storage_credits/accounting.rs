@@ -223,9 +223,10 @@ mod tests {
         let fee_payer = Address::repeat_byte(0x22);
         let no_credit_slot = TIP20Token::from_address_unchecked(owner).balances[fee_payer].slot();
         let fresh_slot = U256::from(0x33);
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
+        storage.set_tip1060_storage_credits(false);
         storage.sstore(owner, no_credit_slot, U256::ONE)?;
-        storage.set_spec(TempoHardfork::T7);
+        storage.set_tip1060_storage_credits(true);
 
         let mut non_creditable_slots = NonCreditableSlots::empty();
         non_creditable_slots.initialize(fee_payer, owner, None);
@@ -259,14 +260,15 @@ mod tests {
         let owner = PATH_USD_ADDRESS;
         let fee_payer = Address::repeat_byte(0x55);
         let no_credit_slot = TIP20Token::from_address_unchecked(owner).balances[fee_payer].slot();
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
+        storage.set_tip1060_storage_credits(false);
         storage.sstore(owner, no_credit_slot, U256::ONE)?;
         storage.sstore(
             STORAGE_CREDITS_ADDRESS,
             StorageCredits::slot(owner),
             U256::ONE,
         )?;
-        storage.set_spec(TempoHardfork::T7);
+        storage.set_tip1060_storage_credits(true);
 
         let mut non_creditable_slots = NonCreditableSlots::empty();
         non_creditable_slots.initialize(fee_payer, owner, None);
@@ -288,9 +290,10 @@ mod tests {
     #[test]
     fn unregistered_zero_key_clear_mints_persistent_credit() -> eyre::Result<()> {
         let owner = Address::repeat_byte(0x66);
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
+        storage.set_tip1060_storage_credits(false);
         storage.sstore(owner, U256::ZERO, U256::ONE)?;
-        storage.set_spec(TempoHardfork::T7);
+        storage.set_tip1060_storage_credits(true);
 
         storage.sstore(owner, U256::ZERO, U256::ZERO)?;
 
