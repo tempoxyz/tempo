@@ -46,15 +46,15 @@ pub(crate) struct Actor<TContext, P, E, M = crate::alias::marshal::Mailbox> {
     epoch_strategy: FixedEpocher,
     floor: Height,
 
-    /// Highest target already attempted or covered, including SYNCING responses.
-    /// This throttles tip retries; only the execution provider establishes finality.
+    // Highest target attempted or covered, even on SYNCING, to throttle tip retries.
+    // Catch-up is gated by the provider's live finality, not this watermark.
     last_fcu: Target,
     latest_tip: Target,
 
     block_queue: VecDeque<(Block, Exact)>,
     floor_candidate: Option<Height>,
 
-    execution_task: OptionFuture<BoxFuture<'static, eyre::Result<Target>>>,
+    execution_task: OptionFuture<BoxFuture<'static, ExecutionTaskResult>>,
 
     fcu_heartbeat_interval: Duration,
     fcu_heartbeat_timer: OptionFuture<BoxFuture<'static, ()>>,
@@ -125,7 +125,7 @@ where
                 result = &mut self.execution_task => {
                     self.execution_task = OptionFuture::none();
                     match result {
-                        Ok(last_fcu) => {
+                        ExecutionTaskResult::Completed(last_fcu) => {
                             self.last_fcu = last_fcu;
                             if last_fcu.supersedes(&self.latest_tip) {
                                 self.latest_tip = last_fcu;
@@ -134,7 +134,7 @@ where
                             // Emits an event on error.
                             let _: Result<_, _> = self.try_advance_floor().await;
                         }
-                        Err(error) => {
+                        ExecutionTaskResult::Fatal(error) => {
                             error!(%error, "execution task failed");
                             break;
                         }
@@ -196,20 +196,14 @@ where
             return;
         };
 
-        let last_fcu = self.last_fcu;
-        let context = self.context.child("execute_request");
-        let execution_engine = self.execution_engine.clone();
-        let execution_provider = self.execution_provider.clone();
-        self.execution_task.replace(
-            execute_request(
-                context,
-                execution_engine,
-                execution_provider,
-                last_fcu,
-                request,
-            )
-            .boxed(),
+        let result = execute_request(
+            self.context.child("execute_request"),
+            self.execution_engine.clone(),
+            self.execution_provider.clone(),
+            self.last_fcu,
+            request,
         );
+        self.execution_task.replace(result.boxed());
     }
 
     #[instrument(skip_all, err(level = Level::WARN))]
@@ -266,38 +260,52 @@ enum ExecutionRequest {
     Block(Block, Exact),
 }
 
+enum ExecutionTaskResult {
+    Completed(Target),
+    Fatal(Report),
+}
+
 async fn execute_request<TContext: Pacer, E: ExecutionEngine, P: FinalizedBlockProvider>(
     context: TContext,
     execution_engine: E,
     execution_provider: P,
     last_fcu: Target,
     request: ExecutionRequest,
-) -> eyre::Result<Target> {
+) -> ExecutionTaskResult {
     let (tip, ack) = match request {
         ExecutionRequest::Forkchoice(tip) => (tip, None),
         ExecutionRequest::Block(block, ack) => {
             let tip = Target::from_block(&block);
-            submit_new_payload(&context, &execution_engine, block).await?;
+            if let Err(error) = submit_new_payload(&context, &execution_engine, block).await {
+                return ExecutionTaskResult::Fatal(error);
+            }
             (tip, Some(ack))
         }
     };
 
-    // Reth can finish syncing independently of an FCU response. Gate catch-up
-    // against its live finality, not a newer requested tip that may still be SYNCING.
-    let finalized = Target::from_header(&execution_provider.finalized_header()?);
+    // Use live finality, not the requested tip, since pipeline sync can complete independently.
+    let finalized = match execution_provider.finalized_header() {
+        Ok(header) => Target::from_header(&header),
+        Err(error) => return ExecutionTaskResult::Fatal(error),
+    };
+    // Skip catch-up blocks at or below live finality, but let heartbeats reaffirm an equal tip.
     let handled = if finalized.supersedes(&tip) || (ack.is_some() && !tip.supersedes(&finalized)) {
         finalized
     } else {
-        // Heartbeats still reaffirm a tip equal to the finalized target.
-        submit_forkchoice_update(&context, &execution_engine, &execution_provider, &tip).await?
+        match submit_forkchoice_update(&context, &execution_engine, &execution_provider, &tip).await
+        {
+            Ok(target) => target,
+            Err(error) => return ExecutionTaskResult::Fatal(error),
+        }
     };
 
+    // Acknowledge SYNCING to unblock marshal. Its floor still requires finalized, durable state.
     if let Some(ack) = ack {
         ack.acknowledge();
     }
 
-    // An older catch-up block must not cause an immediate retry of a newer tip.
-    Ok(if handled.supersedes(&last_fcu) {
+    // Keep the watermark monotonic so older catch-up blocks cannot immediately retry a newer tip.
+    ExecutionTaskResult::Completed(if handled.supersedes(&last_fcu) {
         handled
     } else {
         last_fcu
@@ -356,7 +364,7 @@ async fn submit_forkchoice_update<
     let response = match response {
         Ok(response) => response,
         Err(error) => {
-            // Pipeline completion can race the caller's finalized-header read.
+            // Re-read finality on TooDeepReorg. Ignore only if finality advanced past the target.
             if matches!(
                 &error,
                 BeaconForkChoiceUpdateError::ForkchoiceUpdateError(

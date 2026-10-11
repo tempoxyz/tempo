@@ -120,9 +120,9 @@ impl StubExecutionProvider {
 
     pub(super) fn respond_next_forkchoice(
         &self,
-        response: Result<ForkchoiceUpdated, BeaconForkChoiceUpdateError>,
+        response: Result<PayloadStatusEnum, BeaconForkChoiceUpdateError>,
     ) {
-        *self.inner.forkchoice_response.lock() = Some(response);
+        *self.inner.forkchoice_response.lock() = Some(response.map(ForkchoiceUpdated::from_status));
     }
 }
 
@@ -187,12 +187,9 @@ impl ExecutionEngine for StubExecutionProvider {
     {
         self.inner.forkchoices.lock().push(state);
         let gate = self.inner.forkchoice_gate.lock().take();
-        let response = self
-            .inner
-            .forkchoice_response
-            .lock()
-            .take()
-            .unwrap_or_else(|| {
+        let response = match self.inner.forkchoice_response.lock().take() {
+            Some(response) => response,
+            None => {
                 let status = if self.inner.reject_forkchoices.load(Ordering::SeqCst) {
                     PayloadStatusEnum::Invalid {
                         validation_error: "rejected by test engine".into(),
@@ -201,7 +198,8 @@ impl ExecutionEngine for StubExecutionProvider {
                     PayloadStatusEnum::Valid
                 };
                 Ok(ForkchoiceUpdated::from_status(status))
-            });
+            }
+        };
         async move {
             if let Some(gate) = gate {
                 let _ = gate.await;
