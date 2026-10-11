@@ -11,10 +11,10 @@ use commonware_consensus::{
     types::{Epoch, FixedEpocher, Height, Round, View},
 };
 use commonware_macros::test_traced;
-use commonware_runtime::{Clock as _, Runner as _, Supervisor as _, deterministic};
+use commonware_runtime::{Runner as _, Supervisor as _, deterministic};
 use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
 
-use super::{Config, init};
+use super::*;
 use crate::consensus::Digest;
 use utils::{StubExecutionProvider, StubMarshal, make_block, make_block_at_round};
 
@@ -709,5 +709,142 @@ fn startup_uses_execution_finalized_tip_without_immediate_forkchoice() {
         assert_eq!(forkchoice.head_block_hash, finalized_hash);
         assert_eq!(forkchoice.safe_block_hash, finalized_hash);
         assert_eq!(forkchoice.finalized_block_hash, finalized_hash);
+    });
+}
+
+#[test_traced]
+fn snapshot_catch_up_canonicalizes_blocks_below_syncing_tip() {
+    deterministic::Runner::default().start(|context| async move {
+        let provider = StubExecutionProvider::default();
+        let snapshot = digest(100);
+        provider.set_finalized(100, snapshot.0, round(10));
+        provider.sync_unknown_forkchoices();
+
+        let first = make_block_at_round(101, snapshot.0, round(11));
+        let second = make_block_at_round(102, first.digest().0, round(12));
+        let third = make_block_at_round(103, second.digest().0, round(13));
+        let tip = third.digest();
+
+        let (actor, mut mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
+                fcu_heartbeat_interval: HEARTBEAT_INTERVAL,
+            },
+        );
+        actor.start();
+
+        assert!(
+            mailbox
+                .report(Update::Tip(round(13), Height::new(103), tip))
+                .accepted()
+        );
+        wait_until(&context, || provider.forkchoices().len() == 1).await;
+        context.sleep(Duration::from_millis(1)).await;
+        assert_eq!(
+            provider.forkchoices().len(),
+            1,
+            "SYNCING must not cause a retry loop"
+        );
+        assert_eq!(provider.finalized_header().unwrap().hash(), snapshot.0);
+
+        for block in [first.clone(), second] {
+            let hash = block.digest().0;
+            let (ack, waiter) = Exact::handle();
+            assert!(mailbox.report(Update::Block(block.into(), ack)).accepted());
+            waiter.await.expect("catch-up block should be acknowledged");
+            assert_eq!(provider.finalized_header().unwrap().hash(), hash);
+        }
+
+        // Catch-up must not replace the newer requested tip with an older block.
+        wait_until(&context, || provider.forkchoices().len() == 4).await;
+        assert_eq!(provider.forkchoices()[3].head_block_hash, tip.0);
+        assert_eq!(provider.finalized_header().unwrap().inner.number, 102);
+
+        let (ack, waiter) = Exact::handle();
+        assert!(mailbox.report(Update::Block(third.into(), ack)).accepted());
+        waiter
+            .await
+            .expect("latest tip should become canonical once executed");
+        assert_eq!(provider.finalized_header().unwrap().hash(), tip.0);
+
+        let count = provider.forkchoices().len();
+        let (ack, waiter) = Exact::handle();
+        assert!(mailbox.report(Update::Block(first.into(), ack)).accepted());
+        waiter
+            .await
+            .expect("already canonicalized block should be acknowledged");
+        assert_eq!(
+            provider.forkchoices().len(),
+            count,
+            "accepted forkchoice must not regress"
+        );
+        assert_eq!(provider.finalized_header().unwrap().hash(), tip.0);
+
+        wait_until(&context, || provider.forkchoices().len() > count).await;
+        assert_eq!(
+            provider.forkchoices().last().unwrap().head_block_hash,
+            tip.0
+        );
+    });
+}
+
+#[test_traced]
+fn syncing_block_forkchoice_does_not_skip_older_catch_up_block() {
+    deterministic::Runner::default().start(|context| async move {
+        let provider = StubExecutionProvider::default();
+        let snapshot = digest(100);
+        provider.set_finalized(100, snapshot.0, round(10));
+        provider.sync_unknown_forkchoices();
+        provider.sync_next_forkchoice();
+
+        let first = make_block_at_round(101, snapshot.0, round(11));
+        let second = make_block_at_round(102, first.digest().0, round(12));
+        let second_hash = second.digest().0;
+        let (actor, mut mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
+                fcu_heartbeat_interval: Duration::from_secs(60),
+            },
+        );
+        actor.start();
+
+        // The first block request itself returns SYNCING, as during gap repair.
+        let (ack, waiter) = Exact::handle();
+        assert!(
+            mailbox
+                .report(Update::Block(second.clone().into(), ack))
+                .accepted()
+        );
+        waiter
+            .await
+            .expect("SYNCING forkchoice should not exit the actor");
+        assert_eq!(provider.finalized_header().unwrap().hash(), snapshot.0);
+
+        let first_hash = first.digest().0;
+        let (ack, waiter) = Exact::handle();
+        assert!(mailbox.report(Update::Block(first.into(), ack)).accepted());
+        waiter
+            .await
+            .expect("older catch-up block should be canonicalized");
+        assert_eq!(provider.finalized_header().unwrap().hash(), first_hash);
+
+        // A repeated block at the requested round must still advance accepted state.
+        let (ack, waiter) = Exact::handle();
+        assert!(mailbox.report(Update::Block(second.into(), ack)).accepted());
+        waiter
+            .await
+            .expect("previously syncing block should now be canonicalized");
+        assert_eq!(provider.finalized_header().unwrap().hash(), second_hash);
+        assert_eq!(provider.forkchoices().len(), 3);
     });
 }
