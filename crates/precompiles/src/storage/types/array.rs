@@ -9,7 +9,11 @@
 //! ## Packing Strategy
 //!
 //! - **Packed**: When `T::BYTES <= 16`, multiple elements fit in one slot
-//! - **Unpacked**: When `T::BYTES > 16` or doesn't divide 32, each element uses full slot(s)
+//! - **Unpacked**: When `T::BYTES > 16`, each element uses full slot(s)
+//!
+//! Non-divisor sizes (`32 % T::BYTES != 0`, e.g. `FixedBytes<11>`) still pack; the
+//! leftover bytes at the end of each slot are skipped via
+//! [`packing::calc_element_loc`].
 
 use alloy::primitives::{Address, U256};
 use std::ops::{Index, IndexMut};
