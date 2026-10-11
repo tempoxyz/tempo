@@ -12,11 +12,12 @@ use std::{
 use alloy_consensus::Header;
 use alloy_primitives::B256;
 use alloy_rpc_types_engine::{
-    ForkchoiceState, ForkchoiceUpdated, PayloadStatus, PayloadStatusEnum,
+    ForkchoiceState, ForkchoiceUpdateError, ForkchoiceUpdated, PayloadStatus, PayloadStatusEnum,
 };
 use commonware_consensus::types::{Height, Round};
 use futures::channel::oneshot;
 use parking_lot::Mutex;
+use reth_engine_primitives::BeaconForkChoiceUpdateError;
 use reth_ethereum::rpc::eth::primitives::BlockNumHash;
 use reth_node_core::primitives::{SealedBlock, SealedHeader};
 use tempo_node::TempoExecutionData;
@@ -74,6 +75,7 @@ struct StubExecutionProviderInner {
     sync_unknown_forkchoices: AtomicBool,
     sync_next_forkchoice: AtomicBool,
     executed: Mutex<HashMap<B256, (u64, Round)>>,
+    finalize_during_forkchoice: Mutex<Option<(u64, B256, Round)>>,
 }
 
 impl StubExecutionProvider {
@@ -130,6 +132,10 @@ impl StubExecutionProvider {
         self.inner
             .sync_next_forkchoice
             .store(true, Ordering::SeqCst);
+    }
+
+    pub(super) fn finalize_during_next_forkchoice(&self, number: u64, hash: B256, round: Round) {
+        *self.inner.finalize_during_forkchoice.lock() = Some((number, hash, round));
     }
 }
 
@@ -216,9 +222,17 @@ impl ExecutionEngine for StubExecutionProvider {
                 && executed.is_none()
                 && state.head_block_hash != self.inner.finalized.lock().hash);
         let provider = self.clone();
+        let finalized = self.inner.finalize_during_forkchoice.lock().take();
         async move {
             if let Some(gate) = gate {
                 let _ = gate.await;
+            }
+            if let Some((number, hash, round)) = finalized {
+                provider.set_finalized(number, hash, round);
+                return Err(BeaconForkChoiceUpdateError::ForkchoiceUpdateError(
+                    ForkchoiceUpdateError::TooDeepReorg,
+                )
+                .into());
             }
             let status = if rejected {
                 PayloadStatusEnum::Invalid {

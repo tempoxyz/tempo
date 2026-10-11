@@ -848,3 +848,101 @@ fn syncing_block_forkchoice_does_not_skip_older_catch_up_block() {
         assert_eq!(provider.forkchoices().len(), 3);
     });
 }
+
+#[test_traced]
+fn pipeline_completion_does_not_regress_finalized_forkchoice() {
+    deterministic::Runner::default().start(|context| async move {
+        let provider = StubExecutionProvider::default();
+        let snapshot = digest(100);
+        let finalized = digest(103);
+        provider.set_finalized(100, snapshot.0, round(10));
+        provider.sync_unknown_forkchoices();
+
+        let (actor, mut mailbox) = init(
+            context.child("follower_executor"),
+            Config {
+                execution_provider: provider.clone(),
+                execution_engine: provider.clone(),
+                marshal: StubMarshal::default(),
+                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                floor: Height::zero(),
+                fcu_heartbeat_interval: HEARTBEAT_INTERVAL,
+            },
+        );
+        actor.start();
+
+        assert!(
+            mailbox
+                .report(Update::Tip(round(13), Height::new(103), finalized))
+                .accepted()
+        );
+        wait_until(&context, || provider.forkchoices().len() == 1).await;
+        context.sleep(Duration::from_millis(1)).await;
+
+        // Reth finishes syncing the requested tip without returning VALID to the actor.
+        provider.set_finalized(103, finalized.0, round(13));
+        let block = make_block_at_round(101, snapshot.0, round(11));
+        let (ack, waiter) = Exact::handle();
+        assert!(mailbox.report(Update::Block(block.into(), ack)).accepted());
+        waiter
+            .await
+            .expect("already finalized history should be acknowledged");
+        assert_eq!(
+            provider.forkchoices().len(),
+            1,
+            "catch-up must not reorg below Reth finality"
+        );
+        assert_eq!(provider.finalized_header().unwrap().hash(), finalized.0);
+
+        wait_until(&context, || provider.forkchoices().len() == 2).await;
+        assert_eq!(provider.forkchoices()[1].head_block_hash, finalized.0);
+    });
+}
+
+#[test_traced]
+fn too_deep_reorg_is_tolerated_only_when_pipeline_advanced_finality() {
+    for advanced in [false, true] {
+        deterministic::Runner::default().start(|context| async move {
+            let provider = StubExecutionProvider::default();
+            let snapshot = digest(100);
+            provider.set_finalized(100, snapshot.0, round(10));
+            let finalized = if advanced { digest(103) } else { snapshot };
+            let height = if advanced { 103 } else { 100 };
+            let finalized_round = if advanced { round(13) } else { round(10) };
+            provider.finalize_during_next_forkchoice(height, finalized.0, finalized_round);
+
+            let (actor, mut mailbox) = init(
+                context.child("follower_executor"),
+                Config {
+                    execution_provider: provider.clone(),
+                    execution_engine: provider.clone(),
+                    marshal: StubMarshal::default(),
+                    epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
+                    floor: Height::zero(),
+                    fcu_heartbeat_interval: Duration::from_secs(60),
+                },
+            );
+            let handle = actor.start();
+
+            let block = make_block_at_round(101, snapshot.0, round(11));
+            let (ack, waiter) = Exact::handle();
+            assert!(mailbox.report(Update::Block(block.into(), ack)).accepted());
+            assert_eq!(waiter.await.is_ok(), advanced);
+            assert_eq!(provider.finalized_header().unwrap().hash(), finalized.0);
+
+            if advanced {
+                let block = make_block_at_round(102, snapshot.0, round(12));
+                let (ack, waiter) = Exact::handle();
+                assert!(mailbox.report(Update::Block(block.into(), ack)).accepted());
+                waiter
+                    .await
+                    .expect("actor should keep acknowledging finalized history");
+            } else {
+                handle
+                    .await
+                    .expect("unconfirmed deep reorg should stop the actor");
+            }
+            assert_eq!(provider.forkchoices().len(), 1);
+        });
+    }
+}
