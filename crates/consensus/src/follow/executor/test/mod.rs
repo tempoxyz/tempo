@@ -5,6 +5,7 @@ mod utils;
 use std::{num::NonZeroU64, time::Duration};
 
 use alloy_primitives::B256;
+use alloy_rpc_types_engine::{ForkchoiceUpdateError, ForkchoiceUpdated, PayloadStatusEnum};
 use commonware_consensus::{
     Reporter as _,
     marshal::Update,
@@ -15,7 +16,7 @@ use commonware_runtime::{Runner as _, Supervisor as _, deterministic};
 use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
 
 use super::*;
-use crate::consensus::Digest;
+use crate::consensus::{Digest, block::Block};
 use utils::{StubExecutionProvider, StubMarshal, make_block, make_block_at_round};
 
 const EPOCH_LENGTH: NonZeroU64 = NonZeroU64::new(10).expect("epoch length is nonzero");
@@ -32,6 +33,26 @@ async fn wait_until<T: commonware_runtime::Clock>(context: &T, mut cond: impl Fn
     }
 
     assert!(cond(), "condition was not met before the test deadline");
+}
+
+/// Make the stub apply finality before completing a successful block FCU.
+async fn canonicalize_block<T: commonware_runtime::Clock>(
+    context: &T,
+    mailbox: &mut Mailbox,
+    provider: &StubExecutionProvider,
+    block: Block,
+) {
+    let header = block.block().sealed_header().clone();
+    let tip = target::Target::from_header(&header);
+    let count = provider.forkchoices().len();
+    let release = provider.pause_next_forkchoice();
+    let (ack, waiter) = Exact::handle();
+    assert!(mailbox.report(Update::Block(block.into(), ack)).accepted());
+    wait_until(context, || provider.forkchoices().len() == count + 1).await;
+    assert_eq!(provider.forkchoices()[count].head_block_hash, tip.digest.0);
+    provider.set_finalized(header.inner.number, header.hash(), tip.round.unwrap());
+    release.send(()).expect("block FCU should still be waiting");
+    waiter.await.expect("catch-up block should be acknowledged");
 }
 
 fn round(view: u64) -> Round {
@@ -718,7 +739,9 @@ fn snapshot_catch_up_canonicalizes_blocks_below_syncing_tip() {
         let provider = StubExecutionProvider::default();
         let snapshot = digest(100);
         provider.set_finalized(100, snapshot.0, round(10));
-        provider.sync_unknown_forkchoices();
+        provider.respond_next_forkchoice(Ok(ForkchoiceUpdated::from_status(
+            PayloadStatusEnum::Syncing,
+        )));
 
         let first = make_block_at_round(101, snapshot.0, round(11));
         let second = make_block_at_round(102, first.digest().0, round(12));
@@ -753,36 +776,34 @@ fn snapshot_catch_up_canonicalizes_blocks_below_syncing_tip() {
         assert_eq!(provider.finalized_header().unwrap().hash(), snapshot.0);
 
         for block in [first.clone(), second] {
-            let hash = block.digest().0;
-            let (ack, waiter) = Exact::handle();
-            assert!(mailbox.report(Update::Block(block.into(), ack)).accepted());
-            waiter.await.expect("catch-up block should be acknowledged");
-            assert_eq!(provider.finalized_header().unwrap().hash(), hash);
+            canonicalize_block(&context, &mut mailbox, &provider, block).await;
         }
+        assert_eq!(provider.forkchoices().len(), 3);
 
         // Catch-up must not replace the newer requested tip with an older block.
+        provider.respond_next_forkchoice(Ok(ForkchoiceUpdated::from_status(
+            PayloadStatusEnum::Syncing,
+        )));
         wait_until(&context, || provider.forkchoices().len() == 4).await;
         assert_eq!(provider.forkchoices()[3].head_block_hash, tip.0);
         assert_eq!(provider.finalized_header().unwrap().inner.number, 102);
 
-        let (ack, waiter) = Exact::handle();
-        assert!(mailbox.report(Update::Block(third.into(), ack)).accepted());
-        waiter
-            .await
-            .expect("latest tip should become canonical once executed");
+        canonicalize_block(&context, &mut mailbox, &provider, third.clone()).await;
         assert_eq!(provider.finalized_header().unwrap().hash(), tip.0);
 
         let count = provider.forkchoices().len();
-        let (ack, waiter) = Exact::handle();
-        assert!(mailbox.report(Update::Block(first.into(), ack)).accepted());
-        waiter
-            .await
-            .expect("already canonicalized block should be acknowledged");
-        assert_eq!(
-            provider.forkchoices().len(),
-            count,
-            "accepted forkchoice must not regress"
-        );
+        for block in [first, third] {
+            let (ack, waiter) = Exact::handle();
+            assert!(mailbox.report(Update::Block(block.into(), ack)).accepted());
+            waiter
+                .await
+                .expect("already canonicalized block should be acknowledged");
+            assert_eq!(
+                provider.forkchoices().len(),
+                count,
+                "forkchoice must not repeat blocks at or below finality"
+            );
+        }
         assert_eq!(provider.finalized_header().unwrap().hash(), tip.0);
 
         wait_until(&context, || provider.forkchoices().len() > count).await;
@@ -799,8 +820,9 @@ fn syncing_block_forkchoice_does_not_skip_older_catch_up_block() {
         let provider = StubExecutionProvider::default();
         let snapshot = digest(100);
         provider.set_finalized(100, snapshot.0, round(10));
-        provider.sync_unknown_forkchoices();
-        provider.sync_next_forkchoice();
+        provider.respond_next_forkchoice(Ok(ForkchoiceUpdated::from_status(
+            PayloadStatusEnum::Syncing,
+        )));
 
         let first = make_block_at_round(101, snapshot.0, round(11));
         let second = make_block_at_round(102, first.digest().0, round(12));
@@ -830,20 +852,10 @@ fn syncing_block_forkchoice_does_not_skip_older_catch_up_block() {
             .expect("SYNCING forkchoice should not exit the actor");
         assert_eq!(provider.finalized_header().unwrap().hash(), snapshot.0);
 
-        let first_hash = first.digest().0;
-        let (ack, waiter) = Exact::handle();
-        assert!(mailbox.report(Update::Block(first.into(), ack)).accepted());
-        waiter
-            .await
-            .expect("older catch-up block should be canonicalized");
-        assert_eq!(provider.finalized_header().unwrap().hash(), first_hash);
+        canonicalize_block(&context, &mut mailbox, &provider, first).await;
 
-        // A repeated block at the requested round must still advance accepted state.
-        let (ack, waiter) = Exact::handle();
-        assert!(mailbox.report(Update::Block(second.into(), ack)).accepted());
-        waiter
-            .await
-            .expect("previously syncing block should now be canonicalized");
+        // A repeated block at the requested round must still advance execution finality.
+        canonicalize_block(&context, &mut mailbox, &provider, second).await;
         assert_eq!(provider.finalized_header().unwrap().hash(), second_hash);
         assert_eq!(provider.forkchoices().len(), 3);
     });
@@ -856,7 +868,9 @@ fn pipeline_completion_does_not_regress_finalized_forkchoice() {
         let snapshot = digest(100);
         let finalized = digest(103);
         provider.set_finalized(100, snapshot.0, round(10));
-        provider.sync_unknown_forkchoices();
+        provider.respond_next_forkchoice(Ok(ForkchoiceUpdated::from_status(
+            PayloadStatusEnum::Syncing,
+        )));
 
         let (actor, mut mailbox) = init(
             context.child("follower_executor"),
@@ -909,7 +923,12 @@ fn too_deep_reorg_is_tolerated_only_when_pipeline_advanced_finality() {
             let finalized = if advanced { digest(103) } else { snapshot };
             let height = if advanced { 103 } else { 100 };
             let finalized_round = if advanced { round(13) } else { round(10) };
-            provider.finalize_during_next_forkchoice(height, finalized.0, finalized_round);
+            provider.respond_next_forkchoice(Err(
+                BeaconForkChoiceUpdateError::ForkchoiceUpdateError(
+                    ForkchoiceUpdateError::TooDeepReorg,
+                ),
+            ));
+            let release = provider.pause_next_forkchoice();
 
             let (actor, mut mailbox) = init(
                 context.child("follower_executor"),
@@ -927,6 +946,11 @@ fn too_deep_reorg_is_tolerated_only_when_pipeline_advanced_finality() {
             let block = make_block_at_round(101, snapshot.0, round(11));
             let (ack, waiter) = Exact::handle();
             assert!(mailbox.report(Update::Block(block.into(), ack)).accepted());
+            wait_until(&context, || provider.forkchoices().len() == 1).await;
+            provider.set_finalized(height, finalized.0, finalized_round);
+            release
+                .send(())
+                .expect("racing FCU should still be waiting");
             assert_eq!(waiter.await.is_ok(), advanced);
             assert_eq!(provider.finalized_header().unwrap().hash(), finalized.0);
 

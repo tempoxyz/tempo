@@ -12,7 +12,7 @@ use std::{
 use alloy_consensus::Header;
 use alloy_primitives::B256;
 use alloy_rpc_types_engine::{
-    ForkchoiceState, ForkchoiceUpdateError, ForkchoiceUpdated, PayloadStatus, PayloadStatusEnum,
+    ForkchoiceState, ForkchoiceUpdated, PayloadStatus, PayloadStatusEnum,
 };
 use commonware_consensus::types::{Height, Round};
 use futures::channel::oneshot;
@@ -26,7 +26,7 @@ use tempo_primitives::{
     Block as TempoBlock, BlockBody, TempoConsensusContext, TempoHeader, ed25519::PublicKey,
 };
 
-use super::super::{ExecutionEngine, FinalizedBlockProvider, Marshal, target::Target};
+use super::super::{ExecutionEngine, FinalizedBlockProvider, Marshal};
 use crate::consensus::block::Block;
 
 pub(super) fn make_block(height: u64, parent_hash: B256) -> Block {
@@ -72,10 +72,7 @@ struct StubExecutionProviderInner {
     reject_payloads: AtomicBool,
     reject_forkchoices: AtomicBool,
     forkchoice_gate: Mutex<Option<oneshot::Receiver<()>>>,
-    sync_unknown_forkchoices: AtomicBool,
-    sync_next_forkchoice: AtomicBool,
-    executed: Mutex<HashMap<B256, (u64, Round)>>,
-    finalize_during_forkchoice: Mutex<Option<(u64, B256, Round)>>,
+    forkchoice_response: Mutex<Option<Result<ForkchoiceUpdated, BeaconForkChoiceUpdateError>>>,
 }
 
 impl StubExecutionProvider {
@@ -121,21 +118,11 @@ impl StubExecutionProvider {
         self.inner.forkchoices.lock().clone()
     }
 
-    /// Model an engine that cannot canonicalize a block until it is executed.
-    pub(super) fn sync_unknown_forkchoices(&self) {
-        self.inner
-            .sync_unknown_forkchoices
-            .store(true, Ordering::SeqCst);
-    }
-
-    pub(super) fn sync_next_forkchoice(&self) {
-        self.inner
-            .sync_next_forkchoice
-            .store(true, Ordering::SeqCst);
-    }
-
-    pub(super) fn finalize_during_next_forkchoice(&self, number: u64, hash: B256, round: Round) {
-        *self.inner.finalize_during_forkchoice.lock() = Some((number, hash, round));
+    pub(super) fn respond_next_forkchoice(
+        &self,
+        response: Result<ForkchoiceUpdated, BeaconForkChoiceUpdateError>,
+    ) {
+        *self.inner.forkchoice_response.lock() = Some(response);
     }
 }
 
@@ -176,17 +163,10 @@ impl FinalizedBlockProvider for StubExecutionProvider {
 impl ExecutionEngine for StubExecutionProvider {
     fn new_payload(
         &self,
-        payload: TempoExecutionData,
+        _payload: TempoExecutionData,
     ) -> impl Future<Output = eyre::Result<PayloadStatus>> + Send + 'static {
         self.inner.payloads.fetch_add(1, Ordering::SeqCst);
         let rejected = self.inner.reject_payloads.load(Ordering::SeqCst);
-        let header = payload.block.sealed_header();
-        if !rejected && let Some(round) = Target::from_header(header).round {
-            self.inner
-                .executed
-                .lock()
-                .insert(header.hash(), (header.inner.number, round));
-        }
         async move {
             let status = if rejected {
                 PayloadStatusEnum::Invalid {
@@ -203,50 +183,30 @@ impl ExecutionEngine for StubExecutionProvider {
         &self,
         state: ForkchoiceState,
         _attributes: Option<TempoPayloadAttributes>,
-    ) -> impl Future<Output = eyre::Result<ForkchoiceUpdated>> + Send + 'static {
+    ) -> impl Future<Output = Result<ForkchoiceUpdated, BeaconForkChoiceUpdateError>> + Send + 'static
+    {
         self.inner.forkchoices.lock().push(state);
         let gate = self.inner.forkchoice_gate.lock().take();
-        let rejected = self.inner.reject_forkchoices.load(Ordering::SeqCst);
-        let executed = self
+        let response = self
             .inner
-            .executed
+            .forkchoice_response
             .lock()
-            .get(&state.head_block_hash)
-            .copied();
-        let sync_unknown = self.inner.sync_unknown_forkchoices.load(Ordering::SeqCst);
-        let syncing = self
-            .inner
-            .sync_next_forkchoice
-            .swap(false, Ordering::SeqCst)
-            || (sync_unknown
-                && executed.is_none()
-                && state.head_block_hash != self.inner.finalized.lock().hash);
-        let provider = self.clone();
-        let finalized = self.inner.finalize_during_forkchoice.lock().take();
+            .take()
+            .unwrap_or_else(|| {
+                let status = if self.inner.reject_forkchoices.load(Ordering::SeqCst) {
+                    PayloadStatusEnum::Invalid {
+                        validation_error: "rejected by test engine".into(),
+                    }
+                } else {
+                    PayloadStatusEnum::Valid
+                };
+                Ok(ForkchoiceUpdated::from_status(status))
+            });
         async move {
             if let Some(gate) = gate {
                 let _ = gate.await;
             }
-            if let Some((number, hash, round)) = finalized {
-                provider.set_finalized(number, hash, round);
-                return Err(BeaconForkChoiceUpdateError::ForkchoiceUpdateError(
-                    ForkchoiceUpdateError::TooDeepReorg,
-                )
-                .into());
-            }
-            let status = if rejected {
-                PayloadStatusEnum::Invalid {
-                    validation_error: "rejected by test engine".into(),
-                }
-            } else if syncing {
-                PayloadStatusEnum::Syncing
-            } else {
-                if sync_unknown && let Some((number, round)) = executed {
-                    provider.set_finalized(number, state.finalized_block_hash, round);
-                }
-                PayloadStatusEnum::Valid
-            };
-            Ok(ForkchoiceUpdated::from_status(status))
+            response
         }
     }
 }

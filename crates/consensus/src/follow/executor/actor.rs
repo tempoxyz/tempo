@@ -14,7 +14,7 @@
 //! upstream, submit them to Reth as finalized payloads, and rely on Reth's sync machinery plus
 //! marshal gap repair to fill history.
 
-use std::{collections::VecDeque, sync::Arc, time::Duration};
+use std::{collections::VecDeque, time::Duration};
 
 use alloy_rpc_types_engine::{ForkchoiceState, ForkchoiceUpdateError};
 use commonware_consensus::{
@@ -26,6 +26,7 @@ use commonware_runtime::{Clock, ContextCell, FutureExt as _, Handle, Pacer, Spaw
 use commonware_utils::{Acknowledgement as _, acknowledgement::Exact};
 use eyre::{Report, WrapErr as _, ensure, eyre};
 use futures::{FutureExt as _, StreamExt as _, channel::mpsc, future::BoxFuture};
+use reth_engine_primitives::BeaconForkChoiceUpdateError;
 use tempo_node::TempoExecutionData;
 use tracing::{Level, debug, error, instrument};
 
@@ -38,20 +39,22 @@ pub(crate) struct Actor<TContext, P, E, M = crate::alias::marshal::Mailbox> {
     context: ContextCell<TContext>,
     mailbox: mpsc::UnboundedReceiver<Message>,
 
-    execution_provider: Arc<P>,
+    execution_provider: P,
     execution_engine: E,
     marshal: M,
 
     epoch_strategy: FixedEpocher,
     floor: Height,
 
-    forkchoice: ForkchoiceProgress,
+    /// Highest target already attempted or covered, including SYNCING responses.
+    /// This throttles tip retries; only the execution provider establishes finality.
+    last_fcu: Target,
     latest_tip: Target,
 
     block_queue: VecDeque<(Block, Exact)>,
     floor_candidate: Option<Height>,
 
-    execution_task: OptionFuture<BoxFuture<'static, ExecutionTaskResult>>,
+    execution_task: OptionFuture<BoxFuture<'static, eyre::Result<Target>>>,
 
     fcu_heartbeat_interval: Duration,
     fcu_heartbeat_timer: OptionFuture<BoxFuture<'static, ()>>,
@@ -90,13 +93,10 @@ where
             marshal,
             epoch_strategy,
             floor,
-            execution_provider: Arc::new(execution_provider),
+            execution_provider,
             execution_engine,
 
-            forkchoice: ForkchoiceProgress {
-                requested: tip,
-                accepted: tip,
-            },
+            last_fcu: tip,
             latest_tip: tip,
             block_queue: VecDeque::new(),
             floor_candidate: None,
@@ -125,16 +125,16 @@ where
                 result = &mut self.execution_task => {
                     self.execution_task = OptionFuture::none();
                     match result {
-                        ExecutionTaskResult::Completed(forkchoice) => {
-                            self.forkchoice = forkchoice;
-                            if forkchoice.requested.supersedes(&self.latest_tip) {
-                                self.latest_tip = forkchoice.requested;
+                        Ok(last_fcu) => {
+                            self.last_fcu = last_fcu;
+                            if last_fcu.supersedes(&self.latest_tip) {
+                                self.latest_tip = last_fcu;
                             }
 
                             // Emits an event on error.
                             let _: Result<_, _> = self.try_advance_floor().await;
                         }
-                        ExecutionTaskResult::Fatal(error) => {
+                        Err(error) => {
                             error!(%error, "execution task failed");
                             break;
                         }
@@ -169,8 +169,7 @@ where
     }
 
     fn should_send_forkchoice(&self) -> bool {
-        self.latest_tip.digest != self.forkchoice.requested.digest
-            && self.latest_tip.supersedes(&self.forkchoice.requested)
+        self.latest_tip.digest != self.last_fcu.digest && self.latest_tip.supersedes(&self.last_fcu)
     }
 
     fn update_fcu_heartbeat_timer(&mut self) {
@@ -197,7 +196,7 @@ where
             return;
         };
 
-        let forkchoice = self.forkchoice;
+        let last_fcu = self.last_fcu;
         let context = self.context.child("execute_request");
         let execution_engine = self.execution_engine.clone();
         let execution_provider = self.execution_provider.clone();
@@ -206,7 +205,7 @@ where
                 context,
                 execution_engine,
                 execution_provider,
-                forkchoice,
+                last_fcu,
                 request,
             )
             .boxed(),
@@ -267,82 +266,42 @@ enum ExecutionRequest {
     Block(Block, Exact),
 }
 
-enum ExecutionTaskResult {
-    Completed(ForkchoiceProgress),
-    Fatal(Report),
-}
-
-/// Requested targets throttle retries; confirmed finality gates catch-up forkchoice.
-#[derive(Clone, Copy)]
-struct ForkchoiceProgress {
-    requested: Target,
-    accepted: Target,
-}
-
-impl ForkchoiceProgress {
-    fn record(&mut self, requested: Target, accepted: Option<Target>) {
-        if requested.supersedes(&self.requested) {
-            self.requested = requested;
-        }
-        if let Some(accepted) = accepted {
-            self.accepted = accepted;
-            if accepted.supersedes(&self.requested) {
-                self.requested = accepted;
-            }
-        }
-    }
-}
-
-async fn execute_request<
-    TContext: Pacer,
-    E: ExecutionEngine + 'static,
-    P: FinalizedBlockProvider,
->(
+async fn execute_request<TContext: Pacer, E: ExecutionEngine, P: FinalizedBlockProvider>(
     context: TContext,
     execution_engine: E,
-    execution_provider: Arc<P>,
-    mut forkchoice: ForkchoiceProgress,
+    execution_provider: P,
+    last_fcu: Target,
     request: ExecutionRequest,
-) -> ExecutionTaskResult {
-    match request {
-        ExecutionRequest::Forkchoice(tip) => {
-            match submit_forkchoice_update(&context, &execution_engine, &*execution_provider, &tip)
-                .await
-            {
-                Ok(accepted) => {
-                    forkchoice.record(tip, accepted);
-                    ExecutionTaskResult::Completed(forkchoice)
-                }
-                Err(error) => ExecutionTaskResult::Fatal(error),
-            }
-        }
+) -> eyre::Result<Target> {
+    let (tip, ack) = match request {
+        ExecutionRequest::Forkchoice(tip) => (tip, None),
         ExecutionRequest::Block(block, ack) => {
             let tip = Target::from_block(&block);
-
-            if let Err(error) = submit_new_payload(&context, &execution_engine, block).await {
-                return ExecutionTaskResult::Fatal(error);
-            }
-
-            // A newer requested tip may still be SYNCING. Canonicalize catch-up
-            // blocks against the last accepted target so execution can persist.
-            if tip.supersedes(&forkchoice.accepted) {
-                match submit_forkchoice_update(
-                    &context,
-                    &execution_engine,
-                    &*execution_provider,
-                    &tip,
-                )
-                .await
-                {
-                    Ok(accepted) => forkchoice.record(tip, accepted),
-                    Err(error) => return ExecutionTaskResult::Fatal(error),
-                }
-            }
-
-            ack.acknowledge();
-            ExecutionTaskResult::Completed(forkchoice)
+            submit_new_payload(&context, &execution_engine, block).await?;
+            (tip, Some(ack))
         }
+    };
+
+    // Reth can finish syncing independently of an FCU response. Gate catch-up
+    // against its live finality, not a newer requested tip that may still be SYNCING.
+    let finalized = Target::from_header(&execution_provider.finalized_header()?);
+    let handled = if finalized.supersedes(&tip) || (ack.is_some() && !tip.supersedes(&finalized)) {
+        finalized
+    } else {
+        // Heartbeats still reaffirm a tip equal to the finalized target.
+        submit_forkchoice_update(&context, &execution_engine, &execution_provider, &tip).await?
+    };
+
+    if let Some(ack) = ack {
+        ack.acknowledge();
     }
+
+    // An older catch-up block must not cause an immediate retry of a newer tip.
+    Ok(if handled.supersedes(&last_fcu) {
+        handled
+    } else {
+        last_fcu
+    })
 }
 
 #[instrument(
@@ -381,13 +340,7 @@ async fn submit_forkchoice_update<
     execution_engine: &E,
     execution_provider: &P,
     tip: &Target,
-) -> eyre::Result<Option<Target>> {
-    // Reth can finish pipeline sync without another VALID response to this actor.
-    // Never move forkchoice below the execution layer's effective finalized head.
-    let finalized = Target::from_header(&execution_provider.finalized_header()?);
-    if finalized.supersedes(tip) {
-        return Ok(Some(finalized));
-    }
+) -> eyre::Result<Target> {
     let hash = tip.digest.0;
     let forkchoice = ForkchoiceState {
         head_block_hash: hash,
@@ -403,19 +356,19 @@ async fn submit_forkchoice_update<
     let response = match response {
         Ok(response) => response,
         Err(error) => {
-            // Pipeline completion can race the finalized-header read above.
-            if error.chain().any(|cause| {
-                matches!(
-                    cause.downcast_ref::<ForkchoiceUpdateError>(),
-                    Some(ForkchoiceUpdateError::TooDeepReorg)
+            // Pipeline completion can race the caller's finalized-header read.
+            if matches!(
+                &error,
+                BeaconForkChoiceUpdateError::ForkchoiceUpdateError(
+                    ForkchoiceUpdateError::TooDeepReorg
                 )
-            }) {
+            ) {
                 let finalized = Target::from_header(&execution_provider.finalized_header()?);
                 if finalized.supersedes(tip) {
-                    return Ok(Some(finalized));
+                    return Ok(finalized);
                 }
             }
-            return Err(error.wrap_err("failed to update forkchoice state"));
+            return Err(error).wrap_err("failed to update forkchoice state");
         }
     };
 
@@ -426,5 +379,5 @@ async fn submit_forkchoice_update<
         Report::msg(response.payload_status).wrap_err("execution layer rejected fcu")
     );
 
-    Ok(response.payload_status.is_valid().then_some(*tip))
+    Ok(*tip)
 }
