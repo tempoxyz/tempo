@@ -24,13 +24,18 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: full
   RUSTC_WRAPPER: "sccache"
+  # Test builds don't need debuginfo; dropping it halves link output and the target dir.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  # rustc links with its bundled lld unless told otherwise; use the mold from setup-mold.
+  # Steps that set RUSTFLAGS ignore this and keep linking with lld.
+  CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
   TEMPO_TESTNET_RPC_URL: ${{ secrets.TEMPO_TESTNET_RPC_URL || 'https://rpc.moderato.tempo.xyz' }}
   TEMPO_DEVNET_RPC_URL: ${{ secrets.TEMPO_DEVNET_RPC_URL || 'https://rpc.devnet.tempoxyz.dev' }}
 
 jobs:
   rpc-tests:
     name: rpc-tests (${{ matrix.network }})
-    runs-on: depot-ubuntu-latest-4
+    runs-on: depot-ubuntu-latest-16
     timeout-minutes: 30
     permissions:
       id-token: write

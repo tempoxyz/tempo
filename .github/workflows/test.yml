@@ -21,6 +21,11 @@ env:
   # Pin vergen's build timestamp so reth-node-core and tempo-node compile identically across runs;
   # otherwise they and every crate depending on them miss sccache on every build.
   SOURCE_DATE_EPOCH: "1700000000"
+  # Test builds don't need debuginfo; dropping it halves link output and the target dir.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  # rustc links with its bundled lld unless told otherwise; use the mold from setup-mold.
+  # Steps that set RUSTFLAGS ignore this and keep linking with lld.
+  CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
   TEMPO_MAINNET_RPC_URL: ${{ secrets.TEMPO_MAINNET_RPC_URL }}
   TEMPO_TESTNET_RPC_URL: ${{ secrets.TEMPO_TESTNET_RPC_URL }}
   TEMPO_DEVNET_RPC_URL: ${{ secrets.TEMPO_DEVNET_RPC_URL }}
@@ -129,24 +134,24 @@ jobs:
       # Build and run tests WITH coverage (only when precompiles changed)
       - name: Build and compile tests with coverage
         if: needs.check-precompiles.outputs.coverage == 'true'
-        run: cargo nextest run --profile ci -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2 --no-run
+        run: cargo nextest run --profile ci --lib --bins --tests -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2 --no-run
         env:
           RUSTFLAGS: -C instrument-coverage
       - name: Run tests with coverage
         if: needs.check-precompiles.outputs.coverage == 'true'
         run: |
           mkdir -p coverage
-          cargo nextest run --profile ci -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2
+          cargo nextest run --profile ci --lib --bins --tests -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2
         env:
           RUSTFLAGS: -C instrument-coverage
           LLVM_PROFILE_FILE: ${{ github.workspace }}/coverage/cargo-%p-%m.profraw
       # Build and run tests WITHOUT coverage (when precompiles not changed)
       - name: Build and compile tests
         if: needs.check-precompiles.outputs.coverage != 'true'
-        run: cargo nextest run --profile ci -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2 --no-run
+        run: cargo nextest run --profile ci --lib --bins --tests -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2 --no-run
       - name: Run tests
         if: needs.check-precompiles.outputs.coverage != 'true'
-        run: cargo nextest run --profile ci -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2
+        run: cargo nextest run --profile ci --lib --bins --tests -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2
       - name: Generate precompiles coverage profdata
         if: needs.check-precompiles.outputs.coverage == 'true'
         run: |
