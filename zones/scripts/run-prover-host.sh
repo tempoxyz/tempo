@@ -49,6 +49,9 @@ if [[ ! "${MONITOR_INTERVAL_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
     exit 1
 fi
 
+printf 'Tempo Zone prover EIF measurements (%s):\n' "${EIF_PATH}"
+nitro-cli describe-eif --eif-path "${EIF_PATH}"
+
 printf 'Launching the Tempo Zone prover as a non-debug Nitro Enclave\n'
 set +e
 run_output="$(nitro-cli run-enclave \
