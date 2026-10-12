@@ -784,6 +784,14 @@ impl AA2dPool {
         }
     }
 
+    /// Returns the regular 2D nonce transaction with the given id.
+    pub(crate) fn get_by_id(
+        &self,
+        id: &AA2dTransactionId,
+    ) -> Option<&Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        self.by_id.get(id).map(|tx| &tx.inner.transaction)
+    }
+
     /// Returns the transaction by hash.
     pub(crate) fn get(
         &self,
@@ -1436,6 +1444,11 @@ impl AA2dPool {
     /// Returns a reference to the metrics for this pool
     pub fn metrics(&self) -> &AA2dPoolMetrics {
         &self.metrics
+    }
+
+    /// Returns the number of pooled transactions, including expiring nonce transactions.
+    pub(crate) fn len(&self) -> usize {
+        self.by_hash.len()
     }
 
     /// Returns `true` if the transaction with the given hash is already included in this pool.

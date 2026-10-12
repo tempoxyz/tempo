@@ -76,6 +76,10 @@ pub struct TempoPooledTransaction {
     /// Stores `(fee_token, balance_slot)` so the payload builder's state-aware iterator
     /// can check if the fee payer's balance was modified without recomputing the keccak.
     fee_balance_slot: OnceLock<Option<(Address, U256)>>,
+    /// Fee payer's balance in the resolved fee token, read from the state used for validation.
+    ///
+    /// Pool admission compares it against the fee payer's aggregate pooled fee cost.
+    fee_payer_balance: OnceLock<U256>,
 }
 
 impl TempoPooledTransaction {
@@ -129,6 +133,7 @@ impl TempoPooledTransaction {
             key_authorization_signer_subject: OnceLock::new(),
             key_authorization_target_subject: OnceLock::new(),
             fee_balance_slot: OnceLock::new(),
+            fee_payer_balance: OnceLock::new(),
         }
     }
 
@@ -399,6 +404,7 @@ impl TempoPooledTransaction {
             key_authorization_target_subject: self.key_authorization_target_subject.clone(),
             // Discard state-dependent caches before revalidation.
             fee_balance_slot: OnceLock::new(),
+            fee_payer_balance: OnceLock::new(),
             key_expiry: OnceLock::new(),
             resolved_fee_token: OnceLock::new(),
             key_authorization_signer_subject: OnceLock::new(),
@@ -438,6 +444,24 @@ impl TempoPooledTransaction {
             let slot = TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
             Some((fee_token, slot))
         })
+    }
+
+    /// Returns the `(fee_token, fee_payer)` pair that pays for this transaction.
+    ///
+    /// This is the key pool maintenance and admission use to group transactions that draw on
+    /// the same fee balance. Returns `None` if the fee payer cannot be recovered.
+    pub fn fee_payer_key(&self) -> Option<(Address, Address)> {
+        Some((self.effective_fee_token(), self.fee_payer().ok()?))
+    }
+
+    /// Caches the fee payer's fee token balance read during validation.
+    pub(crate) fn set_fee_payer_balance(&self, balance: U256) {
+        let _ = self.fee_payer_balance.set(balance);
+    }
+
+    /// Returns the fee payer's fee token balance cached during validation, if any.
+    pub(crate) fn fee_payer_balance(&self) -> Option<U256> {
+        self.fee_payer_balance.get().copied()
     }
 
     /// Returns true when the transaction fee is paid by the transaction sender.
@@ -730,6 +754,24 @@ pub enum TempoPoolTransactionError {
         address: Address,
     },
 
+    /// The fee payer cannot cover this transaction on top of the fee cost of its other
+    /// pooled transactions.
+    ///
+    /// Thrown during pool admission when the summed max fee cost of all pooled transactions
+    /// paid by the same `(fee_token, fee_payer)`, plus this transaction's max fee cost,
+    /// exceeds the fee payer's balance. Each transaction on its own may be affordable.
+    #[error(
+        "Fee payer {fee_payer} cannot cover the fee cost of its pooled transactions: required {required}, balance {balance}"
+    )]
+    FeePayerPooledCostExceedsBalance {
+        /// The account paying the transaction fee.
+        fee_payer: Address,
+        /// Summed max fee cost of the fee payer's pooled transactions plus this transaction.
+        required: U256,
+        /// The fee payer's balance in the resolved fee token.
+        balance: U256,
+    },
+
     /// A Tempo EVM validation error returned by the transaction pool.
     ///
     /// Thrown when `TempoEvm::validate_transaction` rejects the transaction with
@@ -750,6 +792,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::AccessKeyExpired { .. }
             | Self::KeyAuthorizationExpired { .. }
             | Self::AddressCheck { .. }
+            | Self::FeePayerPooledCostExceedsBalance { .. }
             | Self::Keychain(_) => false,
             Self::SubblockNonceKey
             | Self::TooManyAuthorizations { .. }

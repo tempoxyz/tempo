@@ -5,17 +5,18 @@
 use crate::{
     amm::AmmLiquidityCache,
     best::MergeBestTransactions,
+    fee_payer_costs::{FeePayerKey, PooledFeeCosts},
     ordering::TempoTipOrdering,
-    transaction::TempoPooledTransaction,
+    transaction::{TempoPoolTransactionError, TempoPooledTransaction},
     tt_2d_pool::AA2dPool,
     validator::{ConfigureTempoPoolEvm, TempoTransactionValidator},
 };
 use alloy_consensus::Transaction;
 use alloy_primitives::{
     Address, B256, TxHash, U256,
-    map::{AddressMap, AddressSet, Entry, HashMap},
+    map::{AddressMap, AddressSet, B256Set, HashMap},
 };
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_eth_wire_types::HandleMempoolData;
 use reth_provider::{ChangedAccount, StateProviderFactory};
@@ -23,15 +24,15 @@ use reth_storage_api::StateProvider;
 use reth_transaction_pool::{
     AddedTransactionOutcome, AllPoolTransactions, BestTransactions, BestTransactionsAttributes,
     BlockInfo, CanonicalStateUpdate, GetPooledTransactionLimit, NewBlobSidecar, Pool, PoolResult,
-    PoolSize, PoolTransaction, PropagatedTransactions, TransactionEvents, TransactionOrigin,
-    TransactionPool, TransactionPoolExt, TransactionValidationOutcome,
+    PoolSize, PoolTransaction, PropagatedTransactions, TransactionEvents, TransactionOrdering,
+    TransactionOrigin, TransactionPool, TransactionPoolExt, TransactionValidationOutcome,
     TransactionValidationTaskExecutor, TransactionValidator, ValidPoolTransaction,
     blobstore::InMemoryBlobStore,
-    error::{PoolError, PoolErrorKind},
+    error::{InvalidPoolTransactionError, PoolError, PoolErrorKind},
     identifier::TransactionId,
 };
 use revm::database::BundleAccount;
-use std::{sync::Arc, time::Instant};
+use std::{cmp::Reverse, sync::Arc, time::Instant};
 use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
 use tempo_evm::TempoEvmConfig;
 use tempo_precompiles::{
@@ -44,6 +45,9 @@ use tempo_precompiles::{
 };
 use tempo_primitives::{Block, TempoHeader};
 use tempo_revm::TempoStateAccess;
+
+/// Stale fee payer cost entries tolerated before [`TempoTransactionPool`] prunes them.
+const FEE_PAYER_COSTS_PRUNE_SLACK: usize = 1024;
 
 /// Transaction pool operations for Tempo nonce lanes.
 pub trait TempoTransactionPoolExt: TransactionPool {
@@ -65,6 +69,10 @@ pub struct TempoTransactionPool<Client, EvmConfig = TempoEvmConfig> {
     >,
     /// Minimal pool for 2D nonces (nonce_key > 0)
     aa_2d_pool: Arc<RwLock<AA2dPool>>,
+    /// Summed fee cost of pooled transactions per `(fee_token, fee_payer)` across both pools.
+    ///
+    /// Lock order: this lock is taken before either pool's lock, never while holding one.
+    fee_payer_costs: Arc<Mutex<PooledFeeCosts>>,
 }
 
 impl<Client, EvmConfig> TempoTransactionPool<Client, EvmConfig>
@@ -86,6 +94,7 @@ where
         Self {
             protocol_pool,
             aa_2d_pool: Arc::new(RwLock::new(aa_2d_pool)),
+            fee_payer_costs: Default::default(),
         }
     }
 }
@@ -116,7 +125,10 @@ where
         &self,
         state: &AddressMap<BundleAccount>,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        let mut fee_payer_costs = self.fee_payer_costs.lock();
         let (promoted, mined, discarded) = self.aa_2d_pool.write().on_state_updates(state);
+        fee_payer_costs.remove_all(mined.iter().chain(&discarded).map(|tx| tx.hash()));
+        drop(fee_payer_costs);
         // Note: mined transactions are notified via the vanilla pool updates
         self.protocol_pool
             .inner()
@@ -136,8 +148,9 @@ where
     ///    inline key authorization whose `(account, witness)` has been manually burned
     /// 3. **Validator token changes**: Transactions that would fail due to insufficient
     ///    liquidity in the new (user_token, validator_token) AMM pool
-    /// 4. **Fee payer balance changes**: Transactions whose fee payer no longer has enough
-    ///    balance in the resolved fee token after a TIP20 transfer
+    /// 4. **Fee payer balance changes**: Transactions whose fee payer's balance in the resolved
+    ///    fee token no longer covers the summed fee cost of its pooled transactions after a
+    ///    TIP20 transfer. Evicts lowest-priority, newest transactions first until it fits.
     /// 5. **Fee token pauses**: Transactions using a token paused in the committed block
     ///
     /// All checks are combined into one scan to avoid iterating the pool multiple times
@@ -252,7 +265,10 @@ where
         let has_keychain_subject_updates = updates.has_keychain_subject_updates();
         let has_key_authorization_target_updates =
             !updates.key_authorization_target_changes.is_empty();
-        let mut fee_balance_cache: HashMap<(Address, Address), U256> = HashMap::default();
+        let mut fee_balance_candidates: HashMap<
+            FeePayerKey,
+            Vec<&Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+        > = HashMap::default();
 
         for tx in transactions {
             if expiry_cutoff.is_some_and(|cutoff| tx.transaction.is_expired_by(cutoff)) {
@@ -376,42 +392,26 @@ where
             }
 
             // Check 3b: Fee payer balance changes.
-            // When a TIP20 transfer changes a fee payer's balance, pending transactions for that
-            // (fee_token, fee_payer) pair may no longer be executable.
-            if !updates.fee_balance_changes.is_empty()
-                && let Some(ref mut provider) = state_provider
-            {
+            // When a TIP20 transfer changes a fee payer's balance, the pooled transactions for
+            // that (fee_token, fee_payer) pair may no longer fit in it. Collect them here and
+            // re-check each fee payer's aggregate after the scan.
+            let fee_balance_candidate = if !updates.fee_balance_changes.is_empty() {
                 let fee_token = tx.transaction.effective_fee_token();
                 // only resolve the fee payer if the fee token saw balance changes
-                if let Some(accounts) = updates.fee_balance_changes.get(&fee_token) {
-                    let Ok(fee_payer) = tx.transaction.fee_payer() else {
-                        continue;
-                    };
-
-                    if accounts.contains(&fee_payer) {
-                        let balance = match fee_balance_cache.entry((fee_token, fee_payer)) {
-                            Entry::Occupied(entry) => *entry.get(),
-                            Entry::Vacant(entry) => {
-                                let Ok(balance) = provider.get_token_balance(
-                                    fee_token,
-                                    fee_payer,
-                                    spec,
-                                    StorageActions::disabled(),
-                                ) else {
-                                    continue;
-                                };
-                                *entry.insert(balance)
-                            }
-                        };
-
-                        if balance < tx.transaction.fee_token_cost() {
-                            to_remove.push(*tx.hash());
-                            insolvent_fee_payer_count += 1;
-                            continue;
-                        }
-                    }
-                }
-            }
+                updates
+                    .fee_balance_changes
+                    .get(&fee_token)
+                    .and_then(|accounts| {
+                        tx.transaction
+                            .fee_payer()
+                            .ok()
+                            .filter(|fee_payer| accounts.contains(fee_payer))
+                    })
+                    .map(|fee_payer| (fee_token, fee_payer))
+            } else {
+                None
+            };
+            let removed_before = to_remove.len();
 
             // Check 4: Blacklisted fee payers.
             // AA transactions use their recovered fee payer; non-AA transactions use their sender.
@@ -516,6 +516,52 @@ where
                 to_remove.push(*tx.hash());
                 user_token_count += 1;
             }
+
+            if let Some(key) = fee_balance_candidate
+                && to_remove.len() == removed_before
+            {
+                fee_balance_candidates.entry(key).or_default().push(tx);
+            }
+        }
+
+        // Check 3b: Evict each changed fee payer's pooled transactions in eviction order (lowest
+        // priority first, newest first on ties) until their fee cost fits its new balance.
+        if !fee_balance_candidates.is_empty()
+            && let Some(ref mut provider) = state_provider
+        {
+            let base_fee = self.protocol_pool.block_info().pending_basefee;
+            let ordering = TempoTipOrdering::<TempoPooledTransaction>::default();
+            for ((fee_token, fee_payer), mut txs) in fee_balance_candidates {
+                let Ok(balance) = provider.get_token_balance(
+                    fee_token,
+                    fee_payer,
+                    spec,
+                    StorageActions::disabled(),
+                ) else {
+                    continue;
+                };
+                let mut pooled_cost = txs.iter().fold(U256::ZERO, |total, tx| {
+                    total.saturating_add(tx.transaction.fee_token_cost())
+                });
+                if pooled_cost <= balance {
+                    continue;
+                }
+
+                txs.sort_by_cached_key(|tx| {
+                    (
+                        ordering.priority(&tx.transaction, base_fee),
+                        Reverse(tx.timestamp),
+                    )
+                });
+                for tx in txs {
+                    if pooled_cost <= balance {
+                        break;
+                    }
+                    pooled_cost -= tx.transaction.fee_token_cost();
+                    to_remove.push(*tx.hash());
+                    insolvent_fee_payer_count += 1;
+                }
+            }
         }
 
         if to_remove.is_empty() {
@@ -548,6 +594,247 @@ where
     /// stays in the protocol pool.
     fn add_validated_transaction(
         &self,
+        origin: TransactionOrigin,
+        transaction: TransactionValidationOutcome<TempoPooledTransaction>,
+    ) -> PoolResult<AddedTransactionOutcome> {
+        // Holding the lock across insertion makes check, reservation, and insertion atomic, so a
+        // concurrent admission can neither overspend the fee payer nor prune this reservation.
+        let mut fee_payer_costs = self.fee_payer_costs.lock();
+        let (transaction, reserved) =
+            self.reserve_fee_payer_cost(&mut fee_payer_costs, transaction, &[]);
+        let result = self.insert_validated_transaction(&mut fee_payer_costs, origin, transaction);
+        if result.is_err()
+            && let Some(hash) = reserved
+        {
+            fee_payer_costs.remove(&hash);
+        }
+        result
+    }
+
+    /// Adds validated transactions, batching protocol pool insertions under one pool lock.
+    fn add_validated_transactions(
+        &self,
+        transactions: Vec<(
+            TransactionOrigin,
+            TransactionValidationOutcome<TempoPooledTransaction>,
+        )>,
+    ) -> Vec<PoolResult<AddedTransactionOutcome>> {
+        let has_aa_2d = transactions.iter().any(|(_, outcome)| {
+            matches!(
+                outcome,
+                TransactionValidationOutcome::Valid { transaction, .. }
+                    if transaction.transaction().is_aa_2d()
+            )
+        });
+        if has_aa_2d {
+            return transactions
+                .into_iter()
+                .map(|(origin, outcome)| self.add_validated_transaction(origin, outcome))
+                .collect();
+        }
+
+        let mut fee_payer_costs = self.fee_payer_costs.lock();
+        let mut reserved = Vec::with_capacity(transactions.len());
+        // Reservations of this batch are not pooled until the batch is inserted.
+        let mut in_flight = Vec::new();
+        let transactions = transactions
+            .into_iter()
+            .map(|(origin, outcome)| {
+                let (outcome, hash) =
+                    self.reserve_fee_payer_cost(&mut fee_payer_costs, outcome, &in_flight);
+                in_flight.extend(hash);
+                reserved.push(hash);
+                (origin, outcome)
+            })
+            .collect::<Vec<_>>();
+        let results = self
+            .protocol_pool
+            .inner()
+            .add_transactions_with_origins(transactions);
+        for (result, reserved) in results.iter().zip(reserved) {
+            if result.is_err()
+                && let Some(hash) = reserved
+            {
+                fee_payer_costs.remove(&hash);
+            }
+        }
+        results
+    }
+
+    /// Reserves the transaction's fee cost against its fee payer's pooled fee cost.
+    ///
+    /// Converts a valid outcome into an invalid one if the fee payer's balance cannot cover the
+    /// fee cost of its pooled transactions plus this one. Returns the hash if this call started
+    /// tracking the transaction, so the caller can release it if insertion fails. `in_flight`
+    /// holds reservations whose transactions are not inserted yet.
+    fn reserve_fee_payer_cost(
+        &self,
+        fee_payer_costs: &mut PooledFeeCosts,
+        outcome: TransactionValidationOutcome<TempoPooledTransaction>,
+        in_flight: &[TxHash],
+    ) -> (
+        TransactionValidationOutcome<TempoPooledTransaction>,
+        Option<TxHash>,
+    ) {
+        let TransactionValidationOutcome::Valid { transaction, .. } = &outcome else {
+            return (outcome, None);
+        };
+        let tx = transaction.transaction();
+        let Some(key) = tx.fee_payer_key() else {
+            return (outcome, None);
+        };
+        let hash = *tx.hash();
+        let cost = tx.fee_token_cost();
+
+        if let Some(balance) = tx.fee_payer_balance()
+            && let Err(err) =
+                self.ensure_fee_payer_cost_fits(fee_payer_costs, tx, key, balance, in_flight)
+        {
+            let TransactionValidationOutcome::Valid { transaction, .. } = outcome else {
+                unreachable!("checked above")
+            };
+            return (
+                TransactionValidationOutcome::Invalid(
+                    transaction.into_transaction(),
+                    InvalidPoolTransactionError::other(err),
+                ),
+                None,
+            );
+        }
+
+        let reserved = fee_payer_costs.insert(hash, key, cost).then_some(hash);
+        (outcome, reserved)
+    }
+
+    /// Checks that `balance` covers the fee payer's pooled fee cost plus `tx`'s fee cost.
+    fn ensure_fee_payer_cost_fits(
+        &self,
+        fee_payer_costs: &mut PooledFeeCosts,
+        tx: &TempoPooledTransaction,
+        key: FeePayerKey,
+        balance: U256,
+        in_flight: &[TxHash],
+    ) -> Result<(), TempoPoolTransactionError> {
+        let hash = *tx.hash();
+        let cost = tx.fee_token_cost();
+        // Stale entries only overcount, so a pass here is final.
+        if fee_payer_costs
+            .total_excluding(&key, &[hash])
+            .saturating_add(cost)
+            <= balance
+        {
+            return Ok(());
+        }
+
+        // Before rejecting, drop entries for transactions the pools no longer hold.
+        self.prune_stale_fee_payer_costs(fee_payer_costs, &key, in_flight);
+
+        // A replacement frees the cost of the transaction it replaces.
+        let replaced = self.replaced_transaction_hash(tx);
+        let pooled_cost = match replaced {
+            Some(replaced) => fee_payer_costs.total_excluding(&key, &[hash, replaced]),
+            None => fee_payer_costs.total_excluding(&key, &[hash]),
+        };
+        if pooled_cost.saturating_add(cost) <= balance {
+            return Ok(());
+        }
+
+        Err(
+            TempoPoolTransactionError::FeePayerPooledCostExceedsBalance {
+                fee_payer: key.1,
+                required: pooled_cost.saturating_add(cost),
+                balance,
+            },
+        )
+    }
+
+    /// Drops `key`'s entries for transactions the pools no longer hold.
+    ///
+    /// The protocol pool removes transactions (mined, replaced, size-limit discards) without
+    /// notifying us, so its removals are reconciled here.
+    fn prune_stale_fee_payer_costs(
+        &self,
+        fee_payer_costs: &mut PooledFeeCosts,
+        key: &FeePayerKey,
+        in_flight: &[TxHash],
+    ) {
+        let mut stale: Vec<TxHash> = fee_payer_costs
+            .hashes(key)
+            .filter(|hash| !in_flight.contains(hash))
+            .copied()
+            .collect();
+        {
+            let aa_2d_pool = self.aa_2d_pool.read();
+            stale.retain(|hash| !aa_2d_pool.contains(hash));
+        }
+        stale.retain(|hash| !self.protocol_pool.contains(hash));
+        fee_payer_costs.remove_all(&stale);
+    }
+
+    /// Returns the summed fee cost of pooled transactions paid by `fee_payer` in `fee_token`.
+    ///
+    /// This is the amount admission checks against the fee payer's balance. Stale entries are
+    /// dropped first, so the result is derived from the pools' current contents.
+    pub fn pooled_fee_cost(&self, fee_token: Address, fee_payer: Address) -> U256 {
+        let key = (fee_token, fee_payer);
+        let mut fee_payer_costs = self.fee_payer_costs.lock();
+        self.prune_stale_fee_payer_costs(&mut fee_payer_costs, &key, &[]);
+        fee_payer_costs.total(&key)
+    }
+
+    /// Returns the hash of the pooled transaction that `tx` would replace, if any.
+    fn replaced_transaction_hash(&self, tx: &TempoPooledTransaction) -> Option<TxHash> {
+        if tx.is_aa_2d() {
+            let id = tx.aa_transaction_id()?;
+            self.aa_2d_pool
+                .read()
+                .get_by_id(&id)
+                .map(|replaced| *replaced.hash())
+        } else {
+            self.protocol_pool
+                .get_transaction_by_sender_and_nonce(tx.sender(), tx.nonce())
+                .map(|replaced| *replaced.hash())
+        }
+    }
+
+    /// Runs a pool removal and stops tracking the fee cost of the removed transactions.
+    ///
+    /// The fee payer cost lock is held across the removal so a concurrent re-insertion of a
+    /// removed transaction is tracked again after it is untracked here.
+    fn remove_tracked(
+        &self,
+        remove: impl FnOnce() -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        let mut fee_payer_costs = self.fee_payer_costs.lock();
+        let txs = remove();
+        fee_payer_costs.remove_all(txs.iter().map(|tx| tx.hash()));
+        txs
+    }
+
+    /// Drops fee cost entries of transactions that left the pools without being untracked.
+    ///
+    /// Every pooled transaction is tracked, so more entries than pooled transactions means
+    /// stale entries. A small slack keeps this from rescanning the pool on every block.
+    fn prune_fee_payer_costs(&self) {
+        let mut fee_payer_costs = self.fee_payer_costs.lock();
+        let pooled = self.protocol_pool.len() + self.aa_2d_pool.read().len();
+        if fee_payer_costs.len() <= pooled + FEE_PAYER_COSTS_PRUNE_SLACK.max(pooled / 8) {
+            return;
+        }
+
+        let mut hashes: B256Set = self
+            .protocol_pool
+            .all_transaction_hashes()
+            .into_iter()
+            .collect();
+        hashes.extend(self.aa_2d_pool.read().all_transaction_hashes_iter());
+        fee_payer_costs.retain(|hash| hashes.contains(hash));
+    }
+
+    /// Inserts a validated transaction into the subpool for its nonce key.
+    fn insert_validated_transaction(
+        &self,
+        fee_payer_costs: &mut PooledFeeCosts,
         origin: TransactionOrigin,
         transaction: TransactionValidationOutcome<TempoPooledTransaction>,
     ) -> PoolResult<AddedTransactionOutcome> {
@@ -586,7 +873,11 @@ where
                             .write()
                             .add_transaction(tx, state_nonce, hardfork)?;
                     let hash = *added.hash();
+                    if let Some(replaced) = added.replaced() {
+                        fee_payer_costs.remove(replaced.hash());
+                    }
                     if let Some(pending) = added.as_pending() {
+                        fee_payer_costs.remove_all(pending.discarded.iter().map(|tx| tx.hash()));
                         if pending.discarded.iter().any(|tx| *tx.hash() == hash) {
                             return Err(PoolError::new(hash, PoolErrorKind::DiscardedOnInsert));
                         }
@@ -639,6 +930,7 @@ impl<Client, EvmConfig> Clone for TempoTransactionPool<Client, EvmConfig> {
         Self {
             protocol_pool: self.protocol_pool.clone(),
             aa_2d_pool: Arc::clone(&self.aa_2d_pool),
+            fee_payer_costs: Arc::clone(&self.fee_payer_costs),
         }
     }
 }
@@ -720,21 +1012,15 @@ where
             return Vec::new();
         }
 
-        // Fully delegate to protocol pool for non-2D transactions
-        if !transactions.iter().any(|tx| tx.is_aa_2d()) {
-            return self
-                .protocol_pool
-                .add_transactions(origin, transactions)
-                .await;
-        }
-
-        self.protocol_pool
+        let outcomes = self
+            .protocol_pool
             .validator()
             .validate_transactions_with_origin(origin, transactions)
             .await
             .into_iter()
-            .map(|outcome| self.add_validated_transaction(origin, outcome))
-            .collect()
+            .map(|outcome| (origin, outcome))
+            .collect();
+        self.add_validated_transactions(outcomes)
     }
 
     async fn add_transactions_with_origins(
@@ -745,27 +1031,21 @@ where
             return Vec::new();
         }
 
-        // Fully delegate to protocol pool for non-2D transactions
-        if !transactions.iter().any(|(_, tx)| tx.is_aa_2d()) {
-            return self
-                .protocol_pool
-                .add_transactions_with_origins(transactions)
-                .await;
-        }
-
         let origins = transactions
             .iter()
             .map(|(origin, _)| *origin)
             .collect::<Vec<_>>();
 
-        self.protocol_pool
+        let outcomes = self
+            .protocol_pool
             .validator()
             .validate_transactions(transactions)
             .await
             .into_iter()
             .zip(origins)
-            .map(|(outcome, origin)| self.add_validated_transaction(origin, outcome))
-            .collect()
+            .map(|(outcome, origin)| (origin, outcome))
+            .collect();
+        self.add_validated_transactions(outcomes)
     }
 
     fn transaction_event_listener(&self, tx_hash: B256) -> Option<TransactionEvents> {
@@ -992,45 +1272,53 @@ where
         &self,
         hashes: Vec<B256>,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut txs = self.aa_2d_pool.write().remove_transactions(hashes.iter());
-        txs.extend(self.protocol_pool.remove_transactions(hashes));
-        txs
+        self.remove_tracked(|| {
+            let mut txs = self.aa_2d_pool.write().remove_transactions(hashes.iter());
+            txs.extend(self.protocol_pool.remove_transactions(hashes));
+            txs
+        })
     }
 
     fn remove_transactions_and_descendants(
         &self,
         hashes: Vec<B256>,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut txs = self
-            .aa_2d_pool
-            .write()
-            .remove_transactions_and_descendants(hashes.iter());
-        txs.extend(
-            self.protocol_pool
-                .remove_transactions_and_descendants(hashes),
-        );
-        txs
+        self.remove_tracked(|| {
+            let mut txs = self
+                .aa_2d_pool
+                .write()
+                .remove_transactions_and_descendants(hashes.iter());
+            txs.extend(
+                self.protocol_pool
+                    .remove_transactions_and_descendants(hashes),
+            );
+            txs
+        })
     }
 
     fn remove_transactions_by_sender(
         &self,
         sender: Address,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut txs = self
-            .aa_2d_pool
-            .write()
-            .remove_transactions_by_sender(sender);
-        txs.extend(self.protocol_pool.remove_transactions_by_sender(sender));
-        txs
+        self.remove_tracked(|| {
+            let mut txs = self
+                .aa_2d_pool
+                .write()
+                .remove_transactions_by_sender(sender);
+            txs.extend(self.protocol_pool.remove_transactions_by_sender(sender));
+            txs
+        })
     }
 
     fn prune_transactions(
         &self,
         hashes: Vec<TxHash>,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut txs = self.aa_2d_pool.write().remove_transactions(hashes.iter());
-        txs.extend(self.protocol_pool.prune_transactions(hashes));
-        txs
+        self.remove_tracked(|| {
+            let mut txs = self.aa_2d_pool.write().remove_transactions(hashes.iter());
+            txs.extend(self.protocol_pool.prune_transactions(hashes));
+            txs
+        })
     }
 
     fn retain_unknown<A: HandleMempoolData>(&self, announcement: &mut A) {
@@ -1325,8 +1613,12 @@ where
         // `set_block_info` at startup and after deep reorgs, so without this the 2D pool would
         // keep ordering its eviction sets against a stale base fee once the fee starts moving.
         let pending_basefee = update.pending_block_base_fee;
+        self.fee_payer_costs
+            .lock()
+            .remove_all(&update.mined_transactions);
         self.protocol_pool.on_canonical_state_change(update);
         self.aa_2d_pool.write().set_base_fee(pending_basefee);
+        self.prune_fee_payer_costs();
     }
 
     fn update_accounts(&self, accounts: Vec<ChangedAccount>) {
@@ -2120,6 +2412,448 @@ mod tests {
         let evicted = pool.evict_invalidated_transactions(&updates);
         assert_eq!(tx_hashes(&evicted), vec![*pooled.hash()]);
         assert!(pool.get(pooled.hash()).is_none());
+    }
+
+    fn create_test_pool_with_2d_config(
+        provider: MockEthProvider<TempoPrimitives, TempoChainSpec>,
+        aa_2d_config: crate::tt_2d_pool::AA2dPoolConfig,
+    ) -> TempoTransactionPool<MockEthProvider<TempoPrimitives, TempoChainSpec>> {
+        let pool = create_test_pool(provider);
+        TempoTransactionPool::new(pool.protocol_pool, AA2dPool::new(aa_2d_config))
+    }
+
+    /// Builds an AA transaction paid by `fee_payer` in `PATH_USD`.
+    fn sponsored_tx(
+        builder: crate::test_utils::TxBuilder,
+        sender: Address,
+        fee_payer: &PrivateKeySigner,
+    ) -> TempoPooledTransaction {
+        let envelope = builder
+            .fee_token(PATH_USD_ADDRESS)
+            .build()
+            .inner()
+            .clone()
+            .into_inner();
+        let TempoTxEnvelope::AA(mut signed) = envelope else {
+            panic!("expected AA transaction");
+        };
+        let fee_payer_hash = signed.tx().fee_payer_signature_hash(sender);
+        signed.tx_mut().fee_payer_signature = Some(
+            fee_payer
+                .sign_hash_sync(&fee_payer_hash)
+                .expect("fee payer signing should succeed"),
+        );
+        let pooled = TempoPooledTransaction::new(Recovered::new_unchecked(
+            TempoTxEnvelope::AA(signed),
+            sender,
+        ));
+        pooled.set_resolved_fee_token(PATH_USD_ADDRESS);
+        pooled
+    }
+
+    fn valid_with_balance(
+        pooled: TempoPooledTransaction,
+        balance: U256,
+    ) -> TransactionValidationOutcome<TempoPooledTransaction> {
+        pooled.set_fee_payer_balance(balance);
+        TransactionValidationOutcome::Valid {
+            balance: *pooled.cost(),
+            state_nonce: 0,
+            bytecode_hash: None,
+            transaction: ValidTransaction::new(pooled, None),
+            propagate: true,
+            authorities: None,
+        }
+    }
+
+    /// Adds `pooled` as if validation read `balance` for its fee payer.
+    fn add_with_balance(
+        pool: &TempoTransactionPool<MockEthProvider<TempoPrimitives, TempoChainSpec>>,
+        pooled: TempoPooledTransaction,
+        balance: U256,
+    ) -> PoolResult<AddedTransactionOutcome> {
+        pool.add_validated_transaction(
+            TransactionOrigin::External,
+            valid_with_balance(pooled, balance),
+        )
+    }
+
+    fn assert_fee_payer_cost_rejected(result: PoolResult<AddedTransactionOutcome>) {
+        let err = result.expect_err("fee payer cost should exceed balance");
+        let PoolErrorKind::InvalidTransaction(err) = &err.kind else {
+            panic!("expected invalid transaction, got {err:?}");
+        };
+        assert!(
+            matches!(
+                err.downcast_other_ref::<TempoPoolTransactionError>(),
+                Some(TempoPoolTransactionError::FeePayerPooledCostExceedsBalance { .. })
+            ),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    /// Asserts that the tracked fee payer costs match the pools' contents once stale entries
+    /// are pruned.
+    fn assert_fee_payer_costs_consistent(
+        pool: &TempoTransactionPool<MockEthProvider<TempoPrimitives, TempoChainSpec>>,
+    ) {
+        let mut expected: HashMap<FeePayerKey, U256> = HashMap::default();
+        let hashes: B256Set = pool
+            .all_transactions()
+            .iter()
+            .map(|tx| {
+                let key = tx.transaction.fee_payer_key().expect("fee payer");
+                let total = expected.entry(key).or_default();
+                *total += tx.transaction.fee_token_cost();
+                *tx.hash()
+            })
+            .collect();
+
+        let mut fee_payer_costs = pool.fee_payer_costs.lock();
+        fee_payer_costs.retain(|hash| hashes.contains(hash));
+        assert_eq!(fee_payer_costs.totals(), expected);
+        assert_eq!(fee_payer_costs.len(), hashes.len());
+    }
+
+    #[test]
+    fn sponsored_flood_cannot_evict_tip_zero_2d_transaction() {
+        use crate::test_utils::TxBuilder;
+        use reth_transaction_pool::SubPoolLimit;
+
+        let pool = create_test_pool_with_2d_config(
+            create_provider_with_tip(),
+            crate::tt_2d_pool::AA2dPoolConfig {
+                pending_limit: SubPoolLimit::new(2, usize::MAX),
+                ..Default::default()
+            },
+        );
+
+        // Zones settlement style transaction: self-paid, nonce key 1, zero tip.
+        let settler = PrivateKeySigner::random();
+        let settlement = sponsored_tx(
+            TxBuilder::aa(settler.address())
+                .nonce_key(U256::ONE)
+                .max_priority_fee(0),
+            settler.address(),
+            &settler,
+        );
+        let settlement_hash = *settlement.hash();
+        add_with_balance(&pool, settlement, U256::MAX).expect("settlement should be admitted");
+
+        // Fee payer funded for exactly one flood transaction.
+        let fee_payer = PrivateKeySigner::random();
+        let flood: Vec<_> = (0..5)
+            .map(|_| {
+                let sender = Address::random();
+                sponsored_tx(
+                    TxBuilder::aa(sender)
+                        .nonce_key(U256::ONE)
+                        .max_priority_fee(1_000_000_000),
+                    sender,
+                    &fee_payer,
+                )
+            })
+            .collect();
+        let balance = flood[0].fee_token_cost();
+
+        let mut flood = flood.into_iter();
+        let admitted = flood.next().unwrap();
+        let admitted_hash = *admitted.hash();
+        add_with_balance(&pool, admitted, balance).expect("first flood tx fits the balance");
+        for tx in flood {
+            assert_fee_payer_cost_rejected(add_with_balance(&pool, tx, balance));
+        }
+
+        assert!(pool.contains(&settlement_hash));
+        assert!(pool.contains(&admitted_hash));
+        assert_eq!(
+            pool.pooled_fee_cost(PATH_USD_ADDRESS, fee_payer.address()),
+            balance
+        );
+        assert_fee_payer_costs_consistent(&pool);
+
+        pool.remove_transactions(vec![settlement_hash, admitted_hash]);
+        assert_eq!(
+            pool.pooled_fee_cost(PATH_USD_ADDRESS, fee_payer.address()),
+            U256::ZERO
+        );
+        assert_eq!(pool.fee_payer_costs.lock().len(), 0);
+    }
+
+    #[test]
+    fn fee_payer_funded_for_k_transactions_admits_k() {
+        use crate::test_utils::TxBuilder;
+
+        let pool = create_test_pool(create_provider_with_tip());
+        let fee_payer = PrivateKeySigner::random();
+        let txs: Vec<_> = (0..6)
+            .map(|_| {
+                let sender = Address::random();
+                sponsored_tx(TxBuilder::aa(sender), sender, &fee_payer)
+            })
+            .collect();
+        let cost = txs[0].fee_token_cost();
+        let balance = cost * U256::from(3);
+
+        let mut admitted = Vec::new();
+        let mut rejected = Vec::new();
+        for tx in txs {
+            let hash = *tx.hash();
+            match add_with_balance(&pool, tx.clone(), balance) {
+                Ok(_) => admitted.push(hash),
+                Err(_) => rejected.push(tx),
+            }
+        }
+        assert_eq!(admitted.len(), 3);
+        assert_eq!(rejected.len(), 3);
+        assert_eq!(
+            pool.pooled_fee_cost(PATH_USD_ADDRESS, fee_payer.address()),
+            balance
+        );
+
+        // Removing through the pool frees room for one more transaction.
+        pool.remove_transactions(vec![admitted[0]]);
+        add_with_balance(&pool, rejected[0].clone(), balance)
+            .expect("removal frees fee payer balance");
+        assert_fee_payer_cost_rejected(add_with_balance(&pool, rejected[1].clone(), balance));
+
+        // The protocol pool can drop transactions without telling us (mined, discarded). The
+        // rejection path reconciles against the pool before rejecting.
+        pool.protocol_pool.remove_transactions(vec![admitted[1]]);
+        add_with_balance(&pool, rejected[1].clone(), balance)
+            .expect("stale entries are pruned before rejecting");
+        assert_fee_payer_cost_rejected(add_with_balance(&pool, rejected[2].clone(), balance));
+        assert_fee_payer_costs_consistent(&pool);
+
+        // A larger balance read at validation admits more.
+        add_with_balance(&pool, rejected[2].clone(), balance + cost)
+            .expect("higher balance admits another transaction");
+        assert_fee_payer_costs_consistent(&pool);
+
+        let all = pool.all_transaction_hashes();
+        pool.remove_transactions(all);
+        assert_eq!(
+            pool.pooled_fee_cost(PATH_USD_ADDRESS, fee_payer.address()),
+            U256::ZERO
+        );
+        assert_eq!(pool.fee_payer_costs.lock().len(), 0);
+    }
+
+    #[test]
+    fn batch_admission_counts_earlier_transactions_in_the_batch() {
+        use crate::test_utils::TxBuilder;
+
+        let pool = create_test_pool(create_provider_with_tip());
+        let fee_payer = PrivateKeySigner::random();
+        let txs: Vec<_> = (0..3)
+            .map(|_| {
+                let sender = Address::random();
+                sponsored_tx(TxBuilder::aa(sender), sender, &fee_payer)
+            })
+            .collect();
+        let balance = txs[0].fee_token_cost() * U256::from(2);
+
+        let results = pool.add_validated_transactions(
+            txs.into_iter()
+                .map(|tx| (TransactionOrigin::External, valid_with_balance(tx, balance)))
+                .collect(),
+        );
+        let mut results = results.into_iter();
+        results.next().unwrap().expect("first fits");
+        results.next().unwrap().expect("second fits");
+        assert_fee_payer_cost_rejected(results.next().unwrap());
+        assert_fee_payer_costs_consistent(&pool);
+    }
+
+    #[test]
+    fn replacement_does_not_double_count_fee_payer_cost() {
+        use crate::test_utils::TxBuilder;
+
+        let pool = create_test_pool(create_provider_with_tip());
+        let fee_payer = PrivateKeySigner::random();
+
+        for nonce_key in [U256::ZERO, U256::ONE] {
+            let sender = Address::random();
+            let original = sponsored_tx(
+                TxBuilder::aa(sender).nonce_key(nonce_key),
+                sender,
+                &fee_payer,
+            );
+            let replacement = sponsored_tx(
+                TxBuilder::aa(sender)
+                    .nonce_key(nonce_key)
+                    .max_fee(30_000_000_000)
+                    .max_priority_fee(2_000_000_000),
+                sender,
+                &fee_payer,
+            );
+            // The balance covers the replacement alone, not both.
+            let balance = replacement.fee_token_cost();
+            assert!(original.fee_token_cost() + replacement.fee_token_cost() > balance);
+
+            let original_hash = *original.hash();
+            let replacement_hash = *replacement.hash();
+            add_with_balance(&pool, original, balance).expect("original fits");
+            add_with_balance(&pool, replacement, balance).expect("replacement fits");
+
+            assert!(!pool.contains(&original_hash));
+            assert!(pool.contains(&replacement_hash));
+            assert_eq!(
+                pool.pooled_fee_cost(PATH_USD_ADDRESS, fee_payer.address()),
+                balance,
+                "nonce key {nonce_key}"
+            );
+            assert_fee_payer_costs_consistent(&pool);
+
+            pool.remove_transactions(vec![replacement_hash]);
+            assert_eq!(
+                pool.pooled_fee_cost(PATH_USD_ADDRESS, fee_payer.address()),
+                U256::ZERO
+            );
+        }
+        assert_eq!(pool.fee_payer_costs.lock().len(), 0);
+    }
+
+    #[test]
+    fn mined_transactions_release_fee_payer_cost() {
+        use crate::test_utils::TxBuilder;
+        use reth_primitives_traits::SealedBlock;
+        use reth_transaction_pool::PoolUpdateKind;
+        use revm::database::{AccountStatus, BundleAccount, states::StorageSlot};
+        use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
+
+        let pool = create_test_pool(create_provider_with_tip());
+        let fee_payer = PrivateKeySigner::random();
+        let sender_2d = Address::random();
+        let tx_2d = sponsored_tx(
+            TxBuilder::aa(sender_2d).nonce_key(U256::ONE),
+            sender_2d,
+            &fee_payer,
+        );
+        let sender = Address::random();
+        let tx_protocol = sponsored_tx(TxBuilder::aa(sender), sender, &fee_payer);
+        let balance = tx_2d.fee_token_cost() + tx_protocol.fee_token_cost();
+        let nonce_slot = tx_2d.nonce_key_slot().expect("2D nonce slot");
+        let protocol_hash = *tx_protocol.hash();
+
+        add_with_balance(&pool, tx_2d, balance).unwrap();
+        add_with_balance(&pool, tx_protocol, balance).unwrap();
+        assert_eq!(
+            pool.pooled_fee_cost(PATH_USD_ADDRESS, fee_payer.address()),
+            balance
+        );
+
+        // 2D nonce advanced on chain.
+        let mut storage = HashMap::default();
+        storage.insert(nonce_slot, StorageSlot::new_changed(U256::ZERO, U256::ONE));
+        let mut state = AddressMap::default();
+        state.insert(
+            NONCE_PRECOMPILE_ADDRESS,
+            BundleAccount::new(None, None, storage, AccountStatus::Changed),
+        );
+        assert_eq!(pool.notify_aa_pool_on_state_updates(&state).len(), 1);
+        assert_eq!(pool.fee_payer_costs.lock().len(), 1);
+
+        // Protocol nonce transaction mined via reth's canonical update.
+        let base_fee = pool.aa_2d_pool.read().base_fee();
+        let new_tip = SealedBlock::seal_slow(Block {
+            header: TempoHeader {
+                inner: Header {
+                    gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
+                    base_fee_per_gas: Some(base_fee),
+                    excess_blob_gas: Some(0),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            body: Default::default(),
+        });
+        pool.on_canonical_state_change(CanonicalStateUpdate {
+            new_tip: &new_tip,
+            pending_block_base_fee: base_fee,
+            pending_block_blob_fee: None,
+            changed_accounts: Vec::new(),
+            mined_transactions: vec![protocol_hash],
+            update_kind: PoolUpdateKind::Commit,
+        });
+        assert!(!pool.contains(&protocol_hash));
+        assert_eq!(pool.fee_payer_costs.lock().len(), 0);
+        assert_eq!(
+            pool.pooled_fee_cost(PATH_USD_ADDRESS, fee_payer.address()),
+            U256::ZERO
+        );
+    }
+
+    #[tokio::test]
+    async fn fee_balance_drop_evicts_lowest_priority_until_aggregate_fits() {
+        use crate::test_utils::TxBuilder;
+
+        let provider = create_provider_with_tip();
+        let fee_payer = PrivateKeySigner::random();
+        let txs: Vec<_> = [3_000_000_000u128, 1_000_000_000, 2_000_000_000]
+            .into_iter()
+            .map(|tip| {
+                let sender = Address::random();
+                sponsored_tx(
+                    TxBuilder::aa(sender)
+                        .nonce_key(U256::ONE)
+                        .max_priority_fee(tip),
+                    sender,
+                    &fee_payer,
+                )
+            })
+            .collect();
+        let cost = txs[0].fee_token_cost();
+        let hashes: Vec<_> = txs.iter().map(|tx| *tx.hash()).collect();
+        set_fee_token_balance(
+            &provider,
+            PATH_USD_ADDRESS,
+            fee_payer.address(),
+            cost * U256::from(3),
+        );
+        let pool = create_test_pool(provider.clone());
+        for tx in txs {
+            add_with_balance(&pool, tx, cost * U256::from(3)).unwrap();
+        }
+
+        // Each transaction alone is still affordable, but not all three together.
+        set_fee_token_balance(
+            &provider,
+            PATH_USD_ADDRESS,
+            fee_payer.address(),
+            cost * U256::from(2),
+        );
+        let mut updates = crate::maintain::TempoPoolUpdates::new();
+        updates
+            .fee_balance_changes
+            .entry(PATH_USD_ADDRESS)
+            .or_default()
+            .insert(fee_payer.address());
+
+        let evicted = pool.evict_invalidated_transactions(&updates);
+        assert_eq!(tx_hashes(&evicted), vec![hashes[1]]);
+        assert!(pool.contains(&hashes[0]));
+        assert!(pool.contains(&hashes[2]));
+        assert_eq!(
+            pool.pooled_fee_cost(PATH_USD_ADDRESS, fee_payer.address()),
+            cost * U256::from(2)
+        );
+        assert_fee_payer_costs_consistent(&pool);
+
+        // Draining the balance below a single fee evicts everything.
+        set_fee_token_balance(
+            &provider,
+            PATH_USD_ADDRESS,
+            fee_payer.address(),
+            cost - U256::ONE,
+        );
+        let evicted = pool.evict_invalidated_transactions(&updates);
+        assert_eq!(evicted.len(), 2);
+        assert_eq!(
+            pool.pooled_fee_cost(PATH_USD_ADDRESS, fee_payer.address()),
+            U256::ZERO
+        );
+        assert_eq!(pool.fee_payer_costs.lock().len(), 0);
     }
 
     #[tokio::test]

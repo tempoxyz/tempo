@@ -695,8 +695,20 @@ where
                     }
                 }
 
-                // Precompute the fee balance slot after validation has resolved the fee token.
-                transaction.transaction().fee_balance_slot();
+                // Precompute the fee balance slot after validation has resolved the fee token,
+                // and cache the fee payer's balance for the pool's aggregate fee cost check.
+                // EVM validation already loaded this slot, so the read hits the validation state.
+                if let Some((fee_token, slot)) = transaction.transaction().fee_balance_slot() {
+                    match evm.db().storage_ref(fee_token, slot) {
+                        Ok(balance) => transaction.transaction().set_fee_payer_balance(balance),
+                        Err(err) => {
+                            return TransactionValidationOutcome::Error(
+                                *transaction.hash(),
+                                Box::new(err),
+                            );
+                        }
+                    }
+                }
 
                 // Precompute nonce storage slots for this transaction.
                 let _ = transaction.transaction().expiring_nonce_slot();
@@ -2109,6 +2121,24 @@ mod tests {
         assert!(
             outcome.is_valid(),
             "Zero-value tx should pass validation, got: {outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_valid_transaction_caches_fee_payer_balance() {
+        let transaction = TxBuilder::eip1559(Address::random()).build_eip1559();
+        let validator = setup_validator(&transaction, 0);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        let TransactionValidationOutcome::Valid { transaction, .. } = outcome else {
+            panic!("expected valid outcome, got: {outcome:?}");
+        };
+        assert_eq!(
+            transaction.transaction().fee_payer_balance(),
+            Some(U256::from(1_000_000_000_000u64))
         );
     }
 
