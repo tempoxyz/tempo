@@ -33,10 +33,32 @@ const SEQUENCER: Address = Address::with_last_byte(0xa1);
 const ALICE: Address = Address::with_last_byte(0xa2);
 const BOB: Address = Address::with_last_byte(0xb0);
 
-// Transfer recipients allowed but mint recipients denied, and the inverse.
-const BRIDGE_POLICY_CASES: [(u64, u64); 2] = [
-    (ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID),
-    (REJECT_ALL_POLICY_ID, ALLOW_ALL_POLICY_ID),
+// Opposing recipient and mint-recipient policies on both sides of the T13 activation.
+const BRIDGE_POLICY_CASES: [(TempoHardfork, u64, u64, bool); 4] = [
+    (
+        TempoHardfork::T12,
+        ALLOW_ALL_POLICY_ID,
+        REJECT_ALL_POLICY_ID,
+        false,
+    ),
+    (
+        TempoHardfork::T12,
+        REJECT_ALL_POLICY_ID,
+        ALLOW_ALL_POLICY_ID,
+        true,
+    ),
+    (
+        TempoHardfork::T13,
+        ALLOW_ALL_POLICY_ID,
+        REJECT_ALL_POLICY_ID,
+        true,
+    ),
+    (
+        TempoHardfork::T13,
+        REJECT_ALL_POLICY_ID,
+        ALLOW_ALL_POLICY_ID,
+        false,
+    ),
 ];
 
 struct Harness {
@@ -762,8 +784,9 @@ fn non_canonical_deposits_are_rejected() {
 
 #[test]
 fn deposit_uses_child_anchor_key_and_recipient_policy() -> eyre::Result<()> {
-    for (recipient_policy_id, mint_recipient_policy_id) in BRIDGE_POLICY_CASES {
-        let mut harness = Harness::new()?;
+    for (hardfork, recipient_policy_id, mint_recipient_policy_id, authorized) in BRIDGE_POLICY_CASES
+    {
+        let mut harness = Harness::new_with_hardfork(hardfork)?;
         harness.set_compound_transfer_policy(recipient_policy_id, mint_recipient_policy_id)?;
         let fixture = EncryptedDepositFixture::new();
         let decrypted = fixture.decrypt().expect("fixture decrypts");
@@ -821,7 +844,6 @@ fn deposit_uses_child_anchor_key_and_recipient_policy() -> eyre::Result<()> {
                 .abi_encode(),
         )?;
 
-        let authorized = recipient_policy_id == ALLOW_ALL_POLICY_ID;
         assert_eq!(
             harness.balance(PATH_USD_ADDRESS, fixture.to)?,
             if authorized {
@@ -1094,8 +1116,9 @@ fn refund_reads_are_limited_to_owner_and_active_sequencer() -> eyre::Result<()> 
 
 #[test]
 fn claim_refund_uses_recipient_policy_and_preserves_failed_refunds() -> eyre::Result<()> {
-    for (recipient_policy_id, mint_recipient_policy_id) in BRIDGE_POLICY_CASES {
-        let mut harness = Harness::new()?;
+    for (hardfork, recipient_policy_id, mint_recipient_policy_id, authorized) in BRIDGE_POLICY_CASES
+    {
+        let mut harness = Harness::new_with_hardfork(hardfork)?;
         harness.set_compound_transfer_policy(recipient_policy_id, mint_recipient_policy_id)?;
         {
             let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
@@ -1112,7 +1135,6 @@ fn claim_refund_uses_recipient_policy_and_preserves_failed_refunds() -> eyre::Re
             }
             .abi_encode(),
         )?;
-        let authorized = recipient_policy_id == ALLOW_ALL_POLICY_ID;
         if authorized {
             assert!(output.is_success());
             assert_eq!(
@@ -1192,8 +1214,9 @@ fn failed_withdrawal_bounce_back_parks_refund() -> eyre::Result<()> {
 
 #[test]
 fn withdrawal_bounce_back_uses_recipient_policy_and_consumes_fallback_nonce() -> eyre::Result<()> {
-    for (recipient_policy_id, mint_recipient_policy_id) in BRIDGE_POLICY_CASES {
-        let mut harness = Harness::new()?;
+    for (hardfork, recipient_policy_id, mint_recipient_policy_id, authorized) in BRIDGE_POLICY_CASES
+    {
+        let mut harness = Harness::new_with_hardfork(hardfork)?;
         harness.set_compound_transfer_policy(recipient_policy_id, mint_recipient_policy_id)?;
         let nonce = 7u64;
         harness.seed_fallback_recipient(nonce, BOB)?;
@@ -1226,7 +1249,6 @@ fn withdrawal_bounce_back_uses_recipient_policy_and_consumes_fallback_nonce() ->
                 .abi_encode(),
         )?;
 
-        let authorized = recipient_policy_id == ALLOW_ALL_POLICY_ID;
         assert_eq!(
             harness.balance(PATH_USD_ADDRESS, BOB)?,
             if authorized {
