@@ -543,21 +543,6 @@ impl<'a> TempoBlockExecutor<'a> {
             }
         }
     }
-
-    /// Returns the section an executed transaction enters at the current position in the block.
-    fn section_for_commit(
-        &self,
-        tx_hash: B256,
-        is_system_tx: bool,
-        is_payment: bool,
-        gas_used: u64,
-    ) -> Result<BlockSection, BlockValidationError> {
-        if is_system_tx {
-            self.subblocks_metadata_section()
-        } else {
-            self.validate_tx(tx_hash, is_payment, gas_used)
-        }
-    }
 }
 
 impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
@@ -693,8 +678,11 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
 
         // The result may have been produced by another executor (e.g. a BAL worker) whose
         // section and lane budgets do not reflect the transactions committed before it.
-        let next_section =
-            self.section_for_commit(tx_hash, is_system_tx, is_payment, block_gas_used)?;
+        let next_section = if is_system_tx {
+            self.subblocks_metadata_section()?
+        } else {
+            self.validate_tx(tx_hash, is_payment, block_gas_used)?
+        };
 
         let gas_output = self.inner.commit_transaction(inner)?;
         self.block_gas_used = self.block_gas_used.saturating_add(block_gas_used);
