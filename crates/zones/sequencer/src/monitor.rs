@@ -647,6 +647,13 @@ impl<P: ZoneSequencerProvider> BatchPreparer<P> {
             }
             ControlFlow::Break(cause) => {
                 if let Some(cause) = cause {
+                    // Only a prover hardfork change skips the fallback (requires re-proving).
+                    if matches!(
+                        cause.downcast_ref::<BatchSubmitError>(),
+                        Some(BatchSubmitError::ProverHardforkChanged { .. })
+                    ) {
+                        return Err(cause.downcast().expect("checked above"));
+                    }
                     warn!(error = ?cause, "Settling batch with the `NoProof` verifier fallback");
                     self.metrics.batch_no_proof_fallback_total.increment(1);
                 }
@@ -1201,6 +1208,24 @@ mod tests {
                 .contains("batch submission failed after 3 retries")
         );
         assert!(l1.read_q().is_empty(), "fallback must reach submission");
+    }
+
+    #[tokio::test]
+    async fn prover_hardfork_change_skips_no_proof_fallback() {
+        let mut monitor = test_monitor(Asserter::new(), TestZoneProvider::new());
+        let expected = BatchSubmitError::ProverHardforkChanged {
+            proved: TempoHardfork::T13,
+            current: TempoHardfork::T14,
+        };
+        let expected_msg = expected.to_string();
+        monitor.settlement_prover = Some(SettlementProver::fixed(Err(expected.into())));
+
+        let error = monitor
+            .batch_preparer()
+            .prepare_artifacts(11, prepared(test_batch_data()), Vec::new())
+            .await
+            .unwrap_err();
+        assert_eq!(error.to_string(), expected_msg);
     }
 
     #[tokio::test]
