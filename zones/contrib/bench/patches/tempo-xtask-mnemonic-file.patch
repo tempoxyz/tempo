@@ -1,0 +1,107 @@
+diff --git a/xtask/src/generate_state_bloat.rs b/xtask/src/generate_state_bloat.rs
+--- a/xtask/src/generate_state_bloat.rs
++++ b/xtask/src/generate_state_bloat.rs
+@@ -46,6 +46,10 @@ pub(crate) struct GenerateStateBloat {
+     )]
+     mnemonic: String,
+ 
++    /// Read the account-generation mnemonic from a file.
++    #[arg(long, value_name = "PATH", conflicts_with = "mnemonic")]
++    mnemonic_file: Option<PathBuf>,
++
+     /// Target file size in MiB
+     #[arg(short, long, default_value = "1024")]
+     size: u64,
+@@ -77,6 +81,7 @@ impl GenerateStateBloat {
+     pub(crate) async fn run(self) -> eyre::Result<()> {
+         let Self {
+             mnemonic,
++            mnemonic_file,
+             size,
+             token: tokens,
+             out,
+@@ -85,6 +90,20 @@ impl GenerateStateBloat {
+             chunk_size,
+         } = self;
+ 
++        let mnemonic = if let Some(path) = mnemonic_file {
++            let mnemonic = std::fs::read_to_string(&path)
++                .wrap_err_with(|| format!("failed reading mnemonic file `{}`", path.display()))?;
++            let mnemonic = mnemonic.trim();
++            ensure!(
++                !mnemonic.is_empty(),
++                "mnemonic file `{}` is empty",
++                path.display()
++            );
++            mnemonic.to_owned()
++        } else {
++            mnemonic
++        };
++
+         ensure!(
+             !tokens.is_empty(),
+             "at least one token ID must be specified"
+diff --git a/xtask/src/genesis_args.rs b/xtask/src/genesis_args.rs
+--- a/xtask/src/genesis_args.rs
++++ b/xtask/src/genesis_args.rs
+@@ -77,6 +77,10 @@ pub(crate) struct GenesisArgs {
+     )]
+     mnemonic: String,
+ 
++    /// Read the account-generation mnemonic from a file.
++    #[arg(long, value_name = "PATH", conflicts_with = "mnemonic")]
++    mnemonic_file: Option<PathBuf>,
++
+     /// Coinbase address
+     #[arg(long, default_value = "0x0000000000000000000000000000000000000000")]
+     coinbase: Address,
+@@ -255,6 +259,21 @@ impl GenesisArgs {
+         self.chain_id = chain_id;
+     }
+ 
++    fn resolved_mnemonic(&self) -> eyre::Result<String> {
++        let Some(path) = &self.mnemonic_file else {
++            return Ok(self.mnemonic.clone());
++        };
++
++        let mnemonic = std::fs::read_to_string(path)
++            .wrap_err_with(|| format!("failed reading mnemonic file `{}`", path.display()))?;
++        let mnemonic = mnemonic.trim();
++        if mnemonic.is_empty() {
++            return Err(eyre!("mnemonic file `{}` is empty", path.display()));
++        }
++
++        Ok(mnemonic.to_owned())
++    }
++
+     pub(crate) fn validator_onchain_addresses(&self) -> eyre::Result<Vec<Address>> {
+         if self.validator_addresses.is_empty() {
+             let validator_count = u32::try_from(self.validators.len())
+@@ -263,9 +282,10 @@ impl GenesisArgs {
+                 return Err(eyre!("not enough accounts created for validators"));
+             }
+ 
++            let mnemonic = self.resolved_mnemonic()?;
+             (1..=validator_count)
+                 .map(|worker_id| {
+-                    let signer = MnemonicBuilder::from_phrase_nth(&self.mnemonic, worker_id);
++                    let signer = MnemonicBuilder::from_phrase_nth(&mnemonic, worker_id);
+                     Ok(secret_key_to_address(signer.credential()))
+                 })
+                 .collect()
+@@ -283,13 +303,14 @@ impl GenesisArgs {
+     /// It creates a new genesis allocation for the configured accounts.
+     /// And creates accounts for system contracts.
+     pub(crate) async fn generate_genesis(self) -> eyre::Result<(Genesis, Option<ConsensusConfig>)> {
++        let mnemonic = self.resolved_mnemonic()?;
+         println!("Generating {:?} accounts", self.accounts);
+ 
+         let addresses: Vec<Address> = (0..self.accounts)
+             .into_par_iter()
+             .progress()
+             .map(|worker_id| -> eyre::Result<Address> {
+-                let signer = MnemonicBuilder::from_phrase_nth(&self.mnemonic, worker_id);
++                let signer = MnemonicBuilder::from_phrase_nth(&mnemonic, worker_id);
+                 let address = secret_key_to_address(signer.credential());
+                 Ok(address)
+             })

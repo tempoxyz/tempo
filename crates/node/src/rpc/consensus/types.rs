@@ -27,12 +27,16 @@ pub struct CertifiedBlock {
     pub block: SealedOrRecoveredBlock<Block>,
 }
 
+/// Identifies the block by number, hash, and parent hash only. The full block can be megabytes of
+/// JSON, which is too expensive to render into every log line.
 impl Display for CertifiedBlock {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match serde_json::to_string(self) {
-            Ok(s) => f.write_str(&s),
-            Err(err) => write!(f, "<failed formatting certified block: {err}"),
-        }
+        let block = self.block.block_with_parent();
+        write!(
+            f,
+            "number: {}, hash: {}, parent_hash: {}",
+            block.block.number, block.block.hash, block.parent
+        )
     }
 }
 
@@ -233,6 +237,20 @@ mod tests {
         let roundtripped = serde_json::to_value(certified).unwrap();
 
         assert_eq!(roundtripped, fixture);
+    }
+
+    #[test]
+    fn certified_block_display_only_identifies_block() {
+        let certified: CertifiedBlock = serde_json::from_value(certified_block_fixture()).unwrap();
+
+        assert_eq!(
+            certified.to_string(),
+            format!(
+                "number: 0, hash: {}, parent_hash: {}",
+                certified.block.hash(),
+                B256::ZERO
+            )
+        );
     }
 
     #[tokio::test]

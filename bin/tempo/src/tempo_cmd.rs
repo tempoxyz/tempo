@@ -28,6 +28,7 @@ use commonware_cryptography::{
 use commonware_math::algebra::Random as _;
 use commonware_utils::ordered;
 use eyre::{OptionExt as _, Report, WrapErr as _, bail, eyre};
+use futures::FutureExt as _;
 use reth_chainspec::EthChainSpec;
 use reth_cli_runner::CliRunner;
 use reth_ethereum_cli::ExtendedCommand;
@@ -424,11 +425,13 @@ impl WalletArgs {
             let keyring_ref = GcpKeyRingRef::new(&project, &location, &keyring);
             let specifier = KeySpecifier::new(keyring_ref, &key_name, key_version);
 
+            // Bound the structural Send proof for the deeply nested GCP client future.
             let client = gcloud_sdk::GoogleApi::from_function(
                 gcloud_sdk::google::cloud::kms::v1::key_management_service_client::KeyManagementServiceClient::new,
                 "https://cloudkms.googleapis.com",
                 None,
             )
+            .boxed()
             .await
             .wrap_err("failed to create GCP KMS client")?;
 
@@ -1258,7 +1261,7 @@ impl ValidatorInfo {
 
         let chain = match self.chain {
             Some(chain) => {
-                let spec_chain_id = chain.chain().id();
+                let spec_chain_id = chain.chain_id();
                 if spec_chain_id != chain_id {
                     eprintln!(
                         "warning: --chain spec has chain id {spec_chain_id} but RPC returned {chain_id}"
@@ -1423,7 +1426,7 @@ impl Info {
 
         let chain = match self.chain {
             Some(chain) => {
-                let spec_chain_id = chain.chain().id();
+                let spec_chain_id = chain.chain_id();
                 if spec_chain_id != chain_id {
                     bail!("--chain spec has chain id {spec_chain_id} but RPC returned {chain_id}");
                 }
@@ -2238,7 +2241,7 @@ mod tests {
 
         // Serve the chain id request, then fail the next request so the command stops early.
         let asserter = Asserter::new();
-        asserter.push_success(&tempo_chainspec::spec::PRESTO.chain().id());
+        asserter.push_success(&tempo_chainspec::spec::PRESTO.chain_id());
         asserter.push_failure_msg("mocked: stop after chain id");
 
         let mut requested_url = None;

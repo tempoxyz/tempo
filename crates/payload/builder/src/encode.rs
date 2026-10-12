@@ -246,10 +246,7 @@ mod tests {
     use proptest::prelude::*;
     use reth_primitives_traits::{RecoveredBlock, SealedBlock};
     use std::sync::Arc;
-    use tempo_primitives::{
-        Block, Header, TempoHeader, TempoTransaction,
-        transaction::{AASigned, Call},
-    };
+    use tempo_primitives::{Block, Header, TempoHeader, TempoTransaction, transaction::Call};
 
     fn arb_address() -> impl Strategy<Value = Address> {
         any::<[u8; 20]>().prop_map(Address::from)
@@ -491,7 +488,7 @@ mod tests {
     }
 
     fn aa_tx(input: Bytes) -> TempoTxEnvelope {
-        TempoTxEnvelope::AA(AASigned::new_unhashed(
+        TempoTxEnvelope::AA(
             TempoTransaction {
                 calls: vec![Call {
                     to: Address::ZERO.into(),
@@ -499,9 +496,9 @@ mod tests {
                     input,
                 }],
                 ..Default::default()
-            },
-            Signature::test_signature().into(),
-        ))
+            }
+            .into_signed(Signature::test_signature().into()),
+        )
     }
 
     fn all_transaction_types(input: Bytes) -> Vec<TempoTxEnvelope> {

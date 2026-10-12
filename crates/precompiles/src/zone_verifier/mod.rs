@@ -14,7 +14,10 @@ use tempo_chainspec::{
     hardfork::TempoHardfork,
 };
 pub use tempo_contracts::precompiles::IZoneVerifier;
-use tempo_contracts::precompiles::{NitroBatchAttestation, ZONE_VERIFIER_ADDRESS};
+use tempo_contracts::precompiles::{
+    NITRO_VERIFIER_CONFIG_V1 as MODE_NITRO_V1, NO_PROOF_FALLBACK_VERIFIER as MODE_NO_PROOF,
+    NitroBatchAttestation, ZONE_VERIFIER_ADDRESS,
+};
 use tempo_nitro_attestation::AWS_NITRO_ROOT_DER;
 use tempo_precompiles_macros::contract;
 
@@ -22,8 +25,6 @@ pub use self::pcr::PcrError;
 use self::{attestation::verify_attestation_with_root, pcr::parse_pcrs};
 use crate::{error::Result, zone_factory::portal_address};
 
-const MODE_NITRO_V1: &[u8] = &[1];
-const MODE_NO_PROOF: &[u8] = &[2];
 const MAX_FUTURE_SKEW_MILLIS: u64 = 300_000;
 
 /// PCR0/1/2 policy changes. Each entry takes effect at its hardfork and remains in effect until a
@@ -233,6 +234,9 @@ mod tests {
         primitives::{Bytes, b256},
         sol_types::SolCall,
     };
+    use tempo_contracts::zones::{
+        BlockTransition, DepositQueueTransition, TokenEnablementTransition,
+    };
 
     const BLOCK_TIMESTAMP: u64 = attestation::tests::BLOCK_TIMESTAMP;
 
@@ -244,17 +248,17 @@ mod tests {
             anchorBlockHash: B256::with_last_byte(11),
             expectedWithdrawalBatchIndex: 13,
             nextZoneHeight: U256::from(14),
-            blockTransition: IZoneVerifier::BlockTransition {
+            blockTransition: BlockTransition {
                 prevBlockHash: B256::with_last_byte(1),
                 nextBlockHash: B256::with_last_byte(2),
             },
-            depositQueueTransition: IZoneVerifier::DepositQueueTransition {
+            depositQueueTransition: DepositQueueTransition {
                 prevProcessedHash: B256::with_last_byte(3),
                 nextProcessedHash: B256::with_last_byte(4),
                 prevDepositNumber: 5,
                 nextDepositNumber: 6,
             },
-            tokenEnablementTransition: IZoneVerifier::TokenEnablementTransition {
+            tokenEnablementTransition: TokenEnablementTransition {
                 prevProcessedTokenCount: 7,
                 nextProcessedTokenCount: 8,
             },

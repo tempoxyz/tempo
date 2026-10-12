@@ -16,11 +16,8 @@ use common::{
     hardfork_bench_cases, txgen_signers,
 };
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
-use reth_revm::DatabaseCommit;
-use revm::{
-    context::JournalTr,
-    database::{CacheDB, EmptyDB},
-};
+use reth_revm::{DatabaseCommit, db::InMemoryDB};
+use revm::context::JournalTr;
 use std::{hint::black_box, sync::Arc};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
 use tempo_contracts::precompiles::{IStablecoinDEX, ITIP20, tip20_factory::createTokenCall};
@@ -58,9 +55,9 @@ fn seed_dex_cache_db(
     participants: &[Address],
     block_timestamp: u64,
     hardfork: TempoHardfork,
-) -> CacheDB<EmptyDB> {
+) -> InMemoryDB {
     let mut evm = TempoEvmFactory::default().create_evm(
-        CacheDB::new(EmptyDB::default()),
+        InMemoryDB::default(),
         common::bench_env(hardfork, block_timestamp),
     );
     let admin = participants
@@ -150,10 +147,7 @@ fn sign_dex_calls(
     use alloy_signer::SignerSync;
     use common::{CHAIN_ID, DEFAULT_BLOCK_TIMESTAMP, TXGEN_FEE_PER_GAS};
     use std::num::NonZeroU64;
-    use tempo_primitives::{
-        AASigned, TempoSignature, TempoTransaction,
-        transaction::{PrimitiveSignature, TEMPO_EXPIRING_NONCE_KEY},
-    };
+    use tempo_primitives::{TempoTransaction, transaction::TEMPO_EXPIRING_NONCE_KEY};
 
     let tx = TempoTransaction {
         chain_id: CHAIN_ID,
@@ -174,10 +168,7 @@ fn sign_dex_calls(
     let signature = signer
         .sign_hash_sync(&tx.signature_hash())
         .expect("failed to sign generated DEX transaction");
-    let signed = AASigned::new_unhashed(
-        tx,
-        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
-    );
+    let signed = tx.into_signed(signature.into());
 
     TempoTxEnvelope::from(signed)
         .try_into_recovered()

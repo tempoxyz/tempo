@@ -26,6 +26,7 @@ zstd.workspace = true
 tempo-ext.workspace = true
 tempo-eyre.workspace = true
 tempo-node = { workspace = true, features = ["default"] }
+tempo-node-launcher.workspace = true
 tempo-consensus.workspace = true
 tempo-consensus-config.workspace = true
 tempo-precompiles.workspace = true
@@ -69,6 +70,7 @@ commonware-math.workspace = true
 commonware-runtime = { workspace = true, features = ["external"] }
 commonware-utils.workspace = true
 futures = { workspace = true, features = ["executor"] }
+parking_lot.workspace = true
 rand.workspace = true
 reth-chainspec.workspace = true
 reth-cli.workspace = true
@@ -132,9 +134,9 @@ required-features = ["localnet"]
 [features]
 default = ["asm-keccak", "jemalloc", "otlp", "keccak-cache-global"]
 
-localnet = ["dep:nix"]
+dst = ["tempo-precompiles/dst", "reth-db/dst", "reth-trie/dst"]
 
-bal = ["tempo-consensus/bal", "tempo-node/bal"]
+localnet = ["dep:nix"]
 
 asm-keccak = [
 	"alloy/asm-keccak",

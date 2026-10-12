@@ -359,7 +359,7 @@ pub(crate) mod marshal {
             .wrap_err("failed querying execution layer for genesis block")?
             .ok_or_eyre("execution layer did not contain the genesis block")?;
         Ok(marshal::Start::Genesis(
-            Block::from_execution_block_unchecked(genesis, None),
+            Block::from_execution_block_unchecked(genesis),
         ))
     }
 

@@ -23,10 +23,7 @@ impl PayloadValidator<TempoPayloadTypes> for TempoEngineValidator {
         &self,
         payload: TempoExecutionData,
     ) -> Result<SealedBlock<Self::Block>, NewPayloadError> {
-        let TempoExecutionData {
-            block,
-            block_access_list: _,
-        } = payload;
+        let TempoExecutionData { block } = payload;
         Ok(block.into_sealed_block())
     }
 

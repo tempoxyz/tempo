@@ -67,6 +67,8 @@ step "rust toolchains" install_rust
 step "cargo-nextest" install_nextest
 step "just" install_just
 step "cargo fetch" cargo fetch --locked
-# Warm target/ so the snapshot ships compiled dependencies. ~13 min cold on a1.medium;
-# incremental on stale snapshots.
-step "warm build" cargo build --workspace --locked
+# Warm target/ so the snapshot ships compiled dependencies and test binaries. This matches
+# `cargo nextest run` from README.md; a plain `cargo build` resolves dependency features
+# without dev-dependencies, so the first test run would recompile ~300 crates.
+# Incremental on stale snapshots.
+step "warm build" cargo nextest run --workspace --locked --no-run

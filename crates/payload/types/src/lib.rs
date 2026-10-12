@@ -39,8 +39,6 @@ pub struct TempoPayloadTypes;
 pub struct TempoBuiltPayload {
     /// The inner built payload.
     inner: EthBuiltPayload<TempoPrimitives>,
-    /// RLP-encoded EIP-7928 block access list, when generated for this payload.
-    block_access_list: Option<Bytes>,
     /// The executed block data, used to skip re-execution in the engine tree.
     executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
     /// Replayable builder work for this payload.
@@ -60,7 +58,6 @@ impl TempoBuiltPayload {
     /// Creates a new [`TempoBuiltPayload`].
     pub fn new(
         inner: EthBuiltPayload<TempoPrimitives>,
-        block_access_list: Option<Bytes>,
         executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
         validation_work_duration: Duration,
         validation_latency_duration: Duration,
@@ -69,7 +66,6 @@ impl TempoBuiltPayload {
     ) -> Self {
         Self {
             inner,
-            block_access_list,
             executed_block,
             validation_work_duration,
             validation_latency_duration,
@@ -78,25 +74,16 @@ impl TempoBuiltPayload {
         }
     }
 
-    /// Converts the built payload into owned execution payload parts.
-    pub fn into_execution_payload(self) -> (SealedBlock<Block>, Option<Bytes>) {
-        (
-            Arc::unwrap_or_clone(self.inner.block_arc().clone()).into_sealed_block(),
-            self.block_access_list,
-        )
+    /// Converts the built payload into an owned execution block.
+    pub fn into_execution_payload(self) -> SealedBlock<Block> {
+        Arc::unwrap_or_clone(self.inner.block_arc().clone()).into_sealed_block()
     }
 
     /// Converts the built payload into consensus block parts without cloning the execution block.
-    pub fn into_consensus_execution_payload(
-        self,
-    ) -> (SealedOrRecoveredBlock<Block>, Option<Bytes>, EncodedBlock) {
+    pub fn into_consensus_execution_payload(self) -> (SealedOrRecoveredBlock<Block>, EncodedBlock) {
         let execution_block = SealedOrRecoveredBlock::recovered_arc(self.inner.block_arc().clone());
 
-        (
-            execution_block,
-            self.block_access_list,
-            self.execution_block_encoded,
-        )
+        (execution_block, self.execution_block_encoded)
     }
 
     /// Returns the approximate execution block RLP size estimate.
@@ -116,11 +103,8 @@ impl TempoBuiltPayload {
 
     /// Converts the built payload into [`TempoExecutionData`].
     pub fn into_execution_data(self) -> TempoExecutionData {
-        let (block, block_access_list, _) = self.into_consensus_execution_payload();
-        TempoExecutionData {
-            block,
-            block_access_list,
-        }
+        let (block, _) = self.into_consensus_execution_payload();
+        TempoExecutionData { block }
     }
 }
 
@@ -142,10 +126,6 @@ impl BuiltPayload for TempoBuiltPayload {
     fn requests(&self) -> Option<Requests> {
         self.inner.requests()
     }
-
-    fn block_access_list(&self) -> Option<&Bytes> {
-        self.block_access_list.as_ref()
-    }
 }
 
 /// Execution data for Tempo node. Simply wraps a sealed block.
@@ -154,8 +134,6 @@ pub struct TempoExecutionData {
     /// The built block.
     #[serde(with = "serde_sealed_or_recovered_block")]
     pub block: SealedOrRecoveredBlock<Block>,
-    /// RLP-encoded EIP-7928 block access list, when supplied with the payload.
-    pub block_access_list: Option<Bytes>,
 }
 
 /// Serde helper for preserving the legacy plain block JSON shape.
@@ -250,7 +228,7 @@ impl ExecutionPayload for TempoExecutionData {
     }
 
     fn block_access_list(&self) -> Option<&Bytes> {
-        self.block_access_list.as_ref()
+        None
     }
 }
 
@@ -265,10 +243,9 @@ impl PayloadTypes for TempoPayloadTypes {
     type BuiltPayload = TempoBuiltPayload;
     type PayloadAttributes = TempoPayloadAttributes;
 
-    fn block_to_payload(block: SealedBlock<Block>, bal: Option<Bytes>) -> Self::ExecutionData {
+    fn block_to_payload(block: SealedBlock<Block>, _bal: Option<Bytes>) -> Self::ExecutionData {
         TempoExecutionData {
             block: block.into(),
-            block_access_list: bal,
         }
     }
 }
@@ -342,13 +319,22 @@ mod tests {
                     "timestampMillisPart": "0x0",
                     "transactionsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
                 }
-            },
-            "block_access_list": null
+            }
         });
 
         let execution_data: TempoExecutionData = serde_json::from_value(fixture.clone()).unwrap();
         let roundtripped = serde_json::to_value(execution_data).unwrap();
 
         assert_eq!(roundtripped, fixture);
+    }
+
+    #[test]
+    fn execution_data_does_not_carry_block_access_lists() {
+        let block = SealedBlock::seal_slow(Block::default());
+        let payload = TempoPayloadTypes::block_to_payload(block, Some(Bytes::from_static(&[0xc0])));
+
+        assert!(payload.block_access_list().is_none());
+        let json = serde_json::to_value(payload).unwrap();
+        assert!(json.get("block_access_list").is_none());
     }
 }

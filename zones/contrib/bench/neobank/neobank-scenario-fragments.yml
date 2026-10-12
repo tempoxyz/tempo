@@ -1,0 +1,569 @@
+version: 1
+
+fragments:
+  wait-encrypted-zone-deposit:
+    parameters:
+      from_block: value
+      deposit_hash: value
+      sender: value
+      recipient: value
+      token: value
+      amount: value
+      memo: value
+    outputs:
+      processed: log
+    steps:
+      - id: processed
+        wait_log:
+          chain: zone
+          from_block: { param: from_block }
+          address: "${ZONES_BENCH_INBOX}"
+          abi: ZoneInbox
+          event: DepositProcessed
+          where:
+            depositHash: { param: deposit_hash }
+            sender: { param: sender }
+            to: { param: recipient }
+            token: { param: token }
+            amount: { param: amount }
+            memo: { param: memo }
+          max_block_range: 1000
+        save: processed
+
+  encrypted-zone-entry:
+    parameters:
+      sender: account_ref
+      sender_address: address
+      recipient: address
+      token: address
+      fee_token: address
+      amount: u256
+      memo: value
+    outputs:
+      submission: submit
+      enqueued: log
+      zone_deposit.processed: log
+    steps:
+      - id: zone_before
+        checkpoint: { chain: zone }
+        save: zone_before
+
+      - id: encryption
+        invoke:
+          chain: l1
+          action: prepare_encrypted_deposit
+          with:
+            sender: { param: sender_address }
+            recipient: { param: recipient }
+            zoneId: ${ZONES_BENCH_EXPECTED_ZONE_ID}
+            portalAddress: "${L1_PORTAL_ADDRESS}"
+            memo: { param: memo }
+        save: encryption
+
+      - id: submission
+        depends_on: [encryption]
+        submit:
+          chain: l1
+          template: encrypted_onramp
+          with:
+            from: { param: sender }
+            fee_token: { param: fee_token }
+            call:
+              args:
+                - { param: token }
+                - { param: amount }
+                - { var: encryption.keyIndex }
+                - { var: encryption.encrypted }
+                - { param: sender_address }
+        save: submission
+
+      - id: enqueued
+        depends_on: [submission]
+        wait_log:
+          chain: l1
+          transaction_hash: { var: submission.tx_hash }
+          sender: { var: submission.sender }
+          events:
+            deposit:
+              address: "${L1_PORTAL_ADDRESS}"
+              abi: ZonePortal
+              event: DepositMade
+              where:
+                sender: { param: sender_address }
+                token: { param: token }
+        timeout: 45s
+        save: enqueued
+
+      - use: wait-encrypted-zone-deposit
+        as: zone_deposit
+        depends_on: [zone_before, enqueued]
+        with:
+          from_block: { var: zone_before.block_number }
+          deposit_hash: { var: enqueued.events.deposit.args.newCurrentDepositQueueHash }
+          sender: { param: sender_address }
+          recipient: { param: recipient }
+          token: { param: token }
+          amount: { var: enqueued.events.deposit.args.netAmount }
+          memo: { param: memo }
+
+  earn-deposit-and-return:
+    parameters:
+      sender: account_ref
+      sender_address: address
+      recipient: address
+      input_token: address
+      fee_token: address
+      amount: u256
+      min_vault_assets: u256
+      min_vault_shares: u256
+      action_id: value
+      fallback_recipient: address
+      refund_recipient: address
+    outputs:
+      request: submit
+      request_result: log
+      l1_processed_locator: log
+      l1_result: log
+      zone_return.processed: log
+    steps:
+      - id: l1_before
+        checkpoint: { chain: l1 }
+        save: l1_before
+      - id: zone_before
+        checkpoint: { chain: zone }
+        save: zone_before
+      - id: encryption
+        invoke:
+          chain: l1
+          action: prepare_encrypted_deposit
+          with:
+            sender: "${ZONES_BENCH_EARN_ROUTER}"
+            recipient: { param: recipient }
+            zoneId: ${ZONES_BENCH_EXPECTED_ZONE_ID}
+            portalAddress: "${L1_PORTAL_ADDRESS}"
+            memo: { param: action_id }
+        save: encryption
+      - id: request
+        depends_on: [encryption]
+        submit:
+          chain: zone
+          template: gateway_deposit
+          with:
+            from: { param: sender }
+            fee_token: { param: fee_token }
+            call:
+              args:
+                - { param: input_token }
+                - "${ZONES_BENCH_EARN_ROUTER}"
+                - { param: amount }
+                - { param: action_id }
+                - ${ZONES_BENCH_CALLBACK_GAS_LIMIT}
+                - { param: fallback_recipient }
+                - abi_encode:
+                    types:
+                      - "tuple(uint8 flow,uint128 minVaultAssets,uint128 minEarnShares,uint128 minOutputAmount,bytes32 actionId,(uint256 keyIndex,(bytes32 ephemeralPubkeyX,uint8 ephemeralPubkeyYParity,bytes ciphertext,bytes12 nonce,bytes16 tag) encrypted,address refundRecipient) zoneReturn)"
+                    values:
+                      - flow: 0
+                        minVaultAssets: { param: min_vault_assets }
+                        minEarnShares: { param: min_vault_shares }
+                        minOutputAmount: 0
+                        actionId: { param: action_id }
+                        zoneReturn:
+                          keyIndex: { var: encryption.keyIndex }
+                          encrypted: { var: encryption.encrypted }
+                          refundRecipient: { param: refund_recipient }
+                - "0x"
+        save: request
+      - id: request_result
+        depends_on: [zone_before, request]
+        wait_log:
+          chain: zone
+          from_block: { var: zone_before.block_number }
+          transaction_hash: { var: request.tx_hash }
+          sender: { var: request.sender }
+          address: "${ZONES_BENCH_OUTBOX}"
+          abi: ZoneOutbox
+          event: WithdrawalRequested
+          where:
+            sender: { param: sender_address }
+            token: { param: input_token }
+            to: "${ZONES_BENCH_EARN_ROUTER}"
+            amount: { param: amount }
+            memo: { param: action_id }
+            gasLimit: ${ZONES_BENCH_CALLBACK_GAS_LIMIT}
+          max_block_range: 1000
+        timeout: 45s
+        save: request_result
+      - id: l1_processed_locator
+        depends_on: [l1_before, request, request_result]
+        wait_log:
+          chain: l1
+          from_block: { var: l1_before.block_number }
+          address: "${L1_PORTAL_ADDRESS}"
+          abi: ZonePortal
+          event: WithdrawalProcessed
+          where:
+            to: "${ZONES_BENCH_EARN_ROUTER}"
+            senderTag:
+              keccak256_packed:
+                types: [address, bytes32, uint64]
+                values:
+                  - { param: sender_address }
+                  - { var: request.tx_hash }
+                  - { var: request_result.args.fallbackNonce }
+            token: { param: input_token }
+            amount: { param: amount }
+            callbackSuccess: true
+          max_block_range: 1000
+        save: l1_processed_locator
+      - id: l1_result
+        depends_on: [l1_processed_locator]
+        wait_log:
+          chain: l1
+          transaction_hash: { var: l1_processed_locator.transaction_hash }
+          events:
+            withdrawal:
+              address: "${L1_PORTAL_ADDRESS}"
+              abi: ZonePortal
+              event: WithdrawalProcessed
+              where:
+                to: "${ZONES_BENCH_EARN_ROUTER}"
+                senderTag:
+                  keccak256_packed:
+                    types: [address, bytes32, uint64]
+                    values:
+                      - { param: sender_address }
+                      - { var: request.tx_hash }
+                      - { var: request_result.args.fallbackNonce }
+                token: { param: input_token }
+                amount: { param: amount }
+                callbackSuccess: true
+            callback:
+              address: "${ZONES_BENCH_EARN_ROUTER}"
+              abi: EarnRouter
+              event: EarnDeposit
+              where:
+                actionId: { param: action_id }
+                earnVault: "${ZONES_BENCH_EARN_VAULT}"
+                inputToken: { param: input_token }
+                inputAmount: { param: amount }
+        save: l1_result
+      - use: wait-encrypted-zone-deposit
+        as: zone_return
+        depends_on: [zone_before, l1_result]
+        with:
+          from_block: { var: zone_before.block_number }
+          deposit_hash: { var: l1_result.events.callback.args.zoneDepositHash }
+          sender: "${ZONES_BENCH_EARN_ROUTER}"
+          recipient: { param: recipient }
+          token: "${ZONES_BENCH_EARN_TOKEN}"
+          amount: { var: l1_result.events.callback.args.earnShares }
+          memo: { param: action_id }
+
+  earn-redeem-and-return:
+    parameters:
+      sender: account_ref
+      sender_address: address
+      recipient: address
+      output_token: address
+      fee_token: address
+      amount: u256
+      min_vault_assets: u256
+      min_output_amount: u256
+      action_id: value
+      fallback_recipient: address
+      refund_recipient: address
+    outputs:
+      request: submit
+      request_result: log
+      l1_processed_locator: log
+      l1_result: log
+      zone_return.processed: log
+    steps:
+      - id: l1_before
+        checkpoint: { chain: l1 }
+        save: l1_before
+      - id: zone_before
+        checkpoint: { chain: zone }
+        save: zone_before
+      - id: encryption
+        invoke:
+          chain: l1
+          action: prepare_encrypted_deposit
+          with:
+            sender: "${ZONES_BENCH_EARN_ROUTER}"
+            recipient: { param: recipient }
+            zoneId: ${ZONES_BENCH_EXPECTED_ZONE_ID}
+            portalAddress: "${L1_PORTAL_ADDRESS}"
+            memo: { param: action_id }
+        save: encryption
+      - id: request
+        depends_on: [encryption]
+        submit:
+          chain: zone
+          template: gateway_redeem
+          with:
+            from: { param: sender }
+            fee_token: { param: fee_token }
+            call:
+              args:
+                - "${ZONES_BENCH_EARN_TOKEN}"
+                - "${ZONES_BENCH_EARN_ROUTER}"
+                - { param: amount }
+                - { param: action_id }
+                - ${ZONES_BENCH_CALLBACK_GAS_LIMIT}
+                - { param: fallback_recipient }
+                - abi_encode:
+                    types:
+                      - "tuple(uint8 flow,uint128 minVaultAssets,uint128 minEarnShares,uint128 minOutputAmount,bytes32 actionId,(uint256 keyIndex,(bytes32 ephemeralPubkeyX,uint8 ephemeralPubkeyYParity,bytes ciphertext,bytes12 nonce,bytes16 tag) encrypted,address refundRecipient) zoneReturn)"
+                    values:
+                      - flow: 1
+                        minVaultAssets: { param: min_vault_assets }
+                        minEarnShares: 0
+                        minOutputAmount: { param: min_output_amount }
+                        actionId: { param: action_id }
+                        zoneReturn:
+                          keyIndex: { var: encryption.keyIndex }
+                          encrypted: { var: encryption.encrypted }
+                          refundRecipient: { param: refund_recipient }
+                - "0x"
+        save: request
+      - id: request_result
+        depends_on: [zone_before, request]
+        wait_log:
+          chain: zone
+          from_block: { var: zone_before.block_number }
+          transaction_hash: { var: request.tx_hash }
+          sender: { var: request.sender }
+          address: "${ZONES_BENCH_OUTBOX}"
+          abi: ZoneOutbox
+          event: WithdrawalRequested
+          where:
+            sender: { param: sender_address }
+            token: "${ZONES_BENCH_EARN_TOKEN}"
+            to: "${ZONES_BENCH_EARN_ROUTER}"
+            amount: { param: amount }
+            memo: { param: action_id }
+            gasLimit: ${ZONES_BENCH_CALLBACK_GAS_LIMIT}
+          max_block_range: 1000
+        timeout: 45s
+        save: request_result
+      - id: l1_processed_locator
+        depends_on: [l1_before, request, request_result]
+        wait_log:
+          chain: l1
+          from_block: { var: l1_before.block_number }
+          address: "${L1_PORTAL_ADDRESS}"
+          abi: ZonePortal
+          event: WithdrawalProcessed
+          where:
+            to: "${ZONES_BENCH_EARN_ROUTER}"
+            senderTag:
+              keccak256_packed:
+                types: [address, bytes32, uint64]
+                values:
+                  - { param: sender_address }
+                  - { var: request.tx_hash }
+                  - { var: request_result.args.fallbackNonce }
+            token: "${ZONES_BENCH_EARN_TOKEN}"
+            amount: { param: amount }
+            callbackSuccess: true
+          max_block_range: 1000
+        save: l1_processed_locator
+      - id: l1_result
+        depends_on: [l1_processed_locator]
+        wait_log:
+          chain: l1
+          transaction_hash: { var: l1_processed_locator.transaction_hash }
+          events:
+            withdrawal:
+              address: "${L1_PORTAL_ADDRESS}"
+              abi: ZonePortal
+              event: WithdrawalProcessed
+              where:
+                to: "${ZONES_BENCH_EARN_ROUTER}"
+                senderTag:
+                  keccak256_packed:
+                    types: [address, bytes32, uint64]
+                    values:
+                      - { param: sender_address }
+                      - { var: request.tx_hash }
+                      - { var: request_result.args.fallbackNonce }
+                token: "${ZONES_BENCH_EARN_TOKEN}"
+                amount: { param: amount }
+                callbackSuccess: true
+            callback:
+              address: "${ZONES_BENCH_EARN_ROUTER}"
+              abi: EarnRouter
+              event: EarnRedeem
+              where:
+                actionId: { param: action_id }
+                earnVault: "${ZONES_BENCH_EARN_VAULT}"
+                outputToken: { param: output_token }
+                earnShares: { param: amount }
+        save: l1_result
+      - use: wait-encrypted-zone-deposit
+        as: zone_return
+        depends_on: [zone_before, l1_result]
+        with:
+          from_block: { var: zone_before.block_number }
+          deposit_hash: { var: l1_result.events.callback.args.zoneDepositHash }
+          sender: "${ZONES_BENCH_EARN_ROUTER}"
+          recipient: { param: recipient }
+          token: { param: output_token }
+          amount: { var: l1_result.events.callback.args.outputAmount }
+          memo: { param: action_id }
+
+  earn-deposit-expect-bounce:
+    parameters:
+      sender: account_ref
+      sender_address: address
+      recipient: address
+      input_token: address
+      fee_token: address
+      amount: u256
+      action_id: value
+      fallback_recipient: address
+      refund_recipient: address
+    outputs:
+      request: submit
+      request_result: log
+      l1_processed_locator: log
+      l1_result: log
+      bounceback_processed: log
+    steps:
+      - id: l1_before
+        checkpoint: { chain: l1 }
+        save: l1_before
+      - id: zone_before
+        checkpoint: { chain: zone }
+        save: zone_before
+      - id: encryption
+        invoke:
+          chain: l1
+          action: prepare_encrypted_deposit
+          with:
+            sender: "${ZONES_BENCH_EARN_ROUTER}"
+            recipient: { param: recipient }
+            zoneId: ${ZONES_BENCH_EXPECTED_ZONE_ID}
+            portalAddress: "${L1_PORTAL_ADDRESS}"
+            memo: { param: action_id }
+        save: encryption
+      - id: request
+        depends_on: [encryption]
+        submit:
+          chain: zone
+          template: gateway_deposit
+          with:
+            from: { param: sender }
+            fee_token: { param: fee_token }
+            call:
+              args:
+                - { param: input_token }
+                - "${ZONES_BENCH_EARN_ROUTER}"
+                - { param: amount }
+                - { param: action_id }
+                - ${ZONES_BENCH_CALLBACK_GAS_LIMIT}
+                - { param: fallback_recipient }
+                - abi_encode:
+                    types:
+                      - "tuple(uint8 flow,uint128 minVaultAssets,uint128 minEarnShares,uint128 minOutputAmount,bytes32 actionId,(uint256 keyIndex,(bytes32 ephemeralPubkeyX,uint8 ephemeralPubkeyYParity,bytes ciphertext,bytes12 nonce,bytes16 tag) encrypted,address refundRecipient) zoneReturn)"
+                    values:
+                      - flow: 0
+                        minVaultAssets: "340282366920938463463374607431768211455"
+                        minEarnShares: { param: amount }
+                        minOutputAmount: 0
+                        actionId: { param: action_id }
+                        zoneReturn:
+                          keyIndex: { var: encryption.keyIndex }
+                          encrypted: { var: encryption.encrypted }
+                          refundRecipient: { param: refund_recipient }
+                - "0x"
+        save: request
+      - id: request_result
+        depends_on: [zone_before, request]
+        wait_log:
+          chain: zone
+          from_block: { var: zone_before.block_number }
+          transaction_hash: { var: request.tx_hash }
+          sender: { var: request.sender }
+          address: "${ZONES_BENCH_OUTBOX}"
+          abi: ZoneOutbox
+          event: WithdrawalRequested
+          where:
+            sender: { param: sender_address }
+            token: { param: input_token }
+            to: "${ZONES_BENCH_EARN_ROUTER}"
+            amount: { param: amount }
+            memo: { param: action_id }
+            gasLimit: ${ZONES_BENCH_CALLBACK_GAS_LIMIT}
+          max_block_range: 1000
+        timeout: 45s
+        save: request_result
+      - id: l1_processed_locator
+        depends_on: [l1_before, request, request_result]
+        wait_log:
+          chain: l1
+          from_block: { var: l1_before.block_number }
+          address: "${L1_PORTAL_ADDRESS}"
+          abi: ZonePortal
+          event: WithdrawalProcessed
+          where:
+            to: "${ZONES_BENCH_EARN_ROUTER}"
+            senderTag:
+              keccak256_packed:
+                types: [address, bytes32, uint64]
+                values:
+                  - { param: sender_address }
+                  - { var: request.tx_hash }
+                  - { var: request_result.args.fallbackNonce }
+            token: { param: input_token }
+            amount: { param: amount }
+            callbackSuccess: false
+          max_block_range: 1000
+        save: l1_processed_locator
+      - id: l1_result
+        depends_on: [l1_processed_locator, request_result]
+        wait_log:
+          chain: l1
+          transaction_hash: { var: l1_processed_locator.transaction_hash }
+          events:
+            withdrawal:
+              address: "${L1_PORTAL_ADDRESS}"
+              abi: ZonePortal
+              event: WithdrawalProcessed
+              where:
+                to: "${ZONES_BENCH_EARN_ROUTER}"
+                senderTag:
+                  keccak256_packed:
+                    types: [address, bytes32, uint64]
+                    values:
+                      - { param: sender_address }
+                      - { var: request.tx_hash }
+                      - { var: request_result.args.fallbackNonce }
+                token: { param: input_token }
+                amount: { param: amount }
+                callbackSuccess: false
+            bounceback:
+              address: "${L1_PORTAL_ADDRESS}"
+              abi: ZonePortal
+              event: WithdrawalBounceBack
+              where:
+                fallbackNonce: { var: request_result.args.fallbackNonce }
+                token: { param: input_token }
+                amount: { param: amount }
+        save: l1_result
+      - id: bounceback_processed
+        depends_on: [zone_before, l1_result]
+        wait_log:
+          chain: zone
+          from_block: { var: zone_before.block_number }
+          address: "${ZONES_BENCH_INBOX}"
+          abi: ZoneInbox
+          event: WithdrawalBounceBackProcessed
+          where:
+            zoneFallbackRecipient: { param: fallback_recipient }
+            token: { param: input_token }
+            amount: { param: amount }
+          max_block_range: 1000
+        save: bounceback_processed

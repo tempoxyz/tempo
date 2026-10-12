@@ -1,0 +1,11 @@
+{
+  "lib/forge-std": {
+    "tag": {
+      "name": "v1.16.2",
+      "rev": "bf647bd6046f2f7da30d0c2bf435e5c76a780c1b"
+    }
+  },
+  "lib/tempo-std": {
+    "rev": "96f882963ce3b0e0abc7ec2b41d03d42457877bb"
+  }
+}

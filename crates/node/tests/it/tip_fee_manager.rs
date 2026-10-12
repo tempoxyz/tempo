@@ -1,4 +1,4 @@
-use crate::utils::{TestNodeBuilder, setup_test_token};
+use crate::utils::{PendingTransactionBuilderExt, TestNodeBuilder, setup_test_token};
 use alloy::{
     consensus::Transaction,
     network::ReceiptResponse,
@@ -7,12 +7,11 @@ use alloy::{
     sol_types::SolEvent,
 };
 use alloy_eips::{BlockId, Encodable2718};
-use alloy_network::{AnyReceiptEnvelope, EthereumWallet};
+use alloy_network::EthereumWallet;
 use alloy_primitives::{Address, Signature, U256, address};
 use alloy_rpc_types_eth::TransactionRequest;
 use eyre::WrapErr;
 use reth_e2e_test_utils::{receipt::PendingTransactionExt, wallet::test_signer};
-use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_contracts::precompiles::{
     IFeeManager, ITIP20, ITIP403Registry,
     ITIPFeeAMM::{self},
@@ -288,13 +287,11 @@ async fn test_fee_token_tx() -> eyre::Result<()> {
         .successful_receipt()
         .await?;
 
-    let tx_hash = send_fee_token_tx().await?.watch().await?;
-    let receipt = provider
-        .client()
-        .request::<_, AnyReceiptEnvelope>("eth_getTransactionReceipt", (tx_hash,))
+    send_fee_token_tx()
+        .await?
+        .into_tempo()
+        .successful_receipt()
         .await?;
-
-    assert!(receipt.status());
 
     Ok(())
 }
@@ -365,17 +362,12 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
         .call()
         .await?;
 
-    let tx_hash = provider
+    let receipt = provider
         .send_raw_transaction(&tx.encoded_2718())
         .await?
-        .watch()
+        .into_tempo()
+        .successful_receipt()
         .await?;
-
-    let receipt = provider
-        .raw_request::<_, TempoTransactionReceipt>("eth_getTransactionReceipt".into(), (tx_hash,))
-        .await?;
-
-    assert!(receipt.status());
 
     let balance_after = ITIP20::new(fee_payer_token, &provider)
         .balanceOf(fee_payer.address())

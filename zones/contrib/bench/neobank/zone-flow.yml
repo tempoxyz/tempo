@@ -1,0 +1,132 @@
+chain_id: ${ZONES_BENCH_EXPECTED_ZONE_CHAIN_ID}
+
+gas:
+  max_fee_per_gas: ${ZONES_BENCH_ZONE_MAX_FEE_PER_GAS}
+  max_priority_fee_per_gas: ${ZONES_BENCH_ZONE_MAX_PRIORITY_FEE_PER_GAS}
+
+accounts:
+  users:
+    mnemonic: "${ZONES_BENCH_MNEMONIC}"
+    range: [${ZONES_BENCH_ACCOUNT_START}, ${ZONES_BENCH_ACCOUNT_END}]
+  sponsor:
+    mnemonic: "${ZONES_BENCH_MNEMONIC}"
+    range: [${ZONES_BENCH_SEQUENCER_ACCOUNT_INDEX}, ${ZONES_BENCH_SEQUENCER_ACCOUNT_END}]
+
+artifacts:
+  TIP20: abis/tip20.json
+  ZoneOutbox: abis/zone-outbox.json
+  ZoneInbox: abis/neobank-zone-inbox.json
+  EarnRouter: abis/earn-router.json
+
+setup: { steps: [] }
+
+templates:
+  approve_base_token:
+    type: tempo
+    from: { var: account.ref }
+    sponsor: { pool: sponsor, select: { index: 0 } }
+    expiring_nonce: true
+    valid_for_secs: 25
+    gas_limit: 500000
+    fee_token: "${ZONES_BENCH_TOKEN}"
+    call:
+      to: "${ZONES_BENCH_TOKEN}"
+      abi: TIP20
+      function: "approve(address,uint256)"
+      args:
+        - "${ZONES_BENCH_OUTBOX}"
+        - "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+
+  approve_earn_token:
+    type: tempo
+    from: { var: account.ref }
+    sponsor: { pool: sponsor, select: { index: 0 } }
+    expiring_nonce: true
+    valid_for_secs: 25
+    gas_limit: 500000
+    fee_token: "${ZONES_BENCH_TOKEN}"
+    call:
+      to: "${ZONES_BENCH_EARN_TOKEN}"
+      abi: TIP20
+      function: "approve(address,uint256)"
+      args:
+        - "${ZONES_BENCH_OUTBOX}"
+        - "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+
+  gateway_deposit:
+    type: tempo
+    from: { var: account.ref }
+    gas_limit: 10000000
+    fee_token: "${ZONES_BENCH_TOKEN}"
+    expiring_nonce: true
+    valid_for_secs: 25
+    call:
+      to: "${ZONES_BENCH_OUTBOX}"
+      abi: ZoneOutbox
+      function: "requestWithdrawal(address,address,uint128,bytes32,uint64,address,bytes,bytes)"
+      args:
+        - "${ZONES_BENCH_TOKEN}"
+        - "${ZONES_BENCH_EARN_ROUTER}"
+        - ${ZONES_BENCH_WITHDRAWAL_AMOUNT}
+        - { var: action_id }
+        - ${ZONES_BENCH_CALLBACK_GAS_LIMIT}
+        - { var: account.address }
+        - "0x"
+        - "0x"
+
+  gateway_redeem:
+    type: tempo
+    from: { var: account.ref }
+    gas_limit: 10000000
+    fee_token: "${ZONES_BENCH_TOKEN}"
+    expiring_nonce: true
+    valid_for_secs: 25
+    call:
+      to: "${ZONES_BENCH_OUTBOX}"
+      abi: ZoneOutbox
+      function: "requestWithdrawal(address,address,uint128,bytes32,uint64,address,bytes,bytes)"
+      args:
+        - "${ZONES_BENCH_EARN_TOKEN}"
+        - "${ZONES_BENCH_EARN_ROUTER}"
+        - ${ZONES_BENCH_WITHDRAWAL_AMOUNT}
+        - { var: action_id }
+        - ${ZONES_BENCH_CALLBACK_GAS_LIMIT}
+        - { var: account.address }
+        - "0x"
+        - "0x"
+
+  offramp:
+    type: tempo
+    from: { var: account.ref }
+    gas_limit: 10000000
+    fee_token: "${ZONES_BENCH_TOKEN}"
+    expiring_nonce: true
+    valid_for_secs: 25
+    call:
+      to: "${ZONES_BENCH_OUTBOX}"
+      abi: ZoneOutbox
+      function: "requestWithdrawal(address,address,uint128,bytes32,uint64,address,bytes,bytes)"
+      args:
+        - "${ZONES_BENCH_TOKEN}"
+        - "${ZONES_BENCH_BRIDGE_WALLET}"
+        - ${ZONES_BENCH_ACTIVITY_AMOUNT}
+        - { var: action_id }
+        - 0
+        - { var: account.address }
+        - "0x"
+        - "0x"
+
+sequences:
+  approval_pair:
+    bindings:
+      account:
+        account: { pool: users, select: random }
+    steps:
+      - name: approve_base_token
+        template: approve_base_token
+      - name: approve_earn_token
+        template: approve_earn_token
+
+mix:
+  - sequence: approval_pair
+    weight: 100

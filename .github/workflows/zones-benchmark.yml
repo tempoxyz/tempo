@@ -1,0 +1,1155 @@
+name: Zones benchmark
+
+on:
+  schedule:
+    - cron: "45 2 * * *"
+
+  workflow_dispatch:
+    inputs:
+      preset:
+        description: Neobank scenario to run.
+        type: choice
+        required: true
+        default: full-journey
+        options:
+          - encrypted-deposit
+          - private-withdrawal
+          - full-journey
+          - slippage-bounce
+          - swapped-lifecycle
+          - swapped-redemption
+      accounts:
+        description: Number of benchmark accounts.
+        type: string
+        required: true
+        default: "100"
+      count:
+        description: Number of complete scenario journeys.
+        type: string
+        required: true
+        default: "100"
+      tps:
+        description: Target journey starts per second.
+        type: string
+        required: true
+        default: "20"
+      max-concurrent:
+        description: Maximum leased journeys in flight.
+        type: string
+        required: true
+        default: "12"
+      state-bloat-gib:
+        description: Tempo L1 TIP-20 state bloat per validator; never applied to the Zone.
+        type: choice
+        required: true
+        default: "1"
+        options:
+          - "0"
+          - "1"
+          - "10"
+          - "100"
+      force-bloat:
+        description: Rebuild and replace the runner-local Tempo L1 virgin snapshot.
+        type: boolean
+        required: true
+        default: false
+      deposit-amount:
+        description: Gross amount for each L1 deposit.
+        type: string
+        required: true
+        default: "2000000"
+      withdrawal-amount:
+        description: Net amount for each Zone withdrawal request.
+        type: string
+        required: true
+        default: "1000000"
+      recipient-mode:
+        description: Reuse funded recipients or use fresh recipients where the selected flow permits.
+        type: choice
+        required: true
+        default: existing
+        options:
+          - existing
+          - random
+      bootstrap-deposit-amount:
+        description: Untimed per-account bootstrap deposit amount.
+        type: string
+        required: true
+        default: "10000000"
+      callback-gas-limit:
+        description: L1 callback gas requested by composable withdrawals (maximum 10000000).
+        type: string
+        required: true
+        default: "5000000"
+      swap-liquidity:
+        description: Untimed liquidity seeded into the selected swap mechanism.
+        type: string
+        required: true
+        default: "10000000000"
+      l1-gas-limit:
+        description: Tempo L1 block gas limit.
+        type: string
+        required: true
+        default: "30000000"
+      l1-general-gas-limit:
+        description: Tempo L1 general transaction gas limit.
+        type: string
+        required: true
+        default: "30000000"
+      withdrawal-max-batch-gas:
+        description: Benchmark override for L1 withdrawal batch gas (node default 10000000; maximum 20000000).
+        type: string
+        required: true
+        default: "20000000"
+      withdrawal-max-in-flight-batches:
+        description: Benchmark override for ordered L1 withdrawal batches in flight (node default 8).
+        type: string
+        required: true
+        default: "12"
+      zone-batch-interval-blocks:
+        description: Zone blocks between withdrawal batch boundaries.
+        type: string
+        required: true
+        default: "120"
+      withdrawal-poll-interval-secs:
+        description: Seconds between L1 withdrawal-queue polls.
+        type: string
+        required: true
+        default: "5"
+      step-timeout:
+        description: Per-step scenario timeout (for example 10m).
+        type: string
+        required: true
+        default: 10m
+      setup-settlement-timeout-secs:
+        description: Maximum seconds to wait for each untimed setup settlement.
+        type: string
+        required: true
+        default: "120"
+      drain-timeout:
+        description: Seconds to drain submitted transactions; zero disables draining.
+        type: string
+        required: true
+        default: "300"
+      seed:
+        description: Optional unsigned txgen seed; empty derives one from the workflow run.
+        type: string
+        required: false
+        default: ""
+      tempo-hardfork:
+        description: Latest Tempo hardfork active during the benchmark, or `latest`.
+        type: string
+        required: false
+        default: latest
+      txgen-ref:
+        description: Exact txgen commit SHA; empty resolves the current txgen HEAD.
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zones-benchmark-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+  RUSTFLAGS: -C target-cpu=native
+  RUSTC_WRAPPER: sccache
+  SCCACHE_IDLE_TIMEOUT: "21600"
+  ZONES_BENCH_ACCOUNT_START: "16"
+  ZONES_BENCH_ACCOUNT_CAPACITY: "10000"
+
+jobs:
+  authorize:
+    permissions:
+      contents: read
+      id-token: write
+    name: Resolve benchmark request
+    # Scheduled benchmarks use upstream-only infrastructure and credentials.
+    # Private copies can still run an explicitly dispatched benchmark.
+    if: github.repository == 'tempoxyz/zones' || github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    outputs:
+      neobank-preset: ${{ steps.config.outputs.neobank-preset }}
+      sha: ${{ steps.config.outputs.sha }}
+      accounts: ${{ steps.config.outputs.accounts }}
+      count: ${{ steps.config.outputs.count }}
+      tps: ${{ steps.config.outputs.tps }}
+      max-concurrent: ${{ steps.config.outputs.max-concurrent }}
+      state-bloat-gib: ${{ steps.config.outputs.state-bloat-gib }}
+      force-bloat: ${{ steps.config.outputs.force-bloat }}
+      deposit-amount: ${{ steps.config.outputs.deposit-amount }}
+      bootstrap-deposit-amount: ${{ steps.config.outputs.bootstrap-deposit-amount }}
+      activity-amount: ${{ steps.config.outputs.activity-amount }}
+      withdrawal-amount: ${{ steps.config.outputs.withdrawal-amount }}
+      swap-mechanism: ${{ steps.config.outputs.swap-mechanism }}
+      recipient-mode: ${{ steps.config.outputs.recipient-mode }}
+      callback-gas-limit: ${{ steps.config.outputs.callback-gas-limit }}
+      swap-liquidity: ${{ steps.config.outputs.swap-liquidity }}
+      l1-gas-limit: ${{ steps.config.outputs.l1-gas-limit }}
+      l1-general-gas-limit: ${{ steps.config.outputs.l1-general-gas-limit }}
+      zone-gas-limit: ${{ steps.config.outputs.zone-gas-limit }}
+      withdrawal-max-batch-gas: ${{ steps.config.outputs.withdrawal-max-batch-gas }}
+      withdrawal-max-in-flight-batches: ${{ steps.config.outputs.withdrawal-max-in-flight-batches }}
+      zone-batch-interval-blocks: ${{ steps.config.outputs.zone-batch-interval-blocks }}
+      withdrawal-poll-interval-secs: ${{ steps.config.outputs.withdrawal-poll-interval-secs }}
+      step-timeout: ${{ steps.config.outputs.step-timeout }}
+      setup-settlement-timeout-secs: ${{ steps.config.outputs.setup-settlement-timeout-secs }}
+      drain-timeout: ${{ steps.config.outputs.drain-timeout }}
+      seed: ${{ steps.config.outputs.seed }}
+      tempo-hardfork: ${{ steps.config.outputs.tempo-hardfork }}
+      tempo-ref: ${{ steps.config.outputs.tempo-ref }}
+      txgen-ref: ${{ steps.config.outputs.txgen-ref }}
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Resolve configuration
+        id: config
+        env:
+          EVENT_SHA: ${{ github.sha }}
+          INPUT_PRESET: ${{ inputs.preset || 'full-journey' }}
+          INPUT_ACCOUNTS: ${{ inputs.accounts || '100' }}
+          INPUT_COUNT: ${{ inputs.count || '100' }}
+          INPUT_TPS: ${{ inputs.tps || '20' }}
+          INPUT_MAX_CONCURRENT: ${{ inputs.max-concurrent || '12' }}
+          INPUT_STATE_BLOAT_GIB: ${{ inputs.state-bloat-gib || '1' }}
+          INPUT_FORCE_BLOAT: ${{ inputs.force-bloat == true }}
+          INPUT_DEPOSIT_AMOUNT: ${{ inputs.deposit-amount || '2000000' }}
+          INPUT_BOOTSTRAP_DEPOSIT_AMOUNT: ${{ inputs.bootstrap-deposit-amount || '10000000' }}
+          INPUT_ACTIVITY_AMOUNT: "1"
+          INPUT_WITHDRAWAL_AMOUNT: ${{ inputs.withdrawal-amount || '1000000' }}
+          INPUT_SWAP_MECHANISM: direct-swap
+          INPUT_RECIPIENT_MODE: ${{ inputs.recipient-mode || 'existing' }}
+          INPUT_CALLBACK_GAS_LIMIT: ${{ inputs.callback-gas-limit || '5000000' }}
+          INPUT_SWAP_LIQUIDITY: ${{ inputs.swap-liquidity || '10000000000' }}
+          INPUT_L1_GAS_LIMIT: ${{ inputs.l1-gas-limit || '30000000' }}
+          INPUT_L1_GENERAL_GAS_LIMIT: ${{ inputs.l1-general-gas-limit || '30000000' }}
+          INPUT_WITHDRAWAL_MAX_BATCH_GAS: ${{ inputs.withdrawal-max-batch-gas || '20000000' }}
+          INPUT_WITHDRAWAL_MAX_IN_FLIGHT_BATCHES: ${{ inputs.withdrawal-max-in-flight-batches || '12' }}
+          INPUT_ZONE_BATCH_INTERVAL_BLOCKS: ${{ inputs.zone-batch-interval-blocks || '120' }}
+          INPUT_WITHDRAWAL_POLL_INTERVAL_SECS: ${{ inputs.withdrawal-poll-interval-secs || '5' }}
+          INPUT_STEP_TIMEOUT: ${{ inputs.step-timeout || '10m' }}
+          INPUT_SETUP_SETTLEMENT_TIMEOUT_SECS: ${{ inputs.setup-settlement-timeout-secs || '120' }}
+          INPUT_DRAIN_TIMEOUT: ${{ inputs.drain-timeout || '300' }}
+          INPUT_SEED: ${{ inputs.seed || '' }}
+          INPUT_TEMPO_HARDFORK: ${{ inputs.tempo-hardfork || 'latest' }}
+          INPUT_TXGEN_REF: ${{ inputs.txgen-ref || '' }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+
+          INPUT_TEMPO_REF="$(sed -nE 's/^tempo-alloy.*rev = "([0-9a-f]{40})".*/\1/p' Cargo.toml)"
+          INPUT_TEMPO_HARDFORK="${INPUT_TEMPO_HARDFORK,,}"
+          if [[ "$INPUT_TEMPO_HARDFORK" != latest && ! "$INPUT_TEMPO_HARDFORK" =~ ^t[0-9]+[a-z]*$ ]]; then
+            echo "::error::tempo-hardfork must be latest or a hardfork such as t11"
+            exit 1
+          fi
+
+          if [ -z "$INPUT_TXGEN_REF" ]; then
+            INPUT_TXGEN_REF="$(git ls-remote https://github.com/tempoxyz/txgen HEAD | awk '{print $1}')"
+          fi
+
+          neobank_preset="$INPUT_PRESET"
+          case "$neobank_preset" in
+            encrypted-deposit|private-withdrawal|full-journey|slippage-bounce|\
+            swapped-lifecycle|swapped-redemption) ;;
+            *) echo "::error::unsupported neobank preset: $neobank_preset"; exit 1 ;;
+          esac
+          leases_per_journey=1
+
+          if [ -z "$INPUT_SEED" ]; then
+            INPUT_SEED=$((10#$RUN_ID * 100000 + 10#$RUN_ATTEMPT))
+          fi
+          for name in \
+            INPUT_ACCOUNTS INPUT_COUNT INPUT_MAX_CONCURRENT \
+            INPUT_STATE_BLOAT_GIB INPUT_DEPOSIT_AMOUNT INPUT_ACTIVITY_AMOUNT \
+            INPUT_WITHDRAWAL_AMOUNT INPUT_BOOTSTRAP_DEPOSIT_AMOUNT \
+            INPUT_CALLBACK_GAS_LIMIT INPUT_SWAP_LIQUIDITY \
+            INPUT_L1_GAS_LIMIT INPUT_L1_GENERAL_GAS_LIMIT \
+            INPUT_WITHDRAWAL_MAX_BATCH_GAS INPUT_WITHDRAWAL_MAX_IN_FLIGHT_BATCHES \
+            INPUT_ZONE_BATCH_INTERVAL_BLOCKS INPUT_WITHDRAWAL_POLL_INTERVAL_SECS \
+            INPUT_SETUP_SETTLEMENT_TIMEOUT_SECS INPUT_DRAIN_TIMEOUT INPUT_SEED
+          do
+            value="${!name}"
+            if ! [[ "$value" =~ ^[0-9]+$ ]]; then
+              echo "::error::$name must be an unsigned integer"
+              exit 1
+            fi
+            if (( ${#value} > 18 )); then
+              echo "::error::$name is outside the supported unsigned-integer range"
+              exit 1
+            fi
+          done
+          for name in INPUT_ACCOUNTS INPUT_COUNT INPUT_MAX_CONCURRENT; do
+            value="${!name}"
+            if (( ${#value} > 9 || 10#$value == 0 )); then
+              echo "::error::$name must be between 1 and 999999999"
+              exit 1
+            fi
+          done
+          if ! [[ "$INPUT_TPS" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ ]] \
+            || ! awk -v value="$INPUT_TPS" 'BEGIN { exit !(value > 0 && value <= 999999999) }'; then
+            echo "::error::INPUT_TPS must be a positive decimal no greater than 999999999"
+            exit 1
+          fi
+          INPUT_TPS="$(awk -v value="$INPUT_TPS" 'BEGIN { printf "%.15g", value }')"
+          for name in \
+            INPUT_DEPOSIT_AMOUNT INPUT_BOOTSTRAP_DEPOSIT_AMOUNT \
+            INPUT_ACTIVITY_AMOUNT INPUT_WITHDRAWAL_AMOUNT
+          do
+            if ! [[ "${!name}" =~ ^0*[1-9][0-9]*$ ]]; then
+              echo "::error::$name must be greater than zero"
+              exit 1
+            fi
+          done
+          case "$INPUT_SWAP_MECHANISM" in
+            direct-swap) ;;
+            *) echo "::error::current Earn only supports swap-mechanism=direct-swap"; exit 1 ;;
+          esac
+          case "$INPUT_RECIPIENT_MODE" in
+            existing|random) ;;
+            *) echo "::error::recipient-mode must be existing or random"; exit 1 ;;
+          esac
+          if ! [[ "$INPUT_STEP_TIMEOUT" =~ ^([1-9][0-9]*)(ms|s|m|h)$ ]]; then
+            echo "::error::step-timeout must be a positive duration ending in ms, s, m, or h"
+            exit 1
+          fi
+          if (( ${#BASH_REMATCH[1]} > 9 )); then
+            echo "::error::step-timeout magnitude cannot exceed nine digits"
+            exit 1
+          fi
+          for name in \
+            INPUT_CALLBACK_GAS_LIMIT INPUT_SWAP_LIQUIDITY \
+            INPUT_L1_GAS_LIMIT INPUT_L1_GENERAL_GAS_LIMIT \
+            INPUT_WITHDRAWAL_MAX_BATCH_GAS INPUT_WITHDRAWAL_MAX_IN_FLIGHT_BATCHES \
+            INPUT_ZONE_BATCH_INTERVAL_BLOCKS INPUT_WITHDRAWAL_POLL_INTERVAL_SECS \
+            INPUT_SETUP_SETTLEMENT_TIMEOUT_SECS
+          do
+            value="${!name}"
+            if (( 10#$value == 0 )); then
+              echo "::error::$name must be greater than zero"
+              exit 1
+            fi
+          done
+          (( 10#$INPUT_CALLBACK_GAS_LIMIT <= 10000000 )) \
+            || { echo "::error::callback-gas-limit cannot exceed the 10000000 protocol cap"; exit 1; }
+          (( 10#$INPUT_L1_GENERAL_GAS_LIMIT <= 10#$INPUT_L1_GAS_LIMIT )) \
+            || { echo "::error::l1-general-gas-limit cannot exceed l1-gas-limit"; exit 1; }
+          (( 10#$INPUT_WITHDRAWAL_MAX_BATCH_GAS <= 20000000 )) \
+            || { echo "::error::withdrawal-max-batch-gas cannot exceed 20000000"; exit 1; }
+          (( 10#$INPUT_WITHDRAWAL_MAX_BATCH_GAS <= 10#$INPUT_L1_GENERAL_GAS_LIMIT )) \
+            || { echo "::error::withdrawal-max-batch-gas cannot exceed l1-general-gas-limit"; exit 1; }
+          planned_singleton_withdrawal_gas=0
+          case "$neobank_preset" in
+            encrypted-deposit) ;;
+            # Startup creates and retains an Earn warmup position with the full
+            # callback allowance before measured steady-state withdrawals.
+            *) planned_singleton_withdrawal_gas=$((500000 + 1750000 + 10000000)) ;;
+          esac
+          (( planned_singleton_withdrawal_gas == 0 ||
+             planned_singleton_withdrawal_gas <= 10#$INPUT_L1_GENERAL_GAS_LIMIT )) \
+            || { echo "::error::l1-general-gas-limit cannot fit a withdrawal planned at $planned_singleton_withdrawal_gas gas"; exit 1; }
+          (( 10#$INPUT_WITHDRAWAL_MAX_IN_FLIGHT_BATCHES <= 10000 )) \
+            || { echo "::error::withdrawal-max-in-flight-batches cannot exceed 10000"; exit 1; }
+          (( 10#$INPUT_ZONE_BATCH_INTERVAL_BLOCKS <= 1000000 )) \
+            || { echo "::error::zone-batch-interval-blocks cannot exceed 1000000"; exit 1; }
+          (( 10#$INPUT_WITHDRAWAL_POLL_INTERVAL_SECS <= 86400 )) \
+            || { echo "::error::withdrawal-poll-interval-secs cannot exceed 86400"; exit 1; }
+          (( 10#$INPUT_SETUP_SETTLEMENT_TIMEOUT_SECS <= 86400 )) \
+            || { echo "::error::setup-settlement-timeout-secs cannot exceed 86400"; exit 1; }
+          (( 10#$INPUT_DRAIN_TIMEOUT <= 86400 )) \
+            || { echo "::error::drain-timeout cannot exceed 86400"; exit 1; }
+          required_accounts=$((10#$INPUT_MAX_CONCURRENT * leases_per_journey))
+          if (( required_accounts > 10#$INPUT_ACCOUNTS )); then
+            echo "::error::$neobank_preset requires at least $required_accounts accounts for max-concurrent=$INPUT_MAX_CONCURRENT"
+            exit 1
+          fi
+          case "$INPUT_STATE_BLOAT_GIB" in
+            0|1|10|100) ;;
+            *) echo "::error::state-bloat-gib must be 0, 1, 10, or 100"; exit 1 ;;
+          esac
+          case "$INPUT_FORCE_BLOAT" in
+            true) INPUT_FORCE_BLOAT=1 ;;
+            false) INPUT_FORCE_BLOAT=0 ;;
+            *) echo "::error::force-bloat must be true or false"; exit 1 ;;
+          esac
+          INPUT_ACCOUNTS=$((10#$INPUT_ACCOUNTS))
+          INPUT_COUNT=$((10#$INPUT_COUNT))
+          INPUT_MAX_CONCURRENT=$((10#$INPUT_MAX_CONCURRENT))
+          INPUT_STATE_BLOAT_GIB=$((10#$INPUT_STATE_BLOAT_GIB))
+          swap_liquidity=$((10#$INPUT_SWAP_LIQUIDITY))
+          withdrawal_amount=$((10#$INPUT_WITHDRAWAL_AMOUNT))
+          if (( INPUT_ACCOUNTS > 10000 )); then
+            echo "::error::accounts cannot exceed the cached funded-account capacity of 10000"
+            exit 1
+          fi
+          required_swap_uses=0
+          case "$neobank_preset" in
+            full-journey|swapped-lifecycle) required_swap_uses=$INPUT_MAX_CONCURRENT ;;
+            private-withdrawal|swapped-redemption)
+              setup_journeys_per_account=$(((INPUT_COUNT + INPUT_ACCOUNTS - 1) / INPUT_ACCOUNTS))
+              callback_reservation=$((1750000 + 10#$INPUT_CALLBACK_GAS_LIMIT))
+              callbacks_per_batch=$(((10#$INPUT_WITHDRAWAL_MAX_BATCH_GAS - 500000) / callback_reservation))
+              if (( callbacks_per_batch == 0 )); then
+                callbacks_per_batch=1
+              fi
+              setup_batch_uses=$((callbacks_per_batch * setup_journeys_per_account))
+              required_swap_uses=$INPUT_MAX_CONCURRENT
+              if (( setup_batch_uses > required_swap_uses )); then
+                required_swap_uses=$setup_batch_uses
+              fi
+              ;;
+            slippage-bounce) required_swap_uses=1 ;;
+          esac
+          if (( required_swap_uses > 0 && swap_liquidity / withdrawal_amount < required_swap_uses )); then
+            echo "::error::$INPUT_SWAP_MECHANISM liquidity must cover $required_swap_uses swap(s) of withdrawal-amount=$withdrawal_amount for $neobank_preset"
+            exit 1
+          fi
+          for name in INPUT_TEMPO_REF INPUT_TXGEN_REF; do
+            if ! [[ "${!name}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+              echo "::error::$name must be an exact 40-character commit SHA"
+              exit 1
+            fi
+          done
+
+          {
+            echo "neobank-preset=$neobank_preset"
+            echo "sha=$EVENT_SHA"
+            echo "accounts=$INPUT_ACCOUNTS"
+            echo "count=$INPUT_COUNT"
+            echo "tps=$INPUT_TPS"
+            echo "max-concurrent=$INPUT_MAX_CONCURRENT"
+            echo "state-bloat-gib=$INPUT_STATE_BLOAT_GIB"
+            echo "force-bloat=$INPUT_FORCE_BLOAT"
+            echo "deposit-amount=$INPUT_DEPOSIT_AMOUNT"
+            echo "bootstrap-deposit-amount=$INPUT_BOOTSTRAP_DEPOSIT_AMOUNT"
+            echo "activity-amount=$INPUT_ACTIVITY_AMOUNT"
+            echo "withdrawal-amount=$INPUT_WITHDRAWAL_AMOUNT"
+            echo "swap-mechanism=$INPUT_SWAP_MECHANISM"
+            echo "recipient-mode=$INPUT_RECIPIENT_MODE"
+            echo "callback-gas-limit=$INPUT_CALLBACK_GAS_LIMIT"
+            echo "swap-liquidity=$INPUT_SWAP_LIQUIDITY"
+            echo "l1-gas-limit=$INPUT_L1_GAS_LIMIT"
+            echo "l1-general-gas-limit=$INPUT_L1_GENERAL_GAS_LIMIT"
+            echo "zone-gas-limit=$INPUT_L1_GAS_LIMIT"
+            echo "withdrawal-max-batch-gas=$INPUT_WITHDRAWAL_MAX_BATCH_GAS"
+            echo "withdrawal-max-in-flight-batches=$INPUT_WITHDRAWAL_MAX_IN_FLIGHT_BATCHES"
+            echo "zone-batch-interval-blocks=$INPUT_ZONE_BATCH_INTERVAL_BLOCKS"
+            echo "withdrawal-poll-interval-secs=$INPUT_WITHDRAWAL_POLL_INTERVAL_SECS"
+            echo "step-timeout=$INPUT_STEP_TIMEOUT"
+            echo "setup-settlement-timeout-secs=$INPUT_SETUP_SETTLEMENT_TIMEOUT_SECS"
+            echo "drain-timeout=$INPUT_DRAIN_TIMEOUT"
+            echo "seed=$INPUT_SEED"
+            echo "tempo-hardfork=$INPUT_TEMPO_HARDFORK"
+            echo "tempo-ref=$INPUT_TEMPO_REF"
+            echo "txgen-ref=$INPUT_TXGEN_REF"
+          } >> "$GITHUB_OUTPUT"
+
+  benchmark:
+    name: neobank-${{ needs.authorize.outputs.neobank-preset }}
+    needs: authorize
+    runs-on: [self-hosted, Linux, X64, bare-metal-dual-schelk]
+    timeout-minutes: 300
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ZONES_BENCH_PHASE: neobank-e2e
+      ZONES_BENCH_NEOBANK_PRESET: ${{ needs.authorize.outputs.neobank-preset }}
+      ZONES_BENCH_ACCOUNTS: ${{ needs.authorize.outputs.accounts }}
+      ZONES_BENCH_COUNT: ${{ needs.authorize.outputs.count }}
+      ZONES_BENCH_TPS: ${{ needs.authorize.outputs.tps }}
+      ZONES_BENCH_MAX_CONCURRENT: ${{ needs.authorize.outputs.max-concurrent }}
+      ZONES_BENCH_BLOAT_GIB: ${{ needs.authorize.outputs.state-bloat-gib }}
+      ZONES_BENCH_FORCE_BLOAT: ${{ needs.authorize.outputs.force-bloat }}
+      ZONES_BENCH_DEPOSIT_AMOUNT: ${{ needs.authorize.outputs.deposit-amount }}
+      ZONES_BENCH_BOOTSTRAP_DEPOSIT_AMOUNT: ${{ needs.authorize.outputs.bootstrap-deposit-amount }}
+      ZONES_BENCH_ACTIVITY_AMOUNT: ${{ needs.authorize.outputs.activity-amount }}
+      ZONES_BENCH_WITHDRAWAL_AMOUNT: ${{ needs.authorize.outputs.withdrawal-amount }}
+      ZONES_BENCH_SWAP_MECHANISM: ${{ needs.authorize.outputs.swap-mechanism }}
+      ZONES_BENCH_RECIPIENT_MODE: ${{ needs.authorize.outputs.recipient-mode }}
+      ZONES_BENCH_CALLBACK_GAS_LIMIT: ${{ needs.authorize.outputs.callback-gas-limit }}
+      ZONES_BENCH_SWAP_LIQUIDITY: ${{ needs.authorize.outputs.swap-liquidity }}
+      ZONES_BENCH_L1_GAS_LIMIT: ${{ needs.authorize.outputs.l1-gas-limit }}
+      ZONES_BENCH_L1_GENERAL_GAS_LIMIT: ${{ needs.authorize.outputs.l1-general-gas-limit }}
+      ZONES_BENCH_ZONE_GAS_LIMIT: ${{ needs.authorize.outputs.zone-gas-limit }}
+      ZONES_BENCH_WITHDRAWAL_MAX_BATCH_GAS: ${{ needs.authorize.outputs.withdrawal-max-batch-gas }}
+      ZONES_BENCH_WITHDRAWAL_MAX_IN_FLIGHT_BATCHES: ${{ needs.authorize.outputs.withdrawal-max-in-flight-batches }}
+      ZONES_BENCH_ZONE_BATCH_INTERVAL_BLOCKS: ${{ needs.authorize.outputs.zone-batch-interval-blocks }}
+      ZONES_BENCH_WITHDRAWAL_POLL_INTERVAL_SECS: ${{ needs.authorize.outputs.withdrawal-poll-interval-secs }}
+      ZONES_BENCH_STEP_TIMEOUT: ${{ needs.authorize.outputs.step-timeout }}
+      ZONES_BENCH_SETUP_SETTLEMENT_TIMEOUT_SECS: ${{ needs.authorize.outputs.setup-settlement-timeout-secs }}
+      ZONES_BENCH_DRAIN_TIMEOUT: ${{ needs.authorize.outputs.drain-timeout }}
+      ZONES_BENCH_SEED: ${{ needs.authorize.outputs.seed }}
+      ZONES_BENCH_TEMPO_HARDFORK: ${{ needs.authorize.outputs.tempo-hardfork }}
+      ZONES_BENCH_TEMPO_REF: ${{ needs.authorize.outputs.tempo-ref }}
+      ZONES_BENCH_TXGEN_REF: ${{ needs.authorize.outputs.txgen-ref }}
+      ZONES_BENCH_ZONES_REF: ${{ needs.authorize.outputs.sha }}
+      ZONES_BENCH_GIT_REF: ${{ github.ref_name }}
+      ZONES_BENCH_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+      ZONES_BENCH_GITHUB_REPOSITORY: ${{ github.repository }}
+      ZONES_BENCH_GITHUB_RUN_ID: ${{ github.run_id }}
+      ZONES_BENCH_GITHUB_WORKFLOW: zones-benchmark.yml
+      ZONES_BENCH_BUILD_PROFILE: profiling
+      ZONES_BENCH_L1_A_CPUS: 0-3,16-19
+      ZONES_BENCH_L1_B_CPUS: 4-7,20-23
+      ZONES_BENCH_ZONE_CPUS: 8-13,24-29
+      ZONES_BENCH_CPUSET: 14-15,30-31
+      ZONES_BENCH_OUTPUT: target/zones-benchmark/neobank-e2e
+      ZONES_BENCH_REPORT: target/zones-benchmark/report-neobank-e2e.json
+      ZONES_BENCH_SPF_OUTPUT: target/zones-benchmark/spf-input.json
+      ZONES_BENCH_SPF_PROFILE: target/zones-benchmark/spf-profile.json.gz
+      ZONES_BENCH_SPF_PROFILE_URL: target/zones-benchmark/spf-profile-url.txt
+      ZONES_BENCH_SPF_REPORT: target/zones-benchmark/spf-report.txt
+      ZONES_BENCH_SPF_SUMMARY: target/zones-benchmark/spf-summary.md
+      ZONES_BENCH_SPF_RANGE: target/zones-benchmark/spf-range.env
+      ZONES_BENCH_TOPOLOGY_ENV: target/zones-benchmark/topology.env
+      ZONES_BENCH_TOPOLOGY_DIR: target/zones-benchmark/topology
+      TEMPO_ROOT: ${{ github.workspace }}/_benchmark-tempo
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.authorize.outputs.sha }}
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Mint read-only Earn token
+        id: earn-token
+        uses: tempoxyz/gh-actions/actions/github-sts@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        with:
+          scope: tempoxyz/earn
+          policy: zones-read
+      - name: Check out Earn contracts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: tempoxyz/earn
+          ref: main
+          path: earn
+          token: ${{ steps.earn-token.outputs.token }}
+          persist-credentials: false
+
+      - name: Initialize Earn public dependencies
+        working-directory: earn
+        # PropAMM is private and only needed by Earn's integration tests.
+        run: git submodule update --init lib/forge-std lib/openzeppelin-contracts lib/openzeppelin-contracts-upgradeable
+
+      - name: Prepare persistent topology control path
+        env:
+          RUNNER_TOOL_CACHE_DIR: ${{ runner.tool_cache }}
+        run: |
+          set -euo pipefail
+          control_root="${RUNNER_TOOL_CACHE_DIR:?}/zones-benchmark"
+          mkdir -p "$control_root"
+          echo "ZONES_BENCH_PID_FILE=$control_root/topology.pids" >> "$GITHUB_ENV"
+
+      - name: Stop stale benchmark topology
+        run: |
+          set -euo pipefail
+          contrib/bench/provision-topology.sh cleanup "$ZONES_BENCH_PID_FILE"
+
+      - name: Configure ClickHouse scenario reporting
+        env:
+          CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
+          CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
+          CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in CLICKHOUSE_URL CLICKHOUSE_USER CLICKHOUSE_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "::error::$name is not available to the Zones benchmark workflow"
+              exit 1
+            fi
+          done
+          echo "::add-mask::$CLICKHOUSE_URL"
+          echo "::add-mask::$CLICKHOUSE_USER"
+          echo "::add-mask::$CLICKHOUSE_PASSWORD"
+
+      - name: Check out pinned Tempo L1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: tempoxyz/tempo
+          ref: ${{ needs.authorize.outputs.tempo-ref }}
+          path: _benchmark-tempo
+          persist-credentials: false
+          submodules: recursive
+
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        with:
+          toolchain: stable
+      - uses: tempoxyz/gh-actions/actions/setup-mold@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        with:
+          version: v0.15.0
+
+      - uses: tempoxyz/gh-actions/actions/setup-foundry@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        with:
+          version: nightly-fc14f674bd853bc817c308a5202faa5be8df05e7
+
+      - name: Resolve Solidity cache key
+        id: solidity-key
+        run: |
+          set -euo pipefail
+          earn_sha="$(git -C earn rev-parse HEAD)"
+          {
+            echo "forge-sha=$(forge --version | sed -n 's/^Commit SHA: //p')"
+            echo "contracts-tree=$(git rev-parse HEAD:crates/contracts)"
+            echo "earn-sha=$earn_sha"
+          } >> "$GITHUB_OUTPUT"
+          echo "ZONES_BENCH_EARN_REVISION=$earn_sha" >> "$GITHUB_ENV"
+
+      - name: Restore Solidity artifacts
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            earn/cache
+            crates/contracts/cache
+            crates/contracts/out
+            crates/contracts/benchmark-out
+          key: forge-${{ runner.os }}-${{ steps.solidity-key.outputs.forge-sha }}-${{ steps.solidity-key.outputs.contracts-tree }}-${{ steps.solidity-key.outputs.earn-sha }}
+
+      - name: Add file-backed mnemonic support to pinned Tempo xtask
+        run: |
+          set -euo pipefail
+          patch=contrib/bench/patches/tempo-xtask-mnemonic-file.patch
+          git -C "$TEMPO_ROOT" apply --check "$GITHUB_WORKSPACE/$patch"
+          git -C "$TEMPO_ROOT" apply "$GITHUB_WORKSPACE/$patch"
+
+      - name: Prepare persistent build directories
+        env:
+          RUNNER_TOOL_CACHE_DIR: ${{ runner.tool_cache }}
+        run: |
+          set -euo pipefail
+          cache_base="${RUNNER_TOOL_CACHE_DIR:-${RUNNER_TEMP:?}/zones-benchmark-build-cache}"
+          build_key="$({ rustc -vV; printf '%s\n' "$RUSTFLAGS" profiling; } \
+            | sha256sum | awk '{print $1}')"
+          cache_root="$cache_base/zones-benchmark/cargo"
+          zones_target="$cache_root/zones/$build_key"
+          tempo_target="$cache_root/tempo/$ZONES_BENCH_TEMPO_REF/$build_key"
+          mkdir -p "$zones_target" "$tempo_target"
+          {
+            echo "ZONES_BENCH_ZONES_TARGET_DIR=$zones_target"
+            echo "ZONES_BENCH_TEMPO_TARGET_DIR=$tempo_target"
+          } >> "$GITHUB_ENV"
+
+      - name: Restore isolated benchmark volumes
+        run: |
+          set -euo pipefail
+          command -v nu >/dev/null
+          nu "$TEMPO_ROOT/bench-schelk.nu" restore /var/lib/schelk/a.json /reth-bench-a
+          nu "$TEMPO_ROOT/bench-schelk.nu" restore /var/lib/schelk/b.json /reth-bench-b
+          nu "$TEMPO_ROOT/bench-schelk.nu" mark-dirty /var/lib/schelk/a.json
+          nu "$TEMPO_ROOT/bench-schelk.nu" mark-dirty /var/lib/schelk/b.json
+          bloat_mib=$((10#$ZONES_BENCH_BLOAT_GIB * 1000))
+          {
+            echo "ZONES_BENCH_BLOAT_MIB=$bloat_mib"
+            echo "ZONES_BENCH_STATE_A_ROOT=/reth-bench-a/zones-l1-${bloat_mib}mb"
+            echo "ZONES_BENCH_STATE_B_ROOT=/reth-bench-b/zones-l1-${bloat_mib}mb"
+            echo "ZONES_BENCH_ZONE_STATE_ROOT=/reth-bench-a/zones-runtime-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            echo "ZONES_BENCH_L1_CACHE_STATUS_FILE=$GITHUB_WORKSPACE/target/zones-benchmark/l1-cache.env"
+          } >> "$GITHUB_ENV"
+
+      - name: Prepare private benchmark identity
+        env:
+          RUNNER_TOOL_CACHE_DIR: ${{ runner.tool_cache }}
+        run: |
+          set -euo pipefail
+          identity_root="${RUNNER_TOOL_CACHE_DIR:?}/zones-benchmark/identity"
+          mnemonic_file="$identity_root/mnemonic"
+          mkdir -p "$identity_root"
+          chmod 700 "$identity_root"
+          if [ -L "$mnemonic_file" ]; then
+            echo "::error::runner-local benchmark mnemonic must not be a symbolic link"
+            exit 1
+          fi
+          if [ ! -s "$mnemonic_file" ]; then
+            temporary="$(mktemp "$identity_root/.mnemonic.XXXXXX")"
+            chmod 600 "$temporary"
+            mnemonic="$(cast wallet new-mnemonic --words 24 --accounts 0 --json | jq -r .mnemonic)"
+            printf '%s\n' "$mnemonic" > "$temporary"
+            mv -f -- "$temporary" "$mnemonic_file"
+          else
+            mnemonic="$(tr -d '\r\n' < "$mnemonic_file")"
+          fi
+          if [ "$(awk 'END { print NR }' "$mnemonic_file")" != 1 ]; then
+            echo "::error::runner-local benchmark mnemonic must contain exactly one line"
+            exit 1
+          fi
+          if [ -z "$mnemonic" ] || [ "$mnemonic" = "test test test test test test test test test test test junk" ]; then
+            echo "::error::runner-local benchmark mnemonic is empty or public"
+            exit 1
+          fi
+          chmod 600 "$mnemonic_file"
+          echo "::add-mask::$mnemonic"
+          echo "ZONES_BENCH_MNEMONIC_FILE=$mnemonic_file" >> "$GITHUB_ENV"
+          unset mnemonic
+
+      - name: Build real L1 and Zone binaries
+        run: |
+          set -euo pipefail
+          cargo build --target-dir "$ZONES_BENCH_ZONES_TARGET_DIR" \
+            --locked --profile profiling -p tempo-zone -p tempo-zone-prover-utils -p tempo-xtask
+          nu -c "source '$TEMPO_ROOT/tempo.nu'; build-in-worktree --no-default-features \
+            '$TEMPO_ROOT' '$ZONES_BENCH_TEMPO_REF' profiling \
+            'jemalloc,asm-keccak,keccak-cache-global,otlp' \
+            '$ZONES_BENCH_TEMPO_REF'"
+          cargo build --target-dir "$ZONES_BENCH_TEMPO_TARGET_DIR" \
+            --locked --manifest-path "$TEMPO_ROOT/Cargo.toml" --profile profiling -p tempo-xtask
+          {
+            echo "ZONE_BIN=$ZONES_BENCH_ZONES_TARGET_DIR/profiling/tempo-zone"
+            echo "SPF_BIN=$ZONES_BENCH_ZONES_TARGET_DIR/profiling/tempo-zone-prover-utils"
+            echo "ZONES_XTASK_BIN=$ZONES_BENCH_ZONES_TARGET_DIR/profiling/tempo-xtask"
+            echo "TEMPO_BIN=$TEMPO_ROOT/target/profiling/tempo"
+            echo "TEMPO_XTASK_BIN=$ZONES_BENCH_TEMPO_TARGET_DIR/profiling/tempo-xtask"
+          } >> "$GITHUB_ENV"
+
+      - name: Build neobank fixture contracts
+        run: |
+          set -euo pipefail
+          forge build --root crates/contracts --no-lint
+          mkdir -p crates/contracts/benchmark-out
+          cp -a crates/contracts/out/. crates/contracts/benchmark-out/
+          forge build \
+            --root earn \
+            --skip test \
+            --skip script \
+            --no-lint \
+            --out "$GITHUB_WORKSPACE/crates/contracts/benchmark-out"
+          test -s crates/contracts/benchmark-out/SingleZoneEarnRouter.sol/SingleZoneEarnRouter.json
+          test -s crates/contracts/benchmark-out/EarnVault.sol/EarnVault.json
+          test -s crates/contracts/benchmark-out/EarnFees.sol/EarnFees.json
+          test -s crates/contracts/benchmark-out/EarnFactory.sol/EarnFactory.json
+          test -s crates/contracts/benchmark-out/EarnContributionController.sol/EarnContributionController.json
+          test -s crates/contracts/benchmark-out/ERC4626Engine.sol/ERC4626Engine.json
+          test -s crates/contracts/benchmark-out/Simple4626Vault.sol/Simple4626Vault.json
+          test -s crates/contracts/benchmark-out/DemoTokenAuthority.sol/DemoTokenAuthority.json
+          test -s crates/contracts/benchmark-out/BridgeWalletFixture.sol/BridgeWalletFixture.json
+
+      - name: Prepare or restore persistent Tempo L1 baseline
+        run: |
+          set -euo pipefail
+          contrib/bench/provision-topology.sh prepare-l1
+          # shellcheck source=/dev/null
+          source "$ZONES_BENCH_L1_CACHE_STATUS_FILE"
+          if [ "$ZONES_BENCH_L1_CACHE_REBUILT" = 1 ]; then
+            echo "promoting completed validator databases as the new virgin snapshot"
+            nu "$TEMPO_ROOT/bench-schelk.nu" promote /var/lib/schelk/a.json
+            nu "$TEMPO_ROOT/bench-schelk.nu" promote /var/lib/schelk/b.json
+            echo "restoring private writable copies of the promoted snapshot"
+            nu "$TEMPO_ROOT/bench-schelk.nu" restore /var/lib/schelk/a.json /reth-bench-a
+            nu "$TEMPO_ROOT/bench-schelk.nu" restore /var/lib/schelk/b.json /reth-bench-b
+            nu "$TEMPO_ROOT/bench-schelk.nu" mark-dirty /var/lib/schelk/a.json
+            nu "$TEMPO_ROOT/bench-schelk.nu" mark-dirty /var/lib/schelk/b.json
+            contrib/bench/provision-topology.sh verify-l1
+            # shellcheck source=/dev/null
+            source "$ZONES_BENCH_L1_CACHE_STATUS_FILE"
+          fi
+          {
+            echo "ZONES_BENCH_L1_CACHE_REBUILT=$ZONES_BENCH_L1_CACHE_REBUILT"
+            echo "ZONES_BENCH_TEMPO_HARDFORK=$ZONES_BENCH_TEMPO_HARDFORK"
+            echo "ZONES_BENCH_L1_CACHE_KEY=$ZONES_BENCH_L1_CACHE_KEY"
+            echo "ZONES_BENCH_L1_CACHE_GENERATION=$ZONES_BENCH_L1_CACHE_GENERATION"
+          } >> "$GITHUB_ENV"
+
+      - name: Install latest txgen
+        run: |
+          set -euo pipefail
+          cargo_bin_dir="${CARGO_HOME:-$HOME/.cargo}/bin"
+          cargo install \
+            --git https://github.com/tempoxyz/txgen \
+            --rev "$ZONES_BENCH_TXGEN_REF" \
+            --locked \
+            txgen-tempo bench-cli
+          echo "$cargo_bin_dir" >> "$GITHUB_PATH"
+          echo "TXGEN_TEMPO_BIN=$cargo_bin_dir/txgen-tempo" >> "$GITHUB_ENV"
+          echo "TXGEN_BENCH_BIN=$cargo_bin_dir/bench" >> "$GITHUB_ENV"
+
+      - name: Apply benchmark host tuning
+        run: |
+          set -euo pipefail
+          echo "ZONES_BENCH_TUNED=1" >> "$GITHUB_ENV"
+          nu -c "source '$TEMPO_ROOT/tempo.nu'; apply-system-tuning | ignore"
+
+      - name: Install pinned Samply profiler
+        run: |
+          set -euo pipefail
+          cargo install samply \
+            --git https://github.com/DaniPopes/samply \
+            --rev 06f9075697ad144feaf3e15c2254a043b243fdbf \
+            --locked \
+            --force
+          samply_path="$(command -v samply)"
+          "$samply_path" --version
+          samply_help="$(samply record --help)"
+          grep -Eq '^[[:space:]]+--presymbolicate([[:space:]]|$)' <<< "$samply_help"
+          grep -Eq '^[[:space:]]+--share([[:space:]]|$)' <<< "$samply_help"
+          for setting in perf_event_paranoid kptr_restrict; do
+            path="/proc/sys/kernel/$setting"
+            if [[ -r "$path" ]]; then
+              printf 'kernel.%s=%s\n' "$setting" "$(< "$path")"
+            fi
+          done
+
+      - name: Provision topology and run neobank workload
+        env:
+          CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
+          CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
+          CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+          ZONES_BENCH_REQUIRE_CLICKHOUSE: "1"
+        run: |
+          set -euo pipefail
+          export ZONES_BENCH_ENV_FILE="$ZONES_BENCH_TOPOLOGY_ENV"
+          contrib/bench/provision-topology.sh up
+          set -a
+          # shellcheck source=/dev/null
+          source "$ZONES_BENCH_TOPOLOGY_ENV"
+          set +a
+          for name in \
+            L1_RPC_URL L1_WS_RPC_URL ZONES_BENCH_L1_QUERY_RPC_URL ZONES_BENCH_L1_SUBMIT_RPC_URLS \
+            ZONE_RPC_URL ZONE_WS_RPC_URL ZONE_PRIVATE_RPC_URL ZONE_REDACTED_RPC_URL \
+            ZONES_BENCH_TEMPO_GENESIS ZONES_BENCH_ZONE_GENESIS \
+            L1_PORTAL_ADDRESS ZONES_BENCH_TOKEN \
+            ZONES_BENCH_EXPECTED_L1_CHAIN_ID ZONES_BENCH_EXPECTED_ZONE_CHAIN_ID \
+            ZONES_BENCH_EXPECTED_ZONE_ID ZONES_BENCH_TARGET_ID \
+            ZONES_BENCH_L1_GAS_LIMIT ZONES_BENCH_L1_GENERAL_GAS_LIMIT ZONES_BENCH_ZONE_GAS_LIMIT \
+            ZONES_BENCH_L1_METRICS_URL ZONES_BENCH_ZONE_METRICS_URL \
+            ZONES_BENCH_TOPOLOGY_DIR
+          do
+            printf '%s=%s\n' "$name" "${!name}" >> "$GITHUB_ENV"
+          done
+          contrib/bench/run-neobank-private-flow.sh
+
+      - name: Generate and validate SPF input
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "$ZONES_BENCH_SPF_OUTPUT")"
+          test -s "$ZONES_BENCH_SPF_RANGE"
+          # shellcheck source=/dev/null
+          source "$ZONES_BENCH_SPF_RANGE"
+          [[ "$ZONES_BENCH_SPF_FROM_BLOCK" =~ ^[0-9]+$ ]]
+          [[ "$ZONES_BENCH_SPF_TO_BLOCK" =~ ^[0-9]+$ ]]
+          (( ZONES_BENCH_SPF_FROM_BLOCK <= ZONES_BENCH_SPF_TO_BLOCK ))
+          private_key="$(cast wallet private-key \
+            --mnemonic "$ZONES_BENCH_MNEMONIC_FILE" \
+            --mnemonic-index 4)"
+          trap 'unset private_key' EXIT
+
+          samply_args=(
+            record
+            --save-only
+            --presymbolicate
+            --share
+            --output "$ZONES_BENCH_SPF_PROFILE"
+          )
+          set +e
+          PRIVATE_KEY="$private_key" samply "${samply_args[@]}" -- \
+            taskset --cpu-list "$ZONES_BENCH_CPUSET" \
+              "$SPF_BIN" generate-input \
+              --tempo-rpc-url "$ZONES_BENCH_L1_QUERY_RPC_URL" \
+              --chain "$ZONES_BENCH_ZONE_GENESIS" \
+              --zone-private-rpc-url "$ZONE_PRIVATE_RPC_URL" \
+              --zone-unrestricted-rpc-url "$ZONE_RPC_URL" \
+              --from-block "$ZONES_BENCH_SPF_FROM_BLOCK" \
+              --to-block "$ZONES_BENCH_SPF_TO_BLOCK" \
+              --output "$ZONES_BENCH_SPF_OUTPUT" \
+            > "$ZONES_BENCH_SPF_REPORT" \
+            2> target/zones-benchmark/spf.log
+          spf_status=$?
+          set -e
+          if (( spf_status == 0 )) && [[ ! -s "$ZONES_BENCH_SPF_PROFILE" ]]; then
+            echo "Samply did not produce $ZONES_BENCH_SPF_PROFILE" \
+              >> target/zones-benchmark/spf.log
+            spf_status=1
+          fi
+          profile_url="$(sed -n \
+            's#^View it at: \(https://profiler\.firefox\.com/public/[^[:space:]]*\)$#\1#p' \
+            target/zones-benchmark/spf.log | tail -n 1)"
+          if (( spf_status == 0 )) && [[ -z "$profile_url" ]]; then
+            echo "Samply did not return a Firefox Profiler URL" \
+              >> target/zones-benchmark/spf.log
+            spf_status=1
+          elif [[ -n "$profile_url" ]]; then
+            printf '%s\n' "$profile_url" > "$ZONES_BENCH_SPF_PROFILE_URL"
+          fi
+          if (( spf_status == 0 )) &&
+             [[ "$ZONES_BENCH_NEOBANK_PRESET" != encrypted-deposit ]] &&
+             ! grep -Eq '^  User transactions: +[1-9][0-9]*$' "$ZONES_BENCH_SPF_REPORT"
+          then
+            echo "selected SPF range contains no measured Zone user transactions" \
+              >> target/zones-benchmark/spf.log
+            spf_status=1
+          fi
+
+          {
+            echo "## SPF benchmark"
+            echo
+            if (( spf_status == 0 )); then
+              echo "[Open the CPU profile in Firefox Profiler]($profile_url)"
+              echo
+              echo '```text'
+              cat "$ZONES_BENCH_SPF_REPORT"
+              echo '```'
+            else
+              echo "> SPF input generation or local validation failed. See \`spf.log\` in the workflow artifact."
+            fi
+          } > "$ZONES_BENCH_SPF_SUMMARY"
+          exit "$spf_status"
+
+      - name: Publish benchmark results
+        if: ${{ !cancelled() }}
+        env:
+          SUMMARY_STATE_BLOAT_GIB: ${{ needs.authorize.outputs.state-bloat-gib }}
+        run: |
+          set -euo pipefail
+          summary=target/zones-benchmark/summary.md
+          mkdir -p "$(dirname "$summary")"
+          results_args=(
+            --report "$ZONES_BENCH_REPORT"
+            --output "$summary"
+          )
+          if [ -s "$ZONES_BENCH_REPORT" ]; then
+            results_args+=(
+              --scenario "$ZONES_BENCH_OUTPUT/scenario.rendered.yml"
+            )
+            "$ZONES_XTASK_BIN" benchmark-results "${results_args[@]}"
+          else
+            {
+              echo "# Zones benchmark results"
+              echo
+              echo "> No txgen report was produced. See the benchmark and node logs for the setup or runtime failure."
+            } > "$summary"
+          fi
+
+          unit=Journeys
+          rate="Target journey starts/s"
+          snapshot_status=hit
+          if [ "${ZONES_BENCH_L1_CACHE_REBUILT:-0}" = 1 ]; then
+            snapshot_status=rebuilt
+          fi
+          {
+            echo
+            echo "## Run configuration"
+            echo
+            echo "- Neobank preset: \`$ZONES_BENCH_NEOBANK_PRESET\`"
+            echo "- Swap mechanism: \`$ZONES_BENCH_SWAP_MECHANISM\` (setup liquidity \`$ZONES_BENCH_SWAP_LIQUIDITY\`)"
+            echo "- Callback gas limit: \`$ZONES_BENCH_CALLBACK_GAS_LIMIT\`"
+            echo "- Recipient mode: \`$ZONES_BENCH_RECIPIENT_MODE\`"
+            echo "- $unit: \`$ZONES_BENCH_COUNT\`"
+            echo "- $rate: \`$ZONES_BENCH_TPS\`"
+            echo "- Maximum concurrency: \`$ZONES_BENCH_MAX_CONCURRENT\`"
+            echo "- Accounts: \`$ZONES_BENCH_ACCOUNTS\`"
+            echo "- Amounts (deposit / activity / withdrawal / bootstrap): \`$ZONES_BENCH_DEPOSIT_AMOUNT\` / \`$ZONES_BENCH_ACTIVITY_AMOUNT\` / \`$ZONES_BENCH_WITHDRAWAL_AMOUNT\` / \`$ZONES_BENCH_BOOTSTRAP_DEPOSIT_AMOUNT\`"
+            echo "- Step / setup settlement / drain timeouts: \`$ZONES_BENCH_STEP_TIMEOUT\` / \`${ZONES_BENCH_SETUP_SETTLEMENT_TIMEOUT_SECS}s\` / \`${ZONES_BENCH_DRAIN_TIMEOUT}s\`"
+            echo "- Txgen seed: \`$ZONES_BENCH_SEED\`"
+            echo "- Tempo L1 state bloat: \`bloat=$SUMMARY_STATE_BLOAT_GIB\` (\`$((10#$SUMMARY_STATE_BLOAT_GIB * 1000)) MiB\` per validator)"
+            echo "- L1 snapshot: \`$snapshot_status\` (key \`${ZONES_BENCH_L1_CACHE_KEY:-unavailable}\`)"
+            echo "- Target: \`${ZONES_BENCH_TARGET_ID:-unavailable}\`"
+            echo "- Zones revision: \`$ZONES_BENCH_ZONES_REF\`"
+            echo "- Tempo revision: \`$ZONES_BENCH_TEMPO_REF\`"
+            echo "- Tempo hardfork: \`${ZONES_BENCH_TEMPO_HARDFORK:-unavailable}\`"
+            echo "- Txgen revision: \`$ZONES_BENCH_TXGEN_REF\`"
+            echo "- Earn revision: \`${ZONES_BENCH_EARN_REVISION:-unavailable}\`"
+            echo "- Build: \`$ZONES_BENCH_BUILD_PROFILE\`, \`RUSTFLAGS=$RUSTFLAGS\`"
+            echo "- L1 block/general gas limits: \`${ZONES_BENCH_L1_GAS_LIMIT:-unavailable}\` / \`${ZONES_BENCH_L1_GENERAL_GAS_LIMIT:-unavailable}\`"
+            echo "- Zone block gas limit: \`${ZONES_BENCH_ZONE_GAS_LIMIT:-unavailable}\`"
+            echo "- Withdrawal scheduler (batch gas / in-flight / Zone blocks / poll): \`$ZONES_BENCH_WITHDRAWAL_MAX_BATCH_GAS\` / \`$ZONES_BENCH_WITHDRAWAL_MAX_IN_FLIGHT_BATCHES\` / \`$ZONES_BENCH_ZONE_BATCH_INTERVAL_BLOCKS\` / \`${ZONES_BENCH_WITHDRAWAL_POLL_INTERVAL_SECS}s\`"
+          } >> "$summary"
+          if [ -s "$ZONES_BENCH_SPF_SUMMARY" ]; then
+            {
+              echo
+              cat "$ZONES_BENCH_SPF_SUMMARY"
+            } >> "$summary"
+          fi
+          cat "$summary" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Collect benchmark host metadata
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/zones-benchmark
+          lscpu --json --extended=CPU,NODE,SOCKET,CORE,ONLINE \
+            > target/zones-benchmark/cpu-topology.json
+          lsblk --json --output NAME,KNAME,PATH,TYPE,SIZE,FSTYPE,MOUNTPOINT \
+            > target/zones-benchmark/storage-topology.json
+          jq -n \
+            --arg zonesRevision "$ZONES_BENCH_ZONES_REF" \
+            --arg tempoRevision "$ZONES_BENCH_TEMPO_REF" \
+            --arg tempoHardfork "${ZONES_BENCH_TEMPO_HARDFORK:-}" \
+            --arg txgenRevision "$ZONES_BENCH_TXGEN_REF" \
+            --arg earnRevision "${ZONES_BENCH_EARN_REVISION:-}" \
+            --arg buildProfile "$ZONES_BENCH_BUILD_PROFILE" \
+            --arg rustflags "$RUSTFLAGS" \
+            --arg targetId "${ZONES_BENCH_TARGET_ID:-}" \
+            --arg phase "$ZONES_BENCH_PHASE" \
+            --arg neobankPreset "$ZONES_BENCH_NEOBANK_PRESET" \
+            --arg swapMechanism "$ZONES_BENCH_SWAP_MECHANISM" \
+            --arg recipientMode "$ZONES_BENCH_RECIPIENT_MODE" \
+            --arg stepTimeout "$ZONES_BENCH_STEP_TIMEOUT" \
+            --arg l1ValidatorACpus "$ZONES_BENCH_L1_A_CPUS" \
+            --arg l1ValidatorBCpus "$ZONES_BENCH_L1_B_CPUS" \
+            --arg zoneCpus "$ZONES_BENCH_ZONE_CPUS" \
+            --arg senderCpus "$ZONES_BENCH_CPUSET" \
+            --arg stateARoot "${ZONES_BENCH_STATE_A_ROOT:-}" \
+            --arg stateBRoot "${ZONES_BENCH_STATE_B_ROOT:-}" \
+            --arg zoneStateRoot "${ZONES_BENCH_ZONE_STATE_ROOT:-}" \
+            --arg l1CacheKey "${ZONES_BENCH_L1_CACHE_KEY:-}" \
+            --arg l1CacheGeneration "${ZONES_BENCH_L1_CACHE_GENERATION:-}" \
+            --argjson l1CacheRebuilt "${ZONES_BENCH_L1_CACHE_REBUILT:-0}" \
+            --argjson forceBloat "$((10#$ZONES_BENCH_FORCE_BLOAT))" \
+            --argjson accounts "$((10#$ZONES_BENCH_ACCOUNTS))" \
+            --argjson count "$((10#$ZONES_BENCH_COUNT))" \
+            --argjson targetRate "$ZONES_BENCH_TPS" \
+            --argjson maxConcurrent "$((10#$ZONES_BENCH_MAX_CONCURRENT))" \
+            --argjson depositAmount "$((10#$ZONES_BENCH_DEPOSIT_AMOUNT))" \
+            --argjson activityAmount "$((10#$ZONES_BENCH_ACTIVITY_AMOUNT))" \
+            --argjson withdrawalAmount "$((10#$ZONES_BENCH_WITHDRAWAL_AMOUNT))" \
+            --argjson bootstrapDepositAmount "$((10#$ZONES_BENCH_BOOTSTRAP_DEPOSIT_AMOUNT))" \
+            --argjson callbackGasLimit "$((10#$ZONES_BENCH_CALLBACK_GAS_LIMIT))" \
+            --argjson swapLiquidity "$((10#$ZONES_BENCH_SWAP_LIQUIDITY))" \
+            --argjson setupSettlementTimeoutSecs "$((10#$ZONES_BENCH_SETUP_SETTLEMENT_TIMEOUT_SECS))" \
+            --argjson drainTimeoutSecs "$((10#$ZONES_BENCH_DRAIN_TIMEOUT))" \
+            --argjson seed "$((10#$ZONES_BENCH_SEED))" \
+            --argjson l1StateBloatMiB "$((10#$ZONES_BENCH_BLOAT_GIB * 1000))" \
+            --argjson l1BlockGasLimit "${ZONES_BENCH_L1_GAS_LIMIT:-0}" \
+            --argjson l1GeneralGasLimit "${ZONES_BENCH_L1_GENERAL_GAS_LIMIT:-0}" \
+            --argjson zoneBlockGasLimit "${ZONES_BENCH_ZONE_GAS_LIMIT:-0}" \
+            --argjson withdrawalMaxBatchGas "$((10#$ZONES_BENCH_WITHDRAWAL_MAX_BATCH_GAS))" \
+            --argjson withdrawalMaxInFlightBatches "$((10#$ZONES_BENCH_WITHDRAWAL_MAX_IN_FLIGHT_BATCHES))" \
+            --argjson zoneBatchIntervalBlocks "$((10#$ZONES_BENCH_ZONE_BATCH_INTERVAL_BLOCKS))" \
+            --argjson withdrawalPollIntervalSecs "$((10#$ZONES_BENCH_WITHDRAWAL_POLL_INTERVAL_SECS))" \
+            '{
+              zonesRevision: $zonesRevision,
+              tempoRevision: $tempoRevision,
+              tempoHardfork: $tempoHardfork,
+              txgenRevision: $txgenRevision,
+              earnRevision: $earnRevision,
+              buildProfile: $buildProfile,
+              rustflags: $rustflags,
+              targetId: $targetId,
+              phase: $phase,
+              neobankPreset: $neobankPreset,
+              swapMechanism: $swapMechanism,
+              recipientMode: $recipientMode,
+              accounts: $accounts,
+              count: $count,
+              targetRate: $targetRate,
+              maxConcurrent: $maxConcurrent,
+              amounts: {
+                deposit: $depositAmount,
+                activity: $activityAmount,
+                withdrawal: $withdrawalAmount,
+                bootstrapDeposit: $bootstrapDepositAmount
+              },
+              swapLiquidity: $swapLiquidity,
+              callbackGasLimit: $callbackGasLimit,
+              timeouts: {
+                step: $stepTimeout,
+                setupSettlementSecs: $setupSettlementTimeoutSecs,
+                drainSecs: $drainTimeoutSecs
+              },
+              seed: $seed,
+              cpuSets: {
+                l1ValidatorA: $l1ValidatorACpus,
+                l1ValidatorB: $l1ValidatorBCpus,
+                zone: $zoneCpus,
+                sender: $senderCpus
+              },
+              stateRoots: {
+                l1A: $stateARoot,
+                l1B: $stateBRoot,
+                zone: $zoneStateRoot
+              },
+              l1Snapshot: {
+                key: $l1CacheKey,
+                generation: $l1CacheGeneration,
+                rebuilt: $l1CacheRebuilt,
+                forceRebuild: ($forceBloat != 0)
+              },
+              l1StateBloatMiB: $l1StateBloatMiB,
+              zoneStateBloatMiB: 0,
+              l1BlockGasLimit: $l1BlockGasLimit,
+              l1GeneralGasLimit: $l1GeneralGasLimit,
+              zoneBlockGasLimit: $zoneBlockGasLimit,
+              withdrawalScheduler: {
+                maxBatchGas: $withdrawalMaxBatchGas,
+                maxInFlightBatches: $withdrawalMaxInFlightBatches,
+                zoneBatchIntervalBlocks: $zoneBatchIntervalBlocks,
+                pollIntervalSecs: $withdrawalPollIntervalSecs
+              }
+            }' > target/zones-benchmark/run-metadata.json
+
+      - name: Collect node logs
+        if: ${{ !cancelled() }}
+        run: |
+          if [ -n "${ZONES_BENCH_TOPOLOGY_DIR:-}" ] && [ -d "$ZONES_BENCH_TOPOLOGY_DIR/logs" ]; then
+            cp -R "$ZONES_BENCH_TOPOLOGY_DIR/logs" target/zones-benchmark/node-logs
+          fi
+
+      - name: Collect invalid block diagnostics
+        if: ${{ failure() && !cancelled() }}
+        run: |
+          witness_dir="${ZONES_BENCH_ZONE_STATE_ROOT:-}/zone/invalid_block_hooks/witness"
+          if [ -d "$witness_dir" ]; then
+            output_dir=target/zones-benchmark/invalid-block-diagnostics
+            mkdir -p "$output_dir"
+            find "$witness_dir" -maxdepth 1 -type f \( \
+              -name '*.bundle_state.original.json' -o \
+              -name '*.bundle_state.re_executed.json' -o \
+              -name '*.bundle_state.diff' -o \
+              -name '*.header_state_root.diff' \
+            \) -exec cp --target-directory="$output_dir" -- {} +
+          fi
+
+      - name: Upload specs, logs, and reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: zones-benchmark-neobank-${{ needs.authorize.outputs.neobank-preset }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/zones-benchmark/neobank-e2e/
+            target/zones-benchmark/*.json
+            target/zones-benchmark/*.md
+            target/zones-benchmark/spf-profile*
+            target/zones-benchmark/spf.log
+            target/zones-benchmark/spf-report.txt
+            target/zones-benchmark/spf-range.env
+            target/zones-benchmark/topology/neobank-fixtures.json
+            target/zones-benchmark/node-logs/
+            target/zones-benchmark/invalid-block-diagnostics/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Stop nodes and restore benchmark volumes
+        if: always()
+        run: |
+          set +e
+          if [ -x contrib/bench/provision-topology.sh ]; then
+            contrib/bench/provision-topology.sh cleanup
+          fi
+          tuning_status=0
+          if [ "${ZONES_BENCH_TUNED:-}" = 1 ] && [ -f "$TEMPO_ROOT/tempo.nu" ]; then
+            nu -c "source '$TEMPO_ROOT/tempo.nu'; restore-system-tuning { tuned: true }"
+            tuning_status=$?
+          fi
+          if [ ! -f "$TEMPO_ROOT/bench-schelk.nu" ]; then
+            exit "$tuning_status"
+          fi
+          nu "$TEMPO_ROOT/bench-schelk.nu" cleanup /var/lib/schelk/a.json
+          status_a=$?
+          nu "$TEMPO_ROOT/bench-schelk.nu" cleanup /var/lib/schelk/b.json
+          status_b=$?
+          if (( status_a != 0 || status_b != 0 || tuning_status != 0 )); then
+            exit 1
+          fi

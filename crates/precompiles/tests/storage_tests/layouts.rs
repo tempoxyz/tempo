@@ -229,9 +229,12 @@ fn test_string_literal_slots() {
 }
 
 #[test]
-#[should_panic(expected = "Storage slot collision")]
+#[cfg_attr(
+    all(debug_assertions, not(feature = "dst")),
+    should_panic(expected = "Storage slot collision")
+)]
 fn test_collision_same_slot() {
-    // Two fields with identical slot assignments should panic in debug builds
+    // Colliding layouts panic only when collision checks are enabled.
     #[contract]
     pub struct Layout {
         #[slot(5)]
@@ -245,9 +248,11 @@ fn test_collision_same_slot() {
 }
 
 #[test]
-#[should_panic(expected = "Storage slot collision")]
+#[cfg_attr(
+    all(debug_assertions, not(feature = "dst")),
+    should_panic(expected = "Storage slot collision")
+)]
 fn test_collision_overlapping_slots_manual() {
-    // A multi-slot field overlapping with another field should panic in debug builds
     #[contract]
     pub struct Layout {
         #[slot(5)]
@@ -261,9 +266,11 @@ fn test_collision_overlapping_slots_manual() {
 }
 
 #[test]
-#[should_panic(expected = "Storage slot collision")]
+#[cfg_attr(
+    all(debug_assertions, not(feature = "dst")),
+    should_panic(expected = "Storage slot collision")
+)]
 fn test_collision_overlapping_slots_auto() {
-    // A multi-slot field overlapping with another field should panic in debug builds
     #[contract]
     pub struct Layout {
         pub large_field: [U256; 3], // occupies slots 0,1,2
@@ -303,8 +310,11 @@ fn test_no_collision_when_using_manual_slot_with_packing() {
 }
 
 #[test]
-#[should_panic(
-    expected = "Storage slot collision: field `c` (slot 1, offset 0) overlaps with field `d` (slot 1, offset 0)"
+#[cfg_attr(
+    all(debug_assertions, not(feature = "dst")),
+    should_panic(
+        expected = "Storage slot collision: field `c` (slot 1, offset 0) overlaps with field `d` (slot 1, offset 0)"
+    )
 )]
 fn test_collision_when_using_base_slot() {
     #[contract]

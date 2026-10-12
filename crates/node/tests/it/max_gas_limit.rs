@@ -9,24 +9,19 @@
 use alloy::{primitives::Address, providers::Provider};
 use alloy_eips::eip7825::MAX_TX_GAS_LIMIT_OSAKA;
 use alloy_primitives::Bytes;
-use alloy_rpc_types_eth::TransactionRequest;
+use eyre::WrapErr;
 use reth_e2e_test_utils::wallet::Wallet;
-use reth_node_api::BuiltPayload;
-use reth_primitives_traits::transaction::TxHashRef;
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_TX_GAS_LIMIT_CAP};
 
-use crate::utils::{TestNodeBuilder, make_genesis_at, with_t1_fees};
+use crate::utils::{TestNodeBuilder, make_genesis_at, t1_account};
 
 /// Helper to build and encode a signed EIP-1559 transaction of the first test account with a
 /// specific gas limit.
 async fn build_tx(chain_id: u64, gas_limit: u64) -> Bytes {
-    let tx = TransactionRequest::default()
+    t1_account(&Wallet::default().with_chain_id(chain_id), 0)
+        .tx()
         .to(Address::ZERO)
-        .gas_limit(gas_limit);
-    Wallet::default()
-        .with_chain_id(chain_id)
-        .account(0)
-        .sign_tx_bytes(with_t1_fees(tx))
+        .gas_limit(gas_limit)
         .await
 }
 
@@ -41,16 +36,11 @@ async fn test_post_t1a_tx_at_osaka_limit() -> eyre::Result<()> {
     let chain_id = provider.get_chain_id().await?;
 
     let raw_tx = build_tx(chain_id, MAX_TX_GAS_LIMIT_OSAKA).await;
-    let pending = provider.send_raw_transaction(&raw_tx).await?;
-    let expected_hash = *pending.tx_hash();
-    let payload = setup.node.advance_block().await?;
-
-    let included = payload
-        .block()
-        .body()
-        .transactions()
-        .any(|tx| *tx.tx_hash() == expected_hash);
-    assert!(included, "tx at 16M should be included in block");
+    setup
+        .node
+        .mine([raw_tx])
+        .await
+        .wrap_err("tx at 16M should be included in block")?;
 
     Ok(())
 }
@@ -66,19 +56,11 @@ async fn test_post_t1a_tx_above_osaka_below_tempo_cap() -> eyre::Result<()> {
     let chain_id = provider.get_chain_id().await?;
 
     let raw_tx = build_tx(chain_id, 20_000_000).await;
-    let pending = provider.send_raw_transaction(&raw_tx).await?;
-    let expected_hash = *pending.tx_hash();
-    let payload = setup.node.advance_block().await?;
-
-    let included = payload
-        .block()
-        .body()
-        .transactions()
-        .any(|tx| *tx.tx_hash() == expected_hash);
-    assert!(
-        included,
-        "tx at 20M should be included in block (TIP-1010 cap is 30M)"
-    );
+    setup
+        .node
+        .mine([raw_tx])
+        .await
+        .wrap_err("tx at 20M should be included in block (TIP-1010 cap is 30M)")?;
 
     Ok(())
 }
@@ -94,19 +76,11 @@ async fn test_post_t1a_tx_at_tempo_cap() -> eyre::Result<()> {
     let chain_id = provider.get_chain_id().await?;
 
     let raw_tx = build_tx(chain_id, TEMPO_T1_TX_GAS_LIMIT_CAP).await;
-    let pending = provider.send_raw_transaction(&raw_tx).await?;
-    let expected_hash = *pending.tx_hash();
-    let payload = setup.node.advance_block().await?;
-
-    let included = payload
-        .block()
-        .body()
-        .transactions()
-        .any(|tx| *tx.tx_hash() == expected_hash);
-    assert!(
-        included,
-        "tx at Tempo's 30M cap should be included in block"
-    );
+    setup
+        .node
+        .mine([raw_tx])
+        .await
+        .wrap_err("tx at Tempo's 30M cap should be included in block")?;
 
     Ok(())
 }
@@ -148,16 +122,11 @@ async fn test_pre_t1a_tx_at_osaka_limit() -> eyre::Result<()> {
     let chain_id = provider.get_chain_id().await?;
 
     let raw_tx = build_tx(chain_id, MAX_TX_GAS_LIMIT_OSAKA).await;
-    let pending = provider.send_raw_transaction(&raw_tx).await?;
-    let expected_hash = *pending.tx_hash();
-    let payload = setup.node.advance_block().await?;
-
-    let included = payload
-        .block()
-        .body()
-        .transactions()
-        .any(|tx| *tx.tx_hash() == expected_hash);
-    assert!(included, "pre-T1A should accept tx at Osaka limit (16M)");
+    setup
+        .node
+        .mine([raw_tx])
+        .await
+        .wrap_err("pre-T1A should accept tx at Osaka limit (16M)")?;
 
     Ok(())
 }

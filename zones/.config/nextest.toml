@@ -1,0 +1,10 @@
+[profile.ci]
+fail-fast = false
+retries = 2
+test-threads = "num-cpus"
+
+# Integration tests spin up full reth nodes — limit concurrency to avoid
+# resource contention and flaky timeouts on CI runners.
+[[profile.ci.overrides]]
+filter = "test(/^(e2e|earn_zone_e2e|l1_e2e|network_chaos_e2e|network_chaos_p2p_e2e|restart_e2e|handoff_e2e)::/) | test(advance_tempo)"
+threads-required = 4

@@ -1048,7 +1048,7 @@ mod tests {
             let spec =
                 super::chain_value_parser(name).expect(&format!("failed to parse chain `{name}`"));
 
-            let resolved = super::chainspec_from_chain_id(spec.chain().id())
+            let resolved = super::chainspec_from_chain_id(spec.chain_id())
                 .expect(&format!("failed to parse chain `{name}`"));
 
             assert_eq!(spec.chain(), resolved.chain(), "chain mismatch for {name}");
