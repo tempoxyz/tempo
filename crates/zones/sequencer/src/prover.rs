@@ -267,6 +267,10 @@ fn spawn_prover<P: ZoneSequencerProvider>(
                 .record(job.enqueued_at.elapsed().as_secs_f64());
             let started = Instant::now();
             let result = validate_candidate(&context, &job, proofs.as_ref(), &metrics).await;
+            if let Some(proofs) = &proofs {
+                // Jobs are processed in order, and failed ones are not retried.
+                proofs.mark_shadow_proven(job.to);
+            }
             metrics
                 .validation_duration_seconds
                 .record(started.elapsed().as_secs_f64());
@@ -1038,7 +1042,7 @@ async fn zone_witnesses(
             } else if let Some(proof) = proofs.and_then(|proofs| proofs.get(number, hash)) {
                 proof.witness.clone()
             } else {
-                // Shadow jobs run after finalization, when their retained inputs may be pruned.
+                // Witnesses past the shadow retention window, or in flight across a restart, are pruned.
                 debug_api
                     .zone_execution_witness(hash.into())
                     .await

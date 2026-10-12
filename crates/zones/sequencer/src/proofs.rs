@@ -27,6 +27,8 @@ use crate::ZoneSequencerProvider;
 // Persisted files survive upgrades; reject incompatible witness formats explicitly.
 const FORMAT_VERSION: u32 = 1;
 const FALLBACK_POLL_INTERVAL: Duration = Duration::from_secs(1);
+/// Finalized blocks retained for a lagging shadow prover before falling back to RPC witnesses.
+const MAX_SHADOW_RETENTION_BLOCKS: u64 = 10_000;
 
 /// Load unsettled witnesses and return the proof collector handle and worker future.
 pub async fn create_proof_collector<P: ZoneSequencerProvider>(
@@ -43,6 +45,10 @@ pub async fn create_proof_collector<P: ZoneSequencerProvider>(
             .await
             .context("proof store opening task panicked")??,
     );
+    if config.retain_for_shadow_proving {
+        // Batches in flight before a restart fall back to RPC witnesses.
+        store.state.write().shadow_proven_through = Some(finalized_zone_height);
+    }
     let (requests_tx, requests_rx) = mpsc::channel(16);
     let collector = ProofCollector {
         config,
@@ -126,6 +132,14 @@ impl ProofCollectorHandle {
             self.collect_and_persist(number, hash).await?;
         }
         Ok(())
+    }
+
+    /// Allow pruning of finalized witnesses through a completed shadow proving job.
+    pub fn mark_shadow_proven(&self, through: u64) {
+        let mut state = self.store.state.write();
+        if let Some(proven) = &mut state.shadow_proven_through {
+            *proven = (*proven).max(through);
+        }
     }
 
     /// Return a retained witness for this exact block without waiting for collection.
@@ -301,6 +315,8 @@ pub struct ProofCollectorConfig {
     pub portal_address: Address,
     /// L1 provider used to read the finalized Zone height.
     pub l1_provider: DynProvider<TempoNetwork>,
+    /// Keep finalized witnesses until the shadow prover has consumed them.
+    pub retain_for_shadow_proving: bool,
 }
 
 impl ProofCollectorConfig {
@@ -322,6 +338,7 @@ impl std::fmt::Debug for ProofCollectorConfig {
             .field("directory", &self.directory)
             .field("debug_api", &"<in-process>")
             .field("portal_address", &self.portal_address)
+            .field("retain_for_shadow_proving", &self.retain_for_shadow_proving)
             .finish()
     }
 }
@@ -376,6 +393,7 @@ impl ProofStore {
             directory,
             state: RwLock::new(ProofStoreState {
                 pruned_through,
+                shadow_proven_through: None,
                 proofs,
             }),
         })
@@ -452,6 +470,9 @@ impl ProofStore {
     fn prune_through(&self, through: u64) -> Result<()> {
         let through = {
             let mut state = self.state.write();
+            let through = state.shadow_proven_through.map_or(through, |proven| {
+                through.min(proven.max(through.saturating_sub(MAX_SHADOW_RETENTION_BLOCKS)))
+            });
             state.pruned_through = state.pruned_through.max(through);
             state.pruned_through
         };
@@ -491,6 +512,7 @@ impl ProofStore {
 #[derive(Debug)]
 struct ProofStoreState {
     pruned_through: u64,
+    shadow_proven_through: Option<u64>,
     proofs: BTreeMap<u64, Arc<StoredBlockProof>>,
 }
 
@@ -600,6 +622,7 @@ mod tests {
                 l1_provider: ProviderBuilder::new_with_network::<TempoNetwork>()
                     .connect_mocked_client(Asserter::new())
                     .erased(),
+                retain_for_shadow_proving: false,
             },
             provider: MockEthProvider::<TempoPrimitives>::new(),
             store: store.clone(),
@@ -769,6 +792,33 @@ mod tests {
         store.remove_files(1..).unwrap();
         assert!(store.state.read().proofs.is_empty());
         assert!(fs::read_dir(directory.path()).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn shadow_retention_caps_pruning_at_proven_height() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ProofStore::open(directory.path().to_path_buf(), 0).unwrap();
+        store.state.write().shadow_proven_through = Some(0);
+        for number in 1..=3 {
+            store
+                .insert(proof(number, B256::repeat_byte(number as u8)))
+                .unwrap();
+        }
+
+        store.prune_through(3).unwrap();
+        assert_eq!(store.state.read().pruned_through, 0);
+        assert!(store.contains(1, B256::repeat_byte(1)));
+
+        store.state.write().shadow_proven_through = Some(2);
+        store.prune_through(3).unwrap();
+        assert_eq!(store.state.read().pruned_through, 2);
+        assert!(store.contains(3, B256::repeat_byte(3)));
+
+        // A stalled shadow prover cannot retain more than the bounded window.
+        store
+            .prune_through(MAX_SHADOW_RETENTION_BLOCKS + 3)
+            .unwrap();
+        assert_eq!(store.state.read().pruned_through, 3);
     }
 
     #[test]
