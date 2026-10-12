@@ -47,8 +47,7 @@ impl TempoBlockExecutor<'_> {
 
         let is_system_tx = self
             .validate_tx_pre_execution(original)
-            .map_err(BlockExecutionError::from)?
-            .is_some();
+            .map_err(BlockExecutionError::from)?;
 
         let state = self
             .replay_actions(actions.drain(..), expiring_nonce)

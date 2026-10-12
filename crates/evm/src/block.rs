@@ -415,18 +415,18 @@ impl<'a> TempoBlockExecutor<'a> {
     }
 
     /// Validates a system transaction.
+    ///
+    /// Its position in the block is validated by [`Self::validate_tx`].
     pub(crate) fn validate_system_tx(
         &self,
         tx: &TempoTxEnvelope,
-    ) -> Result<BlockSection, BlockValidationError> {
+    ) -> Result<(), BlockValidationError> {
         let block = self.evm().block();
         let block_number = block.number.to_be_bytes::<32>();
         let to = tx.to().unwrap_or_default();
 
         // Handle end-of-block system transactions (subblocks signatures only)
         if to.is_zero() {
-            let next_section = self.subblocks_metadata_section()?;
-
             if self.evm().config_spec_id().is_t4() {
                 return Err(BlockValidationError::msg("subblocks are disabled in T4+"));
             }
@@ -457,47 +457,28 @@ impl<'a> TempoBlockExecutor<'a> {
                 ));
             }
 
-            Ok(next_section)
+            Ok(())
         } else {
             Err(BlockValidationError::msg("invalid system transaction"))
         }
     }
 
-    /// Returns the section entered by a subblocks metadata system transaction at the current
-    /// position in the block.
-    fn subblocks_metadata_section(&self) -> Result<BlockSection, BlockValidationError> {
-        if matches!(
-            self.section,
-            BlockSection::System {
-                seen_subblocks_signatures: true
-            }
-        ) {
-            return Err(BlockValidationError::msg(
-                "duplicate subblocks metadata system transaction",
-            ));
-        }
-
-        Ok(BlockSection::System {
-            seen_subblocks_signatures: true,
-        })
-    }
-
-    /// Pre-validate a transaction before execution.
+    /// Pre-validate a transaction before execution, returning whether it is a system transaction.
     ///
     /// Reject reserved subblock nonces and restrict system transactions to explicitly
     /// allowed actions, since they bypass regular block gas limit checks.
     pub(crate) fn validate_tx_pre_execution(
         &self,
         tx: &TempoTxEnvelope,
-    ) -> Result<Option<BlockSection>, BlockValidationError> {
+    ) -> Result<bool, BlockValidationError> {
         if tx.is_system_tx() {
-            self.validate_system_tx(tx).map(Some)
+            self.validate_system_tx(tx).map(|()| true)
         } else if tx.has_sub_block_nonce_key_prefix() {
             Err(BlockValidationError::msg(
                 "subblock transactions are not supported",
             ))
         } else {
-            Ok(None)
+            Ok(false)
         }
     }
 
@@ -525,7 +506,21 @@ impl<'a> TempoBlockExecutor<'a> {
         gas_used: u64,
     ) -> Result<BlockSection, BlockValidationError> {
         if is_system_tx {
-            return self.subblocks_metadata_section();
+            // End-of-block system transactions are limited to a single subblocks metadata
+            // transaction.
+            if matches!(
+                self.section,
+                BlockSection::System {
+                    seen_subblocks_signatures: true
+                }
+            ) {
+                return Err(BlockValidationError::msg(
+                    "duplicate subblocks metadata system transaction",
+                ));
+            }
+            return Ok(BlockSection::System {
+                seen_subblocks_signatures: true,
+            });
         }
 
         match self.section {
@@ -632,7 +627,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         tx_env.inner_mut().set_expiring_nonce_idx(None);
         let execution_context = tx_env.inner().execution_context();
         let original = recovered.tx();
-        let is_system_tx = self.validate_tx_pre_execution(original)?.is_some();
+        let is_system_tx = self.validate_tx_pre_execution(original)?;
         let tx_hash = *original.tx_hash();
         let tx_type = original.tx_type();
         let is_payment = self.is_payment(original);
@@ -1419,12 +1414,6 @@ mod tests {
             "validate_system_tx failed: {:?}",
             result.err()
         );
-        assert_eq!(
-            result.unwrap(),
-            BlockSection::System {
-                seen_subblocks_signatures: true
-            }
-        );
     }
 
     fn create_system_tx_input(metadata: Vec<SubBlockMetadata>, block_number: u64) -> Bytes {
@@ -1460,7 +1449,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_system_tx_duplicate_subblocks_system_tx() {
+    fn test_validate_tx_duplicate_subblocks_system_tx() {
         let chainspec = test_chainspec();
         let mut db = InMemoryDB::default();
         let executor = TestExecutorBuilder::default()
@@ -1474,7 +1463,8 @@ mod tests {
         let input = create_system_tx_input(metadata, 1);
         let system_tx = create_system_tx(chainspec.chain_id(), input);
 
-        let result = executor.validate_system_tx(&system_tx);
+        executor.validate_system_tx(&system_tx).unwrap();
+        let result = executor.validate_tx(*system_tx.tx_hash(), true, false, 0);
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
