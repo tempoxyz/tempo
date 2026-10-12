@@ -198,7 +198,6 @@ tempo-chainspec = { path = "crates/chainspec", default-features = false }
 tempo-consensus = { path = "crates/consensus", default-features = false }
 tempo-consensus-config = { path = "crates/consensus-config", default-features = false }
 tempo-dkg-onchain-artifacts = { path = "crates/dkg-onchain-artifacts", default-features = false }
-tempo-e2e = { path = "crates/e2e" }
 tempo-faucet = { path = "crates/faucet", default-features = false }
 tempo-evm = { path = "crates/evm", default-features = false }
 tempo-eyre = { path = "crates/eyre", default-features = false }
@@ -229,7 +228,6 @@ reth-db = { git = "https://github.com/paradigmxyz/reth", rev = "1a4dbbe" }
 reth-discv5 = { git = "https://github.com/paradigmxyz/reth", rev = "1a4dbbe" }
 reth-db-api = { git = "https://github.com/paradigmxyz/reth", rev = "1a4dbbe" }
 reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth", rev = "1a4dbbe" }
-reth-engine-local = { git = "https://github.com/paradigmxyz/reth", rev = "1a4dbbe" }
 reth-engine-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "1a4dbbe" }
 reth-engine-tree = { git = "https://github.com/paradigmxyz/reth", rev = "1a4dbbe" }
 reth-errors = { git = "https://github.com/paradigmxyz/reth", rev = "1a4dbbe" }
@@ -285,7 +283,6 @@ reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "1a4dbbe", feat
   "optional-checks",
 ] }
 revm = { version = "43.0.3", features = ["optional_fee_charge"], default-features = false }
-revm-inspectors = "0.44.0"
 
 alloy-json-abi = { version = "1.7.3", default-features = false }
 alloy-primitives = { version = "1.7.3", default-features = false }
@@ -330,7 +327,6 @@ commonware-storage = "2026.9.0"
 commonware-utils = "2026.9.0"
 
 arbitrary = { version = "1.4", features = ["derive"] }
-async-lock = "3.4.2"
 async-trait = "0.1"
 auto_impl = "1"
 axum = "0.8.8"
@@ -345,8 +341,6 @@ dashmap = "6"
 dirs-next = "2.0.0"
 derive_more = { version = "2.1.1", default-features = false }
 
-ed25519-dalek = { version = "2", features = ["rand_core"] }
-either = "1"
 eyre = "0.6.12"
 futures = "0.3.31"
 governor = "0.10.4"
