@@ -24,6 +24,7 @@ mod generate_localnet;
 mod generate_shadowfork;
 mod genesis_args;
 mod get_dkg_outcome;
+mod get_verifier_pcrs;
 mod identity_transitions;
 mod shadowfork;
 
@@ -59,6 +60,7 @@ async fn main() -> eyre::Result<()> {
             .run()
             .await
             .wrap_err("failed to generate state bloat file"),
+        Action::GetVerifierPcrs(args) => args.run().await.wrap_err("failed to get verifier PCRs"),
     }
 }
 
@@ -85,6 +87,7 @@ enum Action {
     BootstrapShadowfork(BootstrapShadowfork),
     GenerateAddPeer(GenerateAddPeer),
     GenerateStateBloat(GenerateStateBloat),
+    GetVerifierPcrs(get_verifier_pcrs::GetVerifierPcrs),
 }
 
 #[derive(Debug, clap::Args)]
