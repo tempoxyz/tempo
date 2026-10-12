@@ -12,42 +12,45 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - name: Resolve native library features
-      id: spec
+    - name: Compute native library cache key
+      id: key
       if: runner.os == 'Linux' && runner.arch == 'X64'
+      shell: bash
+      env:
+        CARGO_ARGS: ${{ inputs.cargo-args }}
+      run: |
+        # shellcheck disable=SC2086 # CARGO_ARGS is a list of arguments
+        echo "key=$(.github/scripts/native-libs.sh key $CARGO_ARGS)" >> "$GITHUB_OUTPUT"
+
+    - name: Restore native libraries
+      id: cache
+      if: steps.key.outputs.key != ''
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ runner.temp }}/native-libs/out
+        key: native-libs-${{ runner.os }}-${{ runner.arch }}-${{ steps.key.outputs.key }}
+
+    - name: Build native libraries
+      if: steps.key.outputs.key != '' && steps.cache.outputs.cache-hit != 'true'
       shell: bash
       env:
         CARGO_ARGS: ${{ inputs.cargo-args }}
         DIR: ${{ runner.temp }}/native-libs
       run: |
         # shellcheck disable=SC2086 # CARGO_ARGS is a list of arguments
-        key=$(.github/scripts/native-libs.sh spec "$DIR" $CARGO_ARGS)
-        echo "key=$key" >> "$GITHUB_OUTPUT"
-
-    - name: Restore native libraries
-      id: cache
-      if: steps.spec.outputs.key != ''
-      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-      with:
-        path: ${{ runner.temp }}/native-libs/out
-        key: native-libs-${{ runner.os }}-${{ runner.arch }}-${{ steps.spec.outputs.key }}
-
-    - name: Build native libraries
-      if: steps.spec.outputs.key != '' && steps.cache.outputs.cache-hit != 'true'
-      shell: bash
-      env:
-        DIR: ${{ runner.temp }}/native-libs
-      run: .github/scripts/native-libs.sh build "$DIR"
+        .github/scripts/native-libs.sh prepare "$DIR" $CARGO_ARGS
+        # Cache an empty result too, so selections that build from source skip this step.
+        touch "$DIR/out/.prepared"
 
     - name: Save native libraries
-      if: steps.spec.outputs.key != '' && steps.cache.outputs.cache-hit != 'true'
+      if: steps.key.outputs.key != '' && steps.cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: ${{ runner.temp }}/native-libs/out
-        key: native-libs-${{ runner.os }}-${{ runner.arch }}-${{ steps.spec.outputs.key }}
+        key: native-libs-${{ runner.os }}-${{ runner.arch }}-${{ steps.key.outputs.key }}
 
     - name: Use native libraries
-      if: steps.spec.outputs.key != ''
+      if: steps.key.outputs.key != ''
       shell: bash
       env:
         DIR: ${{ runner.temp }}/native-libs

@@ -10,9 +10,9 @@
 # interchangeable.
 #
 # Usage:
-#   native-libs.sh spec  <dir> <cargo tree args...>   writes <dir>/crate and prints the cache key
-#   native-libs.sh build <dir>                        builds the libraries into <dir>/out
-#   native-libs.sh env   <dir>                        exports the overrides to $GITHUB_ENV
+#   native-libs.sh key <cargo tree args...>        prints the cache key, without running cargo
+#   native-libs.sh prepare <dir> <cargo tree args...>  builds the libraries into <dir>/out
+#   native-libs.sh env <dir>                       exports the overrides to $GITHUB_ENV
 set -euo pipefail
 
 TARGET=x86_64-unknown-linux-gnu
@@ -63,20 +63,22 @@ dependency() {
     echo "$krate = { version = \"=$(locked_version "$krate")\", default-features = $default, features = [${list%, }] }"
 }
 
-cmd_spec() {
+# Writes a crate to <dir>/crate that depends on the native -sys crates with the selection's
+# features, locked like the repository. Fails if the selection should build them from source.
+write_crate() {
     local dir=$1
     shift
     local rocksdb jemalloc
     rocksdb=$(resolved_features librocksdb-sys "$@")
     if [[ -z $rocksdb ]]; then
         echo "librocksdb-sys is not part of the selection" >&2
-        return 0
+        return 1
     fi
     jemalloc=$(resolved_features tikv-jemalloc-sys "$@")
     for krate in librocksdb-sys ${jemalloc:+tikv-jemalloc-sys}; do
         if ! from_registry "$krate"; then
             echo "$krate is not locked to a single crates.io release; building it from source" >&2
-            return 0
+            return 1
         fi
     done
 
@@ -110,15 +112,30 @@ cmd_spec() {
         echo "$unlocked" >&2
         exit 1
     fi
+}
 
+# The resolved features and versions are a function of the manifests, the lockfile and the
+# selection, so hashing those keys the cache without running cargo on a hit.
+cmd_key() {
     {
-        cat "$dir/crate/Cargo.toml" "$dir/crate/Cargo.lock"
+        echo "$*"
+        cat "$0" Cargo.lock
+        git ls-files -z -- '*Cargo.toml' | sort -z | xargs -0 cat
         cc --version | head -n1
         c++ --version | head -n1
     } | sha256sum | cut -c1-16
 }
 
-cmd_build() {
+cmd_prepare() {
+    local dir=$1
+    shift
+    mkdir -p "$dir/out"
+    if write_crate "$dir" "$@"; then
+        build "$dir"
+    fi
+}
+
+build() {
     local dir=$1 target=$1/crate/target
     # Build script output directories, keyed by crate name.
     local out_dirs
@@ -140,6 +157,9 @@ cmd_build() {
 
 cmd_env() {
     local dir=$1 out=$1/out
+    if [[ ! -f $out/librocksdb.a ]]; then
+        return 0
+    fi
     # librocksdb-sys only links the C++ runtime when it compiles rocksdb itself.
     mkdir -p "$dir/bin"
     printf '#!/bin/sh\nexec cc "$@" -lstdc++\n' >"$dir/bin/cc-stdcxx"
