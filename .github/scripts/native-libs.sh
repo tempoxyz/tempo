@@ -57,7 +57,7 @@ cmd_spec() {
     jemalloc=$(resolved_features tikv-jemalloc-sys "$@")
 
     mkdir -p "$dir/crate/src"
-    : >"$dir/crate/src/lib.rs"
+    echo "use librocksdb_sys as _;" >"$dir/crate/src/lib.rs"
     {
         echo '[package]'
         echo 'name = "native-libs"'
@@ -71,6 +71,9 @@ cmd_spec() {
             dependency tikv-jemalloc-sys "$jemalloc"
         fi
     } >"$dir/crate/Cargo.toml"
+    if [[ -n $jemalloc ]]; then
+        echo "use tikv_jemalloc_sys as _;" >>"$dir/crate/src/lib.rs"
+    fi
 
     {
         cat "$dir/crate/Cargo.toml"
@@ -81,11 +84,20 @@ cmd_spec() {
 
 cmd_build() {
     local dir=$1 target=$1/crate/target
-    CARGO_TARGET_DIR=$target cargo build --release --manifest-path "$dir/crate/Cargo.toml"
+    # Build script output directories, keyed by crate name.
+    local out_dirs
+    out_dirs=$(CARGO_TARGET_DIR=$target cargo build --release --manifest-path "$dir/crate/Cargo.toml" \
+        --message-format json-render-diagnostics |
+        jq -r 'select(.reason == "build-script-executed") | "\(.package_id) \(.out_dir)"')
+    out_dir() { awk -v krate="$1" '$1 ~ "[/#]" krate "[@#]" { print $2 }' <<<"$out_dirs"; }
+
     mkdir -p "$dir/out"
-    cp "$target"/release/build/librocksdb-sys-*/out/{librocksdb.a,libsnappy.a} "$dir/out/"
-    if compgen -G "$target/release/build/tikv-jemalloc-sys-*/out/lib/libjemalloc.a" >/dev/null; then
-        cp "$target"/release/build/tikv-jemalloc-sys-*/out/lib/libjemalloc.a "$dir/out/"
+    local rocksdb jemalloc
+    rocksdb=$(out_dir librocksdb-sys)
+    cp "$rocksdb/librocksdb.a" "$rocksdb/libsnappy.a" "$dir/out/"
+    jemalloc=$(out_dir tikv-jemalloc-sys)
+    if [[ -n $jemalloc ]]; then
+        cp "$jemalloc/lib/libjemalloc.a" "$dir/out/"
     fi
     rm -rf "$target"
 }
