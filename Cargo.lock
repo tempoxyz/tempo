@@ -13491,6 +13491,7 @@ dependencies = [
  "jiff",
  "nix 0.30.1",
  "opentelemetry-otlp",
+ "parking_lot",
  "pyroscope",
  "pyroscope_pprofrs",
  "rand 0.10.2",

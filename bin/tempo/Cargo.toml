@@ -69,6 +69,7 @@ commonware-math.workspace = true
 commonware-runtime = { workspace = true, features = ["external"] }
 commonware-utils.workspace = true
 futures = { workspace = true, features = ["executor"] }
+parking_lot.workspace = true
 rand.workspace = true
 reth-chainspec.workspace = true
 reth-cli.workspace = true
