@@ -559,7 +559,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         let NodeHandle {
             node,
             node_exit_future,
-        } = builder
+        } = tempo_node_launcher::launch(builder
             .node(tempo_node)
             .apply(|mut builder: WithLaunchContext<_>| {
                 // Uncertified follower mode: set debug RPC when certification is off
@@ -594,8 +594,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
                     Ok(())
                 })
-            })
-            .launch_with_debug_capabilities()
+            }))
             .await
             .wrap_err("failed launching execution node")?;
 

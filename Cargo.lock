@@ -13538,6 +13538,7 @@ dependencies = [
  "tempo-eyre",
  "tempo-faucet",
  "tempo-node",
+ "tempo-node-launcher",
  "tempo-precompiles",
  "tempo-primitives",
  "tempo-state-bloat",
@@ -13789,6 +13790,7 @@ dependencies = [
  "tempo-evm",
  "tempo-eyre",
  "tempo-node",
+ "tempo-node-launcher",
  "tempo-precompiles",
  "tempo-primitives",
  "tokio",
@@ -13979,7 +13981,6 @@ dependencies = [
  "tempo-alloy",
  "tempo-chainspec",
  "tempo-contracts",
- "tempo-e2e",
  "tempo-evm",
  "tempo-payload-builder",
  "tempo-payload-types",
@@ -13994,6 +13995,17 @@ dependencies = [
  "url",
  "vergen",
  "vergen-git2",
+]
+
+[[package]]
+name = "tempo-node-launcher"
+version = "1.16.0"
+dependencies = [
+ "eyre",
+ "futures",
+ "reth-db",
+ "reth-node-builder",
+ "tempo-node",
 ]
 
 [[package]]
