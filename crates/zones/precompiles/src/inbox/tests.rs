@@ -5,8 +5,10 @@ use alloy_primitives::{B256, Bytes, U256, address, keccak256};
 use alloy_sol_types::{SolCall, SolError, SolValue};
 use revm::precompile::PrecompileResult;
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::UnknownFunctionSelector;
-use tempo_contracts::zones::{MAX_UNPROCESSED_DEPOSITS, MAX_UNPROCESSED_TOKEN_ENABLEMENTS};
+use tempo_contracts::{
+    precompiles::UnknownFunctionSelector,
+    zones::{MAX_UNPROCESSED_DEPOSITS, MAX_UNPROCESSED_TOKEN_ENABLEMENTS},
+};
 use tempo_precompiles::{
     PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, TIP403_REGISTRY_ADDRESS,
     receive_policy_guard::ReceivePolicyGuard,
@@ -30,6 +32,12 @@ const PORTAL: Address = Address::repeat_byte(0x42);
 const SEQUENCER: Address = Address::with_last_byte(0xa1);
 const ALICE: Address = Address::with_last_byte(0xa2);
 const BOB: Address = Address::with_last_byte(0xb0);
+
+// Transfer recipients allowed but mint recipients denied, and the inverse.
+const BRIDGE_POLICY_CASES: [(u64, u64); 2] = [
+    (ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID),
+    (REJECT_ALL_POLICY_ID, ALLOW_ALL_POLICY_ID),
+];
 
 struct Harness {
     ctx: TestContext,
@@ -185,6 +193,31 @@ impl Harness {
             internals.checkpoint_revert(checkpoint);
         }
         result
+    }
+
+    fn set_compound_transfer_policy(
+        &mut self,
+        recipient_policy_id: u64,
+        mint_recipient_policy_id: u64,
+    ) -> eyre::Result<()> {
+        let mut storage = test_storage_provider(&mut self.ctx, u64::MAX, false);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let policy_id = TIP403Registry::new().create_compound_policy(
+                ALICE,
+                ITIP403Registry::createCompoundPolicyCall {
+                    senderPolicyId: REJECT_ALL_POLICY_ID,
+                    recipientPolicyId: recipient_policy_id,
+                    mintRecipientPolicyId: mint_recipient_policy_id,
+                },
+            )?;
+            TIP20Token::from_address(PATH_USD_ADDRESS)?.change_transfer_policy_id(
+                ALICE,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy_id,
+                },
+            )?;
+            Ok(())
+        })
     }
 
     fn balance(&mut self, token: Address, owner: Address) -> eyre::Result<U256> {
@@ -728,74 +761,91 @@ fn non_canonical_deposits_are_rejected() {
 }
 
 #[test]
-fn deposit_uses_child_anchor_key_and_mints_plaintext_recipient() -> eyre::Result<()> {
-    let mut harness = Harness::new()?;
-    let fixture = EncryptedDepositFixture::new();
-    let decrypted = fixture.decrypt().expect("fixture decrypts");
-    let portal = PORTAL;
-    let info = crate::ecies::hkdf_info(&portal, &fixture.key_index, &fixture.eph_pub_x, &ALICE);
-    let key = crate::ecies::hkdf_sha256(&decrypted.proof.shared_secret.0, b"ecies-aes-key", &info);
-    let plaintext = build_plaintext(&fixture.to, &fixture.memo);
-    let (ciphertext, nonce, tag) = encrypt_plaintext(&key, &plaintext);
-    let (sequencer_x, sequencer_y_parity) = compressed_x_and_parity(&fixture.seq_pub);
+fn deposit_uses_child_anchor_key_and_recipient_policy() -> eyre::Result<()> {
+    for (recipient_policy_id, mint_recipient_policy_id) in BRIDGE_POLICY_CASES {
+        let mut harness = Harness::new()?;
+        harness.set_compound_transfer_policy(recipient_policy_id, mint_recipient_policy_id)?;
+        let fixture = EncryptedDepositFixture::new();
+        let decrypted = fixture.decrypt().expect("fixture decrypts");
+        let portal = PORTAL;
+        let info = crate::ecies::hkdf_info(&portal, &fixture.key_index, &fixture.eph_pub_x, &ALICE);
+        let key =
+            crate::ecies::hkdf_sha256(&decrypted.proof.shared_secret.0, b"ecies-aes-key", &info);
+        let plaintext = build_plaintext(&fixture.to, &fixture.memo);
+        let (ciphertext, nonce, tag) = encrypt_plaintext(&key, &plaintext);
+        let (sequencer_x, sequencer_y_parity) = compressed_x_and_parity(&fixture.seq_pub);
 
-    let base: U256 = keccak256(B256::from(portal::slots::ENCRYPTION_KEYS)).into();
-    let slot_x = base + fixture.key_index * U256::from(2);
-    harness.l1.insert(portal, slot_x, 1, sequencer_x.into());
-    harness.l1.insert(
-        portal,
-        slot_x + U256::ONE,
-        1,
-        U256::from(sequencer_y_parity),
-    );
+        let base: U256 = keccak256(B256::from(portal::slots::ENCRYPTION_KEYS)).into();
+        let slot_x = base + fixture.key_index * U256::from(2);
+        harness.l1.insert(portal, slot_x, 1, sequencer_x.into());
+        harness.l1.insert(
+            portal,
+            slot_x + U256::ONE,
+            1,
+            U256::from(sequencer_y_parity),
+        );
 
-    let deposit = Deposit {
-        token: PATH_USD_ADDRESS,
-        sender: ALICE,
-        amount: 900,
-        tempoRefundRecipient: ALICE,
-        keyIndex: fixture.key_index,
-        encrypted: tempo_contracts::zones::DepositPayload {
-            ephemeralPubkeyX: fixture.eph_pub_x,
-            ephemeralPubkeyYParity: fixture.eph_pub_y_parity,
-            ciphertext: ciphertext.into(),
-            nonce: nonce.into(),
-            tag: tag.into(),
-        },
-    };
-    let expected_hash =
-        keccak256((DepositType::Deposit, deposit.clone(), B256::ZERO).abi_encode_params());
-    harness.set_queue_hash(expected_hash);
+        let deposit = Deposit {
+            token: PATH_USD_ADDRESS,
+            sender: ALICE,
+            amount: 900,
+            tempoRefundRecipient: ALICE,
+            keyIndex: fixture.key_index,
+            encrypted: tempo_contracts::zones::DepositPayload {
+                ephemeralPubkeyX: fixture.eph_pub_x,
+                ephemeralPubkeyYParity: fixture.eph_pub_y_parity,
+                ciphertext: ciphertext.into(),
+                nonce: nonce.into(),
+                tag: tag.into(),
+            },
+        };
+        let expected_hash =
+            keccak256((DepositType::Deposit, deposit.clone(), B256::ZERO).abi_encode_params());
+        harness.set_queue_hash(expected_hash);
 
-    harness.call(
-        Address::ZERO,
-        harness
-            .advance_call(
-                vec![QueuedDeposit {
-                    depositType: DepositType::Deposit,
-                    rejected: false,
-                    depositData: deposit.abi_encode().into(),
-                }],
-                vec![DecryptionData {
-                    sharedSecret: decrypted.proof.shared_secret,
-                    sharedSecretYParity: decrypted.proof.shared_secret_y_parity,
-                    cpProof: decrypted.proof.cp_proof,
-                }],
-            )
-            .abi_encode(),
-    )?;
+        harness.call(
+            Address::ZERO,
+            harness
+                .advance_call(
+                    vec![QueuedDeposit {
+                        depositType: DepositType::Deposit,
+                        rejected: false,
+                        depositData: deposit.abi_encode().into(),
+                    }],
+                    vec![DecryptionData {
+                        sharedSecret: decrypted.proof.shared_secret,
+                        sharedSecretYParity: decrypted.proof.shared_secret_y_parity,
+                        cpProof: decrypted.proof.cp_proof,
+                    }],
+                )
+                .abi_encode(),
+        )?;
 
-    assert_eq!(
-        harness.balance(PATH_USD_ADDRESS, fixture.to)?,
-        U256::from(900)
-    );
-    assert!(harness.pending_withdrawals()?.is_empty());
-    assert!(
-        harness
-            .l1
-            .storage_requests()
-            .contains(&(portal, B256::from(slot_x), 1))
-    );
+        let authorized = recipient_policy_id == ALLOW_ALL_POLICY_ID;
+        assert_eq!(
+            harness.balance(PATH_USD_ADDRESS, fixture.to)?,
+            if authorized {
+                U256::from(900)
+            } else {
+                U256::ZERO
+            }
+        );
+        if authorized {
+            assert!(harness.pending_withdrawals()?.is_empty());
+        } else {
+            harness.assert_single_bounce_back(PATH_USD_ADDRESS, 900, ALICE)?;
+        }
+        assert_eq!(
+            harness.balance(PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS)?,
+            U256::ZERO
+        );
+        assert!(
+            harness
+                .l1
+                .storage_requests()
+                .contains(&(portal, B256::from(slot_x), 1))
+        );
+    }
     Ok(())
 }
 
@@ -1043,36 +1093,52 @@ fn refund_reads_are_limited_to_owner_and_active_sequencer() -> eyre::Result<()> 
 }
 
 #[test]
-fn claim_refund_clears_balance_and_mints_to_caller() -> eyre::Result<()> {
-    let mut harness = Harness::new()?;
-    {
+fn claim_refund_uses_recipient_policy_and_preserves_failed_refunds() -> eyre::Result<()> {
+    for (recipient_policy_id, mint_recipient_policy_id) in BRIDGE_POLICY_CASES {
+        let mut harness = Harness::new()?;
+        harness.set_compound_transfer_policy(recipient_policy_id, mint_recipient_policy_id)?;
+        {
+            let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                ZoneInbox::new().withdrawal_bounce_backs[PATH_USD_ADDRESS][BOB].write(444)?;
+                Ok(())
+            })?;
+        }
+
+        let output = harness.call(
+            BOB,
+            IZoneInbox::claimRefundCall {
+                token: PATH_USD_ADDRESS,
+            }
+            .abi_encode(),
+        )?;
+        let authorized = recipient_policy_id == ALLOW_ALL_POLICY_ID;
+        if authorized {
+            assert!(output.is_success());
+            assert_eq!(
+                IZoneInbox::claimRefundCall::abi_decode_returns(&output.bytes)?,
+                444
+            );
+        } else {
+            assert!(output.is_revert());
+        }
+        assert_eq!(
+            harness.balance(PATH_USD_ADDRESS, BOB)?,
+            if authorized {
+                U256::from(444)
+            } else {
+                U256::ZERO
+            }
+        );
         let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-            ZoneInbox::new().withdrawal_bounce_backs[PATH_USD_ADDRESS][BOB].write(444)?;
+            assert_eq!(
+                ZoneInbox::new().withdrawal_bounce_backs[PATH_USD_ADDRESS][BOB].read()?,
+                if authorized { 0 } else { 444 }
+            );
             Ok(())
         })?;
     }
-
-    let output = harness.call(
-        BOB,
-        IZoneInbox::claimRefundCall {
-            token: PATH_USD_ADDRESS,
-        }
-        .abi_encode(),
-    )?;
-    assert_eq!(
-        IZoneInbox::claimRefundCall::abi_decode_returns(&output.bytes)?,
-        444
-    );
-    assert_eq!(harness.balance(PATH_USD_ADDRESS, BOB)?, U256::from(444));
-    let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
-    StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-        assert_eq!(
-            ZoneInbox::new().withdrawal_bounce_backs[PATH_USD_ADDRESS][BOB].read()?,
-            0
-        );
-        Ok(())
-    })?;
     Ok(())
 }
 
@@ -1125,41 +1191,60 @@ fn failed_withdrawal_bounce_back_parks_refund() -> eyre::Result<()> {
 }
 
 #[test]
-fn withdrawal_bounce_back_consumes_fallback_nonce() -> eyre::Result<()> {
-    let mut harness = Harness::new()?;
-    let nonce = 7u64;
-    harness.seed_fallback_recipient(nonce, BOB)?;
-    let deposit = WithdrawalBounceBackDeposit {
-        token: PATH_USD_ADDRESS,
-        to: Address::left_padding_from(&nonce.to_be_bytes()),
-        amount: 321,
-    };
-    let expected_hash = keccak256(
-        (
-            DepositType::WithdrawalBounceBack,
-            deposit.clone(),
-            B256::ZERO,
-        )
-            .abi_encode_params(),
-    );
-    harness.set_queue_hash(expected_hash);
-
-    harness.call(
-        Address::ZERO,
-        harness
-            .advance_call(
-                vec![QueuedDeposit {
-                    depositType: DepositType::WithdrawalBounceBack,
-                    rejected: false,
-                    depositData: deposit.abi_encode().into(),
-                }],
-                Vec::new(),
+fn withdrawal_bounce_back_uses_recipient_policy_and_consumes_fallback_nonce() -> eyre::Result<()> {
+    for (recipient_policy_id, mint_recipient_policy_id) in BRIDGE_POLICY_CASES {
+        let mut harness = Harness::new()?;
+        harness.set_compound_transfer_policy(recipient_policy_id, mint_recipient_policy_id)?;
+        let nonce = 7u64;
+        harness.seed_fallback_recipient(nonce, BOB)?;
+        let deposit = WithdrawalBounceBackDeposit {
+            token: PATH_USD_ADDRESS,
+            to: Address::left_padding_from(&nonce.to_be_bytes()),
+            amount: 321,
+        };
+        let expected_hash = keccak256(
+            (
+                DepositType::WithdrawalBounceBack,
+                deposit.clone(),
+                B256::ZERO,
             )
-            .abi_encode(),
-    )?;
+                .abi_encode_params(),
+        );
+        harness.set_queue_hash(expected_hash);
 
-    assert_eq!(harness.balance(PATH_USD_ADDRESS, BOB)?, U256::from(321));
-    assert!(harness.pending_withdrawals()?.is_empty());
-    assert_eq!(harness.fallback_recipient(nonce)?, Address::ZERO);
+        harness.call(
+            Address::ZERO,
+            harness
+                .advance_call(
+                    vec![QueuedDeposit {
+                        depositType: DepositType::WithdrawalBounceBack,
+                        rejected: false,
+                        depositData: deposit.abi_encode().into(),
+                    }],
+                    Vec::new(),
+                )
+                .abi_encode(),
+        )?;
+
+        let authorized = recipient_policy_id == ALLOW_ALL_POLICY_ID;
+        assert_eq!(
+            harness.balance(PATH_USD_ADDRESS, BOB)?,
+            if authorized {
+                U256::from(321)
+            } else {
+                U256::ZERO
+            }
+        );
+        assert!(harness.pending_withdrawals()?.is_empty());
+        assert_eq!(harness.fallback_recipient(nonce)?, Address::ZERO);
+        let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            assert_eq!(
+                ZoneInbox::new().withdrawal_bounce_backs[PATH_USD_ADDRESS][BOB].read()?,
+                if authorized { 0 } else { 321 }
+            );
+            Ok(())
+        })?;
+    }
     Ok(())
 }
