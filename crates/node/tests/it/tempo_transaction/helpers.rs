@@ -849,10 +849,9 @@ pub(crate) async fn configure_fee_payer_context(
 
     let fee_payer_addr = fee_payer_signer.address();
     let token = tx.fee_token.unwrap_or(DEFAULT_FEE_TOKEN);
-    let balance_before = ITIP20::new(token, provider)
-        .balanceOf(fee_payer_addr)
-        .call()
-        .await?;
+    // Callers fund the fee payer right before this.
+    let balance_before =
+        settled_balance(provider, token, fee_payer_addr, |bal| !bal.is_zero()).await?;
     sign_fee_payer(tx, signer_addr, fee_payer_signer)?;
 
     Ok(Some(FeePayerContext {
@@ -862,6 +861,42 @@ pub(crate) async fn configure_fee_payer_context(
     }))
 }
 
+/// Runs `read`, re-running it for up to 5s until `settled` holds, and returns the last value.
+///
+/// A live RPC endpoint can serve the read from a backend that has not imported the
+/// block of the receipt the caller just saw.
+pub(crate) async fn settled<T, Fut>(
+    mut read: impl FnMut() -> Fut,
+    settled: impl Fn(&T) -> bool,
+) -> eyre::Result<T>
+where
+    Fut: Future<Output = eyre::Result<T>>,
+{
+    let mut value = read().await?;
+    for _ in 0..20 {
+        if settled(&value) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        value = read().await?;
+    }
+    Ok(value)
+}
+
+async fn settled_balance(
+    provider: &impl Provider,
+    token: Address,
+    who: Address,
+    done: impl Fn(U256) -> bool,
+) -> eyre::Result<U256> {
+    let token = ITIP20::new(token, provider);
+    settled(
+        || async { Ok(token.balanceOf(who).call().await?) },
+        |bal| done(*bal),
+    )
+    .await
+}
+
 pub(crate) async fn assert_token_balance(
     provider: &impl Provider,
     token: Address,
@@ -869,7 +904,7 @@ pub(crate) async fn assert_token_balance(
     expected: U256,
     msg: &str,
 ) -> eyre::Result<()> {
-    let bal = ITIP20::new(token, provider).balanceOf(who).call().await?;
+    let bal = settled_balance(provider, token, who, |bal| bal == expected).await?;
     assert_eq!(bal, expected, "{msg}");
     Ok(())
 }
@@ -927,10 +962,10 @@ pub(crate) async fn assert_fee_payer_spent(
 
     let expected_cost = calc_gas_balance_spending(gas_used, effective_gas_price);
 
-    let balance_after = ITIP20::new(fee_payer.token, provider)
-        .balanceOf(fee_payer.addr)
-        .call()
-        .await?;
+    let balance_after = settled_balance(provider, fee_payer.token, fee_payer.addr, |bal| {
+        bal != fee_payer.balance_before
+    })
+    .await?;
     let actual_spent = fee_payer
         .balance_before
         .checked_sub(balance_after)
