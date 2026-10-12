@@ -19,13 +19,14 @@ use alloy_sol_types::{SolCall, SolConstructor, SolValue};
 use eyre::WrapErr;
 use std::time::Duration;
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionRequest};
-use tempo_contracts::precompiles::{IRolesAuth, ITIP20, ITIP403Registry};
+use tempo_contracts::{
+    precompiles::{ITIP20, ITIP403Registry},
+    zones::{DepositPayload, ZONE_OUTBOX_ADDRESS, ZonePortal},
+};
 use tempo_precompiles::{
-    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, tip20::ISSUER_ROLE,
-    tip403_registry::AuthRole,
+    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, tip403_registry::AuthRole,
 };
 use tempo_primitives::transaction::Call;
-use tempo_contracts::zones::{DepositPayload, ZONE_OUTBOX_ADDRESS, ZonePortal};
 
 const AMOUNT: u128 = 1_000_000;
 const REWARD_AMOUNT: u128 = AMOUNT / 10;
@@ -194,7 +195,13 @@ alloy_sol_types::sol! {
 
     #[sol(rpc)]
     contract SingleZoneEarnRouter {
-        constructor(uint32 allowedZoneId_, address earnVault_, address privateAsset_, address tokenAuthority_);
+        constructor(
+            uint32 allowedZoneId_,
+            address earnVault_,
+            address privateAsset_,
+            address pool_,
+            bytes32 customerId_
+        );
     }
 
     #[sol(rpc)]
@@ -214,13 +221,10 @@ alloy_sol_types::sol! {
     }
 
     #[sol(rpc)]
-    contract DemoTokenAuthority {
-        constructor(address reserveToken, address administrator);
-        function BRIDGE_ECOSYSTEM_CONTRACT_ROLE() external view returns (bytes32);
-        function UNWRAPPER_ROLE() external view returns (bytes32);
-        function grantRole(bytes32 role, address account) external;
-        function setTxnMintLimit(address stablecoin, uint256 limit) external;
-        function mintBridgeEcosystem(address stablecoin, address receiver, uint256 amount) external;
+    contract DemoParPool {
+        constructor(address baseToken_, address quoteToken_, address owner_);
+        function setTakerAllowed(address taker, bool allowed) external;
+        function setRecipientAllowed(address recipient, bool allowed) external;
     }
 
     #[sol(rpc)]
@@ -267,6 +271,7 @@ struct EarnZoneFixture {
     earn_share: Address,
     earn_vault: Address,
     router: Address,
+    pool: Address,
     contribution_controller: Address,
     access_policy: Option<EarnAccessPolicy>,
     user: ZoneAccount,
@@ -411,46 +416,21 @@ impl EarnZoneFixture {
             .await?;
         eyre::ensure!(receipt.status(), "initializing the Earn engine failed");
 
-        let authority = deploy_contract(
+        // Earn's public pool fixture converts 1:1 from inventory without the private PropAMM
+        // dependency. Fund both directions so deposits, redemptions, and rewards can settle.
+        let pool = deploy_contract(
             &l1,
-            "DemoTokenAuthority",
-            DemoTokenAuthority::constructorCall {
-                reserveToken: PATH_USD_ADDRESS,
-                administrator: owner,
+            "DemoParPool",
+            DemoParPool::constructorCall {
+                baseToken_: alternate_asset,
+                quoteToken_: vault_asset,
+                owner_: owner,
             }
             .abi_encode(),
         )
         .await?;
-        let provider = l1.dev_provider();
-        let authority_contract = DemoTokenAuthority::new(authority, &provider);
-        let receipt = IRolesAuth::new(PATH_USD_ADDRESS, &provider)
-            .grantRole(ISSUER_ROLE, authority)
-            .send()
-            .await?
-            .get_receipt()
-            .await?;
-        eyre::ensure!(receipt.status(), "granting reserve issuer role failed");
         for token in [vault_asset, alternate_asset] {
-            let receipt = IRolesAuth::new(token, &provider)
-                .grantRole(ISSUER_ROLE, authority)
-                .send()
-                .await?
-                .get_receipt()
-                .await?;
-            eyre::ensure!(
-                receipt.status(),
-                "granting TokenAuthority issuer role failed"
-            );
-            let receipt = authority_contract
-                .setTxnMintLimit(token, U256::from(TOKEN_SUPPLY))
-                .send()
-                .await?
-                .get_receipt()
-                .await?;
-            eyre::ensure!(
-                receipt.status(),
-                "setting TokenAuthority transaction limit failed"
-            );
+            l1.fund_user_token(token, pool, TOKEN_SUPPLY / 2).await?;
         }
         let zone_id = ZonePortal::new(portal, l1.provider())
             .zoneId()
@@ -463,41 +443,28 @@ impl EarnZoneFixture {
                 allowedZoneId_: zone_id,
                 earnVault_: earn_vault,
                 privateAsset_: alternate_asset,
-                tokenAuthority_: authority,
+                pool_: pool,
+                customerId_: keccak256("zones-earn-e2e"),
             }
             .abi_encode(),
         )
         .await?;
         let provider = l1.dev_provider();
-        let authority_contract = DemoTokenAuthority::new(authority, &provider);
-        let unwrap_role = authority_contract.UNWRAPPER_ROLE().call().await?;
-        let receipt = authority_contract
-            .grantRole(unwrap_role, router)
+        let pool_contract = DemoParPool::new(pool, &provider);
+        let receipt = pool_contract
+            .setTakerAllowed(router, true)
             .send()
             .await?
             .get_receipt()
             .await?;
-        eyre::ensure!(receipt.status(), "granting router unwrap role failed");
-        let bridge_role = authority_contract
-            .BRIDGE_ECOSYSTEM_CONTRACT_ROLE()
-            .call()
-            .await?;
-        let receipt = authority_contract
-            .grantRole(bridge_role, owner)
+        eyre::ensure!(receipt.status(), "allowing router as pool taker failed");
+        let receipt = pool_contract
+            .setRecipientAllowed(router, true)
             .send()
             .await?
             .get_receipt()
             .await?;
-        eyre::ensure!(receipt.status(), "granting fixture funding role failed");
-        for token in [vault_asset, alternate_asset] {
-            let receipt = authority_contract
-                .mintBridgeEcosystem(token, user_address, U256::from(PUBLIC_USER_BALANCE))
-                .send()
-                .await?
-                .get_receipt()
-                .await?;
-            eyre::ensure!(receipt.status(), "funding TokenAuthority fixture failed");
-        }
+        eyre::ensure!(receipt.status(), "allowing router as pool recipient failed");
         let router_block = l1.set_zone_gateway_on_portal(portal, router, true).await?;
         zone.wait_for_l2_tempo_finalized(router_block, E2E_TIMEOUT)
             .await?;
@@ -556,6 +523,7 @@ impl EarnZoneFixture {
             earn_share,
             earn_vault,
             router,
+            pool,
             contribution_controller,
             access_policy,
             user,
@@ -1549,12 +1517,50 @@ async fn zone_redeem_third_party_recipient() -> eyre::Result<()> {
 async fn zone_lifecycle_swapped() -> eyre::Result<()> {
     let mut fixture = EarnZoneFixture::start().await?;
     let user = fixture.user.address();
+    let private_before = fixture
+        .l1
+        .balance_of(fixture.alternate_asset, fixture.pool)
+        .await?;
+    let vault_before = fixture
+        .l1
+        .balance_of(fixture.vault_asset, fixture.pool)
+        .await?;
     let shares = fixture.zone_deposit(fixture.alternate_asset, user).await?;
     assert_eq!(shares, AMOUNT, "swapped Zone deposit was not 1:1");
+    assert_eq!(
+        fixture
+            .l1
+            .balance_of(fixture.alternate_asset, fixture.pool)
+            .await?,
+        private_before + U256::from(AMOUNT),
+        "deposit did not replenish the pool's private asset inventory"
+    );
+    assert_eq!(
+        fixture
+            .l1
+            .balance_of(fixture.vault_asset, fixture.pool)
+            .await?,
+        vault_before - U256::from(AMOUNT),
+        "deposit did not draw from the pool's vault asset inventory"
+    );
     let output = fixture
         .zone_redeem(shares, fixture.alternate_asset, user)
         .await?;
     assert_eq!(output, AMOUNT, "swapped Zone lifecycle was not 1:1");
+    assert_eq!(
+        fixture
+            .l1
+            .balance_of(fixture.alternate_asset, fixture.pool)
+            .await?,
+        private_before
+    );
+    assert_eq!(
+        fixture
+            .l1
+            .balance_of(fixture.vault_asset, fixture.pool)
+            .await?,
+        vault_before
+    );
     Ok(())
 }
 
