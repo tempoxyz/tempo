@@ -5,14 +5,15 @@ use crate::{
     bootstrap_shadowfork::BootstrapShadowfork, check_abi::CheckAbi,
     generate_devnet::GenerateDevnet, generate_genesis::GenerateGenesis,
     generate_hardfork::AddHardfork, generate_localnet::GenerateLocalnet,
-    generate_shadowfork::GenerateShadowfork, generate_state_bloat::GenerateStateBloat,
-    get_dkg_outcome::GetDkgOutcome, identity_transitions::GetIdentityTransitions,
+    generate_shadowfork::GenerateShadowfork, get_dkg_outcome::GetDkgOutcome,
+    identity_transitions::GetIdentityTransitions,
 };
 
 use alloy::signers::{local::MnemonicBuilder, utils::secret_key_to_address};
 use clap::Parser as _;
 use commonware_codec::DecodeExt;
 use eyre::Context;
+use tempo_state_bloat::GenerateStateBloat;
 
 mod bootstrap_shadowfork;
 mod check_abi;
@@ -21,7 +22,6 @@ mod generate_genesis;
 mod generate_hardfork;
 mod generate_localnet;
 mod generate_shadowfork;
-mod generate_state_bloat;
 mod genesis_args;
 mod get_dkg_outcome;
 mod identity_transitions;

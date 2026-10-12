@@ -242,7 +242,7 @@ pub(crate) fn gen_storable_rust_ints() -> TokenStream {
         let signed_config = TypeConfig {
             type_path: quote! { #signed_type },
             byte_count,
-            storable_strategy: StorableConversionStrategy::SignedRust(unsigned_type.clone()),
+            storable_strategy: StorableConversionStrategy::SignedRust(unsigned_type),
             storage_key_strategy: StorageKeyStrategy::Simple,
         };
         impls.push(gen_complete_impl_set(&signed_config));
@@ -275,7 +275,7 @@ fn gen_alloy_integers() -> Vec<TokenStream> {
         let signed_config = TypeConfig {
             type_path: quote! { ::alloy::primitives::aliases::#signed_type },
             byte_count,
-            storable_strategy: StorableConversionStrategy::SignedAlloy(unsigned_type.clone()),
+            storable_strategy: StorableConversionStrategy::SignedAlloy(unsigned_type),
             storage_key_strategy: StorageKeyStrategy::SignedRaw(byte_count),
         };
         impls.push(gen_complete_impl_set(&signed_config));

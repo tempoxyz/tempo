@@ -19,14 +19,24 @@ TEMPO_ROOT="${1:?Usage: $0 <tempo_root> <foundry_root>}"
 FOUNDRY_ROOT="${2:?Usage: $0 <tempo_root> <foundry_root>}"
 
 TEMPO_CARGO="$TEMPO_ROOT/Cargo.toml"
+TEMPO_LOCK="$TEMPO_ROOT/Cargo.lock"
 FOUNDRY_CARGO="$FOUNDRY_ROOT/Cargo.toml"
+FOUNDRY_LOCK="$FOUNDRY_ROOT/Cargo.lock"
 
 if [[ ! -f "$TEMPO_CARGO" ]]; then
   echo "ERROR: Tempo Cargo.toml not found at $TEMPO_CARGO" >&2
   exit 1
 fi
+if [[ ! -f "$TEMPO_LOCK" ]]; then
+  echo "ERROR: Tempo Cargo.lock not found at $TEMPO_LOCK" >&2
+  exit 1
+fi
 if [[ ! -f "$FOUNDRY_CARGO" ]]; then
   echo "ERROR: Foundry Cargo.toml not found at $FOUNDRY_CARGO" >&2
+  exit 1
+fi
+if [[ ! -f "$FOUNDRY_LOCK" ]]; then
+  echo "ERROR: Foundry Cargo.lock not found at $FOUNDRY_LOCK" >&2
   exit 1
 fi
 
@@ -181,6 +191,43 @@ update_stale_tempo_git_packages() {
   cargo update "${update_args[@]}" >/dev/null
 }
 
+locked_versions() {
+  local lockfile="$1"
+  local package="$2"
+  awk -v package="$package" '
+    /^\[\[package\]\]$/ { selected = 0; next }
+    /^name = / {
+      name = $3
+      gsub(/"/, "", name)
+      selected = name == package
+      next
+    }
+    selected && /^version = / {
+      version = $3
+      gsub(/"/, "", version)
+      print version
+    }
+  ' "$lockfile" | sort -u
+}
+
+assert_lock_versions_match() {
+  local package="$1"
+  local tempo_versions
+  local foundry_versions
+  tempo_versions="$(locked_versions "$TEMPO_LOCK" "$package")"
+  foundry_versions="$(locked_versions "$FOUNDRY_LOCK" "$package")"
+
+  if [[ -z "$tempo_versions" || -z "$foundry_versions" ]]; then
+    echo "ERROR: Missing $package from a lockfile (Tempo='$tempo_versions', Foundry='$foundry_versions')" >&2
+    exit 1
+  fi
+  if [[ "$tempo_versions" != "$foundry_versions" ]]; then
+    echo "ERROR: $package lock mismatch (Tempo='$tempo_versions', Foundry='$foundry_versions')" >&2
+    exit 1
+  fi
+  echo "$package lock aligned at $tempo_versions"
+}
+
 # ── 5. Re-resolve the lockfile without upgrading unrelated crates ──────────
 # `cargo update` can pull newer upstream deps from Foundry's workspace, which is non-deterministic.
 # A normal resolver pass is enough to rewrite the lockfile entries for the tempo path overrides.
@@ -219,6 +266,9 @@ done
 
 update_stale_tempo_git_packages
 cargo metadata --format-version=1 --no-default-features >/dev/null
+for package in alloy-primitives alloy-sol-types revm; do
+  assert_lock_versions_match "$package"
+done
 popd >/dev/null
 
 if grep -q '^source = "git+https://github.com/tempoxyz/tempo?rev=' "$FOUNDRY_ROOT/Cargo.lock"; then

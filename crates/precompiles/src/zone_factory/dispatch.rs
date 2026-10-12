@@ -1,6 +1,6 @@
 //! ABI dispatch for the [`ZoneFactory`] precompile.
 
-use crate::{Precompile, charge_input_cost, dispatch, mutate, mutate_void, view};
+use crate::{Precompile, charge_input_cost, dispatch, mutate, view};
 use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::IZoneFactory;
@@ -19,7 +19,7 @@ impl Precompile for ZoneFactory {
                 IZoneFactory::IZoneFactoryCalls {
                     owner(call) => view(call, |_| self.owner()),
                     transferOwnership(call) => {
-                        mutate_void(call, msg_sender, |sender, call| {
+                        mutate(call, msg_sender, |sender, call| {
                             self.transfer_ownership(sender, call)
                         })
                     },

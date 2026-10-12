@@ -7,7 +7,11 @@
 use std::time::Instant;
 
 use alloy_consensus::Sealable as _;
-use commonware_consensus::simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization};
+use commonware_consensus::{
+    Epochable as _,
+    simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization},
+    types::{Epocher as _, FixedEpocher, Height},
+};
 use commonware_cryptography::{
     bls12381::primitives::variant::MinSig, certificate::Verifier as _, ed25519::PublicKey,
 };
@@ -17,9 +21,9 @@ use commonware_storage::{
     translator::TwoCap,
 };
 use commonware_utils::{NZU16, NZU64, NZUsize};
-use eyre::{WrapErr as _, ensure};
+use eyre::{OptionExt as _, WrapErr as _, ensure, eyre};
 use reth_provider::{BlockIdReader, BlockReader};
-use tracing::{info, instrument};
+use tracing::{info, instrument, warn};
 
 use crate::{
     config::BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
@@ -28,6 +32,8 @@ use crate::{
 
 pub(crate) mod hybrid;
 pub mod snapshot;
+#[cfg(test)]
+mod tests;
 
 pub(crate) use hybrid::{FinalizedBlocksProvider, Hybrid};
 
@@ -47,34 +53,14 @@ pub(crate) const MAX_REPAIR: std::num::NonZeroUsize = NZUsize!(20);
 pub(crate) const BUFFER_POOL_PAGE_SIZE: std::num::NonZeroU16 = NZU16!(4_096); // 4KB
 pub(crate) const BUFFER_POOL_CAPACITY: std::num::NonZeroUsize = NZUsize!(8_192); // 32MB (8k page slots)
 
-/// Default number of finalized blocks (relative to reth's finalized
-/// watermark) to keep cached in the prunable archive.
-///
-/// Beyond this depth, [`Hybrid`] falls back to looking up blocks from the
-/// execution layer.
-///
-/// The prunable archive evicts in `PRUNABLE_ITEMS_PER_SECTION`-sized
-/// batches (see [`hybrid`]'s "Section-rounding" docs). When reth is
-/// caught up to the marshal's tip the cache holds between `RETENTION`
-/// and `RETENTION + PRUNABLE_ITEMS_PER_SECTION − 1` items; if reth is
-/// lagging the marshal, the cache can hold more (it never drops blocks
-/// reth doesn't yet have). The assertion below keeps the section
-/// overshoot small relative to `RETENTION` (current ratio: 4×).
-pub(crate) const DEFAULT_FINALIZED_BLOCKS_RETENTION: u64 = 16_384;
-
-const _: () = assert!(
-    DEFAULT_FINALIZED_BLOCKS_RETENTION >= 2 * PRUNABLE_ITEMS_PER_SECTION.get(),
-    "DEFAULT_FINALIZED_BLOCKS_RETENTION must be at least 2 * PRUNABLE_ITEMS_PER_SECTION; \
-     otherwise the section-rounding overshoot dominates the working set",
-);
-
+/// Open the finalization archive and ensure its tip certificate's epoch matches its stored height.
 pub(crate) async fn init_finalizations_archive<TContext>(
     context: &TContext,
     partition_prefix: &str,
     page_cache: CacheRef,
-) -> Result<
+    epoch_strategy: &FixedEpocher,
+) -> eyre::Result<
     immutable::Archive<TContext, Digest, Finalization<Scheme<PublicKey, MinSig>, Digest>>,
-    commonware_storage::archive::Error,
 >
 where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
@@ -108,14 +94,31 @@ where
             ordinal_write_buffer: WRITE_BUFFER,
         },
     )
-    .await;
+    .await?;
+
+    if let Some(height) = archive.last_index() {
+        let certificate: Finalization<Scheme<PublicKey, MinSig>, Digest> = archive
+            .get(Identifier::Index(height))
+            .await
+            .wrap_err("failed reading finalized tip certificate")?
+            .ok_or_eyre("archive did not contain finalized tip certificate")?;
+        let epoch = epoch_strategy
+            .containing(Height::new(height))
+            .ok_or_else(|| eyre!("epoch strategy did not contain archive tip height `{height}`"))?
+            .epoch();
+        ensure!(
+            certificate.epoch() == epoch,
+            "finalized tip certificate epoch `{}` does not match epoch `{epoch}` for archive height `{height}`",
+            certificate.epoch(),
+        );
+    }
 
     info!(
         elapsed = %tempo_telemetry_util::display_duration(start.elapsed()),
         "restored finalizations by height archive"
     );
 
-    archive
+    Ok(archive)
 }
 
 /// Initialize the [`Hybrid`] finalized blocks store backed by a prunable
@@ -137,6 +140,15 @@ where
         retention_blocks > 0,
         "finalized blocks retention must be greater than zero",
     );
+    if retention_blocks < 2 * PRUNABLE_ITEMS_PER_SECTION.get() {
+        warn!(
+            retention_blocks,
+            items_per_section = PRUNABLE_ITEMS_PER_SECTION.get(),
+            "finalized blocks retention is below two prunable archive sections; the cache \
+             evicts whole sections and can hold up to `items_per_section - 1` more blocks \
+             than requested",
+        );
+    }
 
     let prunable =
         init_prunable_finalized_blocks_archive(context, partition_prefix, page_cache.clone())
@@ -186,6 +198,7 @@ where
             key_partition: format!("{partition_prefix}-{PRUNABLE_FINALIZED_BLOCKS}-key"),
             key_page_cache: page_cache,
             value_partition: format!("{partition_prefix}-{PRUNABLE_FINALIZED_BLOCKS}-value"),
+            metadata_partition: format!("{partition_prefix}-{PRUNABLE_FINALIZED_BLOCKS}-metadata"),
             compression: FREEZER_VALUE_COMPRESSION,
             codec_config: (),
             items_per_section: PRUNABLE_ITEMS_PER_SECTION,
@@ -214,15 +227,17 @@ pub async fn find_last_finalized_marker<TContext, P>(
     context: &TContext,
     execution_provider: &P,
     max_depth: u64,
+    epoch_strategy: &FixedEpocher,
 ) -> eyre::Result<Option<(u64, Finalization<Scheme<PublicKey, MinSig>, Digest>)>>
 where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
     P: BlockIdReader + BlockReader<Block = tempo_primitives::Block> + Send + Sync + ?Sized,
 {
     let page_cache = CacheRef::from_pooler(context, BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
-    let archive = init_finalizations_archive(context, crate::PARTITION_PREFIX, page_cache)
-        .await
-        .wrap_err("failed to open finalizations-by-height archive")?;
+    let archive =
+        init_finalizations_archive(context, crate::PARTITION_PREFIX, page_cache, epoch_strategy)
+            .await
+            .wrap_err("failed to open finalizations-by-height archive")?;
 
     if archive.last_index().is_none() {
         return Ok(None);

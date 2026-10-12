@@ -1,6 +1,5 @@
 use std::{net::SocketAddr, path::PathBuf};
 
-use alloy_primitives::Address;
 use eyre::{Context, OptionExt as _, ensure};
 use rand_08::SeedableRng as _;
 use reth_network_peers::pk2id;
@@ -121,9 +120,6 @@ impl GenerateDevnet {
                     consensus_on_disk_signing_key: signing_key_to_hex(&validator.signing_key),
                     consensus_on_disk_signing_share: validator.signing_share.to_string(),
 
-                    // FIXME(janis): this should not be zero
-                    consensus_fee_recipient: Address::ZERO,
-
                     consensus_p2p_port,
                     consensus_metrics_port,
                     execution_p2p_port,
@@ -167,7 +163,6 @@ pub(crate) struct ConfigOutput {
     consensus_on_disk_signing_key: String,
     consensus_on_disk_signing_share: String,
     consensus_p2p_port: u16,
-    consensus_fee_recipient: Address,
     consensus_metrics_port: u16,
     node_image_tag: String,
     execution_genesis_url: String,

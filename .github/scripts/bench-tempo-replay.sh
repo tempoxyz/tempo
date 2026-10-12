@@ -147,7 +147,7 @@ build_tempo() {
 
   echo "Building $label tempo ($ref) with features: $build_features"
   cd "$src_dir"
-  RUSTFLAGS="-C target-cpu=native" \
+  RUSTFLAGS="-C target-cpu=native -C force-frame-pointers=yes" \
     cargo build --profile profiling --bin tempo --no-default-features --features "$build_features"
   cd -
 }

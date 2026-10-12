@@ -695,7 +695,7 @@ mod tests {
         let base_slot = U256::from(600);
 
         // Test Address at offset 0
-        let addr0 = Address::from([0x12; 20]);
+        let addr0 = Address::repeat_byte(0x12);
         StorageCtx::enter(&mut storage, || {
             let mut slot0 = Address::handle(base_slot, LayoutCtx::packed(0), address);
             slot0.write(addr0).unwrap();
@@ -721,7 +721,7 @@ mod tests {
         });
 
         // Test Address at offset 12 (fits in one slot: 12 + 20 = 32)
-        let addr12 = Address::from([0xAB; 20]);
+        let addr12 = Address::repeat_byte(0xAB);
         StorageCtx::enter(&mut storage, || {
             let mut slot12 = Address::handle(base_slot + U256::ONE, LayoutCtx::packed(12), address);
             slot12.write(addr12).unwrap();

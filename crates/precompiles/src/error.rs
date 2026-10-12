@@ -16,7 +16,7 @@ use alloy::{
 };
 use alloy_evm::EvmInternalsError;
 use revm::{
-    context::journaled_state::JournalLoadError,
+    context::journaled_state::{JournalLoadErasedError, JournalLoadError},
     precompile::{PrecompileError, PrecompileHalt, PrecompileOutput, PrecompileResult},
 };
 use tempo_contracts::{
@@ -119,6 +119,10 @@ pub enum TempoPrecompileError {
     #[error("Gas limit exceeded")]
     OutOfGas,
 
+    /// State mutation attempted during static execution.
+    #[error("State change during static call")]
+    StaticCallNotAllowed,
+
     /// The calldata's 4-byte selector does not match any known precompile function.
     #[error("Unknown function selector: {0:?}")]
     UnknownFunctionSelector([u8; 4]),
@@ -146,8 +150,8 @@ impl From<JournalLoadError<EvmInternalsError>> for TempoPrecompileError {
     }
 }
 
-impl From<JournalLoadError<revm::context::ErasedError>> for TempoPrecompileError {
-    fn from(value: JournalLoadError<revm::context::ErasedError>) -> Self {
+impl From<JournalLoadErasedError> for TempoPrecompileError {
+    fn from(value: JournalLoadErasedError) -> Self {
         match value {
             JournalLoadError::DBError(e) => Self::Fatal(e.to_string()),
             JournalLoadError::ColdLoadSkipped => Self::OutOfGas,
@@ -182,7 +186,7 @@ impl TempoPrecompileError {
             Self::ZoneFactoryError(e) => e.selector(),
             Self::UnknownFunctionSelector(selector) => *selector,
             Self::Panic(_) | Self::StorageDeltaUnderflow(_) => Panic::SELECTOR,
-            Self::OutOfGas | Self::Fatal(_) => [0, 0, 0, 0],
+            Self::OutOfGas | Self::StaticCallNotAllowed | Self::Fatal(_) => [0, 0, 0, 0],
         }
         .into()
     }
@@ -191,9 +195,11 @@ impl TempoPrecompileError {
     /// rather than swallowed, because state may be inconsistent.
     pub fn is_system_error(&self) -> bool {
         match self {
-            Self::OutOfGas | Self::Fatal(_) | Self::Panic(_) | Self::StorageDeltaUnderflow(_) => {
-                true
-            }
+            Self::OutOfGas
+            | Self::StaticCallNotAllowed
+            | Self::Fatal(_)
+            | Self::Panic(_)
+            | Self::StorageDeltaUnderflow(_) => true,
             Self::StablecoinDEX(_)
             | Self::TIP20(_)
             | Self::TIP20ChannelReserveError(_)
@@ -277,6 +283,12 @@ impl TempoPrecompileError {
             Self::ZoneFactoryError(e) => e.abi_encode().into(),
             Self::OutOfGas => {
                 return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, reservoir));
+            }
+            Self::StaticCallNotAllowed => {
+                return Ok(PrecompileOutput::halt(
+                    PrecompileHalt::other_static("state change during static call"),
+                    reservoir,
+                ));
             }
             Self::UnknownFunctionSelector(selector) => UnknownFunctionSelector {
                 selector: selector.into(),
@@ -524,11 +536,24 @@ mod tests {
     }
 
     #[test]
+    fn test_static_call_violation_becomes_exceptional_halt() {
+        let output = TempoPrecompileError::StaticCallNotAllowed
+            .into_precompile_result(0, 123)
+            .expect("static-call violation should be a frame-local halt");
+
+        assert!(matches!(
+            output.status,
+            revm::precompile::PrecompileStatus::Halt(PrecompileHalt::Other(_))
+        ));
+        assert!(output.bytes.is_empty());
+        assert_eq!(output.reservoir, 123);
+    }
+
+    #[test]
     fn test_encode_precompile_result_trait_success() {
         let result: Result<u64> = Ok(42);
-        let precompile_result = result.encode_precompile_result(0, 0, |val| {
-            alloy::primitives::Bytes::from(val.to_be_bytes().to_vec())
-        });
+        let precompile_result =
+            result.encode_precompile_result(0, 0, |val| val.to_be_bytes().into());
 
         let output = precompile_result.expect("success should be Ok");
         assert!(output.status.is_success());

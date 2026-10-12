@@ -19,15 +19,12 @@
 //! 3. Update `From<TempoHardfork> for SpecId` if the hardfork requires a different Ethereum
 //!    `SpecId`.
 //!
-//! ### In `tempo-chainspec`
-//! 4. Add `vivace_time: Option<u64>` field to `TempoGenesisInfo` if the fork is configurable in
-//!    genesis. `fork_time()` is generated through [`tempo_post_genesis_hardforks!`], so missing
-//!    fields for new hardfork variants fail at compile time.
+//! The genesis config key (`vivaceTime`), `TempoGenesisInfo` parsing in `tempo-chainspec`, and
+//! the `--vivace-time` genesis generator flag are all derived from the variant list, so they need
+//! no manual changes.
 //!
-//! ### In genesis files and generator
-//! 5. Add `"vivaceTime": 0` to `genesis/dev.json`.
-//! 6. Add `vivace_time: Option<u64>` arg to `xtask/src/genesis_args.rs`.
-//! 7. Add insertion of `"vivaceTime"` to `chain_config.extra_fields`.
+//! ### In genesis files
+//! 4. Add `"vivaceTime": 0` to `genesis/dev.json`.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -79,6 +76,15 @@ macro_rules! tempo_hardfork {
                         *self as u64 >= Self::$variant as u64
                     }
                 )*
+
+                /// Returns the genesis `config` key holding this hardfork's activation timestamp,
+                /// for example `t1aTime`. Genesis has no configurable activation.
+                pub const fn genesis_key(&self) -> Option<&'static str> {
+                    match self {
+                        Self::Genesis => None,
+                        $(Self::$variant => Some(stringify!([<$variant:lower Time>])),)*
+                    }
+                }
             }
         }
 
@@ -103,6 +109,16 @@ macro_rules! tempo_hardfork {
             fn test_hardfork_name() {
                 assert_eq!(Genesis.name(), "Genesis");
                 $(assert_eq!($variant.name(), stringify!($variant));)*
+            }
+
+            #[test]
+            fn test_genesis_keys() {
+                assert_eq!(Genesis.genesis_key(), None);
+                $(
+                    let key = $variant.genesis_key().unwrap();
+                    assert!(key.eq_ignore_ascii_case(concat!(stringify!($variant), "Time")));
+                    assert!(key.starts_with('t') && key.ends_with("Time"), "{key}");
+                )*
             }
 
             #[test]
@@ -226,6 +242,10 @@ tempo_hardfork!(
         ///
         /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t13>.
         T13,
+        /// T14 hardfork.
+        ///
+        /// See <https://docs.tempo.xyz/docs/protocol/upgrades/t14>.
+        T14,
     }
 );
 
@@ -373,6 +393,7 @@ impl TempoHardfork {
             Self::T11 => None,
             Self::T12 => None,
             Self::T13 => None,
+            Self::T14 => None,
         }
     }
 
@@ -396,8 +417,9 @@ impl TempoHardfork {
             Self::T9 => Some(MAINNET_T9_TIMESTAMP),
             Self::T10 => Some(MAINNET_T10_TIMESTAMP),
             Self::T11 => Some(MAINNET_T11_TIMESTAMP),
-            Self::T12 => None,
+            Self::T12 => Some(MAINNET_T12_TIMESTAMP),
             Self::T13 => None,
+            Self::T14 => None,
         }
     }
 
@@ -423,6 +445,7 @@ impl TempoHardfork {
             Self::T11 => None,
             Self::T12 => None,
             Self::T13 => None,
+            Self::T14 => None,
         }
     }
 
@@ -446,8 +469,9 @@ impl TempoHardfork {
             Self::T9 => Some(MODERATO_T9_TIMESTAMP),
             Self::T10 => Some(MODERATO_T10_TIMESTAMP),
             Self::T11 => Some(MODERATO_T11_TIMESTAMP),
-            Self::T12 => None,
+            Self::T12 => Some(MODERATO_T12_TIMESTAMP),
             Self::T13 => None,
+            Self::T14 => None,
         }
     }
 }

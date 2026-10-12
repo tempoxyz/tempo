@@ -185,13 +185,15 @@ impl AddressRegistry {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::{
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{VIRTUAL_MASTER, VIRTUAL_SALT},
     };
-    use alloy_primitives::hex_literal::hex;
+    use alloy_primitives::fixed_bytes;
+
     use tempo_chainspec::hardfork::TempoHardfork;
 
     #[test]
@@ -423,7 +425,7 @@ mod tests {
                 IAddressRegistry::registerVirtualMasterCall { salt },
             )?;
 
-            let virtual_addr = Address::new_virtual(master_id, UserTag::new(hex!("010203040506")));
+            let virtual_addr = Address::new_virtual(master_id, fixed_bytes!("010203040506"));
 
             let resolved = registry.resolve_recipient(virtual_addr)?;
             assert_eq!(resolved, master);
@@ -458,7 +460,7 @@ mod tests {
                 master,
                 IAddressRegistry::registerVirtualMasterCall { salt },
             )?;
-            let virtual_addr = Address::new_virtual(master_id, UserTag::new(hex!("aabbccddeeff")));
+            let virtual_addr = Address::new_virtual(master_id, fixed_bytes!("aabbccddeeff"));
             assert_eq!(registry.resolve_virtual_address(virtual_addr)?, master);
 
             Ok(())

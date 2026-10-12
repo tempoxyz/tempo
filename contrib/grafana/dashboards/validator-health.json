@@ -217,17 +217,24 @@
           "values": false
         },
         "showPercentChange": false,
-        "textMode": "auto",
+        "textMode": "value_and_name",
         "wideLayout": true
       },
       "pluginVersion": "12.4.0-21024277089.patch2",
       "targets": [
         {
           "editorMode": "code",
-          "expr": "consensus_network_spawner_connections{${instance_label}=~\"$instance.*\"}",
-          "legendFormat": "{{sequencer}}",
+          "expr": "count(consensus_network_tracker_directory_connected{${instance_label}=~\"$instance.*\"})",
+          "legendFormat": "connected",
           "range": true,
           "refId": "A"
+        },
+        {
+          "editorMode": "code",
+          "expr": "max(consensus_network_tracker_directory_tracked{${instance_label}=~\"$instance.*\"})",
+          "legendFormat": "tracked",
+          "range": true,
+          "refId": "B"
         }
       ],
       "title": "CW Peers",
@@ -669,7 +676,8 @@
         }
       ],
       "title": "Finalized vs Processed Height",
-      "type": "timeseries"
+      "type": "timeseries",
+      "description": "Finalized: highest block height the consensus layer knows is finalized. Processed: highest height the execution layer has applied and acknowledged, in order. On a healthy node both lines rise together at the block rate and overlap. A widening gap means the node is receiving finalized blocks faster than it can execute them (e.g. catching up after a restart or slow disk); a flat Finalized line means the node is not learning about new finalized blocks at all (consensus stalled or node partitioned) — check CW Peers and the block rate panel."
     },
     {
       "datasource": {
@@ -738,7 +746,8 @@
         }
       ],
       "title": "Sync Gap (Finalized - Processed)",
-      "type": "stat"
+      "type": "stat",
+      "description": "Number of finalized blocks the execution layer has not yet processed (Finalized - Processed height). Should be ~0 on a healthy node. Yellow above 10, red above 100. A persistently growing value means execution is falling behind consensus. This is a local measure: if the node stops receiving finalized blocks both heights stall and the gap stays 0 — use the block rate panel and CW Peers to detect that."
     },
     {
       "datasource": {
@@ -775,7 +784,7 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 12,
+        "w": 6,
         "x": 0,
         "y": 14
       },
@@ -809,6 +818,76 @@
       ],
       "title": "Time to Next Epoch (approx)",
       "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "yellow",
+                "value": 10
+              },
+              {
+                "color": "red",
+                "value": 100
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 14
+      },
+      "id": 113,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.0-21024277089.patch2",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "consensus_engine_executor_finalization_lag{${instance_label}=~\"$instance.*\"}",
+          "legendFormat": "{{pod}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Finalization Lag",
+      "type": "stat",
+      "description": "Blocks between the finalized tip this node's consensus layer has seen and the finalized tip its execution layer has committed. Should be ~0; a growing value means execution is falling behind consensus. This is a local measure: if the node stops receiving finalized blocks (cut off or stalled) it stays 0 — use the block rate panel and CW Peers to detect that."
     },
     {
       "datasource": {
@@ -1831,4 +1910,3 @@
   "version": 4,
   "weekStart": ""
 }
-

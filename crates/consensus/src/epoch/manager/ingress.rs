@@ -1,5 +1,4 @@
-use commonware_actor::Feedback;
-use commonware_consensus::{Reporter, marshal::Update, types::Epoch};
+use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     bls12381::primitives::{group::Share, sharing::Sharing, variant::MinSig},
     ed25519::PublicKey,
@@ -7,9 +6,7 @@ use commonware_cryptography::{
 use commonware_utils::ordered;
 use eyre::WrapErr as _;
 use futures::channel::mpsc;
-use tracing::{Span, error};
-
-use crate::consensus::block::Block;
+use tracing::Span;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Mailbox {
@@ -64,7 +61,6 @@ impl Message {
 pub(super) enum Content {
     Enter(EpochTransition),
     Exit(Exit),
-    Update(Box<Update<Block>>),
 }
 
 impl From<EpochTransition> for Content {
@@ -79,12 +75,6 @@ impl From<Exit> for Content {
     }
 }
 
-impl From<Update<Block>> for Content {
-    fn from(value: Update<Block>) -> Self {
-        Self::Update(Box::new(value))
-    }
-}
-
 #[derive(Debug)]
 pub(super) struct EpochTransition {
     pub(super) epoch: Epoch,
@@ -96,24 +86,4 @@ pub(super) struct EpochTransition {
 #[derive(Debug)]
 pub(super) struct Exit {
     pub(super) epoch: Epoch,
-}
-
-impl Reporter for Mailbox {
-    type Activity = Update<Block>;
-
-    fn report(&mut self, activity: Self::Activity) -> Feedback {
-        if self
-            .inner
-            .unbounded_send(Message::in_current_span(activity))
-            .is_err()
-        {
-            error!(
-                "failed sending finalization activity to epoch manager because \
-                it is no longer running"
-            );
-            Feedback::Closed
-        } else {
-            Feedback::Ok
-        }
-    }
 }

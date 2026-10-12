@@ -677,14 +677,14 @@ mod tests {
             assert!(handler.is_empty()?);
             assert!(!handler.contains(&U256::ONE)?);
 
-            handler.insert(U256::from(1))?;
+            handler.insert(U256::ONE)?;
             handler.insert(U256::from(2))?;
-            handler.remove(&U256::from(1))?;
+            handler.remove(&U256::ONE)?;
             handler.insert(U256::from(3))?;
             assert_eq!(handler.len()?, 2);
             assert!(handler.contains(&U256::from(2))?);
             assert!(handler.contains(&U256::from(3))?);
-            assert!(!handler.contains(&U256::from(1))?);
+            assert!(!handler.contains(&U256::ONE)?);
 
             Ok(())
         })
@@ -755,7 +755,7 @@ mod tests {
 
             assert_eq!(
                 handler.read_range(1, 4)?,
-                vec![U256::from(1), U256::from(2), U256::from(3)]
+                vec![U256::ONE, U256::from(2), U256::from(3)]
             );
             // end > len clamps
             assert_eq!(handler.read_range(0, 100)?.len(), 5);
@@ -774,14 +774,14 @@ mod tests {
             let mut handler = SetHandler::<U256>::new(U256::ZERO, address);
 
             // Write to grow (1 → 3)
-            handler.insert(U256::from(1))?;
+            handler.insert(U256::ONE)?;
             handler.write(Set::from(vec![
                 U256::from(10),
                 U256::from(20),
                 U256::from(30),
             ]))?;
             assert_eq!(handler.len()?, 3);
-            assert!(!handler.contains(&U256::from(1))?);
+            assert!(!handler.contains(&U256::ONE)?);
             assert!(handler.contains(&U256::from(10))?);
 
             // Write to shrink (3 → 2)

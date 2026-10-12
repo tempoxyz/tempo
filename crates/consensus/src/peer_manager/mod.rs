@@ -33,9 +33,11 @@ use commonware_cryptography::ed25519::PublicKey;
 use commonware_p2p::AddressableManager;
 use commonware_runtime::{Clock, Metrics, Spawner};
 use futures::channel::mpsc;
+use reth_provider::{BlockIdReader as _, HeaderProvider as _};
 use tempo_node::TempoFullNode;
+use tempo_primitives::TempoHeader;
 
-use crate::consensus::Digest;
+use crate::{consensus::Digest, validators::ExecutionNode};
 
 mod actor;
 mod ingress;
@@ -44,35 +46,53 @@ pub(crate) use actor::Actor;
 pub(crate) use ingress::Mailbox;
 
 /// Configuration of the peer manager actor.
-pub(crate) struct Config<TOracle> {
+pub(crate) struct Config<TOracle, TExecutionNode> {
     /// The mailbox to the P2P network to register the peer sets.
     pub(crate) oracle: TOracle,
     /// A handle to the full execution node to read block headers and look up
     /// the Validator Config contract
-    pub(crate) execution_node: Arc<TempoFullNode>,
+    pub(crate) execution_node: Arc<TExecutionNode>,
     /// The  epoch strategy used by the node.
     pub(crate) epoch_strategy: FixedEpocher,
-    /// The last finalized height according to the marshal actor.
-    /// Used during start to determine the correct boundary block, since
-    /// the execution layer may be behind.
-    pub(crate) finalized_floor: Height,
     /// Highest finalized tip observed from consensus at startup.
     /// Execution-layer-derived reads must not advance beyond this tip until
     /// marshal reports a newer finalized tip.
     pub(crate) finalized_tip: (Height, Digest),
 }
 
-/// Initializes a peer manager actor from a `config` with runtime `context`.
-pub(crate) fn init<TContext, TPeerManager>(
+/// Initializes the actor and registers its first peers from available execution
+/// state, before marshal or executor startup can depend on those peers.
+pub(crate) fn init<TContext, TPeerManager, TExecutionNode>(
     context: TContext,
-    config: Config<TPeerManager>,
-) -> (Actor<TContext, TPeerManager>, Mailbox)
+    config: Config<TPeerManager, TExecutionNode>,
+) -> eyre::Result<(Actor<TContext, TPeerManager, TExecutionNode>, Mailbox)>
 where
     TContext: Clock + Metrics + Spawner,
     TPeerManager: AddressableManager<PublicKey = PublicKey>,
+    TExecutionNode: ExecutionLayer,
 {
     let (tx, rx) = mpsc::unbounded();
-    let actor = Actor::new(context, config, rx);
+    let actor = Actor::new(context, config, rx)?;
     let mailbox = Mailbox::new(tx);
-    (actor, mailbox)
+    Ok((actor, mailbox))
+}
+
+/// Execution-layer reads used to discover peers without waiting for consensus replay.
+pub(crate) trait ExecutionLayer: ExecutionNode + Send + Sync + 'static {
+    fn finalized_block_number(&self) -> eyre::Result<Option<u64>>;
+    fn header_by_number(&self, height: u64) -> eyre::Result<Option<TempoHeader>>;
+}
+
+impl ExecutionLayer for TempoFullNode {
+    fn finalized_block_number(&self) -> eyre::Result<Option<u64>> {
+        self.provider
+            .finalized_block_number()
+            .map_err(eyre::Report::new)
+    }
+
+    fn header_by_number(&self, height: u64) -> eyre::Result<Option<TempoHeader>> {
+        self.provider
+            .header_by_number(height)
+            .map_err(eyre::Report::new)
+    }
 }

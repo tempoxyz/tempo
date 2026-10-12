@@ -86,8 +86,8 @@ pub enum TempoInvalidTransaction {
     #[error("expiring nonce transaction requires valid_before to be set")]
     ExpiringNonceMissingValidBefore,
 
-    /// Expiring nonce transaction must have nonce == 0.
-    #[error("expiring nonce transaction must have nonce == 0")]
+    /// Pre-T12 expiring nonce transaction must have nonce == 0.
+    #[error("expiring nonce transaction must have nonce == 0 before T12")]
     ExpiringNonceNonceNotZero,
 
     /// The nonce key uses the reserved subblock prefix.
@@ -305,14 +305,14 @@ impl TempoInvalidTransaction {
             | Self::ValueTransferNotAllowedInAATx
             | Self::ExpiringNonceMissingTxEnv
             | Self::ExpiringNonceMissingValidBefore
-            | Self::ExpiringNonceNonceNotZero
             | Self::SubblockTransactionsDisabled
             | Self::LegacyKeychainSignature
             | Self::CallsValidation(_) => true,
 
-            // State-dependent: may resolve as state advances.
+            // State- or fork-dependent: may resolve as the chain advances.
             Self::ValidAfter { .. }
             | Self::ValidBefore { .. }
+            | Self::ExpiringNonceNonceNotZero
             | Self::InvalidFeeToken(_)
             | Self::FeeTokenNotTip20 { .. }
             | Self::FeeTokenNotUsdCurrency { .. }
@@ -489,6 +489,22 @@ mod tests {
         for err in cases {
             assert!(!err.is_bad_transaction(), "{err} should not be bad");
         }
+    }
+
+    #[test]
+    fn test_pre_t12_expiring_nonce_discriminator_is_not_bad() {
+        assert!(
+            !TempoInvalidTransaction::ExpiringNonceNonceNotZero.is_bad_transaction(),
+            "a discriminator rejected only before T12 must not poison gossip or bad imports"
+        );
+
+        assert!(
+            TempoInvalidTransaction::EthInvalidTransaction(
+                InvalidTransaction::NonceOverflowInTransaction
+            )
+            .is_bad_transaction(),
+            "ordinary nonce overflow remains permanently invalid"
+        );
     }
 
     #[test]

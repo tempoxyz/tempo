@@ -23,9 +23,14 @@ pub const BROADCASTER_CHANNEL_IDENT: commonware_p2p::Channel = 3;
 pub const MARSHAL_CHANNEL_IDENT: commonware_p2p::Channel = 4;
 pub const DKG_CHANNEL_IDENT: commonware_p2p::Channel = 5;
 
-pub(crate) const NUMBER_CONCURRENT_FETCHES: NonZeroUsize = NZUsize!(4);
-
-pub(crate) const PEERSETS_TO_TRACK: NonZeroUsize = NZUsize!(3);
+/// Number of peer sets the lookup network retains.
+///
+/// Each tracked set is the full union of current players, next players, and
+/// active validators, so older sets only keep connections alive to peers that
+/// have left that union. Retaining a single set disconnects them at the
+/// boundary and keeps the derived channel mailboxes (sized by
+/// `max_peers_per_set * tracked_peer_sets * burst`) at one third of the cost.
+pub(crate) const PEERSETS_TO_TRACK: NonZeroUsize = NZUsize!(1);
 
 pub(crate) const BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES: u32 = 2u32.pow(21); // 100MB
 

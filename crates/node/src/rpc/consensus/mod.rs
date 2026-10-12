@@ -8,13 +8,16 @@
 
 pub mod types;
 
+#[cfg(test)]
+mod tests;
+
 use jsonrpsee::{
     core::RpcResult,
     proc_macros::rpc,
     types::{ErrorObject, error::INTERNAL_ERROR_CODE},
 };
 
-pub use types::{CertifiedBlock, ConsensusFeed, ConsensusState, Event, Query};
+pub use types::{CertifiedBlock, ConsensusFeed, ConsensusState, Event, Query, SharedEvent};
 
 /// Custom error codes for the consensus RPC.
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -107,12 +110,19 @@ impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
 
         tokio::spawn(async move {
             loop {
-                match rx.recv().await {
+                // Events only arrive on finalization, so a failed `send` alone would not detect
+                // a disconnect or unsubscribe while finalization is stalled. Race against
+                // `closed()` so the task (and its subscription permit) is released promptly.
+                let recv = tokio::select! {
+                    _ = sink.closed() => break,
+                    recv = rx.recv() => recv,
+                };
+                match recv {
                     Ok(event) => {
                         let msg = jsonrpsee::SubscriptionMessage::new(
                             sink.method_name(),
                             sink.subscription_id().clone(),
-                            &event,
+                            &event.json().await,
                         )
                         .expect("Event should be serializable");
                         if sink.send(msg).await.is_err() {

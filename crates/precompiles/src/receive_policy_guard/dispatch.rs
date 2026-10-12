@@ -1,8 +1,7 @@
 //! ABI dispatch for the [`ReceivePolicyGuard`] precompile.
 
 use crate::{
-    Precompile, charge_input_cost, dispatch, mutate_void, receive_policy_guard::ReceivePolicyGuard,
-    view,
+    Precompile, charge_input_cost, dispatch, mutate, receive_policy_guard::ReceivePolicyGuard, view,
 };
 use alloy::primitives::Address;
 use revm::precompile::PrecompileResult;
@@ -18,9 +17,9 @@ impl Precompile for ReceivePolicyGuard {
             |call| match call {
                 IReceivePolicyGuard::IReceivePolicyGuardCalls {
                     balanceOf(call) => view(call, |c| self.balance_of(c.receipt)),
-                    claim(call) => mutate_void(call, msg_sender, |s, c| self.claim(s, c.to, c.receipt)),
-                    burnBlockedReceipt(call) => mutate_void(call, msg_sender, |s, c| {
-                        self.burn_blocked_receipt(s, c.receipt)
+                    claim(call) => mutate(call, msg_sender, |sender, c| self.claim(sender, c.to, c.receipt)),
+                    burnBlockedReceipt(call) => mutate(call, msg_sender, |sender, c| {
+                        self.burn_blocked_receipt(sender, c.receipt)
                     })
                 }
             }

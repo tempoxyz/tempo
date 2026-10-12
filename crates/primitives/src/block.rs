@@ -54,7 +54,7 @@ impl TempoBlockEnv {
 
     /// Returns the epoch containing `height`.
     pub fn epoch(&self, height: u64) -> u64 {
-        height / self.epoch_length.get()
+        height / self.epoch_length
     }
 }
 

@@ -1,0 +1,274 @@
+name: Zones Nitro prover benchmark
+
+on:
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      feature-sha:
+        description: Exact 40-character Zones commit to compare with main.
+        type: string
+        required: true
+      tempo-hardfork:
+        description: Tempo L1 hardfork for both phases (for example, t14).
+        type: string
+        required: true
+        default: t13
+      region:
+        description: Existing AWS benchmark region.
+        type: choice
+        required: true
+        default: us-east-1
+        options: [us-east-1, us-west-2, eu-central-1, ap-southeast-1, ap-northeast-1]
+      preset:
+        description: Neobank scenario containing a withdrawal.
+        type: choice
+        required: true
+        default: full-journey
+        options: [full-journey, private-withdrawal, swapped-lifecycle, swapped-redemption]
+      accounts:
+        type: string
+        required: true
+        default: "20"
+      count:
+        type: string
+        required: true
+        default: "20"
+      tps:
+        type: string
+        required: true
+        default: "5"
+      max-concurrent:
+        type: string
+        required: true
+        default: "4"
+      state-bloat-mib:
+        description: Tempo L1 bloat. Start with 0 for the Nitro smoke test.
+        type: string
+        required: true
+        default: "0"
+
+permissions: {}
+
+concurrency:
+  group: zones-prover-benchmark-${{ github.event.issue.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    if: >-
+      github.repository == 'tempoxyz/zones' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+        startsWith(github.event.comment.body, 'derek bench ')))
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: read
+    outputs:
+      feature-sha: ${{ steps.request.outputs.feature-sha }}
+      pr-number: ${{ steps.request.outputs.pr-number }}
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+      - name: Mint benchmark repository read token
+        id: benchmark-token
+        uses: tempoxyz/gh-actions/actions/github-sts@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        with:
+          scope: tempoxyz/tempo-multi-region-benchmark
+          policy: bench-e2e-multi-region
+      - name: Check org membership
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+        with:
+          github-token: ${{ steps.benchmark-token.outputs.token }}
+          script: |
+            for (const username of new Set([context.actor, process.env.TRIGGERING_ACTOR])) {
+              try {
+                await github.rest.orgs.checkMembershipForUser({org: 'tempoxyz', username});
+              } catch {
+                core.setFailed(`@${username} must be a tempoxyz member`);
+                return;
+              }
+            }
+      - name: Resolve PR SHA
+        id: request
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          FEATURE_SHA: ${{ inputs.feature-sha || '' }}
+        with:
+          script: |
+            if (context.eventName === 'issue_comment') {
+              // Bind approval to the event's immutable comment payload, including on reruns.
+              const match = /^derek bench(?: prover)? ([0-9a-f]{40})$/.exec(context.payload.comment.body);
+              if (!match) {
+                core.setFailed('Use derek bench <40-character SHA> or derek bench prover <40-character SHA>');
+                return;
+              }
+              const sha = match[1];
+              const number = context.issue.number;
+              const {data: pr} = await github.rest.pulls.get({...context.repo, pull_number: number});
+              if (pr.head.repo?.full_name !== 'tempoxyz/zones') {
+                core.setFailed('Benchmark PR head must be in tempoxyz/zones');
+                return;
+              }
+              if (pr.head.sha !== sha) {
+                core.setFailed('PR head must match the approved SHA; post a new benchmark comment for the current head');
+                return;
+              }
+              core.setOutput('feature-sha', sha);
+              core.setOutput('pr-number', number);
+            } else if (/^[0-9a-f]{40}$/.test(process.env.FEATURE_SHA)) {
+              core.setOutput('feature-sha', process.env.FEATURE_SHA);
+            } else {
+              core.setFailed('feature-sha must be an exact 40-character commit SHA');
+            }
+
+  benchmark:
+    needs: authorize
+    runs-on: depot-ubuntu-latest-16
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
+    env:
+      BASELINE_ZONES_ROOT: ${{ github.workspace }}/baseline-zones
+      FEATURE_ZONES_ROOT: ${{ github.workspace }}/feature-zones
+      BENCH_TEMPO_ROOT: ${{ github.workspace }}/tempo
+      BENCH_EARN_ROOT: ${{ github.workspace }}/earn
+      BENCH_REGION: ${{ inputs.region || 'us-east-1' }}
+      BENCH_TEMPO_HARDFORK: ${{ inputs['tempo-hardfork'] || 't13' }}
+      BENCH_PRESET: ${{ inputs.preset || 'full-journey' }}
+      BENCH_ACCOUNTS: ${{ inputs.accounts || '20' }}
+      BENCH_COUNT: ${{ inputs.count || '20' }}
+      BENCH_TPS: ${{ inputs.tps || '5' }}
+      BENCH_MAX_CONCURRENT: ${{ inputs.max-concurrent || '4' }}
+      BENCH_L1_BLOAT_MIB: ${{ inputs.state-bloat-mib || '0' }}
+      BENCH_BATCH_INTERVAL_BLOCKS: "20"
+      BENCH_RESULTS_PATH: ${{ github.workspace }}/zones-prover-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+      - name: Mint benchmark repository read token
+        id: benchmark-token
+        uses: tempoxyz/gh-actions/actions/github-sts@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        with:
+          scope: tempoxyz/tempo-multi-region-benchmark
+          policy: bench-e2e-multi-region
+      # A benchmark-only rerun can reuse authorize outputs, so recheck membership here.
+      - name: Check org membership
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+        with:
+          github-token: ${{ steps.benchmark-token.outputs.token }}
+          script: |
+            for (const username of new Set([context.actor, process.env.TRIGGERING_ACTOR])) {
+              try {
+                await github.rest.orgs.checkMembershipForUser({org: 'tempoxyz', username});
+              } catch {
+                core.setFailed(`@${username} must be a tempoxyz member`);
+                return;
+              }
+            }
+      - name: Mint Earn read token
+        id: earn-token
+        uses: tempoxyz/gh-actions/actions/github-sts@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        with:
+          scope: tempoxyz/earn
+          policy: zones-read
+      - name: Check out benchmark infrastructure
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: tempoxyz/tempo-multi-region-benchmark
+          ref: main
+          path: benchmark
+          token: ${{ steps.benchmark-token.outputs.token }}
+          persist-credentials: false
+      - name: Check out baseline Zones
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: tempoxyz/zones
+          ref: main
+          path: baseline-zones
+          submodules: recursive
+          persist-credentials: false
+      - name: Check out feature Zones
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: tempoxyz/zones
+          ref: ${{ needs.authorize.outputs.feature-sha }}
+          path: feature-zones
+          submodules: recursive
+          persist-credentials: false
+      - name: Check out Tempo with native Nitro verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: tempoxyz/tempo
+          ref: main
+          path: tempo
+          submodules: recursive
+          persist-credentials: false
+      - name: Check out Earn fixtures
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: tempoxyz/earn
+          ref: main
+          path: earn
+          token: ${{ steps.earn-token.outputs.token }}
+          persist-credentials: false
+      - name: Initialize Earn fixture dependencies
+        working-directory: earn
+        run: git submodule update --init lib/forge-std lib/openzeppelin-contracts lib/openzeppelin-contracts-upgradeable
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        with:
+          toolchain: stable
+      - uses: tempoxyz/gh-actions/actions/setup-mold@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        with:
+          version: v0.15.0
+      - uses: tempoxyz/gh-actions/actions/setup-foundry@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        with:
+          version: nightly-fc14f674bd853bc817c308a5202faa5be8df05e7
+      - uses: tempoxyz/gh-actions/actions/setup-terraform@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        with:
+          version: 1.14.7
+      - uses: tempoxyz/gh-actions/vendor/depot/setup-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+      - name: Configure AWS benchmark role
+        uses: tempoxyz/gh-actions/vendor/aws-actions/configure-aws-credentials@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        with:
+          role-to-assume: arn:aws:iam::934822761402:role/benchmark-runner
+          aws-region: ${{ env.BENCH_REGION }}
+          role-duration-seconds: 21600
+      - name: Configure S3 transfers
+        run: bash benchmark/scripts/configure_aws_s3_transfer.sh
+      - name: Run matched baseline and PR phases
+        id: bench
+        run: bash benchmark/scripts/zones_prover/run.sh
+      - name: Attach comparison to PR
+        if: steps.bench.outcome == 'success' && needs.authorize.outputs.pr-number != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          SUMMARY_PATH: ${{ env.BENCH_RESULTS_PATH }}/summary.md
+          PR_NUMBER: ${{ needs.authorize.outputs.pr-number }}
+        with:
+          script: |
+            const fs = require('fs');
+            await github.rest.issues.createComment({
+              ...context.repo,
+              issue_number: Number(process.env.PR_NUMBER),
+              body: fs.readFileSync(process.env.SUMMARY_PATH, 'utf8') + `\n[Workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+            });
+      - name: Upload benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: zones-prover-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.BENCH_RESULTS_PATH }}/results
+            ${{ env.BENCH_RESULTS_PATH }}/summary.md
+          if-no-files-found: warn

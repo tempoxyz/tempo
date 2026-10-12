@@ -134,7 +134,7 @@ abstract contract GhostState {
     uint256 public ghost_expiringNonceExpiredAllowed;
     /// @dev E3 violation: validBefore > now + 30s allowed
     uint256 public ghost_expiringNonceWindowAllowed;
-    /// @dev E4 violation: nonce != 0 allowed
+    /// @dev Successful non-zero expiring nonces (an E4 violation only before T12)
     uint256 public ghost_expiringNonceNonZeroAllowed;
     /// @dev E5 violation: missing validBefore allowed
     uint256 public ghost_expiringNonceMissingVBAllowed;

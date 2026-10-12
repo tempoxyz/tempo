@@ -14,12 +14,13 @@ publish.workspace = true
 [dependencies]
 bytes.workspace = true
 commonware-codec.workspace = true
-commonware-consensus.workspace = true
-commonware-cryptography.workspace = true
+commonware-consensus = { workspace = true, optional = true }
+commonware-cryptography = { workspace = true, features = ["bls12381", "std"] }
 commonware-utils.workspace = true
 modular-bitfield = { version = "0.13.1", optional = true }
 
 [dev-dependencies]
+commonware-consensus.workspace = true
 commonware-math.workspace = true
 rand.workspace = true
 

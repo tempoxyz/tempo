@@ -416,16 +416,13 @@ mod tests {
     #[test]
     fn test_authorize_key_t3_defaults_to_unrestricted_never_expiring() {
         let call = authorize_key(
-            address!("0x1111111111111111111111111111111111111111"),
+            Address::repeat_byte(0x11),
             SignatureType::Secp256k1,
             KeyRestrictions::default(),
         );
 
         let decoded = authorizeKeyCall::abi_decode(&call.input).expect("decode authorizeKey");
-        assert_eq!(
-            decoded.keyId,
-            address!("0x1111111111111111111111111111111111111111")
-        );
+        assert_eq!(decoded.keyId, Address::repeat_byte(0x11));
         assert_eq!(decoded.signatureType, AbiSignatureType::Secp256k1);
         assert_eq!(decoded.config.expiry, u64::MAX);
         assert!(!decoded.config.enforceLimits);
@@ -447,12 +444,12 @@ mod tests {
                 target: address!("0x20c0000000000000000000000000000000000002"),
                 selector_rules: vec![SelectorRule {
                     selector: [0xaa, 0xbb, 0xcc, 0xdd],
-                    recipients: vec![address!("0x3333333333333333333333333333333333333333")],
+                    recipients: vec![Address::repeat_byte(0x33)],
                 }],
             }]);
 
         let call = authorize_key(
-            address!("0x1111111111111111111111111111111111111111"),
+            Address::repeat_byte(0x11),
             SignatureType::P256,
             restrictions,
         );
@@ -474,7 +471,7 @@ mod tests {
     #[test]
     fn test_authorize_key_legacy_rejects_t3_only_restrictions() {
         let scoped = authorize_key_legacy(
-            address!("0x1111111111111111111111111111111111111111"),
+            Address::repeat_byte(0x11),
             SignatureType::Secp256k1,
             KeyRestrictions::default().with_no_calls(),
         )
@@ -482,11 +479,11 @@ mod tests {
         assert_eq!(scoped, KeychainBuildError::LegacyCallScopes);
 
         let periodic = authorize_key_legacy(
-            address!("0x1111111111111111111111111111111111111111"),
+            Address::repeat_byte(0x11),
             SignatureType::Secp256k1,
             KeyRestrictions::default().with_limits(vec![TokenLimit {
                 token: address!("0x20c0000000000000000000000000000000000001"),
-                limit: U256::from(1),
+                limit: U256::ONE,
                 period: 1,
             }]),
         )
@@ -497,7 +494,7 @@ mod tests {
     #[test]
     fn test_authorize_key_legacy_flattens_limits() {
         let call = authorize_key_legacy(
-            address!("0x1111111111111111111111111111111111111111"),
+            Address::repeat_byte(0x11),
             SignatureType::WebAuthn,
             KeyRestrictions::default()
                 .with_expiry(999)
@@ -521,7 +518,7 @@ mod tests {
     #[test]
     fn test_call_scope_builder_tip20_selectors() {
         let token = address!("0x20c0000000000000000000000000000000000001");
-        let recipient = address!("0x3333333333333333333333333333333333333333");
+        let recipient = Address::repeat_byte(0x33);
 
         let scope = CallScopeBuilder::new(token)
             .transfer(vec![recipient])
@@ -549,7 +546,7 @@ mod tests {
             target: address!("0x20c0000000000000000000000000000000000002"),
             selectorRules: vec![AbiSelectorRule {
                 selector: [0x12, 0x34, 0x56, 0x78].into(),
-                recipients: vec![address!("0x3333333333333333333333333333333333333333")],
+                recipients: vec![Address::repeat_byte(0x33)],
             }],
         }];
 
@@ -560,7 +557,7 @@ mod tests {
 
     #[test]
     fn test_revoke_key_encodes_correctly() {
-        let key_id = address!("0x1111111111111111111111111111111111111111");
+        let key_id = Address::repeat_byte(0x11);
         let call = revoke_key(key_id);
 
         assert_eq!(call.to, TxKind::Call(ACCOUNT_KEYCHAIN_ADDRESS));
@@ -572,8 +569,8 @@ mod tests {
 
     #[test]
     fn test_update_spending_limit_encodes_correctly() {
-        let key_id = address!("0x1111111111111111111111111111111111111111");
-        let token = address!("0x2222222222222222222222222222222222222222");
+        let key_id = Address::repeat_byte(0x11);
+        let token = Address::repeat_byte(0x22);
         let limit = uint!(1000_U256);
         let call = update_spending_limit(key_id, token, limit);
 
@@ -589,12 +586,12 @@ mod tests {
 
     #[test]
     fn test_set_allowed_calls_encodes_correctly() {
-        let key_id = address!("0x1111111111111111111111111111111111111111");
+        let key_id = Address::repeat_byte(0x11);
         let scopes = vec![CallScope {
-            target: address!("0x2222222222222222222222222222222222222222"),
+            target: Address::repeat_byte(0x22),
             selector_rules: vec![SelectorRule {
                 selector: [0xaa, 0xbb, 0xcc, 0xdd],
-                recipients: vec![address!("0x3333333333333333333333333333333333333333")],
+                recipients: vec![Address::repeat_byte(0x33)],
             }],
         }];
         let call = set_allowed_calls(key_id, scopes);
@@ -611,7 +608,7 @@ mod tests {
     #[test]
     fn test_is_call_allowed_unrestricted() {
         let r = KeyRestrictions::default();
-        let target = address!("0x2222222222222222222222222222222222222222");
+        let target = Address::repeat_byte(0x22);
         assert!(r.is_call_allowed(&target, &[]));
         assert!(r.is_call_allowed(&target, &[0xaa, 0xbb, 0xcc, 0xdd]));
     }
@@ -619,14 +616,14 @@ mod tests {
     #[test]
     fn test_is_call_allowed_empty_scopes_denies_all() {
         let r = KeyRestrictions::default().with_no_calls();
-        let target = address!("0x2222222222222222222222222222222222222222");
+        let target = Address::repeat_byte(0x22);
         assert!(!r.is_call_allowed(&target, &[0xaa, 0xbb, 0xcc, 0xdd]));
     }
 
     #[test]
     fn test_is_call_allowed_target_not_in_scope() {
         let token = address!("0x20c0000000000000000000000000000000000001");
-        let other = address!("0x3333333333333333333333333333333333333333");
+        let other = Address::repeat_byte(0x33);
         let r = KeyRestrictions::default()
             .with_allowed_calls(vec![CallScopeBuilder::new(token).build()]);
         assert!(!r.is_call_allowed(&other, &[0xaa, 0xbb, 0xcc, 0xdd]));
@@ -658,8 +655,8 @@ mod tests {
     #[test]
     fn test_is_call_allowed_tip20_transfer_with_recipients() {
         let token = address!("0x20c0000000000000000000000000000000000001");
-        let allowed = address!("0x4444444444444444444444444444444444444444");
-        let denied = address!("0x5555555555555555555555555555555555555555");
+        let allowed = Address::repeat_byte(0x44);
+        let denied = Address::repeat_byte(0x55);
 
         let r = KeyRestrictions::default().with_allowed_calls(vec![
             CallScopeBuilder::new(token).transfer(vec![allowed]).build(),
@@ -689,7 +686,7 @@ mod tests {
     #[test]
     fn test_is_call_allowed_recipient_word_too_short() {
         let token = address!("0x20c0000000000000000000000000000000000001");
-        let allowed = address!("0x4444444444444444444444444444444444444444");
+        let allowed = Address::repeat_byte(0x44);
         let r = KeyRestrictions::default().with_allowed_calls(vec![
             CallScopeBuilder::new(token).transfer(vec![allowed]).build(),
         ]);
@@ -702,7 +699,7 @@ mod tests {
     #[test]
     fn test_is_call_allowed_rejects_noncanonical_recipient_padding() {
         let token = address!("0x20c0000000000000000000000000000000000001");
-        let allowed = address!("0x4444444444444444444444444444444444444444");
+        let allowed = Address::repeat_byte(0x44);
         let r = KeyRestrictions::default().with_allowed_calls(vec![
             CallScopeBuilder::new(token).transfer(vec![allowed]).build(),
         ]);
@@ -717,7 +714,7 @@ mod tests {
     #[test]
     fn test_is_call_allowed_no_recipients_allows_any() {
         let token = address!("0x20c0000000000000000000000000000000000001");
-        let anyone = address!("0x9999999999999999999999999999999999999999");
+        let anyone = Address::repeat_byte(0x99);
 
         let r = KeyRestrictions::default()
             .with_allowed_calls(vec![CallScopeBuilder::new(token).transfer(vec![]).build()]);
@@ -733,8 +730,8 @@ mod tests {
 
     #[test]
     fn test_remove_allowed_calls_encodes_correctly() {
-        let key_id = address!("0x1111111111111111111111111111111111111111");
-        let target = address!("0x2222222222222222222222222222222222222222");
+        let key_id = Address::repeat_byte(0x11);
+        let target = Address::repeat_byte(0x22);
         let call = remove_allowed_calls(key_id, target);
 
         assert_eq!(call.to, TxKind::Call(ACCOUNT_KEYCHAIN_ADDRESS));

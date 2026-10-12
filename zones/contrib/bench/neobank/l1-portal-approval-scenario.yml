@@ -1,0 +1,30 @@
+version: 1
+
+chains:
+  l1:
+    network: tempo
+    rpc_url: "${L1_RPC_URL}"
+    query_rpc_url: "${ZONES_BENCH_L1_QUERY_RPC_URL}"
+    observation:
+      mode: auto
+      websocket_url: "${L1_WS_RPC_URL}"
+      poll_interval: 50ms
+    chain_id: ${ZONES_BENCH_EXPECTED_L1_CHAIN_ID}
+    workload: ./l1-onramp.yml
+
+scenario:
+  name: neobank-l1-portal-approval
+  timeout: 2m
+
+  bindings:
+    account:
+      account: { pool: users, select: lease }
+
+  steps:
+    - submit:
+        chain: l1
+        template: approve_portal
+        with:
+          from: { var: account.ref }
+        await: receipt
+      save: approval

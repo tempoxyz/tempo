@@ -1,0 +1,50 @@
+version: 1
+
+include:
+  - ./neobank-scenario-fragments.yml
+
+chains:
+  l1:
+    network: tempo
+    rpc_url: "${L1_RPC_URL}"
+    query_rpc_url: "${ZONES_BENCH_L1_QUERY_RPC_URL}"
+    observation:
+      mode: auto
+      websocket_url: "${L1_WS_RPC_URL}"
+      poll_interval: 50ms
+    chain_id: ${ZONES_BENCH_EXPECTED_L1_CHAIN_ID}
+    workload: ./l1-onramp.yml
+
+  zone:
+    network: tempo
+    rpc_url: "${ZONE_RPC_URL}"
+    query_rpc_url: "${ZONE_RPC_URL}"
+    observation:
+      mode: auto
+      websocket_url: "${ZONE_WS_RPC_URL}"
+      poll_interval: 50ms
+    chain_id: ${ZONES_BENCH_EXPECTED_ZONE_CHAIN_ID}
+    workload: ./zone-flow.yml
+
+scenario:
+  name: neobank-admission-seed
+  execution: dag
+  timeout: 2m
+
+  bindings:
+    account:
+      account: { pool: users, select: lease }
+    action_id:
+      bytes32: { random_bytes: 32 }
+
+  steps:
+    - use: encrypted-zone-entry
+      as: seed
+      with:
+        sender: { var: account.ref }
+        sender_address: { var: account.address }
+        recipient: { var: account.address }
+        token: "${ZONES_BENCH_TOKEN}"
+        fee_token: "${ZONES_BENCH_TOKEN}"
+        amount: "${ZONES_BENCH_ADMISSION_SEED_AMOUNT}"
+        memo: { var: action_id }

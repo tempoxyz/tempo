@@ -78,13 +78,10 @@ mod tests {
         assert_eq!(calc_gas_balance_spending(0, 0), U256::ZERO);
 
         // exact division: 1 gas * 10^12 attodollars = 1 microdollar
-        assert_eq!(
-            calc_gas_balance_spending(1, 1_000_000_000_000),
-            U256::from(1)
-        );
+        assert_eq!(calc_gas_balance_spending(1, 1_000_000_000_000), U256::ONE);
 
         // rounds up via div_ceil: 1 gas * 1 attodollar → ceil(1 / 10^12) = 1
-        assert_eq!(calc_gas_balance_spending(1, 1), U256::from(1));
+        assert_eq!(calc_gas_balance_spending(1, 1), U256::ONE);
 
         // typical tx: 21000 gas * 1 gwei (10^9 attodollars)
         // = 21000 * 10^9 / 10^12 = 21000 / 1000 = 21

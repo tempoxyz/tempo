@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Runs on every orb wake. Keep fast: only checks that the toolchain from .agents/setup is present.
+set -euo pipefail
+
+# shellcheck disable=SC1091
+source "$HOME/.cargo/env"
+cargo --version
+cargo nextest --version | head -1

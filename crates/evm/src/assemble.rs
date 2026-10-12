@@ -260,7 +260,7 @@ mod tests {
         let evm_env = EvmEnv {
             block_env: TempoBlockEnv {
                 inner: BlockEnv {
-                    number: U256::from(1),
+                    number: U256::ONE,
                     timestamp: U256::from(1000),
                     beneficiary: Address::repeat_byte(0x01),
                     basefee: 1,
@@ -340,7 +340,7 @@ mod tests {
         let evm_env = EvmEnv {
             block_env: TempoBlockEnv {
                 inner: BlockEnv {
-                    number: U256::from(1),
+                    number: U256::ONE,
                     timestamp: U256::from(1000),
                     beneficiary: Address::repeat_byte(0x01),
                     basefee: 1,

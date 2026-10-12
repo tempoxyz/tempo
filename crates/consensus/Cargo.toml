@@ -19,7 +19,7 @@ workspace = true
 tempo-alloy.workspace = true
 tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-consensus-config.workspace = true
-tempo-dkg-onchain-artifacts.workspace = true
+tempo-dkg-onchain-artifacts = { workspace = true, features = ["commonware-consensus"] }
 tempo-evm.workspace = true
 tempo-node.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }
@@ -54,6 +54,7 @@ commonware-runtime = { workspace = true, features = ["external"] }
 commonware-storage.workspace = true
 commonware-utils.workspace = true
 
+derive_more = { workspace = true, features = ["eq"] }
 eyre.workspace = true
 futures.workspace = true
 governor.workspace = true
@@ -100,4 +101,3 @@ tracing-subscriber.workspace = true
 
 [features]
 default = []
-bal = []

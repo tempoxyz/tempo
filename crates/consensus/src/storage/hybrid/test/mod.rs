@@ -16,7 +16,7 @@ use commonware_runtime::{Runner as _, Spawner, deterministic};
 use commonware_utils::NZU64;
 
 use super::*;
-use crate::storage::PRUNABLE_ITEMS_PER_SECTION;
+use crate::{consensus::block::Error as BlockError, storage::PRUNABLE_ITEMS_PER_SECTION};
 use utils::{StubProvider, fresh_prunable_with_section_size, make_block, make_chain};
 
 /// Force every height into its own section so the prunable archive's
@@ -29,6 +29,40 @@ const PER_HEIGHT_SECTION: std::num::NonZeroU64 = NZU64!(1);
 /// pruning path with a handful of blocks while still leaving room to
 /// observe pre-prune behavior.
 const RETENTION: u64 = 4;
+
+#[test]
+fn execution_fallback_rejects_bal() {
+    let block = SealedBlock::seal_slow(tempo_primitives::Block {
+        header: TempoHeader {
+            inner: alloy_consensus::Header {
+                block_access_list_hash: Some(B256::repeat_byte(42)),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        body: Default::default(),
+    });
+
+    let error = validate_execution_block(block.into())
+        .expect_err("a stored BAL block is unsupported, not a miss");
+    let error = error
+        .as_other()
+        .and_then(|error| error.downcast_ref::<BlockError>())
+        .expect("stored block should fail consensus block validation");
+    assert_eq!(
+        error.to_string(),
+        reth_consensus::ConsensusError::BlockAccessListHashUnexpected.to_string()
+    );
+}
+
+#[test]
+fn execution_fallback_without_bal_remains_available() {
+    let block = make_block(42, B256::ZERO);
+    assert_eq!(
+        validate_execution_block(block.clone().into_execution_block()).unwrap(),
+        block
+    );
+}
 
 struct SetupHybrid {
     retention: u64,
@@ -71,7 +105,7 @@ fn get_returns_block_from_prunable_archive() {
 
         let blocks = make_chain(1, 3);
         for block in &blocks {
-            hybrid.put(block.clone()).await.expect("put");
+            hybrid = hybrid.put(block.clone()).await.expect("put");
         }
 
         // By index.
@@ -94,6 +128,103 @@ fn get_returns_block_from_prunable_archive() {
 }
 
 #[test_traced]
+fn get_header_uses_cache_above_execution_finalized_watermark() {
+    deterministic::Runner::default().start(|context| async move {
+        let (mut hybrid, provider) = SetupHybrid::default().build(&context).await;
+        let block = make_block(10, B256::ZERO);
+        hybrid = hybrid.put(block.clone()).await.expect("put");
+        provider.set_reth_finalized(9);
+        provider.set_fail(true);
+
+        for id in [Identifier::Index(10), Identifier::Key(&block.digest())] {
+            let header = hybrid.get_header(id).await.expect("read cached header");
+            assert_eq!(header.as_ref(), Some(block.block().header()));
+        }
+    });
+}
+
+#[test_traced]
+fn get_header_reads_execution_headers_without_bodies() {
+    deterministic::Runner::default().start(|context| async move {
+        let (hybrid, provider) = SetupHybrid::default().build(&context).await;
+        let genesis = make_block(0, B256::ZERO);
+        provider.add_header(genesis.block().header().clone());
+        assert_eq!(
+            hybrid
+                .get_header(Identifier::Index(0))
+                .await
+                .unwrap()
+                .as_ref(),
+            Some(genesis.block().header()),
+        );
+
+        let block = make_block(10, B256::ZERO);
+        let digest = block.digest();
+        provider.add_header(block.block().header().clone());
+
+        // Exact hash reads do not require execution to have finalized the header.
+        assert_eq!(
+            hybrid
+                .get_header(Identifier::Key(&digest))
+                .await
+                .unwrap()
+                .as_ref(),
+            Some(block.block().header()),
+        );
+        assert!(
+            hybrid
+                .get_header(Identifier::Index(10))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        provider.set_reth_finalized(9);
+        assert!(
+            hybrid
+                .get_header(Identifier::Index(10))
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        provider.set_reth_finalized(10);
+        assert_eq!(
+            hybrid
+                .get_header(Identifier::Index(10))
+                .await
+                .unwrap()
+                .as_ref(),
+            Some(block.block().header()),
+        );
+        // Headers remain available even though neither store has the block body.
+        assert!(hybrid.get(Identifier::Index(10)).await.unwrap().is_none());
+        assert!(
+            hybrid
+                .get(Identifier::Key(&digest))
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        assert!(
+            hybrid
+                .get_header(Identifier::Index(1))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let missing = make_block(1, B256::ZERO).digest();
+        assert!(
+            hybrid
+                .get_header(Identifier::Key(&missing))
+                .await
+                .unwrap()
+                .is_none()
+        );
+    });
+}
+
+#[test_traced]
 fn get_falls_back_to_reth_on_prunable_miss() {
     let executor = deterministic::Runner::default();
     executor.start(|context| async move {
@@ -112,7 +243,7 @@ fn get_falls_back_to_reth_on_prunable_miss() {
         // Also put one block into the prunable archive so we can assert
         // the prunable hit path was tried first.
         let in_prunable = chain[4].clone();
-        hybrid.put(in_prunable.clone()).await.expect("put");
+        hybrid = hybrid.put(in_prunable.clone()).await.expect("put");
 
         // Index path: prunable miss → reth hit.
         let height = only_in_reth.height();
@@ -216,7 +347,7 @@ fn put_trims_prunable_archive_to_retention() {
         let blocks = make_chain(1, (RETENTION as usize) + 3);
         let highest = blocks.last().unwrap().height().get();
         for block in &blocks {
-            hybrid.put(block.clone()).await.expect("put");
+            hybrid = hybrid.put(block.clone()).await.expect("put");
         }
 
         // Phase 2: advance reth's watermark to `highest` and trigger
@@ -225,7 +356,7 @@ fn put_trims_prunable_archive_to_retention() {
         // section overshoot, so the cache snaps to that floor.
         provider.set_reth_finalized(highest);
         let trigger = make_block(highest + 1, blocks.last().unwrap().digest().0);
-        hybrid.put(trigger).await.expect("put trigger");
+        hybrid = hybrid.put(trigger).await.expect("put trigger");
 
         // The newest `RETENTION` seeded blocks plus the trigger must
         // remain.
@@ -277,7 +408,7 @@ fn gap_tracking_treats_reth_finalized_as_covered_prefix() {
         let blocks = make_chain(6, 7); // heights 6..=12
         for offset in [0, 1, 4, 6] {
             let block = blocks[offset].clone();
-            hybrid.put(block).await.expect("put block");
+            hybrid = hybrid.put(block).await.expect("put block");
         }
 
         // Heights 1..=5 are covered by reth and 6..=7 by prunable, so
@@ -319,7 +450,7 @@ fn gap_tracking_merges_prunable_run_overlapping_reth_watermark() {
         provider.set_reth_finalized(5);
         let blocks = make_chain(3, 8); // heights 3..=10
         for offset in [0, 1, 2, 3, 4, 7] {
-            hybrid.put(blocks[offset].clone()).await.expect("put block");
+            hybrid = hybrid.put(blocks[offset].clone()).await.expect("put block");
         }
 
         assert_eq!(
@@ -370,8 +501,8 @@ fn next_gap_upholds_blocks_trait_behavior_contract() {
         // `current_range_end` will be `None`" — and `next_range_start`
         // points at the first range.
         let blocks = make_chain(4, 6); // heights 4..=9
-        hybrid.put(blocks[4].clone()).await.expect("put 8");
-        hybrid.put(blocks[5].clone()).await.expect("put 9");
+        hybrid = hybrid.put(blocks[4].clone()).await.expect("put 8");
+        hybrid = hybrid.put(blocks[5].clone()).await.expect("put 9");
         assert_eq!(
             hybrid.next_gap(Height::new(2)),
             (None, Some(Height::new(8)))
@@ -380,8 +511,8 @@ fn next_gap_upholds_blocks_trait_behavior_contract() {
         // Coverage is now [0..=5] (reth 0..=3 merged with prunable 4..=5)
         // and [8..=9].
         provider.set_reth_finalized(3);
-        hybrid.put(blocks[0].clone()).await.expect("put 4");
-        hybrid.put(blocks[1].clone()).await.expect("put 5");
+        hybrid = hybrid.put(blocks[0].clone()).await.expect("put 4");
+        hybrid = hybrid.put(blocks[1].clone()).await.expect("put 5");
 
         // "If `value` falls within an existing range `[r_start, r_end]`,
         // `current_range_end` will be `Some(r_end)`."
@@ -446,7 +577,7 @@ fn sync_flushes_prunable_archive() {
 
         let blocks = make_chain(1, 2);
         for block in &blocks {
-            hybrid.put(block.clone()).await.expect("put");
+            hybrid = hybrid.put(block.clone()).await.expect("put");
         }
         hybrid
             .sync()
@@ -462,8 +593,8 @@ fn put_at_existing_index_is_idempotent() {
         let (mut hybrid, _) = SetupHybrid::default().build(&context).await;
 
         let blocks = make_chain(1, 1);
-        hybrid.put(blocks[0].clone()).await.expect("first put");
-        hybrid.put(blocks[0].clone()).await.expect("idempotent put");
+        hybrid = hybrid.put(blocks[0].clone()).await.expect("first put");
+        hybrid = hybrid.put(blocks[0].clone()).await.expect("idempotent put");
 
         let stored = hybrid
             .get(Identifier::Index(1))
@@ -489,7 +620,7 @@ fn put_below_retention_silently_succeeds_when_reth_covers_the_height() {
         // (no eviction yet).
         let blocks = make_chain(1, 6);
         for block in &blocks {
-            hybrid.put(block.clone()).await.expect("put");
+            hybrid = hybrid.put(block.clone()).await.expect("put");
         }
 
         // Phase 2: advance reth's watermark and trigger eviction with
@@ -498,7 +629,7 @@ fn put_below_retention_silently_succeeds_when_reth_covers_the_height() {
         // <5 are dropped.
         provider.set_reth_finalized(6);
         let trigger = make_block(7, blocks.last().unwrap().digest().0);
-        hybrid.put(trigger).await.expect("put trigger");
+        hybrid = hybrid.put(trigger).await.expect("put trigger");
 
         // Phase 3: model "reth has the evicted height" by seeding the
         // stub provider with the original block. The marshal would
@@ -506,7 +637,7 @@ fn put_below_retention_silently_succeeds_when_reth_covers_the_height() {
         // in reth's storage at or below its finalized boundary, so
         // re-putting it must succeed silently.
         provider.add_block(&blocks[0]);
-        hybrid
+        hybrid = hybrid
             .put(blocks[0].clone())
             .await
             .expect("re-put of an already-durable height must be a no-op success");
@@ -540,7 +671,7 @@ fn prune_respects_section_boundary() {
         // (no eviction yet).
         let blocks = make_chain(1, 30);
         for block in &blocks {
-            hybrid.put(block.clone()).await.unwrap();
+            hybrid = hybrid.put(block.clone()).await.unwrap();
         }
 
         // Phase 1: advance reth's watermark to 23. Requested eviction
@@ -549,7 +680,7 @@ fn prune_respects_section_boundary() {
         // [0, 7] are dropped and the cache holds heights 8..=31.
         provider.set_reth_finalized(23);
         let next31 = make_block(31, blocks.last().unwrap().digest().0);
-        hybrid.put(next31.clone()).await.expect("put 31");
+        hybrid = hybrid.put(next31.clone()).await.expect("put 31");
 
         for height in 8..=31 {
             assert!(
@@ -576,13 +707,13 @@ fn prune_respects_section_boundary() {
         // so 7 is below it) must succeed silently — the block is below
         // the cache window, and reth's finality contract guarantees
         // it's durable in reth's storage.
-        hybrid
+        hybrid = hybrid
             .put(blocks[6].clone())
             .await
             .expect("stale put at height 7 must silently succeed (reth covers it)");
         // A re-put at the section boundary still succeeds (silent
         // dedupe inside the prunable archive itself).
-        hybrid
+        hybrid = hybrid
             .put(blocks[7].clone())
             .await
             .expect("re-put at oldest_allowed should dedupe, not error");
@@ -593,7 +724,7 @@ fn prune_respects_section_boundary() {
         // cache snaps to heights 16..=32.
         provider.set_reth_finalized(31);
         let next32 = make_block(32, next31.digest().0);
-        hybrid.put(next32).await.expect("put 32");
+        hybrid = hybrid.put(next32).await.expect("put 32");
 
         for height in 16..=32 {
             assert!(
@@ -641,7 +772,7 @@ fn mid_section_prune_floor_keeps_live_tail_in_cache() {
         // (no eviction yet).
         let blocks = make_chain(1, 10);
         for block in &blocks {
-            hybrid.put(block.clone()).await.expect("put");
+            hybrid = hybrid.put(block.clone()).await.expect("put");
         }
 
         // Phase 1: advance reth to 10 → requested floor = 6, which sits
@@ -649,7 +780,7 @@ fn mid_section_prune_floor_keeps_live_tail_in_cache() {
         // only section [0, 3]. Trigger eviction with one more put.
         provider.set_reth_finalized(10);
         let trigger = make_block(11, blocks.last().unwrap().digest().0);
-        hybrid.put(trigger).await.expect("put trigger");
+        hybrid = hybrid.put(trigger).await.expect("put trigger");
 
         // Make the reth fallback fail loudly so we can distinguish
         // prunable hits from reth hits — anything that survives the
@@ -704,18 +835,18 @@ fn mid_section_silent_no_op_floor_is_section_aligned_not_requested() {
         // requested_floor=6.
         let blocks = make_chain(1, 10);
         for block in &blocks {
-            hybrid.put(block.clone()).await.expect("put");
+            hybrid = hybrid.put(block.clone()).await.expect("put");
         }
         provider.set_reth_finalized(10);
         let trigger = make_block(11, blocks.last().unwrap().digest().0);
-        hybrid.put(trigger).await.expect("put trigger");
+        hybrid = hybrid.put(trigger).await.expect("put trigger");
 
         // Heights 1..=3 sit below the section-aligned `oldest_allowed`
-        // (4) and must silently no-op — surfacing the prunable's
-        // `AlreadyPrunedTo` here would crash the marshal on a
+        // (4) and must silently no-op — rejecting these puts
+        // here would crash the marshal on a
         // perfectly recoverable condition.
         for height in 1..=3 {
-            hybrid
+            hybrid = hybrid
                 .put(blocks[(height - 1) as usize].clone())
                 .await
                 .unwrap_or_else(|err| {
@@ -725,11 +856,11 @@ fn mid_section_silent_no_op_floor_is_section_aligned_not_requested() {
 
         // Heights 4 and 5 sit in the live tail of the partially-evicted
         // section. The archive accepts these puts directly (4 ≥
-        // oldest_allowed=4); they do NOT take the `AlreadyPrunedTo`
-        // branch even though they are below the requested retention
+        // oldest_allowed=4); they do NOT take the silent no-op
+        // path even though they are below the requested retention
         // floor of 6.
         for height in 4..=5 {
-            hybrid
+            hybrid = hybrid
                 .put(blocks[(height - 1) as usize].clone())
                 .await
                 .unwrap_or_else(|err| {
@@ -756,14 +887,14 @@ fn eviction_no_op_when_advancing_reth_within_same_section() {
         // Phase 0: seed heights 1..=15 with reth's watermark unset.
         let blocks = make_chain(1, 15);
         for block in &blocks {
-            hybrid.put(block.clone()).await.expect("put");
+            hybrid = hybrid.put(block.clone()).await.expect("put");
         }
 
         // Phase 1: reth=10 → rounded floor = 4 → drop section [0, 3].
         // Trigger eviction with put at 16; cache now spans 4..=16.
         provider.set_reth_finalized(10);
         let next16 = make_block(16, blocks.last().unwrap().digest().0);
-        hybrid.put(next16.clone()).await.expect("put 16");
+        hybrid = hybrid.put(next16.clone()).await.expect("put 16");
         for height in 4..=16 {
             assert!(
                 hybrid
@@ -780,7 +911,7 @@ fn eviction_no_op_when_advancing_reth_within_same_section() {
         // must still be in the cache.
         provider.set_reth_finalized(11);
         let next17 = make_block(17, next16.digest().0);
-        hybrid.put(next17.clone()).await.expect("put 17");
+        hybrid = hybrid.put(next17.clone()).await.expect("put 17");
         for height in 4..=17 {
             assert!(
                 hybrid
@@ -796,7 +927,7 @@ fn eviction_no_op_when_advancing_reth_within_same_section() {
         // Trigger with put at 18; cache snaps to 8..=18.
         provider.set_reth_finalized(12);
         let next18 = make_block(18, next17.digest().0);
-        hybrid.put(next18).await.expect("put 18");
+        hybrid = hybrid.put(next18).await.expect("put 18");
         for height in 8..=18 {
             assert!(
                 hybrid
@@ -842,5 +973,12 @@ fn reth_provider_errors_propagate_to_caller() {
             matches!(result, Err(Error::Provider(_))),
             "expected Error::Provider on digest path, got {result:?}"
         );
+
+        for id in [Identifier::Index(99), Identifier::Key(&digest)] {
+            assert!(matches!(
+                hybrid.get_header(id).await,
+                Err(Error::Provider(_))
+            ));
+        }
     });
 }

@@ -1,10 +1,11 @@
 use alloy::{
     primitives::U256,
     providers::{Provider, ProviderBuilder},
-    signers::{SignerSync, local::MnemonicBuilder},
+    signers::SignerSync,
     sol_types::SolCall,
 };
 use alloy_eips::Encodable2718;
+use reth_e2e_test_utils::wallet::test_signer;
 use tempo_contracts::precompiles::{IFeeManager::setUserTokenCall, ITIP20};
 use tempo_precompiles::DEFAULT_FEE_TOKEN;
 use tempo_primitives::{TempoTransaction, TempoTxEnvelope, transaction::tempo_transaction::Call};
@@ -21,9 +22,7 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
         .await?;
     let http_url = setup.http_url;
 
-    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
+    let wallet = test_signer(0);
     let sender_address = wallet.address();
     let provider = ProviderBuilder::new()
         .wallet(wallet.clone())

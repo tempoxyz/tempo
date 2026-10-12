@@ -15,7 +15,7 @@ pub use transaction::{KeychainSubject, RevokedKeys, SpendingLimitUpdates};
 pub mod tempo_pool;
 
 // The main Tempo transaction pool type that handles both protocol and 2D nonces
-pub use tempo_pool::TempoTransactionPool;
+pub use tempo_pool::{TempoTransactionPool, TempoTransactionPoolExt};
 
 pub mod amm;
 pub mod best;

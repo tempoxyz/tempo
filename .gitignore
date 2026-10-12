@@ -42,3 +42,12 @@ _
 *.profraw
 __pycache__/
 .bench-tmp/
+
+# Amp orb portals
+.amp/portals/*
+
+# Imported Zones test fixtures and generated Solidity artifacts
+/earn/
+crates/zones/contracts/cache/
+crates/zones/contracts/out/
+crates/zones/contracts/benchmark-out/

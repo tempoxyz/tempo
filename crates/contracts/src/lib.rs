@@ -6,7 +6,6 @@
 // auto-generated sol! builders for events/errors with many fields trigger this
 #![allow(clippy::too_many_arguments)]
 
-#[cfg(test)]
 extern crate alloc;
 
 pub use tempo_hardfork::TempoHardfork;
@@ -30,18 +29,17 @@ macro_rules! sol {
     ($($input:tt)*) => {
         #[cfg(all(feature = "rpc", feature = "serde"))]
         alloy_sol_types::sol! {
-            #[sol(rpc)]
-            #[derive(serde::Serialize, serde::Deserialize)]
+            #![sol(rpc, extra_derives(serde::Serialize, serde::Deserialize))]
             $($input)*
         }
         #[cfg(all(feature = "rpc", not(feature = "serde")))]
         alloy_sol_types::sol! {
-            #[sol(rpc)]
+            #![sol(rpc)]
             $($input)*
         }
         #[cfg(all(not(feature = "rpc"), feature = "serde"))]
         alloy_sol_types::sol! {
-            #[derive(serde::Serialize, serde::Deserialize)]
+            #![sol(extra_derives(serde::Serialize, serde::Deserialize))]
             $($input)*
         }
         #[cfg(all(not(feature = "rpc"), not(feature = "serde")))]

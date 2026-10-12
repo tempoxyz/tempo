@@ -17,11 +17,13 @@ const E2E_B_CPUS = "8-15,24-31"
 const E2E_A_MEMORY = "60G"
 const E2E_B_MEMORY = "60G"
 const E2E_GAS_LIMIT = "1000000000000"
+const E2E_GENERAL_GAS_LIMIT = "1500000000"
 const E2E_RUNNER_METRICS_URL = "http://127.0.0.1:9100/metrics"
 const E2E_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
 const TRACY_SAMPLING_HZ = 18999
 const E2E_BLOAT_FREE_MARGIN_MIB = 51200
-const E2E_BLOAT_IMPORT_WORKING_SET_MULTIPLIER = 7
+# Measured peak import working set is ~4.8x bloat per side (ETL + DB + static files + rocksdb).
+const E2E_BLOAT_IMPORT_WORKING_SET_MULTIPLIER = 5
 const E2E_DEFAULT_BLOAT = 100
 const E2E_LOCAL_RETH_ARGS = [
     "--ipcdisable"
@@ -29,6 +31,7 @@ const E2E_LOCAL_RETH_ARGS = [
     "--trusted-only"
     "--tempo.bootnodes-endpoint" "none"
     "--consensus.no-legacy-archive"
+    "--consensus.verification-mode" "deferred"
     "--engine.share-execution-cache-with-payload-builder"
     "--builder.enable-prewarming"
     "--rpc.max-connections" "10000"
@@ -1344,7 +1347,7 @@ def "main summarize" [
 }
 
 def "main render-txgen-spec" [
-    --preset: string = ""                              # Txgen preset name or scenario expression
+    --preset: string = "default"                       # Txgen preset name or scenario expression
     --out-dir: string = ""                             # Directory for rendered scenario specs
 ] {
     let spec = (txgen-resolve-bench-spec $preset $out_dir)
@@ -1355,7 +1358,7 @@ def "main render-txgen-spec" [
 def "main e2e" [
     --baseline: string                                  # Baseline git SHA/ref
     --feature: string                                   # Feature git SHA/ref
-    --preset: string = ""                               # Txgen preset name
+    --preset: string = "default"                        # Txgen preset name
     --preset-path: string = ""                          # Pre-rendered txgen preset path
     --tps: int = 50000                                  # Target TPS
     --duration: int = 90                                # Duration in seconds
@@ -1365,7 +1368,7 @@ def "main e2e" [
     --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 0, 1, 10, or 100
     --token-count: int = 4                         # Number of TIP20 tokens to use in txgen presets
     --gas-limit: string = $E2E_GAS_LIMIT                # Builder gas limit
-    --general-gas-limit: string = $E2E_GAS_LIMIT        # General (non-payment) gas limit override
+    --general-gas-limit: string = $E2E_GENERAL_GAS_LIMIT # General (non-payment) gas limit override
     --force-bloat                                      # Regenerate and promote both local e2e snapshots
     --init-only                                         # Refresh snapshots and exit without running benchmark phases
     --profile: string = $DEFAULT_PROFILE                # Cargo build profile
@@ -1514,10 +1517,14 @@ def "main e2e" [
     bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
     bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
 
-    let snapshots_ready = (e2e-snapshots-ready $a_db $b_db)
+    let snapshots_ready = (
+        (e2e-snapshots-ready $a_db $b_db)
+        and (bloat-matches (read-bench-marker $a_db) $bloat_mib $snapshot_state_hardfork)
+        and (bloat-matches (read-bench-marker $b_db) $bloat_mib $snapshot_state_hardfork)
+    )
     let should_init_snapshots = $force_bloat or (not $snapshots_ready)
     if (not $snapshots_ready) and (not $force_bloat) {
-        print $"Local e2e snapshot ($bloat) is missing required files; initializing it once."
+        print $"Local e2e snapshot ($bloat) has missing files or outdated bloat; rebuilding it."
         let missing_a = (e2e-snapshot-missing-files $a_db)
         let missing_b = (e2e-snapshot-missing-files $b_db)
         if ($missing_a | length) > 0 {
@@ -1558,11 +1565,13 @@ def "main e2e" [
             ensure-bloat-space $bloat_mib
             print $"Generating local e2e state bloat \(($bloat_mib) MiB\)..."
             let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_mib --out $bloat_file ...$token_args
+            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_mib --nonce-ring-hardfork $snapshot_state_hardfork --out $bloat_file ...$token_args
         }
 
         let marker = {
             bloat_mib: $bloat_mib
+            bloat_version: $BLOAT_VERSION
+            nonce_ring_hardfork: $snapshot_state_hardfork
             bloat: $bloat
             accounts: $genesis_accounts
             validators: $E2E_VALIDATORS

@@ -14,8 +14,12 @@ jobs:
   deploy:
     name: Trigger Vercel Deploy
     runs-on: ubuntu-latest
-    permissions: {}
+    permissions:
+      id-token: write
     steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+
       - name: Deploy to Vercel
         run: |
           curl -X POST "${{ secrets.VERCEL_DEPLOY_HOOK }}"
