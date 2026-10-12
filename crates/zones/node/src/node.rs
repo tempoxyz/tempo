@@ -852,6 +852,7 @@ where
                 debug_api: debug_api.clone(),
                 portal_address: self.portal_address,
                 l1_provider: l1_provider.clone(),
+                retain_for_shadow_proving: matches!(prover_config, ZoneProverConfig::Shadow { .. }),
             };
             let (collector, collector_task) =
                 create_proof_collector(proof_collector_config, provider.clone()).await?;

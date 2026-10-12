@@ -31,7 +31,7 @@ use tempo_precompiles::{
     error::TempoPrecompileError,
     storage::{Handler, Mapping, Slot, StorageCtx},
     tip20::{ISSUER_ROLE, ITIP20, TIP20Error, TIP20Token},
-    tip403_registry::TIP403Registry,
+    tip403_registry::{AuthRole, TIP403Registry},
 };
 use tempo_precompiles_macros::contract;
 use zone_primitives::constants::{ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS};
@@ -337,6 +337,7 @@ impl ZoneInbox {
 
     /// Mint with Solidity `try/catch` semantics: ordinary reverts are caught while fatal and
     /// out-of-gas failures abort the outer Inbox call.
+    /// +T13: Bridged assets use TIP-403 `Recipient` authorization rather than `MintRecipient`.
     fn try_mint(&mut self, token: Address, to: Address, amount: u128) -> ZoneResult<bool> {
         let ensure_logic_err = |err: TempoPrecompileError| {
             if err.is_system_error() {
@@ -359,11 +360,16 @@ impl ZoneInbox {
         let checkpoint = self.storage.checkpoint();
         let success = TIP20Token::from_address(token)
             .and_then(|mut token| {
-                token.mint(
+                token.mint_with_role(
                     ZONE_INBOX_ADDRESS,
                     ITIP20::mintCall {
                         to,
                         amount: U256::from(amount),
+                    },
+                    if self.storage.spec().is_t13() {
+                        AuthRole::recipient()
+                    } else {
+                        AuthRole::mint_recipient()
                     },
                 )
             })
