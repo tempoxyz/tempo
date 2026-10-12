@@ -20,7 +20,7 @@ use reth_evm::{
     execute::{map_database_error, map_handler_error},
 };
 use reth_evm_ethereum::{EthBlockExecutor, EthTransactionResultWithState};
-use reth_execution_types::EvmState;
+use reth_execution_types::StateUpdate;
 use std::sync::Arc;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
@@ -751,7 +751,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         self.inner.evm()
     }
 
-    fn set_state_hook(&mut self, hook: impl FnMut(EvmState) + Send + 'static) -> bool {
+    fn set_state_hook(&mut self, hook: impl FnMut(StateUpdate) + Send + 'static) -> bool {
         self.inner.set_state_hook(hook);
         true
     }
@@ -905,7 +905,7 @@ mod tests {
                     .lock()
                     .unwrap()
                     .iter()
-                    .any(|state| state.contains_key(&HISTORY_STORAGE_ADDRESS))
+                    .any(|state| state.account(&HISTORY_STORAGE_ADDRESS).is_some())
             );
 
             assert_eq!(
@@ -2252,7 +2252,7 @@ mod tests {
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
 
-        let hook_calls: Arc<Mutex<Vec<EvmState>>> = Arc::new(Mutex::new(Vec::new()));
+        let hook_calls: Arc<Mutex<Vec<StateUpdate>>> = Arc::new(Mutex::new(Vec::new()));
         let hook_calls_clone = hook_calls.clone();
         executor.set_state_hook(move |state| hook_calls_clone.lock().unwrap().push(state));
 
@@ -2272,11 +2272,16 @@ mod tests {
         let calls = hook_calls.lock().unwrap();
         assert_eq!(calls.len(), 1, "state hook should be called exactly once");
         assert!(
-            calls[0].contains_key(&addr),
+            calls[0].account(&addr).is_some(),
             "state hook should contain the deployed address"
         );
         assert_eq!(
-            calls[0][&addr].original_info(),
+            calls[0]
+                .account(&addr)
+                .unwrap()
+                .original
+                .clone()
+                .unwrap_or_default(),
             Default::default(),
             "state hook account should preserve original_info"
         );
@@ -2300,7 +2305,7 @@ mod tests {
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
 
-        let hook_calls: Arc<Mutex<Vec<EvmState>>> = Arc::new(Mutex::new(Vec::new()));
+        let hook_calls: Arc<Mutex<Vec<StateUpdate>>> = Arc::new(Mutex::new(Vec::new()));
         let hook_calls_clone = hook_calls.clone();
         executor.set_state_hook(move |state| hook_calls_clone.lock().unwrap().push(state));
 
@@ -2309,7 +2314,12 @@ mod tests {
         let calls = hook_calls.lock().unwrap();
         assert_eq!(calls.len(), 1, "state hook should be called exactly once");
         assert_eq!(
-            calls[0][&addr].original_info(),
+            calls[0]
+                .account(&addr)
+                .unwrap()
+                .original
+                .clone()
+                .unwrap_or_default(),
             reth_execution_types::revm_account(&original_info),
             "state hook account should preserve existing original_info"
         );
@@ -2471,7 +2481,7 @@ mod tests {
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
 
-        let hook_calls: Arc<Mutex<Vec<EvmState>>> = Arc::new(Mutex::new(Vec::new()));
+        let hook_calls: Arc<Mutex<Vec<StateUpdate>>> = Arc::new(Mutex::new(Vec::new()));
         let hook_calls_clone = hook_calls.clone();
         executor.set_state_hook(move |state| hook_calls_clone.lock().unwrap().push(state));
 
@@ -2522,18 +2532,18 @@ mod tests {
             3,
             "T10 installation and T13 replacement must each dispatch an update"
         );
-        assert!(calls[0].contains_key(&ZONE_FACTORY_ADDRESS));
+        assert!(calls[0].account(&ZONE_FACTORY_ADDRESS).is_some());
         for address in [
             ZONE_PORTAL_IMPL_ADDRESS,
             ZONE_VERIFIER_ADDRESS,
             ZONE_MESSENGER_ADDRESS,
         ] {
             assert!(
-                calls[1].contains_key(&address),
+                calls[1].account(&address).is_some(),
                 "shared runtime must be installed in the runtime state hook"
             );
             assert!(
-                calls[2].contains_key(&address),
+                calls[2].account(&address).is_some(),
                 "T13 runtime must be installed in the runtime state hook"
             );
         }
