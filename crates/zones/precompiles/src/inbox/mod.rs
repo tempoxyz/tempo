@@ -337,8 +337,7 @@ impl ZoneInbox {
 
     /// Mint with Solidity `try/catch` semantics: ordinary reverts are caught while fatal and
     /// out-of-gas failures abort the outer Inbox call.
-    /// From T13, bridged assets use TIP-403 `Recipient` authorization; earlier forks retain
-    /// `MintRecipient` authorization.
+    /// +T13: Bridged assets use TIP-403 `Recipient` authorization rather than `MintRecipient`.
     fn try_mint(&mut self, token: Address, to: Address, amount: u128) -> ZoneResult<bool> {
         let ensure_logic_err = |err: TempoPrecompileError| {
             if err.is_system_error() {
