@@ -63,14 +63,13 @@ impl TempoBlockExecutor<'_> {
         } else {
             gas.tx_gas_used()
         };
-        if !is_system_tx {
-            self.validate_tx(
-                *original.tx_hash(),
-                self.is_payment(original),
-                block_gas_used,
-            )
-            .map_err(BlockExecutionError::from)?;
-        }
+        self.validate_tx(
+            *original.tx_hash(),
+            is_system_tx,
+            self.is_payment(original),
+            block_gas_used,
+        )
+        .map_err(BlockExecutionError::from)?;
 
         let result = TempoTxResult::new_precomputed(
             original,

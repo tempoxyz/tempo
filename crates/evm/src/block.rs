@@ -516,12 +516,18 @@ impl<'a> TempoBlockExecutor<'a> {
         }
     }
 
+    /// Returns the section an executed transaction enters at the current position in the block.
     pub(crate) fn validate_tx(
         &self,
         tx_hash: B256,
+        is_system_tx: bool,
         is_payment: bool,
         gas_used: u64,
     ) -> Result<BlockSection, BlockValidationError> {
+        if is_system_tx {
+            return self.subblocks_metadata_section();
+        }
+
         match self.section {
             BlockSection::StartOfBlock | BlockSection::NonShared => {
                 if gas_used > self.non_shared_gas_left
@@ -642,11 +648,9 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
             inner.result().result.tx_gas_used()
         };
 
-        if !is_system_tx {
-            // Reject before the result is observed; `commit_transaction` derives the section
-            // again from the committing executor's state.
-            self.validate_tx(tx_hash, is_payment, block_gas_used)?;
-        }
+        // Reject before the result is observed; `commit_transaction` derives the section again
+        // from the committing executor's state.
+        self.validate_tx(tx_hash, is_system_tx, is_payment, block_gas_used)?;
         // Snapshot the per-tx validator-credited fee set by the handler's `reimburse_caller`
         let validator_fee = inner.result().result.ext.validator_fee;
         Ok(TempoTxResult {
@@ -678,11 +682,7 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
 
         // The result may have been produced by another executor (e.g. a BAL worker) whose
         // section and lane budgets do not reflect the transactions committed before it.
-        let next_section = if is_system_tx {
-            self.subblocks_metadata_section()?
-        } else {
-            self.validate_tx(tx_hash, is_payment, block_gas_used)?
-        };
+        let next_section = self.validate_tx(tx_hash, is_system_tx, is_payment, block_gas_used)?;
 
         let gas_output = self.inner.commit_transaction(inner)?;
         self.block_gas_used = self.block_gas_used.saturating_add(block_gas_used);
@@ -1583,7 +1583,7 @@ mod tests {
 
         // Test regular transaction in StartOfBlock section goes to NonShared
         let tx = create_legacy_tx();
-        let result = executor.validate_tx(*tx.tx_hash(), executor.is_payment(&tx), 21_000);
+        let result = executor.validate_tx(*tx.tx_hash(), false, executor.is_payment(&tx), 21_000);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), BlockSection::NonShared);
     }
@@ -1652,7 +1652,7 @@ mod tests {
 
         // Try to validate a regular tx
         let tx = create_legacy_tx();
-        let result = executor.validate_tx(*tx.tx_hash(), executor.is_payment(&tx), 21_000);
+        let result = executor.validate_tx(*tx.tx_hash(), false, executor.is_payment(&tx), 21_000);
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
