@@ -13,7 +13,7 @@ const context = {
 };
 const status = { id: 456, attempt: 1, number: 123, mode: '', status: 'completed', conclusion: 'success' };
 function images(mode = '') {
-  const names = mode === 'profiling' ? ['tempo'] : ['tempo', 'tempo-devnet', 'tempo-localnet', 'tempo-sidecar', 'tempo-xtask'];
+  const names = mode === 'profiling' ? ['tempo'] : ['tempo', 'tempo-devnet', 'tempo-localnet', 'tempo-xtask'];
   const registries = mode === 'profiling' ? ['ghcr.io'] : ['ghcr.io', 'docker.io'];
   const prefix = mode === 'profiling' ? 'profiling-' : '';
   const tags = [`${prefix}pr-123`, `${prefix}sha-${sha.slice(0, 7)}`, ...(mode === 'nightly' ? ['nightly'] : [])];

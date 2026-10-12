@@ -23,7 +23,6 @@ ignore = [
     "tempo-precompiles",
     "tempo-precompiles-macros",
     "tempo-revm",
-    "tempo-sidecar",
     "tempo-telemetry-util",
     "tempo-transaction-pool",
     "tempo-validator-config",
