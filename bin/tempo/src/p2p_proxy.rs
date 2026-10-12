@@ -59,7 +59,7 @@ const SOFT_BODY_RESPONSE_SIZE_LIMIT: usize = 1024 * 1024; // 1 MiB
 /// so a single peer can't take more than a few of these.
 const MAX_CONCURRENT_REQUESTS: usize = 256;
 /// Maximum number of RPC fetches in flight across all requests.
-const MAX_CONCURRENT_RPC_FETCHES: usize = 8;
+const MAX_CONCURRENT_RPC_FETCHES: usize = 4;
 
 #[derive(Parser, Debug)]
 #[command(
