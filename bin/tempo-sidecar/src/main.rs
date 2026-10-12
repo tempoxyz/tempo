@@ -1,3 +1,8 @@
+//! Command-line tools for monitoring Tempo nodes and generating transaction load.
+//!
+//! Provides fee AMM monitoring, simple arbitrage, synthetic load generation, and transaction
+//! landing latency monitoring through a node's RPC endpoint.
+
 use crate::opts::{TempoSidecar, TempoSidecarSubcommand};
 use clap::Parser;
 
