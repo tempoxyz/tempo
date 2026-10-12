@@ -26,6 +26,19 @@ resolved_features() {
         sed -nE "s/^$krate feature \"([a-z0-9_-]+)\"$/\1/p" | sort -u || true
 }
 
+# Prints the Cargo.lock entries (name, version, source, checksum) of `$1`.
+lock_entries() {
+    awk -v name="$1" '$0 == "[[package]]" { p = 0 } $0 == "name = \"" name "\"" { p = 1 }
+        p && /^(name|version|source|checksum) = / { print }' Cargo.lock
+}
+
+# Succeeds if `$1` is locked exactly once, from crates.io. Patched, git or path sources would
+# not match the registry release the prebuilt libraries are built from.
+from_registry() {
+    [[ $(lock_entries "$1" | grep -c '^source = "registry+https://github.com/rust-lang/crates.io-index"$') == 1 &&
+        $(lock_entries "$1" | grep -c '^name = ') == 1 ]]
+}
+
 # Prints the locked version of `$1` without build metadata.
 locked_version() {
     awk -v name="$1" '$0 == "name = \"" name "\"" { getline; gsub(/"|version = /, ""); print; exit }' Cargo.lock |
@@ -55,6 +68,12 @@ cmd_spec() {
         return 0
     fi
     jemalloc=$(resolved_features tikv-jemalloc-sys "$@")
+    for krate in librocksdb-sys ${jemalloc:+tikv-jemalloc-sys}; do
+        if ! from_registry "$krate"; then
+            echo "$krate is not locked to a single crates.io release; building it from source" >&2
+            return 0
+        fi
+    done
 
     mkdir -p "$dir/crate/src"
     echo "use librocksdb_sys as _;" >"$dir/crate/src/lib.rs"
@@ -77,6 +96,8 @@ cmd_spec() {
 
     {
         cat "$dir/crate/Cargo.toml"
+        lock_entries librocksdb-sys
+        lock_entries tikv-jemalloc-sys
         cc --version | head -n1
         c++ --version | head -n1
     } | sha256sum | cut -c1-16
