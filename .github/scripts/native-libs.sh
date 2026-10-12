@@ -39,6 +39,11 @@ from_registry() {
         $(lock_entries "$1" | grep -c '^name = ') == 1 ]]
 }
 
+# Prints a "name version checksum" line per registry package in the lockfile `$1`.
+locked_packages() {
+    awk '/^name = / { n = $3 } /^version = / { v = $3 } /^checksum = / { print n, v, $3 }' "$1" | sort
+}
+
 # Prints the locked version of `$1` without build metadata.
 locked_version() {
     awk -v name="$1" '$0 == "name = \"" name "\"" { getline; gsub(/"|version = /, ""); print; exit }' Cargo.lock |
@@ -94,10 +99,20 @@ cmd_spec() {
         echo "use tikv_jemalloc_sys as _;" >>"$dir/crate/src/lib.rs"
     fi
 
+    # Seed the crate with the repository lock: cargo keeps the locked versions of everything the
+    # crate still uses (build-time deps like cc and bindgen included) and prunes the rest.
+    cp Cargo.lock "$dir/crate/Cargo.lock"
+    cargo metadata --format-version 1 --manifest-path "$dir/crate/Cargo.toml" >/dev/null
+    local unlocked
+    unlocked=$(comm -23 <(locked_packages "$dir/crate/Cargo.lock") <(locked_packages Cargo.lock))
+    if [[ -n $unlocked ]]; then
+        echo "native-libs resolved packages that Cargo.lock does not pin:" >&2
+        echo "$unlocked" >&2
+        exit 1
+    fi
+
     {
-        cat "$dir/crate/Cargo.toml"
-        lock_entries librocksdb-sys
-        lock_entries tikv-jemalloc-sys
+        cat "$dir/crate/Cargo.toml" "$dir/crate/Cargo.lock"
         cc --version | head -n1
         c++ --version | head -n1
     } | sha256sum | cut -c1-16
@@ -107,7 +122,7 @@ cmd_build() {
     local dir=$1 target=$1/crate/target
     # Build script output directories, keyed by crate name.
     local out_dirs
-    out_dirs=$(CARGO_TARGET_DIR=$target cargo build --release --manifest-path "$dir/crate/Cargo.toml" \
+    out_dirs=$(CARGO_TARGET_DIR=$target cargo build --locked --release --manifest-path "$dir/crate/Cargo.toml" \
         --message-format json-render-diagnostics |
         jq -r 'select(.reason == "build-script-executed") | "\(.package_id) \(.out_dir)"')
     out_dir() { awk -v krate="$1" '$1 ~ "[/#]" krate "[@#]" { print $2 }' <<<"$out_dirs"; }
