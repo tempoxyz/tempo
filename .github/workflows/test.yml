@@ -123,6 +123,13 @@ jobs:
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
           version: v0.15.0
+      - name: Cache Rust dependencies
+        uses: tempoxyz/gh-actions/vendor/Swatinem/rust-cache@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        with:
+          prefix-key: v1-tempo-deps
+          cache-bin: false
+          save-if: ${{ matrix.partition == 1 }}
+          key: ${{ needs.check-precompiles.outputs.coverage == 'true' && 'coverage' || 'plain' }}
       - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
           tool: nextest@0.9.127
@@ -192,6 +199,12 @@ jobs:
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
           version: v0.15.0
+      - name: Cache Rust dependencies
+        uses: tempoxyz/gh-actions/vendor/Swatinem/rust-cache@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        with:
+          prefix-key: v1-tempo-deps
+          cache-bin: false
+          save-if: ${{ matrix.partition == 1 }}
       - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
           tool: nextest@0.9.127
