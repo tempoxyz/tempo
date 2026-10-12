@@ -11,6 +11,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+tempo-contracts.workspace = true
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true, optional = true }
 serde = { workspace = true, optional = true, features = ["alloc"] }
@@ -20,6 +21,7 @@ thiserror = { version = "2", default-features = false }
 [features]
 default = ["std", "serde"]
 std = [
+    "tempo-contracts/std",
     "alloy-primitives/std",
     "thiserror/std",
     "alloy-rlp?/std",
@@ -27,6 +29,7 @@ std = [
     "tempo-hardfork/std",
 ]
 serde = [
+    "tempo-contracts/serde",
     "dep:alloy-rlp",
     "dep:serde",
     "alloy-primitives/serde",

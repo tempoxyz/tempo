@@ -11,18 +11,18 @@ use alloy::{
 use eyre::{Context as _, ensure, eyre};
 use serde::Serialize;
 use tempo_alloy::TempoNetwork;
-use tempo_zone_contracts::ZonePortal;
+use tempo_contracts::zones::ZonePortal;
 use zone_p2p::ZoneManifest;
 
 use super::{
-    config::{SharedAdminArgs, format_duration, parse_nonzero_duration},
+    config::{
+        DEFAULT_FINALITY_TIMEOUT, FINALITY_POLL, SharedAdminArgs, format_duration,
+        parse_nonzero_duration,
+    },
     invariants::{address_set, ensure_invariants, evaluate_base_invariants},
     secret_file::read_private_key_file,
     snapshot::{ClusterView, PortalSnapshot, read_portal_snapshot},
 };
-
-const DEFAULT_FINALITY_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-const FINALITY_POLL: Duration = Duration::from_millis(500);
 
 #[derive(Debug, clap::Parser)]
 pub(crate) struct SequencerSet {

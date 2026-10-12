@@ -14,6 +14,9 @@ use serde::Deserialize;
 
 use crate::zone_utils::MODERATO_ZONE_FACTORY;
 
+pub(super) const DEFAULT_FINALITY_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+pub(super) const FINALITY_POLL: Duration = Duration::from_millis(500);
+
 /// Connection and identity inputs shared by every admin command.
 #[derive(Debug, Clone, clap::Args)]
 pub(crate) struct SharedAdminArgs {

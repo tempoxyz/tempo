@@ -11,7 +11,7 @@ use eyre::{Context as _, ensure, eyre};
 use futures::future::{join_all, try_join_all};
 use serde::{Deserialize, Serialize};
 use tempo_alloy::TempoNetwork;
-use tempo_zone_contracts::{ZoneFactory, ZonePortal};
+use tempo_contracts::zones::{ZoneFactory, ZonePortal};
 use tokio::time::timeout;
 use zone_p2p::ZoneManifest;
 use zone_rpc::types::{SequencerInfoResponse, ZoneInfoResponse};

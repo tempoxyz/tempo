@@ -14,8 +14,10 @@ use std::{
     time::Duration,
 };
 use tempo_alloy::TempoNetwork;
-use tempo_contracts::precompiles::ITIP20 as TIP20Token;
-use tempo_zone_contracts::{IZoneInbox, ZONE_FACTORY_ADDRESS, ZoneFactory, ZonePortal};
+use tempo_contracts::{
+    precompiles::ITIP20 as TIP20Token,
+    zones::{IZoneInbox, ZONE_FACTORY_ADDRESS, ZoneFactory, ZonePortal},
+};
 
 /// Write a file that may contain key material with owner-only permissions on Unix.
 ///
@@ -45,18 +47,18 @@ pub(crate) fn write_owner_only(path: &Path, contents: impl AsRef<[u8]>) -> std::
 }
 
 pub(crate) const L1_EXPLORER: &str = "https://explore.moderato.tempo.xyz/tx";
+pub(crate) use tempo_contracts::precompiles::STABLECOIN_DEX_ADDRESS;
 /// Shared Moderato ZoneFactory.
 ///
 /// `create-zone`, `deploy-router`, and `zone-info` use this as their default
 /// factory unless the caller overrides `--zone-factory` or `ZONE_FACTORY`, or
 /// `zone.json` already provides a zone-specific value.
 /// Explorer: <https://explore.moderato.tempo.xyz/address/0x5aF2000000000000000000000000000000000000>
-pub(crate) const MODERATO_ZONE_FACTORY: Address = ZONE_FACTORY_ADDRESS;
-pub(crate) use tempo_contracts::precompiles::STABLECOIN_DEX_ADDRESS;
+pub(crate) use tempo_contracts::zones::ZONE_FACTORY_ADDRESS as MODERATO_ZONE_FACTORY;
 pub(crate) const ROUTER_CALLBACK_GAS_LIMIT: u64 = 2_000_000;
 const DEFAULT_WAIT_ATTEMPTS: usize = 120;
 const DEFAULT_WAIT_POLL: Duration = Duration::from_millis(500);
-const LOG_QUERY_BLOCK_CHUNK: u64 = 5_000;
+pub(crate) const LOG_QUERY_BLOCK_CHUNK: u64 = 5_000;
 
 /// Finds the block of the single ZoneCreated event for `zone_id` and `portal` in
 /// `from_block..=snapshot_block`.
@@ -257,7 +259,7 @@ pub(crate) async fn wait_for_token_enabled<P: Provider<TempoNetwork>>(
     token: Address,
 ) -> eyre::Result<u64> {
     let filter = Filter::new()
-        .address(tempo_zone_contracts::ZONE_INBOX_ADDRESS)
+        .address(tempo_contracts::zones::ZONE_INBOX_ADDRESS)
         .event_signature(IZoneInbox::TokenEnabled::SIGNATURE_HASH)
         .from_block(from_block);
 
@@ -284,7 +286,7 @@ pub(crate) async fn wait_for_deposit_processed<P: Provider<TempoNetwork>>(
     token: Address,
 ) -> eyre::Result<u64> {
     let filter = Filter::new()
-        .address(tempo_zone_contracts::ZONE_INBOX_ADDRESS)
+        .address(tempo_contracts::zones::ZONE_INBOX_ADDRESS)
         .event_signature(IZoneInbox::DepositProcessed::SIGNATURE_HASH)
         .from_block(from_block);
 

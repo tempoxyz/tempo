@@ -12,7 +12,7 @@ use alloy::{
     providers::Provider as _,
 };
 use alloy_network::ReceiptResponse as _;
-use tempo_zone_contracts::{TEMPO_STATE_ADDRESS, TempoState, ZONE_TOKEN_ADDRESS, ZonePortal};
+use tempo_contracts::zones::{TEMPO_STATE_ADDRESS, TempoState, ZONE_TOKEN_ADDRESS, ZonePortal};
 
 use crate::utils::{
     P2pChaosNetwork, RealP2pCluster, ZoneAccount, batch_count, poll_until,

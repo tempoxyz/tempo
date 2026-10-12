@@ -145,6 +145,9 @@ jobs:
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
           version: v0.15.0
+      - uses: ./.github/actions/native-libs
+        with:
+          cargo-args: -p tempo-xtask
       - name: Generate genesis
         run: |
           cargo xtask generate-genesis \
@@ -189,6 +192,9 @@ jobs:
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
           version: v0.15.0
+      - uses: ./.github/actions/native-libs
+        with:
+          cargo-args: --workspace
       - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
           tool: nextest@0.9.127
@@ -263,6 +269,9 @@ jobs:
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
           version: v0.15.0
+      - uses: ./.github/actions/native-libs
+        with:
+          cargo-args: -p tempo-e2e
       - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
           tool: nextest@0.9.127
@@ -310,6 +319,9 @@ jobs:
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
           version: v0.15.0
+      - uses: ./.github/actions/native-libs
+        with:
+          cargo-args: -p tempo
       - name: Build tempo
         run: cargo build --bin tempo
       - name: Run CLI tests
@@ -362,6 +374,9 @@ jobs:
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
           version: v0.15.0
+      - uses: ./.github/actions/native-libs
+        with:
+          cargo-args: -p tempo
       - name: Build with MSRV
         run: cargo build --bin tempo
         env:

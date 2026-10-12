@@ -21,6 +21,11 @@ use alloc::vec::Vec;
 use alloy_evm::precompiles::DynPrecompile;
 use alloy_primitives::{Address, B256, U256};
 use alloy_sol_types::{SolCall, SolValue, abi::AbiDecoderConfig};
+use tempo_contracts::zones::{
+    DecryptionData, Deposit, DepositType, EnabledToken, IZoneInbox, IZoneOutbox,
+    LegacyTempoAdvanced, QueuedDeposit, TempoAdvanced, WithdrawalBounceBackDeposit, ZoneInboxError,
+    ZoneInboxEvent,
+};
 use tempo_precompiles::{
     PATH_USD_ADDRESS,
     error::TempoPrecompileError,
@@ -29,11 +34,6 @@ use tempo_precompiles::{
     tip403_registry::TIP403Registry,
 };
 use tempo_precompiles_macros::contract;
-use tempo_zone_contracts::{
-    DecryptionData, Deposit, DepositType, EnabledToken, IZoneInbox, IZoneOutbox,
-    LegacyTempoAdvanced, QueuedDeposit, TempoAdvanced, WithdrawalBounceBackDeposit, ZoneInboxError,
-    ZoneInboxEvent,
-};
 use zone_primitives::constants::{ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS};
 
 use crate::{
@@ -398,7 +398,7 @@ impl ZoneInbox {
         if msg_sender != owner
             && !l1.has_portal_role(
                 msg_sender,
-                tempo_zone_contracts::ZonePortal::Role::Sequencer,
+                tempo_contracts::zones::ZonePortal::Role::Sequencer,
             )?
         {
             return Err(ZonePrecompileError::Inbox(ZoneInboxError::Unauthorized(

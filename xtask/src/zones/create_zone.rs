@@ -13,11 +13,13 @@ use eyre::{WrapErr as _, ensure, eyre};
 use std::path::PathBuf;
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
 use tempo_chainspec::{cli::TempoHardforkArgs, spec::TEMPO_T0_BASE_FEE};
-use tempo_contracts::precompiles::ITIP403Registry;
-use tempo_precompiles::{PATH_USD_ADDRESS, TIP403_REGISTRY_ADDRESS};
-use tempo_zone_contracts::{
-    MAX_SEQUENCERS, ZONE_MESSENGER_ADDRESS, ZONE_VERIFIER_ADDRESS, ZoneFactory, ZonePortal,
+use tempo_contracts::{
+    precompiles::ITIP403Registry,
+    zones::{
+        MAX_SEQUENCERS, ZONE_MESSENGER_ADDRESS, ZONE_VERIFIER_ADDRESS, ZoneFactory, ZonePortal,
+    },
 };
+use tempo_precompiles::{PATH_USD_ADDRESS, TIP403_REGISTRY_ADDRESS};
 use zone_primitives::constants::zone_chain_id;
 
 use crate::{

@@ -19,13 +19,15 @@ use alloy_sol_types::{SolCall, SolConstructor, SolValue};
 use eyre::WrapErr;
 use std::time::Duration;
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionRequest};
-use tempo_contracts::precompiles::{IRolesAuth, ITIP20, ITIP403Registry};
+use tempo_contracts::{
+    precompiles::{IRolesAuth, ITIP20, ITIP403Registry},
+    zones::{DepositPayload, ZONE_OUTBOX_ADDRESS, ZonePortal},
+};
 use tempo_precompiles::{
     PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, tip20::ISSUER_ROLE,
     tip403_registry::AuthRole,
 };
 use tempo_primitives::transaction::Call;
-use tempo_zone_contracts::{DepositPayload, ZONE_OUTBOX_ADDRESS, ZonePortal};
 
 const AMOUNT: u128 = 1_000_000;
 const REWARD_AMOUNT: u128 = AMOUNT / 10;

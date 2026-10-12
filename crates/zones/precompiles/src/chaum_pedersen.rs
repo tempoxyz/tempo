@@ -20,8 +20,8 @@ use k256::{
         sec1::{FromEncodedPoint, ToEncodedPoint},
     },
 };
+use tempo_contracts::zones::ChaumPedersenProof;
 use tempo_precompiles::storage::StorageCtx;
-use tempo_zone_contracts::ChaumPedersenProof;
 
 /// Gas cost for Chaum-Pedersen proof verification (two EC muls + hashing).
 const CP_VERIFY_GAS: u64 = 6_000;

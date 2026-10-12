@@ -5,7 +5,7 @@ use std::sync::Arc;
 use alloy_primitives::{Address, B256, Bytes, U256};
 use tempo_primitives::TempoHeader;
 
-pub use tempo_zone_contracts::{
+pub use tempo_contracts::zones::{
     BlockTransition, ChaumPedersenProof, DecryptionData, DepositQueueTransition, DepositType,
     EnabledToken, QueuedDeposit, TokenEnablementTransition,
 };

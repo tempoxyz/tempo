@@ -9,7 +9,7 @@ use alloy_consensus::{Transaction, TxReceipt, transaction::TxHashRef};
 use alloy_eips::BlockNumHash;
 use alloy_primitives::{Address, Log, keccak256};
 use alloy_sol_types::{SolCall, SolEvent};
-use tempo_zone_contracts::{IZoneInbox, TEMPO_STATE_ADDRESS, TempoState, ZONE_INBOX_ADDRESS};
+use tempo_contracts::zones::{IZoneInbox, TEMPO_STATE_ADDRESS, TempoState, ZONE_INBOX_ADDRESS};
 
 use events::EventCollector;
 

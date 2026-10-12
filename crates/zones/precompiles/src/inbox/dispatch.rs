@@ -2,10 +2,10 @@
 
 use alloy_primitives::{Address, Bytes};
 use revm::precompile::PrecompileResult;
+use tempo_contracts::zones::IZoneInbox;
 use tempo_precompiles::{
     EncodePrecompileResult, charge_input_cost, dispatch, dispatch::typed, storage::Handler, view,
 };
-use tempo_zone_contracts::IZoneInbox;
 use zone_primitives::constants::TEMPO_STATE_ADDRESS;
 
 use super::ZoneInbox;

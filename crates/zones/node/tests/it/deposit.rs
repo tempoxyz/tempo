@@ -3,9 +3,11 @@ use alloy::{
     providers::{Provider, ProviderBuilder},
     signers::local::PrivateKeySigner,
 };
-use tempo_contracts::precompiles::ITIP20;
+use tempo_contracts::{
+    precompiles::ITIP20,
+    zones::{DepositPayload, ZonePortal},
+};
 use tempo_precompiles::PATH_USD_ADDRESS;
-use tempo_zone_contracts::{DepositPayload, ZonePortal};
 use zone_precompiles::ecies::encrypt_deposit;
 
 use crate::utils::{DEFAULT_POLL, ZoneTestNode, poll_until};

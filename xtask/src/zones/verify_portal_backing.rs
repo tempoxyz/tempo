@@ -7,15 +7,13 @@ use alloy::{
 };
 use eyre::{WrapErr as _, ensure};
 use tempo_alloy::TempoNetwork;
-use tempo_contracts::precompiles::ITIP20 as TIP20Token;
-use tempo_zone_contracts::{
-    IZoneInbox, ZONE_FACTORY_ADDRESS, ZONE_INBOX_ADDRESS, ZoneFactory, ZonePortal,
+use tempo_contracts::{
+    precompiles::ITIP20 as TIP20Token,
+    zones::{IZoneInbox, ZONE_FACTORY_ADDRESS, ZONE_INBOX_ADDRESS, ZoneFactory, ZonePortal},
 };
 use zone_primitives::constants::zone_chain_id;
 
-use crate::zone_utils::normalize_http_rpc;
-
-const LOG_QUERY_BLOCK_CHUNK: u64 = 5_000;
+use crate::zone_utils::{LOG_QUERY_BLOCK_CHUNK, normalize_http_rpc};
 
 #[derive(Clone, Copy)]
 struct EventRanges {
@@ -278,7 +276,7 @@ async fn withdrawal_liability<P: Provider<TempoNetwork>>(
     let portal = ZonePortal::new(portal_address, l1);
     let inbox = IZoneInbox::new(ZONE_INBOX_ADDRESS, zone);
     let outbox =
-        tempo_zone_contracts::IZoneOutbox::new(tempo_zone_contracts::ZONE_OUTBOX_ADDRESS, zone);
+        tempo_contracts::zones::IZoneOutbox::new(tempo_contracts::zones::ZONE_OUTBOX_ADDRESS, zone);
 
     let requested_filter = outbox
         .WithdrawalRequested_filter()

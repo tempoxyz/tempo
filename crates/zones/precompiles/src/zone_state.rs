@@ -5,8 +5,8 @@
 //! generated storage handlers used by protocol execution.
 
 use alloy_primitives::{Address, B256};
+use tempo_contracts::zones::IZoneOutbox;
 use tempo_precompiles::error::Result;
-use tempo_zone_contracts::IZoneOutbox;
 
 use crate::{TempoState, ZoneFeeManager, ZoneInbox, ZoneOutbox};
 

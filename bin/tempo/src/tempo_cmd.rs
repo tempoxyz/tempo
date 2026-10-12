@@ -28,6 +28,7 @@ use commonware_cryptography::{
 use commonware_math::algebra::Random as _;
 use commonware_utils::ordered;
 use eyre::{OptionExt as _, Report, WrapErr as _, bail, eyre};
+use futures::FutureExt as _;
 use reth_chainspec::EthChainSpec;
 use reth_cli_runner::CliRunner;
 use reth_ethereum_cli::ExtendedCommand;
@@ -420,11 +421,13 @@ impl WalletArgs {
             let keyring_ref = GcpKeyRingRef::new(&project, &location, &keyring);
             let specifier = KeySpecifier::new(keyring_ref, &key_name, key_version);
 
+            // Bound the structural Send proof for the deeply nested GCP client future.
             let client = gcloud_sdk::GoogleApi::from_function(
                 gcloud_sdk::google::cloud::kms::v1::key_management_service_client::KeyManagementServiceClient::new,
                 "https://cloudkms.googleapis.com",
                 None,
             )
+            .boxed()
             .await
             .wrap_err("failed to create GCP KMS client")?;
 

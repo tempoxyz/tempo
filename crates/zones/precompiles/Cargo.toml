@@ -13,7 +13,6 @@ workspace = true
 
 [dependencies]
 # zones
-tempo-zone-contracts = { workspace = true, default-features = false }
 zone-primitives = { workspace = true, default-features = false }
 
 # tempo (workspace deps already have default-features = false)
@@ -59,7 +58,7 @@ test-utils = [
     "tempo-primitives/test-utils",
 ]
 std = [
-    "tempo-zone-contracts/std",
+    "tempo-contracts/std",
     "zone-primitives/std",
     "tempo-primitives/std",
     "alloy-consensus/std",
@@ -75,7 +74,6 @@ std = [
     "alloy/std",
     "serde/std",
     "tempo-chainspec/std",
-    "tempo-contracts/std",
 ]
 
 [[test]]

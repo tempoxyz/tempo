@@ -12,10 +12,12 @@
 use alloy::primitives::{B256, U256, address};
 use alloy_provider::{Provider, ProviderBuilder};
 use tempo_chainspec::spec::TEMPO_T0_BASE_FEE;
-use tempo_contracts::precompiles::ITIP20;
+use tempo_contracts::{
+    precompiles::ITIP20,
+    zones::{IZoneOutbox, ZONE_OUTBOX_ADDRESS},
+};
 use tempo_node::rpc::NATIVE_BALANCE_PLACEHOLDER;
 use tempo_precompiles::PATH_USD_ADDRESS;
-use tempo_zone_contracts::{IZoneOutbox, ZONE_OUTBOX_ADDRESS};
 
 use crate::utils::{
     DEFAULT_TIMEOUT, TIP20_TX_GAS, WITHDRAWAL_TX_GAS, approve_outbox, l1_dev_signer,

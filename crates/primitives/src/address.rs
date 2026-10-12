@@ -74,7 +74,7 @@ pub trait TempoAddressExt {
 
 impl TempoAddressExt for Address {
     const TIP20_PREFIX: [u8; 12] = TIP20_TOKEN_PREFIX;
-    const ZONE_PORTAL_PREFIX: [u8; 12] = hex!("5AD000000000000000000000");
+    const ZONE_PORTAL_PREFIX: [u8; 12] = tempo_contracts::precompiles::ZONE_PORTAL_PREFIX.0;
     const VIRTUAL_MAGIC: [u8; 10] = [0xFD; 10];
 
     fn is_tip20(&self) -> bool {

@@ -1183,9 +1183,7 @@ mod tests {
 
     #[test]
     fn maximum_batch_fits_portal_bounceback_reserve() {
-        const PORTAL_BOUNCEBACK_RESERVE: usize = 20;
-
-        let withdrawals = simple_withdrawals(PORTAL_BOUNCEBACK_RESERVE);
+        let withdrawals = simple_withdrawals(WITHDRAWAL_BOUNCEBACK_RESERVE);
         let batches = build_withdrawal_batches(&withdrawals, MAX_WITHDRAWAL_BATCH_GAS);
 
         assert_eq!(batches.len(), 2);
@@ -1194,7 +1192,7 @@ mod tests {
         assert!(
             batches
                 .iter()
-                .all(|batch| batch.len() <= PORTAL_BOUNCEBACK_RESERVE)
+                .all(|batch| batch.len() <= WITHDRAWAL_BOUNCEBACK_RESERVE)
         );
     }
 

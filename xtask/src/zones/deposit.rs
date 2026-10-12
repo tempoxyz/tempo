@@ -12,8 +12,8 @@ use alloy::{
 };
 use eyre::{WrapErr as _, eyre};
 use tempo_alloy::TempoNetwork;
+use tempo_contracts::zones::{DepositPayload, IZoneInbox, ZonePortal};
 use tempo_precompiles::PATH_USD_ADDRESS;
-use tempo_zone_contracts::{DepositPayload, IZoneInbox, ZonePortal};
 use zone_precompiles::ecies::encrypt_deposit;
 
 use crate::zone_utils::{L1_EXPLORER, parse_private_key};
@@ -144,7 +144,7 @@ impl Deposit {
         sender: Address,
         to: Address,
     ) -> eyre::Result<()> {
-        use tempo_zone_contracts::ZONE_INBOX_ADDRESS;
+        use tempo_contracts::zones::ZONE_INBOX_ADDRESS;
 
         println!("Waiting for deposit to be processed on L2...");
         let l2 = ProviderBuilder::new().connect(zone_rpc).await?;

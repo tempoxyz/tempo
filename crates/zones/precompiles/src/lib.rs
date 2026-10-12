@@ -93,6 +93,9 @@ use alloy_primitives::Address;
 use alloy_sol_types::SolError;
 use revm::{context::CfgEnv, handler::EthPrecompiles, primitives::hardfork::SpecId};
 use tempo_chainspec::hardfork::TempoHardfork;
+#[cfg(feature = "std")]
+use tempo_contracts::zones::ZONE_OUTBOX_ADDRESS;
+use tempo_contracts::zones::{TEMPO_STATE_ADDRESS, ZONE_INBOX_ADDRESS};
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS, Precompile as _,
     RECEIVE_POLICY_GUARD_ADDRESS, STORAGE_CREDITS_ADDRESS,
@@ -104,9 +107,6 @@ use tempo_precompiles::{
     tip20::{ITIP20::InsufficientBalance as TIP20InsufficientBalance, TIP20Token, is_tip20_prefix},
     tip403_registry::TIP403Registry,
 };
-#[cfg(feature = "std")]
-use tempo_zone_contracts::ZONE_OUTBOX_ADDRESS;
-use tempo_zone_contracts::{TEMPO_STATE_ADDRESS, ZONE_INBOX_ADDRESS};
 
 /// Returns every precompile that is available to a Zone EVM.
 ///

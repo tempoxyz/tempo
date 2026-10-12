@@ -9,7 +9,7 @@ use alloy::{
 use eyre::{WrapErr as _, ensure};
 use std::path::PathBuf;
 use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderExt, rpc::TempoCallBuilderExt};
-use tempo_zone_contracts::{ZonePortal, ZonePortal::Role};
+use tempo_contracts::zones::{ZonePortal, ZonePortal::Role};
 use zone_sequencer::nonce_keys::ADMIN_OPS_NONCE_KEY;
 
 use crate::{
@@ -377,7 +377,7 @@ fn parse_token(value: &str) -> Result<Address, String> {
 async fn connect(
     args: PortalAccessArgs,
 ) -> eyre::Result<(
-    tempo_zone_contracts::ZonePortal::ZonePortalInstance<DynProvider<TempoNetwork>, TempoNetwork>,
+    tempo_contracts::zones::ZonePortal::ZonePortalInstance<DynProvider<TempoNetwork>, TempoNetwork>,
     DynProvider<TempoNetwork>,
     u64,
 )> {
@@ -414,7 +414,7 @@ async fn connect_safe(
     args: &PortalAccessArgs,
     safe: Address,
 ) -> eyre::Result<(
-    tempo_zone_contracts::ZonePortal::ZonePortalInstance<DynProvider<TempoNetwork>, TempoNetwork>,
+    tempo_contracts::zones::ZonePortal::ZonePortalInstance<DynProvider<TempoNetwork>, TempoNetwork>,
     DynProvider<TempoNetwork>,
 )> {
     let provider = ProviderBuilder::new_with_network::<TempoNetwork>()

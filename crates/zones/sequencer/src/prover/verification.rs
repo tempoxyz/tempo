@@ -77,20 +77,9 @@ pub(super) fn verifier_call(
         anchorBlockHash: inputs.anchor_block_hash,
         expectedWithdrawalBatchIndex: inputs.expected_withdrawal_batch_index,
         nextZoneHeight: U256::from(output.next_zone_height),
-        blockTransition: IZoneVerifier::BlockTransition {
-            prevBlockHash: output.block_transition.prevBlockHash,
-            nextBlockHash: output.block_transition.nextBlockHash,
-        },
-        depositQueueTransition: IZoneVerifier::DepositQueueTransition {
-            prevProcessedHash: output.deposit_queue_transition.prevProcessedHash,
-            nextProcessedHash: output.deposit_queue_transition.nextProcessedHash,
-            prevDepositNumber: output.deposit_queue_transition.prevDepositNumber,
-            nextDepositNumber: output.deposit_queue_transition.nextDepositNumber,
-        },
-        tokenEnablementTransition: IZoneVerifier::TokenEnablementTransition {
-            prevProcessedTokenCount: output.token_enablement_transition.prevProcessedTokenCount,
-            nextProcessedTokenCount: output.token_enablement_transition.nextProcessedTokenCount,
-        },
+        blockTransition: output.block_transition.clone(),
+        depositQueueTransition: output.deposit_queue_transition.clone(),
+        tokenEnablementTransition: output.token_enablement_transition.clone(),
         withdrawalQueueHash: output.withdrawal_queue_hash,
         verifierConfig: bundle.verifier_config.clone(),
         proof: bundle.proof.clone(),

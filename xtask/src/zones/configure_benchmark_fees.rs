@@ -7,7 +7,7 @@
 use alloy::{network::ReceiptResponse as _, primitives::Address, providers::ProviderBuilder};
 use eyre::{WrapErr as _, ensure};
 use tempo_alloy::{TempoNetwork, rpc::TempoCallBuilderExt as _};
-use tempo_zone_contracts::{IZoneOutbox, ZONE_OUTBOX_ADDRESS, ZonePortal};
+use tempo_contracts::zones::{IZoneOutbox, ZONE_OUTBOX_ADDRESS, ZonePortal};
 
 use crate::zone_utils::parse_private_key;
 

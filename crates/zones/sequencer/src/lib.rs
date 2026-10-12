@@ -18,7 +18,7 @@ use tokio::sync::Notify;
 use zone_chainspec::ZoneChainSpec;
 
 pub mod abi {
-    pub use tempo_zone_contracts::*;
+    pub use tempo_contracts::zones::*;
 }
 
 pub mod attestation;

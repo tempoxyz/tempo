@@ -7,7 +7,9 @@ pub use ZonePortal::{
     submitBatch_1Call as submitBatchCall,
 };
 
-use crate::{IZoneOutbox, ZoneInboxEvent};
+use super::{IZoneOutbox, ZoneInboxEvent};
+#[cfg(feature = "rpc")]
+use alloc::{format, string::ToString};
 use alloy_primitives::{Address, B256, Bytes, keccak256};
 use alloy_sol_types::SolValue;
 
@@ -410,54 +412,27 @@ crate::sol! {
             external view returns (bytes32 x, uint8 yParity, uint256 keyIndex);
         function claimRefund(address token) external returns (uint128 amount);
     }
-}
 
-/// ZonePortal entries retired by the T13 hardfork.
-mod pre_t13_retired {
-    crate::sol! {
-        #[sol(abi)]
-        contract ZonePortalPreT13Retired {
-            struct BlockTransition {
-                bytes32 prevBlockHash;
-                bytes32 nextBlockHash;
-            }
-
-            struct DepositQueueTransition {
-                bytes32 prevProcessedHash;
-                bytes32 nextProcessedHash;
-                uint64 prevDepositNumber;
-                uint64 nextDepositNumber;
-            }
-
-            event BatchSubmitted(
-                uint64 indexed withdrawalBatchIndex,
-                uint256 indexed withdrawalQueueIndex,
-                bytes32 nextProcessedDepositQueueHash,
-                bytes32 nextBlockHash,
-                bytes32 withdrawalQueueHash,
-                uint64 lastProcessedDepositNumber
-            );
-
-            function MAX_DEPOSITS_PER_TEMPO_BLOCK() external view returns (uint64);
-            function MAX_TOKENS_ENABLED_PER_TEMPO_BLOCK() external view returns (uint64);
-
-            function submitBatch(
-                uint64 tempoBlockNumber,
-                uint64 recentTempoBlockNumber,
-                BlockTransition blockTransition,
-                DepositQueueTransition depositQueueTransition,
-                bytes32 withdrawalQueueHash,
-                bytes verifierConfig,
-                bytes proof,
-                uint256 nextZoneHeight,
-                bytes[] signatures
-            ) external;
-        }
+    /// Proof-agnostic Zone verifier ABI retained by TIP-1098.
+    #[derive(Debug, PartialEq, Eq)]
+    #[sol(abi)]
+    interface IZoneVerifier {
+        function verify(
+            uint32 zoneId,
+            uint64 tempoBlockNumber,
+            uint64 anchorBlockNumber,
+            bytes32 anchorBlockHash,
+            uint64 expectedWithdrawalBatchIndex,
+            uint256 nextZoneHeight,
+            ZonePortal.BlockTransition calldata blockTransition,
+            ZonePortal.DepositQueueTransition calldata depositQueueTransition,
+            ZonePortal.TokenEnablementTransition calldata tokenEnablementTransition,
+            bytes32 withdrawalQueueHash,
+            bytes calldata verifierConfig,
+            bytes calldata proof
+        ) external view returns (bool);
     }
 }
-
-#[doc(hidden)]
-pub use pre_t13_retired::ZonePortalPreT13Retired;
 
 #[cfg(feature = "rpc")]
 impl<P: alloy_provider::Provider<N>, N: alloy_network::Network>

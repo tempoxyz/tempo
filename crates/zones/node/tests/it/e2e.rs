@@ -15,12 +15,14 @@ use alloy_provider::{DynProvider, Provider};
 use alloy_rpc_types_eth::TransactionRequest;
 use alloy_sol_types::SolCall;
 use tempo_chainspec::spec::TEMPO_T0_BASE_FEE;
-use tempo_contracts::precompiles::ITIP20;
-use tempo_precompiles::PATH_USD_ADDRESS;
-use tempo_zone_contracts::{
-    IZoneInbox, IZoneOutbox, TEMPO_STATE_ADDRESS, TempoState, Withdrawal, ZONE_INBOX_ADDRESS,
-    ZONE_OUTBOX_ADDRESS,
+use tempo_contracts::{
+    precompiles::ITIP20,
+    zones::{
+        IZoneInbox, IZoneOutbox, TEMPO_STATE_ADDRESS, TempoState, Withdrawal, ZONE_INBOX_ADDRESS,
+        ZONE_OUTBOX_ADDRESS,
+    },
 };
+use tempo_precompiles::PATH_USD_ADDRESS;
 use zone_l1::ChainTempoStateExt;
 use zone_primitives::constants::zone_chain_id;
 

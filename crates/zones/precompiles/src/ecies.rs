@@ -12,7 +12,7 @@ use k256::{
     AffinePoint, ProjectivePoint, Scalar,
     elliptic_curve::{PrimeField, sec1::ToEncodedPoint},
 };
-use tempo_zone_contracts::{ChaumPedersenProof, Withdrawal};
+use tempo_contracts::zones::{ChaumPedersenProof, Withdrawal};
 
 use crate::{
     aes_gcm,

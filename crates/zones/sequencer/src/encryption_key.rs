@@ -7,7 +7,7 @@ use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use alloy_sol_types::SolValue;
 use tempo_alloy::TempoNetwork;
-use tempo_zone_contracts::ZonePortal;
+use tempo_contracts::zones::ZonePortal;
 
 /// Proof of possession for a sequencer encryption public key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

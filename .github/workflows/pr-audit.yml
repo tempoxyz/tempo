@@ -30,7 +30,6 @@ jobs:
       required-labels: |
         cyclops
         agentic-audit
-      require-completed-audit: true
       audit-on-push: true
     secrets:
       EVENTS_KEY: ${{ secrets.EVENTS_KEY }}

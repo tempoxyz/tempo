@@ -3,7 +3,7 @@
 use alloy::{network::ReceiptResponse as _, primitives::Address, providers::ProviderBuilder};
 use eyre::{WrapErr as _, ensure};
 use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderExt, rpc::TempoCallBuilderExt};
-use tempo_zone_contracts::ZonePortal;
+use tempo_contracts::zones::ZonePortal;
 use zone_sequencer::nonce_keys::ADMIN_OPS_NONCE_KEY;
 
 use crate::zone_utils::parse_private_key;

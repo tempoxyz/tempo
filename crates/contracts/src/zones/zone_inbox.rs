@@ -143,25 +143,6 @@ crate::sol! {
     }
 }
 
-/// IZoneInbox entries retired by the T13 hardfork.
-mod pre_t13_retired {
-    crate::sol! {
-        #[sol(abi)]
-        contract IZoneInboxPreT13Retired {
-            event TempoAdvanced(
-                bytes32 indexed tempoBlockHash,
-                uint64 indexed tempoBlockNumber,
-                uint256 depositsProcessed,
-                bytes32 newProcessedDepositQueueHash,
-                uint64 lastProcessedDepositNumber
-            );
-        }
-    }
-}
-
-#[doc(hidden)]
-pub use pre_t13_retired::IZoneInboxPreT13Retired;
-
 impl EnabledToken {
     /// Hash this token enablement as the next link in the portal commitment.
     pub fn hash_with_previous(&self, previous_hash: B256) -> B256 {

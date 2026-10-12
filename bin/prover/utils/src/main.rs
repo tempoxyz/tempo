@@ -18,11 +18,11 @@ use clap::{Parser, Subcommand};
 use eyre::{Context, OptionExt, Result, bail, eyre};
 use futures::{StreamExt, TryStreamExt, stream};
 use tempo_alloy::{TempoNetwork, rpc::TempoHeaderResponse};
-use tempo_primitives::{TempoHeader, TempoTxEnvelope};
-use tempo_zone_contracts::{
+use tempo_contracts::zones::{
     IZoneInbox as ZoneInbox, IZoneOutbox as ZoneOutbox, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
     ZonePortal,
 };
+use tempo_primitives::{TempoHeader, TempoTxEnvelope};
 use tracing::{debug, info};
 use tracing_subscriber::EnvFilter;
 use zone_chainspec::{ZoneChainSpec, ZoneChainSpecParser};

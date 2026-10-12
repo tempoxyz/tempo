@@ -24,10 +24,10 @@ use futures::{StreamExt as _, TryStreamExt as _, stream};
 use reth_primitives_traits::RecoveredBlock;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::{Block, TempoHeader};
-use tempo_zone_contracts::{
+use tempo_contracts::zones::{
     IZoneInbox as ZoneInbox, IZoneOutbox as ZoneOutbox, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
 };
+use tempo_primitives::{Block, TempoHeader};
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     sync::{mpsc, oneshot},

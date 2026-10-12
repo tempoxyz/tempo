@@ -4,12 +4,12 @@ use alloy_evm::precompiles::DynPrecompile;
 use alloy_primitives::{Bytes, address};
 use alloy_sol_types::{SolCall, SolInterface};
 use revm::precompile::{PrecompileHalt, PrecompileResult, PrecompileStatus};
+use tempo_contracts::zones::IZoneOutbox as ZoneOutboxAbi;
 use tempo_precompiles::{
     storage::{StorageCtx, StorageKey},
     test_util::TIP20Setup,
     zone_factory::portal::{self, ZonePortalStorage},
 };
-use tempo_zone_contracts::IZoneOutbox as ZoneOutboxAbi;
 use zone_primitives::constants::TEMPO_STATE_ADDRESS;
 
 use crate::{

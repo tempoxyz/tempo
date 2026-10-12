@@ -18,14 +18,10 @@ use tempo_contracts::{
     precompiles::{INITIAL_FACTORY_OWNER, initial_zone_factory_config},
     zones::{
         T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-        ZONE_MESSENGER_RUNTIME as TEMPO_ZONE_MESSENGER_RUNTIME,
-        ZONE_PORTAL_RUNTIME as TEMPO_ZONE_PORTAL_RUNTIME,
-        ZONE_VERIFIER_RUNTIME as TEMPO_ZONE_VERIFIER_RUNTIME,
+        ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_MESSENGER_RUNTIME,
+        ZONE_PORTAL_IMPL_ADDRESS, ZONE_PORTAL_PREFIX, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_ADDRESS,
+        ZONE_VERIFIER_RUNTIME,
     },
-};
-use tempo_zone_contracts::{
-    ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS, ZONE_PORTAL_PREFIX,
-    ZONE_VERIFIER_ADDRESS,
 };
 
 #[derive(Debug, clap::Parser)]
@@ -218,19 +214,19 @@ fn install_native_zone_factory(
             "ZonePortal implementation",
             ZONE_PORTAL_IMPL_ADDRESS,
             artifacts.portal,
-            [TEMPO_ZONE_PORTAL_RUNTIME, T13_ZONE_PORTAL_RUNTIME],
+            [ZONE_PORTAL_RUNTIME, T13_ZONE_PORTAL_RUNTIME],
         ),
         (
             "Verifier",
             ZONE_VERIFIER_ADDRESS,
             artifacts.verifier,
-            [TEMPO_ZONE_VERIFIER_RUNTIME, T13_ZONE_VERIFIER_RUNTIME],
+            [ZONE_VERIFIER_RUNTIME, T13_ZONE_VERIFIER_RUNTIME],
         ),
         (
             "ZoneMessenger",
             ZONE_MESSENGER_ADDRESS,
             artifacts.messenger,
-            [TEMPO_ZONE_MESSENGER_RUNTIME, T13_ZONE_MESSENGER_RUNTIME],
+            [ZONE_MESSENGER_RUNTIME, T13_ZONE_MESSENGER_RUNTIME],
         ),
     ] {
         let expected = GenesisAccount::default()
@@ -294,9 +290,9 @@ mod tests {
     #[test]
     fn validates_tempo_shared_runtimes() {
         assert_validates_shared_runtimes([
-            TEMPO_ZONE_PORTAL_RUNTIME,
-            TEMPO_ZONE_VERIFIER_RUNTIME,
-            TEMPO_ZONE_MESSENGER_RUNTIME,
+            ZONE_PORTAL_RUNTIME,
+            ZONE_VERIFIER_RUNTIME,
+            ZONE_MESSENGER_RUNTIME,
         ]);
         assert_validates_shared_runtimes([
             T13_ZONE_PORTAL_RUNTIME,

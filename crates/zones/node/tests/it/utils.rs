@@ -40,13 +40,20 @@ use tempo_chainspec::{
     hardfork::TempoHardfork,
     spec::{TEMPO_T0_BASE_FEE, TempoChainSpec},
 };
-use tempo_contracts::precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, IStablecoinDEX, ITIP20, ITIP403Registry, TIP403_REGISTRY_ADDRESS,
-    ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
-    account_keychain::IAccountKeychain::{
-        IAccountKeychainInstance, KeyRestrictions, SignatureType as KeyInfoSignatureType,
+use tempo_contracts::{
+    precompiles::{
+        ACCOUNT_KEYCHAIN_ADDRESS, IStablecoinDEX, ITIP20, ITIP403Registry, TIP403_REGISTRY_ADDRESS,
+        ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
+        account_keychain::IAccountKeychain::{
+            IAccountKeychainInstance, KeyRestrictions, SignatureType as KeyInfoSignatureType,
+        },
+        t13_zone_factory_state,
     },
-    t13_zone_factory_state,
+    zones::{
+        ZONE_OUTBOX_ADDRESS,
+        ZonePortal::{self, Role as PortalRole},
+        submitBatchCall,
+    },
 };
 use tempo_precompiles::{
     PATH_USD_ADDRESS,
@@ -60,11 +67,6 @@ use tempo_precompiles::{
     zone_factory::portal,
 };
 use tempo_primitives::{TempoHeader, transaction::tt_signature::TempoSignature};
-use tempo_zone_contracts::{
-    ZONE_OUTBOX_ADDRESS,
-    ZonePortal::{self, Role as PortalRole},
-    submitBatchCall,
-};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio_util::sync::CancellationToken;
 use zone_chainspec::{ZoneChainSpec, test_utils::set_tempo_fork};
@@ -738,7 +740,7 @@ impl ZoneTestNode {
         gateway: Address,
         expected: bool,
     ) -> eyre::Result<()> {
-        use tempo_zone_contracts::{ZonePortal, ZonePortal::Role};
+        use tempo_contracts::zones::{ZonePortal, ZonePortal::Role};
         let portal = ZonePortal::new(self.portal_address, &self.l1_provider);
         eyre::ensure!(
             portal
@@ -753,7 +755,7 @@ impl ZoneTestNode {
 
     /// Assert whether account enforcement is enabled on the L1 portal.
     pub(crate) async fn assert_access_enforced(&self, expected: bool) -> eyre::Result<()> {
-        use tempo_zone_contracts::ZonePortal;
+        use tempo_contracts::zones::ZonePortal;
         let actual = ZonePortal::new(self.portal_address, &self.l1_provider)
             .isAccessEnforced()
             .call()
@@ -767,7 +769,7 @@ impl ZoneTestNode {
 
     /// Assert whether gateway registration is open on the L1 portal.
     pub(crate) async fn assert_gateway_open(&self, expected: bool) -> eyre::Result<()> {
-        use tempo_zone_contracts::ZonePortal;
+        use tempo_contracts::zones::ZonePortal;
         let actual = ZonePortal::new(self.portal_address, &self.l1_provider)
             .isGatewayOpen()
             .call()
@@ -785,7 +787,7 @@ impl ZoneTestNode {
         account: Address,
         expected: bool,
     ) -> eyre::Result<()> {
-        use tempo_zone_contracts::{ZonePortal, ZonePortal::Role};
+        use tempo_contracts::zones::{ZonePortal, ZonePortal::Role};
         let portal = ZonePortal::new(self.portal_address, &self.l1_provider);
         let actual = !portal.isAccessEnforced().call().await?
             || portal.hasRole(account, Role::Account).call().await?;
@@ -881,7 +883,7 @@ impl ZoneTestNode {
 
     /// Reads `tempoBlockNumber` from the L2 `TempoState` predeploy right now.
     pub(crate) async fn tempo_block_number(&self) -> eyre::Result<u64> {
-        use tempo_zone_contracts::{TEMPO_STATE_ADDRESS, TempoState};
+        use tempo_contracts::zones::{TEMPO_STATE_ADDRESS, TempoState};
 
         Ok(TempoState::new(TEMPO_STATE_ADDRESS, self.provider())
             .tempoBlockNumber()
@@ -897,7 +899,7 @@ impl ZoneTestNode {
         target: u64,
         timeout: Duration,
     ) -> eyre::Result<u64> {
-        use tempo_zone_contracts::{TEMPO_STATE_ADDRESS, TempoState};
+        use tempo_contracts::zones::{TEMPO_STATE_ADDRESS, TempoState};
 
         let tempo_state = TempoState::new(TEMPO_STATE_ADDRESS, self.provider());
         poll_until(
@@ -970,7 +972,7 @@ impl ZoneTestNode {
         after_block: u64,
         timeout: Duration,
     ) -> eyre::Result<u64> {
-        use tempo_zone_contracts::{TEMPO_STATE_ADDRESS, TempoState};
+        use tempo_contracts::zones::{TEMPO_STATE_ADDRESS, TempoState};
 
         let provider = self.provider();
         let tempo_state = TempoState::new(TEMPO_STATE_ADDRESS, &provider);
@@ -1691,7 +1693,7 @@ impl L1TestNode {
 
     /// Assert that a `BatchSubmitted` event exists on the portal.
     pub(crate) async fn assert_batch_submitted(&self, portal_address: Address) -> eyre::Result<()> {
-        use tempo_zone_contracts::ZonePortal;
+        use tempo_contracts::zones::ZonePortal;
         let portal = ZonePortal::new(portal_address, self.provider());
         let events = portal
             .BatchSubmitted_1_filter()
@@ -1712,7 +1714,7 @@ impl L1TestNode {
         to: Address,
         amount: u128,
     ) -> eyre::Result<()> {
-        use tempo_zone_contracts::ZonePortal;
+        use tempo_contracts::zones::ZonePortal;
         let portal = ZonePortal::new(portal_address, self.provider());
         let events = portal
             .WithdrawalProcessed_filter()
@@ -1736,7 +1738,7 @@ impl L1TestNode {
         amount: u128,
         callback_success: bool,
     ) -> eyre::Result<()> {
-        use tempo_zone_contracts::ZonePortal;
+        use tempo_contracts::zones::ZonePortal;
         let portal = ZonePortal::new(portal_address, self.provider());
         let events = portal
             .WithdrawalProcessed_filter()
@@ -1765,7 +1767,7 @@ impl L1TestNode {
         amount: u128,
         timeout: Duration,
     ) -> eyre::Result<bool> {
-        use tempo_zone_contracts::ZonePortal;
+        use tempo_contracts::zones::ZonePortal;
         let portal = ZonePortal::new(portal_address, self.provider());
         poll_until(timeout, DEFAULT_POLL, "WithdrawalProcessed event", || {
             let portal = &portal;
@@ -1792,7 +1794,7 @@ impl L1TestNode {
         portal_address: Address,
         expected: &[(Address, Address, u128, bool)],
     ) -> eyre::Result<()> {
-        use tempo_zone_contracts::ZonePortal;
+        use tempo_contracts::zones::ZonePortal;
         let portal = ZonePortal::new(portal_address, self.provider());
         let events = portal
             .WithdrawalProcessed_filter()
@@ -2057,8 +2059,8 @@ impl L1TestNode {
         threshold: u8,
         config: ZoneCreationConfig,
     ) -> eyre::Result<Address> {
+        use tempo_contracts::zones::ZoneFactory;
         use tempo_precompiles::PATH_USD_ADDRESS;
-        use tempo_zone_contracts::ZoneFactory;
 
         let l1_provider = self.dev_provider();
         let create_zone = ZoneFactory::createZoneCall {
@@ -2208,7 +2210,7 @@ impl L1TestNode {
         portal_address: Address,
         token: Address,
     ) -> eyre::Result<()> {
-        use tempo_zone_contracts::ZonePortal;
+        use tempo_contracts::zones::ZonePortal;
         let provider = self.admin_provider();
         let portal = ZonePortal::new(portal_address, &provider);
         let receipt = portal
@@ -2243,7 +2245,7 @@ impl L1TestNode {
         portal_address: Address,
         mode: bool,
     ) -> eyre::Result<u64> {
-        use tempo_zone_contracts::ZonePortal;
+        use tempo_contracts::zones::ZonePortal;
         let provider = self.admin_provider();
         let portal = ZonePortal::new(portal_address, &provider);
         let receipt = portal
@@ -2266,7 +2268,7 @@ impl L1TestNode {
         portal_address: Address,
         mode: bool,
     ) -> eyre::Result<u64> {
-        use tempo_zone_contracts::ZonePortal;
+        use tempo_contracts::zones::ZonePortal;
         let provider = self.admin_provider();
         let portal = ZonePortal::new(portal_address, &provider);
         let receipt = portal
@@ -2291,7 +2293,7 @@ impl L1TestNode {
         enabled: bool,
         admin_signer: alloy_signer_local::PrivateKeySigner,
     ) -> eyre::Result<u64> {
-        use tempo_zone_contracts::ZonePortal;
+        use tempo_contracts::zones::ZonePortal;
         let provider = self.provider_with_signer(admin_signer);
         let portal = ZonePortal::new(portal_address, &provider);
         let receipt = portal
@@ -2337,7 +2339,7 @@ impl L1TestNode {
         enabled: bool,
         admin_signer: alloy_signer_local::PrivateKeySigner,
     ) -> eyre::Result<u64> {
-        use tempo_zone_contracts::ZonePortal;
+        use tempo_contracts::zones::ZonePortal;
         let provider = self.provider_with_signer(admin_signer);
         let portal = ZonePortal::new(portal_address, &provider);
         let receipt = portal
@@ -2423,8 +2425,8 @@ impl L1TestNode {
         sender: Address,
         recipient: Address,
         memo: B256,
-    ) -> eyre::Result<(U256, tempo_zone_contracts::DepositPayload)> {
-        use tempo_zone_contracts::ZonePortal;
+    ) -> eyre::Result<(U256, tempo_contracts::zones::DepositPayload)> {
+        use tempo_contracts::zones::ZonePortal;
         use zone_precompiles::ecies;
 
         let portal = ZonePortal::new(portal_address, self.provider());
@@ -2449,7 +2451,7 @@ impl L1TestNode {
 
         Ok((
             key_index,
-            tempo_zone_contracts::DepositPayload {
+            tempo_contracts::zones::DepositPayload {
                 ephemeralPubkeyX: enc.eph_pub_x,
                 ephemeralPubkeyYParity: enc.eph_pub_y_parity,
                 ciphertext: enc.ciphertext.into(),
@@ -2929,7 +2931,7 @@ pub(crate) struct RouterCallbackArgs {
     pub token_out: Address,
     pub target_portal: Address,
     pub key_index: U256,
-    pub encrypted: tempo_zone_contracts::DepositPayload,
+    pub encrypted: tempo_contracts::zones::DepositPayload,
     pub tempo_refund_recipient: Address,
     pub min_amount_out: u128,
 }
@@ -2972,7 +2974,7 @@ impl WithdrawalArgs {
 
     /// Prepared router callback: optionally swap, then deposit into `target_portal`.
     pub(crate) fn swap_and_deposit_via_router_callback(args: RouterCallbackArgs) -> Self {
-        let callback_data = tempo_zone_contracts::SwapAndDepositRouterCallback {
+        let callback_data = tempo_contracts::zones::SwapAndDepositRouterCallback {
             token_out: args.token_out,
             target_portal: args.target_portal,
             key_index: args.key_index,
@@ -3131,8 +3133,8 @@ impl ZoneAccount {
         recipient: Address,
         tempo_refund_recipient: Address,
     ) -> eyre::Result<()> {
+        use tempo_contracts::zones::ZonePortal;
         use tempo_precompiles::PATH_USD_ADDRESS;
-        use tempo_zone_contracts::ZonePortal;
 
         let (key_index, encrypted) = self.prepare_deposit(recipient, B256::ZERO).await?;
 
@@ -3194,8 +3196,7 @@ impl ZoneAccount {
         timeout: Duration,
         zone: &ZoneTestNode,
     ) -> eyre::Result<U256> {
-        use tempo_contracts::precompiles::ITIP20;
-        use tempo_zone_contracts::ZonePortal;
+        use tempo_contracts::{precompiles::ITIP20, zones::ZonePortal};
 
         // Approve portal for this specific token
         ITIP20::new(token, &self.l1_provider)
@@ -3259,7 +3260,7 @@ impl ZoneAccount {
         timeout: Duration,
         zone: &ZoneTestNode,
     ) -> eyre::Result<(u64, U256)> {
-        use tempo_zone_contracts::ZONE_TOKEN_ADDRESS;
+        use tempo_contracts::zones::ZONE_TOKEN_ADDRESS;
 
         // Snapshot balance before deposit
         let balance_before = zone.balance_of(ZONE_TOKEN_ADDRESS, recipient).await?;
@@ -3286,9 +3287,8 @@ impl ZoneAccount {
         recipient: Address,
         memo: B256,
     ) -> eyre::Result<u64> {
-        use tempo_contracts::precompiles::ITIP20;
+        use tempo_contracts::{precompiles::ITIP20, zones::ZonePortal};
         use tempo_precompiles::PATH_USD_ADDRESS;
-        use tempo_zone_contracts::ZonePortal;
 
         let portal_address = self.portal_address;
         if !self.l1_portal_approved {
@@ -3319,8 +3319,8 @@ impl ZoneAccount {
         &self,
         recipient: Address,
         memo: B256,
-    ) -> eyre::Result<(U256, tempo_zone_contracts::DepositPayload)> {
-        use tempo_zone_contracts::{DepositPayload, ZonePortal};
+    ) -> eyre::Result<(U256, tempo_contracts::zones::DepositPayload)> {
+        use tempo_contracts::zones::{DepositPayload, ZonePortal};
         use zone_precompiles::ecies;
 
         let portal = ZonePortal::new(self.portal_address, &self.l1_provider);
@@ -3366,7 +3366,7 @@ impl ZoneAccount {
     /// The outbox must already be approved with [`Self::approve_outbox`]. Keeping approval
     /// separate makes it possible to submit this transaction while block production is paused.
     pub(crate) async fn submit_withdrawal(&self, amount: u128) -> eyre::Result<B256> {
-        use tempo_zone_contracts::{IZoneOutbox, ZONE_OUTBOX_ADDRESS, ZONE_TOKEN_ADDRESS};
+        use tempo_contracts::zones::{IZoneOutbox, ZONE_OUTBOX_ADDRESS, ZONE_TOKEN_ADDRESS};
 
         eyre::ensure!(
             self.l2_outbox_approved_tokens.contains(&ZONE_TOKEN_ADDRESS),
@@ -3395,14 +3395,14 @@ impl ZoneAccount {
     /// Skips approval if already approved in this session.
     /// Uses the default zone token (pathUSD / `ZONE_TOKEN_ADDRESS`).
     pub(crate) async fn withdraw_with(&mut self, args: WithdrawalArgs) -> eyre::Result<()> {
-        use tempo_zone_contracts::ZONE_TOKEN_ADDRESS;
+        use tempo_contracts::zones::ZONE_TOKEN_ADDRESS;
         self.withdraw_token_with(ZONE_TOKEN_ADDRESS, args).await
     }
 
     /// Simulate a withdrawal request without submitting it to the transaction pool.
     /// Useful for asserting deterministic validation reverts.
     pub(crate) async fn simulate_withdraw_with(&self, args: WithdrawalArgs) -> eyre::Result<()> {
-        use tempo_zone_contracts::{IZoneOutbox, ZONE_OUTBOX_ADDRESS, ZONE_TOKEN_ADDRESS};
+        use tempo_contracts::zones::{IZoneOutbox, ZONE_OUTBOX_ADDRESS, ZONE_TOKEN_ADDRESS};
 
         let to = args.to.unwrap_or(self.address);
         let zone_fallback_recipient = args.zone_fallback_recipient.unwrap_or(self.address);
@@ -3429,7 +3429,7 @@ impl ZoneAccount {
         token: Address,
         args: WithdrawalArgs,
     ) -> eyre::Result<()> {
-        use tempo_zone_contracts::{IZoneOutbox, ZONE_OUTBOX_ADDRESS};
+        use tempo_contracts::zones::{IZoneOutbox, ZONE_OUTBOX_ADDRESS};
 
         self.approve_outbox(token).await?;
 
@@ -3468,7 +3468,7 @@ impl ZoneAccount {
         token: Address,
         args: WithdrawalArgs,
     ) -> eyre::Result<()> {
-        use tempo_zone_contracts::{IZoneOutbox, ZONE_OUTBOX_ADDRESS};
+        use tempo_contracts::zones::{IZoneOutbox, ZONE_OUTBOX_ADDRESS};
 
         self.approve_outbox(token).await?;
 
@@ -3504,8 +3504,7 @@ impl ZoneAccount {
     ///
     /// Reuses a successful max approval for subsequent withdrawals of the same token.
     pub(crate) async fn approve_outbox(&mut self, token: Address) -> eyre::Result<()> {
-        use tempo_contracts::precompiles::ITIP20;
-        use tempo_zone_contracts::ZONE_OUTBOX_ADDRESS;
+        use tempo_contracts::{precompiles::ITIP20, zones::ZONE_OUTBOX_ADDRESS};
 
         if self.l2_outbox_approved_tokens.contains(&token) {
             return Ok(());
@@ -3575,7 +3574,7 @@ pub(crate) async fn spawn_sequencer_with_config(
     batch_anchor_config: zone_sequencer::BatchAnchorConfig,
     withdrawal_batch_limits: zone_sequencer::WithdrawalBatchLimits,
 ) -> zone_sequencer::ZoneSequencerHandle {
-    use tempo_zone_contracts::{ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS};
+    use tempo_contracts::zones::{ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS};
 
     let config = zone_sequencer::ZoneSequencerConfig {
         chain_spec: std::sync::Arc::new(zone_chainspec::ZoneChainSpec {

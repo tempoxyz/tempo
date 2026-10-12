@@ -10,22 +10,18 @@
 
 use alloy_primitives::Address;
 use alloy_sol_types::{SolCall, SolError, SolInterface};
+pub use tempo_contracts::zones::InsufficientBalance;
+use tempo_contracts::zones::Unauthorized;
 use tempo_precompiles::{
     dispatch::abi_decoder_config_for_spec,
     tip20::{IRolesAuth, ITIP20},
 };
-use tempo_zone_contracts::Unauthorized;
 
 use crate::{
     execution::{CallCheck, CallRules},
     privacy::check_caller,
     storage::StorageCtx,
 };
-
-alloy_sol_types::sol! {
-    /// Returned instead of the upstream balance error that reveal the user balance to the spender.
-    error InsufficientBalance();
-}
 
 /// Fixed gas charged for TIP20 transfer and approval selectors on the zone.
 ///
@@ -157,7 +153,10 @@ mod tests {
     use alloy_sol_types::{SolCall, SolError, SolInterface};
     use revm::precompile::PrecompileResult;
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{TIP20Error, UnknownFunctionSelector};
+    use tempo_contracts::{
+        precompiles::{TIP20Error, UnknownFunctionSelector},
+        zones::Unauthorized,
+    };
     use tempo_precompiles::{
         PATH_USD_ADDRESS, Precompile,
         storage::{Handler, StorageCtx},
@@ -168,7 +167,6 @@ mod tests {
         },
         zone_factory::ZonePortalStorage as ZonePortal,
     };
-    use tempo_zone_contracts::Unauthorized;
     use zone_primitives::constants::{ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS};
 
     use crate::{
@@ -501,9 +499,10 @@ mod tests {
         harness.l1_reader.with_storage(TEMPO_BLOCK_NUMBER, || {
             let mut portal = ZonePortal::new(PORTAL_ADDRESS);
             portal.role[harness.sequencer]
-                .write(u8::from(tempo_zone_contracts::ZonePortal::Role::None))?;
-            portal.role[next_sequencer]
-                .write(u8::from(tempo_zone_contracts::ZonePortal::Role::Sequencer))
+                .write(u8::from(tempo_contracts::zones::ZonePortal::Role::None))?;
+            portal.role[next_sequencer].write(u8::from(
+                tempo_contracts::zones::ZonePortal::Role::Sequencer,
+            ))
         })?;
 
         assert!(

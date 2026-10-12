@@ -24,10 +24,16 @@ use p256::{ecdsa::SigningKey as P256SigningKey, elliptic_curve::rand_core::OsRng
 use serde_json::{Value, json};
 use std::{collections::HashSet, time::Duration};
 use tempo_chainspec::spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE};
-use tempo_contracts::precompiles::{
-    IAccountKeychain, INonce, IStorageCredits, ITIP20 as ContractTip20, ITIP403Registry,
-    TIP403_REGISTRY_ADDRESS,
-    account_keychain::IAccountKeychain::SignatureType as KeyInfoSignatureType,
+use tempo_contracts::{
+    precompiles::{
+        IAccountKeychain, INonce, IStorageCredits, ITIP20 as ContractTip20, ITIP403Registry,
+        TIP403_REGISTRY_ADDRESS,
+        account_keychain::IAccountKeychain::SignatureType as KeyInfoSignatureType,
+    },
+    zones::{
+        IZoneInbox, TEMPO_STATE_ADDRESS, TempoState, Unauthorized, ZONE_INBOX_ADDRESS,
+        ZONE_TOKEN_ADDRESS,
+    },
 };
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
@@ -36,10 +42,6 @@ use tempo_precompiles::{
 use tempo_primitives::{
     TempoTxEnvelope,
     transaction::{Call, TempoTransaction},
-};
-use tempo_zone_contracts::{
-    IZoneInbox, TEMPO_STATE_ADDRESS, TempoState, Unauthorized, ZONE_INBOX_ADDRESS,
-    ZONE_TOKEN_ADDRESS,
 };
 use tokio_tungstenite::{
     connect_async,

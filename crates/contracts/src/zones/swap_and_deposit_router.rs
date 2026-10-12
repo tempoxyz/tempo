@@ -1,6 +1,6 @@
 //! `SwapAndDepositRouter` — deployed on Tempo L1.
 
-use crate::DepositPayload;
+use super::DepositPayload;
 use alloc::vec::Vec;
 use alloy_primitives::{Address, U256};
 use alloy_sol_types::SolValue;
