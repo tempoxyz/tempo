@@ -1704,12 +1704,50 @@ async fn zone_redeem_third_party_recipient() -> eyre::Result<()> {
 async fn zone_lifecycle_swapped() -> eyre::Result<()> {
     let mut fixture = EarnZoneFixture::start().await?;
     let user = fixture.user.address();
+    let private_before = fixture
+        .l1
+        .balance_of(fixture.alternate_asset, fixture.pool)
+        .await?;
+    let vault_before = fixture
+        .l1
+        .balance_of(fixture.vault_asset, fixture.pool)
+        .await?;
     let shares = fixture.zone_deposit(fixture.alternate_asset, user).await?;
     assert_eq!(shares, AMOUNT, "swapped Zone deposit was not 1:1");
+    assert_eq!(
+        fixture
+            .l1
+            .balance_of(fixture.alternate_asset, fixture.pool)
+            .await?,
+        private_before + U256::from(AMOUNT),
+        "deposit did not replenish the pool's private asset inventory"
+    );
+    assert_eq!(
+        fixture
+            .l1
+            .balance_of(fixture.vault_asset, fixture.pool)
+            .await?,
+        vault_before - U256::from(AMOUNT),
+        "deposit did not draw from the pool's vault asset inventory"
+    );
     let output = fixture
         .zone_redeem(shares, fixture.alternate_asset, user)
         .await?;
     assert_eq!(output, AMOUNT, "swapped Zone lifecycle was not 1:1");
+    assert_eq!(
+        fixture
+            .l1
+            .balance_of(fixture.alternate_asset, fixture.pool)
+            .await?,
+        private_before
+    );
+    assert_eq!(
+        fixture
+            .l1
+            .balance_of(fixture.vault_asset, fixture.pool)
+            .await?,
+        vault_before
+    );
     Ok(())
 }
 
