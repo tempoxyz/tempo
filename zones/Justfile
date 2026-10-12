@@ -28,7 +28,7 @@ regen-zone-dev-genesis:
     #!/bin/bash
     set -euo pipefail
     rm -rf {{zone_dev_genesis_tmp}}
-    cargo run -p tempo-xtask -- generate-zone-genesis \
+    cargo zone-xtask generate-zone-genesis \
         --output {{zone_dev_genesis_tmp}} \
         --chain-id 1337 \
         --hardfork T14 \
@@ -42,7 +42,7 @@ regen-zone-dev-genesis:
 [group('localnet')]
 [doc('Generates a genesis file')]
 genesis accounts="1000" output="./" profile="maxperf":
-    cargo run -p tempo-xtask --profile {{profile}} -- generate-genesis --output {{output}} -a {{accounts}} --no-dkg-in-genesis
+    cargo run -p tempo-xtask --bin tempo-xtask --profile {{profile}} -- generate-genesis --output {{output}} -a {{accounts}} --no-dkg-in-genesis
 
 [group('localnet')]
 [doc('Deletes local network data and launches a new localnet')]
@@ -101,12 +101,12 @@ send-deposit amount="1000000" to="" memo="0x000000000000000000000000000000000000
         TO=$(cast wallet address "$PK")
     fi
     ARGS="--amount {{amount}} --token {{token}} --memo {{memo}} --to $TO --zone-rpc-url {{rpc}}"
-    PRIVATE_KEY="$PK" cargo run -p tempo-xtask -- deposit $ARGS
+    PRIVATE_KEY="$PK" cargo zone-xtask deposit $ARGS
 
 [group('zone')]
 [doc('Fetches and prints zone info from the ZoneFactory. Pass a zone ID (integer) or portal address (0x...). Set ZONE_FACTORY to override the Moderato default.')]
 zone-info identifier:
-    cargo run -p tempo-xtask -- zone-info {{identifier}}
+    cargo zone-xtask zone-info {{identifier}}
 
 [group('zone')]
 [doc('Creates a new zone on L1 via ZoneFactory and generates genesis + zone.json in generated/<name>/. Enforcement defaults to false. Initial membership and gateways are optional via ZONE_ALLOWED_ACCOUNTS and ZONE_GATEWAYS.')]
@@ -142,7 +142,7 @@ create-zone name token="" access_enforced="false" gateway_enforced="false":
     echo "Building Solidity contracts..."
     (cd crates/contracts && forge build --skip test) || true
     echo "Building xtask..."
-    cargo build -p tempo-xtask
+    cargo build -p tempo-xtask --bin tempo-zone-xtask
     echo "Creating zone '{{name}}' on L1 and generating genesis..."
     echo "Initial portal token: $ZONE_TOKEN_L1"
     echo "Admin: $ADMIN_ADDR"
@@ -170,7 +170,7 @@ create-zone name token="" access_enforced="false" gateway_enforced="false":
     for gateway in "${GATEWAYS[@]}"; do
         [[ -n "$gateway" ]] && CREATE_ARGS+=(--zone-gateway "$gateway")
     done
-    ZONE_FACTORY_OWNER_KEY="$PK" cargo run -p tempo-xtask -- create-zone \
+    ZONE_FACTORY_OWNER_KEY="$PK" cargo zone-xtask create-zone \
         --output "$OUTPUT" \
         --l1-rpc-url "$HTTP_RPC" \
         --initial-token "$ZONE_TOKEN_L1" \
@@ -195,7 +195,7 @@ deploy-router name dex="0xDEc0000000000000000000000000000000000000":
     fi
     echo "Building Solidity contracts..."
     (cd crates/contracts && forge build --skip test) || true
-    PRIVATE_KEY="$PK" cargo run -p tempo-xtask -- deploy-router \
+    PRIVATE_KEY="$PK" cargo zone-xtask deploy-router \
         --zone-dir "$ZONE_DIR" \
         --l1-rpc-url "$HTTP_RPC" \
         --stablecoin-dex "{{dex}}"
@@ -206,7 +206,7 @@ verify-closed-loop earn_router:
     #!/bin/bash
     set -euo pipefail
     L1_RPC="${L1_RPC_URL:?Set L1_RPC_URL env var}"
-    cargo run -p tempo-xtask -- verify-closed-loop \
+    cargo zone-xtask verify-closed-loop \
         --l1-rpc-url "$L1_RPC" \
         --earn-router "{{earn_router}}"
 
@@ -224,7 +224,7 @@ demo-swap-and-deposit name amount="100000000" tick="0" rpc=zone_rpc:
         echo "Error: $ZONE_JSON not found. Run 'just create-zone {{name}}' first." >&2
         exit 1
     fi
-    PRIVATE_KEY="$PK" cargo run -p tempo-xtask -- demo-swap-and-deposit \
+    PRIVATE_KEY="$PK" cargo zone-xtask demo-swap-and-deposit \
         --zone-dir "$ZONE_DIR" \
         --l1-rpc-url "$HTTP_RPC" \
         --zone-rpc-url "{{rpc}}" \
@@ -466,7 +466,7 @@ resume-deposits token:
 [group('zone')]
 [doc('Pauses batch submissions, all new deposits, and L1 withdrawal processing for 30 days. Requires L1_RPC_URL, L1_PORTAL_ADDRESS, and PRIVATE_KEY.')]
 pause-portal:
-    cargo run -p tempo-xtask -- pause-portal
+    cargo zone-xtask pause-portal
 
 [group('zone')]
 [doc('Enables or disables closed-loop account enforcement. Pass true to close access or false to open it. Requires L1_RPC_URL, L1_PORTAL_ADDRESS, and ADMIN_KEY.')]
@@ -479,7 +479,7 @@ set-access-mode enforced:
         false) ARGS=() ;;
         *) echo "Error: enforced must be 'true' or 'false'" >&2; exit 1 ;;
     esac
-    cargo run -p tempo-xtask -- set-access-mode "${ARGS[@]}"
+    cargo zone-xtask set-access-mode "${ARGS[@]}"
 
 [group('zone')]
 [doc('Enables or disables callback gateway enforcement. Pass true to enforce registered gateways or false to allow arbitrary targets. Requires L1_RPC_URL, L1_PORTAL_ADDRESS, and ADMIN_KEY.')]
@@ -492,7 +492,7 @@ set-gateway-mode enforced:
         false) ARGS=() ;;
         *) echo "Error: enforced must be 'true' or 'false'" >&2; exit 1 ;;
     esac
-    cargo run -p tempo-xtask -- set-gateway-mode "${ARGS[@]}"
+    cargo zone-xtask set-gateway-mode "${ARGS[@]}"
 
 [group('zone')]
 [doc('Adds or removes an account from closed-loop portal flows. Pass true to add or false to remove. Requires L1_RPC_URL, L1_PORTAL_ADDRESS, and ADMIN_KEY.')]
@@ -505,7 +505,7 @@ set-allowed-account account allowed:
         false) ARGS=() ;;
         *) echo "Error: allowed must be 'true' or 'false'" >&2; exit 1 ;;
     esac
-    cargo run -p tempo-xtask -- set-allowed-account "{{account}}" "${ARGS[@]}"
+    cargo zone-xtask set-allowed-account "{{account}}" "${ARGS[@]}"
 
 [group('zone')]
 [doc('Adds or removes a callback gateway. Pass true to add or false to remove. Requires L1_RPC_URL, L1_PORTAL_ADDRESS, and ADMIN_KEY.')]
@@ -518,7 +518,7 @@ set-gateway account allowed:
         false) ARGS=() ;;
         *) echo "Error: allowed must be 'true' or 'false'" >&2; exit 1 ;;
     esac
-    cargo run -p tempo-xtask -- set-gateway "{{account}}" "${ARGS[@]}"
+    cargo zone-xtask set-gateway "{{account}}" "${ARGS[@]}"
 
 [group('zone')]
 [doc('Lists TIP-20 token addresses currently enabled on the ZonePortal. Pass a portal address or set L1_PORTAL_ADDRESS. Requires L1_RPC_URL.')]
@@ -892,7 +892,7 @@ deploy-zone name token="" access_enforced="false" gateway_enforced="false":
     for gateway in "${GATEWAYS[@]}"; do
         [[ -n "$gateway" ]] && CREATE_ARGS+=(--zone-gateway "$gateway")
     done
-    ZONE_FACTORY_OWNER_KEY="$SEQUENCER_KEY" cargo run -p tempo-xtask -- create-zone \
+    ZONE_FACTORY_OWNER_KEY="$SEQUENCER_KEY" cargo zone-xtask create-zone \
         --output "$OUTPUT" \
         --l1-rpc-url "$HTTP_RPC" \
         --initial-token "$ZONE_TOKEN_L1" \
@@ -918,7 +918,7 @@ deploy-zone name token="" access_enforced="false" gateway_enforced="false":
 
     # Step 5: Register sequencer encryption key on the portal
     echo "Step 5: Registering sequencer encryption key on ZonePortal..."
-    PRIVATE_KEY="$SEQUENCER_KEY" cargo run -p tempo-xtask -- set-encryption-key \
+    PRIVATE_KEY="$SEQUENCER_KEY" cargo zone-xtask set-encryption-key \
         --l1-rpc-url "$HTTP_RPC" \
         --portal "$PORTAL"
     echo ""
@@ -978,7 +978,7 @@ spam-deposits total="20" per-block="10" amount="1000000" token="0x20C00000000000
     set -euo pipefail
     PK="${PRIVATE_KEY:?Set PRIVATE_KEY env var}"
     ARGS="--total {{total}} --per-block {{per-block}} --amount {{amount}} --token {{token}} --lead-time {{lead-time}}"
-    PRIVATE_KEY="$PK" cargo run -p tempo-xtask -- spam-deposits $ARGS
+    PRIVATE_KEY="$PK" cargo zone-xtask spam-deposits $ARGS
 
 [group('zone')]
 [doc('Runs the full TIP-20 + TIP-403 blacklist demo: creates token, enables on zone, blacklists address, shows deposit bounce, unblacklists, shows deposit success, withdraws. Requires PRIVATE_KEY for the token admin/depositor, L1_PORTAL_ADDRESS, and portal admin authority via ADMIN_KEY or matching generated/<name>/zone.json adminKey.')]
@@ -989,7 +989,7 @@ demo-blacklist amount="500000" rpc=zone_rpc zone-dir="":
     if [[ -n "{{zone-dir}}" ]]; then
         ARGS+=(--zone-dir "{{zone-dir}}")
     fi
-    cargo run -p tempo-xtask -- demo-blacklist "${ARGS[@]}"
+    cargo zone-xtask demo-blacklist "${ARGS[@]}"
 
 # Docs commands
 [group('docs')]

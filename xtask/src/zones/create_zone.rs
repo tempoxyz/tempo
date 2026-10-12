@@ -765,7 +765,7 @@ mod tests {
     #[test]
     fn finish_command_replaces_safe_flags_with_creation_tx() {
         let args = [
-            "./target/debug/tempo-xtask",
+            "./target/debug/tempo-zone-xtask",
             "create-zone",
             "--safe-address",
             "0x7000000000000000000000000000000000000007",
@@ -779,7 +779,7 @@ mod tests {
 
         assert_eq!(
             finish_command(args),
-            "./target/debug/tempo-xtask create-zone --output 'generated/zone a' \
+            "./target/debug/tempo-zone-xtask create-zone --output 'generated/zone a' \
              --sequencer 0x1000000000000000000000000000000000000001 \
              --creation-tx <EXECUTION_TX_HASH>"
         );

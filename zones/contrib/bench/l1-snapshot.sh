@@ -214,7 +214,7 @@ l1_snapshot_load_config() {
     [[ -n "${TEMPO_ROOT:-}" ]] || l1_snapshot_die "TEMPO_ROOT must be set"
     L1_SNAPSHOT_TEMPO_BIN="${TEMPO_BIN:-$TEMPO_ROOT/target/profiling/tempo}"
     L1_SNAPSHOT_TEMPO_XTASK_BIN="${TEMPO_XTASK_BIN:-$TEMPO_ROOT/target/profiling/tempo-xtask}"
-    L1_SNAPSHOT_ZONES_XTASK_BIN="${ZONES_XTASK_BIN:-$L1_SNAPSHOT_ZONES_ROOT/target/profiling/tempo-xtask}"
+    L1_SNAPSHOT_ZONES_XTASK_BIN="${ZONES_XTASK_BIN:-$L1_SNAPSHOT_ZONES_ROOT/../target/profiling/tempo-zone-xtask}"
     l1_snapshot_require_executable "$L1_SNAPSHOT_TEMPO_BIN"
     l1_snapshot_require_executable "$L1_SNAPSHOT_TEMPO_XTASK_BIN"
     l1_snapshot_require_executable "$L1_SNAPSHOT_ZONES_XTASK_BIN"

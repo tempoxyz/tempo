@@ -38,7 +38,7 @@
 //!
 //! Or directly via cargo:
 //! ```sh
-//! cargo run -p tempo-xtask -- demo-blacklist \
+//! cargo zone-xtask demo-blacklist \
 //!     --portal 0x9d00Ee56f371Cc5365a686180dE3648207399640
 //! ```
 //!

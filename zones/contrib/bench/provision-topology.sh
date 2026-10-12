@@ -9,7 +9,7 @@
 #   TEMPO_ROOT=/path/to/tempo
 #   TEMPO_BIN=/path/to/tempo/target/profiling/tempo
 #   TEMPO_XTASK_BIN=/path/to/tempo/target/profiling/tempo-xtask
-#   ZONES_XTASK_BIN=/path/to/zones/target/profiling/tempo-xtask
+#   ZONES_XTASK_BIN=/path/to/tempo/target/profiling/tempo-zone-xtask
 #   ZONE_BIN=/path/to/zones/target/profiling/tempo-zone
 #
 # `prepare-l1` builds the paired L1 baseline on a cache miss but deliberately
@@ -554,7 +554,7 @@ provision_up() {
 
     TEMPO_BIN="${TEMPO_BIN:-$TEMPO_ROOT/target/profiling/tempo}"
     TEMPO_XTASK_BIN="${TEMPO_XTASK_BIN:-$TEMPO_ROOT/target/profiling/tempo-xtask}"
-    ZONES_XTASK_BIN="${ZONES_XTASK_BIN:-$ZONES_ROOT/target/profiling/tempo-xtask}"
+    ZONES_XTASK_BIN="${ZONES_XTASK_BIN:-$ZONES_ROOT/../target/profiling/tempo-zone-xtask}"
     ZONE_BIN="${ZONE_BIN:-$ZONES_ROOT/target/profiling/tempo-zone}"
     require_executable "$TEMPO_BIN"
     require_executable "$TEMPO_XTASK_BIN"

@@ -186,7 +186,7 @@ serde_yaml = "0.9.34"
 tokio-vsock = "0.7.2"
 toml = "0.9.12"
 vsock = "0.5.4"
-tokio-tungstenite = "0.28"
+tokio-tungstenite = "0.29"
 
 tempo-state-bloat = { path = "crates/state-bloat" }
 aws-lc-rs = { version = "1.17.0", default-features = false, features = ["alloc", "non-fips", "ring-sig-verify"] }
