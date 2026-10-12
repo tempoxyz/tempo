@@ -1199,7 +1199,7 @@ fn bridged_credits_use_recipient_policy_from_t13() -> eyre::Result<()> {
             )?;
 
             let credited = U256::from(if authorized { 100 } else { 0 });
-            let mut balance = |account| token.balance_of(ITIP20::balanceOfCall { account });
+            let balance = |account| token.balance_of(ITIP20::balanceOfCall { account });
             let mut inbox = ZoneInbox::new();
             assert_eq!(inbox.try_mint(PATH_USD_ADDRESS, ALICE, 100)?, authorized);
             assert_eq!(balance(ALICE)?, credited);
