@@ -30,7 +30,7 @@ These are the comments reviewers leave most often. Follow them so they don't hav
 
 ## Keep it small
 
-- No helper, wrapper, trait, enum, or type alias with a single call site. Inline it.
+- No helper, wrapper, trait, enum, or type alias with a single call site. Inline it. The one exception is a type alias that replaces `#[allow(clippy::type_complexity)]`.
 - Don't add a `foo_with_x` that forwards to `foo`. Generalize `foo`.
 - Add code only with a caller in the same PR. This covers `pub` items, fields, accessors, config knobs, CLI flags, RPC methods, cargo features, generics, and extra bounds.
 - No caches, interior mutability, or format versioning without a measured need.

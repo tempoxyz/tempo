@@ -4,7 +4,7 @@ Tempo is a blockchain node built on [Reth SDK](https://github.com/paradigmxyz/re
 
 ## Rust style
 
-Before writing or changing Rust, load the `tempo-rust-style` skill ([`.agents/skills/tempo-rust-style/SKILL.md`](.agents/skills/tempo-rust-style/SKILL.md)).
+Before writing, changing, or reviewing Rust, load the `tempo-rust-style` skill ([`.agents/skills/tempo-rust-style/SKILL.md`](.agents/skills/tempo-rust-style/SKILL.md)).
 
 ## Pull Requests
 
