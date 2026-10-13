@@ -1,5 +1,7 @@
 use super::*;
 
+use std::{cell::RefCell, rc::Rc};
+
 use alloy_evm::EvmInternals;
 use alloy_primitives::{B256, Bytes, U256, address, keccak256};
 use alloy_sol_types::{SolCall, SolError, SolValue};
@@ -12,7 +14,11 @@ use tempo_contracts::{
 use tempo_precompiles::{
     PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, TIP403_REGISTRY_ADDRESS,
     receive_policy_guard::ReceivePolicyGuard,
-    storage::{ContractStorage, Handler, StorageCtx},
+    storage::{
+        ContractStorage, Handler, StorageCtx,
+        actions::{StorageAction, StorageActions},
+    },
+    storage_credits::NonCreditableSlots,
     test_util::TIP20Setup,
     tip20::{ITIP20, TIP20Token},
     tip403_registry::{ALLOW_ALL_POLICY_ID, ITIP403Registry, REJECT_ALL_POLICY_ID, TIP403Registry},
@@ -1045,6 +1051,62 @@ fn refund_reads_are_limited_to_owner_and_active_sequencer() -> eyre::Result<()> 
 }
 
 #[test]
+fn claim_refund_rejects_zero_amount_before_policy_reads() -> eyre::Result<()> {
+    let mut harness = Harness::new()?;
+    let callers = [BOB, tempo_contracts::MULTICALL3_ADDRESS];
+    {
+        let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut registry = TIP403Registry::new();
+            registry.initialize()?;
+            let filter = registry.create_policy_with_accounts(
+                ALICE,
+                ITIP403Registry::createPolicyWithAccountsCall {
+                    admin: ALICE,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                    accounts: Vec::new(),
+                },
+            )?;
+            for caller in callers {
+                registry.set_receive_policy(
+                    caller,
+                    ITIP403Registry::setReceivePolicyCall {
+                        senderPolicyId: ALLOW_ALL_POLICY_ID,
+                        tokenFilterId: filter,
+                        recoveryAuthority: caller,
+                    },
+                )?;
+            }
+            Ok(())
+        })?;
+    }
+    let actions = StorageActions::enabled();
+    let env = crate::ZonePrecompileEnv::new(
+        &harness.ctx.cfg,
+        actions.clone(),
+        Rc::new(RefCell::new(NonCreditableSlots::empty())),
+    );
+    harness.precompile = ZoneInbox::create(harness.l1_state.clone(), &env);
+
+    for caller in callers {
+        for token in [
+            PATH_USD_ADDRESS,
+            address!("0x20c000000000000000000000000000000000ffff"),
+            Address::with_last_byte(0x55),
+        ] {
+            let output =
+                harness.call_atomic(caller, IZoneInbox::claimRefundCall { token }.abi_encode())?;
+            assert!(output.is_revert());
+            assert_eq!(output.bytes, IZoneInbox::NoRefund {}.abi_encode());
+        }
+    }
+    assert!(actions.take().unwrap().iter().all(|action| {
+        !matches!(action, StorageAction::Sload(address, ..) if *address == TIP403_REGISTRY_ADDRESS)
+    }), "empty refunds must not reach the L1-backed registry");
+    Ok(())
+}
+
+#[test]
 fn claim_refund_clears_balance_and_mints_to_caller() -> eyre::Result<()> {
     let mut harness = Harness::new()?;
     {
@@ -1067,6 +1129,15 @@ fn claim_refund_clears_balance_and_mints_to_caller() -> eyre::Result<()> {
         444
     );
     assert_eq!(harness.balance(PATH_USD_ADDRESS, BOB)?, U256::from(444));
+    let repeated = harness.call(
+        BOB,
+        IZoneInbox::claimRefundCall {
+            token: PATH_USD_ADDRESS,
+        }
+        .abi_encode(),
+    )?;
+    assert!(repeated.is_revert());
+    assert_eq!(repeated.bytes, IZoneInbox::NoRefund {}.abi_encode());
     let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
     StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
         assert_eq!(
