@@ -37,13 +37,13 @@ use reth_evm::{
     BlockExecutor as _, BlockExecutorFactory as _, ConfigureEvm as _,
     database::StateProviderDatabase,
 };
-use reth_execution_types::TransactionChanges;
+use reth_execution_types::{StateUpdate, TransactionChanges};
 use reth_primitives_traits::RecoveredBlock;
 use reth_provider::{
     CanonStateSubscriptions, ChainSpecProvider, StateProvider, StateProviderFactory,
 };
 use reth_revm::{
-    db::{CacheState, TransitionState},
+    db::{AccountStatus, CacheState, TransitionAccount, TransitionState},
     state::{AccountInfo, EvmState},
 };
 use reth_tracing::tracing::{debug, error, info, info_span, warn};
@@ -506,16 +506,37 @@ fn restore_pre_block_info(cache: &mut Cache, saved: Vec<SavedPreBlockInfo>) {
     }
 }
 
-fn take_updates(updates: &Mutex<Vec<EvmState>>) -> TransitionState {
+fn take_updates(updates: &Mutex<Vec<StateUpdate>>) -> TransitionState {
     let states = std::mem::take(&mut *updates.lock());
     let mut merged = TransitionState::default();
     for state in states {
-        for (address, account) in transition(state).transitions {
+        for account in state.accounts {
+            let previous_status = match &account.original {
+                None => AccountStatus::LoadedNotExisting,
+                Some(info) if info.is_empty() => AccountStatus::LoadedEmptyEIP161,
+                Some(_) => AccountStatus::Loaded,
+            };
+            let status = if account.current.is_none() {
+                previous_status.on_selfdestructed()
+            } else if account.wiped && !account.created {
+                AccountStatus::DestroyedChanged
+            } else if account.created {
+                previous_status.on_created()
+            } else {
+                previous_status.on_changed(account.original.as_ref().is_none_or(|info| {
+                    info.nonce == 0 && info.code_hash == alloy_primitives::KECCAK256_EMPTY
+                }))
+            };
             merged.add_transition(
-                address,
-                account.map_storage(|storage| {
-                    Some(Cow::Owned(
-                        storage
+                account.address,
+                TransitionAccount {
+                    info: account.current,
+                    status,
+                    previous_info: account.original,
+                    previous_status,
+                    storage: Some(Cow::Owned(
+                        account
+                            .storage
                             .into_iter()
                             .map(|(key, slot)| {
                                 (
@@ -528,8 +549,9 @@ fn take_updates(updates: &Mutex<Vec<EvmState>>) -> TransitionState {
                                 )
                             })
                             .collect(),
-                    ))
-                }),
+                    )),
+                    storage_was_destroyed: account.wiped,
+                },
             );
         }
     }
@@ -906,7 +928,10 @@ mod tests {
         db.insert_account(destroyed_address, original);
         db.commit(state.clone());
 
-        assert_eq!(transition(state), drain_revm(&mut db));
+        let expected = drain_revm(&mut db);
+        let update = reth_execution_types::evm_state_to_state_update(&state);
+        assert_eq!(take_updates(&Mutex::new(vec![update])), expected);
+        assert_eq!(transition(state), expected);
     }
 
     fn drain_revm<DB>(db: &mut State<DB>) -> TransitionState {

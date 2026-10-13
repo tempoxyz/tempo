@@ -4,10 +4,11 @@ use alloy_consensus::{
     Signed, Transaction, TxEip1559, TxEip2930, TxEip7702, TxLegacy, Typed2718,
     transaction::{Either, Recovered, TxHashRef},
 };
+use alloy_eips::eip2930::AccessList;
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind};
 pub use evm2::ethereum::RecoveredTxEnvelope;
 use evm2::ethereum::{LazyTxEip7702, TxEnvelope as EthTxEnvelope};
-use reth_evm::{FromRecoveredTx, FromTxWithEncoded};
+use reth_evm::{FromRecoveredTx, FromTxWithEncoded, TransactionEnvMut};
 use reth_primitives_traits::WithEncoded;
 use std::{borrow::Borrow, ops::Deref, sync::Arc};
 use tempo_primitives::{AASigned, TempoTxEnvelope};
@@ -493,7 +494,10 @@ impl Typed2718 for TempoTxEnv {
 
 impl Transaction for TempoTxEnv {
     fn chain_id(&self) -> Option<u64> {
-        self.transaction().chain_id()
+        match &self.evm_tx {
+            TempoEvmTx::Eip2930(tx) => Some(tx.inner().chain_id),
+            _ => self.transaction().chain_id(),
+        }
     }
 
     fn nonce(&self) -> u64 {
@@ -501,7 +505,7 @@ impl Transaction for TempoTxEnv {
     }
 
     fn gas_limit(&self) -> u64 {
-        self.transaction().gas_limit()
+        self.evm_tx.gas_limit()
     }
 
     fn gas_price(&self) -> Option<u128> {
@@ -549,7 +553,13 @@ impl Transaction for TempoTxEnv {
     }
 
     fn access_list(&self) -> Option<&alloy_eips::eip2930::AccessList> {
-        self.transaction().access_list()
+        match &self.evm_tx {
+            TempoEvmTx::Legacy { .. } => None,
+            TempoEvmTx::Eip2930(tx) => Some(&tx.inner().access_list),
+            TempoEvmTx::Eip1559(tx) => Some(&tx.inner().access_list),
+            TempoEvmTx::Eip7702(tx) => Some(&tx.inner().access_list),
+            TempoEvmTx::AA(tx) => Some(&tx.inner().tx().access_list),
+        }
     }
 
     fn blob_versioned_hashes(&self) -> Option<&[B256]> {
@@ -591,12 +601,70 @@ impl FromTxWithEncoded<TempoTxEnvelope> for TempoTxEnv {
     }
 }
 
+impl TransactionEnvMut for TempoTxEnv {
+    fn set_gas_limit(&mut self, gas_limit: u64) {
+        match &mut self.evm_tx {
+            TempoEvmTx::Legacy { transaction, .. } => transaction.inner_mut().gas_limit = gas_limit,
+            TempoEvmTx::Eip2930(tx) => tx.inner_mut().gas_limit = gas_limit,
+            TempoEvmTx::Eip1559(tx) => tx.inner_mut().gas_limit = gas_limit,
+            TempoEvmTx::Eip7702(tx) => tx.inner_mut().gas_limit = gas_limit,
+            TempoEvmTx::AA(tx) => {
+                Arc::make_mut(&mut tx.transaction)
+                    .inner_mut()
+                    .tx_mut()
+                    .gas_limit = gas_limit;
+            }
+        }
+    }
+
+    fn set_access_list(&mut self, access_list: AccessList) {
+        match &mut self.evm_tx {
+            TempoEvmTx::Legacy { transaction, .. } => {
+                let signer = transaction.signer();
+                let TxLegacy {
+                    chain_id,
+                    nonce,
+                    gas_price,
+                    gas_limit,
+                    to,
+                    value,
+                    input,
+                } = transaction.inner().clone();
+                self.evm_tx = TempoEvmTx::Eip2930(Recovered::new_unchecked(
+                    TxEip2930 {
+                        chain_id: chain_id.unwrap_or_default(),
+                        nonce,
+                        gas_price,
+                        gas_limit,
+                        to,
+                        value,
+                        access_list,
+                        input,
+                    },
+                    signer,
+                ));
+            }
+            TempoEvmTx::Eip2930(tx) => tx.inner_mut().access_list = access_list,
+            TempoEvmTx::Eip1559(tx) => tx.inner_mut().access_list = access_list,
+            TempoEvmTx::Eip7702(tx) => tx.inner_mut().access_list = access_list,
+            TempoEvmTx::AA(tx) => {
+                Arc::make_mut(&mut tx.transaction)
+                    .inner_mut()
+                    .tx_mut()
+                    .access_list = access_list;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use alloy_consensus::{Signed, TxEip7702, transaction::TxHashRef};
-    use alloy_eips::eip2930::{AccessList, AccessListItem};
+    use alloy_eips::eip2930::AccessListItem;
     use alloy_primitives::{B256, Signature, U256, keccak256};
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
     use core::num::NonZeroU64;
     use proptest::prelude::*;
     use tempo_primitives::{
@@ -1150,5 +1218,91 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn prepared_env_mutation_preserves_sponsor_and_original_transaction() {
+        let sponsor = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x22)).unwrap();
+        let mut transaction = TempoTransaction {
+            gas_limit: 1_000_000,
+            fee_payer_signature: Some(Signature::test_signature()),
+            ..Default::default()
+        };
+        transaction.fee_payer_signature = Some(
+            sponsor
+                .sign_hash_sync(&transaction.fee_payer_signature_hash(SIGNER))
+                .unwrap(),
+        );
+        let env = aa_env(transaction, SIGNER);
+        assert_eq!(env.fee_payer().unwrap(), sponsor.address());
+        let hash = env.tx_hash();
+        let identifier = env.unique_tx_identifier();
+        let access_list = AccessList(vec![AccessListItem {
+            address: Address::repeat_byte(0x33),
+            storage_keys: vec![B256::ZERO],
+        }]);
+        for gas_limit in [900_000, 500_000, 250_000] {
+            let mut probe = env.clone();
+            probe.set_gas_limit(gas_limit);
+            probe.set_access_list(access_list.clone());
+            assert_eq!(probe.gas_limit(), gas_limit);
+            assert_eq!(probe.evm_tx().gas_limit(), gas_limit);
+            assert_eq!(probe.access_list(), Some(&access_list));
+            assert_eq!(probe.as_aa().unwrap().inner().tx().access_list, access_list);
+            assert_eq!(probe.fee_payer().unwrap(), sponsor.address());
+            assert_eq!(probe.evm_tx().fee_payer().unwrap(), sponsor.address());
+            assert_eq!(probe.tx_hash(), hash);
+            assert_eq!(probe.unique_tx_identifier(), identifier);
+            assert_eq!(probe.recovered(), env.recovered());
+            assert_ne!(
+                probe
+                    .as_aa()
+                    .unwrap()
+                    .inner()
+                    .tx()
+                    .recover_fee_payer(SIGNER)
+                    .unwrap(),
+                sponsor.address(),
+            );
+        }
+        assert_eq!(env.gas_limit(), 1_000_000);
+        assert!(env.access_list().unwrap().0.is_empty());
+    }
+
+    #[test]
+    fn prepared_env_mutation_upgrades_legacy_access_list() {
+        let original = legacy_env(
+            TxLegacy {
+                nonce: 7,
+                gas_price: 42,
+                gas_limit: 100_000,
+                to: TxKind::Call(Address::repeat_byte(0x33)),
+                input: Bytes::from_static(&[1, 2, 3]),
+                ..Default::default()
+            },
+            SIGNER,
+        );
+        let mut probe = original.clone();
+        let access_list = AccessList(vec![AccessListItem {
+            address: Address::repeat_byte(0x44),
+            storage_keys: vec![B256::ZERO],
+        }]);
+        probe.set_gas_limit(80_000);
+        probe.set_access_list(access_list.clone());
+        let transaction = probe.as_eip2930().unwrap();
+        assert_eq!(transaction.gas_limit, 80_000);
+        assert_eq!(transaction.access_list, access_list);
+        assert_eq!(probe.gas_limit(), 80_000);
+        assert_eq!(probe.access_list(), Some(&access_list));
+        assert_eq!(probe.chain_id(), Some(0));
+        assert_eq!(probe.ty(), 1);
+        assert_eq!(probe.nonce(), original.nonce());
+        assert_eq!(probe.gas_price(), original.gas_price());
+        assert_eq!(probe.kind(), original.kind());
+        assert_eq!(probe.input(), original.input());
+        assert_eq!(probe.evm_tx().signer(), SIGNER);
+        assert_eq!(probe.recovered(), original.recovered());
+        assert_eq!(original.gas_limit(), 100_000);
+        assert_eq!(original.access_list(), None);
     }
 }

@@ -8,10 +8,11 @@ use alloy::{
 };
 use alloy_eips::{BlockId, Encodable2718};
 use alloy_network::EthereumWallet;
-use alloy_primitives::{Address, Signature, U256, address};
+use alloy_primitives::{Address, Signature, U64, U256, address};
 use alloy_rpc_types_eth::TransactionRequest;
 use eyre::WrapErr;
 use reth_e2e_test_utils::{receipt::PendingTransactionExt, wallet::test_signer};
+use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_contracts::precompiles::{
     IFeeManager, ITIP20, ITIP403Registry,
     ITIPFeeAMM::{self},
@@ -361,6 +362,15 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
         .balanceOf(fee_payer.address())
         .call()
         .await?;
+
+    // Only the sponsor is funded. Estimation must preserve its recovered address while
+    // probing gas limits that differ from the limit committed to by its signature.
+    let mut request = TempoTransactionRequest::from(tx.clone());
+    request.inner.from = Some(user.address());
+    let estimate: U64 = provider
+        .raw_request("eth_estimateGas".into(), (request,))
+        .await?;
+    assert!(estimate.to::<u64>() < tx.gas_limit());
 
     let receipt = provider
         .send_raw_transaction(&tx.encoded_2718())
