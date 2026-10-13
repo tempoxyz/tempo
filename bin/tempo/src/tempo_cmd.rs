@@ -182,8 +182,7 @@ pub enum ConsensusSubcommand {
     #[command(alias = "validators-info")]
     Info(Info),
     /// Claim accrued validator fees for a fee recipient and token.
-    #[command(name = "claim-fees")]
-    ClaimValidatorFees(ClaimValidatorFees),
+    ClaimFees(ClaimFees),
 }
 
 impl ConsensusSubcommand {
@@ -203,7 +202,7 @@ impl ConsensusSubcommand {
             Self::ShowVerificationKey(args) => args.run(),
             Self::Validator(args) => args.run().await,
             Self::Info(args) => args.run().await,
-            Self::ClaimValidatorFees(args) => args.run().await,
+            Self::ClaimFees(args) => args.run().await,
         }
     }
 }
@@ -1593,7 +1592,7 @@ fn key_from_file<P: AsRef<Path>>(p: P) -> eyre::Result<PrivateKeySigner> {
 /// Claim fees for a validator's current fee recipient or an explicit recipient.
 #[derive(Debug, clap::Args)]
 #[group(required = true, multiple = false, args = ["of_validator", "at_address"])]
-pub struct ClaimValidatorFees {
+pub struct ClaimFees {
     /// Validator Ethereum address, ed25519 public key, or index. Resolves its current fee recipient.
     #[arg(long, value_name = "ID")]
     of_validator: Option<ValidatorId>,
@@ -1611,7 +1610,7 @@ pub struct ClaimValidatorFees {
     submit: ValidatorTransactionArgs,
 }
 
-impl ClaimValidatorFees {
+impl ClaimFees {
     async fn run(self) -> eyre::Result<()> {
         let call = self
             .resolve_call(async || self.submit.provider().await)
@@ -2157,7 +2156,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn claim_validator_fees_dry_run_needs_no_wallet_or_rpc() {
+    async fn claim_fees_dry_run_needs_no_wallet_or_rpc() {
         let cli = TempoCli::try_parse_from([
             "tempo",
             "consensus",
@@ -2174,9 +2173,9 @@ mod tests {
 
         let cmd = match cli.command {
             reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
-                ConsensusSubcommand::ClaimValidatorFees(cmd),
+                ConsensusSubcommand::ClaimFees(cmd),
             )) => cmd,
-            other => panic!("expected ClaimValidatorFees, got `{other:?}`"),
+            other => panic!("expected ClaimFees, got `{other:?}`"),
         };
         cmd.run().await.unwrap();
     }
@@ -2212,7 +2211,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn claim_validator_fees_infers_recipient_token() {
+    async fn claim_fees_infers_recipient_token() {
         for (source, value) in [
             ("--at-address", TEST_FEE_RECIPIENT),
             ("--of-validator", "1"),
@@ -2228,9 +2227,9 @@ mod tests {
             .unwrap();
             let cmd = match cli.command {
                 reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
-                    ConsensusSubcommand::ClaimValidatorFees(cmd),
+                    ConsensusSubcommand::ClaimFees(cmd),
                 )) => cmd,
-                other => panic!("expected ClaimValidatorFees, got `{other:?}`"),
+                other => panic!("expected ClaimFees, got `{other:?}`"),
             };
 
             let recipient = TEST_FEE_RECIPIENT.parse().unwrap();
