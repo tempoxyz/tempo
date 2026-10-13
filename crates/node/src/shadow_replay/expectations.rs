@@ -15,7 +15,8 @@ use tempo_contracts::{
     precompiles::*,
     zones::{
         T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-        ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
+        T14_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
+        ZONE_VERIFIER_RUNTIME,
     },
 };
 use tempo_precompiles::{
@@ -261,26 +262,7 @@ const T13_ZONE_RUNTIME_UPGRADE: Expectation = Expectation {
             ZONE_MESSENGER_ADDRESS => (ZONE_MESSENGER_RUNTIME, T13_ZONE_MESSENGER_RUNTIME),
             _ => return None,
         };
-        let real = ctx.real.pre_block.as_ref()?;
-        let shadow = ctx.shadow.pre_block.as_ref()?;
-
-        // The canonical arm must not change code. The shadow arm activates the new bytecode.
-        if AccountDelta(real.transitions.get(&address))
-            .info(|info| info.code_hash)
-            .is_some()
-        {
-            return None;
-        }
-        let transition = shadow.transitions.get(&address)?;
-        let before = transition
-            .previous_info
-            .as_ref()
-            .map_or(KECCAK256_EMPTY, |info| info.code_hash);
-        let after = transition.info.as_ref()?.code_hash;
-
-        ((before == KECCAK256_EMPTY || before == keccak256(&old_runtime))
-            && after == keccak256(&new_runtime))
-        .then_some(())
+        exact_runtime_upgrade(ctx, address, &[&old_runtime], &new_runtime)
     },
 };
 
@@ -319,6 +301,7 @@ const REGISTRY: &[(TempoHardfork, &[Expectation])] = &[
         ],
     ),
     (TempoHardfork::T13, &[T13_ZONE_RUNTIME_UPGRADE]),
+    (TempoHardfork::T14, &[T14_ZONE_PORTAL_UPGRADE]),
 ];
 
 pub(crate) fn between(
@@ -334,6 +317,53 @@ pub(crate) fn between(
                 .flat_map(|(_, rules)| *rules),
         )
         .collect()
+}
+
+const T14_ZONE_PORTAL_UPGRADE: Expectation = Expectation {
+    id: "t14.zone-portal-upgrade",
+    check: |ctx, field| {
+        if ctx.boundary != Boundary::PreBlock
+            || field.name != "code"
+            || field.slot.is_some()
+            || field.address != Some(ZONE_PORTAL_IMPL_ADDRESS)
+        {
+            return None;
+        }
+        exact_runtime_upgrade(
+            ctx,
+            ZONE_PORTAL_IMPL_ADDRESS,
+            &[&ZONE_PORTAL_RUNTIME, &T13_ZONE_PORTAL_RUNTIME],
+            &T14_ZONE_PORTAL_RUNTIME,
+        )
+    },
+};
+
+fn exact_runtime_upgrade(
+    ctx: &Context<'_>,
+    address: Address,
+    old_runtimes: &[&[u8]],
+    new_runtime: &[u8],
+) -> Option<()> {
+    let real = ctx.real.pre_block.as_ref()?;
+    let shadow = ctx.shadow.pre_block.as_ref()?;
+
+    // The canonical arm must not change code. The shadow arm activates the new bytecode.
+    if AccountDelta(real.transitions.get(&address))
+        .info(|info| info.code_hash)
+        .is_some()
+    {
+        return None;
+    }
+    let transition = shadow.transitions.get(&address)?;
+    let before = transition
+        .previous_info
+        .as_ref()
+        .map_or(KECCAK256_EMPTY, |info| info.code_hash);
+    let after = transition.info.as_ref()?.code_hash;
+
+    ((before == KECCAK256_EMPTY || old_runtimes.iter().any(|code| before == keccak256(code)))
+        && after == keccak256(new_runtime))
+    .then_some(())
 }
 
 #[cfg(test)]
@@ -412,6 +442,16 @@ mod tests {
             ]
         );
         assert_eq!(ids(T12, T13), [FEE_STATE.id, T13_ZONE_RUNTIME_UPGRADE.id]);
+        assert_eq!(ids(T13, T14), [FEE_STATE.id, T14_ZONE_PORTAL_UPGRADE.id]);
+        assert_eq!(
+            ids(T12, T14),
+            [
+                FEE_STATE.id,
+                T13_ZONE_RUNTIME_UPGRADE.id,
+                T14_ZONE_PORTAL_UPGRADE.id
+            ]
+        );
+        assert_eq!(ids(T14, T14), [FEE_STATE.id]);
         let mut combined = ids(T11, T12);
         combined.extend(ids(T12, T13).into_iter().skip(1)); // baseline runs only once
         assert_eq!(ids(T11, T13), combined);
@@ -748,5 +788,78 @@ mod tests {
             Report::analyze(&real, &shadow, &rules, &block).unexplained,
             1
         );
+    }
+
+    #[test]
+    fn t14_replay_accepts_only_exact_portal_code_upgrade() {
+        let address = ZONE_PORTAL_IMPL_ADDRESS;
+        let rules = between(TempoHardfork::T13, TempoHardfork::T14);
+        let block = block(vec![]);
+        for before in [
+            KECCAK256_EMPTY,
+            keccak256(&ZONE_PORTAL_RUNTIME),
+            keccak256(&T13_ZONE_PORTAL_RUNTIME),
+        ] {
+            let real = evidence(&[]);
+            let mut shadow = evidence(&[]);
+            shadow.pre_block.as_mut().unwrap().transitions.insert(
+                address,
+                TransitionAccount {
+                    previous_info: Some(AccountInfo {
+                        code_hash: before,
+                        ..Default::default()
+                    }),
+                    info: Some(AccountInfo {
+                        code_hash: keccak256(&T14_ZONE_PORTAL_RUNTIME),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            );
+            let report = Report::analyze(&real, &shadow, &rules, &block);
+            assert_eq!(report.outcome(&shadow), ReplayOutcome::Expected);
+            assert_eq!(report.expected, [(T14_ZONE_PORTAL_UPGRADE.id, 1)].into());
+
+            let transition = shadow
+                .pre_block
+                .as_mut()
+                .unwrap()
+                .transitions
+                .get_mut(&address)
+                .unwrap();
+            transition
+                .storage
+                .insert(U256::ONE, StorageSlot::new_changed(U256::ZERO, U256::ONE));
+            assert_eq!(
+                Report::analyze(&real, &shadow, &rules, &block).outcome(&shadow),
+                ReplayOutcome::Findings
+            );
+            let transition = shadow
+                .pre_block
+                .as_mut()
+                .unwrap()
+                .transitions
+                .get_mut(&address)
+                .unwrap();
+            transition.storage.clear();
+            transition.info.as_mut().unwrap().code_hash = B256::repeat_byte(0x42);
+            assert_eq!(
+                Report::analyze(&real, &shadow, &rules, &block).outcome(&shadow),
+                ReplayOutcome::Findings
+            );
+            let transition = shadow
+                .pre_block
+                .as_mut()
+                .unwrap()
+                .transitions
+                .get_mut(&address)
+                .unwrap();
+            transition.info.as_mut().unwrap().code_hash = keccak256(&T14_ZONE_PORTAL_RUNTIME);
+            transition.previous_info.as_mut().unwrap().code_hash = B256::repeat_byte(0x42);
+            assert_eq!(
+                Report::analyze(&real, &shadow, &rules, &block).outcome(&shadow),
+                ReplayOutcome::Findings
+            );
+        }
     }
 }

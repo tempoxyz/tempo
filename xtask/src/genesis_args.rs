@@ -41,7 +41,7 @@ use tempo_contracts::{
     contracts::{CreateX, Multicall3, SafeDeployer},
     precompiles::{
         INITIAL_FACTORY_OWNER, IValidatorConfigV2, createTokenCall, initial_zone_factory_state,
-        t13_zone_factory_state,
+        t13_zone_factory_state, t14_zone_factory_state,
     },
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -531,7 +531,9 @@ fn insert_zone_state_at_genesis(
 ) {
     if hardforks.active_at_genesis(TempoHardfork::T10) {
         println!("Initializing ZoneFactory and shared runtimes");
-        let accounts = if hardforks.active_at_genesis(TempoHardfork::T13) {
+        let accounts = if hardforks.active_at_genesis(TempoHardfork::T14) {
+            t14_zone_factory_state(INITIAL_FACTORY_OWNER)
+        } else if hardforks.active_at_genesis(TempoHardfork::T13) {
             t13_zone_factory_state(INITIAL_FACTORY_OWNER)
         } else {
             initial_zone_factory_state(INITIAL_FACTORY_OWNER)
@@ -884,7 +886,8 @@ mod tests {
         },
         zones::{
             T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-            ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
+            T14_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
+            ZONE_VERIFIER_RUNTIME,
         },
     };
 
@@ -951,7 +954,7 @@ mod tests {
     fn t10_genesis_installs_factory_and_canonical_shared_runtimes() {
         let mut alloc = BTreeMap::new();
         let hardforks = TempoHardforkArgs {
-            t13_time: Some(1),
+            hardfork: Some(TempoHardfork::T10),
             ..Default::default()
         };
         insert_zone_state_at_genesis(&hardforks, &mut alloc);
@@ -988,7 +991,10 @@ mod tests {
     #[test]
     fn t13_genesis_installs_t13_shared_runtimes() {
         let mut alloc = BTreeMap::new();
-        let hardforks = TempoHardforkArgs::default();
+        let hardforks = TempoHardforkArgs {
+            hardfork: Some(TempoHardfork::T13),
+            ..Default::default()
+        };
         insert_zone_state_at_genesis(&hardforks, &mut alloc);
 
         for (destination, expected) in [
@@ -1043,5 +1049,28 @@ mod tests {
         assert!(from_file.resolved_mnemonic().is_err());
         std::fs::remove_file(path).unwrap();
         assert!(from_file.validator_onchain_addresses().is_err());
+    }
+
+    #[tokio::test]
+    async fn generated_t14_genesis_installs_current_zone_runtimes() {
+        for args in ["", "--hardfork T14"] {
+            let genesis = generate(args).await;
+            let chainspec = tempo_chainspec::TempoChainSpec::from_genesis(genesis.clone());
+            assert_eq!(
+                tempo_chainspec::TempoHardforks::tempo_hardfork_at(&chainspec, 0),
+                TempoHardfork::T14
+            );
+            for (address, runtime) in [
+                (ZONE_PORTAL_IMPL_ADDRESS, T14_ZONE_PORTAL_RUNTIME),
+                (ZONE_VERIFIER_ADDRESS, T13_ZONE_VERIFIER_RUNTIME),
+                (ZONE_MESSENGER_ADDRESS, T13_ZONE_MESSENGER_RUNTIME),
+            ] {
+                assert_eq!(
+                    genesis.alloc[&address].code.as_ref(),
+                    Some(&runtime),
+                    "{args}: {address}"
+                );
+            }
+        }
     }
 }

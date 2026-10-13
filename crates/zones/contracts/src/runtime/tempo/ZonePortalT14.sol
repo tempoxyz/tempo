@@ -35,7 +35,7 @@ import { ITIP403Registry } from "tempo-std/interfaces/ITIP403Registry.sol";
 
 /// @title ZonePortal
 /// @notice Per-zone portal that escrows zone tokens on Tempo and manages deposits/withdrawals
-contract ZonePortal is IZonePortal {
+contract ZonePortalT14 is IZonePortal {
 
     using WithdrawalQueueLib for WithdrawalQueue;
 
@@ -619,13 +619,13 @@ contract ZonePortal is IZonePortal {
         return _enabledTokens[index];
     }
 
-    /// @notice Whether deposits and withdrawal processing are currently paused.
+    /// @notice Whether deposits, settlement, withdrawals, and refund claims are paused.
     /// @dev The pause expires automatically once block.timestamp reaches pauseExpiry.
     function paused() public view returns (bool) {
         return block.timestamp < pauseExpiry;
     }
 
-    /// @notice Pause deposits and withdrawal processing for 30 days.
+    /// @notice Pause deposits, settlement, withdrawals, and refund claims for 30 days.
     function pause() external whenNotPaused {
         _requireCapabilityActive(Capability.PausePortal);
         if (
@@ -638,7 +638,7 @@ contract ZonePortal is IZonePortal {
         emit PortalPaused(msg.sender);
     }
 
-    /// @notice Resume deposits and withdrawal processing before the pause expires.
+    /// @notice Resume deposits, settlement, withdrawals, and refund claims before expiry.
     /// @dev Admin recovery remains available after the pause capability is abdicated.
     function resume() external onlyAdmin {
         pauseExpiry = 0;
@@ -1237,7 +1237,7 @@ contract ZonePortal is IZonePortal {
         }
     }
 
-    function claimRefund(address token) external returns (uint128 amount) {
+    function claimRefund(address token) external whenNotPaused returns (uint128 amount) {
         _requireAllowed(msg.sender);
         amount = refunds[token][msg.sender];
         refunds[token][msg.sender] = 0;
@@ -1324,6 +1324,7 @@ contract ZonePortal is IZonePortal {
     )
         external
         onlySequencer
+        whenNotPaused
     {
         if (blockTransition.prevBlockHash != blockHash) {
             revert InvalidProof();

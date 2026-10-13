@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - "crates/zones/contracts/**"
+      - "crates/contracts/src/zones.rs"
+      - "crates/chainspec/src/genesis/dev.json"
       - ".github/workflows/zones-contracts.yml"
       - ".gitmodules"
   merge_group:
@@ -44,6 +46,8 @@ jobs:
           filters: |
             zones_contracts:
               - 'crates/zones/contracts/**'
+              - 'crates/contracts/src/zones.rs'
+              - 'crates/chainspec/src/genesis/dev.json'
               - '.gitmodules'
               - '.github/workflows/zones-contracts.yml'
 
@@ -90,13 +94,19 @@ jobs:
         working-directory: crates/zones/contracts
         run: forge build --skip test
 
+      - uses: tempoxyz/gh-actions/vendor/astral-sh/setup-uv@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+
+      - name: Check versioned Zone Portal bytecode
+        working-directory: crates/zones/contracts
+        run: uv run --no-project python scripts/check-zone-portal-bytecode.py
+
       # Exclude all test helpers too: their imports would pull the runtimes back in. Protocol-
       # installed runtimes have a separate 64 KiB budget in PortalRuntime.t.sol.
       - name: Check sizes of normally deployed contracts
         working-directory: crates/zones/contracts
         run: |
           forge build --sizes --skip 'test/**' \
-            src/runtime/tempo/ZonePortal.sol \
+            src/runtime/tempo/ZonePortalT14.sol \
             src/runtime/tempo/ZoneMessenger.sol \
             src/runtime/tempo/Verifier.sol
 
@@ -235,7 +245,7 @@ jobs:
           # Protocol-installed runtimes are excluded here and have a separate 64 KiB budget in
           # PortalRuntime.t.sol.
           "$GITHUB_WORKSPACE/foundry/target/release/forge" build --sizes --skip 'test/**' \
-            src/runtime/tempo/ZonePortal.sol \
+            src/runtime/tempo/ZonePortalT14.sol \
             src/runtime/tempo/ZoneMessenger.sol \
             src/runtime/tempo/Verifier.sol
 
@@ -335,7 +345,7 @@ jobs:
           generated_layout="$RUNNER_TEMP/ZonePortal.generated.json"
 
           jq --sort-keys "$normalizer" storage-layouts/ZonePortal.json > "$expected_layout"
-          forge inspect ZonePortal storage-layout --json \
+          forge inspect ZonePortalT14 storage-layout --json \
             | jq --sort-keys "$normalizer" > "$generated_layout"
 
           diff --unified \

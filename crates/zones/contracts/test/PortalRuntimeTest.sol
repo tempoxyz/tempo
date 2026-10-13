@@ -2,14 +2,14 @@
 pragma solidity ^0.8.13;
 
 import { ZONE_PORTAL_IMPL_ADDRESS } from "../src/runtime/interfaces/IZone.sol";
-import { ZonePortal } from "../src/runtime/tempo/ZonePortal.sol";
+import { ZonePortalT14 as ZonePortal } from "../src/runtime/tempo/ZonePortalT14.sol";
 import { Test } from "forge-std/Test.sol";
 
 /// Fixtures mirror Tempo's shared runtime and native factory's ERC-1167 proxies.
 abstract contract PortalRuntimeTest is Test {
 
     function _installPortalRuntime() internal {
-        vm.etch(ZONE_PORTAL_IMPL_ADDRESS, vm.getDeployedCode("ZonePortal.sol:ZonePortal"));
+        vm.etch(ZONE_PORTAL_IMPL_ADDRESS, vm.getDeployedCode("ZonePortalT14.sol:ZonePortalT14"));
     }
 
     function _portalProxyRuntime() internal pure returns (bytes memory) {

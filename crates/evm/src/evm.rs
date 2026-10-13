@@ -384,9 +384,10 @@ mod tests {
         },
         zones::{
             BlockTransition, DepositQueueTransition,
-            SwapAndDepositRouter as TestWithdrawalReceiver, ZONE_MESSENGER_RUNTIME,
+            SwapAndDepositRouter as TestWithdrawalReceiver, T13_ZONE_PORTAL_RUNTIME,
+            T14_ZONE_PORTAL_RUNTIME, TokenEnablementTransition, ZONE_MESSENGER_RUNTIME,
             ZONE_PORTAL_RUNTIME, ZoneMessenger as IZoneMessenger, ZonePortal as IZonePortal,
-            legacySubmitBatchCall,
+            legacySubmitBatchCall, submitBatchCall,
         },
     };
     use tempo_precompiles::{
@@ -1785,5 +1786,109 @@ mod tests {
             1_000,
             "T1 code deposit cost should be 1,000 per byte"
         );
+    }
+
+    #[test]
+    fn zone_portal_runtime_gates_refund_and_settlement_pause_at_t14() {
+        let caller = Address::repeat_byte(0x11);
+        for (fork, runtime) in [
+            (TempoHardfork::T13, T13_ZONE_PORTAL_RUNTIME),
+            (TempoHardfork::T14, T14_ZONE_PORTAL_RUNTIME),
+        ] {
+            for paused in [false, true] {
+                let mut db = InMemoryDB::default();
+                let code = Bytecode::new_legacy(runtime.clone());
+                db.insert_account_info(
+                    ZONE_PORTAL_IMPL_ADDRESS,
+                    AccountInfo {
+                        code_hash: code.hash_slow(),
+                        code: Some(code),
+                        ..Default::default()
+                    },
+                );
+                // pauseExpiry is a uint64 at byte offset 8 in slot 25.
+                db.insert_account_storage(
+                    ZONE_PORTAL_IMPL_ADDRESS,
+                    U256::from(25),
+                    if paused {
+                        U256::from(u64::MAX) << 64
+                    } else {
+                        U256::ZERO
+                    },
+                )
+                .unwrap();
+                db.insert_account_storage(
+                    ZONE_PORTAL_IMPL_ADDRESS,
+                    U256::from_be_bytes(keccak256((caller, U256::from(20)).abi_encode()).0),
+                    U256::from(IZonePortal::Role::Sequencer as u8),
+                )
+                .unwrap();
+                let mut evm = TempoEvm::new(db, evm_env_with_spec(fork));
+                StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
+                    TIP20Setup::path_usd(caller).apply()
+                })
+                .unwrap();
+                let setup_state = evm.ctx_mut().journaled_state.finalize();
+                evm.db_mut().commit(setup_state);
+                let result = evm
+                    .transact_system_call(
+                        caller,
+                        ZONE_PORTAL_IMPL_ADDRESS,
+                        IZonePortal::claimRefundCall {
+                            token: PATH_USD_ADDRESS,
+                        }
+                        .abi_encode()
+                        .into(),
+                    )
+                    .unwrap();
+                if paused && fork.is_t14() {
+                    assert_matches!(result.result, ExecutionResult::Revert { output, .. }
+                        if output.as_ref() == IZonePortal::PortalIsPaused::SELECTOR);
+                } else {
+                    assert_matches!(result.result, ExecutionResult::Success {
+                        output: revm::context::result::Output::Call(output), .. }
+                        if IZonePortal::claimRefundCall::abi_decode_returns(&output).unwrap() == 0);
+                }
+
+                let result = evm
+                    .transact_system_call(
+                        caller,
+                        ZONE_PORTAL_IMPL_ADDRESS,
+                        submitBatchCall {
+                            tempoBlockNumber: 0,
+                            recentTempoBlockNumber: 0,
+                            blockTransition: BlockTransition {
+                                prevBlockHash: B256::repeat_byte(1),
+                                nextBlockHash: B256::ZERO,
+                            },
+                            depositQueueTransition: DepositQueueTransition {
+                                prevProcessedHash: B256::ZERO,
+                                nextProcessedHash: B256::ZERO,
+                                prevDepositNumber: 0,
+                                nextDepositNumber: 0,
+                            },
+                            tokenEnablementTransition: TokenEnablementTransition {
+                                prevProcessedTokenCount: 0,
+                                nextProcessedTokenCount: 0,
+                            },
+                            withdrawalQueueHash: B256::ZERO,
+                            verifierConfig: Bytes::new(),
+                            proof: Bytes::new(),
+                            nextZoneHeight: U256::ZERO,
+                            signatures: Vec::new(),
+                        }
+                        .abi_encode()
+                        .into(),
+                    )
+                    .unwrap();
+                let expected = if paused && fork.is_t14() {
+                    IZonePortal::PortalIsPaused::SELECTOR
+                } else {
+                    IZonePortal::InvalidProof::SELECTOR
+                };
+                assert_matches!(result.result, ExecutionResult::Revert { output, .. }
+                    if output.as_ref() == expected);
+            }
+        }
     }
 }

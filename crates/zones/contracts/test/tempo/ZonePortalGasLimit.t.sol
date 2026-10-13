@@ -6,7 +6,7 @@ import {
     Withdrawal,
     ZONE_FACTORY_ADDRESS
 } from "../../src/runtime/interfaces/IZone.sol";
-import { ZonePortal } from "../../src/runtime/tempo/ZonePortal.sol";
+import { ZonePortalT14 as ZonePortal } from "../../src/runtime/tempo/ZonePortalT14.sol";
 import { PortalRuntimeTest } from "../PortalRuntimeTest.sol";
 import { StdPrecompiles } from "tempo-std/StdPrecompiles.sol";
 import { ITIP403Registry } from "tempo-std/interfaces/ITIP403Registry.sol";

@@ -18,7 +18,7 @@ import {
 import { EIP2935 } from "../src/runtime/libraries/BlockHashHistory.sol";
 import { Verifier } from "../src/runtime/tempo/Verifier.sol";
 import { ZoneMessenger } from "../src/runtime/tempo/ZoneMessenger.sol";
-import { ZonePortal } from "../src/runtime/tempo/ZonePortal.sol";
+import { ZonePortalT14 as ZonePortal } from "../src/runtime/tempo/ZonePortalT14.sol";
 import { PortalRuntimeTest } from "./PortalRuntimeTest.sol";
 import { MockZoneGateway } from "./mocks/MockZoneGateway.sol";
 import { console } from "forge-std/Test.sol";

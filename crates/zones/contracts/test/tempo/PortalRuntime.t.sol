@@ -4,7 +4,7 @@ pragma solidity ^0.8.13;
 import { ZONE_PORTAL_IMPL_ADDRESS } from "../../src/runtime/interfaces/IZone.sol";
 import { Verifier } from "../../src/runtime/tempo/Verifier.sol";
 import { ZoneMessenger } from "../../src/runtime/tempo/ZoneMessenger.sol";
-import { ZonePortal } from "../../src/runtime/tempo/ZonePortal.sol";
+import { ZonePortalT14 as ZonePortal } from "../../src/runtime/tempo/ZonePortalT14.sol";
 import { PortalRuntimeTest } from "../PortalRuntimeTest.sol";
 
 contract PortalRuntimeTestCase is PortalRuntimeTest {
@@ -15,7 +15,7 @@ contract PortalRuntimeTestCase is PortalRuntimeTest {
 
     function test_protocolInstalledRuntimesStayWithinSizeBudget() public view {
         assertLe(
-            vm.getDeployedCode("ZonePortal.sol:ZonePortal").length,
+            vm.getDeployedCode("ZonePortalT14.sol:ZonePortalT14").length,
             MAX_PROTOCOL_RUNTIME_SIZE,
             "ZonePortal runtime exceeds 64 KiB"
         );
@@ -33,7 +33,9 @@ contract PortalRuntimeTestCase is PortalRuntimeTest {
 
     function test_installsExactArtifactAndNativeProxy() public {
         ZonePortal portal = _newPortalProxy(1);
-        assertEq(ZONE_PORTAL_IMPL_ADDRESS.code, vm.getDeployedCode("ZonePortal.sol:ZonePortal"));
+        assertEq(
+            ZONE_PORTAL_IMPL_ADDRESS.code, vm.getDeployedCode("ZonePortalT14.sol:ZonePortalT14")
+        );
         assertEq(address(portal), address(0x5ad0000000000000000000000000000000000001));
         assertEq(
             address(portal).code,
