@@ -1602,9 +1602,10 @@ pub struct ClaimValidatorFees {
     #[arg(long, value_name = "ADDRESS")]
     at_address: Option<Address>,
 
-    /// TIP-20 token address in which the fees accrued.
+    /// TIP-20 token address in which the fees accrued. Defaults to the recipient's current
+    /// preferred fee token (requires RPC). Specify this to claim fees in a previous token.
     #[arg(long, value_name = "ADDRESS")]
-    token: Address,
+    token: Option<Address>,
 
     #[command(flatten)]
     submit: ValidatorTransactionArgs,
@@ -1612,21 +1613,45 @@ pub struct ClaimValidatorFees {
 
 impl ClaimValidatorFees {
     async fn run(self) -> eyre::Result<()> {
-        let fee_recipient = if let Some(id) = self.of_validator {
-            let provider = self.submit.provider().await?;
-            read_validator_from_contract(&provider, id)
-                .await?
-                .feeRecipient
-        } else {
-            self.at_address
-                .expect("clap requires --of-validator or --at-address")
-        };
-
-        let call = IFeeManager::distributeFeesCall {
-            validator: fee_recipient,
-            token: self.token,
-        };
+        let call = self
+            .resolve_call(async || self.submit.provider().await)
+            .await?;
         self.submit.call_to(TIP_FEE_MANAGER_ADDRESS, &call).await
+    }
+
+    async fn resolve_call<P: Provider<TempoNetwork>>(
+        &self,
+        connect: impl AsyncFnOnce() -> eyre::Result<P>,
+    ) -> eyre::Result<IFeeManager::distributeFeesCall> {
+        let (fee_recipient, token) =
+            if let (Some(address), Some(token)) = (self.at_address, self.token) {
+                (address, token)
+            } else {
+                let provider = connect().await?;
+                let fee_recipient = if let Some(id) = self.of_validator.clone() {
+                    read_validator_from_contract(&provider, id)
+                        .await?
+                        .feeRecipient
+                } else {
+                    self.at_address
+                        .expect("clap requires --of-validator or --at-address")
+                };
+                let token = if let Some(token) = self.token {
+                    token
+                } else {
+                    IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &provider)
+                        .validatorTokens(fee_recipient)
+                        .call()
+                        .await
+                        .wrap_err("failed to get recipient's preferred fee token")?
+                };
+                (fee_recipient, token)
+            };
+
+        Ok(IFeeManager::distributeFeesCall {
+            validator: fee_recipient,
+            token,
+        })
     }
 }
 
@@ -2184,5 +2209,63 @@ mod tests {
         assert_eq!(requested_url.as_deref(), Some("wss://rpc.presto.tempo.xyz"));
         assert_eq!(err.to_string(), "failed to get latest block number");
         assert!(asserter.read_q().is_empty());
+    }
+
+    #[tokio::test]
+    async fn claim_validator_fees_infers_recipient_token() {
+        for (source, value) in [
+            ("--at-address", TEST_FEE_RECIPIENT),
+            ("--of-validator", "1"),
+        ] {
+            let cli = TempoCli::try_parse_from([
+                "tempo",
+                "consensus",
+                "claim-fees",
+                source,
+                value,
+                "--dry-run",
+            ])
+            .unwrap();
+            let cmd = match cli.command {
+                reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
+                    ConsensusSubcommand::ClaimValidatorFees(cmd),
+                )) => cmd,
+                other => panic!("expected ClaimValidatorFees, got `{other:?}`"),
+            };
+
+            let recipient = TEST_FEE_RECIPIENT.parse().unwrap();
+            let token = TEST_VALIDATOR_TOKEN.parse().unwrap();
+            let asserter = Asserter::new();
+            if source == "--of-validator" {
+                let validator = Validator {
+                    publicKey: TEST_PUBLIC_KEY.parse().unwrap(),
+                    validatorAddress: TEST_VALIDATOR_ADDRESS.parse().unwrap(),
+                    ingress: TEST_INGRESS.to_owned(),
+                    egress: TEST_EGRESS.to_owned(),
+                    feeRecipient: recipient,
+                    index: 1,
+                    addedAtHeight: 0,
+                    deactivatedAtHeight: 0,
+                };
+                asserter.push_success(&Bytes::from(
+                    IValidatorConfigV2::validatorByIndexCall::abi_encode_returns(&validator),
+                ));
+            }
+            asserter.push_success(&Bytes::from(
+                IFeeManager::validatorTokensCall::abi_encode_returns(&token),
+            ));
+
+            let call = cmd
+                .resolve_call(async || {
+                    Ok(ProviderBuilder::new_with_network::<TempoNetwork>()
+                        .connect_mocked_client(asserter.clone()))
+                })
+                .await
+                .unwrap();
+
+            assert_eq!(call.validator, recipient);
+            assert_eq!(call.token, token);
+            assert!(asserter.read_q().is_empty());
+        }
     }
 }
