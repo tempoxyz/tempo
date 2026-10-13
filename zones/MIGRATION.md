@@ -19,11 +19,12 @@ The root Cargo workspace now owns the imported Zones crates, prover binaries,
 and lockfile. `cargo zone-xtask` runs Zones tooling; `cargo xtask` continues to run
 Tempo tooling. Zones crates retain version 0.3.5 independently of Tempo.
 
+Root lint and test jobs cover the unified workspace. The build matrix includes
+Zones and prover binaries, and root nextest configuration preserves Zones’
+integration-test concurrency limits. Imported lint/test/build workflows are retired.
+
 The remaining workflow and publication prerequisites are:
 
-- The inactive `zones/.github/workflows/{lint,test,build}.yml` remain as coverage
-  references until that integration lands. Then extend the existing root jobs,
-  preserve the Zones nextest concurrency limits, and retire these definitions.
 - Docker, release, benchmarks, and prover workflows retain distinct product
   behavior. Their legacy paths, repository guards, tag/release ownership, and
   external event/STS/AWS consumers need a coordinated migration. The Zones
