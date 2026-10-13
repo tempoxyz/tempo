@@ -36,7 +36,7 @@ impl BestTransactionsPrewarming {
         best_txs: Txs,
     ) -> Self
     where
-        Txs: BestTransactions<Item = BestTransaction> + Send + 'static,
+        Txs: BestTransactions<Item = BestTransaction> + 'static,
         Provider: StateProviderFactory + Clone + 'static,
     {
         let (transactions_tx, transactions_rx) = mpsc::channel();

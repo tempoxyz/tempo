@@ -214,7 +214,7 @@ where
 
 impl<I> BestTransactions for StateAwareBestTransactions<I>
 where
-    I: BestTransactions + Send,
+    I: BestTransactions,
     I::Item: StateAwarePoolTransaction,
 {
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {

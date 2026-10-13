@@ -466,8 +466,7 @@ impl NodeTypes for ZoneNode {
 pub struct ZoneAddOns<N>
 where
     N: FullNodeComponents<Types = ZoneNode, Evm = ZoneEvmConfig>,
-    N::Pool: TempoTransactionPoolExt,
-    N::Pool: reth_transaction_pool::TransactionPool<Transaction = TempoPooledTransaction>,
+    N::Pool: TempoTransactionPoolExt<Transaction = TempoPooledTransaction>,
 {
     inner: RpcAddOns<
         N,
@@ -506,8 +505,7 @@ where
 impl<N> std::fmt::Debug for ZoneAddOns<N>
 where
     N: FullNodeComponents<Types = ZoneNode, Evm = ZoneEvmConfig>,
-    N::Pool: TempoTransactionPoolExt,
-    N::Pool: reth_transaction_pool::TransactionPool<Transaction = TempoPooledTransaction>,
+    N::Pool: TempoTransactionPoolExt<Transaction = TempoPooledTransaction>,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ZoneAddOns").finish_non_exhaustive()
@@ -575,10 +573,7 @@ struct P2PRuntime {
 impl<N> NodeAddOns<N> for ZoneAddOns<N>
 where
     N: FullNodeComponents<Types = ZoneNode, Evm = ZoneEvmConfig>,
-    N::Pool: TempoTransactionPoolExt,
-    N::Pool: reth_transaction_pool::TransactionPool<
-            Transaction = tempo_transaction_pool::transaction::TempoPooledTransaction,
-        >,
+    N::Pool: TempoTransactionPoolExt<Transaction = TempoPooledTransaction>,
 {
     type Handle = <RpcAddOns<
         N,
@@ -1094,7 +1089,7 @@ async fn install_manifest_forced_recovery<P>(
     schedule: &LeadershipSchedule,
 ) -> eyre::Result<()>
 where
-    P: BlockNumReader + HeaderProvider<Header = TempoHeader> + StateProviderFactory,
+    P: HeaderProvider<Header = TempoHeader> + StateProviderFactory,
 {
     let Some(recovery) = manifest.forced_recovery() else {
         return Ok(());
@@ -1239,10 +1234,7 @@ async fn seed_leadership_schedule(
 impl<N> ZoneAddOns<N>
 where
     N: FullNodeComponents<Types = ZoneNode, Evm = ZoneEvmConfig>,
-    N::Pool: TempoTransactionPoolExt,
-    N::Pool: reth_transaction_pool::TransactionPool<
-            Transaction = tempo_transaction_pool::transaction::TempoPooledTransaction,
-        >,
+    N::Pool: TempoTransactionPoolExt<Transaction = TempoPooledTransaction>,
 {
     async fn start_p2p(
         config: P2pConfig,
@@ -1693,10 +1685,7 @@ where
 impl<N> RethRpcAddOns<N> for ZoneAddOns<N>
 where
     N: FullNodeComponents<Types = ZoneNode, Evm = ZoneEvmConfig>,
-    N::Pool: TempoTransactionPoolExt,
-    N::Pool: reth_transaction_pool::TransactionPool<
-            Transaction = tempo_transaction_pool::transaction::TempoPooledTransaction,
-        >,
+    N::Pool: TempoTransactionPoolExt<Transaction = TempoPooledTransaction>,
 {
     type EthApi = <TempoEthApiBuilder<N> as EthApiBuilder<N>>::EthApi;
 
@@ -1708,10 +1697,7 @@ where
 impl<N> EngineValidatorAddOn<N> for ZoneAddOns<N>
 where
     N: FullNodeComponents<Types = ZoneNode, Evm = ZoneEvmConfig>,
-    N::Pool: TempoTransactionPoolExt,
-    N::Pool: reth_transaction_pool::TransactionPool<
-            Transaction = tempo_transaction_pool::transaction::TempoPooledTransaction,
-        >,
+    N::Pool: TempoTransactionPoolExt<Transaction = TempoPooledTransaction>,
 {
     type ValidatorBuilder = BasicEngineValidatorBuilder<ZoneEngineValidatorBuilder>;
 
@@ -2045,7 +2031,7 @@ where
 /// boundary.
 fn latest_operational_tempo_block<P>(provider: &P) -> eyre::Result<u64>
 where
-    P: BlockNumReader + ReceiptProvider + StateProviderFactory,
+    P: ReceiptProvider + StateProviderFactory,
 {
     let best = provider.best_block_number()?;
     for number in (1..=best).rev() {

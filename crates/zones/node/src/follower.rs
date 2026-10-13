@@ -227,8 +227,6 @@ where
         + HeaderProvider<Header = TempoHeader>
         + StateProviderFactory
         + Clone
-        + Send
-        + Sync
         + 'static,
 {
     pub(crate) fn new(
