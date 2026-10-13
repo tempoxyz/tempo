@@ -1592,7 +1592,7 @@ fn key_from_file<P: AsRef<Path>>(p: P) -> eyre::Result<PrivateKeySigner> {
 
 /// Claim fees for a validator's current fee recipient or an explicit recipient.
 #[derive(Debug, clap::Args)]
-#[group(required = true, multiple = false, args = ["of_validator", "from_address"])]
+#[group(required = true, multiple = false, args = ["of_validator", "at_address"])]
 pub struct ClaimValidatorFees {
     /// Validator Ethereum address, ed25519 public key, or index. Resolves its current fee recipient.
     #[arg(long, value_name = "ID")]
@@ -1600,7 +1600,7 @@ pub struct ClaimValidatorFees {
 
     /// Claim fees accrued to this address instead of looking up a validator (including old recipients).
     #[arg(long, value_name = "ADDRESS")]
-    from_address: Option<Address>,
+    at_address: Option<Address>,
 
     /// TIP-20 token address in which the fees accrued.
     #[arg(long, value_name = "ADDRESS")]
@@ -1618,8 +1618,8 @@ impl ClaimValidatorFees {
                 .await?
                 .feeRecipient
         } else {
-            self.from_address
-                .expect("clap requires --of-validator or --from-address")
+            self.at_address
+                .expect("clap requires --of-validator or --at-address")
         };
 
         let call = IFeeManager::distributeFeesCall {
@@ -2137,7 +2137,7 @@ mod tests {
             "tempo",
             "consensus",
             "claim-fees",
-            "--from-address",
+            "--at-address",
             TEST_FEE_RECIPIENT,
             "--token",
             TEST_VALIDATOR_TOKEN,

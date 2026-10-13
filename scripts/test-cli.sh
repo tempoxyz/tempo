@@ -32,7 +32,7 @@ fi
 # Verify the emitted transaction, including the recipient and token ABI arguments.
 # Invalid RPC and wallet paths ensure an explicit-recipient dry run stays offline.
 run_ok "claim-fees offline dry run" "$TEMPO" --quiet consensus claim-fees \
-    --from-address 0x1111111111111111111111111111111111111111 \
+    --at-address 0x1111111111111111111111111111111111111111 \
     --token 0x20c0000000000000000000000000000000000000 \
     --rpc-url not-a-url --wallet-key /nonexistent/claim-fees-wallet --dry-run --yes
 EXPECTED_CLAIM_INPUT="0xa6c07924"
