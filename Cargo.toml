@@ -139,6 +139,27 @@ panic = "abort"
 incremental = false
 
 [workspace.dependencies]
+zone-chainspec = { path = "crates/zones/chainspec" }
+zone-evm = { path = "crates/zones/evm" }
+zone-l1 = { path = "crates/zones/l1" }
+zone-p2p = { path = "crates/zones/p2p" }
+zone-precompiles = { path = "crates/zones/precompiles", default-features = false }
+zone-prover = { path = "crates/zones/prover" }
+zone-rpc = { path = "crates/zones/rpc" }
+zone-sequencer = { path = "crates/zones/sequencer" }
+zone-spf = { path = "crates/zones/spf" }
+rcgen = { version = "0.14.7", default-features = false, features = ["crypto", "aws_lc_rs"] }
+tokio-rustls = { version = "0.26.4", default-features = false, features = ["aws_lc_rs"] }
+reth-chain-state = { git = "https://github.com/paradigmxyz/reth", rev = "3ea44aa" }
+reth-trie-sparse = { git = "https://github.com/paradigmxyz/reth", rev = "3ea44aa", default-features = false, features = ["std"] }
+alloy-chains = "0.2.36"
+alloy-rpc-types-debug = "2.5.0"
+minicbor = { version = "=2.3.0", default-features = false, features = ["alloc"] }
+minicbor-serde = { version = "=0.7.1", default-features = false, features = ["alloc"] }
+serde_yaml = "0.9.34"
+toml = "0.9.12"
+tokio-tungstenite = "0.29"
+
 tempo-state-bloat = { path = "crates/state-bloat" }
 aws-lc-rs = { version = "1.17.0", default-features = false, features = ["alloc", "non-fips", "ring-sig-verify"] }
 tempo-alloy = { path = "crates/alloy" }
