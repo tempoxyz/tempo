@@ -49,7 +49,6 @@ use reth_primitives_traits::SealedHeader;
 use reth_provider::ChainSpecProvider;
 use reth_rpc_api::Web3ApiServer as _;
 use reth_rpc_builder::Identity;
-use reth_rpc_eth_api::EthApiTypes;
 use reth_storage_api::{
     BlockNumReader, EmptyBodyStorage, HeaderProvider, ReceiptProvider, StateProvider,
     StateProviderFactory,
@@ -579,14 +578,6 @@ where
     N::Pool: TempoTransactionPoolExt,
     N::Pool: reth_transaction_pool::TransactionPool<
             Transaction = tempo_transaction_pool::transaction::TempoPooledTransaction,
-        >,
-    TempoEthApiBuilder<N>: EthApiBuilder<
-            N,
-            EthApi: reth_rpc_eth_api::helpers::FullEthApi<
-                Evm = ZoneEvmConfig,
-                Primitives = TempoPrimitives,
-                NetworkTypes = TempoNetwork,
-            >,
         >,
 {
     type Handle = <RpcAddOns<
@@ -1252,14 +1243,6 @@ where
     N::Pool: reth_transaction_pool::TransactionPool<
             Transaction = tempo_transaction_pool::transaction::TempoPooledTransaction,
         >,
-    TempoEthApiBuilder<N>: EthApiBuilder<
-            N,
-            EthApi: reth_rpc_eth_api::helpers::FullEthApi<
-                Evm = ZoneEvmConfig,
-                Primitives = TempoPrimitives,
-                NetworkTypes = TempoNetwork,
-            >,
-        >,
 {
     async fn start_p2p(
         config: P2pConfig,
@@ -1714,14 +1697,6 @@ where
     N::Pool: reth_transaction_pool::TransactionPool<
             Transaction = tempo_transaction_pool::transaction::TempoPooledTransaction,
         >,
-    TempoEthApiBuilder<N>: EthApiBuilder<
-            N,
-            EthApi: reth_rpc_eth_api::helpers::FullEthApi<
-                Evm = ZoneEvmConfig,
-                Primitives = TempoPrimitives,
-                NetworkTypes = TempoNetwork,
-            >,
-        >,
 {
     type EthApi = <TempoEthApiBuilder<N> as EthApiBuilder<N>>::EthApi;
 
@@ -1737,7 +1712,6 @@ where
     N::Pool: reth_transaction_pool::TransactionPool<
             Transaction = tempo_transaction_pool::transaction::TempoPooledTransaction,
         >,
-    TempoEthApiBuilder<N>: EthApiBuilder<N, EthApi: EthApiTypes<NetworkTypes = TempoNetwork>>,
 {
     type ValidatorBuilder = BasicEngineValidatorBuilder<ZoneEngineValidatorBuilder>;
 
