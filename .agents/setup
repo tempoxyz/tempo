@@ -62,7 +62,16 @@ install_just() {
   just --version
 }
 
+install_archil() {
+  # FUSE client for the shared Archil disk that .agents/resume mounts.
+  if ! command -v archil >/dev/null; then
+    curl -fsSL https://archil.com/install | ARCHIL_SKIP_IAM_CHECK=1 sh
+  fi
+  archil --version
+}
+
 step "apt packages" install_apt_packages
+step "archil" install_archil
 step "rust toolchains" install_rust
 step "cargo-nextest" install_nextest
 step "just" install_just
