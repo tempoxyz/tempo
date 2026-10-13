@@ -1589,15 +1589,18 @@ fn key_from_file<P: AsRef<Path>>(p: P) -> eyre::Result<PrivateKeySigner> {
         .wrap_err("failed converting file decoded hex bytes to private key")
 }
 
-/// Claim fees for a validator's current fee recipient or an explicit recipient.
+/// Claim fees for an active validator's current fee recipient or an explicit recipient.
 #[derive(Debug, clap::Args)]
 #[group(required = true, multiple = false, args = ["of_validator", "at_address"])]
 pub struct ClaimFees {
-    /// Validator Ethereum address, ed25519 public key, or index. Resolves its current fee recipient.
+    /// Active validator Ethereum address, ed25519 public key, or index. Resolves its current
+    /// fee recipient. Historical or deactivated entries (including old keys after rotation)
+    /// are not supported; use --at-address with their fee recipient to claim historical fees.
     #[arg(long, value_name = "ID")]
     of_validator: Option<ValidatorId>,
 
-    /// Claim fees accrued to this address instead of looking up a validator (including old recipients).
+    /// Claim fees accrued to this address, including recipients of historical or deactivated
+    /// validators and previous fee recipients.
     #[arg(long, value_name = "ADDRESS")]
     at_address: Option<Address>,
 
@@ -1622,30 +1625,36 @@ impl ClaimFees {
         &self,
         connect: impl AsyncFnOnce() -> eyre::Result<P>,
     ) -> eyre::Result<IFeeManager::distributeFeesCall> {
-        let (fee_recipient, token) =
-            if let (Some(address), Some(token)) = (self.at_address, self.token) {
-                (address, token)
+        let (fee_recipient, token) = if let (Some(address), Some(token)) =
+            (self.at_address, self.token)
+        {
+            (address, token)
+        } else {
+            let provider = connect().await?;
+            let fee_recipient = if let Some(id) = self.of_validator.clone() {
+                let validator = read_validator_from_contract(&provider, id).await?;
+                if validator.deactivatedAtHeight != 0 {
+                    bail!(
+                        "validator entry is historical or deactivated; use the current validator ID, or --at-address {} to claim fees for its historical recipient",
+                        validator.feeRecipient
+                    );
+                }
+                validator.feeRecipient
             } else {
-                let provider = connect().await?;
-                let fee_recipient = if let Some(id) = self.of_validator.clone() {
-                    read_validator_from_contract(&provider, id)
-                        .await?
-                        .feeRecipient
-                } else {
-                    self.at_address
-                        .expect("clap requires --of-validator or --at-address")
-                };
-                let token = if let Some(token) = self.token {
-                    token
-                } else {
-                    IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &provider)
-                        .validatorTokens(fee_recipient)
-                        .call()
-                        .await
-                        .wrap_err("failed to get recipient's preferred fee token")?
-                };
-                (fee_recipient, token)
+                self.at_address
+                    .expect("clap requires --of-validator or --at-address")
             };
+            let token = if let Some(token) = self.token {
+                token
+            } else {
+                IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &provider)
+                    .validatorTokens(fee_recipient)
+                    .call()
+                    .await
+                    .wrap_err("failed to get recipient's preferred fee token")?
+            };
+            (fee_recipient, token)
+        };
 
         Ok(IFeeManager::distributeFeesCall {
             validator: fee_recipient,
@@ -2378,6 +2387,55 @@ mod tests {
             assert!(submissions.lock().unwrap().is_empty());
             handle.stop().unwrap();
             handle.stopped().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn claim_fees_rejects_historical_validator_entries() {
+        for id in [TEST_PUBLIC_KEY, "1"] {
+            let cli = TempoCli::try_parse_from([
+                "tempo",
+                "consensus",
+                "claim-fees",
+                "--of-validator",
+                id,
+                "--dry-run",
+            ])
+            .unwrap();
+            let cmd = match cli.command {
+                reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
+                    ConsensusSubcommand::ClaimFees(cmd),
+                )) => cmd,
+                other => panic!("expected ClaimFees, got `{other:?}`"),
+            };
+            let validator = Validator {
+                publicKey: TEST_PUBLIC_KEY.parse().unwrap(),
+                validatorAddress: TEST_VALIDATOR_ADDRESS.parse().unwrap(),
+                ingress: TEST_INGRESS.to_owned(),
+                egress: TEST_EGRESS.to_owned(),
+                feeRecipient: TEST_FEE_RECIPIENT.parse().unwrap(),
+                index: 1,
+                addedAtHeight: 0,
+                deactivatedAtHeight: 100,
+            };
+            let asserter = Asserter::new();
+            asserter.push_success(&Bytes::from(
+                IValidatorConfigV2::validatorByIndexCall::abi_encode_returns(&validator),
+            ));
+
+            let err = cmd
+                .resolve_call(async || {
+                    Ok(ProviderBuilder::new_with_network::<TempoNetwork>()
+                        .connect_mocked_client(asserter.clone()))
+                })
+                .await
+                .unwrap_err();
+
+            assert_eq!(
+                err.to_string(),
+                "validator entry is historical or deactivated; use the current validator ID, or --at-address 0x0000000000000000000000000000000000000002 to claim fees for its historical recipient"
+            );
+            assert!(asserter.read_q().is_empty());
         }
     }
 }
