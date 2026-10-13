@@ -30,7 +30,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use tempo_chainspec::{
-    TempoHardfork,
+    TempoChainSpec, TempoHardfork,
     cli::TempoHardforkArgs,
     spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE},
 };
@@ -161,6 +161,15 @@ pub(crate) struct GenesisArgs {
     /// Tempo hardfork schedule. Individual `--<fork>-time` flags default to genesis (0).
     #[command(flatten)]
     hardforks: TempoHardforkArgs,
+
+    /// Development-only recovery factory address for configurable accounts.
+    #[arg(long, value_name = "ADDRESS")]
+    multisig_recovery_factory: Option<Address>,
+
+    /// Enable account migration and root retirement at this timestamp (0 = genesis).
+    /// Requires a recovery factory and must not precede T14. Disabled when omitted.
+    #[arg(long, value_name = "TIMESTAMP", requires = "multisig_recovery_factory")]
+    account_migration_time: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -481,6 +490,16 @@ impl GenesisArgs {
                 .insert_value("generalGasLimit".to_string(), general_gas_limit)?;
         }
         self.hardforks.write_to(&mut chain_config);
+        if let Some(factory) = self.multisig_recovery_factory {
+            chain_config
+                .extra_fields
+                .insert_value("multisigRecoveryFactory".to_string(), factory)?;
+        }
+        if let Some(time) = self.account_migration_time {
+            chain_config
+                .extra_fields
+                .insert_value("accountMigrationTime".to_string(), time)?;
+        }
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
@@ -507,6 +526,14 @@ impl GenesisArgs {
 
         genesis.alloc = genesis_alloc;
         genesis.config = chain_config;
+
+        if self.multisig_recovery_factory.is_some() || self.account_migration_time.is_some() {
+            // Use the node's validation and protocol reservations before writing genesis.
+            genesis = TempoChainSpec::try_from_genesis(genesis)
+                .wrap_err("invalid configurable-account genesis configuration")?
+                .inner
+                .genesis;
+        }
 
         Ok((genesis, consensus_config))
     }
@@ -1043,5 +1070,111 @@ mod tests {
         assert!(from_file.resolved_mnemonic().is_err());
         std::fs::remove_file(path).unwrap();
         assert!(from_file.validator_onchain_addresses().is_err());
+    }
+
+    #[tokio::test]
+    async fn account_migration_is_opt_in() {
+        let genesis = generate("").await;
+        assert!(
+            !genesis
+                .config
+                .extra_fields
+                .contains_key("accountMigrationTime")
+        );
+        assert!(
+            !genesis
+                .config
+                .extra_fields
+                .contains_key("multisigRecoveryFactory")
+        );
+    }
+
+    #[tokio::test]
+    async fn account_migration_genesis_roundtrips_through_chainspec() {
+        let factory = address!("1234567890123456789012345678901234567890");
+        let genesis = generate(&format!(
+            "--hardfork T14 --account-migration-time 0 --multisig-recovery-factory {factory}"
+        ))
+        .await;
+        assert_eq!(genesis.config.extra_fields["accountMigrationTime"], 0);
+        assert_eq!(
+            genesis.config.extra_fields["multisigRecoveryFactory"],
+            serde_json::json!(factory)
+        );
+        assert_eq!(genesis.alloc[&factory].nonce, Some(1));
+        assert_eq!(
+            genesis.alloc[&factory].code,
+            Some(Bytes::from_static(&[0xef]))
+        );
+        assert_eq!(
+            genesis.alloc[&tempo_contracts::precompiles::NATIVE_MULTISIG_ADDRESS].code,
+            Some(Bytes::from_static(&[0xef]))
+        );
+        let roundtrip = serde_json::from_str(&serde_json::to_string(&genesis).unwrap()).unwrap();
+        let spec = TempoChainSpec::try_from_genesis(roundtrip).unwrap();
+        assert!(spec.info.account_migration_enabled(0));
+        assert_eq!(spec.info.multisig_recovery_factory(), Some(factory));
+        assert_eq!(spec.inner.genesis, genesis);
+    }
+
+    #[tokio::test]
+    async fn account_migration_can_be_scheduled_with_t14() {
+        let genesis = generate(
+            "--t14-time 100 --account-migration-time 200 --multisig-recovery-factory 0x1234567890123456789012345678901234567890",
+        )
+        .await;
+        let spec = TempoChainSpec::try_from_genesis(genesis).unwrap();
+        assert!(!spec.info.account_migration_enabled(199));
+        assert!(spec.info.account_migration_enabled(200));
+    }
+
+    #[tokio::test]
+    async fn recovery_factory_does_not_enable_migration() {
+        let genesis =
+            generate("--multisig-recovery-factory 0x1234567890123456789012345678901234567890")
+                .await;
+        assert!(
+            !genesis
+                .config
+                .extra_fields
+                .contains_key("accountMigrationTime")
+        );
+        let spec = TempoChainSpec::try_from_genesis(genesis).unwrap();
+        assert!(!spec.info.account_migration_enabled(u64::MAX));
+    }
+
+    #[tokio::test]
+    async fn invalid_account_migration_configuration_is_rejected() {
+        assert!(parse("--account-migration-time 0").is_err());
+        for args in [
+            "--hardfork T13 --account-migration-time 0",
+            "--t14-time 100 --account-migration-time 99",
+        ] {
+            let error = parse(&format!(
+                "{args} --multisig-recovery-factory 0x1234567890123456789012345678901234567890"
+            ))
+            .unwrap()
+            .generate_genesis()
+            .await
+            .unwrap_err();
+            assert_eq!(
+                error.root_cause().to_string(),
+                "accountMigrationTime requires multisigRecoveryFactory and must not precede T14"
+            );
+        }
+        for factory in [
+            Address::ZERO,
+            tempo_contracts::precompiles::NATIVE_MULTISIG_ADDRESS,
+        ] {
+            let error = parse(&format!("--multisig-recovery-factory {factory}"))
+                .unwrap()
+                .generate_genesis()
+                .await
+                .unwrap_err();
+            assert_eq!(
+                error.root_cause().to_string(),
+                "multisigRecoveryFactory must be a nonzero, non-reserved address"
+            );
+        }
     }
 }
