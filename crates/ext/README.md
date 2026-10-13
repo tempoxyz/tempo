@@ -18,6 +18,7 @@ tempo remove <extension>        →  delete binary and skill files
 - `launcher` — CLI entry point (clap). Routes to extension dispatch or management commands.
 - `installer` — Download, verify, and install extension binaries and skill files.
 - `registry` — Persistent registry at `$TEMPO_HOME/extensions.json` (installed versions, update check timestamps).
+- `sign` (feature `sign`) — Builds and signs release manifests. Backs the `tempo-sign` binary.
 
 ## Release Manifest
 
@@ -71,6 +72,30 @@ This prevents an attacker from taking a validly-signed binary for one extension 
 
 Binary and manifest download URLs must use `https://` or `file://`. Any other scheme (including `http://`) is rejected.
 
+## Signing Releases
+
+`tempo-sign` produces the manifests and signatures the installer verifies. It is behind the `sign` feature so the `tempo` launcher only links verification.
+
+```bash
+cargo build --locked --release -p tempo-ext --features sign --bin tempo-sign
+
+# One-time: generate a keypair and bake the public key into `PUBLIC_KEY` in launcher.rs
+tempo-sign generate-key release.key
+
+tempo-sign sign \
+  --key-file release.key \
+  --artifacts-dir artifacts \
+  --version 0.1.0 \
+  --base-url https://cli.tempo.xyz/extensions/tempo-wallet \
+  --description "Manage your Tempo Wallet" \
+  --skill https://cli.tempo.xyz/extensions/tempo-wallet/v0.1.0/SKILL.md \
+  --skill-sha256 "$(sha256sum SKILL.md | cut -d' ' -f1)" \
+  --skill-file SKILL.md \
+  --output manifest.json
+```
+
+Release workflows normally call it through `tempoxyz/gh-actions/.github/workflows/tempo-extension.yml`.
+
 ## Environment Variables
 
 | Variable | Description |
@@ -84,4 +109,4 @@ Binary and manifest download URLs must use `https://` or `file://`. Any other sc
 cargo test -p tempo-ext
 ```
 
-Integration tests in `tests/lifecycle.rs` exercise the full add → update → remove lifecycle against locally-signed binaries using `file://` URLs. No network access required.
+Integration tests in `tests/lifecycle.rs` exercise the full add → update → remove lifecycle against locally-signed binaries using `file://` URLs. `tests/sign.rs` installs manifests produced by `tempo-sign` through the launcher, so signer and verifier changes stay compatible. No network access required.

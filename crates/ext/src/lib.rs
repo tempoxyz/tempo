@@ -6,6 +6,8 @@
 mod installer;
 mod launcher;
 mod registry;
+#[cfg(feature = "sign")]
+pub mod sign;
 
 pub use installer::InstallerError;
 pub use launcher::{LauncherError, run};
