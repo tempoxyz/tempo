@@ -13489,6 +13489,7 @@ dependencies = [
  "eyre",
  "futures",
  "jiff",
+ "jsonrpsee",
  "nix 0.30.1",
  "opentelemetry-otlp",
  "parking_lot",

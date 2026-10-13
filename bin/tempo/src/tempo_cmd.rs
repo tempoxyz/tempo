@@ -1659,8 +1659,10 @@ mod tests {
     use super::*;
     use alloy::transports::mock::Asserter;
     use clap::Parser;
+    use jsonrpsee::{RpcModule, server::ServerBuilder, types::ErrorObjectOwned};
     use reth_ethereum_cli::Cli;
     use reth_rpc_server_types::{RethRpcModule, RpcModuleSelection, RpcModuleValidator};
+    use std::sync::{Arc, Mutex};
     use tempo_chainspec::spec::TempoChainSpecParser;
 
     type TempoCli = Cli<
@@ -2265,6 +2267,102 @@ mod tests {
             assert_eq!(call.validator, recipient);
             assert_eq!(call.token, token);
             assert!(asserter.read_q().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn claim_fees_dry_run_resolves_recipient_and_token_without_sending() {
+        for (source, value) in [
+            ("--at-address", TEST_FEE_RECIPIENT),
+            ("--of-validator", "1"),
+        ] {
+            let recipient = TEST_FEE_RECIPIENT.parse().unwrap();
+            let token = TEST_VALIDATOR_TOKEN.parse().unwrap();
+            let validator = Validator {
+                publicKey: TEST_PUBLIC_KEY.parse().unwrap(),
+                validatorAddress: TEST_VALIDATOR_ADDRESS.parse().unwrap(),
+                ingress: TEST_INGRESS.to_owned(),
+                egress: TEST_EGRESS.to_owned(),
+                feeRecipient: recipient,
+                index: 1,
+                addedAtHeight: 0,
+                deactivatedAtHeight: 0,
+            };
+
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let mut module = RpcModule::new(requests.clone());
+            module
+                .register_method("eth_chainId", |_, _, _| "0xa5bf")
+                .unwrap();
+            module
+                .register_method("eth_call", move |params, requests, _| {
+                    let (tx, block) = params.parse::<(TransactionRequest, String)>()?;
+                    let response = if tx.to == Some(VALIDATOR_CONFIG_V2_ADDRESS.into()) {
+                        IValidatorConfigV2::validatorByIndexCall::abi_encode_returns(&validator)
+                    } else {
+                        IFeeManager::validatorTokensCall::abi_encode_returns(&token)
+                    };
+                    requests.lock().unwrap().push((tx, block));
+                    Ok::<_, ErrorObjectOwned>(Bytes::from(response))
+                })
+                .unwrap();
+            // Only read methods are registered: any attempt to submit a transaction fails.
+            let server = ServerBuilder::default().build("127.0.0.1:0").await.unwrap();
+            let rpc_url = format!("http://{}", server.local_addr().unwrap());
+            let handle = server.start(module);
+
+            let cli = TempoCli::try_parse_from([
+                "tempo",
+                "consensus",
+                "claim-fees",
+                source,
+                value,
+                "--rpc-url",
+                &rpc_url,
+                "--dry-run",
+            ])
+            .unwrap();
+            let cmd = match cli.command {
+                reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
+                    ConsensusSubcommand::ClaimFees(cmd),
+                )) => cmd,
+                other => panic!("expected ClaimFees, got `{other:?}`"),
+            };
+
+            // Exercise lookup, transaction printing, and the dry-run exit with no wallet.
+            tokio::time::timeout(std::time::Duration::from_secs(5), cmd.run())
+                .await
+                .unwrap()
+                .unwrap();
+
+            let mut expected = Vec::new();
+            if source == "--of-validator" {
+                expected.push((
+                    TransactionRequest::default()
+                        .to(VALIDATOR_CONFIG_V2_ADDRESS)
+                        .input(
+                            IValidatorConfigV2::validatorByIndexCall { index: 1 }
+                                .abi_encode()
+                                .into(),
+                        ),
+                    "latest".to_owned(),
+                ));
+            }
+            expected.push((
+                TransactionRequest::default()
+                    .to(TIP_FEE_MANAGER_ADDRESS)
+                    .input(
+                        IFeeManager::validatorTokensCall {
+                            validator: recipient,
+                        }
+                        .abi_encode()
+                        .into(),
+                    ),
+                "latest".to_owned(),
+            ));
+            assert_eq!(*requests.lock().unwrap(), expected);
+            handle.stop().unwrap();
+            handle.stopped().await;
         }
     }
 }
