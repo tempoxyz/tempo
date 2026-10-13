@@ -825,7 +825,7 @@ mod tests {
 
     use std::{
         io,
-        net::{SocketAddr, TcpListener},
+        net::{SocketAddr, TcpListener, TcpStream},
         sync::{Arc, Mutex},
         time::Duration,
     };
@@ -902,9 +902,18 @@ mod tests {
         }
     }
 
+    /// Returns a loopback address for a P2P listener, which Commonware binds later itself.
+    ///
+    /// The accepted side closes first and leaves the port in `TIME_WAIT`. Until the listener binds
+    /// it, the kernel skips the port for other processes' `bind(0)` calls and outbound
+    /// connections, while Commonware's `SO_REUSEADDR` listener can still claim it.
     fn available_address() -> SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.local_addr().unwrap()
+        let address = listener.local_addr().unwrap();
+        let client = TcpStream::connect(address).unwrap();
+        drop(listener.accept().unwrap());
+        drop(client);
+        address
     }
 
     fn ed25519_identity(seed: u64) -> Ed25519Identity {
