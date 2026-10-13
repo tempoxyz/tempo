@@ -156,8 +156,6 @@ where
     P: StateProviderFactory
         + ChainSpecProvider<ChainSpec = TempoChainSpec>
         + CanonStateSubscriptions<Primitives = TempoPrimitives>
-        + Send
-        + Sync
         + 'static,
 {
     /// Spawns the replay task. Lagged notifications are reported rather than backfilled.
@@ -236,7 +234,7 @@ where
     }
 }
 
-impl<P: StateProviderFactory + Sync> ShadowReplayer<P> {
+impl<P: StateProviderFactory> ShadowReplayer<P> {
     /// Replays a canonical block under both rule sets.
     /// IMPORTANT: An error means the control arm can't be trusted. Callers must treat it as fatal.
     pub fn replay(

@@ -172,7 +172,7 @@ impl<P> OperatorZoneApi<P> {
 #[jsonrpsee::core::async_trait]
 impl<P> ZoneApiServer for OperatorZoneApi<P>
 where
-    P: StateProviderFactory + Clone + Send + Sync + 'static,
+    P: StateProviderFactory + Clone + 'static,
 {
     async fn get_zone_info(&self) -> RpcResult<ZoneInfoResponse> {
         let tempo_block_number = self
@@ -208,7 +208,7 @@ pub(crate) fn operator_zone_rpc_module<P>(
     provider: P,
 ) -> Result<RpcModule<()>, jsonrpsee::core::RegisterMethodError>
 where
-    P: HeaderProvider + StateProviderFactory + Clone + Send + Sync + 'static,
+    P: HeaderProvider + StateProviderFactory + Clone + 'static,
 {
     let mut module = RpcModule::new(());
     let set_leader_sequencer = sequencer.clone();

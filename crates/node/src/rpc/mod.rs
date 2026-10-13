@@ -139,10 +139,7 @@ impl<N> TempoEthApiBounds for N where
 /// This type implements the [`FullEthApi`](reth_rpc_eth_api::helpers::FullEthApi) by implemented
 /// all the `Eth` helper traits and prerequisite traits.
 #[derive(Debug, Clone)]
-pub struct TempoEthApi<N>
-where
-    N: TempoEthApiBounds,
-{
+pub struct TempoEthApi<N: RpcNodeCore<Primitives = TempoPrimitives>> {
     /// Gateway to node's core components.
     inner: EthApi<N, DynRpcConverter<N::Evm, TempoNetwork>>,
 }
