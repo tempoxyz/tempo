@@ -380,10 +380,7 @@ fn serve_backfill_page<P>(
     proofs: Option<&ProofCollectorHandle>,
 ) -> eyre::Result<()>
 where
-    P: BlockNumReader
-        + BlockReader<Block = Block>
-        + HeaderProvider<Header = TempoHeader>
-        + StateProviderFactory,
+    P: BlockReader<Block = Block> + HeaderProvider<Header = TempoHeader> + StateProviderFactory,
 {
     let tip = provider.last_block_number()?;
     let end = tip.min(start.saturating_add(BACKFILL_PAGE_SIZE.saturating_sub(1)));
@@ -440,8 +437,7 @@ pub(crate) async fn serve_backfill_requests<P>(
     mut requests: mpsc::Receiver<BackfillRequest>,
     proofs: Option<ProofCollectorHandle>,
 ) where
-    P: BlockNumReader
-        + BlockReader<Block = Block>
+    P: BlockReader<Block = Block>
         + HeaderProvider<Header = TempoHeader>
         + StateProviderFactory
         + Clone

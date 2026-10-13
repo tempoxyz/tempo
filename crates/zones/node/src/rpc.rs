@@ -37,7 +37,7 @@ use reth_rpc_eth_api::{
     helpers::{EthApiSpec, EthBlocks, EthCall, EthFees, EthState, EthTransactions, FullEthApi},
 };
 use reth_rpc_eth_types::{EthApiError, logs_utils};
-use reth_storage_api::{BlockNumReader, StateProviderFactory};
+use reth_storage_api::StateProviderFactory;
 use reth_trie_common::{ExecutionWitnessMode, HashedPostState, HashedStorage};
 use tempo_alloy::{
     TempoNetwork,
@@ -208,7 +208,7 @@ pub(crate) fn operator_zone_rpc_module<P>(
     provider: P,
 ) -> Result<RpcModule<()>, jsonrpsee::core::RegisterMethodError>
 where
-    P: BlockNumReader + HeaderProvider + StateProviderFactory + Clone + Send + Sync + 'static,
+    P: HeaderProvider + StateProviderFactory + Clone + Send + Sync + 'static,
 {
     let mut module = RpcModule::new(());
     let set_leader_sequencer = sequencer.clone();
@@ -544,7 +544,7 @@ fn get_sequencer_info<P>(
     provider: &P,
 ) -> Result<SequencerInfoResponse, JsonRpcError>
 where
-    P: BlockNumReader + HeaderProvider + StateProviderFactory,
+    P: HeaderProvider + StateProviderFactory,
 {
     let Some(context) = sequencer.get() else {
         // Single-sequencer (or not yet initialized) node: report the minimal view.
@@ -849,7 +849,7 @@ impl<Api: EthApiTypes + 'static> ZoneRpc<Api> {
 
 impl<Api> ZoneRpc<Api>
 where
-    Api: FullEthApi + EthApiTypes<NetworkTypes = TempoNetwork> + Send + Sync + 'static,
+    Api: FullEthApi + EthApiTypes<NetworkTypes = TempoNetwork> + 'static,
 {
     fn block_by_id(&self, id: BlockId) -> BoxFut<'_> {
         Box::pin(async move {
@@ -870,7 +870,7 @@ where
 
 impl<Api> zone_rpc::ZoneRpcApi for ZoneRpc<Api>
 where
-    Api: FullEthApi + EthApiTypes<NetworkTypes = TempoNetwork> + Send + Sync + 'static,
+    Api: FullEthApi + EthApiTypes<NetworkTypes = TempoNetwork> + 'static,
 {
     fn get_keychain_key(&self, account: Address, key_id: Address) -> BoxEyreFut<'_, KeyInfo> {
         Box::pin(async move {
@@ -1400,7 +1400,7 @@ where
 
 fn local_recovery_tip<P>(provider: &P) -> Result<PeerTip, JsonRpcError>
 where
-    P: BlockNumReader + HeaderProvider + StateProviderFactory,
+    P: HeaderProvider + StateProviderFactory,
 {
     let zone_height = provider.last_block_number().map_err(internal)?;
     let zone_header = provider

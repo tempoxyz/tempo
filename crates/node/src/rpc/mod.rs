@@ -592,7 +592,6 @@ where
             Evm = <N as RpcNodeCore>::Evm,
         > + FullNodeTypes<Provider = <N as RpcNodeCore>::Provider>
         + TempoEthApiBounds,
-    <N as RpcNodeCore>::Provider: ChainSpecProvider<ChainSpec = <N::Types as NodeTypes>::ChainSpec>,
     <<N as RpcNodeCore>::Evm as ConfigureEvm>::NextBlockEnvCtx: BuildPendingEnv<TempoHeader>,
     <N::Types as NodeTypes>::ChainSpec: Hardforks + EthereumHardforks,
 {
