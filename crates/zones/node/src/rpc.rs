@@ -849,7 +849,7 @@ impl<Api: EthApiTypes + 'static> ZoneRpc<Api> {
 
 impl<Api> ZoneRpc<Api>
 where
-    Api: FullEthApi + EthApiTypes<NetworkTypes = TempoNetwork> + Send + Sync + 'static,
+    Api: FullEthApi + EthApiTypes<NetworkTypes = TempoNetwork>,
 {
     fn block_by_id(&self, id: BlockId) -> BoxFut<'_> {
         Box::pin(async move {
@@ -870,7 +870,7 @@ where
 
 impl<Api> zone_rpc::ZoneRpcApi for ZoneRpc<Api>
 where
-    Api: FullEthApi + EthApiTypes<NetworkTypes = TempoNetwork> + Send + Sync + 'static,
+    Api: FullEthApi + EthApiTypes<NetworkTypes = TempoNetwork>,
 {
     fn get_keychain_key(&self, account: Address, key_id: Address) -> BoxEyreFut<'_, KeyInfo> {
         Box::pin(async move {

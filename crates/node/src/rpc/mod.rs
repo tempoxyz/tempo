@@ -89,7 +89,6 @@ pub trait TempoEthApiBounds:
         Primitives = TempoPrimitives,
         Pool: TempoTransactionPoolExt<Transaction: PoolTransaction<Pooled = TempoTxEnvelope>>,
         Evm: ConfigureEvm<
-            Primitives = TempoPrimitives,
             BlockExecutorFactory: BlockExecutorFactory<
                 EvmFactory: EvmFactory<
                     Tx = TempoTxEnv,
@@ -112,7 +111,6 @@ impl<N> TempoEthApiBounds for N where
             Primitives = TempoPrimitives,
             Pool: TempoTransactionPoolExt<Transaction: PoolTransaction<Pooled = TempoTxEnvelope>>,
             Evm: ConfigureEvm<
-                Primitives = TempoPrimitives,
                 BlockExecutorFactory: BlockExecutorFactory<
                     EvmFactory: EvmFactory<
                         Tx = TempoTxEnv,
