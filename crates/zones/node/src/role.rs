@@ -1,6 +1,6 @@
 //! Dynamic role supervision for multi-sequencer zone nodes.
 //!
-//! The [`RoleController`] switches complete role generations — block production or import,
+//! The role controller switches complete role generations — block production or import,
 //! broadcast, transaction flow, settlement, and sequencer background tasks — as one fenced
 //! unit, driven by the effective [`LeadershipSchedule`].
 //!
@@ -8,7 +8,7 @@
 //! Tempo anchor `N` to be consumed, if `schedule.leader_for(N)` is this node and the zone
 //! block embedding `N − 1` is locally canonical, the controller runs the leader generation
 //! and the engine produces `N`; otherwise it runs the follower generation and imports. The
-//! per-anchor [`ProductionPermit`](crate::ProductionPermit) inside the engine and the
+//! per-anchor [`ProductionPermit`] inside the engine and the
 //! anchor-aware sender fence inside follower import are the protocol fences; generation
 //! switching is lifecycle management.
 

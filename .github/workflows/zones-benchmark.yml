@@ -692,17 +692,19 @@ jobs:
         run: |
           set -euo pipefail
           cargo build --target-dir "$ZONES_BENCH_ZONES_TARGET_DIR" \
-            --locked --profile profiling -p tempo-zone -p tempo-zone-prover-utils -p tempo-xtask
+            --locked --profile profiling -p tempo-zone -p tempo-zone-prover-utils -p tempo-xtask \
+            --bin tempo-zone --bin tempo-zone-prover-utils --bin tempo-zone-xtask
           nu -c "source '$TEMPO_ROOT/tempo.nu'; build-in-worktree --no-default-features \
             '$TEMPO_ROOT' '$ZONES_BENCH_TEMPO_REF' profiling \
             'jemalloc,asm-keccak,keccak-cache-global,otlp' \
             '$ZONES_BENCH_TEMPO_REF'"
           cargo build --target-dir "$ZONES_BENCH_TEMPO_TARGET_DIR" \
-            --locked --manifest-path "$TEMPO_ROOT/Cargo.toml" --profile profiling -p tempo-xtask
+            --locked --manifest-path "$TEMPO_ROOT/Cargo.toml" --profile profiling -p tempo-xtask \
+            --bin tempo-xtask
           {
             echo "ZONE_BIN=$ZONES_BENCH_ZONES_TARGET_DIR/profiling/tempo-zone"
             echo "SPF_BIN=$ZONES_BENCH_ZONES_TARGET_DIR/profiling/tempo-zone-prover-utils"
-            echo "ZONES_XTASK_BIN=$ZONES_BENCH_ZONES_TARGET_DIR/profiling/tempo-xtask"
+            echo "ZONES_XTASK_BIN=$ZONES_BENCH_ZONES_TARGET_DIR/profiling/tempo-zone-xtask"
             echo "TEMPO_BIN=$TEMPO_ROOT/target/profiling/tempo"
             echo "TEMPO_XTASK_BIN=$ZONES_BENCH_TEMPO_TARGET_DIR/profiling/tempo-xtask"
           } >> "$GITHUB_ENV"

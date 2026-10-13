@@ -1,7 +1,7 @@
 //! L1 batch submitter for the zone sequencer.
 //!
 //! This module handles **Tempo L1** interactions — all transactions go to the
-//! [`ZonePortal`](crate::abi::ZonePortal) contract deployed on L1. The sequencer
+//! [`ZonePortal`] contract deployed on L1. The sequencer
 //! signing key is used for every L1 transaction.
 //!
 //! [`PreparedBatch`] is produced by the zone monitor and passed to the submitter.

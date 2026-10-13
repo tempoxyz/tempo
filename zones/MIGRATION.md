@@ -15,13 +15,12 @@ success gate. Root `.gitmodules` owns the imported Solidity dependencies. Tempo'
 
 ## Remaining migration prerequisites
 
-The history-import branch has moved source files without integrating their build
-configuration. Do not interpret this workflow cleanup as working Zones Rust or
-publication coverage:
+The root Cargo workspace now owns the imported Zones crates, prover binaries,
+and lockfile. `cargo zone-xtask` runs Zones tooling; `cargo xtask` continues to run
+Tempo tooling. Zones crates retain version 0.3.5 independently of Tempo.
 
-- `zones/Cargo.toml` still names nonexistent `zones/bin` and `zones/crates` members.
-  Integrate the moved `bin/tempo-zone`, `bin/prover`, `crates/zones`, and xtask
-  sources/dependencies/lockfile before adding Zones to root Cargo jobs.
+The remaining workflow and publication prerequisites are:
+
 - The inactive `zones/.github/workflows/{lint,test,build}.yml` remain as coverage
   references until that integration lands. Then extend the existing root jobs,
   preserve the Zones nextest concurrency limits, and retire these definitions.

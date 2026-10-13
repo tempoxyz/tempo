@@ -8,8 +8,8 @@ use alloy_rpc_types_eth::{TransactionInput, TransactionRequest};
 use alloy_sol_types::SolCall;
 use eyre::{Context, Result, bail};
 use serde_json::{Value, json};
-use tempo_precompiles::zone_factory::portal_address;
 use tempo_contracts::zones::{IZoneVerifier::verifyCall, ZONE_VERIFIER_ADDRESS};
+use tempo_precompiles::zone_factory::portal_address;
 
 pub(super) struct VerifierRequest {
     pub chain_id: u64,

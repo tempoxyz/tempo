@@ -13,9 +13,9 @@ use reth_revm::{State, database::StateProviderDatabase};
 use reth_storage_api::{StateProvider, StateProviderFactory};
 use reth_tasks::{TaskExecutor, cancel::ManualCancel};
 use std::{error::Error, sync::Arc};
+use tempo_contracts::zones::DepositType;
 use tempo_evm::TempoNextBlockEnvAttributes;
 use tempo_primitives::TempoHeader;
-use tempo_contracts::zones::DepositType;
 use zone_evm::ZoneEvmConfig;
 use zone_l1::PreparedL1Block;
 

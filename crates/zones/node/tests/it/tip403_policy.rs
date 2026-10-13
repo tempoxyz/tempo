@@ -61,7 +61,7 @@ async fn test_tip20_transfer_on_zone() -> eyre::Result<()> {
     let tip20 = ITIP20::new(PATH_USD_ADDRESS, &alice_provider);
     let pending = tip20
         .transfer(bob, U256::from(transfer_amount))
-        .gas_price(TEMPO_T0_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
         .gas(TIP20_TX_GAS)
         .send()
         .await?;
@@ -138,7 +138,7 @@ async fn test_l1_blacklisted_sender_cannot_pay_for_empty_transaction() -> eyre::
     let request = TransactionRequest::default()
         .to(alice)
         .gas_limit(TIP20_TX_GAS)
-        .gas_price(TEMPO_T0_BASE_FEE as u128);
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE));
 
     let nonce_before = alice_provider.get_transaction_count(alice).await?;
     let error = alice_provider

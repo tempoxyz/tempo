@@ -11,12 +11,11 @@ use crate::{
 };
 use alloy_primitives::Address;
 use alloy_sol_types::{SolCall, SolError};
-use tempo_contracts::precompiles::IReceivePolicyGuard;
+use tempo_contracts::{precompiles::IReceivePolicyGuard, zones::Unauthorized};
 use tempo_precompiles::{
     address_registry::AddressRegistry,
     dispatch::{abi_decoder_config_for_spec, selector_from_calldata},
 };
-use tempo_contracts::zones::Unauthorized;
 
 /// Stakeholder-only admission for receipt balance lookups.
 pub(crate) struct ReceivePolicyGuardRules;

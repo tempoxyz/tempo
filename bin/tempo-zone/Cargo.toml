@@ -3,7 +3,7 @@ name = "tempo-zone"
 description = "Tempo Zone L2 node binary"
 default-run = "tempo-zone"
 
-version.workspace = true
+version = "0.3.5"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -30,6 +30,6 @@ path = "src/main.rs"
 [features]
 default = ["asm-keccak", "jemalloc", "keccak-cache-global"]
 
-asm-keccak = ["zone-node/asm-keccak"]
-jemalloc = ["reth-cli-util/jemalloc", "zone-node/jemalloc"]
-keccak-cache-global = ["zone-node/keccak-cache-global"]
+asm-keccak = ["reth-node-core/asm-keccak", "zone-node/asm-keccak"]
+jemalloc = ["reth-cli-util/jemalloc", "reth-node-core/jemalloc", "zone-node/jemalloc"]
+keccak-cache-global = ["reth-node-core/keccak-cache-global", "zone-node/keccak-cache-global"]

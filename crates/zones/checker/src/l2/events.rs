@@ -3,10 +3,10 @@
 use alloy_consensus::{TxReceipt, transaction::TxHashRef};
 use alloy_primitives::{Address, B256, Log, U256};
 use alloy_sol_types::SolEvent;
-use tempo_precompiles::tip20::{ITIP20, TIP20Token};
 use tempo_contracts::zones::{
     IZoneInbox, IZoneOutbox, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS, ZonePortal,
 };
+use tempo_precompiles::tip20::{ITIP20, TIP20Token};
 
 use crate::decode_event;
 

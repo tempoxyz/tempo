@@ -40,13 +40,20 @@ use tempo_chainspec::{
     hardfork::TempoHardfork,
     spec::{TEMPO_T0_BASE_FEE, TempoChainSpec},
 };
-use tempo_contracts::precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, IStablecoinDEX, ITIP20, ITIP403Registry, TIP403_REGISTRY_ADDRESS,
-    ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
-    account_keychain::IAccountKeychain::{
-        IAccountKeychainInstance, KeyRestrictions, SignatureType as KeyInfoSignatureType,
+use tempo_contracts::{
+    precompiles::{
+        ACCOUNT_KEYCHAIN_ADDRESS, IStablecoinDEX, ITIP20, ITIP403Registry, TIP403_REGISTRY_ADDRESS,
+        ZONE_PORTAL_IMPL_ADDRESS, ZONE_VERIFIER_ADDRESS,
+        account_keychain::IAccountKeychain::{
+            IAccountKeychainInstance, KeyRestrictions, SignatureType as KeyInfoSignatureType,
+        },
+        t13_zone_factory_state,
     },
-    t13_zone_factory_state,
+    zones::{
+        ZONE_OUTBOX_ADDRESS,
+        ZonePortal::{self, Role as PortalRole},
+        submitBatchCall,
+    },
 };
 use tempo_precompiles::{
     PATH_USD_ADDRESS,
@@ -60,11 +67,6 @@ use tempo_precompiles::{
     zone_factory::portal,
 };
 use tempo_primitives::{TempoHeader, transaction::tt_signature::TempoSignature};
-use tempo_contracts::zones::{
-    ZONE_OUTBOX_ADDRESS,
-    ZonePortal::{self, Role as PortalRole},
-    submitBatchCall,
-};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio_util::sync::CancellationToken;
 use zone_chainspec::{ZoneChainSpec, test_utils::set_tempo_fork};
@@ -163,7 +165,7 @@ where
     let zone_token = ITIP20::new(PATH_USD_ADDRESS, provider);
     let approve_pending = zone_token
         .approve(ZONE_OUTBOX_ADDRESS, U256::MAX)
-        .gas_price(TEMPO_T0_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
         .gas(TIP20_TX_GAS)
         .send()
         .await?;
@@ -2057,8 +2059,8 @@ impl L1TestNode {
         threshold: u8,
         config: ZoneCreationConfig,
     ) -> eyre::Result<Address> {
-        use tempo_precompiles::PATH_USD_ADDRESS;
         use tempo_contracts::zones::ZoneFactory;
+        use tempo_precompiles::PATH_USD_ADDRESS;
 
         let l1_provider = self.dev_provider();
         let create_zone = ZoneFactory::createZoneCall {
@@ -3131,8 +3133,8 @@ impl ZoneAccount {
         recipient: Address,
         tempo_refund_recipient: Address,
     ) -> eyre::Result<()> {
-        use tempo_precompiles::PATH_USD_ADDRESS;
         use tempo_contracts::zones::ZonePortal;
+        use tempo_precompiles::PATH_USD_ADDRESS;
 
         let (key_index, encrypted) = self.prepare_deposit(recipient, B256::ZERO).await?;
 
@@ -3194,8 +3196,7 @@ impl ZoneAccount {
         timeout: Duration,
         zone: &ZoneTestNode,
     ) -> eyre::Result<U256> {
-        use tempo_contracts::precompiles::ITIP20;
-        use tempo_contracts::zones::ZonePortal;
+        use tempo_contracts::{precompiles::ITIP20, zones::ZonePortal};
 
         // Approve portal for this specific token
         ITIP20::new(token, &self.l1_provider)
@@ -3286,9 +3287,8 @@ impl ZoneAccount {
         recipient: Address,
         memo: B256,
     ) -> eyre::Result<u64> {
-        use tempo_contracts::precompiles::ITIP20;
+        use tempo_contracts::{precompiles::ITIP20, zones::ZonePortal};
         use tempo_precompiles::PATH_USD_ADDRESS;
-        use tempo_contracts::zones::ZonePortal;
 
         let portal_address = self.portal_address;
         if !self.l1_portal_approved {
@@ -3504,8 +3504,7 @@ impl ZoneAccount {
     ///
     /// Reuses a successful max approval for subsequent withdrawals of the same token.
     pub(crate) async fn approve_outbox(&mut self, token: Address) -> eyre::Result<()> {
-        use tempo_contracts::precompiles::ITIP20;
-        use tempo_contracts::zones::ZONE_OUTBOX_ADDRESS;
+        use tempo_contracts::{precompiles::ITIP20, zones::ZONE_OUTBOX_ADDRESS};
 
         if self.l2_outbox_approved_tokens.contains(&token) {
             return Ok(());

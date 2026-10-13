@@ -344,8 +344,8 @@ mod tests {
     use alloy_rpc_types_eth::Header as RpcHeader;
     use alloy_sol_types::SolEvent;
     use tempo_alloy::rpc::TempoHeaderResponse;
-    use tempo_primitives::TempoHeader;
     use tempo_contracts::zones::ZonePortal;
+    use tempo_primitives::TempoHeader;
 
     const BLOCK: u64 = 100;
     const HASH: B256 = B256::repeat_byte(0x10);

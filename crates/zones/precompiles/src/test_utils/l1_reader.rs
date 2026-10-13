@@ -96,8 +96,9 @@ impl MockL1Reader {
         account: Address,
     ) {
         self.with_storage(block_number, || {
-            ZonePortalStorage::new(portal_address).role[account]
-                .write(u8::from(tempo_contracts::zones::ZonePortal::Role::Sequencer))
+            ZonePortalStorage::new(portal_address).role[account].write(u8::from(
+                tempo_contracts::zones::ZonePortal::Role::Sequencer,
+            ))
         })
         .unwrap();
     }

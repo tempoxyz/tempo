@@ -1,3 +1,5 @@
+//! AWS Nitro Enclave service for verifying Tempo Zone state transition proofs.
+
 use std::{future::Future, io, path::PathBuf, process::ExitCode, sync::Arc, time::Duration};
 
 use alloy_genesis::Genesis;

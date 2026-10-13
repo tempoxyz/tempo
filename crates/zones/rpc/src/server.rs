@@ -402,9 +402,8 @@ mod tests {
     };
     use alloy_primitives::{Address, Bytes};
     use axum::http::StatusCode;
-    use p256::ecdsa::SigningKey as P256SigningKey;
+    use p256::{ecdsa::SigningKey as P256SigningKey, elliptic_curve::rand_core::OsRng};
     use parking_lot::Mutex;
-    use rand::thread_rng;
     use std::collections::HashMap;
     use tempo_contracts::precompiles::account_keychain::IAccountKeychain::{
         KeyInfo, SignatureType as KeyInfoSignatureType,
@@ -609,7 +608,7 @@ mod tests {
     #[tokio::test]
     async fn revoked_keychain_key_is_classified_as_revoked() {
         let root_account = Address::repeat_byte(0x55);
-        let access_signer = P256SigningKey::random(&mut thread_rng());
+        let access_signer = P256SigningKey::random(&mut OsRng);
         let now = now_secs();
         let (fields, digest) = build_token_fields(ZONE_ID, CHAIN_ID, now, now + 600);
         let (signature, key_id) =
@@ -641,7 +640,7 @@ mod tests {
     #[tokio::test]
     async fn expired_keychain_key_is_classified_as_expired() {
         let root_account = Address::repeat_byte(0x55);
-        let access_signer = P256SigningKey::random(&mut thread_rng());
+        let access_signer = P256SigningKey::random(&mut OsRng);
         let now = now_secs();
         let (fields, digest) = build_token_fields(ZONE_ID, CHAIN_ID, now, now + 600);
         let (signature, key_id) =

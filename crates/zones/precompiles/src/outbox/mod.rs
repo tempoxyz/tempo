@@ -7,6 +7,9 @@ mod tests;
 use alloc::vec::Vec;
 
 use alloy_primitives::{Address, B256, Bytes, U256};
+use tempo_contracts::zones::{
+    IZoneOutbox, Withdrawal, ZoneOutboxError, ZoneOutboxEvent, ZonePortal::Role, ZonePortalError,
+};
 use tempo_precompiles::{
     Result as TempoResult,
     error::TempoPrecompileError,
@@ -14,9 +17,6 @@ use tempo_precompiles::{
     tip20::{ITIP20, TIP20Error, TIP20Token},
 };
 use tempo_precompiles_macros::{Storable, contract};
-use tempo_contracts::zones::{
-    IZoneOutbox, Withdrawal, ZoneOutboxError, ZoneOutboxEvent, ZonePortal::Role, ZonePortalError,
-};
 use zone_primitives::constants::{
     MAX_WITHDRAWAL_GAS_LIMIT, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
 };

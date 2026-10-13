@@ -37,7 +37,7 @@ use reth_rpc_eth_api::{
     helpers::{EthApiSpec, EthBlocks, EthCall, EthFees, EthState, EthTransactions, FullEthApi},
 };
 use reth_rpc_eth_types::{EthApiError, logs_utils};
-use reth_storage_api::{BlockNumReader, StateProviderFactory};
+use reth_storage_api::StateProviderFactory;
 use reth_trie_common::{ExecutionWitnessMode, HashedPostState, HashedStorage};
 use tempo_alloy::{
     TempoNetwork,
@@ -208,7 +208,7 @@ pub(crate) fn operator_zone_rpc_module<P>(
     provider: P,
 ) -> Result<RpcModule<()>, jsonrpsee::core::RegisterMethodError>
 where
-    P: BlockNumReader + HeaderProvider + StateProviderFactory + Clone + Send + Sync + 'static,
+    P: HeaderProvider + StateProviderFactory + Clone + Send + Sync + 'static,
 {
     let mut module = RpcModule::new(());
     let set_leader_sequencer = sequencer.clone();
@@ -544,7 +544,7 @@ fn get_sequencer_info<P>(
     provider: &P,
 ) -> Result<SequencerInfoResponse, JsonRpcError>
 where
-    P: BlockNumReader + HeaderProvider + StateProviderFactory,
+    P: HeaderProvider + StateProviderFactory,
 {
     let Some(context) = sequencer.get() else {
         // Single-sequencer (or not yet initialized) node: report the minimal view.
@@ -1400,7 +1400,7 @@ where
 
 fn local_recovery_tip<P>(provider: &P) -> Result<PeerTip, JsonRpcError>
 where
-    P: BlockNumReader + HeaderProvider + StateProviderFactory,
+    P: HeaderProvider + StateProviderFactory,
 {
     let zone_height = provider.last_block_number().map_err(internal)?;
     let zone_header = provider
@@ -1500,7 +1500,9 @@ async fn set_leader(
             .setLeader(target, expected_epoch)
             .nonce_key(zone_sequencer::nonce_keys::ADMIN_OPS_NONCE_KEY)
             .nonce(nonce)
-            .max_fee_per_gas(tempo_chainspec::constants::gas::TEMPO_T1_BASE_FEE as u128)
+            .max_fee_per_gas(u128::from(
+                tempo_chainspec::constants::gas::TEMPO_T1_BASE_FEE,
+            ))
             .max_priority_fee_per_gas(0)
             .send_sync(),
     )

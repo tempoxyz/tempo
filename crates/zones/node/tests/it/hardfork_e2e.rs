@@ -9,13 +9,15 @@ use alloy_provider::Provider;
 use alloy_rpc_types_eth::{Filter, TransactionRequest};
 use alloy_sol_types::{SolCall, SolError, SolEvent};
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TempoHardforks};
-use tempo_contracts::precompiles::UnknownFunctionSelector;
+use tempo_contracts::{
+    precompiles::UnknownFunctionSelector,
+    zones::{
+        IZoneInbox, IZoneOutbox, LegacyTempoAdvanced, TEMPO_STATE_ADDRESS, TempoAdvanced,
+        ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS, finalizeTempoCall, legacyFinalizeTempoCall,
+    },
+};
 use tempo_precompiles::PATH_USD_ADDRESS;
 use tempo_primitives::TempoHeader;
-use tempo_contracts::zones::{
-    IZoneInbox, IZoneOutbox, LegacyTempoAdvanced, TEMPO_STATE_ADDRESS, TempoAdvanced,
-    ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS, finalizeTempoCall, legacyFinalizeTempoCall,
-};
 use zone_chainspec::{ZoneChainSpec, test_utils::set_tempo_fork};
 use zone_l1::{EnabledToken, L1PortalEvents};
 

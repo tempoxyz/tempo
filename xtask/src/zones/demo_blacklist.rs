@@ -38,7 +38,7 @@
 //!
 //! Or directly via cargo:
 //! ```sh
-//! cargo run -p tempo-xtask -- demo-blacklist \
+//! cargo zone-xtask demo-blacklist \
 //!     --portal 0x9d00Ee56f371Cc5365a686180dE3648207399640
 //! ```
 //!
@@ -66,12 +66,12 @@ use alloy::{
 };
 use eyre::{WrapErr as _, eyre};
 use tempo_alloy::TempoNetwork;
-use tempo_contracts::precompiles::{
-    IRolesAuth, ITIP20 as TIP20Token, ITIP20Factory as TIP20Factory,
-    ITIP403Registry as TIP403Registry,
-};
-use tempo_contracts::zones::{
-    DepositPayload, IZoneInbox, IZoneOutbox, ZONE_OUTBOX_ADDRESS, ZonePortal,
+use tempo_contracts::{
+    precompiles::{
+        IRolesAuth, ITIP20 as TIP20Token, ITIP20Factory as TIP20Factory,
+        ITIP403Registry as TIP403Registry,
+    },
+    zones::{DepositPayload, IZoneInbox, IZoneOutbox, ZONE_OUTBOX_ADDRESS, ZonePortal},
 };
 use tempo_precompiles::{
     PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, tip20::ISSUER_ROLE,

@@ -194,7 +194,7 @@ You can also run the xtask directly for more control. Set `ZONE_FACTORY_OWNER_KE
 invocation instead of passing a key argument:
 
 ```bash
-ZONE_FACTORY_OWNER_KEY="$SEQUENCER_KEY" cargo run -p tempo-xtask -- create-zone \
+ZONE_FACTORY_OWNER_KEY="$SEQUENCER_KEY" cargo zone-xtask create-zone \
   --output generated/my-zone \
   --initial-token 0x20c0000000000000000000000000000000000001 \
   --admin "$ADMIN_ADDR" \
@@ -212,7 +212,7 @@ command. First, replace `ZONE_FACTORY_OWNER_KEY` with `--safe-address` and `--sa
 
 ```bash
 unset ZONE_FACTORY_OWNER_KEY
-cargo run -p tempo-xtask -- create-zone \
+cargo zone-xtask create-zone \
   --output generated/my-zone \
   --l1-rpc-url https://rpc.tempo.xyz \
   --zone-factory 0x5aF2000000000000000000000000000000000000 \
@@ -237,7 +237,7 @@ transaction executes. After execution, rerun the same command with the execution
 hash in place of the Safe options (the first run prints this command):
 
 ```bash
-cargo run -p tempo-xtask -- create-zone \
+cargo zone-xtask create-zone \
   --output generated/my-zone \
   ...same zone arguments... \
   --creation-tx 0x<execution-tx-hash>
@@ -265,7 +265,7 @@ just set-access-mode true
 just set-gateway-mode true
 ```
 
-If the portal admin is a Safe, have `tempo-xtask` simulate each call from the Safe and
+If the portal admin is a Safe, have `tempo-zone-xtask` simulate each call from the Safe and
 create an unsigned Safe Transaction Builder file instead of setting `ADMIN_KEY`:
 
 ```bash
@@ -274,11 +274,11 @@ export L1_PORTAL_ADDRESS=0x<portal>
 export SAFE_ADDRESS=0x<safe>
 unset ADMIN_KEY
 
-cargo run -p tempo-xtask -- set-allowed-account 0x<account> --allowed \
+cargo zone-xtask set-allowed-account 0x<account> --allowed \
   --safe-address "$SAFE_ADDRESS" \
   --safe-output allow-account.json
 
-cargo run -p tempo-xtask -- set-gateway 0x<gateway> --allowed \
+cargo zone-xtask set-gateway 0x<gateway> --allowed \
   --safe-address "$SAFE_ADDRESS" \
   --safe-output allow-gateway.json
 ```
@@ -373,7 +373,7 @@ Encrypted deposits hide the recipient address and memo on-chain using ECIES encr
 ```bash
 # The sequencer must first register their encryption key (done automatically by deploy-zone)
 # For manual setup:
-PRIVATE_KEY="$SEQUENCER_KEY" cargo run -p tempo-xtask -- set-encryption-key \
+PRIVATE_KEY="$SEQUENCER_KEY" cargo zone-xtask set-encryption-key \
   --portal "$L1_PORTAL_ADDRESS" \
   --l1-rpc-url "$L1_RPC_URL"
 
@@ -383,7 +383,7 @@ just send-deposit 1000000 <recipient-address>   # to a specific address
 ```
 
 For shared-key rotations, pass the currently deployed
-`--deposit-decryption-keys-file` to `tempo-xtask admin encryption-key prepare`
+`--deposit-decryption-keys-file` to `tempo-zone-xtask admin encryption-key prepare`
 with `--existing-decryption-keys-file`. Deploy its merged output before
 registering the replacement encryption key, restart every node that may
 sequence, and confirm the nodes are healthy. Keep every previous key in the
@@ -564,11 +564,11 @@ just enable-token alphausd
 
 If `ZONE_RPC_URL` is set (defaults to `http://localhost:8546`), the command waits for the zone to process the L1 block and confirms the token is available on L2.
 
-To perform only the L1 portal update through `tempo-xtask`, use the same address or alias:
+To perform only the L1 portal update through `tempo-zone-xtask`, use the same address or alias:
 
 ```bash
-cargo run -p tempo-xtask -- enable-token <token-address>
-cargo run -p tempo-xtask -- enable-token alphausd
+cargo zone-xtask enable-token <token-address>
+cargo zone-xtask enable-token alphausd
 ```
 
 The xtask waits for the L1 receipt and verifies `ZonePortal.isTokenEnabled`, but unlike the
@@ -577,7 +577,7 @@ portal admin is a Safe, create an unsigned Transaction Builder proposal instead:
 
 ```bash
 unset ADMIN_KEY
-cargo run -p tempo-xtask -- enable-token <token-address> \
+cargo zone-xtask enable-token <token-address> \
   --safe-address 0x<safe> \
   --safe-output enable-token.json
 ```

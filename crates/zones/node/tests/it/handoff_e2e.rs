@@ -217,7 +217,7 @@ async fn test_planned_handoff_moves_production_at_exact_activation_boundary() ->
     let approval_amount = 123_456_u128;
     let pending = ITIP20::new(PATH_USD_ADDRESS, sender_wallet)
         .approve(spender, U256::from(approval_amount))
-        .gas_price(TEMPO_T0_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
         .gas(TIP20_TX_GAS)
         .send()
         .await?;
@@ -483,7 +483,7 @@ async fn test_advance_scheduled_handoff_keeps_outgoing_leader_live() -> eyre::Re
     let approval_amount = 123_456_u128;
     let pending = ITIP20::new(PATH_USD_ADDRESS, sender_wallet)
         .approve(spender, U256::from(approval_amount))
-        .gas_price(TEMPO_T0_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
         .gas(TIP20_TX_GAS)
         .send()
         .await?;

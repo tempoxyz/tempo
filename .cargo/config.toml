@@ -1,4 +1,5 @@
 [alias]
-x = "run --package tempo-xtask --"
-xtask = "run --package tempo-xtask --"
+zone-xtask = "run --package tempo-xtask --bin tempo-zone-xtask --"
+x = "run --package tempo-xtask --bin tempo-xtask --"
+xtask = "run --package tempo-xtask --bin tempo-xtask --"
 docs = "doc --workspace --all-features --no-deps"

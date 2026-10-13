@@ -19,6 +19,9 @@ use crate::{
     chaum_pedersen::{challenge_hash, recover_point},
 };
 
+#[cfg(feature = "std")]
+use k256::elliptic_curve::rand_core::OsRng;
+
 /// Plaintext size for encrypted deposits: 20 bytes (address) + 32 bytes (memo) + 12 bytes (padding).
 pub const ENCRYPTED_PAYLOAD_PLAINTEXT_SIZE: usize = 64;
 
@@ -181,12 +184,13 @@ pub struct EncryptedDepositArgs {
 ///
 /// The output is:
 /// `compressed_ephemeral_pubkey(33) || nonce(12) || ciphertext(52) || tag(16)`.
+#[cfg(feature = "std")]
 pub fn encrypt_authenticated_withdrawal(
     reveal_to: &[u8],
     sender: Address,
     tx_hash: B256,
 ) -> Option<Vec<u8>> {
-    let eph_key = k256::SecretKey::random(&mut rand::thread_rng());
+    let eph_key = k256::SecretKey::random(&mut OsRng);
     let eph_scalar: Scalar = *eph_key.to_nonzero_scalar();
     let nonce_bytes: [u8; 12] = rand::random();
 
@@ -409,6 +413,7 @@ pub fn decrypt_authenticated_withdrawal(
 /// 3. ECDH: `sharedSecret = ephPriv * sequencerPub`
 /// 4. HKDF-SHA256: derive AES key from the shared secret and deposit sender
 /// 5. AES-256-GCM encrypt `[to(20) | memo(32) | padding(12)]`
+#[cfg(feature = "std")]
 pub fn encrypt_deposit(
     seq_pub_x: &B256,
     seq_pub_y_parity: u8,
@@ -422,7 +427,7 @@ pub fn encrypt_deposit(
     let seq_pub = recover_point(&seq_pub_x.0, seq_pub_y_parity)?;
 
     // 2. Generate ephemeral key pair
-    let eph_key = k256::SecretKey::random(&mut rand::thread_rng());
+    let eph_key = k256::SecretKey::random(&mut OsRng);
     let eph_scalar: Scalar = *eph_key.to_nonzero_scalar();
     let eph_pub = AffinePoint::from(ProjectivePoint::GENERATOR * eph_scalar);
     let (eph_pub_x, eph_pub_y_parity) = compressed_x_and_parity(&eph_pub);

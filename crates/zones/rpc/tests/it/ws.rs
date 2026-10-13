@@ -4,9 +4,8 @@ use alloy_primitives::{Address, B256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use futures::{SinkExt, StreamExt, stream};
-use p256::ecdsa::SigningKey as P256SigningKey;
+use p256::{ecdsa::SigningKey as P256SigningKey, elliptic_curve::rand_core::OsRng};
 use parking_lot::Mutex;
-use rand::thread_rng;
 use serde_json::{Value, json};
 use tempo_contracts::precompiles::account_keychain::IAccountKeychain::{
     KeyInfo, SignatureType as KeyInfoSignatureType,
@@ -794,7 +793,7 @@ async fn ws_empty_batch() {
 #[tokio::test]
 async fn ws_roundtrip_with_p256_auth() {
     let ctx = TestContext::start(MockZoneRpcApi::default()).await;
-    let signing_key = P256SigningKey::random(&mut thread_rng());
+    let signing_key = P256SigningKey::random(&mut OsRng);
     let now = now_secs();
     let (fields, digest) = build_token_fields(ZONE_ID, CHAIN_ID, now, now + 600);
     let token = build_token_with_signature(
@@ -819,7 +818,7 @@ async fn ws_roundtrip_with_p256_auth() {
 #[tokio::test]
 async fn ws_roundtrip_with_webauthn_auth() {
     let ctx = TestContext::start(MockZoneRpcApi::default()).await;
-    let signing_key = P256SigningKey::random(&mut thread_rng());
+    let signing_key = P256SigningKey::random(&mut OsRng);
     let now = now_secs();
     let (fields, digest) = build_token_fields(ZONE_ID, CHAIN_ID, now, now + 600);
     let token = build_token_with_signature(
@@ -844,7 +843,7 @@ async fn ws_roundtrip_with_webauthn_auth() {
 #[tokio::test]
 async fn ws_roundtrip_with_keychain_auth() {
     let root_account = Address::repeat_byte(0x55);
-    let access_signer = P256SigningKey::random(&mut thread_rng());
+    let access_signer = P256SigningKey::random(&mut OsRng);
     let now = now_secs();
     let (fields, digest) = build_token_fields(ZONE_ID, CHAIN_ID, now, now + 600);
     let (signature, key_id) = sign_keychain_signature(digest, &access_signer, root_account, 0x04)
@@ -888,7 +887,7 @@ async fn ws_closes_when_auth_token_expires() {
 #[tokio::test]
 async fn ws_closes_when_keychain_key_is_revoked() {
     let root_account = Address::repeat_byte(0x77);
-    let access_signer = P256SigningKey::random(&mut thread_rng());
+    let access_signer = P256SigningKey::random(&mut OsRng);
     let now = now_secs();
     let (fields, digest) = build_token_fields(ZONE_ID, CHAIN_ID, now, now + 600);
     let (signature, key_id) = sign_keychain_signature(digest, &access_signer, root_account, 0x04)
@@ -914,7 +913,7 @@ async fn ws_closes_when_keychain_key_is_revoked() {
 #[tokio::test]
 async fn ws_closes_when_keychain_key_is_revoked_during_request() {
     let root_account = Address::repeat_byte(0x78);
-    let access_signer = P256SigningKey::random(&mut thread_rng());
+    let access_signer = P256SigningKey::random(&mut OsRng);
     let now = now_secs();
     let (fields, digest) = build_token_fields(ZONE_ID, CHAIN_ID, now, now + 600);
     let (signature, key_id) = sign_keychain_signature(digest, &access_signer, root_account, 0x04)
@@ -950,7 +949,7 @@ async fn ws_closes_when_keychain_key_is_revoked_during_request() {
 #[tokio::test]
 async fn ws_reject_unauthorized_keychain_token() {
     let root_account = Address::repeat_byte(0x44);
-    let access_signer = P256SigningKey::random(&mut thread_rng());
+    let access_signer = P256SigningKey::random(&mut OsRng);
     let ctx = TestContext::start(MockZoneRpcApi::default()).await;
     let now = now_secs();
     let (fields, digest) = build_token_fields(ZONE_ID, CHAIN_ID, now, now + 600);
@@ -970,7 +969,7 @@ async fn ws_reject_unauthorized_keychain_token() {
 #[tokio::test]
 async fn ws_keychain_lookup_failure_returns_500() {
     let root_account = Address::repeat_byte(0x66);
-    let access_signer = P256SigningKey::random(&mut thread_rng());
+    let access_signer = P256SigningKey::random(&mut OsRng);
     let ctx = TestContext::start(MockZoneRpcApi::with_key_lookup_error("key lookup failed")).await;
     let now = now_secs();
     let (fields, digest) = build_token_fields(ZONE_ID, CHAIN_ID, now, now + 600);

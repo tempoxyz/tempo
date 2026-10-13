@@ -15,12 +15,14 @@ use alloy_provider::{DynProvider, Provider};
 use alloy_rpc_types_eth::TransactionRequest;
 use alloy_sol_types::SolCall;
 use tempo_chainspec::spec::TEMPO_T0_BASE_FEE;
-use tempo_contracts::precompiles::ITIP20;
-use tempo_precompiles::PATH_USD_ADDRESS;
-use tempo_contracts::zones::{
-    IZoneInbox, IZoneOutbox, TEMPO_STATE_ADDRESS, TempoState, Withdrawal, ZONE_INBOX_ADDRESS,
-    ZONE_OUTBOX_ADDRESS,
+use tempo_contracts::{
+    precompiles::ITIP20,
+    zones::{
+        IZoneInbox, IZoneOutbox, TEMPO_STATE_ADDRESS, TempoState, Withdrawal, ZONE_INBOX_ADDRESS,
+        ZONE_OUTBOX_ADDRESS,
+    },
 };
+use tempo_precompiles::PATH_USD_ADDRESS;
 use zone_l1::ChainTempoStateExt;
 use zone_primitives::constants::zone_chain_id;
 
@@ -194,7 +196,7 @@ async fn test_p2p_follower_tracks_leader_balance() -> eyre::Result<()> {
     let transfer_amount = 123_456_u128;
     let pending = ITIP20::new(PATH_USD_ADDRESS, follower_wallet)
         .transfer(transfer_recipient, U256::from(transfer_amount))
-        .gas_price(TEMPO_T0_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
         .gas(TIP20_TX_GAS)
         .send()
         .await?;
@@ -385,7 +387,7 @@ async fn test_p2p_follower_enforces_policy_change_at_anchor_block() -> eyre::Res
     let tip20 = ITIP20::new(PATH_USD_ADDRESS, &alice_provider);
     let pending = tip20
         .transfer(bob, U256::from(200_000u128))
-        .gas_price(TEMPO_T0_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
         .gas(TIP20_TX_GAS)
         .send()
         .await?;
@@ -498,7 +500,7 @@ async fn test_contract_creation_transaction_is_rejected() -> eyre::Result<()> {
     let request = TransactionRequest::default()
         .with_deploy_code(Bytes::from_static(&[0x00]))
         .gas_limit(CONTRACT_CREATION_TX_GAS)
-        .gas_price(TEMPO_T0_BASE_FEE as u128);
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE));
 
     let err = provider
         .send_transaction(request)
@@ -1015,7 +1017,7 @@ async fn submit_withdrawals(
                     Bytes::new(),
                 )
                 .nonce(nonce + offset as u64)
-                .gas_price(TEMPO_T0_BASE_FEE as u128)
+                .gas_price(u128::from(TEMPO_T0_BASE_FEE))
                 .send()
                 .await?,
         );
@@ -1429,7 +1431,7 @@ async fn test_withdrawal_request_rejects_over_max_callback_gas() -> eyre::Result
             Bytes::from_static(b"callback"),
             Bytes::new(),
         )
-        .gas_price(TEMPO_T0_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
         .gas(WITHDRAWAL_TX_GAS)
         .send()
         .await?;

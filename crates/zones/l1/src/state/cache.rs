@@ -14,7 +14,7 @@
 //!
 //! ## Write path
 //!
-//! - The [`L1Subscriber`](crate::l1::L1Subscriber) records mutation barriers from finalized L1
+//! - The [`L1Subscriber`](crate::L1Subscriber) records mutation barriers from finalized L1
 //!   receipts.
 //! - The [`L1StateProvider`](super::provider::L1StateProvider) writes RPC-fetched values on
 //!   cache miss, tagged with the block number that was requested.

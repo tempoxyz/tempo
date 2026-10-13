@@ -19,11 +19,11 @@ use alloy_consensus::Transaction;
 use eyre::WrapErr as _;
 use futures::future::try_join_all;
 use std::{collections::HashMap, time::Duration};
-use tempo_precompiles::{PATH_USD_ADDRESS, zone_factory::portal};
 use tempo_contracts::zones::{
     IZoneOutbox, TEMPO_STATE_ADDRESS, TempoState, ZONE_OUTBOX_ADDRESS, ZONE_TOKEN_ADDRESS,
     ZonePortal, ZonePortal::Role as PortalRole,
 };
+use tempo_precompiles::{PATH_USD_ADDRESS, zone_factory::portal};
 use zone_node::dev::{ProvisionConfig, provision_zone};
 
 /// Longer timeout for real L1 tests — the L1 dev node produces blocks every
@@ -2501,8 +2501,7 @@ async fn test_deposit_old_key_during_grace_mints_after_rotation() -> eyre::Resul
     reth_tracing::init_test_tracing();
 
     use k256::{AffinePoint, ProjectivePoint, Scalar};
-    use tempo_contracts::precompiles::ITIP20;
-    use tempo_contracts::zones::DepositPayload;
+    use tempo_contracts::{precompiles::ITIP20, zones::DepositPayload};
     use zone_precompiles::ecies;
 
     let l1 = L1TestNode::start().await?;
@@ -2690,7 +2689,8 @@ async fn test_deposit_blacklisted_recipient() -> eyre::Result<()> {
     {
         use tempo_contracts::precompiles::ITIP20;
 
-        let portal = tempo_contracts::zones::ZonePortal::new(portal_address, depositor.l1_provider());
+        let portal =
+            tempo_contracts::zones::ZonePortal::new(portal_address, depositor.l1_provider());
 
         ITIP20::new(PATH_USD_ADDRESS, depositor.l1_provider())
             .approve(portal_address, U256::MAX)
@@ -2803,8 +2803,7 @@ async fn test_blacklisted_sender_transfer_rejected() -> eyre::Result<()> {
     // herself. The dev account deposits on her behalf (recipient = allow-all).
     let deposit_amount: u128 = 1_000_000; // 1 pathUSD
     {
-        use tempo_contracts::precompiles::ITIP20;
-        use tempo_contracts::zones::ZonePortal;
+        use tempo_contracts::{precompiles::ITIP20, zones::ZonePortal};
 
         let dev_provider = l1.dev_provider();
         ITIP20::new(PATH_USD_ADDRESS, &dev_provider)

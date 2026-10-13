@@ -16,10 +16,10 @@ use alloy_evm::{
 use alloy_sol_types::{SolCall as _, SolEvent as _};
 use reth_evm::block::StateDB;
 use reth_revm::{Inspector, context::result::ResultAndState};
+use tempo_contracts::zones::{IZoneOutbox, TempoAdvanced};
 use tempo_evm::{TempoBlockExecutionCtx, TempoReceiptBuilder};
 use tempo_primitives::{TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tempo_revm::evm::TempoContext;
-use tempo_contracts::zones::{IZoneOutbox, TempoAdvanced};
 use zone_chainspec::ZoneChainSpec;
 use zone_l1::state::L1StateProvider;
 use zone_precompiles::{ADVANCE_TEMPO_HEADERS_SELECTOR, ADVANCE_TEMPO_SELECTOR, L1StorageReader};
@@ -326,6 +326,10 @@ mod tests {
     use reth_primitives_traits::Recovered;
     use revm::database::InMemoryDB;
     use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
+    use tempo_contracts::zones::{
+        ChaumPedersenProof, DecryptionData, IZoneInbox, IZoneOutbox, LegacyTempoAdvanced,
+        TempoAdvanced,
+    };
     use tempo_evm::{TempoBlockEnv, TempoBlockExecutionCtx};
     use tempo_precompiles::{
         DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
@@ -342,10 +346,6 @@ mod tests {
         },
     };
     use tempo_revm::{TempoBatchCallEnv, TempoTxEnv};
-    use tempo_contracts::zones::{
-        ChaumPedersenProof, DecryptionData, IZoneInbox, IZoneOutbox, LegacyTempoAdvanced,
-        TempoAdvanced,
-    };
     use zone_chainspec::ZoneChainSpec;
     use zone_precompiles::{
         tempo_state::{TEMPO_BLOCK_NUMBER_SLOT, slots::TEMPO_BLOCK_HASH},

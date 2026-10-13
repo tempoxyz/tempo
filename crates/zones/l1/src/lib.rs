@@ -6,12 +6,12 @@
 //! polling.
 //!
 //! The module is split into:
-//! - [`subscriber`] — the [`L1Subscriber`] background task and its config.
-//! - [`deposit`] — deposit value types ([`WithdrawalBounceBackDeposit`], [`Deposit`],
+//! - `subscriber` — the [`L1Subscriber`] background task and its config.
+//! - `deposit` — deposit value types ([`WithdrawalBounceBackDeposit`], [`Deposit`],
 //!   [`L1Deposit`]).
-//! - [`event`] — portal event types extracted per L1 block.
-//! - [`block`] — per-block deposit grouping and prepared payload types.
-//! - [`queue`] — the finalized L1 block queue consumed by the engine.
+//! - `event` — portal event types extracted per L1 block.
+//! - `block` — per-block deposit grouping and prepared payload types.
+//! - `queue` — the finalized L1 block queue consumed by the engine.
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]

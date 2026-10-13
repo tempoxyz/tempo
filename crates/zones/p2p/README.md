@@ -196,10 +196,10 @@ before deregistering.
 
 ## Generate a Commonware identity
 
-Generate a unique Ed25519 key for each node with `xtask`:
+Generate a unique Ed25519 key for each node with `cargo zone-xtask`:
 
 ```bash
-cargo run -p tempo-xtask -- generate-p2p-key --out leader-p2p.key
+cargo zone-xtask generate-p2p-key --out leader-p2p.key
 ```
 
 The command writes the hex-encoded private key to the requested file and prints
