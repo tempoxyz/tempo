@@ -43,7 +43,6 @@ pub(crate) async fn run<Node>(
 ) -> eyre::Result<()>
 where
     Node: FullNodeComponents<Types: NodeTypes<Primitives = TempoPrimitives>>,
-    Node::Provider: BlockNumReader + ChainSpecProvider + StateProviderFactory,
     <Node::Provider as ChainSpecProvider>::ChainSpec: TempoHardforks,
 {
     let metrics = CheckerMetrics::default();
@@ -93,7 +92,6 @@ async fn run_inner<Node>(
 ) -> eyre::Result<()>
 where
     Node: FullNodeComponents<Types: NodeTypes<Primitives = TempoPrimitives>>,
-    Node::Provider: BlockNumReader + ChainSpecProvider + StateProviderFactory,
     <Node::Provider as ChainSpecProvider>::ChainSpec: TempoHardforks,
 {
     tracing::info!(target: "zone::checker", "checker started");

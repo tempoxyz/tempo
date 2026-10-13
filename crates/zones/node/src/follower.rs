@@ -10,7 +10,7 @@ use eyre::{OptionExt as _, WrapErr as _};
 use reth_node_api::{ConsensusEngineHandle, PayloadTypes as _};
 use reth_primitives_traits::{SealedBlock, SealedHeader};
 use reth_provider::HeaderProvider;
-use reth_storage_api::{BlockNumReader, BlockReader, ReceiptProvider, StateProviderFactory};
+use reth_storage_api::{BlockReader, StateProviderFactory};
 use std::{
     collections::{BTreeMap, HashMap},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -223,11 +223,9 @@ pub(crate) struct FollowerBlockSync<P> {
 /// parent/anchor/execution/conflict validation alone. The loop exits when `stop` fires.
 impl<P> FollowerBlockSync<P>
 where
-    P: BlockNumReader
-        + BlockReader<Block = Block>
+    P: BlockReader<Block = Block>
         + HeaderProvider<Header = TempoHeader>
         + StateProviderFactory
-        + ReceiptProvider
         + Clone
         + Send
         + Sync
