@@ -1662,7 +1662,7 @@ mod tests {
     use jsonrpsee::{RpcModule, server::ServerBuilder, types::ErrorObjectOwned};
     use reth_ethereum_cli::Cli;
     use reth_rpc_server_types::{RethRpcModule, RpcModuleSelection, RpcModuleValidator};
-    use std::sync::{Arc, Mutex};
+    use std::sync::Mutex;
     use tempo_chainspec::spec::TempoChainSpecParser;
 
     type TempoCli = Cli<
@@ -2290,6 +2290,7 @@ mod tests {
             };
 
             let requests = Arc::new(Mutex::new(Vec::new()));
+            let submissions = Arc::new(Mutex::new(Vec::new()));
             let mut module = RpcModule::new(requests.clone());
             module
                 .register_method("eth_chainId", |_, _, _| "0xa5bf")
@@ -2306,10 +2307,20 @@ mod tests {
                     Ok::<_, ErrorObjectOwned>(Bytes::from(response))
                 })
                 .unwrap();
-            // Only read methods are registered: any attempt to submit a transaction fails.
+            for method in ["eth_sendTransaction", "eth_sendRawTransaction"] {
+                let submissions = submissions.clone();
+                module
+                    .register_method(method, move |_, _, _| {
+                        submissions.lock().unwrap().push(method);
+                        Ok::<_, ErrorObjectOwned>(B256::ZERO)
+                    })
+                    .unwrap();
+            }
             let server = ServerBuilder::default().build("127.0.0.1:0").await.unwrap();
             let rpc_url = format!("http://{}", server.local_addr().unwrap());
             let handle = server.start(module);
+            let temp_dir = tempfile::tempdir().unwrap();
+            let missing_wallet = temp_dir.path().join("missing-wallet.key");
 
             let cli = TempoCli::try_parse_from([
                 "tempo",
@@ -2319,6 +2330,8 @@ mod tests {
                 value,
                 "--rpc-url",
                 &rpc_url,
+                "--wallet-key",
+                missing_wallet.to_str().unwrap(),
                 "--dry-run",
             ])
             .unwrap();
@@ -2329,7 +2342,8 @@ mod tests {
                 other => panic!("expected ClaimFees, got `{other:?}`"),
             };
 
-            // Exercise lookup, transaction printing, and the dry-run exit with no wallet.
+            // Exercise lookup, transaction printing, and the dry-run exit without opening a wallet.
+            // Leave --yes unset so dry runs must also skip the confirmation prompt.
             tokio::time::timeout(std::time::Duration::from_secs(5), cmd.run())
                 .await
                 .unwrap()
@@ -2361,6 +2375,7 @@ mod tests {
                 "latest".to_owned(),
             ));
             assert_eq!(*requests.lock().unwrap(), expected);
+            assert!(submissions.lock().unwrap().is_empty());
             handle.stop().unwrap();
             handle.stopped().await;
         }
