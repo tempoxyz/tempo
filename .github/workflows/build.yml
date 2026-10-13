@@ -7,7 +7,7 @@ on:
     inputs:
       binary:
         default: "tempo"
-        description: "Binary to build (all builds every binary)"
+        description: "Binary to build ('all' builds every listed binary)"
         type: choice
         options:
           - "tempo"
