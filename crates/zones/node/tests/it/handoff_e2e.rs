@@ -186,10 +186,12 @@ async fn test_planned_handoff_moves_production_at_exact_activation_boundary() ->
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     // --- Blocks 1..=3 are produced by A (the manifest bootstrap leader). ---
-    for _ in 0..3 {
+    // Consume each anchor before injecting the next so checkpoint catch-up cannot batch
+    // multiple anchors into one Zone block and break the 1:1 mapping asserted below.
+    for height in 1..=3 {
         cluster.inject_block(vec![])?;
+        cluster.wait_all_at(height, HANDOFF_TIMEOUT).await?;
     }
-    cluster.wait_all_at(3, HANDOFF_TIMEOUT).await?;
 
     // --- Block 4 funds a sender so a pending transaction can ride through the handoff. ---
     let (sender_wallet, sender) = local_dev_zone_account(&cluster.nodes[2])?;
