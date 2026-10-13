@@ -448,14 +448,18 @@ where
         }
 
         let pool_fetch_start = Instant::now();
-        let raw_best_txs = best_txs(BestTransactionsAttributes::new(
-            executor.evm().block().basefee,
-            executor
-                .evm()
-                .block()
-                .blob_gasprice()
-                .map(|gasprice| gasprice as u64),
-        ));
+        let raw_best_txs = skip_txs_outside_validity_window(
+            best_txs(BestTransactionsAttributes::new(
+                executor.evm().block().basefee,
+                executor
+                    .evm()
+                    .block()
+                    .blob_gasprice()
+                    .map(|gasprice| gasprice as u64),
+            )),
+            attributes.timestamp,
+            self.metrics.clone(),
+        );
         let prewarm_ctx = PrewarmingExecutionContext::new(
             self.provider.clone(),
             self.executor.clone(),
@@ -1183,10 +1187,127 @@ pub(crate) struct RootsTaskResult {
     encoded_block_transactions: EncodedBlockTransactionList,
 }
 
+/// Skips pool transactions whose validity window does not include `timestamp`.
+///
+/// Such a transaction fails execution in this block, so it is dropped from the iterator before
+/// prewarming or execution spends any work on it. Pool admission deliberately keeps transactions
+/// that are not valid yet (see `aa_valid_after_max_secs`), so without this they would be executed
+/// and rejected in every block until their `valid_after`.
+fn skip_txs_outside_validity_window<Txs>(
+    best_txs: Txs,
+    timestamp: u64,
+    metrics: TempoPayloadBuilderMetrics,
+) -> impl BestTransactions<Item = BestTransaction> + 'static
+where
+    Txs: BestTransactions<Item = BestTransaction> + Send + 'static,
+{
+    best_txs.filter_transactions(move |tx| {
+        let valid = tx.transaction.inner().is_valid_at(timestamp);
+        if !valid {
+            metrics.inc_pool_tx_skipped("outside_validity_window");
+        }
+        valid
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::Bytes;
+    use alloy_primitives::{Bytes, Signature};
+    use reth_primitives_traits::Recovered;
+    use reth_transaction_pool::{
+        TransactionOrigin, ValidPoolTransaction, identifier::TransactionId,
+    };
+    use std::{collections::VecDeque, num::NonZeroU64, sync::Mutex};
+    use tempo_primitives::TempoTransaction;
+    use tempo_transaction_pool::transaction::TempoPooledTransaction;
+
+    /// Yields a fixed list of transactions and records the ones marked invalid.
+    struct RecordingBestTransactions {
+        txs: VecDeque<BestTransaction>,
+        invalid: Arc<Mutex<Vec<B256>>>,
+    }
+
+    impl Iterator for RecordingBestTransactions {
+        type Item = BestTransaction;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            self.txs.pop_front()
+        }
+    }
+
+    impl BestTransactions for RecordingBestTransactions {
+        fn mark_invalid(&mut self, tx: &Self::Item, _kind: InvalidPoolTransactionError) {
+            self.invalid.lock().unwrap().push(*tx.hash());
+        }
+
+        fn no_updates(&mut self) {}
+
+        fn set_skip_blobs(&mut self, _skip_blobs: bool) {}
+    }
+
+    fn aa_tx_with_window(valid_after: u64, valid_before: u64) -> BestTransaction {
+        let tx = TempoTransaction {
+            chain_id: 42431,
+            valid_after: NonZeroU64::new(valid_after),
+            valid_before: NonZeroU64::new(valid_before),
+            ..Default::default()
+        };
+        let envelope = TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()));
+        let pooled =
+            TempoPooledTransaction::new(Recovered::new_unchecked(envelope, Address::random()));
+        Arc::new(ValidPoolTransaction {
+            transaction_id: TransactionId::new(0u64.into(), 0),
+            transaction: pooled,
+            propagate: true,
+            timestamp: Instant::now(),
+            origin: TransactionOrigin::External,
+            authority_ids: None,
+        })
+    }
+
+    /// Transactions outside their validity window are skipped and marked invalid before they
+    /// reach prewarming; `valid_after` is inclusive and `valid_before` exclusive, as in execution.
+    #[test]
+    fn skips_transactions_outside_validity_window() {
+        let not_yet_valid = aa_tx_with_window(101, 0);
+        let valid_from_now = aa_tx_with_window(100, 0);
+        let expired = aa_tx_with_window(0, 100);
+        let still_valid = aa_tx_with_window(0, 101);
+        let unbounded = aa_tx_with_window(0, 0);
+
+        let invalid = Arc::default();
+        let best = RecordingBestTransactions {
+            txs: [
+                &not_yet_valid,
+                &valid_from_now,
+                &expired,
+                &still_valid,
+                &unbounded,
+            ]
+            .into_iter()
+            .cloned()
+            .collect(),
+            invalid: Arc::clone(&invalid),
+        };
+
+        let yielded: Vec<_> =
+            skip_txs_outside_validity_window(best, 100, TempoPayloadBuilderMetrics::default())
+                .map(|tx| *tx.hash())
+                .collect();
+        assert_eq!(
+            yielded,
+            vec![
+                *valid_from_now.hash(),
+                *still_valid.hash(),
+                *unbounded.hash()
+            ]
+        );
+        assert_eq!(
+            *invalid.lock().unwrap(),
+            vec![*not_yet_valid.hash(), *expired.hash()]
+        );
+    }
 
     #[test]
     fn test_extra_data_flow_in_attributes() {
