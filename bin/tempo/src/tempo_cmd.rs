@@ -2345,7 +2345,7 @@ mod tests {
                                 .abi_encode()
                                 .into(),
                         ),
-                    "latest".to_owned(),
+                    "pending".to_owned(),
                 ));
             }
             expected.push((
