@@ -82,7 +82,7 @@ on:
         required: true
         default: "5000000"
       swap-liquidity:
-        description: Untimed liquidity seeded into the selected swap mechanism.
+        description: Untimed per-side liquidity seeded into the Earn router's par pool.
         type: string
         required: true
         default: "10000000000"
@@ -186,7 +186,6 @@ jobs:
       bootstrap-deposit-amount: ${{ steps.config.outputs.bootstrap-deposit-amount }}
       activity-amount: ${{ steps.config.outputs.activity-amount }}
       withdrawal-amount: ${{ steps.config.outputs.withdrawal-amount }}
-      swap-mechanism: ${{ steps.config.outputs.swap-mechanism }}
       recipient-mode: ${{ steps.config.outputs.recipient-mode }}
       callback-gas-limit: ${{ steps.config.outputs.callback-gas-limit }}
       swap-liquidity: ${{ steps.config.outputs.swap-liquidity }}
@@ -227,7 +226,6 @@ jobs:
           INPUT_BOOTSTRAP_DEPOSIT_AMOUNT: ${{ inputs.bootstrap-deposit-amount || '10000000' }}
           INPUT_ACTIVITY_AMOUNT: "1"
           INPUT_WITHDRAWAL_AMOUNT: ${{ inputs.withdrawal-amount || '1000000' }}
-          INPUT_SWAP_MECHANISM: direct-swap
           INPUT_RECIPIENT_MODE: ${{ inputs.recipient-mode || 'existing' }}
           INPUT_CALLBACK_GAS_LIMIT: ${{ inputs.callback-gas-limit || '5000000' }}
           INPUT_SWAP_LIQUIDITY: ${{ inputs.swap-liquidity || '10000000000' }}
@@ -312,10 +310,6 @@ jobs:
               exit 1
             fi
           done
-          case "$INPUT_SWAP_MECHANISM" in
-            direct-swap) ;;
-            *) echo "::error::current Earn only supports swap-mechanism=direct-swap"; exit 1 ;;
-          esac
           case "$INPUT_RECIPIENT_MODE" in
             existing|random) ;;
             *) echo "::error::recipient-mode must be existing or random"; exit 1 ;;
@@ -412,7 +406,7 @@ jobs:
             slippage-bounce) required_swap_uses=1 ;;
           esac
           if (( required_swap_uses > 0 && swap_liquidity / withdrawal_amount < required_swap_uses )); then
-            echo "::error::$INPUT_SWAP_MECHANISM liquidity must cover $required_swap_uses swap(s) of withdrawal-amount=$withdrawal_amount for $neobank_preset"
+            echo "::error::par pool liquidity must cover $required_swap_uses swap(s) of withdrawal-amount=$withdrawal_amount for $neobank_preset"
             exit 1
           fi
           for name in INPUT_TEMPO_REF INPUT_TXGEN_REF; do
@@ -435,7 +429,6 @@ jobs:
             echo "bootstrap-deposit-amount=$INPUT_BOOTSTRAP_DEPOSIT_AMOUNT"
             echo "activity-amount=$INPUT_ACTIVITY_AMOUNT"
             echo "withdrawal-amount=$INPUT_WITHDRAWAL_AMOUNT"
-            echo "swap-mechanism=$INPUT_SWAP_MECHANISM"
             echo "recipient-mode=$INPUT_RECIPIENT_MODE"
             echo "callback-gas-limit=$INPUT_CALLBACK_GAS_LIMIT"
             echo "swap-liquidity=$INPUT_SWAP_LIQUIDITY"
@@ -476,7 +469,6 @@ jobs:
       ZONES_BENCH_BOOTSTRAP_DEPOSIT_AMOUNT: ${{ needs.authorize.outputs.bootstrap-deposit-amount }}
       ZONES_BENCH_ACTIVITY_AMOUNT: ${{ needs.authorize.outputs.activity-amount }}
       ZONES_BENCH_WITHDRAWAL_AMOUNT: ${{ needs.authorize.outputs.withdrawal-amount }}
-      ZONES_BENCH_SWAP_MECHANISM: ${{ needs.authorize.outputs.swap-mechanism }}
       ZONES_BENCH_RECIPIENT_MODE: ${{ needs.authorize.outputs.recipient-mode }}
       ZONES_BENCH_CALLBACK_GAS_LIMIT: ${{ needs.authorize.outputs.callback-gas-limit }}
       ZONES_BENCH_SWAP_LIQUIDITY: ${{ needs.authorize.outputs.swap-liquidity }}
@@ -736,7 +728,7 @@ jobs:
           test -s crates/contracts/benchmark-out/EarnContributionController.sol/EarnContributionController.json
           test -s crates/contracts/benchmark-out/ERC4626Engine.sol/ERC4626Engine.json
           test -s crates/contracts/benchmark-out/Simple4626Vault.sol/Simple4626Vault.json
-          test -s crates/contracts/benchmark-out/DemoTokenAuthority.sol/DemoTokenAuthority.json
+          test -s crates/contracts/benchmark-out/DemoParPool.sol/DemoParPool.json
           test -s crates/contracts/benchmark-out/BridgeWalletFixture.sol/BridgeWalletFixture.json
 
       - name: Prepare or restore persistent Tempo L1 baseline
@@ -945,7 +937,7 @@ jobs:
             echo "## Run configuration"
             echo
             echo "- Neobank preset: \`$ZONES_BENCH_NEOBANK_PRESET\`"
-            echo "- Swap mechanism: \`$ZONES_BENCH_SWAP_MECHANISM\` (setup liquidity \`$ZONES_BENCH_SWAP_LIQUIDITY\`)"
+            echo "- Par pool setup liquidity: \`$ZONES_BENCH_SWAP_LIQUIDITY\`"
             echo "- Callback gas limit: \`$ZONES_BENCH_CALLBACK_GAS_LIMIT\`"
             echo "- Recipient mode: \`$ZONES_BENCH_RECIPIENT_MODE\`"
             echo "- $unit: \`$ZONES_BENCH_COUNT\`"
@@ -996,7 +988,6 @@ jobs:
             --arg targetId "${ZONES_BENCH_TARGET_ID:-}" \
             --arg phase "$ZONES_BENCH_PHASE" \
             --arg neobankPreset "$ZONES_BENCH_NEOBANK_PRESET" \
-            --arg swapMechanism "$ZONES_BENCH_SWAP_MECHANISM" \
             --arg recipientMode "$ZONES_BENCH_RECIPIENT_MODE" \
             --arg stepTimeout "$ZONES_BENCH_STEP_TIMEOUT" \
             --arg l1ValidatorACpus "$ZONES_BENCH_L1_A_CPUS" \
@@ -1042,7 +1033,6 @@ jobs:
               targetId: $targetId,
               phase: $phase,
               neobankPreset: $neobankPreset,
-              swapMechanism: $swapMechanism,
               recipientMode: $recipientMode,
               accounts: $accounts,
               count: $count,

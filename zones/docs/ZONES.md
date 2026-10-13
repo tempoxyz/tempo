@@ -616,7 +616,10 @@ The verifier derives the Zone and Portal from the router, finds the Zone's deplo
 reconstructs the current role and enabled-token sets from Portal events through one pinned L1 block.
 It requires the Earn router to be the only `CallbackGateway` and the boundary-crossing tokens
 (`privateAsset` and `earnShare`) to be the exact enabled-token set with active deposits. The vault
-asset remains on L1 and is not Portal-enabled unless it is also the private asset. The current
+asset remains on L1 and is not Portal-enabled unless it is also the private asset. It also requires
+the router's conversion pool to pair exactly the private asset with the vault asset, a nonzero
+customer ID, and the router's admission as the pool's taker and recipient; the pool's pause state,
+par status, and per-flow liquidity are printed for review rather than failing the check. The current
 `Account` role set is printed in sorted order and must be compared manually with the approved
 deployment record; account membership is not part of the automated pass/fail result. Verification
 performs no transactions and requires no private key.

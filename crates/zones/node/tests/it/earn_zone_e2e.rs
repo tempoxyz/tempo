@@ -3,7 +3,8 @@
 //! CI builds the Solidity artifacts from the Tempo Earn `main` branch. These tests deliberately
 //! exercise the complete callback path: a private withdrawal settles on L1, the Earn router
 //! deposits or redeems through the vault stack, and the output is encrypted back into the
-//! originating Zone.
+//! originating Zone. The router converts between the private asset and the vault asset at par
+//! through Earn's public `DemoParPool`, which stands in for the private DirectPropAMM pool.
 
 use crate::utils::{
     Check403Registry, L1TestNode, WithdrawalArgs, ZoneAccount, ZoneTestNode, forge_bytecode,
@@ -33,6 +34,12 @@ const REWARD_AMOUNT: u128 = AMOUNT / 10;
 const PUBLIC_USER_BALANCE: u128 = 50_000_000;
 const PRIVATE_FEE_BALANCE: u128 = 10_000_000;
 const TOKEN_SUPPLY: u128 = 1_000_000_000;
+// Per-side par pool inventory; covers every scenario's conversions, including reward redemptions.
+const POOL_INVENTORY: u128 = 100_000_000;
+// The router rejects a zero customer ID; any fixed value works with the demo pool.
+const EARN_ROUTER_CUSTOMER_ID: B256 = B256::with_last_byte(0xE3);
+// Exact 1:1 price at the demo pool's 8 oracle decimals.
+const PAR_PRICE: u64 = 100_000_000;
 // Match Earn's current callback budget.
 const CALLBACK_GAS_LIMIT: u64 = 10_000_000;
 const REWARD_FUNDING_TX_GAS_LIMIT: u64 = 5_000_000;
@@ -202,6 +209,20 @@ alloy_sol_types::sol! {
             address pool_,
             bytes32 customerId_
         );
+        function pool() external view returns (address);
+        function customerId() external view returns (bytes32);
+        function privateAssetIsBase() external view returns (bool);
+        function parPrice() external view returns (uint256);
+        function liquidityStatus()
+            external
+            view
+            returns (
+                bool paused,
+                bool admitted,
+                bool atPar,
+                uint256 depositLiquidity,
+                uint256 redeemLiquidity
+            );
     }
 
     #[sol(rpc)]
@@ -220,11 +241,13 @@ alloy_sol_types::sol! {
         ) external returns (uint256 assets, bytes32 zoneDepositHash);
     }
 
+    /// Earn's public test-only stand-in for the DirectPropAMM par pool behind the router.
     #[sol(rpc)]
     contract DemoParPool {
         constructor(address baseToken_, address quoteToken_, address owner_);
         function setTakerAllowed(address taker, bool allowed) external;
         function setRecipientAllowed(address recipient, bool allowed) external;
+        function setPaused(bool paused_) external;
     }
 
     #[sol(rpc)]
@@ -270,8 +293,8 @@ struct EarnZoneFixture {
     engine: Address,
     earn_share: Address,
     earn_vault: Address,
-    router: Address,
     pool: Address,
+    router: Address,
     contribution_controller: Address,
     access_policy: Option<EarnAccessPolicy>,
     user: ZoneAccount,
@@ -416,8 +439,8 @@ impl EarnZoneFixture {
             .await?;
         eyre::ensure!(receipt.status(), "initializing the Earn engine failed");
 
-        // Earn's public pool fixture converts 1:1 from inventory without the private PropAMM
-        // dependency. Fund both directions so deposits, redemptions, and rewards can settle.
+        // The router converts the private asset to the vault asset 1:1 through a par pool. CI builds
+        // Earn without the private DirectPropAMM artifact, so use Earn's public stand-in pool.
         let pool = deploy_contract(
             &l1,
             "DemoParPool",
@@ -430,7 +453,7 @@ impl EarnZoneFixture {
         )
         .await?;
         for token in [vault_asset, alternate_asset] {
-            l1.fund_user_token(token, pool, TOKEN_SUPPLY / 2).await?;
+            l1.mint_tip20(token, pool, POOL_INVENTORY).await?;
         }
         let zone_id = ZonePortal::new(portal, l1.provider())
             .zoneId()
@@ -444,7 +467,7 @@ impl EarnZoneFixture {
                 earnVault_: earn_vault,
                 privateAsset_: alternate_asset,
                 pool_: pool,
-                customerId_: keccak256("zones-earn-e2e"),
+                customerId_: EARN_ROUTER_CUSTOMER_ID,
             }
             .abi_encode(),
         )
@@ -457,14 +480,18 @@ impl EarnZoneFixture {
             .await?
             .get_receipt()
             .await?;
-        eyre::ensure!(receipt.status(), "allowing router as pool taker failed");
+        eyre::ensure!(receipt.status(), "admitting router as pool taker failed");
         let receipt = pool_contract
             .setRecipientAllowed(router, true)
             .send()
             .await?
             .get_receipt()
             .await?;
-        eyre::ensure!(receipt.status(), "allowing router as pool recipient failed");
+        eyre::ensure!(
+            receipt.status(),
+            "admitting router as pool recipient failed"
+        );
+        assert_router_pool_binding(&l1, router, pool, alternate_asset).await?;
         let router_block = l1.set_zone_gateway_on_portal(portal, router, true).await?;
         zone.wait_for_l2_tempo_finalized(router_block, E2E_TIMEOUT)
             .await?;
@@ -522,8 +549,8 @@ impl EarnZoneFixture {
             engine,
             earn_share,
             earn_vault,
-            router,
             pool,
+            router,
             contribution_controller,
             access_policy,
             user,
@@ -586,6 +613,46 @@ impl EarnZoneFixture {
         eyre::ensure!(
             earn_vault.depositsPaused().call().await? == paused,
             "Earn deposit pause state did not update"
+        );
+        Ok(())
+    }
+
+    async fn set_pool_paused(&self, paused: bool) -> eyre::Result<()> {
+        let provider = self.l1.dev_provider();
+        let receipt = DemoParPool::new(self.pool, &provider)
+            .setPaused(paused)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        eyre::ensure!(receipt.status(), "setting par pool pause failed");
+        let status = SingleZoneEarnRouter::new(self.router, self.l1.provider())
+            .liquidityStatus()
+            .call()
+            .await?;
+        eyre::ensure!(
+            status.paused == paused,
+            "router did not observe the par pool pause state"
+        );
+        Ok(())
+    }
+
+    async fn set_pool_recipient_allowed(&self, allowed: bool) -> eyre::Result<()> {
+        let provider = self.l1.dev_provider();
+        let receipt = DemoParPool::new(self.pool, &provider)
+            .setRecipientAllowed(self.router, allowed)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        eyre::ensure!(receipt.status(), "setting par pool router admission failed");
+        let status = SingleZoneEarnRouter::new(self.router, self.l1.provider())
+            .liquidityStatus()
+            .call()
+            .await?;
+        eyre::ensure!(
+            status.admitted == allowed,
+            "router did not observe its par pool admission"
         );
         Ok(())
     }
@@ -1016,6 +1083,85 @@ impl EarnZoneFixture {
         Ok(())
     }
 
+    async fn zone_redeem_expect_callback_bounce(
+        &mut self,
+        shares: u128,
+        output_token: Address,
+        recipient: Address,
+    ) -> eyre::Result<()> {
+        let user = self.user.address();
+        let private_shares_before = self.zone.balance_of(self.earn_share, user).await?;
+        let recipient_output_before = self.zone.balance_of(output_token, recipient).await?;
+        let share_supply_before = ITIP20::new(self.earn_share, self.l1.provider())
+            .totalSupply()
+            .call()
+            .await?;
+        let backing_before = VenueVault::new(self.venue_vault, self.l1.provider())
+            .balanceOf(self.engine)
+            .call()
+            .await?;
+        let limits = self.redeem_limits(shares, output_token).await?;
+        let data = self
+            .callback_data(EarnFlow::Redeem, output_token, recipient, user, limits)
+            .await?;
+        self.user
+            .withdraw_token_with(
+                self.earn_share,
+                WithdrawalArgs {
+                    amount: shares,
+                    to: Some(self.router),
+                    memo: B256::ZERO,
+                    gas_limit: CALLBACK_GAS_LIMIT,
+                    zone_fallback_recipient: Some(user),
+                    data,
+                    reveal_to: Bytes::new(),
+                },
+            )
+            .await?;
+
+        self.zone
+            .wait_for_balance(self.earn_share, user, private_shares_before, BOUNCE_TIMEOUT)
+            .await?;
+        self.l1
+            .assert_withdrawal_processed_with_status(
+                self.portal,
+                self.router,
+                self.earn_share,
+                shares,
+                false,
+            )
+            .await?;
+        assert_eq!(
+            self.zone.balance_of(output_token, recipient).await?,
+            recipient_output_before,
+            "failed Earn redemption credited private output"
+        );
+        assert_eq!(
+            ITIP20::new(self.earn_share, self.l1.provider())
+                .totalSupply()
+                .call()
+                .await?,
+            share_supply_before,
+            "failed Earn redemption changed share supply"
+        );
+        assert_eq!(
+            VenueVault::new(self.venue_vault, self.l1.provider())
+                .balanceOf(self.engine)
+                .call()
+                .await?,
+            backing_before,
+            "failed Earn redemption changed engine backing"
+        );
+        for token in [self.earn_share, self.vault_asset, output_token] {
+            assert_eq!(
+                self.l1.balance_of(token, self.router).await?,
+                U256::ZERO,
+                "failed Earn redemption left {token} on the router"
+            );
+        }
+        Ok(())
+    }
+
     async fn zone_deposit_expect_recipient_bounce(
         &mut self,
         input_token: Address,
@@ -1424,6 +1570,47 @@ async fn deploy_contract(
         .ok_or_else(|| eyre::eyre!("{contract} deployment returned no contract address"))
 }
 
+async fn assert_router_pool_binding(
+    l1: &L1TestNode,
+    router: Address,
+    pool: Address,
+    private_asset: Address,
+) -> eyre::Result<()> {
+    let router = SingleZoneEarnRouter::new(router, l1.provider());
+    eyre::ensure!(
+        router.pool().call().await? == pool,
+        "router is not bound to the par pool"
+    );
+    eyre::ensure!(
+        router.customerId().call().await? == EARN_ROUTER_CUSTOMER_ID,
+        "router customer ID does not match the fixture"
+    );
+    eyre::ensure!(
+        router.privateAssetIsBase().call().await?,
+        "router did not resolve {private_asset} as the par pool base token"
+    );
+    eyre::ensure!(
+        router.parPrice().call().await? == U256::from(PAR_PRICE),
+        "router par price does not match the demo pool oracle"
+    );
+    let status = router.liquidityStatus().call().await?;
+    eyre::ensure!(
+        !status.paused && status.admitted && status.atPar,
+        "par pool is not ready for the router: paused={}, admitted={}, atPar={}",
+        status.paused,
+        status.admitted,
+        status.atPar
+    );
+    eyre::ensure!(
+        status.depositLiquidity == U256::from(POOL_INVENTORY)
+            && status.redeemLiquidity == U256::from(POOL_INVENTORY),
+        "par pool inventory was not funded on both sides: deposit={}, redeem={}",
+        status.depositLiquidity,
+        status.redeemLiquidity
+    );
+    Ok(())
+}
+
 fn map_deposit_payload(payload: DepositPayload) -> EarnDepositPayload {
     EarnDepositPayload {
         ephemeralPubkeyX: payload.ephemeralPubkeyX,
@@ -1596,6 +1783,55 @@ async fn controls_pause_blocks_entry_but_preserves_exits() -> eyre::Result<()> {
         .await?;
     assert_eq!(output, AMOUNT, "deposit pause blocked a private exit");
     fixture.set_deposits_paused(false).await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn controls_par_pool_failures_bounce_until_restored() -> eyre::Result<()> {
+    let mut fixture = EarnZoneFixture::start().await?;
+    let user = fixture.user.address();
+    let shares = fixture.zone_deposit(fixture.alternate_asset, user).await?;
+    let pool_vault_asset = fixture
+        .l1
+        .balance_of(fixture.vault_asset, fixture.pool)
+        .await?;
+    let pool_private_asset = fixture
+        .l1
+        .balance_of(fixture.alternate_asset, fixture.pool)
+        .await?;
+
+    fixture.set_pool_paused(true).await?;
+    fixture
+        .zone_deposit_expect_callback_bounce(fixture.alternate_asset, user, EarnLimits::default())
+        .await?;
+    fixture.set_pool_paused(false).await?;
+
+    fixture.set_pool_recipient_allowed(false).await?;
+    fixture
+        .zone_redeem_expect_callback_bounce(shares, fixture.alternate_asset, user)
+        .await?;
+    fixture.set_pool_recipient_allowed(true).await?;
+
+    assert_eq!(
+        fixture
+            .l1
+            .balance_of(fixture.vault_asset, fixture.pool)
+            .await?,
+        pool_vault_asset,
+        "failed conversions changed par pool vault-asset inventory"
+    );
+    assert_eq!(
+        fixture
+            .l1
+            .balance_of(fixture.alternate_asset, fixture.pool)
+            .await?,
+        pool_private_asset,
+        "failed conversions changed par pool private-asset inventory"
+    );
+    let output = fixture
+        .zone_redeem(shares, fixture.alternate_asset, user)
+        .await?;
+    assert_eq!(output, AMOUNT, "restored par pool did not redeem 1:1");
     Ok(())
 }
 
