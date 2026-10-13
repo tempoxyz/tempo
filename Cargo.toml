@@ -173,7 +173,7 @@ reth-cli = { git = "https://github.com/paradigmxyz/reth", rev = "d5d9026" }
 reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", rev = "d5d9026" }
 reth-cli-runner = { git = "https://github.com/paradigmxyz/reth", rev = "d5d9026" }
 reth-cli-util = { git = "https://github.com/paradigmxyz/reth", rev = "d5d9026" }
-reth-codecs = { version = "0.8.1", default-features = false }
+reth-codecs = { version = "0.8.2", default-features = false }
 reth-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "d5d9026" }
 reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", rev = "d5d9026" }
 reth-db = { git = "https://github.com/paradigmxyz/reth", rev = "d5d9026" }
@@ -207,7 +207,7 @@ reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "d5d90
 reth-node-metrics = { git = "https://github.com/paradigmxyz/reth", rev = "d5d9026" }
 reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "d5d9026" }
 reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "d5d9026" }
-reth-primitives-traits = { version = "0.8.1", default-features = false }
+reth-primitives-traits = { version = "0.8.2", default-features = false }
 reth-config = { git = "https://github.com/paradigmxyz/reth", rev = "d5d9026" }
 reth-downloaders = { git = "https://github.com/paradigmxyz/reth", rev = "d5d9026" }
 reth-provider = { git = "https://github.com/paradigmxyz/reth", rev = "d5d9026" }
@@ -236,7 +236,7 @@ reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "d5d9026", feat
   "optional-checks",
 ] }
 revm = { version = "43.0.3", features = ["optional_fee_charge"], default-features = false }
-revm-inspectors = "0.44.0"
+revm-inspectors = "0.44.1"
 
 alloy-json-abi = { version = "1.7.3", default-features = false }
 alloy-primitives = { version = "1.7.3", default-features = false }
@@ -248,7 +248,7 @@ alloy-contract = { version = "2.5.0", default-features = false }
 alloy-eips = { version = "2.5.0", default-features = false }
 alloy-evm = { version = "0.39.0", default-features = false }
 alloy-genesis = { version = "2.5.0", default-features = false }
-alloy-hardforks = "0.4.9"
+alloy-hardforks = "0.4.10"
 alloy-json-rpc = "2.5.0"
 alloy-network = { version = "2.5.0", default-features = false }
 alloy-provider = { version = "2.5.0", default-features = false }
