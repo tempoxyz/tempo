@@ -21,8 +21,10 @@ profile.json.gz
 **/.envrc
 localnet/**
 
-.claude/*
-!.claude/skills
+.claude/
+!/.claude/
+/.claude/*
+!/.claude/skills
 !docs/.claude/
 CLAUDE.local.md
 research.md
