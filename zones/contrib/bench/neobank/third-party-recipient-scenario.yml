@@ -1,0 +1,108 @@
+version: 1
+
+include:
+  - ./neobank-scenario-fragments.yml
+
+chains:
+  l1:
+    network: tempo
+    rpc_url: "${L1_RPC_URL}"
+    query_rpc_url: "${ZONES_BENCH_L1_QUERY_RPC_URL}"
+    observation:
+      mode: auto
+      websocket_url: "${L1_WS_RPC_URL}"
+      poll_interval: 50ms
+    chain_id: ${ZONES_BENCH_EXPECTED_L1_CHAIN_ID}
+    workload: ./l1-onramp.yml
+
+  zone:
+    network: tempo
+    rpc_url: "${ZONE_REDACTED_RPC_URL}"
+    query_rpc_url: "${ZONE_RPC_URL}"
+    observation:
+      mode: auto
+      websocket_url: "${ZONE_WS_RPC_URL}"
+      poll_interval: 50ms
+    request_auth:
+      sender_header:
+        name: X-Authorization-Token
+        map: "${ZONES_BENCH_ZONE_AUTH_MAP}"
+        reload_interval: 1s
+    chain_id: ${ZONES_BENCH_EXPECTED_ZONE_CHAIN_ID}
+    workload: ./zone-flow.yml
+
+scenario:
+  name: neobank-third-party-recipient
+  execution: dag
+  timeout: 10m
+
+  bindings:
+    account_a:
+      account: { pool: users, select: lease }
+    account_b:
+      account: { pool: users, select: lease }
+    account_a_entry_action_id:
+      bytes32: { random_bytes: 32 }
+    account_b_fee_action_id:
+      bytes32: { random_bytes: 32 }
+    earn_deposit_action_id:
+      bytes32: { random_bytes: 32 }
+    earn_redeem_action_id:
+      bytes32: { random_bytes: 32 }
+
+  steps:
+    - use: encrypted-zone-entry
+      as: account_a_entry
+      with:
+        sender: { var: account_a.ref }
+        sender_address: { var: account_a.address }
+        recipient: { var: account_a.address }
+        token: "${ZONES_BENCH_PATHUSD}"
+        fee_token: "${ZONES_BENCH_PATHUSD}"
+        amount: ${ZONES_BENCH_DEPOSIT_AMOUNT}
+        memo: { var: account_a_entry_action_id }
+
+    - use: encrypted-zone-entry
+      as: account_b_fee_entry
+      with:
+        sender: { var: account_b.ref }
+        sender_address: { var: account_b.address }
+        recipient: { var: account_b.address }
+        token: "${ZONES_BENCH_PATHUSD}"
+        fee_token: "${ZONES_BENCH_PATHUSD}"
+        amount: ${ZONES_BENCH_DEPOSIT_AMOUNT}
+        memo: { var: account_b_fee_action_id }
+
+    - use: earn-deposit-and-return
+      as: earn_deposit
+      depends_on: [account_a_entry.zone_deposit.processed]
+      with:
+        sender: { var: account_a.ref }
+        sender_address: { var: account_a.address }
+        recipient: { var: account_b.address }
+        input_token: "${ZONES_BENCH_PATHUSD}"
+        fee_token: "${ZONES_BENCH_PATHUSD}"
+        amount: ${ZONES_BENCH_WITHDRAWAL_AMOUNT}
+        min_vault_assets: ${ZONES_BENCH_WITHDRAWAL_AMOUNT}
+        min_vault_shares: ${ZONES_BENCH_WITHDRAWAL_AMOUNT}
+        action_id: { var: earn_deposit_action_id }
+        fallback_recipient: { var: account_a.address }
+        refund_recipient: { var: account_a.address }
+
+    - use: earn-redeem-and-return
+      as: earn_redeem
+      depends_on:
+        - account_b_fee_entry.zone_deposit.processed
+        - earn_deposit.zone_return.processed
+      with:
+        sender: { var: account_b.ref }
+        sender_address: { var: account_b.address }
+        recipient: { var: account_a.address }
+        output_token: "${ZONES_BENCH_PATHUSD}"
+        fee_token: "${ZONES_BENCH_PATHUSD}"
+        amount: { var: earn_deposit.zone_return.processed.args.amount }
+        min_vault_assets: ${ZONES_BENCH_WITHDRAWAL_AMOUNT}
+        min_output_amount: ${ZONES_BENCH_WITHDRAWAL_AMOUNT}
+        action_id: { var: earn_redeem_action_id }
+        fallback_recipient: { var: account_b.address }
+        refund_recipient: { var: account_b.address }

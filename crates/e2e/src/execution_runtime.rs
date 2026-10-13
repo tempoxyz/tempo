@@ -27,10 +27,7 @@ use futures::{StreamExt, future::BoxFuture};
 use reth_chainspec::EthChainSpec;
 use reth_db::mdbx::DatabaseEnv;
 use reth_ethereum::{
-    evm::{
-        primitives::EvmEnv,
-        revm::db::{CacheDB, EmptyDB},
-    },
+    evm::{primitives::EvmEnv, revm::db::InMemoryDB},
     network::{
         Peers as _,
         api::{NetworkEventListenerProvider, PeerKind, PeersInfo, events::NetworkEvent},
@@ -392,7 +389,7 @@ impl ExecutionRuntime {
                                     egress.to_string(),
                                     fee_recipient,
                                     sign_add_validator_args(
-                                        EthChainSpec::chain(&chain_spec).id(),
+                                        chain_spec.chain_id(),
                                         &private_key,
                                         address,
                                         ingress,
@@ -480,7 +477,7 @@ impl ExecutionRuntime {
                                     ingress.to_string(),
                                     egress.to_string(),
                                     sign_rotate_validator_args(
-                                        EthChainSpec::chain(&chain_spec).id(),
+                                        chain_spec.chain_id(),
                                         &private_key,
                                         address,
                                         ingress,
@@ -962,7 +959,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
     };
     let executed_state = tempo_node.executed_state();
 
-    let node_handle = if let Some(rocksdb) = rocksdb {
+    let builder = if let Some(rocksdb) = rocksdb {
         NodeBuilder::new(node_config)
             .with_database(database)
             .with_rocksdb_provider(rocksdb)
@@ -977,15 +974,15 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
                 .merge_configured(TempoConsensusRpc::new(feed_state).into_rpc())?;
         }
         Ok(())
-    })
-    .launch()
-    .await
-    .wrap_err_with(|| {
-        format!(
-            "failed launching node; databasedir: `{}`",
-            datadir.as_ref().display()
-        )
-    })?;
+    });
+    let node_handle = tempo_node_launcher::launch(builder)
+        .await
+        .wrap_err_with(|| {
+            format!(
+                "failed launching node; databasedir: `{}`",
+                datadir.as_ref().display()
+            )
+        })?;
 
     Ok(ExecutionNode {
         node: Box::new(node_handle.node),
@@ -1115,8 +1112,8 @@ pub fn address(index: u32) -> Address {
     secret_key_to_address(MnemonicBuilder::from_phrase_nth(TEST_MNEMONIC, index).credential())
 }
 
-fn setup_tempo_evm(chain_id: u64) -> TempoEvm<CacheDB<EmptyDB>> {
-    let db = CacheDB::default();
+fn setup_tempo_evm(chain_id: u64) -> TempoEvm<InMemoryDB> {
+    let db = InMemoryDB::default();
     // revm sets timestamp to 1 by default, override it to 0 for genesis initializations
     let mut env = EvmEnv::default().with_timestamp(U256::ZERO);
     env.cfg_env.chain_id = chain_id;

@@ -2145,7 +2145,7 @@ struct AccountsU256(U256);
 
 impl AccountsU256 {
     fn into_b256(self) -> B256 {
-        B256::from(self.0.to_be_bytes::<32>())
+        B256::from(self.0)
     }
 }
 
@@ -4373,7 +4373,7 @@ mod tests {
             inner: TransactionRequest {
                 from: Some(root.address()),
                 to: Some(target.into()),
-                input: TransactionInput::new(Bytes::copy_from_slice(&selector)),
+                input: TransactionInput::new(selector.into()),
                 ..Default::default()
             },
             ..Default::default()

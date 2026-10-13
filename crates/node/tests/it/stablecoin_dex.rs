@@ -1,4 +1,4 @@
-use alloy::{primitives::U256, providers::ProviderBuilder, sol_types::SolError};
+use alloy::{hex, primitives::U256, providers::ProviderBuilder, sol_types::SolError};
 use reth_e2e_test_utils::{receipt::await_successful_receipts, wallet::test_signer};
 use tempo_contracts::precompiles::{
     IStablecoinDEX,
@@ -632,10 +632,7 @@ async fn test_place_rejects_order_below_dust_limit() -> eyre::Result<()> {
     );
     await_successful_receipts(pending).await?;
 
-    let expected_selector = format!(
-        "0x{}",
-        alloy::hex::encode(IStablecoinDEX::BelowMinimumOrderSize::SELECTOR)
-    );
+    let expected_selector = hex::encode_prefixed(IStablecoinDEX::BelowMinimumOrderSize::SELECTOR);
 
     // Try to place a bid order below dust limit (should fail)
     let min_order_amount = MIN_ORDER_AMOUNT;
@@ -724,10 +721,7 @@ async fn test_place_flip_rejects_order_below_dust_limit() -> eyre::Result<()> {
     );
     await_successful_receipts(pending).await?;
 
-    let expected_selector = format!(
-        "0x{}",
-        alloy::hex::encode(IStablecoinDEX::BelowMinimumOrderSize::SELECTOR)
-    );
+    let expected_selector = hex::encode_prefixed(IStablecoinDEX::BelowMinimumOrderSize::SELECTOR);
 
     // Try to place a flip bid order below dust limit (should fail)
     let min_order_amount = MIN_ORDER_AMOUNT;

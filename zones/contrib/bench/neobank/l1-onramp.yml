@@ -1,0 +1,83 @@
+chain_id: ${ZONES_BENCH_EXPECTED_L1_CHAIN_ID}
+
+gas:
+  max_fee_per_gas: ${ZONES_BENCH_L1_MAX_FEE_PER_GAS}
+  max_priority_fee_per_gas: ${ZONES_BENCH_L1_MAX_PRIORITY_FEE_PER_GAS}
+
+accounts:
+  users:
+    mnemonic: "${ZONES_BENCH_MNEMONIC}"
+    range: [${ZONES_BENCH_ACCOUNT_START}, ${ZONES_BENCH_ACCOUNT_END}]
+  control:
+    mnemonic: "${ZONES_BENCH_MNEMONIC}"
+    range: [${ZONES_BENCH_CONTROL_ACCOUNT_INDEX}, ${ZONES_BENCH_CONTROL_ACCOUNT_END}]
+
+artifacts:
+  TIP20: abis/tip20.json
+  ZonePortal: abis/neobank-zone-portal.json
+  EarnRouter: abis/earn-router.json
+  EarnContributionController: abis/earn-contribution-controller.json
+  EarnVault: abis/earn-vault.json
+
+setup: { steps: [] }
+
+templates:
+  approve_portal:
+    type: tempo
+    from: { var: account.ref }
+    gas_limit: 2000000
+    fee_token: "${ZONES_BENCH_TOKEN}"
+    call:
+      to: "${ZONES_BENCH_TOKEN}"
+      abi: TIP20
+      function: "approve(address,uint256)"
+      args:
+        - "${L1_PORTAL_ADDRESS}"
+        - "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+
+  encrypted_onramp:
+    type: tempo
+    from: { var: account.ref }
+    gas_limit: 2000000
+    fee_token: "${ZONES_BENCH_TOKEN}"
+    expiring_nonce: true
+    valid_for_secs: 25
+    call:
+      to: "${L1_PORTAL_ADDRESS}"
+      abi: ZonePortal
+      function: "deposit(address,uint128,uint256,(bytes32,uint8,bytes,bytes12,bytes16),address)"
+      args:
+        - "${ZONES_BENCH_TOKEN}"
+        - ${ZONES_BENCH_DEPOSIT_AMOUNT}
+        - { var: encrypted.keyIndex }
+        - { var: encrypted.encrypted }
+        - { var: account.address }
+
+  reward_approval:
+    type: tempo
+    from: { var: account.ref }
+    gas_limit: 2000000
+    fee_token: "${ZONES_BENCH_PATHUSD}"
+    call:
+      to: "${ZONES_BENCH_PATHUSD}"
+      abi: TIP20
+      function: "approve(address,uint256)"
+      args:
+        - "${ZONES_BENCH_EARN_CONTRIBUTION_CONTROLLER}"
+        - "${ZONES_BENCH_REWARD_FUND_AMOUNT}"
+
+  reward_fund:
+    type: tempo
+    from: { var: account.ref }
+    gas_limit: 5000000
+    fee_token: "${ZONES_BENCH_PATHUSD}"
+    call:
+      to: "${ZONES_BENCH_EARN_CONTRIBUTION_CONTROLLER}"
+      abi: EarnContributionController
+      function: "fund(address,uint256,uint256)"
+      args:
+        - { var: account.address }
+        - "${ZONES_BENCH_REWARD_FUND_AMOUNT}"
+        - "${ZONES_BENCH_REWARD_MAX_EARN_SHARE_SUPPLY}"
+
+mix: []

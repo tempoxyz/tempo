@@ -27,4 +27,7 @@ txgen-configure-existing-recipients-env $default.spec_path 1024 4
 assert equal ($env.TXGEN_EXISTING_RECIPIENTS_START | into int) 10000
 assert (($env.TXGEN_EXISTING_RECIPIENTS_END | into int) > 10000)
 assert equal (txgen-workload-metadata-args $default.scenario_id $default.spec_path) (txgen-workload-metadata-args public-mix $public_mix.spec_path)
+for preset in [tip20 tip20_existing_recipients mix dex mpp neobank-deposit neobank-swap neobank-withdraw zones vault-deposit vault-withdraw] {
+    assert equal (txgen-workload-metadata-args $preset "") ["-m" "workload_mix_weighting=gas"]
+}
 print "Preset alias, transfer compatibility, state-bloat setup, and workload metadata checks passed"

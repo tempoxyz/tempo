@@ -70,15 +70,12 @@ async fn send_tempo_tx<P: Provider>(
     tx: TempoTransaction,
 ) -> eyre::Result<TempoTransactionReceipt> {
     let sig = signer.sign_hash_sync(&tx.signature_hash())?;
-    let envelope: TempoTxEnvelope = tx
-        .into_signed(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            sig,
-        )))
-        .into();
+    let envelope: TempoTxEnvelope = tx.into_signed(sig.into()).into();
     provider
         .send_raw_transaction(&envelope.encoded_2718())
         .await?
-        .get_tempo_receipt()
+        .into_tempo()
+        .successful_receipt()
         .await
 }
 
@@ -96,13 +93,11 @@ async fn test_tip1060_keychain_fee_refund_does_not_retain_storage_credit() -> ey
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let root = test_signer(0);
     let root_addr = root.address();
-    let provider = ProviderBuilder::new()
-        .wallet(root.clone())
-        .connect_http(setup.http_url);
-    // Keep Alloy's pending-transaction heartbeat ahead of the 100ms dev block interval.
-    provider
-        .client()
-        .set_poll_interval(std::time::Duration::from_millis(10));
+    let provider = setup
+        .local_node
+        .as_ref()
+        .expect("local node")
+        .rpc_provider_with_wallet(root.clone());
     let access_key = PrivateKeySigner::random();
 
     let gas_limit = 500_000u64;
@@ -305,11 +300,7 @@ async fn test_tip1060_rebalance_swap_does_not_mint_stale_fee_manager_custody_cre
         ..Default::default()
     };
     let sig = root.sign_hash_sync(&fee_tx.signature_hash())?;
-    let envelope: TempoTxEnvelope = fee_tx
-        .into_signed(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            sig,
-        )))
-        .into();
+    let envelope: TempoTxEnvelope = fee_tx.into_signed(sig.into()).into();
     root_provider
         .send_raw_transaction(&envelope.encoded_2718())
         .await?
@@ -378,11 +369,7 @@ async fn test_tip1060_rebalance_swap_does_not_mint_stale_fee_manager_custody_cre
         ..Default::default()
     };
     let sig = root.sign_hash_sync(&recreate_tx.signature_hash())?;
-    let envelope: TempoTxEnvelope = recreate_tx
-        .into_signed(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            sig,
-        )))
-        .into();
+    let envelope: TempoTxEnvelope = recreate_tx.into_signed(sig.into()).into();
     root_provider
         .send_raw_transaction(&envelope.encoded_2718())
         .await?
@@ -483,7 +470,7 @@ async fn test_tip1060_fee_manager_credit_from_distribute_fees_is_not_redeemable(
             .await?;
     }
     let token_credit_before_seed = credits.balanceOf(fee_token_addr).call().await?;
-    let seed_credit_receipt = send_tempo_tx(
+    send_tempo_tx(
         &provider,
         &credit_source,
         TempoTransaction {
@@ -507,7 +494,6 @@ async fn test_tip1060_fee_manager_credit_from_distribute_fees_is_not_redeemable(
         },
     )
     .await?;
-    assert!(seed_credit_receipt.status());
     assert_eq!(
         credits.balanceOf(fee_token_addr).call().await?,
         token_credit_before_seed + 1,
@@ -541,9 +527,7 @@ async fn test_tip1060_fee_manager_credit_from_distribute_fees_is_not_redeemable(
     };
     let collect_fees_signature = root.sign_hash_sync(&collect_fees_tx.signature_hash())?;
     let collect_fees_envelope: TempoTxEnvelope = collect_fees_tx
-        .into_signed(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            collect_fees_signature,
-        )))
+        .into_signed(collect_fees_signature.into())
         .into();
     provider
         .send_raw_transaction(&collect_fees_envelope.encoded_2718())
@@ -640,9 +624,7 @@ async fn test_tip1060_fee_manager_credit_from_distribute_fees_is_not_redeemable(
     };
     let recreate_signature = user.sign_hash_sync(&recreate_collected_fees_tx.signature_hash())?;
     let recreate_envelope: TempoTxEnvelope = recreate_collected_fees_tx
-        .into_signed(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            recreate_signature,
-        )))
+        .into_signed(recreate_signature.into())
         .into();
     provider
         .send_raw_transaction(&recreate_envelope.encoded_2718())
@@ -791,9 +773,7 @@ async fn test_tip1060_distribute_fees_receive_policy_guard_creations_are_account
     };
     let collect_fees_signature = root.sign_hash_sync(&collect_fees_tx.signature_hash())?;
     let collect_fees_envelope: TempoTxEnvelope = collect_fees_tx
-        .into_signed(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            collect_fees_signature,
-        )))
+        .into_signed(collect_fees_signature.into())
         .into();
     provider
         .send_raw_transaction(&collect_fees_envelope.encoded_2718())
@@ -822,7 +802,7 @@ async fn test_tip1060_distribute_fees_receive_policy_guard_creations_are_account
         .successful_receipt()
         .await?;
     let token_credit_before_seed = credits.balanceOf(fee_token_addr).call().await?;
-    let seed_token_credit_receipt = send_tempo_tx(
+    send_tempo_tx(
         &provider,
         &credit_source,
         TempoTransaction {
@@ -846,7 +826,6 @@ async fn test_tip1060_distribute_fees_receive_policy_guard_creations_are_account
         },
     )
     .await?;
-    assert!(seed_token_credit_receipt.status());
     assert_eq!(
         credits.balanceOf(fee_token_addr).call().await?,
         token_credit_before_seed + 1,
@@ -1016,13 +995,11 @@ async fn test_tip1060_successful_keychain_spend_fee_refund_cancels_restored_limi
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let root = test_signer(0);
     let root_addr = root.address();
-    let provider = ProviderBuilder::new()
-        .wallet(root.clone())
-        .connect_http(setup.http_url);
-    // Keep Alloy's pending-transaction heartbeat ahead of the 100ms dev block interval.
-    provider
-        .client()
-        .set_poll_interval(std::time::Duration::from_millis(10));
+    let provider = setup
+        .local_node
+        .as_ref()
+        .expect("local node")
+        .rpc_provider_with_wallet(root.clone());
     let access_key = PrivateKeySigner::random();
 
     let gas_limit = 500_000u64;
@@ -1196,11 +1173,7 @@ async fn test_tip1060_successful_fee_token_spend_fee_refund_cancels_restored_bal
         ..Default::default()
     };
     let sig = fee_payer.sign_hash_sync(&tx.signature_hash())?;
-    let envelope: TempoTxEnvelope = tx
-        .into_signed(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            sig,
-        )))
-        .into();
+    let envelope: TempoTxEnvelope = tx.into_signed(sig.into()).into();
 
     let receipt = fee_payer_provider
         .send_raw_transaction(&envelope.encoded_2718())
@@ -1287,11 +1260,7 @@ async fn test_tip1060_tip20_clear_mints_and_later_creation_redeems_credit() -> e
         ..Default::default()
     };
     let sig = root.sign_hash_sync(&tx.signature_hash())?;
-    let envelope: TempoTxEnvelope = tx
-        .into_signed(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
-            sig,
-        )))
-        .into();
+    let envelope: TempoTxEnvelope = tx.into_signed(sig.into()).into();
     provider
         .send_raw_transaction(&envelope.encoded_2718())
         .await?

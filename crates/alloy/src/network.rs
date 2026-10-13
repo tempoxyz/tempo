@@ -314,7 +314,7 @@ mod tests {
     use alloy_primitives::{B256, Signature};
     use alloy_rpc_types_eth::{AccessListItem, Authorization, TransactionRequest};
     use tempo_primitives::{
-        SignatureType, TempoSignature,
+        SignatureType,
         transaction::{
             FEE_PAYER_SIGNATURE_MARKER, KeyAuthorization, PrimitiveSignature,
             TempoSignedAuthorization,
@@ -514,11 +514,7 @@ mod tests {
                     address: Address::ZERO,
                     nonce: 0,
                 },
-                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::new(
-                    U256::ZERO,
-                    U256::ZERO,
-                    false,
-                ))),
+                Signature::new(U256::ZERO, U256::ZERO, false).into(),
             )],
             ..Default::default()
         };

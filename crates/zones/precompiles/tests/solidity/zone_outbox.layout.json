@@ -1,0 +1,231 @@
+{
+  "contracts": {
+    "tests/solidity/zone_outbox.sol:ZoneOutboxStorage": {
+      "storage-layout": {
+        "storage": [
+          {
+            "astId": 25,
+            "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
+            "label": "tempoGasRate",
+            "offset": 0,
+            "slot": "0",
+            "type": "t_uint128"
+          },
+          {
+            "astId": 27,
+            "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
+            "label": "nextWithdrawalIndex",
+            "offset": 16,
+            "slot": "0",
+            "type": "t_uint64"
+          },
+          {
+            "astId": 29,
+            "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
+            "label": "_withdrawalQueueHash",
+            "offset": 0,
+            "slot": "1",
+            "type": "t_bytes32"
+          },
+          {
+            "astId": 31,
+            "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
+            "label": "_withdrawalBatchIndex",
+            "offset": 0,
+            "slot": "2",
+            "type": "t_uint64"
+          },
+          {
+            "astId": 33,
+            "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
+            "label": "maxWithdrawalsPerBlock",
+            "offset": 8,
+            "slot": "2",
+            "type": "t_uint32"
+          },
+          {
+            "astId": 35,
+            "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
+            "label": "_withdrawalsThisBlock",
+            "offset": 12,
+            "slot": "2",
+            "type": "t_uint32"
+          },
+          {
+            "astId": 37,
+            "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
+            "label": "_currentBlockNumber",
+            "offset": 16,
+            "slot": "2",
+            "type": "t_uint64"
+          },
+          {
+            "astId": 39,
+            "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
+            "label": "lastFinalizedTimestamp",
+            "offset": 24,
+            "slot": "2",
+            "type": "t_uint64"
+          },
+          {
+            "astId": 43,
+            "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
+            "label": "_pendingWithdrawals",
+            "offset": 0,
+            "slot": "3",
+            "type": "t_array(t_struct(PendingWithdrawal)22_storage)dyn_storage"
+          },
+          {
+            "astId": 45,
+            "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
+            "label": "lastFallbackNonce",
+            "offset": 0,
+            "slot": "4",
+            "type": "t_uint64"
+          },
+          {
+            "astId": 49,
+            "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
+            "label": "_zoneFallbackRecipients",
+            "offset": 0,
+            "slot": "5",
+            "type": "t_mapping(t_uint64,t_address)"
+          }
+        ],
+        "types": {
+          "t_address": {
+            "encoding": "inplace",
+            "label": "address",
+            "numberOfBytes": "20"
+          },
+          "t_array(t_struct(PendingWithdrawal)22_storage)dyn_storage": {
+            "base": "t_struct(PendingWithdrawal)22_storage",
+            "encoding": "dynamic_array",
+            "label": "struct PendingWithdrawal[]",
+            "numberOfBytes": "32"
+          },
+          "t_bytes32": {
+            "encoding": "inplace",
+            "label": "bytes32",
+            "numberOfBytes": "32"
+          },
+          "t_bytes_storage": {
+            "encoding": "bytes",
+            "label": "bytes",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_uint64,t_address)": {
+            "encoding": "mapping",
+            "key": "t_uint64",
+            "label": "mapping(uint64 => address)",
+            "numberOfBytes": "32",
+            "value": "t_address"
+          },
+          "t_struct(PendingWithdrawal)22_storage": {
+            "encoding": "inplace",
+            "label": "struct PendingWithdrawal",
+            "members": [
+              {
+                "astId": 3,
+                "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
+                "label": "token",
+                "offset": 0,
+                "slot": "0",
+                "type": "t_address"
+              },
+              {
+                "astId": 5,
+                "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
+                "label": "sender",
+                "offset": 0,
+                "slot": "1",
+                "type": "t_address"
+              },
+              {
+                "astId": 7,
+                "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
+                "label": "txHash",
+                "offset": 0,
+                "slot": "2",
+                "type": "t_bytes32"
+              },
+              {
+                "astId": 9,
+                "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
+                "label": "to",
+                "offset": 0,
+                "slot": "3",
+                "type": "t_address"
+              },
+              {
+                "astId": 11,
+                "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
+                "label": "amount",
+                "offset": 0,
+                "slot": "4",
+                "type": "t_uint128"
+              },
+              {
+                "astId": 13,
+                "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
+                "label": "memo",
+                "offset": 0,
+                "slot": "5",
+                "type": "t_bytes32"
+              },
+              {
+                "astId": 15,
+                "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
+                "label": "gasLimit",
+                "offset": 0,
+                "slot": "6",
+                "type": "t_uint64"
+              },
+              {
+                "astId": 17,
+                "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
+                "label": "fallbackNonce",
+                "offset": 8,
+                "slot": "6",
+                "type": "t_uint64"
+              },
+              {
+                "astId": 19,
+                "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
+                "label": "callbackData",
+                "offset": 0,
+                "slot": "7",
+                "type": "t_bytes_storage"
+              },
+              {
+                "astId": 21,
+                "contract": "tests/solidity/zone_outbox.sol:ZoneOutboxStorage",
+                "label": "revealTo",
+                "offset": 0,
+                "slot": "8",
+                "type": "t_bytes_storage"
+              }
+            ],
+            "numberOfBytes": "288"
+          },
+          "t_uint128": {
+            "encoding": "inplace",
+            "label": "uint128",
+            "numberOfBytes": "16"
+          },
+          "t_uint32": {
+            "encoding": "inplace",
+            "label": "uint32",
+            "numberOfBytes": "4"
+          },
+          "t_uint64": {
+            "encoding": "inplace",
+            "label": "uint64",
+            "numberOfBytes": "8"
+          }
+        }
+      }
+    }
+  },
+  "version": "0.8.33+commit.64118f21.Darwin.appleclang"
+}

@@ -149,7 +149,7 @@ impl NonceManager {
         // 4. If there's an existing entry, check if it's expired (can be evicted)
         // Safety check: buffer is sized so entries should always be expired, but verify
         // in case TPS exceeds expectations.
-        if old_hash != B256::ZERO {
+        if !old_hash.is_zero() {
             let old_expiry = self.expiring_nonce_seen[old_hash].read()?;
             if old_expiry != 0 && old_expiry > now {
                 // Entry is still valid, cannot evict - buffer is full

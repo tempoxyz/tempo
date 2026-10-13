@@ -12,7 +12,7 @@ use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
-pub struct MonitorArgs {
+pub(crate) struct MonitorArgs {
     #[arg(short, long, required = true)]
     rpc_url: Url,
 
@@ -33,7 +33,7 @@ pub struct MonitorArgs {
 }
 
 impl MonitorArgs {
-    pub async fn run(self) -> eyre::Result<()> {
+    pub(crate) async fn run(self) -> eyre::Result<()> {
         tracing_subscriber::FmtSubscriber::builder()
             .with_env_filter(EnvFilter::from_default_env())
             .init();

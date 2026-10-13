@@ -48,15 +48,9 @@ where
 {
     /// Creates a new [`TempoConsensus`] with the given chain spec.
     pub fn new(chain_spec: Arc<C>) -> Self {
-        Self::new_with_bal_hashes(chain_spec, false)
-    }
-
-    /// Creates a new [`TempoConsensus`] with optional pre-Amsterdam BAL hash support.
-    pub fn new_with_bal_hashes(chain_spec: Arc<C>, allow_bal_hashes: bool) -> Self {
         Self {
             inner: EthBeaconConsensus::new(chain_spec)
-                .with_max_extra_data_size(TEMPO_MAXIMUM_EXTRA_DATA_SIZE)
-                .with_allow_bal_hashes(allow_bal_hashes),
+                .with_max_extra_data_size(TEMPO_MAXIMUM_EXTRA_DATA_SIZE),
             allow_equal_timestamps: false,
         }
     }
@@ -176,7 +170,7 @@ where
         let transactions = &block.body().transactions;
 
         if let Some(tx) = transactions.iter().find(|&tx| {
-            tx.is_system_tx() && !tx.is_valid_system_tx(self.inner.chain_spec().chain().id())
+            tx.is_system_tx() && !tx.is_valid_system_tx(self.inner.chain_spec().chain_id())
         }) {
             return Err(TempoConsensusError::InvalidSystemTransaction {
                 tx_hash: *tx.tx_hash(),
@@ -955,7 +949,7 @@ mod tests {
     #[test]
     fn test_validate_block_pre_execution() {
         let consensus = TempoConsensus::new(MODERATO.clone());
-        let chain_id = MODERATO.chain().id();
+        let chain_id = MODERATO.chain_id();
 
         let system_tx = create_system_tx(chain_id, SYSTEM_TX_ADDRESSES[0]);
         let user_tx = create_tx(chain_id);
@@ -973,7 +967,7 @@ mod tests {
     #[test]
     fn test_validate_block_pre_execution_invalid_system_tx() {
         let consensus = TempoConsensus::new(MODERATO.clone());
-        let chain_id = MODERATO.chain().id();
+        let chain_id = MODERATO.chain_id();
 
         let tx = TxLegacy {
             chain_id: Some(chain_id),
@@ -1009,7 +1003,7 @@ mod tests {
     #[test]
     fn test_validate_block_pre_execution_pre_t4_missing_system_tx() {
         let consensus = TempoConsensus::new(MODERATO.clone());
-        let chain_id = MODERATO.chain().id();
+        let chain_id = MODERATO.chain_id();
 
         let user_tx = create_tx(chain_id);
 
@@ -1037,7 +1031,7 @@ mod tests {
     #[test]
     fn test_validate_block_pre_execution_t4_allows_missing_system_tx() {
         let consensus = TempoConsensus::new(DEV.clone());
-        let chain_id = DEV.chain().id();
+        let chain_id = DEV.chain_id();
 
         let user_tx = create_tx(chain_id);
 
@@ -1060,7 +1054,7 @@ mod tests {
             .build();
         let sealed = SealedHeader::seal_slow(header);
 
-        let chain_id = MODERATO.chain().id();
+        let chain_id = MODERATO.chain_id();
         let user_tx = create_tx(chain_id);
         let body = BlockBody {
             transactions: vec![user_tx],
@@ -1078,7 +1072,7 @@ mod tests {
     #[test]
     fn test_validate_block_post_execution_bad_receipts() {
         let consensus = TempoConsensus::new(MODERATO.clone());
-        let chain_id = MODERATO.chain().id();
+        let chain_id = MODERATO.chain_id();
 
         let system_tx = create_system_tx(chain_id, SYSTEM_TX_ADDRESSES[0]);
         let user_tx = create_tx(chain_id);
@@ -1126,7 +1120,7 @@ mod tests {
     #[test]
     fn test_validate_block_pre_execution_system_tx_out_of_order() {
         let consensus = TempoConsensus::new(MODERATO.clone());
-        let chain_id = MODERATO.chain().id();
+        let chain_id = MODERATO.chain_id();
 
         let wrong_addr = Address::repeat_byte(0xFF);
         let system_tx = create_system_tx(chain_id, wrong_addr);

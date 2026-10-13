@@ -1,5 +1,12 @@
 # Changelog
 
+## `tempo-contracts@1.16.0`
+
+### Minor Changes
+
+- Added the T12 `burnAt` TIP-20 API, role, and caller-attributed event for authorized burns from unprotected accounts. (by @rakita, [#7902](https://github.com/tempoxyz/tempo/pull/7902))
+- Implemented TIP-1098 with a native T11 Zone verifier that validates AWS Nitro attestations and binds them to Zone batch inputs. The verifier remains fail-closed until the canonical T11 PCR measurements are finalized. (by @rakita, [#7902](https://github.com/tempoxyz/tempo/pull/7902))
+
 ## `tempo-contracts@1.11.0`
 
 ### Minor Changes

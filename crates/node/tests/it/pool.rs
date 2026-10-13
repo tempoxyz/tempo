@@ -4,9 +4,8 @@ use alloy::{
 };
 use alloy_eips::{Decodable2718, Encodable2718};
 use alloy_primitives::{Address, TxKind, U64, U256};
-use eyre::WrapErr;
 use reth_chainspec::EthChainSpec;
-use reth_e2e_test_utils::wallet::test_signer;
+use reth_e2e_test_utils::{node::Finality, wait::assert_holds_for, wallet::test_signer};
 use reth_ethereum::{
     evm::revm::primitives::hex, pool::TransactionPool, primitives::SignerRecoverable,
 };
@@ -15,9 +14,8 @@ use reth_primitives_traits::transaction::{TxHashRef, error::InvalidTransactionEr
 use reth_transaction_pool::{
     TransactionOrigin,
     error::{InvalidPoolTransactionError, PoolError, PoolErrorKind},
-    pool::AddedTransactionState,
 };
-use std::num::NonZeroU64;
+use std::{num::NonZeroU64, time::Duration};
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_precompiles::{DEFAULT_FEE_TOKEN, tip_fee_manager::TipFeeManager};
 use tempo_primitives::{
@@ -49,7 +47,7 @@ async fn submit_pending_tx() -> eyre::Result<()> {
         .add_consensus_transaction(tx, TransactionOrigin::Local)
         .await
         .unwrap();
-    assert!(matches!(res.state, AddedTransactionState::Pending));
+    assert!(res.state.is_pending());
     let pooled_tx = node.pool.get_transactions_by_sender(signer);
     assert_eq!(pooled_tx.len(), 1);
 
@@ -166,19 +164,18 @@ async fn test_evict_expired_aa_tx() -> eyre::Result<()> {
         .pool
         .get_transactions_by_sender(signer_addr);
 
-    assert!(matches!(res.state, AddedTransactionState::Pending),);
+    assert!(res.state.is_pending(),);
     assert_eq!(pooled_txs.len(), 1);
     assert_eq!(*pooled_txs[0].hash(), tx_hash,);
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-
-    // Verify tx is still there before commiting the new block
-    let pooled_txs_before = setup
-        .node
-        .inner
-        .pool
-        .get_transactions_by_sender(signer_addr);
-    assert_eq!(pooled_txs_before.len(), 1);
+    // Verify tx stays there before committing the new block
+    let pool = &setup.node.inner.pool;
+    assert_holds_for(
+        Duration::from_secs(2),
+        "tx to stay in the pool",
+        move || async move { Ok(pool.get_transactions_by_sender(signer_addr).len() == 1) },
+    )
+    .await?;
 
     // Build the next block at `valid_before`, so the tx expires instead of being mined.
     setup.node.set_next_payload_timestamp(tip_timestamp + 5)?;
@@ -197,27 +194,22 @@ async fn test_evict_expired_aa_tx() -> eyre::Result<()> {
 ///
 /// Reth's built-in `maintain_transaction_pool` handles this — no custom reorg logic needed.
 ///
-/// 1. Node2 builds an empty block B at height 1 (before the tx exists)
-/// 2. Node1 submits and mines a 2D nonce AA tx in block A at height 1
-/// 3. Import block B into node1 and FCU to it → reorg A→B
-/// 4. The orphaned tx reappears in node1's pool
+/// 1. Submit and mine a 2D nonce AA tx in block A at height 1
+/// 2. Build an empty block B on genesis and make it the head → reorg A→B
+/// 3. The orphaned tx reappears in the pool
 #[tokio::test(flavor = "multi_thread")]
 async fn test_2d_nonce_tx_reinjected_after_reorg() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // Two disconnected nodes — no tx propagation
-    let mut multi = crate::utils::TestNodeBuilder::new()
-        .with_node_count(2)
-        .build_multi_node()
-        .await?;
+    let mut node = crate::utils::TestNodeBuilder::new()
+        .build_with_node_access()
+        .await?
+        .node;
+    // Keep genesis finalized, so block A can be reorged.
+    node.set_finality(Finality::Keep);
+    let genesis = node.block_hash(0);
 
-    let mut node1 = multi.nodes.remove(0);
-    let mut node2 = multi.nodes.remove(0);
-
-    // Step 1: Build empty block B on node2 first (before the tx exists)
-    let block_b = node2.build_and_submit_payload().await?;
-
-    // Step 2: Submit a 2D nonce AA tx to node1 and mine it in block A
+    // Step 1: Submit a 2D nonce AA tx and mine it in block A
     let signer_wallet = test_signer(0);
 
     let tx_aa = TempoTransaction {
@@ -240,31 +232,22 @@ async fn test_2d_nonce_tx_reinjected_after_reorg() -> eyre::Result<()> {
     let recovered = envelope.try_into_recovered()?;
     let tx_hash = *recovered.tx_hash();
 
-    node1
-        .inner
+    node.inner
         .pool
         .add_consensus_transaction(recovered, TransactionOrigin::Local)
         .await?;
-    assert!(
-        node1.inner.pool.contains(&tx_hash),
-        "tx should be in node1 pool"
-    );
+    assert!(node.inner.pool.contains(&tx_hash), "tx should be in pool");
 
-    node1.advance_block().await?;
+    node.mine_pooled([tx_hash]).await?;
 
-    node1
-        .wait_for_pool(|pool| !pool.contains(&tx_hash))
-        .await
-        .wrap_err("tx should be mined out of pool")?;
+    node.wait_for_pool_removal([tx_hash]).await?;
 
-    // Step 3: Import block B into node1 and FCU to it → reorg A→B
-    node1.import_payload(block_b).await?;
+    // Step 2: Build block B on genesis and make it the head → reorg A→B. B is empty because the
+    // pool no longer holds the tx.
+    node.advance_block_on(genesis).await?;
 
-    // Step 4: Wait for the orphaned tx to reappear in node1's pool
-    node1
-        .wait_for_pool(|pool| pool.contains(&tx_hash))
-        .await
-        .wrap_err("tx should be back in node1 pool after reorg")?;
+    // Step 3: Wait for the orphaned tx to reappear in the pool
+    node.wait_for_pooled([tx_hash]).await?;
 
     Ok(())
 }
@@ -322,7 +305,7 @@ async fn test_evict_tx_on_validator_token_change() -> eyre::Result<()> {
     let res = pool
         .add_consensus_transaction(recovered, TransactionOrigin::Local)
         .await?;
-    assert!(matches!(res.state, AddedTransactionState::Pending));
+    assert!(res.state.is_pending());
 
     // Verify transaction is in the pool
     let pooled_txs = pool.get_transactions_by_sender(user_addr);
@@ -341,18 +324,17 @@ async fn test_evict_tx_on_validator_token_change() -> eyre::Result<()> {
     };
     pool.evict_invalidated_transactions(&updates);
 
-    // Give time for any eviction to complete
-    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-
     // Transaction should NOT be evicted because the attacker's token is not in
     // the active validator set.
-    let pooled_txs_after = pool.get_transactions_by_sender(user_addr);
-    assert_eq!(
-        pooled_txs_after.len(),
-        1,
-        "Transaction should NOT be evicted when validator token change is from a non-active validator"
-    );
-    assert_eq!(*pooled_txs_after[0].hash(), tx_hash);
+    assert_holds_for(
+        Duration::from_millis(10),
+        "transaction to stay in the pool when validator token change is from a non-active validator",
+        move || async move {
+            let pooled_txs_after = pool.get_transactions_by_sender(user_addr);
+            Ok(pooled_txs_after.len() == 1 && *pooled_txs_after[0].hash() == tx_hash)
+        },
+    )
+    .await?;
 
     Ok(())
 }
@@ -542,9 +524,8 @@ async fn test_evict_txs_on_transfer_policy_change() -> eyre::Result<()> {
 
     // Pool maintenance runs asynchronously; wait for it to evict the non-whitelisted txs
     node1
-        .wait_for_pool(|pool| evictable_hashes.iter().all(|hash| !pool.contains(hash)))
-        .await
-        .wrap_err("non-whitelisted tx should be evicted after policy change")?;
+        .wait_for_pool_removal(evictable_hashes.iter().copied())
+        .await?;
 
     // Whitelisted transaction should still be in the pool
     assert!(

@@ -85,7 +85,6 @@ tokio.workspace = true
 tokio-stream = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
-tempo-e2e.workspace = true
 tempo-transaction-pool = { workspace = true, features = ["test-utils"] }
 alloy-network.workspace = true
 tempo-precompiles.workspace = true
@@ -117,7 +116,6 @@ vergen-git2.workspace = true
 
 [features]
 default = []
-bal = ["tempo-payload-builder/bal"]
 asm-keccak = [
 	"alloy/asm-keccak",
 	"alloy-evm/asm-keccak",

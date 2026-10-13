@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Amp supervises .amp/services.yaml; no per-thread authentication needs repair.
+exit 0

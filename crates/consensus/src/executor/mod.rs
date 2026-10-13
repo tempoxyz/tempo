@@ -145,7 +145,7 @@ impl ExecutionLayer for Arc<TempoFullNode> {
         let state = self.provider.canonical_in_memory_state();
         let head_block_hash = state.get_canonical_head().hash();
         eyre::ensure!(
-            head_block_hash != B256::ZERO,
+            !head_block_hash.is_zero(),
             "execution layer returned a zero canonical head"
         );
 
@@ -181,7 +181,7 @@ impl ExecutionLayer for Arc<TempoFullNode> {
         Ok(self
             .provider
             .find_sealed_or_recovered_block(digest.0, BlockSource::Any)?
-            .map(|block| Block::from_execution_block_unchecked(block, None)))
+            .map(Block::from_execution_block_unchecked))
     }
 
     fn new_payload(

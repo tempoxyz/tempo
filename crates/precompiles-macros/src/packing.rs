@@ -443,7 +443,7 @@ pub(crate) fn gen_collision_check_fn(
     }
 
     let check_fn = quote! {
-        #[cfg(debug_assertions)]
+        #[cfg(all(debug_assertions, not(feature = "dst")))]
         #[inline(always)]
         #[allow(non_snake_case)]
         fn #check_fn_name() {
@@ -478,7 +478,7 @@ mod tests {
         let f = [field("a", parse_quote!(U256), None, None)];
         let r = allocate_slots(&f).unwrap();
         assert!(
-            matches!(r[0].assigned_slot, SlotAssignment::Auto { base_slot } if base_slot == U256::ZERO)
+            matches!(r[0].assigned_slot, SlotAssignment::Auto { base_slot } if base_slot.is_zero())
         );
 
         // single manual

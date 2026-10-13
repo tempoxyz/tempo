@@ -1,15 +1,11 @@
-use crate::utils::with_t1_fees;
+use crate::utils::t1_account;
 use alloy::{network::EthereumWallet, providers::Provider};
 use alloy_eips::BlockNumberOrTag;
 use alloy_primitives::Address;
 use alloy_rpc_types_engine::ForkchoiceState;
-use alloy_rpc_types_eth::TransactionRequest;
-use reth_e2e_test_utils::{
-    wait::poll_until,
-    wallet::{Wallet, test_signer},
-};
+use reth_e2e_test_utils::wallet::{Wallet, test_signer};
 use reth_node_api::BuiltPayload;
-use reth_node_metrics::recorder::install_prometheus_recorder;
+use reth_node_metrics::recorder::{PrometheusRecorder, install_prometheus_recorder};
 use reth_primitives_traits::AlloyBlockHeader as _;
 
 /// Test that verifies backfill sync works correctly.
@@ -53,12 +49,10 @@ async fn test_backfill_sync() -> eyre::Result<()> {
     // For simplicity, let's just send one transaction per block using the simple approach
     for i in 0..target_blocks {
         // Use a different account for each transaction to avoid nonce conflicts
-        let tx = TransactionRequest::default()
+        let raw_tx = t1_account(&accounts, i as u32)
+            .tx()
             .to(Address::ZERO)
-            .gas_limit(300_000);
-        let raw_tx = accounts
-            .account(i as u32)
-            .sign_tx_bytes(with_t1_fees(tx))
+            .gas_limit(300_000)
             .await;
 
         // Send the transaction and advance the block that includes it
@@ -104,56 +98,26 @@ async fn test_backfill_sync() -> eyre::Result<()> {
     // Send Fork Choice Update to trigger backfill sync
     println!("Sending FCU to node2 with finalized block: {final_block_hash:?}");
 
-    let forkchoice_state = ForkchoiceState {
-        head_block_hash: final_block_hash.0.into(),
-        safe_block_hash: final_block_hash.0.into(),
-        finalized_block_hash: final_block_hash.0.into(),
-    };
-
     let metrics_recorder = install_prometheus_recorder();
     let result = node2
-        .inner
-        .add_ons_handle
-        .beacon_engine_handle
-        .fork_choice_updated(forkchoice_state, None)
+        .engine
+        .forkchoice_updated(ForkchoiceState::same_hash(final_block_hash))
         .await?;
 
     println!("FCU result: {result:?}");
 
     // Assert that FCU returns Syncing status, indicating backfill is triggered
-    use alloy_rpc_types_engine::PayloadStatusEnum;
+
     assert!(
-        matches!(result.payload_status.status, PayloadStatusEnum::Syncing),
+        result.payload_status.status.is_syncing(),
         "Expected FCU to return SYNCING status for backfill, got: {:?}",
         result.payload_status.status
     );
     println!("FCU returned SYNCING status - backfill mechanism triggered correctly");
 
     println!("Waiting for node2 to sync with node1...");
-    let synced_block_number = poll_until(
-        format!("node2 to sync to target block {final_block_number}"),
-        || async {
-            let current_block2 = provider2
-                .get_block_by_number(BlockNumberOrTag::Latest)
-                .await?
-                .expect("Could not get latest block");
-            let number = current_block2.header.number;
-            Ok((number >= final_block_number).then_some(number))
-        },
-    )
-    .await?;
-    println!("Node2 successfully synced to block {synced_block_number}");
-
-    // Verify that node2 has the same state as node1
-    let final_block2 = provider2
-        .get_block_by_number(BlockNumberOrTag::Number(final_block_number))
-        .await?
-        .expect("Could not get final block from node2");
-
-    assert_eq!(
-        final_block2.header.hash, final_block_hash,
-        "Block hashes don't match after sync"
-    );
+    node2.wait_for_head(final_block_hash).await?;
+    println!("Node2 successfully synced to block {final_block_number}");
 
     // Verify that node2 can also access intermediate blocks
     let mid_block_number = final_block_number / 2;
@@ -173,9 +137,20 @@ async fn test_backfill_sync() -> eyre::Result<()> {
     );
 
     assert!(
-        tempo_e2e::get_pipeline_runs(metrics_recorder) == 1,
+        get_pipeline_runs(metrics_recorder) == 1,
         "Backfill was never triggered"
     );
 
     Ok(())
+}
+
+/// Returns the number of pipeline runs recorded by the Prometheus metrics recorder.
+fn get_pipeline_runs(recorder: &PrometheusRecorder) -> u64 {
+    recorder
+        .handle()
+        .render()
+        .lines()
+        .find(|line| line.starts_with("reth_consensus_engine_beacon_pipeline_runs"))
+        .and_then(|line| line.split_whitespace().nth(1)?.parse().ok())
+        .unwrap_or(0)
 }

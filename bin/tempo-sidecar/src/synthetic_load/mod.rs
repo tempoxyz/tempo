@@ -17,7 +17,7 @@ use tempo_precompiles::{TIP_FEE_MANAGER_ADDRESS, tip_fee_manager::IFeeManager, t
 use tempo_telemetry_util::error_field;
 use tracing::{debug, info, warn};
 
-pub struct SyntheticLoadGenerator {
+pub(crate) struct SyntheticLoadGenerator {
     mnemonic: String,
     rpc_url: Url,
     wallet_count: usize,
@@ -27,7 +27,7 @@ pub struct SyntheticLoadGenerator {
 }
 
 impl SyntheticLoadGenerator {
-    pub fn new(
+    pub(crate) fn new(
         mnemonic: String,
         rpc_url: Url,
         wallet_count: usize,
@@ -45,7 +45,7 @@ impl SyntheticLoadGenerator {
         }
     }
 
-    pub async fn worker(&self) -> eyre::Result<()> {
+    pub(crate) async fn worker(&self) -> eyre::Result<()> {
         info!("starting synthetic load generator");
 
         let mut rng = match self.seed {

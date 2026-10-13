@@ -222,9 +222,7 @@ impl<P: Provider + Clone> ChannelEnv<P> {
             .getVoucherDigest(self.id, U96::from(amount))
             .call()
             .await?;
-        Ok(Bytes::copy_from_slice(
-            &payer.sign_hash_sync(&digest)?.as_bytes(),
-        ))
+        Ok(payer.sign_hash_sync(&digest)?.as_bytes().into())
     }
 }
 

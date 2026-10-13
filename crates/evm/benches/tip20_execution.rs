@@ -17,11 +17,8 @@ use common::{
     hardfork_bench_cases, sign_precompile_call, txgen_signers,
 };
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
-use reth_revm::DatabaseCommit;
-use revm::{
-    context::JournalTr,
-    database::{CacheDB, EmptyDB},
-};
+use reth_revm::{DatabaseCommit, db::InMemoryDB};
+use revm::context::JournalTr;
 use std::{collections::BTreeSet, fs, hint::black_box, num::NonZeroU64, path::Path, sync::Arc};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
 use tempo_contracts::precompiles::ITIP20;
@@ -89,13 +86,11 @@ fn seed_in_memory_cache_db(
     block_timestamp: u64,
     reward_seed: Option<(&[Address], RewardBenchKind)>,
     hardfork: TempoHardfork,
-) -> CacheDB<EmptyDB> {
+) -> InMemoryDB {
     // This setup database only materializes the benchmark fixture in memory. The measured
     // execution path below uses Reth's fixed-cache execution provider, not CacheDB.
-    let mut evm = TempoEvmFactory::default().create_evm(
-        CacheDB::new(EmptyDB::default()),
-        bench_env(hardfork, block_timestamp),
-    );
+    let mut evm = TempoEvmFactory::default()
+        .create_evm(InMemoryDB::default(), bench_env(hardfork, block_timestamp));
     let admin = participants
         .first()
         .copied()
