@@ -1589,13 +1589,14 @@ fn key_from_file<P: AsRef<Path>>(p: P) -> eyre::Result<PrivateKeySigner> {
         .wrap_err("failed converting file decoded hex bytes to private key")
 }
 
-/// Claim fees for an active validator's current fee recipient or an explicit recipient.
+/// Claim fees for a validator entry's fee recipient or an explicit recipient.
 #[derive(Debug, clap::Args)]
 #[group(required = true, multiple = false, args = ["of_validator", "at_address"])]
 pub struct ClaimFees {
-    /// Active validator Ethereum address, ed25519 public key, or index. Resolves its current
-    /// fee recipient. Historical or deactivated entries (including old keys after rotation)
-    /// are not supported; use --at-address with their fee recipient to claim historical fees.
+    /// Validator Ethereum address, ed25519 public key, or index. Claims fees for the recipient
+    /// stored in that entry. Old public keys and historical indices resolve to snapshots and
+    /// may select a previous fee recipient. Use the current validator ID for its current
+    /// recipient, or --at-address to select a recipient explicitly.
     #[arg(long, value_name = "ID")]
     of_validator: Option<ValidatorId>,
 
@@ -1634,9 +1635,11 @@ impl ClaimFees {
             let fee_recipient = if let Some(id) = self.of_validator.clone() {
                 let validator = read_validator_from_contract(&provider, id).await?;
                 if validator.deactivatedAtHeight != 0 {
-                    bail!(
-                        "validator entry is historical or deactivated; use the current validator ID, or --at-address {} to claim fees for its historical recipient",
-                        validator.feeRecipient
+                    tracing::warn!(
+                        validator_index = validator.index,
+                        deactivated_at_height = validator.deactivatedAtHeight,
+                        fee_recipient = %validator.feeRecipient,
+                        "validator entry is historical or deactivated; claiming fees for its stored recipient, which may differ from the current recipient"
                     );
                 }
                 validator.feeRecipient
@@ -2391,7 +2394,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn claim_fees_rejects_historical_validator_entries() {
+    async fn claim_fees_accepts_historical_validator_entries() {
         for id in [TEST_PUBLIC_KEY, "1"] {
             let cli = TempoCli::try_parse_from([
                 "tempo",
@@ -2422,19 +2425,21 @@ mod tests {
             asserter.push_success(&Bytes::from(
                 IValidatorConfigV2::validatorByIndexCall::abi_encode_returns(&validator),
             ));
+            let token = TEST_VALIDATOR_TOKEN.parse().unwrap();
+            asserter.push_success(&Bytes::from(
+                IFeeManager::validatorTokensCall::abi_encode_returns(&token),
+            ));
 
-            let err = cmd
+            let call = cmd
                 .resolve_call(async || {
                     Ok(ProviderBuilder::new_with_network::<TempoNetwork>()
                         .connect_mocked_client(asserter.clone()))
                 })
                 .await
-                .unwrap_err();
+                .unwrap();
 
-            assert_eq!(
-                err.to_string(),
-                "validator entry is historical or deactivated; use the current validator ID, or --at-address 0x0000000000000000000000000000000000000002 to claim fees for its historical recipient"
-            );
+            assert_eq!(call.validator, validator.feeRecipient);
+            assert_eq!(call.token, token);
             assert!(asserter.read_q().is_empty());
         }
     }
