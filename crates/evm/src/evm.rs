@@ -400,10 +400,12 @@ mod tests {
             slots as fee_manager_slots,
         },
         tip20::{
-            ITIP20, rewards::__packing_user_reward_info as user_reward_info_slots,
+            ITIP20, TIP20Token, rewards::__packing_user_reward_info as user_reward_info_slots,
             slots as tip20_slots,
         },
-        tip403_registry::slots as tip403_registry_slots,
+        tip403_registry::{
+            ITIP403Registry, PolicyType, TIP403Registry, slots as tip403_registry_slots,
+        },
         zone_factory::{ZONE_CREATION_GAS, ZoneFactory, portal_address},
     };
     use tempo_primitives::{TempoAddressExt, transaction::Call};
@@ -1329,9 +1331,12 @@ mod tests {
 
     #[test]
     fn test_tip20_full_evm_storage_actions() {
-        for hardfork in TempoHardfork::VARIANTS {
-            // skip pre-T5 hardforks to avoid clutter
-            if !hardfork.is_t5() {
+        for (hardfork, with_policies) in TempoHardfork::VARIANTS
+            .iter()
+            .flat_map(|hardfork| [(hardfork, false), (hardfork, true)])
+        {
+            // Keep the existing cases since T5 and compare policy-heavy payments across T14.
+            if !hardfork.is_t5() || (with_policies && !hardfork.is_t13()) {
                 continue;
             }
 
@@ -1408,6 +1413,50 @@ mod tests {
                         }
                         .encode_to_slot()?,
                     )?;
+
+                    if with_policies {
+                        let mut registry = TIP403Registry::new();
+                        // Separate compound policies keep fee checks from warming the
+                        // payment token's policy. Empty blacklists still read every list.
+                        let blacklist = |registry: &mut TIP403Registry| {
+                            registry.create_policy(
+                                sender,
+                                ITIP403Registry::createPolicyCall {
+                                    policyType: PolicyType::BLACKLIST,
+                                    admin: sender,
+                                },
+                            )
+                        };
+                        for address in [PATH_USD_ADDRESS, fee_token.address()] {
+                            let sender_policy = blacklist(&mut registry)?;
+                            let recipient_policy = blacklist(&mut registry)?;
+                            let mint_policy = blacklist(&mut registry)?;
+                            let policy_id = registry.create_compound_policy(
+                                sender,
+                                ITIP403Registry::createCompoundPolicyCall {
+                                    senderPolicyId: sender_policy,
+                                    recipientPolicyId: recipient_policy,
+                                    mintRecipientPolicyId: mint_policy,
+                                },
+                            )?;
+                            TIP20Token::from_address(address)?.change_transfer_policy_id(
+                                sender,
+                                ITIP20::changeTransferPolicyIdCall {
+                                    newPolicyId: policy_id,
+                                },
+                            )?;
+                        }
+                        let receive_policies =
+                            [blacklist(&mut registry)?, blacklist(&mut registry)?];
+                        registry.set_receive_policy(
+                            recipient,
+                            ITIP403Registry::setReceivePolicyCall {
+                                senderPolicyId: receive_policies[0],
+                                tokenFilterId: receive_policies[1],
+                                recoveryAuthority: Address::ZERO,
+                            },
+                        )?;
+                    }
 
                     Ok::<(Address, Address), tempo_precompiles::error::TempoPrecompileError>((
                         fee_token.address(),
@@ -1535,6 +1584,12 @@ mod tests {
                     ExecutionResult::Success { .. },
                     "hardfork: {hardfork:?}"
                 );
+                if with_policies {
+                    insta::assert_snapshot!(
+                        format!("policy_payment_gas_{}", hardfork.name()),
+                        result.result.tx_gas_used()
+                    );
+                }
                 let actions = evm
                     .take_actions()
                     .expect("storage action recording should be enabled");
@@ -1543,6 +1598,26 @@ mod tests {
                 Ok(snapshot_storage_actions(&actions, &labels))
             };
 
+            if with_policies {
+                let snapshot = IndexMap::from([(
+                    "policy_payment",
+                    run_transfer(
+                        &mut evm,
+                        sender,
+                        recipient,
+                        transfer_amount,
+                        0,
+                        U256::ZERO,
+                        fee_token,
+                    )
+                    .unwrap(),
+                )]);
+                insta::assert_yaml_snapshot!(
+                    format!("policy_payment_{}", hardfork.name()),
+                    snapshot
+                );
+                continue;
+            }
             let snapshot = IndexMap::from([
                 // TIP-20 transfer with sequential protocol nonce and a fee token that requires going through feeAMM to pay fees.
                 (
