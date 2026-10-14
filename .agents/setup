@@ -77,6 +77,8 @@ configure_build_cache() {
   # Every orb shares one sccache directory on the Archil disk that .agents/resume mounts. The
   # wrapper compiles without sccache while the disk is not mounted, e.g. during this setup. It is
   # named `sccache` so the cc crate also routes C/C++ builds (rocksdb, jemalloc) through it.
+  # Any orb can write cache entries that every other orb links, so all orbs of this project are
+  # one trust domain: do not build untrusted code (e.g. external PRs) in them.
   local wrapper_dir="$HOME/.cargo/archil-sccache"
   mkdir -p "$wrapper_dir"
   cat >"$wrapper_dir/sccache" <<EOF
