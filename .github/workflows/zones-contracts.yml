@@ -7,7 +7,6 @@ on:
       - "crates/zones/contracts/**"
       - ".github/workflows/zones-contracts.yml"
       - ".gitmodules"
-  merge_group:
   pull_request:
 
 permissions:

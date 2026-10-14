@@ -16,7 +16,6 @@ on:
       - scripts/sanitize_source.py
       - scripts/sanitize_toml.py
       - Cargo.toml
-  merge_group:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}

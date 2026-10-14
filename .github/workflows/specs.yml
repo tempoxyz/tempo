@@ -22,7 +22,6 @@ on:
       - "scripts/foundry-patch.sh"
       - ".github/workflows/specs.yml"
       - ".github/workflows/update-reth.yml"
-  merge_group:
   pull_request:
 
 env:

@@ -7,7 +7,6 @@ on:
     tags:
       - "v*.*.*"
   pull_request:
-  merge_group:
   workflow_dispatch:
     inputs:
       nightly:

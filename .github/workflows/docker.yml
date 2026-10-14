@@ -10,7 +10,6 @@ on:
       - "rc/*"
     tags:
       - "v*.*.*"
-  merge_group:
   workflow_dispatch:
     inputs:
       request_id:

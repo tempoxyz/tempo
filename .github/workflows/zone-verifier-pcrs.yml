@@ -14,7 +14,6 @@ on:
       - "crates/precompiles/src/zone_verifier/pcrs.json"
       - ".github/scripts/verify-zone-verifier-pcrs.sh"
       - ".github/workflows/zone-verifier-pcrs.yml"
-  merge_group:
   workflow_dispatch:
 
 concurrency:

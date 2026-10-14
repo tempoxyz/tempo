@@ -16,7 +16,6 @@ on:
       - 'crates/primitives/**'
       - 'crates/revm/**'
       - '.github/workflows/rpc-tests.yml'
-  merge_group:
 
 env:
   # Allow Aegis to finish its 90-second Socket lookup before Cargo times out.
