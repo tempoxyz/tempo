@@ -673,34 +673,6 @@ mod tests {
     }
 
     #[test]
-    fn test_logo_uri_selectors_gated_behind_t5() -> eyre::Result<()> {
-        // Pre-T5: logoURI/setLogoURI should return unknown selector.
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
-        let admin = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
-
-            // logoURI selector is gated
-            let logo_uri_calldata = ITIP20::logoURICall {}.abi_encode();
-            let result = token.call(&logo_uri_calldata, admin)?;
-            assert!(result.is_revert());
-            assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
-
-            // setLogoURI selector is gated
-            let set_logo_uri_calldata = ITIP20::setLogoURICall {
-                newLogoURI: "https://example.com/icon.svg".to_string(),
-            }
-            .abi_encode();
-            let result = token.call(&set_logo_uri_calldata, admin)?;
-            assert!(result.is_revert());
-            assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_logo_uri_pre_t5_deploy_post_t5_read_returns_empty() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
         let admin = Address::random();

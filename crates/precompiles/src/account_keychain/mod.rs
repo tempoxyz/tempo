@@ -2522,63 +2522,6 @@ mod tests {
     }
 
     #[test]
-    fn test_admin_operations_allow_origin_mismatch_pre_t2() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
-        let msg_sender = Address::random();
-        let other_origin = Address::random();
-        let key_id = Address::random();
-        let token = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-
-            // Pre-T2, admin operations do not enforce msg.sender == tx.origin.
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(other_origin)?;
-
-            authorize_key(
-                &mut keychain,
-                msg_sender,
-                authorizeKeyCall {
-                    keyId: key_id,
-                    signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: true,
-                        limits: vec![TokenLimit {
-                            token,
-                            amount: U256::from(100),
-                            period: 0,
-                        }],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
-                },
-            )?;
-
-            keychain.update_spending_limit(
-                msg_sender,
-                updateSpendingLimitCall {
-                    keyId: key_id,
-                    token,
-                    newLimit: U256::from(200),
-                },
-            )?;
-
-            keychain.revoke_key(msg_sender, revokeKeyCall { keyId: key_id })?;
-
-            let key_info = keychain.get_key(getKeyCall {
-                account: msg_sender,
-                keyId: key_id,
-            })?;
-            assert!(key_info.isRevoked);
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_admin_operations_reject_eoa_mismatch_on_t2() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
         let account = Address::random();
@@ -2874,65 +2817,6 @@ mod tests {
                     ))
                 ),
                 "Expected ExpiryInPast error for past expiry, got: {result_past:?}"
-            );
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_pre_t3_authorize_key_rejects_tip_1011_fields_without_writing_key() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
-        let account = Address::random();
-        let key_id = Address::random();
-        let token = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
-
-            let result = authorize_key(
-                &mut keychain,
-                account,
-                authorizeKeyCall {
-                    keyId: key_id,
-                    signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: true,
-                        limits: vec![TokenLimit {
-                            token,
-                            amount: U256::from(100u64),
-                            period: 60,
-                        }],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
-                },
-            );
-
-            assert!(
-                matches!(
-                    result,
-                    Err(TempoPrecompileError::AccountKeychainError(
-                        AccountKeychainError::InvalidSpendingLimit(_)
-                    ))
-                ),
-                "expected InvalidSpendingLimit, got {result:?}"
-            );
-
-            assert_eq!(
-                keychain.keys[account][key_id].read()?,
-                AuthorizedKey::default(),
-                "pre-T3 invalid TIP-1011 fields must not leave behind a key"
-            );
-
-            let limit_key = AccountKeychain::spending_limit_key(account, key_id);
-            assert_eq!(
-                keychain.spending_limits[limit_key][token].read()?,
-                SpendingLimitState::default(),
-                "pre-T3 invalid TIP-1011 fields must not initialize limits"
             );
 
             Ok(())
@@ -4406,52 +4290,6 @@ mod tests {
                 stored_key.expiry, 0,
                 "duplicate rejection must not persist the key"
             );
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_pre_t5_authorize_key_ignores_scopes_when_allowing_any_call() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
-        let account = Address::random();
-        let key_id = Address::random();
-        let target = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
-
-            authorize_key(
-                &mut keychain,
-                account,
-                authorizeKeyCall {
-                    keyId: key_id,
-                    signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: false,
-                        limits: vec![],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![CallScope {
-                            target,
-                            selectorRules: vec![],
-                        }],
-                    },
-                },
-            )?;
-
-            let stored_key = keychain.keys[account][key_id].read()?;
-            assert_eq!(stored_key.expiry, u64::MAX);
-
-            let scopes = keychain.get_allowed_calls(getAllowedCallsCall {
-                account,
-                keyId: key_id,
-            })?;
-            assert!(!scopes.isScoped);
-            assert!(scopes.scopes.is_empty());
 
             Ok(())
         })

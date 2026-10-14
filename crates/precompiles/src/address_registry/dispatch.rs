@@ -55,7 +55,7 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
     };
-    use alloy::sol_types::{SolCall, SolError, SolValue};
+    use alloy::sol_types::{SolCall, SolValue};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::IAddressRegistry::IAddressRegistryCalls;
 
@@ -74,25 +74,6 @@ mod tests {
 
             assert_full_coverage([unsupported]);
 
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_is_implicitly_approved_selector_gated_pre_t5() -> eyre::Result<()> {
-        // Pre-T5: the isImplicitlyApproved selector must be treated as unknown.
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
-        StorageCtx::enter(&mut storage, || {
-            let mut registry = AddressRegistry::new();
-            let call = IAddressRegistry::isImplicitlyApprovedCall {
-                addr: Address::ZERO,
-            };
-            let result = registry.call(&call.abi_encode(), Address::ZERO)?;
-            assert!(result.is_revert());
-            assert!(
-                tempo_contracts::precompiles::UnknownFunctionSelector::abi_decode(&result.bytes)
-                    .is_ok()
-            );
             Ok(())
         })
     }

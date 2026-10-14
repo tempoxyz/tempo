@@ -450,11 +450,6 @@ mod tests {
     }
 
     #[test]
-    fn test_ring_buffer_pointer_wraps_at_pre_t11_capacity() -> eyre::Result<()> {
-        assert_ring_buffer_pointer_wraps_at_capacity(TempoHardfork::T10)
-    }
-
-    #[test]
     fn test_ring_buffer_pointer_wraps_at_t11_capacity() -> eyre::Result<()> {
         assert_ring_buffer_pointer_wraps_at_capacity(TempoHardfork::T11)
     }

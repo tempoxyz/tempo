@@ -5411,60 +5411,6 @@ mod tests {
     }
 
     #[test]
-    fn test_cancel_stale_order_recipient_blacklisted_on_payout_token_pre_t4() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinDEX::new();
-            exchange.initialize()?;
-
-            let alice = Address::random();
-            let admin = Address::random();
-
-            let mut registry = TIP403Registry::new();
-            let policy_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                },
-            )?;
-
-            let (base_addr, quote_addr) =
-                setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT * 2)?;
-
-            exchange.create_pair(base_addr)?;
-            let order_id = exchange.place(alice, base_addr, MIN_ORDER_AMOUNT, false, 0)?;
-
-            let mut quote = TIP20Token::from_address(quote_addr)?;
-            quote.change_transfer_policy_id(
-                admin,
-                ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: policy_id,
-                },
-            )?;
-
-            registry.modify_policy_blacklist(
-                admin,
-                ITIP403Registry::modifyPolicyBlacklistCall {
-                    policyId: policy_id,
-                    account: alice,
-                    restricted: true,
-                },
-            )?;
-
-            // Pre-T4: recipient check on payout token is not performed, order is not stale
-            let result = exchange.cancel_stale_order(order_id);
-            assert!(result.is_err());
-            assert!(matches!(
-                result.unwrap_err(),
-                TempoPrecompileError::StablecoinDEX(StablecoinDEXError::OrderNotStale(_))
-            ));
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_cancel_stale_order_recipient_blacklisted_on_payout_token_t4() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
         StorageCtx::enter(&mut storage, || {

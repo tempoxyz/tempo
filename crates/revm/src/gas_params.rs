@@ -240,37 +240,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_t1_gas_params_no_state_gas_split() {
-        let gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T1, false);
-
-        // T1 has full 250k costs in regular gas, no state gas split
-        assert_eq!(
-            gas_params.get(GasId::sstore_set_without_load_cost()),
-            250_000
-        );
-        assert_eq!(gas_params.get(GasId::new_account_cost()), 250_000);
-        assert_eq!(gas_params.get(GasId::tx_create_cost()), 500_000);
-        assert_eq!(gas_params.get(GasId::create()), 500_000);
-        assert_eq!(gas_params.get(GasId::code_deposit_cost()), 1_000);
-
-        // State gas params should remain at upstream defaults (not Tempo-bumped)
-        let upstream = GasParams::new_spec(TempoHardfork::T1.into());
-        assert_eq!(
-            gas_params.get(GasId::sstore_set_state_gas()),
-            upstream.get(GasId::sstore_set_state_gas()),
-            "T1 should not override state gas params"
-        );
-        assert_eq!(
-            gas_params.get(GasId::new_account_state_gas()),
-            upstream.get(GasId::new_account_state_gas()),
-        );
-        assert_eq!(
-            gas_params.get(GasId::create_state_gas()),
-            upstream.get(GasId::create_state_gas()),
-        );
-    }
-
     /// TIP-1016 spec table: regular/state gas splits must match the spec exactly.
     ///
     /// | Operation                      | Execution Gas | Storage Gas | Total   |

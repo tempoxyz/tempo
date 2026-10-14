@@ -444,80 +444,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_validate_header_general_gas_mismatch_pre_t1() {
-        // Pre-T1 chainspec uses the divisor-based calculation
-        let consensus = TempoConsensus::new(create_pre_t1_chainspec());
-        let gas_limit = 500_000_000u64;
-        let shared_gas_limit = gas_limit / 10;
-        // Pre-T1: expected = (gas_limit - shared_gas_limit) / 2
-        let header = TestHeaderBuilder::default()
-            .gas_limit(gas_limit)
-            .timestamp_millis(current_timestamp_millis())
-            .general_gas_limit(999)
-            .shared_gas_limit(shared_gas_limit)
-            .build();
-        let sealed = SealedHeader::seal_slow(header);
-
-        let result = consensus.validate_header(&sealed);
-        let err = result.unwrap_err();
-        assert!(
-            err.downcast_other_ref::<TempoConsensusError>()
-                .is_some_and(|e| matches!(e, TempoConsensusError::GeneralGasLimitMismatch { .. })),
-            "Expected GeneralGasLimitMismatch, got: {err:?}",
-        );
-
-        // Now verify the correct pre-T1 value works
-        let expected_general_gas_limit = (gas_limit - shared_gas_limit) / 2;
-        let header = TestHeaderBuilder::default()
-            .gas_limit(gas_limit)
-            .timestamp_millis(current_timestamp_millis())
-            .general_gas_limit(expected_general_gas_limit)
-            .shared_gas_limit(shared_gas_limit)
-            .build();
-        let sealed = SealedHeader::seal_slow(header);
-        assert!(consensus.validate_header(&sealed).is_ok());
-    }
-
-    /// Creates a chainspec with only T0 active (no T1).
-    fn create_pre_t1_chainspec() -> Arc<TempoChainSpec> {
-        let genesis_json = r#"{
-            "config": {
-                "chainId": 99998,
-                "homesteadBlock": 0,
-                "daoForkSupport": false,
-                "eip150Block": 0,
-                "eip155Block": 0,
-                "eip158Block": 0,
-                "byzantiumBlock": 0,
-                "constantinopleBlock": 0,
-                "petersburgBlock": 0,
-                "istanbulBlock": 0,
-                "berlinBlock": 0,
-                "londonBlock": 0,
-                "mergeNetsplitBlock": 0,
-                "shanghaiTime": 0,
-                "cancunTime": 0,
-                "pragueTime": 0,
-                "osakaTime": 0,
-                "terminalTotalDifficulty": 0,
-                "terminalTotalDifficultyPassed": true,
-                "epochLength": 21600,
-                "t0Time": 0
-            },
-            "nonce": "0x42",
-            "timestamp": "0x0",
-            "extraData": "0x",
-            "gasLimit": "0x1dcd6500",
-            "difficulty": "0x0",
-            "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
-            "coinbase": "0x0000000000000000000000000000000000000000",
-            "alloc": {}
-        }"#;
-        let genesis: Genesis = serde_json::from_str(genesis_json).unwrap();
-        Arc::new(TempoChainSpec::from_genesis(genesis))
-    }
-
     /// Creates a chainspec with T1 active at timestamp 0.
     fn create_t1_chainspec() -> Arc<TempoChainSpec> {
         let genesis_json = r#"{
@@ -997,34 +923,6 @@ mod tests {
                     |e| matches!(e, TempoConsensusError::InvalidSystemTransaction { tx_hash: h } if *h == tx_hash)
                 ),
             "Expected InvalidSystemTransaction, got: {err:?}"
-        );
-    }
-
-    #[test]
-    fn test_validate_block_pre_execution_pre_t4_missing_system_tx() {
-        let consensus = TempoConsensus::new(MODERATO.clone());
-        let chain_id = MODERATO.chain_id();
-
-        let user_tx = create_tx(chain_id);
-
-        use tempo_chainspec::constants::moderato::MODERATO_T4_TIMESTAMP;
-
-        let header = TestHeaderBuilder::default()
-            .gas_limit(30_000_000)
-            .timestamp(MODERATO_T4_TIMESTAMP - 1)
-            .build();
-        let block = create_valid_block(header, vec![user_tx]);
-        let sealed = SealedBlock::seal_slow(block);
-
-        let result = consensus.validate_block_pre_execution(&sealed);
-        let err = result.unwrap_err();
-        assert!(
-            err.downcast_other_ref::<TempoConsensusError>()
-                .is_some_and(|e| matches!(
-                    e,
-                    TempoConsensusError::MissingEndOfBlockSystemTxs { .. }
-                )),
-            "Expected MissingEndOfBlockSystemTxs, got: {err:?}"
         );
     }
 

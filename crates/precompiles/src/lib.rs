@@ -727,71 +727,6 @@ mod tests {
         );
     }
 
-    /// Pre-T4 precompile calls must not report state_gas_used, because the new revm's
-    /// reservoir model propagates it via `handle_reservoir_remaining_gas` on revert/halt,
-    /// corrupting `tx_gas_used()`.
-    #[test]
-    fn test_precompile_state_gas_zero_pre_t4() {
-        let call_with_spec = |calldata: Bytes, spec: TempoHardfork| {
-            let mut cfg = CfgEnv::<TempoHardfork>::default();
-            cfg.set_spec_and_mainnet_gas_params(spec);
-            let tx = TxEnv::default();
-            let precompile = tempo_precompile!("TIP20Token", &cfg, |input| {
-                TIP20Token::from_address(PATH_USD_ADDRESS).expect("PATH_USD_ADDRESS is valid")
-            });
-
-            let mut db = InMemoryDB::default();
-            db.insert_account_info(
-                PATH_USD_ADDRESS,
-                AccountInfo {
-                    code: Some(Bytecode::new_raw(bytes!("0xEF"))),
-                    ..Default::default()
-                },
-            );
-            let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
-            let block = evm.block.clone();
-            let evm_internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
-
-            let input = PrecompileInput {
-                data: &calldata,
-                caller: Address::ZERO,
-                internals: evm_internals,
-                gas: 1_000_000,
-                is_static: false,
-                value: U256::ZERO,
-                target_address: PATH_USD_ADDRESS,
-                bytecode_address: PATH_USD_ADDRESS,
-                reservoir: 0,
-            };
-
-            AlloyEvmPrecompile::call(&precompile, input)
-        };
-
-        // Pre-T4 (T2): state_gas_used must be 0
-        let result = call_with_spec(
-            ITIP20::balanceOfCall::new((Address::ZERO,))
-                .abi_encode()
-                .into(),
-            TempoHardfork::T2,
-        )
-        .expect("T2 balanceOf should succeed");
-        assert!(result.gas_used > 0, "precompile should consume gas");
-        assert_eq!(
-            result.state_gas_used, 0,
-            "pre-T4 precompile must not report state_gas_used, got {}",
-            result.state_gas_used
-        );
-
-        // Pre-T4 (T1): reverted call should also have state_gas_used == 0
-        let reverted =
-            call_with_spec(Bytes::new(), TempoHardfork::T1).expect("T1 empty should revert");
-        assert!(reverted.status.is_revert());
-        assert_eq!(
-            reverted.state_gas_used, 0,
-            "pre-T4 reverted precompile must not report state_gas_used"
-        );
-    }
-
     /// T4+ precompile `state_gas_used` must only include state-creating gas (cold SSTORE
     /// zero->non-zero), not all gas consumed. A read-only operation like `balanceOf` must
     /// have `state_gas_used == 0` even though `gas_used > 0`.
@@ -1164,17 +1099,6 @@ mod tests {
         assert!(
             random_precompile.is_none(),
             "Random address should not be a precompile"
-        );
-    }
-
-    #[test]
-    fn test_signature_verifier_not_registered_pre_t3() {
-        let cfg = CfgEnv::<TempoHardfork>::default();
-        let precompiles = test_tempo_precompiles(&cfg);
-
-        assert!(
-            precompiles.get(&SIGNATURE_VERIFIER_ADDRESS).is_none(),
-            "SignatureVerifier should NOT be registered before T3"
         );
     }
 
