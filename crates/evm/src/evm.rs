@@ -1211,6 +1211,19 @@ mod tests {
                         action.address(),
                     );
                 }
+                StorageAction::SupplyCapCheck(address, slot, sload_value, amount, supply_cap) => {
+                    let current = storage_state.apply_sload_value(
+                        (address, slot),
+                        sload_value,
+                        "SupplyCapCheck",
+                        hardfork,
+                    );
+                    assert!(
+                        current
+                            .checked_add(amount)
+                            .is_some_and(|supply| supply <= supply_cap)
+                    );
+                }
             }
         }
 
@@ -1300,6 +1313,13 @@ mod tests {
                         "FeeAmmLiquidityCheck({}, {}, {slot_value}, {amount_out}, {has_enough_liquidity})",
                         labels.address(action.address()),
                         labels.slot(action.address(), slot),
+                    )
+                }
+                StorageAction::SupplyCapCheck(address, slot, sload_value, amount, supply_cap) => {
+                    format!(
+                        "SupplyCapCheck({}, {}, {sload_value}, {amount}, {supply_cap})",
+                        labels.address(address),
+                        labels.slot(address, slot),
                     )
                 }
             })

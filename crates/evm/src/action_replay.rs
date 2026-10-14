@@ -167,6 +167,16 @@ where
                         return Err(StorageActionReplayError::ActionConflict.into());
                     }
                 }
+                StorageAction::SupplyCapCheck(address, key, sload_value, amount, supply_cap) => {
+                    self.replay_state.check_supply_cap(
+                        db,
+                        address,
+                        key,
+                        sload_value,
+                        amount,
+                        supply_cap,
+                    )?;
+                }
             }
         }
 
@@ -527,6 +537,26 @@ impl StorageActionReplayState {
         self.tx_changes.clear();
         self.expiring_nonce.commit_pending_ring_ptr();
     }
+
+    /// Revalidates a mint's cap against the current supply before its semantic increment.
+    fn check_supply_cap<DB: Database>(
+        &mut self,
+        db: &mut State<DB>,
+        address: Address,
+        slot: U256,
+        fallback: U256,
+        amount: U256,
+        supply_cap: U256,
+    ) -> Result<(), BlockExecutionError> {
+        let current = self.sload_current_or(db, address, slot, fallback)?;
+        if current
+            .checked_add(amount)
+            .is_none_or(|supply| supply > supply_cap)
+        {
+            return Err(StorageActionReplayError::ActionConflict.into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -783,5 +813,56 @@ mod tests {
         assert_eq!(change.original, U256::from(11));
         assert_eq!(change.current, U256::from(14));
         assert!(change.written);
+    }
+
+    #[test]
+    fn supply_cap_check_allows_rebased_mint_but_rejects_exceeding_cap() {
+        let address = Address::repeat_byte(0x42);
+        let slot = U256::from(7);
+        let mut db = state_with_storage(address, slot, U256::from(11));
+        let mut replay_state = StorageActionReplayState::default();
+
+        replay_state
+            .check_supply_cap(
+                &mut db,
+                address,
+                slot,
+                U256::from(10),
+                U256::ONE,
+                U256::from(12),
+            )
+            .unwrap();
+        replay_state.sstore(address, slot, U256::from(12)).unwrap();
+
+        let err = replay_state
+            .check_supply_cap(
+                &mut db,
+                address,
+                slot,
+                U256::from(10),
+                U256::ONE,
+                U256::from(12),
+            )
+            .unwrap_err();
+        assert_eq!(
+            StorageActionReplayError::from_block_execution_error(&err),
+            Some(StorageActionReplayError::ActionConflict)
+        );
+    }
+
+    #[test]
+    fn supply_cap_check_rejects_overflow() {
+        let address = Address::repeat_byte(0x42);
+        let slot = U256::from(7);
+        let mut db = state_with_storage(address, slot, U256::MAX);
+        let mut replay_state = StorageActionReplayState::default();
+
+        let err = replay_state
+            .check_supply_cap(&mut db, address, slot, U256::ONE, U256::ONE, U256::MAX)
+            .unwrap_err();
+        assert_eq!(
+            StorageActionReplayError::from_block_execution_error(&err),
+            Some(StorageActionReplayError::ActionConflict)
+        );
     }
 }

@@ -49,6 +49,10 @@ pub enum StorageAction {
     /// `amount_out` - Amount of tokens to swap out.
     /// `has_enough_liquidity` - Whether the pool has enough liquidity.
     FeeAmmLiquidityCheck(U256, U256, U256, bool),
+    /// Checks that incrementing a token's current supply by `amount` stays within its cap.
+    ///
+    /// `address`, `key`, `sload_value`, `amount`, `supply_cap`.
+    SupplyCapCheck(Address, U256, U256, U256, U256),
 }
 
 impl StorageAction {
@@ -58,7 +62,8 @@ impl StorageAction {
             Self::Sload(address, ..)
             | Self::Sstore(address, ..)
             | Self::Sinc(address, ..)
-            | Self::Sdec(address, ..) => *address,
+            | Self::Sdec(address, ..)
+            | Self::SupplyCapCheck(address, ..) => *address,
             Self::FeeAmmSwap(..) | Self::FeeAmmLiquidityCheck(..) => TIP_FEE_MANAGER_ADDRESS,
         }
     }
