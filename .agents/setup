@@ -5,6 +5,8 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 NEXTEST_VERSION="0.9.127" # matches .github/workflows/test.yml
+SCCACHE_VERSION="0.14.0"  # matches Dockerfile.chef
+ARCHIL_MOUNT="$HOME/archil" # mounted by .agents/resume, and by this script for the warm build
 
 step() {
   local name="$1"
@@ -62,11 +64,78 @@ install_just() {
   just --version
 }
 
+install_sccache() {
+  if [[ "$(sccache --version 2>/dev/null)" != "sccache $SCCACHE_VERSION" ]]; then
+    local name="sccache-v$SCCACHE_VERSION-x86_64-unknown-linux-musl"
+    curl -fsSL "https://github.com/mozilla/sccache/releases/download/v$SCCACHE_VERSION/$name.tar.gz" |
+      tar xzf - -C "$HOME/.cargo/bin" --strip-components=1 "$name/sccache"
+  fi
+  sccache --version
+}
+
+configure_build_cache() {
+  # Every orb shares one sccache directory on the Archil disk that .agents/resume mounts. The
+  # wrapper compiles without sccache while the disk is not mounted, e.g. without Archil config. It is
+  # named `sccache` so the cc crate also routes C/C++ builds (rocksdb, jemalloc) through it.
+  # Any orb can write cache entries that every other orb links, so all orbs of this project are
+  # one trust domain: do not build untrusted code (e.g. external PRs) in them.
+  local wrapper_dir="$HOME/.cargo/archil-sccache"
+  mkdir -p "$wrapper_dir"
+  cat >"$wrapper_dir/sccache" <<EOF
+#!/bin/sh
+if mountpoint -q "$ARCHIL_MOUNT"; then exec "$HOME/.cargo/bin/sccache" "\$@"; fi
+exec "\$@"
+EOF
+  chmod +x "$wrapper_dir/sccache"
+  mkdir -p "$HOME/.config/sccache"
+  cat >"$HOME/.config/sccache/config" <<EOF
+[cache.disk]
+dir = "$ARCHIL_MOUNT/sccache"
+size = $((20 * 1024 * 1024 * 1024))
+EOF
+  # Pin vergen's build timestamp like CI does, so reth-node-core and its dependents hit the cache.
+  cat >"$HOME/.cargo/config.toml" <<EOF
+[build]
+rustc-wrapper = "$wrapper_dir/sccache"
+
+[env]
+SOURCE_DATE_EPOCH = "1700000000"
+EOF
+}
+
+install_archil() {
+  # FUSE client for the shared Archil disk that .agents/resume mounts.
+  if ! command -v archil >/dev/null; then
+    curl -fsSL https://archil.com/install | ARCHIL_SKIP_IAM_CHECK=1 sh
+  fi
+  archil --version
+}
+
+mount_archil() {
+  # Lets the warm build read and fill the shared sccache cache. Reuses .agents/resume, which is
+  # idempotent and skips the mount when Archil is not configured.
+  if findmnt -n "$ARCHIL_MOUNT" >/dev/null; then return; fi
+  # Set before resume so a failure after a successful mount (e.g. chown) still unmounts.
+  trap unmount_archil EXIT
+  .agents/resume
+}
+
+unmount_archil() {
+  # The archil and sccache daemons stop when setup exits, so leave no mount in the snapshot;
+  # .agents/resume mounts the disk again on wake.
+  sccache --stop-server || true # prints cache stats to setup.log
+  if findmnt -n "$ARCHIL_MOUNT" >/dev/null; then sudo archil unmount "$ARCHIL_MOUNT"; fi
+}
+
 step "apt packages" install_apt_packages
+step "archil" install_archil
 step "rust toolchains" install_rust
+step "sccache" install_sccache
+step "build cache" configure_build_cache
 step "cargo-nextest" install_nextest
 step "just" install_just
 step "cargo fetch" cargo fetch --locked
+step "archil mount" mount_archil
 # Warm target/ so the snapshot ships compiled dependencies and test binaries. This matches
 # `cargo nextest run` from README.md; a plain `cargo build` resolves dependency features
 # without dev-dependencies, so the first test run would recompile ~300 crates.

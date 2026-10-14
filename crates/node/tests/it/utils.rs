@@ -281,7 +281,13 @@ use reth_e2e_test_utils::{
     wallet::{TestAccount, Wallet},
 };
 use reth_rpc_builder::RpcModuleSelection;
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
 use tempo_chainspec::{
     hardfork::{TempoHardfork, TempoHardforks},
@@ -449,6 +455,7 @@ pub(crate) struct TestNodeBuilder {
     custom_gas_limit: Option<String>,
     node_count: usize,
     block_time: Option<Duration>,
+    first_block_timestamp: Option<u64>,
     external_rpc: Option<Url>,
     dynamic_validator: Option<Arc<std::sync::Mutex<Address>>>,
     schedule: ForkSchedule,
@@ -462,6 +469,7 @@ impl TestNodeBuilder {
             custom_gas_limit: None,
             node_count: 1,
             block_time: Some(Duration::from_millis(100)),
+            first_block_timestamp: None,
             external_rpc: None,
             dynamic_validator: None,
             schedule: ForkSchedule::Devnet,
@@ -483,6 +491,11 @@ impl TestNodeBuilder {
     /// Mine HTTP-only test blocks as soon as transactions arrive, without an interval timer.
     pub(crate) fn with_instant_mining(mut self) -> Self {
         self.block_time = None;
+        self
+    }
+
+    pub(crate) fn with_block_timestamps_from(mut self, first: u64) -> Self {
+        self.first_block_timestamp = Some(first);
         self
     }
 
@@ -582,10 +595,14 @@ impl TestNodeBuilder {
         let chain_spec = self.build_chain_spec()?;
         let static_validator = chain_spec.inner.genesis.coinbase;
         let dynamic_validator = self.dynamic_validator.clone();
+        let next_timestamp = self.first_block_timestamp.map(AtomicU64::new);
 
         let (node, _wallet) = tempo_test_setup(1, Arc::new(chain_spec))
             .with_dev_mining(self.block_time)
             .map_dev_payload_attributes(move |mut attributes| {
+                if let Some(next) = &next_timestamp {
+                    attributes.timestamp = next.fetch_add(1, Ordering::Relaxed);
+                }
                 let validator = dynamic_validator
                     .as_ref()
                     .map(|v| *v.lock().unwrap())

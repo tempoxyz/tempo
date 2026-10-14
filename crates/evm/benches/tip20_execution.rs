@@ -28,6 +28,7 @@ use tempo_precompiles::{
     error::TempoPrecompileError,
     nonce::NonceManager,
     storage::{StorageActions, StorageCtx},
+    test_util::{set_empty_compound_transfer_policy, set_empty_receive_policies},
     tip_fee_manager::TipFeeManager,
     tip20::{ISSUER_ROLE, TIP20Token},
     tip20_factory::TIP20Factory,
@@ -85,6 +86,7 @@ fn seed_in_memory_cache_db(
     participants: &[Address],
     block_timestamp: u64,
     reward_seed: Option<(&[Address], RewardBenchKind)>,
+    with_policies: bool,
     hardfork: TempoHardfork,
 ) -> InMemoryDB {
     // This setup database only materializes the benchmark fixture in memory. The measured
@@ -129,6 +131,11 @@ fn seed_in_memory_cache_db(
 
             if let Some((delegates, kind)) = reward_seed {
                 seed_reward_bench_state(&mut token, admin, participants, delegates, kind)?;
+            }
+
+            if with_policies {
+                set_empty_compound_transfer_policy(admin, PATH_USD_ADDRESS)?;
+                set_empty_receive_policies(admin, participants)?;
             }
 
             TipFeeManager::new().initialize()?;
@@ -473,38 +480,44 @@ fn tip20_execution(c: &mut Criterion) {
     let config = TempoEvmConfig::new(Arc::new(TempoChainSpec::moderato()));
 
     for &(label, hardfork) in &hardfork_cases {
-        let fixture = fixture_from_seeded_db(seed_in_memory_cache_db(
-            &workload.participants,
-            workload.block_timestamp,
-            None,
-            hardfork,
-        ));
-        execute_txs(
-            &config,
-            fixture.prewarm_state_db(),
-            &workload.transactions,
-            workload.block_timestamp,
-            hardfork,
-        );
-
         let mut group = c.benchmark_group(format!("{label}/tip20_execution"));
         group.throughput(Throughput::Elements(workload.transactions.len() as u64));
-        group.bench_function("txgen_tip20_pure_execution", |b| {
-            b.iter_batched(
-                || fixture.state_db(),
-                |db| {
-                    let stats = execute_txs(
-                        &config,
-                        db,
-                        &workload.transactions,
-                        workload.block_timestamp,
-                        hardfork,
-                    );
-                    black_box(stats.gas_used);
-                },
-                BatchSize::SmallInput,
-            )
-        });
+        for (name, with_policies) in [
+            ("txgen_tip20_pure_execution", false),
+            ("txgen_tip20_policy_execution", true),
+        ] {
+            let fixture = fixture_from_seeded_db(seed_in_memory_cache_db(
+                &workload.participants,
+                workload.block_timestamp,
+                None,
+                with_policies,
+                hardfork,
+            ));
+            execute_txs(
+                &config,
+                fixture.prewarm_state_db(),
+                &workload.transactions,
+                workload.block_timestamp,
+                hardfork,
+            );
+
+            group.bench_function(name, |b| {
+                b.iter_batched(
+                    || fixture.state_db(),
+                    |db| {
+                        let stats = execute_txs(
+                            &config,
+                            db,
+                            &workload.transactions,
+                            workload.block_timestamp,
+                            hardfork,
+                        );
+                        black_box(stats.gas_used);
+                    },
+                    BatchSize::SmallInput,
+                )
+            });
+        }
         group.finish();
     }
 
@@ -515,6 +528,7 @@ fn tip20_execution(c: &mut Criterion) {
                 &reward_workload.participants,
                 DEFAULT_BLOCK_TIMESTAMP,
                 Some((&reward_workload.delegates, reward_workload.kind)),
+                false,
                 hardfork,
             ));
             execute_txs(
