@@ -5,6 +5,8 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 NEXTEST_VERSION="0.9.127" # matches .github/workflows/test.yml
+SCCACHE_VERSION="0.14.0"  # matches Dockerfile.chef
+ARCHIL_MOUNT="$HOME/archil" # mounted by .agents/resume
 
 step() {
   local name="$1"
@@ -62,6 +64,40 @@ install_just() {
   just --version
 }
 
+install_sccache() {
+  if [[ "$(sccache --version 2>/dev/null)" != "sccache $SCCACHE_VERSION" ]]; then
+    local name="sccache-v$SCCACHE_VERSION-x86_64-unknown-linux-musl"
+    curl -fsSL "https://github.com/mozilla/sccache/releases/download/v$SCCACHE_VERSION/$name.tar.gz" |
+      tar xzf - -C "$HOME/.cargo/bin" --strip-components=1 "$name/sccache"
+  fi
+  sccache --version
+}
+
+configure_build_cache() {
+  # Every orb shares one sccache directory on the Archil disk that .agents/resume mounts. The
+  # wrapper compiles without sccache while the disk is not mounted, e.g. during this setup.
+  cat >"$HOME/.cargo/bin/rustc-archil-sccache" <<EOF
+#!/bin/sh
+if mountpoint -q "$ARCHIL_MOUNT"; then exec sccache "\$@"; fi
+exec "\$@"
+EOF
+  chmod +x "$HOME/.cargo/bin/rustc-archil-sccache"
+  mkdir -p "$HOME/.config/sccache"
+  cat >"$HOME/.config/sccache/config" <<EOF
+[cache.disk]
+dir = "$ARCHIL_MOUNT/sccache"
+size = $((20 * 1024 * 1024 * 1024))
+EOF
+  # Pin vergen's build timestamp like CI does, so reth-node-core and its dependents hit the cache.
+  cat >"$HOME/.cargo/config.toml" <<EOF
+[build]
+rustc-wrapper = "$HOME/.cargo/bin/rustc-archil-sccache"
+
+[env]
+SOURCE_DATE_EPOCH = "1700000000"
+EOF
+}
+
 install_archil() {
   # FUSE client for the shared Archil disk that .agents/resume mounts.
   if ! command -v archil >/dev/null; then
@@ -73,6 +109,8 @@ install_archil() {
 step "apt packages" install_apt_packages
 step "archil" install_archil
 step "rust toolchains" install_rust
+step "sccache" install_sccache
+step "build cache" configure_build_cache
 step "cargo-nextest" install_nextest
 step "just" install_just
 step "cargo fetch" cargo fetch --locked
