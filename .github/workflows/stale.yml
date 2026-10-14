@@ -11,6 +11,7 @@ permissions:
 jobs:
   stale:
     permissions:
+      actions: write # lets actions/stale delete its _state cache between runs
       issues: write
       pull-requests: write
       id-token: write
