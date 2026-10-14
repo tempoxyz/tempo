@@ -66,7 +66,7 @@ use tempo_precompiles::{
     },
     zone_factory::portal,
 };
-use tempo_primitives::{TempoHeader, transaction::tt_signature::TempoSignature};
+use tempo_primitives::TempoHeader;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio_util::sync::CancellationToken;
 use zone_chainspec::{ZoneChainSpec, test_utils::set_tempo_fork};
@@ -4346,28 +4346,14 @@ fn build_auth_token(
     alloy_primitives::hex::encode([sig.as_rsy().as_slice(), &fields].concat())
 }
 
-fn build_auth_token_with_signature(
-    signature: TempoSignature,
-    zone_id: u32,
-    chain_id: u64,
-) -> String {
-    use zone_node::rpc::auth::build_token_fields;
-
-    let now = now_secs();
-    let expires_at = now + 600;
-
-    let (fields, _) = build_token_fields(zone_id, chain_id, now, expires_at);
-    auth_tokens::build_token_with_signature(signature, &fields)
-}
-
 fn build_p256_auth_token(signing_key: &P256SigningKey, zone_id: u32, chain_id: u64) -> String {
     let now = now_secs();
     let expires_at = now + 600;
-    let (_, digest) = zone_node::rpc::auth::build_token_fields(zone_id, chain_id, now, expires_at);
-    build_auth_token_with_signature(
+    let (fields, digest) =
+        zone_node::rpc::auth::build_token_fields(zone_id, chain_id, now, expires_at);
+    auth_tokens::build_token_with_signature(
         sign_p256_signature(digest, signing_key).expect("p256 signing failed"),
-        zone_id,
-        chain_id,
+        &fields,
     )
 }
 
@@ -4379,12 +4365,12 @@ fn build_webauthn_auth_token(
 ) -> String {
     let now = now_secs();
     let expires_at = now + 600;
-    let (_, digest) = zone_node::rpc::auth::build_token_fields(zone_id, chain_id, now, expires_at);
-    build_auth_token_with_signature(
+    let (fields, digest) =
+        zone_node::rpc::auth::build_token_fields(zone_id, chain_id, now, expires_at);
+    auth_tokens::build_token_with_signature(
         sign_webauthn_signature(signing_key, challenge_digest.unwrap_or(digest))
             .expect("webauthn signing failed"),
-        zone_id,
-        chain_id,
+        &fields,
     )
 }
 
@@ -4397,12 +4383,13 @@ fn build_keychain_auth_token(
 ) -> (String, Address) {
     let now = now_secs();
     let expires_at = now + 600;
-    let (_, digest) = zone_node::rpc::auth::build_token_fields(zone_id, chain_id, now, expires_at);
+    let (fields, digest) =
+        zone_node::rpc::auth::build_token_fields(zone_id, chain_id, now, expires_at);
     let (signature, key_id) = sign_keychain_signature(digest, signing_key, root_account, version)
         .expect("keychain signing failed");
 
     (
-        build_auth_token_with_signature(signature, zone_id, chain_id),
+        auth_tokens::build_token_with_signature(signature, &fields),
         key_id,
     )
 }

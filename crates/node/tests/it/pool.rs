@@ -528,10 +528,7 @@ async fn test_evict_txs_on_transfer_policy_change() -> eyre::Result<()> {
         .await?;
 
     // Whitelisted transaction should still be in the pool
-    assert!(
-        node1.inner.pool.contains(&whitelisted_hash),
-        "whitelisted tx should survive the policy change"
-    );
+    node1.wait_for_pooled([whitelisted_hash]).await?;
 
     Ok(())
 }

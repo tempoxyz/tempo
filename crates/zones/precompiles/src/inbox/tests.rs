@@ -1045,6 +1045,25 @@ fn refund_reads_are_limited_to_owner_and_active_sequencer() -> eyre::Result<()> 
 }
 
 #[test]
+fn claim_refund_zero_amount_is_gated_by_t13() -> eyre::Result<()> {
+    for (hardfork, expected) in [
+        (TempoHardfork::T12, 0u128.abi_encode()),
+        (TempoHardfork::T13, IZoneInbox::NoRefund {}.abi_encode()),
+    ] {
+        let output = Harness::new_with_hardfork(hardfork)?.call(
+            BOB,
+            IZoneInbox::claimRefundCall {
+                token: PATH_USD_ADDRESS,
+            }
+            .abi_encode(),
+        )?;
+        assert_eq!(output.is_revert(), hardfork.is_t13());
+        assert_eq!(output.bytes, expected);
+    }
+    Ok(())
+}
+
+#[test]
 fn claim_refund_clears_balance_and_mints_to_caller() -> eyre::Result<()> {
     let mut harness = Harness::new()?;
     {
@@ -1067,6 +1086,15 @@ fn claim_refund_clears_balance_and_mints_to_caller() -> eyre::Result<()> {
         444
     );
     assert_eq!(harness.balance(PATH_USD_ADDRESS, BOB)?, U256::from(444));
+    let repeated = harness.call(
+        BOB,
+        IZoneInbox::claimRefundCall {
+            token: PATH_USD_ADDRESS,
+        }
+        .abi_encode(),
+    )?;
+    assert!(repeated.is_revert());
+    assert_eq!(repeated.bytes, IZoneInbox::NoRefund {}.abi_encode());
     let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
     StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
         assert_eq!(

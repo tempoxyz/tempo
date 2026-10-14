@@ -74,6 +74,8 @@ jobs:
         id: run
         if: steps.build.outcome == 'success'
         continue-on-error: ${{ matrix.allow_failure }}
+        env:
+          RUST_LOG: error,alloy_rpc_client=debug,alloy_transport_http=debug,alloy_transport::layers::retry=trace
         run: cargo nextest run -p tempo-node --test it --profile ci-rpc -E 'package(tempo-node) & binary(it) & test(/test_matrices_${{ matrix.network }}/)'
       - name: Report allowed devnet failure
         if: matrix.allow_failure && (steps.build.outcome == 'failure' || steps.run.outcome == 'failure')
