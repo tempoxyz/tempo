@@ -48,6 +48,10 @@ __pycache__/
 
 # Amp orb portals
 .amp/portals/*
+# Generated only inside orbs; never copy an output identity into a project snapshot.
+/.amp/archil-output-id
+/.cargo/orb.toml
+/.cargo/orb.toml.tmp
 
 # Imported Zones test fixtures and generated Solidity artifacts
 /earn/

@@ -6,7 +6,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 NEXTEST_VERSION="0.9.127" # matches .github/workflows/test.yml
 SCCACHE_VERSION="0.14.0"  # matches Dockerfile.chef
-ARCHIL_MOUNT="$HOME/archil" # mounted by .agents/resume, and by this script for the warm build
+ARCHIL_MOUNT="$HOME/archil" # mounted by .agents/resume
 
 step() {
   local name="$1"
@@ -75,16 +75,19 @@ install_sccache() {
 
 configure_build_cache() {
   # Every orb shares one sccache directory on the Archil disk that .agents/resume mounts. The
-  # wrapper compiles without sccache while the disk is not mounted, e.g. without Archil config. It is
-  # named `sccache` so the cc crate also routes C/C++ builds (rocksdb, jemalloc) through it.
+  # wrapper refuses to compile without that mount. It is named `sccache` so the cc crate also
+  # routes C/C++ builds (rocksdb, jemalloc) through it.
   # Any orb can write cache entries that every other orb links, so all orbs of this project are
   # one trust domain: do not build untrusted code (e.g. external PRs) in them.
   local wrapper_dir="$HOME/.cargo/archil-sccache"
   mkdir -p "$wrapper_dir"
   cat >"$wrapper_dir/sccache" <<EOF
 #!/bin/sh
-if mountpoint -q "$ARCHIL_MOUNT"; then exec "$HOME/.cargo/bin/sccache" "\$@"; fi
-exec "\$@"
+if ! mountpoint -q "$ARCHIL_MOUNT"; then
+  echo "Archil is not mounted; run .agents/resume before building" >&2
+  exit 1
+fi
+exec "$HOME/.cargo/bin/sccache" "\$@"
 EOF
   chmod +x "$wrapper_dir/sccache"
   mkdir -p "$HOME/.config/sccache"
@@ -111,22 +114,6 @@ install_archil() {
   archil --version
 }
 
-mount_archil() {
-  # Lets the warm build read and fill the shared sccache cache. Reuses .agents/resume, which is
-  # idempotent and skips the mount when Archil is not configured.
-  if findmnt -n "$ARCHIL_MOUNT" >/dev/null; then return; fi
-  # Set before resume so a failure after a successful mount (e.g. chown) still unmounts.
-  trap unmount_archil EXIT
-  .agents/resume
-}
-
-unmount_archil() {
-  # The archil and sccache daemons stop when setup exits, so leave no mount in the snapshot;
-  # .agents/resume mounts the disk again on wake.
-  sccache --stop-server || true # prints cache stats to setup.log
-  if findmnt -n "$ARCHIL_MOUNT" >/dev/null; then sudo archil unmount "$ARCHIL_MOUNT"; fi
-}
-
 step "apt packages" install_apt_packages
 step "archil" install_archil
 step "rust toolchains" install_rust
@@ -134,10 +121,13 @@ step "sccache" install_sccache
 step "build cache" configure_build_cache
 step "cargo-nextest" install_nextest
 step "just" install_just
-step "cargo fetch" cargo fetch --locked
-step "archil mount" mount_archil
-# Warm target/ so the snapshot ships compiled dependencies and test binaries. This matches
-# `cargo nextest run` from README.md; a plain `cargo build` resolves dependency features
-# without dev-dependencies, so the first test run would recompile ~300 crates.
-# Incremental on stale snapshots.
-step "warm build" cargo nextest run --workspace --locked --no-run
+# Fetch only queries rustc; it must work before Archil is mounted, without starting sccache.
+step "cargo fetch" env RUSTC_WRAPPER= cargo fetch --locked
+# Drop disposable outputs from old snapshots, without following an existing remote target link.
+rm -rf target
+mkdir -p .amp
+rm -f .amp/archil-output-id
+# A reusable snapshot must contain neither an orb identity nor local build outputs. Resume
+# enables output only after mounting Archil and choosing a private directory.
+printf '[build]\ntarget-dir = "/dev/null/tempo-target"\nbuild-dir = "/dev/null/tempo-target"\n' > .cargo/orb.toml.tmp
+mv .cargo/orb.toml.tmp .cargo/orb.toml
