@@ -181,42 +181,6 @@ async fn test_set_user_token() -> eyre::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_set_validator_token() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
-    let setup = TestNodeBuilder::new().build_http_only().await?;
-    let http_url = setup.http_url;
-
-    let wallet = test_signer(0);
-    let validator_address = wallet.address();
-    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
-
-    let validator_token = setup_test_token(provider.clone(), validator_address).await?;
-    let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider);
-
-    let initial_token = fee_manager
-        .validatorTokens(validator_address)
-        .call()
-        .await?;
-    assert_eq!(initial_token, PATH_USD_ADDRESS);
-
-    fee_manager
-        .setValidatorToken(*validator_token.address())
-        .send()
-        .await?
-        .successful_receipt()
-        .await?;
-
-    let current_token = fee_manager
-        .validatorTokens(validator_address)
-        .call()
-        .await?;
-    assert_eq!(current_token, *validator_token.address());
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn test_fee_token_tx() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 

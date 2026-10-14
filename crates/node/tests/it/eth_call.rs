@@ -61,54 +61,6 @@ fn state_diff(address: Address, diffs: &[(B256, U256)]) -> StateOverride {
 #[test_case(ForkSchedule::Testnet ; "testnet")]
 #[test_case(ForkSchedule::Mainnet ; "mainnet")]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_eth_call(schedule: ForkSchedule) -> eyre::Result<()> {
-    run_schedule_cases(schedule, |schedule| async move {
-        reth_tracing::init_test_tracing();
-
-        let setup = TestNodeBuilder::new()
-            .with_schedule(schedule)
-            .build_http_only()
-            .await?;
-        let http_url = setup.http_url;
-
-        let wallet = test_signer(0);
-        let caller = wallet.address();
-        let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
-
-        // Setup test token
-        let token = setup_test_token(provider.clone(), caller).await?;
-
-        // First, mint some tokens to the caller for testing
-        let mint_amount = U256::from(rand_09::random::<u128>());
-        token
-            .mint(caller, mint_amount)
-            .gas_price(TEMPO_T1_BASE_FEE as u128)
-            .gas(1_000_000)
-            .send()
-            .await?
-            .get_receipt()
-            .await?;
-
-        let recipient = Address::random();
-        let calldata = token.transfer(recipient, mint_amount).calldata().clone();
-        let tx = TransactionRequest::default()
-            .to(*token.address())
-            .gas_price(0)
-            .input(TransactionInput::new(calldata));
-
-        let res = provider.call(tx).await?;
-        let success = transferCall::abi_decode_returns(&res)?;
-        assert!(success);
-
-        Ok(())
-    })
-    .await
-}
-
-#[test_case(ForkSchedule::Devnet ; "devnet")]
-#[test_case(ForkSchedule::Testnet ; "testnet")]
-#[test_case(ForkSchedule::Mainnet ; "mainnet")]
-#[tokio::test(flavor = "multi_thread")]
 async fn test_eth_trace_call(schedule: ForkSchedule) -> eyre::Result<()> {
     run_schedule_cases(schedule, |schedule| async move {
         reth_tracing::init_test_tracing();

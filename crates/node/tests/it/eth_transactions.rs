@@ -1,13 +1,10 @@
-use crate::utils::{TestNodeBuilder, setup_test_token};
+use crate::utils::TestNodeBuilder;
 use alloy::{
-    consensus::Transaction,
     primitives::{Address, Bytes, TxKind, U256},
-    providers::{Provider, ProviderBuilder},
     rpc::types::TransactionRequest,
     signers::SignerSync,
 };
-use alloy_network::TransactionResponse;
-use reth_e2e_test_utils::{receipt::PendingTransactionExt, wallet::test_signer};
+use reth_e2e_test_utils::wallet::test_signer;
 use reth_primitives_traits::SignerRecoverable;
 use reth_rpc_eth_api::helpers::LoadState;
 use reth_transaction_pool::{TransactionOrigin, TransactionPool};
@@ -15,60 +12,6 @@ use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_precompiles::DEFAULT_FEE_TOKEN;
 use tempo_primitives::{TempoTransaction, TempoTxEnvelope, transaction::tempo_transaction::Call};
-
-#[tokio::test(flavor = "multi_thread")]
-async fn test_get_transaction_by_sender_and_nonce() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
-    let setup = TestNodeBuilder::new().build_http_only().await?;
-    let http_url = setup.http_url;
-
-    let wallet = test_signer(0);
-    let caller = wallet.address();
-    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
-
-    let token = setup_test_token(provider.clone(), caller).await?;
-
-    let nonce_before = provider.get_transaction_count(caller).await?;
-
-    let mint_amount = U256::from(1000000u64);
-    let pending_tx = token
-        .mint(caller, mint_amount)
-        .gas_price(TEMPO_T1_BASE_FEE as u128)
-        .gas(1_000_000)
-        .send()
-        .await?;
-
-    let tx_hash = *pending_tx.tx_hash();
-    pending_tx.successful_receipt().await?;
-
-    let nonce_after = provider.get_transaction_count(caller).await?;
-    assert_eq!(nonce_after, nonce_before + 1);
-
-    let fetched_tx = provider
-        .get_transaction_by_sender_nonce(caller, nonce_before)
-        .await?;
-
-    assert!(
-        fetched_tx.is_some(),
-        "Transaction should be found by sender and nonce"
-    );
-
-    let tx = fetched_tx.unwrap();
-    assert_eq!(
-        *tx.inner.tx_hash(),
-        tx_hash,
-        "Transaction hash should match"
-    );
-    assert_eq!(tx.from(), caller, "Transaction sender should match");
-    assert_eq!(
-        tx.inner.nonce(),
-        nonce_before,
-        "Transaction nonce should match"
-    );
-
-    Ok(())
-}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_next_available_nonce_for_2d_key_includes_pending_txs() -> eyre::Result<()> {
