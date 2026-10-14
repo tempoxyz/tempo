@@ -28,14 +28,15 @@ pub fn configure_version(
     spec: TempoHardfork,
     amsterdam_eip8037_enabled: bool,
 ) -> Version {
-    debug_assert!(
-        !(spec.is_t7() && amsterdam_eip8037_enabled),
-        "TIP-1060 and TIP-1016 do not yet have a combined gas schedule"
-    );
-
     if amsterdam_eip8037_enabled {
         version.features.insert(EvmFeatures::EIP8037);
         apply_amsterdam(&mut version);
+        if spec.is_t7() {
+            // TIP-1060 owns the credit-backed 245k storage charge. Its SSTORE
+            // residual remains execution gas; the credit hook charges state gas.
+            apply_t7(&mut version);
+            version.gas_params[GasId::SstoreSetState] = 0;
+        }
     } else {
         version.features.remove(EvmFeatures::EIP8037);
         if spec.is_t1() {
@@ -112,6 +113,21 @@ mod tests {
         assert_eq!(
             amsterdam_t4.gas_params, amsterdam_t5.gas_params,
             "Amsterdam gas params should have equal values"
+        );
+    }
+
+    #[test]
+    fn test_tip1016_with_tip1060_charges_credit_creation_as_state_gas() {
+        let version = version(SpecId::OSAKA, TempoHardfork::T16, true);
+        assert!(version.feature(EvmFeatures::EIP8037));
+        let gas = &version.gas_params;
+        assert_eq!(gas[GasId::SstoreSetWithoutLoadCost], SSTORE_SET_COST as u32);
+        assert_eq!(gas[GasId::SstoreSetState], 0);
+        assert_eq!(gas[GasId::SstoreSetRefund], SSTORE_SET_COST as u32);
+        assert_eq!(gas[GasId::SstoreClearingSlotRefund], 0);
+        assert_eq!(
+            gas.new_account_state_gas(),
+            u64::from(AMSTERDAM_NEW_ACCOUNT_STATE)
         );
     }
 

@@ -42,6 +42,10 @@ impl StorageCreditsBackend for StorageCreditsContext<'_, '_, '_> {
         self.gas.tracker_mut()
     }
 
+    fn tip1016_state_gas_enabled(&self) -> bool {
+        self.state.feature(EvmFeatures::EIP8037)
+    }
+
     fn sload(
         &mut self,
         address: Address,

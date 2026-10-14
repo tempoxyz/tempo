@@ -252,6 +252,83 @@ fn create_funded_evm_t7(address: Address) -> TempoEvm<'static> {
     evm
 }
 
+/// TIP-1016 must reclassify TIP-1060's paid creation charge without changing
+/// the gas paid by the caller or applying EVM2's separate SSTORE state charge.
+#[test]
+fn test_tip1016_tip1060_creation_gas_split() -> eyre::Result<()> {
+    let caller = Address::repeat_byte(0x81);
+    let contract = Address::repeat_byte(0x82);
+    let run = |amsterdam, mode, credits| -> eyre::Result<_> {
+        let mut evm = configured_evm(TempoHardfork::T16, 0, amsterdam, InMemoryDB::default());
+        evm.overlay_db_mut().insert_account_info(
+            &STORAGE_CREDITS_ADDRESS,
+            AccountInfo::default().with_nonce(1),
+        );
+        fund_account_with_nonce(&mut evm, caller, 1);
+        seed_storage_credit_balance(&mut evm, contract, credits);
+        evm.overlay_db_mut().insert_account_info(
+            &contract,
+            AccountInfo {
+                code: Some(bytecode_with_tip1060_mode(
+                    mode,
+                    &[
+                        opcode::PUSH1,
+                        1,
+                        opcode::PUSH1,
+                        0,
+                        opcode::SSTORE,
+                        opcode::STOP,
+                    ],
+                )),
+                ..Default::default()
+            },
+        );
+        let result = evm.transact_commit(legacy_tx_env(
+            caller,
+            1,
+            TxKind::Call(contract),
+            Bytes::new(),
+            1_000_000,
+        ))?;
+        assert!(result.status);
+        assert_eq!(
+            evm.overlay_db_mut().get_storage(&contract, &U256::ZERO)?,
+            U256::from(1)
+        );
+        Ok((result, storage_credit_balance(&mut evm, contract)))
+    };
+
+    for mode in [CreditMode::Refund, CreditMode::Preserve, CreditMode::Direct] {
+        for credits in [0, 1] {
+            let (old, old_credits) = run(false, mode, credits)?;
+            let (split, split_credits) = run(true, mode, credits)?;
+            let expected_state_gas = match (mode, credits) {
+                (CreditMode::Refund | CreditMode::Direct, 1) => 0,
+                _ => STORAGE_CREDIT_VALUE,
+            };
+            assert_eq!(old.state_gas_spent, 0, "{mode:?} with {credits} credits");
+            assert_eq!(
+                split.state_gas_spent, expected_state_gas,
+                "{mode:?} with {credits} credits"
+            );
+            assert_eq!(
+                split.tx_gas_used(),
+                old.tx_gas_used(),
+                "{mode:?} with {credits} credits"
+            );
+            assert_eq!(
+                split_credits, old_credits,
+                "{mode:?} with {credits} credits"
+            );
+            assert_eq!(
+                split.execution_gas_spent() + split.state_gas_spent,
+                split.total_gas_spent
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Create an EVM with T7 hardfork, a specific timestamp, and a funded account.
 fn create_funded_evm_t7_with_timestamp(address: Address, timestamp: u64) -> TempoEvm<'static> {
     let mut evm = configured_evm(TempoHardfork::T7, timestamp, false, InMemoryDB::default());

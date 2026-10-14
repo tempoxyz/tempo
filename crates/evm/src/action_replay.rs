@@ -1,4 +1,4 @@
-use crate::{TempoBlockExecutor, TempoEvmTypes, TempoTxResult};
+use crate::{TempoBlockExecutor, TempoEvmTypes, TempoTxResult, block::tip1016_block_gas};
 use alloy_consensus::transaction::TxHashRef;
 use alloy_primitives::{
     Address, B256, U256,
@@ -64,7 +64,7 @@ impl TempoBlockExecutor<'_> {
         let cfg = self.evm().version();
         let gas = &result;
         let block_gas_used = if cfg.feature(evm2::EvmFeatures::EIP8037) {
-            gas.execution_gas_spent()
+            tip1016_block_gas(gas)
         } else {
             gas.tx_gas_used()
         };
