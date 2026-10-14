@@ -1052,7 +1052,7 @@ fn refund_reads_are_limited_to_owner_and_active_sequencer() -> eyre::Result<()> 
 
 #[test]
 fn claim_refund_rejects_zero_amount_before_policy_reads() -> eyre::Result<()> {
-    let mut harness = Harness::new()?;
+    let mut harness = Harness::new_with_hardfork(TempoHardfork::T13)?;
     let callers = [BOB, tempo_contracts::MULTICALL3_ADDRESS];
     {
         let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
@@ -1103,6 +1103,25 @@ fn claim_refund_rejects_zero_amount_before_policy_reads() -> eyre::Result<()> {
     assert!(actions.take().unwrap().iter().all(|action| {
         !matches!(action, StorageAction::Sload(address, ..) if *address == TIP403_REGISTRY_ADDRESS)
     }), "empty refunds must not reach the L1-backed registry");
+    Ok(())
+}
+
+#[test]
+fn claim_refund_allows_zero_amount_before_t13() -> eyre::Result<()> {
+    let mut harness = Harness::new_with_hardfork(TempoHardfork::T12)?;
+    let output = harness.call(
+        BOB,
+        IZoneInbox::claimRefundCall {
+            token: PATH_USD_ADDRESS,
+        }
+        .abi_encode(),
+    )?;
+    assert!(output.is_success());
+    assert_eq!(
+        IZoneInbox::claimRefundCall::abi_decode_returns(&output.bytes)?,
+        0
+    );
+    assert_eq!(harness.balance(PATH_USD_ADDRESS, BOB)?, U256::ZERO);
     Ok(())
 }
 

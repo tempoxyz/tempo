@@ -385,7 +385,7 @@ impl ZoneInbox {
 
     fn claim_refund(&mut self, caller: Address, token: Address) -> ZoneResult<u128> {
         let amount = self.withdrawal_bounce_backs[token][caller].read()?;
-        if amount == 0 {
+        if self.storage.spec().is_t13() && amount == 0 {
             return Err(ZoneInboxError::no_refund().into());
         }
         if !self.try_mint(token, caller, amount)? {
