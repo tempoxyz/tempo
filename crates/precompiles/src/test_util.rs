@@ -20,7 +20,7 @@ use crate::{
     storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
     tip20::{self, ITIP20, TIP20Token},
     tip20_factory::{self, TIP20Factory},
-    tip403_registry::{ITIP403Registry, PolicyType, TIP403Registry},
+    tip403_registry::{ITIP403Registry, PolicyType, TIP403Registry, TOKEN_POLICY_ID},
 };
 use alloy::{
     primitives::{Address, B256, U256, address, fixed_bytes, hex_literal::hex},
@@ -427,15 +427,31 @@ fn create_empty_blacklist(registry: &mut TIP403Registry, admin: Address) -> Resu
     )
 }
 
-pub fn set_empty_compound_transfer_policy(admin: Address, token: Address) -> Result<u64> {
+/// Sets empty issuer blacklists for all three roles and returns the active policy ID.
+/// Packed tokens use token-specific modes and require empty issuer membership lists.
+/// Legacy tokens use a new compound policy.
+pub fn set_empty_transfer_policy(admin: Address, token: Address) -> Result<u64> {
     let mut registry = TIP403Registry::new();
+    let mut token = TIP20Token::from_address(token)?;
+    if token.token_control()?.is_some() {
+        registry.set_token_policy_modes(
+            admin,
+            ITIP403Registry::setTokenPolicyModesCall {
+                token: token.address(),
+                senderMode: ITIP403Registry::PolicyMode::BLACKLIST,
+                recipientMode: ITIP403Registry::PolicyMode::BLACKLIST,
+                mintRecipientMode: ITIP403Registry::PolicyMode::BLACKLIST,
+            },
+        )?;
+        return Ok(TOKEN_POLICY_ID);
+    }
     let call = ITIP403Registry::createCompoundPolicyCall {
         senderPolicyId: create_empty_blacklist(&mut registry, admin)?,
         recipientPolicyId: create_empty_blacklist(&mut registry, admin)?,
         mintRecipientPolicyId: create_empty_blacklist(&mut registry, admin)?,
     };
     let policy_id = registry.create_compound_policy(admin, call)?;
-    TIP20Token::from_address(token)?.change_transfer_policy_id(
+    token.change_transfer_policy_id(
         admin,
         ITIP20::changeTransferPolicyIdCall {
             newPolicyId: policy_id,
@@ -444,8 +460,22 @@ pub fn set_empty_compound_transfer_policy(admin: Address, token: Address) -> Res
     Ok(policy_id)
 }
 
+/// Sets empty sender and token blacklists with originator recovery for each account.
+/// Uses receive configurations at T14 and legacy receive policies on earlier forks.
+/// T14 accounts must have empty receive-token and receive-sender lists.
 pub fn set_empty_receive_policies(admin: Address, accounts: &[Address]) -> Result<()> {
     let mut registry = TIP403Registry::new();
+    if StorageCtx.spec().is_t14() {
+        let call = ITIP403Registry::setReceiveConfigCall {
+            tokenMode: ITIP403Registry::PolicyMode::BLACKLIST,
+            senderMode: ITIP403Registry::PolicyMode::BLACKLIST,
+            recoveryAuthority: Address::ZERO,
+        };
+        for account in accounts {
+            registry.set_receive_config(*account, call.clone())?;
+        }
+        return Ok(());
+    }
     let call = ITIP403Registry::setReceivePolicyCall {
         senderPolicyId: create_empty_blacklist(&mut registry, admin)?,
         tokenFilterId: create_empty_blacklist(&mut registry, admin)?,

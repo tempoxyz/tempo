@@ -303,7 +303,11 @@ async fn test_eth_estimate_gas(schedule: ForkSchedule) -> eyre::Result<()> {
         let gas = provider.estimate_gas(tx.clone()).await?;
         // gas estimation is calldata dependent, but should be consistent with same calldata
         // TIP-1000 (T1): gas includes 250k new account cost when nonce=0
-        let expected_gas = if schedule.is_active(TempoHardfork::T11) {
+        // TIP-1145 (T14): the packed supply word is already nonzero, so the first mint creates no
+        // new slot for it.
+        let expected_gas = if schedule.is_active(TempoHardfork::T14) {
+            294185
+        } else if schedule.is_active(TempoHardfork::T11) {
             547480
         } else if schedule.is_active(TempoHardfork::T8) {
             547407

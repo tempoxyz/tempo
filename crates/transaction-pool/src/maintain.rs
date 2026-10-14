@@ -65,7 +65,8 @@ pub struct TempoPoolUpdates {
     pub whitelist_removals: Vec<(u64, Address)>,
     /// Fee tokens paused by this block.
     pub paused_tokens: AddressSet,
-    /// Tokens whose transfer policy was changed via `changeTransferPolicyId()`.
+    /// Tokens whose transfer policy was changed via `changeTransferPolicyId()`, or whose TIP-1145
+    /// token-specific modes or issuer memberships changed.
     /// Pending transactions using these tokens as fee tokens need to be re-validated
     /// because the new policy may forbid the fee payer or fee manager.
     pub transfer_policy_updates: AddressSet,
@@ -230,6 +231,9 @@ impl TempoPoolUpdates {
                             .whitelist_removals
                             .push((event.policyId, event.account));
                     }
+                    Some(Tip403PoolEvent::TokenPolicyChanged { token }) => {
+                        updates.transfer_policy_updates.insert(token);
+                    }
                     Some(_) | None => {}
                 }
             }
@@ -327,6 +331,9 @@ enum Tip403PoolEvent {
     BlacklistUpdated(ITIP403Registry::BlacklistUpdated),
     /// [`ITIP403Registry::WhitelistUpdated`] log.
     WhitelistUpdated(ITIP403Registry::WhitelistUpdated),
+    /// TIP-1145 [`ITIP403Registry::TransferPolicyUpdated`] or issuer
+    /// [`ITIP403Registry::PolicyMembershipUpdated`] log for `token`.
+    TokenPolicyChanged { token: Address },
 }
 
 impl Tip403PoolEvent {
@@ -338,6 +345,15 @@ impl Tip403PoolEvent {
             }
             ITIP403Registry::WhitelistUpdated::SIGNATURE_HASH => {
                 decode_event(log).map(Self::WhitelistUpdated)
+            }
+            ITIP403Registry::TransferPolicyUpdated::SIGNATURE_HASH => {
+                decode_event::<ITIP403Registry::TransferPolicyUpdated>(log)
+                    .map(|event| Self::TokenPolicyChanged { token: event.token })
+            }
+            ITIP403Registry::PolicyMembershipUpdated::SIGNATURE_HASH => {
+                decode_event::<ITIP403Registry::PolicyMembershipUpdated>(log)
+                    .filter(|event| event.kind == ITIP403Registry::MembershipKind::ISSUER)
+                    .map(|event| Self::TokenPolicyChanged { token: event.owner })
             }
             _ => None,
         }
@@ -1281,6 +1297,62 @@ mod tests {
             assert!(
                 updates.transfer_policy_updates.contains(&fee_token),
                 "TransferPolicyUpdate should be tracked by token address"
+            );
+        }
+
+        /// TIP-1145 policy edits revalidate the token's fee payers.
+        #[test]
+        fn extracts_tip1145_policy_updates() {
+            use tempo_contracts::precompiles::ITIP403Registry::{
+                AuthRole, MembershipKind, PolicyMode,
+            };
+
+            let [modes_token, issuer_token, receive_token] = [1, 2, 3].map(Address::new_tip20);
+            let log = |address: Address, data: alloy_primitives::LogData| {
+                Log::new_unchecked(address, data.topics().to_vec(), data.data)
+            };
+            let membership = |kind, owner| ITIP403Registry::PolicyMembershipUpdated {
+                kind,
+                owner,
+                account: Address::random(),
+                role: AuthRole::SENDER,
+                isMember: false,
+            };
+            let logs = vec![
+                log(
+                    TIP403_REGISTRY_ADDRESS,
+                    ITIP403Registry::TransferPolicyUpdated {
+                        token: modes_token,
+                        senderMode: PolicyMode::DENY,
+                        recipientMode: PolicyMode::ALLOW,
+                        mintRecipientMode: PolicyMode::ALLOW,
+                    }
+                    .into_log_data(),
+                ),
+                log(
+                    TIP403_REGISTRY_ADDRESS,
+                    membership(MembershipKind::ISSUER, issuer_token).into_log_data(),
+                ),
+                // Receive lists never affect fee payment.
+                log(
+                    TIP403_REGISTRY_ADDRESS,
+                    membership(MembershipKind::RECEIVE_SENDER, receive_token).into_log_data(),
+                ),
+            ];
+            let receipt = TempoReceipt {
+                tx_type: TempoTxType::Legacy,
+                success: true,
+                cumulative_gas_used: 21_000,
+                logs,
+            };
+
+            let block = create_block_with_txs(1, vec![], vec![]);
+            let chain = create_test_chain_with_receipts(vec![block], vec![vec![receipt]]);
+            let updates = TempoPoolUpdates::from_chain(&chain);
+
+            assert_eq!(
+                updates.transfer_policy_updates,
+                AddressSet::from_iter([modes_token, issuer_token])
             );
         }
 

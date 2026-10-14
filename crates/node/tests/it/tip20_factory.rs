@@ -1,7 +1,6 @@
 use alloy::{
     primitives::{B256, U256},
     providers::{Provider, ProviderBuilder},
-    sol_types::SolEvent,
 };
 use reth_e2e_test_utils::wallet::test_signer;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
@@ -46,7 +45,9 @@ async fn test_create_token() -> eyre::Result<()> {
         .get_receipt()
         .await?;
 
-    let event = ITIP20Factory::TokenCreated::decode_log(&receipt.logs()[1].inner).unwrap();
+    let event = receipt
+        .decoded_log::<ITIP20Factory::TokenCreated>()
+        .unwrap();
     assert_eq!(event.address, TIP20_FACTORY_ADDRESS);
     assert_eq!(event.name, "Test");
     assert_eq!(event.symbol, "TEST");
@@ -64,7 +65,8 @@ async fn test_create_token() -> eyre::Result<()> {
     assert_eq!(token.currency().call().await?, currency);
     // Supply cap is u128::MAX
     assert_eq!(token.supplyCap().call().await?, U256::from(u128::MAX));
-    assert_eq!(token.transferPolicyId().call().await?, 1);
+    // TIP-1145: new tokens use their own token-specific policy.
+    assert_eq!(token.transferPolicyId().call().await?, u64::MAX);
 
     Ok(())
 }

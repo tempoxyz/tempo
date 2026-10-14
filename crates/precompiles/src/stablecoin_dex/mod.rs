@@ -31,7 +31,7 @@ use crate::{
     storage_credits::{StorageCreditDeltas, StorageCredits},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
     tip20_factory::TIP20Factory,
-    tip403_registry::{AuthRole, TIP403Registry, is_policy_lookup_error},
+    tip403_registry::{AuthRole, is_policy_lookup_error},
 };
 use alloy::primitives::{Address, B256, U256};
 use tempo_precompiles_macros::contract;
@@ -632,7 +632,8 @@ impl StablecoinDEX {
 
     /// Places a limit order on the orderbook for `token` against its quote token.
     /// Escrows the appropriate amount via [`TIP20Token`] transfer or DEX balance and enforces
-    /// compliance via the [`TIP403Registry`]. Auto-creates the trading pair if needed.
+    /// compliance via the [`TIP403Registry`](crate::tip403_registry::TIP403Registry).
+    /// Auto-creates the trading pair if needed.
     ///
     /// # Errors
     /// - `InvalidBaseToken` — token address does not have a valid TIP-20 prefix
@@ -791,7 +792,8 @@ impl StablecoinDEX {
 
     /// Places a flip order that auto-reverses to the opposite side when
     /// fully filled, acting as perpetual liquidity. Escrows tokens via
-    /// [`TIP20Token`] and enforces compliance via [`TIP403Registry`].
+    /// [`TIP20Token`] and enforces compliance via
+    /// [`TIP403Registry`](crate::tip403_registry::TIP403Registry).
     /// Pre-T5: for bids `flip_tick` must be > `tick`; for asks, < `tick`.
     /// T5+ (TIP-1030): for bids `flip_tick >= tick`; for asks `flip_tick <= tick`.
     ///
@@ -1421,8 +1423,9 @@ impl StablecoinDEX {
         self.emit_event(StablecoinDEXEvents::order_cancelled(order.order_id()))
     }
 
-    /// Cancels an order whose maker is blocked by [`TIP403Registry`] policy, allowing anyone to
-    /// clean up stale liquidity.
+    /// Cancels an order whose maker is blocked by
+    /// [`TIP403Registry`](crate::tip403_registry::TIP403Registry) policy, allowing anyone to clean
+    /// up stale liquidity.
     ///
     /// [TIP-1015]: T4+ checks sender authorization on the escrow token and recipient
     /// authorization on the payout token. An order is stale if the maker fails either check.
@@ -1852,9 +1855,7 @@ impl StablecoinDEX {
 /// Checks whether `address` is authorized under the transfer policy of `token` for the given
 /// `role`. Returns `false` instead of erroring when the policy lookup fails.
 fn is_authorized_for_token(token: Address, address: Address, role: AuthRole) -> Result<bool> {
-    let policy_id = TIP20Token::from_address(token)?.transfer_policy_id()?;
-    let registry = TIP403Registry::new();
-    match registry.is_authorized_as(policy_id, address, role) {
+    match TIP20Token::from_address(token)?.is_authorized_as(address, role) {
         Ok(authorized) => Ok(authorized),
         Err(e) if is_policy_lookup_error(&e) => Ok(false),
         Err(e) => Err(e),

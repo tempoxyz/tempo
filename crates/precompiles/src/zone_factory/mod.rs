@@ -356,6 +356,7 @@ mod tests {
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
+        tip403_registry::TOKEN_POLICY_ID,
     };
     use alloy::{
         primitives::{B256, U256, address, keccak256},
@@ -363,7 +364,7 @@ mod tests {
     };
     use portal::PortalTokenConfig;
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::ZonePortalCapability;
+    use tempo_contracts::precompiles::{ITIP20, ZonePortalCapability};
 
     const OWNER: Address = Address::with_last_byte(0x11);
     const ADMIN: Address = Address::with_last_byte(0x22);
@@ -602,10 +603,24 @@ mod tests {
 
     #[test]
     fn create_zone_initializes_token_cursor_at_t13() -> eyre::Result<()> {
-        for hardfork in [TempoHardfork::T12, TempoHardfork::T13] {
+        for (hardfork, converted) in [
+            (TempoHardfork::T12, false),
+            (TempoHardfork::T13, false),
+            (TempoHardfork::T14, false),
+            (TempoHardfork::T13, true),
+        ] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-                TIP20Setup::path_usd(ADMIN).apply()?;
+                let mut token = TIP20Setup::path_usd(ADMIN).apply()?;
+                if converted {
+                    StorageCtx.set_spec(TempoHardfork::T14);
+                    token.change_transfer_policy_id(
+                        ADMIN,
+                        ITIP20::changeTransferPolicyIdCall {
+                            newPolicyId: TOKEN_POLICY_ID,
+                        },
+                    )?;
+                }
                 let mut factory = factory_with_owner(OWNER)?;
                 let created = factory.create_zone(
                     OWNER,

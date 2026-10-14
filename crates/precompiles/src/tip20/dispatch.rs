@@ -38,6 +38,15 @@ impl Precompile for TIP20Token {
                     totalSupply(call) => view(call, |_| self.total_supply()),
                     supplyCap(call) => view(call, |_| self.supply_cap()),
                     transferPolicyId(call) => view(call, |_| self.transfer_policy_id()),
+                    #[schedule(since = T14)]
+                    transferPolicy(call) => view(call, |_| {
+                        let policy = self.transfer_policy()?;
+                        Ok(ITIP20::transferPolicyReturn {
+                            senderMode: policy.sender as u8,
+                            recipientMode: policy.recipient as u8,
+                            mintRecipientMode: policy.mint_recipient as u8,
+                        })
+                    }),
                     paused(call) => view(call, |_| self.paused()),
                     #[schedule(since = T5)]
                     logoURI(call) => view(call, |_| self.logo_uri()),
@@ -119,7 +128,7 @@ mod tests {
     use crate::{
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, setup_storage},
-        tip20::{ISSUER_ROLE, PAUSE_ROLE, UNPAUSE_ROLE},
+        tip20::{ISSUER_ROLE, PAUSE_ROLE, U128_MAX, UNPAUSE_ROLE, slots},
         tip403_registry::{ITIP403Registry, TIP403Registry},
     };
     use alloy::{
@@ -191,32 +200,39 @@ mod tests {
 
     #[test]
     fn test_mint_updates_storage() -> eyre::Result<()> {
-        let (mut storage, admin) = setup_storage();
+        let admin = Address::random();
         let recipient = Address::random();
+        for spec in [TempoHardfork::T0, TempoHardfork::T13, TempoHardfork::T14] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let mut token = TIP20Setup::create("Test", "TST", admin)
+                    .with_issuer(admin)
+                    .apply()?;
 
-        StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("Test", "TST", admin)
-                .with_issuer(admin)
-                .apply()?;
+                let initial_balance =
+                    token.balance_of(ITIP20::balanceOfCall { account: recipient })?;
+                assert_eq!(initial_balance, U256::ZERO);
 
-            let initial_balance = token.balance_of(ITIP20::balanceOfCall { account: recipient })?;
-            assert_eq!(initial_balance, U256::ZERO);
+                let mint_amount = U256::random().min(U256::from(u128::MAX)) % token.supply_cap()?;
+                let mint_call = ITIP20::mintCall {
+                    to: recipient,
+                    amount: mint_amount,
+                };
+                let calldata = mint_call.abi_encode();
 
-            let mint_amount = U256::random().min(U256::from(u128::MAX)) % token.supply_cap()?;
-            let mint_call = ITIP20::mintCall {
-                to: recipient,
-                amount: mint_amount,
-            };
-            let calldata = mint_call.abi_encode();
+                let result = token.call(&calldata, admin)?;
+                assert!(result.status.is_success());
 
-            let result = token.call(&calldata, admin)?;
-            assert!(result.status.is_success());
+                let final_balance =
+                    token.balance_of(ITIP20::balanceOfCall { account: recipient })?;
+                assert_eq!(final_balance, mint_amount);
+                assert_eq!(token.total_supply()?, mint_amount);
+                assert_eq!(token.supply_cap()?, U128_MAX);
 
-            let final_balance = token.balance_of(ITIP20::balanceOfCall { account: recipient })?;
-            assert_eq!(final_balance, mint_amount);
-
-            Ok(())
-        })
+                Ok(())
+            })?;
+        }
+        Ok(())
     }
 
     #[test]
@@ -328,71 +344,86 @@ mod tests {
 
     #[test]
     fn test_pause_and_unpause() -> eyre::Result<()> {
-        let (mut storage, admin) = setup_storage();
+        let admin = Address::random();
         let pauser = Address::random();
         let unpauser = Address::random();
+        for spec in [TempoHardfork::T0, TempoHardfork::T13, TempoHardfork::T14] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let quote = TIP20Setup::create("Quote", "QT", admin).apply()?;
+                let mut token = TIP20Setup::create("Test", "TST", admin)
+                    .quote_token(quote.address)
+                    .with_role(pauser, PAUSE_ROLE)
+                    .with_role(unpauser, UNPAUSE_ROLE)
+                    .apply()?;
+                assert!(!token.paused()?);
+                let control = StorageCtx.sload(token.address, slots::PAUSED)?;
 
-        StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("Test", "TST", admin)
-                .with_role(pauser, PAUSE_ROLE)
-                .with_role(unpauser, UNPAUSE_ROLE)
-                .apply()?;
-            assert!(!token.paused()?);
+                // Pause the token
+                let pause_call = ITIP20::pauseCall {};
+                let calldata = pause_call.abi_encode();
+                let result = token.call(&calldata, pauser)?;
+                assert!(result.status.is_success());
+                assert!(token.paused()?);
+                assert_eq!(
+                    StorageCtx.sload(token.address, slots::PAUSED)?,
+                    control | U256::ONE
+                );
 
-            // Pause the token
-            let pause_call = ITIP20::pauseCall {};
-            let calldata = pause_call.abi_encode();
-            let result = token.call(&calldata, pauser)?;
-            assert!(result.status.is_success());
-            assert!(token.paused()?);
+                // Unpause the token
+                let unpause_call = ITIP20::unpauseCall {};
+                let calldata = unpause_call.abi_encode();
+                let result = token.call(&calldata, unpauser)?;
+                assert!(result.status.is_success());
+                assert!(!token.paused()?);
+                assert_eq!(StorageCtx.sload(token.address, slots::PAUSED)?, control);
 
-            // Unpause the token
-            let unpause_call = ITIP20::unpauseCall {};
-            let calldata = unpause_call.abi_encode();
-            let result = token.call(&calldata, unpauser)?;
-            assert!(result.status.is_success());
-            assert!(!token.paused()?);
-
-            Ok(())
-        })
+                Ok(())
+            })?;
+        }
+        Ok(())
     }
 
     #[test]
     fn test_burn_functionality() -> eyre::Result<()> {
-        let (mut storage, admin) = setup_storage();
+        let admin = Address::random();
         let burner = Address::random();
         let initial_balance = U256::from(1000);
         let burn_amount = U256::from(300);
+        for spec in [TempoHardfork::T0, TempoHardfork::T13, TempoHardfork::T14] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let mut token = TIP20Setup::create("Test", "TST", admin)
+                    .with_issuer(admin)
+                    .with_role(burner, ISSUER_ROLE)
+                    .with_mint(burner, initial_balance)
+                    .apply()?;
 
-        StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("Test", "TST", admin)
-                .with_issuer(admin)
-                .with_role(burner, ISSUER_ROLE)
-                .with_mint(burner, initial_balance)
-                .apply()?;
+                // Check initial state
+                assert_eq!(
+                    token.balance_of(ITIP20::balanceOfCall { account: burner })?,
+                    initial_balance
+                );
+                assert_eq!(token.total_supply()?, initial_balance);
 
-            // Check initial state
-            assert_eq!(
-                token.balance_of(ITIP20::balanceOfCall { account: burner })?,
-                initial_balance
-            );
-            assert_eq!(token.total_supply()?, initial_balance);
+                // Burn tokens
+                let burn_call = ITIP20::burnCall {
+                    amount: burn_amount,
+                };
+                let calldata = burn_call.abi_encode();
+                let result = token.call(&calldata, burner)?;
+                assert!(result.status.is_success());
+                assert_eq!(
+                    token.balance_of(ITIP20::balanceOfCall { account: burner })?,
+                    initial_balance - burn_amount
+                );
+                assert_eq!(token.total_supply()?, initial_balance - burn_amount);
+                assert_eq!(token.supply_cap()?, U128_MAX);
 
-            // Burn tokens
-            let burn_call = ITIP20::burnCall {
-                amount: burn_amount,
-            };
-            let calldata = burn_call.abi_encode();
-            let result = token.call(&calldata, burner)?;
-            assert!(result.status.is_success());
-            assert_eq!(
-                token.balance_of(ITIP20::balanceOfCall { account: burner })?,
-                initial_balance - burn_amount
-            );
-            assert_eq!(token.total_supply()?, initial_balance - burn_amount);
-
-            Ok(())
-        })
+                Ok(())
+            })?;
+        }
+        Ok(())
     }
 
     #[test]
@@ -451,36 +482,50 @@ mod tests {
 
     #[test]
     fn test_supply_cap_enforcement() -> eyre::Result<()> {
-        let (mut storage, admin) = setup_storage();
+        let admin = Address::random();
         let recipient = Address::random();
         let supply_cap = U256::from(1000);
         let mint_amount = U256::from(1001);
+        for spec in [TempoHardfork::T0, TempoHardfork::T13, TempoHardfork::T14] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let mut token = TIP20Setup::create("Test", "TST", admin)
+                    .with_issuer(admin)
+                    .with_mint(recipient, U256::from(500))
+                    .apply()?;
 
-        StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("Test", "TST", admin)
-                .with_issuer(admin)
-                .apply()?;
+                let set_cap_call = ITIP20::setSupplyCapCall {
+                    newSupplyCap: supply_cap,
+                };
+                let calldata = set_cap_call.abi_encode();
+                let result = token.call(&calldata, admin)?;
+                assert!(result.status.is_success());
 
-            let set_cap_call = ITIP20::setSupplyCapCall {
-                newSupplyCap: supply_cap,
-            };
-            let calldata = set_cap_call.abi_encode();
-            let result = token.call(&calldata, admin)?;
-            assert!(result.status.is_success());
+                let mint_call = ITIP20::mintCall {
+                    to: recipient,
+                    amount: mint_amount,
+                };
+                let calldata = mint_call.abi_encode();
+                let output = token.call(&calldata, admin)?;
+                assert!(output.is_revert());
 
-            let mint_call = ITIP20::mintCall {
-                to: recipient,
-                amount: mint_amount,
-            };
-            let calldata = mint_call.abi_encode();
-            let output = token.call(&calldata, admin)?;
-            assert!(output.is_revert());
+                let expected: Bytes = TIP20Error::supply_cap_exceeded().selector().into();
+                assert_eq!(output.bytes, expected);
+                assert_eq!(token.supply_cap()?, supply_cap);
+                assert_eq!(
+                    token.set_supply_cap(
+                        admin,
+                        ITIP20::setSupplyCapCall {
+                            newSupplyCap: U256::from(499)
+                        }
+                    ),
+                    Err(TIP20Error::invalid_supply_cap().into())
+                );
 
-            let expected: Bytes = TIP20Error::supply_cap_exceeded().selector().into();
-            assert_eq!(output.bytes, expected);
-
-            Ok(())
-        })
+                Ok(())
+            })?;
+        }
+        Ok(())
     }
 
     #[test]
@@ -648,8 +693,8 @@ mod tests {
         use crate::test_util::{assert_full_coverage, check_selector_coverage};
         use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls};
 
-        // Use T12 so the TIP-1006 selectors are active too.
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+        // Use T14 so the TIP-1006 and TIP-1145 selectors are active too.
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {

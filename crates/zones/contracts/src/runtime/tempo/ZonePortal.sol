@@ -1007,7 +1007,12 @@ contract ZonePortal is IZonePortal {
         _validateDepositsActive(_token);
 
         uint64 policyId = ITIP20(_token).transferPolicyId();
-        if (!TIP403_REGISTRY.isAuthorizedRecipient(policyId, tempoRefundRecipient)) {
+        bool authorized = policyId == type(uint64).max
+            ? TIP403_REGISTRY.isTokenAuthorized(
+                _token, tempoRefundRecipient, ITIP403Registry.AuthRole.RECIPIENT
+            )
+            : TIP403_REGISTRY.isAuthorizedRecipient(policyId, tempoRefundRecipient);
+        if (!authorized) {
             revert ITIP20.PolicyForbids();
         }
 

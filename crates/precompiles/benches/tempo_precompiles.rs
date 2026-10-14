@@ -16,7 +16,7 @@ use tempo_precompiles::{
     Precompile,
     signature_verifier::SignatureVerifier,
     storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
-    test_util::{TIP20Setup, set_empty_compound_transfer_policy, set_empty_receive_policies},
+    test_util::{TIP20Setup, set_empty_receive_policies, set_empty_transfer_policy},
     tip20::{ISSUER_ROLE, ITIP20, PAUSE_ROLE, UNPAUSE_ROLE},
     tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
     zone_factory::portal_address,
@@ -426,7 +426,7 @@ fn tip20_mutate(c: &mut Criterion) {
                 .with_mint(from, U256::from(u128::MAX))
                 .apply()
                 .unwrap();
-            set_empty_compound_transfer_policy(admin, token.address()).unwrap();
+            set_empty_transfer_policy(admin, token.address()).unwrap();
             set_empty_receive_policies(admin, &[to]).unwrap();
 
             let amount = U256::ONE;

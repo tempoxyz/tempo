@@ -9,6 +9,7 @@
 //! [TIP-1022]: <https://docs.tempo.xyz/protocol/tip1022>
 
 pub mod dispatch;
+pub mod layout;
 pub mod rewards;
 pub mod roles;
 
@@ -27,9 +28,12 @@ use crate::{
     error::{Result, TempoPrecompileError},
     receive_policy_guard::{InboundKind, ReceivePolicyGuard, RecoveryMode},
     storage::{Handler, Mapping},
-    tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
+    tip20::{layout::Supply, rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
-    tip403_registry::{ALLOW_ALL_POLICY_ID, AuthRole, ITIP403Registry, TIP403Registry},
+    tip403_registry::{
+        ALLOW_ALL_POLICY_ID, AuthRole, ITIP403Registry, IssuerPolicy, TIP403Registry,
+        TIP403RegistryError, TOKEN_POLICY_ID, TokenPolicy,
+    },
 };
 use alloy::{
     primitives::{Address, B256, U256, uint},
@@ -54,7 +58,7 @@ pub const U128_MAX: U256 = uint!(0xffffffffffffffffffffffffffffffff_U256);
 /// - `InvalidToken` — address does not have the TIP-20 prefix
 /// - `InvalidCurrency` — token currency is not `"USD"`
 pub fn validate_usd_currency(token: Address) -> Result<()> {
-    if TIP20Token::from_address(token)?.currency()? != USD_CURRENCY {
+    if !TIP20Token::from_address(token)?.is_usd()? {
         return Err(TIP20Error::invalid_currency().into());
     }
     Ok(())
@@ -168,7 +172,14 @@ impl TIP20Token {
 
     /// Returns the token's currency denomination (e.g. `"USD"`).
     pub fn currency(&self) -> Result<String> {
-        self.currency.read()
+        match self
+            .token_control()?
+            .as_ref()
+            .and_then(|c| c.inline_currency())
+        {
+            Some(currency) => Ok(currency.to_owned()),
+            None => self.currency.read(),
+        }
     }
 
     /// Returns the logo URI for this token (TIP-1026).
@@ -180,39 +191,52 @@ impl TIP20Token {
 
     /// Returns the current total supply.
     pub fn total_supply(&self) -> Result<U256> {
-        self.total_supply.read()
+        Ok(self.get_supply()?.total)
     }
 
     /// Returns the active quote token address used for pricing.
     pub fn quote_token(&self) -> Result<Address> {
-        self.quote_token.read()
+        self.get_quote(false)
     }
 
     /// Returns the pending next quote token address (set but not yet finalized).
     pub fn next_quote_token(&self) -> Result<Address> {
-        self.next_quote_token.read()
+        self.get_quote(true)
     }
 
     /// Returns the maximum mintable supply.
     pub fn supply_cap(&self) -> Result<U256> {
-        self.supply_cap.read()
+        if self.storage.spec().is_t14() {
+            self.supply_cap_of(&self.get_supply()?)
+        } else {
+            self.supply_cap.read()
+        }
     }
 
     /// Returns whether the token is currently paused.
     pub fn paused(&self) -> Result<bool> {
-        self.paused.read()
+        Ok(self.get_token_control()?.is_paused())
     }
 
     /// Returns the TIP-403 transfer policy ID governing this token's transfers.
+    ///
+    /// (T14+) Tokens with a token-specific policy report [`TOKEN_POLICY_ID`].
     pub fn transfer_policy_id(&self) -> Result<u64> {
-        if StorageCtx.spec().is_t9()
-            && let Some(policy_id) =
-                TIP403Registry::new().registered_token_transfer_policy_id(self.address)?
-        {
-            return Ok(policy_id);
-        }
+        Ok(match TIP403Registry::new().issuer_policy(self)? {
+            IssuerPolicy::Generic(policy_id) => policy_id,
+            IssuerPolicy::TokenSpecific(_) => TOKEN_POLICY_ID,
+        })
+    }
 
-        self.legacy_transfer_policy_id()
+    /// Returns the active token-specific modes (TIP-1145).
+    ///
+    /// # Errors
+    /// - `InvalidTransferPolicyId` — the token uses a generic TIP-403 policy
+    pub fn transfer_policy(&self) -> Result<TokenPolicy> {
+        match TIP403Registry::new().issuer_policy(self)? {
+            IssuerPolicy::TokenSpecific(policy) => Ok(policy),
+            IssuerPolicy::Generic(_) => Err(TIP20Error::invalid_transfer_policy_id().into()),
+        }
     }
 
     /// Returns the policy ID stored in the legacy TIP-20 storage slot.
@@ -284,6 +308,27 @@ impl TIP20Token {
     ) -> Result<()> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
 
+        // (T14+) TIP-1145 activation: the reserved ID permanently selects the prepared
+        // token-specific policy and converts the token to the packed layout. Afterwards, generic
+        // policy IDs are unsupported.
+        if self.storage.spec().is_t14() {
+            let control = self.get_token_control()?;
+            if call.newPolicyId == TOKEN_POLICY_ID {
+                if !control.is_packed() {
+                    let policy = TIP403Registry::new().activate_token_policy(self.address)?;
+                    self.convert_to_packed(control.is_paused(), &policy)?;
+                    self.emit_event(TIP20Event::transfer_policy_update(
+                        msg_sender,
+                        TOKEN_POLICY_ID,
+                    ))?;
+                }
+                return Ok(());
+            }
+            if control.is_packed() {
+                return Err(TIP403RegistryError::token_policy_ids_unsupported().into());
+            }
+        }
+
         // Validate that the policy exists
         if !TIP403Registry::new().policy_exists(ITIP403Registry::policyExistsCall {
             policyId: call.newPolicyId,
@@ -315,7 +360,8 @@ impl TIP20Token {
         call: ITIP20::setSupplyCapCall,
     ) -> Result<()> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
-        if call.newSupplyCap < self.total_supply()? {
+        let supply = self.get_supply()?;
+        if call.newSupplyCap < supply.total {
             return Err(TIP20Error::invalid_supply_cap().into());
         }
 
@@ -323,7 +369,13 @@ impl TIP20Token {
             return Err(TIP20Error::supply_cap_exceeded().into());
         }
 
-        self.supply_cap.write(call.newSupplyCap)?;
+        match supply.cap {
+            Some(_) => self.set_supply(Supply {
+                cap: Some(call.newSupplyCap),
+                ..supply
+            })?,
+            None => self.supply_cap.write(call.newSupplyCap)?,
+        }
 
         self.emit_event(TIP20Event::supply_cap_update(msg_sender, call.newSupplyCap))
     }
@@ -418,7 +470,7 @@ impl TIP20Token {
     /// - `Unauthorized` — caller does not hold `PAUSE_ROLE`
     pub fn pause(&mut self, msg_sender: Address, _call: ITIP20::pauseCall) -> Result<()> {
         self.check_role(msg_sender, PAUSE_ROLE)?;
-        self.paused.write(true)?;
+        self.set_paused(true)?;
 
         self.emit_event(TIP20Event::pause_state_update(msg_sender, true))
     }
@@ -429,7 +481,7 @@ impl TIP20Token {
     /// - `Unauthorized` — caller does not hold `UNPAUSE_ROLE`
     pub fn unpause(&mut self, msg_sender: Address, _call: ITIP20::unpauseCall) -> Result<()> {
         self.check_role(msg_sender, UNPAUSE_ROLE)?;
-        self.paused.write(false)?;
+        self.set_paused(false)?;
 
         self.emit_event(TIP20Event::pause_state_update(msg_sender, false))
     }
@@ -460,15 +512,11 @@ impl TIP20Token {
         }
 
         // Check if the currency is USD, if so then the quote token's currency MUST also be USD
-        let currency = self.currency()?;
-        if currency == USD_CURRENCY {
-            let quote_token_currency = Self::from_address(call.newQuoteToken)?.currency()?;
-            if quote_token_currency != USD_CURRENCY {
-                return Err(TIP20Error::invalid_quote_token().into());
-            }
+        if self.is_usd()? && !Self::from_address(call.newQuoteToken)?.is_usd()? {
+            return Err(TIP20Error::invalid_quote_token().into());
         }
 
-        self.next_quote_token.write(call.newQuoteToken)?;
+        self.set_quote(true, call.newQuoteToken)?;
 
         self.emit_event(TIP20Event::next_quote_token_set(
             msg_sender,
@@ -503,7 +551,7 @@ impl TIP20Token {
         }
 
         // Update the quote token
-        self.quote_token.write(next_quote_token)?;
+        self.set_quote(false, next_quote_token)?;
 
         self.emit_event(TIP20Event::quote_token_update(msg_sender, next_quote_token))
     }
@@ -532,13 +580,13 @@ impl TIP20Token {
         call: ITIP20::mintCall,
         recipient_role: AuthRole,
     ) -> Result<()> {
-        let Some((total_supply, to)) =
+        let Some((supply, to)) =
             self.validate_mint(msg_sender, call.to, call.amount, B256::ZERO, recipient_role)?
         else {
             return Ok(());
         };
 
-        self._mint(&to, total_supply, call.amount)?;
+        self._mint(&to, supply, call.amount)?;
         self.emit_event(TIP20Event::mint(call.to, call.amount))?;
         if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
             self.emit_event(hop)?;
@@ -553,7 +601,7 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::mintWithMemoCall,
     ) -> Result<()> {
-        let Some((total_supply, to)) = self.validate_mint(
+        let Some((supply, to)) = self.validate_mint(
             msg_sender,
             call.to,
             call.amount,
@@ -564,7 +612,7 @@ impl TIP20Token {
             return Ok(());
         };
 
-        self._mint(&to, total_supply, call.amount)?;
+        self._mint(&to, supply, call.amount)?;
         self.emit_event(TIP20Event::transfer_with_memo(
             Address::ZERO,
             call.to,
@@ -578,20 +626,25 @@ impl TIP20Token {
         Ok(())
     }
 
-    /// Internal helper to mint new tokens and update balances.
-    pub(crate) fn _mint(&mut self, to: &Recipient, total_supply: U256, amount: U256) -> Result<()> {
-        let new_supply = total_supply
+    /// Internal helper to mint new tokens and update balances. Checks the `uint256` sum
+    /// against the cap before any packed narrowing.
+    pub(crate) fn _mint(&mut self, to: &Recipient, supply: Supply, amount: U256) -> Result<()> {
+        let new_supply = supply
+            .total
             .checked_add(amount)
             .ok_or(TempoPrecompileError::under_overflow())?;
 
-        let supply_cap = self.supply_cap()?;
+        let supply_cap = self.supply_cap_of(&supply)?;
         if new_supply > supply_cap {
             return Err(TIP20Error::supply_cap_exceeded().into());
         }
 
         self.handle_rewards_on_mint(to.target, amount)?;
 
-        self.set_total_supply(new_supply)?;
+        self.set_supply(Supply {
+            total: new_supply,
+            ..supply
+        })?;
         self.increment_balance(to.target, amount)?;
 
         self.emit_event(to.build_transfer_event(Address::ZERO, amount))
@@ -653,8 +706,7 @@ impl TIP20Token {
         }
 
         // Check if the address is blocked from transferring (sender authorization)
-        let policy_id = self.transfer_policy_id()?;
-        if TIP403Registry::new().is_authorized_as(policy_id, owner, AuthRole::sender())? {
+        if self.is_authorized_as(owner, AuthRole::sender())? {
             // Only allow burning from addresses that are blocked from transferring
             return Err(TIP20Error::policy_forbids().into());
         }
@@ -665,17 +717,7 @@ impl TIP20Token {
             RECEIVE_POLICY_GUARD_ADDRESS
         };
         self._transfer(burn_from, &Recipient::direct(Address::ZERO), amount)?;
-
-        let total_supply = self.total_supply()?;
-        let new_supply =
-            total_supply
-                .checked_sub(amount)
-                .ok_or(TIP20Error::insufficient_balance(
-                    total_supply,
-                    amount,
-                    self.address,
-                ))?;
-        self.set_total_supply(new_supply)?;
+        self.decrease_total_supply(amount)?;
 
         self.emit_event(TIP20Event::burn_blocked(owner, amount))
     }
@@ -691,16 +733,7 @@ impl TIP20Token {
         self.check_and_update_spending_limit(call.from, call.amount)?;
 
         self._transfer(call.from, &Recipient::direct(Address::ZERO), call.amount)?;
-        let total_supply = self.total_supply()?;
-        let new_supply =
-            total_supply
-                .checked_sub(call.amount)
-                .ok_or(TIP20Error::insufficient_balance(
-                    total_supply,
-                    call.amount,
-                    self.address,
-                ))?;
-        self.set_total_supply(new_supply)?;
+        self.decrease_total_supply(call.amount)?;
 
         self.emit_event(TIP20Event::burn_at(msg_sender, call.from, call.amount))
     }
@@ -727,17 +760,26 @@ impl TIP20Token {
         self.check_role(msg_sender, ISSUER_ROLE)?;
 
         self._transfer(msg_sender, &Recipient::direct(Address::ZERO), amount)?;
+        self.decrease_total_supply(amount)
+    }
 
-        let total_supply = self.total_supply()?;
+    /// Reduces total supply by a burned `amount`, reverting with `InsufficientBalance` on
+    /// underflow.
+    fn decrease_total_supply(&mut self, amount: U256) -> Result<()> {
+        let supply = self.get_supply()?;
         let new_supply =
-            total_supply
+            supply
+                .total
                 .checked_sub(amount)
                 .ok_or(TIP20Error::insufficient_balance(
-                    total_supply,
+                    supply.total,
                     amount,
                     self.address,
                 ))?;
-        self.set_total_supply(new_supply)
+        self.set_supply(Supply {
+            total: new_supply,
+            ..supply
+        })
     }
 
     /// Sets `spender`'s allowance to `amount` for the caller's tokens.
@@ -1083,6 +1125,9 @@ impl TIP20Token {
 
     /// Initializes the TIP-20 token precompile with metadata, quote token, supply cap, and
     /// default admin role. Called once by [`TIP20Factory`] during token creation.
+    ///
+    /// (T14+) New tokens use the TIP-1145 packed layout with an `ALLOW` token-specific policy,
+    /// unless their quote cannot be packed (a non-pathUSD token with a null quote).
     pub fn initialize(
         &mut self,
         msg_sender: Address,
@@ -1092,6 +1137,32 @@ impl TIP20Token {
         quote_token: Address,
         admin: Address,
     ) -> Result<()> {
+        self.initialize_with_mirror(
+            msg_sender,
+            name,
+            symbol,
+            currency,
+            quote_token,
+            admin,
+            false,
+        )
+    }
+
+    /// Like [`Self::initialize`]. With `mirror_registry`, for environments whose TIP-403 state
+    /// mirrors another chain (e.g. zones), the token keeps the legacy layout, as a packed mode
+    /// cache could not be synchronized. At T14, without a registry binding, its policy resolves
+    /// from the registry's token-specific policy, or rejects all if none is active.
+    #[allow(clippy::too_many_arguments)]
+    pub fn initialize_with_mirror(
+        &mut self,
+        msg_sender: Address,
+        name: &str,
+        symbol: &str,
+        currency: &str,
+        quote_token: Address,
+        admin: Address,
+        mirror_registry: bool,
+    ) -> Result<()> {
         trace!(%name, address=%self.address, "Initializing token");
 
         // must ensure the account is not empty, by setting some code
@@ -1099,18 +1170,23 @@ impl TIP20Token {
 
         self.name.write(name.to_string())?;
         self.symbol.write(symbol.to_string())?;
-        self.currency.write(currency.to_string())?;
 
-        self.quote_token.write(quote_token)?;
-        // Initialize nextQuoteToken to the same value as quoteToken
-        self.next_quote_token.write(quote_token)?;
+        let packed = !mirror_registry && self.storage.spec().is_t14();
+        if !(packed && self.try_initialize_packed(currency, quote_token)?) {
+            self.currency.write(currency.to_string())?;
 
-        // Set default values
-        self.supply_cap.write(U128_MAX)?;
-        if StorageCtx.spec().is_t9() {
-            TIP403Registry::new().set_token_transfer_policy(self.address, ALLOW_ALL_POLICY_ID)?;
-        } else {
-            self.transfer_policy_id.write(ALLOW_ALL_POLICY_ID)?;
+            self.quote_token.write(quote_token)?;
+            // Initialize nextQuoteToken to the same value as quoteToken
+            self.next_quote_token.write(quote_token)?;
+
+            // Set default values
+            self.supply_cap.write(U128_MAX)?;
+            if StorageCtx.spec().is_t9() {
+                TIP403Registry::new()
+                    .set_token_transfer_policy(self.address, ALLOW_ALL_POLICY_ID)?;
+            } else {
+                self.transfer_policy_id.write(ALLOW_ALL_POLICY_ID)?;
+            }
         }
 
         // Initialize roles system and grant admin role
@@ -1162,10 +1238,6 @@ impl TIP20Token {
 
     fn set_allowance(&mut self, owner: Address, spender: Address, amount: U256) -> Result<()> {
         self.allowances[owner][spender].write(amount)
-    }
-
-    fn set_total_supply(&mut self, amount: U256) -> Result<()> {
-        self.total_supply.write(amount)
     }
 
     pub fn check_not_paused(&self) -> Result<()> {
@@ -1223,30 +1295,26 @@ impl TIP20Token {
         amount: U256,
         memo: B256,
         recipient_role: AuthRole,
-    ) -> Result<Option<(U256, Recipient)>> {
+    ) -> Result<Option<(Supply, Recipient)>> {
         let to = Recipient::resolve(to)?;
         self.check_role(msg_sender, ISSUER_ROLE)?;
-        let total_supply = self.total_supply()?;
 
+        let supply = self.get_supply()?;
         if self.storage.spec().is_t3() {
             self.check_not_paused()?;
             to.validate()?;
         }
 
         // Authorize the resolved target using the role selected by the mint operation.
-        if !TIP403Registry::new().is_authorized_as(
-            self.transfer_policy_id()?,
-            to.target,
-            recipient_role,
-        )? {
+        if !self.is_authorized_as(to.target, recipient_role)? {
             return Err(TIP20Error::policy_forbids().into());
         }
 
-        if self.validate_inbound_or_block(msg_sender, &to, amount, Some(total_supply), memo)? {
+        if self.validate_inbound_or_block(msg_sender, &to, amount, Some(supply), memo)? {
             return Ok(None);
         }
 
-        Ok(Some((total_supply, to)))
+        Ok(Some((supply, to)))
     }
 
     /// Check whether a transfer is authorized by the token's [`TIP403Registry`] policy.
@@ -1254,16 +1322,24 @@ impl TIP20Token {
     ///
     /// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
     pub fn is_transfer_authorized(&self, from: Address, to: Address) -> Result<bool> {
-        let policy_id = self.transfer_policy_id()?;
         let registry = TIP403Registry::new();
+        let policy = registry.issuer_policy(self)?;
 
         // (spec: +T2) short-circuit and skip recipient check if sender fails
-        let sender_auth = registry.is_authorized_as(policy_id, from, AuthRole::sender())?;
+        let sender_auth = registry.policy_allows(self.address, policy, from, AuthRole::sender())?;
         if self.storage.spec().is_t2() && !sender_auth {
             return Ok(false);
         }
-        let recipient_auth = registry.is_authorized_as(policy_id, to, AuthRole::recipient())?;
+        let recipient_auth =
+            registry.policy_allows(self.address, policy, to, AuthRole::recipient())?;
         Ok(sender_auth && recipient_auth)
+    }
+
+    /// Returns whether `user` is authorized for `role` by the token's active issuer policy.
+    pub fn is_authorized_as(&self, user: Address, role: AuthRole) -> Result<bool> {
+        let registry = TIP403Registry::new();
+        let policy = registry.issuer_policy(self)?;
+        registry.policy_allows(self.address, policy, user, role)
     }
 
     /// Ensures the transfer is authorized by the token's [`TIP403Registry`] policy.
@@ -1302,10 +1378,10 @@ impl TIP20Token {
     /// # Errors
     /// - `PolicyForbids` — a user is not authorized for the requested role by the active transfer policy
     pub fn ensure_authorized_as(&self, user_auth: &[(Address, AuthRole)]) -> Result<()> {
-        let policy_id = self.transfer_policy_id()?;
         let registry = TIP403Registry::new();
+        let policy = registry.issuer_policy(self)?;
         for &(user, role) in user_auth {
-            if !registry.is_authorized_as(policy_id, user, role)? {
+            if !registry.policy_allows(self.address, policy, user, role)? {
                 return Err(TIP20Error::policy_forbids().into());
             }
         }
@@ -1370,7 +1446,7 @@ impl TIP20Token {
         originator: Address,
         to: &Recipient,
         amount: U256,
-        mint_total_supply: Option<U256>,
+        mint_supply: Option<Supply>,
         memo: B256,
     ) -> Result<bool> {
         if !self.storage.spec().is_t6() {
@@ -1388,8 +1464,8 @@ impl TIP20Token {
         };
 
         let guard = Recipient::direct(RECEIVE_POLICY_GUARD_ADDRESS);
-        let kind = if let Some(total_supply) = mint_total_supply {
-            self._mint(&guard, total_supply, amount)?;
+        let kind = if let Some(supply) = mint_supply {
+            self._mint(&guard, supply, amount)?;
             self.emit_event(TIP20Event::mint(guard.target, amount))?;
             InboundKind::MINT
         } else {
@@ -1862,81 +1938,103 @@ pub(crate) mod tests {
             token_filter_id: u64,
             recovery_address: Address,
         ) -> Result<()> {
-            TIP403Registry::new().set_receive_policy(
-                receiver,
-                ITIP403Registry::setReceivePolicyCall {
-                    senderPolicyId: sender_policy_id,
-                    tokenFilterId: token_filter_id,
-                    recoveryAuthority: recovery_address,
-                },
-            )
+            let mut registry = TIP403Registry::new();
+            if StorageCtx.spec().is_t14() {
+                let mode = |id| match id {
+                    REJECT_ALL_POLICY_ID => ITIP403Registry::PolicyMode::DENY,
+                    ALLOW_ALL_POLICY_ID => ITIP403Registry::PolicyMode::ALLOW,
+                    _ => panic!("receive-policy fixture requires a built-in policy"),
+                };
+                registry.set_receive_config(
+                    receiver,
+                    ITIP403Registry::setReceiveConfigCall {
+                        tokenMode: mode(token_filter_id),
+                        senderMode: mode(sender_policy_id),
+                        recoveryAuthority: recovery_address,
+                    },
+                )
+            } else {
+                registry.set_receive_policy(
+                    receiver,
+                    ITIP403Registry::setReceivePolicyCall {
+                        senderPolicyId: sender_policy_id,
+                        tokenFilterId: token_filter_id,
+                        recoveryAuthority: recovery_address,
+                    },
+                )
+            }
         }
 
         #[test]
         fn test_transfer_blocked_by_receive_policy_guards_funds() -> eyre::Result<()> {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
-            storage.set_timestamp(U256::from(BLOCKED_AT));
             let admin = Address::random();
             let sender = Address::random();
             let receiver = Address::random();
             let amount = U256::from(100u64);
-
-            StorageCtx::enter(&mut storage, || {
-                let mut token = TIP20Setup::create("Test", "TST", admin)
-                    .with_issuer(admin)
-                    .with_mint(sender, amount)
-                    .clear_events()
-                    .apply()?;
-                set_receive_policy(
-                    receiver,
-                    REJECT_ALL_POLICY_ID,
-                    ALLOW_ALL_POLICY_ID,
-                    Address::ZERO,
-                )?;
-
-                token.transfer(
-                    sender,
-                    ITIP20::transferCall {
-                        to: receiver,
-                        amount,
-                    },
-                )?;
-
-                assert_eq!(token.get_balance(sender)?, U256::ZERO);
-                assert_eq!(token.get_balance(receiver)?, U256::ZERO);
-                assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, amount);
-                token.assert_emitted_events(vec![TIP20Event::Transfer(ITIP20::Transfer {
-                    from: sender,
-                    to: RECEIVE_POLICY_GUARD_ADDRESS,
-                    amount,
-                })]);
-
-                let receipt = IReceivePolicyGuard::ClaimReceiptV1::new(
-                    token.address,
-                    Address::ZERO,
-                    sender,
-                    receiver,
-                    BLOCKED_AT,
-                    1,
-                    ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8,
-                    InboundKind::TRANSFER,
-                    B256::ZERO,
-                );
-                let guard = ReceivePolicyGuard::new();
-                assert_eq!(guard.balance_of(receipt.abi_encode().into())?, amount);
-                guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::TransferBlocked(
-                    IReceivePolicyGuard::TransferBlocked {
-                        token: token.address,
+            for (spec, recovery) in [
+                (TempoHardfork::T6, Address::ZERO),
+                (TempoHardfork::T14, Address::random()),
+            ] {
+                let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+                storage.set_timestamp(U256::from(BLOCKED_AT));
+                StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                    let mut token = TIP20Setup::create("Test", "TST", admin)
+                        .with_issuer(admin)
+                        .with_mint(sender, amount)
+                        .clear_events()
+                        .apply()?;
+                    set_receive_policy(
                         receiver,
-                        blockedNonce: 1,
-                        receiptVersion: BLOCKED_RECEIPT_VERSION,
-                        amount,
-                        receipt: receipt.abi_encode().into(),
-                    },
-                )]);
+                        REJECT_ALL_POLICY_ID,
+                        ALLOW_ALL_POLICY_ID,
+                        recovery,
+                    )?;
 
-                Ok(())
-            })
+                    token.transfer(
+                        sender,
+                        ITIP20::transferCall {
+                            to: receiver,
+                            amount,
+                        },
+                    )?;
+
+                    assert_eq!(token.get_balance(sender)?, U256::ZERO);
+                    assert_eq!(token.get_balance(receiver)?, U256::ZERO);
+                    assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, amount);
+                    token.assert_emitted_events(vec![TIP20Event::Transfer(ITIP20::Transfer {
+                        from: sender,
+                        to: RECEIVE_POLICY_GUARD_ADDRESS,
+                        amount,
+                    })]);
+
+                    let receipt = IReceivePolicyGuard::ClaimReceiptV1::new(
+                        token.address,
+                        recovery,
+                        sender,
+                        receiver,
+                        BLOCKED_AT,
+                        1,
+                        ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8,
+                        InboundKind::TRANSFER,
+                        B256::ZERO,
+                    );
+                    let guard = ReceivePolicyGuard::new();
+                    assert_eq!(guard.balance_of(receipt.abi_encode().into())?, amount);
+                    guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::TransferBlocked(
+                        IReceivePolicyGuard::TransferBlocked {
+                            token: token.address,
+                            receiver,
+                            blockedNonce: 1,
+                            receiptVersion: BLOCKED_RECEIPT_VERSION,
+                            amount,
+                            receipt: receipt.abi_encode().into(),
+                        },
+                    )]);
+
+                    Ok(())
+                })?;
+            }
+            Ok(())
         }
 
         #[test]
@@ -2062,59 +2160,64 @@ pub(crate) mod tests {
 
         #[test]
         fn test_transfer_blocked_by_token_filter_records_reason() -> eyre::Result<()> {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
-            storage.set_timestamp(U256::from(BLOCKED_AT));
             let admin = Address::random();
             let sender = Address::random();
             let receiver = Address::random();
             let amount = U256::from(40u64);
-
-            StorageCtx::enter(&mut storage, || {
-                let mut token = TIP20Setup::create("Test", "TST", admin)
-                    .with_issuer(admin)
-                    .with_mint(sender, amount)
-                    .apply()?;
-                set_receive_policy(
-                    receiver,
-                    ALLOW_ALL_POLICY_ID,
-                    REJECT_ALL_POLICY_ID,
-                    Address::ZERO,
-                )?;
-
-                token.transfer(
-                    sender,
-                    ITIP20::transferCall {
-                        to: receiver,
-                        amount,
-                    },
-                )?;
-
-                let receipt = IReceivePolicyGuard::ClaimReceiptV1::new(
-                    token.address,
-                    Address::ZERO,
-                    sender,
-                    receiver,
-                    BLOCKED_AT,
-                    1,
-                    ITIP403Registry::BlockedReason::TOKEN_FILTER as u8,
-                    InboundKind::TRANSFER,
-                    B256::ZERO,
-                );
-                let guard = ReceivePolicyGuard::new();
-                assert_eq!(guard.balance_of(receipt.abi_encode().into())?, amount);
-                guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::TransferBlocked(
-                    IReceivePolicyGuard::TransferBlocked {
-                        token: token.address,
+            for (spec, sender_policy) in [
+                (TempoHardfork::T6, ALLOW_ALL_POLICY_ID),
+                (TempoHardfork::T14, REJECT_ALL_POLICY_ID),
+            ] {
+                let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+                storage.set_timestamp(U256::from(BLOCKED_AT));
+                StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                    let mut token = TIP20Setup::create("Test", "TST", admin)
+                        .with_issuer(admin)
+                        .with_mint(sender, amount)
+                        .apply()?;
+                    set_receive_policy(
                         receiver,
-                        blockedNonce: 1,
-                        receiptVersion: BLOCKED_RECEIPT_VERSION,
-                        amount,
-                        receipt: receipt.abi_encode().into(),
-                    },
-                )]);
+                        sender_policy,
+                        REJECT_ALL_POLICY_ID,
+                        Address::ZERO,
+                    )?;
 
-                Ok(())
-            })
+                    token.transfer(
+                        sender,
+                        ITIP20::transferCall {
+                            to: receiver,
+                            amount,
+                        },
+                    )?;
+
+                    let receipt = IReceivePolicyGuard::ClaimReceiptV1::new(
+                        token.address,
+                        Address::ZERO,
+                        sender,
+                        receiver,
+                        BLOCKED_AT,
+                        1,
+                        ITIP403Registry::BlockedReason::TOKEN_FILTER as u8,
+                        InboundKind::TRANSFER,
+                        B256::ZERO,
+                    );
+                    let guard = ReceivePolicyGuard::new();
+                    assert_eq!(guard.balance_of(receipt.abi_encode().into())?, amount);
+                    guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::TransferBlocked(
+                        IReceivePolicyGuard::TransferBlocked {
+                            token: token.address,
+                            receiver,
+                            blockedNonce: 1,
+                            receiptVersion: BLOCKED_RECEIPT_VERSION,
+                            amount,
+                            receipt: receipt.abi_encode().into(),
+                        },
+                    )]);
+
+                    Ok(())
+                })?;
+            }
+            Ok(())
         }
 
         #[test]
@@ -2903,54 +3006,68 @@ pub(crate) mod tests {
 
     #[test]
     fn test_initialize_sets_next_quote_token() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
+        for spec in [TempoHardfork::T0, TempoHardfork::T13, TempoHardfork::T14] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let token = TIP20Setup::create("Test", "TST", admin).apply()?;
 
-        StorageCtx::enter(&mut storage, || {
-            let token = TIP20Setup::create("Test", "TST", admin).apply()?;
-
-            // Verify both quoteToken and nextQuoteToken are set to the same value
-            assert_eq!(token.quote_token()?, PATH_USD_ADDRESS);
-            assert_eq!(token.next_quote_token()?, PATH_USD_ADDRESS);
-
-            Ok(())
-        })
+                // Verify both quoteToken and nextQuoteToken are set to the same value
+                assert_eq!(token.quote_token()?, PATH_USD_ADDRESS);
+                assert_eq!(token.next_quote_token()?, PATH_USD_ADDRESS);
+                let path_usd = TIP20Token::from_address(PATH_USD_ADDRESS)?;
+                assert_eq!(path_usd.quote_token()?, Address::ZERO);
+                assert_eq!(path_usd.next_quote_token()?, Address::ZERO);
+                assert_eq!(path_usd.token_control()?.is_some(), spec.is_t14());
+                if spec.is_t14() {
+                    for slot in [slots::QUOTE_TOKEN, slots::NEXT_QUOTE_TOKEN] {
+                        assert_eq!(StorageCtx.sload(token.address, slot)?, U256::ZERO);
+                    }
+                }
+                Ok(())
+            })?;
+        }
+        Ok(())
     }
 
     #[test]
     fn test_update_quote_token() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
+        for spec in [TempoHardfork::T0, TempoHardfork::T13, TempoHardfork::T14] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
 
-        StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+                // Create a new USD token to use as the new quote token
+                let new_quote_token = TIP20Setup::create("New Quote", "NQ", admin).apply()?;
+                let new_quote_token_address = new_quote_token.address;
 
-            // Create a new USD token to use as the new quote token
-            let new_quote_token = TIP20Setup::create("New Quote", "NQ", admin).apply()?;
-            let new_quote_token_address = new_quote_token.address;
+                // Verify initial quote token is PATH_USD
+                assert_eq!(token.quote_token()?, PATH_USD_ADDRESS);
 
-            // Verify initial quote token is PATH_USD
-            assert_eq!(token.quote_token()?, PATH_USD_ADDRESS);
+                // Set next quote token to the new token
+                token.set_next_quote_token(
+                    admin,
+                    ITIP20::setNextQuoteTokenCall {
+                        newQuoteToken: new_quote_token_address,
+                    },
+                )?;
 
-            // Set next quote token to the new token
-            token.set_next_quote_token(
-                admin,
-                ITIP20::setNextQuoteTokenCall {
-                    newQuoteToken: new_quote_token_address,
-                },
-            )?;
+                // Verify next quote token was set to the new token
+                assert_eq!(token.next_quote_token()?, new_quote_token_address);
+                assert_eq!(token.quote_token()?, PATH_USD_ADDRESS);
 
-            // Verify next quote token was set to the new token
-            assert_eq!(token.next_quote_token()?, new_quote_token_address);
+                // Verify event was emitted
+                assert_eq!(
+                    token.emitted_events().last().unwrap(),
+                    &TIP20Event::next_quote_token_set(admin, new_quote_token_address)
+                        .into_log_data()
+                );
 
-            // Verify event was emitted
-            assert_eq!(
-                token.emitted_events().last().unwrap(),
-                &TIP20Event::next_quote_token_set(admin, new_quote_token_address).into_log_data()
-            );
-
-            Ok(())
-        })
+                Ok(())
+            })?;
+        }
+        Ok(())
     }
 
     #[test]
@@ -3043,35 +3160,38 @@ pub(crate) mod tests {
 
     #[test]
     fn test_finalize_quote_token_update() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
+        for spec in [TempoHardfork::T0, TempoHardfork::T13, TempoHardfork::T14] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+                let quote_token_address = TIP20Setup::create("Quote", "QT", admin).apply()?.address;
 
-        StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
-            let quote_token_address = token.quote_token()?;
+                // Set next quote token
+                token.set_next_quote_token(
+                    admin,
+                    ITIP20::setNextQuoteTokenCall {
+                        newQuoteToken: quote_token_address,
+                    },
+                )?;
 
-            // Set next quote token
-            token.set_next_quote_token(
-                admin,
-                ITIP20::setNextQuoteTokenCall {
-                    newQuoteToken: quote_token_address,
-                },
-            )?;
+                // Complete the update
+                token
+                    .complete_quote_token_update(admin, ITIP20::completeQuoteTokenUpdateCall {})?;
 
-            // Complete the update
-            token.complete_quote_token_update(admin, ITIP20::completeQuoteTokenUpdateCall {})?;
+                // Verify quote token was updated
+                assert_eq!(token.quote_token()?, quote_token_address);
+                assert_eq!(token.next_quote_token()?, quote_token_address);
 
-            // Verify quote token was updated
-            assert_eq!(token.quote_token()?, quote_token_address);
-
-            // Verify event was emitted
-            assert_eq!(
-                token.emitted_events().last().unwrap(),
-                &TIP20Event::quote_token_update(admin, quote_token_address).into_log_data()
-            );
-
-            Ok(())
-        })
+                // Verify event was emitted
+                assert_eq!(
+                    token.emitted_events().last().unwrap(),
+                    &TIP20Event::quote_token_update(admin, quote_token_address).into_log_data()
+                );
+                Ok(())
+            })?;
+        }
+        Ok(())
     }
 
     #[test]
@@ -3145,29 +3265,31 @@ pub(crate) mod tests {
 
     #[test]
     fn test_arbitrary_currency() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            for _ in 0..50 {
-                let currency: String = thread_rng()
-                    .sample_iter(&Alphanumeric)
-                    .take(31)
-                    .map(char::from)
-                    .collect();
-
-                // Initialize token with the random currency
-                let token = TIP20Setup::create("Test", "TST", admin)
-                    .currency(&currency)
-                    .apply()?;
-
-                // Verify the currency was stored and can be retrieved correctly
-                let stored_currency = token.currency()?;
-                assert_eq!(stored_currency, currency,);
-            }
-
-            Ok(())
-        })
+        for spec in [TempoHardfork::T0, TempoHardfork::T13, TempoHardfork::T14] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                for (currency, inline) in [
+                    ("USD", true),
+                    ("EUR", true),
+                    ("", false),
+                    ("1234567890123456789012345678901", false),
+                ] {
+                    let token = TIP20Setup::create("Test", "TST", admin)
+                        .currency(currency)
+                        .apply()?;
+                    assert_eq!(token.currency()?, currency);
+                    assert_eq!(token.is_usd()?, currency == "USD");
+                    assert_eq!(
+                        StorageCtx.sload(token.address, slots::CURRENCY)?.is_zero(),
+                        currency.is_empty() || (spec.is_t14() && inline),
+                        "{spec:?}: {currency:?}"
+                    );
+                }
+                Ok(())
+            })?;
+        }
+        Ok(())
     }
 
     #[test]
@@ -3516,17 +3638,33 @@ pub(crate) mod tests {
 
     #[test]
     fn test_initialize_supply_cap() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let token = TIP20Setup::create("Token", "TKN", admin).apply()?;
-
-            let supply_cap = token.supply_cap()?;
-            assert_eq!(supply_cap, U256::from(u128::MAX));
-
-            Ok(())
-        })
+        for spec in [TempoHardfork::T0, TempoHardfork::T13, TempoHardfork::T14] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let token = TIP20Setup::create("Token", "TKN", admin).apply()?;
+                StorageCtx.reset_counters();
+                assert_eq!(token.supply_cap()?, U128_MAX);
+                assert_eq!(
+                    StorageCtx.counter_sload(),
+                    if spec.is_t14() { 2 } else { 1 }
+                );
+                assert_eq!(
+                    StorageCtx.sload(token.address, slots::TOTAL_SUPPLY)?,
+                    if spec.is_t14() {
+                        U128_MAX << 128
+                    } else {
+                        U256::ZERO
+                    }
+                );
+                assert_eq!(
+                    StorageCtx.sload(token.address, slots::SUPPLY_CAP)?,
+                    if spec.is_t14() { U256::ZERO } else { U128_MAX }
+                );
+                Ok(())
+            })?;
+        }
+        Ok(())
     }
 
     #[test]
@@ -4611,33 +4749,49 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_new_t9_token_registers_transfer_policy() -> eyre::Result<()> {
+    fn test_new_token_registers_transfer_policy() -> eyre::Result<()> {
         let admin = Address::random();
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
-
-        StorageCtx::enter(&mut storage, || {
-            let token = TIP20Setup::create("Token", "TKN", admin).apply()?;
-            let registry = TIP403Registry::new();
-
-            assert!(
-                registry
-                    .registered_token_transfer_policy_id(token.address)?
-                    .is_some()
-            );
-            assert_eq!(
-                registry.token_transfer_policy_id(ITIP403Registry::tokenTransferPolicyIdCall {
-                    token: token.address,
-                },)?,
-                ITIP403Registry::tokenTransferPolicyIdReturn {
-                    isSet: true,
-                    policyId: ALLOW_ALL_POLICY_ID,
+        for spec in [TempoHardfork::T9, TempoHardfork::T13, TempoHardfork::T14] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let token = TIP20Setup::create("Token", "TKN", admin).apply()?;
+                let registry = TIP403Registry::new();
+                let policy_id = if spec.is_t14() {
+                    TOKEN_POLICY_ID
+                } else {
+                    ALLOW_ALL_POLICY_ID
+                };
+                assert_eq!(
+                    registry.token_transfer_policy_id(
+                        ITIP403Registry::tokenTransferPolicyIdCall {
+                            token: token.address,
+                        }
+                    )?,
+                    ITIP403Registry::tokenTransferPolicyIdReturn {
+                        isSet: true,
+                        policyId: policy_id,
+                    }
+                );
+                assert_eq!(token.transfer_policy_id()?, policy_id);
+                assert_eq!(token.legacy_transfer_policy_id()?, 0);
+                if spec.is_t14() {
+                    assert_eq!(
+                        registry.emitted_events().last(),
+                        Some(
+                            &ITIP403Registry::TransferPolicyUpdated {
+                                token: token.address,
+                                senderMode: ITIP403Registry::PolicyMode::ALLOW,
+                                recipientMode: ITIP403Registry::PolicyMode::ALLOW,
+                                mintRecipientMode: ITIP403Registry::PolicyMode::ALLOW,
+                            }
+                            .encode_log_data()
+                        )
+                    );
                 }
-            );
-            assert_eq!(token.transfer_policy_id()?, ALLOW_ALL_POLICY_ID);
-            assert_eq!(token.legacy_transfer_policy_id()?, 0);
-
-            Ok(())
-        })
+                Ok(())
+            })?;
+        }
+        Ok(())
     }
 
     #[test]
@@ -4647,8 +4801,9 @@ pub(crate) mod tests {
         let admin = Address::random();
         let sender = Address::random();
         let recipient = Address::random();
+        let user_auth = [(sender, AuthRole::Sender), (recipient, AuthRole::Recipient)];
 
-        for hardfork in [TempoHardfork::T0, TempoHardfork::T1] {
+        for hardfork in [TempoHardfork::T0, TempoHardfork::T1, TempoHardfork::T13] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
 
             StorageCtx::enter(&mut storage, || {
@@ -4675,46 +4830,37 @@ pub(crate) mod tests {
                     },
                 )?;
 
-                // Sender not whitelisted, recipient whitelisted
-                registry.modify_policy_whitelist(
-                    admin,
-                    ITIP403Registry::modifyPolicyWhitelistCall {
-                        policyId: policy_id,
-                        account: recipient,
-                        allowed: true,
-                    },
-                )?;
-                assert!(!token.is_transfer_authorized(sender, recipient)?);
-
-                // Sender whitelisted, recipient not whitelisted
-                registry.modify_policy_whitelist(
-                    admin,
-                    ITIP403Registry::modifyPolicyWhitelistCall {
-                        policyId: policy_id,
-                        account: sender,
-                        allowed: true,
-                    },
-                )?;
-                registry.modify_policy_whitelist(
-                    admin,
-                    ITIP403Registry::modifyPolicyWhitelistCall {
-                        policyId: policy_id,
-                        account: recipient,
-                        allowed: false,
-                    },
-                )?;
-                assert!(!token.is_transfer_authorized(sender, recipient)?);
-
-                // Both whitelisted
-                registry.modify_policy_whitelist(
-                    admin,
-                    ITIP403Registry::modifyPolicyWhitelistCall {
-                        policyId: policy_id,
-                        account: recipient,
-                        allowed: true,
-                    },
-                )?;
-                assert!(token.is_transfer_authorized(sender, recipient)?);
+                for (updates, authorized) in [
+                    (&[(recipient, true)][..], false),
+                    (&[(sender, true), (recipient, false)][..], false),
+                    (&[(recipient, true)][..], true),
+                ] {
+                    for &(account, allowed) in updates {
+                        registry.modify_policy_whitelist(
+                            admin,
+                            ITIP403Registry::modifyPolicyWhitelistCall {
+                                policyId: policy_id,
+                                account,
+                                allowed,
+                            },
+                        )?;
+                    }
+                    assert_eq!(
+                        token.is_transfer_authorized(sender, recipient)?,
+                        authorized,
+                        "{hardfork:?}, updates: {updates:?}"
+                    );
+                    let expected = if authorized {
+                        Ok(())
+                    } else {
+                        Err(TIP20Error::policy_forbids().into())
+                    };
+                    assert_eq!(
+                        token.ensure_authorized_as(&user_auth),
+                        expected,
+                        "{hardfork:?}, updates: {updates:?}"
+                    );
+                }
 
                 Ok::<_, TempoPrecompileError>(())
             })?;

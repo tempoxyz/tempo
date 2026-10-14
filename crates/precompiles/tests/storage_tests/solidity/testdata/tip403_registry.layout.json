@@ -4,7 +4,7 @@
       "storage-layout": {
         "storage": [
           {
-            "astId": 48,
+            "astId": 58,
             "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
             "label": "policyIdCounter",
             "offset": 0,
@@ -12,7 +12,7 @@
             "type": "t_uint64"
           },
           {
-            "astId": 54,
+            "astId": 64,
             "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
             "label": "policyRecords",
             "offset": 0,
@@ -20,7 +20,7 @@
             "type": "t_mapping(t_uint64,t_struct(PolicyRecord)21_storage)"
           },
           {
-            "astId": 61,
+            "astId": 71,
             "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
             "label": "policySet",
             "offset": 0,
@@ -28,7 +28,7 @@
             "type": "t_mapping(t_uint64,t_mapping(t_address,t_bool))"
           },
           {
-            "astId": 67,
+            "astId": 77,
             "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
             "label": "receivePolicies",
             "offset": 0,
@@ -36,12 +36,36 @@
             "type": "t_mapping(t_address,t_struct(ReceivePolicy)40_storage)"
           },
           {
-            "astId": 73,
+            "astId": 83,
             "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
             "label": "tokenTransferPolicies",
             "offset": 0,
             "slot": "4",
             "type": "t_mapping(t_address,t_struct(TokenTransferPolicy)45_storage)"
+          },
+          {
+            "astId": 89,
+            "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
+            "label": "tokenPolicies",
+            "offset": 0,
+            "slot": "5",
+            "type": "t_mapping(t_address,t_struct(TokenPolicy)55_storage)"
+          },
+          {
+            "astId": 96,
+            "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
+            "label": "tokenUserFlags",
+            "offset": 0,
+            "slot": "6",
+            "type": "t_mapping(t_address,t_mapping(t_address,t_uint8))"
+          },
+          {
+            "astId": 103,
+            "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
+            "label": "receiveSenderMembers",
+            "offset": 0,
+            "slot": "7",
+            "type": "t_mapping(t_address,t_mapping(t_address,t_bool))"
           }
         ],
         "types": {
@@ -62,6 +86,20 @@
             "numberOfBytes": "32",
             "value": "t_bool"
           },
+          "t_mapping(t_address,t_mapping(t_address,t_bool))": {
+            "encoding": "mapping",
+            "key": "t_address",
+            "label": "mapping(address => mapping(address => bool))",
+            "numberOfBytes": "32",
+            "value": "t_mapping(t_address,t_bool)"
+          },
+          "t_mapping(t_address,t_mapping(t_address,t_uint8))": {
+            "encoding": "mapping",
+            "key": "t_address",
+            "label": "mapping(address => mapping(address => uint8))",
+            "numberOfBytes": "32",
+            "value": "t_mapping(t_address,t_uint8)"
+          },
           "t_mapping(t_address,t_struct(ReceivePolicy)40_storage)": {
             "encoding": "mapping",
             "key": "t_address",
@@ -69,12 +107,26 @@
             "numberOfBytes": "32",
             "value": "t_struct(ReceivePolicy)40_storage"
           },
+          "t_mapping(t_address,t_struct(TokenPolicy)55_storage)": {
+            "encoding": "mapping",
+            "key": "t_address",
+            "label": "mapping(address => struct TIP403Registry.TokenPolicy)",
+            "numberOfBytes": "32",
+            "value": "t_struct(TokenPolicy)55_storage"
+          },
           "t_mapping(t_address,t_struct(TokenTransferPolicy)45_storage)": {
             "encoding": "mapping",
             "key": "t_address",
             "label": "mapping(address => struct TIP403Registry.TokenTransferPolicy)",
             "numberOfBytes": "32",
             "value": "t_struct(TokenTransferPolicy)45_storage"
+          },
+          "t_mapping(t_address,t_uint8)": {
+            "encoding": "mapping",
+            "key": "t_address",
+            "label": "mapping(address => uint8)",
+            "numberOfBytes": "32",
+            "value": "t_uint8"
           },
           "t_mapping(t_uint64,t_mapping(t_address,t_bool))": {
             "encoding": "mapping",
@@ -239,6 +291,45 @@
                 "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
                 "label": "recoveryMode",
                 "offset": 19,
+                "slot": "0",
+                "type": "t_uint8"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_struct(TokenPolicy)55_storage": {
+            "encoding": "inplace",
+            "label": "struct TIP403Registry.TokenPolicy",
+            "members": [
+              {
+                "astId": 48,
+                "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
+                "label": "isSet",
+                "offset": 0,
+                "slot": "0",
+                "type": "t_bool"
+              },
+              {
+                "astId": 50,
+                "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
+                "label": "sender",
+                "offset": 1,
+                "slot": "0",
+                "type": "t_uint8"
+              },
+              {
+                "astId": 52,
+                "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
+                "label": "recipient",
+                "offset": 2,
+                "slot": "0",
+                "type": "t_uint8"
+              },
+              {
+                "astId": 54,
+                "contract": "tests/storage_tests/solidity/testdata/tip403_registry.sol:TIP403Registry",
+                "label": "mintRecipient",
+                "offset": 3,
                 "slot": "0",
                 "type": "t_uint8"
               }

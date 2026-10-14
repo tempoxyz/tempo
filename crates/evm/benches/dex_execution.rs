@@ -177,10 +177,7 @@ fn sign_dex_calls(
 
 fn compute_tip20_address(sender: Address, salt: B256) -> Address {
     let hash = keccak256((sender, salt).abi_encode());
-    let mut address_bytes = [0u8; 20];
-    address_bytes[..12].copy_from_slice(&Address::TIP20_PREFIX);
-    address_bytes[12..].copy_from_slice(&hash[..8]);
-    Address::from(address_bytes)
+    Address::new_tip20(u64::from_be_bytes(hash[..8].try_into().unwrap()))
 }
 
 fn dex_bench_workloads() -> Vec<DexBenchWorkload> {

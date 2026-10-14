@@ -28,7 +28,7 @@ use tempo_precompiles::{
     error::TempoPrecompileError,
     nonce::NonceManager,
     storage::{StorageActions, StorageCtx},
-    test_util::{set_empty_compound_transfer_policy, set_empty_receive_policies},
+    test_util::{set_empty_receive_policies, set_empty_transfer_policy},
     tip_fee_manager::TipFeeManager,
     tip20::{ISSUER_ROLE, TIP20Token},
     tip20_factory::TIP20Factory,
@@ -134,7 +134,7 @@ fn seed_in_memory_cache_db(
             }
 
             if with_policies {
-                set_empty_compound_transfer_policy(admin, PATH_USD_ADDRESS)?;
+                set_empty_transfer_policy(admin, PATH_USD_ADDRESS)?;
                 set_empty_receive_policies(admin, participants)?;
             }
 

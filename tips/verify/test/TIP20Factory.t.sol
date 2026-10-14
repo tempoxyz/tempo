@@ -4,8 +4,33 @@ pragma solidity >=0.8.13 <0.9.0;
 import "./TempoTest.t.sol";
 import { Test } from "forge-std/Test.sol";
 import { ITIP20, ITIP20Factory } from "tempo-std/interfaces/ITIP20Factory.sol";
+import { ITIP403Registry } from "tempo-std/interfaces/ITIP403Registry.sol";
 
 contract TIP20FactoryTest is TempoTest {
+
+    function testLegacyPolicyFixturePreservesTokenState() public {
+        token1.grantRole(_ISSUER_ROLE, admin);
+        token1.grantRole(_PAUSE_ROLE, admin);
+        token1.mint(alice, 1000);
+        token1.setSupplyCap(2000);
+        token1.setNextQuoteToken(token2);
+        token1.pause();
+
+        _seedLegacyPolicyToken(token1);
+
+        assertEq(token1.balanceOf(alice), 1000);
+        assertEq(token1.totalSupply(), 1000);
+        assertEq(token1.supplyCap(), 2000);
+        assertEq(token1.currency(), "USD");
+        assertEq(address(token1.quoteToken()), PATH_USD);
+        assertEq(address(token1.nextQuoteToken()), address(token2));
+        assertTrue(token1.paused());
+        assertEq(token1.transferPolicyId(), 1);
+
+        uint64 policyId = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
+        token1.changeTransferPolicyId(policyId);
+        assertEq(token1.transferPolicyId(), policyId);
+    }
 
     function testCreateUsdToken_RevertsIf_NonUsdQuoteToken() public {
         address nonUsdTokenAddr = factory.createToken(

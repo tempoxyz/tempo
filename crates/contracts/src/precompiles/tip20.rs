@@ -85,6 +85,8 @@ crate::sol! {
         function supplyCap() external view returns (uint256);
         function paused() external view returns (bool);
         function transferPolicyId() external view returns (uint64);
+        /// @notice Returns the active TIP-1145 token-specific policy modes (TIP-403 `PolicyMode`).
+        function transferPolicy() external view returns (uint8 senderMode, uint8 recipientMode, uint8 mintRecipientMode);
         function logoURI() external view returns (string memory);
         function setLogoURI(string calldata newLogoURI) external;
         function burnBlocked(address from, uint256 amount) external;

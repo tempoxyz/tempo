@@ -49,6 +49,9 @@ abstract contract InvariantBaseTest is TempoTest {
             factory.createToken("TOKEN4", "T4", "USD", pathUSD, admin, bytes32("token4"))
         );
 
+        // These policy-ID models exercise legacy tokens, including under T14.
+        _seedLegacyPolicyToken(pathUSD);
+
         // Setup pathUSD with issuer role (pathUSDAdmin is the pathUSD admin from TempoTest)
         vm.startPrank(pathUSDAdmin);
         ITIP20Token(address(pathUSD)).grantRole(_ISSUER_ROLE, pathUSDAdmin);
@@ -59,6 +62,7 @@ abstract contract InvariantBaseTest is TempoTest {
         vm.startPrank(admin);
         ITIP20Token[4] memory tokens = [token1, token2, token3, token4];
         for (uint256 i = 0; i < tokens.length; i++) {
+            _seedLegacyPolicyToken(tokens[i]);
             tokens[i].grantRole(_ISSUER_ROLE, admin);
             _tokens.push(tokens[i]);
 

@@ -393,7 +393,7 @@ mod tests {
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageAction, StorageActions, StorageCtx, StorageKey},
         storage_credits::StorageCredits,
-        test_util::{TIP20Setup, set_empty_compound_transfer_policy, set_empty_receive_policies},
+        test_util::{TIP20Setup, set_empty_receive_policies, set_empty_transfer_policy},
         tip_fee_manager::{
             IFeeManager, TipFeeManager,
             amm::{Pool, PoolKey, compute_amount_out},
@@ -1413,10 +1413,10 @@ mod tests {
                     )?;
 
                     if with_policies {
-                        // Separate compound policies keep fee checks from warming the
+                        // Separate issuer policies keep fee checks from warming the
                         // payment token's policy. Empty blacklists still read every list.
                         for address in [PATH_USD_ADDRESS, fee_token.address()] {
-                            set_empty_compound_transfer_policy(sender, address)?;
+                            set_empty_transfer_policy(sender, address)?;
                         }
                         set_empty_receive_policies(sender, &[recipient])?;
                     }

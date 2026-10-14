@@ -110,6 +110,7 @@ impl CallRules for TIP20Rules {
                 | ITIP20::ITIP20Calls::totalSupply(_)
                 | ITIP20::ITIP20Calls::supplyCap(_)
                 | ITIP20::ITIP20Calls::transferPolicyId(_)
+                | ITIP20::ITIP20Calls::transferPolicy(_)
                 | ITIP20::ITIP20Calls::paused(_)
                 | ITIP20::ITIP20Calls::logoURI(_)
                 | ITIP20::ITIP20Calls::quoteToken(_)
@@ -335,11 +336,22 @@ mod tests {
     }
 
     #[test]
-    fn role_metadata_reads_are_allowed() {
+    fn public_metadata_reads_are_allowed() {
         let caller = Address::repeat_byte(0x11);
         let account = Address::repeat_byte(0x22);
         let rules = rules();
 
+        for spec in [TempoHardfork::T13, TempoHardfork::T14] {
+            assert!(matches!(
+                admit_at(
+                    &rules,
+                    &ITIP20::transferPolicyCall {}.abi_encode(),
+                    caller,
+                    spec
+                ),
+                CallCheck::Continue
+            ));
+        }
         assert_allowed(&rules, ITIP20::BURN_AT_ROLECall {}, caller);
 
         assert_allowed(

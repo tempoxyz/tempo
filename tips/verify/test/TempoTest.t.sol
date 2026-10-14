@@ -5,7 +5,7 @@ import { Test } from "forge-std/Test.sol";
 import { Tempo } from "tempo-std/Tempo.sol";
 import { IFeeManager } from "tempo-std/interfaces/IFeeManager.sol";
 import { IStablecoinDEX } from "tempo-std/interfaces/IStablecoinDEX.sol";
-import { ITIP20Token } from "tempo-std/interfaces/ITIP20.sol";
+import { ITIP20, ITIP20Token } from "tempo-std/interfaces/ITIP20.sol";
 import { ITIP20Factory } from "tempo-std/interfaces/ITIP20Factory.sol";
 import { ITIP403Registry } from "tempo-std/interfaces/ITIP403Registry.sol";
 
@@ -47,6 +47,29 @@ contract TempoTest is Tempo, Test {
         if (precompile.code.length == 0) {
             revert MissingPrecompile(name, precompile);
         }
+    }
+
+    /// @dev Seeds pre-T14 storage for USD fixtures that exercise legacy policy IDs.
+    /// Preserves balances, metadata, supply, cap, and pause state. Legacy tokens are unchanged.
+    function _seedLegacyPolicyToken(ITIP20 token) internal {
+        if (token.transferPolicyId() != type(uint64).max) return;
+
+        address addr = address(token);
+        uint256 supply = token.totalSupply();
+        uint256 cap = token.supplyCap();
+        address quote = address(token.quoteToken());
+        address nextQuote = address(token.nextQuoteToken());
+        bool paused = token.paused();
+
+        vm.store(addr, bytes32(uint256(4)), bytes32("USD") | bytes32(uint256(6)));
+        vm.store(addr, bytes32(uint256(6)), bytes32(uint256(uint160(quote))));
+        vm.store(addr, bytes32(uint256(7)), bytes32(uint256(uint160(nextQuote))));
+        vm.store(addr, bytes32(uint256(8)), bytes32(supply));
+        vm.store(addr, bytes32(uint256(12)), bytes32(uint256(paused ? 1 : 0)));
+        vm.store(addr, bytes32(uint256(13)), bytes32(cap));
+        // Restore the pre-T14 allow-all binding and clear the token-specific registration.
+        vm.store(TIP403_REGISTRY, keccak256(abi.encode(addr, uint256(4))), bytes32((uint256(1) << 64) | 1));
+        vm.store(TIP403_REGISTRY, keccak256(abi.encode(addr, uint256(5))), bytes32(0));
     }
 
     function setUp() public virtual {
