@@ -75,13 +75,16 @@ install_sccache() {
 
 configure_build_cache() {
   # Every orb shares one sccache directory on the Archil disk that .agents/resume mounts. The
-  # wrapper compiles without sccache while the disk is not mounted, e.g. during this setup.
-  cat >"$HOME/.cargo/bin/rustc-archil-sccache" <<EOF
+  # wrapper compiles without sccache while the disk is not mounted, e.g. during this setup. It is
+  # named `sccache` so the cc crate also routes C/C++ builds (rocksdb, jemalloc) through it.
+  local wrapper_dir="$HOME/.cargo/archil-sccache"
+  mkdir -p "$wrapper_dir"
+  cat >"$wrapper_dir/sccache" <<EOF
 #!/bin/sh
-if mountpoint -q "$ARCHIL_MOUNT"; then exec sccache "\$@"; fi
+if mountpoint -q "$ARCHIL_MOUNT"; then exec "$HOME/.cargo/bin/sccache" "\$@"; fi
 exec "\$@"
 EOF
-  chmod +x "$HOME/.cargo/bin/rustc-archil-sccache"
+  chmod +x "$wrapper_dir/sccache"
   mkdir -p "$HOME/.config/sccache"
   cat >"$HOME/.config/sccache/config" <<EOF
 [cache.disk]
@@ -91,7 +94,7 @@ EOF
   # Pin vergen's build timestamp like CI does, so reth-node-core and its dependents hit the cache.
   cat >"$HOME/.cargo/config.toml" <<EOF
 [build]
-rustc-wrapper = "$HOME/.cargo/bin/rustc-archil-sccache"
+rustc-wrapper = "$wrapper_dir/sccache"
 
 [env]
 SOURCE_DATE_EPOCH = "1700000000"
