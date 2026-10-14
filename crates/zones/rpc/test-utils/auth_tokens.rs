@@ -93,21 +93,21 @@ pub(crate) fn sign_keychain_signature(
             eyre::bail!("unsupported keychain version");
         }
     };
-    let primitive = match sign_p256_signature(signing_hash, signing_key)? {
-        TempoSignature::Primitive(primitive) => primitive,
-        TempoSignature::Keychain(_) => unreachable!("primitive signature expected"),
+    let TempoSignature::Primitive(primitive) = sign_p256_signature(signing_hash, signing_key)?
+    else {
+        unreachable!("primitive signature expected");
     };
     let signature = if version == 0x03 {
         TempoSignature::Keychain(KeychainSignature::new_v1(root_account, primitive))
     } else {
         TempoSignature::Keychain(KeychainSignature::new(root_account, primitive))
     };
-    let key_id = match &signature {
-        TempoSignature::Keychain(keychain) => keychain
-            .key_id(&digest)
-            .map_err(|err| eyre::eyre!("inner key recovery failed: {err}"))?,
-        TempoSignature::Primitive(_) => unreachable!("keychain signature expected"),
+    let TempoSignature::Keychain(keychain) = &signature else {
+        unreachable!("keychain signature expected");
     };
+    let key_id = keychain
+        .key_id(&digest)
+        .map_err(|err| eyre::eyre!("inner key recovery failed: {err}"))?;
 
     Ok((signature, key_id))
 }

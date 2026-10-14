@@ -17,10 +17,7 @@ use std::{io, sync::Arc, time::Instant};
 use tempo_contracts::precompiles::account_keychain::IAccountKeychain::{
     KeyInfo, SignatureType as KeyInfoSignatureType,
 };
-use tempo_primitives::transaction::{
-    SignatureType as TempoSignatureType,
-    tt_signature::{KeychainSignature, TempoSignature},
-};
+use tempo_primitives::transaction::tt_signature::{KeychainSignature, TempoSignature};
 use tracing::info;
 
 use crate::{
@@ -330,6 +327,10 @@ pub(crate) async fn authenticate_token(
 
     let signature =
         TempoSignature::from_bytes(&token.signature).map_err(|_| AuthError::InvalidSignature)?;
+    // Zone auth cannot validate configurable owner quorums.
+    if signature.is_multisig() {
+        return Err(AuthError::InvalidSignature.into());
+    }
     let caller = signature
         .recover_signer(&token.digest)
         .map_err(|_| AuthError::InvalidSignature)?;
@@ -353,18 +354,17 @@ async fn validate_keychain_signature(
     keychain_signature: &KeychainSignature,
     digest: &alloy_primitives::B256,
 ) -> Result<alloy_primitives::Address, AuthenticateError> {
+    let expected_signature_type: KeyInfoSignatureType = keychain_signature
+        .signature
+        .primitive_signature_type()
+        .ok_or(AuthError::InvalidSignature)?
+        .into();
     let key_id = keychain_signature
         .key_id(digest)
         .map_err(|_| AuthError::InvalidSignature)?;
     let key_info = api.get_keychain_key(caller, key_id).await?;
 
     validate_keychain_key_info(&key_info)?;
-
-    let expected_signature_type = match keychain_signature.signature.signature_type() {
-        TempoSignatureType::Secp256k1 => KeyInfoSignatureType::Secp256k1,
-        TempoSignatureType::P256 => KeyInfoSignatureType::P256,
-        TempoSignatureType::WebAuthn => KeyInfoSignatureType::WebAuthn,
-    };
 
     if key_info.signatureType != expected_signature_type {
         return Err(AuthError::KeychainSignatureTypeMismatch.into());
@@ -396,17 +396,21 @@ mod tests {
     use crate::{
         RedactedRpcConfig,
         auth::build_token_fields,
-        error::AuthenticateError,
+        error::{AuthError, AuthenticateError},
         handlers::ZoneRpcApi,
         types::{BoxEyreFut, BoxFut, JsonRpcError, JsonRpcResponse, to_raw},
     };
-    use alloy_primitives::{Address, Bytes};
+    use alloy_primitives::{Address, B256, Bytes};
     use axum::http::StatusCode;
     use p256::{ecdsa::SigningKey as P256SigningKey, elliptic_curve::rand_core::OsRng};
     use parking_lot::Mutex;
     use std::collections::HashMap;
     use tempo_contracts::precompiles::account_keychain::IAccountKeychain::{
         KeyInfo, SignatureType as KeyInfoSignatureType,
+    };
+    use tempo_primitives::transaction::{
+        KeychainSignature, MultisigConfig, MultisigOwner, MultisigSignature, PrimitiveSignature,
+        TempoSignature,
     };
 
     #[allow(dead_code)]
@@ -501,6 +505,53 @@ mod tests {
             max_auth_token_validity: crate::auth::DEFAULT_MAX_AUTH_TOKEN_VALIDITY,
             max_response_size: 160 * 1024 * 1024,
             zone_portal: PORTAL,
+        }
+    }
+
+    #[tokio::test]
+    async fn multisig_auth_tokens_are_rejected() {
+        let parent = Address::repeat_byte(0x55);
+        let delegate = Address::repeat_byte(0x66);
+        let now = now_secs();
+        let (fields, _) = build_token_fields(ZONE_ID, CHAIN_ID, now, now + 600);
+        let signature = MultisigSignature::try_new(
+            delegate,
+            MultisigConfig {
+                salt: B256::ZERO,
+                version: 1,
+                threshold: 1,
+                owners: vec![MultisigOwner {
+                    owner: Address::repeat_byte(3),
+                    weight: 1,
+                }],
+            },
+            vec![PrimitiveSignature::default()],
+        )
+        .unwrap();
+        let api = TestApi::with_key_info(
+            parent,
+            delegate,
+            KeyInfo {
+                signatureType: KeyInfoSignatureType::Multisig,
+                keyId: delegate,
+                expiry: u64::MAX,
+                enforceLimits: false,
+                isRevoked: false,
+            },
+        );
+        for signature in [
+            TempoSignature::Multisig(signature.clone()),
+            TempoSignature::Keychain(KeychainSignature::new(parent, signature)),
+        ] {
+            let token = build_token_with_signature(signature, &fields);
+            let error = authenticate_token(&token, &test_config(), &api)
+                .await
+                .expect_err("owner quorum is not verified by Zone auth");
+            assert!(matches!(
+                error,
+                AuthenticateError::Invalid(AuthError::InvalidSignature)
+            ));
+            assert_eq!(error.status_code(), StatusCode::FORBIDDEN);
         }
     }
 

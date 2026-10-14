@@ -1,5 +1,6 @@
 //! Tempo-specific transaction validation errors.
 
+use crate::native_multisig::NativeMultisigError;
 use alloy_evm::error::InvalidTxError;
 use alloy_primitives::{Address, U256};
 use revm::context::result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction};
@@ -11,6 +12,9 @@ use tempo_primitives::transaction::{KeyAuthorizationChainIdError, KeychainVersio
 /// validation errors that occur during transaction processing.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum TempoInvalidTransaction {
+    /// Native account authorization failure.
+    #[error(transparent)]
+    NativeMultisig(#[from] NativeMultisigError),
     /// Standard Ethereum transaction validation error.
     #[error(transparent)]
     EthInvalidTransaction(#[from] InvalidTransaction),
@@ -251,6 +255,13 @@ impl TempoInvalidTransaction {
     /// that may resolve as state advances.
     pub fn is_bad_transaction(&self) -> bool {
         match self {
+            Self::NativeMultisig(error) => matches!(
+                error,
+                NativeMultisigError::OwnerSignatureRecoveryFailed { .. }
+                    | NativeMultisigError::AccountMismatch { .. }
+                    | NativeMultisigError::InvalidSignatureContext
+                    | NativeMultisigError::Quorum(_)
+            ),
             Self::EthInvalidTransaction(eth) => match eth {
                 InvalidTransaction::PriorityFeeGreaterThanMaxFee
                 | InvalidTransaction::CallGasCostMoreThanGasLimit { .. }

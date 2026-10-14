@@ -9,6 +9,7 @@
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256, map::B256Map};
 use reth_trie_common::{DecodedMultiProofV2, EMPTY_ROOT_HASH, HashedPostState, TrieAccount};
 use reth_trie_sparse::{LeafUpdate, RevealableSparseTrie, SparseStateTrie, TrieNodeEpoch};
+use tempo_primitives::account::decode_config_commitment;
 
 /// Fully revealed, root-bound stateless trie.
 #[derive(Debug)]
@@ -226,8 +227,14 @@ impl StatelessSparseTrie {
 }
 
 fn decode_account(value: &[u8], address: Address) -> Result<TrieAccount, StatelessSparseTrieError> {
-    alloy_rlp::decode_exact(value)
+    decode_account_leaf(value)
         .map_err(|_| StatelessSparseTrieError::InvalidAccountValue { account: address })
+}
+
+fn decode_account_leaf(value: &[u8]) -> alloy_rlp::Result<TrieAccount> {
+    let account: TrieAccount = alloy_rlp::decode_exact(value)?;
+    decode_config_commitment(&account.extension, true)?;
+    Ok(account)
 }
 
 fn decode_storage_value(
@@ -240,7 +247,7 @@ fn decode_storage_value(
 }
 
 fn decode_hashed_account(value: &[u8]) -> Result<TrieAccount, StatelessSparseTrieError> {
-    alloy_rlp::decode_exact(value).map_err(|_| StatelessSparseTrieError::InvalidSparseTrie)
+    decode_account_leaf(value).map_err(|_| StatelessSparseTrieError::InvalidSparseTrie)
 }
 
 /// The pinned Reth helper assumes internally consistent paths in a few places.
@@ -303,15 +310,18 @@ mod tests {
             balance: U256::MAX,
             ..Default::default()
         };
-        let encoded = alloy_rlp::encode(account);
-        assert_eq!(decode_account(&encoded, address), Ok(account));
-        assert_eq!(decode_hashed_account(&encoded), Ok(account));
+        let encoded = alloy_rlp::encode(&account);
+        assert_eq!(decode_account(&encoded, address).unwrap(), account);
+        assert_eq!(decode_hashed_account(&encoded).unwrap(), account);
 
         let mut invalid = (0..encoded.len())
             .map(|len| encoded[..len].to_vec())
             .collect::<Vec<_>>();
         for suffix in [&[0][..], &[0x80][..], encoded.as_slice()] {
             invalid.push([encoded.as_slice(), suffix].concat());
+        }
+        for payload in [vec![1; 33], vec![0; 33], vec![0; 32], vec![0; 34]] {
+            invalid.push(alloy_rlp::encode(account.clone().with_extension(payload)));
         }
         for bytes in invalid {
             assert_eq!(

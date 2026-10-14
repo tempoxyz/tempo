@@ -26,6 +26,9 @@ impl NodePrimitives for TempoPrimitives {
     type Receipt = TempoReceipt;
 }
 
+#[cfg(all(test, feature = "evm", feature = "reth-codec"))]
+mod account;
+
 mod ed25519;
 
 mod header;

@@ -431,7 +431,18 @@ async fn test_p2p_listener_failure_stops_node() -> eyre::Result<()> {
     let occupied_listener = TcpListener::bind("127.0.0.1:0")?;
     let p2p_config = leader_p2p_config(occupied_listener.local_addr()?)?;
     let l1_rpc_url = start_chain_id_rpc(1337).await?;
-    let mut zone = ZoneTestNode::start_local_with_p2p(l1_rpc_url.to_string(), p2p_config).await?;
+    let mut zone =
+        match ZoneTestNode::start_local_with_p2p(l1_rpc_url.to_string(), p2p_config).await {
+            Ok(zone) => zone,
+            Err(error) => {
+                // Fatal P2P shutdown can close the runtime before launch finishes subscribing.
+                assert_eq!(
+                    error.to_string(),
+                    "Failed to subscribe to payload builder events: ChannelClosed"
+                );
+                return Ok(());
+            }
+        };
 
     let _exit = tokio::time::timeout(DEFAULT_TIMEOUT, zone.wait_for_node_exit())
         .await

@@ -1,3 +1,4 @@
+use super::ConfigCommitmentWriteGas;
 use alloy::{
     primitives::{Address, B256, Bytes, LogData, U256},
     sol_types::SolInterface,
@@ -39,6 +40,33 @@ scoped_thread_local!(static STORAGE: RefCell<&mut dyn PrecompileStorageProvider>
 pub struct StorageCtx;
 
 impl StorageCtx {
+    /// Reads the already-warm execution caller without charging account access twice.
+    pub fn with_warm_caller_info<T>(
+        &self,
+        address: Address,
+        mut f: impl FnMut(&AccountInfo) -> Result<T>,
+    ) -> Result<T> {
+        let mut result = None;
+        Self::try_with_storage(|s| {
+            s.with_warm_caller_info(address, &mut |info| result = Some(f(info)))
+        })?;
+        result.expect("provider invokes account callback")
+    }
+    /// Reads the account commitment with normal account-access gas.
+    pub fn config_commitment(&self, address: Address) -> Result<B256> {
+        Self::try_with_storage(|s| s.config_commitment(address))
+    }
+
+    /// Writes an authorized commitment using the provider's account journal.
+    pub fn set_config_commitment(
+        &mut self,
+        address: Address,
+        commitment: B256,
+        gas: ConfigCommitmentWriteGas,
+    ) -> Result<()> {
+        Self::try_with_storage(|s| s.set_config_commitment(address, commitment, gas))
+    }
+
     /// Enter storage context. All storage operations must happen within the closure.
     ///
     /// # IMPORTANT

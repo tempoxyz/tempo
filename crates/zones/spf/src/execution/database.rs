@@ -9,7 +9,7 @@ use revm::{
     Database,
     database::states::bundle_state::BundleState,
     primitives::{AddressMap, B256Map, U256Map},
-    state::{AccountInfo, Bytecode},
+    state::{AccountExtension, AccountInfo, Bytecode},
 };
 use tempo_primitives::TempoHeader;
 use zone_precompiles::{L1StateError, L1StorageReader};
@@ -130,6 +130,7 @@ impl Database for WitnessDatabase {
             code_hash: account.code_hash,
             account_id: None,
             code: None,
+            extension: AccountExtension::from_shared(account.extension.into_shared()),
         });
         self.accounts.insert(address, account.clone());
         Ok(account)
@@ -332,7 +333,45 @@ fn storage_unavailable(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reth_trie_common::EMPTY_ROOT_HASH;
+    use reth_primitives_traits::Account as RethAccount;
+    use reth_trie_common::{
+        EMPTY_ROOT_HASH, HashedPostState, LeafNode, Nibbles, TrieAccount, TrieNode,
+    };
+    use tempo_primitives::account::{decode_config_commitment, encode_config_commitment};
+
+    #[test]
+    fn commitment_survives_witness_execution() {
+        let address = Address::repeat_byte(0x42);
+        for commitment in [B256::ZERO, B256::repeat_byte(9)] {
+            let account = TrieAccount {
+                nonce: 7,
+                balance: U256::from(42),
+                ..Default::default()
+            }
+            .with_extension(encode_config_commitment(commitment));
+            let node = TrieNode::Leaf(LeafNode::new(
+                Nibbles::unpack(keccak256(address)),
+                alloy_rlp::encode(account),
+            ));
+            let encoded = Bytes::from(alloy_rlp::encode(node));
+            let root = keccak256(&encoded);
+            let witness = ZoneStateWitness {
+                node_pool: vec![encoded],
+                bytecodes: Vec::new(),
+            };
+            let mut database = WitnessDatabase::from_zone_state_witness(witness, root).unwrap();
+            let info = database.basic(address).unwrap().unwrap();
+            assert_eq!(
+                decode_config_commitment(&info.extension, true),
+                Ok(commitment)
+            );
+            let mut state = HashedPostState::default();
+            state
+                .accounts
+                .insert(keccak256(address), Some(RethAccount::from(info)));
+            assert_eq!(database.state.calculate_state_root(state), Ok(root));
+        }
+    }
 
     #[test]
     fn checkpoint_requires_exact_header_rlp() {
