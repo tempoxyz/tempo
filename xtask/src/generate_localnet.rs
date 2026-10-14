@@ -40,6 +40,7 @@ impl GenerateLocalnet {
 
         // Copy the seed here before genesis_args are consumed.
         let seed = genesis_args.seed;
+        let top_of_block_registry = genesis_args.top_of_block_registry()?;
 
         let (genesis, consensus_config) = genesis_args
             .generate_genesis()
@@ -120,6 +121,14 @@ impl GenerateLocalnet {
         let genesis_dst = output.join("genesis.json");
         std::fs::write(&genesis_dst, &genesis_ser)
             .wrap_err_with(|| format!("failed writing genesis to `{}`", genesis_dst.display()))?;
+        if let Some(address) = top_of_block_registry {
+            let dst = output.join("top-of-block-registry");
+            std::fs::write(&dst, address.to_string())
+                .wrap_err_with(|| format!("failed writing `{}`", dst.display()))?;
+        }
+        let top_of_block_arg = top_of_block_registry
+            .map(|address| format!(" \\\n--consensus.top-of-block-registry {address}"))
+            .unwrap_or_default();
 
         for (validator, config) in all_configs.into_iter() {
             let target_dir = validator.dst_dir(&output);
@@ -179,7 +188,7 @@ impl GenerateLocalnet {
                 \\\n--port {execution_p2p_port} \
                 \\\n--discovery.port {execution_p2p_port} \
                 \\\n--p2p-secret-key {execution_p2p_secret_key} \
-                \\\n--authrpc.port {authrpc_port}",
+                \\\n--authrpc.port {authrpc_port}{top_of_block_arg}",
                 signing_key = signing_key_dst.display(),
                 signing_key_secret = LOCALNET_SIGNING_KEY_SECRET,
                 signing_share = signing_share_dst.display(),

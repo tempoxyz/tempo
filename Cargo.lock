@@ -13802,6 +13802,7 @@ version = "1.16.0"
 dependencies = [
  "alloy",
  "alloy-consensus",
+ "alloy-eips",
  "alloy-genesis",
  "alloy-network",
  "alloy-primitives",
@@ -13814,6 +13815,7 @@ dependencies = [
  "alloy-signer-local",
  "alloy-signer-trezor",
  "alloy-sol-types",
+ "axum",
  "base64 0.22.1",
  "blake3",
  "clap",
@@ -13821,6 +13823,7 @@ dependencies = [
  "commonware-consensus",
  "commonware-cryptography",
  "commonware-math",
+ "commonware-p2p",
  "commonware-runtime",
  "commonware-utils",
  "eyre",

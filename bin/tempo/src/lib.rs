@@ -93,6 +93,11 @@ use tracing::{debug, info, info_span, warn, warn_span};
 #[cfg(all(feature = "localnet", unix))]
 use nix as _;
 
+// Used by the `tempo-tob-operator` binary.
+use alloy_eips as _;
+use axum as _;
+use commonware_p2p as _;
+
 const DEFAULT_DEV_ZONE_FACTORY_OWNER: Address =
     alloy_primitives::address!("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
 

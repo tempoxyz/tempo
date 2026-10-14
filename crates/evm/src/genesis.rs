@@ -98,6 +98,28 @@ pub fn deploy_permit2(evm: &mut GenesisEvm) -> eyre::Result<()> {
 /// Salt for deploying the top-of-block registry through the Arachnid CREATE2 factory.
 pub const TOP_OF_BLOCK_REGISTRY_SALT: B256 = B256::ZERO;
 
+fn top_of_block_registry_init_code(owner: Address, window_ms: u64) -> Bytes {
+    TopOfBlockRegistry::BYTECODE
+        .iter()
+        .copied()
+        .chain(
+            TopOfBlockRegistry::constructorCall {
+                initialOwner: owner,
+                windowMs_: window_ms,
+            }
+            .abi_encode(),
+        )
+        .collect()
+}
+
+/// Address at which [`deploy_top_of_block_registry`] deploys the registry.
+pub fn top_of_block_registry_address(owner: Address, window_ms: u64) -> Address {
+    ARACHNID_CREATE2_FACTORY_ADDRESS.create2_from_code(
+        TOP_OF_BLOCK_REGISTRY_SALT,
+        top_of_block_registry_init_code(owner, window_ms),
+    )
+}
+
 /// Deploys a [`TopOfBlockRegistry`] owned by `owner` through the Arachnid CREATE2 factory and
 /// registers `operators` as the owner. Returns the registry address.
 ///
@@ -108,23 +130,11 @@ pub fn deploy_top_of_block_registry(
     window_ms: u64,
     operators: &[TopOfBlockRegistry::Operator],
 ) -> eyre::Result<Address> {
-    let init_code: Bytes = TopOfBlockRegistry::BYTECODE
-        .iter()
-        .copied()
-        .chain(
-            TopOfBlockRegistry::constructorCall {
-                initialOwner: owner,
-                windowMs_: window_ms,
-            }
-            .abi_encode(),
-        )
-        .collect();
-    let address =
-        ARACHNID_CREATE2_FACTORY_ADDRESS.create2_from_code(TOP_OF_BLOCK_REGISTRY_SALT, &init_code);
+    let address = top_of_block_registry_address(owner, window_ms);
     let calldata: Bytes = TOP_OF_BLOCK_REGISTRY_SALT
         .iter()
-        .chain(init_code.iter())
         .copied()
+        .chain(top_of_block_registry_init_code(owner, window_ms))
         .collect();
 
     let mut call = |caller, contract, data: Bytes| -> eyre::Result<()> {
