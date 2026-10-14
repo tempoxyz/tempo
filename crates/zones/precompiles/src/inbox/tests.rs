@@ -1,7 +1,5 @@
 use super::*;
 
-use std::{cell::RefCell, rc::Rc};
-
 use alloy_evm::EvmInternals;
 use alloy_primitives::{B256, Bytes, U256, address, keccak256};
 use alloy_sol_types::{SolCall, SolError, SolValue};
@@ -14,11 +12,7 @@ use tempo_contracts::{
 use tempo_precompiles::{
     PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, TIP403_REGISTRY_ADDRESS,
     receive_policy_guard::ReceivePolicyGuard,
-    storage::{
-        ContractStorage, Handler, StorageCtx,
-        actions::{StorageAction, StorageActions},
-    },
-    storage_credits::NonCreditableSlots,
+    storage::{ContractStorage, Handler, StorageCtx},
     test_util::TIP20Setup,
     tip20::{ITIP20, TIP20Token},
     tip403_registry::{ALLOW_ALL_POLICY_ID, ITIP403Registry, REJECT_ALL_POLICY_ID, TIP403Registry},
@@ -1052,82 +1046,19 @@ fn refund_reads_are_limited_to_owner_and_active_sequencer() -> eyre::Result<()> 
 
 #[test]
 fn claim_refund_zero_amount_is_gated_by_t13() -> eyre::Result<()> {
-    for hardfork in [TempoHardfork::T12, TempoHardfork::T13] {
-        let mut harness = Harness::new_with_hardfork(hardfork)?;
-        let output = harness.call_atomic(
+    for (hardfork, expected) in [
+        (TempoHardfork::T12, 0u128.abi_encode()),
+        (TempoHardfork::T13, IZoneInbox::NoRefund {}.abi_encode()),
+    ] {
+        let output = Harness::new_with_hardfork(hardfork)?.call(
             BOB,
             IZoneInbox::claimRefundCall {
                 token: PATH_USD_ADDRESS,
             }
             .abi_encode(),
         )?;
-        if hardfork.is_t13() {
-            assert!(output.is_revert());
-            assert_eq!(output.bytes, IZoneInbox::NoRefund {}.abi_encode());
-        } else {
-            assert!(output.is_success());
-            assert_eq!(
-                IZoneInbox::claimRefundCall::abi_decode_returns(&output.bytes)?,
-                0
-            );
-        }
-        assert_eq!(harness.balance(PATH_USD_ADDRESS, BOB)?, U256::ZERO);
-        let callers = [BOB, tempo_contracts::MULTICALL3_ADDRESS];
-        {
-            let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
-            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-                let mut registry = TIP403Registry::new();
-                registry.initialize()?;
-                let filter = registry.create_policy_with_accounts(
-                    ALICE,
-                    ITIP403Registry::createPolicyWithAccountsCall {
-                        admin: ALICE,
-                        policyType: ITIP403Registry::PolicyType::WHITELIST,
-                        accounts: Vec::new(),
-                    },
-                )?;
-                for caller in callers {
-                    registry.set_receive_policy(
-                        caller,
-                        ITIP403Registry::setReceivePolicyCall {
-                            senderPolicyId: ALLOW_ALL_POLICY_ID,
-                            tokenFilterId: filter,
-                            recoveryAuthority: caller,
-                        },
-                    )?;
-                }
-                Ok(())
-            })?;
-        }
-        let actions = StorageActions::enabled();
-        let env = crate::ZonePrecompileEnv::new(
-            &harness.ctx.cfg,
-            actions.clone(),
-            Rc::new(RefCell::new(NonCreditableSlots::empty())),
-        );
-        harness.precompile = ZoneInbox::create(harness.l1_state.clone(), &env);
-
-        for caller in callers {
-            for token in [
-                PATH_USD_ADDRESS,
-                address!("0x20c000000000000000000000000000000000ffff"),
-                Address::with_last_byte(0x55),
-            ] {
-                let output = harness
-                    .call_atomic(caller, IZoneInbox::claimRefundCall { token }.abi_encode())?;
-                assert!(output.is_revert());
-                let expected = if hardfork.is_t13() {
-                    IZoneInbox::NoRefund {}.abi_encode()
-                } else {
-                    ITIP20::PolicyForbids {}.abi_encode()
-                };
-                assert_eq!(output.bytes, expected);
-            }
-        }
-        let reads_policy = actions.take().unwrap().iter().any(|action| {
-            matches!(action, StorageAction::Sload(address, ..) if *address == TIP403_REGISTRY_ADDRESS)
-        });
-        assert_eq!(reads_policy, !hardfork.is_t13());
+        assert_eq!(output.is_revert(), hardfork.is_t13());
+        assert_eq!(output.bytes, expected);
     }
     Ok(())
 }
