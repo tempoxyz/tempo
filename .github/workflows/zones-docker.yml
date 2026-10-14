@@ -358,6 +358,9 @@ jobs:
     outputs:
       artifact_id: ${{ steps.images.outputs.artifact-id }}
       builder_ref: ${{ steps.eif_builder.outputs.ref }}
+      version: ${{ steps.release-version.outputs.version }}
+      is_release: ${{ steps.release-version.outputs.is_release }}
+      is_stable: ${{ steps.release-version.outputs.is_stable }}
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
@@ -368,17 +371,62 @@ jobs:
           ref: ${{ needs.resolve-production-build-inputs.outputs.commit_sha }}
           persist-credentials: false
           submodules: recursive
+          fetch-depth: ${{ startsWith(github.ref, 'refs/tags/zones/v') && '0' || '1' }}
 
       - uses: tempoxyz/gh-actions/vendor/depot/setup-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
 
-      - name: Resolve Zones image version
+      - name: Validate Zones image release tag
         id: release-version
         env:
-          TAG: ${{ github.ref_name }}
+          TAG_REF: ${{ github.ref }}
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/zones/v* ]]; then
-            echo "version=${TAG#zones/}" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+
+          # Manual builds from unrelated tags may publish a SHA tag, but must
+          # never publish a Zones release or stable tag.
+          if [[ "$TAG_REF" != refs/tags/zones/v* ]]; then
+            exit 0
           fi
+
+          tag="${TAG_REF#refs/tags/}"
+          if ! [[ "$tag" =~ ^zones/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+            echo "Expected a Zones release tag: zones/vX.Y.Z[-prerelease]" >&2
+            exit 1
+          fi
+
+          commit_sha="$(git rev-parse HEAD)"
+          tag_commit="$(git rev-parse --verify "refs/tags/$tag^{commit}")"
+          if [[ "$tag_commit" != "$commit_sha" || ! "$commit_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Release tag $tag does not resolve to checked-out commit $commit_sha" >&2
+            exit 1
+          fi
+          if ! git show-ref --verify --quiet refs/remotes/origin/main; then
+            echo "Protected main was not fetched" >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$commit_sha" refs/remotes/origin/main; then
+            echo "Release tag $tag does not point to a commit on main" >&2
+            exit 1
+          fi
+
+          cargo_ver="$(sed -n '/^\[package\]/,/^\[/ s/^version = "\([^"]*\)"$/\1/p' bin/tempo-zone/Cargo.toml)"
+          if [[ -z "$cargo_ver" ]]; then
+            echo "Could not read tempo-zone version" >&2
+            exit 1
+          fi
+          version="${tag#zones/v}"
+          if [[ "$version" != "$cargo_ver" && "$version" != "$cargo_ver-"* ]]; then
+            echo "Tag $tag does not match tempo-zone version $cargo_ver" >&2
+            exit 1
+          fi
+
+          {
+            echo "version=v$version"
+            echo "is_release=true"
+            if [[ "$version" != *-* ]]; then
+              echo "is_stable=true"
+            fi
+          } >> "$GITHUB_OUTPUT"
 
       - name: Docker metadata for tempo-zone-xtask
         id: meta-tempo-zone-xtask
@@ -388,13 +436,14 @@ jobs:
             ${{ env.REGISTRY }}/tempo-zone-xtask
             docker.io/tempoxyz/tempo-zone-xtask
           bake-target: tempo-zone-xtask
+          flavor: latest=false
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}},value=${{ steps.release-version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/zones/v') }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/zones/v') }}
-            type=semver,pattern={{major}},value=${{ steps.release-version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/zones/v') }}
-            type=raw,value=stable,enable=${{ github.ref_type == 'tag' && !contains(github.ref_name, '-') }}
+            type=semver,pattern={{version}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.is_release == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.is_release == 'true' }}
+            type=semver,pattern={{major}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.is_release == 'true' }}
+            type=raw,value=stable,enable=${{ steps.release-version.outputs.is_stable == 'true' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
             type=sha,prefix=sha-
@@ -408,13 +457,14 @@ jobs:
             ${{ env.REGISTRY }}/tempo-zone-prover
             docker.io/tempoxyz/tempo-zone-prover
           bake-target: tempo-zone-prover
+          flavor: latest=false
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}},value=${{ steps.release-version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/zones/v') }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/zones/v') }}
-            type=semver,pattern={{major}},value=${{ steps.release-version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/zones/v') }}
-            type=raw,value=stable,enable=${{ github.ref_type == 'tag' && !contains(github.ref_name, '-') }}
+            type=semver,pattern={{version}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.is_release == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.is_release == 'true' }}
+            type=semver,pattern={{major}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.is_release == 'true' }}
+            type=raw,value=stable,enable=${{ steps.release-version.outputs.is_stable == 'true' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
             type=sha,prefix=sha-
@@ -428,13 +478,14 @@ jobs:
             ${{ env.REGISTRY }}/tempo-zone-prover-utils
             docker.io/tempoxyz/tempo-zone-prover-utils
           bake-target: tempo-zone-prover-utils
+          flavor: latest=false
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}},value=${{ steps.release-version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/zones/v') }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/zones/v') }}
-            type=semver,pattern={{major}},value=${{ steps.release-version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/zones/v') }}
-            type=raw,value=stable,enable=${{ github.ref_type == 'tag' && !contains(github.ref_name, '-') }}
+            type=semver,pattern={{version}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.is_release == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.is_release == 'true' }}
+            type=semver,pattern={{major}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.is_release == 'true' }}
+            type=raw,value=stable,enable=${{ steps.release-version.outputs.is_stable == 'true' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
             type=sha,prefix=sha-
@@ -684,15 +735,6 @@ jobs:
         with:
           username: ${{ secrets.DOCKER_HUB_USER }}
           password: ${{ secrets.DOCKER_HUB_TOKEN }}
-      - name: Resolve Zones image version
-        id: release-version
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/zones/v* ]]; then
-            echo "version=${TAG#zones/}" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Docker metadata for tempo-zone-xtask
         id: meta-tempo-zone-xtask
         uses: tempoxyz/gh-actions/vendor/docker/metadata-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
@@ -701,13 +743,14 @@ jobs:
             ${{ env.REGISTRY }}/tempo-zone-xtask
             docker.io/tempoxyz/tempo-zone-xtask
           bake-target: tempo-zone-xtask
+          flavor: latest=false
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}},value=${{ steps.release-version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/zones/v') }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/zones/v') }}
-            type=semver,pattern={{major}},value=${{ steps.release-version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/zones/v') }}
-            type=raw,value=stable,enable=${{ github.ref_type == 'tag' }}
+            type=semver,pattern={{version}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
+            type=semver,pattern={{major}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
+            type=raw,value=stable,enable=${{ needs.build-and-push.outputs.is_stable == 'true' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
             type=sha,prefix=sha-
@@ -721,13 +764,14 @@ jobs:
             ${{ env.REGISTRY }}/tempo-zone-prover
             docker.io/tempoxyz/tempo-zone-prover
           bake-target: tempo-zone-prover
+          flavor: latest=false
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}},value=${{ steps.release-version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/zones/v') }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/zones/v') }}
-            type=semver,pattern={{major}},value=${{ steps.release-version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/zones/v') }}
-            type=raw,value=stable,enable=${{ github.ref_type == 'tag' }}
+            type=semver,pattern={{version}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
+            type=semver,pattern={{major}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
+            type=raw,value=stable,enable=${{ needs.build-and-push.outputs.is_stable == 'true' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
             type=sha,prefix=sha-
@@ -741,13 +785,14 @@ jobs:
             ${{ env.REGISTRY }}/tempo-zone-prover-utils
             docker.io/tempoxyz/tempo-zone-prover-utils
           bake-target: tempo-zone-prover-utils
+          flavor: latest=false
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}},value=${{ steps.release-version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/zones/v') }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/zones/v') }}
-            type=semver,pattern={{major}},value=${{ steps.release-version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/zones/v') }}
-            type=raw,value=stable,enable=${{ github.ref_type == 'tag' }}
+            type=semver,pattern={{version}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
+            type=semver,pattern={{major}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
+            type=raw,value=stable,enable=${{ needs.build-and-push.outputs.is_stable == 'true' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
             type=sha,prefix=sha-
@@ -1038,15 +1083,6 @@ jobs:
           username: ${{ secrets.DOCKER_HUB_USER }}
           password: ${{ secrets.DOCKER_HUB_TOKEN }}
 
-      - name: Resolve Zones image version
-        id: release-version
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/zones/v* ]]; then
-            echo "version=${TAG#zones/}" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Docker metadata for promoted tempo-zone
         id: meta-tempo-zone
         uses: tempoxyz/gh-actions/vendor/docker/metadata-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
@@ -1054,13 +1090,14 @@ jobs:
           images: |
             ${{ env.REGISTRY }}/tempo-zone
             docker.io/tempoxyz/tempo-zone
+          flavor: latest=false
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ inputs.nightly == true }}
-            type=semver,pattern={{version}},value=${{ steps.release-version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/zones/v') }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/zones/v') }}
-            type=semver,pattern={{major}},value=${{ steps.release-version.outputs.version }},enable=${{ startsWith(github.ref, 'refs/tags/zones/v') }}
-            type=raw,value=stable,enable=${{ github.ref_type == 'tag' }}
+            type=semver,pattern={{version}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
+            type=semver,pattern={{major}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
+            type=raw,value=stable,enable=${{ needs.build-and-push.outputs.is_stable == 'true' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
             type=sha,prefix=sha-
