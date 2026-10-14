@@ -115,8 +115,9 @@ mount_archil() {
   # Lets the warm build read and fill the shared sccache cache. Reuses .agents/resume, which is
   # idempotent and skips the mount when Archil is not configured.
   if findmnt -n "$ARCHIL_MOUNT" >/dev/null; then return; fi
-  .agents/resume
+  # Set before resume so a failure after a successful mount (e.g. chown) still unmounts.
   trap unmount_archil EXIT
+  .agents/resume
 }
 
 unmount_archil() {
