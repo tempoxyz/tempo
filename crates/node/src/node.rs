@@ -48,7 +48,7 @@ use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_payload_builder::{
     DEFAULT_BUILD_TIME_MULTIPLIER, TempoPayloadBuilder, TempoPayloadBuilderConfig,
 };
-use tempo_payload_types::TempoPayloadAttributes;
+use tempo_payload_types::{TempoPayloadAttributes, TopOfBlockLane};
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{
     AA2dPool, AA2dPoolConfig, AddressFilter, TempoTransactionPool,
@@ -175,6 +175,7 @@ impl TempoNodeArgs {
             enable_prewarming: !self.builder_disable_prewarming,
             enable_parallel: self.builder_parallel,
             build_time_multiplier: self.builder_build_time_multiplier,
+            top_of_block: TopOfBlockLane::default(),
         }
     }
 }
@@ -268,6 +269,12 @@ impl TempoNode {
     /// The handle works after the node is launched.
     pub fn executed_state(&self) -> ExecutedState {
         self.executed_state.clone()
+    }
+
+    /// Returns the top-of-block lane whose transactions this node's payload
+    /// builder executes before pool transactions.
+    pub fn top_of_block_lane(&self) -> TopOfBlockLane {
+        self.payload_builder_builder.top_of_block.clone()
     }
 
     /// Announces `tempo/1` for finalization certificate gossip on every session.
@@ -483,7 +490,7 @@ where
     fn components_builder(&self) -> Self::ComponentsBuilder {
         Self::components(
             self.pool_builder.clone(),
-            self.payload_builder_builder,
+            self.payload_builder_builder.clone(),
             self.network_builder.clone(),
         )
     }
@@ -843,7 +850,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct TempoPayloadBuilderBuilder {
     /// Enable state provider metrics for the payload builder.
@@ -855,6 +862,8 @@ pub struct TempoPayloadBuilderBuilder {
     /// Initial estimate of total replayable payload build work divided by work
     /// at transaction cutoff.
     pub build_time_multiplier: f64,
+    /// Privileged transactions that consensus hands to the payload builder.
+    pub top_of_block: TopOfBlockLane,
 }
 
 impl Default for TempoPayloadBuilderBuilder {
@@ -864,6 +873,7 @@ impl Default for TempoPayloadBuilderBuilder {
             enable_prewarming: true,
             enable_parallel: false,
             build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
+            top_of_block: TopOfBlockLane::default(),
         }
     }
 }
@@ -904,7 +914,8 @@ where
                 enable_parallel: self.enable_parallel,
                 build_time_multiplier: self.build_time_multiplier,
             },
-        ))
+        )
+        .with_top_of_block(self.top_of_block))
     }
 }
 

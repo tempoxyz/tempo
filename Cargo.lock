@@ -14388,6 +14388,7 @@ dependencies = [
 name = "tempo-payload-types"
 version = "1.16.0"
 dependencies = [
+ "alloy-consensus",
  "alloy-eips",
  "alloy-primitives",
  "alloy-rlp",
@@ -14401,6 +14402,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempo-primitives",
+ "thiserror 2.0.21",
  "tracing",
 ]
 

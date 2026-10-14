@@ -24,7 +24,7 @@ use crate::{
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
     prewarming::{BestTransactionsPrewarming, PrewarmedTransaction, PrewarmingExecutionContext},
 };
-use alloy_consensus::{BlockHeader as _, TxReceipt};
+use alloy_consensus::{BlockHeader as _, Transaction as _, TxReceipt};
 use alloy_eips::{eip1559::calculate_block_gas_limit, eip2718::Encodable2718};
 use alloy_primitives::{Address, B256, Bloom, U256};
 use alloy_rlp::Encodable;
@@ -47,7 +47,9 @@ use reth_evm::{
 use reth_execution_types::BlockExecutionOutput;
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
 use reth_payload_primitives::BuiltPayloadExecutedBlock;
-use reth_primitives_traits::{RecoveredBlock, transaction::error::InvalidTransactionError};
+use reth_primitives_traits::{
+    Recovered, RecoveredBlock, transaction::error::InvalidTransactionError,
+};
 use reth_revm::{
     State, context::Block, database::StateProviderDatabase,
     db::states::bundle_state::BundleRetention,
@@ -58,10 +60,13 @@ use reth_storage_api::{
 };
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
-    BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
+    BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionOrigin,
+    TransactionPool, ValidPoolTransaction,
     error::InvalidPoolTransactionError,
+    identifier::{SenderId, TransactionId},
 };
 use std::{
+    collections::VecDeque,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -73,12 +78,15 @@ use tempo_evm::{
     StorageActionReplayError, TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess,
     TempoTxResult, evm::TempoEvm,
 };
-use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes, ValidationLatencyWorkload};
+use tempo_payload_types::{
+    TempoBuiltPayload, TempoPayloadAttributes, TopOfBlockLane, ValidationLatencyWorkload,
+};
 use tempo_precompiles::{storage::StorageActions, validator_config_v2::ValidatorConfigV2};
 use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
 use tempo_transaction_pool::{
-    StateAwareBestTransactions, TempoTransactionPool, best::BestTransaction,
-    transaction::TempoPoolTransactionError,
+    StateAwareBestTransactions, TempoTransactionPool,
+    best::BestTransaction,
+    transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use tokio::sync::oneshot;
 use tracing::{Level, Span, debug, debug_span, info, instrument, trace, warn};
@@ -130,6 +138,53 @@ impl PayloadTransactions {
     }
 }
 
+/// Transactions of a block: the taken top-of-block lane first, then the pool.
+///
+/// The lane bypasses prewarming so its order holds in every builder mode.
+struct BlockTransactions {
+    top_of_block: VecDeque<BestTransaction>,
+    pool: PayloadTransactions,
+    /// Whether the last yielded transaction came from the top-of-block lane.
+    last_from_top_of_block: bool,
+}
+
+impl BlockTransactions {
+    fn next(&mut self) -> Option<PrewarmedTransaction> {
+        self.last_from_top_of_block = !self.top_of_block.is_empty();
+        match self.top_of_block.pop_front() {
+            Some(tx) => Some(PrewarmedTransaction::without_replay(tx)),
+            None => self.pool.next(),
+        }
+    }
+
+    /// Marks the last yielded transaction invalid. Lane transactions are not in
+    /// the pool, so they are only skipped.
+    fn mark_invalid(&mut self, tx: &PrewarmedTransaction, kind: InvalidPoolTransactionError) {
+        if !self.last_from_top_of_block {
+            self.pool.mark_invalid(tx, kind);
+        }
+    }
+
+    fn on_new_result(&mut self, result: &TempoTxResult) {
+        self.pool.on_new_result(result);
+    }
+}
+
+/// Wraps a transaction taken from the top-of-block lane like a pool transaction.
+fn top_of_block_transaction(tx: Recovered<TempoTxEnvelope>) -> BestTransaction {
+    let nonce = tx.nonce();
+    Arc::new(ValidPoolTransaction {
+        transaction: TempoPooledTransaction::new(tx),
+        // Lane transactions are never handed to the pool, so their sender id
+        // only has to be well-formed.
+        transaction_id: TransactionId::new(SenderId::from(u64::MAX), nonce),
+        propagate: false,
+        timestamp: Instant::now(),
+        origin: TransactionOrigin::Private,
+        authority_ids: None,
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct TempoPayloadBuilder<Provider> {
     pool: TempoTransactionPool<Provider>,
@@ -144,6 +199,9 @@ pub struct TempoPayloadBuilder<Provider> {
     /// This lets the builder reserve time for non-interruptible
     /// `builder_finish` without a fixed duration.
     build_time_multiplier: Arc<AtomicU64>,
+    /// Privileged transactions executed before pool transactions when this
+    /// node proposes.
+    top_of_block: TopOfBlockLane,
 }
 
 /// Runtime settings for the Tempo payload builder.
@@ -209,7 +267,15 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             build_time_multiplier: Arc::new(AtomicU64::new(scaled_build_time_multiplier(
                 config.build_time_multiplier,
             ))),
+            top_of_block: TopOfBlockLane::default(),
         }
+    }
+
+    /// Executes the transactions of `lane` before pool transactions when
+    /// consensus opened it for the round being built.
+    pub fn with_top_of_block(mut self, lane: TopOfBlockLane) -> Self {
+        self.top_of_block = lane;
+        self
     }
 
     fn build_time_multiplier(&self) -> u64 {
@@ -240,7 +306,7 @@ where
         &self,
         args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
     ) -> Result<BuildOutcome<Self::BuiltPayload>, PayloadBuilderError> {
-        self.build_payload(args, |attributes| {
+        self.build_payload(args, true, |attributes| {
             self.pool.best_transactions_with_attributes(attributes)
         })
     }
@@ -265,6 +331,7 @@ where
                 Default::default(),
                 Default::default(),
             ),
+            false,
             |_| core::iter::empty(),
         )?
         .into_payload()
@@ -289,6 +356,7 @@ where
     fn build_payload<Txs>(
         &self,
         args: BuildArguments<TempoPayloadAttributes, TempoBuiltPayload>,
+        take_top_of_block: bool,
         best_txs: impl FnOnce(BestTransactionsAttributes) -> Txs,
     ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError>
     where
@@ -464,7 +532,7 @@ where
             executor.evm().evm_env(),
             self.config.enable_parallel,
         );
-        let mut best_txs = if self.config.enable_prewarming {
+        let pool_txs = if self.config.enable_prewarming {
             if self.config.enable_parallel {
                 PayloadTransactions::Parallel(BestTransactionsPrewarming::new(
                     prewarm_ctx,
@@ -482,11 +550,34 @@ where
             .pool_fetch_duration_seconds
             .record(pool_fetch_start.elapsed());
 
+        // Take the top-of-block lane after the start-of-block system work and
+        // after pool prewarming has started. Waiting for the lane's window is
+        // proposer-only idle time, which validators do not repeat.
+        let top_of_block_wait_start = Instant::now();
+        let top_of_block = match attributes.consensus_context() {
+            Some(context) if take_top_of_block => {
+                self.top_of_block
+                    .take(context.epoch, context.view, attributes.timestamp_millis())
+            }
+            _ => Vec::new(),
+        };
+        let top_of_block_wait = top_of_block_wait_start.elapsed();
+        let top_of_block_taken = top_of_block.len();
+        let mut top_of_block_included = 0u64;
+        let mut best_txs = BlockTransactions {
+            top_of_block: top_of_block
+                .into_iter()
+                .map(top_of_block_transaction)
+                .collect(),
+            pool: pool_txs,
+            last_from_top_of_block: false,
+        };
+
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
         let mut skipped_oversized_block = false;
         let mut invalid_pool_transaction_execution_attempts = 0u64;
-        let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
+        let mut normal_transaction_fill_idle_elapsed = top_of_block_wait;
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
@@ -496,7 +587,11 @@ where
         let block_build_stop_reason = loop {
             check_cancel!();
 
-            if let Some(build_budget) = payload_build_budget {
+            // The top-of-block prefix is reserved and bounded by operator
+            // limits, so the build budget only cuts pool transactions.
+            if let Some(build_budget) = payload_build_budget
+                && best_txs.top_of_block.is_empty()
+            {
                 let elapsed = start.elapsed();
                 let current_workload = ValidationLatencyWorkload::new(
                     cumulative_gas_used,
@@ -701,6 +796,9 @@ where
 
             trace!("Transaction executed");
 
+            if best_txs.last_from_top_of_block {
+                top_of_block_included += 1;
+            }
             pool_transactions_included += 1;
             estimated_rlp_block_size += tx_rlp_length;
             let receipt = executor.receipts().last().unwrap().clone();
@@ -1000,6 +1098,9 @@ where
             parallel_transactions_executed,
             invalid_pool_transaction_execution_attempts,
             pool_transactions_inclusion_ratio,
+            top_of_block_taken,
+            top_of_block_included,
+            ?top_of_block_wait,
             total_transactions,
             ?elapsed,
             ?validation_work_duration,
