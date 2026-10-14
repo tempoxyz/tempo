@@ -103,16 +103,23 @@ fn native_fixture() -> TestHandlerEvm {
 #[test]
 fn native_registration_charges_empty_sender_creation_once() {
     let gas_params = tempo_gas_params(TempoHardfork::T14);
-    for (nonce_key, funded) in [
-        (U256::ZERO, false),
-        (U256::from(1), false),
-        (TEMPO_EXPIRING_NONCE_KEY, false),
-        (TEMPO_EXPIRING_NONCE_KEY, true),
+    for (nonce_key, funded, create) in [
+        (U256::ZERO, false, false),
+        (U256::from(1), false, false),
+        (U256::from(1), false, true),
+        (U256::from(1), true, false),
+        (TEMPO_EXPIRING_NONCE_KEY, false, false),
+        (TEMPO_EXPIRING_NONCE_KEY, false, true),
+        (TEMPO_EXPIRING_NONCE_KEY, true, false),
     ] {
         let mut test = native_fixture();
         let account = test.evm.ctx.tx.caller;
         test.evm.ctx.tx.nonce = 0;
-        test.evm.ctx.tx.tempo_tx_env.as_mut().unwrap().nonce_key = nonce_key;
+        let aa = test.evm.ctx.tx.tempo_tx_env.as_mut().unwrap();
+        aa.nonce_key = nonce_key;
+        if create {
+            aa.aa_calls[0].to = TxKind::Create;
+        }
         if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
             test.evm.ctx.tx.fee_payer = Some(Some(Address::repeat_byte(0x45)));
         }
@@ -133,7 +140,9 @@ fn native_registration_charges_empty_sender_creation_once() {
             .config();
         let proof_and_write =
             tempo_precompiles::native_multisig::initial_account_proof_gas(config) + 20_000;
-        let creates_account = nonce_key == TEMPO_EXPIRING_NONCE_KEY && !funded;
+        // Only `nonce_key == 0` pays for the account through the `nonce == 0` charge; a 2D or
+        // expiring first-call CREATE pays for it during state validation.
+        let creates_account = !nonce_key.is_zero() && !funded && !create;
         let actual = test.validate_initial_tx_gas();
         assert_eq!(
             actual.initial_regular_gas - base.initial_regular_gas,
@@ -143,7 +152,7 @@ fn native_registration_charges_empty_sender_creation_once() {
                 } else {
                     0
                 },
-            "nonce_key={nonce_key}, funded={funded}"
+            "nonce_key={nonce_key}, funded={funded}, create={create}"
         );
         assert_eq!(
             actual.initial_state_gas - base.initial_state_gas,
@@ -152,7 +161,7 @@ fn native_registration_charges_empty_sender_creation_once() {
             } else {
                 0
             },
-            "nonce_key={nonce_key}, funded={funded}"
+            "nonce_key={nonce_key}, funded={funded}, create={create}"
         );
     }
 }

@@ -238,10 +238,16 @@ pub fn validate_state<J: JournalTr>(
             extra_gas += initial_account_proof_gas(signature.config());
             if first {
                 extra_gas += CONFIG_COMMITMENT_REGISTRATION_GAS;
-                if info.is_empty()
-                    && !(address == tx.caller
-                        && crate::handler::pays_nonce_zero_account_gas(tx, spec))
-                {
+                // A 2D `nonce == 0` charge pays for the nonce-key slot, not the sender account;
+                // a 2D or expiring first-call CREATE is charged in
+                // `validate_against_state_and_deduct_caller`.
+                let sender_creation_paid = address == tx.caller
+                    && if aa.nonce_key.is_zero() {
+                        crate::handler::pays_nonce_zero_account_gas(tx, spec)
+                    } else {
+                        tx.first_call().is_some_and(|(kind, _)| kind.is_create())
+                    };
+                if info.is_empty() && !sender_creation_paid {
                     extra_gas += gas.get(GasId::new_account_cost());
                     state_gas += gas.new_account_state_gas();
                 }

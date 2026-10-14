@@ -2434,7 +2434,7 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
     Ok(gas)
 }
 
-/// Whether the AA intrinsic charge already covers creation of the sender account.
+/// Whether AA intrinsic gas includes TIP-1000's `nonce == 0` charge.
 pub(crate) fn pays_nonce_zero_account_gas(
     tx: &crate::TempoTxEnv,
     spec: tempo_chainspec::hardfork::TempoHardfork,
