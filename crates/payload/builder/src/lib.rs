@@ -292,7 +292,7 @@ where
         best_txs: impl FnOnce(BestTransactionsAttributes) -> Txs,
     ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError>
     where
-        Txs: BestTransactions<Item = BestTransaction> + Send + 'static,
+        Txs: BestTransactions<Item = BestTransaction> + 'static,
     {
         let BuildArguments {
             cached_reads,

@@ -1257,7 +1257,9 @@ async fn test_current_only_block_finalizes_at_batch_boundary() -> eyre::Result<(
     const BATCH_INTERVAL_BLOCKS: u64 = 8;
 
     let batch_index = outbox.lastBatch().call().await?.withdrawalBatchIndex;
-    fixture.inject_empty_blocks(zone.deposit_queue(), BATCH_INTERVAL_BLOCKS);
+    fixture
+        .produce_empty_zone_blocks(&zone, BATCH_INTERVAL_BLOCKS)
+        .await?;
     poll_until(
         DEFAULT_TIMEOUT,
         DEFAULT_POLL,
@@ -1288,31 +1290,16 @@ async fn test_current_only_block_finalizes_at_batch_boundary() -> eyre::Result<(
     approve_outbox(&mut fixture, &zone, &provider).await?;
 
     // Advance to exactly one block before the next batch boundary, then wait
-    // for those quiet blocks to be built. `inject_empty_blocks` only enqueues
-    // L1 blocks; without this wait the withdrawal can race into one of those
-    // still-building quiet zone blocks.
+    // for each quiet block to be built. Enqueuing them all at once can turn
+    // intermediate L1 blocks into checkpoint-only catch-up imports instead
+    // of producing one Zone block per L1 block.
     let current_block = zone.provider().get_block_number().await?;
     let quiet_blocks_until_pre_boundary =
         (BATCH_INTERVAL_BLOCKS - 1) - (current_block % BATCH_INTERVAL_BLOCKS);
     let pre_boundary_block = current_block + quiet_blocks_until_pre_boundary;
-    fixture.inject_empty_blocks(zone.deposit_queue(), quiet_blocks_until_pre_boundary);
-    let observed_pre_boundary = poll_until(
-        DEFAULT_TIMEOUT,
-        DEFAULT_POLL,
-        "quiet blocks before withdrawal boundary built",
-        || {
-            let provider = zone.provider();
-            async move {
-                let number = provider.get_block_number().await?;
-                if number >= pre_boundary_block {
-                    Ok(Some(number))
-                } else {
-                    Ok(None)
-                }
-            }
-        },
-    )
-    .await?;
+    let observed_pre_boundary = fixture
+        .produce_empty_zone_blocks(&zone, quiet_blocks_until_pre_boundary)
+        .await?;
     assert_eq!(
         observed_pre_boundary, pre_boundary_block,
         "zone should be exactly one block before the withdrawal boundary"

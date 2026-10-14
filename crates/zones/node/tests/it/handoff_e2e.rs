@@ -44,10 +44,12 @@ async fn test_forced_recovery_resumes_after_leader_crash() -> eyre::Result<()> {
     let mut cluster = start_local_p2p_cluster(24).await?;
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    for _ in 0..3 {
+    // Consume each anchor before injecting the next so checkpoint catch-up cannot batch
+    // multiple anchors into one Zone block and break the 1:1 mapping asserted below.
+    for height in 1..=3 {
         cluster.inject_block(vec![])?;
+        cluster.wait_all_at(height, HANDOFF_TIMEOUT).await?;
     }
-    cluster.wait_all_at(3, HANDOFF_TIMEOUT).await?;
 
     let recovery_tip_height = 3;
     let mut original_hashes = Vec::new();
@@ -186,10 +188,12 @@ async fn test_planned_handoff_moves_production_at_exact_activation_boundary() ->
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     // --- Blocks 1..=3 are produced by A (the manifest bootstrap leader). ---
-    for _ in 0..3 {
+    // Consume each anchor before injecting the next so checkpoint catch-up cannot batch
+    // multiple anchors into one Zone block and break the 1:1 mapping asserted below.
+    for height in 1..=3 {
         cluster.inject_block(vec![])?;
+        cluster.wait_all_at(height, HANDOFF_TIMEOUT).await?;
     }
-    cluster.wait_all_at(3, HANDOFF_TIMEOUT).await?;
 
     // --- Block 4 funds a sender so a pending transaction can ride through the handoff. ---
     let (sender_wallet, sender) = local_dev_zone_account(&cluster.nodes[2])?;
@@ -348,23 +352,24 @@ async fn test_lagged_follower_promotes_only_after_catching_up() -> eyre::Result<
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     // Blocks 1..=2 are observed by everyone.
-    for _ in 0..2 {
+    for height in 1..=2 {
         cluster.inject_block(vec![])?;
+        cluster.wait_all_at(height, HANDOFF_TIMEOUT).await?;
     }
-    cluster.wait_all_at(2, HANDOFF_TIMEOUT).await?;
 
     // Blocks 3..=5: node B (index 1) does not observe the anchors, so it cannot import the
-    // corresponding zone blocks — it lags at height 2 while A and C advance.
+    // corresponding zone blocks — it lags at height 2 while A and C advance. Each anchor is
+    // consumed before the next is injected so A cannot checkpoint several into one Zone block.
     let mut withheld = Vec::new();
-    for _ in 0..3 {
+    for height in 3..=5 {
         withheld.push(cluster.inject_block_observed_by(vec![], &[0, 2])?);
+        cluster.nodes[0]
+            .wait_for_block_number(height, DEFAULT_TIMEOUT)
+            .await?;
+        cluster.nodes[2]
+            .wait_for_block_number(height, DEFAULT_TIMEOUT)
+            .await?;
     }
-    cluster.nodes[0]
-        .wait_for_block_number(5, DEFAULT_TIMEOUT)
-        .await?;
-    cluster.nodes[2]
-        .wait_for_block_number(5, DEFAULT_TIMEOUT)
-        .await?;
     assert_eq!(cluster.nodes[1].provider().get_block_number().await?, 2);
 
     // Leadership of anchors >= 6 moves to the lagging B.
@@ -443,10 +448,12 @@ async fn test_advance_scheduled_handoff_keeps_outgoing_leader_live() -> eyre::Re
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     // Blocks 1..=3 are produced by A (the manifest bootstrap leader).
-    for _ in 0..3 {
+    // Consume each anchor before injecting the next so checkpoint catch-up cannot batch
+    // multiple anchors into one Zone block and break the 1:1 mapping asserted below.
+    for height in 1..=3 {
         cluster.inject_block(vec![])?;
+        cluster.wait_all_at(height, HANDOFF_TIMEOUT).await?;
     }
-    cluster.wait_all_at(3, HANDOFF_TIMEOUT).await?;
 
     // Block 4 funds a sender used during the window.
     let (sender_wallet, sender) = local_dev_zone_account(&cluster.nodes[2])?;

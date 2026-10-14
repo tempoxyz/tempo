@@ -659,7 +659,7 @@ type HeaderStream = Pin<Box<dyn Stream<Item = ()> + Send>>;
 
 impl<P> L1Subscriber<P>
 where
-    P: StateProviderFactory + Sync,
+    P: StateProviderFactory,
 {
     /// Create an L1 subscriber.
     #[expect(clippy::too_many_arguments)]

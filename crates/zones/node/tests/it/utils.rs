@@ -22,7 +22,7 @@ use reth_tasks::Runtime;
 use std::{
     collections::{BTreeMap, BTreeSet},
     future::Future,
-    net::{SocketAddr, TcpListener},
+    net::{SocketAddr, TcpListener, TcpStream},
     num::NonZeroU32,
     ops::Deref,
     pin::Pin,
@@ -3941,6 +3941,20 @@ pub(crate) async fn start_real_p2p_network_chaos_cluster(
     ))
 }
 
+/// Returns a loopback address for a node's P2P listener, which Commonware binds later itself.
+///
+/// The accepted side closes first and leaves the port in `TIME_WAIT`. Until the node binds it,
+/// the kernel skips the port for other processes' `bind(0)` calls and outbound connections,
+/// while the node's `SO_REUSEADDR` listener can still claim it.
+fn available_address() -> eyre::Result<SocketAddr> {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let address = listener.local_addr()?;
+    let client = TcpStream::connect(address)?;
+    drop(listener.accept()?);
+    drop(client);
+    Ok(address)
+}
+
 #[derive(Clone, Copy)]
 enum L1ProxyMode {
     Direct,
@@ -3966,11 +3980,6 @@ async fn start_real_p2p_cluster_inner(
         (2..=3).contains(&active_nodes),
         "real P2P test cluster requires two or three active nodes, got {active_nodes}"
     );
-
-    fn available_address() -> eyre::Result<SocketAddr> {
-        let listener = TcpListener::bind("127.0.0.1:0")?;
-        Ok(listener.local_addr()?)
-    }
 
     let l1 = match l1_block_time {
         Some(block_time) => {
@@ -4134,11 +4143,6 @@ async fn start_real_p2p_cluster_inner(
 /// Start a three-node multi-sequencer cluster with identical genesis state and authenticated
 /// P2P identities. Node 0 bootstraps as the leader.
 pub(crate) async fn start_local_p2p_cluster(seed_blocks: u64) -> eyre::Result<P2pCluster> {
-    fn available_address() -> eyre::Result<SocketAddr> {
-        let listener = TcpListener::bind("127.0.0.1:0")?;
-        Ok(listener.local_addr()?)
-    }
-
     let addresses = [
         available_address()?,
         available_address()?,
@@ -4247,10 +4251,6 @@ pub(crate) async fn start_local_p2p_cluster(seed_blocks: u64) -> eyre::Result<P2
 }
 
 pub(crate) fn leader_p2p_config(listen: SocketAddr) -> eyre::Result<P2pConfig> {
-    fn available_address() -> eyre::Result<SocketAddr> {
-        Ok(TcpListener::bind("127.0.0.1:0")?.local_addr()?)
-    }
-
     let identities = [
         Ed25519PrivateKey::from_seed(201),
         Ed25519PrivateKey::from_seed(202),

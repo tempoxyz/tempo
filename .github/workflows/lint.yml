@@ -26,9 +26,10 @@ jobs:
   clippy:
     name: clippy
     runs-on: depot-ubuntu-latest-32
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
-      CARGO_BUILD_JOBS: 4
+      # Limit peak memory while linting the combined Tempo and Zones workspace.
+      CARGO_BUILD_JOBS: 2
     permissions:
       id-token: write
       contents: read

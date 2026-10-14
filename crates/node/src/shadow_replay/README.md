@@ -67,16 +67,12 @@ other state differences still require fork expectations.
 
 `expectations.rs` always enables the fee-state check and registers feature-specific checks at
 their introducing hardfork. For each block, replay selects the baseline check followed by those in
-`(canonical fork, candidate fork]` after validating the control. The T12 channel and DEX rules
-retain their precompile-scoped storage checks, including TIP-1060 credits; they no longer need to
-accept gas differences because those are not compared.
+`(canonical fork, candidate fork]` after validating the control.
 
 A check receives existing execution evidence and a changed field descriptor. It returns `None` when
 it cannot explain the difference and `Some(())` when it accepts it. The first accepting check owns
 attribution. The baseline check runs first, followed by fork-specific checks in fork and
-registration order. `Context::call()` iterates every call in an AA batch (or the single call of a
-non-AA transaction), but cannot see internal EVM calls. Fee-slot provenance alone never accepts a
-difference.
+registration order. Fee-slot provenance alone never accepts a difference.
 
 ## Adding an expectation
 

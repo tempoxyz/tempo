@@ -1,11 +1,9 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 #
-# Reproducible build of the `tempo-zone` binary for x86_64-unknown-linux-gnu.
-# This is verification-only for now; release.yml and docker.yml still publish
-# through the existing release paths.
+# Reproducible build of the canonical Linux x86_64 `tempo-zone` binary.
 
 ARG RUST_TOOLCHAIN=1.96.0
-FROM rust:${RUST_TOOLCHAIN}-bookworm@sha256:64d9b7f60e3abb08d477cad983d0a3743acc53a19369ba4482510184c9c807e5 AS builder
+FROM rust:${RUST_TOOLCHAIN}-bookworm@sha256:64d9b7f60e3abb08d477cad983d0a3743acc53a19369ba4482510184c9c807e5 AS reproducible-builder-base
 
 ARG SOURCE_DATE_EPOCH
 ARG GIT_SHA
@@ -46,6 +44,7 @@ ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
     JEMALLOC_OVERRIDE=/usr/lib/x86_64-linux-gnu/libjemalloc.a \
     RUSTFLAGS="-C symbol-mangling-version=v0 -C strip=none -C link-arg=-Wl,--build-id=none -C link-arg=-fuse-ld=mold -C metadata= --remap-path-prefix /app=. --remap-path-prefix /usr/local/cargo/registry=/registry --remap-path-prefix /usr/local/rustup=/rustup"
 
+FROM reproducible-builder-base AS builder
 RUN cargo build --locked --bin tempo-zone \
         --features jemalloc \
         --profile zones-reproducible \
@@ -54,9 +53,17 @@ RUN cargo build --locked --bin tempo-zone \
 FROM scratch AS artifacts
 COPY --from=builder /app/target/x86_64-unknown-linux-gnu/zones-reproducible/tempo-zone /tempo-zone
 
-# Runtime image used only by the reproducible-image verification pilot. The
-# binary is intentionally copied from the reproducible builder above rather
-# than rebuilt in this stage.
+FROM reproducible-builder-base AS prover-builder
+RUN cargo build --locked --bin tempo-zone-prover-enclave \
+        --profile zones-reproducible \
+        --target x86_64-unknown-linux-gnu
+
+# Production and verification export the same executable before genesis packaging.
+FROM scratch AS prover-artifacts
+COPY --from=prover-builder /app/target/x86_64-unknown-linux-gnu/zones-reproducible/tempo-zone-prover-enclave /tempo-zone-prover-enclave
+
+# The production runtime copies the canonical reproducible binary. Production
+# publishing also compares the full image ID with an independent clean build.
 FROM debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d AS reproducible-runtime-base
 ARG DEBIAN_SNAPSHOT=20260501T000000Z
 RUN echo "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/ bookworm main" \

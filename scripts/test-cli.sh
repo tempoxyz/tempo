@@ -29,6 +29,21 @@ if ! grep -A 2 -- '--consensus.message-backlog' <<<"$OUT" | grep -q 'Deprecated:
     fail "message-backlog help must mark the flag as deprecated"
 fi
 
+# Verify the emitted transaction, including the recipient and token ABI arguments.
+# Invalid RPC and wallet paths ensure an explicit-recipient dry run stays offline.
+run_ok "claim-fees offline dry run" "$TEMPO" --quiet consensus claim-fees \
+    --at-address 0x1111111111111111111111111111111111111111 \
+    --token 0x20c0000000000000000000000000000000000000 \
+    --rpc-url not-a-url --wallet-key /nonexistent/claim-fees-wallet --dry-run --yes
+EXPECTED_CLAIM_INPUT="0xa6c07924"
+EXPECTED_CLAIM_INPUT+="0000000000000000000000001111111111111111111111111111111111111111"
+EXPECTED_CLAIM_INPUT+="00000000000000000000000020c0000000000000000000000000000000000000"
+if ! jq -e --arg input "$EXPECTED_CLAIM_INPUT" \
+    '.to == "0xfeec000000000000000000000000000000000000" and .input == $input' \
+    <<<"$OUT" >/dev/null; then
+    fail "claim-fees dry run must encode distributeFees(recipient, token) to the fee manager"
+fi
+
 # --- node --follow: verify it stays alive for 15s with no crashes ---
 echo "--- Test: tempo node --follow (no crash)"
 DATADIR=$(mktemp -d)

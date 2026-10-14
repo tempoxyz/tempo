@@ -240,7 +240,6 @@ where
 
 impl<DB: Database, I> Deref for TempoEvm<DB, I>
 where
-    DB: Database,
     I: Inspector<TempoContext<DB>>,
 {
     type Target = TempoContext<DB>;
@@ -253,7 +252,6 @@ where
 
 impl<DB: Database, I> DerefMut for TempoEvm<DB, I>
 where
-    DB: Database,
     I: Inspector<TempoContext<DB>>,
 {
     #[inline]

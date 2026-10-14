@@ -67,3 +67,12 @@ Automatic reproducible builds on `main` require `ZONES_REPRODUCIBLE_ENABLED=true
 Manual dispatch remains available for validating the root-context build before
 turning on automatic builds. The separate profile enables SPF's `catch_unwind`
 recovery for invalid MPT proofs.
+
+The final reproducible publication pipeline from
+[tempoxyz/zones#1264](https://github.com/tempoxyz/zones/pull/1264) builds and compares
+complete production node image IDs before promotion, delays companion tags until
+verification succeeds, and verifies archived Linux x86_64 release binaries against
+an independent clean rebuild. Production and verification share the canonical
+prover compiler and timestamp-normalizing EIF packager. The Docker pipeline keeps
+`ZONES_PUBLISH_ENABLED` and `ZONES_EVENTS_ENABLED` as external cutover gates.
+See [reproduction instructions](docs/REPRODUCIBLE_BUILDS.md).
