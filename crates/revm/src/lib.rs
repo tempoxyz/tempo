@@ -27,3 +27,6 @@ pub use handler::{ValidationContext, calculate_aa_batch_intrinsic_gas};
 pub use revm::interpreter::instructions::utility::IntoAddress;
 pub use tempo_primitives::TempoBlockEnv;
 pub use tx::{ExecutionContext, TempoBatchCallEnv, TempoTxEnv};
+
+#[cfg(feature = "jit")]
+pub mod jit;

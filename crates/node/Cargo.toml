@@ -16,6 +16,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+tracing = { workspace = true, optional = true }
 tempo-alloy = { workspace = true, features = ["reth"] }
 tempo-evm = { workspace = true, features = ["rpc", "engine"] }
 tempo-transaction-pool.workspace = true
@@ -162,3 +163,4 @@ trie-debug = [
 	"reth-node-core/trie-debug",
 	"tempo-payload-builder/trie-debug",
 ]
+jit = ["tempo-evm/jit", "dep:tracing"]

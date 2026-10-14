@@ -4580,3 +4580,279 @@ fn test_aa_tx_transfer_calls_format_no_extra_250k() -> eyre::Result<()> {
 
     Ok(())
 }
+
+#[cfg(feature = "jit")]
+mod jit_tests {
+    use super::*;
+    use crate::jit::{JitBackend, LookupRequest, RuntimeCacheKey, RuntimeConfig, RuntimeTuning};
+    use revm::{
+        context::JournalTr,
+        handler::{EvmTr, ItemOrResult},
+        interpreter::{
+            CallInputs, CallScheme, CallValue, FrameInput, SharedMemory,
+            interpreter_action::FrameInit, interpreter_types::Jumps,
+        },
+    };
+
+    #[test]
+    fn jit_nested_call_equivalence() -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+        let contract = Address::repeat_byte(0x6c);
+        let callee = Address::repeat_byte(0x6d);
+        let spec = TempoHardfork::T13;
+        for call in [opcode::STATICCALL, opcode::DELEGATECALL] {
+            let backend = JitBackend::new(RuntimeConfig {
+                enabled: true,
+                blocking: true,
+                single_error: false,
+                gas_params: Some(tempo_gas_params(spec)),
+                ..Default::default()
+            })?;
+            // CALL-family suspension/resumption must preserve static mode and storage ownership.
+            let mut body = hex!("600060006000600073").to_vec();
+            body.extend_from_slice(callee.as_slice());
+            body.extend_from_slice(&[opcode::PUSH3, 0xff, 0xff, 0xff, call]);
+            body.extend_from_slice(&hex!("60005260206000f3"));
+            let mut outputs = Vec::new();
+            for compiled in [false, true] {
+                let mut evm = create_funded_evm_at_spec_with_timestamp(caller, 1, spec);
+                evm.ctx.db_mut().insert_account_info(
+                    contract,
+                    AccountInfo {
+                        code: Some(Bytecode::new_raw(body.clone().into())),
+                        ..Default::default()
+                    },
+                );
+                evm.ctx.db_mut().insert_account_info(
+                    callee,
+                    AccountInfo {
+                        code: Some(Bytecode::new_raw(bytes!("600160005500"))),
+                        ..Default::default()
+                    },
+                );
+                seed_storage_credit_balance(&mut evm, contract, 2);
+                if compiled {
+                    evm.set_jit_backend(backend.clone(), spec);
+                }
+                let tx = TxBuilder::new()
+                    .call(contract, &[])
+                    .gas_limit(2_000_000)
+                    .build();
+                let result = evm.transact_commit(TempoTxEnv::from_recovered_tx(
+                    &key_pair.sign_tx(tx)?,
+                    caller,
+                ))?;
+                let stored = evm.ctx.db().storage_ref(contract, U256::ZERO)?;
+                let credits = storage_credit_balance(&evm, contract);
+                assert!(result.is_success());
+                assert_eq!(
+                    stored,
+                    if call == opcode::DELEGATECALL {
+                        U256::ONE
+                    } else {
+                        U256::ZERO
+                    }
+                );
+                assert_eq!(evm.ctx.db().storage_ref(callee, U256::ZERO)?, U256::ZERO);
+                outputs.push((result, stored, credits));
+            }
+            assert_eq!(outputs[0], outputs[1]);
+            assert!(
+                backend.stats().lookup_hits >= 2,
+                "both call frames must execute compiled code"
+            );
+            assert_eq!(backend.stats().compilations_failed, 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn jit_storage_credit_equivalence() -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+        let contract = Address::repeat_byte(0x6c);
+        for spec in [TempoHardfork::T6, TempoHardfork::T7, TempoHardfork::T13] {
+            for mode in [CreditMode::Refund, CreditMode::Preserve, CreditMode::Direct] {
+                for revert in [false, true] {
+                    for gas_limit in [300_000, 2_000_000] {
+                        let backend = JitBackend::new(RuntimeConfig {
+                            enabled: true,
+                            blocking: true,
+                            single_error: false,
+                            gas_params: Some(tempo_gas_params(spec)),
+                            ..Default::default()
+                        })?;
+                        // Clear, restore, then create a fresh slot. This exercises credit minting,
+                        // consumption and rollback, including the pre-storage-credit fork.
+                        let mut body = bytes!("600060005560026000556003600155").to_vec();
+                        body.extend_from_slice(if revert {
+                            &hex!("60006000fd")
+                        } else {
+                            &[opcode::STOP]
+                        });
+                        let code = if spec.is_t7() {
+                            bytecode_with_tip1060_mode(mode, &body)
+                        } else {
+                            Bytecode::new_raw(body.into())
+                        };
+                        let mut results = Vec::new();
+                        let mut states = Vec::new();
+                        for compiled in [false, true] {
+                            let mut evm = create_funded_evm_at_spec_with_timestamp(caller, 1, spec);
+                            evm.ctx.db_mut().insert_account_info(
+                                contract,
+                                AccountInfo {
+                                    code: Some(code.clone()),
+                                    ..Default::default()
+                                },
+                            );
+                            evm.ctx.db_mut().insert_account_storage(
+                                contract,
+                                U256::ZERO,
+                                U256::ONE,
+                            )?;
+                            seed_storage_credit_balance(&mut evm, contract, 2);
+                            if compiled {
+                                evm.set_jit_backend(backend.clone(), spec);
+                            }
+                            let tx = TxBuilder::new()
+                                .call(contract, &[])
+                                .gas_limit(gas_limit)
+                                .build();
+                            results.push(evm.transact_commit(TempoTxEnv::from_recovered_tx(
+                                &key_pair.sign_tx(tx)?,
+                                caller,
+                            ))?);
+                            states.push(
+                                evm.ctx
+                                    .db()
+                                    .cache
+                                    .accounts
+                                    .iter()
+                                    .map(|(address, account)| {
+                                        (
+                                            *address,
+                                            (
+                                                account.info.clone(),
+                                                account.storage.clone(),
+                                                account.account_state.clone(),
+                                            ),
+                                        )
+                                    })
+                                    .collect::<std::collections::BTreeMap<_, _>>(),
+                            );
+                        }
+                        assert_eq!(
+                            results[0], results[1],
+                            "{spec:?} {mode:?} revert={revert} gas={gas_limit}"
+                        );
+                        assert_eq!(
+                            states[0], states[1],
+                            "{spec:?} {mode:?} revert={revert} gas={gas_limit}"
+                        );
+                        assert!(
+                            backend.stats().lookup_hits > 0,
+                            "compiled code must execute"
+                        );
+                        assert_eq!(backend.stats().compilations_failed, 0);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn jit_compilation_during_suspended_frame() -> eyre::Result<()> {
+        let caller = Address::repeat_byte(0x6b);
+        let contract = Address::repeat_byte(0x6c);
+        let spec = TempoHardfork::T13;
+        let backend = JitBackend::new(RuntimeConfig {
+            enabled: true,
+            gas_params: Some(tempo_gas_params(spec)),
+            tuning: RuntimeTuning {
+                jit_hot_threshold: usize::MAX,
+                ..Default::default()
+            },
+            ..Default::default()
+        })?;
+        // Call the identity precompile, then return its success flag.
+        let code = Bytecode::new_raw(bytes!("6000600060006000600461fffffa60005260206000f3"));
+        let code_hash = code.hash_slow();
+        let input = FrameInit {
+            depth: 0,
+            memory: SharedMemory::new(),
+            frame_input: FrameInput::Call(Box::new(CallInputs {
+                input: Default::default(),
+                return_memory_offset: 0..0,
+                gas_limit: 1_000_000,
+                reservoir: 0,
+                bytecode_address: contract,
+                known_bytecode: (code_hash, code.clone()),
+                target_address: contract,
+                caller,
+                value: CallValue::Transfer(U256::ZERO),
+                scheme: CallScheme::Call,
+                is_static: false,
+                charged_new_account_state_gas: false,
+            })),
+        };
+        let mut evm = create_funded_evm_at_spec_with_timestamp(caller, 1, spec);
+        evm.set_jit_backend(backend.clone(), spec);
+        evm.ctx.journal_mut().load_account(contract).unwrap();
+        evm.ctx
+            .journal_mut()
+            .load_account(IDENTITY_PRECOMPILE)
+            .unwrap();
+        assert!(evm.frame_init(input.clone()).unwrap().is_item());
+        let ItemOrResult::Item(child) = evm.frame_run().unwrap() else {
+            panic!("expected suspension at STATICCALL");
+        };
+        assert!(evm.inner.frame_stack.get().interpreter.bytecode.pc() > 0);
+        backend.compile_jit_sync(LookupRequest {
+            key: RuntimeCacheKey {
+                code_hash,
+                spec_id: spec.into(),
+            },
+            code: code.original_bytes(),
+        })?;
+        assert!(backend.get_compiled(code_hash, spec.into()).is_some());
+        let ItemOrResult::Result(child_result) = evm.frame_init(child).unwrap() else {
+            panic!("identity precompile must return without a child frame");
+        };
+        assert!(evm.frame_return_result(child_result).unwrap().is_none());
+        let ItemOrResult::Result(interpreted) = evm.frame_run().unwrap() else {
+            panic!("expected root frame result");
+        };
+        assert_eq!(
+            interpreted.interpreter_result().output.as_ref(),
+            U256::ONE.to_be_bytes::<32>()
+        );
+        assert!(
+            evm.frame_return_result(interpreted.clone())
+                .unwrap()
+                .is_some()
+        );
+
+        // The next root frame must pick up the newly compiled program.
+        assert!(evm.frame_init(input).unwrap().is_item());
+        let ItemOrResult::Item(child) = evm.frame_run().unwrap() else {
+            panic!("expected compiled STATICCALL suspension");
+        };
+        // Compiled execution stores a resume index instead of the bytecode PC.
+        assert_eq!(evm.inner.frame_stack.get().interpreter.bytecode.pc(), 1);
+        let ItemOrResult::Result(child_result) = evm.frame_init(child).unwrap() else {
+            panic!("identity precompile must return without a child frame");
+        };
+        assert!(evm.frame_return_result(child_result).unwrap().is_none());
+        let ItemOrResult::Result(compiled) = evm.frame_run().unwrap() else {
+            panic!("expected compiled root frame result");
+        };
+        assert_eq!(
+            interpreted.interpreter_result(),
+            compiled.interpreter_result()
+        );
+        Ok(())
+    }
+}

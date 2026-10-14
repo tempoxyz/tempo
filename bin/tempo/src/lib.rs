@@ -97,6 +97,11 @@ const DEFAULT_DEV_ZONE_FACTORY_OWNER: Address =
     alloy_primitives::address!("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
 
 fn apply_tempo_cli_overrides(cli: &mut TempoCli) -> eyre::Result<()> {
+    #[cfg(feature = "jit")]
+    if let Commands::Node(node_cmd) = &mut cli.command {
+        node_cmd.ext.node_args.jit = node_cmd.jit.clone();
+    }
+
     if let Commands::Node(node_cmd) = &mut cli.command
         && node_cmd
             .ext
@@ -1254,5 +1259,26 @@ mod tests {
                 .payload_builder_builder()
                 .enable_prewarming
         );
+    }
+
+    #[cfg(feature = "jit")]
+    #[test]
+    fn jit_cli_settings_reach_tempo_executor() {
+        init_defaults_once();
+        let mut cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--dev",
+            "--jit",
+            "--jit.hot-threshold",
+            "1",
+        ])
+        .unwrap();
+        apply_tempo_cli_overrides(&mut cli).unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert!(node_cmd.ext.node_args.jit.enabled);
+        assert_eq!(node_cmd.ext.node_args.jit.hot_threshold, 1);
     }
 }

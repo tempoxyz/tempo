@@ -17,6 +17,8 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+metrics = { workspace = true, optional = true }
+reth-metrics = { workspace = true, optional = true }
 tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-contracts.workspace = true
 tempo-dkg-onchain-artifacts.workspace = true
@@ -77,6 +79,7 @@ tempo-primitives = { workspace = true, features = ["arbitrary", "test-utils"] }
 tikv-jemallocator = "0.6.1"
 
 [features]
+jit = ["tempo-revm/jit", "dep:metrics", "dep:reth-metrics"]
 default = ["rpc", "engine"]
 rpc = ["dep:alloy-rpc-types-eth", "dep:reth-rpc-eth-api", "tempo-primitives/serde", "tempo-primitives/reth-codec"]
 engine = ["dep:tempo-payload-types", "dep:rayon"]

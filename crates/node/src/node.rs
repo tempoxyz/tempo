@@ -62,6 +62,9 @@ use tempo_transaction_pool::{
     },
 };
 
+#[cfg(feature = "jit")]
+use tempo_chainspec::hardfork::TempoHardforks;
+
 /// 500M gas limit
 pub const BLOCK_GAS_LIMIT_500M: u64 = 500_000_000;
 
@@ -132,6 +135,10 @@ pub struct TempoNodeArgs {
         num_args = 0..=1
     )]
     pub shadow_replay: Option<Option<TempoHardfork>>,
+    /// Experimental EVM JIT compilation settings.
+    #[cfg(feature = "jit")]
+    #[arg(skip)]
+    pub jit: crate::jit::JitArgs,
 }
 
 impl Default for TempoNodeArgs {
@@ -148,6 +155,8 @@ impl Default for TempoNodeArgs {
             engine_disable_execution_cache_sharing_with_builder: false,
             builder_build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
             shadow_replay: None,
+            #[cfg(feature = "jit")]
+            jit: Default::default(),
         }
     }
 }
@@ -248,6 +257,8 @@ pub struct TempoNode {
     network_builder: TempoNetworkBuilder,
     /// Filled with the engine's in-memory overlay when the node launches.
     executed_state: ExecutedState,
+    /// Executor configuration, including optional JIT settings.
+    executor_builder: TempoExecutorBuilder,
 }
 
 impl TempoNode {
@@ -259,6 +270,10 @@ impl TempoNode {
             validator_key,
             network_builder: TempoNetworkBuilder::default(),
             executed_state: ExecutedState::default(),
+            executor_builder: TempoExecutorBuilder {
+                #[cfg(feature = "jit")]
+                jit: args.jit.clone(),
+            },
         }
     }
 
@@ -486,6 +501,7 @@ where
             self.payload_builder_builder,
             self.network_builder.clone(),
         )
+        .executor(self.executor_builder.clone())
     }
 
     fn add_ons(&self) -> Self::AddOns {
@@ -544,9 +560,13 @@ impl PayloadAttributesBuilder<TempoPayloadAttributes, TempoHeader>
 }
 
 /// A regular ethereum evm and executor builder.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 #[non_exhaustive]
-pub struct TempoExecutorBuilder;
+pub struct TempoExecutorBuilder {
+    /// JIT compilation arguments.
+    #[cfg(feature = "jit")]
+    pub jit: crate::jit::JitArgs,
+}
 
 impl<Node> ExecutorBuilder<Node> for TempoExecutorBuilder
 where
@@ -556,6 +576,32 @@ where
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
         let mut evm_config = TempoEvmConfig::new(ctx.chain_spec());
+        #[cfg(feature = "jit")]
+        if self.jit.enabled || self.jit.blocking {
+            let spec = ctx.chain_spec().tempo_hardfork_at(u64::MAX);
+            let backend = crate::jit::backend(&self.jit, spec)?;
+            let stats_backend = backend.clone();
+            ctx.task_executor().spawn_with_graceful_shutdown_signal(|shutdown| async move {
+                let mut shutdown = std::pin::pin!(shutdown);
+                let metrics = tempo_evm::jit::RevmcMetrics::default();
+                loop {
+                    tokio::select! {
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+                            let stats = stats_backend.stats();
+                            metrics.record(&stats);
+                            info!(target: "tempo::jit", hits = stats.lookup_hits,
+                                misses = stats.lookup_misses, compiled = stats.compilations_succeeded,
+                                failed = stats.compilations_failed, "JIT runtime stats");
+                        }
+                        _ = &mut shutdown => break,
+                    }
+                }
+            });
+            evm_config = TempoEvmConfig::new_with_evm_factory(
+                ctx.chain_spec(),
+                tempo_evm::TempoEvmFactory::with_jit(backend, spec),
+            );
+        }
         if let Some(cache) = ctx.sender_recovery_cache() {
             evm_config = evm_config.with_sender_recovery_cache(cache.clone());
         }

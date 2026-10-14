@@ -130,6 +130,7 @@ path = "src/localnet.rs"
 required-features = ["localnet"]
 
 [features]
+jit = ["tempo-node/jit", "tempo-evm/jit"]
 default = ["asm-keccak", "jemalloc", "otlp", "keccak-cache-global"]
 
 localnet = ["dep:nix"]

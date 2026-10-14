@@ -34,9 +34,22 @@ use tempo_revm::{
 use crate::{TempoBlockEnv, TempoPoolValidationEvm, TempoPoolValidationResult};
 
 /// Factory for creating Tempo EVM instances.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 #[non_exhaustive]
-pub struct TempoEvmFactory;
+pub struct TempoEvmFactory {
+    #[cfg(feature = "jit")]
+    jit_backend: Option<(tempo_revm::jit::JitBackend, TempoHardfork)>,
+}
+
+impl TempoEvmFactory {
+    /// Creates a factory whose JIT backend uses the gas schedule for `spec`.
+    #[cfg(feature = "jit")]
+    pub fn with_jit(backend: tempo_revm::jit::JitBackend, spec: TempoHardfork) -> Self {
+        Self {
+            jit_backend: Some((backend, spec)),
+        }
+    }
+}
 
 impl EvmFactory for TempoEvmFactory {
     type Evm<DB: Database, I: Inspector<Self::Context<DB>>> = TempoEvm<DB, I>;
@@ -53,7 +66,16 @@ impl EvmFactory for TempoEvmFactory {
         db: DB,
         input: EvmEnv<Self::Spec, Self::BlockEnv>,
     ) -> Self::Evm<DB, NoOpInspector> {
-        TempoEvm::new(db, input)
+        #[cfg_attr(
+            not(feature = "jit"),
+            expect(unused_mut, reason = "JIT installs a backend")
+        )]
+        let mut evm = TempoEvm::new(db, input);
+        #[cfg(feature = "jit")]
+        if let Some((backend, spec)) = &self.jit_backend {
+            evm.inner.set_jit_backend(backend.clone(), *spec);
+        }
+        evm
     }
 
     fn create_evm_with_inspector<DB: Database, I: Inspector<Self::Context<DB>>>(

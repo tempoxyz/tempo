@@ -620,6 +620,16 @@ jobs:
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         continue-on-error: true
 
+      - name: Enable JIT build support
+        if: contains(inputs.baseline-args, '--jit') || contains(inputs.feature-args, '--jit') || contains(inputs.baseline-features, 'jit') || contains(inputs.feature-features, 'jit')
+        run: |
+          echo "BENCH_FEATURES=$BENCH_FEATURES,jit" >> "$GITHUB_ENV"
+          echo "LLVM_SYS_221_PREFIX=/usr/lib/llvm-22" >> "$GITHUB_ENV"
+          if [ ! -x /usr/lib/llvm-22/bin/llvm-config ]; then
+            sudo .github/scripts/install_llvm_ubuntu.sh
+          fi
+          /usr/lib/llvm-22/bin/llvm-config --version
+
       - name: Install Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
