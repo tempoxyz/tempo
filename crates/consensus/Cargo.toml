@@ -18,6 +18,7 @@ workspace = true
 [dependencies]
 tempo-alloy.workspace = true
 tempo-chainspec = { workspace = true, features = ["reth"] }
+tempo-contracts.workspace = true
 tempo-consensus-config.workspace = true
 tempo-dkg-onchain-artifacts = { workspace = true, features = ["commonware-consensus"] }
 tempo-evm.workspace = true
@@ -28,12 +29,15 @@ tempo-precompiles.workspace = true
 tempo-telemetry-util.workspace = true
 
 alloy-consensus.workspace = true
+alloy-eips.workspace = true
+alloy-evm.workspace = true
 alloy-primitives.workspace = true
 alloy-provider.workspace = true
 alloy-rpc-client = { workspace = true, features = ["ws-base"] }
 alloy-rpc-types-engine.workspace = true
 alloy-rpc-types-eth.workspace = true
 alloy-rlp.workspace = true
+alloy-sol-types.workspace = true
 alloy-transport.workspace = true
 
 axum.workspace = true
@@ -86,6 +90,7 @@ tracing.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+tempo-evm = { workspace = true, features = ["genesis"] }
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempo-primitives = { workspace = true, features = ["arbitrary", "test-utils"] }
 

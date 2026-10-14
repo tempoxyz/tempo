@@ -391,6 +391,14 @@ pub struct Args {
     #[arg(long = "consensus.datadir", value_name = "PATH")]
     pub storage_dir: Option<PathBuf>,
 
+    /// Address of the `TopOfBlockRegistry` contract (TIP-1147).
+    ///
+    /// Operators listed in the contract may connect as secondary peers and
+    /// submit transactions that this node executes first in the blocks it
+    /// proposes. The registry is read from the latest finalized state.
+    #[arg(long = "consensus.top-of-block-registry", value_name = "ADDRESS")]
+    pub top_of_block_registry: Option<alloy_primitives::Address>,
+
     /// Number of recently finalized blocks the marshal actor keeps in its
     /// prunable archive. Anything older is served from reth's database
     /// through the hybrid finalized blocks store.

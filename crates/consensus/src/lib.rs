@@ -22,6 +22,7 @@ pub(crate) mod peer_manager;
 pub mod storage;
 #[cfg(test)]
 pub(crate) mod test_utils;
+pub mod top_of_block;
 pub(crate) mod utils;
 pub(crate) mod validators;
 
@@ -61,8 +62,17 @@ pub async fn run_consensus_stack(
     executed_state: tempo_node::ExecutedState,
     feed_state: feed::FeedStateHandle,
     gossip_transport: Option<tempo_node::gossip::TransportHandle>,
+    top_of_block_lane: tempo_payload_types::TopOfBlockLane,
 ) -> eyre::Result<()> {
     config.validate_simplex_timing()?;
+
+    let top_of_block = config
+        .top_of_block_registry
+        .map(|registry_address| top_of_block::Config {
+            registry_address,
+            registry: Default::default(),
+            lane: top_of_block_lane,
+        });
 
     let network_identity = config
         .network_identity()
@@ -101,6 +111,9 @@ pub async fn run_consensus_stack(
     let broadcaster = network.register(BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT);
     let marshal = network.register(MARSHAL_CHANNEL_IDENT, backfill_quota);
     let dkg = network.register(DKG_CHANNEL_IDENT, DKG_LIMIT);
+    let top_of_block_channel = top_of_block
+        .is_some()
+        .then(|| network.register(top_of_block::CHANNEL, top_of_block::LIMIT));
     let target_block_time = config.target_block_time.into_duration();
     // Reserve time for propagation. The remaining application budget starts
     // after commonware fetches the parent; that fetch time is not deducted.
@@ -140,6 +153,8 @@ pub async fn run_consensus_stack(
         feed_state,
 
         finalized_blocks_retention: config.finalized_blocks_retention,
+
+        top_of_block,
     }
     .try_init(context.child("engine"))
     .await
@@ -147,7 +162,15 @@ pub async fn run_consensus_stack(
 
     let (network, consensus_engine) = (
         network.start(),
-        consensus_engine.start(votes, certificates, resolver, broadcaster, marshal, dkg),
+        consensus_engine.start(
+            votes,
+            certificates,
+            resolver,
+            broadcaster,
+            marshal,
+            dkg,
+            top_of_block_channel,
+        ),
     );
 
     tokio::select! {

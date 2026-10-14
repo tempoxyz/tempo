@@ -307,6 +307,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         tempo_node::ExecutedState,
         TempoArgs,
         Option<tempo_node::gossip::TransportHandle>,
+        tempo_payload_types::TopOfBlockLane,
     )>();
     let (consensus_dead_tx, mut consensus_dead_rx) = oneshot::channel();
 
@@ -322,7 +323,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             return Ok(());
         }
 
-        let (node, executed_state, args, gossip_transport) =
+        let (node, executed_state, args, gossip_transport, top_of_block_lane) =
             consensus_startup_rx.blocking_recv().wrap_err(
                 "channel closed before consensus-relevant command line args \
                 and a handle to the execution node could be received",
@@ -424,6 +425,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     executed_state,
                     cl_feed_state_clone,
                     gossip_transport,
+                    top_of_block_lane,
                 ))
             };
 
@@ -555,6 +557,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             }
         });
         let executed_state = tempo_node.executed_state();
+        let top_of_block_lane = tempo_node.top_of_block_lane();
 
         let NodeHandle {
             node,
@@ -657,7 +660,13 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             });
         }
 
-        let _ = consensus_startup_tx.send((node, executed_state, args, gossip_transport));
+        let _ = consensus_startup_tx.send((
+            node,
+            executed_state,
+            args,
+            gossip_transport,
+            top_of_block_lane,
+        ));
 
         // TODO: emit these inside a span
         tokio::select! {

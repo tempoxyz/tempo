@@ -19,6 +19,9 @@
 //!    `active == true`.
 //! 2. The dealers and players as per the last DKG outcome.
 //!
+//! Operators in the top-of-block registry contract, read at the same height,
+//! are added to the secondary peers.
+//!
 //! Because DKG ceremonies can fail, it happens that the DKG outcome contains
 //! validators that contain `active == false` in the contract. Therefore, the
 //! actor reads all entries in the contract to look up the egress and ingress
@@ -58,6 +61,13 @@ pub(crate) struct Config<TOracle, TExecutionNode> {
     /// Execution-layer-derived reads must not advance beyond this tip until
     /// marshal reports a newer finalized tip.
     pub(crate) finalized_tip: (Height, Digest),
+    /// The top-of-block registry contract and the handle to publish it to.
+    /// Its operators are tracked as secondary peers so that they can connect
+    /// to this node. Validators never dial secondary peers.
+    pub(crate) top_of_block_registry: Option<(
+        alloy_primitives::Address,
+        crate::top_of_block::RegistryHandle,
+    )>,
 }
 
 /// Initializes the actor and registers its first peers from available execution

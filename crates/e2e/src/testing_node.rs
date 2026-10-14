@@ -343,6 +343,7 @@ where
             // Plenty of headroom for any test; the marshal will fall back to
             // reth past this depth via the hybrid finalized blocks store.
             finalized_blocks_retention: 1024,
+            top_of_block: None,
         };
         let engine = config
             .try_init(engine_context)
@@ -385,7 +386,25 @@ where
             .register(DKG_CHANNEL_IDENT, DKG_LIMIT)
             .await
             .unwrap();
-        let consensus_handle = engine.start(votes, certificates, resolver, broadcast, marshal, dkg);
+        // No top-of-block operators are configured, so the channel stays unused.
+        let top_of_block = self
+            .oracle
+            .control(self.public_key())
+            .register(
+                tempo_consensus::top_of_block::CHANNEL,
+                tempo_consensus::top_of_block::LIMIT,
+            )
+            .await
+            .unwrap();
+        let consensus_handle = engine.start(
+            votes,
+            certificates,
+            resolver,
+            broadcast,
+            marshal,
+            dkg,
+            Some(top_of_block),
+        );
 
         self.consensus_handle = Some(consensus_handle);
         debug!(%self.uid, "started consensus for testing node");

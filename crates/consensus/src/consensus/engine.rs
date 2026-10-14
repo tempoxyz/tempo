@@ -95,6 +95,9 @@ pub struct Builder<TBlocker, TPeerManager> {
     /// Number of recently finalized blocks retained in the prunable archive
     /// passed to the marshal actor. Older blocks are served from reth.
     pub finalized_blocks_retention: u64,
+
+    /// Operators with privileged top-of-block access, if any.
+    pub top_of_block: Option<crate::top_of_block::Config>,
 }
 
 impl<TBlocker, TPeerManager> Builder<TBlocker, TPeerManager>
@@ -193,6 +196,15 @@ where
         )
         .wrap_err("failed initialization executor actor")?;
 
+        let top_of_block_registry = self
+            .top_of_block
+            .as_ref()
+            .map(|config| (config.registry_address, config.registry.clone()));
+        let (top_of_block, top_of_block_mailbox) = self
+            .top_of_block
+            .map(|config| crate::top_of_block::init(context.child("top_of_block"), config))
+            .unzip();
+
         let (peer_manager, peer_manager_mailbox) = peer_manager::init(
             context.child("peer_manager"),
             peer_manager::Config {
@@ -200,6 +212,7 @@ where
                 oracle: self.peer_manager.clone(),
                 epoch_strategy: epoch_strategy.clone(),
                 finalized_tip: (finalized_tip.1, finalized_tip.2),
+                top_of_block_registry,
             },
         )
         .wrap_err("failed initializing peer manager")?;
@@ -290,6 +303,7 @@ where
             },
             proposal_return_budget: self.proposal_return_budget,
             epoch_strategy: epoch_strategy.clone(),
+            top_of_block: top_of_block_mailbox,
         });
         let application = application::Marshaled::new(
             context.child("application"),
@@ -343,6 +357,7 @@ where
             feed_mailbox,
             gossip_mailbox,
             gossip_actor,
+            top_of_block,
         })
     }
 }
@@ -401,6 +416,7 @@ where
             crate::gossip::NetworkPeerControl,
         >,
     >,
+    top_of_block: Option<crate::top_of_block::Actor<TContext>>,
 }
 
 impl<TContext, TBlocker, TPeerManager> Engine<TContext, TBlocker, TPeerManager>
@@ -417,6 +433,7 @@ where
     TBlocker: Blocker<PublicKey = PublicKey> + Sync,
     TPeerManager: AddressableManager<PublicKey = PublicKey> + Sync,
 {
+    #[expect(clippy::too_many_arguments, reason = "one argument per p2p channel")]
     pub fn start(
         mut self,
         votes_network: (
@@ -443,6 +460,10 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
+        top_of_block_channel: Option<(
+            impl Sender<PublicKey = PublicKey>,
+            impl Receiver<PublicKey = PublicKey>,
+        )>,
     ) -> Handle<eyre::Result<()>> {
         spawn_cell!(
             self.context,
@@ -453,10 +474,12 @@ where
                 broadcast_network,
                 marshal_network,
                 dkg_channel,
+                top_of_block_channel,
             )
         )
     }
 
+    #[expect(clippy::too_many_arguments, reason = "one argument per p2p channel")]
     async fn run(
         self,
         votes_channel: (
@@ -483,6 +506,10 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
+        top_of_block_channel: Option<(
+            impl Sender<PublicKey = PublicKey>,
+            impl Receiver<PublicKey = PublicKey>,
+        )>,
     ) -> eyre::Result<()> {
         let context = &*self.context;
         let votes_channel = limit_channel(
@@ -575,6 +602,16 @@ where
 
         if let Some(gossip_task) = gossip_task {
             tasks.push(gossip_task);
+        }
+
+        if let (Some(actor), Some(channel)) = (self.top_of_block, top_of_block_channel) {
+            let channel = limit_channel(
+                context,
+                channel,
+                crate::top_of_block::CHANNEL,
+                self.max_message_size,
+            );
+            tasks.push(actor.start(channel));
         }
 
         // Even a clean actor exit (e.g. marshal losing an acknowledgement) must
