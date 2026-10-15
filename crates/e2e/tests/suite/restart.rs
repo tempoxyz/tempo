@@ -20,7 +20,7 @@ use tracing::debug;
 
 use crate::{
     Setup, connect_execution_peers, connect_execution_to_peers, get_pipeline_runs,
-    metrics::{Metrics, MetricsExt, wait_for_metrics},
+    metrics::{Metrics, MetricsExt, wait_for_metrics_with_interval},
     setup_validators,
 };
 
@@ -135,7 +135,8 @@ fn validator_catches_up_to_network_during_epoch() {
 fn validator_catches_up_with_gap_of_one_epoch() {
     let _ = tempo_eyre::install();
 
-    let epoch_length = 30;
+    // Keep the epoch longer than the default 20-block marshal repair batch.
+    let epoch_length = 21;
     RestartSetup {
         epoch_length,
         shutdown_height: epoch_length + 1,
@@ -150,7 +151,8 @@ fn validator_catches_up_with_gap_of_one_epoch() {
 fn validator_catches_up_with_gap_of_three_epochs() {
     let _ = tempo_eyre::install();
 
-    let epoch_length = 30;
+    // Keep the epoch longer than the default 20-block marshal repair batch.
+    let epoch_length = 21;
     RestartSetup {
         epoch_length,
         connect_execution_layer: true,
@@ -302,7 +304,7 @@ impl RestartSetup {
 
 /// Wait for a specific number of validators to reach a target height
 async fn wait_for_height(context: &Context, expected_validators: u32, target_height: u64) {
-    wait_for_metrics(context, |metrics| {
+    wait_for_metrics_with_interval(context, Duration::from_secs(1), |metrics| {
         metrics.consensus_at_height(target_height) == expected_validators as usize
     })
     .await;

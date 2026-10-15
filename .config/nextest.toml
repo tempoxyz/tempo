@@ -9,11 +9,6 @@ test-threads = "num-cpus"
 [profile.ci.junit]
 path = "junit.xml"
 
-# Treat timeout as success while debugging snapshot-restart flakiness.
-[[profile.ci.overrides]]
-filter = "test(can_restart_after_joining_from_snapshot)"
-slow-timeout = { period = "3m", terminate-after = 3, on-timeout = "pass" }
-
 # Heavy e2e tests that flake under resource contention — run exclusively.
 # threads-required = "num-test-threads" reserves all slots, so no other test runs concurrently.
 # Scheduled last to avoid blocking the rest of the suite.
