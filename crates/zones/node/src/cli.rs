@@ -7,7 +7,9 @@ use alloy_provider::{Provider, ProviderBuilder};
 use alloy_signer_local::PrivateKeySigner;
 use clap::{Args, CommandFactory, FromArgMatches};
 use reth_chainspec::EthChainSpec as _;
-use reth_ethereum::cli::Cli;
+use reth_cli_runner::CliRunner;
+use reth_ethereum::cli::{Cli, ExtendedCommand};
+use reth_rpc_server_types::DefaultRpcModuleValidator;
 use reth_tracing::tracing::{info, warn};
 use tempo_alloy::TempoNetwork;
 use tempo_evm::consensus::TempoConsensus;
@@ -20,7 +22,7 @@ use zone_payload::DEFAULT_WITHDRAWAL_BATCH_INTERVAL_BLOCKS;
 
 use crate::{
     ZoneNode, ZoneProverConfig, ZoneRedactedRpcConfig, ZoneSequencerAddOnsConfig, dev::DevCommand,
-    rpc::auth::DEFAULT_MAX_AUTH_TOKEN_VALIDITY_SECS,
+    rpc::auth::DEFAULT_MAX_AUTH_TOKEN_VALIDITY_SECS, state_bloat::InitZoneFromBinaryDump,
 };
 use zone_checker::{CheckerConfig, CheckerExEx, CheckerMode};
 use zone_sequencer::{
@@ -40,13 +42,36 @@ const ZONE_LOG_FILTER_DIRECTIVES: &str = concat!(
 
 /// Tempo Zone CLI entry point.
 pub enum ZoneCli {
-    Node(Box<Cli<ZoneChainSpecParser, ZoneArgs>>),
+    Node(Box<ZoneNodeCli>),
     Dev(Box<DevCommand>),
+}
+
+/// Node CLI with Zone chain parsing and offline state import commands.
+pub type ZoneNodeCli =
+    Cli<ZoneChainSpecParser, ZoneArgs, DefaultRpcModuleValidator, ZoneSubcommand>;
+
+/// Additional offline commands supported by the Zone node.
+#[derive(Debug, clap::Subcommand)]
+pub enum ZoneSubcommand {
+    /// Initialize a fresh database with TIP20 bloat committed in Zone genesis.
+    InitFromBinaryDump(Box<InitZoneFromBinaryDump>),
+}
+
+impl ExtendedCommand for ZoneSubcommand {
+    fn execute(self, runner: CliRunner) -> eyre::Result<()> {
+        match self {
+            Self::InitFromBinaryDump(command) => {
+                let runtime = runner.runtime();
+                runner.run_blocking_until_ctrl_c(command.execute(runtime))?;
+                Ok(())
+            }
+        }
+    }
 }
 
 impl ZoneCli {
     fn command() -> clap::Command {
-        Cli::<ZoneChainSpecParser, ZoneArgs>::command()
+        ZoneNodeCli::command()
             .about("Tempo Zone")
             .subcommand(DevCommand::command())
     }
@@ -95,7 +120,7 @@ impl ZoneCli {
 }
 
 /// Main entry point for the `node` command.
-fn run_node(mut cli: Cli<ZoneChainSpecParser, ZoneArgs>) -> eyre::Result<()> {
+fn run_node(mut cli: ZoneNodeCli) -> eyre::Result<()> {
     prepend_log_filter(&mut cli.logs.log_stdout_filter, ZONE_LOG_FILTER_DIRECTIVES);
     prepend_log_filter(&mut cli.logs.log_file_filter, ZONE_LOG_FILTER_DIRECTIVES);
 
