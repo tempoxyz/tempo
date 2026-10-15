@@ -27,7 +27,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=zones-
 
 # Solidity contracts compiled for shared runtimes, routers, and zone genesis artifacts.
 # Requires the crates/zones/contracts/lib submodules to be checked out.
-FROM debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d AS solidity
+FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587 AS solidity
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl git \
     && rm -rf /var/lib/apt/lists/*
@@ -39,7 +39,7 @@ WORKDIR /app/crates/zones/contracts
 COPY crates/zones/contracts .
 RUN forge build --skip test
 
-FROM debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d AS base
+FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587 AS base
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
