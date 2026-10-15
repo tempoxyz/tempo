@@ -81,6 +81,7 @@ fn is_already_known(err: &RpcError<TransportErrorKind>) -> bool {
         || msg.contains("nonce too low")
 }
 
+#[derive(Clone)]
 pub(super) struct RpcEnv {
     provider: alloy::providers::RootProvider,
     chain_id: u64,
