@@ -32,7 +32,7 @@ jobs:
       id-token: write
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        uses: tempoxyz/gh-actions/actions/secure-runner@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
       # Never check out or execute candidate code in this privileged publisher.
       - name: Resolve candidate and seed owned pending status
         id: candidate
@@ -69,7 +69,7 @@ jobs:
       - name: Detect merge-queue changes
         id: paths
         if: github.event_name == 'merge_group'
-        uses: tempoxyz/gh-actions/actions/changed-paths@c28778f589e9cd5b6e17a395a3203cedbd0f3f6f # 2026-09-28T07-25-04Z-c28778f5
+        uses: tempoxyz/gh-actions/actions/changed-paths@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
         with:
           base: ${{ steps.candidate.outputs.base }}
           head: ${{ steps.candidate.outputs.sha }}
