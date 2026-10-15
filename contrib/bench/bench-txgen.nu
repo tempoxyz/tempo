@@ -278,6 +278,7 @@ def "main run" [
         error make { msg: "--baseline-hardfork and --feature-hardfork must both be provided" }
     }
     let dual_hardfork = $baseline_hardfork != "" and $feature_hardfork != ""
+    let bloat_hardfork = if $dual_hardfork { highest-hardfork [$baseline_hardfork $feature_hardfork] } else { latest-tempo-hardfork }
 
     let baseline_sha = if $baseline == "local" { "local" } else { resolve-git-ref $baseline }
     let feature_sha = if $feature == "local" { "local" } else { resolve-git-ref $feature }
@@ -372,7 +373,7 @@ def "main run" [
         let snapshot_ready = (
             not $force
             and $marker != null
-            and ($marker.bloat_mib | into int) == $bloat
+            and (bloat-matches $marker $bloat $bloat_hardfork)
             and ($marker.accounts | into int) == $genesis_accounts
             and ($marker | get -o txgen_mnemonic | default "") == $txgen_mnemonic
             and ($marker | get -o baseline_hardfork | default "") == ($baseline_hardfork | str upcase)
@@ -419,14 +420,7 @@ def "main run" [
 
             if $bloat > 0 {
                 let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-                if $baseline == "local" {
-                    cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
-                } else {
-                    do {
-                        cd $baseline_wt
-                        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
-                    }
-                }
+                cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --nonce-ring-hardfork $bloat_hardfork --out $bloat_file ...$token_args
             }
 
             for side in [
@@ -440,6 +434,8 @@ def "main run" [
 
             bench-save-and-promote $datadir $meta_dir {
                 bloat_mib: $bloat
+                bloat_version: $BLOAT_VERSION
+                nonce_ring_hardfork: $bloat_hardfork
                 accounts: $genesis_accounts
                 bench_datadir: $datadir
                 txgen_mnemonic: $txgen_mnemonic
@@ -454,7 +450,7 @@ def "main run" [
         let snapshot_ready = (
             not $force
             and $marker != null
-            and ($marker.bloat_mib | into int) == $bloat
+            and (bloat-matches $marker $bloat $bloat_hardfork)
             and ($marker.accounts | into int) == $genesis_accounts
             and ($marker | get -o txgen_mnemonic | default "") == $txgen_mnemonic
             and ($marker | get -o gas_limit | default "") == $gas_limit
@@ -480,20 +476,15 @@ def "main run" [
 
             if $bloat > 0 {
                 let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-                if $baseline == "local" {
-                    cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
-                } else {
-                    do {
-                        cd $baseline_wt
-                        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
-                    }
-                }
+                cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --nonce-ring-hardfork $bloat_hardfork --out $bloat_file ...$token_args
             }
 
             bench-clean-datadir $datadir
             bench-init-db $baseline_tempo $genesis_path_std $datadir $bloat $bloat_file
             bench-save-and-promote $datadir $meta_dir {
                 bloat_mib: $bloat
+                bloat_version: $BLOAT_VERSION
+                nonce_ring_hardfork: $bloat_hardfork
                 accounts: $genesis_accounts
                 bench_datadir: $datadir
                 txgen_mnemonic: $txgen_mnemonic

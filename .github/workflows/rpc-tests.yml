@@ -9,11 +9,13 @@ on:
       - 'crates/node/**'
       - 'crates/primitives/**'
       - 'crates/revm/**'
+      - '.github/workflows/rpc-tests.yml'
   pull_request:
     paths:
       - 'crates/node/**'
       - 'crates/primitives/**'
       - 'crates/revm/**'
+      - '.github/workflows/rpc-tests.yml'
   merge_group:
 
 env:
@@ -22,13 +24,18 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: full
   RUSTC_WRAPPER: "sccache"
+  # Test builds don't need debuginfo; dropping it halves link output and the target dir.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  # rustc links with its bundled lld unless told otherwise; use the mold from setup-mold.
+  # Steps that set RUSTFLAGS ignore this and keep linking with lld.
+  CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
   TEMPO_TESTNET_RPC_URL: ${{ secrets.TEMPO_TESTNET_RPC_URL || 'https://rpc.moderato.tempo.xyz' }}
   TEMPO_DEVNET_RPC_URL: ${{ secrets.TEMPO_DEVNET_RPC_URL || 'https://rpc.devnet.tempoxyz.dev' }}
 
 jobs:
   rpc-tests:
     name: rpc-tests (${{ matrix.network }})
-    runs-on: depot-ubuntu-latest-4
+    runs-on: depot-ubuntu-latest-16
     timeout-minutes: 30
     permissions:
       id-token: write
@@ -51,18 +58,25 @@ jobs:
       - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
       - uses: tempoxyz/gh-actions/actions/setup-mold@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+      - uses: ./.github/actions/native-libs
+        with:
+          cargo-args: -p tempo-node
       - uses: tempoxyz/gh-actions/vendor/taiki-e/install-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
         with:
           tool: nextest@0.9.127
       - name: Build RPC tests
         id: build
         continue-on-error: ${{ matrix.allow_failure }}
-        run: cargo nextest run --profile ci-rpc -E 'package(tempo-node) & binary(it) & test(/test_matrices_${{ matrix.network }}/)' --no-run
+        # Build only the binary the filter selects; without -p/--test nextest builds every
+        # workspace test binary.
+        run: cargo nextest run -p tempo-node --test it --profile ci-rpc -E 'package(tempo-node) & binary(it) & test(/test_matrices_${{ matrix.network }}/)' --no-run
       - name: Run RPC tests
         id: run
         if: steps.build.outcome == 'success'
         continue-on-error: ${{ matrix.allow_failure }}
-        run: cargo nextest run --profile ci-rpc -E 'package(tempo-node) & binary(it) & test(/test_matrices_${{ matrix.network }}/)'
+        env:
+          RUST_LOG: error,alloy_rpc_client=debug,alloy_transport_http=debug,alloy_transport::layers::retry=trace
+        run: cargo nextest run -p tempo-node --test it --profile ci-rpc -E 'package(tempo-node) & binary(it) & test(/test_matrices_${{ matrix.network }}/)'
       - name: Report allowed devnet failure
         if: matrix.allow_failure && (steps.build.outcome == 'failure' || steps.run.outcome == 'failure')
         run: echo '::warning::Devnet RPC tests failed, but this check is allowed to fail so merge queue processing can continue.'

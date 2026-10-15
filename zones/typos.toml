@@ -1,0 +1,24 @@
+[files]
+extend-exclude = [
+    "crates/contracts/lib/**",
+    ".git",
+    "target",
+    "testdata",
+    "Cargo.toml",
+    "Cargo.lock",
+    "*.json",
+    "**/ph.js",
+    "**/tests/**",
+    "**/test/**",
+    "**/*_test.*",
+    "**/*_tests.*",
+]
+
+[default.extend-words]
+ba = "ba"
+multline = "multline"
+froms = "froms"
+Nam = "Nam"
+prool = "prool"
+Prool = "Prool"
+COSE = "COSE"

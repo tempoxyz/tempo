@@ -959,7 +959,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
     };
     let executed_state = tempo_node.executed_state();
 
-    let node_handle = if let Some(rocksdb) = rocksdb {
+    let builder = if let Some(rocksdb) = rocksdb {
         NodeBuilder::new(node_config)
             .with_database(database)
             .with_rocksdb_provider(rocksdb)
@@ -974,15 +974,15 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
                 .merge_configured(TempoConsensusRpc::new(feed_state).into_rpc())?;
         }
         Ok(())
-    })
-    .launch()
-    .await
-    .wrap_err_with(|| {
-        format!(
-            "failed launching node; databasedir: `{}`",
-            datadir.as_ref().display()
-        )
-    })?;
+    });
+    let node_handle = tempo_node_launcher::launch(builder)
+        .await
+        .wrap_err_with(|| {
+            format!(
+                "failed launching node; databasedir: `{}`",
+                datadir.as_ref().display()
+            )
+        })?;
 
     Ok(ExecutionNode {
         node: Box::new(node_handle.node),

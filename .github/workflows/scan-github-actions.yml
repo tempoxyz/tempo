@@ -4,11 +4,15 @@ on:
   pull_request:
     paths:
       - ".github/**"
+      - "zones/docker/**"
+      - "zones/contrib/bench/l1-snapshot.sh"
   push:
     branches:
       - main
     paths:
       - ".github/**"
+      - "zones/docker/**"
+      - "zones/contrib/bench/l1-snapshot.sh"
   schedule:
     - cron: "17 9 * * 1"
   workflow_dispatch:
@@ -28,6 +32,12 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
+      - uses: tempoxyz/gh-actions/vendor/astral-sh/setup-uv@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        with:
+          version: "0.12.16"
+          enable-cache: false
+      - name: Test Zones workflow helpers
+        run: uv run --no-project --with pyyaml python -m unittest discover -s .github/scripts -p 'test_zones_*.py'
       - name: Test CI helpers
         run: |
           bash .github/scripts/bench-state-test.sh

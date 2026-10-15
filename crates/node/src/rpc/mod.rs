@@ -92,7 +92,6 @@ pub trait TempoEthApiBounds:
         Primitives = TempoPrimitives,
         Pool: TempoTransactionPoolExt<Transaction: PoolTransaction<Pooled = TempoTxEnvelope>>,
         Evm: ConfigureEvm<
-            Primitives = TempoPrimitives,
             BlockExecutorFactory: BlockExecutorFactory<
                 EvmFactory: EvmFactory<
                     Tx = TempoTxEnv,
@@ -115,7 +114,6 @@ impl<N> TempoEthApiBounds for N where
             Primitives = TempoPrimitives,
             Pool: TempoTransactionPoolExt<Transaction: PoolTransaction<Pooled = TempoTxEnvelope>>,
             Evm: ConfigureEvm<
-                Primitives = TempoPrimitives,
                 BlockExecutorFactory: BlockExecutorFactory<
                     EvmFactory: EvmFactory<
                         Tx = TempoTxEnv,
@@ -144,10 +142,7 @@ impl<N> TempoEthApiBounds for N where
 /// This type implements the [`FullEthApi`](reth_rpc_eth_api::helpers::FullEthApi) by implemented
 /// all the `Eth` helper traits and prerequisite traits.
 #[derive(Debug, Clone)]
-pub struct TempoEthApi<N>
-where
-    N: TempoEthApiBounds,
-{
+pub struct TempoEthApi<N: RpcNodeCore<Primitives = TempoPrimitives>> {
     /// Gateway to node's core components.
     inner: EthApi<N, DynRpcConverter<N::Evm, TempoNetwork>>,
 }
@@ -598,7 +593,6 @@ where
             Evm = <N as RpcNodeCore>::Evm,
         > + FullNodeTypes<Provider = <N as RpcNodeCore>::Provider>
         + TempoEthApiBounds,
-    <N as RpcNodeCore>::Provider: ChainSpecProvider<ChainSpec = <N::Types as NodeTypes>::ChainSpec>,
     <<N as RpcNodeCore>::Evm as ConfigureEvm>::NextBlockEnvCtx: BuildPendingEnv<TempoHeader>,
     <N::Types as NodeTypes>::ChainSpec: Hardforks + EthereumHardforks,
 {

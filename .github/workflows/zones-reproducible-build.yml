@@ -1,0 +1,36 @@
+name: Zones Reproducible Build
+
+# Builds and hashes the byte-deterministic `tempo-zone` binary via the shared
+# reusable workflow in tempoxyz/gh-actions.
+
+permissions: {}
+
+concurrency:
+  group: zones-reproducible-build-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
+on:
+  push:
+    branches: [main]
+
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref (branch, tag, or full SHA) to build reproducibly"
+        type: string
+        required: false
+        default: "main"
+
+jobs:
+  build:
+    if: >-
+      github.repository == 'tempoxyz/tempo' &&
+      (github.event_name == 'workflow_dispatch' || vars.ZONES_REPRODUCIBLE_ENABLED == 'true')
+    uses: tempoxyz/gh-actions/.github/workflows/reproducible-build.yml@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      binary-name: tempo-zone
+      build-script: ./zones/scripts/reproducible-build.sh
+      ref: ${{ inputs.ref }}

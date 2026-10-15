@@ -1,0 +1,46 @@
+chain_id: ${ZONES_BENCH_EXPECTED_L1_CHAIN_ID}
+
+gas:
+  max_fee_per_gas: ${ZONES_BENCH_L1_MAX_FEE_PER_GAS}
+  max_priority_fee_per_gas: ${ZONES_BENCH_L1_MAX_PRIORITY_FEE_PER_GAS}
+
+accounts:
+  control:
+    mnemonic: "${ZONES_BENCH_MNEMONIC}"
+    range: [${ZONES_BENCH_CONTROL_ACCOUNT_INDEX}, ${ZONES_BENCH_CONTROL_ACCOUNT_END}]
+
+artifacts:
+  TIP20: abis/tip20.json
+  ZonePortal: abis/neobank-zone-portal.json
+
+templates:
+  control_portal_approval:
+    type: tempo
+    from: { var: account.ref }
+    gas_limit: ${ZONES_BENCH_APPROVAL_GAS_LIMIT}
+    fee_token: "${ZONES_BENCH_TOKEN}"
+    call:
+      to: "${ZONES_BENCH_TOKEN}"
+      abi: TIP20
+      function: "approve(address,uint256)"
+      args:
+        - "${L1_PORTAL_ADDRESS}"
+        - "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+
+  bootstrap_deposit:
+    type: tempo
+    from: { var: account.ref }
+    gas_limit: ${ZONES_BENCH_DEPOSIT_GAS_LIMIT}
+    fee_token: "${ZONES_BENCH_TOKEN}"
+    call:
+      to: "${L1_PORTAL_ADDRESS}"
+      abi: ZonePortal
+      function: "deposit(address,uint128,uint256,(bytes32,uint8,bytes,bytes12,bytes16),address)"
+      args:
+        - "${ZONES_BENCH_TOKEN}"
+        - ${ZONES_BENCH_BOOTSTRAP_DEPOSIT_AMOUNT}
+        - { var: encryption.keyIndex }
+        - { var: encryption.encrypted }
+        - { var: account.address }
+
+mix: []

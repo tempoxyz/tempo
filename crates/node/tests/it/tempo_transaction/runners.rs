@@ -1201,7 +1201,11 @@ pub(crate) async fn run_raw_case<E: TestEnv>(
             .await?;
 
             if matches!(test_case.expected, ExpectedOutcome::Revert) {
-                let nonce_after = env.provider().get_transaction_count(root_addr).await?;
+                let nonce_after = settled(
+                    || async { Ok(env.provider().get_transaction_count(root_addr).await?) },
+                    |nonce| *nonce > nonce_before,
+                )
+                .await?;
                 assert_eq!(
                     nonce_after,
                     nonce_before + 1,
@@ -2055,17 +2059,24 @@ pub(super) async fn run_authorization_list_scenario<E: TestEnv>(env: &mut E) -> 
     assert_eq!(receipt["status"].as_str(), Some("0x1"));
 
     // Verify AFTER state: delegation code
-    let auth1_code_after = env.provider().get_code_at(auth1_addr).await?;
+    let provider = env.provider();
+    let code_after = |addr| {
+        settled(
+            move || async move { Ok(provider.get_code_at(addr).await?) },
+            |code: &Bytes| !code.is_empty(),
+        )
+    };
+    let auth1_code_after = code_after(auth1_addr).await?;
     verify_delegation_code(
         &auth1_code_after,
         delegate_address,
         "Authority 1 (Secp256k1)",
     );
 
-    let auth2_code_after = env.provider().get_code_at(auth2_addr).await?;
+    let auth2_code_after = code_after(auth2_addr).await?;
     verify_delegation_code(&auth2_code_after, delegate_address, "Authority 2 (P256)");
 
-    let auth3_code_after = env.provider().get_code_at(auth3_addr).await?;
+    let auth3_code_after = code_after(auth3_addr).await?;
     verify_delegation_code(
         &auth3_code_after,
         delegate_address,
@@ -2154,7 +2165,11 @@ pub(super) async fn run_keychain_auth_list_skipped_scenario<E: TestEnv>(
         status, "0x1",
         "Keychain-auth-list tx should succeed (auth skipped, not rejected)"
     );
-    let sender_nonce_after = env.provider().get_transaction_count(sender_addr).await?;
+    let sender_nonce_after = settled(
+        || async { Ok(env.provider().get_transaction_count(sender_addr).await?) },
+        |nonce| *nonce > sender_nonce_before,
+    )
+    .await?;
     assert_eq!(
         sender_nonce_after,
         sender_nonce_before + 1,
@@ -2755,7 +2770,11 @@ pub(super) async fn run_create_contract_address_scenario<E: TestEnv>(
         "Contract address should be computed from nonce {nonce}"
     );
 
-    let deployed_code = env.provider().get_code_at(actual_contract_address).await?;
+    let deployed_code = settled(
+        || async { Ok(env.provider().get_code_at(actual_contract_address).await?) },
+        |code| !code.is_empty(),
+    )
+    .await?;
     assert!(!deployed_code.is_empty(), "Contract should be deployed");
 
     let mut expected_code = [0u8; 32];
