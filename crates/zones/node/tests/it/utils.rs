@@ -10,6 +10,7 @@ use alloy_sol_types::{SolCall, SolEvent, SolValue};
 use commonware_codec::Encode as _;
 use commonware_cryptography::{Signer as _, ed25519::PrivateKey as Ed25519PrivateKey};
 use eyre::WrapErr;
+use futures::future::try_join_all;
 use k256::SecretKey;
 use p256::ecdsa::SigningKey as P256SigningKey;
 use reth_node_api::FullNodeComponents;
@@ -4104,14 +4105,13 @@ async fn start_real_p2p_cluster_inner(
     }
     let _ = std::fs::remove_dir_all(&config_dir);
 
-    let mut nodes = Vec::with_capacity(active_nodes);
-    for (index, config) in configs.into_iter().take(active_nodes).enumerate() {
-        let additional_decryption_keys = if index == 0 {
-            Vec::new()
-        } else {
-            vec![SecretKey::from(attestation_signers[0].credential())]
-        };
-        nodes.push(
+    let nodes = try_join_all(configs.into_iter().take(active_nodes).enumerate().map(
+        |(index, config)| {
+            let additional_decryption_keys = if index == 0 {
+                Vec::new()
+            } else {
+                vec![SecretKey::from(attestation_signers[0].credential())]
+            };
             ZoneTestNode::launch_with_genesis_and_withdrawal_batch_interval_and_decryption_keys(
                 l1_rpc_urls[index].clone(),
                 portal_address,
@@ -4124,9 +4124,9 @@ async fn start_real_p2p_cluster_inner(
                 additional_decryption_keys,
                 prover_config.clone(),
             )
-            .await?,
-        );
-    }
+        },
+    ))
+    .await?;
 
     Ok(RealP2pClusterParts {
         cluster: RealP2pCluster {
