@@ -51,6 +51,11 @@ jobs:
       - uses: ./.github/actions/native-libs # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
         with:
           cargo-args: --workspace --all-features
+      - name: Cache Rust dependencies
+        uses: tempoxyz/gh-actions/vendor/Swatinem/rust-cache@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
+        with:
+          prefix-key: v1-clippy-deps
+          cache-bin: false
       - name: Run clippy on runtime targets
         run: cargo clippy --workspace --lib --bins --all-features --locked
         env:
