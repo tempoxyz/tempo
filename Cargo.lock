@@ -13847,6 +13847,7 @@ dependencies = [
  "reth-primitives-traits",
  "reth-provider",
  "reth-prune-types",
+ "reth-rpc-eth-api",
  "reth-rpc-server-types",
  "reth-static-file-types",
  "reth-storage-api",
@@ -13869,6 +13870,7 @@ dependencies = [
  "tempo-ext",
  "tempo-eyre",
  "tempo-faucet",
+ "tempo-metabinary",
  "tempo-node",
  "tempo-node-launcher",
  "tempo-precompiles",
@@ -14231,6 +14233,25 @@ dependencies = [
  "paste",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "tempo-metabinary"
+version = "1.16.0"
+dependencies = [
+ "alloy-eips",
+ "alloy-primitives",
+ "eyre",
+ "futures",
+ "jsonrpsee",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tempo-hardfork",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]

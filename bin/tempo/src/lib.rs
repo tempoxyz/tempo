@@ -27,10 +27,14 @@ use opentelemetry_otlp as _;
 
 pub mod cli;
 mod defaults;
+mod eras;
 mod follow;
+mod history;
 mod overrides;
 pub mod p2p_proxy;
+mod re_execute;
 pub mod regenesis;
+pub mod rpc_only;
 pub mod shadow_replay;
 mod snapshot_download;
 mod snapshot_manifest;
@@ -61,7 +65,9 @@ use futures::{
     future::{Either, FusedFuture as _},
 };
 use reth_cli_runner::CliRunner;
-use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
+use reth_ethereum::{
+    chainspec::EthChainSpec as _, cli::Commands, rpc::builder::config::RethRpcServerConfig as _,
+};
 use reth_network_api::Peers;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
 use std::{sync::Arc, thread};
@@ -141,6 +147,15 @@ pub fn tempo_main() -> eyre::Result<()> {
     tempo_main_with(TempoOverrides::default())
 }
 
+/// The Tempo CLI, with `snapshot-manifest` and `download` replaced by Tempo's wrappers.
+/// They wrap the Reth variants, so they cannot be added without colliding.
+fn tempo_command() -> clap::Command {
+    TempoCli::command()
+        .about("Tempo")
+        .mut_subcommand("snapshot-manifest", |_| snapshot_manifest::Args::command())
+        .mut_subcommand("download", |_| snapshot_download::Args::command())
+}
+
 /// Runs the Tempo node CLI with programmatic startup overrides.
 ///
 /// This is the embedding entrypoint for binaries that want the standard Tempo
@@ -174,14 +189,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
     tempo_node::init_version_metadata();
     defaults::init_defaults();
 
-    // `tempo snapshot-manifest` and `tempo download` wrap the Reth variants, so they
-    // cannot be added without colliding. Mutate those subcommands with the wrapped ones.
-    let matches = match TempoCli::command()
-        .about("Tempo")
-        .mut_subcommand("snapshot-manifest", |_| snapshot_manifest::Args::command())
-        .mut_subcommand("download", |_| snapshot_download::Args::command())
-        .try_get_matches_from(std::env::args_os())
-    {
+    let matches = match tempo_command().try_get_matches_from(std::env::args_os()) {
         Ok(matches) => matches,
         Err(err) => {
             if err.kind() == clap::error::ErrorKind::InvalidSubcommand {
@@ -207,6 +215,15 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             }
 
             err.exit();
+        }
+    };
+
+    // Frozen eras re-execute their blocks in their own workers; the live binary continues after them.
+    let matches = match re_execute::prepare(&matches, std::env::args_os().collect())? {
+        std::ops::ControlFlow::Break(()) => return Ok(()),
+        std::ops::ControlFlow::Continue(None) => matches,
+        std::ops::ControlFlow::Continue(Some(args)) => {
+            tempo_command().try_get_matches_from(args)?
         }
     };
 
@@ -245,6 +262,10 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
     };
 
     apply_tempo_cli_overrides(&mut cli)?;
+
+    let std::ops::ControlFlow::Continue(needs_history_anchor) = history::prepare(&cli)? else {
+        return Ok(());
+    };
 
     if let Commands::Node(node_cmd) = &cli.command
         && node_cmd.engine.share_sparse_trie_with_payload_builder
@@ -375,6 +396,22 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
         let runner = commonware_runtime::tokio::Runner::new(runtime_config);
         let ret = runner.start(async move |ctx| {
+            let node = Arc::new(node);
+            if needs_history_anchor {
+                let upstream = args
+                    .follow
+                    .as_ref()
+                    .unwrap_or(&follow::FollowMode::Auto)
+                    .resolve_url(&node.chain_spec())
+                    .ok_or_eyre("historical handoff requires a consensus RPC upstream")?;
+                tokio::select! {
+                    result = tempo_consensus::storage::bootstrap(
+                        ctx.child("history"), args.consensus.network_identity(), &node, &upstream,
+                        args.follow_upstream_request_timeout.into_duration(),
+                    ) => result?,
+                    () = shutdown_token_clone.cancelled() => return Ok(()),
+                }
+            }
             let mut metrics_server = tempo_consensus::metrics::install(
                 ctx.child("metrics"),
                 args.consensus.metrics_address,
@@ -412,7 +449,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                     args.consensus,
                     follow_url,
                     args.follow_upstream_request_timeout.into_duration(),
-                    Arc::new(node),
+                    node,
                     cl_feed_state_clone,
                     gossip_transport,
                 ))
@@ -420,7 +457,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                 Either::Right(run_consensus_stack(
                     ctx.child("consensus"),
                     args.consensus,
-                    Arc::new(node),
+                    node,
                     executed_state,
                     cl_feed_state_clone,
                     gossip_transport,
@@ -465,6 +502,20 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         |spec: Arc<TempoChainSpec>| (TempoEvmConfig::new(spec.clone()), TempoConsensus::new(spec));
 
     cli.run_with_components::<TempoNode>(components, async move |builder, args| {
+        let chain = &builder.config().chain;
+        let era_runtime = eras::release_schedule(chain)?
+            .map(|schedule| {
+                let datadir = &builder.config().datadir;
+                eras::EraRuntime::new(
+                    schedule,
+                    chain,
+                    builder.config().datadir().data_dir().to_owned(),
+                    datadir.static_files_path.clone(),
+                    datadir.rocksdb_path.clone(),
+                    builder.config().rpc.eth_config(),
+                )
+            })
+            .transpose()?;
         if let Some(value) = args.consensus.message_backlog {
             warn!(
                 flag = "--consensus.message-backlog",
@@ -555,6 +606,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             }
         });
         let executed_state = tempo_node.executed_state();
+        let rpc_era_runtime = era_runtime.clone();
 
         let NodeHandle {
             node,
@@ -590,6 +642,10 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                         let consensus_rpc = TempoConsensusRpc::new(cl_feed_state);
                         ctx.modules.merge_configured(consensus_rpc.into_rpc())
                             .wrap_err("failed to register consensus rpc module")?;
+                    }
+
+                    if let Some(runtime) = rpc_era_runtime {
+                        runtime.install(ctx.modules, ctx.registry.eth_api().clone())?;
                     }
 
                     Ok(())
@@ -672,6 +728,12 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             }
         }
 
+        if let Some(runtime) = era_runtime
+            && let Err(error) = runtime.shutdown().await
+        {
+            warn!(%error, "failed to reap historical RPC workers");
+        }
+
         #[cfg(feature = "pyroscope")]
         if let Some(agent) = pyroscope_agent {
             agent.shutdown();
@@ -706,27 +768,25 @@ pub(crate) fn tmpfs_tempdir() -> tempfile::TempDir {
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        TempoArgs, TempoChainSpec, TempoCli, TempoHardfork, apply_tempo_cli_overrides, defaults,
+        follow::FollowMode, snapshot_download,
+    };
+    use alloy_genesis::GenesisAccount;
+    use alloy_primitives::{Address, B256, Bytes, address};
+    use clap::{CommandFactory, FromArgMatches, Parser};
+    use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
     use std::{
         collections::BTreeMap,
         sync::{Arc, Once},
         time::Duration,
     };
-
-    use alloy_genesis::GenesisAccount;
-    use alloy_primitives::{Address, B256, Bytes, address};
-    use clap::{CommandFactory, FromArgMatches, Parser};
-
-    use super::{
-        TempoArgs, TempoChainSpec, TempoCli, TempoHardfork, apply_tempo_cli_overrides, defaults,
-        follow::FollowMode, snapshot_download,
-    };
-    use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
     use tempo_contracts::precompiles::{
         ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
         ZONE_VERIFIER_ADDRESS, initial_zone_factory_config,
     };
 
-    fn init_defaults_once() {
+    pub(super) fn init_defaults_once() {
         static INIT: Once = Once::new();
         INIT.call_once(defaults::init_defaults);
     }

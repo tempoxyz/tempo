@@ -1,12 +1,3 @@
-use std::{
-    fs::OpenOptions,
-    io::Write as _,
-    net::{IpAddr, SocketAddr},
-    path::{Path, PathBuf},
-    str::FromStr,
-    sync::Arc,
-};
-
 use alloy::hex::ToHexExt;
 use alloy_network::EthereumWallet;
 use alloy_primitives::{Address, B256, Bytes};
@@ -33,6 +24,14 @@ use reth_chainspec::EthChainSpec;
 use reth_cli_runner::CliRunner;
 use reth_ethereum_cli::ExtendedCommand;
 use serde::{Deserialize, Serialize};
+use std::{
+    fs::OpenOptions,
+    io::Write as _,
+    net::{IpAddr, SocketAddr},
+    path::{Path, PathBuf},
+    str::FromStr,
+    sync::Arc,
+};
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_consensus_config::{SigningKey, SigningKeyPassphrase};
@@ -84,6 +83,9 @@ pub enum TempoSubcommand {
     /// Replay historical canonical blocks under candidate hardfork rules.
     ShadowReplay(Box<shadow_replay::ShadowReplay>),
 
+    /// Serve private RPC over an existing database without running a node.
+    RpcOnly(Box<crate::rpc_only::RpcOnly>),
+
     /// Install an extension (e.g., `tempo add wallet`).
     #[command(
         override_usage = "tempo add <EXT> [VERSION]",
@@ -133,6 +135,11 @@ impl ExtendedCommand for TempoSubcommand {
                 Ok(())
             }
             Self::ShadowReplay(cmd) => {
+                let runtime = runner.runtime();
+                runner.run_blocking_until_ctrl_c(cmd.execute(runtime))?;
+                Ok(())
+            }
+            Self::RpcOnly(cmd) => {
                 let runtime = runner.runtime();
                 runner.run_blocking_until_ctrl_c(cmd.execute(runtime))?;
                 Ok(())

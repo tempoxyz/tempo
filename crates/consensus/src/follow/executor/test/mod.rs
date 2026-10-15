@@ -130,9 +130,9 @@ fn block_is_executed_canonicalized_acknowledged_and_advances_floor_to_deep_candi
 
         let block = make_block_at_round(block_height, B256::with_last_byte(20), round(1));
         let block_hash = block.digest().0;
-        let (ack, waiter) = Exact::handle();
-        assert!(mailbox.report(Update::Block(block.into(), ack)).accepted());
-        waiter.await.expect("valid payload should be acknowledged");
+        report_block(&mut mailbox, block)
+            .await
+            .expect("valid payload should be acknowledged");
 
         wait_until(&context, || marshal.floor() == Height::new(expected_floor)).await;
 
@@ -183,30 +183,22 @@ fn floor_candidate_uses_execution_depth_and_next_tip_starts_new_cycle() {
             );
         }
 
-        let (ack, waiter) = Exact::handle();
-        assert!(
-            mailbox
-                .report(Update::Block(
-                    make_block_at_round(19, B256::with_last_byte(18), round(1)).into(),
-                    ack,
-                ))
-                .accepted()
-        );
-        waiter.await.expect("valid payload should be acknowledged");
+        report_block(
+            &mut mailbox,
+            make_block_at_round(19, B256::with_last_byte(18), round(1)),
+        )
+        .await
+        .expect("valid payload should be acknowledged");
         context.sleep(Duration::from_millis(1)).await;
         assert_eq!(marshal.floor(), Height::zero());
 
         provider.set_finalized(19, B256::with_last_byte(19), Round::zero());
-        let (ack, waiter) = Exact::handle();
-        assert!(
-            mailbox
-                .report(Update::Block(
-                    make_block_at_round(20, B256::with_last_byte(19), round(2)).into(),
-                    ack,
-                ))
-                .accepted()
-        );
-        waiter.await.expect("valid payload should be acknowledged");
+        report_block(
+            &mut mailbox,
+            make_block_at_round(20, B256::with_last_byte(19), round(2)),
+        )
+        .await
+        .expect("valid payload should be acknowledged");
         wait_until(&context, || marshal.floor() == Height::new(9)).await;
 
         provider.set_finalized(39, B256::with_last_byte(39), Round::zero());
@@ -246,9 +238,9 @@ fn block_at_or_below_finalized_tip_does_not_regress_forkchoice() {
         actor.start();
 
         let block = make_block(finalized_height - 1, B256::with_last_byte(10));
-        let (ack, waiter) = Exact::handle();
-        assert!(mailbox.report(Update::Block(block.into(), ack)).accepted());
-        waiter.await.expect("valid payload should be acknowledged");
+        report_block(&mut mailbox, block)
+            .await
+            .expect("valid payload should be acknowledged");
 
         assert_eq!(provider.payload_count(), 1);
         assert!(provider.forkchoices().is_empty());
@@ -299,9 +291,9 @@ fn floor_does_not_advance_until_its_execution_block_is_durable() {
         );
 
         let block = make_block(block_height, B256::with_last_byte(20));
-        let (ack, waiter) = Exact::handle();
-        assert!(mailbox.report(Update::Block(block.into(), ack)).accepted());
-        waiter.await.expect("valid payload should be acknowledged");
+        report_block(&mut mailbox, block)
+            .await
+            .expect("valid payload should be acknowledged");
         context.sleep(Duration::from_millis(1)).await;
 
         assert_eq!(marshal.floor(), Height::zero());
@@ -329,9 +321,7 @@ fn invalid_payload_exits_without_acknowledging_or_canonicalizing() {
         let actor_handle = actor.start();
 
         let block = make_block(1, B256::with_last_byte(1));
-        let (ack, waiter) = Exact::handle();
-        assert!(mailbox.report(Update::Block(block.into(), ack)).accepted());
-
+        let waiter = report_block(&mut mailbox, block);
         assert!(waiter.await.is_err(), "invalid payload must cancel its ack");
         actor_handle
             .await
@@ -362,9 +352,7 @@ fn forkchoice_failure_exits_without_acknowledging_block() {
         let actor_handle = actor.start();
 
         let block = make_block(1, B256::with_last_byte(1));
-        let (ack, waiter) = Exact::handle();
-        assert!(mailbox.report(Update::Block(block.into(), ack)).accepted());
-
+        let waiter = report_block(&mut mailbox, block);
         assert!(waiter.await.is_err(), "rejected FCU must cancel the ack");
         actor_handle
             .await
@@ -475,28 +463,12 @@ fn tip_drives_forkchoice_by_round() {
 #[test_traced]
 fn delayed_tip_does_not_regress_newer_block_forkchoice() {
     deterministic::Runner::default().start(|context| async move {
-        let current = Digest(B256::with_last_byte(10));
-        let provider = StubExecutionProvider::default();
-        provider.set_finalized(100, current.0, round(10));
+        let (provider, mut mailbox, _) =
+            start_snapshot_executor(context.child("follower_executor"));
         let release_block_forkchoice = provider.pause_next_forkchoice();
-
-        let (actor, mut mailbox) = init(
-            context.child("follower_executor"),
-            Config {
-                execution_provider: provider.clone(),
-                execution_engine: provider.clone(),
-                marshal: StubMarshal::default(),
-                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
-                floor: Height::zero(),
-                fcu_heartbeat_interval: HEARTBEAT_INTERVAL,
-            },
-        );
-        actor.start();
-
-        let block = make_block_at_round(101, current.0, round(13));
+        let block = make_block_at_round(101, digest(100).0, round(13));
         let newest = block.digest();
-        let (ack, waiter) = Exact::handle();
-        let _ = mailbox.report(Update::Block(block.into(), ack));
+        let waiter = report_block(&mut mailbox, block);
         wait_until(&context, || {
             provider.payload_count() == 1 && provider.forkchoices().len() == 1
         })
@@ -712,10 +684,7 @@ fn durable_block_read_failure_does_not_exit_actor() {
             (finalized_height + 2, round(2)),
         ] {
             let block = make_block_at_round(block_height, B256::with_last_byte(20), block_round);
-            let (ack, waiter) = Exact::handle();
-            assert!(mailbox.report(Update::Block(block.into(), ack)).accepted());
-
-            waiter
+            report_block(&mut mailbox, block)
                 .await
                 .expect("durability read errors must not stop block execution");
 
@@ -731,23 +700,8 @@ fn durable_block_read_failure_does_not_exit_actor() {
 #[test_traced]
 fn startup_uses_execution_finalized_tip_without_immediate_forkchoice() {
     deterministic::Runner::default().start(|context| async move {
-        let provider = StubExecutionProvider::default();
-        let finalized_hash = B256::with_last_byte(10);
-        provider.set_finalized(EPOCH_LENGTH.get(), finalized_hash, round(10));
-
-        let (actor, _mailbox) = init(
-            context.child("follower_executor"),
-            Config {
-                execution_provider: provider.clone(),
-                execution_engine: provider.clone(),
-                marshal: StubMarshal::default(),
-                epoch_strategy: FixedEpocher::new(EPOCH_LENGTH),
-                floor: Height::zero(),
-                fcu_heartbeat_interval: HEARTBEAT_INTERVAL,
-            },
-        );
-
-        actor.start();
+        let (provider, _mailbox, _) = start_snapshot_executor(context.child("follower_executor"));
+        let finalized_hash = digest(100).0;
 
         context.sleep(Duration::from_millis(1)).await;
         assert!(provider.forkchoices().is_empty());

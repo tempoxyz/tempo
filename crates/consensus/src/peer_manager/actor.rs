@@ -1,10 +1,3 @@
-use std::{
-    collections::{HashMap, hash_map::Entry},
-    pin::Pin,
-    sync::Arc,
-    time::Duration,
-};
-
 use alloy_consensus::{BlockHeader as _, Sealable as _};
 use alloy_primitives::B256;
 use commonware_codec::ReadExt as _;
@@ -22,6 +15,12 @@ use commonware_runtime::{
 use commonware_utils::{Acknowledgement, ordered};
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::{StreamExt as _, channel::mpsc};
+use std::{
+    collections::{HashMap, hash_map::Entry},
+    pin::Pin,
+    sync::Arc,
+    time::Duration,
+};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
 use tempo_primitives::TempoHeader;
@@ -464,12 +463,6 @@ fn read_header_at_height(
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::HashMap,
-        net::{IpAddr, Ipv4Addr, SocketAddr},
-        sync::Mutex,
-    };
-
     use alloy_consensus::Header;
     use alloy_primitives::{Address as AlloyAddress, B256, Keccak256, U256};
     use commonware_actor::Feedback;
@@ -486,13 +479,16 @@ mod tests {
     use commonware_runtime::{Runner as _, deterministic::Runner};
     use commonware_utils::{N3f1, TryFromIterator as _};
     use rand::SeedableRng as _;
-    use reth_ethereum::evm::revm::{State, database::StateProviderDatabase};
-    use reth_node_builder::ConfigureEvm as _;
     use reth_provider::{
         EvmStateProviderBox, StateProvider as _,
         test_utils::{ExtendedAccount, MockEthProvider},
     };
-    use tempo_node::evm::{TempoEvmConfig, evm::TempoEvm};
+    use std::{
+        collections::HashMap,
+        net::{IpAddr, Ipv4Addr, SocketAddr},
+        sync::Mutex,
+    };
+    use tempo_chainspec::{TempoChainSpec, spec::MODERATO};
     use tempo_precompiles::{
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         validator_config_v2::{IValidatorConfigV2, VALIDATOR_NS_ADD},
@@ -523,14 +519,8 @@ mod tests {
             Ok(Box::new(self.provider.clone().into_evm_state_provider()))
         }
 
-        fn evm_for_block(
-            &self,
-            db: State<StateProviderDatabase<EvmStateProviderBox>>,
-            header: &TempoHeader,
-        ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<EvmStateProviderBox>>>> {
-            TempoEvmConfig::moderato()
-                .evm_for_block(db, header)
-                .map_err(eyre::Report::new)
+        fn chain_spec(&self) -> &TempoChainSpec {
+            &MODERATO
         }
     }
 

@@ -1,0 +1,28 @@
+[package]
+name = "tempo-metabinary"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+alloy-eips = { workspace = true, features = ["serde"] }
+alloy-primitives = { workspace = true, features = ["serde"] }
+eyre.workspace = true
+futures.workspace = true
+jsonrpsee.workspace = true
+libc = "0.2"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tempo-hardfork = { workspace = true, features = ["std", "serde"] }
+tokio.workspace = true
+tokio-util = { workspace = true, features = ["rt"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }

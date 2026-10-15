@@ -14,6 +14,7 @@ publish = false
 exclude = ["crates/nitro-attestation/fuzz"]
 members = [
   "bin/tempo",
+  "bin/tempo-metabinary",
   "bin/tempo-sidecar",
   "crates/alloy",
   "crates/chainspec",
@@ -197,6 +198,7 @@ tempo-state-bloat = { path = "crates/state-bloat" }
 aws-lc-rs = { version = "1.17.0", default-features = false, features = ["alloc", "non-fips", "ring-sig-verify"] }
 tempo-alloy = { path = "crates/alloy" }
 tempo-node = { path = "crates/node" }
+tempo-metabinary = { path = "bin/tempo-metabinary" }
 tempo-node-launcher = { path = "crates/node-launcher" }
 tempo-nitro-attestation = { path = "crates/nitro-attestation", default-features = false }
 tempo-chainspec = { path = "crates/chainspec", default-features = false }

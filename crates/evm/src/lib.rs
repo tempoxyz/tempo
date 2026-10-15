@@ -113,6 +113,14 @@ impl TempoEvmConfig {
         &self.inner
     }
 
+    fn supported_hardfork_at(&self, timestamp: u64) -> Result<TempoHardfork, TempoEvmError> {
+        let spec = self.chain_spec().tempo_hardfork_at(timestamp);
+        if spec < TempoHardfork::MINIMUM_SUPPORTED {
+            return Err(TempoEvmError::UnsupportedHardfork(spec));
+        }
+        Ok(spec)
+    }
+
     /// Returns the moderato EVM config.
     pub fn moderato() -> Self {
         Self::new(Arc::new(TempoChainSpec::moderato()))
@@ -173,7 +181,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 .blob_params_at_timestamp(header.timestamp()),
         );
 
-        let spec = self.chain_spec().tempo_hardfork_at(header.timestamp());
+        let spec = self.supported_hardfork_at(header.timestamp())?;
 
         // Apply TIP-1000 gas params for T1 hardfork.
         //
@@ -231,7 +239,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 .blob_params_at_timestamp(attributes.timestamp),
         );
 
-        let spec = self.chain_spec().tempo_hardfork_at(attributes.timestamp);
+        let spec = self.supported_hardfork_at(attributes.timestamp)?;
 
         // Apply TIP-1000 gas params for T1 hardfork. TIP-1016 is gated by
         // `cfg_env.enable_amsterdam_eip8037`, independent of the T4 hardfork
@@ -386,6 +394,37 @@ mod tests {
             })
             .unwrap();
         assert_eq!(evm_env.block_env.proposer_public_key, Some(proposer));
+    }
+
+    #[test]
+    fn evm_env_executes_only_supported_hardforks() {
+        let evm_config = TempoEvmConfig::new(test_chainspec());
+        for &fork in TempoHardfork::VARIANTS {
+            let reth_chainspec::ForkCondition::Timestamp(timestamp) =
+                evm_config.chain_spec().tempo_fork_activation(fork)
+            else {
+                continue;
+            };
+            let spec = evm_config.chain_spec().tempo_hardfork_at(timestamp);
+            let header = TempoHeader {
+                inner: alloy_consensus::Header {
+                    timestamp,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            match evm_config.evm_env(&header) {
+                Ok(env) => {
+                    assert!(spec >= TempoHardfork::MINIMUM_SUPPORTED, "{spec}");
+                    assert_eq!(env.cfg_env.spec, spec);
+                }
+                Err(error) => assert!(
+                    spec < TempoHardfork::MINIMUM_SUPPORTED
+                        && matches!(error, TempoEvmError::UnsupportedHardfork(f) if f == spec),
+                    "{spec}: {error}"
+                ),
+            }
+        }
     }
 
     /// Test that evm_env sets 30M gas limit cap for T1 hardfork as per [TIP-1000].

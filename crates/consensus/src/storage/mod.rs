@@ -30,7 +30,9 @@ use crate::{
     consensus::{Digest, block::Block},
 };
 
+mod bootstrap;
 pub(crate) mod hybrid;
+pub use bootstrap::bootstrap;
 pub mod snapshot;
 #[cfg(test)]
 mod tests;

@@ -1,12 +1,11 @@
-//! Tests for follow mode.
+//! Tests for follow mode and historical bootstrap.
 //!
-//! These tests verify that a follower node can sync blocks from an upstream
-//! node (validator or another follower) using in-process direct access.
-
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+//! These tests verify syncing from validators or followers and recovering
+//! cached blocks without an upstream.
 
 use crate::{
-    Setup, TestingNode, connect_execution_peers,
+    ExecutionNodeConfig, Setup, TestingNode, connect_execution_peers,
+    consensus_snapshot::write_consensus_snapshot,
     execution_runtime::{ExecutionNode, ExecutionRuntimeHandle, test_db_args},
     metrics::{MetricScope, MetricsExt, wait_for_height},
     setup_validators,
@@ -19,11 +18,20 @@ use commonware_math::algebra::Random as _;
 use commonware_runtime::{
     BufferPooler, Clock, Handle, Metrics as RuntimeMetrics, Pacer, Runner as _, Spawner, Storage,
     deterministic::{self, Context, Runner},
+    tokio as runtime,
 };
 use futures::{channel::oneshot, future::join_all};
-use jsonrpsee::{core::client::ClientT as _, http_client::HttpClientBuilder, rpc_params};
+use jsonrpsee::{
+    RpcModule, core::client::ClientT as _, http_client::HttpClientBuilder, rpc_params,
+    server::ServerBuilder, types::ErrorObjectOwned,
+};
 use rand_core::CryptoRng;
-use reth_ethereum::provider::BlockIdReader as _;
+use reth_db::Database as _;
+use reth_ethereum::provider::{
+    BlockIdReader as _, BlockNumReader as _, ChainStateBlockReader as _,
+    DatabaseProviderFactory as _,
+};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tempo_consensus::{feed::FeedStateHandle, follow};
 use tempo_node::rpc::consensus::{ConsensusFeed as _, Event, Query, types::Response};
 
@@ -200,7 +208,7 @@ impl FollowerBuilder {
     }
 
     /// Fully consume a stopped validator and donate its consensus partition
-    /// (`uid`) and execution-layer state to the follower being built.
+    /// and execution-layer state to the follower being built.
     ///
     /// The donor must already be stopped; both `consensus_handle` and
     /// `execution_node` must be `None`.
@@ -215,7 +223,7 @@ impl FollowerBuilder {
         );
 
         Self {
-            partition_prefix: Some(donor.uid.clone()),
+            partition_prefix: Some(donor.partition_prefix.clone()),
             donor: Some(donor),
             ..self
         }
@@ -370,6 +378,112 @@ impl MetricScope for Follower {
     fn metric_prefix(&self) -> String {
         self.name.clone()
     }
+}
+
+#[test_traced]
+fn historical_bootstrap_recovers_cached_tail_offline() {
+    let _ = tempo_eyre::install();
+    deterministic::Runner::default().start(|mut context| async move {
+        let setup = Setup::new(crate::VERIFICATION_MODE)
+            .how_many_signers(1)
+            .epoch_length(EPOCH_LENGTH);
+        let (mut validators, execution_runtime) = setup_validators(&mut context, setup).await;
+        let reference = &mut validators[0];
+        reference.start(&context).await;
+        wait_for_height(&context, reference, 30).await;
+        reference.stop_consensus().await;
+        let floor = reference
+            .feed_state
+            .get_finalization(Query::Latest)
+            .await
+            .unwrap();
+        assert!(floor.epoch > 0, "exercise a non-genesis boundary");
+        let handle = execution_runtime.handle();
+        let config = ExecutionNodeConfig::generate();
+        let storage = tempfile::tempdir().unwrap();
+
+        for (name, offline) in [("history", false), ("history-replay", true)] {
+            let database =
+                reth_db::init_db(handle.nodes_dir().join(name).join("db"), test_db_args())
+                    .unwrap()
+                    .with_metrics();
+            let target = handle
+                .spawn_node(name, config.clone(), database.clone(), None)
+                .await
+                .unwrap();
+            if !offline {
+                target
+                    .connect_peer(reference.execution_node.as_ref().unwrap())
+                    .await;
+            }
+            let node = target.node.clone();
+            let identity = reference.network_identity.clone();
+            let anchor = floor.clone();
+            let cfg = runtime::Config::default().with_storage_directory(storage.path());
+            std::thread::spawn(move || {
+                runtime::Runner::new(cfg).start(|context| async move {
+                    let (url, _server) = if offline {
+                        ("ws://127.0.0.1:0".to_owned(), None)
+                    } else {
+                        let server = ServerBuilder::default().build("127.0.0.1:0").await.unwrap();
+                        let url = format!("ws://{}", server.local_addr().unwrap());
+                        let mut module = RpcModule::new(anchor);
+                        // RPC nodes may retain only scattered certificates, without boundaries.
+                        module
+                            .register_method("consensus_getFinalization", |params, anchor, _| {
+                                match params.one::<Query>()? {
+                                    Query::Latest => Ok(anchor.clone()),
+                                    Query::Height(_) => Err(ErrorObjectOwned::owned(
+                                        204,
+                                        "boundary certificate unavailable",
+                                        None::<()>,
+                                    )),
+                                }
+                            })
+                            .unwrap();
+                        (url, Some(server.start(module)))
+                    };
+                    tokio::time::timeout(
+                        Duration::from_secs(60),
+                        tempo_consensus::storage::bootstrap(
+                            context,
+                            Some(identity),
+                            &node,
+                            &url,
+                            Duration::from_secs(5),
+                        ),
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap();
+                });
+            })
+            .join()
+            .unwrap();
+
+            let provider = &target.node.provider;
+            let head = provider.canonical_in_memory_state().get_canonical_head();
+            assert_eq!(
+                (head.number(), head.hash()),
+                (floor.block.number(), floor.digest)
+            );
+            let durable = provider.database_provider_ro().unwrap();
+            let finish = durable.best_block_number().unwrap();
+            assert!(durable.last_finalized_block_number().unwrap().unwrap() <= finish);
+            if !offline {
+                // A fresh genesis DB reproduces this state without Reth's shutdown flush.
+                assert_eq!(finish, 0);
+            }
+            drop(durable);
+            target.shutdown().await;
+            drop(database.tx_mut().unwrap());
+
+            if !offline {
+                reference.execution_node.take().unwrap().shutdown().await;
+            }
+        }
+        execution_runtime.stop().unwrap();
+    });
 }
 
 #[test_traced]
@@ -623,6 +737,66 @@ fn follower_bootstraps_from_follower() {
             .get_finalization(Query::Latest)
             .await
             .unwrap();
+    });
+}
+
+#[test_traced]
+fn marshal_starts_from_sparse_certificate_archive_without_boundaries() {
+    let _ = tempo_eyre::install();
+    let setup = Setup::new(crate::VERIFICATION_MODE).epoch_length(EPOCH_LENGTH);
+    let cfg = deterministic::Config::default()
+        .with_seed(setup.seed)
+        .with_timeout(Some(Duration::from_secs(300)));
+    Runner::from(cfg).start(|mut context| async move {
+        let (mut validators, execution_runtime) = setup_validators(&mut context, setup).await;
+        let mut donor = validators.remove(0);
+        join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+        let partition_prefix = "sparse-marshal-startup";
+        let mut anchors = Vec::new();
+
+        // Reuse snapshot selection to copy only two non-boundary tip certificates.
+        for target in [12, 32] {
+            donor.start(&context).await;
+            crate::connect_execution_to_peers(&donor, &validators).await;
+            wait_for_height(&context, &donor, target).await;
+            let provider = donor.execution_provider();
+            donor.stop().await;
+            let state =
+                write_consensus_snapshot(&context, &donor, provider, partition_prefix).await;
+            assert_eq!(
+                state.anchor_finalization_height,
+                state.tip_finalization_height
+            );
+            assert_ne!(
+                state.tip_finalization_height % EPOCH_LENGTH,
+                EPOCH_LENGTH - 1
+            );
+            anchors.push((state.tip_finalization_height, state.tip_finalization_digest));
+        }
+        let (first_height, _) = anchors[0];
+        let (tip_height, tip_digest) = anchors[1];
+        assert!(first_height > 1 && tip_height > first_height + 1);
+
+        donor.partition_prefix = partition_prefix.to_owned();
+        let follower = Follower::builder()
+            .runtime(execution_runtime.handle())
+            .donor(donor)
+            .silent_upstream()
+            .follow(&mut context, &validators[0])
+            .await;
+        wait_for_height(&context, &follower, tip_height).await;
+        let latest = follower.feed.get_finalization(Query::Latest).await.unwrap();
+        assert_eq!(latest.digest, tip_digest.0);
+
+        // Read through the running marshal; block 1 and all boundaries stay uncertified.
+        for height in 1..=tip_height {
+            let response = follower.feed.get_finalization(Query::Height(height)).await;
+            if let Some((_, digest)) = anchors.iter().find(|(anchor, _)| *anchor == height) {
+                assert_eq!(response.unwrap().digest, digest.0);
+            } else {
+                assert!(matches!(response, Response::Missing("certificate")));
+            }
+        }
     });
 }
 
