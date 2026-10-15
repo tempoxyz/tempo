@@ -254,7 +254,7 @@ for mode in bundle rollback legacy fresh-failure incomplete; do
     expected="$TMP_ROOT/expected-$mode"
     mkdir -p "$destination" "$package"
     if [[ "$mode" != fresh-failure ]]; then
-        for file in tempo eras/tempo-genesis-t10 tempo-eras.json history/genesis-t10/era.json; do
+        for file in tempo eras/tempo-genesis-t10 tempo-eras.json history/genesis-t10/build-info.json; do
             mkdir -p "$destination/$(dirname "$file")"
             printf 'old %s\n' "$file" > "$destination/$file"
         done
@@ -264,7 +264,7 @@ for mode in bundle rollback legacy fresh-failure incomplete; do
     if [[ "$mode" != legacy ]]; then
         mkdir -p "$package/eras" "$package/history/genesis-t10"
         cp "$GOOD_TEMPO" "$package/eras/tempo-genesis-t10"
-        for file in tempo-eras.json history/genesis-t10/{era.json,build-info.json,verification.json,SHA256SUMS}; do
+        for file in tempo-eras.json history/genesis-t10/{build-info.json,verification.json,SHA256SUMS}; do
             printf 'new %s\n' "$file" > "$package/$file"
         done
     fi

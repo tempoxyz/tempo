@@ -11,7 +11,7 @@ keywords = ["blockchain", "ethereum", "evm", "payments", "tempo"]
 publish = false
 
 [workspace]
-exclude = ["crates/nitro-attestation/fuzz"]
+exclude = ["bin/tempo-metabinary/eras/genesis-t10", "crates/nitro-attestation/fuzz"]
 members = [
   "bin/tempo",
   "bin/tempo-metabinary",

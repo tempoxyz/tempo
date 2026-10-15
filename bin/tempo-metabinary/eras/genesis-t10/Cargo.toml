@@ -1,0 +1,75 @@
+[package]
+name = "tempo-genesis-t10"
+description = "Frozen Tempo execution worker for Genesis through T10"
+version = "0.1.3"
+edition = "2024"
+rust-version = "1.95.0"
+license = "MIT OR Apache-2.0"
+homepage = "https://tempo.xyz"
+repository = "https://github.com/tempoxyz/tempo"
+publish = false
+
+# Read by scripts/bundle-history.py to build, smoke-test, and install the worker.
+[package.metadata.era]
+name = "genesis-t10"
+maximum_hardfork = "T10"
+successor_hardfork = "T11"
+worker_protocol_version = 1
+
+# Built independently: the frozen tree pins its own Reth and must not unify with the live workspace.
+[workspace]
+
+[[bin]]
+name = "tempo-genesis-t10"
+path = "src/main.rs"
+
+# Source and Reth revisions must match the frozen tree exactly; `rev` strings identify Cargo sources.
+[dependencies]
+eyre = "0.6.12"
+reth-cli-util = { git = "https://github.com/paradigmxyz/reth", rev = "faf79fe8219899bc4653889d10fa994f73916c2d" }
+tempo = { git = "https://github.com/tempoxyz/tempo", rev = "325127bd9fc529d9e17b45639c87ffa351312959", features = ["genesis-t10"] }
+
+[dev-dependencies]
+alloy-consensus = { version = "2.5.0", default-features = false }
+alloy-evm = { version = "0.39.0", default-features = false }
+alloy-primitives = { version = "1.7.3", default-features = false }
+reth-evm = { git = "https://github.com/paradigmxyz/reth", rev = "faf79fe8219899bc4653889d10fa994f73916c2d" }
+tempo-chainspec = { git = "https://github.com/tempoxyz/tempo", rev = "325127bd9fc529d9e17b45639c87ffa351312959" }
+tempo-evm = { git = "https://github.com/tempoxyz/tempo", rev = "325127bd9fc529d9e17b45639c87ffa351312959" }
+tempo-primitives = { git = "https://github.com/tempoxyz/tempo", rev = "325127bd9fc529d9e17b45639c87ffa351312959" }
+
+# Profiles copied from the frozen tree; dependencies do not inherit them.
+[profile.dev]
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
+
+[profile.dev.build-override]
+debug = "line-tables-only"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+debug = "none"
+strip = "symbols"
+panic = "unwind"
+codegen-units = 16
+
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"
+strip = "none"
+incremental = true
+
+[profile.maxperf]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+
+[profile.reproducible]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+strip = "none"
+debug = "none"
+panic = "abort"
+incremental = false

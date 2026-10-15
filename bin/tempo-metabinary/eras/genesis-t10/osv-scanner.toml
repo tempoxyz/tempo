@@ -1,0 +1,22 @@
+# The frozen Genesis-T10 worker pins its source and Reth; only patch releases are updated here.
+# These advisories have no compatible fix and match what the root configuration accepts.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0253"
+reason = "lru 0.16 is pinned by the frozen Reth revision; the fix is in 0.18, a breaking upgrade of frozen source."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0141"
+reason = "bincode is unmaintained; transitive via frozen upstream crates."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0388"
+reason = "derivative is unmaintained; transitive via frozen upstream crates."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0436"
+reason = "paste is unmaintained; transitive via frozen upstream crates."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0173"
+reason = "proc-macro-error2 is unmaintained; build-time only, transitive via frozen upstream crates."

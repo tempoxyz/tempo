@@ -358,6 +358,32 @@ jobs:
           shellcheck tempoup/tempoup tempoup/install tempoup/test-tempoup.sh
           ./tempoup/test-tempoup.sh
 
+  history:
+    name: Frozen history worker
+    runs-on: depot-ubuntu-latest-16
+    timeout-minutes: 45
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+      - uses: tempoxyz/gh-actions/actions/setup-mold@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        with:
+          version: v0.15.0
+      - name: Test execution ceiling
+        run: cargo test --locked --manifest-path bin/tempo-metabinary/eras/genesis-t10/Cargo.toml
+        env:
+          CARGO_TARGET_DIR: target/history
+      - name: Build and smoke-test the bundle
+        run: python3 scripts/bundle-history.py --output dist --profile dev
+
   msrv:
     name: MSRV
     runs-on: depot-ubuntu-latest-4
@@ -400,6 +426,7 @@ jobs:
       - cli
       - msrv
       - genesis
+      - history
     timeout-minutes: 30
     steps:
       - name: Secure runner
