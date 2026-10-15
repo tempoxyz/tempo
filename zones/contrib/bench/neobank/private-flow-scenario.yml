@@ -68,7 +68,7 @@ scenario:
         sender_address: { var: account.address }
         recipient: { var: account.address }
         input_token: "${ZONES_BENCH_DLUSD}"
-        fee_token: "${ZONES_BENCH_DLUSD}"
+        fee_token: "${ZONES_BENCH_JOURNEY_ZONE_FEE_TOKEN}"
         amount: ${ZONES_BENCH_WITHDRAWAL_AMOUNT}
         min_vault_assets: ${ZONES_BENCH_WITHDRAWAL_AMOUNT}
         min_vault_shares: ${ZONES_BENCH_WITHDRAWAL_AMOUNT}
@@ -84,7 +84,7 @@ scenario:
         sender_address: { var: account.address }
         recipient: { var: account.address }
         output_token: "${ZONES_BENCH_DLUSD}"
-        fee_token: "${ZONES_BENCH_DLUSD}"
+        fee_token: "${ZONES_BENCH_JOURNEY_ZONE_FEE_TOKEN}"
         amount: { var: earn_deposit.zone_return.processed.args.amount }
         min_vault_assets: ${ZONES_BENCH_WITHDRAWAL_AMOUNT}
         min_output_amount: ${ZONES_BENCH_WITHDRAWAL_AMOUNT}
@@ -104,7 +104,7 @@ scenario:
         template: offramp
         with:
           from: { var: account.ref }
-          fee_token: "${ZONES_BENCH_DLUSD}"
+          fee_token: "${ZONES_BENCH_JOURNEY_ZONE_FEE_TOKEN}"
           call:
             args:
               - "${ZONES_BENCH_DLUSD}"
