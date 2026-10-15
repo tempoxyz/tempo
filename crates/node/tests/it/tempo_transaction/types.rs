@@ -26,14 +26,6 @@ pub(crate) trait TestEnv: Sized {
     /// Currently active hardfork
     fn hardfork(&self) -> TempoHardfork;
 
-    /// Whether this environment should run selector-scoped key auth RPC cases.
-    ///
-    /// Local test nodes exercise the current branch's RPC implementation, while remote networks
-    /// may lag until the relevant hardfork is deployed there.
-    fn supports_scoped_key_auth_rpc(&self) -> bool {
-        true
-    }
-
     /// Fund `addr` with fee tokens so it can transact.
     /// Returns the funded amount.
     async fn fund_account(&mut self, addr: Address) -> eyre::Result<U256>;

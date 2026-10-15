@@ -2,7 +2,6 @@
 
 use std::{
     cmp::Ordering,
-    fmt::Debug,
     sync::{Arc, OnceLock},
 };
 
@@ -67,12 +66,6 @@ use crate::{
     signature_gas::{primitive_signature_verification_gas, tempo_signature_verification_gas},
 };
 
-/// Base gas for KeyAuthorization (22k storage + 5k buffer), signature gas added at runtime
-const KEY_AUTH_BASE_GAS: u64 = 27_000;
-
-/// Gas per spending limit in KeyAuthorization
-const KEY_AUTH_PER_LIMIT_GAS: u64 = 22_000;
-
 /// Rounded buffer for each extra LOG3/no-data event emitted by key authorizations.
 const KEY_AUTH_EXTRA_EVENT_BUFFER: u64 = 1_500;
 
@@ -105,28 +98,19 @@ struct LoadedTxAccessKey {
     key: AuthorizedKey,
 }
 
-/// Counts the scope storage rows that pay the dynamic SSTORE-set path for the active spec.
-///
-/// T3 keeps the broader all-persisted-rows accounting from current main. T4 narrows this to rows
-/// that actually create storage, so repeated same-tx set length rewrites no longer count as fresh
-/// SSTORE-set rows. The helper bookkeeping around scope persistence is charged separately via a
-/// rounded surcharge.
-fn call_scope_storage_slots(
-    auth: &tempo_primitives::transaction::KeyAuthorization,
-    spec: tempo_chainspec::hardfork::TempoHardfork,
-) -> u64 {
+/// Counts storage-creating rows used to persist call scopes.
+fn call_scope_storage_slots(auth: &tempo_primitives::transaction::KeyAuthorization) -> u64 {
     match auth.allowed_calls.as_ref() {
         None => 0,
         Some(scopes) if scopes.is_empty() => 1,
         Some(scopes) => {
-            let is_t4 = spec.is_t4();
             let mut selector_sets = 0u64;
             let mut selectors = 0u64;
             let mut constrained_selectors = 0u64;
             let mut recipients = 0u64;
 
             for scope in scopes {
-                if is_t4 && !scope.selector_rules.is_empty() {
+                if !scope.selector_rules.is_empty() {
                     selector_sets += 1;
                 }
 
@@ -139,35 +123,24 @@ fn call_scope_storage_slots(
                 }
             }
 
-            if is_t4 {
-                // Storage-creating rows only:
-                // - account mode write: 1
-                // - target set values+positions: +2 per target, plus one length slot for the set
-                // - selector set values+positions: +2 per selector, plus one length slot per
-                //   target that persists selectors
-                // - recipient-constrained selectors persist one recipient set length slot each
-                // - recipient set values+positions: +2 per recipient
-                1 + scopes.len() as u64 * 2
-                    + 1
-                    + selectors * 2
-                    + selector_sets
-                    + constrained_selectors
-                    + recipients * 2
-            } else {
-                // All persisted rows:
-                // - account mode write: 1
-                // - each target insertion: 3
-                // - each selector insertion: 3
-                // - recipient-constrained selectors also write recipient set length: +1 per
-                //   selector
-                // - recipient set values+positions: +2 per recipient
-                1 + scopes.len() as u64 * 3 + selectors * 3 + constrained_selectors + recipients * 2
-            }
+            // Storage-creating rows only:
+            // - account mode write: 1
+            // - target set values+positions: +2 per target, plus one length slot for the set
+            // - selector set values+positions: +2 per selector, plus one length slot per
+            //   target that persists selectors
+            // - recipient-constrained selectors persist one recipient set length slot each
+            // - recipient set values+positions: +2 per recipient
+            1 + scopes.len() as u64 * 2
+                + 1
+                + selectors * 2
+                + selector_sets
+                + constrained_selectors
+                + recipients * 2
         }
     }
 }
 
-/// Charges the unpriced scope-helper bookkeeping for T4 key authorizations.
+/// Charges unpriced scope persistence bookkeeping.
 /// The dynamic SSTORE rows are already counted by `call_scope_storage_slots()`. What remains is the
 /// helper work around them: clearing the empty scope tree for fresh keys, target/set maintenance,
 /// selector/set maintenance, and recipient-set writes. We use rounded constants here because the
@@ -277,25 +250,12 @@ fn translate_allowed_calls_for_precompile(
         .collect()
 }
 
-/// Calculates the intrinsic gas cost for a KeyAuthorization.
-///
-/// This is charged before execution as part of transaction validation.
-///
-/// Pre-T1B: Gas = BASE (27k) + signature verification + (22k per spending limit)
-///   On T1/T1A this was double-charged alongside the gas-metered precompile call.
-///
-/// T1B+: Gas = signature verification + SLOAD (existing key check) +
-///   SSTORE (write key) + N × SSTORE (per spending limit)
-///   This is the sole gas accounting — the precompile runs with unlimited gas.
-///
-/// Returns `(total_gas, state_gas)` where `total_gas` includes the state gas portion.
-/// On T4+, each storage-creating SSTORE contributes `sstore_set_state_gas` to state gas
-/// per TIP-1016.
+/// Charges signature verification and each storage-creating key authorization write.
+/// Returns `(regular_gas, state_gas)`; authorization executes with unlimited gas.
 #[inline]
 fn calculate_key_authorization_gas(
     key_auth: &tempo_primitives::transaction::SignedKeyAuthorization,
     gas_params: &GasParams,
-    spec: tempo_chainspec::hardfork::TempoHardfork,
 ) -> (u64, u64) {
     // All signature types pay ECRECOVER_GAS (3k) as the baseline since
     // primitive_signature_verification_gas assumes ecrecover is already in base 21k.
@@ -309,64 +269,36 @@ fn calculate_key_authorization_gas(
         .map(|limits| limits.len() as u64)
         .unwrap_or(0);
 
-    if spec.is_t1b() {
-        // T1B+: Accurate gas matching actual precompile storage operations.
-        // authorize_key does: 1 SLOAD (read existing key) + 1 SSTORE (write key)
-        //   + N SSTOREs (one per spending limit) + 2k buffer (TSTORE + keccak + event)
-        // T5 witness and T6 admin authorizations emit additional LOG3 events with no data.
-        const BUFFER: u64 = 2_000;
-        let sload_cost =
-            gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
+    // Price storage writes directly, with a buffer for transient state, hashing, and events.
+    const BUFFER: u64 = 2_000;
+    let sload_cost =
+        gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
 
-        let limit_slots = if spec.is_t3() {
-            // T3 periodic limits write 2 storage slots per token:
-            // spending_limits[token].remaining + packed {max, period, period_end}
-            num_limits.saturating_mul(2)
-        } else {
-            num_limits
-        };
+    let num_sstores =
+        1 + num_limits.saturating_mul(2) + call_scope_storage_slots(&key_auth.authorization);
+    // Intrinsic-only writes include the portion normally paid through storage credits.
+    let sstore_cost = gas_params
+        .get(GasId::sstore_set_without_load_cost())
+        .saturating_add(STORAGE_CREDIT_VALUE);
 
-        let has_t5_witness = key_auth.has_witness();
-        let mut num_sstores = 1 + limit_slots;
+    let mut regular_gas = sig_gas + sload_cost + sstore_cost * num_sstores + BUFFER;
 
-        if spec.is_t3() {
-            num_sstores += call_scope_storage_slots(&key_auth.authorization, spec);
-        }
-
-        let mut sstore_cost = gas_params.get(GasId::sstore_set_without_load_cost());
-        if spec.is_t7() {
-            // T7 exposes only the SSTORE residual in the gas table. Since key-auth storage is
-            // intrinsic-only, we must also add the creditable portion here.
-            sstore_cost = sstore_cost.saturating_add(STORAGE_CREDIT_VALUE);
-        }
-        let mut regular_gas = sig_gas + sload_cost + sstore_cost * num_sstores + BUFFER;
-
-        if has_t5_witness {
-            regular_gas += sload_cost + KEY_AUTH_EXTRA_EVENT_BUFFER;
-        }
-
-        if spec.is_t6() && key_auth.is_admin() {
-            regular_gas += KEY_AUTH_EXTRA_EVENT_BUFFER;
-        }
-
-        // T4+: include extra gas for call scopes configuration
-        if spec.is_t4() {
-            regular_gas += call_scope_extra_gas(&key_auth.authorization);
-        }
-
-        // TIP-1016: each storage-creating SSTORE also incurs state gas.
-        let state_gas = gas_params
-            .get(GasId::sstore_set_state_gas())
-            .saturating_mul(num_sstores);
-
-        (regular_gas, state_gas)
-    } else {
-        // Pre-T1B: Original heuristic constants
-        (
-            KEY_AUTH_BASE_GAS + sig_gas + num_limits * KEY_AUTH_PER_LIMIT_GAS,
-            0,
-        )
+    if key_auth.has_witness() {
+        regular_gas += sload_cost + KEY_AUTH_EXTRA_EVENT_BUFFER;
     }
+
+    if key_auth.is_admin() {
+        regular_gas += KEY_AUTH_EXTRA_EVENT_BUFFER;
+    }
+
+    regular_gas += call_scope_extra_gas(&key_auth.authorization);
+
+    // TIP-1016: each storage-creating SSTORE also incurs state gas.
+    let state_gas = gas_params
+        .get(GasId::sstore_set_state_gas())
+        .saturating_mul(num_sstores);
+
+    (regular_gas, state_gas)
 }
 
 /// Tempo EVM [`Handler`] implementation with Tempo specific modifications:
@@ -430,11 +362,6 @@ where
         remaining_gas: &mut u64,
         reservoir: u64,
     ) -> Result<Option<FrameResult>, EVMError<DB::Error, TempoInvalidTransaction>> {
-        let spec = *evm.ctx().cfg().spec();
-        if !spec.is_t3() {
-            return Ok(None);
-        }
-
         // Call-scope matching scales with batch size, so it runs under a metered storage provider.
         // This keeps unpaid transaction validation bounded while still failing before the first
         // user call executes.
@@ -804,27 +731,6 @@ where
     type Error = EVMError<DB::Error, TempoInvalidTransaction>;
     type HaltReason = HaltReason;
 
-    /// Overridden transaction-level gas builder that reproduces the pre-T0
-    /// behavior when the initial gas spending exceeds the gas limit.
-    ///
-    /// Upstream's [`Handler::tx_gas`] subtracts the intrinsic gas unguarded,
-    /// which would underflow for pre-T0 (Genesis) transactions that pass
-    /// validation with `gas_limit < intrinsic` (nonce gas is added after
-    /// validation). `TempoEvm::initial_gas_and_reservoir` falls back to
-    /// `(u64::MAX, 0)` in that case, matching the historic behavior.
-    ///
-    /// This is also the last hook that still sees `init_and_floor_gas`, so it
-    /// records whether the intrinsic gas ended up above the gas limit for
-    /// [`Handler::execution`] — see `TempoEvm::intrinsic_gas_exceeds_limit`.
-    #[inline]
-    fn tx_gas(&self, evm: &mut Self::Evm, init_and_floor_gas: &InitialAndFloorGas) -> GasTracker {
-        let tx_gas_limit = evm.ctx_ref().tx().gas_limit();
-        evm.intrinsic_gas_exceeds_limit = evm.ctx_ref().cfg().spec().is_t0()
-            && tx_gas_limit < init_and_floor_gas.initial_total_gas();
-        let (remaining, reservoir) = evm.initial_gas_and_reservoir(init_and_floor_gas);
-        GasTracker::new(tx_gas_limit, remaining, reservoir)
-    }
-
     /// Overridden execution method that handles AA vs standard transactions.
     ///
     /// Dispatches based on transaction type:
@@ -837,16 +743,14 @@ where
         _checkpoint: JournalCheckpoint,
         gas: &mut GasTracker,
     ) -> Result<Option<FrameResult>, Self::Error> {
+        evm.ensure_supported_spec()?;
+
         // Tempo keeps the EIP-2780 runtime gas phase disabled: first-frame
         // creation charges nothing, so the phase checkpoint opened by
         // `pre_execution` (or `run_system_call`) commits immediately. The
         // EIP-7702 delegations applied under that checkpoint stay applied even
         // when execution is skipped below, matching revm 41.
         evm.ctx().journal_mut().checkpoint_commit();
-
-        if let Some(oog) = oog_frame_result_if_intrinsic_exceeds_limit(evm) {
-            return Ok(Some(oog));
-        }
 
         if let Some(tempo_tx_env) = evm.ctx().tx().tempo_tx_env.as_ref() {
             let calls = tempo_tx_env.aa_calls.clone();
@@ -883,32 +787,18 @@ where
         Ok(result_gas)
     }
 
-    /// Applies gas refunds, dropping the EIP-3529 one-fifth refund cap on T7+.
-    ///
-    /// TIP-1060 removes the standard EVM refund cap: the `Refund`-mode
-    /// storage-credit settlement refund and the preserved baseline SSTORE
-    /// refunds are credited to the transaction's gas refund counter in full,
-    /// regardless of the transaction's gas used. Pre-T7 keeps the standard
-    /// capped behavior (`Gas::set_final_refund`).
+    /// TIP-1060 credits the accumulated refund in full, without the EIP-3529 cap.
     #[inline]
     fn refund(
         &self,
-        evm: &mut Self::Evm,
+        _evm: &mut Self::Evm,
         exec_result: &mut FrameResult,
         eip7702_refund: i64,
     ) -> Result<(), Self::Error> {
-        let spec = evm.ctx.cfg.spec;
-        if spec.is_t7() {
-            // No cap: leave the accumulated refund counter untouched after
-            // recording the EIP-7702 auth refund.
-            exec_result.gas_mut().record_refund(eip7702_refund);
-        } else {
-            post_execution::refund(
-                evm.ctx.cfg.gas_params(),
-                exec_result.gas_mut(),
-                eip7702_refund,
-            );
-        }
+        // No cap: leave the accumulated refund counter untouched after
+        // recording the EIP-7702 auth refund.
+        exec_result.gas_mut().record_refund(eip7702_refund);
+
         Ok(())
     }
 
@@ -937,7 +827,6 @@ where
         _gas: &mut GasTracker,
     ) -> Result<Option<u64>, Self::Error> {
         let ctx = &mut evm.ctx;
-        let spec = ctx.cfg.spec;
 
         // Check if this is an AA transaction with an authorization list
         let has_aa_auth_list = ctx
@@ -955,7 +844,7 @@ where
                     .tempo_authorization_list
                     .iter()
                     // T0 hardfork: skip keychain signatures in auth list processing
-                    .filter(|auth| !(spec.is_t0() && auth.signature().is_keychain())),
+                    .filter(|auth| !auth.signature().is_keychain()),
                 &mut ctx.journaled_state,
             )?
         } else {
@@ -1023,8 +912,8 @@ where
 
         let spec = cfg.spec();
 
-        // Only treat as expiring nonce if T1 is active, otherwise treat as regular 2D nonce
-        let is_expiring_nonce = nonce_key == TEMPO_EXPIRING_NONCE_KEY && spec.is_t1();
+        // The reserved nonce key selects expiring replay protection.
+        let is_expiring_nonce = nonce_key == TEMPO_EXPIRING_NONCE_KEY;
 
         // Validate account nonce and code (EIP-3607) using upstream helper
         pre_execution::validate_account_nonce_and_code(
@@ -1049,7 +938,7 @@ where
             init_gas.initial_regular_gas += cfg.gas_params.get(GasId::new_account_cost());
             init_gas.initial_state_gas += cfg.gas_params.new_account_state_gas();
 
-            // do the gas limit check again (include state gas for T4+).
+            // Recheck the gas limit after adding state-dependent intrinsics.
             if tx.gas_limit() < init_gas.initial_total_gas() {
                 return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
                     gas_limit: tx.gas_limit(),
@@ -1073,10 +962,7 @@ where
         if is_expiring_nonce {
             let max_expiry_secs = spec.expiring_nonce_max_expiry_secs();
             let capacity = spec.expiring_nonce_set_capacity();
-            // Expiring nonce transaction replay protection:
-            // - Pre-T1B: use tx_hash for backwards-compatible behavior.
-            // - T1B+: use the sender-scoped tx identifier (keccak256(encode_for_signing || sender))
-            //   to prevent replay via different fee payer signatures.
+            // Scope replay protection to the sender, independent of the fee payer signature.
             let tempo_tx_env = tx
                 .tempo_tx_env
                 .as_ref()
@@ -1089,11 +975,9 @@ where
                 return Err(TempoInvalidTransaction::ExpiringNonceNonceNotZero.into());
             }
 
-            let replay_hash = if spec.is_t1b() {
+            let replay_hash = {
                 tx.unique_tx_identifier()
                     .ok_or(TempoInvalidTransaction::ExpiringNonceMissingTxEnv)?
-            } else {
-                tempo_tx_env.tx_hash
             };
             let valid_before = tempo_tx_env
                 .valid_before
@@ -1314,10 +1198,8 @@ where
                         // Extract the signature type from the inner signature to validate it matches
                         // the key_type stored in the keychain. This prevents using a signature of one
                         // type to authenticate as a key registered with a different type.
-                        // Only validate signature type on T1+ to maintain backward compatibility
-                        // with historical blocks during re-execution.
                         let tx_sig_type = keychain_sig.signature.signature_type().into();
-                        let sig_type = (key_auth.is_some() || spec.is_t1()).then_some(tx_sig_type);
+                        let sig_type = tx_sig_type;
 
                         let key = keychain
                             .validate_keychain_authorization(
@@ -1360,8 +1242,7 @@ where
 
         // T6 stateless signer/account checks run in `validate_env`. This state-aware phase only
         // proves that a non-root sidecar signer is an active admin key for the caller account.
-        if cfg.spec.is_t6()
-            && let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
+        if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
             && let Some(key_auth) = tempo_tx_env.key_authorization.as_ref()
         {
             let auth_signer = key_auth
@@ -1463,18 +1344,16 @@ where
                 });
             }
 
-            if cfg.spec.is_t7() {
-                let keychain_fee_key = if fee_payer == tx.caller {
-                    keychain_fee_key
-                } else {
-                    None
-                };
-                evm.non_creditable_slots.borrow_mut().initialize(
-                    fee_payer,
-                    fee_token,
-                    keychain_fee_key,
-                );
-            }
+            let keychain_fee_key = if fee_payer == tx.caller {
+                keychain_fee_key
+            } else {
+                None
+            };
+            evm.non_creditable_slots.borrow_mut().initialize(
+                fee_payer,
+                fee_token,
+                keychain_fee_key,
+            );
 
             journal.checkpoint_commit();
             evm.collected_fee = gas_balance_spending;
@@ -1487,31 +1366,15 @@ where
         if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
             && let Some(key_auth) = &tempo_tx_env.key_authorization
         {
-            let keychain_checkpoint = if spec.is_t1() {
-                Some(journal.checkpoint())
-            } else {
-                None
-            };
+            journal.checkpoint();
 
             let amsterdam_eip8037_enabled = cfg.enable_amsterdam_eip8037;
             let internals = EvmInternals::new(journal, block, cfg, tx);
 
-            // T1/T1A: Apply gas metering for the keychain precompile call.
-            // Pre-T1 and T1B+: Use unlimited gas.
-            // T1B+ disables gas metering here because gas is already accounted for
-            // in intrinsic gas via `calculate_key_authorization_gas`. Running with
-            // unlimited gas also eliminates the OOG path that caused the CREATE
-            // nonce replay vulnerability (protocol nonce not bumped on OOG).
-            let gas_limit = if spec.is_t1() && !spec.is_t1b() {
-                tx.gas_limit() - init_gas.initial_total_gas()
-            } else {
-                u64::MAX
-            };
-
-            // Create gas_params with only sstore increase for key authorization
-            let gas_params = if spec.is_t1() {
+            // Key authorization is charged in intrinsic gas, so its precompile is unmetered.
+            // Keep only storage costs in the unmetered authorization provider.
+            let gas_params = {
                 static TABLE: OnceLock<GasParams> = OnceLock::new();
-                // only enabled SSTORE and warm storage read gas params for T1 fork in keychain.
                 TABLE
                     .get_or_init(|| {
                         let mut table = [0u64; 256];
@@ -1522,14 +1385,12 @@ where
                         GasParams::new(Arc::new(table))
                     })
                     .clone()
-            } else {
-                cfg.gas_params.clone()
             };
 
-            // It's ok to set reservoir to 0 because pre-T1B it doesn't matter and post-T1B we have unlimited gas anyway.
+            // Unlimited authorization gas needs no state-gas reservoir.
             let mut provider = EvmPrecompileStorageProvider::new(
                 internals,
-                gas_limit,
+                u64::MAX,
                 0,
                 cfg.spec,
                 amsterdam_eip8037_enabled,
@@ -1540,7 +1401,7 @@ where
             provider.set_tip1060_storage_credits(false);
 
             // The core logic of setting up thread-local storage is here.
-            let out_of_gas = StorageCtx::enter(&mut provider, || {
+            StorageCtx::enter(&mut provider, || {
                 let mut keychain = AccountKeychain::default();
                 let access_key_addr = key_auth.key_id;
 
@@ -1605,9 +1466,7 @@ where
 
                 match result {
                     // all is good, we can do execution.
-                    Ok(_) => Ok(false),
-                    // on out of gas we are skipping execution but not invalidating the transaction.
-                    Err(TempoPrecompileError::OutOfGas) => Ok(true),
+                    Ok(_) => Ok(()),
                     Err(TempoPrecompileError::Fatal(err)) => Err(EVMError::Custom(err)),
                     Err(err) => Err(TempoInvalidTransaction::KeychainPrecompileError {
                         reason: err.to_string(),
@@ -1616,7 +1475,6 @@ where
                 }
             })?;
 
-            let gas_used = provider.gas_used();
             drop(provider);
 
             // Cache inline key authorization expiry.
@@ -1624,21 +1482,7 @@ where
                 evm.key_expiry = Some(expiry.get());
             }
 
-            // activated only on T1/T1A fork.
-            // T1B+: Skip adding precompile gas to initial_gas since it is already
-            // accounted for in intrinsic gas. The precompile runs with unlimited gas
-            // on T1B+ so out_of_gas is never true.
-            if let Some(keychain_checkpoint) = keychain_checkpoint {
-                if spec.is_t1b() {
-                    journal.checkpoint_commit();
-                } else if out_of_gas {
-                    init_gas.initial_regular_gas = u64::MAX;
-                    journal.checkpoint_revert(keychain_checkpoint);
-                } else {
-                    init_gas.initial_regular_gas += gas_used;
-                    journal.checkpoint_commit();
-                };
-            }
+            journal.checkpoint_commit();
 
             // If this is a same tx auth+use, set the transient key_id to the newly authorized
             // key and decrement the fee from its spending limit. Admin delegation must keep the
@@ -1761,6 +1605,8 @@ where
     /// - Time window validation (validAfter/validBefore)
     #[inline]
     fn validate_env(&self, evm: &mut Self::Evm) -> Result<(), Self::Error> {
+        evm.ensure_supported_spec()?;
+
         // Reset per-tx fee state.
         evm.collected_fee = U256::ZERO;
         evm.validator_fee = U256::ZERO;
@@ -1769,10 +1615,7 @@ where
         // Validate the fee payer signature
         let fee_payer = evm.ctx.tx.fee_payer()?;
 
-        if evm.ctx.cfg.spec.is_t2()
-            && evm.ctx.tx.has_fee_payer_signature()
-            && fee_payer == evm.ctx.tx.caller()
-        {
+        if evm.ctx.tx.has_fee_payer_signature() && fee_payer == evm.ctx.tx.caller() {
             return Err(TempoInvalidTransaction::SelfSponsoredFeePayer.into());
         }
 
@@ -1791,8 +1634,7 @@ where
         // error. At T12+, the discriminator is accepted.
         // TODO: Remove this workaround when migrating to EVM2. Its per-transaction-type handlers
         // let Tempo omit the nonce-overflow check for expiring nonce transactions.
-        let is_max_expiring_nonce = evm.ctx.cfg.spec.is_t1()
-            && evm.ctx.tx.nonce() == u64::MAX
+        let is_max_expiring_nonce = evm.ctx.tx.nonce() == u64::MAX
             && evm
                 .ctx
                 .tx
@@ -1827,8 +1669,7 @@ where
             // per-call scope walk or state mutation. Rejecting it here keeps validation work
             // constant and avoids entering CREATE execution paths that require special protocol-
             // nonce preservation on failure.
-            if cfg.spec().is_t3()
-                && aa_env.signature.is_keychain()
+            if aa_env.signature.is_keychain()
                 && aa_env
                     .aa_calls
                     .first()
@@ -1843,11 +1684,11 @@ where
             // Validate keychain signature version (outer + authorization list).
             aa_env
                 .signature
-                .validate_version(cfg.spec().is_t1c())
+                .validate_version()
                 .map_err(TempoInvalidTransaction::from)?;
             for auth in &aa_env.tempo_authorization_list {
                 auth.signature()
-                    .validate_version(cfg.spec().is_t1c())
+                    .validate_version()
                     .map_err(TempoInvalidTransaction::from)?;
             }
 
@@ -1867,14 +1708,8 @@ where
                     };
 
                     same_tx_auth_use = access_key_addr == key_auth.key_id;
-                    if !same_tx_auth_use && !cfg.spec.is_t6() {
-                        return Err(
-                            TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys.into()
-                        );
-                    }
 
                     if same_tx_auth_use
-                        && cfg.spec.is_t3()
                         && key_auth.key_type != keychain_sig.signature.signature_type()
                     {
                         return Err(TempoInvalidTransaction::KeychainValidationFailed {
@@ -1885,15 +1720,7 @@ where
                     }
                 }
 
-                if (key_auth.is_admin || key_auth.account.is_some()) && !cfg.spec.is_t6() {
-                    return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                        reason: "T6 key authorization fields are not active before T6".to_string(),
-                    }
-                    .into());
-                }
-
-                if cfg.spec.is_t6() && key_auth.account.is_some_and(|account| account != tx.caller)
-                {
+                if key_auth.account.is_some_and(|account| account != tx.caller) {
                     // T6 allows existing admin keys to sign `KeyAuthorization`s for an
                     // account. Any named account must match the transaction caller so the
                     // signed payload cannot be replayed against another account where the
@@ -1923,113 +1750,65 @@ where
                     .into());
                 }
 
-                if !cfg.spec.is_t6() {
-                    let auth_signer = key_auth.recover_signer().map_err(|_| {
-                        TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed
-                    })?;
-
-                    if auth_signer != tx.caller {
-                        return Err(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
-                            expected: tx.caller,
-                            actual: auth_signer,
-                        }
-                        .into());
-                    }
-                }
-
-                // Validate KeyAuthorization chain_id.
-                // T1C+: chain_id must exactly match (wildcard 0 is no longer allowed).
-                // Pre-T1C: chain_id == 0 allows replay on any chain (wildcard).
+                // Require the exact chain ID; wildcard authorizations are invalid.
                 key_auth
-                    .validate_chain_id(cfg.chain_id(), cfg.spec.is_t1c())
+                    .validate_chain_id(cfg.chain_id())
                     .map_err(TempoInvalidTransaction::from)?;
 
-                if key_auth.has_witness() && !cfg.spec.is_t5() {
+                let auth_signer = key_auth.recover_signer().map_err(|_| {
+                    TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed
+                })?;
+                if auth_signer != tx.caller && key_auth.account.is_none() {
                     return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                        reason: "key authorization witnesses are not active before T5".to_string(),
+                        reason: "admin-signed key authorization account mismatch".to_string(),
                     }
                     .into());
                 }
 
-                // T3 gates all TIP-1011 fields. Before activation, transaction semantics must stay
-                // unchanged, so periodic limits and call scopes are rejected.
-                if !cfg.spec.is_t3() {
-                    if key_auth.has_periodic_limits() {
-                        return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                            reason: "periodic token limits are not active before T3".to_string(),
-                        }
-                        .into());
+                if auth_signer == tx.caller && aa_env.signature.is_keychain() && !same_tx_auth_use {
+                    return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                        reason: "root-signed key authorization must use root transaction signature"
+                            .to_string(),
                     }
-
-                    if key_auth.has_call_scopes() {
-                        return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                            reason: "call scopes are not active before T3".to_string(),
-                        }
-                        .into());
-                    }
+                    .into());
                 }
 
-                if cfg.spec.is_t6() {
-                    let auth_signer = key_auth.recover_signer().map_err(|_| {
-                        TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed
-                    })?;
-                    if auth_signer != tx.caller && key_auth.account.is_none() {
-                        return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                            reason: "admin-signed key authorization account mismatch".to_string(),
-                        }
-                        .into());
-                    }
-
-                    if auth_signer == tx.caller
-                        && aa_env.signature.is_keychain()
-                        && !same_tx_auth_use
-                    {
+                if auth_signer != tx.caller {
+                    let Some(keychain_sig) = aa_env.signature.as_keychain() else {
                         return Err(TempoInvalidTransaction::KeychainValidationFailed {
                             reason:
-                                "root-signed key authorization must use root transaction signature"
+                                "admin-signed key authorization must be signed by transaction key"
+                                    .to_string(),
+                        }
+                        .into());
+                    };
+
+                    let access_key_addr = if let Some(override_key_id) = aa_env.override_key_id {
+                        override_key_id
+                    } else {
+                        keychain_sig
+                            .key_id(&aa_env.signature_hash)
+                            .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
+                    };
+
+                    if access_key_addr != auth_signer {
+                        return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                            reason:
+                                "admin-signed key authorization must be signed by transaction key"
                                     .to_string(),
                         }
                         .into());
                     }
 
-                    if auth_signer != tx.caller {
-                        let Some(keychain_sig) = aa_env.signature.as_keychain() else {
-                            return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                                reason:
-                                    "admin-signed key authorization must be signed by transaction key"
-                                        .to_string(),
-                            }
-                            .into());
-                        };
-
-                        let access_key_addr = if let Some(override_key_id) = aa_env.override_key_id
-                        {
-                            override_key_id
-                        } else {
-                            keychain_sig
-                                .key_id(&aa_env.signature_hash)
-                                .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
-                        };
-
-                        if access_key_addr != auth_signer {
-                            return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                                reason:
-                                    "admin-signed key authorization must be signed by transaction key"
-                                        .to_string(),
-                            }
-                            .into());
-                        }
-
-                        if key_auth.signature.signature_type()
-                            != keychain_sig.signature.signature_type()
-                        {
-                            return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                    if key_auth.signature.signature_type()
+                        != keychain_sig.signature.signature_type()
+                    {
+                        return Err(TempoInvalidTransaction::KeychainValidationFailed {
                                 reason:
                                     "admin-signed key authorization signature type does not match transaction key signature type"
                                         .to_string(),
                             }
                             .into());
-                        }
                     }
                 }
 
@@ -2074,7 +1853,6 @@ where
         evm: &mut Self::Evm,
     ) -> Result<InitialAndFloorGas, Self::Error> {
         let tx = evm.ctx_ref().tx();
-        let spec = evm.ctx_ref().cfg().spec();
         let gas_params = evm.ctx_ref().cfg().gas_params();
         let gas_limit = tx.gas_limit();
 
@@ -2110,7 +1888,6 @@ where
             // account creation and CREATE state gas) into the EIP-2780
             // runtime gas phase. Tempo keeps EIP-2780 disabled, so charge
             // them at the intrinsic phase exactly like revm 41.0.0 did.
-            // Pre-T4 gas tables have these at zero.
             init_gas.initial_state_gas += tx.authorization_list_len() as u64
                 * (gas_params.new_account_state_gas() + gas_params.tx_eip7702_state_gas_bytecode());
             if tx.kind().is_create() {
@@ -2118,9 +1895,8 @@ where
             }
             // TIP-1000: Storage pricing updates for launch
             // EIP-7702 authorisation list entries with `auth_list.nonce == 0` require an additional 250,000 gas.
-            // no need for v1 fork check as gas_params would be zero
             for auth in tx.authorization_list() {
-                if spec.is_t1() && auth.nonce == 0 {
+                if auth.nonce == 0 {
                     init_gas.initial_regular_gas += gas_params.get(GasId::new_account_cost());
                     init_gas.initial_state_gas += gas_params.new_account_state_gas();
                 }
@@ -2128,7 +1904,7 @@ where
 
             // TIP-1000: Storage pricing updates for launch
             // Transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas.
-            if spec.is_t1() && tx.nonce == 0 {
+            if tx.nonce == 0 {
                 // Add both execution and state portions to initial_total_gas
                 // (revm's invariant: initial_total_gas >= initial_state_gas)
                 init_gas.initial_regular_gas += gas_params.get(GasId::new_account_cost());
@@ -2235,14 +2011,12 @@ pub struct ValidationContext {
 /// - Check that value transfer is zero.
 /// - Access list costs (shared across batch)
 /// - Key authorization costs (if present):
-///   - Pre-T1B: 27k base + 3k ecrecover + 22k per spending limit
-///   - T1B+: ecrecover + SLOAD + SSTORE × (1 + N limits)
+///   - Signature verification, SLOAD, and each storage-creating write
 /// - Floor gas calculation (EIP-7623, Prague+)
 pub fn calculate_aa_batch_intrinsic_gas<'a>(
     aa_env: &TempoBatchCallEnv,
     gas_params: &GasParams,
     access_list: Option<impl Iterator<Item = &'a AccessListItem>>,
-    spec: tempo_chainspec::hardfork::TempoHardfork,
 ) -> Result<InitialAndFloorGas, TempoInvalidTransaction> {
     let calls = &aa_env.aa_calls;
     let signature = &aa_env.signature;
@@ -2266,17 +2040,16 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
     // 4. Authorization list costs (EIP-7702)
     let num_auths = authorization_list.len() as u64;
     gas.initial_regular_gas += num_auths * gas_params.get(GasId::tx_eip7702_regular_gas());
-    // TIP-1016: Track state gas portion of per-auth cost (225k on T4, 0 pre-T4).
+    // TIP-1016 tracks authorization state gas separately when enabled.
     gas.initial_state_gas += num_auths
         * (gas_params.new_account_state_gas() + gas_params.tx_eip7702_state_gas_bytecode());
 
     // Add signature verification costs for each authorization
-    // No need for v1 fork check as gas_params would be zero
     for auth in authorization_list {
         gas.initial_regular_gas += tempo_signature_verification_gas(auth.signature());
         // TIP-1000: Storage pricing updates for launch
         // EIP-7702 authorisation list entries with `auth_list.nonce == 0` require an additional 250,000 gas.
-        if spec.is_t1() && auth.nonce == 0 {
+        if auth.nonce == 0 {
             gas.initial_regular_gas += gas_params.get(GasId::new_account_cost());
             gas.initial_state_gas += gas_params.new_account_state_gas();
         }
@@ -2285,7 +2058,7 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
     // 5. Key authorization costs (if present)
     if let Some(key_auth) = key_authorization {
         let (key_auth_regular_gas, key_auth_state_gas) =
-            calculate_key_authorization_gas(key_auth, gas_params, spec);
+            calculate_key_authorization_gas(key_auth, gas_params);
         gas.initial_regular_gas += key_auth_regular_gas;
         gas.initial_state_gas += key_auth_state_gas;
     }
@@ -2373,47 +2146,27 @@ where
     }
 
     // Calculate batch intrinsic gas using helper
-    let mut batch_gas =
-        calculate_aa_batch_intrinsic_gas(aa_env, gas_params, tx.access_list(), spec)?;
-
-    let mut nonce_2d_gas = 0;
+    let mut batch_gas = calculate_aa_batch_intrinsic_gas(aa_env, gas_params, tx.access_list())?;
 
     // Calculate 2D nonce gas if nonce_key is non-zero
     // If tx nonce is 0, it's a new key (0 -> 1 transition), otherwise existing key
-    if spec.is_t1() {
-        if aa_env.nonce_key == TEMPO_EXPIRING_NONCE_KEY {
-            // Calculate nonce gas based on nonce type:
-            // - Expiring nonce (nonce_key == MAX, T1 active): ring buffer + seen mapping operations
-            // - 2D nonce (nonce_key != 0): SLOAD + SSTORE for nonce increment
-            // - Regular nonce (nonce_key == 0): no additional gas
-            batch_gas.initial_regular_gas += EXPIRING_NONCE_GAS;
-        } else if tx.nonce == 0 {
-            // TIP-1000: Storage pricing updates for launch
-            // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas
-            batch_gas.initial_regular_gas += gas_params.get(GasId::new_account_cost());
-            batch_gas.initial_state_gas += gas_params.new_account_state_gas();
-        } else if !aa_env.nonce_key.is_zero() {
-            // Existing 2D nonce key usage (nonce > 0)
-            // TIP-1000 Invariant 3: existing state updates must charge +5,000 gas
-            batch_gas.initial_regular_gas += spec.gas_existing_nonce_key();
-        }
-    } else if let Some(aa_env) = &tx.tempo_tx_env
-        && !aa_env.nonce_key.is_zero()
-    {
-        nonce_2d_gas = if tx.nonce() == 0 {
-            spec.gas_new_nonce_key()
-        } else {
-            spec.gas_existing_nonce_key()
-        };
-    };
 
-    // For T0+, include 2D nonce gas in validation (charged upfront)
-    // For pre-T0 (Genesis), 2D nonce gas is added AFTER validation to allow transactions
-    // with gas_limit < intrinsic + nonce_2d_gas to pass validation, but the gas is still
-    // charged during execution via init_and_floor_gas (not evm.initial_gas)
-    if spec.is_t0() {
-        batch_gas.initial_regular_gas += nonce_2d_gas;
-    }
+    if aa_env.nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+        // Calculate nonce gas based on nonce type:
+        // - Expiring nonce (nonce_key == MAX, T1 active): ring buffer + seen mapping operations
+        // - 2D nonce (nonce_key != 0): SLOAD + SSTORE for nonce increment
+        // - Regular nonce (nonce_key == 0): no additional gas
+        batch_gas.initial_regular_gas += EXPIRING_NONCE_GAS;
+    } else if tx.nonce == 0 {
+        // TIP-1000: Storage pricing updates for launch
+        // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas
+        batch_gas.initial_regular_gas += gas_params.get(GasId::new_account_cost());
+        batch_gas.initial_state_gas += gas_params.new_account_state_gas();
+    } else if !aa_env.nonce_key.is_zero() {
+        // Existing 2D nonce key usage (nonce > 0)
+        // TIP-1000 Invariant 3: existing state updates must charge +5,000 gas
+        batch_gas.initial_regular_gas += spec.gas_existing_nonce_key();
+    };
 
     // Validate gas limit is sufficient for initial gas.
     // initial_total_gas already includes initial_state_gas as a subset,
@@ -2424,12 +2177,6 @@ where
             initial_gas: batch_gas.initial_total_gas(),
         }
         .into());
-    }
-
-    // For pre-T0 (Genesis), add 2D nonce gas after validation
-    // This gas will be charged via init_and_floor_gas, not evm.initial_gas
-    if !spec.is_t0() {
-        batch_gas.initial_regular_gas += nonce_2d_gas;
     }
 
     Ok(batch_gas)
@@ -2470,13 +2217,11 @@ where
         _checkpoint: JournalCheckpoint,
         gas: &mut GasTracker,
     ) -> Result<Option<FrameResult>, Self::Error> {
+        evm.ensure_supported_spec()?;
+
         // See `Handler::execution`: EIP-2780 is disabled, commit the phase
         // checkpoint immediately.
         evm.ctx().journal_mut().checkpoint_commit();
-
-        if let Some(oog) = oog_frame_result_if_intrinsic_exceeds_limit(evm) {
-            return Ok(Some(oog));
-        }
 
         if let Some(tempo_tx_env) = evm.ctx().tx().tempo_tx_env.as_ref() {
             let calls = tempo_tx_env.aa_calls.clone();
@@ -2485,41 +2230,6 @@ where
             self.inspect_execute_single_call(evm, gas).map(Some)
         }
     }
-}
-
-/// Builds the out-of-gas frame result for a transaction whose intrinsic gas
-/// ended up above its gas limit, or `None` when execution should proceed.
-///
-/// `Handler::validate` checks the gas limit against the intrinsic gas, but
-/// Tempo's `validate_against_state_and_deduct_caller` charges state-dependent
-/// intrinsics after that check: pre-T1B a keychain precompile that runs out of
-/// gas raises `initial_regular_gas` to `u64::MAX`. Such a transaction stays
-/// valid and burns its gas limit, but must not execute — in particular the
-/// CREATE frame, and with it the caller nonce bump, is never reached, which is
-/// what makes the poisoned payload replayable on those historic forks.
-///
-/// Upstream's [`Handler::runtime_oog_result`] is deliberately not reused: it
-/// bumps the caller nonce for CREATE transactions.
-#[inline]
-fn oog_frame_result_if_intrinsic_exceeds_limit<DB, I>(evm: &TempoEvm<DB, I>) -> Option<FrameResult>
-where
-    DB: Database + Debug,
-    DB::Error: Debug,
-{
-    if !evm.intrinsic_gas_exceeds_limit {
-        return None;
-    }
-    let tx = &evm.ctx.tx;
-    let gas_limit = tx.gas_limit();
-    let kind = *tx
-        .first_call()
-        .expect("we already checked that there is at least one call in aa tx")
-        .0;
-    Some(if kind.is_call() {
-        FrameResult::new_call_oog(gas_limit, 0..0, 0)
-    } else {
-        FrameResult::new_create_oog(gas_limit, 0)
-    })
 }
 
 /// Validates time window for AA transactions

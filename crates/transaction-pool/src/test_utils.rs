@@ -366,7 +366,7 @@ pub(crate) fn create_mock_provider() -> MockEthProvider<TempoPrimitives, TempoCh
 /// # Example
 ///
 /// ```ignore
-/// provider.setup_storage(TempoHardfork::T1C, || {
+/// provider.setup_storage(TempoHardfork::T10, || {
 ///     AccountKeychain::new().keys[user][key_id].write(AuthorizedKey {
 ///         signature_type: 0,
 ///         expiry: u64::MAX,

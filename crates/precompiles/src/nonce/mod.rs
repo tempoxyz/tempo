@@ -184,8 +184,8 @@ mod tests {
 
     #[test]
     fn test_expiring_nonce_parameters_activate_at_t11() {
-        assert_eq!(TempoHardfork::T9.expiring_nonce_max_expiry_secs(), 30);
-        assert_eq!(TempoHardfork::T9.expiring_nonce_set_capacity(), 300_000);
+        assert_eq!(TempoHardfork::T10.expiring_nonce_max_expiry_secs(), 30);
+        assert_eq!(TempoHardfork::T10.expiring_nonce_set_capacity(), 300_000);
         assert_eq!(TempoHardfork::T10.expiring_nonce_max_expiry_secs(), 30);
         assert_eq!(TempoHardfork::T10.expiring_nonce_set_capacity(), 300_000);
         assert_eq!(TempoHardfork::T11.expiring_nonce_max_expiry_secs(), 300);
@@ -322,7 +322,7 @@ mod tests {
 
     #[test]
     fn test_expiring_nonce_expiry_validation() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let now = 1000u64;
         storage.set_timestamp(U256::from(now));
         StorageCtx::enter(&mut storage, || {

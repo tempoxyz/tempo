@@ -14187,7 +14187,6 @@ dependencies = [
  "tempo-revm",
  "thiserror 2.0.21",
  "tikv-jemallocator",
- "tracing",
 ]
 
 [[package]]

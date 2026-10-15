@@ -658,8 +658,7 @@ where
                         );
                     }
 
-                    // Expiring nonces are only recognized once T1 is active at the tip.
-                    if spec.is_t1() && nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+                    if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
                         // Expiring nonce transactions are validated by the EVM
                     } else {
                         // This is a 2D nonce transaction - validate against 2D nonce
@@ -920,6 +919,7 @@ mod tests {
     };
     use tempo_chainspec::{
         TempoChainSpec,
+        constants::moderato::MODERATO_T10_TIMESTAMP,
         spec::{MODERATO, TEMPO_T0_BASE_FEE, TEMPO_T1_TX_GAS_LIMIT_CAP},
     };
     use tempo_precompiles::{
@@ -1070,6 +1070,7 @@ mod tests {
         let block_with_gas = Block {
             header: TempoHeader {
                 inner: Header {
+                    timestamp: tip_timestamp,
                     gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
                     ..Default::default()
                 },
@@ -1149,7 +1150,7 @@ mod tests {
                     nonce,
                     "test transaction must preserve its nonce"
                 );
-                let validator = setup_validator(&tx, 1);
+                let validator = setup_validator(&tx, MODERATO_T10_TIMESTAMP);
                 let result = validator
                     .inner
                     .validate_stateless(TransactionOrigin::External, &tx);
@@ -1169,7 +1170,7 @@ mod tests {
     #[test]
     fn state_cache_for_tip_reuses_only_matching_tip_cache() {
         let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
-        let validator = setup_validator(&tx, 1);
+        let validator = setup_validator(&tx, MODERATO_T10_TIMESTAMP);
         let (shared_tip_hash, shared_cache) = validator.cached_state.read().clone();
 
         let matching_cache = validator.state_cache_for_tip(shared_tip_hash);
@@ -1201,7 +1202,7 @@ mod tests {
                 },
             ])
             .build();
-        let validator = setup_validator(&transaction, 1)
+        let validator = setup_validator(&transaction, MODERATO_T10_TIMESTAMP)
             .with_address_filter(AddressFilter::new([checked_address]));
 
         let outcome = validator
@@ -1223,7 +1224,7 @@ mod tests {
     #[test]
     fn latest_state_provider_uses_shared_cache_for_current_tip() {
         let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
-        let validator = setup_validator(&tx, 1);
+        let validator = setup_validator(&tx, MODERATO_T10_TIMESTAMP);
         let latest_hash = validator.client().chain_info().unwrap().best_hash;
         let shared_cache = Arc::new(StateCache::default());
         *validator.cached_state.write() = (latest_hash, shared_cache.clone());
@@ -1236,7 +1237,7 @@ mod tests {
     #[test]
     fn latest_state_provider_uses_ephemeral_cache_when_tip_hash_mismatches_latest() {
         let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
-        let validator = setup_validator(&tx, 1);
+        let validator = setup_validator(&tx, MODERATO_T10_TIMESTAMP);
         let latest_hash = validator.client().chain_info().unwrap().best_hash;
         let mismatched_tip_hash = if latest_hash == B256::repeat_byte(0x42) {
             B256::repeat_byte(0x43)
@@ -1255,7 +1256,7 @@ mod tests {
     #[test]
     fn provider_for_old_tip_never_uses_cache_retagged_to_new_tip() {
         let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
-        let validator = setup_validator(&tx, 1);
+        let validator = setup_validator(&tx, MODERATO_T10_TIMESTAMP);
         let tip_x = validator.client().chain_info().unwrap().best_hash;
         let tip_y = B256::repeat_byte(0x59);
         assert_ne!(tip_x, tip_y);
@@ -1276,7 +1277,7 @@ mod tests {
     #[test]
     fn missing_tip_provider_falls_back_to_latest_with_ephemeral_cache() {
         let tx = TxBuilder::eip1559(Address::random()).build_eip1559();
-        let validator = setup_validator(&tx, 1);
+        let validator = setup_validator(&tx, MODERATO_T10_TIMESTAMP);
         let tip = validator.client().chain_info().unwrap().best_hash;
         let shared_cache = Arc::new(StateCache::default());
         *validator.cached_state.write() = (tip, shared_cache.clone());
@@ -1344,7 +1345,7 @@ mod tests {
         let transaction = TxBuilder::eip1559(Address::random())
             .value(U256::ONE)
             .build_eip1559();
-        let validator = setup_validator(&transaction, 0);
+        let validator = setup_validator(&transaction, MODERATO_T10_TIMESTAMP);
 
         let outcome = validator
             .validate_transaction(TransactionOrigin::External, transaction.clone())
@@ -1378,7 +1379,7 @@ mod tests {
         let transaction = TempoPooledTransaction::new(
             reth_primitives_traits::Recovered::new_unchecked(envelope, Address::ZERO),
         );
-        let validator = setup_validator(&transaction, 0);
+        let validator = setup_validator(&transaction, MODERATO_T10_TIMESTAMP);
 
         let outcome = validator
             .validate_transaction(TransactionOrigin::External, transaction)
@@ -1422,7 +1423,7 @@ mod tests {
         let transaction = TempoPooledTransaction::new(
             TempoTxEnvelope::from(signed).try_into_recovered().unwrap(),
         );
-        let validator = setup_validator(&transaction, 0);
+        let validator = setup_validator(&transaction, MODERATO_T10_TIMESTAMP);
 
         let outcome = validator
             .validate_transaction(TransactionOrigin::External, transaction)
@@ -2254,7 +2255,6 @@ mod tests {
                     .build_eip1559(),
             ] {
                 let validator = setup_validator(&transaction, current_time);
-                assert!(validator.active_hardfork().is_t7());
                 assert!(validator.cached_evm_env.read().block_env.inner.basefee > fee);
                 let outcome = validator
                     .validate_transaction(TransactionOrigin::External, transaction)
@@ -2272,22 +2272,11 @@ mod tests {
         use reth_transaction_pool::error::PoolTransactionError;
 
         #[test]
-        fn test_legacy_keychain_post_t1c_is_bad_transaction() {
+        fn test_legacy_keychain_is_bad_transaction() {
             assert!(
                 TempoPoolTransactionError::Evm(TempoInvalidTransaction::LegacyKeychainSignature)
                     .is_bad_transaction(),
-                "Post-T1C V1 rejection should be a bad transaction (permanent)"
-            );
-        }
-
-        #[test]
-        fn test_v2_keychain_pre_t1c_is_not_bad_transaction() {
-            assert!(
-                !TempoPoolTransactionError::Evm(
-                    TempoInvalidTransaction::V2KeychainBeforeActivation
-                )
-                .is_bad_transaction(),
-                "Pre-T1C V2 rejection should NOT be a bad transaction (transient)"
+                "Legacy keychain rejection should be a bad transaction"
             );
         }
 
@@ -2682,7 +2671,9 @@ mod tests {
         );
 
         let mut state = provider.latest().unwrap();
-        let spec = provider.chain_spec().tempo_hardfork_at(0);
+        let spec = provider
+            .chain_spec()
+            .tempo_hardfork_at(MODERATO_T10_TIMESTAMP);
 
         // Test that is_fee_token_paused returns true for paused tokens
         let result = state.is_fee_token_paused(spec, fee_token, StorageActions::disabled());
@@ -2813,7 +2804,9 @@ mod tests {
         );
 
         let mut state = provider.latest().unwrap();
-        let spec = provider.chain_spec().tempo_hardfork_at(0);
+        let spec = provider
+            .chain_spec()
+            .tempo_hardfork_at(MODERATO_T10_TIMESTAMP);
 
         // Create AMM cache with the paused token in unique_tokens (simulating a validator's
         // preferred token). This would normally cause has_enough_liquidity() to return true

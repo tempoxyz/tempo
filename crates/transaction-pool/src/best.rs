@@ -257,7 +257,7 @@ mod tests {
         test_utils::OkValidator,
     };
     use std::sync::Arc;
-    use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
+    use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 
     type TestTx = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 
@@ -331,7 +331,7 @@ mod tests {
                 .aa_transaction_id()
                 .expect("AA2D transaction must have an AA transaction id");
             let on_chain_nonce = on_chain_nonces[&id.seq_id];
-            pool.add_transaction(tx, on_chain_nonce, TempoHardfork::T1)
+            pool.add_transaction(tx, on_chain_nonce)
                 .expect("AA2D transaction must be added successfully");
         }
         pool.best_transactions()

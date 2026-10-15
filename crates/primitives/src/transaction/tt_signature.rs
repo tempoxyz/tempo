@@ -392,14 +392,11 @@ pub enum KeychainVersion {
 
 /// Keychain version validation error.
 ///
-/// Returned by [`TempoSignature::validate_version`] when a keychain
-/// signature's version is incompatible with the current hardfork.
+/// Returned by [`TempoSignature::validate_version`] for legacy keychain signatures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeychainVersionError {
     /// Legacy V1 keychain signature used after T1C activation (permanently invalid).
     LegacyPostT1C,
-    /// V2 keychain signature used before T1C activation (not yet valid).
-    V2BeforeActivation,
 }
 
 /// Keychain signature wrapping another signature with a user address.
@@ -737,16 +734,10 @@ impl TempoSignature {
         )
     }
 
-    /// Validates keychain signature version compatibility with the current hardfork.
-    ///
-    /// - Post-T1C: legacy V1 keychain signatures are rejected.
-    /// - Pre-T1C: V2 keychain signatures are rejected to prevent chain splits.
-    pub fn validate_version(&self, is_t1c: bool) -> Result<(), KeychainVersionError> {
-        if is_t1c && self.is_legacy_keychain() {
+    /// Rejects legacy V1 keychain signatures.
+    pub fn validate_version(&self) -> Result<(), KeychainVersionError> {
+        if self.is_legacy_keychain() {
             return Err(KeychainVersionError::LegacyPostT1C);
-        }
-        if !is_t1c && self.is_v2_keychain() {
-            return Err(KeychainVersionError::V2BeforeActivation);
         }
         Ok(())
     }

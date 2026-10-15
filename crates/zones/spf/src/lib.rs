@@ -700,7 +700,7 @@ mod tests {
         database::{State, states::bundle_state::BundleRetention},
     };
     use std::sync::Arc;
-    use tempo_chainspec::TempoHardfork;
+    use tempo_chainspec::{TempoHardfork, hardfork::TempoHardforks as _};
     use tempo_evm::TempoBlockEnv;
     use tempo_primitives::TempoHeader;
     use zone_evm::ZoneEvmConfig;
@@ -1231,11 +1231,18 @@ mod tests {
 
     #[test]
     fn prepares_zone_next_block_environment() {
-        let witness = minimal_batch_witness();
+        let mut witness = minimal_batch_witness();
+        // Zone parents always carry a base fee; T7+ derives the next one from it.
+        witness.parent_header.inner.base_fee_per_gas = Some(0);
+        // Pre-T10 execution moved to the frozen Genesis-T10 worker.
+        let timestamp = tempo_chainspec::spec::MODERATO
+            .tempo_fork_activation(TempoHardfork::T10)
+            .as_timestamp()
+            .unwrap();
         let block = ZoneBlock {
             number: 1,
             parent_hash: witness.parent_header.hash_slow(),
-            timestamp: 0,
+            timestamp,
             timestamp_millis_part: 321,
             beneficiary: Address::ZERO,
             tempo_import: full_import(witness.tempo_state_witness.initial_tempo_header_rlp.clone()),
@@ -1252,7 +1259,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(attributes.timestamp, 0);
+        assert_eq!(attributes.timestamp, timestamp);
         assert_eq!(attributes.suggested_fee_recipient, Address::ZERO);
         assert_eq!(attributes.gas_limit, 30_000_000);
         assert_eq!(attributes.general_gas_limit, 0);

@@ -245,10 +245,8 @@ impl OrderHandler {
             OrderVersion::V1 | OrderVersion::V2 => __packing_v1_order::MAKER_LOC,
         };
 
-        // T8+ version detection loads slot 0. We reuse it when the maker is stored there.
-        if let Some(slot0) = slot0
-            && loc.offset_slots == 0
-        {
+        // Reuse the version-detection load when the maker is stored in slot 0.
+        if loc.offset_slots == 0 {
             Address::load(
                 &packing::PackedSlot(slot0),
                 U256::ZERO,
@@ -297,14 +295,10 @@ impl OrderHandler {
         Ok(Slot::new_at_loc(self.base_slot, loc, self.address))
     }
 
-    /// Returns the physical storage version and the loaded base slot, when read.
-    pub(crate) fn version_and_slot(&self) -> StorageResult<(OrderVersion, Option<U256>)> {
-        if !StorageCtx.spec().is_t8() {
-            return Ok((OrderVersion::Legacy, None));
-        }
-
+    /// Returns the physical storage version and the loaded base slot.
+    pub(crate) fn version_and_slot(&self) -> StorageResult<(OrderVersion, U256)> {
         let slot0 = self.load(self.base_slot)?;
-        Ok((OrderVersion::try_from(slot0)?, Some(slot0)))
+        Ok((OrderVersion::try_from(slot0)?, slot0))
     }
 
     /// Returns the physical storage version.
@@ -343,10 +337,6 @@ impl OrderHandler {
     fn write_with_book_id(&mut self, value: Order, known_id: Option<BookId>) -> StorageResult<()> {
         debug_assert_eq!(value.order_id, self.order_id);
 
-        if !StorageCtx.spec().is_t8() {
-            return value.store(self, self.base_slot, LayoutCtx::FULL);
-        }
-
         let (old_version, slot0) = self.version_and_slot()?;
         let old_slots = match old_version {
             OrderVersion::Legacy => LegacyOrder::SLOTS,
@@ -368,7 +358,7 @@ impl OrderHandler {
             V1Order::SLOTS
         };
 
-        if slot0.is_none_or(|val| !val.is_zero()) {
+        if !slot0.is_zero() {
             for offset in new_slots..old_slots {
                 self.store(self.base_slot.wrapping_add(U256::from(offset)), U256::ZERO)?;
             }
@@ -566,13 +556,6 @@ mod tests {
             }
         }
 
-        fn hardfork_for(version: OrderVersion) -> TempoHardfork {
-            match version {
-                OrderVersion::Legacy => TempoHardfork::T7,
-                OrderVersion::V1 | OrderVersion::V2 => TempoHardfork::T8,
-            }
-        }
-
         fn pair_index(version: OrderVersion) -> usize {
             match version {
                 OrderVersion::Legacy | OrderVersion::V1 => 0,
@@ -606,17 +589,13 @@ mod tests {
                 .apply()?;
             self.quote = base.quote_token()?;
 
-            // Ensure orderbook is created with/out its ID depending on the version
-            let prev_spec = StorageCtx.spec();
-            let pair_creation_hardfork = match version {
-                OrderVersion::Legacy | OrderVersion::V1 => TempoHardfork::T7,
-                OrderVersion::V2 => TempoHardfork::T8,
-            };
-            StorageCtx.set_spec(pair_creation_hardfork);
             exchange.create_pair(base.address())?;
-            StorageCtx.set_spec(prev_spec);
 
             let book_key = stablecoin_dex::orderbook::compute_book_key(base.address(), self.quote);
+            if version != OrderVersion::V2 {
+                // Seed a pre-index orderbook while executing only current rules.
+                exchange.books[book_key].write(Orderbook::new(base.address(), self.quote))?;
+            }
             self.pairs[Self::pair_index(version)] = (base.address(), book_key);
 
             Ok(())
@@ -712,33 +691,23 @@ mod tests {
     #[test]
     fn test_store_order_uses_expected_layout() -> eyre::Result<()> {
         let (amount, tick, flip_tick) = (MIN_ORDER_AMOUNT, 5i16, 10i16);
-        let (test, mut storage) = DexTestSetup::new(amount, 100).setup(TempoHardfork::T7);
+        let (test, mut storage) = DexTestSetup::new(amount, 100).setup(TempoHardfork::T10);
 
         for (i, version) in [OrderVersion::Legacy, OrderVersion::V1, OrderVersion::V2]
             .into_iter()
             .enumerate()
         {
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-                StorageCtx.set_spec(DexTestSetup::hardfork_for(version));
-
                 let mut exchange = StablecoinDEX::new();
                 let (_, book_key) = test.pair(version);
                 let id = 10 + i as u128;
 
-                let mut order = Order::new_flip(
-                    id,
-                    TEST_MAKER,
-                    book_key,
-                    amount,
-                    tick,
-                    true,
-                    flip_tick,
-                    StorageCtx.spec(),
-                )?;
+                let mut order =
+                    Order::new_flip(id, TEST_MAKER, book_key, amount, tick, true, flip_tick)?;
                 order.set_prev(id - 1);
                 order.set_next(id + 1);
 
-                exchange.orders[id].write(order)?;
+                store_versioned_order(&mut exchange, version, order)?;
 
                 let base_slot = exchange.orders[id].base_slot;
                 assert_eq!(exchange.orders[id].version()?, version);
@@ -784,7 +753,7 @@ mod tests {
     #[test]
     fn test_can_delete_any_order_layout() -> eyre::Result<()> {
         let (amount, tick, flip_tick) = (MIN_ORDER_AMOUNT, 5i16, 10i16);
-        let (test, mut storage) = DexTestSetup::new(amount, 100).setup(TempoHardfork::T8);
+        let (test, mut storage) = DexTestSetup::new(amount, 100).setup(TempoHardfork::T10);
 
         for (i, version) in [OrderVersion::Legacy, OrderVersion::V1, OrderVersion::V2]
             .into_iter()
@@ -795,28 +764,18 @@ mod tests {
                 let (_, book_key) = test.pair(version);
 
                 // Create 2 orders of each version
-                StorageCtx.set_spec(DexTestSetup::hardfork_for(version));
                 for n in [10, 20] {
                     let id = n + i as u128;
 
-                    let order = Order::new_flip(
-                        id,
-                        TEST_MAKER,
-                        book_key,
-                        amount,
-                        tick,
-                        true,
-                        flip_tick,
-                        StorageCtx.spec(),
-                    )?;
-                    exchange.orders[id].write(order)?;
+                    let order =
+                        Order::new_flip(id, TEST_MAKER, book_key, amount, tick, true, flip_tick)?;
+                    store_versioned_order(&mut exchange, version, order)?;
                     assert_eq!(exchange.orders[id].version()?, version);
                     assert_eq!(exchange.orders[id].read()?, order);
                 }
 
                 // Verify orders are properly deleted regardless of hardfork
-                for (n, hardfork) in [(10, TempoHardfork::T7), (20, TempoHardfork::T8)] {
-                    StorageCtx.set_spec(hardfork);
+                for n in [10, 20] {
                     let id = n + i as u128;
 
                     exchange.orders[id].delete()?;
@@ -844,7 +803,7 @@ mod tests {
     #[test]
     fn test_t8_can_read_and_mutate_any_order_layout() -> eyre::Result<()> {
         let (amount, tick, flip_tick) = (MIN_ORDER_AMOUNT, 5i16, 10i16);
-        let (test, mut storage) = DexTestSetup::new(amount, 100).setup(TempoHardfork::T8);
+        let (test, mut storage) = DexTestSetup::new(amount, 100).setup(TempoHardfork::T10);
 
         for (i, version) in [OrderVersion::Legacy, OrderVersion::V1, OrderVersion::V2]
             .into_iter()
@@ -855,16 +814,8 @@ mod tests {
                 let (_, book_key) = test.pair(version);
                 let id = 10 + i as u128;
 
-                let mut order = Order::new_flip(
-                    id,
-                    TEST_MAKER,
-                    book_key,
-                    amount,
-                    tick,
-                    true,
-                    flip_tick,
-                    StorageCtx.spec(),
-                )?;
+                let mut order =
+                    Order::new_flip(id, TEST_MAKER, book_key, amount, tick, true, flip_tick)?;
                 order.set_prev(id - 1);
                 order.set_next(id + 1);
 
@@ -899,25 +850,16 @@ mod tests {
     #[test]
     fn test_t8_write_migrates_legacy_order_layout() -> eyre::Result<()> {
         let (amount, tick, flip_tick) = (MIN_ORDER_AMOUNT, 5i16, 10i16);
-        let (test, mut storage) = DexTestSetup::new(amount, 100).setup(TempoHardfork::T7);
+        let (test, mut storage) = DexTestSetup::new(amount, 100).setup(TempoHardfork::T10);
 
         for (i, version) in [OrderVersion::V1, OrderVersion::V2].into_iter().enumerate() {
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-                StorageCtx.set_spec(TempoHardfork::T8);
                 let mut exchange = StablecoinDEX::new();
                 let (_, book_key) = test.pair(version);
                 let id = 10 + i as u128;
 
-                let mut order = Order::new_flip(
-                    id,
-                    TEST_MAKER,
-                    book_key,
-                    amount,
-                    tick,
-                    true,
-                    flip_tick,
-                    StorageCtx.spec(),
-                )?;
+                let mut order =
+                    Order::new_flip(id, TEST_MAKER, book_key, amount, tick, true, flip_tick)?;
                 order.set_prev(id - 1);
                 order.set_next(id + 1);
                 exchange.next_order_id.write(id + 1)?;
@@ -1038,7 +980,7 @@ mod tests {
     #[test]
     fn test_t8_fill_legacy_flip_order_migrates_without_corrupting_book() -> eyre::Result<()> {
         let (amount, tick) = (MIN_ORDER_AMOUNT, 100i16);
-        let (test, mut storage) = DexTestSetup::new(amount, tick).setup(TempoHardfork::T8);
+        let (test, mut storage) = DexTestSetup::new(amount, tick).setup(TempoHardfork::T10);
 
         for version in [OrderVersion::V1, OrderVersion::V2] {
             StorageCtx::enter(&mut storage, || {
@@ -1102,14 +1044,8 @@ mod tests {
     fn test_flip_rewrite_does_not_spend_maker_storage_credits() -> eyre::Result<()> {
         let (amount, tick, flip_tick) = (MIN_ORDER_AMOUNT, 100i16, 200i16);
 
-        for (placement_fork, version) in [
-            (TempoHardfork::T7, OrderVersion::Legacy),
-            (TempoHardfork::T7, OrderVersion::V1),
-            (TempoHardfork::T7, OrderVersion::V2),
-            (TempoHardfork::T8, OrderVersion::V1),
-            (TempoHardfork::T8, OrderVersion::V2),
-        ] {
-            let (test, mut storage) = DexTestSetup::new(amount, tick).setup(placement_fork);
+        for version in [OrderVersion::Legacy, OrderVersion::V1, OrderVersion::V2] {
+            let (test, mut storage) = DexTestSetup::new(amount, tick).setup(TempoHardfork::T10);
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinDEX::new();
                 let (base_token, _) = test.pair(version);
@@ -1120,13 +1056,10 @@ mod tests {
                 exchange.cancel(test.alice, credit_order_id)?;
 
                 let credits_before = exchange.storage_credits(test.alice)?;
-                assert!(
-                    credits_before > 0,
-                    "{placement_fork:?} setup must give maker credits"
-                );
+                assert!(credits_before > 0, "setup must give maker credits");
 
-                let rewrite_fork = DexTestSetup::hardfork_for(version);
-                StorageCtx.set_spec(rewrite_fork);
+                let order = exchange.orders[flip_id].read()?;
+                store_versioned_order(&mut exchange, version, order)?;
 
                 let destination_tail =
                     exchange.place(test.carol, base_token, amount, false, flip_tick)?;
@@ -1137,7 +1070,7 @@ mod tests {
                 assert_eq!(flipped.prev(), destination_tail);
                 assert!(
                     exchange.storage_credits(test.alice)? >= credits_before,
-                    "{placement_fork:?}->{rewrite_fork:?} flip rewrite spent maker credits"
+                    "flip rewrite spent maker credits"
                 );
 
                 Ok::<(), TempoPrecompileError>(())
@@ -1149,7 +1082,7 @@ mod tests {
     #[test]
     fn test_t8_legacy_flip_rewrite_gets_fresh_destination_priority() -> eyre::Result<()> {
         let (amount, tick, flip_tick) = (MIN_ORDER_AMOUNT, 100i16, 200i16);
-        let (test, mut storage) = DexTestSetup::new(amount, tick).setup(TempoHardfork::T8);
+        let (test, mut storage) = DexTestSetup::new(amount, tick).setup(TempoHardfork::T10);
 
         for version in [OrderVersion::V1, OrderVersion::V2] {
             StorageCtx::enter(&mut storage, || {
@@ -1202,7 +1135,7 @@ mod tests {
     #[test]
     fn test_t8_cancel_migrated_legacy_flip_cleans_destination_queue() -> eyre::Result<()> {
         let (amount, tick, flip_tick) = (MIN_ORDER_AMOUNT, 100i16, 200i16);
-        let (test, mut storage) = DexTestSetup::new(amount, tick).setup(TempoHardfork::T8);
+        let (test, mut storage) = DexTestSetup::new(amount, tick).setup(TempoHardfork::T10);
 
         for version in [OrderVersion::V1, OrderVersion::V2] {
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
@@ -1254,7 +1187,7 @@ mod tests {
     #[test]
     fn test_t8_cancel_stale_migrated_legacy_flip() -> eyre::Result<()> {
         let (amount, tick, flip_tick) = (MIN_ORDER_AMOUNT, 100i16, 200i16);
-        let (test, mut storage) = DexTestSetup::new(amount, tick).setup(TempoHardfork::T8);
+        let (test, mut storage) = DexTestSetup::new(amount, tick).setup(TempoHardfork::T10);
 
         for version in [OrderVersion::V1, OrderVersion::V2] {
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
@@ -1331,7 +1264,7 @@ mod tests {
     fn test_t8_migrated_legacy_flip_can_partially_fill_then_flip_again() -> eyre::Result<()> {
         let (amount, tick) = (MIN_ORDER_AMOUNT, 100i16);
         let partial = amount / 2;
-        let (test, mut storage) = DexTestSetup::new(amount, tick).setup(TempoHardfork::T8);
+        let (test, mut storage) = DexTestSetup::new(amount, tick).setup(TempoHardfork::T10);
 
         for version in [OrderVersion::V1, OrderVersion::V2] {
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
@@ -1403,11 +1336,10 @@ mod tests {
     #[test]
     fn test_t8_fill_legacy_head_updates_v1_and_v2_neighbors() -> eyre::Result<()> {
         let (amount, tick) = (MIN_ORDER_AMOUNT, 100i16);
-        let (test, mut storage) = DexTestSetup::new(amount, tick).setup(TempoHardfork::T7);
+        let (test, mut storage) = DexTestSetup::new(amount, tick).setup(TempoHardfork::T10);
 
         for version in [OrderVersion::V1, OrderVersion::V2] {
             StorageCtx::enter(&mut storage, || {
-                StorageCtx.set_spec(TempoHardfork::T8);
                 let mut exchange = StablecoinDEX::new();
                 let (base_token, book_key) = test.pair(version);
                 let legacy_head_id = exchange.place(test.alice, base_token, amount, false, tick)?;
@@ -1454,7 +1386,7 @@ mod tests {
         let (amount, tick, flip_tick) = (MIN_ORDER_AMOUNT, 100i16, 200i16);
 
         for version in [OrderVersion::V1, OrderVersion::V2] {
-            let (test, mut storage) = DexTestSetup::new(amount, tick).setup(TempoHardfork::T8);
+            let (test, mut storage) = DexTestSetup::new(amount, tick).setup(TempoHardfork::T10);
 
             StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
                 let mut exchange = StablecoinDEX::new();
@@ -1536,7 +1468,7 @@ mod tests {
 
     #[test]
     fn test_unknown_order_version_fails() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
 
@@ -1705,7 +1637,7 @@ mod tests {
             carol: address!("0x1000000000000000000000000000000000000004"),
             ..DexTestSetup::new(amount, tick)
         };
-        let (test, mut storage) = test.setup(TempoHardfork::T8);
+        let (test, mut storage) = test.setup(TempoHardfork::T10);
 
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
@@ -1890,7 +1822,7 @@ mod tests {
         remaining_seed: u128,
         mixed_offset: bool,
     ) -> eyre::Result<Vec<IStablecoinDEX::Order>> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
             let mut expected_ids: Vec<u128> = (1..=order_specs.len() as u128).collect();

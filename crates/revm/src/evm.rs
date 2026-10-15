@@ -3,12 +3,12 @@ use alloy_evm::{Database, precompiles::PrecompilesMap};
 use alloy_primitives::{Address, U256};
 use revm::{
     Context, Inspector,
-    context::{Cfg, CfgEnv, ContextError, Evm, FrameStack},
+    context::{CfgEnv, ContextError, Evm, FrameStack},
     handler::{
         EthFrame, EvmTr, FrameInitOrResult, FrameTr, ItemOrResult, instructions::EthInstructions,
     },
     inspector::InspectorEvmTr,
-    interpreter::{InitialAndFloorGas, interpreter::EthInterpreter},
+    interpreter::interpreter::EthInterpreter,
 };
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -57,14 +57,6 @@ pub struct TempoEvm<DB: Database, I> {
     /// The transaction pool sets this because it performs its own liquidity
     /// validation against a cached view of the AMM state.
     pub skip_liquidity_check: bool,
-    /// Set when the intrinsic gas ended up above the transaction gas limit.
-    ///
-    /// `validate_against_state_and_deduct_caller` can raise the intrinsic gas
-    /// after `validate` already accepted the transaction (pre-T1B the keychain
-    /// precompile running out of gas sets `initial_regular_gas` to `u64::MAX`).
-    /// Recorded by `Handler::tx_gas` and consumed by `Handler::execution`,
-    /// which then skips execution entirely.
-    pub(crate) intrinsic_gas_exceeds_limit: bool,
     /// Recorded storage actions.
     pub(crate) actions: StorageActions,
     /// Transaction-local protocol slots whose clears must not mint storage credits.
@@ -111,6 +103,19 @@ impl<DB: Database, I> TempoEvm<DB, I> {
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
+    /// Rejects execution delegated to historical binaries.
+    pub(crate) fn ensure_supported_spec(
+        &self,
+    ) -> Result<(), revm::context::result::EVMError<DB::Error, crate::TempoInvalidTransaction>>
+    {
+        if self.cfg.spec < TempoHardfork::MINIMUM_SUPPORTED {
+            return Err(revm::context::result::EVMError::Custom(
+                "pre-T10 execution requires a historical binary".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Updates the protocol fee manager used by the EVM.
     pub fn with_fee_manager<F>(self, fee_manager: F) -> Self
     where
@@ -129,7 +134,6 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             key_expiry,
             skip_valid_after_check,
             skip_liquidity_check,
-            intrinsic_gas_exceeds_limit,
             actions,
             non_creditable_slots,
             precompiles_builder,
@@ -144,7 +148,6 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             key_expiry,
             skip_valid_after_check,
             skip_liquidity_check,
-            intrinsic_gas_exceeds_limit,
             actions,
             non_creditable_slots,
             fee_manager,
@@ -176,27 +179,10 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             key_expiry: None,
             skip_valid_after_check: false,
             skip_liquidity_check: false,
-            intrinsic_gas_exceeds_limit: false,
             actions,
             non_creditable_slots,
             fee_manager,
             precompiles_builder,
-        }
-    }
-
-    /// Computes initial gas limit and reservoir for a transaction given its initial gas spending.
-    pub(crate) fn initial_gas_and_reservoir(
-        &self,
-        init_and_floor_gas: &InitialAndFloorGas,
-    ) -> (u64, u64) {
-        // Pre-T0 it could happen that the initial gas spending is greater than the gas limit due to faulty validation.
-        //
-        // Before that it would overflow, so we are reproducing this behavior here by setting the gas limit to u64::MAX and the reservoir to 0.
-        if !self.cfg.spec.is_t0() && init_and_floor_gas.initial_total_gas() > self.tx.gas_limit {
-            (u64::MAX, 0)
-        } else {
-            init_and_floor_gas
-                .initial_gas_and_reservoir(self.tx.gas_limit, self.cfg.tx_gas_limit_cap())
         }
     }
 }

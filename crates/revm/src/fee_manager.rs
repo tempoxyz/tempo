@@ -247,7 +247,7 @@ impl FeeTokenResolver for TempoFeeManager {
                         // Otherwise, restricted to TIP-20 calls that move the called token.
                         else {
                             tx.calls().all(|(kind, input)| {
-                                kind.to() == Some(&to) && is_tip20_fee_inference_call(spec, input)
+                                kind.to() == Some(&to) && is_tip20_fee_inference_call(input)
                             })
                         }
                     ;

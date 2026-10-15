@@ -34,10 +34,6 @@ pub fn apply_refund<DB: Database, I>(
     evm: &mut TempoEvm<DB, I>,
     gas: &mut Gas,
 ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
-    if !evm.cfg.spec.is_t7() {
-        return Ok(());
-    }
-
     let journal = &mut evm.inner.ctx.journaled_state;
 
     // Take the tx-local storage-credit slots so we can settle them while mutating the journal.

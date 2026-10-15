@@ -360,23 +360,14 @@ impl EthChainSpec for TempoChainSpec {
         self.inner.get_final_paris_total_difficulty()
     }
 
-    fn next_block_base_fee(&self, parent: &TempoHeader, target_timestamp: u64) -> Option<u64> {
-        let target_fork = self.tempo_hardfork_at(target_timestamp);
-
-        if target_fork.is_t7() {
-            let parent_base_fee = parent
+    fn next_block_base_fee(&self, parent: &TempoHeader, _target_timestamp: u64) -> Option<u64> {
+        Some(tempo_t7_next_block_base_fee(
+            parent
                 .inner
                 .base_fee_per_gas
-                .expect("tempo blocks are expected to have a base fee");
-            Some(tempo_t7_next_block_base_fee(
-                parent_base_fee,
-                parent.inner.gas_used,
-            ))
-        } else if target_fork.is_t1() {
-            Some(TEMPO_T1_BASE_FEE)
-        } else {
-            Some(TEMPO_T0_BASE_FEE)
-        }
+                .expect("tempo blocks are expected to have a base fee"),
+            parent.inner.gas_used,
+        ))
     }
 }
 
@@ -448,16 +439,19 @@ pub trait TempoConsensusSpec: EthChainSpec<Header = TempoHeader> + TempoHardfork
 }
 
 impl TempoConsensusSpec for TempoChainSpec {
-    fn shared_gas_limit_at(&self, timestamp: u64, gas_limit: u64) -> u64 {
-        self.tempo_hardfork_at(timestamp)
-            .shared_gas_limit(gas_limit)
+    fn shared_gas_limit_at(&self, _timestamp: u64, _gas_limit: u64) -> u64 {
+        0
     }
 
-    fn general_gas_limit_at(&self, timestamp: u64, gas_limit: u64, shared_gas_limit: u64) -> u64 {
+    fn general_gas_limit_at(
+        &self,
+        _timestamp: u64,
+        _gas_limit: u64,
+        _shared_gas_limit: u64,
+    ) -> u64 {
         self.info
             .general_gas_limit()
-            .or_else(|| self.tempo_hardfork_at(timestamp).general_gas_limit())
-            .unwrap_or_else(|| (gas_limit - shared_gas_limit) / 2)
+            .unwrap_or(TEMPO_T1_GENERAL_GAS_LIMIT)
     }
 }
 
@@ -474,7 +468,6 @@ mod tests {
     use reth_chainspec::{ForkCondition, Hardforks};
     #[cfg(feature = "cli")]
     use reth_cli::chainspec::ChainSpecParser as _;
-    use tempo_primitives::Header;
 
     #[test]
     #[cfg(feature = "cli")]
@@ -663,99 +656,23 @@ mod tests {
         assert_eq!(chainspec.general_gas_limit_at(0, 500_000_000, 0), 123456789);
     }
 
-    fn header(timestamp: u64, base_fee: u64, gas_used: u64) -> super::TempoHeader {
-        super::TempoHeader {
-            inner: Header {
-                timestamp,
-                base_fee_per_gas: Some(base_fee),
-                gas_used,
+    #[test]
+    fn next_block_base_fee() {
+        for (base_fee, gas_used, expected) in [
+            (TEMPO_T1_BASE_FEE, 0, TEMPO_T7_BASE_FEE_CAP),
+            (TEMPO_T7_BASE_FEE_CAP, 0, TEMPO_T7_BASE_FEE_CAP * 7 / 8),
+            (TEMPO_T7_BASE_FEE_FLOOR, 30_000_000, 750_000_000),
+        ] {
+            let parent = super::TempoHeader {
+                inner: tempo_primitives::Header {
+                    base_fee_per_gas: Some(base_fee),
+                    gas_used,
+                    ..Default::default()
+                },
                 ..Default::default()
-            },
-            ..Default::default()
+            };
+            assert_eq!(super::DEV.next_block_base_fee(&parent, 1), Some(expected));
         }
-    }
-
-    fn chainspec_with_t7_at(t7_time: u64) -> super::TempoChainSpec {
-        let genesis = serde_json::json!({
-            "config": {
-                "chainId": 99999,
-                "homesteadBlock": 0,
-                "daoForkSupport": false,
-                "eip150Block": 0,
-                "eip155Block": 0,
-                "eip158Block": 0,
-                "byzantiumBlock": 0,
-                "constantinopleBlock": 0,
-                "petersburgBlock": 0,
-                "istanbulBlock": 0,
-                "berlinBlock": 0,
-                "londonBlock": 0,
-                "mergeNetsplitBlock": 0,
-                "shanghaiTime": 0,
-                "cancunTime": 0,
-                "pragueTime": 0,
-                "osakaTime": 0,
-                "terminalTotalDifficulty": 0,
-                "terminalTotalDifficultyPassed": true,
-                "t0Time": 0,
-                "t1Time": 0,
-                "t7Time": t7_time
-            },
-            "nonce": "0x42",
-            "timestamp": "0x0",
-            "extraData": "0x",
-            "gasLimit": "0x1dcd6500",
-            "difficulty": "0x0",
-            "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
-            "coinbase": "0x0000000000000000000000000000000000000000",
-            "alloc": {}
-        });
-        let genesis: alloy_genesis::Genesis = serde_json::from_value(genesis).unwrap();
-        super::TempoChainSpec::from_genesis(genesis)
-    }
-
-    #[test]
-    fn next_block_base_fee_fixed_before_t7() {
-        let chainspec = chainspec_with_t7_at(10);
-        let parent = header(8, TEMPO_T1_BASE_FEE / 2, 0);
-
-        assert_eq!(
-            chainspec.next_block_base_fee(&parent, 9),
-            Some(TEMPO_T1_BASE_FEE)
-        );
-    }
-
-    #[test]
-    fn next_block_base_fee_seeds_cap_on_t7_activation() {
-        let chainspec = chainspec_with_t7_at(10);
-        let parent = header(9, TEMPO_T1_BASE_FEE, 0);
-
-        assert_eq!(
-            chainspec.next_block_base_fee(&parent, 10),
-            Some(TEMPO_T7_BASE_FEE_CAP)
-        );
-    }
-
-    #[test]
-    fn next_block_base_fee_adjusts_after_t7_activation() {
-        let chainspec = chainspec_with_t7_at(10);
-        let parent = header(10, TEMPO_T7_BASE_FEE_CAP, 0);
-
-        assert_eq!(
-            chainspec.next_block_base_fee(&parent, 11),
-            Some(TEMPO_T7_BASE_FEE_CAP * 7 / 8)
-        );
-    }
-
-    #[test]
-    fn next_block_base_fee_uses_parent_gas_used_after_t7_activation() {
-        let chainspec = chainspec_with_t7_at(10);
-        let parent = header(10, TEMPO_T7_BASE_FEE_FLOOR, 30_000_000);
-
-        assert_eq!(
-            chainspec.next_block_base_fee(&parent, 11),
-            Some(750_000_000)
-        );
     }
 
     #[cfg(feature = "cli")]

@@ -40,6 +40,15 @@ if [[ ! -f "$FOUNDRY_LOCK" ]]; then
   exit 1
 fi
 
+# The T10 execution floor uses the strict payment classifier and implicit
+# approval list unconditionally. Update pinned Foundry's pre-T10 API calls.
+sed -i.bak 's/tx\.is_payment_v2()/tx.is_payment()/' \
+  "$FOUNDRY_ROOT/crates/common/src/tempo/lane.rs"
+sed -i.bak 's/Some(hardfork) => address_registry::is_implicitly_approved(spender, hardfork)/Some(_) => address_registry::is_implicitly_approved(spender)/' \
+  "$FOUNDRY_ROOT/crates/cheatcodes/src/tempo.rs"
+rm "$FOUNDRY_ROOT/crates/common/src/tempo/lane.rs.bak" \
+  "$FOUNDRY_ROOT/crates/cheatcodes/src/tempo.rs.bak"
+
 has_tempo_git_patch=false
 if grep -q '^\[patch\."https://github.com/tempoxyz/tempo"\]' "$FOUNDRY_CARGO"; then
   has_tempo_git_patch=true

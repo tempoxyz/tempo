@@ -135,7 +135,6 @@ mod tests {
     use reth_evm::{ConfigureEngineEvm, ConvertTx, ExecutableTxTuple};
     use reth_primitives_traits::SealedBlock;
     use std::sync::Arc;
-    use tempo_chainspec::{TempoChainSpec, spec::MODERATO};
     use tempo_primitives::{
         BlockBody, SubBlockMetadata, TempoHeader, transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
     };
@@ -200,7 +199,7 @@ mod tests {
 
     #[test]
     fn test_tx_iterator_for_payload() {
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()));
+        let chainspec = crate::test_utils::test_chainspec();
         let sender_recovery_cache = SenderRecoveryCache::new(4);
         let evm_config = TempoEvmConfig::new(chainspec.clone())
             .with_sender_recovery_cache(sender_recovery_cache.clone());
@@ -244,7 +243,7 @@ mod tests {
 
     #[test]
     fn test_context_for_payload() {
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()));
+        let chainspec = crate::test_utils::test_chainspec();
         let evm_config = TempoEvmConfig::new(chainspec.clone());
 
         let system_tx = create_subblock_metadata_tx(chainspec.chain_id(), 1);
@@ -265,7 +264,7 @@ mod tests {
 
     #[test]
     fn test_evm_env_for_payload() {
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()));
+        let chainspec = crate::test_utils::test_chainspec();
         let evm_config = TempoEvmConfig::new(chainspec.clone());
 
         let system_tx = create_subblock_metadata_tx(chainspec.chain_id(), 1);

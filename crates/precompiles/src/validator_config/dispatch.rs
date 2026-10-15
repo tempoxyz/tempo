@@ -31,7 +31,7 @@ impl Precompile for ValidatorConfig {
                     addValidator(call) => mutate(call, msg_sender, |sender, c| self.add_validator(sender, c)),
                     updateValidator(call) => mutate(call, msg_sender, |sender, c| self.update_validator(sender, c)),
                     changeValidatorStatus(call) => mutate(call, msg_sender, |sender, c| self.change_validator_status(sender, c)),
-                    #[schedule(since = T1)]
+
                     changeValidatorStatusByIndex(call) => mutate(call, msg_sender, |sender, c| {
                         self.change_validator_status_by_index(sender, c)
                     }),
@@ -69,7 +69,7 @@ mod tests {
         let owner = Address::random();
 
         // T1: invalid selector returns reverted output
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut validator_config = ValidatorConfig::new();
             validator_config.initialize(owner)?;
@@ -84,18 +84,7 @@ mod tests {
             Ok(())
         })?;
 
-        // Pre-T1 (T0): insufficient calldata returns halted output
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
-        StorageCtx::enter(&mut storage, || {
-            let mut validator_config = ValidatorConfig::new();
-            validator_config.initialize(owner)?;
-
-            let result = validator_config.call(&[0x12, 0x34], sender);
-            let output = result.expect("expected Ok(halt) for short calldata");
-            assert!(output.is_halt());
-
-            Ok(())
-        })
+        Ok(())
     }
 
     #[test]
@@ -197,7 +186,7 @@ mod tests {
 
     #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || {
             let mut validator_config = ValidatorConfig::new();
 
@@ -215,52 +204,13 @@ mod tests {
     }
 
     #[test]
-    fn test_change_validator_status_by_index_t1_gating() -> eyre::Result<()> {
-        use alloy::sol_types::SolError;
-        use tempo_contracts::precompiles::UnknownFunctionSelector;
-
+    fn test_change_validator_status_by_index() -> eyre::Result<()> {
         let owner = Address::random();
         let validator = Address::random();
         let public_key = FixedBytes::<32>::repeat_byte(0x42);
 
-        // T0: changeValidatorStatusByIndex returns UnknownFunctionSelector
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
-        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-            let mut validator_config = ValidatorConfig::new();
-            validator_config.initialize(owner)?;
-
-            // Add a validator first
-            validator_config.add_validator(
-                owner,
-                IValidatorConfig::addValidatorCall {
-                    newValidatorAddress: validator,
-                    publicKey: public_key,
-                    active: true,
-                    inboundAddress: "192.168.1.1:8000".to_string(),
-                    outboundAddress: "192.168.1.1:9000".to_string(),
-                },
-            )?;
-
-            // Try to call changeValidatorStatusByIndex in T0 - should return UnknownFunctionSelector
-            let call = IValidatorConfig::changeValidatorStatusByIndexCall {
-                index: 0,
-                active: false,
-            };
-            let calldata = call.abi_encode();
-            let result = validator_config.call(&calldata, owner)?;
-
-            assert!(result.is_revert());
-            let decoded = UnknownFunctionSelector::abi_decode(&result.bytes)?;
-            assert_eq!(
-                decoded.selector.0,
-                IValidatorConfig::changeValidatorStatusByIndexCall::SELECTOR
-            );
-
-            Ok(())
-        })?;
-
         // T1: changeValidatorStatusByIndex works
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut validator_config = ValidatorConfig::new();
             validator_config.initialize(owner)?;

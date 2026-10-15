@@ -30,7 +30,6 @@ use crate::{
     error::Result,
     has_duplicates_metered,
     storage::{Handler, Mapping, Set},
-    tip20_factory::TIP20Factory,
 };
 use alloy::primitives::{Address, B256, FixedBytes, TxKind, U256, keccak256};
 use tempo_precompiles_macros::{Storable, contract};
@@ -262,8 +261,6 @@ impl AccountKeychain {
     ) -> Result<()> {
         let config = &config;
         self.ensure_admin_caller(msg_sender)?;
-        let is_t3 = self.storage.spec().is_t3();
-
         // Validate inputs
         if key_id.is_zero() {
             return Err(AccountKeychainError::zero_public_key().into());
@@ -273,12 +270,9 @@ impl AccountKeychain {
             return Err(AccountKeychainError::invalid_key_id().into());
         }
 
-        // T0+: Expiry must be in the future (also catches expiry == 0 which means "key doesn't exist")
-        if self.storage.spec().is_t0() {
-            let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
-            if config.expiry <= current_timestamp {
-                return Err(AccountKeychainError::expiry_in_past().into());
-            }
+        let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
+        if config.expiry <= current_timestamp {
+            return Err(AccountKeychainError::expiry_in_past().into());
         }
 
         // Check if key already exists (key exists if expiry > 0)
@@ -294,8 +288,8 @@ impl AccountKeychain {
 
         let signature_type = StoredSignatureType::try_from(signature_type)?;
 
-        // TIP-1011 fields are hardfork-gated at T3, so reject them before mutating state.
-        let allowed_call_configs = if is_t3 {
+        // Validate restrictions before mutating state.
+        let allowed_call_configs = {
             if config.enforceLimits {
                 let mut seen_tokens = HashSet::with_capacity(config.limits.len());
                 for limit in &config.limits {
@@ -306,8 +300,7 @@ impl AccountKeychain {
             }
 
             if config.allowAnyCalls {
-                // T5+: prevent footguns where callers accidentally pass scopes with allow-all.
-                if self.storage.spec().is_t5() && !config.allowedCalls.is_empty() {
+                if !config.allowedCalls.is_empty() {
                     return Err(AccountKeychainError::invalid_call_scope().into());
                 }
 
@@ -315,16 +308,6 @@ impl AccountKeychain {
             } else {
                 Some(config.allowedCalls.as_slice())
             }
-        } else {
-            if config.limits.iter().any(|limit| limit.period != 0) {
-                return Err(AccountKeychainError::invalid_spending_limit().into());
-            }
-
-            if !config.allowAnyCalls || !config.allowedCalls.is_empty() {
-                return Err(AccountKeychainError::invalid_call_scope().into());
-            }
-
-            None
         };
 
         if let Some(witness) = witness {
@@ -442,7 +425,6 @@ impl AccountKeychain {
         self.keys[msg_sender][call.keyId].write(revoked_key)?;
 
         // Note: We don't clear spending limits here - they become inaccessible
-
         // Emit event
         self.emit_event(AccountKeychainEvent::key_revoked(msg_sender, call.keyId))
     }
@@ -476,20 +458,12 @@ impl AccountKeychain {
             self.keys[msg_sender][call.keyId].write(key)?;
         }
 
-        // Update the spending limit
+        // Update the cap and remaining amount, preserving the period.
         let limit_key = Self::spending_limit_key(msg_sender, call.keyId);
-        if self.storage.spec().is_t3() {
-            // T3: newLimit updates both the configured cap and current remaining amount,
-            // while preserving period + period_end.
-            let mut limit_state = self.spending_limits[limit_key][call.token].read()?;
-            limit_state.remaining = call.newLimit;
-            limit_state.max = Self::t3_spending_limit_cap(call.newLimit)?;
-            self.spending_limits[limit_key][call.token].write(limit_state)?;
-        } else {
-            self.spending_limits[limit_key][call.token]
-                .remaining
-                .write(call.newLimit)?;
-        }
+        let mut limit_state = self.spending_limits[limit_key][call.token].read()?;
+        limit_state.remaining = call.newLimit;
+        limit_state.max = Self::t3_spending_limit_cap(call.newLimit)?;
+        self.spending_limits[limit_key][call.token].write(limit_state)?;
 
         // Emit event
         self.emit_event(AccountKeychainEvent::spending_limit_updated(
@@ -526,14 +500,8 @@ impl AccountKeychain {
 
     /// Returns the remaining spending limit for a key-token pair.
     ///
-    /// T2+ returns zero for missing, revoked, or expired keys. Pre-T2 preserves the historical
-    /// behavior of reading the raw stored remaining amount so old blocks reexecute identically.
+    /// Returns zero for missing, revoked, or expired keys.
     pub fn get_remaining_limit(&self, call: getRemainingLimitCall) -> Result<U256> {
-        if !self.storage.spec().is_t2() {
-            let limit_key = Self::spending_limit_key(call.account, call.keyId);
-            return self.spending_limits[limit_key][call.token].remaining.read();
-        }
-
         self.get_remaining_limit_with_period(getRemainingLimitWithPeriodCall {
             account: call.account,
             keyId: call.keyId,
@@ -568,10 +536,6 @@ impl AccountKeychain {
         msg_sender: Address,
         call: setAllowedCallsCall,
     ) -> Result<()> {
-        if !self.storage.spec().is_t3() {
-            return Err(AccountKeychainError::invalid_call_scope().into());
-        }
-
         self.ensure_admin_caller(msg_sender)?;
 
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
@@ -750,33 +714,20 @@ impl AccountKeychain {
     ) -> Result<()> {
         let limit_key = Self::spending_limit_key(account, key_id);
 
-        let is_t3 = self.storage.spec().is_t3();
-        debug_assert!(is_t3 || allowed_calls.is_none());
-
         let now = self.storage.timestamp().saturating_to::<u64>();
         for limit in limits {
-            if is_t3 {
-                let period_end = if limit.period == 0 {
-                    0
-                } else {
-                    now.saturating_add(limit.period)
-                };
-
-                self.spending_limits[limit_key][limit.token].write(SpendingLimitState {
-                    remaining: limit.amount,
-                    max: Self::t3_spending_limit_cap(limit.amount)?,
-                    period: limit.period,
-                    period_end,
-                })?;
+            let period_end = if limit.period == 0 {
+                0
             } else {
-                self.spending_limits[limit_key][limit.token]
-                    .remaining
-                    .write(limit.amount)?;
-            }
-        }
+                now.saturating_add(limit.period)
+            };
 
-        if !is_t3 {
-            return Ok(());
+            self.spending_limits[limit_key][limit.token].write(SpendingLimitState {
+                remaining: limit.amount,
+                max: Self::t3_spending_limit_cap(limit.amount)?,
+                period: limit.period,
+                period_end,
+            })?;
         }
 
         self.replace_allowed_calls(limit_key, allowed_calls)
@@ -797,7 +748,7 @@ impl AccountKeychain {
         to: &TxKind,
         input: &[u8],
     ) -> Result<()> {
-        if key_id.is_zero() || !self.storage.spec().is_t3() {
+        if key_id.is_zero() {
             return Ok(());
         }
 
@@ -950,11 +901,6 @@ impl AccountKeychain {
     fn upsert_target_scope(&mut self, account_key: B256, scope: &CallScope) -> Result<()> {
         let target = scope.target;
 
-        // Pre-T4: validate call scopes inline
-        if !self.storage.spec().is_t4() {
-            self.validate_call_scope(scope)?;
-        }
-
         self.key_scopes[account_key].targets.insert(target)?;
         self.clear_target_selectors(account_key, target)?;
 
@@ -971,16 +917,7 @@ impl AccountKeychain {
                 .selectors
                 .insert(selector)?;
 
-            if rule.recipients.is_empty() {
-                if !self.storage.spec().is_t4() {
-                    // Keep the pre-T4 empty-set delete to preserve the original storage-touch
-                    // pattern. Removing it earlier changes same-tx call-scope warmness without
-                    // changing persisted state.
-                    self.key_scopes[account_key].target_scopes[target].selector_scopes[selector]
-                        .recipients
-                        .delete()?;
-                }
-            } else {
+            if !rule.recipients.is_empty() {
                 // `validate_selector_rules` already rejected duplicates.
                 self.key_scopes[account_key].target_scopes[target].selector_scopes[selector]
                     .recipients
@@ -1012,9 +949,7 @@ impl AccountKeychain {
             }
 
             // Post-T4: validate call scopes before inserting
-            if self.storage.spec().is_t4() {
-                self.validate_call_scope(scope)?;
-            }
+            self.validate_call_scope(scope)?;
         }
         Ok(())
     }
@@ -1043,22 +978,6 @@ impl AccountKeychain {
         let spec = self.storage.spec();
         let sort_selectors = spec.is_t11();
 
-        let mut cached_is_tip20: Option<bool> = None;
-        let mut is_tip20 = || -> Result<bool> {
-            match cached_is_tip20 {
-                Some(v) => Ok(v),
-                None => Ok(*cached_is_tip20.insert({
-                    if !spec.is_t4() {
-                        // Pre-T4: validate that TIP-20 is initialized
-                        TIP20Factory::new().is_tip20(target)?
-                    } else {
-                        // Post-T4: only validate the address
-                        target.is_tip20()
-                    }
-                })),
-            }
-        };
-
         if sort_selectors
             && has_duplicates_metered(&mut self.storage, rules.iter().map(|rule| rule.selector))?
         {
@@ -1075,7 +994,7 @@ impl AccountKeychain {
                 continue;
             }
 
-            if !is_constrained_tip20_selector(*rule.selector) || !is_tip20()? {
+            if !is_constrained_tip20_selector(*rule.selector) || !target.is_tip20() {
                 return Err(AccountKeychainError::invalid_call_scope().into());
             }
 
@@ -1092,33 +1011,28 @@ impl AccountKeychain {
     /// Ensures admin operations are authorized for this caller.
     ///
     /// Rules:
-    /// - transaction must be signed by the root key (`transaction_key == Address::ZERO`) or,
-    ///   on T6+, an active admin access key
-    /// - T2+: caller must match tx.origin
+    /// - transaction must be signed by the root key or an active admin access key
+    /// - caller must match tx.origin
     ///
     /// # Errors
     /// - `UnauthorizedCaller` when the transaction is signed by a non-admin access key
-    /// - `UnauthorizedCaller` on T2+ when `msg.sender != tx.origin`
+    /// - `UnauthorizedCaller` when `msg.sender != tx.origin`
     /// - storage read errors from transient key/origin or account metadata lookups
     ///
-    /// The T2 check prevents transaction-global root-key status from being reused by
+    /// The origin check prevents transaction-global root-key status from being reused by
     /// intermediate contracts (confused-deputy self-administration).
     ///
     /// `tx_origin` is seeded by the handler before validation/execution.
     /// If origin is not seeded (zero), admin ops are rejected.
     fn ensure_admin_caller(&self, msg_sender: Address) -> Result<()> {
         let transaction_key = self.transaction_key.t_read()?;
-        if !transaction_key.is_zero()
-            && (!self.storage.spec().is_t6() || !self.is_admin_key(msg_sender, transaction_key)?)
-        {
+        if !transaction_key.is_zero() && !self.is_admin_key(msg_sender, transaction_key)? {
             return Err(AccountKeychainError::unauthorized_caller().into());
         }
 
-        if self.storage.spec().is_t2() {
-            let tx_origin = self.tx_origin.t_read()?;
-            if tx_origin.is_zero() || tx_origin != msg_sender {
-                return Err(AccountKeychainError::unauthorized_caller().into());
-            }
+        let tx_origin = self.tx_origin.t_read()?;
+        if tx_origin.is_zero() || tx_origin != msg_sender {
+            return Err(AccountKeychainError::unauthorized_caller().into());
         }
 
         Ok(())
@@ -1207,14 +1121,14 @@ impl AccountKeychain {
         Ok(key)
     }
 
-    /// Validate keychain authorization (existence, revocation, expiry, and optionally signature type).
+    /// Validates key existence, revocation, expiry, and signature type.
     ///
     /// # Arguments
     /// * `account` - The account that owns the key
     /// * `key_id` - The key identifier to validate
     /// * `current_timestamp` - Current block timestamp for expiry check
     /// * `expected_sig_type` - The signature type from the actual signature (0=Secp256k1, 1=P256,
-    ///   2=WebAuthn). Pass `None` to skip validation (for backward compatibility pre-T1).
+    ///   2=WebAuthn).
     ///
     /// # Errors
     /// - `KeyAlreadyRevoked` — the key has been permanently revoked
@@ -1226,18 +1140,14 @@ impl AccountKeychain {
         account: Address,
         key_id: Address,
         current_timestamp: u64,
-        expected_sig_type: Option<u8>,
+        expected_sig_type: u8,
     ) -> Result<AuthorizedKey> {
         let key = self.load_active_key(account, key_id, current_timestamp)?;
 
-        // Validate that the signature type matches the key type stored in the keychain
-        // Only check if expected_sig_type is provided (T1+ hardfork)
-        if let Some(sig_type) = expected_sig_type
-            && key.signature_type as u8 != sig_type
-        {
+        if key.signature_type as u8 != expected_sig_type {
             return Err(AccountKeychainError::signature_type_mismatch(
                 key.signature_type as u8,
-                sig_type,
+                expected_sig_type,
             )
             .into());
         }
@@ -1266,7 +1176,7 @@ impl AccountKeychain {
         current_timestamp: u64,
         key: &AuthorizedKey,
     ) -> Result<U256> {
-        if key_id.is_zero() && self.storage.spec().is_t3() {
+        if key_id.is_zero() {
             return Ok(U256::ZERO);
         }
 
@@ -1283,7 +1193,7 @@ impl AccountKeychain {
         token: Address,
         current_timestamp: u64,
     ) -> Result<(U256, u64)> {
-        if key_id.is_zero() && self.storage.spec().is_t3() {
+        if key_id.is_zero() {
             return Ok((U256::ZERO, 0));
         }
 
@@ -1300,34 +1210,27 @@ impl AccountKeychain {
         current_timestamp: u64,
         key: &AuthorizedKey,
     ) -> Result<(U256, u64)> {
-        // T2+: return zero if key doesn't exist or has been revoked
         if key.is_revoked || key.expiry == 0 {
             return Ok((U256::ZERO, 0));
         }
 
-        // T3+: return zero if key has expired
-        if current_timestamp >= key.expiry && self.storage.spec().is_t3() {
+        if current_timestamp >= key.expiry {
             return Ok((U256::ZERO, 0));
         }
 
         let limit_key = Self::spending_limit_key(account, key_id);
         let remaining = self.spending_limits[limit_key][token].remaining.read()?;
 
-        if !self.storage.spec().is_t3() {
-            return Ok((remaining, 0));
-        }
-
         let period = self.spending_limits[limit_key][token].period.read()?;
         if period == 0 {
             return Ok((remaining, 0));
         }
 
-        let remaining =
-            if self.storage.spec().is_t7() && remaining == ZERO_PERIODIC_REMAINING_SENTINEL {
-                U256::ZERO
-            } else {
-                remaining
-            };
+        let remaining = if remaining == ZERO_PERIODIC_REMAINING_SENTINEL {
+            U256::ZERO
+        } else {
+            remaining
+        };
 
         let period_end = self.spending_limits[limit_key][token].period_end.read()?;
         if current_timestamp < period_end {
@@ -1373,25 +1276,13 @@ impl AccountKeychain {
 
         // Check and update spending limit
         let limit_key = Self::spending_limit_key(account, key_id);
-        if !self.storage.spec().is_t3() {
-            let remaining = self.spending_limits[limit_key][token].remaining.read()?;
-            if amount > remaining {
-                return Err(AccountKeychainError::spending_limit_exceeded().into());
-            }
-
-            let new_remaining = remaining - amount;
-            self.spending_limits[limit_key][token]
-                .remaining
-                .write(new_remaining)?;
-            return Ok(());
-        }
 
         let mut limit_state = self.spending_limits[limit_key][token].read()?;
         let mut remaining = limit_state.remaining;
         let is_periodic = limit_state.period != 0;
 
         if is_periodic {
-            if self.storage.spec().is_t7() && remaining == ZERO_PERIODIC_REMAINING_SENTINEL {
+            if remaining == ZERO_PERIODIC_REMAINING_SENTINEL {
                 remaining = U256::ZERO;
             }
 
@@ -1411,7 +1302,7 @@ impl AccountKeychain {
         // Update remaining limit
         let new_remaining = remaining - amount;
         if is_periodic {
-            if self.storage.spec().is_t7() && new_remaining.is_zero() {
+            if new_remaining.is_zero() {
                 limit_state.remaining = ZERO_PERIODIC_REMAINING_SENTINEL;
             } else {
                 limit_state.remaining = new_remaining;
@@ -1471,18 +1362,10 @@ impl AccountKeychain {
         }
 
         let limit_key = Self::spending_limit_key(account, transaction_key);
-        if !self.storage.spec().is_t3() {
-            let remaining = self.spending_limits[limit_key][token].remaining.read()?;
-            let refunded = remaining.saturating_add(amount);
-            return self.spending_limits[limit_key][token]
-                .remaining
-                .write(refunded);
-        }
 
         let mut limit_state = self.spending_limits[limit_key][token].read()?;
         // (T7+) decode the periodic zero sentinel before adding the refund.
-        let refunded = if self.storage.spec().is_t7()
-            && limit_state.period != 0
+        let refunded = if limit_state.period != 0
             && limit_state.remaining == ZERO_PERIODIC_REMAINING_SENTINEL
         {
             amount
@@ -1745,7 +1628,7 @@ mod tests {
 
     #[test]
     fn test_t6_root_authorizes_admin_key() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let account = Address::random();
         let admin_key = Address::random();
 
@@ -1771,7 +1654,7 @@ mod tests {
 
     #[test]
     fn test_t6_is_admin_key_uses_active_key_status() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         storage.set_timestamp(U256::from(100u64));
         let account = Address::random();
         let active_admin_key = Address::random();
@@ -1826,7 +1709,7 @@ mod tests {
 
     #[test]
     fn test_t6_authorize_admin_key_with_witness_checks_burned_state() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let account = Address::random();
         let first_admin_key = Address::random();
         let second_admin_key = Address::random();
@@ -1868,7 +1751,7 @@ mod tests {
 
     #[test]
     fn test_t6_admin_key_can_authorize_and_revoke_keys() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let account = Address::random();
         let admin_key = Address::random();
         let child_key = Address::random();
@@ -1900,7 +1783,7 @@ mod tests {
 
     #[test]
     fn test_t6_non_admin_key_cannot_authorize_keys() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let account = Address::random();
         let access_key = Address::random();
         let child_key = Address::random();
@@ -1937,7 +1820,7 @@ mod tests {
 
     #[test]
     fn test_t6_admin_key_restrictions_and_root_admin_authorization_rejected() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let account = Address::random();
         let admin_key = Address::random();
         let token = Address::random();
@@ -1973,7 +1856,7 @@ mod tests {
 
     #[test]
     fn test_t6_root_slot_mutators_use_stored_key_row() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let account = Address::random();
         let token = Address::random();
         let target = Address::random();
@@ -2096,7 +1979,7 @@ mod tests {
 
     #[test]
     fn test_t6_existing_key_cannot_become_admin() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let account = Address::random();
         let access_key = Address::random();
 
@@ -2127,7 +2010,7 @@ mod tests {
 
     #[test]
     fn test_t5_authorize_key_with_witness_does_not_burn_and_allows_reuse() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let account = Address::random();
         let first_key = Address::random();
         let second_key = Address::random();
@@ -2171,7 +2054,7 @@ mod tests {
 
     #[test]
     fn test_t5_burn_key_authorization_witness_blocks_later_auth() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let account = Address::random();
         let witness = B256::repeat_byte(0x54);
 
@@ -2210,7 +2093,7 @@ mod tests {
 
     #[test]
     fn test_t5_access_key_cannot_burn_key_authorization_witness() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let account = Address::random();
         let access_key = Address::random();
         let witness = B256::repeat_byte(0x55);
@@ -2302,6 +2185,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             // Initialize the keychain
             let mut keychain = AccountKeychain::new();
+            keychain.set_tx_origin(msg_sender)?;
             keychain.initialize()?;
 
             // First, authorize a key with main key (transaction_key = 0) to set up the test
@@ -2371,7 +2255,7 @@ mod tests {
 
     #[test]
     fn test_admin_operations_require_tx_origin_on_t2() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let tx_origin = Address::random();
         let delegated_sender = Address::random();
         let existing_key = Address::random();
@@ -2453,7 +2337,7 @@ mod tests {
 
     #[test]
     fn test_admin_operations_allow_contract_origin_on_t2() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let contract_sender = Address::random();
         let key_id = Address::random();
         let token = Address::random();
@@ -2522,65 +2406,8 @@ mod tests {
     }
 
     #[test]
-    fn test_admin_operations_allow_origin_mismatch_pre_t2() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
-        let msg_sender = Address::random();
-        let other_origin = Address::random();
-        let key_id = Address::random();
-        let token = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-
-            // Pre-T2, admin operations do not enforce msg.sender == tx.origin.
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(other_origin)?;
-
-            authorize_key(
-                &mut keychain,
-                msg_sender,
-                authorizeKeyCall {
-                    keyId: key_id,
-                    signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: true,
-                        limits: vec![TokenLimit {
-                            token,
-                            amount: U256::from(100),
-                            period: 0,
-                        }],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
-                },
-            )?;
-
-            keychain.update_spending_limit(
-                msg_sender,
-                updateSpendingLimitCall {
-                    keyId: key_id,
-                    token,
-                    newLimit: U256::from(200),
-                },
-            )?;
-
-            keychain.revoke_key(msg_sender, revokeKeyCall { keyId: key_id })?;
-
-            let key_info = keychain.get_key(getKeyCall {
-                account: msg_sender,
-                keyId: key_id,
-            })?;
-            assert!(key_info.isRevoked);
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_admin_operations_reject_eoa_mismatch_on_t2() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let account = Address::random();
         let other_origin = Address::random();
         let key_id = Address::random();
@@ -2635,7 +2462,7 @@ mod tests {
     /// This catches any execution path that forgets to call `seed_tx_origin`.
     #[test]
     fn test_admin_operations_reject_unseeded_origin_on_t2() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let account = Address::random();
         let key_id = Address::random();
         let other_key = Address::random();
@@ -2723,7 +2550,7 @@ mod tests {
 
     #[test]
     fn test_replay_protection_revoked_key_cannot_be_reauthorized() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let account = Address::random();
         let key_id = Address::random();
         let token = Address::random();
@@ -2814,11 +2641,12 @@ mod tests {
     #[test]
     fn test_authorize_key_rejects_expiry_in_past() -> eyre::Result<()> {
         // Must use T0 hardfork for expiry validation to be enforced
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let account = Address::random();
         let key_id = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
+            keychain.set_tx_origin(account)?;
             keychain.initialize()?;
 
             // Use main key for the operation
@@ -2881,65 +2709,6 @@ mod tests {
     }
 
     #[test]
-    fn test_pre_t3_authorize_key_rejects_tip_1011_fields_without_writing_key() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1C);
-        let account = Address::random();
-        let key_id = Address::random();
-        let token = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
-
-            let result = authorize_key(
-                &mut keychain,
-                account,
-                authorizeKeyCall {
-                    keyId: key_id,
-                    signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: true,
-                        limits: vec![TokenLimit {
-                            token,
-                            amount: U256::from(100u64),
-                            period: 60,
-                        }],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
-                },
-            );
-
-            assert!(
-                matches!(
-                    result,
-                    Err(TempoPrecompileError::AccountKeychainError(
-                        AccountKeychainError::InvalidSpendingLimit(_)
-                    ))
-                ),
-                "expected InvalidSpendingLimit, got {result:?}"
-            );
-
-            assert_eq!(
-                keychain.keys[account][key_id].read()?,
-                AuthorizedKey::default(),
-                "pre-T3 invalid TIP-1011 fields must not leave behind a key"
-            );
-
-            let limit_key = AccountKeychain::spending_limit_key(account, key_id);
-            assert_eq!(
-                keychain.spending_limits[limit_key][token].read()?,
-                SpendingLimitState::default(),
-                "pre-T3 invalid TIP-1011 fields must not initialize limits"
-            );
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_different_key_id_can_be_authorized_after_revocation() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let account = Address::random();
@@ -2947,6 +2716,7 @@ mod tests {
         let key_id_2 = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
+            keychain.set_tx_origin(account)?;
             keychain.initialize()?;
 
             // Use main key for all operations
@@ -3078,7 +2848,6 @@ mod tests {
                 token,
             })?;
             assert_eq!(limit_after_contract, U256::from(40)); // unchanged
-
             // Assert that exceeding remaining limit fails
             let exceed_result = keychain.authorize_approve(eoa, token, U256::ZERO, U256::from(50));
             assert!(matches!(
@@ -3227,12 +2996,13 @@ mod tests {
 
     #[test]
     fn test_authorize_key_rejects_existing_key_boundary() -> eyre::Result<()> {
-        // Use pre-T0 to avoid expiry validation (focus on existence check)
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Genesis);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
+        storage.set_timestamp(U256::ZERO);
         let account = Address::random();
         let key_id = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
+            keychain.set_tx_origin(account)?;
             keychain.initialize()?;
             keychain.set_transaction_key(Address::ZERO)?;
 
@@ -3325,6 +3095,7 @@ mod tests {
             keychain.set_transaction_key(Address::ZERO)?;
 
             let account = Address::random();
+            keychain.set_tx_origin(account)?;
             let key_id = Address::random();
             let auth_call = authorizeKeyCall {
                 keyId: key_id,
@@ -3358,6 +3129,7 @@ mod tests {
         let key_id = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
+            keychain.set_tx_origin(account)?;
             keychain.initialize()?;
             keychain.set_transaction_key(Address::ZERO)?;
 
@@ -3387,14 +3159,14 @@ mod tests {
             );
 
             // Verify via validation that signature type 2 is accepted
-            let result = keychain.validate_keychain_authorization(account, key_id, 0, Some(2));
+            let result = keychain.validate_keychain_authorization(account, key_id, 0, 2);
             assert!(
                 result.is_ok(),
                 "WebAuthn (type 2) validation should succeed"
             );
 
             // Verify signature type mismatch is rejected
-            let mismatch = keychain.validate_keychain_authorization(account, key_id, 0, Some(0));
+            let mismatch = keychain.validate_keychain_authorization(account, key_id, 0, 0);
             assert!(mismatch.is_err(), "Secp256k1 should not match WebAuthn key");
 
             Ok(())
@@ -3409,6 +3181,7 @@ mod tests {
         let token = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
+            keychain.set_tx_origin(account)?;
             keychain.initialize()?;
             keychain.set_transaction_key(Address::ZERO)?;
 
@@ -3462,6 +3235,7 @@ mod tests {
         let token = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
+            keychain.set_tx_origin(account)?;
             keychain.initialize()?;
             keychain.set_transaction_key(Address::ZERO)?;
 
@@ -3528,6 +3302,7 @@ mod tests {
         let key_id_never_existed = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
+            keychain.set_tx_origin(account)?;
             keychain.initialize()?;
             keychain.set_transaction_key(Address::ZERO)?;
 
@@ -3624,6 +3399,7 @@ mod tests {
         let key_webauthn = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
+            keychain.set_tx_origin(account)?;
             keychain.initialize()?;
             keychain.set_transaction_key(Address::ZERO)?;
 
@@ -3723,6 +3499,7 @@ mod tests {
         let key_id = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
+            keychain.set_tx_origin(account)?;
             keychain.initialize()?;
 
             // Use main key for authorization
@@ -3743,15 +3520,14 @@ mod tests {
             authorize_key(&mut keychain, account, auth_call)?;
 
             // Test 1: Validation should succeed with matching signature type (P256 = 1)
-            let result = keychain.validate_keychain_authorization(account, key_id, 0, Some(1));
+            let result = keychain.validate_keychain_authorization(account, key_id, 0, 1);
             assert!(
                 result.is_ok(),
                 "Validation should succeed with matching signature type"
             );
 
             // Test 2: Validation should fail with mismatched signature type (Secp256k1 = 0)
-            let mismatch_result =
-                keychain.validate_keychain_authorization(account, key_id, 0, Some(0));
+            let mismatch_result = keychain.validate_keychain_authorization(account, key_id, 0, 0);
             assert!(
                 mismatch_result.is_err(),
                 "Validation should fail with mismatched signature type"
@@ -3767,18 +3543,10 @@ mod tests {
             }
 
             // Test 3: Validation should fail with WebAuthn (2) when key is P256 (1)
-            let webauthn_mismatch =
-                keychain.validate_keychain_authorization(account, key_id, 0, Some(2));
+            let webauthn_mismatch = keychain.validate_keychain_authorization(account, key_id, 0, 2);
             assert!(
                 webauthn_mismatch.is_err(),
                 "Validation should fail with WebAuthn when key is P256"
-            );
-
-            // Test 4: Validation should succeed with None (backward compatibility, pre-T1)
-            let none_result = keychain.validate_keychain_authorization(account, key_id, 0, None);
-            assert!(
-                none_result.is_ok(),
-                "Validation should succeed when signature type check is skipped (pre-T1)"
             );
 
             Ok(())
@@ -3813,10 +3581,10 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
+            keychain.set_tx_origin(eoa)?;
             authorize_key(&mut keychain, eoa, auth_call)?;
 
             keychain.set_transaction_key(access_key)?;
-            keychain.set_tx_origin(eoa)?;
 
             keychain.authorize_transfer(eoa, token, U256::from(60))?;
 
@@ -3888,10 +3656,10 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
+            keychain.set_tx_origin(eoa)?;
             authorize_key(&mut keychain, eoa, auth_call)?;
 
             keychain.set_transaction_key(access_key)?;
-            keychain.set_tx_origin(eoa)?;
 
             keychain.authorize_transfer(eoa, token, U256::from(60))?;
 
@@ -3910,11 +3678,10 @@ mod tests {
             let result = keychain.refund_spending_limit(eoa, token, U256::from(25));
             assert!(result.is_ok());
 
-            let after_refund = keychain.get_remaining_limit(getRemainingLimitCall {
-                account: eoa,
-                keyId: access_key,
-                token,
-            })?;
+            let limit_key = AccountKeychain::spending_limit_key(eoa, access_key);
+            let after_refund = keychain.spending_limits[limit_key][token]
+                .remaining
+                .read()?;
             assert_eq!(
                 after_refund,
                 U256::from(40),
@@ -3954,10 +3721,10 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
+            keychain.set_tx_origin(eoa)?;
             authorize_key(&mut keychain, eoa, auth_call)?;
 
             keychain.set_transaction_key(access_key)?;
-            keychain.set_tx_origin(eoa)?;
             keychain.authorize_transfer(eoa, token, U256::from(60))?;
 
             Ok::<_, eyre::Report>(())
@@ -3972,11 +3739,10 @@ mod tests {
             let result = keychain.refund_spending_limit(eoa, token, U256::from(25));
             assert!(result.is_ok());
 
-            let after_refund = keychain.get_remaining_limit(getRemainingLimitCall {
-                account: eoa,
-                keyId: access_key,
-                token,
-            })?;
+            let limit_key = AccountKeychain::spending_limit_key(eoa, access_key);
+            let after_refund = keychain.spending_limits[limit_key][token]
+                .remaining
+                .read()?;
             assert_eq!(
                 after_refund,
                 U256::from(40),
@@ -4015,10 +3781,10 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
+            keychain.set_tx_origin(eoa)?;
             authorize_key(&mut keychain, eoa, auth_call)?;
 
             keychain.set_transaction_key(access_key)?;
-            keychain.set_tx_origin(eoa)?;
             keychain.authorize_transfer(eoa, token, U256::from(60))?;
 
             Ok::<_, TempoPrecompileError>(keychain.keys[eoa][access_key].as_slot().slot())
@@ -4042,68 +3808,8 @@ mod tests {
     }
 
     #[test]
-    fn test_refund_spending_limit_clamped_by_saturating_add() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let eoa = Address::random();
-        let access_key = Address::random();
-        let token = Address::random();
-        let original_limit = U256::from(100);
-
-        StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-
-            keychain.set_transaction_key(Address::ZERO)?;
-
-            let auth_call = authorizeKeyCall {
-                keyId: access_key,
-                signatureType: SignatureType::Secp256k1,
-                config: KeyRestrictions {
-                    expiry: u64::MAX,
-                    enforceLimits: true,
-                    limits: vec![TokenLimit {
-                        token,
-                        amount: original_limit,
-                        period: 0,
-                    }],
-                    allowAnyCalls: true,
-                    allowedCalls: vec![],
-                },
-            };
-            authorize_key(&mut keychain, eoa, auth_call)?;
-
-            keychain.set_transaction_key(access_key)?;
-            keychain.set_tx_origin(eoa)?;
-
-            keychain.authorize_transfer(eoa, token, U256::from(10))?;
-
-            let remaining = keychain.get_remaining_limit(getRemainingLimitCall {
-                account: eoa,
-                keyId: access_key,
-                token,
-            })?;
-            assert_eq!(remaining, U256::from(90));
-
-            keychain.refund_spending_limit(eoa, token, U256::from(50))?;
-
-            let after_refund = keychain.get_remaining_limit(getRemainingLimitCall {
-                account: eoa,
-                keyId: access_key,
-                token,
-            })?;
-            assert_eq!(
-                after_refund,
-                U256::from(140),
-                "saturating_add should allow refund beyond original limit without overflow"
-            );
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_t3_refund_spending_limit_clamps_to_max() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let eoa = Address::random();
         let access_key = Address::random();
         let token = Address::random();
@@ -4168,7 +3874,7 @@ mod tests {
 
     #[test]
     fn test_t3_refund_spending_limit_preserves_legacy_rows_without_max() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let eoa = Address::random();
         let access_key = Address::random();
         let token = Address::random();
@@ -4213,7 +3919,7 @@ mod tests {
 
     #[test]
     fn test_t3_authorize_key_ignores_limits_when_enforce_limits_false() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let account = Address::random();
         let key_id = Address::random();
         let token = Address::random();
@@ -4265,7 +3971,7 @@ mod tests {
 
     #[test]
     fn test_t3_rejects_spending_limits_above_u128() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let account = Address::random();
         let invalid_key_id = Address::random();
         let valid_key_id = Address::random();
@@ -4353,7 +4059,7 @@ mod tests {
 
     #[test]
     fn test_t3_rejects_duplicate_token_limits() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let account = Address::random();
         let key_id = Address::random();
         let token = Address::random();
@@ -4412,54 +4118,8 @@ mod tests {
     }
 
     #[test]
-    fn test_pre_t5_authorize_key_ignores_scopes_when_allowing_any_call() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
-        let account = Address::random();
-        let key_id = Address::random();
-        let target = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
-
-            authorize_key(
-                &mut keychain,
-                account,
-                authorizeKeyCall {
-                    keyId: key_id,
-                    signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: false,
-                        limits: vec![],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![CallScope {
-                            target,
-                            selectorRules: vec![],
-                        }],
-                    },
-                },
-            )?;
-
-            let stored_key = keychain.keys[account][key_id].read()?;
-            assert_eq!(stored_key.expiry, u64::MAX);
-
-            let scopes = keychain.get_allowed_calls(getAllowedCallsCall {
-                account,
-                keyId: key_id,
-            })?;
-            assert!(!scopes.isScoped);
-            assert!(scopes.scopes.is_empty());
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_t5_authorize_key_rejects_scopes_when_allowing_any_call() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let account = Address::random();
         let key_id = Address::random();
         let target = Address::random();
@@ -4504,7 +4164,7 @@ mod tests {
 
     #[test]
     fn test_spending_limit_state_preserves_legacy_remaining_slot() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let account = Address::random();
         let key_id = Address::random();
         let token = Address::random();
@@ -4533,68 +4193,8 @@ mod tests {
     }
 
     #[test]
-    fn test_t3_rejects_recipient_constrained_scope_for_undeployed_tip20() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
-        let account = Address::random();
-        let key_id = Address::random();
-        let recipient = Address::repeat_byte(0x44);
-        let mut target_bytes = [0u8; 20];
-        target_bytes[0] = 0x20;
-        target_bytes[1] = 0xc0;
-        target_bytes[19] = 0x42;
-        let undeployed_tip20 = Address::from(target_bytes);
-
-        StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_transaction_key(Address::ZERO)?;
-            keychain.set_tx_origin(account)?;
-
-            authorize_key(
-                &mut keychain,
-                account,
-                authorizeKeyCall {
-                    keyId: key_id,
-                    signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: false,
-                        limits: vec![],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
-                },
-            )?;
-
-            let err = keychain
-                .apply_key_authorization_restrictions(
-                    account,
-                    key_id,
-                    &[],
-                    Some(&[CallScope {
-                        target: undeployed_tip20,
-                        selectorRules: vec![SelectorRule {
-                            selector: TIP20_TRANSFER_SELECTOR.into(),
-                            recipients: vec![recipient],
-                        }],
-                    }]),
-                )
-                .expect_err("unexpected success for undeployed TIP-20 target");
-
-            match err {
-                TempoPrecompileError::AccountKeychainError(
-                    AccountKeychainError::InvalidCallScope(_),
-                ) => {}
-                other => panic!("expected InvalidCallScope, got {other:?}"),
-            }
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_t3_periodic_limit_rollover() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         storage.set_timestamp(U256::from(1_000u64));
 
         let account = Address::random();
@@ -4672,7 +4272,7 @@ mod tests {
 
     #[test]
     fn test_effective_remaining_limit_with_key_matches_storage_loaded() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         storage.set_timestamp(U256::from(1_000u64));
 
         let account = Address::random();
@@ -4723,7 +4323,7 @@ mod tests {
 
     #[test]
     fn test_t7_periodic_exact_depletion_stores_sentinel_but_emits_zero() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         storage.set_timestamp(U256::from(1_000u64));
 
         let account = Address::random();
@@ -4807,7 +4407,7 @@ mod tests {
 
     #[test]
     fn test_t3_get_allowed_calls_distinguishes_unrestricted_and_deny_all() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let account = Address::random();
         let key_id = Address::random();
 
@@ -4855,7 +4455,7 @@ mod tests {
 
     #[test]
     fn test_t3_get_allowed_calls_returns_deny_all_for_inactive_keys() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let account = Address::random();
         let revoked_key = Address::random();
         let expiring_key = Address::random();
@@ -4925,192 +4525,143 @@ mod tests {
 
     #[test]
     fn test_expired_key_has_zero_remaining_limit() -> eyre::Result<()> {
-        for hardfork in [TempoHardfork::T0, TempoHardfork::T2, TempoHardfork::T3] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
-            let account = Address::random();
-            let key_id = Address::random();
-            let token = Address::random();
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
+        let account = Address::random();
+        let key_id = Address::random();
+        let token = Address::random();
 
-            storage.set_timestamp(U256::from(1_000u64));
-            StorageCtx::enter(&mut storage, || {
-                let mut keychain = AccountKeychain::new();
-                keychain.initialize()?;
-                keychain.set_transaction_key(Address::ZERO)?;
-                keychain.set_tx_origin(account)?;
+        storage.set_timestamp(U256::from(1_000u64));
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
 
-                authorize_key(
-                    &mut keychain,
-                    account,
-                    authorizeKeyCall {
-                        keyId: key_id,
-                        signatureType: SignatureType::Secp256k1,
-                        config: KeyRestrictions {
-                            expiry: 1_005,
-                            enforceLimits: true,
-                            limits: vec![TokenLimit {
-                                token,
-                                amount: U256::from(100u64),
-                                period: 0,
-                            }],
-                            allowAnyCalls: true,
-                            allowedCalls: vec![],
-                        },
-                    },
-                )?;
-
-                Ok::<_, eyre::Report>(())
-            })?;
-
-            // warp block time so that key auth expires
-            storage.set_timestamp(U256::from(1_010u64));
-
-            StorageCtx::enter(&mut storage, || {
-                let keychain = AccountKeychain::new();
-
-                let sload_before = StorageCtx.counter_sload();
-                if hardfork.is_t3() {
-                    // T3: expired keys are zeroed out
-                    let remaining = keychain.get_remaining_limit_with_period(
-                        getRemainingLimitWithPeriodCall {
-                            account,
-                            keyId: key_id,
+            authorize_key(
+                &mut keychain,
+                account,
+                authorizeKeyCall {
+                    keyId: key_id,
+                    signatureType: SignatureType::Secp256k1,
+                    config: KeyRestrictions {
+                        expiry: 1_005,
+                        enforceLimits: true,
+                        limits: vec![TokenLimit {
                             token,
-                        },
-                    )?;
-                    assert_eq!(remaining.remaining, U256::ZERO);
-                    assert_eq!(remaining.periodEnd, 0);
+                            amount: U256::from(100u64),
+                            period: 0,
+                        }],
+                        allowAnyCalls: true,
+                        allowedCalls: vec![],
+                    },
+                },
+            )?;
 
-                    // T3+: expired key returns zero directly
-                    assert_eq!(StorageCtx.counter_sload() - sload_before, 1);
-                } else {
-                    // pre-T3: expired keys are NOT zeroed; the raw stored limit is returned
-                    let remaining = keychain.get_remaining_limit(getRemainingLimitCall {
-                        account,
-                        keyId: key_id,
-                        token,
-                    })?;
-                    assert_eq!(remaining, U256::from(100u64));
+            Ok::<_, eyre::Report>(())
+        })?;
 
-                    // pre-T2: direct storage read without reading the key
-                    let expected_delta = if hardfork.is_t2() { 2 } else { 1 };
-                    assert_eq!(StorageCtx.counter_sload() - sload_before, expected_delta);
-                }
+        // warp block time so that key auth expires
+        storage.set_timestamp(U256::from(1_010u64));
 
-                Ok::<_, eyre::Report>(())
-            })?;
-        }
+        StorageCtx::enter(&mut storage, || {
+            let keychain = AccountKeychain::new();
+
+            let sload_before = StorageCtx.counter_sload();
+
+            let remaining =
+                keychain.get_remaining_limit_with_period(getRemainingLimitWithPeriodCall {
+                    account,
+                    keyId: key_id,
+                    token,
+                })?;
+            assert_eq!(remaining.remaining, U256::ZERO);
+            assert_eq!(remaining.periodEnd, 0);
+
+            assert_eq!(StorageCtx.counter_sload() - sload_before, 1);
+
+            Ok::<_, eyre::Report>(())
+        })?;
 
         Ok(())
     }
 
     #[test]
     fn test_revoked_key_has_zero_remaining_limit() -> eyre::Result<()> {
-        for hardfork in [TempoHardfork::T0, TempoHardfork::T2, TempoHardfork::T3] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
-            let account = Address::random();
-            let key_id = Address::random();
-            let token = Address::random();
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
+        let account = Address::random();
+        let key_id = Address::random();
+        let token = Address::random();
 
-            StorageCtx::enter(&mut storage, || {
-                let mut keychain = AccountKeychain::new();
-                keychain.initialize()?;
-                keychain.set_transaction_key(Address::ZERO)?;
-                keychain.set_tx_origin(account)?;
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
 
-                authorize_key(
-                    &mut keychain,
-                    account,
-                    authorizeKeyCall {
-                        keyId: key_id,
-                        signatureType: SignatureType::Secp256k1,
-                        config: KeyRestrictions {
-                            expiry: u64::MAX,
-                            enforceLimits: true,
-                            limits: vec![TokenLimit {
-                                token,
-                                amount: U256::from(100u64),
-                                period: 0,
-                            }],
-                            allowAnyCalls: true,
-                            allowedCalls: vec![],
-                        },
-                    },
-                )?;
-
-                // revoke key auth
-                keychain.revoke_key(account, revokeKeyCall { keyId: key_id })?;
-
-                let sload_before = StorageCtx.counter_sload();
-                if hardfork.is_t2() {
-                    // T2+: revoked keys are zeroed out
-                    let remaining = keychain.get_remaining_limit_with_period(
-                        getRemainingLimitWithPeriodCall {
-                            account,
-                            keyId: key_id,
+            authorize_key(
+                &mut keychain,
+                account,
+                authorizeKeyCall {
+                    keyId: key_id,
+                    signatureType: SignatureType::Secp256k1,
+                    config: KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: true,
+                        limits: vec![TokenLimit {
                             token,
-                        },
-                    )?;
-                    assert_eq!(remaining.remaining, U256::ZERO);
-                    assert_eq!(remaining.periodEnd, 0);
+                            amount: U256::from(100u64),
+                            period: 0,
+                        }],
+                        allowAnyCalls: true,
+                        allowedCalls: vec![],
+                    },
+                },
+            )?;
 
-                    // T2+: revoked key returns zero directly
-                    assert_eq!(StorageCtx.counter_sload() - sload_before, 1);
-                } else {
-                    // pre-T2: revoked keys are NOT zeroed; the raw stored limit is returned
-                    let remaining = keychain.get_remaining_limit(getRemainingLimitCall {
-                        account,
-                        keyId: key_id,
-                        token,
-                    })?;
-                    assert_eq!(remaining, U256::from(100u64));
+            // revoke key auth
+            keychain.revoke_key(account, revokeKeyCall { keyId: key_id })?;
 
-                    // pre-T2: direct storage read without reading the key
-                    assert_eq!(StorageCtx.counter_sload() - sload_before, 1);
-                }
+            let sload_before = StorageCtx.counter_sload();
 
-                Ok::<_, eyre::Report>(())
-            })?;
-        }
+            let remaining =
+                keychain.get_remaining_limit_with_period(getRemainingLimitWithPeriodCall {
+                    account,
+                    keyId: key_id,
+                    token,
+                })?;
+            assert_eq!(remaining.remaining, U256::ZERO);
+            assert_eq!(remaining.periodEnd, 0);
+
+            assert_eq!(StorageCtx.counter_sload() - sload_before, 1);
+
+            Ok::<_, eyre::Report>(())
+        })?;
 
         Ok(())
     }
 
     #[test]
-    fn test_zero_key_remaining_limit_reads_storage_on_t2_but_not_t3() -> eyre::Result<()> {
-        let (account, token) = (Address::random(), Address::random());
-
-        for (hardfork, expected_sloads) in [(TempoHardfork::T2, 1_u64), (TempoHardfork::T3, 0)] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
-            StorageCtx::enter(&mut storage, || {
-                let mut keychain = AccountKeychain::new();
-                let _ = keychain.initialize();
-
-                let sloads_before = StorageCtx.counter_sload();
-                assert_eq!(
-                    keychain.get_remaining_limit(getRemainingLimitCall {
-                        account,
-                        keyId: Address::ZERO,
-                        token,
-                    })?,
-                    U256::ZERO
-                );
-
-                assert_eq!(
-                    StorageCtx.counter_sload() - sloads_before,
-                    expected_sloads,
-                    "{hardfork:?} should perform the expected number of storage reads for zero key_id"
-                );
-
-                Ok::<_, eyre::Report>(())
-            })?;
-        }
-
-        Ok(())
+    fn test_zero_key_remaining_limit_skips_storage() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
+        StorageCtx::enter(&mut storage, || {
+            let keychain = AccountKeychain::new();
+            let before = StorageCtx.counter_sload();
+            assert_eq!(
+                keychain.get_remaining_limit(getRemainingLimitCall {
+                    account: Address::random(),
+                    keyId: Address::ZERO,
+                    token: Address::random(),
+                })?,
+                U256::ZERO
+            );
+            assert_eq!(StorageCtx.counter_sload(), before);
+            Ok(())
+        })
     }
 
     #[test]
     fn test_t3_set_allowed_calls_rejects_zero_target() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let account = Address::random();
         let key_id = Address::random();
 
@@ -5156,7 +4707,7 @@ mod tests {
 
     #[test]
     fn test_t3_set_allowed_calls_rejects_empty_scope_batch() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let account = Address::random();
         let key_id = Address::random();
 
@@ -5206,7 +4757,7 @@ mod tests {
 
     #[test]
     fn test_t3_set_allowed_calls_roundtrip_and_remove_target_scope() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let account = Address::random();
         let key_id = Address::random();
         let target = Address::random();
@@ -5300,7 +4851,7 @@ mod tests {
 
     #[test]
     fn test_t3_set_allowed_calls_empty_selector_rules_allow_all_selectors() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let account = Address::random();
         let key_id = Address::random();
         let target = DEFAULT_FEE_TOKEN;
@@ -5360,81 +4911,8 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_recipient_selector_delete_is_gated_at_t4() -> eyre::Result<()> {
-        let account = Address::random();
-        let key_id = Address::random();
-        let target = Address::random();
-
-        let mut t3_sstores = 0;
-        let mut t4_sstores = 0;
-
-        for (hardfork, writes) in [
-            (TempoHardfork::T3, &mut t3_sstores),
-            (TempoHardfork::T4, &mut t4_sstores),
-        ] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
-            StorageCtx::enter(&mut storage, || {
-                let mut keychain = AccountKeychain::new();
-                keychain.initialize()?;
-                keychain.set_transaction_key(Address::ZERO)?;
-                keychain.set_tx_origin(account)?;
-
-                authorize_key(
-                    &mut keychain,
-                    account,
-                    authorizeKeyCall {
-                        keyId: key_id,
-                        signatureType: SignatureType::Secp256k1,
-                        config: KeyRestrictions {
-                            expiry: u64::MAX,
-                            enforceLimits: false,
-                            limits: vec![],
-                            allowAnyCalls: true,
-                            allowedCalls: vec![],
-                        },
-                    },
-                )?;
-
-                let before = StorageCtx.counter_sstore();
-                keychain.set_allowed_calls(
-                    account,
-                    setAllowedCallsCall {
-                        keyId: key_id,
-                        scopes: vec![CallScope {
-                            target,
-                            selectorRules: vec![SelectorRule {
-                                selector: TIP20_TRANSFER_SELECTOR.into(),
-                                recipients: vec![],
-                            }],
-                        }],
-                    },
-                )?;
-                *writes = StorageCtx.counter_sstore() - before;
-
-                let scopes = keychain.get_allowed_calls(getAllowedCallsCall {
-                    account,
-                    keyId: key_id,
-                })?;
-                assert!(scopes.isScoped);
-                assert_eq!(scopes.scopes.len(), 1);
-                assert!(scopes.scopes[0].selectorRules[0].recipients.is_empty());
-
-                Ok::<_, eyre::Report>(())
-            })?;
-        }
-
-        assert_eq!(
-            t3_sstores,
-            t4_sstores + 1,
-            "pre-T4 should retain the redundant empty-recipient delete"
-        );
-
-        Ok(())
-    }
-
-    #[test]
     fn test_t3_call_scope_selector_and_recipient_checks() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let account = Address::random();
         let key_id = Address::random();
         let target = DEFAULT_FEE_TOKEN;
@@ -5520,7 +4998,7 @@ mod tests {
 
     #[test]
     fn test_t3_contract_creation_rejected_for_access_key() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let account = Address::random();
         let key_id = Address::random();
 

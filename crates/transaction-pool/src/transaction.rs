@@ -102,7 +102,7 @@ impl TempoPooledTransaction {
         expiring_nonce_hash: Option<B256>,
         encoded_length: usize,
     ) -> Self {
-        let is_payment = transaction.is_payment_v2();
+        let is_payment = transaction.is_payment();
         let value = transaction.value();
         let cost =
             calc_gas_balance_spending(transaction.gas_limit(), transaction.max_fee_per_gas())

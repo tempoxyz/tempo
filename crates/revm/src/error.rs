@@ -222,16 +222,6 @@ pub enum TempoInvalidTransaction {
     #[error("legacy V1 keychain signature is no longer accepted, use V2 (type 0x04)")]
     LegacyKeychainSignature,
 
-    /// V2 keychain signature used before T1C activation.
-    ///
-    /// V2 signatures (type 0x04) are only valid after the T1C hardfork activates.
-    /// Rejecting them before activation prevents chain splits between upgraded and
-    /// non-upgraded nodes.
-    ///
-    /// TODO(tanishk): This variant can be removed after T1C activation on all networks.
-    #[error("V2 keychain signature (type 0x04) is not valid before T1C activation")]
-    V2KeychainBeforeActivation,
-
     /// Fee payment error.
     #[error(transparent)]
     CollectFeePreTx(#[from] FeePaymentError),
@@ -321,8 +311,7 @@ impl TempoInvalidTransaction {
             | Self::KeychainPrecompileError { .. }
             | Self::KeychainValidationFailed { .. }
             | Self::CollectFeePreTx(_)
-            | Self::NonceManagerError(_)
-            | Self::V2KeychainBeforeActivation => false,
+            | Self::NonceManagerError(_) => false,
         }
     }
 }
@@ -359,7 +348,6 @@ impl From<KeychainVersionError> for TempoInvalidTransaction {
     fn from(err: KeychainVersionError) -> Self {
         match err {
             KeychainVersionError::LegacyPostT1C => Self::LegacyKeychainSignature,
-            KeychainVersionError::V2BeforeActivation => Self::V2KeychainBeforeActivation,
         }
     }
 }

@@ -41,9 +41,6 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 const DEFAULT_TX_COUNT: usize = 4_096;
 const PARTICIPANT_MINT_AMOUNT: u128 = 1_000_000_000_000_000_000;
-const REWARD_BENCH_TX_COUNT: usize = 1_024;
-const REWARD_DISTRIBUTION_AMOUNT: u128 = 1_000_000_000_000;
-const REWARD_TRANSFER_AMOUNT: u128 = 1_000_000;
 
 #[derive(Clone)]
 struct Workload {
@@ -52,39 +49,9 @@ struct Workload {
     block_timestamp: u64,
 }
 
-#[derive(Clone, Copy)]
-enum RewardSeedMode {
-    None,
-    SelfRecipient,
-    SharedDelegate,
-    DistinctDelegate,
-}
-
-#[derive(Clone, Copy)]
-enum RewardBenchKind {
-    Transfer {
-        sender: RewardSeedMode,
-        recipient: RewardSeedMode,
-        reward_delta: bool,
-    },
-    ClaimRewards,
-    DistributeReward {
-        opted_in_accounts: usize,
-    },
-}
-
-struct RewardBenchWorkload {
-    name: &'static str,
-    transactions: Vec<Recovered<TempoTxEnvelope>>,
-    participants: Vec<Address>,
-    delegates: Vec<Address>,
-    kind: RewardBenchKind,
-}
-
 fn seed_in_memory_cache_db(
     participants: &[Address],
     block_timestamp: u64,
-    reward_seed: Option<(&[Address], RewardBenchKind)>,
     hardfork: TempoHardfork,
 ) -> InMemoryDB {
     // This setup database only materializes the benchmark fixture in memory. The measured
@@ -127,10 +94,6 @@ fn seed_in_memory_cache_db(
                 )?;
             }
 
-            if let Some((delegates, kind)) = reward_seed {
-                seed_reward_bench_state(&mut token, admin, participants, delegates, kind)?;
-            }
-
             TipFeeManager::new().initialize()?;
             NonceManager::new().initialize()?;
             Ok::<(), TempoPrecompileError>(())
@@ -141,87 +104,6 @@ fn seed_in_memory_cache_db(
     let evm_state = evm.ctx_mut().journaled_state.evm_state().clone();
     evm.db_mut().commit(evm_state);
     evm.finish().0
-}
-
-fn seed_reward_bench_state(
-    token: &mut TIP20Token,
-    admin: Address,
-    participants: &[Address],
-    delegates: &[Address],
-    kind: RewardBenchKind,
-) -> Result<(), TempoPrecompileError> {
-    match kind {
-        RewardBenchKind::Transfer {
-            sender,
-            recipient,
-            reward_delta,
-        } => {
-            for chunk in participants.chunks(2) {
-                if let Some(sender_addr) = chunk.first().copied() {
-                    apply_seed_reward_mode(token, sender_addr, sender, delegates)?;
-                }
-                if let Some(recipient_addr) = chunk.get(1).copied() {
-                    apply_seed_reward_mode(token, recipient_addr, recipient, delegates)?;
-                }
-            }
-            if reward_delta {
-                token.distribute_reward(
-                    admin,
-                    ITIP20::distributeRewardCall {
-                        amount: U256::from(REWARD_DISTRIBUTION_AMOUNT),
-                    },
-                )?;
-            }
-        }
-        RewardBenchKind::ClaimRewards => {
-            for participant in participants {
-                token.set_reward_recipient(
-                    *participant,
-                    ITIP20::setRewardRecipientCall {
-                        recipient: *participant,
-                    },
-                )?;
-            }
-            token.distribute_reward(
-                admin,
-                ITIP20::distributeRewardCall {
-                    amount: U256::from(REWARD_DISTRIBUTION_AMOUNT),
-                },
-            )?;
-            for participant in participants {
-                token.update_rewards(*participant)?;
-            }
-        }
-        RewardBenchKind::DistributeReward { opted_in_accounts } => {
-            for participant in participants.iter().take(opted_in_accounts) {
-                token.set_reward_recipient(
-                    *participant,
-                    ITIP20::setRewardRecipientCall {
-                        recipient: *participant,
-                    },
-                )?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn apply_seed_reward_mode(
-    token: &mut TIP20Token,
-    account: Address,
-    mode: RewardSeedMode,
-    delegates: &[Address],
-) -> Result<(), TempoPrecompileError> {
-    let recipient = match mode {
-        RewardSeedMode::None => return Ok(()),
-        RewardSeedMode::SelfRecipient => account,
-        RewardSeedMode::SharedDelegate => delegates[0],
-        RewardSeedMode::DistinctDelegate => {
-            delegates[account.as_slice()[19] as usize % delegates.len()]
-        }
-    };
-    token.set_reward_recipient(account, ITIP20::setRewardRecipientCall { recipient })?;
-    Ok(())
 }
 
 fn sign_tip20_transfer(
@@ -262,132 +144,6 @@ fn generated_workload() -> Workload {
         transactions,
         participants,
         block_timestamp: DEFAULT_BLOCK_TIMESTAMP,
-    }
-}
-
-fn reward_bench_workloads() -> Vec<RewardBenchWorkload> {
-    let signers = txgen_signers(DEFAULT_ACCOUNT_COUNT);
-    let participants: Vec<_> = signers.iter().map(|signer| signer.address()).collect();
-    let delegates = vec![Address::repeat_byte(0xa1), Address::repeat_byte(0xa2)];
-
-    vec![
-        transfer_reward_workload(
-            "tip20_transfer_rewards_opted_out",
-            &signers,
-            RewardSeedMode::None,
-            RewardSeedMode::None,
-            false,
-            &delegates,
-        ),
-        transfer_reward_workload(
-            "tip20_transfer_rewards_self_no_delta",
-            &signers,
-            RewardSeedMode::SelfRecipient,
-            RewardSeedMode::SelfRecipient,
-            false,
-            &delegates,
-        ),
-        transfer_reward_workload(
-            "tip20_transfer_rewards_self_with_delta",
-            &signers,
-            RewardSeedMode::SelfRecipient,
-            RewardSeedMode::SelfRecipient,
-            true,
-            &delegates,
-        ),
-        transfer_reward_workload(
-            "tip20_transfer_rewards_delegate_no_delta",
-            &signers,
-            RewardSeedMode::SharedDelegate,
-            RewardSeedMode::SharedDelegate,
-            false,
-            &delegates,
-        ),
-        transfer_reward_workload(
-            "tip20_transfer_rewards_delegate_with_delta",
-            &signers,
-            RewardSeedMode::SharedDelegate,
-            RewardSeedMode::SharedDelegate,
-            true,
-            &delegates,
-        ),
-        transfer_reward_workload(
-            "tip20_transfer_mixed_sender_recipient",
-            &signers,
-            RewardSeedMode::DistinctDelegate,
-            RewardSeedMode::SelfRecipient,
-            true,
-            &delegates,
-        ),
-        RewardBenchWorkload {
-            name: "tip20_claim_rewards",
-            transactions: signers
-                .iter()
-                .take(REWARD_BENCH_TX_COUNT)
-                .map(|signer| {
-                    sign_tip20_call(
-                        signer,
-                        Bytes::from(ITIP20::claimRewardsCall {}.abi_encode()),
-                    )
-                })
-                .collect(),
-            participants: participants.clone(),
-            delegates: delegates.clone(),
-            kind: RewardBenchKind::ClaimRewards,
-        },
-        RewardBenchWorkload {
-            name: "tip20_distribute_reward",
-            transactions: signers
-                .iter()
-                .take(REWARD_BENCH_TX_COUNT)
-                .map(|signer| {
-                    sign_tip20_call(
-                        signer,
-                        Bytes::from(
-                            ITIP20::distributeRewardCall {
-                                amount: U256::from(REWARD_DISTRIBUTION_AMOUNT / 1_000),
-                            }
-                            .abi_encode(),
-                        ),
-                    )
-                })
-                .collect(),
-            participants,
-            delegates,
-            kind: RewardBenchKind::DistributeReward {
-                opted_in_accounts: DEFAULT_ACCOUNT_COUNT,
-            },
-        },
-    ]
-}
-
-fn transfer_reward_workload(
-    name: &'static str,
-    signers: &[PrivateKeySigner],
-    sender: RewardSeedMode,
-    recipient: RewardSeedMode,
-    reward_delta: bool,
-    delegates: &[Address],
-) -> RewardBenchWorkload {
-    let participants: Vec<_> = signers.iter().map(|signer| signer.address()).collect();
-    let transactions = (0..REWARD_BENCH_TX_COUNT)
-        .map(|idx| {
-            let signer = &signers[idx % signers.len()];
-            let recipient = participants[(idx.wrapping_mul(17) + 1) % participants.len()];
-            sign_tip20_transfer(signer, recipient, U256::from(REWARD_TRANSFER_AMOUNT))
-        })
-        .collect();
-
-    RewardBenchWorkload {
-        name,
-        transactions,
-        participants,
-        delegates: delegates.to_vec(),
-        kind: RewardBenchKind::Transfer {
-            sender,
-            recipient,
-            reward_delta,
-        },
     }
 }
 
@@ -476,7 +232,6 @@ fn tip20_execution(c: &mut Criterion) {
         let fixture = fixture_from_seeded_db(seed_in_memory_cache_db(
             &workload.participants,
             workload.block_timestamp,
-            None,
             hardfork,
         ));
         execute_txs(
@@ -506,47 +261,6 @@ fn tip20_execution(c: &mut Criterion) {
             )
         });
         group.finish();
-    }
-
-    let reward_workloads = reward_bench_workloads();
-    for &(label, hardfork) in &hardfork_cases {
-        for reward_workload in &reward_workloads {
-            let fixture = fixture_from_seeded_db(seed_in_memory_cache_db(
-                &reward_workload.participants,
-                DEFAULT_BLOCK_TIMESTAMP,
-                Some((&reward_workload.delegates, reward_workload.kind)),
-                hardfork,
-            ));
-            execute_txs(
-                &config,
-                fixture.prewarm_state_db(),
-                &reward_workload.transactions,
-                DEFAULT_BLOCK_TIMESTAMP,
-                hardfork,
-            );
-
-            let mut group = c.benchmark_group(format!("{label}/tip20_rewards"));
-            group.throughput(Throughput::Elements(
-                reward_workload.transactions.len() as u64
-            ));
-            group.bench_function(reward_workload.name, |b| {
-                b.iter_batched(
-                    || fixture.state_db(),
-                    |db| {
-                        let stats = execute_txs(
-                            &config,
-                            db,
-                            &reward_workload.transactions,
-                            DEFAULT_BLOCK_TIMESTAMP,
-                            hardfork,
-                        );
-                        black_box(stats.gas_used);
-                    },
-                    BatchSize::SmallInput,
-                )
-            });
-            group.finish();
-        }
     }
 }
 

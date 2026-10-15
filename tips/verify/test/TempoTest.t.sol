@@ -49,6 +49,33 @@ contract TempoTest is Tempo, Test {
         }
     }
 
+    /// @dev Seeds legacy settled rewards and their reserve using the TIP-20 storage layout.
+    function _seedSettledRewards(
+        ITIP20Token rewardToken,
+        address holder,
+        uint256 amount,
+        uint256 funding
+    )
+        internal
+    {
+        // userRewardInfo is at slot 17; rewardBalance is its third field.
+        uint256 rewardSlot = uint256(keccak256(abi.encode(holder, uint256(17)))) + 2;
+        vm.store(
+            address(rewardToken),
+            bytes32(rewardSlot),
+            bytes32(rewardToken.getPendingRewards(holder) + amount)
+        );
+        // balances and totalSupply are at slots 9 and 8 respectively.
+        vm.store(
+            address(rewardToken),
+            keccak256(abi.encode(address(rewardToken), uint256(9))),
+            bytes32(rewardToken.balanceOf(address(rewardToken)) + funding)
+        );
+        vm.store(
+            address(rewardToken), bytes32(uint256(8)), bytes32(rewardToken.totalSupply() + funding)
+        );
+    }
+
     function setUp() public virtual {
         _requirePrecompile("AccountKeychain", KEYCHAIN);
         _requirePrecompile("TIP403Registry", TIP403_REGISTRY);

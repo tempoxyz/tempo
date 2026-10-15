@@ -25,10 +25,26 @@ A frozen era executes blocks before its `until` hardfork. Its boundary is that f
 timestamp in `tempo-hardfork`'s constants, so only mainnet and moderato can have frozen eras, and
 `until` must be an already scheduled fork. Executables resolve relative to the catalog, and blocks
 after the last frozen era run in the live node. A frozen era's required `checkpoint` pins its last
-canonical block, and checkpoints strictly increase. The built-in development catalog
-(`bin/tempo/eras.json`) is empty. Unmatched chains, custom genesis, and custom fork schedules use
-the native path. Independently of the catalog, the live binary refuses to execute blocks older than
-its compiled `TempoHardfork::MINIMUM_SUPPORTED`, on every execution path.
+canonical block, and checkpoints strictly increase. The built-in catalog (`bin/tempo/eras.json`)
+routes mainnet and Moderato blocks before T11 to `eras/tempo-genesis-t10`. Unmatched chains,
+custom genesis, and custom fork schedules use the native path. Independently of the catalog, the
+live binary refuses to execute blocks older than its compiled `TempoHardfork::MINIMUM_SUPPORTED`,
+currently T10, on every execution path.
+
+Docker images, release archives, and `tempoup` install the worker beside the live executable.
+Source builds must bundle it explicitly. The pinned source and era metadata are recorded in
+`bin/tempo/history.json`:
+
+```sh
+cargo build --locked --release --bin tempo
+python3 scripts/bundle-history.py --output target/release --profile release
+```
+
+The helper fetches the pinned frozen source, builds with its frozen feature, and
+verifies calls and traces before installation. Use `--source /path/to/tempo-history` for a clean
+local checkout at the pin, or `--package /path/to/extracted-bundle` for a trusted, already verified
+package matching the host and profile.
+Installed checksums and build/smoke provenance live in `history/genesis-t10/`.
 
 Workers inherit the selected genesis, datadir, custom static-file/RocksDB paths, and resolved SDK
 `EthConfig` through private temporary files. Gas, simulation, memory, and tracing settings retain

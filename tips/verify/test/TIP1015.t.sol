@@ -9,9 +9,6 @@ import { ITIP403Registry } from "tempo-std/interfaces/ITIP403Registry.sol";
 /// @title TIP-1015 Compound Policy Tests
 /// @notice Unit tests and stateless fuzz tests for compound transfer policies as specified in TIP-1015
 /// @dev Tests both TIP403Registry compound policy functions and TIP-20 integration
-/// forge-config: default.hardfork = "tempo:T2"
-/// forge-config: next.hardfork = "tempo:T2"
-/// forge-config: fuzz500.hardfork = "tempo:T2"
 contract TIP1015Test is TempoTest {
 
     /*//////////////////////////////////////////////////////////////
@@ -867,223 +864,6 @@ contract TIP1015Test is TempoTest {
         }
     }
 
-    /*//////////////////////////////////////////////////////////////
-        INVARIANT 7: distributeReward requires both sender AND recipient authorization
-    //////////////////////////////////////////////////////////////*/
-
-    /// @notice distributeReward must check isAuthorizedSender(msg.sender) AND isAuthorizedRecipient(address(this))
-    function test_invariant7_distributeRewardRequiresBothAuth() public {
-        vm.startPrank(admin);
-
-        ITIP20Token rewardToken = ITIP20Token(
-            factory.createToken("REWARD1", "RWD1", "USD", pathUSD, admin, bytes32("reward1"))
-        );
-        rewardToken.grantRole(_ISSUER_ROLE, admin);
-
-        rewardToken.changeTransferPolicyId(1);
-        rewardToken.mint(sender, 10_000);
-        rewardToken.mint(blockedUser, 10_000);
-        rewardToken.mint(recipient, 10_000);
-
-        vm.stopPrank();
-
-        vm.prank(recipient);
-        rewardToken.setRewardRecipient(recipient);
-
-        vm.startPrank(admin);
-
-        uint64 senderWL = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
-        uint64 recipientWL = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
-
-        registry.modifyPolicyWhitelist(senderWL, sender, true);
-        // blockedUser NOT whitelisted as sender
-        // contract NOT whitelisted as recipient initially
-
-        uint64 testCompound = registry.createCompoundPolicy(senderWL, recipientWL, 1);
-        rewardToken.changeTransferPolicyId(testCompound);
-
-        vm.stopPrank();
-
-        // Case 1: sender authorized, contract NOT authorized as recipient -> reverts
-        assertTrue(registry.isAuthorizedSender(testCompound, sender));
-        assertFalse(registry.isAuthorizedRecipient(testCompound, address(rewardToken)));
-
-        vm.expectRevert(ITIP20.PolicyForbids.selector);
-        this.distributeRewardAsExternal(rewardToken, sender, 100);
-
-        // Case 2: sender NOT authorized, contract authorized as recipient -> reverts
-        vm.prank(admin);
-        registry.modifyPolicyWhitelist(recipientWL, address(rewardToken), true);
-
-        assertFalse(registry.isAuthorizedSender(testCompound, blockedUser));
-        assertTrue(registry.isAuthorizedRecipient(testCompound, address(rewardToken)));
-
-        vm.expectRevert(ITIP20.PolicyForbids.selector);
-        this.distributeRewardAsExternal(rewardToken, blockedUser, 100);
-
-        // Case 3: both authorized -> succeeds
-        assertTrue(registry.isAuthorizedSender(testCompound, sender));
-        assertTrue(registry.isAuthorizedRecipient(testCompound, address(rewardToken)));
-
-        uint256 balanceBefore = rewardToken.balanceOf(sender);
-
-        vm.prank(sender);
-        rewardToken.distributeReward(100);
-
-        assertEq(rewardToken.balanceOf(sender), balanceBefore - 100);
-        assertEq(rewardToken.balanceOf(address(rewardToken)), 100);
-    }
-
-    /*//////////////////////////////////////////////////////////////
-        INVARIANT 8: claimRewards uses correct directional authorization
-    //////////////////////////////////////////////////////////////*/
-
-    /// @notice claimRewards must check isAuthorizedSender(address(this)) AND isAuthorizedRecipient(msg.sender)
-    function test_invariant8_claimRewardsDirectionalAuth() public {
-        vm.startPrank(admin);
-
-        ITIP20Token rewardToken = ITIP20Token(
-            factory.createToken("CLAIM1", "CLM1", "USD", pathUSD, admin, bytes32("claim1"))
-        );
-        rewardToken.grantRole(_ISSUER_ROLE, admin);
-
-        rewardToken.changeTransferPolicyId(1);
-        rewardToken.mint(sender, 10_000);
-        rewardToken.mint(recipient, 10_000);
-
-        vm.stopPrank();
-
-        vm.prank(recipient);
-        rewardToken.setRewardRecipient(recipient);
-
-        vm.prank(sender);
-        rewardToken.distributeReward(1000);
-
-        vm.startPrank(admin);
-
-        uint64 senderWL = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
-        uint64 recipientWL = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
-
-        // contract NOT whitelisted as sender initially
-        // recipient NOT whitelisted as recipient initially
-
-        uint64 testCompound = registry.createCompoundPolicy(senderWL, recipientWL, 1);
-        rewardToken.changeTransferPolicyId(testCompound);
-
-        vm.stopPrank();
-
-        // Case 1: contract NOT authorized as sender, recipient NOT authorized -> reverts
-        assertFalse(registry.isAuthorizedSender(testCompound, address(rewardToken)));
-        assertFalse(registry.isAuthorizedRecipient(testCompound, recipient));
-
-        vm.expectRevert(ITIP20.PolicyForbids.selector);
-        this.claimRewardsAsExternal(rewardToken, recipient);
-
-        // Case 2: contract authorized as sender, recipient NOT authorized -> reverts
-        vm.prank(admin);
-        registry.modifyPolicyWhitelist(senderWL, address(rewardToken), true);
-
-        assertTrue(registry.isAuthorizedSender(testCompound, address(rewardToken)));
-        assertFalse(registry.isAuthorizedRecipient(testCompound, recipient));
-
-        vm.expectRevert(ITIP20.PolicyForbids.selector);
-        this.claimRewardsAsExternal(rewardToken, recipient);
-
-        // Case 3: contract NOT authorized as sender, recipient authorized -> reverts
-        vm.startPrank(admin);
-        registry.modifyPolicyWhitelist(senderWL, address(rewardToken), false);
-        registry.modifyPolicyWhitelist(recipientWL, recipient, true);
-        vm.stopPrank();
-
-        assertFalse(registry.isAuthorizedSender(testCompound, address(rewardToken)));
-        assertTrue(registry.isAuthorizedRecipient(testCompound, recipient));
-
-        vm.expectRevert(ITIP20.PolicyForbids.selector);
-        this.claimRewardsAsExternal(rewardToken, recipient);
-
-        // Case 4: both authorized -> succeeds
-        vm.prank(admin);
-        registry.modifyPolicyWhitelist(senderWL, address(rewardToken), true);
-
-        assertTrue(registry.isAuthorizedSender(testCompound, address(rewardToken)));
-        assertTrue(registry.isAuthorizedRecipient(testCompound, recipient));
-
-        uint256 balanceBefore = rewardToken.balanceOf(recipient);
-
-        vm.prank(recipient);
-        uint256 claimed = rewardToken.claimRewards();
-
-        assertGt(claimed, 0);
-        assertEq(rewardToken.balanceOf(recipient), balanceBefore + claimed);
-    }
-
-    /*//////////////////////////////////////////////////////////////
-        FUZZ TESTS: distributeReward and claimRewards
-    //////////////////////////////////////////////////////////////*/
-
-    function testFuzz_distributeReward_respectsDirectionalAuth(
-        bool senderAuthorized,
-        bool contractAuthorizedAsRecipient,
-        uint256 amount
-    )
-        public
-    {
-        amount = bound(amount, 1, 1000);
-
-        address testSender = makeAddr("fuzzDistributeSender");
-
-        vm.startPrank(admin);
-
-        ITIP20Token fuzzToken = ITIP20Token(
-            factory.createToken(
-                "FUZZD",
-                "FZD",
-                "USD",
-                pathUSD,
-                admin,
-                keccak256(
-                    abi.encode("distributeReward", senderAuthorized, contractAuthorizedAsRecipient)
-                )
-            )
-        );
-        fuzzToken.grantRole(_ISSUER_ROLE, admin);
-
-        fuzzToken.changeTransferPolicyId(1);
-        fuzzToken.mint(testSender, 10_000);
-        fuzzToken.mint(recipient, 10_000);
-
-        vm.stopPrank();
-
-        vm.prank(recipient);
-        fuzzToken.setRewardRecipient(recipient);
-
-        vm.startPrank(admin);
-
-        uint64 senderPolicy = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
-        uint64 recipientPolicy = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
-
-        if (senderAuthorized) {
-            registry.modifyPolicyWhitelist(senderPolicy, testSender, true);
-        }
-        if (contractAuthorizedAsRecipient) {
-            registry.modifyPolicyWhitelist(recipientPolicy, address(fuzzToken), true);
-        }
-
-        uint64 fuzzCompound = registry.createCompoundPolicy(senderPolicy, recipientPolicy, 1);
-        fuzzToken.changeTransferPolicyId(fuzzCompound);
-
-        vm.stopPrank();
-
-        if (senderAuthorized && contractAuthorizedAsRecipient) {
-            vm.prank(testSender);
-            fuzzToken.distributeReward(amount);
-            assertEq(fuzzToken.balanceOf(address(fuzzToken)), amount);
-        } else {
-            vm.expectRevert(ITIP20.PolicyForbids.selector);
-            this.distributeRewardAsExternal(fuzzToken, testSender, amount);
-        }
-    }
-
     function testFuzz_claimRewards_respectsDirectionalAuth(
         bool contractAuthorizedAsSender,
         bool recipientAuthorized
@@ -1114,11 +894,7 @@ contract TIP1015Test is TempoTest {
 
         vm.stopPrank();
 
-        vm.prank(testRecipient);
-        fuzzToken.setRewardRecipient(testRecipient);
-
-        vm.prank(sender);
-        fuzzToken.distributeReward(1000);
+        _seedSettledRewards(fuzzToken, testRecipient, 1000, 1000);
 
         vm.startPrank(admin);
 
@@ -1140,7 +916,8 @@ contract TIP1015Test is TempoTest {
         if (contractAuthorizedAsSender && recipientAuthorized) {
             vm.prank(testRecipient);
             uint256 claimed = fuzzToken.claimRewards();
-            assertGt(claimed, 0);
+            assertEq(claimed, 1000);
+            assertEq(fuzzToken.getPendingRewards(testRecipient), 0);
         } else {
             vm.expectRevert(ITIP20.PolicyForbids.selector);
             this.claimRewardsAsExternal(fuzzToken, testRecipient);
@@ -1165,19 +942,6 @@ contract TIP1015Test is TempoTest {
 
     function burnBlockedExternal(ITIP20 token, address from, uint256 amount) external {
         token.burnBlocked(from, amount);
-    }
-
-    function distributeRewardExternal(ITIP20 token, uint256 amount) external {
-        token.distributeReward(amount);
-    }
-
-    function distributeRewardAsExternal(ITIP20 token, address caller, uint256 amount) external {
-        vm.prank(caller);
-        token.distributeReward(amount);
-    }
-
-    function claimRewardsExternal(ITIP20 token) external returns (uint256) {
-        return token.claimRewards();
     }
 
     function claimRewardsAsExternal(ITIP20 token, address caller) external returns (uint256) {

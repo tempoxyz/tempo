@@ -1,0 +1,9 @@
+{
+  "repository": "https://github.com/tempoxyz/tempo-history.git",
+  "ref": "rus/tempo-era-handoff",
+  "revision": "6b016cf3bf5a51686ef0b55ab3bb4525c279d677",
+  "era": "genesis-t10",
+  "version": "0.1.2",
+  "upstream_revision": "4e14416db157271526e90d70a68b132c3b3a4123",
+  "era_sha256": "26c04a2c1a7c5c05531ba5d0e69fe5ea73d60f4ce79ffc64c87dd26af3914b2c"
+}

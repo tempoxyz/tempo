@@ -598,11 +598,13 @@ mod tests {
             .retain(|name, _| !name.ends_with("Time"));
         genesis.config.chain_id = zone_chain_id(MODERATO.chain_id(), 1).unwrap();
         let composed = Arc::new(ZoneChainSpec::from_genesis(genesis).unwrap());
+        // Pre-T10 execution moved to the frozen Genesis-T10 worker.
         let activation_timestamp = TempoHardfork::VARIANTS
             .iter()
+            .filter(|&&hardfork| hardfork > TempoHardfork::T10)
             .filter_map(|&hardfork| MODERATO.tempo_fork_activation(hardfork).as_timestamp())
             .find(|&timestamp| timestamp > 0)
-            .expect("Moderato must have a post-genesis Tempo hardfork");
+            .expect("Moderato must have a Tempo hardfork after T10");
         let config = ZoneEvmConfig::new(composed, MockL1Reader::default(), Address::ZERO);
         for timestamp in [activation_timestamp - 1, activation_timestamp] {
             let header = TempoHeader {

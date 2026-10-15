@@ -54,7 +54,7 @@ impl AmmLiquidityCache {
     }
 
     /// Checks whether there's enough liquidity in at least one of the AMM pools used by recent
-    /// validators for the given fee token and fee amount. On T5+, as per [TIP-1033], considers
+    /// validators for the given fee token and fee amount. As per [TIP-1033], considers
     /// the two-hop fallback through an intermediate `userToken.quoteToken()`.
     ///
     /// [TIP-1033]: <https://docs.tempo.xyz/protocol/tips/tip-1033>
@@ -85,7 +85,7 @@ impl AmmLiquidityCache {
 
             let calc_swap = |input| compute_amount_out(input).map_err(ProviderError::other);
             let out1 = calc_swap(fee)?;
-            let out2 = hardfork.is_t5().then(|| calc_swap(out1)).transpose()?;
+            let out2 = calc_swap(out1)?;
 
             for &validator_token in &inner.unique_tokens {
                 let direct = inner
@@ -99,22 +99,20 @@ impl AmmLiquidityCache {
                     None => true,     // Direct reserve is missing.
                 };
 
-                if let Some(out2) = out2 {
-                    if let Some(hop) = inner.quote_token_cache.get(&user_token).copied() {
-                        if !hop.is_zero() && hop != validator_token {
-                            let r1 = inner.pool_cache.get(&(user_token, hop)).copied();
-                            let r2 = inner.pool_cache.get(&(hop, validator_token)).copied();
-                            match (r1, r2) {
-                                (Some(r1), Some(r2)) if r1 >= out1 && r2 >= out2 => {
-                                    return Ok(true);
-                                }
-                                (Some(_), Some(_)) => {} // Both cached and not enough liquidity.
-                                _ => defer = true,       // A leg's reserve is missing.
+                if let Some(hop) = inner.quote_token_cache.get(&user_token).copied() {
+                    if !hop.is_zero() && hop != validator_token {
+                        let r1 = inner.pool_cache.get(&(user_token, hop)).copied();
+                        let r2 = inner.pool_cache.get(&(hop, validator_token)).copied();
+                        match (r1, r2) {
+                            (Some(r1), Some(r2)) if r1 >= out1 && r2 >= out2 => {
+                                return Ok(true);
                             }
+                            (Some(_), Some(_)) => {} // Both cached and not enough liquidity.
+                            _ => defer = true,       // A leg's reserve is missing.
                         }
-                    } else {
-                        defer = true; // Quote token not yet cached.
                     }
+                } else {
+                    defer = true; // Quote token not yet cached.
                 }
 
                 if defer {
@@ -197,7 +195,7 @@ impl AmmLiquidityCache {
     /// Processes a new [`ExecutionOutcome`] and caches new validator
     /// fee token preferences and AMM pool liquidity changes.
     ///
-    /// On T5+ also invalidates `AmmLiquidityCacheInner::quote_token_cache` entries for TIP-20
+    /// Also invalidates `AmmLiquidityCacheInner::quote_token_cache` entries for TIP-20
     /// tokens whose `quoteToken` storage slot was written.
     pub fn on_new_state(&self, execution_outcome: &ExecutionOutcome<TempoReceipt>) {
         let mut inner = self.inner.write();
@@ -461,25 +459,23 @@ mod tests {
         let provider = create_mock_provider();
         let state = provider.latest().unwrap();
 
-        for hardfork in [TempoHardfork::T4, TempoHardfork::T5] {
-            for validator_token in [user_token, other_token] {
-                let cache = AmmLiquidityCache {
-                    inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
-                        hardfork,
-                        unique_tokens: vec![validator_token],
-                        ..Default::default()
-                    })),
-                };
+        for validator_token in [user_token, other_token] {
+            let cache = AmmLiquidityCache {
+                inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
+                    hardfork: TempoHardfork::T10,
+                    unique_tokens: vec![validator_token],
+                    ..Default::default()
+                })),
+            };
 
-                let result = cache.has_enough_liquidity(user_token, U256::MAX, &state);
-                if validator_token == user_token {
-                    assert!(result.unwrap(), "same-token fees need no swap arithmetic");
-                } else {
-                    assert!(
-                        result.is_err(),
-                        "swap arithmetic must still reject overflow"
-                    );
-                }
+            let result = cache.has_enough_liquidity(user_token, U256::MAX, &state);
+            if validator_token == user_token {
+                assert!(result.unwrap(), "same-token fees need no swap arithmetic");
+            } else {
+                assert!(
+                    result.is_err(),
+                    "swap arithmetic must still reject overflow"
+                );
             }
         }
     }
@@ -514,8 +510,8 @@ mod tests {
 
     #[test]
     fn test_has_enough_liquidity_cached_pool_insufficient() {
-        let user_token = Address::repeat_byte(0x22);
-        let validator_token = Address::repeat_byte(0x33);
+        let user_token = address!("20C0000000000000000000000000000000000002");
+        let validator_token = address!("20C0000000000000000000000000000000000003");
 
         let cache = AmmLiquidityCache {
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
@@ -566,7 +562,7 @@ mod tests {
 
         let cache = AmmLiquidityCache {
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
-                hardfork: TempoHardfork::T5,
+                hardfork: TempoHardfork::T10,
                 unique_tokens: vec![validator],
                 pool_cache: {
                     let mut m = HashMap::default();
@@ -599,8 +595,8 @@ mod tests {
 
     #[test]
     fn test_has_enough_liquidity_cache_miss_insufficient() {
-        let user_token = Address::repeat_byte(0x22);
-        let validator_token = Address::repeat_byte(0x33);
+        let user_token = address!("20C0000000000000000000000000000000000002");
+        let validator_token = address!("20C0000000000000000000000000000000000003");
 
         let cache = AmmLiquidityCache {
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
@@ -645,7 +641,7 @@ mod tests {
         // lookup falls through to the slow path, where the provider returns zero reserves.
         let cache = AmmLiquidityCache {
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
-                hardfork: TempoHardfork::T5,
+                hardfork: TempoHardfork::T10,
                 unique_tokens: vec![validator_token],
                 pool_cache: {
                     let mut m = HashMap::default();

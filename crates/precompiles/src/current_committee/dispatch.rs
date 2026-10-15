@@ -120,7 +120,7 @@ mod tests {
 
     #[test]
     fn test_set_committee_members_does_not_mint_storage_credits() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T8);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || {
             let mut committee = CurrentCommittee::new();
             committee.set_committee_members(

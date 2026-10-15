@@ -244,8 +244,8 @@ async fn test_receive_policy_guard_gas_snapshots() -> eyre::Result<()> {
             recovery.address(),
         ),
     ] {
-        gas.record(
-            name,
+        gas.insert(
+            name.into(),
             set_receive_policy(
                 &ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, provider(signer)),
                 sender_policy_id,
@@ -265,8 +265,8 @@ async fn test_receive_policy_guard_gas_snapshots() -> eyre::Result<()> {
         U256::from(1_000),
     )
     .await?;
-    gas.record(
-        "transfer_blocked_originator_recovery",
+    gas.insert(
+        "transfer_blocked_originator_recovery".into(),
         originator_blocked.gas_used,
     );
 
@@ -278,8 +278,8 @@ async fn test_receive_policy_guard_gas_snapshots() -> eyre::Result<()> {
         U256::from(2_000),
     )
     .await?;
-    gas.record(
-        "transfer_blocked_receiver_recovery",
+    gas.insert(
+        "transfer_blocked_receiver_recovery".into(),
         receiver_blocked.gas_used,
     );
 
@@ -291,12 +291,12 @@ async fn test_receive_policy_guard_gas_snapshots() -> eyre::Result<()> {
         U256::from(3_000),
     )
     .await?;
-    gas.record(
-        "transfer_blocked_third_party_recovery",
+    gas.insert(
+        "transfer_blocked_third_party_recovery".into(),
         third_party_blocked.gas_used,
     );
-    gas.record(
-        "transfer_allowed_third_party_receive_policy",
+    gas.insert(
+        "transfer_allowed_third_party_receive_policy".into(),
         create_allowed_transfer(
             &originator_token,
             allowed_third_party_receiver.address(),
@@ -314,8 +314,8 @@ async fn test_receive_policy_guard_gas_snapshots() -> eyre::Result<()> {
     let recovery_guard =
         IReceivePolicyGuard::new(RECEIVE_POLICY_GUARD_ADDRESS, provider(&recovery));
 
-    gas.record(
-        "claim_originator_recovery_to_destination",
+    gas.insert(
+        "claim_originator_recovery_to_destination".into(),
         claim_blocked(
             &originator_guard,
             destination.address(),
@@ -323,8 +323,8 @@ async fn test_receive_policy_guard_gas_snapshots() -> eyre::Result<()> {
         )
         .await?,
     );
-    gas.record(
-        "claim_receiver_recovery_to_receiver",
+    gas.insert(
+        "claim_receiver_recovery_to_receiver".into(),
         claim_blocked(
             &receiver_guard,
             receiver_blocked.receiver,
@@ -332,8 +332,8 @@ async fn test_receive_policy_guard_gas_snapshots() -> eyre::Result<()> {
         )
         .await?,
     );
-    gas.record(
-        "claim_third_party_recovery_to_destination",
+    gas.insert(
+        "claim_third_party_recovery_to_destination".into(),
         claim_blocked(&recovery_guard, destination.address(), &third_party_blocked).await?,
     );
 

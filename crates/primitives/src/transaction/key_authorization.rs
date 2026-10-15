@@ -360,23 +360,12 @@ impl KeyAuthorization {
         SignedKeyAuthorization::new(self, signature)
     }
 
-    /// Validates that this key authorization's `chain_id` is compatible with `expected_chain_id`.
-    ///
-    /// - Post-T1C: `chain_id` must exactly match (wildcard `0` is no longer allowed).
-    /// - Pre-T1C: `chain_id == 0` is a wildcard (valid on any chain), otherwise must match.
+    /// Requires this key authorization's `chain_id` to match `expected_chain_id`.
     pub fn validate_chain_id(
         &self,
         expected_chain_id: u64,
-        is_t1c: bool,
     ) -> Result<(), KeyAuthorizationChainIdError> {
-        if is_t1c {
-            if self.chain_id != expected_chain_id {
-                return Err(KeyAuthorizationChainIdError {
-                    expected: expected_chain_id,
-                    got: self.chain_id,
-                });
-            }
-        } else if self.chain_id != 0 && self.chain_id != expected_chain_id {
+        if self.chain_id != expected_chain_id {
             return Err(KeyAuthorizationChainIdError {
                 expected: expected_chain_id,
                 got: self.chain_id,
@@ -1446,52 +1435,26 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_chain_id_pre_t1c() {
+    fn test_validate_chain_id() {
         let expected = 42431;
 
         // Matching chain_id → ok
         assert!(
             make_auth_with_chain_id(expected)
-                .validate_chain_id(expected, false)
-                .is_ok()
-        );
-
-        // Wildcard chain_id=0 → ok pre-T1C
-        assert!(
-            make_auth_with_chain_id(0)
-                .validate_chain_id(expected, false)
-                .is_ok()
-        );
-
-        // Wrong chain_id → err
-        let err = make_auth_with_chain_id(999)
-            .validate_chain_id(expected, false)
-            .unwrap_err();
-        assert_eq!(err.expected, expected);
-        assert_eq!(err.got, 999);
-    }
-
-    #[test]
-    fn test_validate_chain_id_post_t1c() {
-        let expected = 42431;
-
-        // Matching chain_id → ok
-        assert!(
-            make_auth_with_chain_id(expected)
-                .validate_chain_id(expected, true)
+                .validate_chain_id(expected)
                 .is_ok()
         );
 
         // Wildcard chain_id=0 → rejected post-T1C
         let err = make_auth_with_chain_id(0)
-            .validate_chain_id(expected, true)
+            .validate_chain_id(expected)
             .unwrap_err();
         assert_eq!(err.expected, expected);
         assert_eq!(err.got, 0);
 
         // Wrong chain_id → rejected
         let err = make_auth_with_chain_id(999)
-            .validate_chain_id(expected, true)
+            .validate_chain_id(expected)
             .unwrap_err();
         assert_eq!(err.expected, expected);
         assert_eq!(err.got, 999);

@@ -715,10 +715,6 @@ impl TIP20ChannelReserve {
         channel_id: B256,
         state: PackedChannelState,
     ) -> Result<()> {
-        if !self.storage.spec().is_t7() {
-            return self.channel_states[channel_id].write(state);
-        }
-
         let current = self.channel_storage_credits[payer].read()?;
         if current == 0 {
             return self.channel_states[channel_id].write(state);
@@ -1092,7 +1088,7 @@ mod tests {
 
     #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T7);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || {
             let mut reserve = TIP20ChannelReserve::new();
             let unsupported = check_selector_coverage(
@@ -1108,7 +1104,7 @@ mod tests {
 
     #[test]
     fn test_open_requires_expiring_nonce_hash() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let payer = Address::random();
         let payee = Address::random();
 
@@ -1141,7 +1137,7 @@ mod tests {
 
     #[test]
     fn test_open_rejects_invalid_payees() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let payer = Address::random();
 
         StorageCtx::enter(&mut storage, || {
@@ -1192,7 +1188,7 @@ mod tests {
 
     #[test]
     fn test_virtual_payee_admission_checks_resolved_master() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let payer = Address::random();
         let admin = payer;
         let operator = Address::random();
@@ -1270,7 +1266,7 @@ mod tests {
 
     #[test]
     fn test_tip403_logical_payer_payee_policy_checks() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let payer_signer = PrivateKeySigner::random();
         let payer = payer_signer.address();
         let payee = Address::random();
@@ -2114,7 +2110,7 @@ mod tests {
 
     #[test]
     fn test_open_settle_close_flow_deletes_state_and_same_tx_reopen_guard() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let payer_signer = PrivateKeySigner::random();
         let payer = payer_signer.address();
         let payee = Address::random();
@@ -2234,7 +2230,7 @@ mod tests {
 
     #[test]
     fn test_expiring_nonce_hash_and_operator_participate_in_channel_id() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let payer = Address::random();
         let payee = Address::random();
         let operator = Address::random();
@@ -2288,7 +2284,7 @@ mod tests {
 
     #[test]
     fn test_multiple_opens_same_transaction() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let payer = Address::random();
         let payee = Address::random();
         let salt = B256::random();
@@ -2347,7 +2343,7 @@ mod tests {
 
     #[test]
     fn test_settle_allows_operator_and_rejects_unrelated_sender() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let payer_signer = PrivateKeySigner::random();
         let payer = payer_signer.address();
         let payee = Address::random();
@@ -2437,7 +2433,7 @@ mod tests {
 
     #[test]
     fn test_close_allows_operator_and_rejects_unrelated_sender() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let payer_signer = PrivateKeySigner::random();
         let payer = payer_signer.address();
         let payee = Address::random();
@@ -2531,7 +2527,7 @@ mod tests {
 
     #[test]
     fn test_zero_top_up_without_close_request_is_noop() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let payer = Address::random();
         let payee = Address::random();
         let salt = B256::random();
@@ -2591,7 +2587,7 @@ mod tests {
 
     #[test]
     fn test_top_up_cancels_close_request() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let payer = Address::random();
         let payee = Address::random();
         let salt = B256::random();
@@ -2657,7 +2653,7 @@ mod tests {
 
     #[test]
     fn test_dispatch_rejects_static_mutation() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         StorageCtx::enter(&mut storage, || {
             let mut reserve = TIP20ChannelReserve::new();
             let result = reserve.call(
@@ -2679,7 +2675,7 @@ mod tests {
 
     #[test]
     fn test_settle_rejects_invalid_signature() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let payer = Address::random();
         let payee = Address::random();
         let salt = B256::random();
@@ -2732,7 +2728,7 @@ mod tests {
 
     #[test]
     fn test_settle_rejects_keychain_signature_wrapper() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let payer = Address::random();
         let payee = Address::random();
         let salt = B256::random();
@@ -2788,7 +2784,7 @@ mod tests {
 
     #[test]
     fn test_withdraw_after_grace_deletes_state() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let payer = Address::random();
         let payee = Address::random();
         let salt = B256::random();
@@ -2847,7 +2843,7 @@ mod tests {
 
     #[test]
     fn test_withdraw_requires_close_request() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T10);
         let payer = Address::random();
         let payee = Address::random();
         let salt = B256::random();

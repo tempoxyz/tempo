@@ -17,14 +17,13 @@ use tempo_precompiles::{
 use tempo_primitives::{TempoAddressExt, TempoTxEnvelope};
 
 /// Returns true if the calldata is for a TIP-20 function that should trigger fee token inference.
-/// `transfer` and `transferWithMemo` always qualify. `distributeReward` qualifies only before T7,
-/// when the call still moves tokens.
-pub(crate) fn is_tip20_fee_inference_call(spec: TempoHardfork, input: &[u8]) -> bool {
+/// Only token transfers qualify.
+pub(crate) fn is_tip20_fee_inference_call(input: &[u8]) -> bool {
     input.first_chunk::<4>().is_some_and(|&s| {
         matches!(
             s,
             ITIP20::transferCall::SELECTOR | ITIP20::transferWithMemoCall::SELECTOR
-        ) || (!spec.is_t7() && s == ITIP20::distributeRewardCall::SELECTOR)
+        )
     })
 }
 
@@ -477,7 +476,7 @@ mod tests {
             &mut EmptyDB::default(),
             &tx,
             caller,
-            TempoHardfork::Genesis,
+            TempoHardfork::T10,
             StorageActions::disabled(),
         )?;
         assert_eq!(token, fee_token);
@@ -505,7 +504,7 @@ mod tests {
             &mut EmptyDB::default(),
             &tx,
             caller,
-            TempoHardfork::Genesis,
+            TempoHardfork::T10,
             StorageActions::disabled(),
         )?;
         assert_eq!(result_token, token);
@@ -527,7 +526,7 @@ mod tests {
             &mut db,
             &TempoTxEnv::default(),
             caller,
-            TempoHardfork::Genesis,
+            TempoHardfork::T10,
             StorageActions::disabled(),
         )?;
         assert_eq!(result_token, user_token);
@@ -554,7 +553,7 @@ mod tests {
             &mut EmptyDB::default(),
             &tx,
             caller,
-            TempoHardfork::Genesis,
+            TempoHardfork::T10,
             StorageActions::disabled(),
         )?;
         assert_eq!(result_token, DEFAULT_FEE_TOKEN);
@@ -577,7 +576,7 @@ mod tests {
             &mut EmptyDB::default(),
             &tx,
             caller,
-            TempoHardfork::Genesis,
+            TempoHardfork::T10,
             StorageActions::disabled(),
         )?;
         // Should fallback to DEFAULT_FEE_TOKEN when no preferences are found
@@ -616,7 +615,7 @@ mod tests {
             &mut db,
             &tx,
             caller,
-            TempoHardfork::Genesis,
+            TempoHardfork::T10,
             StorageActions::disabled(),
         )?;
         assert_eq!(token, token_in);
@@ -645,7 +644,7 @@ mod tests {
             &mut db,
             &tx,
             caller,
-            TempoHardfork::Genesis,
+            TempoHardfork::T10,
             StorageActions::disabled(),
         )?;
         assert_eq!(token, token_in);
@@ -668,7 +667,7 @@ mod tests {
         let balance = db.get_token_balance(
             token_address,
             account,
-            TempoHardfork::Genesis,
+            TempoHardfork::T10,
             StorageActions::disabled(),
         )?;
         assert_eq!(balance, expected_balance);
@@ -678,28 +677,19 @@ mod tests {
 
     #[test]
     fn test_is_tip20_fee_inference_call() {
-        for spec in [(TempoHardfork::T6), (TempoHardfork::T7)] {
-            // Allowed selectors
-            assert!(is_tip20_fee_inference_call(spec, &transferCall::SELECTOR));
-            assert!(is_tip20_fee_inference_call(
-                spec,
-                &transferWithMemoCall::SELECTOR
-            ));
-            // Only allowed pre-T7
-            assert_eq!(
-                is_tip20_fee_inference_call(spec, &distributeRewardCall::SELECTOR),
-                !spec.is_t7()
-            );
-
-            // Disallowed selectors
-            assert!(!is_tip20_fee_inference_call(spec, &grantRoleCall::SELECTOR));
-            assert!(!is_tip20_fee_inference_call(spec, &mintCall::SELECTOR));
-            assert!(!is_tip20_fee_inference_call(spec, &approveCall::SELECTOR));
-
-            // Edge cases
-            assert!(!is_tip20_fee_inference_call(spec, &[]));
-            assert!(!is_tip20_fee_inference_call(spec, &[0x00, 0x01, 0x02]));
+        for selector in [transferCall::SELECTOR, transferWithMemoCall::SELECTOR] {
+            assert!(is_tip20_fee_inference_call(&selector));
         }
+        for selector in [
+            distributeRewardCall::SELECTOR,
+            grantRoleCall::SELECTOR,
+            mintCall::SELECTOR,
+            approveCall::SELECTOR,
+        ] {
+            assert!(!is_tip20_fee_inference_call(&selector));
+        }
+        assert!(!is_tip20_fee_inference_call(&[]));
+        assert!(!is_tip20_fee_inference_call(&[0, 1, 2]));
     }
 
     #[test]
@@ -709,7 +699,7 @@ mod tests {
 
         // Default (unpaused) returns false
         assert!(!db.is_fee_token_paused(
-            TempoHardfork::Genesis,
+            TempoHardfork::T10,
             token_address,
             StorageActions::disabled()
         )?);
@@ -717,7 +707,7 @@ mod tests {
         // Set paused=true
         db.insert_account_storage(token_address, tip20_slots::PAUSED, U256::ONE)?;
         assert!(db.is_fee_token_paused(
-            TempoHardfork::Genesis,
+            TempoHardfork::T10,
             token_address,
             StorageActions::disabled()
         )?);
@@ -757,11 +747,8 @@ mod tests {
             let mut db = InMemoryDB::default();
             db.insert_account_storage(fee_token, tip20_slots::CURRENCY, *currency_value)?;
 
-            let is_usd = db.is_tip20_usd(
-                TempoHardfork::Genesis,
-                fee_token,
-                StorageActions::disabled(),
-            )?;
+            let is_usd =
+                db.is_tip20_usd(TempoHardfork::T10, fee_token, StorageActions::disabled())?;
             assert_eq!(is_usd, *expected, "currency '{label}' failed");
         }
 
@@ -777,11 +764,7 @@ mod tests {
         db.insert_account_storage(fee_token, tip20_slots::CURRENCY, U256::from(len * 2 + 1))?;
 
         let err = db
-            .ensure_tip20_usd(
-                TempoHardfork::Genesis,
-                fee_token,
-                StorageActions::disabled(),
-            )
+            .ensure_tip20_usd(TempoHardfork::T10, fee_token, StorageActions::disabled())
             .expect_err("long non-USD currency returns an EVM error");
         assert!(matches!(
             err,
