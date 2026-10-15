@@ -56,6 +56,7 @@ jobs:
         with:
           prefix-key: v1-clippy-deps
           cache-bin: false
+          save-if: ${{ github.event_name == 'push' }}
       - name: Run clippy on runtime targets
         run: cargo clippy --workspace --lib --bins --all-features --locked
         env:
