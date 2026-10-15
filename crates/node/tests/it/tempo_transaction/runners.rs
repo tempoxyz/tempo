@@ -1864,8 +1864,12 @@ pub(super) async fn run_fill_sign_send<E: TestEnv>(
         let tx_hash = submit_expecting(env, envelope, test_case.expected, false, None).await?;
 
         if matches!(test_case.expected, ExpectedOutcome::Success) {
-            let final_protocol_nonce = env.provider().get_transaction_count(signer_addr).await?;
             let should_increment = matches!(test_case.nonce_mode, NonceMode::Protocol);
+            let final_protocol_nonce = settled(
+                || async { Ok(env.provider().get_transaction_count(signer_addr).await?) },
+                |nonce| !should_increment || *nonce > initial_protocol_nonce,
+            )
+            .await?;
             if should_increment {
                 assert_eq!(final_protocol_nonce, initial_protocol_nonce + 1);
             } else {

@@ -175,15 +175,13 @@ impl super::types::TestEnv for RpcEnv {
             wait_for_receipt(&self.provider, tx_hash).await?;
         }
 
-        let balance = tempo_precompiles::tip20::ITIP20::new(
-            tempo_contracts::precompiles::DEFAULT_FEE_TOKEN,
+        settled_balance(
             &self.provider,
+            tempo_contracts::precompiles::DEFAULT_FEE_TOKEN,
+            addr,
+            |bal| !bal.is_zero(),
         )
-        .balanceOf(addr)
-        .call()
-        .await?;
-
-        Ok(balance)
+        .await
     }
 
     async fn submit_tx(
