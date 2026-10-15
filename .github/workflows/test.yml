@@ -33,6 +33,8 @@ env:
 jobs:
   zones-artifacts:
     name: Build Zones test artifacts
+    needs: check-precompiles
+    if: needs.check-precompiles.outputs.rust != 'false'
     runs-on: depot-ubuntu-latest-16
     timeout-minutes: 30
     permissions:
@@ -98,41 +100,32 @@ jobs:
           retention-days: 1
 
   check-precompiles:
-    name: Check precompiles changes
+    name: Check test changes
     runs-on: ubuntu-latest
     permissions:
       id-token: write
       contents: read
     outputs:
-      coverage: ${{ steps.check.outputs.coverage }}
+      # Continue exercising main even for agent-only changes.
+      rust: ${{ github.event_name == 'push' || contains(fromJSON(steps.check.outputs.changes), 'rust') }}
+      coverage: ${{ github.event_name == 'pull_request' && contains(fromJSON(steps.check.outputs.changes), 'precompiles') }}
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          fetch-depth: 0
           persist-credentials: false
-      - name: Check for precompiles changes
+      - name: Detect test inputs
         id: check
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_REF: ${{ github.base_ref }}
-        run: |
-          # Only run coverage on pull_request events when precompiles/contracts changed
-          if [[ "$EVENT_NAME" != "pull_request" ]]; then
-            echo "coverage=false" >> "$GITHUB_OUTPUT"
-            echo "Skipping coverage: not a pull_request event (event: $EVENT_NAME)"
-          elif git diff --name-only origin/"$BASE_REF"...HEAD | grep -qE '^(crates/(precompiles|contracts)/|tips/verify/)'; then
-            echo "coverage=true" >> "$GITHUB_OUTPUT"
-            echo "Running coverage: precompiles/contracts changed"
-          else
-            echo "coverage=false" >> "$GITHUB_OUTPUT"
-            echo "Skipping coverage: no precompiles/contracts changes"
-          fi
+        uses: tempoxyz/gh-actions/actions/changed-paths@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        with:
+          filters: .github/ci-paths.yml
 
   genesis:
     name: Genesis generation
+    needs: check-precompiles
+    if: needs.check-precompiles.outputs.rust != 'false'
     runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
     permissions:
@@ -174,6 +167,7 @@ jobs:
   test:
     name: test (${{ matrix.partition }}/2)
     needs: [check-precompiles, zones-artifacts]
+    if: needs.check-precompiles.outputs.rust != 'false'
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 30
     permissions:
@@ -250,6 +244,8 @@ jobs:
 
   e2e:
     name: e2e (${{ matrix.partition }}/4)
+    needs: check-precompiles
+    if: needs.check-precompiles.outputs.rust != 'false'
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 30
     permissions:
@@ -307,6 +303,8 @@ jobs:
 
   cli:
     name: CLI smoke tests
+    needs: check-precompiles
+    if: needs.check-precompiles.outputs.rust != 'false'
     runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
     permissions:
@@ -360,6 +358,8 @@ jobs:
 
   msrv:
     name: MSRV
+    needs: check-precompiles
+    if: needs.check-precompiles.outputs.rust != 'false'
     runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
     permissions:
@@ -395,6 +395,7 @@ jobs:
       id-token: write
     needs:
       - check-precompiles
+      - zones-artifacts
       - test
       - e2e
       - cli
@@ -408,4 +409,6 @@ jobs:
       - name: Decide whether the needed jobs succeeded or failed
         uses: tempoxyz/gh-actions/actions/check-needs@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
         with:
+          # Only a successful detection of agent-only changes permits these skips.
+          allowed-skips: ${{ needs.check-precompiles.result == 'success' && needs.check-precompiles.outputs.rust == 'false' && 'zones-artifacts,test,e2e,cli,msrv,genesis' || '' }}
           jobs: ${{ toJSON(needs) }}

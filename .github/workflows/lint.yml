@@ -23,8 +23,31 @@ env:
   SOURCE_DATE_EPOCH: "1700000000"
 
 jobs:
+  check-changes:
+    name: Check lint changes
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      rust: ${{ github.event_name == 'push' || contains(fromJSON(steps.check.outputs.changes), 'rust') }}
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Detect lint inputs
+        id: check
+        uses: tempoxyz/gh-actions/actions/changed-paths@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        with:
+          filters: .github/ci-paths.yml
+
   clippy:
     name: clippy
+    needs: check-changes
+    if: needs.check-changes.outputs.rust != 'false'
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 60
     env:
@@ -113,7 +136,8 @@ jobs:
       - run: cargo hack check --feature-powerset --depth 1 --partition ${{ matrix.partition }}/2
 
   docs:
-    if: ${{ github.repository == 'tempoxyz/tempo' }}
+    needs: check-changes
+    if: ${{ github.repository == 'tempoxyz/tempo' && needs.check-changes.outputs.rust != 'false' }}
     name: docs
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 30
@@ -195,6 +219,8 @@ jobs:
       - uses: tempoxyz/gh-actions/actions/typos@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
 
   deny:
+    needs: check-changes
+    if: needs.check-changes.outputs.rust != 'false'
     permissions:
       contents: read
       id-token: write
@@ -205,6 +231,8 @@ jobs:
 
   zepter:
     name: zepter
+    needs: check-changes
+    if: needs.check-changes.outputs.rust != 'false'
     runs-on: depot-ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -231,6 +259,8 @@ jobs:
 
   no-std:
     name: no-std
+    needs: check-changes
+    if: needs.check-changes.outputs.rust != 'false'
     runs-on: depot-ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -263,6 +293,7 @@ jobs:
     permissions:
       id-token: write
     needs:
+      - check-changes
       - clippy
       - fmt
       - docs
@@ -278,5 +309,5 @@ jobs:
       - name: Decide whether the needed jobs succeeded or failed
         uses: tempoxyz/gh-actions/actions/check-needs@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
         with:
-          allowed-skips: ${{ github.repository != 'tempoxyz/tempo' && 'docs' || '' }}
+          allowed-skips: ${{ needs.check-changes.result == 'success' && needs.check-changes.outputs.rust == 'false' && 'clippy,docs,deny,zepter,no-std' || (github.repository != 'tempoxyz/tempo' && 'docs' || '') }}
           jobs: ${{ toJSON(needs) }}
