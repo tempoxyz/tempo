@@ -413,7 +413,7 @@ jobs:
     name: Precompiles Coverage
     needs: [check-precompiles, specs-success]
     if: success() && needs.check-precompiles.outputs.coverage == 'true'
-    uses: ./.github/workflows/coverage.yml
+    uses: ./.github/workflows/coverage.yml # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
     with:
       commit_sha: ${{ github.event.pull_request.head.sha || github.sha }}
       pr_number: ${{ github.event.pull_request.number || 0 }}

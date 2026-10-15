@@ -626,7 +626,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: ./.github/workflows/bench-e2e.yml
+    uses: ./.github/workflows/bench-e2e.yml # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
     with:
       pr: ${{ needs.tempo-bench-ack.outputs.pr }}
       actor: ${{ needs.tempo-bench-ack.outputs.actor }}
@@ -690,7 +690,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: ./.github/workflows/bench-replay.yml
+    uses: ./.github/workflows/bench-replay.yml # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
     with:
       chain: ${{ needs.tempo-bench-ack.outputs.chain }}
       pr: ${{ needs.tempo-bench-ack.outputs.pr }}

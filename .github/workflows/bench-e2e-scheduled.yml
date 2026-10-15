@@ -157,7 +157,7 @@ jobs:
     needs: resolve-refs
     if: needs.resolve-refs.outputs.has-benchmarks == 'true'
     name: bench-e2e (${{ matrix.preset }}, ${{ matrix.feature_name }})
-    uses: ./.github/workflows/bench-e2e.yml
+    uses: ./.github/workflows/bench-e2e.yml # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.resolve-refs.outputs.bench-matrix) }}

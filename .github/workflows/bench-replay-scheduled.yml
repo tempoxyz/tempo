@@ -223,7 +223,7 @@ jobs:
       needs.resolve-refs.outputs.should-skip != 'true' &&
       needs.resolve-refs.outputs.is-stale != 'true'
     name: bench-replay (${{ needs.resolve-refs.outputs.chain }})
-    uses: ./.github/workflows/bench-replay.yml
+    uses: ./.github/workflows/bench-replay.yml # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
     permissions:
       actions: read
       contents: read
