@@ -590,14 +590,6 @@ pub enum TempoPoolTransactionError {
     )]
     Keychain(&'static str),
 
-    /// A pool transaction attempted to use the subblock nonce-key prefix.
-    ///
-    /// Thrown after validation when a transaction has a non-zero nonce key whose
-    /// prefix is reserved for validator subblock transactions, which are
-    /// not accepted from the public pool.
-    #[error("Tempo Transaction with subblock nonce key prefix aren't supported in the pool")]
-    SubblockNonceKey,
-
     /// An AA transaction has too many Tempo authorizations.
     ///
     /// Thrown during pool admission when the AA transaction's authorization list
@@ -751,8 +743,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::KeyAuthorizationExpired { .. }
             | Self::AddressCheck { .. }
             | Self::Keychain(_) => false,
-            Self::SubblockNonceKey
-            | Self::TooManyAuthorizations { .. }
+            Self::TooManyAuthorizations { .. }
             | Self::TooManyCalls { .. }
             | Self::CallInputTooLarge { .. }
             | Self::TooManyAccessListAccounts { .. }
@@ -1421,7 +1412,6 @@ mod tests {
                 },
                 false,
             ),
-            (TempoPoolTransactionError::SubblockNonceKey, true),
             (
                 TempoPoolTransactionError::Evm(TempoInvalidTransaction::CallsValidation(
                     "calls error",
