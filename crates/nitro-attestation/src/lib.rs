@@ -174,3 +174,20 @@ pub fn verify_parsed<V: P384Verifier + Sha384Hasher>(
         nonce: parsed.nonce,
     })
 }
+
+/// Extracts PCR0/1/2 as SHA-384 measurements, returning `None` if any is missing or has
+/// the wrong length. Entry order is immaterial; zero measurements are preserved.
+/// This does not verify signatures or establish an approved PCR policy.
+pub fn to_measurements(pcrs: &[Pcr]) -> Option<[[u8; SHA384_SIZE]; 3]> {
+    let mut measurements = [[0; SHA384_SIZE]; 3];
+    for (index, measurement) in measurements.iter_mut().enumerate() {
+        *measurement = pcrs
+            .iter()
+            .find(|pcr| usize::from(pcr.index) == index)?
+            .value
+            .as_slice()
+            .try_into()
+            .ok()?;
+    }
+    Some(measurements)
+}

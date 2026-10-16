@@ -89,7 +89,7 @@ EXPECTED_FACTORY_OWNER="0x000000000000000000000000${EXPECTED_OWNER#0x}"
 RPC_URL="http://127.0.0.1:18546"
 $TEMPO node --dev --dev.mnemonic "$DEV_MNEMONIC" --datadir "$DATADIR" \
     --consensus.message-backlog 16384 \
-    --http --http.port 18546 --http.api eth --disable-discovery --ipcdisable \
+    --http --http.port 18546 --http.api eth,tempo --disable-discovery --ipcdisable \
     --port 0 --authrpc.port 0 --log.file.max-files 0 >"$NODE_LOG" 2>&1 &
 NODE_PID=$!
 
@@ -131,6 +131,43 @@ elif [[ $RPC_READY -eq 1 ]]; then
     else
         echo "PASS"
     fi
+fi
+
+# --- zone-pcr-history: stdout is JSON and empty factories retain fork intervals ---
+if [[ $RPC_READY -eq 1 ]]; then
+    echo "--- Test: tempo zone-pcr-history (JSON output without RPC credentials)"
+    PCR_STDOUT=$(mktemp)
+    PCR_STDERR=$(mktemp)
+    PCR_RPC_URL="http://user:PCR_USERINFO_CANARY@127.0.0.1:18546?apiKey=PCR_QUERY_CANARY"
+    for LOG_FILTER in info debug; do
+        if "$TEMPO" zone-pcr-history --rpc-url "$PCR_RPC_URL" --to-block 0 \
+            --log.stdout.filter "$LOG_FILTER" >"$PCR_STDOUT" 2>"$PCR_STDERR"; then
+            if ! jq -se 'length == 1 and .[0] == [{"hardfork":"T14","observed_pcrs":null}]' \
+                "$PCR_STDOUT" >/dev/null; then
+                dump_log "$PCR_STDOUT"
+                fail "PCR history must contain exactly one JSON array with the empty T14 interval"
+            fi
+        else
+            dump_log "$PCR_STDERR"
+            fail "PCR history exited with non-zero status"
+        fi
+        if grep -qE 'PCR_(USERINFO|QUERY)_CANARY' "$PCR_STDOUT" "$PCR_STDERR"; then
+            fail "PCR history must not disclose RPC credentials"
+        fi
+    done
+
+    echo "--- Test: tempo zone-pcr-history (failure leaves stdout empty)"
+    if "$TEMPO" zone-pcr-history --rpc-url "$PCR_RPC_URL" --from-block 1 --to-block 0 \
+        >"$PCR_STDOUT" 2>"$PCR_STDERR"; then
+        fail "PCR history must reject an inverted block range"
+    fi
+    if [[ -s "$PCR_STDOUT" ]] || ! grep -q "from-block can't exceed to-block" "$PCR_STDERR"; then
+        fail "PCR history errors must appear only on stderr"
+    fi
+    if grep -qE 'PCR_(USERINFO|QUERY)_CANARY' "$PCR_STDOUT" "$PCR_STDERR"; then
+        fail "failed PCR history must not disclose RPC credentials"
+    fi
+    rm -f "$PCR_STDOUT" "$PCR_STDERR"
 fi
 
 if [[ $FAILED -ne 0 ]]; then echo ""; echo "CLI smoke tests FAILED"; exit 1; fi

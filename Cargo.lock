@@ -13869,6 +13869,7 @@ dependencies = [
  "tempo-ext",
  "tempo-eyre",
  "tempo-faucet",
+ "tempo-nitro-attestation",
  "tempo-node",
  "tempo-node-launcher",
  "tempo-precompiles",
