@@ -67,7 +67,39 @@ impl Precompile for TIP403Registry {
                     modifyPolicyWhitelist(call) => mutate(call, msg_sender, |sender, c| self.modify_policy_whitelist(sender, c)),
                     modifyPolicyBlacklist(call) => mutate(call, msg_sender, |sender, c| self.modify_policy_blacklist(sender, c)),
                     #[schedule(since = T2)]
-                    createCompoundPolicy(call) => mutate(call, msg_sender, |sender, c| self.create_compound_policy(sender, c))
+                    createCompoundPolicy(call) => mutate(call, msg_sender, |sender, c| self.create_compound_policy(sender, c)),
+                    #[schedule(since = T13)]
+                    addPolicyWhitelist(call) => mutate(call, msg_sender, |sender, c| {
+                        self.modify_policy_whitelist(sender, ITIP403Registry::modifyPolicyWhitelistCall {
+                            policyId: c.policyId,
+                            account: c.account,
+                            allowed: true,
+                        })
+                    }),
+                    #[schedule(since = T13)]
+                    removePolicyWhitelist(call) => mutate(call, msg_sender, |sender, c| {
+                        self.modify_policy_whitelist(sender, ITIP403Registry::modifyPolicyWhitelistCall {
+                            policyId: c.policyId,
+                            account: c.account,
+                            allowed: false,
+                        })
+                    }),
+                    #[schedule(since = T13)]
+                    addPolicyBlacklist(call) => mutate(call, msg_sender, |sender, c| {
+                        self.modify_policy_blacklist(sender, ITIP403Registry::modifyPolicyBlacklistCall {
+                            policyId: c.policyId,
+                            account: c.account,
+                            restricted: true,
+                        })
+                    }),
+                    #[schedule(since = T13)]
+                    removePolicyBlacklist(call) => mutate(call, msg_sender, |sender, c| {
+                        self.modify_policy_blacklist(sender, ITIP403Registry::modifyPolicyBlacklistCall {
+                            policyId: c.policyId,
+                            account: c.account,
+                            restricted: false,
+                        })
+                    })
                 }
             }
         )
@@ -78,18 +110,23 @@ impl Precompile for TIP403Registry {
 mod tests {
     use super::*;
     use crate::{
+        account_keychain::{
+            AccountKeychain, CallScope, KeyRestrictions, SelectorRule, SignatureType,
+        },
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
         tip403_registry::{ALLOW_ALL_POLICY_ID, ITIP403Registry},
     };
     use alloy::{
-        primitives::U256,
+        primitives::{TxKind, U256},
         sol_types::{SolCall, SolError, SolValue},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
-        ITIP403Registry::ITIP403RegistryCalls, UnknownFunctionSelector,
+        AccountKeychainError, ITIP403Registry::ITIP403RegistryCalls, TIP403_REGISTRY_ADDRESS,
+        UnknownFunctionSelector,
     };
+    use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
 
     #[test]
     fn test_is_authorized_precompile() -> eyre::Result<()> {
@@ -533,8 +570,8 @@ mod tests {
 
     #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
-        // Use T9 to test all selectors, including TIP-1092 token policy lookups.
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T9);
+        // Use T13 to include the separate whitelist/blacklist add/remove selectors.
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
@@ -651,5 +688,247 @@ mod tests {
             assert_eq!(U256::abi_decode(&result.bytes)?, U256::ZERO);
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_policy_add_remove_are_t13_gated() -> eyre::Result<()> {
+        let account = Address::random();
+        let calls = [
+            ITIP403Registry::addPolicyWhitelistCall {
+                policyId: 2,
+                account,
+            }
+            .abi_encode(),
+            ITIP403Registry::removePolicyWhitelistCall {
+                policyId: 2,
+                account,
+            }
+            .abi_encode(),
+            ITIP403Registry::addPolicyBlacklistCall {
+                policyId: 2,
+                account,
+            }
+            .abi_encode(),
+            ITIP403Registry::removePolicyBlacklistCall {
+                policyId: 2,
+                account,
+            }
+            .abi_encode(),
+        ];
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+            for calldata in calls {
+                let output = registry.call(&calldata, account)?;
+                assert!(output.is_revert());
+                let error = UnknownFunctionSelector::abi_decode(&output.bytes)?;
+                assert_eq!(error.selector.as_slice(), &calldata[..4]);
+            }
+            Ok(())
+        })
+    }
+
+    type Encode = fn(u64, Address) -> Vec<u8>;
+
+    #[test]
+    fn test_policy_add_remove_match_legacy_modify() -> eyre::Result<()> {
+        let admin = Address::random();
+        let stranger = Address::random();
+        let account = Address::random();
+        let virtual_account = Address::new_virtual(MasterId::ZERO, UserTag::ZERO);
+
+        // (is whitelist op, new call, equivalent legacy call)
+        let pairs: [(bool, Encode, Encode); 4] = [
+            (
+                true,
+                |id, account| {
+                    ITIP403Registry::addPolicyWhitelistCall {
+                        policyId: id,
+                        account,
+                    }
+                    .abi_encode()
+                },
+                |id, account| {
+                    ITIP403Registry::modifyPolicyWhitelistCall {
+                        policyId: id,
+                        account,
+                        allowed: true,
+                    }
+                    .abi_encode()
+                },
+            ),
+            (
+                true,
+                |id, account| {
+                    ITIP403Registry::removePolicyWhitelistCall {
+                        policyId: id,
+                        account,
+                    }
+                    .abi_encode()
+                },
+                |id, account| {
+                    ITIP403Registry::modifyPolicyWhitelistCall {
+                        policyId: id,
+                        account,
+                        allowed: false,
+                    }
+                    .abi_encode()
+                },
+            ),
+            (
+                false,
+                |id, account| {
+                    ITIP403Registry::addPolicyBlacklistCall {
+                        policyId: id,
+                        account,
+                    }
+                    .abi_encode()
+                },
+                |id, account| {
+                    ITIP403Registry::modifyPolicyBlacklistCall {
+                        policyId: id,
+                        account,
+                        restricted: true,
+                    }
+                    .abi_encode()
+                },
+            ),
+            (
+                false,
+                |id, account| {
+                    ITIP403Registry::removePolicyBlacklistCall {
+                        policyId: id,
+                        account,
+                    }
+                    .abi_encode()
+                },
+                |id, account| {
+                    ITIP403Registry::modifyPolicyBlacklistCall {
+                        policyId: id,
+                        account,
+                        restricted: false,
+                    }
+                    .abi_encode()
+                },
+            ),
+        ];
+
+        for (is_whitelist, new_call, legacy_call) in pairs {
+            // Runs every check plus a repeated success from fresh state, returning outputs,
+            // final membership, and emitted events.
+            let run = |encode: Encode| -> eyre::Result<_> {
+                let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
+                let (outputs, member) = StorageCtx::enter(&mut storage, || -> eyre::Result<_> {
+                    let mut registry = TIP403Registry::new();
+                    let mut create = |policy_type| {
+                        registry.create_policy(
+                            admin,
+                            ITIP403Registry::createPolicyCall {
+                                admin,
+                                policyType: policy_type,
+                            },
+                        )
+                    };
+                    let whitelist_id = create(ITIP403Registry::PolicyType::WHITELIST)?;
+                    let blacklist_id = create(ITIP403Registry::PolicyType::BLACKLIST)?;
+                    let (own, other) = if is_whitelist {
+                        (whitelist_id, blacklist_id)
+                    } else {
+                        (blacklist_id, whitelist_id)
+                    };
+
+                    let mut outputs = Vec::new();
+                    for (caller, policy, member) in [
+                        (stranger, own, account),
+                        (admin, other, account),
+                        (admin, u64::MAX, account),
+                        (admin, own, virtual_account),
+                        (admin, own, account),
+                        (admin, own, account),
+                    ] {
+                        let output = registry.call(&encode(policy, member), caller)?;
+                        outputs.push((output.is_revert(), output.bytes));
+                    }
+                    let member = registry.is_authorized_as(own, account, AuthRole::Transfer)?;
+                    Ok((outputs, member))
+                })?;
+                Ok((
+                    outputs,
+                    member,
+                    storage.get_events(TIP403_REGISTRY_ADDRESS).clone(),
+                ))
+            };
+
+            let new = run(new_call)?;
+            assert_eq!(new, run(legacy_call)?);
+            // Guard against both sides failing the same way: the last call must succeed.
+            assert!(!new.0.last().unwrap().0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_single_selector_access_key_scope() -> eyre::Result<()> {
+        let admin = Address::random();
+        let selectors = [
+            ITIP403Registry::addPolicyWhitelistCall::SELECTOR,
+            ITIP403Registry::removePolicyWhitelistCall::SELECTOR,
+            ITIP403Registry::addPolicyBlacklistCall::SELECTOR,
+            ITIP403Registry::removePolicyBlacklistCall::SELECTOR,
+        ];
+        let others = [
+            ITIP403Registry::modifyPolicyWhitelistCall::SELECTOR,
+            ITIP403Registry::modifyPolicyBlacklistCall::SELECTOR,
+            ITIP403Registry::setPolicyAdminCall::SELECTOR,
+        ];
+
+        for scoped in selectors {
+            let key_id = Address::random();
+            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let mut keychain = AccountKeychain::new();
+                keychain.initialize()?;
+                keychain.set_transaction_key(Address::ZERO)?;
+                keychain.set_tx_origin(admin)?;
+                keychain.authorize_key(
+                    admin,
+                    key_id,
+                    SignatureType::Secp256k1,
+                    KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: false,
+                        limits: vec![],
+                        allowAnyCalls: false,
+                        allowedCalls: vec![CallScope {
+                            target: TIP403_REGISTRY_ADDRESS,
+                            selectorRules: vec![SelectorRule {
+                                selector: scoped.into(),
+                                recipients: vec![],
+                            }],
+                        }],
+                    },
+                    None,
+                )?;
+                keychain.set_transaction_key(key_id)?;
+
+                let target = TxKind::Call(TIP403_REGISTRY_ADDRESS);
+                // With no recipient rules, scope checks only look at the selector.
+                for selector in selectors.iter().chain(&others) {
+                    let calldata = [selector.as_slice(), &[0u8; 96]].concat();
+                    let result = keychain
+                        .validate_call_scope_for_transaction(admin, key_id, &target, &calldata);
+                    if *selector == scoped {
+                        result?;
+                    } else {
+                        assert_eq!(
+                            result.unwrap_err(),
+                            AccountKeychainError::call_not_allowed().into()
+                        );
+                    }
+                }
+                Ok(())
+            })?;
+        }
+        Ok(())
     }
 }
