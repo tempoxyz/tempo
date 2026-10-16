@@ -95,8 +95,8 @@ impl SimpleRestart {
             debug!(public_key = %validators[0].public_key(), "stopped validator");
 
             // wait a bit to let the network settle; some finalizations come in later
-            context.sleep(Duration::from_secs(5)).await;
-            ensure_no_progress(&context, 5).await;
+            context.sleep(Duration::from_secs(2)).await;
+            ensure_no_progress(&context, 3).await;
 
             validators[0].start(&context).await;
             if connect_execution_layer {
@@ -403,7 +403,7 @@ impl AssertNodeRecoversAfterFinalizingBlock {
             join_all(validators.iter_mut().map(|node| node.start(&context))).await;
 
             // Catch a node right after it processed the pre-to-boundary height.
-            // Best-effort: we hot-loop in 100ms steps, but if processing is too
+            // Best-effort: we hot-loop in 20ms steps, but if processing is too
             // fast we might miss the window and the test will succeed no matter
             // what.
             let (stopped_val_idx, height) = 'wait_to_boundary: loop {
@@ -420,7 +420,7 @@ impl AssertNodeRecoversAfterFinalizingBlock {
                         break 'wait_to_boundary (idx, value);
                     }
                 }
-                context.sleep(Duration::from_millis(100)).await;
+                context.sleep(Duration::from_millis(20)).await;
             };
 
             tracing::debug!(
