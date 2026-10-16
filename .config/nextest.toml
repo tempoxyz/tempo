@@ -70,6 +70,15 @@ threads-required = 4
 filter = "package(tempo-node) & binary(it)"
 threads-required = 4
 
+# The longest Zone integration tests start first so they don't extend the tail
+# of their test partition.
+[[profile.ci.overrides]]
+filter = """
+  package(zone-node) & binary(it) &
+    test(/^(network_chaos_e2e|network_chaos_p2p_e2e|hardfork_e2e|hardfork_settlement_e2e)::/)
+"""
+priority = 100
+
 # Integration tests spin up full reth nodes — limit concurrency to avoid
 # resource contention and flaky timeouts on CI runners.
 [[profile.ci.overrides]]
