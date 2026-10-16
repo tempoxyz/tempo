@@ -7,8 +7,8 @@
 pub use zone_rpc::*;
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    sync::{Arc, Weak},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, hash_map::Entry},
+    sync::Arc,
     time::Duration,
 };
 
@@ -50,10 +50,7 @@ use tempo_contracts::precompiles::{
     account_keychain::IAccountKeychain::{self, KeyInfo, getKeyCall},
 };
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope};
-use tokio::{
-    sync::Mutex,
-    time::{MissedTickBehavior, interval},
-};
+use tokio::time::{MissedTickBehavior, interval};
 use zone_l1::{TempoStateExt as _, state::EnabledTokenRegistry};
 
 use alloy_rpc_client::{ConnectionConfig, WebSocketConfig};
@@ -673,6 +670,16 @@ where
 type RpcBlock = Block<alloy_rpc_types_eth::Transaction<TempoTxEnvelope>, TempoHeaderResponse>;
 const FILTER_OWNER_PRUNE_INTERVAL: Duration = Duration::from_secs(60);
 
+/// Maximum number of active filters owned through the zone RPC across all callers.
+///
+/// Reth only evicts a filter after its stale TTL, so without a cap an unpolled filter
+/// stays resident for several minutes. The redacted RPC accepts self-signed auth tokens
+/// from any account, so per-caller limits alone can be bypassed with fresh keys.
+const MAX_ACTIVE_FILTERS: usize = 10_000;
+
+/// Maximum number of active filters a single authenticated caller may own.
+const MAX_FILTERS_PER_CALLER: usize = 16;
+
 fn filter_not_found_error() -> JsonRpcError {
     JsonRpcError::invalid_params("filter not found")
 }
@@ -696,12 +703,9 @@ fn stale_filter_owner_ids(
 
 async fn prune_filter_owners<Api: EthApiTypes + 'static>(
     filter: &EthFilter<Api>,
-    owners: &Mutex<HashMap<FilterId, Address>>,
+    owners: &FilterOwners,
 ) {
-    let owner_ids = {
-        let owners = owners.lock().await;
-        owners.keys().cloned().collect::<Vec<_>>()
-    };
+    let owner_ids = owners.ids();
     if owner_ids.is_empty() {
         return;
     }
@@ -713,13 +717,138 @@ async fn prune_filter_owners<Api: EthApiTypes + 'static>(
         .into_iter()
         .collect::<HashSet<_>>();
     let stale_ids = stale_filter_owner_ids(owner_ids, &active_ids);
-    if stale_ids.is_empty() {
-        return;
+    owners.remove_many(stale_ids);
+}
+
+/// Tracks which authenticated account owns each filter and enforces the filter caps.
+///
+/// Slots are reserved under a single lock *before* a filter is installed in reth, so
+/// concurrent or batched creations cannot race past the limits. A reservation counts
+/// towards both the global and the per-caller totals until it is committed with the new
+/// filter id or dropped, which keeps the check O(1) and cancellation-safe.
+///
+/// The lock is never held across an `.await`.
+#[derive(Debug)]
+struct FilterOwners {
+    max_total: usize,
+    max_per_caller: usize,
+    state: std::sync::Mutex<FilterOwnersState>,
+}
+
+impl FilterOwners {
+    fn new(max_total: usize, max_per_caller: usize) -> Self {
+        Self {
+            max_total,
+            max_per_caller,
+            state: Default::default(),
+        }
     }
 
-    let mut owners = owners.lock().await;
-    for id in stale_ids {
-        owners.remove(&id);
+    /// Reserves a filter slot for `caller`, or returns an error if a limit is reached.
+    fn reserve(self: &Arc<Self>, caller: Address) -> Result<FilterReservation, JsonRpcError> {
+        let mut state = self.state();
+        if state.counts.get(&caller).copied().unwrap_or_default() >= self.max_per_caller {
+            return Err(JsonRpcError::invalid_params(format!(
+                "too many active filters for caller ({} max)",
+                self.max_per_caller
+            )));
+        }
+        if state.total >= self.max_total {
+            return Err(JsonRpcError::invalid_params(format!(
+                "too many active filters ({} max)",
+                self.max_total
+            )));
+        }
+
+        *state.counts.entry(caller).or_default() += 1;
+        state.total += 1;
+        Ok(FilterReservation {
+            owners: Arc::clone(self),
+            caller,
+            committed: false,
+        })
+    }
+
+    /// Returns the owner of the filter, if tracked.
+    fn owner(&self, id: &FilterId) -> Option<Address> {
+        self.state().owners.get(id).copied()
+    }
+
+    /// Returns a snapshot of all tracked filter ids.
+    fn ids(&self) -> Vec<FilterId> {
+        self.state().owners.keys().cloned().collect()
+    }
+
+    /// Stops tracking the filter and frees its slot.
+    fn remove(&self, id: &FilterId) {
+        self.state().remove(id);
+    }
+
+    /// Stops tracking all given filters and frees their slots.
+    fn remove_many(&self, ids: impl IntoIterator<Item = FilterId>) {
+        let mut state = self.state();
+        for id in ids {
+            state.remove(&id);
+        }
+    }
+
+    fn state(&self) -> std::sync::MutexGuard<'_, FilterOwnersState> {
+        self.state.lock().expect("poisoned")
+    }
+}
+
+#[derive(Debug, Default)]
+struct FilterOwnersState {
+    owners: HashMap<FilterId, Address>,
+    /// Filters per caller, including reserved slots.
+    counts: HashMap<Address, usize>,
+    /// Filters across all callers, including reserved slots.
+    total: usize,
+}
+
+impl FilterOwnersState {
+    fn remove(&mut self, id: &FilterId) {
+        if let Some(caller) = self.owners.remove(id) {
+            self.release(caller);
+        }
+    }
+
+    fn release(&mut self, caller: Address) {
+        if let Entry::Occupied(mut entry) = self.counts.entry(caller) {
+            *entry.get_mut() -= 1;
+            if *entry.get() == 0 {
+                entry.remove();
+            }
+        }
+        self.total -= 1;
+    }
+}
+
+/// A reserved filter slot, released on drop unless committed.
+#[derive(Debug)]
+struct FilterReservation {
+    owners: Arc<FilterOwners>,
+    caller: Address,
+    committed: bool,
+}
+
+impl FilterReservation {
+    /// Records the installed filter as owned by the caller, keeping the slot.
+    fn commit(mut self, id: FilterId) {
+        self.committed = true;
+        let mut state = self.owners.state();
+        if let Some(previous) = state.owners.insert(id, self.caller) {
+            // Ids are unique, but never count a slot twice.
+            state.release(previous);
+        }
+    }
+}
+
+impl Drop for FilterReservation {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.owners.state().release(self.caller);
+        }
     }
 }
 
@@ -749,9 +878,10 @@ pub struct ZoneRpc<Api: EthApiTypes> {
     config: zone_rpc::RedactedRpcConfig,
     enabled_tokens: EnabledTokenRegistry,
     l1_provider: DynProvider<TempoNetwork>,
-    /// Maps filter IDs to the authenticated account that created them.
+    /// Maps filter IDs to the authenticated account that created them and enforces
+    /// [`MAX_ACTIVE_FILTERS`] and [`MAX_FILTERS_PER_CALLER`].
     /// The reth filter registry remains the source of truth for filter liveness.
-    filter_owners: Arc<Mutex<HashMap<FilterId, Address>>>,
+    filter_owners: Arc<FilterOwners>,
 }
 
 impl<Api: EthApiTypes + 'static> ZoneRpc<Api> {
@@ -767,7 +897,10 @@ impl<Api: EthApiTypes + 'static> ZoneRpc<Api> {
             config,
             enabled_tokens,
             l1_provider,
-            filter_owners: Arc::new(Mutex::new(HashMap::new())),
+            filter_owners: Arc::new(FilterOwners::new(
+                MAX_ACTIVE_FILTERS,
+                MAX_FILTERS_PER_CALLER,
+            )),
         };
         rpc.spawn_filter_owner_pruner();
         rpc
@@ -787,7 +920,7 @@ impl<Api: EthApiTypes + 'static> ZoneRpc<Api> {
         Api: Send + Sync + 'static,
     {
         let filter = self.filter().clone();
-        let owners: Weak<Mutex<HashMap<FilterId, Address>>> = Arc::downgrade(&self.filter_owners);
+        let owners = Arc::downgrade(&self.filter_owners);
         tokio::spawn(async move {
             let mut prune_interval = interval(FILTER_OWNER_PRUNE_INTERVAL);
             prune_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -814,17 +947,13 @@ impl<Api: EthApiTypes + 'static> ZoneRpc<Api> {
         id: &FilterId,
         auth: &AuthContext,
     ) -> Result<(), JsonRpcError> {
-        let owner_matches = {
-            let owners = self.filter_owners.lock().await;
-            matches!(owners.get(id), Some(owner) if *owner == auth.caller)
-        };
-        if !owner_matches {
+        if self.filter_owners.owner(id) != Some(auth.caller) {
             return Err(filter_not_found_error());
         }
         if self.filter_is_active(id).await {
             Ok(())
         } else {
-            self.filter_owners.lock().await.remove(id);
+            self.filter_owners.remove(id);
             Err(filter_not_found_error())
         }
     }
@@ -1171,13 +1300,12 @@ where
             let zone_tokens = self.zone_tokens();
             zone_rpc::filter::scope_filter_addresses(&mut filter, &zone_tokens)?;
             zone_rpc::filter::scope_filter_for_caller(&mut filter, &auth.caller)?;
+            // Reserve before installing so the caps hold under concurrent creation.
+            let reservation = self.filter_owners.reserve(auth.caller)?;
             let id = EthFilterApiServer::new_filter(&self.eth.filter, filter)
                 .await
                 .map_err(internal)?;
-            self.filter_owners
-                .lock()
-                .await
-                .insert(id.clone(), auth.caller);
+            reservation.commit(id.clone());
             to_raw(&id)
         })
     }
@@ -1230,13 +1358,12 @@ where
 
     fn new_block_filter(&self, auth: AuthContext) -> BoxFut<'_> {
         Box::pin(async move {
+            // Reserve before installing so the caps hold under concurrent creation.
+            let reservation = self.filter_owners.reserve(auth.caller)?;
             let id = EthFilterApiServer::new_block_filter(&self.eth.filter)
                 .await
                 .map_err(internal)?;
-            self.filter_owners
-                .lock()
-                .await
-                .insert(id.clone(), auth.caller);
+            reservation.commit(id.clone());
             to_raw(&id)
         })
     }
@@ -1250,7 +1377,7 @@ where
                 .map_err(internal)?;
 
             if result || !self.filter_is_active(&id).await {
-                self.filter_owners.lock().await.remove(&id);
+                self.filter_owners.remove(&id);
             }
 
             to_raw(&result)
@@ -1969,5 +2096,208 @@ mod tests {
         let stale_ids = stale_filter_owner_ids(Vec::new(), &HashSet::new());
 
         assert!(stale_ids.is_empty());
+    }
+
+    fn filter_id(n: usize) -> FilterId {
+        FilterId::Str(format!("0x{n:x}"))
+    }
+
+    fn assert_limit_error(err: JsonRpcError, message: &str) {
+        assert_eq!(err.code, -32602);
+        assert_eq!(err.message, message);
+    }
+
+    fn install(owners: &Arc<FilterOwners>, caller: Address, n: usize) -> FilterId {
+        let id = filter_id(n);
+        owners.reserve(caller).unwrap().commit(id.clone());
+        id
+    }
+
+    #[test]
+    fn filter_owners_enforce_per_caller_limit() {
+        let owners = Arc::new(FilterOwners::new(100, 3));
+        let caller = Address::repeat_byte(0x01);
+        let other = Address::repeat_byte(0x02);
+
+        for n in 0..3 {
+            install(&owners, caller, n);
+        }
+        assert_limit_error(
+            owners.reserve(caller).unwrap_err(),
+            "too many active filters for caller (3 max)",
+        );
+
+        // Other callers are unaffected.
+        install(&owners, other, 3);
+        assert_eq!(owners.owner(&filter_id(3)), Some(other));
+    }
+
+    #[test]
+    fn filter_owners_enforce_global_limit() {
+        let owners = Arc::new(FilterOwners::new(4, 3));
+
+        for n in 0..4 {
+            install(&owners, Address::repeat_byte(n as u8 + 1), n);
+        }
+        assert_limit_error(
+            owners.reserve(Address::repeat_byte(0x7f)).unwrap_err(),
+            "too many active filters (4 max)",
+        );
+    }
+
+    #[test]
+    fn filter_owners_default_limits_are_applied() {
+        let owners = Arc::new(FilterOwners::new(
+            MAX_ACTIVE_FILTERS,
+            MAX_FILTERS_PER_CALLER,
+        ));
+        let caller = Address::repeat_byte(0x01);
+
+        let reservations = (0..MAX_FILTERS_PER_CALLER)
+            .map(|_| owners.reserve(caller).unwrap())
+            .collect::<Vec<_>>();
+        assert!(owners.reserve(caller).is_err());
+        drop(reservations);
+
+        // Fill the global limit with many distinct callers.
+        let mut held = Vec::new();
+        for n in 0..MAX_ACTIVE_FILTERS {
+            let caller = Address::left_padding_from(&(n / MAX_FILTERS_PER_CALLER).to_be_bytes());
+            held.push(owners.reserve(caller).unwrap());
+        }
+        assert_limit_error(
+            owners.reserve(Address::repeat_byte(0xff)).unwrap_err(),
+            "too many active filters (10000 max)",
+        );
+    }
+
+    #[test]
+    fn filter_owners_remove_frees_slot() {
+        let owners = Arc::new(FilterOwners::new(2, 1));
+        let caller = Address::repeat_byte(0x01);
+
+        let id = install(&owners, caller, 0);
+        assert!(owners.reserve(caller).is_err());
+
+        owners.remove(&id);
+        assert_eq!(owners.owner(&id), None);
+        {
+            let state = owners.state();
+            assert_eq!(state.total, 0);
+            assert!(state.counts.is_empty());
+        }
+        install(&owners, caller, 1);
+
+        // Removing an unknown or already removed id never underflows the counts.
+        owners.remove(&id);
+        owners.remove(&filter_id(99));
+        let state = owners.state();
+        assert_eq!(state.total, 1);
+        assert_eq!(state.counts.get(&caller), Some(&1));
+    }
+
+    #[test]
+    fn filter_owners_pruning_stale_entries_frees_slots() {
+        let owners = Arc::new(FilterOwners::new(10, 2));
+        let caller = Address::repeat_byte(0x01);
+        let other = Address::repeat_byte(0x02);
+
+        let stale = install(&owners, caller, 0);
+        let live = install(&owners, caller, 1);
+        let other_stale = install(&owners, other, 2);
+        assert!(owners.reserve(caller).is_err());
+
+        let active_ids = HashSet::from([live.clone()]);
+        owners.remove_many(stale_filter_owner_ids(owners.ids(), &active_ids));
+
+        assert_eq!(owners.owner(&stale), None);
+        assert_eq!(owners.owner(&other_stale), None);
+        assert_eq!(owners.owner(&live), Some(caller));
+        {
+            let state = owners.state();
+            assert_eq!(state.total, 1);
+            assert_eq!(state.counts.get(&caller), Some(&1));
+            assert!(!state.counts.contains_key(&other));
+        }
+        install(&owners, caller, 3);
+    }
+
+    #[test]
+    fn filter_owners_dropped_reservation_frees_slot() {
+        let owners = Arc::new(FilterOwners::new(1, 1));
+        let caller = Address::repeat_byte(0x01);
+
+        // A failed or cancelled install releases its reservation.
+        let reservation = owners.reserve(caller).unwrap();
+        assert!(owners.reserve(caller).is_err());
+        drop(reservation);
+
+        let state = owners.state();
+        assert_eq!(state.total, 0);
+        assert!(state.counts.is_empty());
+    }
+
+    #[test]
+    fn filter_owners_pending_reservations_are_not_pruned_or_owned() {
+        let owners = Arc::new(FilterOwners::new(10, 2));
+        let caller = Address::repeat_byte(0x01);
+
+        let reservation = owners.reserve(caller).unwrap();
+        assert!(owners.ids().is_empty());
+        owners.remove_many(stale_filter_owner_ids(owners.ids(), &HashSet::new()));
+        assert_eq!(owners.state().total, 1);
+
+        reservation.commit(filter_id(0));
+        assert_eq!(owners.state().total, 1);
+        assert_eq!(owners.owner(&filter_id(0)), Some(caller));
+    }
+
+    #[test]
+    fn filter_owners_concurrent_reservations_respect_limits() {
+        use std::sync::Barrier;
+
+        let max_per_caller = 4;
+        let owners = Arc::new(FilterOwners::new(6, max_per_caller));
+        let threads = 32;
+        let barrier = Barrier::new(threads);
+
+        // All threads race for the same caller.
+        let caller = Address::repeat_byte(0x01);
+        let granted = std::thread::scope(|scope| {
+            let handles = (0..threads)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        owners.reserve(caller).ok()
+                    })
+                })
+                .collect::<Vec<_>>();
+            handles
+                .into_iter()
+                .filter_map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(granted.len(), max_per_caller);
+        drop(granted);
+
+        // All threads race for the global limit with distinct callers.
+        let granted = std::thread::scope(|scope| {
+            let handles = (0..threads)
+                .map(|n| {
+                    let owners = &owners;
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        barrier.wait();
+                        owners.reserve(Address::left_padding_from(&[n as u8])).ok()
+                    })
+                })
+                .collect::<Vec<_>>();
+            handles
+                .into_iter()
+                .filter_map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(granted.len(), 6);
+        assert_eq!(owners.state().total, 6);
     }
 }

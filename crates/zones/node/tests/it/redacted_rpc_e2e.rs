@@ -606,6 +606,65 @@ async fn test_filter_ownership_and_uninstall_cleanup() -> eyre::Result<()> {
     Ok(())
 }
 
+/// Each account may own a bounded number of filters, and uninstalling frees a slot.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_filter_per_caller_limit() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let ctx = start_zone_with_redacted_rpc().await?;
+    let signer = PrivateKeySigner::random();
+    let other_signer = PrivateKeySigner::random();
+
+    let mut filter_ids = Vec::new();
+    for _ in 0..16 {
+        let resp = ctx
+            .call_as_user("eth_newBlockFilter", json!([]), &signer)
+            .await?;
+        assert!(resp.get("error").is_none(), "filter within limit: {resp}");
+        filter_ids.push(resp["result"].clone());
+    }
+
+    for (method, params) in [
+        ("eth_newBlockFilter", json!([])),
+        (
+            "eth_newFilter",
+            json!([{"topics": [null, signer.address().into_word()]}]),
+        ),
+    ] {
+        let resp = ctx.call_as_user(method, params, &signer).await?;
+        let error = &resp["error"];
+        assert_eq!(error["code"].as_i64(), Some(-32602), "{resp}");
+        assert_eq!(
+            error["message"].as_str(),
+            Some("too many active filters for caller (16 max)"),
+            "{resp}"
+        );
+    }
+
+    let resp = ctx
+        .call_as_user("eth_newBlockFilter", json!([]), &other_signer)
+        .await?;
+    assert!(
+        resp.get("error").is_none(),
+        "other caller unaffected: {resp}"
+    );
+
+    let resp = ctx
+        .call_as_user("eth_uninstallFilter", json!([filter_ids[0]]), &signer)
+        .await?;
+    assert_eq!(resp["result"], json!(true), "{resp}");
+
+    let resp = ctx
+        .call_as_user("eth_newBlockFilter", json!([]), &signer)
+        .await?;
+    assert!(
+        resp.get("error").is_none(),
+        "uninstall frees a slot: {resp}"
+    );
+
+    Ok(())
+}
+
 /// Balance & state privacy: users see `0x0` for other addresses (balance and nonce),
 /// can see their own, and sequencer has full access.
 #[tokio::test(flavor = "multi_thread")]
