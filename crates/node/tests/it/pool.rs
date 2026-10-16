@@ -115,7 +115,6 @@ async fn test_fallback_balance_updates_revalidate_only_relevant_crossings() -> e
     assert!(
         setup
             .node
-            .rpc
             .transaction_receipt(mint_hash)
             .await?
             .expect("liquidity setup must be included")
@@ -219,7 +218,6 @@ async fn test_fallback_balance_updates_revalidate_only_relevant_crossings() -> e
         assert!(
             setup
                 .node
-                .rpc
                 .transaction_receipt(transfer_hash)
                 .await?
                 .expect("balance-changing transaction must be included")
@@ -269,6 +267,7 @@ async fn submit_pending_tx() -> eyre::Result<()> {
         .build_with_node_access()
         .await?
         .node
+        .into_inner()
         .inner;
 
     // <cast mktx 0x20c0000000000000000000000000000000000000 'transfer(address,uint256)' 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC 100000000 --private-key 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d --gas-limit 2000000 --gas-price 44000000000000 --priority-gas-price 1 --chain-id 1337 --nonce 0>
@@ -303,6 +302,7 @@ async fn test_insufficient_funds() -> eyre::Result<()> {
         .build_with_node_access()
         .await?
         .node
+        .into_inner()
         .inner;
 
     let tx = TempoTransaction {
@@ -680,7 +680,7 @@ async fn test_evict_txs_on_transfer_policy_change() -> eyre::Result<()> {
     let mut encoded = Vec::new();
     envelope.encode_2718(&mut encoded);
 
-    node2.rpc.inject_tx(encoded.into()).await?;
+    node2.inject_tx(encoded.into()).await?;
     let policy_payload = node2.build_and_submit_payload().await?;
 
     // === Step 2: On node1, add 10 AA transactions using DEFAULT_FEE_TOKEN ===

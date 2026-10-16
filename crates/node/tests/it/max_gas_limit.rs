@@ -123,7 +123,7 @@ async fn test_pre_t1a_tx_at_osaka_limit() -> eyre::Result<()> {
     let chain_id = provider.get_chain_id().await?;
 
     let raw_tx = build_tx(chain_id, MAX_TX_GAS_LIMIT_OSAKA).await;
-    let tx_hash = setup.node.rpc.inject_tx(raw_tx).await?;
+    let tx_hash = setup.node.inject_tx(raw_tx).await?;
 
     let payload = setup.node.new_payload().await?;
     assert!(

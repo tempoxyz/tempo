@@ -274,14 +274,17 @@ use alloy::{
     sol_types::SolEvent,
     transports::http::reqwest::Url,
 };
+use alloy_eips::Encodable2718;
 use alloy_primitives::{B256, Bytes};
 use eyre::WrapErr;
 use reth_e2e_test_utils::{
     E2ETestSetupBuilder,
+    node::MinedBlock,
     wallet::{TestAccount, Wallet},
 };
 use reth_rpc_builder::RpcModuleSelection;
 use std::{
+    ops::{Deref, DerefMut},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -298,8 +301,8 @@ use tempo_contracts::precompiles::{
     ITIP20::{self, ITIP20Instance},
     ITIP20Factory,
 };
-use tempo_node::node::TempoNode;
-use tempo_payload_types::TempoPayloadAttributes;
+use tempo_node::{node::TempoNode, rpc::error::TempoEthApiError};
+use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::ISSUER_ROLE};
 
 /// Creates a test TIP20 token with issuer role granted to the caller
@@ -353,6 +356,98 @@ pub(crate) enum NodeSource {
 
 /// A local test node, kept alive for the duration of a test.
 pub(crate) type LocalTestNode = reth_e2e_test_utils::NodeHelperType<TempoNode>;
+
+/// A block mined by [`TestNode::mine`] and its variants.
+pub(crate) type TestMinedBlock = MinedBlock<TempoBuiltPayload, TempoTransactionReceipt>;
+
+/// A [`LocalTestNode`] whose transaction helpers are concrete wrappers of the generic
+/// [`LocalTestNode`] helpers.
+///
+/// Each call of a helper bounded on the node's `EthApi`, e.g. [`LocalTestNode::mine`], makes
+/// borrowck prove those bounds for the full Tempo node types, and rustc's region inference cost
+/// grows quadratically with the number of such calls in one function. The wrappers prove the
+/// bounds once, which keeps the integration tests from taking minutes and >100 GB to check.
+pub(crate) struct TestNode(LocalTestNode);
+
+impl TestNode {
+    /// Returns the wrapped node.
+    pub(crate) fn into_inner(self) -> LocalTestNode {
+        self.0
+    }
+
+    /// See [`LocalTestNode::mine`].
+    pub(crate) async fn mine(
+        &mut self,
+        txs: impl IntoIterator<Item = Bytes>,
+    ) -> eyre::Result<TestMinedBlock> {
+        self.0.mine(txs).await
+    }
+
+    /// See [`LocalTestNode::mine_signed`].
+    pub(crate) async fn mine_signed<T: Encodable2718>(
+        &mut self,
+        txs: impl IntoIterator<Item = T>,
+    ) -> eyre::Result<TestMinedBlock> {
+        self.0.mine_signed(txs).await
+    }
+
+    /// See [`LocalTestNode::mine_pooled`].
+    pub(crate) async fn mine_pooled(
+        &mut self,
+        hashes: impl IntoIterator<Item = B256>,
+    ) -> eyre::Result<TestMinedBlock> {
+        self.0.mine_pooled(hashes).await
+    }
+
+    /// See [`LocalTestNode::inject_and_advance`].
+    pub(crate) async fn inject_and_advance(
+        &mut self,
+        raw_tx: Bytes,
+    ) -> eyre::Result<(B256, TempoBuiltPayload)> {
+        self.0.inject_and_advance(raw_tx).await
+    }
+
+    /// See [`LocalTestNode::advance_until_receipt`].
+    pub(crate) async fn advance_until_receipt(
+        &mut self,
+        hash: B256,
+    ) -> eyre::Result<TempoTransactionReceipt> {
+        self.0.advance_until_receipt(hash).await
+    }
+
+    /// Injects the raw transaction into the node's pool via the `eth` API.
+    pub(crate) async fn inject_tx(&self, raw_tx: Bytes) -> Result<B256, TempoEthApiError> {
+        self.0.rpc.inject_tx(raw_tx).await
+    }
+
+    /// Returns the receipt of the transaction via the `eth` API.
+    pub(crate) async fn transaction_receipt(
+        &self,
+        hash: B256,
+    ) -> Result<Option<TempoTransactionReceipt>, TempoEthApiError> {
+        self.0.rpc.transaction_receipt(hash).await
+    }
+}
+
+impl From<LocalTestNode> for TestNode {
+    fn from(node: LocalTestNode) -> Self {
+        Self(node)
+    }
+}
+
+impl Deref for TestNode {
+    type Target = LocalTestNode;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for TestNode {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
 
 /// Returns the harness setup for `num_nodes` Tempo nodes on `chain_spec`.
 ///
@@ -430,7 +525,7 @@ pub(crate) fn t1_account(wallet: &Wallet, index: u32) -> TestAccount {
 /// Result type for single node setup
 pub(crate) struct SingleNodeSetup {
     /// The node handle for direct manipulation (inject_tx, advance_block, etc.)
-    pub node: reth_e2e_test_utils::NodeHelperType<TempoNode>,
+    pub node: TestNode,
     /// Latest Tempo hardfork active at genesis (timestamp 0).
     pub hardfork: TempoHardfork,
 }
@@ -438,7 +533,7 @@ pub(crate) struct SingleNodeSetup {
 /// Result type for multi-node setup
 pub(crate) struct MultiNodeSetup {
     /// Node handles for direct manipulation
-    pub nodes: Vec<reth_e2e_test_utils::NodeHelperType<TempoNode>>,
+    pub nodes: Vec<TestNode>,
 }
 
 /// Result type for HTTP-only setup (no direct node access)
@@ -548,7 +643,10 @@ impl TestNodeBuilder {
             .build_single()
             .await?;
 
-        Ok(SingleNodeSetup { node, hardfork })
+        Ok(SingleNodeSetup {
+            node: node.into(),
+            hardfork,
+        })
     }
 
     /// Build multiple nodes with direct access
@@ -572,7 +670,9 @@ impl TestNodeBuilder {
             .build()
             .await?;
 
-        Ok(MultiNodeSetup { nodes })
+        Ok(MultiNodeSetup {
+            nodes: nodes.into_iter().map(Into::into).collect(),
+        })
     }
 
     /// Build HTTP-only setup
