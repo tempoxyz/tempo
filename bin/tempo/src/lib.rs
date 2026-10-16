@@ -61,6 +61,7 @@ use futures::{
     future::{Either, FusedFuture as _},
 };
 use reth_cli_runner::CliRunner;
+use reth_db::mdbx::SyncMode;
 use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
 use reth_network_api::Peers;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
@@ -97,6 +98,12 @@ const DEFAULT_DEV_ZONE_FACTORY_OWNER: Address =
     alloy_primitives::address!("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
 
 fn apply_tempo_cli_overrides(cli: &mut TempoCli) -> eyre::Result<()> {
+    // An OS crash only rolls MDBX back to the last synced commit, and the node syncs the lost
+    // blocks again; skipping the per-commit flush keeps writeback off the execution path.
+    if let Commands::Node(node_cmd) = &mut cli.command {
+        node_cmd.db.sync_mode.get_or_insert(SyncMode::SafeNoSync);
+    }
+
     if let Commands::Node(node_cmd) = &mut cli.command
         && node_cmd
             .ext
@@ -720,6 +727,7 @@ mod tests {
         TempoArgs, TempoChainSpec, TempoCli, TempoHardfork, apply_tempo_cli_overrides, defaults,
         follow::FollowMode, snapshot_download,
     };
+    use reth_db::mdbx::SyncMode;
     use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
     use tempo_contracts::precompiles::{
         ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_PORTAL_IMPL_ADDRESS,
@@ -914,6 +922,25 @@ mod tests {
             &chain_spec,
             address!("0x9858EfFD232B4033E47d90003D41EC34EcaEda94"),
         );
+    }
+
+    #[test]
+    fn node_sync_mode_defaults_to_safe_no_sync() {
+        for (args, expected) in [
+            (&["tempo", "node", "--dev"][..], SyncMode::SafeNoSync),
+            (
+                &["tempo", "node", "--dev", "--db.sync-mode", "durable"][..],
+                SyncMode::Durable,
+            ),
+        ] {
+            init_defaults_once();
+            let mut cli = TempoCli::try_parse_from(args).unwrap();
+            apply_tempo_cli_overrides(&mut cli).unwrap();
+            let Commands::Node(node_cmd) = cli.command else {
+                panic!("expected node command");
+            };
+            assert_eq!(node_cmd.db.sync_mode, Some(expected));
+        }
     }
 
     #[test]
