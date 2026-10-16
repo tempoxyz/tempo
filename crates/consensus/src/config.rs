@@ -34,8 +34,6 @@ pub(crate) const PEERSETS_TO_TRACK: NonZeroUsize = NZUsize!(1);
 
 #[cfg(not(test))]
 pub(crate) const BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES: u32 = 2u32.pow(21); // 100MB
-/// Reopening an archive scans every table entry, which takes about a second
-/// per reopen at the production size in debug builds.
 #[cfg(test)]
 pub(crate) const BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES: u32 = 2u32.pow(8);
 
