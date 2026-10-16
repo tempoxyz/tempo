@@ -720,7 +720,7 @@ jobs:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
       - name: Download candidate image archives
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.build-and-push.outputs.artifact_id }}
           path: ${{ runner.temp }}/candidate-images
@@ -904,13 +904,13 @@ jobs:
         uses: tempoxyz/gh-actions/actions/secure-runner@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
 
       - name: Download candidate image archives
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.build-and-push.outputs.artifact_id }}
           path: ${{ runner.temp }}/candidate-images
 
       - name: Download clean image archive
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.production-reproducible-clean-rebuild.outputs.artifact_id }}
           path: ${{ runner.temp }}/clean-image
