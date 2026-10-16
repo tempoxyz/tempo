@@ -47,7 +47,7 @@ pub(crate) fn tempo_instructions<DB: Database>(
             evm_spec,
         )
     } else {
-        EthInstructions::new_mainnet_with_spec(spec.into())
+        EthInstructions::new_mainnet_with_spec(evm_spec)
     };
 
     if !spec.is_t1c() {

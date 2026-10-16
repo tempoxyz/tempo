@@ -65,7 +65,6 @@ use revm::{
     context::CfgEnv,
     handler::EthPrecompiles,
     precompile::{PrecompileId, PrecompileOutput, PrecompileResult},
-    primitives::hardfork::SpecId,
 };
 
 pub use tempo_contracts::precompiles::{
@@ -196,12 +195,8 @@ pub fn tempo_precompiles(
     actions: StorageActions,
     non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
 ) -> PrecompilesMap {
-    let spec = if cfg.spec.is_t1c() {
-        cfg.spec.into()
-    } else {
-        SpecId::PRAGUE
-    };
-    let mut precompiles = PrecompilesMap::from_static(EthPrecompiles::new(spec).precompiles);
+    let mut precompiles =
+        PrecompilesMap::from_static(EthPrecompiles::new(cfg.spec.into()).precompiles);
     extend_tempo_precompiles(&mut precompiles, cfg, actions, non_creditable_slots);
     precompiles
 }
