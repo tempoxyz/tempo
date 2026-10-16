@@ -37,6 +37,21 @@ where
         replay: StorageActionReplay,
         result_closure: impl FnOnce(&TempoTxResult),
     ) -> Result<(), BlockExecutionError> {
+        let result = self.execute_transaction_with_actions_without_commit(tx, replay)?;
+        result_closure(&result);
+        self.commit_transaction(result);
+
+        Ok(())
+    }
+
+    /// Replays recorded storage actions without committing state or a receipt.
+    ///
+    /// The caller can discard the result or commit it with [`Self::commit_transaction`].
+    pub fn execute_transaction_with_actions_without_commit(
+        &mut self,
+        tx: impl ExecutableTx<Self>,
+        replay: StorageActionReplay,
+    ) -> Result<TempoTxResult, BlockExecutionError> {
         let (tx_env, recovered) = tx.into_parts();
 
         let StorageActionReplay {
@@ -69,7 +84,7 @@ where
             .validate_tx(recovered.tx(), block_gas_used)
             .map_err(BlockExecutionError::from)?;
 
-        let result = TempoTxResult::new_precomputed(
+        Ok(TempoTxResult::new_precomputed(
             recovered.tx(),
             tx_env.execution_context,
             result,
@@ -78,12 +93,7 @@ where
             self.is_payment(recovered.tx()),
             block_gas_used,
             validator_fee,
-        );
-        result_closure(&result);
-
-        self.commit_transaction(result);
-
-        Ok(())
+        ))
     }
 
     fn replay_actions(
