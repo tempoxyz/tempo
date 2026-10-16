@@ -92,6 +92,13 @@ impl HashMapStorageProvider {
         }
     }
 
+    /// Selects an explicit recovery factory for native-account test fixtures.
+    #[cfg(test)]
+    pub(crate) const fn with_multisig_recovery_factory(mut self, factory: Address) -> Self {
+        self.block_env.multisig_recovery_factory = Some(factory);
+        self
+    }
+
     /// Returns self with the hardfork spec overridden (builder pattern).
     pub fn with_spec(mut self, spec: TempoHardfork) -> Self {
         self.spec = spec;

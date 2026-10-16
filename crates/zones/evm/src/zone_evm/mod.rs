@@ -149,7 +149,8 @@ where
         validate_transaction(&tx, CONTRACT_DEPLOYER_ALLOWLIST)?;
         let tx_hash = match tx.execution_context() {
             ExecutionContext::Transaction { tx_hash } => tx_hash,
-            ExecutionContext::Simulation => B256::repeat_byte(0xff),
+            // Only the hash is synthetic; Tempo still receives the original context.
+            ExecutionContext::Simulation | ExecutionContext::Unspecified => B256::repeat_byte(0xff),
         };
         let _tx_context_guard =
             tx_context::set_current_transaction(tx_hash, tx.fee_payer().unwrap_or(tx.caller));
@@ -201,7 +202,7 @@ fn map_adapter_error<E: core::error::Error + DBErrorMarker>(
 mod tests {
     use super::*;
     use alloy_evm::EvmEnv;
-    use alloy_primitives::U256;
+    use alloy_primitives::{TxKind, U256};
     use revm::{
         context::{
             TxEnv,
@@ -224,6 +225,33 @@ mod tests {
     fn test_evm() -> ZoneEvm<EmptyDB, NoOpInspector, MockL1Reader> {
         let db = L1OverlayDB::new(EmptyDB::default(), MockL1Reader::default(), Address::ZERO);
         ZoneEvm::new(TempoEvm::new(db, EvmEnv::default()))
+    }
+
+    #[test]
+    fn execution_context_is_forwarded_unchanged() {
+        for execution_context in [
+            ExecutionContext::Unspecified,
+            ExecutionContext::Simulation,
+            ExecutionContext::Transaction {
+                tx_hash: B256::repeat_byte(0x42),
+            },
+        ] {
+            let mut evm = test_evm();
+            let tx = TempoTxEnv {
+                inner: TxEnv {
+                    kind: TxKind::Call(Address::ZERO),
+                    gas_limit: 0,
+                    ..Default::default()
+                },
+                execution_context,
+                ..Default::default()
+            };
+            assert!(
+                evm.transact_raw(tx).is_err(),
+                "zero gas must fail validation"
+            );
+            assert_eq!(evm.ctx().tx.execution_context(), execution_context);
+        }
     }
 
     fn registry_write() -> AddressMap<Account> {

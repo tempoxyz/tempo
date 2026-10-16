@@ -1,9 +1,14 @@
 use super::SignatureVerifier;
 use crate::{Precompile, charge_input_cost, dispatch, view};
-use alloy::primitives::Address;
+use alloy::{primitives::Address, rlp::Header, sol_types::SolCall};
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::{ISignatureVerifier, SignatureVerifierError};
-use tempo_primitives::MAX_WEBAUTHN_SIGNATURE_LENGTH;
+use tempo_primitives::{
+    MAX_WEBAUTHN_SIGNATURE_LENGTH,
+    transaction::multisig::{
+        MAX_MULTISIG_OWNER_SIGNATURE_BYTES, MAX_MULTISIG_OWNERS, MAX_MULTISIG_SIGNATURES,
+    },
+};
 
 /// Maximum valid calldata size: `verify(address,bytes32,bytes)` with a WebAuthn signature is the
 /// worst case. ABI encoding pads the dynamic `bytes` field independently, so only round the
@@ -11,13 +16,56 @@ use tempo_primitives::MAX_WEBAUTHN_SIGNATURE_LENGTH;
 const MAX_CALLDATA_LEN: usize =
     4 + 32 * 4 + (MAX_WEBAUTHN_SIGNATURE_LENGTH + 1).next_multiple_of(32);
 
+// Upper bound for 0x05 || rlp([account, config, approvals]) with 48 owners and 8 approvals.
+const MAX_OWNERS_RLP_PAYLOAD: usize = MAX_MULTISIG_OWNERS * (1 + 21 + 2);
+const MAX_CONFIG_RLP_PAYLOAD: usize = 33
+    + 9
+    + 2
+    + Header {
+        list: true,
+        payload_length: MAX_OWNERS_RLP_PAYLOAD,
+    }
+    .length_with_payload();
+const MAX_APPROVALS_RLP_PAYLOAD: usize = MAX_MULTISIG_SIGNATURES
+    * Header {
+        list: false,
+        payload_length: MAX_MULTISIG_OWNER_SIGNATURE_BYTES,
+    }
+    .length_with_payload();
+const MAX_MULTISIG_RLP_PAYLOAD: usize = 21
+    + Header {
+        list: true,
+        payload_length: MAX_CONFIG_RLP_PAYLOAD,
+    }
+    .length_with_payload()
+    + Header {
+        list: true,
+        payload_length: MAX_APPROVALS_RLP_PAYLOAD,
+    }
+    .length_with_payload();
+const MAX_MULTISIG_CALLDATA_LEN: usize = 4
+    + 32 * 4
+    + (1 + Header {
+        list: true,
+        payload_length: MAX_MULTISIG_RLP_PAYLOAD,
+    }
+    .length_with_payload())
+    .next_multiple_of(32);
+
 impl Precompile for SignatureVerifier {
     fn call(&mut self, calldata: &[u8], _msg_sender: Address) -> PrecompileResult {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
             return err;
         }
 
-        if calldata.len() > MAX_CALLDATA_LEN {
+        let max_len = if self.storage.spec().is_t14()
+            && calldata.starts_with(&ISignatureVerifier::verifyMultisigCall::SELECTOR)
+        {
+            MAX_MULTISIG_CALLDATA_LEN
+        } else {
+            MAX_CALLDATA_LEN
+        };
+        if calldata.len() > max_len {
             return Ok(self
                 .storage
                 .abi_revert(SignatureVerifierError::invalid_format()));
@@ -39,6 +87,10 @@ impl Precompile for SignatureVerifier {
                     verifyKeychainAdmin(call) => view(call, |c| {
                         self.verify_keychain_admin(c.account, c.hash, c.signature)
                     }),
+                    #[schedule(since = T14)]
+                    verifyMultisig(call) => view(call, |c| {
+                        self.verify_multisig(c.account, c.hash, &c.signature)
+                    }),
                 }
             }
         )
@@ -52,6 +104,7 @@ mod tests {
         Precompile,
         account_keychain::{AccountKeychain, KeyRestrictions, SignatureType},
         expect_precompile_revert,
+        signature_verifier::tests::random_p256_key,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
     };
@@ -66,8 +119,12 @@ mod tests {
         ISignatureVerifier, ISignatureVerifier::ISignatureVerifierCalls as ISVCalls,
         UnknownFunctionSelector,
     };
-    use tempo_primitives::transaction::tt_signature::{
-        KeychainSignature, PrimitiveSignature, TempoSignature,
+    use tempo_primitives::transaction::{
+        MultisigConfig, MultisigOwner, MultisigSignature,
+        tt_signature::{
+            KeychainSignature, P256SignatureWithPreHash, PrimitiveSignature, TempoSignature,
+            WebAuthnSignature,
+        },
     };
 
     fn call_verify_keychain(
@@ -121,7 +178,7 @@ mod tests {
 
     #[test]
     fn test_signature_verifier_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
         StorageCtx::enter(&mut storage, || {
             let mut verifier = SignatureVerifier::new();
 
@@ -175,6 +232,22 @@ mod tests {
                 UnknownFunctionSelector::abi_decode(&result.bytes).is_ok(),
                 "verifyKeychainAdmin should be selector-gated before T6"
             );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_verify_multisig_selector_rejected_before_t14() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
+        StorageCtx::enter(&mut storage, || {
+            let calldata = ISignatureVerifier::verifyMultisigCall {
+                account: Address::repeat_byte(0x71),
+                hash: B256::ZERO,
+                signature: vec![0x05].into(),
+            }
+            .abi_encode();
+            let result = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
+            assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
             Ok(())
         })
     }
@@ -352,6 +425,54 @@ mod tests {
     }
 
     #[test]
+    fn test_verify_keychain_stored_type_check_starts_at_t14() -> eyre::Result<()> {
+        let account = Address::random();
+        let hash = B256::repeat_byte(0x69);
+        let (signing_key, pub_key_x, pub_key_y, key_id) = random_p256_key()?;
+        let signing_hash = KeychainSignature::signing_hash(hash, account);
+        let (signature, _) = signing_key.sign_prehash_recoverable(signing_hash.as_slice())?;
+        let signature = signature.normalize_s().unwrap_or(signature);
+        let signature = TempoSignature::Keychain(KeychainSignature::new(
+            account,
+            PrimitiveSignature::P256(P256SignatureWithPreHash {
+                r: B256::from_slice(&signature.r().to_bytes()),
+                s: B256::from_slice(&signature.s().to_bytes()),
+                pub_key_x,
+                pub_key_y,
+                pre_hash: false,
+            }),
+        ))
+        .to_bytes()
+        .to_vec();
+
+        // P256 and WebAuthn derive the same key address from the same public key.
+        for (spec, stored_type, expected) in [
+            (TempoHardfork::T13, SignatureType::P256, true),
+            (TempoHardfork::T13, SignatureType::WebAuthn, true),
+            (TempoHardfork::T14, SignatureType::P256, true),
+            (TempoHardfork::T14, SignatureType::WebAuthn, false),
+            (TempoHardfork::T14, SignatureType::Multisig, false),
+        ] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let mut keychain = AccountKeychain::new();
+                keychain.initialize()?;
+                keychain.set_tx_origin(account)?;
+                keychain.authorize_admin_key(account, key_id, stored_type, None)?;
+
+                for actual in [
+                    call_verify_keychain(account, hash, signature.clone())?,
+                    call_verify_keychain_admin(account, hash, signature.clone())?,
+                ] {
+                    assert_eq!(actual, expected, "{spec:?}, {stored_type:?}");
+                }
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
+    #[test]
     fn test_verify_keychain_admin_returns_true_for_root_key() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         StorageCtx::enter(&mut storage, || {
@@ -504,5 +625,40 @@ mod tests {
             );
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_max_multisig_calldata_fits_size_guard() {
+        let owners = (1..=u8::try_from(MAX_MULTISIG_OWNERS).expect("owner count fits in u8"))
+            .map(|index| MultisigOwner {
+                owner: Address::repeat_byte(index),
+                weight: 1,
+            })
+            .collect();
+        let approval = PrimitiveSignature::WebAuthn(WebAuthnSignature {
+            webauthn_data: vec![0xff; MAX_WEBAUTHN_SIGNATURE_LENGTH - 128].into(),
+            r: B256::ZERO,
+            s: B256::ZERO,
+            pub_key_x: B256::ZERO,
+            pub_key_y: B256::ZERO,
+        });
+        let signature = MultisigSignature::try_new(
+            Address::repeat_byte(0x71),
+            MultisigConfig {
+                salt: B256::repeat_byte(0xff),
+                version: u64::MAX,
+                threshold: 8,
+                owners,
+            },
+            vec![approval; MAX_MULTISIG_SIGNATURES],
+        )
+        .unwrap();
+        let calldata = ISignatureVerifier::verifyMultisigCall {
+            account: signature.account(),
+            hash: B256::ZERO,
+            signature: TempoSignature::Multisig(signature).to_bytes(),
+        }
+        .abi_encode();
+        assert!(calldata.len() <= MAX_MULTISIG_CALLDATA_LEN);
     }
 }
