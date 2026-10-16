@@ -824,12 +824,7 @@ mod tests {
             }
             None => EMPTY_ROOT_HASH,
         };
-        let account = TrieAccount {
-            nonce,
-            balance,
-            storage_root,
-            code_hash,
-        };
+        let account = TrieAccount::new(nonce, balance, storage_root, code_hash);
         let account_node = TrieNode::Leaf(LeafNode::new(
             Nibbles::unpack(keccak256(address)),
             alloy_rlp::encode(account),
@@ -1106,10 +1101,8 @@ mod tests {
         assert!(state.bundle_state.state.contains_key(&address));
 
         let expected_account = TrieAccount {
-            nonce: 0,
             balance: U256::from(42),
-            storage_root: EMPTY_ROOT_HASH,
-            code_hash: alloy_consensus::constants::KECCAK_EMPTY,
+            ..Default::default()
         };
         let expected_root = state_root_unhashed([(address, expected_account)]);
         assert_eq!(

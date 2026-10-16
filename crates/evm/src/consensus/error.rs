@@ -4,6 +4,10 @@ use reth_consensus::ConsensusError;
 /// Tempo-specific consensus errors.
 #[derive(Debug, thiserror::Error)]
 pub enum TempoConsensusError {
+    /// BAL commitments cannot represent configurable account extensions.
+    #[error("BAL is unsupported with configurable account extensions")]
+    UnsupportedBlockAccessList,
+
     /// Timestamp milliseconds part is out of range (must be < 1000).
     #[error("timestamp milliseconds part {millis_part} must be less than 1000")]
     InvalidTimestampMillisPart { millis_part: u64 },

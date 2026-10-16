@@ -469,12 +469,12 @@ fn genesis_state_witness(genesis: &Genesis) -> (B256, Vec<Bytes>, Vec<Bytes>) {
         if let Some(code) = &account.code {
             bytecodes.entry(code_hash).or_insert_with(|| code.clone());
         }
-        let trie_account = TrieAccount {
-            nonce: account.nonce.unwrap_or_default(),
-            balance: account.balance,
+        let trie_account = TrieAccount::new(
+            account.nonce.unwrap_or_default(),
+            account.balance,
             storage_root,
             code_hash,
-        };
+        );
         account_leaves.push((keccak256(address), alloy_rlp::encode(trie_account)));
     }
 

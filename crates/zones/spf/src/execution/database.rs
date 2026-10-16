@@ -9,7 +9,7 @@ use revm::{
     Database,
     database::states::bundle_state::BundleState,
     primitives::{AddressMap, B256Map, U256Map},
-    state::{AccountInfo, Bytecode},
+    state::{AccountExtension, AccountInfo, Bytecode},
 };
 use tempo_primitives::TempoHeader;
 use zone_precompiles::{L1StateError, L1StorageReader};
@@ -130,6 +130,7 @@ impl Database for WitnessDatabase {
             code_hash: account.code_hash,
             account_id: None,
             code: None,
+            extension: AccountExtension::from_shared(account.extension.into_shared()),
         });
         self.accounts.insert(address, account.clone());
         Ok(account)
