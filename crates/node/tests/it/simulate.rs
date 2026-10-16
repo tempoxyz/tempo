@@ -90,6 +90,19 @@ async fn test_tempo_simulate_v1() -> eyre::Result<()> {
         "expected empty token metadata for non-TIP-20 and undeployed TIP-20 targets"
     );
 
+    let payload = json!({
+        "blockStateCalls": [{ "calls": vec![json!({}); 4097] }],
+    });
+    let result: Result<serde_json::Value, _> = provider
+        .raw_request("tempo_simulateV1".into(), (payload,))
+        .await;
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("too many calls in tempo_simulateV1 request"),
+    );
+
     Ok(())
 }
 
