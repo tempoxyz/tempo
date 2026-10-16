@@ -2061,6 +2061,44 @@ async fn sync_classifies_corrupt_recognized_portal_log_as_fatal() {
 }
 
 #[tokio::test]
+async fn sync_ingests_a_rotation_to_a_key_without_local_private_material() {
+    let mut subscriber = test_subscriber(9);
+    let configured = k256::SecretKey::from_slice(&[0x11; 32]).unwrap();
+    let foreign = k256::SecretKey::from_slice(&[0x22; 32]).unwrap();
+    let keys = EncryptionKeyRing::new([configured]);
+    subscriber.encryption_keys = Some(keys.clone());
+    let portal = subscriber.config.portal_address;
+    let queue = subscriber.deposit_queue.clone();
+
+    let (x, y_parity) =
+        crate::precompiles::ecies::compressed_x_and_parity(foreign.public_key().as_affine());
+    let pubkey = encryption_key_address(x, y_parity).unwrap();
+    let log = encryption_key_updated_log(portal, x, y_parity, pubkey, U256::ONE, 10);
+    let receipt = make_receipt_with_logs(10, B256::ZERO, vec![log]);
+    let mut header_10 = make_test_header(10);
+    header_10.inner.receipts_root = calculate_test_receipts_root(std::slice::from_ref(&receipt));
+    header_10.inner.logs_bloom = *receipt.inner.inner.bloom_ref();
+
+    let asserter = Asserter::new();
+    let l1_provider =
+        ProviderBuilder::new_with_network::<TempoNetwork>().connect_mocked_client(asserter.clone());
+    asserter.push_success(&Some(header_response(header_10.clone())));
+    asserter.push_success(&Some(header_response(header_10.clone())));
+    asserter.push_success(&Some(vec![receipt]));
+    // The finalized target is re-read once the backfill completes.
+    asserter.push_success(&Some(header_response(header_10.clone())));
+
+    subscriber
+        .sync_to_finalized(&l1_provider, 10)
+        .await
+        .unwrap();
+
+    assert_eq!(queue.last_enqueued(), Some(seal(header_10).num_hash()));
+    let err = keys.key(U256::ONE).unwrap_err();
+    assert!(err.to_string().contains("missing private decryption key"));
+}
+
+#[tokio::test]
 async fn sync_fails_fatally_when_finalized_batch_observer_is_closed() {
     let mut subscriber = test_subscriber(9);
     let (sender, receiver) = tokio::sync::mpsc::channel(1);

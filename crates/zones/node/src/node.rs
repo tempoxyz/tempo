@@ -1500,7 +1500,7 @@ where
         Ok(())
     }
 
-    /// Bind configured private keys to the Portal key history at the persisted L1 anchor.
+    /// Record the Portal key history at the persisted L1 anchor, binding configured private keys.
     async fn resolve_and_seed_encryption_keys(
         &mut self,
         l1_provider: &alloy_provider::DynProvider<TempoNetwork>,
@@ -1541,29 +1541,34 @@ where
                 key_index,
                 activation_block: entry.activationBlock,
             };
-            if keys.has_candidate(rotation.x, rotation.y_parity) {
-                keys.apply_rotation(&rotation)?;
+            if keys.apply_rotation(&rotation)? {
                 continue;
             }
 
+            // Another sequencer can register a key this node doesn't have. That only stops this
+            // node from including deposits to it while leading, so it isn't fatal.
             let validity = portal
                 .isEncryptionKeyValid(key_index)
                 .block(block_id)
                 .call()
                 .await?;
-            eyre::ensure!(
-                !validity.valid
-                // A key that has expired at the persisted checkpoint may still be needed by a deposit in the
-                // deferred Portal-work range.
-                    && self
-                        .l1_config
-                        .deferred_work_start.is_none_or(|from| validity.expiresAtBlock <= from),
-                "missing private decryption key for Portal key index {key_index} required at L1 \
-                 checkpoint {block_number} or by deferred work starting at {:?} (expires at L1 \
-                 block {})",
-                self.l1_config.deferred_work_start,
-                validity.expiresAtBlock,
-            );
+            // A key that has expired at the persisted checkpoint may still be needed by a deposit
+            // in the deferred Portal-work range.
+            let may_be_needed = validity.valid
+                || self
+                    .l1_config
+                    .deferred_work_start
+                    .is_some_and(|from| validity.expiresAtBlock > from);
+            if may_be_needed {
+                warn!(
+                    %key_index,
+                    checkpoint = block_number,
+                    deferred_work_start = ?self.l1_config.deferred_work_start,
+                    expires_at_block = validity.expiresAtBlock,
+                    "no private decryption key configured for a Portal encryption key that \
+                     deposits may still use"
+                );
+            }
         }
 
         Ok(())
