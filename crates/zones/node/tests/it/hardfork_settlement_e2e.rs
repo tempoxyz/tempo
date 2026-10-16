@@ -26,12 +26,13 @@ use tempo_precompiles::{
     },
 };
 use tempo_primitives::TempoHeader;
+use tokio::task::spawn_blocking;
 use zone_chainspec::test_utils::set_tempo_fork;
 use zone_rpc::types::ZoneExecutionWitness;
 use zone_sequencer::{BatchData, BatchSubmitter};
 use zone_spf::{
-    BatchOutput, BatchWitness, PublicInputs, SpfConfig, TempoImport, TempoStateWitness, ZoneBlock,
-    ZoneStateWitness, prove_zone_batch,
+    BatchOutput, BatchWitness, Error as SpfError, PublicInputs, SpfConfig, TempoImport,
+    TempoStateWitness, ZoneBlock, ZoneStateWitness, prove_zone_batch,
 };
 
 use crate::utils::{
@@ -268,7 +269,7 @@ async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
 
     let witness = recovery_witness(&l1, &zone, portal_address, 9, end).await?;
     let config = SpfConfig::new(spec);
-    let output = prove_zone_batch(&config, witness.clone())?;
+    let output = prove_batch(config.clone(), witness.clone()).await?;
     let head = provider.get_block_by_number(end.into()).await?.unwrap();
     assert_eq!(output.block_transition.prevBlockHash, parent.header.hash);
     assert_eq!(
@@ -294,8 +295,8 @@ async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
     let mut checkpoint_only = witness.clone();
     checkpoint_only.zone_blocks.pop();
     assert!(matches!(
-        prove_zone_batch(&config, checkpoint_only),
-        Err(zone_spf::Error::InvalidBatchShape)
+        prove_batch(config.clone(), checkpoint_only).await,
+        Err(SpfError::InvalidBatchShape)
     ));
     let mut omitted = witness;
     if let TempoImport::Full { enabled_tokens, .. } =
@@ -304,7 +305,7 @@ async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
         enabled_tokens.clear();
     }
     assert!(
-        prove_zone_batch(&config, omitted).is_err(),
+        prove_batch(config, omitted).await.is_err(),
         "the full token suffix is mandatory"
     );
 
@@ -340,6 +341,13 @@ async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
     l1.enable_token_on_portal(portal_address, gamma).await?;
     assert_eq!(portal.enabledTokenCount().call().await?, U256::from(4));
     Ok(())
+}
+
+/// Keeps CPU-bound SPF execution off the async test's orchestration stack.
+async fn prove_batch(config: SpfConfig, witness: BatchWitness) -> Result<BatchOutput, SpfError> {
+    spawn_blocking(move || prove_zone_batch(&config, witness))
+        .await
+        .expect("SPF worker panicked")
 }
 
 /// Predeploy a T12 portal whose mock verifier storage survives the canonical T13 runtime upgrade.
