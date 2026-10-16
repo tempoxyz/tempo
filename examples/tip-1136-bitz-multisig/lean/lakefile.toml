@@ -1,0 +1,5 @@
+name = "tip1136"
+defaultTargets = ["Tip1136"]
+
+[[lean_lib]]
+name = "Tip1136"

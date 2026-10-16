@@ -1,0 +1,11 @@
+# BitZ's GF(2^128) kernel needs a carryless-multiply instruction; without it,
+# every field multiplication falls back to a 64-step software loop (~25x slower
+# proving). Apple and other aarch64 targets get PMULL through `aes`.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-feature=+pclmulqdq,+sse4.1"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "target-feature=+pclmulqdq,+sse4.1"]
+
+[target.aarch64-unknown-linux-gnu]
+rustflags = ["-C", "target-feature=+aes"]
