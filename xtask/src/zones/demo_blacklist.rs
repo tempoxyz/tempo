@@ -20,7 +20,7 @@
 //!
 //! # Prerequisites
 //!
-//! - A running zone. Pass `--zone-dir` if `generated/*/zone.json` auto-discovery
+//! - A running zone. Pass `--zone-dir` if `zones/generated/*/zone.json` auto-discovery
 //!   cannot match `L1_PORTAL_ADDRESS`.
 //! - The zone's sequencer must be actively producing blocks
 //! - An L1 account with enough funds for gas (set via `PRIVATE_KEY`)
@@ -31,9 +31,9 @@
 //! # Usage
 //!
 //! ```sh
-//! just demo-blacklist              # default amount=500000, auto-discovers zone metadata
-//! just demo-blacklist 1000000      # custom deposit amount
-//! just demo-blacklist 500000 http://localhost:8546 generated/my-zone
+//! just --justfile zones/Justfile demo-blacklist              # default amount=500000, auto-discovers zone metadata
+//! just --justfile zones/Justfile demo-blacklist 1000000      # custom deposit amount
+//! just --justfile zones/Justfile demo-blacklist 500000 http://localhost:8546 zones/generated/my-zone
 //! ```
 //!
 //! Or directly via cargo:
@@ -111,7 +111,7 @@ pub(crate) struct DemoBlacklist {
     sequencer_key: Option<String>,
 
     /// Path to zone directory containing zone.json. If omitted, scans
-    /// generated/*/zone.json for the portal address.
+    /// zones/generated/*/zone.json for the portal address.
     #[arg(long)]
     zone_dir: Option<std::path::PathBuf>,
 
@@ -144,7 +144,7 @@ impl DemoBlacklist {
                     zone_json_path
                         .as_ref()
                         .map(|path| path.display().to_string())
-                        .unwrap_or_else(|| "the matching generated/<name>/zone.json".to_string())
+                        .unwrap_or_else(|| "the matching zones/generated/<name>/zone.json".to_string())
                 )
             })?;
         let portal_admin_signer = parse_private_key(&portal_admin_key_str)?;
@@ -624,12 +624,12 @@ fn load_zone_metadata(
         return Ok((Some(path), Some(value)));
     }
 
-    let generated = std::path::Path::new("generated");
+    let generated = std::path::Path::new("zones/generated");
     if !generated.is_dir() {
         return Ok((None, None));
     }
 
-    for entry in std::fs::read_dir(generated).wrap_err("failed reading generated/")? {
+    for entry in std::fs::read_dir(generated).wrap_err("failed reading zones/generated/")? {
         let Ok(entry) = entry else {
             continue;
         };

@@ -1,3 +1,6 @@
+# Resolve workspace sources from the repository root, regardless of invocation directory.
+set working-directory := '..'
+
 cross_compile := "false"
 cargo_build_binary := if cross_compile == "true" { "cross" } else { "cargo" }
 act_debug_mode := env("ACT", "false")
@@ -36,12 +39,12 @@ regen-zone-dev-genesis:
         --with-createx \
         --with-safe-deployer \
         --with-create2-factory
-    mv {{zone_dev_genesis_tmp}}/genesis.json crates/node/assets/zone-dev-genesis.json
+    mv {{zone_dev_genesis_tmp}}/genesis.json crates/zones/node/assets/zone-dev-genesis.json
     rm -rf {{zone_dev_genesis_tmp}}
 
 [group('localnet')]
 [doc('Generates a genesis file')]
-genesis accounts="1000" output="./" profile="maxperf":
+genesis accounts="1000" output="./zones/" profile="maxperf":
     cargo run -p tempo-xtask --bin tempo-xtask --profile {{profile}} -- generate-genesis --output {{output}} -a {{accounts}} --no-dkg-in-genesis
 
 [group('localnet')]
@@ -50,16 +53,16 @@ genesis accounts="1000" output="./" profile="maxperf":
 localnet accounts="1000" reset="false" profile="maxperf" features="asm-keccak" args="":
     #!/bin/bash
     if [[ "{{reset}}" = "true" ]]; then
-        rm -r ./localnet/ || true
-        mkdir ./localnet/
-        just genesis {{accounts}} ./localnet {{profile}}
+        rm -r ./zones/localnet/ || true
+        mkdir ./zones/localnet/
+        just --justfile "{{justfile()}}" genesis {{accounts}} ./zones/localnet {{profile}}
     fi;
     cargo run --bin tempo --profile {{profile}} --features {{features}} -- \
                       node \
-                      --chain ./localnet/genesis.json \
+                      --chain ./zones/localnet/genesis.json \
                       --dev \
                       --dev.block-time 1sec \
-                      --datadir ./localnet/reth \
+                      --datadir ./zones/localnet/reth \
                       --http \
                       --http.addr 0.0.0.0 \
                       --http.port 8545 \
@@ -69,7 +72,7 @@ localnet accounts="1000" reset="false" profile="maxperf" features="asm-keccak" a
                       --builder.gaslimit 3000000000 \
                       --builder.max-tasks 8 \
                       --builder.deadline 3 \
-                      --log.file.directory ./localnet/logs \
+                      --log.file.directory ./zones/localnet/logs \
                       --faucet.enabled \
                       --faucet.private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
                       --faucet.amount 1000000000000 \
@@ -109,7 +112,7 @@ zone-info identifier:
     cargo zone-xtask zone-info {{identifier}}
 
 [group('zone')]
-[doc('Creates a new zone on L1 via ZoneFactory and generates genesis + zone.json in generated/<name>/. Enforcement defaults to false. Initial membership and gateways are optional via ZONE_ALLOWED_ACCOUNTS and ZONE_GATEWAYS.')]
+[doc('Creates a new zone on L1 via ZoneFactory and generates genesis + zone.json in zones/generated/<name>/. Enforcement defaults to false. Initial membership and gateways are optional via ZONE_ALLOWED_ACCOUNTS and ZONE_GATEWAYS.')]
 create-zone name token="" access_enforced="false" gateway_enforced="false":
     #!/bin/bash
     set -euo pipefail
@@ -137,10 +140,10 @@ create-zone name token="" access_enforced="false" gateway_enforced="false":
     L1_RPC="${L1_RPC_URL:?Set L1_RPC_URL env var (wss://...)}"
     HTTP_RPC=$(echo "$L1_RPC" | sed 's|^wss://|https://|' | sed 's|^ws://|http://|')
     SEQUENCER_ADDR=$(cast wallet address "$SEQ_KEY")
-    OUTPUT="generated/{{name}}"
+    OUTPUT="zones/generated/{{name}}"
     mkdir -p "$OUTPUT"
     echo "Building Solidity contracts..."
-    (cd crates/contracts && forge build --skip test) || true
+    (cd crates/zones/contracts && forge build --skip test) || true
     echo "Building xtask..."
     cargo build -p tempo-xtask --bin tempo-zone-xtask
     echo "Creating zone '{{name}}' on L1 and generating genesis..."
@@ -180,21 +183,21 @@ create-zone name token="" access_enforced="false" gateway_enforced="false":
     echo "Zone '{{name}}' created. Artifacts in $OUTPUT/"
 
 [group('zone')]
-[doc('Deploys SwapAndDepositRouter on L1 for an existing zone and saves it to generated/<name>/zone.json. Requires L1_RPC_URL and PRIVATE_KEY env vars.')]
+[doc('Deploys SwapAndDepositRouter on L1 for an existing zone and saves it to zones/generated/<name>/zone.json. Requires L1_RPC_URL and PRIVATE_KEY env vars.')]
 deploy-router name dex="0xDEc0000000000000000000000000000000000000":
     #!/bin/bash
     set -euo pipefail
     PK="${PRIVATE_KEY:?Set PRIVATE_KEY env var}"
     L1_RPC="${L1_RPC_URL:?Set L1_RPC_URL env var (wss://...)}"
     HTTP_RPC=$(echo "$L1_RPC" | sed 's|^wss://|https://|' | sed 's|^ws://|http://|')
-    ZONE_DIR="generated/{{name}}"
+    ZONE_DIR="zones/generated/{{name}}"
     ZONE_JSON="$ZONE_DIR/zone.json"
     if [[ ! -f "$ZONE_JSON" ]]; then
         echo "Error: $ZONE_JSON not found. Run 'just create-zone {{name}}' first." >&2
         exit 1
     fi
     echo "Building Solidity contracts..."
-    (cd crates/contracts && forge build --skip test) || true
+    (cd crates/zones/contracts && forge build --skip test) || true
     PRIVATE_KEY="$PK" cargo zone-xtask deploy-router \
         --zone-dir "$ZONE_DIR" \
         --l1-rpc-url "$HTTP_RPC" \
@@ -218,7 +221,7 @@ demo-swap-and-deposit name amount="100000000" tick="0" rpc=zone_rpc:
     PK="${PRIVATE_KEY:?Set PRIVATE_KEY env var}"
     L1_RPC="${L1_RPC_URL:?Set L1_RPC_URL env var (wss://...)}"
     HTTP_RPC=$(echo "$L1_RPC" | sed 's|^wss://|https://|' | sed 's|^ws://|http://|')
-    ZONE_DIR="generated/{{name}}"
+    ZONE_DIR="zones/generated/{{name}}"
     ZONE_JSON="$ZONE_DIR/zone.json"
     if [[ ! -f "$ZONE_JSON" ]]; then
         echo "Error: $ZONE_JSON not found. Run 'just create-zone {{name}}' first." >&2
@@ -236,7 +239,7 @@ demo-swap-and-deposit name amount="100000000" tick="0" rpc=zone_rpc:
 zone-up name reset="false" profile="dev" args="":
     #!/bin/bash
     set -euo pipefail
-    ZONE_DIR="generated/{{name}}"
+    ZONE_DIR="zones/generated/{{name}}"
     ZONE_JSON="$ZONE_DIR/zone.json"
     GENESIS_JSON="$ZONE_DIR/genesis.json"
     if [[ ! -f "$ZONE_JSON" ]]; then
@@ -456,12 +459,12 @@ _portal-admin-token-call action token:
 [group('zone')]
 [doc('Pauses deposits for an enabled TIP-20 on the ZonePortal (withdrawals unaffected). Token can be an address or alias. Requires L1_RPC_URL, L1_PORTAL_ADDRESS, and ADMIN_KEY env vars.')]
 pause-deposits token:
-    just _portal-admin-token-call pauseDeposits {{token}}
+    just --justfile "{{justfile()}}" _portal-admin-token-call pauseDeposits {{token}}
 
 [group('zone')]
 [doc('Resumes deposits for a previously paused TIP-20 on the ZonePortal. Token can be an address or alias. Requires L1_RPC_URL, L1_PORTAL_ADDRESS, and ADMIN_KEY env vars.')]
 resume-deposits token:
-    just _portal-admin-token-call resumeDeposits {{token}}
+    just --justfile "{{justfile()}}" _portal-admin-token-call resumeDeposits {{token}}
 
 [group('zone')]
 [doc('Pauses batch submissions, all new deposits, and L1 withdrawal processing for 30 days. Requires L1_RPC_URL, L1_PORTAL_ADDRESS, and PRIVATE_KEY.')]
@@ -738,18 +741,18 @@ check-balance account token="0x20C0000000000000000000000000000000000000" rpc=zon
     @printf "Balance of {{account}}: " && cast call "{{token}}" "balanceOf(address)(uint256)" "{{account}}" --from "{{account}}" --rpc-url "{{rpc}}"
 
 [group('zone')]
-[doc('Generates a signed auth token for the redacted zone RPC. Requires PRIVATE_KEY env var. Reads zone metadata from generated/<name>/zone.json.')]
+[doc('Generates a signed auth token for the redacted zone RPC. Requires PRIVATE_KEY env var. Reads zone metadata from zones/generated/<name>/zone.json.')]
 zone-auth-token name:
     #!/bin/bash
     set -euo pipefail
     PK="${PRIVATE_KEY:?Set PRIVATE_KEY env var}"
-    ZONE_JSON="generated/{{name}}/zone.json"
+    ZONE_JSON="zones/generated/{{name}}/zone.json"
     if [[ ! -f "$ZONE_JSON" ]]; then
         echo "Error: $ZONE_JSON not found. Run 'just create-zone {{name}}' first." >&2
         exit 1
     fi
     ZONE_ID=$(jq -r '.zoneId' "$ZONE_JSON")
-    GENESIS_JSON="generated/{{name}}/genesis.json"
+    GENESIS_JSON="zones/generated/{{name}}/genesis.json"
     CHAIN_ID=$(jq -r '.config.chainId' "$GENESIS_JSON")
     NOW=$(date +%s)
     EXPIRES=$((NOW + 600))
@@ -772,7 +775,7 @@ check-balance-redacted name token="0x20C0000000000000000000000000000000000000" r
     set -euo pipefail
     PK="${PRIVATE_KEY:?Set PRIVATE_KEY env var}"
     ACCOUNT=$(cast wallet address "$PK")
-    TOKEN=$(just zone-auth-token {{name}})
+    TOKEN=$(just --justfile "{{justfile()}}" zone-auth-token {{name}})
     ACCOUNT_LOWER=$(echo "$ACCOUNT" | sed 's/0x//' | tr '[:upper:]' '[:lower:]')
     RESPONSE=$(curl -sS -w '\n%{http_code}' -X POST "{{rpc}}" \
         -H "Content-Type: application/json" \
@@ -810,7 +813,7 @@ deploy-zone name token="" access_enforced="false" gateway_enforced="false":
     umask 077
     L1_RPC="${L1_RPC_URL:?Set L1_RPC_URL env var (wss://...)}"
     HTTP_RPC=$(echo "$L1_RPC" | sed 's|^wss://|https://|' | sed 's|^ws://|http://|')
-    OUTPUT="generated/{{name}}"
+    OUTPUT="zones/generated/{{name}}"
     ZONE_TOKEN_L1="{{token}}"
     if [[ -z "$ZONE_TOKEN_L1" ]]; then
         ZONE_TOKEN_L1="${ZONE_TOKEN:-0x20C0000000000000000000000000000000000000}"
@@ -863,7 +866,7 @@ deploy-zone name token="" access_enforced="false" gateway_enforced="false":
 
     # Step 3: Build Solidity contracts
     echo "Step 3: Building Solidity contracts..."
-    (cd crates/contracts && forge build --skip test) || true
+    (cd crates/zones/contracts && forge build --skip test) || true
     echo ""
 
     # Step 4: Create zone on L1 and generate genesis
@@ -981,7 +984,7 @@ spam-deposits total="20" per-block="10" amount="1000000" token="0x20C00000000000
     PRIVATE_KEY="$PK" cargo zone-xtask spam-deposits $ARGS
 
 [group('zone')]
-[doc('Runs the full TIP-20 + TIP-403 blacklist demo: creates token, enables on zone, blacklists address, shows deposit bounce, unblacklists, shows deposit success, withdraws. Requires PRIVATE_KEY for the token admin/depositor, L1_PORTAL_ADDRESS, and portal admin authority via ADMIN_KEY or matching generated/<name>/zone.json adminKey.')]
+[doc('Runs the full TIP-20 + TIP-403 blacklist demo: creates token, enables on zone, blacklists address, shows deposit bounce, unblacklists, shows deposit success, withdraws. Requires PRIVATE_KEY for the token admin/depositor, L1_PORTAL_ADDRESS, and portal admin authority via ADMIN_KEY or matching zones/generated/<name>/zone.json adminKey.')]
 demo-blacklist amount="500000" rpc=zone_rpc zone-dir="":
     #!/bin/bash
     set -euo pipefail
@@ -991,34 +994,14 @@ demo-blacklist amount="500000" rpc=zone_rpc zone-dir="":
     fi
     cargo zone-xtask demo-blacklist "${ARGS[@]}"
 
-# Docs commands
-[group('docs')]
-[doc('Install docs dependencies')]
-docs-install:
-    cd docs && bun install
-
-[group('docs')]
-[doc('Start docs dev server')]
-docs-dev:
-    cd docs && bun run dev
-
-[group('docs')]
-[doc('Build docs for production')]
-docs-build:
-    cd docs && bun run build
-
-[group('docs')]
-[doc('Run docs linting and type checks')]
-docs-check:
-    cd docs && bun run check && bun run check:types
-
-[group('docs')]
+# Solidity contract commands
+[group('contracts')]
 [doc('Run Solidity contract tests')]
 docs-specs-test:
-    cd crates/contracts && forge test -vvv
+    cd crates/zones/contracts && forge test -vvv
 
-[group('docs')]
+[group('contracts')]
 [doc('Build Solidity contracts')]
 docs-specs-build:
-    cd crates/contracts && forge build --skip test
-    cd crates/contracts && forge build --sizes --skip 'test/**' src/runtime/tempo/ZonePortal.sol src/runtime/tempo/ZoneMessenger.sol src/runtime/tempo/Verifier.sol
+    cd crates/zones/contracts && forge build --skip test
+    cd crates/zones/contracts && forge build --sizes --skip 'test/**' src/runtime/tempo/ZonePortal.sol src/runtime/tempo/ZoneMessenger.sol src/runtime/tempo/Verifier.sol

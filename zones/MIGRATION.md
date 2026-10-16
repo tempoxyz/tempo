@@ -13,7 +13,7 @@ storage-layout compatibility check. The latter is now part of the contracts
 success gate. Root `.gitmodules` owns the imported Solidity dependencies. Tempo's
 `specs.yml` still tests `tips/verify` with its own Foundry/Tempo revisions.
 
-## Remaining migration prerequisites
+## Workspace and CI
 
 The root Cargo workspace now owns the imported Zones crates, prover binaries,
 and lockfile. `cargo zone-xtask` runs Zones tooling; `cargo xtask` continues to run
@@ -23,25 +23,56 @@ Root lint and test jobs cover the unified workspace. The build matrix includes
 Zones and prover binaries, and root nextest configuration preserves Zones’
 integration-test concurrency limits. Imported lint/test/build workflows are retired.
 
-The remaining workflow and publication prerequisites are:
-
-- Docker, release, benchmarks, and prover workflows retain distinct product
-  behavior. Their legacy paths, repository guards, tag/release ownership, and
-  external event/STS/AWS consumers need a coordinated migration. The Zones
-  Docker build is gated to `tempoxyz/zones` until then, since its recipe still
-  expects `docker/`, `crates/contracts`, and the Zones Cargo workspace. The Zones
-  release workflow is gated the same way because Tempo and Zones tags share the
-  `v*.*.*` namespace. Tempo already has `v0.1.0`, `v0.2.0`, and `v0.3.0`, so Zones
-  releases need their own tag scheme before that gate is lifted.
-- Zones reproducible builds have a separate concurrency group so they cannot
-  cancel Tempo builds, and are gated to `tempoxyz/zones` because the shared recipe
-  would run Tempo's `scripts/reproducible-build.sh`. Their recipe/script and Cargo
-  layout still need migration.
-
-The root Dependabot configuration also needs the final workspace layout before
-retiring the imported dependency configuration.
+Root Dependabot covers the shared Cargo workspace and GitHub Actions workflows,
+plus Docker recipes at `/` and `/zones/docker`, each with its own one-PR limit.
+The imported dependency configuration and redundant lint/Cross configs are retired.
+`zones/Justfile` remains the documented local recipe collection; prover E2E rollout
+documentation lives in [docs/PROVER_E2E.md](docs/PROVER_E2E.md).
 
 The root Test workflow builds Earn before Zones and distributes
 `crates/zones/contracts/out` to each Rust test shard. The merged
 [tempoxyz/earn#365](https://github.com/tempoxyz/earn/pull/365) authorizes Tempo
 through Earn’s `zones-read` STS policy.
+
+## Product workflow cutover
+
+Zones releases use `zones/vX.Y.Z` tags and keep version 0.3.5 in their manifests;
+Tempo keeps `vX.Y.Z` tags and the root workspace version. Zones release assets
+use the slash-free `vX.Y.Z` version and never become the repository's latest
+release. Docker recipes live under `zones/docker` and build the root workspace.
+The Zones tooling image keeps its `tempo-xtask` entrypoint but contains the
+`tempo-zone-xtask` executable.
+
+External consumers must be migrated before enabling the corresponding repository
+variable (each is disabled unless set to `true`):
+
+| Variable | Required external cutover |
+| --- | --- |
+| `ZONES_PUBLISH_ENABLED` | Authorize Tempo in Depot project `0c6tg19qsp`, transfer GHCR/Docker Hub package access and secrets, and verify the prover genesis/artifact consumers against the new workflow paths. |
+| `ZONES_EVENTS_ENABLED` | Transfer event credentials and update Zones sensors to accept `event: zones_registry_package` and `repository: tempoxyz/tempo` and fetch Tempo commit SHAs. |
+| `ZONES_BENCHMARK_ENABLED` | Provision the benchmark runner and ClickHouse credentials for Tempo, and verify the imported benchmark helper paths. |
+| `ZONES_PROVER_BENCHMARK_ENABLED` | Update the benchmark repository's STS policy and AWS `benchmark-runner` trust, and migrate `scripts/zones_prover/run.sh` to Tempo checkouts, `crates/zones/contracts`, and `tempo-zone-xtask`. |
+| `ZONES_PROVER_E2E_ENABLED` | Deploy the prover event sensor and pinned templates for Tempo commit/status ownership, workflow filenames, and imported source paths; transfer event credentials. |
+
+The gates deliberately separate repository changes from external cutover. These
+PRs do not deploy sensors, alter AWS/Depot trust, or enable publishing variables.
+
+The Zones reproducible workflow invokes `zones/scripts/reproducible-build.sh`
+with the root workspace as context. Its `zones-reproducible` profile preserves
+Zones' unwind behavior while Tempo's `reproducible` profile keeps abort behavior.
+The workflows retain separate concurrency groups. Independent Linux rebuilds are
+still required to establish byte-for-byte reproducibility after the import.
+
+Automatic reproducible builds on `main` require `ZONES_REPRODUCIBLE_ENABLED=true`.
+Manual dispatch remains available for validating the root-context build before
+turning on automatic builds. The separate profile enables SPF's `catch_unwind`
+recovery for invalid MPT proofs.
+
+The final reproducible publication pipeline from
+[tempoxyz/zones#1264](https://github.com/tempoxyz/zones/pull/1264) builds and compares
+complete production node image IDs before promotion, delays companion tags until
+verification succeeds, and verifies archived Linux x86_64 release binaries against
+an independent clean rebuild. Production and verification share the canonical
+prover compiler and timestamp-normalizing EIF packager. The Docker pipeline keeps
+`ZONES_PUBLISH_ENABLED` and `ZONES_EVENTS_ENABLED` as external cutover gates.
+See [reproduction instructions](docs/REPRODUCIBLE_BUILDS.md).

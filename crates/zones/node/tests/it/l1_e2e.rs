@@ -27,7 +27,7 @@ use tempo_precompiles::{PATH_USD_ADDRESS, zone_factory::portal};
 use zone_node::dev::{ProvisionConfig, provision_zone};
 
 /// Longer timeout for real L1 tests — the L1 dev node produces blocks every
-/// 500ms and the L1Subscriber needs to connect, backfill, and subscribe.
+/// 250ms and the L1Subscriber needs to connect, backfill, and subscribe.
 const L1_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const ROUTER_SWAP_TICK: i16 = 0;
 const ROUTER_SWAP_AMOUNT: u128 = 100_000_000;
@@ -143,7 +143,7 @@ async fn setup_same_zone_swap_fixture() -> eyre::Result<SameZoneSwapFixture> {
 async fn test_zone_advances_with_real_l1() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // Start real Tempo L1 in dev mode (500ms block time)
+    // Start real Tempo L1 in dev mode (250ms block time)
     let l1 = L1TestNode::start().await?;
 
     // Verify L1 is producing blocks
@@ -500,7 +500,7 @@ async fn test_dev_provisioner_replays_initial_token_event() -> eyre::Result<()> 
 async fn test_deposit_via_real_l1() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // Start real Tempo L1 in dev mode (500ms block time)
+    // Start real Tempo L1 in dev mode (250ms block time)
     let l1 = L1TestNode::start().await?;
 
     // Deploy L1 infrastructure and create a zone

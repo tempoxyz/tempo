@@ -6,7 +6,7 @@ set -e
 
 # NOTE: if you make modifications to this script, please increment the version number.
 # WARNING: the SemVer pattern: major.minor.patch must be followed as we use it to determine if the script is up to date.
-TEMPOUP_INSTALLER_VERSION="0.0.15"
+TEMPOUP_INSTALLER_VERSION="0.0.16"
 
 REPO="tempoxyz/tempo"
 # GPG key fingerprint for release signing verification
@@ -420,14 +420,54 @@ detect_target() {
     esac
 }
 
+# Release labels never exempt an archive from authenticity verification.
+verify_release_archive() {
+    local version_tag="$1" archive_name="$2" tmp_dir="$3"
+    local archive_path="$tmp_dir/$archive_name" key_url
+    if [[ "$UNSAFE_SKIP_VERIFY" == "1" ]]; then
+        warn "Release integrity verification skipped (--unsafe-skip-verify)."
+    elif gh_authenticated; then
+        verify_attestation "$archive_path"
+    else
+        if command -v gpg >/dev/null 2>&1; then
+            info "Verifying GPG signature..."
+            download_file "$version_tag" "${archive_name}.asc" "$tmp_dir"
+
+            # Import the release signing key if not already present
+            if ! gpg --list-keys "$GPG_KEY_FINGERPRINT" >/dev/null 2>&1; then
+                key_url="https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x${GPG_KEY_FINGERPRINT}"
+                info "Fetching Tempo release signing key..."
+                if curl -sSfL "$key_url" 2>/dev/null | gpg --import 2>/dev/null; then
+                    : # key imported via HTTPS
+                else
+                    error "Failed to fetch GPG key. Re-run with --unsafe-skip-verify to bypass integrity verification."
+                fi
+            fi
+
+            if gpg --list-keys "$GPG_KEY_FINGERPRINT" >/dev/null 2>&1; then
+                if gpg --batch --verify "$tmp_dir/${archive_name}.asc" "$archive_path" 2>/dev/null; then
+                    info "GPG signature verified ✓"
+                else
+                    error "GPG signature verification failed. The binary may have been tampered with."
+                fi
+            else
+                error "GPG key is not available. Re-run with --unsafe-skip-verify to bypass integrity verification."
+            fi
+        else
+            error "gh is unavailable or unauthenticated, and gpg was not found. Run 'gh auth login', install gpg, or re-run with --unsafe-skip-verify to bypass integrity verification."
+        fi
+    fi
+}
+
 # Get latest release tag from GitHub
 get_latest_version() {
     if ! command -v curl >/dev/null 2>&1; then
         error "curl not found. Please install curl."
     fi
 
-    # List recent non-prerelease releases and pick the first tag starting with
-    # "v" (binary releases). The /releases/latest endpoint can return crate-publish
+    # List recent non-prerelease releases and pick the highest numeric version
+    # among "v" tags (binary releases), regardless of publication order.
+    # The /releases/latest endpoint can return crate-publish
     # tags (e.g. tempo-primitives@1.6.0) which carry no binary assets.
     # We also match only strict "vN.N.N" to skip prerelease tags like v1.6.0-rc.1.
     # Prefer authenticated gh to avoid the 60 req/hr anonymous rate-limit.
@@ -441,12 +481,15 @@ get_latest_version() {
             --exclude-drafts --exclude-pre-releases \
             --json tagName,isDraft,isPrerelease \
             --jq '.[] | select(.isDraft == false and .isPrerelease == false) | .tagName' 2>/dev/null | \
-            grep '^v[0-9]*\.[0-9]*\.[0-9]*$' | head -n 1)
+            grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | LC_ALL=C sort -t. -k1.2,1n -k2,2n -k3,3n | tail -n 1)
     else
+        if ! command -v jq >/dev/null 2>&1; then
+            error "jq not found. Install jq for automatic release selection, or specify a version with 'tempoup -i <VERSION>'."
+        fi
         local api_url="https://api.github.com/repos/$REPO/releases?per_page=100"
-        version=$(curl -sSL "$api_url" 2>/dev/null | \
-            grep '"tag_name":' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/' | \
-            grep '^v[0-9]*\.[0-9]*\.[0-9]*$' | head -n 1)
+        version=$(curl -sSfL "$api_url" 2>/dev/null | \
+            jq -r '.[] | select(.draft == false and .prerelease == false) | .tag_name' | \
+            grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | LC_ALL=C sort -t. -k1.2,1n -k2,2n -k3,3n | tail -n 1)
     fi
 
     if [[ -z "$version" ]]; then
@@ -552,41 +595,7 @@ main() {
 
     info "Checksum verified ✓"
 
-    if [[ "$UNSAFE_SKIP_VERIFY" == "1" ]]; then
-        warn "Release integrity verification skipped (--unsafe-skip-verify)."
-    elif gh_authenticated; then
-        verify_attestation "$ARCHIVE_PATH"
-    elif version_gt "$VERSION_TAG" "1.1.2"; then
-        if command -v gpg >/dev/null 2>&1; then
-            info "Verifying GPG signature..."
-            download_file "$VERSION_TAG" "${ARCHIVE_NAME}.asc" "$TMP_DIR"
-
-            # Import the release signing key if not already present
-            if ! gpg --list-keys "$GPG_KEY_FINGERPRINT" >/dev/null 2>&1; then
-                GPG_KEY_URL="https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x${GPG_KEY_FINGERPRINT}"
-                info "Fetching Tempo release signing key..."
-                if curl -sSfL "$GPG_KEY_URL" 2>/dev/null | gpg --import 2>/dev/null; then
-                    : # key imported via HTTPS
-                else
-                    error "Failed to fetch GPG key. Re-run with --unsafe-skip-verify to bypass integrity verification."
-                fi
-            fi
-
-            if gpg --list-keys "$GPG_KEY_FINGERPRINT" >/dev/null 2>&1; then
-                if gpg --batch --verify "$TMP_DIR/${ARCHIVE_NAME}.asc" "$ARCHIVE_PATH" 2>/dev/null; then
-                    info "GPG signature verified ✓"
-                else
-                    error "GPG signature verification failed. The binary may have been tampered with."
-                fi
-            else
-                error "GPG key is not available. Re-run with --unsafe-skip-verify to bypass integrity verification."
-            fi
-        else
-            error "gh is unavailable or unauthenticated, and gpg was not found. Run 'gh auth login', install gpg, or re-run with --unsafe-skip-verify to bypass integrity verification."
-        fi
-    else
-        info "Skipping GPG signature verification (not available for versions <= 1.1.1)"
-    fi
+    verify_release_archive "$VERSION_TAG" "$ARCHIVE_NAME" "$TMP_DIR"
 
     # Extract archive
     info "Extracting archive..."

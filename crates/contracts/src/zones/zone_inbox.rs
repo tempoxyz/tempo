@@ -120,6 +120,7 @@ crate::sol! {
         error ExtraDecryptionData();
         error InvalidSharedSecretProof();
         error Unauthorized();
+        error NoRefund();
 
         function processedDepositQueueHash() external view returns (bytes32);
         function processedDepositNumber() external view returns (uint64);

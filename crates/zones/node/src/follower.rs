@@ -252,6 +252,8 @@ where
         let inactivity = tokio::time::sleep(BLOCK_INACTIVITY_TIMEOUT);
         tokio::pin!(inactivity);
 
+        let mut schedule_changes = self.context.schedule.subscribe();
+
         loop {
             tokio::select! {
             biased;
@@ -335,6 +337,14 @@ where
                         P2pEvent::SettlementSignatureReceived { .. } => {
                             debug!(target: "zone::p2p", "Ignoring leader-only attestation event on follower");
                         }
+                    }
+                }
+                Ok(()) = schedule_changes.changed() => {
+                    // The outgoing leader goes silent at the activation boundary, so blocks missed
+                    // before it would otherwise only be found by the inactivity probe.
+                    if !self.backfill.needed && self.context.schedule.pending_transitions() > 0 {
+                        info!(target: "zone::p2p", "Leadership transition pending; probing for backfill");
+                        self.backfill.needed = true;
                     }
                 }
                 _ = retry.tick(), if self.backfill.needed => {

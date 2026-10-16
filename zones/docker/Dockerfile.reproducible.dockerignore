@@ -1,0 +1,16 @@
+**/.git
+# Genesis is supplied through the tempo-genesis named build context.
+.tempo-genesis/
+# Foundry validates locks in contract CI; Docker has no submodule Git metadata.
+crates/zones/contracts/foundry.lock
+contrib/
+docs/
+localnet/
+scripts/
+target/
+**/target/
+zones/contrib/
+zones/docs/
+zones/localnet/
+zones/scripts/*
+!zones/scripts/run-prover-host.sh

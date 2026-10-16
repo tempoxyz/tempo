@@ -1374,22 +1374,18 @@ where
         } = handle.into_parts();
 
         let sinks = EventSinks::default();
-        task_executor.spawn_critical_task(
-            "zone-p2p-event-router",
+        let routers = futures::future::join3(
             route_events_to_generations(events, sinks.clone()),
-        );
-        task_executor.spawn_critical_task(
-            "zone-p2p-backfill-request-router",
             route_backfill_requests(backfill.requests, backfill_requests),
-        );
-        task_executor.spawn_critical_task(
-            "zone-p2p-backfill-response-router",
             route_backfill_responses(backfill.responses, sinks.clone()),
         );
+        let senders = (commands.clone(), backfill.commands.clone());
 
         task_executor.spawn_critical_with_graceful_shutdown_signal(
             "zone-p2p",
             |shutdown| async move {
+                let _senders = senders;
+                tokio::pin!(routers);
                 let unexpected_exit = tokio::select! {
                     guard = shutdown => {
                         let _guard = guard;
@@ -1401,14 +1397,14 @@ where
                         }
                         None
                     }
-                    result = &mut stopped => {
-                        Some(match result {
-                            Ok(Ok(())) => "P2P runtime stopped unexpectedly".to_string(),
-                            Ok(Err(err)) => format!("P2P runtime failed: {err}"),
-                            Err(err) => format!("P2P runtime completion channel closed unexpectedly: {err}"),
-                        })
-                    }
-                };
+                    result = &mut stopped => Some(result),
+                    _ = &mut routers => Some(stopped.await),
+                }
+                .map(|result| match result {
+                    Ok(Ok(())) => "P2P runtime stopped unexpectedly".to_string(),
+                    Ok(Err(err)) => format!("P2P runtime failed: {err}"),
+                    Err(err) => format!("P2P runtime completion channel closed unexpectedly: {err}"),
+                });
 
                 match tokio::task::spawn_blocking(move || thread.join()).await {
                     Ok(Ok(())) => {}

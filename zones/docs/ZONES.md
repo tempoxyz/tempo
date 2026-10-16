@@ -673,22 +673,24 @@ just check-authorized 2 0x<address-to-block>
 
 This is useful for verifying that transfer-policy enforcement works end-to-end across L1 and L2, or for demoing the blacklist feature to others.
 
+From `zones/` (recipe arguments are resolved from the repository root):
+
 ```bash
 export PRIVATE_KEY="0x<token-admin-and-depositor-private-key>"
 export L1_PORTAL_ADDRESS=$(jq -r '.portal' generated/my-zone/zone.json)
-# If generated/*/zone.json does not contain the matching adminKey, set ADMIN_KEY
+# If zones/generated/*/zone.json does not contain the matching adminKey, set ADMIN_KEY
 # to the private key for the portal's on-chain admin.
 
 just demo-blacklist              # default deposit amount = 500,000
 just demo-blacklist 1000000      # custom deposit amount
-just demo-blacklist 500000 http://localhost:8546 generated/my-zone  # explicit metadata directory
+just demo-blacklist 500000 http://localhost:8546 zones/generated/my-zone  # explicit metadata directory
 ```
 
 The demo walks through 9 steps, printing every transaction with an explorer link:
 
 1. **Create token** — deploys a fresh TIP-20 "DemoUSD" via `TIP20Factory` (random salt each run)
 2. **Configure token** — sets supply cap, grants `ISSUER_ROLE`, mints tokens, approves portal
-3. **Enable on zone** — portal admin calls `enableToken` on the portal (uses `ADMIN_KEY`, or auto-discovers the matching `generated/<name>/zone.json` and reads `adminKey` with `sequencerKey` as a legacy fallback)
+3. **Enable on zone** — portal admin calls `enableToken` on the portal (uses `ADMIN_KEY`, or auto-discovers the matching `zones/generated/<name>/zone.json` and reads `adminKey` with `sequencerKey` as a legacy fallback)
 4. **Deposit** — plain deposit so the `PRIVATE_KEY` wallet has L2 funds
 5. **Blacklist** — creates a TIP-403 blacklist policy, adds a fresh target wallet, assigns the policy to the token
 6. **Deposit → bounce** — sends a deposit to the blacklisted target; zone rejects it and returns funds to sender
@@ -696,7 +698,7 @@ The demo walks through 9 steps, printing every transaction with an explorer link
 8. **Deposit → success** — the same deposit now goes through
 9. **Withdraw** — target withdraws tokens from zone back to L1
 
-Prerequisites: a running zone with the sequencer producing blocks, the `PRIVATE_KEY` wallet funded with pathUSD on L1, and portal admin authority available via `ADMIN_KEY` or a saved `adminKey` in the matching `generated/<name>/zone.json` (the demo deposits a small amount to the target for L2 gas fees).
+Prerequisites: a running zone with the sequencer producing blocks, the `PRIVATE_KEY` wallet funded with pathUSD on L1, and portal admin authority available via `ADMIN_KEY` or a saved `adminKey` in the matching `zones/generated/<name>/zone.json` (the demo deposits a small amount to the target for L2 gas fees).
 
 ## Architecture
 
@@ -820,6 +822,13 @@ cast code 0x5A4d000000000000000000000000000000000000 --rpc-url "$ETH_RPC_URL"
 | `ZONE_FACTORY` | No | Optional ZoneFactory override; xtasks default to the current Moderato shared deployment |
 
 ## Justfile Commands Reference
+
+Run these commands from `zones/` with `just <recipe>`, or from the repository root
+with `just --justfile zones/Justfile <recipe>`. Recipes use the repository root as
+their working directory and keep generated zone data under `zones/generated/` and
+localnet data under `zones/localnet/`. Explicit path arguments are relative to the
+repository root. The former Bun docs recipes were retired because the docs app
+was not imported; the Markdown guides remain under `zones/docs/`.
 
 | Command | Description |
 |---------|-------------|

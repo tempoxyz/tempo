@@ -7013,6 +7013,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "libyaml-rs"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e126dda6f34391ab7b444f9922055facc83c07a910da3eb16f1e4d9c45dc777"
+
+[[package]]
 name = "libz-sys"
 version = "1.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12699,9 +12705,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "aws-lc-rs",
  "log",
@@ -13209,19 +13215,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "serde_yaml"
-version = "0.9.34+deprecated"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a8b1a1a2ebf674015cc02edccce75287f1a0130d394307b36743c2f5d504b47"
-dependencies = [
- "indexmap 2.14.2",
- "itoa",
- "ryu",
- "serde",
- "unsafe-libyaml",
 ]
 
 [[package]]
@@ -13798,7 +13791,7 @@ dependencies = [
 
 [[package]]
 name = "tempo"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "alloy",
  "alloy-consensus",
@@ -13966,7 +13959,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-consensus"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "age",
  "alloy-consensus",
@@ -14037,7 +14030,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-consensus-config"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "age",
  "commonware-codec",
@@ -14071,7 +14064,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-dkg-onchain-artifacts"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -14085,7 +14078,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-e2e"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "alloy",
  "alloy-evm",
@@ -14139,7 +14132,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-evm"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -14190,7 +14183,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-ext"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "clap",
  "dirs-next",
@@ -14209,7 +14202,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-eyre"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "eyre",
  "indenter",
@@ -14217,7 +14210,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-faucet"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "alloy",
  "async-trait",
@@ -14235,6 +14228,7 @@ dependencies = [
  "alloy-eips",
  "alloy-evm",
  "alloy-hardforks",
+ "alloy-primitives",
  "paste",
  "serde",
  "serde_json",
@@ -14242,7 +14236,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-nitro-attestation"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "arrayvec",
  "aws-lc-rs",
@@ -14257,7 +14251,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-node"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "alloy",
  "alloy-eips",
@@ -14338,7 +14332,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-node-launcher"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "eyre",
  "futures",
@@ -14349,7 +14343,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-payload-builder"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -14386,7 +14380,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-payload-types"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
@@ -14406,7 +14400,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-precompiles"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "alloy",
  "alloy-evm",
@@ -14449,7 +14443,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-precompiles-macros"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "alloy",
  "proc-macro2",
@@ -14498,7 +14492,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-revm"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -14530,7 +14524,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-sidecar"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "alloy",
  "clap",
@@ -14555,7 +14549,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-state-bloat"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "alloy",
  "alloy-primitives",
@@ -14585,7 +14579,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-telemetry-util"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "eyre",
  "jiff",
@@ -14594,7 +14588,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-transaction-pool"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -14637,7 +14631,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-validator-config"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "alloy-primitives",
  "commonware-codec",
@@ -14662,7 +14656,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-xtask"
-version = "1.16.0"
+version = "1.16.1"
 dependencies = [
  "alloy",
  "alloy-consensus",
@@ -14699,7 +14693,6 @@ dependencies = [
  "secp256k1 0.30.0",
  "serde",
  "serde_json",
- "serde_yaml",
  "tempfile",
  "tempo-alloy",
  "tempo-chainspec",
@@ -14714,6 +14707,7 @@ dependencies = [
  "tempo-validator-config",
  "tokio",
  "toml 0.9.12+spec-1.1.0",
+ "yaml_serde",
  "zeroize",
  "zone-chainspec",
  "zone-p2p",
@@ -15747,12 +15741,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "unsafe-libyaml"
-version = "0.2.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
-
-[[package]]
 name = "unsigned-varint"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -16647,6 +16635,19 @@ name = "xsum"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0637d3a5566a82fa5214bae89087bc8c9fb94cd8e8a3c07feb691bb8d9c632db"
+
+[[package]]
+name = "yaml_serde"
+version = "0.10.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33b729a08a9a6be689bbad3e2bf8015926db54b6622cc89c3a5f7dc174b9e918"
+dependencies = [
+ "indexmap 2.14.2",
+ "itoa",
+ "libyaml-rs",
+ "ryu",
+ "serde",
+]
 
 [[package]]
 name = "yansi"

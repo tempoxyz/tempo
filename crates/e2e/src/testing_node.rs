@@ -330,13 +330,16 @@ where
             deque_size: 10,
             max_message_size: crate::MAX_MESSAGE_SIZE,
             verification_mode: self.verification_mode,
-            time_to_propose: Duration::from_secs(2),
-            time_to_collect_notarizations: Duration::from_secs(3),
-            time_to_retry_nullify_broadcast: Duration::from_secs(10),
-            time_for_peer_response: Duration::from_secs(2),
+            // Simulated time costs wall time under the `external` runtime, so
+            // these are tighter than production: every offline leader costs a
+            // proposal timeout, and lost nullifies wait for the rebroadcast.
+            time_to_propose: Duration::from_secs(1),
+            time_to_collect_notarizations: Duration::from_millis(1500),
+            time_to_retry_nullify_broadcast: Duration::from_secs(2),
+            time_for_peer_response: Duration::from_secs(1),
             views_to_track: 10,
-            // Floor (10s nullify rebroadcast) plus one 2s proposal wait.
-            inactive_time_before_leader_skip: Duration::from_secs(12),
+            // Floor (2s nullify rebroadcast) plus one 1s proposal wait.
+            inactive_time_before_leader_skip: Duration::from_secs(3),
             proposal_return_budget: self.proposal_return_budget,
             fcu_heartbeat_interval: Duration::from_secs(3),
             feed_state: self.feed_state.clone(),

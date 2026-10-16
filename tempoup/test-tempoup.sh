@@ -101,7 +101,7 @@ case "$1 $2" in
     "release list")
         [[ " $* " == *" --exclude-drafts "* ]] || exit 20
         [[ " $* " == *" --exclude-pre-releases "* ]] || exit 21
-        printf 'v1.13.1\n'
+        printf 'v0.0.1\nv1.9.9\nv1.13.1\nv1.2.2\nv1.13.0\n'
         ;;
     "release view")
         case "$GH_RELEASE_STATE" in
@@ -266,3 +266,83 @@ fi
 [[ "$(cat "$ROLLBACK_DIR/tempo")" == "old tempo" ]] || fail "failed upgrade did not restore old tempo"
 [[ ! -e "$ROLLBACK_DIR/tempo.old" ]] || fail "failed upgrade left backup behind"
 ok "failed upgrade restores old tempo"
+
+RELEASES_FIXTURE="$TMP_ROOT/releases.json"
+cat > "$RELEASES_FIXTURE" <<'JSON'
+[
+  {"tag_name":"v0.0.1", "draft":false, "prerelease":false},
+  {"tag_name":"v9.0.0", "draft":false, "prerelease":true},
+  {"tag_name":"v1.9.9", "draft":false, "prerelease":false},
+  {"tag_name":"v1.13.1", "draft":false, "prerelease":false},
+  {"tag_name":"v20.0.0", "draft":true, "prerelease":false},
+  {"tag_name":"v30.0.0"},
+  {"tag_name":"v1.13.0", "draft":false, "prerelease":false}
+]
+JSON
+latest="$(RELEASES_FIXTURE="$RELEASES_FIXTURE" run_tempoup '
+    gh_authenticated() { return 1; }
+    curl() { cat "$RELEASES_FIXTURE"; }
+    get_latest_version
+')"
+[[ "$latest" == "v1.13.1" ]] || fail "anonymous latest release selection returned $latest"
+ok "anonymous release selection excludes prereleases and drafts before numeric sorting"
+
+if output="$(run_tempoup '
+    gh_authenticated() { return 1; }
+    command() {
+        if [[ "$*" == "-v jq" ]]; then return 1; fi
+        builtin command "$@"
+    }
+    get_latest_version
+' 2>&1)"; then
+    fail "anonymous release selection without jq succeeded"
+fi
+contains "$output" "jq not found"
+ok "anonymous release selection without a JSON parser fails closed"
+
+# Use local stubs; verification failures must abort before installation proceeds.
+for tag in v0.0.0 v1.1.1 v1.1.2 v1.1.3 v1.13.1; do
+    for result in valid invalid missing; do
+        VERIFY_LOG="$TMP_ROOT/verify-$tag-$result.log"
+        if output="$(VERIFY_LOG="$VERIFY_LOG" VERIFY_TAG="$tag" VERIFY_RESULT="$result" run_tempoup '
+            gh_authenticated() { return 1; }
+            download_file() {
+                printf "download %s %s\n" "$1" "$2" >> "$VERIFY_LOG"
+                [[ "$VERIFY_RESULT" != missing ]] || error "Signature unavailable"
+            }
+            gpg() {
+                if [[ "$1" == --batch ]]; then
+                    printf "verify\n" >> "$VERIFY_LOG"
+                    [[ "$VERIFY_RESULT" == valid ]]
+                fi
+            }
+            verify_release_archive "$VERIFY_TAG" archive.tar.gz /unused
+            printf "verified\n" >> "$VERIFY_LOG"
+        ' 2>&1)"; then
+            [[ "$result" == valid ]] || fail "$tag accepted $result signature"
+            log_contains "$VERIFY_LOG" "verified"
+        else
+            [[ "$result" != valid ]] || fail "$tag rejected valid signature: $output"
+            log_lacks "$VERIFY_LOG" "verified"
+        fi
+        log_contains "$VERIFY_LOG" "download $tag archive.tar.gz.asc"
+    done
+done
+ok "all versions require a valid signature in the anonymous fallback"
+
+VERIFY_LOG="$TMP_ROOT/attestation.log"
+VERIFY_LOG="$VERIFY_LOG" run_tempoup '
+    gh_authenticated() { return 0; }
+    verify_attestation() { printf "%s\n" "$1" >> "$VERIFY_LOG"; }
+    verify_release_archive v0.0.0 archive.tar.gz /unused
+'
+log_contains "$VERIFY_LOG" "/unused/archive.tar.gz"
+ok "authenticated installs use attestation even for old versions"
+
+run_tempoup '
+    UNSAFE_SKIP_VERIFY=1
+    gh_authenticated() { error "unexpected authentication check"; }
+    download_file() { error "unexpected signature download"; }
+    verify_release_archive v0.0.0 archive.tar.gz /unused
+'
+ok "explicit unsafe opt-out remains available"

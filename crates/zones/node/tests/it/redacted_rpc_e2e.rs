@@ -1431,9 +1431,12 @@ async fn test_zone_metadata_methods() -> eyre::Result<()> {
         "expiresAt should be a quantity string",
     );
 
+    let tempo_state = TempoState::new(TEMPO_STATE_ADDRESS, ctx.zone.provider());
+    let tempo_block_before = tempo_state.tempoBlockNumber().call().await?;
     let zone_info = ctx
         .call_as_user("zone_getZoneInfo", serde_json::json!([]), &user_signer)
         .await?;
+    let tempo_block_after = tempo_state.tempoBlockNumber().call().await?;
     assert_eq!(
         zone_info["result"]["zoneId"].as_str().unwrap(),
         format!("0x{:x}", ctx.config.zone_id),
@@ -1453,13 +1456,16 @@ async fn test_zone_metadata_methods() -> eyre::Result<()> {
         zone_info["result"]["chainId"].as_str().unwrap(),
         format!("0x{:x}", ctx.config.chain_id),
     );
-    let tempo_block_number = TempoState::new(TEMPO_STATE_ADDRESS, ctx.zone.provider())
-        .tempoBlockNumber()
-        .call()
-        .await?;
-    assert_eq!(
-        zone_info["result"]["tempoBlockNumber"],
-        format!("0x{tempo_block_number:x}"),
+    let tempo_block_number = u64::from_str_radix(
+        zone_info["result"]["tempoBlockNumber"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("0x"),
+        16,
+    )?;
+    assert!(
+        (tempo_block_before..=tempo_block_after).contains(&tempo_block_number),
+        "tempoBlockNumber {tempo_block_number} outside [{tempo_block_before}, {tempo_block_after}]",
     );
 
     Ok(())

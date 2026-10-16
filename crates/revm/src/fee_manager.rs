@@ -16,9 +16,12 @@ use tempo_contracts::precompiles::{
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     error::Result as TempoResult,
-    storage::{Handler, StorageActions, StorageCtx},
+    storage::{Handler, StorageAction, StorageActions, StorageCtx},
     tip_fee_manager::TipFeeManager,
+    tip20::{TIP20Error, TIP20Token},
 };
+
+use tempo_primitives::transaction::calc_gas_balance_spending;
 
 /// EVM state needed to install storage for an internal protocol fee hook.
 pub struct ProtocolFeeContext<'a, DB: Database> {
@@ -68,15 +71,17 @@ pub trait FeeTokenResolver {
 /// Internal protocol fee hooks, separate from the public FeeManager precompile.
 pub trait ProtocolFeeManager<DB: Database>: Debug {
     /// Resolves the fee token that should pay for `tx`.
+    /// `max_fee` is in TIP-20 base units.
     fn get_fee_token(
         &self,
         journal: &mut Journal<DB>,
         tx: &TempoTxEnv,
         fee_payer: Address,
+        max_fee: U256,
         spec: TempoHardfork,
         actions: StorageActions,
     ) -> TempoResult<Address> {
-        TempoFeeManager::new().resolve_fee_token(journal, tx, fee_payer, spec, actions)
+        resolve_fee_token(journal, tx, fee_payer, max_fee, spec, actions)
     }
 
     /// Validates whether a TIP-20 can be used to pay fees.
@@ -210,73 +215,120 @@ impl FeeTokenResolver for TempoFeeManager {
     where
         S: TempoStateAccess<M>,
     {
-        // If there is a fee token explicitly set on the tx type, use that.
-        if let Some(fee_token) = tx.fee_token() {
-            return Ok(fee_token);
-        }
+        use revm::context::Transaction;
 
-        // If the fee payer is also the msg.sender and the transaction is calling FeeManager to set a
-        // new preference, the newly set preference should be used immediately instead of the
-        // previously stored one
-        if !tx.is_aa()
-            && fee_payer == tx.caller()
-            && let Some((kind, input)) = tx.calls().next()
-            && kind.to() == Some(&TIP_FEE_MANAGER_ADDRESS)
-            && let Ok(call) = IFeeManager::setUserTokenCall::abi_decode(input)
-        {
-            return Ok(call.token);
-        }
-
-        // Check stored user token preference
-        let user_token = state.with_read_only_storage_ctx(spec, actions.clone(), || {
-            // ensure TIP_FEE_MANAGER_ADDRESS is loaded
-            TipFeeManager::new().user_tokens[fee_payer].read()
-        })?;
-
-        if !user_token.is_zero() {
-            return Ok(user_token);
-        }
-
-        // Check if the fee can be inferred from the TIP20 token being called
-        if let Some(to) = tx.calls().next().and_then(|(kind, _)| kind.to().copied()) {
-            let can_infer_tip20 =
-                        // AA txs only when fee_payer == tx.origin.
-                        if tx.is_aa() && fee_payer != tx.caller() {
-                            false
-                        }
-                        // Otherwise, restricted to TIP-20 calls that move the called token.
-                        else {
-                            tx.calls().all(|(kind, input)| {
-                                kind.to() == Some(&to) && is_tip20_fee_inference_call(spec, input)
-                            })
-                        }
-                    ;
-
-            if can_infer_tip20 && state.is_valid_fee_token(spec, to, actions.clone())? {
-                return Ok(to);
-            }
-        }
-
-        // If calling swapExactAmountOut() or swapExactAmountIn() on the Stablecoin DEX,
-        // use the input token as the fee token (the token that will be pulled from the user).
-        // For AA transactions, this only applies if there's exactly one call.
-        let mut calls = tx.calls();
-        if let Some((kind, input)) = calls.next()
-            && kind.to() == Some(&STABLECOIN_DEX_ADDRESS)
-            && (!tx.is_aa() || calls.next().is_none())
-        {
-            if let Ok(call) = IStablecoinDEX::swapExactAmountInCall::abi_decode(input)
-                && state.is_valid_fee_token(spec, call.tokenIn, actions.clone())?
-            {
-                return Ok(call.tokenIn);
-            } else if let Ok(call) = IStablecoinDEX::swapExactAmountOutCall::abi_decode(input)
-                && state.is_valid_fee_token(spec, call.tokenIn, actions)?
-            {
-                return Ok(call.tokenIn);
-            }
-        }
-
-        // If no fee token is found, default to the first deployed TIP20
-        Ok(DEFAULT_FEE_TOKEN)
+        resolve_fee_token(
+            state,
+            tx,
+            fee_payer,
+            calc_gas_balance_spending(tx.gas_limit(), tx.max_fee_per_gas()),
+            spec,
+            actions,
+        )
     }
+}
+
+fn resolve_fee_token<S, M>(
+    state: &mut S,
+    tx: &TempoTxEnv,
+    fee_payer: Address,
+    max_fee: U256,
+    spec: TempoHardfork,
+    actions: StorageActions,
+) -> TempoResult<Address>
+where
+    S: TempoStateAccess<M>,
+{
+    // If there is a fee token explicitly set on the tx type, use that.
+    if let Some(fee_token) = tx.fee_token() {
+        return Ok(fee_token);
+    }
+
+    // If the fee payer is also the msg.sender and the transaction is calling FeeManager to set a
+    // new preference, the newly set preference should be used immediately instead of the
+    // previously stored one
+    if !tx.is_aa()
+        && fee_payer == tx.caller()
+        && let Some((kind, input)) = tx.calls().next()
+        && kind.to() == Some(&TIP_FEE_MANAGER_ADDRESS)
+        && let Ok(call) = IFeeManager::setUserTokenCall::abi_decode(input)
+    {
+        return Ok(call.token);
+    }
+
+    // Check stored user token preference
+    let user_token = state.with_read_only_storage_ctx(spec, actions.clone(), || {
+        // ensure TIP_FEE_MANAGER_ADDRESS is loaded
+        TipFeeManager::new().user_tokens[fee_payer].read()
+    })?;
+
+    if !user_token.is_zero() {
+        return Ok(user_token);
+    }
+
+    // Check if the fee can be inferred from the TIP20 token being called
+    if let Some(to) = tx.calls().next().and_then(|(kind, _)| kind.to().copied()) {
+        // AA txs only when fee_payer == tx.origin.
+        let can_infer_tip20 = if tx.is_aa() && fee_payer != tx.caller() {
+            false
+        } else {
+            // Otherwise, restricted to TIP-20 calls that move the called token.
+            tx.calls().all(|(kind, input)| {
+                kind.to() == Some(&to) && is_tip20_fee_inference_call(spec, input)
+            })
+        };
+
+        if can_infer_tip20 && state.is_valid_fee_token(spec, to, actions.clone())? {
+            return Ok(to);
+        }
+    }
+
+    // If calling swapExactAmountOut() or swapExactAmountIn() on the Stablecoin DEX,
+    // use the input token as the fee token (the token that will be pulled from the user).
+    // For AA transactions, this only applies if there's exactly one call.
+    let mut calls = tx.calls();
+    if let Some((kind, input)) = calls.next()
+        && kind.to() == Some(&STABLECOIN_DEX_ADDRESS)
+        && (!tx.is_aa() || calls.next().is_none())
+    {
+        if let Ok(call) = IStablecoinDEX::swapExactAmountInCall::abi_decode(input)
+            && state.is_valid_fee_token(spec, call.tokenIn, actions.clone())?
+        {
+            return Ok(call.tokenIn);
+        } else if let Ok(call) = IStablecoinDEX::swapExactAmountOutCall::abi_decode(input)
+            && state.is_valid_fee_token(spec, call.tokenIn, actions.clone())?
+        {
+            return Ok(call.tokenIn);
+        }
+    }
+
+    if !spec.is_t13() || max_fee.is_zero() {
+        return Ok(DEFAULT_FEE_TOKEN);
+    }
+
+    let candidates = spec.fallback_fee_tokens();
+    let mut richest_token = DEFAULT_FEE_TOKEN;
+    let mut highest_balance = U256::ZERO;
+    // Replay depends on affordability, not the exact balance.
+    for &token in candidates {
+        let balance = actions
+            .unrecorded(|| state.get_token_balance(token, fee_payer, spec, actions.clone()))?;
+        let sufficient = balance >= max_fee;
+        actions.record(StorageAction::FeeTokenBalanceCheck(
+            token,
+            TIP20Token::from_address_unchecked(token).balances[fee_payer].slot(),
+            balance,
+            max_fee,
+            sufficient,
+        ));
+        if sufficient {
+            return Ok(token);
+        }
+        if balance > highest_balance {
+            richest_token = token;
+            highest_balance = balance;
+        }
+    }
+
+    Err(TIP20Error::insufficient_balance(highest_balance, max_fee, richest_token).into())
 }

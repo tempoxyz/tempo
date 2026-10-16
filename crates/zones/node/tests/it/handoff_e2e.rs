@@ -352,10 +352,10 @@ async fn test_lagged_follower_promotes_only_after_catching_up() -> eyre::Result<
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     // Blocks 1..=2 are observed by everyone.
-    for _ in 0..2 {
+    for height in 1..=2 {
         cluster.inject_block(vec![])?;
+        cluster.wait_all_at(height, HANDOFF_TIMEOUT).await?;
     }
-    cluster.wait_all_at(2, HANDOFF_TIMEOUT).await?;
 
     // Blocks 3..=5: node B (index 1) does not observe the anchors, so it cannot import the
     // corresponding zone blocks — it lags at height 2 while A and C advance. Each anchor is

@@ -618,11 +618,12 @@ fn follower_bootstraps_from_follower() {
 
         // Height progress can precede ordered delivery into the secondary's
         // consensus feed, so wait for the state this test actually asserts.
-        follower_follower
-            .feed
-            .get_finalization(Query::Latest)
-            .await
-            .unwrap();
+        while !matches!(
+            follower_follower.feed.get_finalization(Query::Latest).await,
+            Response::Success(..)
+        ) {
+            context.sleep(Duration::from_millis(100)).await;
+        }
     });
 }
 
