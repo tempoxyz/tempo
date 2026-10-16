@@ -2,7 +2,6 @@
 
 use alloy_consensus::{BlockHeader as _, Sealable as _};
 use alloy_primitives::B256;
-use alloy_rlp::Decodable as _;
 use futures::{StreamExt as _, stream::BoxStream};
 use reth_chain_state::PersistedBlockSubscriptions;
 use reth_primitives_traits::SealedBlock;
@@ -18,8 +17,9 @@ use zone_sequencer::{ProofCollectorHandle, SettlementManager, StoredBlockProof};
 /// A decoded block and the optional witness supplied by its peer.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct PeerBlock {
-    pub block: Block,
+    pub block: SealedBlock<Block>,
     pub witness: Option<StoredBlockProof>,
+    pub encoded_size: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -346,8 +346,21 @@ pub(crate) fn decode_peer_block(encoded: &[u8]) -> eyre::Result<PeerBlock> {
     } else {
         encoded
     };
-    let block = Block::decode(&mut input)
+    let mut payload = input;
+    let header = alloy_rlp::Header::decode(&mut payload)?;
+    eyre::ensure!(header.list, "encoded zone block is not an RLP list");
+    let block_length = (input.len() - payload.len())
+        .checked_add(header.payload_length)
+        .ok_or_else(|| eyre::eyre!("RLP block length overflows"))?;
+    eyre::ensure!(
+        block_length <= input.len(),
+        "truncated RLP-encoded zone block"
+    );
+    let mut block_input = &input[..block_length];
+    let block = SealedBlock::<Block>::decode_sealed(&mut block_input)
         .map_err(|err| eyre::eyre!("invalid RLP-encoded zone block: {err}"))?;
+    eyre::ensure!(block_input.is_empty(), "RLP block has unconsumed payload");
+    input = &input[block_length..];
     let witness = if witnessed {
         let mut deserializer = minicbor_serde::Deserializer::from(minicbor::Decoder::new(input));
         let proof = serde::Deserialize::deserialize(&mut deserializer)?;
@@ -361,7 +374,11 @@ pub(crate) fn decode_peer_block(encoded: &[u8]) -> eyre::Result<PeerBlock> {
         "encoded zone block has {} trailing bytes",
         input.len()
     );
-    Ok(PeerBlock { block, witness })
+    Ok(PeerBlock {
+        block,
+        witness,
+        encoded_size: encoded.len(),
+    })
 }
 
 const BACKFILL_PAGE_SIZE: u64 = 64;
@@ -521,13 +538,10 @@ mod tests {
         atomic::{AtomicU64, AtomicUsize, Ordering},
     };
 
-    use futures::{StreamExt as _, stream};
+    use futures::stream;
     use tokio::sync::{oneshot, watch};
 
-    use super::{
-        Block, BroadcasterShutdown, EncodedPersistedBlock, PersistedBlockSource, PersistedTip,
-        StoredBlockProof, broadcast_persisted_blocks, decode_peer_block, encode_block_with_witness,
-    };
+    use super::*;
     use alloy_primitives::B256;
     use zone_p2p::{EncodedBlock, P2pCommand};
 
@@ -653,8 +667,9 @@ mod tests {
         assert_eq!(
             decode_peer_block(&bare).unwrap(),
             super::PeerBlock {
-                block: block.clone(),
-                witness: None
+                block: SealedBlock::seal_slow(block.clone()),
+                witness: None,
+                encoded_size: bare.len(),
             }
         );
         let mut proof = StoredBlockProof {
@@ -676,8 +691,9 @@ mod tests {
         assert_eq!(
             decode_peer_block(&encoded).unwrap(),
             super::PeerBlock {
-                block,
-                witness: Some(proof.clone())
+                block: SealedBlock::seal_slow(block),
+                witness: Some(proof.clone()),
+                encoded_size: encoded.len(),
             }
         );
 
@@ -859,5 +875,35 @@ mod tests {
         );
         task.await.expect("the broadcaster task must not panic");
         assert_eq!(command_rx.recv().await, None);
+    }
+
+    #[test]
+    fn peer_block_decoder_enforces_outer_list_boundary() {
+        let encoded = alloy_rlp::encode(Block::default());
+        let mut payload = encoded.as_slice();
+        let header = alloy_rlp::Header::decode(&mut payload).unwrap();
+        for length in [header.payload_length - 1, header.payload_length + 1] {
+            let mut malformed = Vec::new();
+            alloy_rlp::Header {
+                list: true,
+                payload_length: length,
+            }
+            .encode(&mut malformed);
+            malformed.extend_from_slice(payload);
+            assert!(decode_peer_block(&malformed).is_err());
+            let witnessed = witness_envelope(
+                malformed,
+                &StoredBlockProof {
+                    format_version: 2,
+                    witness: Default::default(),
+                },
+            );
+            assert!(decode_peer_block(&witnessed).is_err());
+        }
+        let decoded = decode_peer_block(&encoded).unwrap();
+        assert_eq!(
+            decoded.block.hash(),
+            alloy_primitives::keccak256(alloy_rlp::encode(decoded.block.header()))
+        );
     }
 }

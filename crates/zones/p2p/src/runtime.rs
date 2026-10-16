@@ -723,10 +723,17 @@ where
             // Got a block
             result = blocks.recv() => {
                 let (peer, bytes) = result.map_err(|err| eyre::eyre!("block channel receive failed: {err}"))?;
+                let block = match into_bounded_payload(bytes, MAX_MESSAGE_SIZE as usize) {
+                    Ok(block) => block,
+                    Err(size) => {
+                        warn!(target: "zone::p2p", %peer, size, "Ignoring oversized live block");
+                        continue;
+                    }
+                };
                 // Commonware authenticates every sender against the manifest. The importer
                 // applies the authoritative `sender == leader_for(block anchor)` fence after
                 // decoding the block and observing its Tempo anchor.
-                P2pEvent::BlockReceived { leader_ed25519_public_key: peer, block: bytes.into() }
+                P2pEvent::BlockReceived { leader_ed25519_public_key: peer, block }
             }
 
             // Got a settlement proposal at a batch boundary
@@ -842,7 +849,7 @@ mod tests {
     use crate::{
         P2pNetworkId, ZoneManifest,
         identity::{Ed25519Identity, Secp256k1Identity},
-        network::MAX_TRANSACTION_MESSAGE_SIZE,
+        network::{MAX_MESSAGE_SIZE, MAX_TRANSACTION_MESSAGE_SIZE},
         routing::RoutingMembership,
     };
 
@@ -2636,5 +2643,59 @@ mod tests {
                 .expect("P2P runtime did not stop")
                 .expect("P2P runtime failed");
         }
+    }
+
+    #[tokio::test]
+    async fn live_ingress_bounds_frames_without_preempting_anchor_authority() {
+        let addresses = [
+            available_address(),
+            available_address(),
+            available_address(),
+        ];
+        let identities = [91_u64, 92, 93].map(ed25519_identity);
+        let input = manifest_with_standby(&identities, &addresses, 91, usize::MAX);
+        let manifest = Arc::new(ZoneManifest::parse(&input).unwrap());
+        let membership = RoutingMembership::from_manifest(&manifest);
+        let leadership = crate::LeadershipSchedule::seeded(manifest.bootstrap_leadership());
+        let incoming = identities[1].ed25519_public_key();
+        assert_ne!(leadership.leader_for(10).unwrap().leader, incoming);
+        let (blocks_tx, blocks) = mock_receiver();
+        let (_proposals_tx, settlement_proposals) = mock_receiver();
+        let (_signatures_tx, settlement_signatures) = mock_receiver();
+        let (_transactions_tx, transactions) = mock_receiver();
+        let (events_tx, mut events) = tokio::sync::mpsc::channel(4);
+        let receiver_task = tokio::spawn(run_receivers(
+            identities[2].ed25519_public_key(),
+            membership,
+            leadership,
+            RecordingBlocker::default(),
+            P2pReceivers {
+                blocks,
+                settlement_proposals,
+                settlement_signatures,
+                transactions,
+            },
+            events_tx,
+        ));
+        blocks_tx
+            .send((
+                incoming.clone(),
+                IoBuf::from(vec![0; MAX_MESSAGE_SIZE as usize + 1]),
+            ))
+            .unwrap();
+        let block = vec![1, 2, 3];
+        blocks_tx
+            .send((incoming.clone(), IoBuf::from(block.clone())))
+            .unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), events.recv())
+                .await
+                .unwrap(),
+            Some(P2pEvent::BlockReceived {
+                leader_ed25519_public_key: incoming,
+                block
+            }),
+        );
+        receiver_task.abort();
     }
 }

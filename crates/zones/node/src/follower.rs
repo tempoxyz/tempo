@@ -7,6 +7,7 @@ use alloy_rlp::Decodable as _;
 use alloy_rpc_types_engine::ForkchoiceState;
 use alloy_sol_types::SolCall as _;
 use eyre::{OptionExt as _, WrapErr as _};
+use reth_consensus_common::validation::validate_body_against_header;
 use reth_node_api::{ConsensusEngineHandle, PayloadTypes as _};
 use reth_primitives_traits::{SealedBlock, SealedHeader};
 use reth_provider::HeaderProvider;
@@ -44,6 +45,8 @@ const BACKFILL_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 const BLOCK_INACTIVITY_TIMEOUT: Duration = Duration::from_secs(30);
 const PEER_ANCHOR_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_PENDING_BLOCKS: usize = 128;
+const MAX_PENDING_BYTES: usize = 64 * 1024 * 1024;
+
 /// Keep track of the backfill exactly. We'll buffer any live blocks received
 /// during backfill.
 struct BackfillProgress {
@@ -109,6 +112,7 @@ struct PendingPeerBlock {
 #[derive(Default)]
 struct PendingBlocks {
     blocks: BTreeMap<u64, PendingPeerBlock>,
+    bytes: usize,
 }
 
 impl PendingBlocks {
@@ -118,22 +122,18 @@ impl PendingBlocks {
         if self.blocks.contains_key(&number) {
             return None;
         }
-        if self.blocks.len() < MAX_PENDING_BLOCKS {
-            self.blocks.insert(number, block);
-            return None;
+        if block.block.encoded_size > MAX_PENDING_BYTES {
+            return Some(number);
         }
-
-        let Some((&farthest, _)) = self.blocks.last_key_value() else {
-            self.blocks.insert(number, block);
-            return None;
-        };
-        if number < farthest {
-            self.blocks.pop_last();
-            self.blocks.insert(number, block);
-            Some(farthest)
-        } else {
-            Some(number)
+        self.bytes += block.block.encoded_size;
+        self.blocks.insert(number, block);
+        let mut dropped = None;
+        while self.blocks.len() > MAX_PENDING_BLOCKS || self.bytes > MAX_PENDING_BYTES {
+            let (height, block) = self.blocks.pop_last().expect("pending buffer is nonempty");
+            self.bytes -= block.block.encoded_size;
+            dropped = Some(height);
         }
+        dropped
     }
 
     fn first_number(&self) -> Option<u64> {
@@ -141,7 +141,9 @@ impl PendingBlocks {
     }
 
     fn take_next_after(&mut self, head: u64) -> Option<PendingPeerBlock> {
-        self.blocks.remove(&head.saturating_add(1))
+        let block = self.blocks.remove(&head.saturating_add(1))?;
+        self.bytes -= block.block.encoded_size;
+        Some(block)
     }
 
     #[cfg(test)]
@@ -275,12 +277,13 @@ where
                                     continue;
                                 }
                             };
-                            inactivity
-                                .as_mut()
-                                .reset(tokio::time::Instant::now() + BLOCK_INACTIVITY_TIMEOUT);
+                            let previous_head = self.context.provider.best_block_number().ok();
                             if !self.process_follower_block(block, None).await
                             {
                                 return;
+                            }
+                            if head_advanced(previous_head, self.context.provider.best_block_number().ok()) {
+                                inactivity.as_mut().reset(tokio::time::Instant::now() + BLOCK_INACTIVITY_TIMEOUT);
                             }
                         }
                         BackfillResponse::Completed { peer, tip } => {
@@ -323,12 +326,13 @@ where
                                 }
                             };
                             let live_sender = Some(leader_ed25519_public_key);
-                            inactivity
-                                .as_mut()
-                                .reset(tokio::time::Instant::now() + BLOCK_INACTIVITY_TIMEOUT);
+                            let previous_head = self.context.provider.best_block_number().ok();
                             if !self.process_follower_block(block, live_sender).await
                             {
                                 return;
+                            }
+                            if head_advanced(previous_head, self.context.provider.best_block_number().ok()) {
+                                inactivity.as_mut().reset(tokio::time::Instant::now() + BLOCK_INACTIVITY_TIMEOUT);
                             }
                         }
                         P2pEvent::TransactionReceived { .. } => {
@@ -448,7 +452,7 @@ where
         block: PeerBlock,
         live_sender: Option<P2pPeerId>,
     ) -> bool {
-        let number = block.block.header.number();
+        let number = block.block.number();
         let best = match self.context.provider.best_block_number() {
             Ok(best) => best,
             Err(err) => {
@@ -466,13 +470,27 @@ where
                 Ok(PeerBlockImportOutcome::Imported) => {}
                 Err(err) => {
                     tracing::error!(target: "zone::p2p", %err, "Rejected duplicate or conflicting peer block");
+                    self.backfill.needed = true;
                 }
             }
             return true;
         }
+        let block = &peer_block.block.block;
+        if let Err(err) =
+            validate_body_against_header(block.body(), block.header()).map_err(|err| {
+                eyre::eyre!(
+                    "zone block body does not match hashed header {}: {err}",
+                    block.hash()
+                )
+            })
+        {
+            tracing::error!(target: "zone::p2p", %err, "Rejected peer block before buffering");
+            self.backfill.needed = true;
+            return true;
+        }
         self.backfill.observe_block(number, best);
         if let Some(dropped) = self.pending.insert(number, peer_block) {
-            tracing::warn!(target: "zone::p2p", dropped, pending_limit = MAX_PENDING_BLOCKS, "Dropped far-future peer block because the pending block buffer is full");
+            tracing::warn!(target: "zone::p2p", dropped, pending_limit = MAX_PENDING_BLOCKS, pending_byte_limit = MAX_PENDING_BYTES, "Dropped far-future peer block because the pending block buffer is full");
         }
         if number > best.saturating_add(1) {
             info!(target: "zone::p2p", local_head = best, received = number, "Detected zone block gap; requesting backfill");
@@ -519,11 +537,10 @@ where
         &self,
         peer_block: PendingPeerBlock,
     ) -> eyre::Result<PeerBlockImportOutcome> {
-        let block = SealedBlock::seal_slow(peer_block.block.block);
+        let block = peer_block.block.block;
         let block_number = block.number();
         let hash = block.hash();
         let best_block = self.context.provider.best_block_number()?;
-        let tempo_import = decode_advance_tempo(&block)?;
 
         // 1. Block number is correct
         if block_number <= best_block {
@@ -537,7 +554,13 @@ where
             if existing.hash() == hash {
                 // This path bypasses `new_payload`, so verify the peer-supplied body against the
                 // canonical header before deriving queue mutations from it.
-                block.ensure_transaction_root_valid()?;
+                validate_body_against_header(block.body(), block.header()).map_err(|err| {
+                    eyre::eyre!(
+                        "zone block body does not match hashed header {}: {err}",
+                        block.hash()
+                    )
+                })?;
+                let tempo_import = decode_advance_tempo(&block)?;
                 reconcile_canonical_import(&self.context.deposit_queue, &tempo_import)
                     .wrap_err_with(|| {
                         format!("cannot reconcile duplicate canonical peer block {block_number}")
@@ -571,6 +594,8 @@ where
                 block.parent_hash()
             );
         }
+
+        let tempo_import = decode_advance_tempo(&block)?;
 
         // 3. Require the block to import a non-empty contiguous L1 header range
         // beginning immediately after the local Tempo checkpoint.
@@ -716,6 +741,12 @@ where
         info!(target: "zone::p2p", block_number, ?hash, "Imported canonical peer block");
         Ok(PeerBlockImportOutcome::Imported)
     }
+}
+
+fn head_advanced(previous: Option<u64>, current: Option<u64>) -> bool {
+    previous
+        .zip(current)
+        .is_some_and(|(previous, current)| current > previous)
 }
 
 fn validate_live_block_sender(
@@ -1050,6 +1081,8 @@ mod tests {
 
     use alloy_eips::NumHash;
     use alloy_primitives::{Address, B256};
+    use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
+    use reth_primitives_traits::BlockBody as _;
     use tokio_util::sync;
     use zone_l1::{DepositQueue, EnabledToken, L1BlockDeposits, L1BlockTracker, L1PortalEvents};
     use zone_p2p::{BackfillCommand, LeadershipSchedule, LeadershipState};
@@ -1513,7 +1546,8 @@ mod tests {
         PendingPeerBlock {
             block: crate::replication::PeerBlock {
                 witness: None,
-                block: Block {
+                encoded_size: 1,
+                block: SealedBlock::seal_slow(Block {
                     header: TempoHeader {
                         inner: alloy_consensus::Header {
                             number,
@@ -1522,7 +1556,7 @@ mod tests {
                         ..Default::default()
                     },
                     ..Default::default()
-                },
+                }),
             },
             live_sender: None,
         }
@@ -1554,8 +1588,151 @@ mod tests {
         let next = pending
             .take_next_after(98)
             .expect("the immediately next pending block must be available");
-        assert_eq!(next.block.block.header.number(), 99);
+        assert_eq!(next.block.block.number(), 99);
         assert_eq!(pending.first_number(), Some(100));
+    }
+
+    #[test]
+    fn pending_byte_limit_evicts_farthest_blocks_and_releases_capacity() {
+        let mut pending = PendingBlocks::default();
+        let mut far = pending_block(3);
+        far.block.encoded_size = MAX_PENDING_BYTES;
+        pending.insert(3, far);
+        let near = pending_block(1);
+        assert_eq!(pending.insert(1, near), Some(3));
+        assert_eq!(pending.bytes, 1);
+        assert_eq!(pending.len(), 1);
+        pending.take_next_after(0).unwrap();
+        assert_eq!(pending.bytes, 0);
+
+        let mut oversized = pending_block(2);
+        oversized.block.encoded_size = MAX_PENDING_BYTES + 1;
+        assert_eq!(pending.insert(2, oversized), Some(2));
+        assert_eq!(pending.bytes, 0);
+        assert_eq!(pending.len(), 0);
+    }
+
+    #[test]
+    fn duplicate_pending_block_does_not_charge_bytes_twice() {
+        let mut pending = PendingBlocks::default();
+        pending.insert(1, pending_block(1));
+        pending.insert(1, pending_block(1));
+        assert_eq!(pending.bytes, 1);
+        assert_eq!(pending.len(), 1);
+    }
+
+    #[test]
+    fn only_canonical_progress_resets_inactivity() {
+        assert!(head_advanced(Some(5), Some(6)));
+        assert!(!head_advanced(Some(5), Some(5)));
+        assert!(!head_advanced(Some(5), Some(4)));
+        assert!(!head_advanced(None, Some(6)));
+        assert!(!head_advanced(Some(5), None));
+    }
+
+    #[tokio::test]
+    async fn pending_block_waits_for_the_incoming_leaders_anchor() {
+        let leader = PrivateKey::from_seed(1).public_key();
+        let incoming = PrivateKey::from_seed(2).public_key();
+        let schedule = LeadershipSchedule::seeded(LeadershipState::new(1, leader, 0));
+        let prepared = zone_l1::PreparedL1Block {
+            header: SealedHeader::seal_slow(TempoHeader {
+                inner: alloy_consensus::Header {
+                    number: 10,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            queued_deposits: vec![],
+            decryptions: vec![],
+            enabled_tokens: vec![],
+            follows_checkpoint_blocks: false,
+        };
+        let body = alloy_consensus::BlockBody {
+            transactions: vec![zone_payload::build_advance_tempo_tx(&prepared, 1337).into_inner()],
+            ommers: vec![],
+            withdrawals: None,
+        };
+        let header = TempoHeader {
+            inner: alloy_consensus::Header {
+                number: 7,
+                transactions_root: body.calculate_tx_root(),
+                ommers_hash: body.calculate_ommers_root(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let block = decode_peer_block(&alloy_rlp::encode(Block { header, body })).unwrap();
+        validate_body_against_header(block.block.body(), block.block.header()).unwrap();
+        let mut pending = PendingBlocks::default();
+        assert_eq!(
+            pending.insert(
+                7,
+                PendingPeerBlock {
+                    block,
+                    live_sender: Some(incoming.clone())
+                }
+            ),
+            None
+        );
+        let block = pending.take_next_after(6).unwrap();
+        let anchor = prepared.header.num_hash();
+        let tracker = L1BlockTracker::default();
+        let stop = sync::CancellationToken::new();
+        let inputs = AdvanceTempoPortalInputs {
+            deposits: vec![],
+            enabled_tokens: vec![],
+        };
+        let waiting = wait_for_validated_peer_anchor(
+            &tracker,
+            &schedule,
+            &inputs,
+            block.live_sender.as_ref(),
+            anchor,
+            7,
+            &stop,
+            PEER_ANCHOR_WAIT_TIMEOUT,
+        );
+        tokio::pin!(waiting);
+        assert!(futures::poll!(waiting.as_mut()).is_pending());
+        schedule
+            .publish(LeadershipState::new(2, incoming, anchor.number))
+            .unwrap();
+        tracker
+            .record_with_portal_events(anchor, L1PortalEvents::default())
+            .unwrap();
+        waiting.await.unwrap();
+    }
+
+    #[test]
+    fn rejects_same_hash_peer_block_with_missing_withdrawals() {
+        let body = alloy_consensus::BlockBody {
+            transactions: vec![],
+            ommers: vec![],
+            withdrawals: Some(Default::default()),
+        };
+        let header = TempoHeader {
+            inner: alloy_consensus::Header {
+                transactions_root: body.calculate_tx_root(),
+                ommers_hash: body.calculate_ommers_root(),
+                withdrawals_root: body.calculate_withdrawals_root(),
+                base_fee_per_gas: Some(0),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let valid = Block { header, body };
+        let received = decode_peer_block(&alloy_rlp::encode(&valid)).unwrap();
+        validate_body_against_header(received.block.body(), received.block.header()).unwrap();
+        let valid_hash = received.block.hash();
+
+        let mut mismatched = valid;
+        mismatched.body.withdrawals = None;
+        let received = decode_peer_block(&alloy_rlp::encode(&mismatched)).unwrap();
+        assert_eq!(received.block.hash(), valid_hash);
+        assert!(
+            validate_body_against_header(received.block.body(), received.block.header()).is_err()
+        );
     }
     #[test]
     fn full_import_validates_deferred_and_current_portal_events() {
