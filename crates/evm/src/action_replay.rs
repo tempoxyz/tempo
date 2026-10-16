@@ -1,4 +1,5 @@
 use std::collections::hash_map::Entry;
+use tempo_primitives::{TempoSignature, TempoTxEnvelope};
 
 use crate::{TempoBlockExecutor, TempoTxResult};
 use alloy_evm::{
@@ -6,17 +7,19 @@ use alloy_evm::{
     block::{BlockExecutionError, BlockExecutor, ExecutableTx},
 };
 use alloy_primitives::{
-    Address, B256, U256,
+    Address, B256, TxKind, U256,
     map::{AddressMap, U256Map},
 };
+use alloy_sol_types::SolCall;
 use reth_evm::block::InternalBlockExecutionError;
 use reth_revm::{
     Database as _, Inspector, State,
     context::result::{ExecutionResult, HaltReason},
     state::{Account, EvmState, EvmStorageSlot, TransactionId},
 };
+use tempo_contracts::precompiles::{ISignatureVerifier, SIGNATURE_VERIFIER_ADDRESS};
 use tempo_precompiles::{
-    NONCE_PRECOMPILE_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, NATIVE_MULTISIG_ADDRESS, NONCE_PRECOMPILE_ADDRESS,
     nonce::NonceManager,
     storage::StorageAction,
     tip_fee_manager::amm::{Pool, compute_amount_out},
@@ -38,6 +41,9 @@ where
         result_closure: impl FnOnce(&TempoTxResult),
     ) -> Result<(), BlockExecutionError> {
         let (tx_env, recovered) = tx.into_parts();
+        if !supports_storage_action_replay(recovered.tx()) {
+            return Err(StorageActionReplayError::UnsupportedAuthorization.into());
+        }
 
         let StorageActionReplay {
             result,
@@ -321,6 +327,8 @@ pub struct ExpiringNonceReplay {
 /// Reason a precomputed storage-action replay cannot be used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum StorageActionReplayError {
+    #[error("authorization requires account-state execution")]
+    UnsupportedAuthorization,
     #[error("transaction execution failed")]
     TransactionExecutionFailed,
     #[error("storage action conflict")]
@@ -579,6 +587,24 @@ impl ExpiringNonceReplayState {
     fn set_next_ring_ptr(&mut self, next: U256) {
         self.pending_ring_ptr = Some(next);
     }
+}
+
+/// Storage actions do not represent configurable account reads/writes or keychain
+/// parent or named grant-recipient eligibility. Such authorizations and direct calls to
+/// `AccountKeychain`, `NativeMultisig`, or `verifyMultisig` must execute through the handler.
+/// These exclusions apply even before T14; this only disables the
+/// replay optimization, not historical transaction execution.
+pub fn supports_storage_action_replay(tx: &TempoTxEnvelope) -> bool {
+    tx.as_aa().is_none_or(|aa| {
+        matches!(aa.signature(), TempoSignature::Primitive(_))
+            && aa.tx().key_authorization.is_none()
+    }) && !tx.calls().any(|(to, input)| {
+        matches!(
+            to,
+            TxKind::Call(ACCOUNT_KEYCHAIN_ADDRESS | NATIVE_MULTISIG_ADDRESS)
+        ) || (to == TxKind::Call(SIGNATURE_VERIFIER_ADDRESS)
+            && input.starts_with(&ISignatureVerifier::verifyMultisigCall::SELECTOR))
+    })
 }
 
 #[cfg(test)]

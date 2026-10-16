@@ -442,7 +442,9 @@ fn config_state_root(genesis: &Genesis) -> B256 {
 
 /// Convert the complete genesis allocation into the flat witness format consumed by SPF.
 fn zone_state_witness(genesis: &Genesis) -> (B256, ZoneStateWitness) {
-    let (state_root, node_pool, bytecodes) = genesis_state_witness(genesis);
+    // Include protocol reservations installed while composing the chain spec.
+    let config = spf_config(genesis);
+    let (state_root, node_pool, bytecodes) = genesis_state_witness(config.chain_spec().genesis());
     (
         state_root,
         ZoneStateWitness {
