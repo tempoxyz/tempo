@@ -157,13 +157,13 @@ pub(crate) struct WithdrawalProcessorMetrics {
 #[derive(Metrics, Clone)]
 #[metrics(scope = "tempo_zone_monitor")]
 pub(crate) struct ZoneMonitorMetrics {
-    /// Most recent zone block observed on L2.
+    /// Latest persisted zone block, sampled independently of batch preparation and submission.
     pub latest_zone_block_observed: Gauge,
 
     /// Most recent zone block successfully submitted to L1.
     pub latest_zone_block_submitted_to_l1: Gauge,
 
-    /// Gap between the latest observed zone block and the latest submitted zone block.
+    /// Sampled gap between the persisted zone head and the latest submitted zone block.
     pub zone_to_l1_submission_lag_blocks: Gauge,
 
     /// Number of zone blocks included in a batch submission.
