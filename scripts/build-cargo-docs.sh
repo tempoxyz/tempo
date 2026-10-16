@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 
 # Script to build cargo docs with the same flags as used in CI
 
