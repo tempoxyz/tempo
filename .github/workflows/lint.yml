@@ -28,7 +28,7 @@ jobs:
     runs-on: depot-ubuntu-latest-32
     timeout-minutes: 60
     env:
-      # Limit peak memory: `tempo-consensus` alone needs ~33 GB per target on nightly.
+      # Limit peak memory while linting the combined Tempo and Zones workspace.
       CARGO_BUILD_JOBS: 16
     permissions:
       id-token: write

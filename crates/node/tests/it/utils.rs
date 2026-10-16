@@ -357,25 +357,15 @@ pub(crate) enum NodeSource {
 /// A local test node, kept alive for the duration of a test.
 pub(crate) type LocalTestNode = reth_e2e_test_utils::NodeHelperType<TempoNode>;
 
-/// A block mined by [`TestNode::mine`] and its variants.
 pub(crate) type TestMinedBlock = MinedBlock<TempoBuiltPayload, TempoTransactionReceipt>;
 
-/// A [`LocalTestNode`] whose transaction helpers are concrete wrappers of the generic
-/// [`LocalTestNode`] helpers.
-///
-/// Each call of a helper bounded on the node's `EthApi`, e.g. [`LocalTestNode::mine`], makes
-/// borrowck prove those bounds for the full Tempo node types, and rustc's region inference cost
-/// grows quadratically with the number of such calls in one function. The wrappers prove the
-/// bounds once, which keeps the integration tests from taking minutes and >100 GB to check.
 pub(crate) struct TestNode(LocalTestNode);
 
 impl TestNode {
-    /// Returns the wrapped node.
     pub(crate) fn into_inner(self) -> LocalTestNode {
         self.0
     }
 
-    /// See [`LocalTestNode::mine`].
     pub(crate) async fn mine(
         &mut self,
         txs: impl IntoIterator<Item = Bytes>,
@@ -383,7 +373,6 @@ impl TestNode {
         self.0.mine(txs).await
     }
 
-    /// See [`LocalTestNode::mine_signed`].
     pub(crate) async fn mine_signed<T: Encodable2718>(
         &mut self,
         txs: impl IntoIterator<Item = T>,
@@ -391,7 +380,6 @@ impl TestNode {
         self.0.mine_signed(txs).await
     }
 
-    /// See [`LocalTestNode::mine_pooled`].
     pub(crate) async fn mine_pooled(
         &mut self,
         hashes: impl IntoIterator<Item = B256>,
@@ -399,7 +387,6 @@ impl TestNode {
         self.0.mine_pooled(hashes).await
     }
 
-    /// See [`LocalTestNode::inject_and_advance`].
     pub(crate) async fn inject_and_advance(
         &mut self,
         raw_tx: Bytes,
@@ -407,7 +394,6 @@ impl TestNode {
         self.0.inject_and_advance(raw_tx).await
     }
 
-    /// See [`LocalTestNode::advance_until_receipt`].
     pub(crate) async fn advance_until_receipt(
         &mut self,
         hash: B256,
@@ -415,12 +401,10 @@ impl TestNode {
         self.0.advance_until_receipt(hash).await
     }
 
-    /// Injects the raw transaction into the node's pool via the `eth` API.
     pub(crate) async fn inject_tx(&self, raw_tx: Bytes) -> Result<B256, TempoEthApiError> {
         self.0.rpc.inject_tx(raw_tx).await
     }
 
-    /// Returns the receipt of the transaction via the `eth` API.
     pub(crate) async fn transaction_receipt(
         &self,
         hash: B256,
