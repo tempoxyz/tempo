@@ -1,0 +1,74 @@
+# TIP implementation dashboard
+
+A read-only view of network upgrades: scheduled TIPs, code links, activation rules, implementation PRs and assertion results. It opens on the latest upgrades: the Foundry `next` and default profiles, followed by the preceding scheduled fork. These profiles describe test targets, not approved network activation dates. Select **All upgrades** for older and unscheduled TIPs.
+
+## Read a report
+
+```sh
+python3 scripts/tip_dashboard/report.py --revision WORKTREE --output output/tip-dashboard --github --compare-main origin/main
+python3 -m http.server 8765 --bind 127.0.0.1 --directory output/tip-dashboard
+```
+
+Open `http://127.0.0.1:8765`, or open the generated self-contained `dashboard.html` directly. The hosted page reads adjacent `report.json`; it has no upload/import flow. `summary.md` consumes the same report data. `--github` reads PR states, submitted GitHub reviews, PR authors and commit authors/committers through `gh`. Spec-file history is anchored to the selected commit; implementation PR activity is shown separately. Declared spec authors come from TIP frontmatter. Missing access, deleted identities or truncated history stay explicit; requested reviewers are not counted as submitted reviews. GitHub reviews retain their state, date and reviewed commit, and never satisfy source or execution coverage.
+
+Fetch the latest main ref before comparison (`git fetch origin main`). `--compare-main origin/main` scans it independently, pins its resolved commit and publishes `main/report.json` plus a revision selector. Each TIP shows its main inventory and coverage alongside the inspected revision. `--main-repo` can select a separate main checkout and `--main-evidence` accepts only evidence from that checkout/commit; PR results are never reused as main evidence. If main has no labels, its coverage remains unknown. The advisory workflow checks both snapshots and attempts main assertions separately, reporting unavailable evidence immediately when none are annotated.
+
+Pass `--revision main`, a release tag or a commit to inspect that Git tree. `WORKTREE` includes local edits and displays its base SHA and source digest. A hosted collection can offer revision selection through adjacent `index.json`:
+
+```json
+{"reports":[{"label":"main","url":"main/report.json","sha":"FULL_COMMIT_SHA"},{"label":"release candidate","url":"release/report.json","sha":"FULL_COMMIT_SHA"}]}
+```
+
+Generate each report from its selected revision. The page displays the report's resolved commit. Host these static files together or use the CI artifact. Tempo already publishes Rust documentation through GitHub Pages; do not replace that deployment with a dashboard-only site.
+
+## Label one TIP
+
+Keep `protocolVersion` as the single scheduled-fork field. Missing, `TBD` or unrecognised values remain unknown. Add explicit implementation PR URLs to `implementation:` frontmatter; existing `**PRs**:` metadata is also supported. Related-work links alone do not establish implementation.
+
+Place a stable ID before each normative requirement, preserving existing IDs:
+
+```markdown
+<!-- @requirement TIP-1006:R21 from=T12 kind=activation cases=selectors_t11,selectors_t12,selectors_t13 -->
+The normative activation rule follows.
+```
+
+Link the real guard and the actual assertion:
+
+```rust
+// @implements TIP-1006:R21 gate=schedule(since=T12)
+#[schedule(since = T12)]
+burnAt(call) => mutate(call, msg_sender, |sender, c| self.burn_at(sender, c)),
+// @asserts TIP-1006:R21 case=selectors_t12 test=tip20::tests::spec_dashboard_burn_at_activation_t12 fork=T12
+spec_evidence!("TIP-1006:R21", "selectors_t12", "tip20::tests::spec_dashboard_burn_at_activation_t12", "T12", assert_eq!(actual, expected));
+```
+
+Cases are distinct obligations; use separate names when both sides of a fork boundary must execute. Use `from=T12 until=T13 superseded_by=TIP-1234:E2` for replaced rules (`until` is exclusive). `gate=always` links an unconditional helper; review must inspect its callers and enclosing guards. Comments establish links, not semantic correctness.
+
+## Collect execution evidence
+
+```sh
+python3 scripts/tip_dashboard/run_pilot.py --output output/tip-dashboard/evidence.json
+python3 scripts/tip_dashboard/report.py --output output/tip-dashboard --evidence output/tip-dashboard/evidence.json --github
+```
+
+The pilot builds `tempo-precompiles` with its existing `test-utils` feature and runs each explicitly ignored `spec_dashboard` test separately. Its test-only macro asserts before emitting a marker; there are no production hooks or per-assertion files. Markers join the outcome of that same test attempt. An early return, skipped test, later failure, wrong fork or stale source cannot produce verified coverage. Build/collection failures remain unavailable evidence.
+
+TIP-1006 (`burnAt`) is the T12 showcase. Its inventory covers activation, roles, validation, state changes, events, access-key limits and all seven invariants. Finite passing cases are execution evidence, not proof over every reachable state. Zone rejection, mixed transfer-and-burn spending, disabled-limit/non-origin accounting and issuer policy review remain explicit gaps; see [the source review](../tips/verification/tip-1006-review.md). Earlier TIP-1088 spec IDs are retained for stability; its demo instrumentation has been removed. Other TIPs remain visible from their real schedule metadata even before labelling. Missing protocol implementation is a finding, not scope to change protocol behaviour.
+
+The matching Foundry helper is `tips/verify/test/helpers/SpecEvidence.sol`. A Foundry outcome collector is not included; the Rust collector does not claim Foundry execution.
+
+## Review and CI
+
+`tips/verification/reviews.json` binds reviewed inventories and source/assertion links to their content digests, with reviewer, automated/human kind and review reference. Review meaning before recording hashes; never refresh hashes automatically. Empty or incomplete inventories cannot establish complete coverage. Historical merged PRs cannot substitute for current code. See [the schema](../scripts/tip_dashboard/SCHEMA.md) for the full contract.
+
+The separate advisory workflow runs on relevant changes, compares against a freshly checked-out main commit and supports explicit release revisions. It publishes the JSON, static UI, summary and evidence as a run/attempt artifact. New completeness checks are warnings, not required gates. A failed report publishes a fresh unavailable result, never an old green result.
+
+Validate tooling with:
+
+```sh
+python3 -m unittest discover -s scripts/tip_dashboard/tests -p 'test_*.py'
+python3 -m unittest discover -s scripts/tip_dashboard -p 'test_runner.py'
+node --test scripts/tip_dashboard/web/app.test.cjs
+```
+
+For real-browser regression, install Playwright outside source and run `web/browser.test.cjs` with `NODE_PATH` pointing there. `TIP_DASHBOARD_REPORT`, `TIP_DASHBOARD_BASELINE` and optional `PLAYWRIGHT_CHROMIUM_EXECUTABLE` select fixtures and browser.

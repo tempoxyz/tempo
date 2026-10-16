@@ -1,0 +1,203 @@
+{
+  "schema_version": 1,
+  "inventories": [
+    {
+      "tip": "TIP-1006",
+      "spec_digest": "ad8852d2a6018e5419c3676dc8e922306eaab4d8bf03abe377ab2d05d1f23ab5",
+      "reviewer": "Codex parent and independent specialist source review",
+      "reviewer_kind": "agent",
+      "source": "tips/verification/tip-1006-review.md"
+    }
+  ],
+  "requirements": [
+    {
+      "id": "TIP-1006:R21",
+      "spec_digest": "ad8852d2a6018e5419c3676dc8e922306eaab4d8bf03abe377ab2d05d1f23ab5",
+      "source_digest": "547a89dad114c3c130824b897963ab36a3706553e13d689ec08cddc940125929",
+      "test_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "reviewer": "Codex parent and independent specialist source review",
+      "reviewer_kind": "agent",
+      "source": "tips/verification/tip-1006-review.md"
+    },
+    {
+      "id": "TIP-1006:R8",
+      "spec_digest": "ad8852d2a6018e5419c3676dc8e922306eaab4d8bf03abe377ab2d05d1f23ab5",
+      "source_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "test_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "reviewer": "Codex parent and independent specialist source review",
+      "reviewer_kind": "agent",
+      "source": "tips/verification/tip-1006-review.md"
+    },
+    {
+      "id": "TIP-1006:R9",
+      "spec_digest": "ad8852d2a6018e5419c3676dc8e922306eaab4d8bf03abe377ab2d05d1f23ab5",
+      "source_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "test_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "reviewer": "Codex parent and independent specialist source review",
+      "reviewer_kind": "agent",
+      "source": "tips/verification/tip-1006-review.md"
+    },
+    {
+      "id": "TIP-1006:R10",
+      "spec_digest": "ad8852d2a6018e5419c3676dc8e922306eaab4d8bf03abe377ab2d05d1f23ab5",
+      "source_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "test_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "reviewer": "Codex parent and independent specialist source review",
+      "reviewer_kind": "agent",
+      "source": "tips/verification/tip-1006-review.md"
+    },
+    {
+      "id": "TIP-1006:R11",
+      "spec_digest": "ad8852d2a6018e5419c3676dc8e922306eaab4d8bf03abe377ab2d05d1f23ab5",
+      "source_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "test_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "reviewer": "Codex parent and independent specialist source review",
+      "reviewer_kind": "agent",
+      "source": "tips/verification/tip-1006-review.md"
+    },
+    {
+      "id": "TIP-1006:R12",
+      "spec_digest": "ad8852d2a6018e5419c3676dc8e922306eaab4d8bf03abe377ab2d05d1f23ab5",
+      "source_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "test_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "reviewer": "Codex parent and independent specialist source review",
+      "reviewer_kind": "agent",
+      "source": "tips/verification/tip-1006-review.md"
+    },
+    {
+      "id": "TIP-1006:R13",
+      "spec_digest": "ad8852d2a6018e5419c3676dc8e922306eaab4d8bf03abe377ab2d05d1f23ab5",
+      "source_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "test_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "reviewer": "Codex parent and independent specialist source review",
+      "reviewer_kind": "agent",
+      "source": "tips/verification/tip-1006-review.md"
+    },
+    {
+      "id": "TIP-1006:R14",
+      "spec_digest": "ad8852d2a6018e5419c3676dc8e922306eaab4d8bf03abe377ab2d05d1f23ab5",
+      "source_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "test_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "reviewer": "Codex parent and independent specialist source review",
+      "reviewer_kind": "agent",
+      "source": "tips/verification/tip-1006-review.md"
+    },
+    {
+      "id": "TIP-1006:R15",
+      "spec_digest": "ad8852d2a6018e5419c3676dc8e922306eaab4d8bf03abe377ab2d05d1f23ab5",
+      "source_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "test_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "reviewer": "Codex parent and independent specialist source review",
+      "reviewer_kind": "agent",
+      "source": "tips/verification/tip-1006-review.md"
+    },
+    {
+      "id": "TIP-1006:R16",
+      "spec_digest": "ad8852d2a6018e5419c3676dc8e922306eaab4d8bf03abe377ab2d05d1f23ab5",
+      "source_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "test_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "reviewer": "Codex parent and independent specialist source review",
+      "reviewer_kind": "agent",
+      "source": "tips/verification/tip-1006-review.md"
+    },
+    {
+      "id": "TIP-1006:R17",
+      "spec_digest": "ad8852d2a6018e5419c3676dc8e922306eaab4d8bf03abe377ab2d05d1f23ab5",
+      "source_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "test_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "reviewer": "Codex parent and independent specialist source review",
+      "reviewer_kind": "agent",
+      "source": "tips/verification/tip-1006-review.md"
+    },
+    {
+      "id": "TIP-1006:R18",
+      "spec_digest": "ad8852d2a6018e5419c3676dc8e922306eaab4d8bf03abe377ab2d05d1f23ab5",
+      "source_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "test_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "reviewer": "Codex parent and independent specialist source review",
+      "reviewer_kind": "agent",
+      "source": "tips/verification/tip-1006-review.md"
+    },
+    {
+      "id": "TIP-1006:R20",
+      "spec_digest": "ad8852d2a6018e5419c3676dc8e922306eaab4d8bf03abe377ab2d05d1f23ab5",
+      "source_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "test_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "reviewer": "Codex parent and independent specialist source review",
+      "reviewer_kind": "agent",
+      "source": "tips/verification/tip-1006-review.md"
+    },
+    {
+      "id": "TIP-1006:R22",
+      "spec_digest": "ad8852d2a6018e5419c3676dc8e922306eaab4d8bf03abe377ab2d05d1f23ab5",
+      "source_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "test_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "reviewer": "Codex parent and independent specialist source review",
+      "reviewer_kind": "agent",
+      "source": "tips/verification/tip-1006-review.md"
+    },
+    {
+      "id": "TIP-1006:R1",
+      "spec_digest": "ad8852d2a6018e5419c3676dc8e922306eaab4d8bf03abe377ab2d05d1f23ab5",
+      "source_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "test_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "reviewer": "Codex parent and independent specialist source review",
+      "reviewer_kind": "agent",
+      "source": "tips/verification/tip-1006-review.md"
+    },
+    {
+      "id": "TIP-1006:R2",
+      "spec_digest": "ad8852d2a6018e5419c3676dc8e922306eaab4d8bf03abe377ab2d05d1f23ab5",
+      "source_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "test_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "reviewer": "Codex parent and independent specialist source review",
+      "reviewer_kind": "agent",
+      "source": "tips/verification/tip-1006-review.md"
+    },
+    {
+      "id": "TIP-1006:R3",
+      "spec_digest": "ad8852d2a6018e5419c3676dc8e922306eaab4d8bf03abe377ab2d05d1f23ab5",
+      "source_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "test_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "reviewer": "Codex parent and independent specialist source review",
+      "reviewer_kind": "agent",
+      "source": "tips/verification/tip-1006-review.md"
+    },
+    {
+      "id": "TIP-1006:R4",
+      "spec_digest": "ad8852d2a6018e5419c3676dc8e922306eaab4d8bf03abe377ab2d05d1f23ab5",
+      "source_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "test_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "reviewer": "Codex parent and independent specialist source review",
+      "reviewer_kind": "agent",
+      "source": "tips/verification/tip-1006-review.md"
+    },
+    {
+      "id": "TIP-1006:R5",
+      "spec_digest": "ad8852d2a6018e5419c3676dc8e922306eaab4d8bf03abe377ab2d05d1f23ab5",
+      "source_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "test_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "reviewer": "Codex parent and independent specialist source review",
+      "reviewer_kind": "agent",
+      "source": "tips/verification/tip-1006-review.md"
+    },
+    {
+      "id": "TIP-1006:R6",
+      "spec_digest": "ad8852d2a6018e5419c3676dc8e922306eaab4d8bf03abe377ab2d05d1f23ab5",
+      "source_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "test_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "reviewer": "Codex parent and independent specialist source review",
+      "reviewer_kind": "agent",
+      "source": "tips/verification/tip-1006-review.md"
+    },
+    {
+      "id": "TIP-1006:R7",
+      "spec_digest": "ad8852d2a6018e5419c3676dc8e922306eaab4d8bf03abe377ab2d05d1f23ab5",
+      "source_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "test_digest": "d8df6a32af3d7971051cc287d1955a7e8bf41bad4e73b386bede3af255a257a1",
+      "reviewer": "Codex parent and independent specialist source review",
+      "reviewer_kind": "agent",
+      "source": "tips/verification/tip-1006-review.md"
+    }
+  ]
+}

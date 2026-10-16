@@ -51,6 +51,7 @@ impl Precompile for TIP20Token {
                     UNPAUSE_ROLE(call) => view(call, |_| Ok(Self::unpause_role())),
                     ISSUER_ROLE(call) => view(call, |_| Ok(Self::issuer_role())),
                     BURN_BLOCKED_ROLE(call) => view(call, |_| Ok(Self::burn_blocked_role())),
+                    // @implements TIP-1006:R21 gate=schedule(since=T12)
                     #[schedule(since = T12)]
                     BURN_AT_ROLE(call) => view(call, |_| Ok(Self::burn_at_role())),
 
@@ -77,6 +78,7 @@ impl Precompile for TIP20Token {
                     burnBlocked(call) => mutate(call, msg_sender, |sender, c| {
                         self.burn_blocked(sender, c.from, c.amount, true)
                     }),
+                    // @implements TIP-1006:R21 gate=schedule(since=T12)
                     #[schedule(since = T12)]
                     burnAt(call) => mutate(call, msg_sender, |sender, c| self.burn_at(sender, c)),
                     transferWithMemo(call) => mutate(call, msg_sender, |sender, c| self.transfer_with_memo(sender, c)),
