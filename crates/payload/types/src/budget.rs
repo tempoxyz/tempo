@@ -104,6 +104,11 @@ pub struct ValidationLatencyEstimate {
 }
 
 impl ValidationLatencyEstimate {
+    /// The recent P90 validation time this estimate is floored at.
+    pub fn elapsed(self) -> Duration {
+        self.elapsed
+    }
+
     /// Estimates validation latency for the supplied workload.
     ///
     /// Recent elapsed validation feedback is the floor so faster replay feedback

@@ -48,7 +48,7 @@ use tempo_evm::{TempoEvmConfig, consensus::TempoConsensus};
 use tempo_payload_builder::{
     DEFAULT_BUILD_TIME_MULTIPLIER, TempoPayloadBuilder, TempoPayloadBuilderConfig,
 };
-use tempo_payload_types::TempoPayloadAttributes;
+use tempo_payload_types::{Estimator, EstimatorConfig, TempoPayloadAttributes};
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{
     AA2dPool, AA2dPoolConfig, AddressFilter, TempoTransactionPool,
@@ -117,10 +117,12 @@ pub struct TempoNodeArgs {
     /// at transaction cutoff.
     ///
     /// The builder updates this at runtime. Higher values stop pool transaction
-    /// execution earlier to leave more room for `builder_finish`.
+    /// execution earlier to leave more room for `builder_finish`. Must be
+    /// between 1.0 and 1.7, the range the builder learns it in.
     #[arg(
         long = "builder.build-time-multiplier",
-        default_value_t = DEFAULT_BUILD_TIME_MULTIPLIER
+        default_value_t = DEFAULT_BUILD_TIME_MULTIPLIER,
+        value_parser = parse_build_time_multiplier
     )]
     pub builder_build_time_multiplier: f64,
 
@@ -175,6 +177,7 @@ impl TempoNodeArgs {
             enable_prewarming: !self.builder_disable_prewarming,
             enable_parallel: self.builder_parallel,
             build_time_multiplier: self.builder_build_time_multiplier,
+            estimator: None,
         }
     }
 }
@@ -346,6 +349,18 @@ impl TempoNode {
         self
     }
 
+    /// Shares the proposal budget estimator between the payload builder and
+    /// consensus.
+    ///
+    /// Consensus hands the same handle to its engine so that the validation
+    /// times it observes reach the builder's stop decisions and the builder's
+    /// finished builds reach consensus's metrics; the proposal window itself
+    /// reaches the builder through the payload attributes.
+    pub fn with_estimator(mut self, estimator: Estimator) -> Self {
+        self.payload_builder_builder.estimator = Some(estimator);
+        self
+    }
+
     /// Sets the validator key returned by the admin RPC API.
     pub fn with_validator_key(mut self, validator_key: Option<B256>) -> Self {
         self.validator_key = validator_key;
@@ -483,7 +498,7 @@ where
     fn components_builder(&self) -> Self::ComponentsBuilder {
         Self::components(
             self.pool_builder.clone(),
-            self.payload_builder_builder,
+            self.payload_builder_builder.clone(),
             self.network_builder.clone(),
         )
     }
@@ -843,7 +858,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct TempoPayloadBuilderBuilder {
     /// Enable state provider metrics for the payload builder.
@@ -854,7 +869,12 @@ pub struct TempoPayloadBuilderBuilder {
     pub enable_parallel: bool,
     /// Initial estimate of total replayable payload build work divided by work
     /// at transaction cutoff.
+    ///
+    /// Only used when no shared `estimator` is provided. Building the payload
+    /// builder fails unless it is between 1.0 and 1.7.
     pub build_time_multiplier: f64,
+    /// Proposal budget estimator shared with consensus, if the node runs one.
+    pub estimator: Option<Estimator>,
 }
 
 impl Default for TempoPayloadBuilderBuilder {
@@ -864,6 +884,7 @@ impl Default for TempoPayloadBuilderBuilder {
             enable_prewarming: true,
             enable_parallel: false,
             build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
+            estimator: None,
         }
     }
 }
@@ -890,6 +911,17 @@ where
             _ => None,
         });
 
+        // Without a handle shared with consensus, the builder paces against an
+        // estimator of its own.
+        let estimator = match self.estimator {
+            Some(estimator) => estimator,
+            None => Estimator::new(
+                EstimatorConfig::default().with_build_time_multiplier(self.build_time_multiplier),
+            )
+            .map_err(|reason| {
+                eyre::eyre!("invalid payload builder build time multiplier: {reason}")
+            })?,
+        };
         Ok(TempoPayloadBuilder::new(
             pool,
             ctx.provider().clone(),
@@ -902,10 +934,25 @@ where
                 enable_prewarming: self.enable_prewarming,
                 skip_state_root: ctx.config().tree_config().skip_state_root(),
                 enable_parallel: self.enable_parallel,
-                build_time_multiplier: self.build_time_multiplier,
             },
+            estimator,
         ))
     }
+}
+
+/// Parses `--builder.build-time-multiplier`, rejecting values the estimator
+/// would reject.
+///
+/// Validating here rejects a bad value at parse time, with an error that
+/// names the flag, before anything builds an estimator from it.
+fn parse_build_time_multiplier(value: &str) -> Result<f64, String> {
+    let multiplier = value
+        .parse::<f64>()
+        .map_err(|error| format!("invalid build time multiplier `{value}`: {error}"))?;
+    EstimatorConfig::default()
+        .with_build_time_multiplier(multiplier)
+        .validate()?;
+    Ok(multiplier)
 }
 
 /// Parses `value` as an address list, falling back to reading it as a file.
@@ -953,6 +1000,36 @@ mod tests {
                 .max_txs_per_lane,
             32
         );
+    }
+
+    #[test]
+    fn build_time_multiplier_is_validated_at_parse_time() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Args {
+            #[command(flatten)]
+            node: TempoNodeArgs,
+        }
+        let parse =
+            |value: &str| Args::try_parse_from(["tempo", "--builder.build-time-multiplier", value]);
+        for value in ["1.7", "1.0"] {
+            let multiplier = parse(value)
+                .unwrap_or_else(|err| panic!("{value} must be accepted: {err}"))
+                .node
+                .builder_build_time_multiplier;
+            assert_eq!(multiplier, value.parse::<f64>().unwrap());
+        }
+        // Rejected by the parser itself, before an estimator is built from
+        // them in any mode.
+        for value in ["2.0", "0.5", "nan"] {
+            let err = parse(value)
+                .err()
+                .unwrap_or_else(|| panic!("{value} must be rejected"));
+            assert!(
+                err.to_string().contains("build time multiplier"),
+                "{value}: {err}"
+            );
+        }
     }
 
     #[test]

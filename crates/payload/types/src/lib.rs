@@ -5,11 +5,18 @@
 
 mod attrs;
 mod budget;
+mod estimator;
 
 use alloy_primitives::Bytes;
 pub use attrs::TempoPayloadAttributes;
 pub use budget::{
     ValidationLatencyEstimate, ValidationLatencyEstimator, ValidationLatencyWorkload,
+};
+pub use estimator::{
+    BuildPlan, DEFAULT_BUILD_TIME_MULTIPLIER, DEFAULT_NETWORK_BUDGET, DEFAULT_NETWORK_BUDGET_MAX,
+    DEFAULT_NETWORK_RESERVE_PERCENTILE, DEFAULT_RETURN_BUDGET_OVERRUN_TOLERANCE,
+    DEFAULT_TARGET_BLOCK_TIME, Estimator, EstimatorConfig, EstimatorSnapshot, FinishedBuild,
+    PayloadBudgetDecision, ProposalBudget, ProposalKey,
 };
 use std::{
     sync::{Arc, OnceLock},

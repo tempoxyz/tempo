@@ -913,7 +913,6 @@ fn payload_attributes_reach_the_execution_layer_unchanged() {
         assert_eq!(received.extra_data(), &extra_data);
         assert_eq!(received.consensus_context(), Some(consensus_context));
         assert_eq!(received.payload_build_budget(), Some(build_budget));
-        assert!(received.validation_latency_estimate().is_none());
     });
 }
 
