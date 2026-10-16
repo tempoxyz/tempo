@@ -260,16 +260,7 @@ async fn configure_sequencing(
             "this node is `rpc_only` in the manifest, so --sequencer-key-file must not be provided: the shared key is never used here and is also the zone ECIES private key for encrypted deposits"
         ));
     }
-    eyre::ensure!(
-        args.shadow_prover_pcrs.is_none() || (rpc_only && !should_sequence_blocks),
-        "--shadow-prover.pcrs requires an rpc_only follower; it is not a settlement policy"
-    );
-    let policy = args
-        .prover_attestation_policy
-        .as_deref()
-        .map(std::fs::read)
-        .transpose()?;
-    let prover_addresses = ProverAddresses::new(args.prover_addresses.clone(), policy.as_deref())?;
+    let prover_addresses = ProverAddresses::new(args.prover_addresses.clone())?;
     let prover_config = if !args.enable_prover {
         None
     } else if should_sequence_blocks {
@@ -284,10 +275,7 @@ async fn configure_sequencing(
             rpc_only,
             "--sequencer.enable-prover requires a sequencer or an rpc_only P2P follower"
         );
-        Some(ZoneProverConfig::Shadow {
-            prover_addresses,
-            proof_verifier: args.shadow_prover_pcrs.clone(),
-        })
+        Some(ZoneProverConfig::Shadow { prover_addresses })
     };
 
     if should_sequence_blocks {
@@ -593,28 +581,9 @@ pub struct ZoneArgs {
         env = "SEQUENCER_PROVER_ADDRESS",
         value_name = "HARDFORK=HOST:PORT",
         value_delimiter = ',',
-        requires_all = ["enable_prover", "prover_attestation_policy"]
+        requires = "enable_prover"
     )]
     pub prover_addresses: Vec<HardforkProverAddress>,
-
-    /// JSON PCR allowlist required to authenticate remote provers.
-    #[arg(
-        long = "sequencer.prover-attestation-policy",
-        env = "SEQUENCER_PROVER_ATTESTATION_POLICY",
-        value_name = "PATH",
-        requires_all = ["enable_prover", "prover_addresses"]
-    )]
-    pub prover_attestation_policy: Option<PathBuf>,
-
-    /// Verify shadow Nitro proofs locally against independently approved PCR0, PCR1 and PCR2.
-    /// Works before T13; applies only to RPC followers and never enables settlement enforcement.
-    #[arg(
-        long = "shadow-prover.pcrs",
-        env = "SHADOW_PROVER_PCRS",
-        value_name = "PCR0,PCR1,PCR2",
-        requires = "prover_addresses"
-    )]
-    pub shadow_prover_pcrs: Option<zone_prover::ShadowProofVerifier>,
 }
 
 fn prepend_log_filter(filter: &mut String, directives: &str) {
@@ -738,47 +707,26 @@ mod tests {
     }
 
     #[test]
-    fn shadow_verification_requires_remote_proving_and_complete_measurements() {
-        let common = [
-            "tempo-zone",
-            "--l1.rpc-url",
-            "ws://localhost:8546",
-            "--l1.portal-address",
-            "0x5ad0000000000000000000000000000000000002",
-        ];
-        let pcr = "11".repeat(48);
-        let pcrs = format!("{pcr},{pcr},{pcr}");
-        assert!(
-            ZoneArgsParser::try_parse_from(
-                common
-                    .into_iter()
-                    .chain(["--shadow-prover.pcrs", pcrs.as_str(),])
-            )
-            .is_err()
-        );
-        let args = ZoneArgsParser::try_parse_from(common.into_iter().chain([
-            "--sequencer.enable-prover",
+    fn pcr_input_flags_are_removed() {
+        for flag in [
             "--sequencer.prover-attestation-policy",
-            "policy.json",
-            "--sequencer.prover-address",
-            "T13=localhost:5000",
             "--shadow-prover.pcrs",
-            pcrs.as_str(),
-        ]))
-        .unwrap();
-        assert!(args.zone.shadow_prover_pcrs.is_some());
-        assert!(
-            ZoneArgsParser::try_parse_from(common.into_iter().chain([
+        ] {
+            let error = ZoneArgsParser::try_parse_from([
+                "tempo-zone",
+                "--l1.rpc-url",
+                "ws://localhost:8546",
+                "--l1.portal-address",
+                "0x5ad0000000000000000000000000000000000002",
                 "--sequencer.enable-prover",
-                "--sequencer.prover-attestation-policy",
-                "policy.json",
                 "--sequencer.prover-address",
                 "T13=localhost:5000",
-                "--shadow-prover.pcrs",
-                "00,00,00",
-            ]))
-            .is_err()
-        );
+                flag,
+                "unused",
+            ])
+            .unwrap_err();
+            assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+        }
     }
 
     #[test]
@@ -790,8 +738,6 @@ mod tests {
             "--l1.portal-address",
             "0x0000000000000000000000000000000000000001",
             "--sequencer.enable-prover",
-            "--sequencer.prover-attestation-policy",
-            "policy.json",
         ];
         for flags in [
             vec![
@@ -811,27 +757,12 @@ mod tests {
                 .unwrap()
                 .zone;
             assert_eq!(args.prover_addresses.len(), 3);
-            assert!(args.prover_attestation_policy.is_some());
         }
-        let local_prover =
-            ZoneArgsParser::try_parse_from(common[..common.len() - 2].iter().copied())
-                .unwrap()
-                .zone;
+        let local_prover = ZoneArgsParser::try_parse_from(common.iter().copied())
+            .unwrap()
+            .zone;
         assert!(local_prover.enable_prover);
         assert!(local_prover.prover_addresses.is_empty());
-        assert!(local_prover.prover_attestation_policy.is_none());
-        let missing_policy = ZoneArgsParser::try_parse_from(
-            common[..common.len() - 2]
-                .iter()
-                .copied()
-                .chain(["--sequencer.prover-address", "T12=old:5000"]),
-        )
-        .unwrap_err();
-        assert!(
-            missing_policy
-                .to_string()
-                .contains("--sequencer.prover-attestation-policy")
-        );
         let error = ZoneArgsParser::try_parse_from(
             common
                 .into_iter()

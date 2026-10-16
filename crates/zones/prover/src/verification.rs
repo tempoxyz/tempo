@@ -1,91 +1,84 @@
-//! Local use of the native verifier's shared logic, independent of L1 fork activation.
+//! Local use of the native verifier's shared logic with the approved hardfork PCR policy.
 
-use std::str::FromStr;
-
-use alloy_primitives::FixedBytes;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
     error::TempoPrecompileError,
     storage::{StorageCtx, hashmap::HashMapStorageProvider},
     zone_factory::portal_address,
-    zone_verifier::{IZoneVerifier, ZoneVerifier},
+    zone_verifier::{IZoneVerifier, ZoneVerifier, approved_pcrs},
 };
 
-/// Independently pinned PCR0, PCR1 and PCR2 for observational Nitro verification.
-///
-/// These measurements must come from the approved EIF build, never from a prover response.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ShadowProofVerifier {
-    pcrs: [[u8; 48]; 3],
-}
-
+/// Failure to select the trusted hardfork measurements or run native Nitro verification.
 #[derive(Debug, thiserror::Error)]
 pub enum ShadowProofVerificationError {
-    #[error("expected three comma-separated 48-byte PCR measurements (PCR0,PCR1,PCR2)")]
-    InvalidMeasurements,
-    #[error("zero/debug enclave PCR measurements are not permitted")]
-    DebugMeasurements,
+    /// No compiled-in policy is effective at the requested L1 hardfork.
+    #[error("no approved prover PCRs for L1 hardfork {0}")]
+    MissingMeasurements(TempoHardfork),
     #[error("Nitro verification failed: {0}")]
     Verification(#[from] TempoPrecompileError),
 }
 
-impl FromStr for ShadowProofVerifier {
-    type Err = ShadowProofVerificationError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let values = value
-            .split(',')
-            .map(|part| part.trim().parse::<FixedBytes<48>>())
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| ShadowProofVerificationError::InvalidMeasurements)?;
-        let values: [FixedBytes<48>; 3] = values
-            .try_into()
-            .map_err(|_| ShadowProofVerificationError::InvalidMeasurements)?;
-        if values.iter().any(FixedBytes::is_zero) {
-            return Err(ShadowProofVerificationError::DebugMeasurements);
-        }
-        Ok(Self {
-            pcrs: values.map(|value| value.0),
-        })
-    }
-}
-
-impl ShadowProofVerifier {
-    /// Verify the complete attestation and its batch commitments using the native verifier's
-    /// implementation, using the machine wall clock for certificate and attestation time checks.
-    pub fn verify(
-        &self,
-        call: IZoneVerifier::verifyCall,
-        parent_chain_id: u64,
-    ) -> Result<bool, ShadowProofVerificationError> {
-        let mut storage = HashMapStorageProvider::new(parent_chain_id);
-        StorageCtx::enter(&mut storage, || {
-            ZoneVerifier::new().verify_with_pcrs(portal_address(call.zoneId), call, self.pcrs)
-        })
-        .map_err(Into::into)
-    }
+/// Verify the complete Nitro attestation and batch commitments against the compiled-in
+/// measurements effective at `hardfork`. Missing measurements return an error.
+/// Uses the machine wall clock for certificate and attestation time checks.
+pub fn verify_shadow_proof(
+    call: IZoneVerifier::verifyCall,
+    parent_chain_id: u64,
+    hardfork: TempoHardfork,
+) -> Result<bool, ShadowProofVerificationError> {
+    let pcrs = approved_pcrs(hardfork)
+        .ok_or(ShadowProofVerificationError::MissingMeasurements(hardfork))?;
+    let mut storage = HashMapStorageProvider::new_with_spec(parent_chain_id, hardfork);
+    StorageCtx::enter(&mut storage, || {
+        ZoneVerifier::new().verify_with_pcrs(portal_address(call.zoneId), call, pcrs)
+    })
+    .map_err(Into::into)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::{B256, Bytes, U256};
+    use tempo_contracts::{
+        precompiles::NITRO_VERIFIER_CONFIG_V1,
+        zones::{BlockTransition, DepositQueueTransition, TokenEnablementTransition},
+    };
 
     #[test]
-    fn requires_complete_non_debug_measurements() {
-        let pcr = "11".repeat(48);
-        assert!(
-            format!("{pcr},{pcr},{pcr}")
-                .parse::<ShadowProofVerifier>()
-                .is_ok()
-        );
-        for invalid in [
-            String::new(),
-            pcr.clone(),
-            format!("{pcr},{pcr}"),
-            format!("{pcr},{pcr},{pcr},{pcr}"),
-            format!("{pcr},{pcr},00"),
-            format!("{pcr},{pcr},{}", "00".repeat(48)),
-        ] {
-            assert!(invalid.parse::<ShadowProofVerifier>().is_err());
+    fn rejects_unapproved_forks_and_invalid_proofs() {
+        for &hardfork in TempoHardfork::VARIANTS {
+            let call = IZoneVerifier::verifyCall {
+                zoneId: 1,
+                tempoBlockNumber: 0,
+                anchorBlockNumber: 0,
+                anchorBlockHash: B256::ZERO,
+                expectedWithdrawalBatchIndex: 0,
+                nextZoneHeight: U256::ZERO,
+                blockTransition: BlockTransition {
+                    prevBlockHash: B256::ZERO,
+                    nextBlockHash: B256::ZERO,
+                },
+                depositQueueTransition: DepositQueueTransition {
+                    prevProcessedHash: B256::ZERO,
+                    nextProcessedHash: B256::ZERO,
+                    prevDepositNumber: 0,
+                    nextDepositNumber: 0,
+                },
+                tokenEnablementTransition: TokenEnablementTransition {
+                    prevProcessedTokenCount: 0,
+                    nextProcessedTokenCount: 0,
+                },
+                withdrawalQueueHash: B256::ZERO,
+                verifierConfig: Bytes::from_static(NITRO_VERIFIER_CONFIG_V1),
+                proof: Bytes::from_static(&[1]),
+            };
+            let result = verify_shadow_proof(call, 42431, hardfork);
+            if approved_pcrs(hardfork).is_some() {
+                assert!(!result.unwrap());
+            } else {
+                assert!(matches!(result,
+                    Err(ShadowProofVerificationError::MissingMeasurements(fork)) if fork == hardfork));
+            }
         }
     }
 }

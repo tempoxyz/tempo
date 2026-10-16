@@ -8,7 +8,10 @@ use std::{collections::BTreeMap, env, error::Error, fmt::Write, fs, path::PathBu
 mod pcr;
 
 const PCRS_PATH: &str = "src/zone_verifier/pcrs.json";
-const COMMIT_PREFIX: &str = "https://github.com/tempoxyz/zones/commit/";
+const COMMIT_PREFIXES: [&str; 2] = [
+    "https://github.com/tempoxyz/tempo/commit/",
+    "https://github.com/tempoxyz/zones/commit/",
+];
 const IMAGE_PREFIX: &str = "ghcr.io/tempoxyz/tempo-zone-prover@sha256:";
 
 /// One approved PCR0/1/2 tuple and the release that produced it.
@@ -34,7 +37,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         if fork.is_empty() || !fork.chars().all(|c| c.is_ascii_alphanumeric()) {
             return Err(format!("{PCRS_PATH}: invalid hardfork `{fork}`").into());
         }
-        check_hex(&entry.commit, COMMIT_PREFIX, 40, "commit")?;
+        let commit_prefix = COMMIT_PREFIXES
+            .iter()
+            .find(|prefix| entry.commit.starts_with(**prefix))
+            .ok_or_else(|| {
+                format!("{PCRS_PATH}: commit must reference tempoxyz/tempo or tempoxyz/zones")
+            })?;
+        check_hex(&entry.commit, commit_prefix, 40, "commit")?;
         check_hex(&entry.image, IMAGE_PREFIX, 64, "image")?;
 
         if !entry.pcrs.keys().eq(["0", "1", "2"]) {

@@ -294,3 +294,31 @@ fn rejects_incomplete_zero_and_malformed_measurement_policies() {
         assert_eq!(result.is_ok(), expected, "policy: {json}: {result:?}");
     }
 }
+
+#[test]
+fn hardfork_policy_matches_the_compiled_verifier_measurements() {
+    for &hardfork in TempoHardfork::VARIANTS {
+        let config = RemoteProverConfig::from_hardfork("localhost:5000".to_owned(), hardfork);
+        match approved_pcrs(hardfork) {
+            Some(pcrs) => {
+                let config = config.unwrap();
+                assert_eq!(config.address(), "localhost:5000");
+                assert_eq!(config.policy.max_age_seconds, DEFAULT_MAX_AGE_SECS);
+                assert_eq!(config.policy.pcrs.len(), 3);
+                for (index, expected) in pcrs.into_iter().enumerate() {
+                    assert_eq!(
+                        config.policy.pcrs[&(index as u8)],
+                        vec![FixedBytes::from(expected)]
+                    );
+                }
+            }
+            None => {
+                let error = config.unwrap_err();
+                assert_eq!(
+                    error.to_string(),
+                    format!("no approved prover PCRs for L1 hardfork {hardfork}")
+                );
+            }
+        }
+    }
+}

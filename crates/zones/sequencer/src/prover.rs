@@ -37,7 +37,7 @@ use zone_chainspec::ZoneChainSpec;
 use zone_l1::TempoStateExt as _;
 use zone_prover::{
     DEFAULT_MAX_REQUEST_BYTES, NITRO_VERIFIER_CONFIG_V1, PROTOCOL_VERSION, ProofBundle,
-    ProverConnection, ShadowProofVerifier, VerifierMode, VerifyRequest, VerifyResponse,
+    ProverConnection, VerifierMode, VerifyRequest, VerifyResponse,
     attested_transport::RemoteProverConfig,
 };
 use zone_rpc::ZoneDebugApi;
@@ -72,9 +72,9 @@ pub struct SettlementProverConfig {
     /// Authenticated remote Nitro prover endpoints. When absent, execute the SPF in-process.
     /// Settlement requires a remote NSM attestation; shadow validation does not.
     pub prover_addresses: Option<ProverAddresses>,
-    /// Optional pinned PCR policy for local verification. Without it, remote proofs are
-    /// checked against the portal's L1 verifier after T13.
-    pub proof_verifier: Option<ShadowProofVerifier>,
+    /// Verify remote shadow proofs locally against the active L1 hardfork's compiled PCRs.
+    /// Settlement proofs are checked against the portal's L1 verifier after T13.
+    pub verify_proofs_locally: bool,
 }
 
 impl fmt::Debug for SettlementProverConfig {
@@ -86,7 +86,7 @@ impl fmt::Debug for SettlementProverConfig {
             .field("chain_spec", &self.chain_spec)
             .field("debug_api", &"<in-process>")
             .field("prover_addresses", &self.prover_addresses)
-            .field("proof_verifier", &self.proof_verifier)
+            .field("verify_proofs_locally", &self.verify_proofs_locally)
             .finish()
     }
 }
@@ -249,7 +249,7 @@ fn spawn_prover<P: ZoneSequencerProvider>(
         target: "zone::sequencer::prover",
         zone_id = config.zone_id,
         prover_addresses = ?config.prover_addresses,
-        shadow_proof_verification = config.proof_verifier.is_some(),
+        shadow_proof_verification = config.verify_proofs_locally,
         queue_capacity,
         "Prover enabled"
     );
@@ -433,9 +433,11 @@ async fn validate_candidate<P: ZoneSequencerProvider>(
 
     let started = Instant::now();
     let (output, proof_bundle) = if let Some(addresses) = &context.config.prover_addresses {
-        let (remote, hardfork) = addresses
+        let (address, hardfork) = addresses
             .resolve(&context.l1_provider, context.config.chain_spec.as_ref())
             .await?;
+        let remote = RemoteProverConfig::from_hardfork(address.to_owned(), hardfork)
+            .wrap_err("failed to resolve prover PCR policy")?;
         info!(
             address = remote.address(),
             ?hardfork,
@@ -444,7 +446,7 @@ async fn validate_candidate<P: ZoneSequencerProvider>(
             "Selected remote prover"
         );
         let (output, bundle) =
-            verify_remotely(remote, context.config.zone_id, job, witness, metrics).await?;
+            verify_remotely(&remote, context.config.zone_id, job, witness, metrics).await?;
         (output, Some(SettlementProof { bundle, hardfork }))
     } else {
         let spf_config = SpfConfig::new(context.config.chain_spec.clone());
@@ -470,7 +472,7 @@ async fn validate_candidate<P: ZoneSequencerProvider>(
         let result = verify_proof(
             &context.l1_provider,
             context.config.chain_spec.as_ref(),
-            context.config.proof_verifier.as_ref(),
+            context.config.verify_proofs_locally,
             context.config.parent_chain_id,
             call,
         )
@@ -482,7 +484,7 @@ async fn validate_candidate<P: ZoneSequencerProvider>(
             Ok(ProofVerification::Verified) => {
                 metrics.proof_verification_success_total.increment(1);
                 info!(target: "zone::sequencer::prover", zone_from = job.from, zone_to = job.to,
-                    local = context.config.proof_verifier.is_some(), "Nitro proof verified");
+                    local = context.config.verify_proofs_locally, "Nitro proof verified");
             }
             Ok(ProofVerification::SkippedBeforeT13) => {
                 metrics.proof_verification_skipped_total.increment(1);
@@ -491,7 +493,7 @@ async fn validate_candidate<P: ZoneSequencerProvider>(
             }
             Ok(ProofVerification::Rejected) => {
                 // L1 may have activated a fork with new PCRs while proving.
-                if context.config.proof_verifier.is_none() {
+                if !context.config.verify_proofs_locally {
                     let current = active_l1_hardfork(
                         &context.l1_provider,
                         context.config.chain_spec.as_ref(),
@@ -513,7 +515,7 @@ async fn validate_candidate<P: ZoneSequencerProvider>(
                 return Err(error);
             }
         }
-    } else if context.config.proof_verifier.is_some() {
+    } else if context.config.verify_proofs_locally {
         bail!("local proof verification requires a remote Nitro proof");
     }
 

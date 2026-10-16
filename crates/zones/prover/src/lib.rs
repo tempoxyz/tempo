@@ -6,7 +6,7 @@ mod connection;
 mod protocol;
 mod verification;
 
-pub use verification::{ShadowProofVerificationError, ShadowProofVerifier};
+pub use verification::{ShadowProofVerificationError, verify_shadow_proof};
 
 pub use chainspec::{TrustedChainSpecError, TrustedChainSpecs};
 pub use connection::{ProverConnection, ProverConnectionError, request_error_response};

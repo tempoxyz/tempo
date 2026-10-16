@@ -9,10 +9,10 @@ use tempo_alloy::TempoNetwork;
 use tempo_contracts::precompiles::IZoneVerifier;
 use tempo_precompiles::zone_factory::portal_address;
 use zone_chainspec::ZoneChainSpec;
-use zone_prover::{ProofBundle, ShadowProofVerifier};
+use zone_prover::{ProofBundle, verify_shadow_proof};
 use zone_spf::{BatchOutput, PublicInputs};
 
-use crate::{SettlementAbi, abi::ZonePortal};
+use crate::{SettlementAbi, abi::ZonePortal, prover_config::active_l1_hardfork};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ProofVerification {
@@ -21,18 +21,18 @@ pub(super) enum ProofVerification {
     SkippedBeforeT13,
 }
 
-/// Apply the local PCR policy when supplied, otherwise simulate the deployed L1 verifier.
+/// Verify shadow proofs with the active hardfork PCR policy, otherwise simulate the L1 verifier.
 /// The call's commitments were checked against the expected batch before reaching this point.
 pub(super) async fn verify_proof(
     provider: &DynProvider<TempoNetwork>,
     chain_spec: &ZoneChainSpec,
-    local: Option<&ShadowProofVerifier>,
+    local: bool,
     parent_chain_id: u64,
     call: IZoneVerifier::verifyCall,
 ) -> Result<ProofVerification> {
-    let accepted = if let Some(verifier) = local {
-        let verifier = verifier.clone();
-        tokio::task::spawn_blocking(move || verifier.verify(call, parent_chain_id))
+    let accepted = if local {
+        let hardfork = active_l1_hardfork(provider, chain_spec).await?;
+        tokio::task::spawn_blocking(move || verify_shadow_proof(call, parent_chain_id, hardfork))
             .await
             .wrap_err("proof verification worker panicked")?
             .wrap_err("local proof verification failed")?
@@ -93,7 +93,7 @@ mod tests {
     use alloy_provider::{Provider as _, ProviderBuilder};
     use alloy_sol_types::SolValue as _;
     use alloy_transport::mock::Asserter;
-    use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_chainspec::{TempoHardforks as _, hardfork::TempoHardfork};
     use zone_chainspec::test_utils::set_tempo_fork;
     use zone_prover::VerifierMode;
     use zone_spf::{
@@ -175,7 +175,7 @@ mod tests {
         let rpc = Asserter::new();
         rpc.push_success(&fork_header(999));
         assert_eq!(
-            verify_proof(&provider(&rpc), &chain_spec(), None, 42431, call())
+            verify_proof(&provider(&rpc), &chain_spec(), false, 42431, call())
                 .await
                 .unwrap(),
             ProofVerification::SkippedBeforeT13,
@@ -193,7 +193,7 @@ mod tests {
             Ok(output) => rpc.push_success(&output),
             Err(message) => rpc.push_failure_msg(message),
         }
-        let result = verify_proof(&provider(&rpc), &chain_spec(), None, 42431, call()).await;
+        let result = verify_proof(&provider(&rpc), &chain_spec(), false, 42431, call()).await;
         assert!(rpc.read_q().is_empty());
         result
     }
@@ -221,7 +221,7 @@ mod tests {
                 rpc.push_success(&fork_header(1_000));
             }
             rpc.push_failure_msg("L1 unavailable");
-            let error = verify_proof(&provider(&rpc), &chain_spec(), None, 42431, call())
+            let error = verify_proof(&provider(&rpc), &chain_spec(), false, 42431, call())
                 .await
                 .unwrap_err();
             assert!(error.root_cause().to_string().contains("L1 unavailable"));
@@ -230,30 +230,49 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn proof_verification_with_pcrs_uses_local_verifier_without_l1_rpc() {
-        let rpc = Asserter::new();
-        // No responses are queued: local verification must not make any L1 RPC calls.
-        let pcr = "11".repeat(48);
-        let local: ShadowProofVerifier = format!("{pcr},{pcr},{pcr}").parse().unwrap();
-        let verdict = verify_proof(&provider(&rpc), &chain_spec(), Some(&local), 42431, call())
-            .await
-            .unwrap();
-        assert_eq!(verdict, ProofVerification::Rejected);
-        assert!(rpc.read_q().is_empty());
-        // Ensure the same native ABI carries the trusted batch and resolved anchor for both paths.
-        let call = call();
-        assert_eq!(
-            IZoneVerifier::verifyCall::SELECTOR,
-            [0xeb, 0xb2, 0xdd, 0xc9]
-        );
-        assert_eq!(
-            (call.zoneId, call.anchorBlockNumber, call.anchorBlockHash),
-            (42, 150, B256::repeat_byte(0xaa))
-        );
-        assert_eq!(call.nextZoneHeight, U256::from(20));
+    async fn shadow_verification_uses_the_live_l1_fork_and_requires_approved_pcrs() {
+        for fork in [TempoHardfork::T13, TempoHardfork::T14] {
+            let mut genesis = tempo_chainspec::spec::DEV.inner.genesis.clone();
+            set_tempo_fork(&mut genesis, fork, 1_000);
+            let spec = ZoneChainSpec {
+                inner: std::sync::Arc::new(tempo_chainspec::TempoChainSpec::from_genesis(genesis)),
+            };
+            for timestamp in [999, 1_000, 999] {
+                let rpc = Asserter::new();
+                rpc.push_success(&fork_header(timestamp));
+                let hardfork = spec.tempo_hardfork_at(timestamp);
+                let result = verify_proof(&provider(&rpc), &spec, true, 42431, call()).await;
+                if tempo_precompiles::zone_verifier::approved_pcrs(hardfork).is_some() {
+                    assert_eq!(result.unwrap(), ProofVerification::Rejected);
+                } else {
+                    assert_eq!(
+                        result.unwrap_err().root_cause().to_string(),
+                        format!("no approved prover PCRs for L1 hardfork {hardfork}")
+                    );
+                }
+                assert!(rpc.read_q().is_empty());
+            }
+        }
     }
+
+    #[tokio::test]
+    async fn shadow_verification_propagates_l1_failure() {
+        let rpc = Asserter::new();
+        rpc.push_failure_msg("L1 unavailable");
+        let error = verify_proof(&provider(&rpc), &chain_spec(), true, 42431, call())
+            .await
+            .unwrap_err();
+        let rpc_error = error
+            .downcast_ref::<alloy_transport::TransportError>()
+            .unwrap();
+        let response = rpc_error.as_error_resp().unwrap();
+        assert_eq!(response.code, -32603);
+        assert_eq!(response.message, "L1 unavailable");
+        assert!(rpc.read_q().is_empty());
+    }
+
     #[test]
-    fn verifier_maps_batch_inputs_and_rejects_fake_proof() {
+    fn verifier_maps_batch_inputs() {
         let inputs = PublicInputs {
             parent_chain_id: 4217,
             zone_id: 2,
@@ -332,8 +351,5 @@ mod tests {
         assert_eq!(call.withdrawalQueueHash, output.withdrawal_queue_hash);
         assert_eq!(call.verifierConfig, bundle.verifier_config);
         assert_eq!(call.proof, bundle.proof);
-        let pcr = "11".repeat(48);
-        let verifier: ShadowProofVerifier = format!("{pcr},{pcr},{pcr}").parse().unwrap();
-        assert!(!verifier.verify(call, inputs.parent_chain_id).unwrap());
     }
 }

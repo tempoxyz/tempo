@@ -17,7 +17,9 @@ use rustls::{
 };
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_nitro_attestation::{AWS_NITRO_ROOT_DER, AwsLcP384, MAX_DOCUMENT_SIZE, SHA384_SIZE};
+use tempo_precompiles::zone_verifier::approved_pcrs;
 use tokio::{
     io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _},
     net::TcpStream,
@@ -81,6 +83,17 @@ impl RemoteProverConfig {
             max_age_seconds: DEFAULT_MAX_AGE_SECS,
         };
         Self::new(address, policy)
+    }
+
+    /// Authenticate using the compiled-in verifier policy effective at `hardfork`.
+    /// Returns an error when no measurements are approved for that fork.
+    pub fn from_hardfork(address: String, hardfork: TempoHardfork) -> io::Result<Self> {
+        let pcrs = approved_pcrs(hardfork).ok_or_else(|| {
+            io::Error::other(format!(
+                "no approved prover PCRs for L1 hardfork {hardfork}"
+            ))
+        })?;
+        Self::from_pcrs(address, pcrs)
     }
 
     fn new(address: String, policy: Policy) -> io::Result<Self> {
