@@ -167,12 +167,26 @@ docker buildx bake \
   tempo-zone-prover
 ```
 
-The EIF and PCR measurements are written under `target/tempo-zone-prover-eif/`. CI embeds the EIF
-in the published image and uploads the measurements as a commit-specific workflow artifact.
+The EIF and PCR measurements are written under `target/tempo-zone-prover-eif/`. The Zones Docker
+recipe embeds the EIF in the published image and uploads the measurements and `components.sha384`
+as commit-specific workflow artifacts. In the Tempo monorepo, this workflow remains disabled
+pending the build migration described in [`zones/MIGRATION.md`](../../../zones/MIGRATION.md).
 
-The EIF uses Linux 6.6.79 and its matching NSM driver, built from a pinned AWS Nitro bootstrap
-commit. Changing either one changes the EIF PCR measurements, so the expected measurements must
-also be updated.
+The EIF uses Linux 6.6.79 and a complete matched bootstrap set built from a pinned AWS Nitro
+bootstrap commit: kernel, resolved config, command line, NSM driver, init, and linuxkit. The Nix
+builder image is pinned by digest, and `components.sha384` records the SHA-384 digest of each
+artifact consumed by the EIF builder, including the command line after the entropy-policy update.
+Changing any of these inputs changes the EIF PCR measurements, so the expected measurements must
+also be reviewed and updated.
+
+The x86_64 kernel build applies `zones/docker/nitro/zones-hardening-x86_64.config` over AWS's
+baseline and asserts the resolved configuration after `olddefconfig`. The enforced delta enables
+kernel and kernel-memory ASLR, hardened user copies, slab-freelist randomization, and unprivileged
+`dmesg` restriction. It disables debugfs, Magic SysRq, kexec, io_uring, the BPF syscall/JIT,
+userfaultfd, user and network namespaces, 32-bit compatibility, `modify_ldt`, `/dev/mem`, and
+`/proc/kcore`. The stateless prover does not use these interfaces; removing them reduces attack
+surface. A full EIF build, boot on real Nitro hardware, and successful prover request are required
+before merging this compatibility-sensitive change.
 
 TLS keys require trusted randomness. The EIF builder sets
 `random.trust_bootloader=off random.trust_cpu=off`; startup checks these flags and requires

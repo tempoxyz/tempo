@@ -1,4 +1,4 @@
-FROM nitro-kernel AS nitro-kernel
+FROM nitro-bootstrap AS nitro-bootstrap
 
 FROM public.ecr.aws/amazonlinux/amazonlinux:2023@sha256:6d8e068b91f351df5bf6acd4bd261316e42747ad4bae76689ff6f4939e2180a2
 
@@ -11,13 +11,11 @@ RUN dnf install -y \
     && dnf clean all \
     && rm -rf /var/cache/dnf
 
-# Nitro CLI 1.4.5 ships a Linux 4.14 kernel and a module built specifically for it. Replace the
-# kernel, config, command line, and NSM module as one matched set from the pinned AWS bootstrap
-# build. Its Linux 6.6.79 kernel includes the modern RNG and the Nitro-specific VSOCK deadlock fix.
-COPY --from=nitro-kernel /blobs/bzImage /usr/share/nitro_enclaves/blobs/bzImage
-COPY --from=nitro-kernel /blobs/bzImage.config /usr/share/nitro_enclaves/blobs/bzImage.config
-COPY --from=nitro-kernel /blobs/nsm.ko /usr/share/nitro_enclaves/blobs/nsm.ko
-COPY --from=nitro-kernel /blobs/cmdline /tmp/aws-nitro-cmdline
+# Replace Nitro CLI's precompiled bootstrap blobs with one matched set from the pinned AWS
+# bootstrap build: hardened Linux 6.6.79, its config and command line, the matching NSM driver
+# and init, and AWS's patched linuxkit. Preserve the trusted-entropy policy for TLS keys below.
+COPY --from=nitro-bootstrap /blobs/x86_64/ /usr/share/nitro_enclaves/blobs/
+RUN cp /usr/share/nitro_enclaves/blobs/cmdline /tmp/aws-nitro-cmdline
 
 RUN file /usr/share/nitro_enclaves/blobs/bzImage | grep -Fq 'version 6.6.79' \
     && grep -aFq 'vermagic=6.6.79' /usr/share/nitro_enclaves/blobs/nsm.ko \
@@ -27,6 +25,9 @@ RUN file /usr/share/nitro_enclaves/blobs/bzImage | grep -Fq 'version 6.6.79' \
     && grep -Fqw 'random.trust_cpu=off' /usr/share/nitro_enclaves/blobs/cmdline \
     && grep -Fqw 'random.trust_bootloader=off' /usr/share/nitro_enclaves/blobs/cmdline \
     && ! grep -Fqw 'random.trust_cpu=on' /usr/share/nitro_enclaves/blobs/cmdline \
-    && rm /tmp/aws-nitro-cmdline
+    && rm /tmp/aws-nitro-cmdline \
+    && cd /usr/share/nitro_enclaves/blobs \
+    && sha384sum bzImage bzImage.config cmdline nsm.ko init linuxkit \
+        > /usr/share/nitro_enclaves/components.sha384
 
 ENTRYPOINT ["nitro-cli"]
