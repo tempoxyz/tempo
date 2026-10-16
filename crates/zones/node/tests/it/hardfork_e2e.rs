@@ -32,9 +32,10 @@ use crate::utils::{
 async fn test_t12_to_t13_tip1096_activation() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // Leave time for startup and the T12 assertions. The engine uses wall time as a timestamp
-    // lower bound, and consensus rejects future blocks, so wait for activation before T13.
-    let activation = now_secs() + 30;
+    // Leave time for startup and the T12 assertions, which take a few seconds. The engine uses
+    // wall time as a timestamp lower bound, and consensus rejects future blocks, so wait for
+    // activation before T13.
+    let activation = now_secs() + 15;
     let mut genesis = zone_node::genesis::genesis_template()?;
     set_tempo_fork(&mut genesis, TempoHardfork::T13, activation);
     genesis.config.chain_id = zone_primitives::constants::zone_chain_id(1_337, 1096)?;

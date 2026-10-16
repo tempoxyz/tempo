@@ -1528,7 +1528,7 @@ impl ZoneTestNode {
 /// A Tempo L1 node running in dev mode for integration testing.
 ///
 /// Starts an in-process Tempo node that produces blocks automatically
-/// (500ms block time), providing both HTTP and WebSocket endpoints.
+/// (250ms block time), providing both HTTP and WebSocket endpoints.
 ///
 /// # Usage
 ///
@@ -2671,7 +2671,7 @@ impl L1TestNode {
         Ok(registry.isAuthorized(policy_id, user).call().await?)
     }
 
-    /// Start an L1 dev node with the default configuration (500ms block time).
+    /// Start an L1 dev node with the default configuration (250ms block time).
     pub(crate) async fn start() -> eyre::Result<Self> {
         Self::start_with(|_| {}).await
     }
@@ -2711,7 +2711,7 @@ impl L1TestNode {
                     .with_ws_api(RpcModuleSelection::All),
             )
             .apply(|mut c| {
-                c.dev.block_time = Some(Duration::from_millis(500));
+                c.dev.block_time = Some(Duration::from_millis(250));
                 c.dev.finality_depth = std::num::NonZeroUsize::MIN;
                 // Witness collection must prove older L1 checkpoints during catch-up.
                 c.rpc.rpc_eth_proof_window = 100_000;
