@@ -2323,15 +2323,8 @@ pub(super) async fn run_keychain_expiry_scenario<E: TestEnv>(env: &mut E) -> eyr
     .await?;
     println!("  ✓ Short-expiry key works before expiry");
 
-    // Advance time past expiry (on testnet, blocks are ~2s so we may need many iterations)
-    let mut new_ts = env.current_block_timestamp().await?;
-    for _ in 0..30 {
-        if new_ts >= short_expiry {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        new_ts = env.current_block_timestamp().await?;
-    }
+    // Advance time past expiry
+    let new_ts = env.wait_for_block_timestamp(short_expiry).await?;
     assert!(new_ts >= short_expiry, "Should be past expiry");
 
     // Use expired key (should be rejected)

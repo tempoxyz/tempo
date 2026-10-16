@@ -247,6 +247,18 @@ impl super::types::TestEnv for Localnet {
         Ok(block.header.timestamp())
     }
 
+    /// Mined block timestamps advance by one second per block, so mining
+    /// reaches `target` without waiting on wall time.
+    async fn wait_for_block_timestamp(&mut self, target: u64) -> eyre::Result<u64> {
+        let mut timestamp = self.current_block_timestamp().await?;
+        while timestamp < target {
+            let next = self.current_block_timestamp().await?;
+            eyre::ensure!(next > timestamp, "local block timestamps stopped advancing");
+            timestamp = next;
+        }
+        Ok(timestamp)
+    }
+
     async fn submit_tx_unchecked(
         &mut self,
         encoded: Vec<u8>,
