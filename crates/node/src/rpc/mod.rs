@@ -602,7 +602,6 @@ where
         let chain_spec = FullNodeComponents::provider(ctx.components).chain_spec();
         let eth_api = ctx
             .eth_api_builder()
-            .modify_gas_oracle_config(|config| config.default_suggested_fee = Some(U256::ZERO))
             .map_converter(|_| RpcConverter::new(TempoReceiptConverter::new(chain_spec)).erased())
             .build();
 
