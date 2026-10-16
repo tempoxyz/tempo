@@ -463,6 +463,7 @@ impl TempoConsensusSpec for TempoChainSpec {
 
 #[cfg(test)]
 mod tests {
+    use super::{Genesis, TempoChainSpec};
     use crate::{
         TempoHardfork,
         spec::{TEMPO_T1_BASE_FEE, TEMPO_T7_BASE_FEE_CAP, TEMPO_T7_BASE_FEE_FLOOR, TempoHardforks},
@@ -474,6 +475,7 @@ mod tests {
     use reth_chainspec::{ForkCondition, Hardforks};
     #[cfg(feature = "cli")]
     use reth_cli::chainspec::ChainSpecParser as _;
+    use serde_json::from_str;
     use tempo_primitives::Header;
 
     #[test]
@@ -488,6 +490,19 @@ mod tests {
     fn can_load_dev() {
         let _ = super::TempoChainSpecParser::parse("dev")
             .expect("the dev chainspec must always be well formed");
+    }
+
+    #[test]
+    fn t14_activation_uses_genesis_timestamp() {
+        let mut genesis: Genesis = from_str(include_str!("genesis/dev.json")).unwrap();
+        genesis
+            .config
+            .extra_fields
+            .insert_value("t14Time".into(), 42_u64)
+            .unwrap();
+        let spec = TempoChainSpec::from_genesis(genesis);
+        assert_eq!(spec.tempo_hardfork_at(41), TempoHardfork::T13);
+        assert_eq!(spec.tempo_hardfork_at(42), TempoHardfork::T14);
     }
 
     #[test]
