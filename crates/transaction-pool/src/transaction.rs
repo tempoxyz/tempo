@@ -11,7 +11,8 @@ use alloy_eips::{
 };
 use alloy_evm::FromRecoveredTx;
 use alloy_primitives::{
-    Address, B256, Bytes, TxHash, TxKind, U256, bytes, keccak256, map::AddressMap,
+    Address, B256, Bytes, TxHash, TxKind, U256, bytes, keccak256,
+    map::{AddressMap, AddressSet},
 };
 use reth_evm::execute::WithTxEnv;
 use reth_primitives_traits::{InMemorySize, Recovered, SignerRecoverable};
@@ -273,6 +274,31 @@ impl TempoPooledTransaction {
             account: *self.sender_ref(),
             witness,
         })
+    }
+
+    /// Whether a changed commitment can stale a native signer in this transaction.
+    pub(crate) fn needs_configurable_revalidation(
+        &self,
+        changed_commitments: &AddressSet,
+        reorg: bool,
+    ) -> bool {
+        let Some(tx) = self.inner().as_aa() else {
+            return false;
+        };
+        let keychain = tx.signature().as_keychain();
+        let transaction_signer = tx
+            .signature()
+            .as_multisig()
+            .or_else(|| keychain.and_then(|signature| signature.signature.as_multisig()));
+        let grant_signer = tx
+            .tx()
+            .key_authorization
+            .as_ref()
+            .and_then(|authorization| authorization.signature.as_multisig());
+        [transaction_signer, grant_signer]
+            .into_iter()
+            .flatten()
+            .any(|signature| reorg || changed_commitments.contains(&signature.account()))
     }
 
     /// Returns the unique identifier for this AA transaction.
@@ -1140,10 +1166,14 @@ mod tests {
     use alloy_sol_types::SolCall;
     use proptest::prelude::*;
     use proptest_arbitrary_interop::arb_sized;
+    use reth_primitives_traits::SignedTransaction;
     use tempo_contracts::precompiles::ITIP20;
     use tempo_precompiles::{PATH_USD_ADDRESS, nonce::NonceManager};
     use tempo_primitives::transaction::{
-        TEMPO_EXPIRING_NONCE_KEY, TempoTransaction, tempo_transaction::Call,
+        KeyAuthorization, MultisigConfig, MultisigOwner, MultisigSignature, SignatureType,
+        TEMPO_EXPIRING_NONCE_KEY, TempoTransaction,
+        tempo_transaction::Call,
+        tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature},
     };
 
     const TEMPO_TRANSACTION_ARBITRARY_SIZE: usize = 4096;
@@ -1155,6 +1185,74 @@ mod tests {
             .expect("signing failed");
         let signed = tx.into_signed(signature.into());
         (signed.into(), signer.address())
+    }
+
+    #[test]
+    fn configurable_revalidation_matches_native_signers() {
+        let parent = Address::repeat_byte(0x11);
+        let signer = Address::repeat_byte(0x22);
+        let recipient = Address::repeat_byte(0x33);
+        let multisig = MultisigSignature::try_new(
+            signer,
+            MultisigConfig {
+                salt: B256::ZERO,
+                version: 0,
+                threshold: 1,
+                owners: vec![MultisigOwner {
+                    owner: Address::repeat_byte(0x44),
+                    weight: 1,
+                }],
+            },
+            vec![PrimitiveSignature::default()],
+        )
+        .unwrap();
+        let pooled = |base: TempoPooledTransaction, signature| {
+            let sender = base.sender();
+            let tx = base.inner().as_aa().unwrap().tx().clone();
+            TempoPooledTransaction::new(
+                TempoTxEnvelope::from(tx.into_signed(signature)).with_signer(sender),
+            )
+        };
+        let changed = |address| std::iter::once(address).collect();
+        let none = AddressSet::default();
+
+        let direct = pooled(
+            TxBuilder::aa(signer).build(),
+            TempoSignature::Multisig(multisig.clone()),
+        );
+        assert!(direct.needs_configurable_revalidation(&changed(signer), false));
+        assert!(!direct.needs_configurable_revalidation(&changed(parent), false));
+        assert!(direct.needs_configurable_revalidation(&none, true));
+
+        let delegated = pooled(
+            TxBuilder::aa(parent).build(),
+            TempoSignature::Keychain(KeychainSignature::new(parent, multisig.clone())),
+        );
+        assert!(delegated.needs_configurable_revalidation(&changed(signer), false));
+        assert!(!delegated.needs_configurable_revalidation(&changed(parent), false));
+        assert!(delegated.needs_configurable_revalidation(&none, true));
+
+        let primitive_keychain = pooled(
+            TxBuilder::aa(parent).build(),
+            TempoSignature::Keychain(KeychainSignature::new(
+                parent,
+                PrimitiveSignature::default(),
+            )),
+        );
+        assert!(!primitive_keychain.needs_configurable_revalidation(&changed(parent), false));
+        assert!(!primitive_keychain.needs_configurable_revalidation(&none, true));
+
+        let grant = KeyAuthorization::unrestricted(1, SignatureType::Multisig, recipient)
+            .into_signed(multisig);
+        let inline = TxBuilder::aa(parent).key_authorization(grant).build();
+        assert!(inline.needs_configurable_revalidation(&changed(signer), false));
+        assert!(!inline.needs_configurable_revalidation(&changed(recipient), false));
+        assert!(inline.needs_configurable_revalidation(&none, true));
+        assert!(
+            !TxBuilder::aa(parent)
+                .build()
+                .needs_configurable_revalidation(&none, true)
+        );
     }
 
     fn raw_pooled_transaction(
