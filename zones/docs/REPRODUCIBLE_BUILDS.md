@@ -67,6 +67,21 @@ and `--latest=false` to preserve Tempo release ownership. It accepts only tags w
 from `main`, including for manual dry runs. This check runs before either
 OIDC-enabled binary build checks out and executes the tagged build script.
 
+To dry-run the canonical Linux x86_64 release build without creating a tag:
+
+```sh
+gh workflow run zones-release.yml --repo tempoxyz/tempo --ref main \
+  -f dry_run=true -f sha=<full-40-character-commit-sha>
+```
+
+The commit must already be reachable from `main`. Omit `tag` when supplying `sha`;
+commit selection is only allowed with `dry_run=true`. Both builds use the resolved
+commit and timestamp, and assets use `sha-<short-sha>` in their filenames. Download
+`tempo-zone-linux-x86_64-reproducible-verification` and require
+`comparison_result` to be `success` with matching `candidate_binary_sha256` and
+`clean_rebuild_binary_sha256`. Dry runs skip crate/tag version checking, ARM/macOS
+builds and release creation. Existing tag-based dry runs remain supported.
+
 ## Prover EIF
 
 The separate `reproducible_eif_verify` dispatch option compares unsigned prover
