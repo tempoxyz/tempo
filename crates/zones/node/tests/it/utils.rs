@@ -2489,7 +2489,7 @@ impl L1TestNode {
     /// Mint tokens on L1.
     ///
     /// The dev account must be the admin of the token (set during `createToken`).
-    /// Grants `ISSUER_ROLE` to self first (admin can grant roles), then mints.
+    /// Grants `ISSUER_ROLE` to self first unless already held (admin can grant roles), then mints.
     pub(crate) async fn mint_tip20(
         &self,
         token: Address,
@@ -2501,14 +2501,20 @@ impl L1TestNode {
 
         let provider = self.dev_provider();
 
-        // Admin can grant ISSUER_ROLE to self
-        let receipt = IRolesAuth::new(token, &provider)
-            .grantRole(ISSUER_ROLE, self.dev_address())
-            .send()
+        let roles = IRolesAuth::new(token, &provider);
+        if !roles
+            .hasRole(self.dev_address(), ISSUER_ROLE)
+            .call()
             .await?
-            .get_receipt()
-            .await?;
-        eyre::ensure!(receipt.status(), "grantRole ISSUER failed on L1");
+        {
+            let receipt = roles
+                .grantRole(ISSUER_ROLE, self.dev_address())
+                .send()
+                .await?
+                .get_receipt()
+                .await?;
+            eyre::ensure!(receipt.status(), "grantRole ISSUER failed on L1");
+        }
 
         let receipt = ITIP20::new(token, &provider)
             .mint(to, U256::from(amount))
@@ -2542,29 +2548,6 @@ impl L1TestNode {
         Ok(event.policyId)
     }
 
-    /// Create a new WHITELIST policy on L1. Returns the policy ID.
-    #[allow(dead_code)]
-    pub(crate) async fn create_whitelist_policy(&self) -> eyre::Result<u64> {
-        use tempo_contracts::precompiles::ITIP403Registry;
-        use tempo_precompiles::TIP403_REGISTRY_ADDRESS;
-
-        let provider = self.dev_provider();
-        let registry = ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, &provider);
-        let receipt = registry
-            .createPolicy(self.dev_address(), ITIP403Registry::PolicyType::WHITELIST)
-            .send()
-            .await?
-            .get_receipt()
-            .await?;
-        eyre::ensure!(receipt.status(), "createPolicy (WHITELIST) failed");
-
-        let event = receipt
-            .decoded_log::<ITIP403Registry::PolicyCreated>()
-            .ok_or_else(|| eyre::eyre!("PolicyCreated event not found"))?;
-
-        Ok(event.policyId)
-    }
-
     /// Add an address to a blacklist policy.
     pub(crate) async fn blacklist_address(
         &self,
@@ -2583,28 +2566,6 @@ impl L1TestNode {
             .get_receipt()
             .await?;
         eyre::ensure!(receipt.status(), "modifyPolicyBlacklist failed");
-        Ok(())
-    }
-
-    /// Add an address to a whitelist policy.
-    #[allow(dead_code)]
-    pub(crate) async fn whitelist_address(
-        &self,
-        policy_id: u64,
-        account: Address,
-    ) -> eyre::Result<()> {
-        use tempo_contracts::precompiles::ITIP403Registry;
-        use tempo_precompiles::TIP403_REGISTRY_ADDRESS;
-
-        let provider = self.dev_provider();
-        let registry = ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, &provider);
-        let receipt = registry
-            .modifyPolicyWhitelist(policy_id, account, true)
-            .send()
-            .await?
-            .get_receipt()
-            .await?;
-        eyre::ensure!(receipt.status(), "modifyPolicyWhitelist failed");
         Ok(())
     }
 
