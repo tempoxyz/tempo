@@ -301,7 +301,8 @@ where
             let raw_best_txs = self
                 .pool
                 .best_transactions_with_attributes(BestTransactionsAttributes::new(base_fee, None));
-            let mut best_txs = StateAwareBestTransactions::new(raw_best_txs);
+            // Zones resolve fee tokens without a fallback list.
+            let mut best_txs = StateAwareBestTransactions::new(raw_best_txs, &[]);
             if execute_pool_transactions(
                 |tx, best_txs| {
                     builder

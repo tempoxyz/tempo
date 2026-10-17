@@ -1,6 +1,8 @@
-use crate::{ProtocolFeeManager, TempoBlockEnv, TempoFeeManager, TempoTxEnv, instructions};
+use crate::{
+    ProtocolFeeManager, ResolvedFeeToken, TempoBlockEnv, TempoFeeManager, TempoTxEnv, instructions,
+};
 use alloy_evm::{Database, precompiles::PrecompilesMap};
-use alloy_primitives::{Address, U256};
+use alloy_primitives::U256;
 use revm::{
     Context, Inspector,
     context::{Cfg, CfgEnv, ContextError, Evm, FrameStack},
@@ -43,7 +45,7 @@ pub struct TempoEvm<DB: Database, I> {
     /// Reset to zero before each transaction so it reflects only the current tx.
     pub validator_fee: U256,
     /// The fee token used to pay fees for the current transaction.
-    pub(crate) fee_token: Option<Address>,
+    pub(crate) fee_token: Option<ResolvedFeeToken>,
     /// The expiry timestamp of the access key used by the current transaction.
     /// Populated during validation for keychain-signed transactions or transactions carrying a KeyAuthorization.
     pub(crate) key_expiry: Option<u64>,

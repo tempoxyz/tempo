@@ -53,6 +53,31 @@ impl<DB: alloy_evm::Database> ProtocolFeeContext<'_, DB> {
     }
 }
 
+/// Fee token resolved for a transaction, and the step that chose it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolvedFeeToken {
+    /// Chosen by the transaction or a fee-manager rule; fee-token balances cannot change it.
+    Selected(Address),
+    /// Chosen from the ordered fallback list because no earlier rule applied.
+    ///
+    /// Another fallback token may pay once the fee payer's fallback-token balances change.
+    Fallback(Address),
+}
+
+impl ResolvedFeeToken {
+    /// Returns the token that pays the fee.
+    pub const fn address(self) -> Address {
+        match self {
+            Self::Selected(token) | Self::Fallback(token) => token,
+        }
+    }
+
+    /// Returns whether the token came from the ordered fallback list.
+    pub const fn is_fallback(self) -> bool {
+        matches!(self, Self::Fallback(_))
+    }
+}
+
 /// Resolves a transaction's fee token for state consumers outside the EVM handler.
 pub trait FeeTokenResolver {
     /// Resolves the fee token that should pay for `tx`.
@@ -80,7 +105,7 @@ pub trait ProtocolFeeManager<DB: Database>: Debug {
         max_fee: U256,
         spec: TempoHardfork,
         actions: StorageActions,
-    ) -> TempoResult<Address> {
+    ) -> TempoResult<ResolvedFeeToken> {
         resolve_fee_token(journal, tx, fee_payer, max_fee, spec, actions)
     }
 
@@ -225,6 +250,7 @@ impl FeeTokenResolver for TempoFeeManager {
             spec,
             actions,
         )
+        .map(ResolvedFeeToken::address)
     }
 }
 
@@ -235,13 +261,13 @@ fn resolve_fee_token<S, M>(
     max_fee: U256,
     spec: TempoHardfork,
     actions: StorageActions,
-) -> TempoResult<Address>
+) -> TempoResult<ResolvedFeeToken>
 where
     S: TempoStateAccess<M>,
 {
     // If there is a fee token explicitly set on the tx type, use that.
     if let Some(fee_token) = tx.fee_token() {
-        return Ok(fee_token);
+        return Ok(ResolvedFeeToken::Selected(fee_token));
     }
 
     // If the fee payer is also the msg.sender and the transaction is calling FeeManager to set a
@@ -253,7 +279,7 @@ where
         && kind.to() == Some(&TIP_FEE_MANAGER_ADDRESS)
         && let Ok(call) = IFeeManager::setUserTokenCall::abi_decode(input)
     {
-        return Ok(call.token);
+        return Ok(ResolvedFeeToken::Selected(call.token));
     }
 
     // Check stored user token preference
@@ -263,7 +289,7 @@ where
     })?;
 
     if !user_token.is_zero() {
-        return Ok(user_token);
+        return Ok(ResolvedFeeToken::Selected(user_token));
     }
 
     // Check if the fee can be inferred from the TIP20 token being called
@@ -279,7 +305,7 @@ where
         };
 
         if can_infer_tip20 && state.is_valid_fee_token(spec, to, actions.clone())? {
-            return Ok(to);
+            return Ok(ResolvedFeeToken::Selected(to));
         }
     }
 
@@ -294,16 +320,16 @@ where
         if let Ok(call) = IStablecoinDEX::swapExactAmountInCall::abi_decode(input)
             && state.is_valid_fee_token(spec, call.tokenIn, actions.clone())?
         {
-            return Ok(call.tokenIn);
+            return Ok(ResolvedFeeToken::Selected(call.tokenIn));
         } else if let Ok(call) = IStablecoinDEX::swapExactAmountOutCall::abi_decode(input)
             && state.is_valid_fee_token(spec, call.tokenIn, actions.clone())?
         {
-            return Ok(call.tokenIn);
+            return Ok(ResolvedFeeToken::Selected(call.tokenIn));
         }
     }
 
     if !spec.is_t13() || max_fee.is_zero() {
-        return Ok(DEFAULT_FEE_TOKEN);
+        return Ok(ResolvedFeeToken::Fallback(DEFAULT_FEE_TOKEN));
     }
 
     let candidates = spec.fallback_fee_tokens();
@@ -322,7 +348,7 @@ where
             sufficient,
         ));
         if sufficient {
-            return Ok(token);
+            return Ok(ResolvedFeeToken::Fallback(token));
         }
         if balance > highest_balance {
             richest_token = token;

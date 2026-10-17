@@ -54,7 +54,7 @@ use tempo_primitives::{
     },
 };
 
-use crate::{TempoBlockEnv, TempoEvm, TempoInvalidTransaction, TempoTxEnv};
+use crate::{ResolvedFeeToken, TempoBlockEnv, TempoEvm, TempoInvalidTransaction, TempoTxEnv};
 use revm::context::result::InvalidTransaction;
 
 // ==================== Test Constants ====================
@@ -4759,6 +4759,28 @@ fn test_fee_fallback_does_not_replace_inferred_token() -> eyre::Result<()> {
             InvalidTransaction::LackOfFundForMaxFee { fee, balance }
         ))) if *fee == U256::from(1_000_000) && *balance == U256::from(999_999)
     ));
+    Ok(())
+}
+
+#[test]
+fn test_fee_fallback_validation_reports_token_source() -> eyre::Result<()> {
+    let (mut fallback, tx, tokens) = create_fee_fallback_evm([2_000_000, 2_000_000], 0)?;
+    fallback.ctx.tx = tx;
+    let validated =
+        crate::handler::TempoEvmHandler::default().validate_transaction(&mut fallback)?;
+    assert_eq!(validated.fee_token, ResolvedFeeToken::Fallback(tokens[0]));
+
+    let (mut preferred, tx, tokens) = create_fee_fallback_evm([2_000_000, 2_000_000], 0)?;
+    StorageCtx::enter_ctx(&mut preferred.ctx, StorageActions::disabled(), || {
+        TipFeeManager::new().set_user_token(
+            tx.inner.caller,
+            IFeeManager::setUserTokenCall { token: tokens[0] },
+        )
+    })?;
+    preferred.ctx.tx = tx;
+    let validated =
+        crate::handler::TempoEvmHandler::default().validate_transaction(&mut preferred)?;
+    assert_eq!(validated.fee_token, ResolvedFeeToken::Selected(tokens[0]));
     Ok(())
 }
 

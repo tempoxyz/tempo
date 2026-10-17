@@ -1502,6 +1502,7 @@ mod tests {
         Block, TempoHeader, TempoPrimitives, TempoTxEnvelope,
         transaction::{KeyAuthorization, PrimitiveSignature, SignatureType},
     };
+    use tempo_revm::ResolvedFeeToken;
 
     fn provider_with_spending_limit(
         account: Address,
@@ -2086,7 +2087,7 @@ mod tests {
         );
         let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
 
-        pooled.set_resolved_fee_token(PATH_USD_ADDRESS);
+        pooled.set_resolved_fee_token(ResolvedFeeToken::Selected(PATH_USD_ADDRESS));
         let validated = TransactionValidationOutcome::Valid {
             balance: *pooled.cost(),
             state_nonce: pooled.nonce(),
@@ -2128,7 +2129,7 @@ mod tests {
         let pooled = crate::test_utils::TxBuilder::aa(sender).build();
 
         assert_eq!(pooled.inner().fee_token(), None);
-        pooled.set_resolved_fee_token(resolved_fee_token);
+        pooled.set_resolved_fee_token(ResolvedFeeToken::Selected(resolved_fee_token));
 
         let provider = MockEthProvider::<TempoPrimitives>::new()
             .with_chain_spec(std::sync::Arc::unwrap_or_clone(MODERATO.clone()));
@@ -2167,7 +2168,7 @@ mod tests {
         let pooled = crate::test_utils::TxBuilder::aa(sender).build();
 
         assert_eq!(pooled.inner().fee_token(), None);
-        pooled.set_resolved_fee_token(resolved_fee_token);
+        pooled.set_resolved_fee_token(ResolvedFeeToken::Selected(resolved_fee_token));
 
         let provider = MockEthProvider::<TempoPrimitives>::new()
             .with_chain_spec(std::sync::Arc::unwrap_or_clone(MODERATO.clone()));
@@ -2206,7 +2207,7 @@ mod tests {
         let pooled = crate::test_utils::TxBuilder::aa(sender).build();
 
         assert_eq!(pooled.inner().fee_token(), None);
-        pooled.set_resolved_fee_token(resolved_fee_token);
+        pooled.set_resolved_fee_token(ResolvedFeeToken::Selected(resolved_fee_token));
 
         let provider = MockEthProvider::<TempoPrimitives>::new()
             .with_chain_spec(std::sync::Arc::unwrap_or_clone(MODERATO.clone()));
