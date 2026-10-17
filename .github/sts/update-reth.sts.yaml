@@ -1,0 +1,9 @@
+# Only the pinned shared publisher called by Tempo's main updater may write.
+subject: repo:tempoxyz@211589300/tempo@994992847:environment:dependency-updates
+claim_pattern:
+  workflow_ref: tempoxyz/tempo/\.github/workflows/update-reth\.yml@refs/heads/main
+  job_workflow_ref: tempoxyz/gh-actions/\.github/workflows/dependency-update\.yml@4bc46b3c01e558d32a3f5643f625d39ffb1cb2ef
+permissions:
+  contents: write
+  pull_requests: write
+max_ttl: 15m
