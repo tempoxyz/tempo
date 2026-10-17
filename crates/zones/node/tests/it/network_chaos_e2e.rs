@@ -836,14 +836,34 @@ async fn test_three_sequencers_reconnect_and_catch_up_after_l1_network_outage() 
     Ok(())
 }
 
-/// Exercise the asymmetric L1 fault matrix. Each restored side must backfill its missed anchors,
-/// process a deposit and withdrawal submitted during the fault, and converge before the next row.
-/// HTTP 503 faults happen during the WebSocket upgrade because established WebSockets do not have
-/// per-request HTTP status codes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_asymmetric_l1_fault_matrix() -> eyre::Result<()> {
+async fn test_asymmetric_l1_fault_matrix_disconnect() -> eyre::Result<()> {
+    asymmetric_l1_fault_matrix(L1Fault::Disconnect).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_asymmetric_l1_fault_matrix_websocket_503() -> eyre::Result<()> {
+    asymmetric_l1_fault_matrix(L1Fault::RandomWebSocket503).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_asymmetric_l1_fault_matrix_silent_stall() -> eyre::Result<()> {
+    asymmetric_l1_fault_matrix(L1Fault::SilentBidirectionalStall).await
+}
+
+/// Exercise all three outage topologies for one fault on the same cluster. Separate tests let
+/// nextest distribute the fault types across shards and apply its normal concurrency limit.
+/// Each restored side must backfill its missed anchors, process a deposit and withdrawal submitted
+/// during the fault, and converge before the next row. HTTP 503 faults happen during the WebSocket
+/// upgrade because established WebSockets do not have per-request HTTP status codes.
+async fn asymmetric_l1_fault_matrix(fault: L1Fault) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
+    let cases: Vec<_> = L1_OUTAGE_CASES
+        .iter()
+        .copied()
+        .filter(|case| case.fault == fault)
+        .collect();
     let (cluster, [leader_proxy, follower_one_proxy, follower_two_proxy]) =
         start_real_p2p_cluster_with_per_node_l1_proxies(4, L1_BLOCK_TIME).await?;
     eyre::ensure!(
@@ -880,7 +900,7 @@ async fn test_asymmetric_l1_fault_matrix() -> eyre::Result<()> {
         .l1
         .fund_user(
             account.address(),
-            INITIAL_DEPOSIT + L1_OUTAGE_CASES.len() as u128 * OUTAGE_DEPOSIT + 10_000_000,
+            INITIAL_DEPOSIT + cases.len() as u128 * OUTAGE_DEPOSIT + 10_000_000,
         )
         .await?;
     let initial_balance = account
@@ -899,7 +919,7 @@ async fn test_asymmetric_l1_fault_matrix() -> eyre::Result<()> {
     account.approve_outbox(ZONE_TOKEN_ADDRESS).await?;
 
     let proxies = [leader_proxy, follower_one_proxy, follower_two_proxy];
-    for &case in L1_OUTAGE_CASES {
+    for case in cases {
         run_l1_outage_case(&cluster, &mut account, &proxies, case).await?;
     }
 
