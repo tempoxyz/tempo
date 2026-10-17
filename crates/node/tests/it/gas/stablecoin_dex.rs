@@ -132,6 +132,7 @@ async fn test_stablecoin_dex_order_gas_snapshots(hardfork: TempoHardfork) -> eyr
             ProviderBuilder::new()
                 .wallet(signer.clone())
                 .connect_http(http_url.clone())
+                .erased()
         })
         .collect::<Vec<_>>();
 

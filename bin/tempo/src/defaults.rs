@@ -156,6 +156,7 @@ fn init_download_urls() {
         default_chain_aware_base_url: None,
         snapshot_api_url: Cow::Borrowed(SNAPSHOT_API_URL),
         long_help: None,
+        full_preset_includes_rocksdb_indices: false,
     };
 
     download_defaults
