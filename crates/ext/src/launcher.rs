@@ -3,20 +3,30 @@
 
 use crate::{
     installer::{
-        InstallSource, Installer, InstallerError, binary_candidates, fallback_bin_dir, find_in_path,
+        InstallSource, Installer, InstallerError, ResolvedInstall, binary_candidates,
+        fallback_bin_dir, find_in_path,
     },
-    registry::Registry,
+    registry::{ExtensionState, Registry, RegistryLock},
 };
 use clap::{Parser, Subcommand};
 use std::{
     env,
-    ffi::OsString,
+    ffi::{OsStr, OsString},
+    io::{self, IsTerminal},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
 };
 
 const BASE_URL: &str = "https://cli.tempo.xyz";
 const PUBLIC_KEY: &str = "RWTtoEUPuapAfh06rC7BZLjm1hG40/lsVAA/2afN88FZ8/Fdk97LzJDf";
+
+/// Set to a non-empty value other than `0` or `false` to disable automatic
+/// extension updates.
+const NO_AUTO_UPDATE_ENV: &str = "TEMPO_EXT_NO_AUTO_UPDATE";
+
+/// Hidden subcommand that runs a single extension update check in the
+/// background process spawned by extension dispatch.
+const AUTO_UPDATE_COMMAND: &str = "__auto-update";
 
 #[derive(Debug, thiserror::Error)]
 pub enum LauncherError {
@@ -31,6 +41,9 @@ pub enum LauncherError {
 
     #[error("{0}")]
     Registry(String),
+
+    #[error("{0}")]
+    Lock(String),
 }
 
 /// Parses arguments and dispatches to built-in commands (add/update/remove/list)
@@ -65,6 +78,7 @@ where
         Commands::Update(args) => launcher.handle_update(args),
         Commands::Remove(args) => launcher.handle_remove(&args.extension, args.dry_run),
         Commands::List => launcher.handle_list(),
+        Commands::AutoUpdate { extension } => launcher.handle_auto_update(&extension),
         Commands::Extension(ext_args) => launcher.handle_extension(ext_args),
     }
 }
@@ -100,6 +114,10 @@ enum Commands {
 
     /// List installed extensions.
     List,
+
+    /// Background update check for one extension (internal).
+    #[command(name = AUTO_UPDATE_COMMAND, hide = true)]
+    AutoUpdate { extension: String },
 
     /// External extension subcommand.
     #[command(external_subcommand)]
@@ -218,6 +236,7 @@ impl Launcher {
             }
         };
         let pinned = args.version.is_some();
+        let _lock = lock_registry(args.dry_run)?;
         let result = installer.install(&args.extension, &source, args.dry_run, false)?;
         if !args.dry_run {
             let mut registry = Registry::load().map_err(LauncherError::Registry)?;
@@ -273,6 +292,7 @@ impl Launcher {
             }
         };
 
+        let _lock = lock_registry(args.dry_run)?;
         let registry = Registry::load().map_err(LauncherError::Registry)?;
         let installed_version = registry
             .extensions
@@ -340,6 +360,7 @@ impl Launcher {
         }
 
         // 2. Update all installed extensions (skip pinned ones).
+        let _lock = lock_registry(dry_run)?;
         let registry = Registry::load().map_err(LauncherError::Registry)?;
         let extensions: Vec<(String, String, bool)> = registry
             .extensions
@@ -407,6 +428,7 @@ impl Launcher {
         }
 
         let installer = Installer::from_env(self.exe_dir.as_deref())?;
+        let _lock = lock_registry(dry_run)?;
         installer.remove(extension, dry_run)?;
 
         if !dry_run {
@@ -479,8 +501,14 @@ impl Launcher {
         if let Some(binary) = self.find_binary(&binary_name) {
             tracing::debug!("extension found locally: {}", binary.display());
             self.warn_path_mismatch(&binary);
-            self.maybe_auto_update(&extension)?;
-            return run_child(binary, child_args, &display_name);
+            let update = self.maybe_auto_update(&extension)?;
+            let code = run_child(binary, child_args, &display_name)?;
+            // Only once the extension has exited, so the update cannot replace
+            // the binary while this invocation is still loading it.
+            if update {
+                spawn_auto_update(&extension);
+            }
+            return Ok(code);
         }
 
         // Try to auto-install as an extension.
@@ -490,6 +518,9 @@ impl Launcher {
                 return run_child(binary, child_args, &display_name);
             }
             Ok(None) => {}
+            // A lock failure is not a missing extension; report it instead
+            // of the install hint.
+            Err(err @ LauncherError::Lock(_)) => return Err(err),
             Err(err) => {
                 tracing::debug!("extension auto-install failed: {err}");
             }
@@ -511,6 +542,7 @@ impl Launcher {
         let binary_name = format!("tempo-{extension}");
 
         let installer = Installer::from_env(self.exe_dir.as_deref())?;
+        let _lock = lock_registry(false)?;
         match installer.install(
             extension,
             &InstallSource {
@@ -537,73 +569,106 @@ impl Launcher {
         }
     }
 
-    /// Checks for extension updates and installs if a newer version is available.
+    /// Prints the notice left by the last background update check and
+    /// returns `true` if a new check is due (at most once every 6 hours per
+    /// extension). The caller starts it with [`spawn_auto_update`] once the
+    /// extension has exited.
     ///
-    /// Runs at most once every 6 hours per extension. Update-check and
-    /// install failures are silent — the existing binary is always used —
-    /// but a corrupt registry is surfaced to the caller.
-    fn maybe_auto_update(&self, extension: &str) -> Result<(), LauncherError> {
-        // TEMPO_HOME indicates a managed or test environment where updates
-        // should be explicit (via `tempo update`), not automatic.
-        if env::var_os("TEMPO_HOME").is_some() {
-            return Ok(());
+    /// Records nothing about the check itself: the background process claims
+    /// it, so an invocation that is interrupted before spawning it leaves the
+    /// check due for the next one. A corrupt registry is surfaced to the
+    /// caller.
+    fn maybe_auto_update(&self, extension: &str) -> Result<bool, LauncherError> {
+        let disabled = auto_update_disabled(
+            env::var_os(NO_AUTO_UPDATE_ENV).as_deref(),
+            env::var_os("TEMPO_HOME").is_some(),
+        );
+        if disabled {
+            return Ok(false);
         }
 
-        let mut registry = Registry::load().map_err(LauncherError::Registry)?;
-        if !registry.needs_update_check(extension) {
-            return Ok(());
+        let registry = Registry::load().map_err(LauncherError::Registry)?;
+        let plan = AutoUpdatePlan::new(
+            registry.needs_update_check(extension),
+            registry.has_notice(extension),
+            io::stderr().is_terminal(),
+        );
+        if plan.show_notice
+            && let Some(notice) = take_notice(extension)
+        {
+            eprintln!("{notice}");
+        }
+        Ok(plan.check)
+    }
+
+    /// Handles the hidden `tempo __auto-update <extension>` command.
+    ///
+    /// Claims the due check under the registry lock, so concurrent updaters
+    /// for one extension run it once. Then downloads and verifies a newer
+    /// release without the lock and, under the lock again, installs it only
+    /// if the registry entry is still the one the check started from, so a
+    /// `tempo remove`, pin, or explicit install made meanwhile wins. A pinned
+    /// extension is only checked. A found update leaves a notice for the next
+    /// interactive invocation. Failures are silent: the existing binary stays
+    /// in place.
+    fn handle_auto_update(&self, extension: &str) -> Result<i32, LauncherError> {
+        if !is_valid_extension_name(extension) {
+            return Err(LauncherError::InvalidArgs(format!(
+                "invalid extension name: {extension} (only alphanumeric, hyphens, and underscores)",
+            )));
         }
 
-        let installed_version = registry
-            .extensions
-            .get(extension)
-            .map(|e| e.installed_version.as_str());
-
-        let installer = match Installer::from_env(self.exe_dir.as_deref()) {
-            Ok(i) => i,
-            Err(_) => {
-                registry.touch_check(extension);
-                registry.save();
-                return Ok(());
-            }
+        let Some(snapshot) = claim_update_check(extension)? else {
+            return Ok(0);
         };
-
+        let installed_version = Some(snapshot.installed_version.as_str());
+        let installer = Installer::from_env(self.exe_dir.as_deref())?;
         let source = InstallSource {
             manifest: Some(manifest_url(extension, None)),
             public_key: Some(release_public_key()),
         };
 
-        if registry.is_pinned(extension) {
-            // Pinned to a specific version — check for updates but don't
-            // install. Only fetch the manifest to compare versions.
-            if let Ok(Some(new_version)) =
-                Installer::check_latest_version(&source, installed_version)
-            {
-                eprintln!(
-                    "tempo-{extension} {new_version} available (pinned to {}; run `tempo update {extension}` to upgrade)",
-                    installed_version.unwrap_or("unknown")
-                );
-            }
-            registry.touch_check(extension);
+        let found = if snapshot.pinned {
+            Installer::check_latest_version(&source, installed_version)
+                .map(|latest| latest.map(FoundUpdate::Available))
         } else {
-            match installer.install_if_changed(extension, &source, installed_version) {
-                Ok(Some(result)) => {
-                    if installed_version.is_some_and(|v| !v.is_empty()) {
-                        eprintln!("updated tempo-{extension} to {}", result.version);
-                    }
-                    registry.record_check(extension, &result.version, false, &result.description);
-                }
-                Ok(None) => {
-                    registry.touch_check(extension);
-                }
-                Err(err) => {
-                    tracing::debug!("auto-update: failed for {extension}: {err}");
-                    registry.touch_check(extension);
-                }
+            installer
+                .prepare_update(extension, &source, installed_version)
+                .map(|prepared| prepared.map(FoundUpdate::Prepared))
+        };
+        // The check is already recorded, so there is nothing to write if no
+        // update was found.
+        let found = match found {
+            Ok(Some(found)) => found,
+            Ok(None) => return Ok(0),
+            Err(err) => {
+                tracing::debug!("auto-update: check failed for {extension}: {err}");
+                return Ok(0);
             }
+        };
+
+        let Some(_lock) = updater_lock() else {
+            return Ok(0);
+        };
+        let mut registry = Registry::load().map_err(LauncherError::Registry)?;
+        if !is_same_install(&snapshot, registry.extensions.get(extension)) {
+            tracing::debug!("auto-update: tempo-{extension} changed during the check, skipping");
+            return Ok(0);
+        }
+
+        let (version, pinned) = match found {
+            FoundUpdate::Available(version) => (version, true),
+            FoundUpdate::Prepared(prepared) => {
+                let result = installer.commit(extension, &prepared)?;
+                registry.record_check(extension, &result.version, false, &result.description);
+                (result.version, false)
+            }
+        };
+        if let Some(notice) = update_notice(extension, installed_version, &version, pinned) {
+            registry.set_notice(extension, notice);
         }
         registry.save();
-        Ok(())
+        Ok(0)
     }
 
     /// Warns if the binary we found is not in the directory where the
@@ -699,6 +764,150 @@ fn manifest_url(extension: &str, version: Option<&str>) -> String {
     }
 }
 
+/// Takes the registry lock for a command that writes the registry or the
+/// install. Dry runs write nothing and skip it.
+fn lock_registry(dry_run: bool) -> Result<Option<RegistryLock>, LauncherError> {
+    if dry_run {
+        return Ok(None);
+    }
+    Registry::lock().map(Some).map_err(LauncherError::Lock)
+}
+
+/// Returns `true` if automatic updates are disabled, either explicitly via
+/// `TEMPO_EXT_NO_AUTO_UPDATE` or because `TEMPO_HOME` marks a managed or test
+/// environment where updates should be explicit (via `tempo update`).
+fn auto_update_disabled(no_auto_update: Option<&OsStr>, tempo_home_set: bool) -> bool {
+    let opted_out = no_auto_update
+        .is_some_and(|v| !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false"));
+    opted_out || tempo_home_set
+}
+
+/// A newer release found by a background update check.
+enum FoundUpdate {
+    /// Newer version of a pinned extension; reported, never installed.
+    Available(String),
+    /// Downloaded and verified release, not yet placed.
+    Prepared(ResolvedInstall),
+}
+
+/// Returns `true` if the registry entry still describes the install a
+/// background check started from. A removal, pin, or explicit install in
+/// the meantime, even of the same version, changes it, and the check must
+/// not override that.
+fn is_same_install(snapshot: &ExtensionState, current: Option<&ExtensionState>) -> bool {
+    current.is_some_and(|current| {
+        current.generation == snapshot.generation
+            && current.installed_version == snapshot.installed_version
+            && current.pinned == snapshot.pinned
+    })
+}
+
+/// Takes the registry lock for the background updater, which skips its work
+/// rather than fail when the lock is unusable.
+fn updater_lock() -> Option<RegistryLock> {
+    Registry::lock()
+        .inspect_err(|err| tracing::debug!("auto-update: {err}, skipping"))
+        .ok()
+}
+
+/// Records a due update check for `extension` under the registry lock and
+/// returns the entry it starts from. Returns `None`, so the updater does
+/// nothing, if another updater already claimed the check, the lock is
+/// unusable, or the registry has no entry for the extension (it was removed,
+/// or was found on `PATH` and is only recorded now).
+fn claim_update_check(extension: &str) -> Result<Option<ExtensionState>, LauncherError> {
+    let Some(_lock) = updater_lock() else {
+        return Ok(None);
+    };
+    let mut registry = Registry::load().map_err(LauncherError::Registry)?;
+    if !registry.needs_update_check(extension) {
+        return Ok(None);
+    }
+    let snapshot = registry.extensions.get(extension).cloned();
+    registry.touch_check(extension);
+    registry.save();
+    Ok(snapshot)
+}
+
+/// Removes and returns the pending notice for `extension`. Returns `None`
+/// without waiting if the registry lock is busy or unusable.
+fn take_notice(extension: &str) -> Option<String> {
+    let _lock = Registry::try_lock()?;
+    let mut registry = Registry::load().ok()?;
+    let notice = registry.take_notice(extension)?;
+    registry.save();
+    Some(notice)
+}
+
+/// What an extension invocation does about auto-update.
+#[derive(Debug, PartialEq, Eq)]
+struct AutoUpdatePlan {
+    /// Start a background update check.
+    check: bool,
+    /// Print and clear the notice left by the previous check.
+    show_notice: bool,
+}
+
+impl AutoUpdatePlan {
+    /// Notices go to stderr only when it is a terminal, so scripts and agents
+    /// never see them; the notice is kept for a later interactive run.
+    fn new(due: bool, has_notice: bool, stderr_is_tty: bool) -> Self {
+        Self {
+            check: due,
+            show_notice: has_notice && stderr_is_tty,
+        }
+    }
+}
+
+/// Builds the notice recorded after a background check found `new_version`.
+/// A first install (no previously installed version) gets no notice.
+fn update_notice(
+    extension: &str,
+    installed_version: Option<&str>,
+    new_version: &str,
+    pinned: bool,
+) -> Option<String> {
+    let installed = installed_version.filter(|v| !v.is_empty());
+    if pinned {
+        Some(format!(
+            "tempo-{extension} {new_version} available (pinned to {}; run `tempo update {extension}` to upgrade)",
+            installed.unwrap_or("unknown")
+        ))
+    } else {
+        installed.map(|_| format!("updated tempo-{extension} to {new_version}"))
+    }
+}
+
+/// Spawns `tempo __auto-update <extension>` as a detached process with all
+/// stdio closed, so it can neither delay nor write to the current invocation.
+fn spawn_auto_update(extension: &str) {
+    let exe = match env::current_exe() {
+        Ok(exe) => exe,
+        Err(err) => {
+            tracing::debug!("auto-update: cannot locate tempo binary: {err}");
+            return;
+        }
+    };
+
+    let mut cmd = Command::new(exe);
+    cmd.args([AUTO_UPDATE_COMMAND, extension])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    // Own process group, so a Ctrl-C aimed at the extension does not
+    // interrupt the update.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+
+    if let Err(err) = cmd.spawn() {
+        tracing::debug!("auto-update: failed to spawn for {extension}: {err}");
+    }
+}
+
 /// Executes the extension binary with the given arguments and returns the exit code.
 fn run_child(binary: PathBuf, args: &[OsString], display_name: &str) -> Result<i32, LauncherError> {
     tracing::debug!("exec {} args={args:?}", binary.display());
@@ -742,11 +951,17 @@ fn print_missing_install_hint(extension: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        BASE_URL, Cli, Commands, PUBLIC_KEY, base_url, is_valid_extension_name, manifest_url,
-        release_public_key,
+        AUTO_UPDATE_COMMAND, AutoUpdatePlan, BASE_URL, Cli, Commands, Launcher, NO_AUTO_UPDATE_ENV,
+        PUBLIC_KEY, auto_update_disabled, base_url, is_same_install, is_valid_extension_name,
+        manifest_url, release_public_key, update_notice,
     };
-    use crate::{installer::is_allowed_manifest_url, test_util::ENV_MUTEX};
+    use crate::{
+        installer::is_allowed_manifest_url,
+        registry::{ExtensionState, Registry, state_path},
+        test_util::ENV_MUTEX,
+    };
     use clap::Parser;
+    use std::{ffi::OsStr, fs};
 
     #[test]
     fn runtime_manifest_url_policy_enforces_https_or_local() {
@@ -1061,6 +1276,167 @@ mod tests {
         assert!(!is_valid_extension_name("a b"));
         assert!(!is_valid_extension_name("foo\0bar"));
         assert!(!is_valid_extension_name("foo!bar"));
+    }
+
+    #[test]
+    fn auto_update_disabled_by_env() {
+        // (TEMPO_EXT_NO_AUTO_UPDATE, TEMPO_HOME set, disabled)
+        let cases: &[(Option<&str>, bool, bool)] = &[
+            (None, false, false),
+            (Some(""), false, false),
+            (Some("0"), false, false),
+            (Some("false"), false, false),
+            (Some("FALSE"), false, false),
+            (Some("1"), false, true),
+            (Some("true"), false, true),
+            (Some("yes"), false, true),
+            (None, true, true),
+            (Some("0"), true, true),
+            (Some("1"), true, true),
+        ];
+        for &(value, tempo_home, disabled) in cases {
+            assert_eq!(
+                auto_update_disabled(value.map(OsStr::new), tempo_home),
+                disabled,
+                "TEMPO_EXT_NO_AUTO_UPDATE={value:?} TEMPO_HOME set={tempo_home}"
+            );
+        }
+    }
+
+    #[test]
+    fn auto_update_plan() {
+        // (due, has notice, stderr is tty, check, show notice)
+        let cases = [
+            (false, false, false, false, false),
+            (false, false, true, false, false),
+            (true, false, false, true, false),
+            (true, false, true, true, false),
+            (false, true, false, false, false),
+            (false, true, true, false, true),
+            (true, true, false, true, false),
+            (true, true, true, true, true),
+        ];
+        for (due, has_notice, tty, check, show_notice) in cases {
+            assert_eq!(
+                AutoUpdatePlan::new(due, has_notice, tty),
+                AutoUpdatePlan { check, show_notice },
+                "due={due} has_notice={has_notice} tty={tty}"
+            );
+        }
+    }
+
+    #[test]
+    fn update_notice_text() {
+        // (installed, new, pinned, notice)
+        let cases = [
+            (
+                Some("1.0.0"),
+                "2.0.0",
+                false,
+                Some("updated tempo-wallet to 2.0.0"),
+            ),
+            (None, "2.0.0", false, None),
+            (Some(""), "2.0.0", false, None),
+            (
+                Some("1.0.0"),
+                "2.0.0",
+                true,
+                Some(
+                    "tempo-wallet 2.0.0 available (pinned to 1.0.0; run `tempo update wallet` to upgrade)",
+                ),
+            ),
+            (
+                None,
+                "2.0.0",
+                true,
+                Some(
+                    "tempo-wallet 2.0.0 available (pinned to unknown; run `tempo update wallet` to upgrade)",
+                ),
+            ),
+        ];
+        for (installed, new, pinned, notice) in cases {
+            assert_eq!(
+                update_notice("wallet", installed, new, pinned).as_deref(),
+                notice,
+                "installed={installed:?} pinned={pinned}"
+            );
+        }
+    }
+
+    #[test]
+    fn same_install_detects_changes_during_check() {
+        let state = |version: &str, pinned: bool, generation: u64| ExtensionState {
+            checked_at: 0,
+            installed_version: version.to_string(),
+            pinned,
+            description: String::new(),
+            notice: None,
+            generation,
+        };
+        let snapshot = state("1.0.0", false, 7);
+        // (current registry entry, still the same install)
+        let cases = [
+            (Some(state("1.0.0", false, 7)), true),
+            (None, false),
+            (Some(state("1.0.0", false, 8)), false),
+            (Some(state("1.0.0", true, 7)), false),
+            (Some(state("1.1.0", false, 7)), false),
+            (Some(state("", false, 7)), false),
+        ];
+        for (current, same) in cases {
+            assert_eq!(
+                is_same_install(&snapshot, current.as_ref()),
+                same,
+                "current={current:?}"
+            );
+        }
+
+        let mut touched = state("1.0.0", false, 7);
+        touched.checked_at = 42;
+        touched.notice = Some("notice".to_string());
+        assert!(
+            is_same_install(&snapshot, Some(&touched)),
+            "check time and notice are not part of the install"
+        );
+    }
+
+    #[test]
+    fn dispatch_records_nothing_before_spawning_the_check() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Auto-update is only enabled without TEMPO_HOME, so point the
+        // platform data directory into the temp dir instead.
+        let _home = EnvGuard::set("HOME", tmp.path().to_str().unwrap());
+        let _data = EnvGuard::set("XDG_DATA_HOME", tmp.path().to_str().unwrap());
+        let _tempo_home = EnvGuard::new("TEMPO_HOME");
+        let _opt_out = EnvGuard::new(NO_AUTO_UPDATE_ENV);
+        assert!(state_path().unwrap().starts_with(tmp.path()));
+
+        let mut registry = Registry::default();
+        registry.record_check("wallet", "1.0.0", false, "");
+        registry.extensions.get_mut("wallet").unwrap().checked_at = 0;
+        registry.save();
+        let before = fs::read(state_path().unwrap()).unwrap();
+
+        let launcher = Launcher { exe_dir: None };
+        assert!(
+            launcher.maybe_auto_update("wallet").unwrap(),
+            "check is due"
+        );
+        assert_eq!(
+            fs::read(state_path().unwrap()).unwrap(),
+            before,
+            "the updater claims the check, so an interrupted run retries"
+        );
+    }
+
+    #[test]
+    fn parse_auto_update() {
+        let cli = parse(&["tempo", AUTO_UPDATE_COMMAND, "wallet"]);
+        match cli.command {
+            Commands::AutoUpdate { ref extension } => assert_eq!(extension, "wallet"),
+            _ => panic!("expected AutoUpdate"),
+        }
     }
 
     /// RAII guard that saves and restores an environment variable.
