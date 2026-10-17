@@ -71,19 +71,44 @@ impl Deposit {
     }
 }
 
-/// A queue entry from L1: either an internal withdrawal bounce-back or a user deposit.
+/// A forced request in the mixed inbox queue. Only encrypted/public admission data is retained.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ForcedExitRequest {
+    /// Global position in the mixed deposit queue, as emitted by the portal.
+    pub deposit_number: u64,
+    /// Complete authenticated public entry, including the fee payer and admission clock.
+    pub entry: abi::ForcedExit,
+}
+
+impl ForcedExitRequest {
+    pub fn from_event(event: ForcedExitRequested) -> Self {
+        Self {
+            deposit_number: event.depositNumber,
+            entry: event.entry,
+        }
+    }
+}
+
+/// An entry in the mixed L1 inbox queue.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum L1Deposit {
     /// An internal withdrawal bounce-back.
     WithdrawalBounceBack(WithdrawalBounceBackDeposit),
     /// A user deposit whose recipient and memo are encrypted.
     Deposit(Deposit),
+    /// An encrypted, root-authorized forced withdrawal request.
+    ForcedExit(ForcedExitRequest),
 }
 
 impl L1Deposit {
     /// Convert the L1 event payload into its canonical `advanceTempo` queue encoding.
     pub fn to_abi_queued_deposit(&self) -> abi::QueuedDeposit {
         match self {
+            Self::ForcedExit(d) => abi::QueuedDeposit {
+                depositType: abi::DepositType::ForcedExit,
+                rejected: false,
+                depositData: d.entry.abi_encode().into(),
+            },
             Self::WithdrawalBounceBack(d) => abi::QueuedDeposit {
                 depositType: abi::DepositType::WithdrawalBounceBack,
                 rejected: false,
@@ -121,6 +146,7 @@ impl L1Deposit {
     /// Compute the next hash chain value: `keccak256(abi.encode(deposit, prevHash))`.
     pub fn hash_chain(&self, prev_hash: B256) -> B256 {
         match self {
+            Self::ForcedExit(d) => exithatch::request_queue_hash(&d.entry, prev_hash),
             Self::WithdrawalBounceBack(d) => keccak256(
                 (
                     abi::DepositType::WithdrawalBounceBack,

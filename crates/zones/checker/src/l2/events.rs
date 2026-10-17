@@ -76,6 +76,11 @@ pub(crate) enum L2BridgeAction {
         token: Address,
         amount: U256,
     },
+    ForcedWithdrawalRequested {
+        withdrawal_index: u64,
+        token: Address,
+        principal: U256,
+    },
     WithdrawalRequested {
         withdrawal_index: u64,
         origin: WithdrawalOrigin,
@@ -222,6 +227,31 @@ fn authenticate_receipt_withdrawals(
     let mut consumed = vec![false; burns.len()];
 
     for (request_index, event) in receipt.iter().enumerate() {
+        if let ReceiptEvent::Action(L2BridgeAction::ForcedWithdrawalRequested {
+            token,
+            principal,
+            ..
+        }) = *event
+        {
+            // The forced helper emits its request immediately after the native debit/burn.
+            // Its sender tag cannot reveal the owner; authenticate the adjacent group instead.
+            let matched = burns.iter().enumerate().find_map(|(index, observed)| {
+                (!consumed[index]
+                    && observed.end_index == request_index
+                    && observed.token == token
+                    && observed.amount == principal
+                    && !observed.owner.is_zero())
+                .then_some(index)
+            });
+            let Some(index) = matched else {
+                eyre::bail!(
+                    "forced withdrawal in transaction {} has no matching adjacent debit and burn",
+                    transaction_hash
+                );
+            };
+            consumed[index] = true;
+            continue;
+        }
         let ReceiptEvent::Action(L2BridgeAction::WithdrawalRequested {
             origin: WithdrawalOrigin::User { sender, .. },
             token,
@@ -587,6 +617,22 @@ fn decode_outbox(
                 token: event.token,
                 principal: U256::from(event.amount),
                 fee: U256::from(event.fee),
+            })
+        }
+        IZoneOutbox::ForcedWithdrawalRequested::SIGNATURE_HASH => {
+            let event = decode_event::<IZoneOutbox::ForcedWithdrawalRequested>(
+                log,
+                "ForcedWithdrawalRequested",
+                block,
+            )?;
+            eyre::ensure!(
+                event.fallbackNonce != 0 && event.amount != 0,
+                "invalid ForcedWithdrawalRequested in block {block}: zero fallback nonce or amount",
+            );
+            ReceiptEvent::Action(L2BridgeAction::ForcedWithdrawalRequested {
+                withdrawal_index: event.withdrawalIndex,
+                token: event.token,
+                principal: U256::from(event.amount),
             })
         }
         IZoneOutbox::BatchFinalized::SIGNATURE_HASH => {
@@ -1346,6 +1392,79 @@ mod tests {
         });
 
         assert!(authenticate_mints(vec![mint, unrelated, outcome]).is_err());
+    }
+
+    fn forced_withdrawal(token: Address, amount: u128, nonce: u64) -> Log {
+        event_log(
+            ZONE_OUTBOX_ADDRESS,
+            IZoneOutbox::ForcedWithdrawalRequested {
+                withdrawalIndex: 1,
+                token,
+                senderTag: B256::repeat_byte(3),
+                to: Address::repeat_byte(4),
+                amount,
+                fallbackNonce: nonce,
+            },
+        )
+    }
+
+    #[test]
+    fn decodes_forced_withdrawal_and_rejects_invalid_fields() {
+        let token = Address::repeat_byte(1);
+        assert!(matches!(
+            decode_outbox(&forced_withdrawal(token, 100, 1), 7, B256::ZERO).unwrap(),
+            Some(ReceiptEvent::Action(L2BridgeAction::ForcedWithdrawalRequested {
+                withdrawal_index: 1, principal, ..
+            })) if principal == U256::from(100)
+        ));
+        assert!(decode_outbox(&forced_withdrawal(token, 100, 0), 7, B256::ZERO).is_err());
+        assert!(decode_outbox(&forced_withdrawal(token, 0, 1), 7, B256::ZERO).is_err());
+        let mut malformed = forced_withdrawal(token, 100, 1);
+        malformed.data = LogData::new_unchecked(malformed.topics().to_vec(), Bytes::new());
+        assert!(decode_outbox(&malformed, 7, B256::ZERO).is_err());
+    }
+
+    #[test]
+    fn authenticates_mixed_forced_and_ordinary_withdrawals() {
+        let token = Address::repeat_byte(1);
+        let sender = Address::repeat_byte(2);
+        let forced = decode_outbox(&forced_withdrawal(token, 100, 1), 7, B256::ZERO)
+            .unwrap()
+            .unwrap();
+        let mut events = burn(token, sender, 100);
+        events.push(forced);
+        events.extend(burn(token, sender, 105));
+        events.push(withdrawal(token, sender, 100, 5));
+        events.extend(burn(token, sender, 100));
+        events.push(forced);
+        authenticate_withdrawals(events).unwrap();
+    }
+
+    #[test]
+    fn rejects_unmatched_or_reused_forced_burns() {
+        let token = Address::repeat_byte(1);
+        let sender = Address::repeat_byte(2);
+        let forced = decode_outbox(&forced_withdrawal(token, 100, 1), 7, B256::ZERO)
+            .unwrap()
+            .unwrap();
+        for mut events in [
+            vec![],
+            burn(token, sender, 101),
+            burn(Address::repeat_byte(9), sender, 100),
+            burn(token, Address::ZERO, 100),
+        ] {
+            events.push(forced);
+            assert!(authenticate_withdrawals(events).is_err());
+        }
+        let mut events = burn(token, sender, 100);
+        events.extend([forced, forced]);
+        assert!(authenticate_withdrawals(events).is_err());
+        let mut events = burn(token, sender, 100);
+        events.extend([withdrawal(token, sender, 100, 0), forced]);
+        assert!(authenticate_withdrawals(events).is_err());
+        let mut events = vec![forced];
+        events.extend(burn(token, sender, 100));
+        assert!(authenticate_withdrawals(events).is_err());
     }
 
     #[test]

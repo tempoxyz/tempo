@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 # zones
+exithatch.workspace = true
 zone-precompiles = { workspace = true, features = ["std"] }
 zone-primitives = { workspace = true }
 

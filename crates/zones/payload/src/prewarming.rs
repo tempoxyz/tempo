@@ -50,11 +50,15 @@ where
 
         // The pool bounds concurrency; cancelled queued jobs skip EVM initialization.
         for deposit in &prepared.queued_deposits {
-            let decryptions = (deposit.depositType == DepositType::Deposit)
-                .then(|| decryptions.next().cloned())
-                .flatten()
-                .into_iter()
-                .collect();
+            // Both encrypted entry types consume a witness; bounce-backs do not.
+            let decryptions = matches!(
+                deposit.depositType,
+                DepositType::Deposit | DepositType::ForcedExit
+            )
+            .then(|| decryptions.next().cloned())
+            .flatten()
+            .into_iter()
+            .collect();
             let partial = PreparedL1Block {
                 header: prepared.header.clone(),
                 enabled_tokens: prepared.enabled_tokens.clone(),

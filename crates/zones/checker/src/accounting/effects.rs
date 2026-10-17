@@ -91,6 +91,16 @@ fn from_tempo_events<'a>(events: impl IntoIterator<Item = &'a L1PortalEvent>) ->
                     change: BalanceChange::Credit(U256::from(amount)),
                 });
             }
+            // The payer's fee stays in the Portal as backing for the admin's refund claim.
+            L1PortalEvent::ForcedExitCompensationPending { token, amount } => {
+                effects.push(Effect::Liability {
+                    token,
+                    kind: LiabilityKind::TempoRefund,
+                    change: BalanceChange::Credit(U256::from(amount)),
+                });
+            }
+            // Admission escrows no principal; the Zone debit arrives as ForcedWithdrawalRequested.
+            L1PortalEvent::ForcedExitsActivated | L1PortalEvent::ForcedExitRequested => {}
             L1PortalEvent::RefundClaimed { amount: 0, .. } => {}
             L1PortalEvent::RefundClaimed { token, amount, .. } => {
                 effects.push(Effect::Liability {
@@ -144,6 +154,9 @@ fn from_zone_actions<'a>(actions: impl Iterator<Item = &'a L2BridgeAction>) -> V
                 token,
                 principal,
                 ..
+            }
+            | L2BridgeAction::ForcedWithdrawalRequested {
+                token, principal, ..
             } => effects.push(Effect::Liability {
                 token,
                 kind: LiabilityKind::Withdrawal,
@@ -239,6 +252,25 @@ mod tests {
                     change: BalanceChange::Credit(amount),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn forced_withdrawal_creates_principal_liability() {
+        let token = Address::repeat_byte(1);
+        let principal = U256::from(100);
+        let action = L2BridgeAction::ForcedWithdrawalRequested {
+            withdrawal_index: 1,
+            token,
+            principal,
+        };
+        assert_eq!(
+            from_zone_actions([&action].into_iter()),
+            vec![Effect::Liability {
+                token,
+                kind: LiabilityKind::Withdrawal,
+                change: BalanceChange::Credit(principal),
+            }]
         );
     }
 
@@ -400,6 +432,33 @@ mod tests {
         assert_eq!(token_state.liability().unwrap(), amount);
 
         let claimed = L1PortalEvent::RefundClaimed { token, amount: 10 };
+        state.apply(&from_tempo_events([&claimed])).unwrap();
+        let token_state = state.token(token).unwrap();
+        assert_eq!(token_state.pending_tempo_refunds, U256::ZERO);
+        assert_eq!(token_state.liability().unwrap(), U256::ZERO);
+    }
+
+    #[test]
+    fn parked_forced_exit_compensation_is_a_tempo_refund_until_claimed() {
+        let token = Address::repeat_byte(1);
+        let amount = U256::from(100_000);
+        let mut state = crate::accounting::State::default();
+        state.apply(&[Effect::EnableToken(token)]).unwrap();
+
+        let pending = L1PortalEvent::ForcedExitCompensationPending {
+            token,
+            amount: 100_000,
+        };
+        state.apply(&from_tempo_events([&pending])).unwrap();
+        let token_state = state.token(token).unwrap();
+        assert_eq!(token_state.pending_deposits, U256::ZERO);
+        assert_eq!(token_state.pending_tempo_refunds, amount);
+        assert_eq!(token_state.liability().unwrap(), amount);
+
+        let claimed = L1PortalEvent::RefundClaimed {
+            token,
+            amount: 100_000,
+        };
         state.apply(&from_tempo_events([&claimed])).unwrap();
         let token_state = state.token(token).unwrap();
         assert_eq!(token_state.pending_tempo_refunds, U256::ZERO);

@@ -96,7 +96,8 @@ struct TokenEnablementTransition {
 /// @dev Used in hash chain: keccak256(abi.encode(depositType, depositData, prevHash))
 enum DepositType {
     WithdrawalBounceBack, // Internal withdrawal bounce-back entry
-    Deposit // User deposit with hidden recipient and memo
+    Deposit, // User deposit with hidden recipient and memo
+    ForcedExit // Root-authorized full-balance withdrawal request
 }
 
 struct WithdrawalBounceBackDeposit {
@@ -131,6 +132,43 @@ struct Deposit {
     address tempoRefundRecipient; // Tempo recipient for a failed-deposit refund
     uint256 keyIndex; // Index of encryption key used (specified by depositor)
     DepositPayload encrypted; // Encrypted (to, memo)
+}
+
+/// @notice Root authorization encrypted inside a forced-exit request.
+struct ForcedExitAuthorization {
+    address account;
+    uint256 zoneChainId;
+    address token;
+    address recipient;
+    uint256 nonce;
+    uint64 admitBefore;
+}
+
+/// @notice Complete public entry committed to the mixed inbox queue.
+struct ForcedExit {
+    uint64 requestId;
+    address token;
+    uint256 keyIndex;
+    DepositPayload encrypted;
+    address feePayer;
+    uint64 requestedAtBlock;
+    uint64 requestedAtTime;
+}
+
+/// @notice TIP-1012 internal execution reason assignments; never published in L1 settlement.
+enum ForcedExitReason {
+    None,
+    InvalidPayload,
+    InvalidAuthorization,
+    NonceAlreadyConsumed,
+    BalanceOverflow,
+    PolicyRejected
+}
+
+/// @notice Admission identity authenticated by Zone inbox execution.
+struct ForcedExitMetadata {
+    address token;
+    uint64 depositNumber;
 }
 
 /// @notice Historical record of an encryption key with its activation block
@@ -278,6 +316,10 @@ address constant ZONE_OUTBOX = 0x1c00000000000000000000000000000000000002;
 //   slot 25: _tokensEnabledInCurrentBlock (uint64) + pauseExpiry (uint64) [packed]
 //   slot 26: tokenEnablementHash (bytes32)
 //   slot 27: abdicationEffectiveAt (mapping(Capability => uint64))
+//   slot 28: lastProcessedEnabledTokenCount (uint64) + tokenEnablementCursorInitialized (bool)
+//            + forcedExitVersion (uint64) + forcedExitCount (uint64) [packed]
+//   slot 29: forcedExitRequests (mapping(uint64 => ForcedExitMetadata))
+//   slot 30: _lastProcessedForcedExitId (uint64)
 //
 // These constants are the single source of truth for cross-domain reads.
 // ZoneInbox and ZoneOutbox use them to read portal state via
@@ -424,6 +466,47 @@ struct TokenConfig {
 /// @notice Interface for zone portal on Tempo
 interface IZonePortal {
 
+    event ForcedExitRequested(uint64 indexed depositNumber, ForcedExit entry);
+
+    /// @notice Activation version: 0 is available for activation; 1 enables forced exits.
+    function forcedExitVersion() external view returns (uint64);
+
+    /// @notice Irreversibly activate version 1. Only the portal admin may call this once.
+    /// @dev Activate only after Zone execution and proving infrastructure support forced exits.
+    function activateForcedExits() external;
+
+    event ForcedExitsActivated(uint64 version);
+
+    /// @notice Emitted when forced-exit compensation cannot be paid to the admin and is parked in
+    ///         `refunds` for `claimRefund`.
+    event ForcedExitCompensationPending(
+        address indexed admin, address indexed token, uint128 amount
+    );
+
+    /// @notice Remaining weighted admission units, including the withdrawal reserve.
+    /// @dev Each withdrawal may require one unit for a callback deposit or bounce-back.
+    function remainingDepositCapacity() external view returns (uint64);
+
+    function forcedExitCount() external view returns (uint64);
+    function forcedExitRequests(uint64 requestId)
+        external
+        view
+        returns (address token, uint64 depositNumber);
+    function FORCED_EXIT_COMPENSATION() external view returns (uint128);
+
+    /// @notice Queue an encrypted root authorization; processing is performed by the Zone.
+    /// @dev Requires activated forced exits, an unpaused portal, an eligible fee payer, an enabled
+    ///      token, a valid bounded envelope/key, and shared public inbox capacity.
+    ///      Collects 100_000 base units from msg.sender and immediately pays the portal admin. If
+    ///      that payout fails, the compensation is parked in `refunds[token][admin]` instead.
+    function requestForcedExit(
+        address token,
+        uint256 keyIndex,
+        DepositPayload calldata encrypted
+    )
+        external
+        returns (uint64 requestId, uint64 depositNumber);
+
     /// @notice Emitted after a batch is accepted by `submitBatch`.
     /// @dev `withdrawalQueueIndex` is the logical (non-wrapping) withdrawal queue index the
     ///      batch's hash chain was enqueued under, or `NO_QUEUE_INDEX` (`type(uint256).max`)
@@ -564,6 +647,10 @@ interface IZonePortal {
     error NoEncryptionKeyAtBlock(uint64 blockNumber);
     error InvalidEphemeralPubkey();
     error InvalidCiphertextLength(uint256 actual, uint256 expected);
+    error InvalidForcedExitCiphertextLength(uint256 actual);
+    error ForcedExitsNotActivated();
+    error ForcedExitsAlreadyActivated();
+    error ForcedExitCompensationRejected();
     error InvalidProofOfPossession();
     error DepositTooSmall();
     error DepositBlockCapacityExceeded(uint64 maximum);
@@ -1172,6 +1259,17 @@ interface IZoneOutbox {
     function REVEAL_TO_KEY_LENGTH() external view returns (uint256);
 
     function AUTHENTICATED_WITHDRAWAL_CIPHERTEXT_LENGTH() external view returns (uint256);
+
+    /// @notice Zone-local reconstruction event carrying the normal sender tag.
+    /// @dev No private hash or account is emitted; L1 uses the ordinary Withdrawal encoding.
+    event ForcedWithdrawalRequested(
+        uint64 indexed withdrawalIndex,
+        address token,
+        bytes32 senderTag,
+        address to,
+        uint128 amount,
+        uint64 fallbackNonce
+    );
 
     event WithdrawalRequested(
         uint64 indexed withdrawalIndex,

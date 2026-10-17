@@ -763,9 +763,9 @@ where
 /// - Processes deposits from the queue (minting zone tokens to recipients)
 /// - Validates the deposit hash chain against Tempo state
 ///
-/// Takes a [`PreparedL1Block`] where all ECIES decryption and ABI encoding have
-/// already been performed. TIP-403 policy is enforced during `advanceTempo` when
-/// the deposits mint TIP-20 tokens.
+/// Takes a [`PreparedL1Block`] with the complete encoded queue and its ECDH witnesses.
+/// Forced requests remain encrypted here; the inbox interprets them during execution.
+/// TIP-403 policy for ordinary deposits is enforced during their mint.
 pub fn build_advance_tempo_tx(
     prepared: &PreparedL1Block,
     chain_id: u64,
@@ -1041,7 +1041,7 @@ mod tests {
     }
 
     /// Verify calldata for an internal withdrawal bounce-back followed by an
-    /// encrypted user deposit.
+    /// encrypted user deposit and a forced request.
     #[test]
     fn test_build_advance_tempo_tx_with_deposit() {
         let token = address!("0x0000000000000000000000000000000000001000");
@@ -1056,7 +1056,7 @@ mod tests {
 
         // Build a PreparedL1Block directly — this test validates
         // `build_advance_tempo_tx` calldata encoding, not `prepare`.
-        let prepared = PreparedL1Block {
+        let mut prepared = PreparedL1Block {
             header: SealedHeader::seal_slow(header),
             queued_deposits: vec![
                 abi::QueuedDeposit {
@@ -1103,6 +1103,28 @@ mod tests {
             follows_checkpoint_blocks: false,
         };
 
+        let forced = abi::ForcedExit {
+            requestId: 9,
+            token,
+            keyIndex: U256::from(4),
+            feePayer: sender,
+            requestedAtBlock: 1,
+            requestedAtTime: 100,
+            encrypted: abi::DepositPayload {
+                ephemeralPubkeyX: B256::repeat_byte(0x55),
+                ephemeralPubkeyYParity: 0x03,
+                ciphertext: vec![0x44; 384].into(),
+                nonce: [0x11; 12].into(),
+                tag: [0x22; 16].into(),
+            },
+        };
+        prepared.queued_deposits.push(abi::QueuedDeposit {
+            depositType: DepositType::ForcedExit,
+            rejected: false,
+            depositData: alloy_sol_types::SolValue::abi_encode(&forced).into(),
+        });
+        prepared.decryptions.push(prepared.decryptions[0].clone());
+
         let recovered_tx = super::build_advance_tempo_tx(&prepared, 1337);
 
         // Decode the calldata to verify structure.
@@ -1117,8 +1139,9 @@ mod tests {
         let decoded = IZoneInbox::advanceTempoCall::abi_decode(input)
             .expect("calldata should decode as advanceTempo");
 
-        // Should have 2 queued deposits
-        assert_eq!(decoded.deposits.len(), 2, "should have 2 queued deposits");
+        assert_eq!(decoded.deposits, prepared.queued_deposits);
+        assert_eq!(decoded.decryptions, prepared.decryptions);
+        assert_eq!(decoded.deposits.len(), 3);
 
         // The internal withdrawal bounce-back keeps its dedicated discriminator.
         assert_eq!(
@@ -1134,11 +1157,8 @@ mod tests {
             "second deposit should be Encrypted"
         );
 
-        // Should have exactly 1 DecryptionData (one per encrypted deposit)
-        assert_eq!(
-            decoded.decryptions.len(),
-            1,
-            "should have 1 DecryptionData for the encrypted deposit"
-        );
+        // Each encrypted queue entry needs one proof, including the forced request.
+        assert_eq!(decoded.decryptions.len(), 2);
+        assert_eq!(decoded.deposits[2].depositType, DepositType::ForcedExit);
     }
 }

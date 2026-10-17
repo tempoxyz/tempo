@@ -84,8 +84,8 @@ priority = 100
 [[profile.ci.overrides]]
 filter = """
   package(/^zone-/) & (
-    test(/^(e2e|earn_zone_e2e|l1_e2e|network_chaos_e2e|network_chaos_p2p_e2e|restart_e2e|handoff_e2e)::/) |
+    test(/^(e2e|earn_zone_e2e|forced_exit_e2e|l1_e2e|network_chaos_e2e|network_chaos_p2p_e2e|restart_e2e|handoff_e2e)::/) |
     test(advance_tempo)
   )
 """
-threads-required = 4
+threads-required = 8

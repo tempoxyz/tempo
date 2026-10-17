@@ -10,6 +10,8 @@ import {
     DepositType,
     ENCRYPTION_KEY_GRACE_PERIOD,
     EncryptionKeyEntry,
+    ForcedExit,
+    ForcedExitMetadata,
     IVerifier,
     IZoneMessenger,
     IZonePortal,
@@ -53,7 +55,15 @@ contract ZonePortal is IZonePortal {
     ///      to adjust the zoneGasRate based on operational costs.
     uint64 public constant FIXED_DEPOSIT_GAS = 100_000;
 
-    /// @notice Maximum deposits that may be appended to this portal in one Tempo block.
+    /// @notice Fixed TIP-1012 compensation in six-decimal token base units.
+    uint128 public constant FORCED_EXIT_COMPENSATION = 100_000;
+
+    /// @notice Shared admission units consumed by one forced request (one actual queue entry).
+    /// @dev Conservative execution bound: 210 public units admit at most 15 forced exits.
+    ///      Re-measure the mixed workload before increasing this limit.
+    uint64 public constant FORCED_EXIT_ADMISSION_WEIGHT = 14;
+
+    /// @notice Maximum outstanding admission units in this portal.
     /// @dev Under T9, processing 230 encrypted deposits rejected by the issuer's
     ///      TIP-403 transfer policy uses 193,044,874 gas, leaving 6,955,126 gas
     ///      below the buffered 200,000,000 gas ceiling.
@@ -154,7 +164,8 @@ contract ZonePortal is IZonePortal {
     /// @dev Tokens can never be removed from this list (non-custodial guarantee).
     address[] internal _enabledTokens;
 
-    /// @notice Refunds parked after a deposit bounce-back transfer reverts on Tempo.
+    /// @notice Refunds parked after a deposit bounce-back or forced-exit compensation transfer
+    ///         fails on Tempo.
     mapping(address token => mapping(address owner => uint128 amount)) public refunds;
 
     /// @notice Withdrawal queue (zone→Tempo): unbounded FIFO
@@ -212,7 +223,8 @@ contract ZonePortal is IZonePortal {
     /// @notice Tempo block number that recorded the most recent leader transition.
     uint64 public leaderActivationTempoBlock;
 
-    /// @dev Per-Tempo-block deposit admission counter. Appended for upgrade-safe storage layout.
+    /// @dev Retired per-Tempo-block deposit admission counters, retained for storage compatibility.
+    ///      Admission weight is derived from queue counters in _outstandingDepositWeight.
     uint64 internal _depositCountBlock;
     uint64 internal _depositsInCurrentBlock;
 
@@ -237,6 +249,17 @@ contract ZonePortal is IZonePortal {
 
     /// @notice Whether the T13 token cursor has been authenticated by an operational batch.
     bool public tokenEnablementCursorInitialized;
+
+    /// @inheritdoc IZonePortal
+    uint64 public forcedExitVersion;
+
+    /// @notice Number of admitted forced-exit requests; distinct from the shared queue count.
+    uint64 public forcedExitCount;
+    mapping(uint64 requestId => ForcedExitMetadata) public forcedExitRequests;
+
+    /// @dev Forced-request prefix confirmed by settlement's shared deposit cursor.
+    ///      Reuses forcedExitRequests to release weight without per-deposit checkpoints.
+    uint64 private _lastProcessedForcedExitId;
 
     /*//////////////////////////////////////////////////////////////
                              INITIALIZATION
@@ -775,11 +798,7 @@ contract ZonePortal is IZonePortal {
         external
         onlySequencerOrAdmin
     {
-        // Validate yParity
-        if (!Secp256k1Lib.isCompressedYParity(yParity)) revert InvalidEphemeralPubkey();
-
-        // Validate x is on the secp256k1 curve
-        if (!Secp256k1Lib.isValidX(x)) revert InvalidEphemeralPubkey();
+        _validatePublicKey(x, yParity);
 
         // Verify proof of possession: the caller must prove control of the encryption private key.
         bytes32 message = keccak256(abi.encode(address(this), x, yParity));
@@ -942,12 +961,49 @@ contract ZonePortal is IZonePortal {
         internal
         returns (uint64 thisDeposit)
     {
-        if (depositCount - lastProcessedDepositNumber >= maximum) {
+        return _recordDeposit(newCurrentDepositQueueHash, maximum, 1);
+    }
+
+    function _recordDeposit(
+        bytes32 newCurrentDepositQueueHash,
+        uint64 maximum,
+        uint64 weight
+    )
+        internal
+        returns (uint64 thisDeposit)
+    {
+        if (_outstandingDepositWeight() + weight > maximum) {
             revert DepositBlockCapacityExceeded(maximum);
         }
 
         currentDepositQueueHash = newCurrentDepositQueueHash;
         thisDeposit = ++depositCount;
+    }
+
+    function _outstandingDepositWeight() internal view returns (uint256) {
+        return uint256(depositCount - lastProcessedDepositNumber)
+            + uint256(forcedExitCount - _lastProcessedForcedExitId)
+            * (FORCED_EXIT_ADMISSION_WEIGHT - 1);
+    }
+
+    /// @inheritdoc IZonePortal
+    function remainingDepositCapacity() public view returns (uint64) {
+        uint256 used = _outstandingDepositWeight();
+        return used >= MAX_UNPROCESSED_DEPOSITS ? 0 : uint64(MAX_UNPROCESSED_DEPOSITS - used);
+    }
+
+    /// @dev Only called after settlement authenticates the new shared queue cursor.
+    ///      Admission bounds the pending forced-request prefix to at most 15 records.
+    function _confirmDeposits(uint64 number) internal {
+        uint64 processed = _lastProcessedForcedExitId;
+        uint64 admitted = forcedExitCount;
+        while (processed < admitted && forcedExitRequests[processed + 1].depositNumber <= number) {
+            ++processed;
+        }
+        if (processed != _lastProcessedForcedExitId) {
+            _lastProcessedForcedExitId = processed;
+        }
+        lastProcessedDepositNumber = number;
     }
 
     /// @notice Alias for `depositEncrypted`.
@@ -989,6 +1045,90 @@ contract ZonePortal is IZonePortal {
         return _deposit(_token, amount, keyIndex, encrypted, tempoRefundRecipient);
     }
 
+    /// @inheritdoc IZonePortal
+    function activateForcedExits() external onlyAdmin {
+        if (forcedExitVersion != 0) revert ForcedExitsAlreadyActivated();
+        forcedExitVersion = 1;
+        emit ForcedExitsActivated(1);
+    }
+
+    /// @inheritdoc IZonePortal
+    function requestForcedExit(
+        address token,
+        uint256 keyIndex,
+        DepositPayload calldata encrypted
+    )
+        external
+        whenNotPaused
+        returns (uint64 requestId, uint64 depositNumber)
+    {
+        if (forcedExitVersion != 1) revert ForcedExitsNotActivated();
+        if (_withdrawalReentrancyStatus != WITHDRAWAL_NOT_ENTERED) revert ReentrantWithdrawal();
+        _requireAllowedDepositor(msg.sender);
+
+        // Enabled tokens have already passed the native TIP-20 factory validation. TIP-20
+        // decimals are fixed at six. depositsActive controls principal deposits only.
+        if (!_tokenConfigs[token].enabled) revert TokenNotEnabled();
+        _validatePublicKey(encrypted.ephemeralPubkeyX, encrypted.ephemeralPubkeyYParity);
+        uint256 length = encrypted.ciphertext.length;
+        if (length < 384 || length > 2368 || length % 32 != 0) {
+            revert InvalidForcedExitCiphertextLength(length);
+        }
+        _validateEncryptionKey(keyIndex);
+
+        // Require direct receipt before paying the admin from the portal's balance.
+        // A diverted inbound transfer must not spend existing deposit backing.
+        (bool authorized,) = TIP403_REGISTRY.validateReceivePolicy(token, msg.sender, address(this));
+        if (!authorized) revert ForcedExitCompensationRejected();
+        ITIP20(token).transferFrom(msg.sender, address(this), FORCED_EXIT_COMPENSATION);
+        // The admin must not be able to block forced exits by refusing compensation, so a failed
+        // payout is parked for claimRefund instead of reverting admission.
+        if (!_tryTransfer(token, admin, FORCED_EXIT_COMPENSATION)) {
+            refunds[token][admin] += FORCED_EXIT_COMPENSATION;
+            emit ForcedExitCompensationPending(admin, token, FORCED_EXIT_COMPENSATION);
+        }
+
+        requestId = forcedExitCount + 1;
+        ForcedExit memory entry = ForcedExit({
+            requestId: requestId,
+            token: token,
+            keyIndex: keyIndex,
+            encrypted: encrypted,
+            feePayer: msg.sender,
+            requestedAtBlock: uint64(block.number),
+            requestedAtTime: uint64(block.timestamp)
+        });
+
+        // Ordinary deposits, withdrawal bounce-backs, and forced-exit requests all enter
+        // the same ordered inbox queue.
+        depositNumber = _recordDeposit(
+            DepositQueueLib.enqueueForcedExit(currentDepositQueueHash, entry),
+            MAX_UNPROCESSED_DEPOSITS - WITHDRAWAL_PROCESSING_DEPOSIT_RESERVE,
+            FORCED_EXIT_ADMISSION_WEIGHT
+        );
+        forcedExitCount = requestId;
+        forcedExitRequests[requestId] = ForcedExitMetadata(token, depositNumber);
+
+        emit ForcedExitRequested(depositNumber, entry);
+    }
+
+    function _validatePublicKey(bytes32 x, uint8 yParity) internal view {
+        if (!Secp256k1Lib.isCompressedYParity(yParity)) revert InvalidEphemeralPubkey();
+        if (!Secp256k1Lib.isValidX(x)) revert InvalidEphemeralPubkey();
+    }
+
+    function _validateEncryptionKey(uint256 keyIndex) internal view {
+        (bool valid,) = isEncryptionKeyValid(keyIndex);
+        if (!valid) {
+            if (keyIndex >= _encryptionKeys.length) {
+                revert InvalidEncryptionKeyIndex(keyIndex);
+            }
+            EncryptionKeyEntry storage key = _encryptionKeys[keyIndex];
+            EncryptionKeyEntry storage nextKey = _encryptionKeys[keyIndex + 1];
+            revert EncryptionKeyExpired(keyIndex, key.activationBlock, nextKey.activationBlock);
+        }
+    }
+
     function _deposit(
         address _token,
         uint128 amount,
@@ -1014,12 +1154,7 @@ contract ZonePortal is IZonePortal {
         // Validate ephemeral public key is a valid secp256k1 point
         // Prevents griefing: invalid points make Chaum-Pedersen proofs impossible,
         // which would block chain progress on the zone side.
-        if (!Secp256k1Lib.isCompressedYParity(encrypted.ephemeralPubkeyYParity)) {
-            revert InvalidEphemeralPubkey();
-        }
-        if (!Secp256k1Lib.isValidX(encrypted.ephemeralPubkeyX)) {
-            revert InvalidEphemeralPubkey();
-        }
+        _validatePublicKey(encrypted.ephemeralPubkeyX, encrypted.ephemeralPubkeyYParity);
 
         // Validate ciphertext length — GCM ciphertext == plaintext length (tag is separate)
         // Prevents DoS: oversized ciphertexts inflate zone-side AES-GCM processing cost
@@ -1029,16 +1164,7 @@ contract ZonePortal is IZonePortal {
             );
         }
 
-        // Validate encryption key
-        (bool valid,) = isEncryptionKeyValid(keyIndex);
-        if (!valid) {
-            if (keyIndex >= _encryptionKeys.length) {
-                revert InvalidEncryptionKeyIndex(keyIndex);
-            }
-            EncryptionKeyEntry storage key = _encryptionKeys[keyIndex];
-            EncryptionKeyEntry storage nextKey = _encryptionKeys[keyIndex + 1];
-            revert EncryptionKeyExpired(keyIndex, key.activationBlock, nextKey.activationBlock);
-        }
+        _validateEncryptionKey(keyIndex);
 
         (uint128 fee, uint128 netAmount) = _collectDepositFunds(_token, amount);
 
@@ -1100,11 +1226,7 @@ contract ZonePortal is IZonePortal {
         whenNotPaused
         nonReentrantWithdrawal
     {
-        uint256 unprocessed = depositCount - lastProcessedDepositNumber;
-        if (
-            unprocessed > MAX_UNPROCESSED_DEPOSITS
-                || withdrawals.length > MAX_UNPROCESSED_DEPOSITS - unprocessed
-        ) {
+        if (withdrawals.length > remainingDepositCapacity()) {
             revert DepositBlockCapacityExceeded(MAX_UNPROCESSED_DEPOSITS);
         }
         bytes32[] memory remainingQueues = new bytes32[](withdrawals.length);
@@ -1131,14 +1253,6 @@ contract ZonePortal is IZonePortal {
             return;
         }
 
-        if (withdrawal.gasLimit > MAX_WITHDRAWAL_GAS_LIMIT) {
-            _enqueueBounceBack(_token, withdrawal.amount, withdrawal.fallbackNonce);
-            emit WithdrawalProcessed(
-                withdrawal.to, withdrawal.senderTag, _token, withdrawal.amount, false
-            );
-            return;
-        }
-
         bool success;
         if (withdrawal.gasLimit == 0) {
             // Re-check current roles without reverting so an in-flight withdrawal to a revoked
@@ -1146,7 +1260,7 @@ contract ZonePortal is IZonePortal {
             success = (!_isGatewayEnforced || !hasRole(withdrawal.to, Role.CallbackGateway))
                 && _isAllowed(withdrawal.to)
                 && _tryTransfer(_token, withdrawal.to, withdrawal.amount);
-        } else {
+        } else if (withdrawal.gasLimit <= MAX_WITHDRAWAL_GAS_LIMIT) {
             // Isolate callback effects so failure can be caught without reverting the dequeue.
             try this.deliverWithdrawal(
                 _token,
@@ -1431,7 +1545,7 @@ contract ZonePortal is IZonePortal {
         withdrawalBatchIndex++;
         blockHash = blockTransition.nextBlockHash;
         lastSyncedTempoBlockNumber = tempoBlockNumber;
-        lastProcessedDepositNumber = depositQueueTransition.nextDepositNumber;
+        _confirmDeposits(depositQueueTransition.nextDepositNumber);
         if (
             tokenEnablementCursorInitialized
                 || tokenEnablementTransition.nextProcessedTokenCount != 0

@@ -11,9 +11,7 @@ use tempo_contracts::{
         IRolesAuth, IStablecoinDEX as StablecoinDEX, ITIP20 as TIP20Token,
         ITIP20Factory as TIP20Factory,
     },
-    zones::{
-        DepositPayload, IZoneOutbox, SwapAndDepositRouterCallback, ZONE_OUTBOX_ADDRESS, ZonePortal,
-    },
+    zones::{IZoneOutbox, SwapAndDepositRouterCallback, ZONE_OUTBOX_ADDRESS, ZonePortal},
 };
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::ISSUER_ROLE};
 use zone_precompiles::ecies::encrypt_deposit;
@@ -620,19 +618,7 @@ async fn send_deposit<P: Provider<TempoNetwork>>(
     )
     .ok_or_else(|| eyre!("ECIES encryption failed — invalid sequencer public key?"))?;
     let receipt = portal
-        .deposit(
-            token,
-            amount,
-            key_index,
-            DepositPayload {
-                ephemeralPubkeyX: encrypted.eph_pub_x,
-                ephemeralPubkeyYParity: encrypted.eph_pub_y_parity,
-                ciphertext: Bytes::from(encrypted.ciphertext),
-                nonce: encrypted.nonce.into(),
-                tag: encrypted.tag.into(),
-            },
-            tempo_refund_recipient,
-        )
+        .deposit(token, amount, key_index, encrypted, tempo_refund_recipient)
         .send_sync()
         .await?;
     check(&receipt, "deposit")
@@ -670,13 +656,7 @@ async fn build_router_callback<P: Provider<TempoNetwork>>(
         token_out: request.token_out,
         target_portal: request.target_portal,
         key_index,
-        encrypted: DepositPayload {
-            ephemeralPubkeyX: encrypted.eph_pub_x,
-            ephemeralPubkeyYParity: encrypted.eph_pub_y_parity,
-            ciphertext: Bytes::from(encrypted.ciphertext),
-            nonce: encrypted.nonce.into(),
-            tag: encrypted.tag.into(),
-        },
+        encrypted,
         tempo_refund_recipient: request.tempo_refund_recipient,
         min_amount_out: request.min_amount_out,
     };

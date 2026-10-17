@@ -23,7 +23,7 @@ use futures::{SinkExt, StreamExt};
 use p256::{ecdsa::SigningKey as P256SigningKey, elliptic_curve::rand_core::OsRng};
 use serde_json::{Value, json};
 use std::{collections::HashSet, time::Duration};
-use tempo_chainspec::spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE};
+use tempo_chainspec::spec::{TEMPO_T0_BASE_FEE, tempo_t7_next_block_base_fee};
 use tempo_contracts::{
     precompiles::{
         IAccountKeychain, INonce, IStorageCredits, ITIP20 as ContractTip20, ITIP403Registry,
@@ -499,6 +499,9 @@ async fn test_keychain_auth_rejection_cases() -> eyre::Result<()> {
 /// Public methods work for both sequencer and users without leaking private fee activity.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_public_methods() -> eyre::Result<()> {
+    use alloy_consensus::BlockHeader as _;
+    use alloy_provider::Provider as _;
+
     reth_tracing::init_test_tracing();
 
     let ctx = start_zone_with_redacted_rpc().await?;
@@ -520,8 +523,19 @@ async fn test_public_methods() -> eyre::Result<()> {
         );
     }
 
+    // The inherited DEV schedule activates T14 at genesis.
+    let latest = ctx
+        .zone
+        .provider()
+        .get_block_by_number(Default::default())
+        .await?
+        .expect("latest Zone block");
+    let next_base_fee = tempo_t7_next_block_base_fee(
+        latest.header.base_fee_per_gas().expect("Zone base fee"),
+        latest.header.gas_used(),
+    );
     for (method, expected) in [
-        ("eth_gasPrice", U256::from(TEMPO_T1_BASE_FEE)),
+        ("eth_gasPrice", U256::from(next_base_fee)),
         ("eth_maxPriorityFeePerGas", U256::ZERO),
     ] {
         for response in [

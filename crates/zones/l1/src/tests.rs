@@ -1167,11 +1167,11 @@ async fn test_prepare_decrypted_deposit_defers_policy_to_upstream_mint() {
             fee: 0,
             tempo_refund_recipient: sender,
             key_index: U256::ZERO,
-            ephemeral_pubkey_x: encrypted.eph_pub_x,
-            ephemeral_pubkey_y_parity: encrypted.eph_pub_y_parity,
-            ciphertext: encrypted.ciphertext,
-            nonce: encrypted.nonce,
-            tag: encrypted.tag,
+            ephemeral_pubkey_x: encrypted.ephemeralPubkeyX,
+            ephemeral_pubkey_y_parity: encrypted.ephemeralPubkeyYParity,
+            ciphertext: encrypted.ciphertext.to_vec(),
+            nonce: encrypted.nonce.0,
+            tag: encrypted.tag.0,
         })]),
     };
 
@@ -1238,8 +1238,8 @@ async fn deposits_select_the_private_key_by_portal_index() {
         .unwrap();
         let decrypted = crate::precompiles::ecies::decrypt_deposit(
             &key,
-            &encrypted.eph_pub_x,
-            encrypted.eph_pub_y_parity,
+            &encrypted.ephemeralPubkeyX,
+            encrypted.ephemeralPubkeyYParity,
             &encrypted.ciphertext,
             &encrypted.nonce,
             &encrypted.tag,
@@ -1256,11 +1256,11 @@ async fn deposits_select_the_private_key_by_portal_index() {
             fee: 0,
             tempo_refund_recipient: sender,
             key_index,
-            ephemeral_pubkey_x: encrypted.eph_pub_x,
-            ephemeral_pubkey_y_parity: encrypted.eph_pub_y_parity,
-            ciphertext: encrypted.ciphertext,
-            nonce: encrypted.nonce,
-            tag: encrypted.tag,
+            ephemeral_pubkey_x: encrypted.ephemeralPubkeyX,
+            ephemeral_pubkey_y_parity: encrypted.ephemeralPubkeyYParity,
+            ciphertext: encrypted.ciphertext.to_vec(),
+            nonce: encrypted.nonce.0,
+            tag: encrypted.tag.0,
         }));
     }
 
@@ -1983,6 +1983,38 @@ fn extract_events_fails_closed_on_corrupt_recognized_portal_log() {
 }
 
 #[test]
+fn token_pause_and_unpause_invalidate_cached_token_storage() {
+    use tempo_contracts::precompiles::ITIP20::PauseStateUpdate;
+
+    for paused in [true, false] {
+        let subscriber = test_subscriber(9);
+        let token = address!("20c0000000000000000000000000000000000000");
+        let slot = B256::with_last_byte(15);
+        subscriber
+            .l1_state_cache
+            .lock()
+            .set(token, slot, 0, B256::ZERO);
+        let log = Log {
+            inner: alloy_primitives::Log {
+                address: token,
+                data: PauseStateUpdate {
+                    updater: Address::ZERO,
+                    isPaused: paused,
+                }
+                .encode_log_data(),
+            },
+            ..Default::default()
+        };
+        let block = NumHash::new(1, B256::with_last_byte(1));
+        let receipt = make_receipt_with_logs(block.number, block.hash, vec![log]);
+        let (_, invalidated, _, _) = subscriber.extract_events(block, &[receipt]).unwrap();
+        assert!(invalidated.contains(&token));
+        subscriber.update_l1_state_anchor(1, &invalidated);
+        assert_eq!(subscriber.l1_state_cache.lock().get(token, slot, 1), None);
+    }
+}
+
+#[test]
 fn pause_events_invalidate_cached_portal_storage() {
     let subscriber = test_subscriber(9);
     let portal = subscriber.config.portal_address;
@@ -2420,4 +2452,254 @@ async fn paused_subscriber_wedges_at_lookahead_then_resumes_contiguously() {
     assert_eq!(tracker.latest(), Some(NumHash::new(tip, parent)));
     assert_eq!(queue.last_enqueued(), Some(NumHash::new(tip, parent)));
     assert!(asserter.read_q().is_empty());
+}
+
+#[tokio::test]
+async fn forced_requests_survive_logs_restart_and_mixed_preparation() {
+    use crate::precompiles::ecies;
+    let portal = Address::repeat_byte(0x77);
+    let payer = Address::repeat_byte(0x88);
+    let token = Address::repeat_byte(0x99);
+    let old = k256::SecretKey::from_slice(&[0x11; 32]).unwrap();
+    let current = k256::SecretKey::from_slice(&[0x22; 32]).unwrap();
+    let keys = EncryptionKeyRing::new([old.clone(), current.clone()]);
+    for (i, key) in [&old, &current].into_iter().enumerate() {
+        let (x, y_parity) = ecies::compressed_x_and_parity(key.public_key().as_affine());
+        keys.apply_rotation(&EncryptionKeyRotation {
+            x,
+            y_parity,
+            pubkey: encryption_key_address(x, y_parity).unwrap(),
+            key_index: U256::from(i),
+            activation_block: 10 + i as u64,
+        })
+        .unwrap();
+    }
+    let (x, parity) = ecies::compressed_x_and_parity(old.public_key().as_affine());
+    let encrypted = ecies::encrypt_payload(
+        &x,
+        parity,
+        &[0x44; 384],
+        ecies::EncryptionContext {
+            portal,
+            sender: payer,
+            key_index: U256::ZERO,
+        },
+        &mut k256::elliptic_curve::rand_core::OsRng,
+        Some("forced-exit-v1"),
+    )
+    .unwrap();
+    let mut entry = abi::ForcedExit {
+        requestId: 1,
+        token,
+        keyIndex: U256::ZERO,
+        encrypted,
+        feePayer: payer,
+        requestedAtBlock: 12,
+        requestedAtTime: 100,
+    };
+    // An invalid GCM tag must still yield a correct ECDH witness for the historical key.
+    entry.encrypted.tag[0] ^= 1;
+    let event = ForcedExitRequested {
+        depositNumber: 2,
+        entry: entry.clone(),
+    };
+    let log = Log {
+        inner: alloy_primitives::Log {
+            address: portal,
+            data: event.encode_log_data(),
+        },
+        ..Default::default()
+    };
+    let mut events = L1PortalEvents::from_deposits(vec![L1Deposit::WithdrawalBounceBack(
+        WithdrawalBounceBackDeposit {
+            token,
+            to: Address::with_last_byte(1),
+            amount: 50,
+            fee: 0,
+        },
+    )]);
+    events.push_log(&log, 12).unwrap();
+    assert!(L1PortalEvents::default().push_log(&log, 13).is_err());
+    let ordinary =
+        ecies::encrypt_deposit(&x, parity, payer, B256::ZERO, payer, portal, U256::ZERO).unwrap();
+    events.deposits.push(L1Deposit::Deposit(Deposit {
+        token,
+        sender: payer,
+        amount: 20,
+        fee: 0,
+        tempo_refund_recipient: payer,
+        key_index: U256::ZERO,
+        ephemeral_pubkey_x: ordinary.ephemeralPubkeyX,
+        ephemeral_pubkey_y_parity: ordinary.ephemeralPubkeyYParity,
+        ciphertext: ordinary.ciphertext.to_vec(),
+        nonce: ordinary.nonce.0,
+        tag: ordinary.tag.0,
+    }));
+    let block = L1BlockDeposits {
+        header: seal(make_test_header(12)),
+        events,
+    };
+    let encoded = serde_json::to_vec(&block).unwrap();
+    let restarted: L1BlockDeposits = serde_json::from_slice(&encoded).unwrap();
+    let L1Deposit::ForcedExit(restored) = &restarted.events.deposits[1] else {
+        panic!()
+    };
+    assert_eq!(restored.deposit_number, 2);
+    assert_eq!(restored.entry, entry);
+    let first = restarted.events.deposits[0].hash_chain(B256::ZERO);
+    assert_eq!(
+        restarted.events.deposits[1].hash_chain(first),
+        keccak256((DepositType::ForcedExit, entry.clone(), first).abi_encode_params())
+    );
+    let prepared = restarted.clone().prepare(&keys, portal).await.unwrap();
+    assert_eq!(prepared.queued_deposits.len(), 3);
+    assert_eq!(prepared.decryptions.len(), 2);
+    assert_eq!(
+        prepared
+            .queued_deposits
+            .iter()
+            .map(|q| q.depositType)
+            .collect::<Vec<_>>(),
+        [
+            DepositType::WithdrawalBounceBack,
+            DepositType::ForcedExit,
+            DepositType::Deposit
+        ]
+    );
+    assert!(!prepared.queued_deposits[1].rejected);
+    assert_eq!(
+        abi::ForcedExit::abi_decode(&prepared.queued_deposits[1].depositData).unwrap(),
+        entry
+    );
+    let proof = ecies::compute_ecdh_proof(
+        &old,
+        &entry.encrypted.ephemeralPubkeyX,
+        entry.encrypted.ephemeralPubkeyYParity,
+    )
+    .unwrap();
+    assert_eq!(prepared.decryptions[0].sharedSecret, proof.shared_secret);
+    assert_eq!(prepared.decryptions[0].cpProof, proof.cp_proof);
+    restarted
+        .events
+        .validate_advance_tempo_inputs(&prepared.queued_deposits, &[])
+        .unwrap();
+    let mut reordered = prepared.queued_deposits.clone();
+    reordered.swap(1, 2);
+    assert!(
+        restarted
+            .events
+            .validate_advance_tempo_inputs(&reordered, &[])
+            .is_err()
+    );
+    assert!(
+        restarted
+            .events
+            .validate_advance_tempo_inputs(&prepared.queued_deposits[..2], &[])
+            .is_err()
+    );
+    assert!(
+        restarted
+            .clone()
+            .prepare(&EncryptionKeyRing::new([]), portal)
+            .await
+            .is_err()
+    );
+    // Exercise main's parallel preparation path with the same mixed queue and witnesses.
+    let mut parallel = restarted.clone();
+    parallel.events.deposits = restarted
+        .events
+        .deposits
+        .iter()
+        .cloned()
+        .cycle()
+        .take(restarted.events.deposits.len() * 6)
+        .collect::<Vec<_>>();
+    let parallel_prepared = parallel.clone().prepare(&keys, portal).await.unwrap();
+    assert_eq!(
+        parallel_prepared.queued_deposits,
+        prepared
+            .queued_deposits
+            .iter()
+            .cloned()
+            .cycle()
+            .take(prepared.queued_deposits.len() * 6)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        parallel_prepared.decryptions,
+        prepared
+            .decryptions
+            .iter()
+            .cloned()
+            .cycle()
+            .take(prepared.decryptions.len() * 6)
+            .collect::<Vec<_>>()
+    );
+    let L1Deposit::ForcedExit(request) = &mut parallel.events.deposits[16] else {
+        panic!()
+    };
+    request.entry.encrypted.ephemeralPubkeyYParity = 4;
+    assert!(parallel.prepare(&keys, portal).await.is_err());
+
+    let mut invalid_point = restarted;
+    let L1Deposit::ForcedExit(request) = &mut invalid_point.events.deposits[1] else {
+        panic!()
+    };
+    request.entry.encrypted.ephemeralPubkeyYParity = 4;
+    assert!(invalid_point.prepare(&keys, portal).await.is_err());
+}
+
+#[tokio::test]
+async fn finalized_backfill_imports_forced_requests_from_verified_receipts() {
+    let subscriber = test_subscriber(9);
+    let queue = subscriber.deposit_queue.clone();
+    let portal = subscriber.config.portal_address;
+    let event = ForcedExitRequested {
+        depositNumber: 4,
+        entry: abi::ForcedExit {
+            requestId: 2,
+            token: Address::repeat_byte(1),
+            keyIndex: U256::from(3),
+            encrypted: abi::DepositPayload {
+                ephemeralPubkeyX: B256::repeat_byte(2),
+                ephemeralPubkeyYParity: 2,
+                ciphertext: vec![3; 384].into(),
+                nonce: [4; 12].into(),
+                tag: [5; 16].into(),
+            },
+            feePayer: Address::repeat_byte(6),
+            requestedAtBlock: 10,
+            requestedAtTime: 123,
+        },
+    };
+    let log = Log {
+        inner: alloy_primitives::Log {
+            address: portal,
+            data: event.encode_log_data(),
+        },
+        ..Default::default()
+    };
+    let receipt = make_receipt_with_logs(10, B256::ZERO, vec![log]);
+    let mut header = make_test_header(10);
+    header.inner.receipts_root = calculate_test_receipts_root(std::slice::from_ref(&receipt));
+    header.inner.logs_bloom = *receipt.inner.inner.bloom_ref();
+    let asserter = Asserter::new();
+    let provider =
+        ProviderBuilder::new_with_network::<TempoNetwork>().connect_mocked_client(asserter.clone());
+    asserter.push_success(&Some(header_response(header.clone())));
+    asserter.push_success(&Some(header_response(header.clone())));
+    asserter.push_success(&Some(vec![receipt]));
+    asserter.push_success(&Some(header_response(header)));
+    assert_eq!(
+        subscriber.sync_to_finalized(&provider, 10).await.unwrap(),
+        11
+    );
+    assert!(asserter.read_q().is_empty());
+    let imported = queue.peek().unwrap();
+    assert_eq!(imported.events.deposits.len(), 1);
+    let L1Deposit::ForcedExit(request) = &imported.events.deposits[0] else {
+        panic!("wrong queue entry")
+    };
+    assert_eq!(request.deposit_number, event.depositNumber);
+    assert_eq!(request.entry, event.entry);
 }

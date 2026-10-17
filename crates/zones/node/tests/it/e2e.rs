@@ -14,7 +14,7 @@ use alloy_network::{ReceiptResponse, TransactionBuilder as _};
 use alloy_provider::{DynProvider, Provider};
 use alloy_rpc_types_eth::TransactionRequest;
 use alloy_sol_types::SolCall;
-use tempo_chainspec::spec::TEMPO_T0_BASE_FEE;
+use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T0_BASE_FEE};
 use tempo_contracts::{
     precompiles::ITIP20,
     zones::{
@@ -23,6 +23,7 @@ use tempo_contracts::{
     },
 };
 use tempo_precompiles::PATH_USD_ADDRESS;
+use zone_chainspec::test_utils::set_tempo_fork;
 use zone_l1::ChainTempoStateExt;
 use zone_primitives::constants::zone_chain_id;
 
@@ -30,15 +31,20 @@ use crate::utils::{
     DEFAULT_POLL, DEFAULT_TIMEOUT, L1Fixture, TIP20_TX_GAS, WITHDRAWAL_TX_GAS, ZoneTestNode,
     approve_outbox, leader_p2p_config, local_dev_zone_account, poll_until, seed_fixture_for_zone,
     start_chain_id_rpc, start_local_p2p_cluster, start_local_zone_with_fixture,
+    start_local_zone_with_fixture_and_withdrawal_batch_interval,
 };
 
 const CONTRACT_CREATION_TX_GAS: u64 = 1_000_000;
 const LEADER_INCLUSION_TIMEOUT: Duration = Duration::from_secs(30);
 const P2P_RECOVERY_TIMEOUT: Duration = Duration::from_secs(45);
 
+/// Zero-fee transactions remain valid until T14 activates dynamic base fees.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_zero_fee_transactions_are_admitted_and_included() -> eyre::Result<()> {
-    let (zone, mut fixture) = start_local_zone_with_fixture(10).await?;
+    let mut genesis = zone_node::genesis::genesis_template()?;
+    set_tempo_fork(&mut genesis, TempoHardfork::T13, 0);
+    let (zone, mut fixture) =
+        start_local_zone_with_fixture_and_withdrawal_batch_interval(1, 10, 8, genesis).await?;
     let (provider, sender) = local_dev_zone_account(&zone)?;
     let deposit = fixture.make_deposit(PATH_USD_ADDRESS, sender, sender, 1_000_000);
     fixture.inject_deposits(zone.deposit_queue(), vec![deposit]);

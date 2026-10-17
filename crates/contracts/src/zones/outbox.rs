@@ -43,6 +43,17 @@ crate::sol! {
             bytes revealTo
         );
 
+        /// Zone-local receipt reconstruction event carrying the normal sender tag.
+        /// No private hash or account is emitted; L1 uses the ordinary Withdrawal encoding.
+        event ForcedWithdrawalRequested(
+            uint64 indexed withdrawalIndex,
+            address token,
+            bytes32 senderTag,
+            address to,
+            uint128 amount,
+            uint64 fallbackNonce
+        );
+
         event BatchFinalized(bytes32 indexed withdrawalQueueHash, uint64 withdrawalBatchIndex);
         event TempoGasRateUpdated(uint128 tempoGasRate);
         event MaxWithdrawalsPerBlockUpdated(uint32 maxWithdrawalsPerBlock);

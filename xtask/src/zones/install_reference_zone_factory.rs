@@ -18,9 +18,9 @@ use tempo_contracts::{
     precompiles::{INITIAL_FACTORY_OWNER, initial_zone_factory_config},
     zones::{
         T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-        ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS, ZONE_MESSENGER_RUNTIME,
-        ZONE_PORTAL_IMPL_ADDRESS, ZONE_PORTAL_PREFIX, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_ADDRESS,
-        ZONE_VERIFIER_RUNTIME,
+        T14_ZONE_PORTAL_RUNTIME, ZONE_FACTORY_ADDRESS, ZONE_MESSENGER_ADDRESS,
+        ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_IMPL_ADDRESS, ZONE_PORTAL_PREFIX, ZONE_PORTAL_RUNTIME,
+        ZONE_VERIFIER_ADDRESS, ZONE_VERIFIER_RUNTIME,
     },
 };
 
@@ -214,32 +214,38 @@ fn install_native_zone_factory(
             "ZonePortal implementation",
             ZONE_PORTAL_IMPL_ADDRESS,
             artifacts.portal,
-            [ZONE_PORTAL_RUNTIME, T13_ZONE_PORTAL_RUNTIME],
+            &[
+                ZONE_PORTAL_RUNTIME,
+                T13_ZONE_PORTAL_RUNTIME,
+                T14_ZONE_PORTAL_RUNTIME,
+            ][..],
         ),
         (
             "Verifier",
             ZONE_VERIFIER_ADDRESS,
             artifacts.verifier,
-            [ZONE_VERIFIER_RUNTIME, T13_ZONE_VERIFIER_RUNTIME],
+            &[ZONE_VERIFIER_RUNTIME, T13_ZONE_VERIFIER_RUNTIME][..],
         ),
         (
             "ZoneMessenger",
             ZONE_MESSENGER_ADDRESS,
             artifacts.messenger,
-            [ZONE_MESSENGER_RUNTIME, T13_ZONE_MESSENGER_RUNTIME],
+            &[ZONE_MESSENGER_RUNTIME, T13_ZONE_MESSENGER_RUNTIME][..],
         ),
     ] {
         let expected = GenesisAccount::default()
             .with_nonce(Some(1))
             .with_code(Some(code));
-        let known_tempo_runtimes =
-            tempo_codes.map(|code| GenesisAccount::default().with_code(Some(code)));
         match genesis.alloc.get(&address) {
             None => {
                 genesis.alloc.insert(address, expected);
             }
             Some(existing) if existing == &expected => {}
-            Some(existing) if known_tempo_runtimes.contains(existing) => {
+            Some(existing)
+                if tempo_codes.iter().any(|code| {
+                    existing == &GenesisAccount::default().with_code(Some(code.clone()))
+                }) =>
+            {
                 genesis.alloc.insert(address, expected);
             }
             Some(_) => {
@@ -296,6 +302,11 @@ mod tests {
         ]);
         assert_validates_shared_runtimes([
             T13_ZONE_PORTAL_RUNTIME,
+            T13_ZONE_VERIFIER_RUNTIME,
+            T13_ZONE_MESSENGER_RUNTIME,
+        ]);
+        assert_validates_shared_runtimes([
+            T14_ZONE_PORTAL_RUNTIME,
             T13_ZONE_VERIFIER_RUNTIME,
             T13_ZONE_MESSENGER_RUNTIME,
         ]);

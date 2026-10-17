@@ -154,7 +154,7 @@ Activity logs contain only the fields needed by log-backed activity dashboards:
 - `activity_event`: the stable event name from the table below.
 - `activity_id`: `v<schema_version>:<zone_hash>:<activity_source>:<activity_index>`,
   which remains stable if recovery replays the same canonical block under the
-  same schema. The ID retains version `1`, the verified Zone block hash, source
+  same schema. The ID retains version `2`, the verified Zone block hash, source
   (`tempo` or `zone`), and zero-based canonical index within that source.
 - `callback_success`: emitted only for `portal_withdrawal_processed`, allowing
   dashboards to distinguish successful and failed withdrawal callbacks.
@@ -173,11 +173,15 @@ Operational warnings and errors retain their diagnostic fields.
 | `portal_withdrawal_bounce_back` | Authenticated Portal withdrawal bounce-back entered accounting. |
 | `portal_deposit_bounce_back` | Authenticated processed Portal deposit bounce-back entered accounting. |
 | `portal_deposit_bounce_back_pending` | Authenticated pending Portal deposit bounce-back entered accounting. |
+| `portal_forced_exits_activated` | Authenticated Portal forced-exit activation. |
+| `portal_forced_exit_requested` | Authenticated Portal forced-exit admission. |
+| `portal_forced_exit_compensation_pending` | Authenticated forced-exit compensation parked as an admin refund. |
 | `portal_refund_accounted` | Authenticated Portal refund entered accounting. |
 | `zone_deposit_minted` | Verified Zone deposit mint. |
 | `zone_deposit_failed` | Authenticated failed Zone deposit. |
 | `zone_deposit_bounce_back_requested` | Authenticated Zone deposit bounce-back request. |
 | `zone_withdrawal_burned` | Verified user withdrawal debit and burn. |
+| `zone_forced_withdrawal_burned` | Verified forced-exit full-balance debit and burn. |
 | `zone_withdrawal_bounce_back_minted` | Verified Zone withdrawal bounce-back mint. |
 | `zone_withdrawal_bounce_back_pending` | Authenticated pending Zone withdrawal bounce-back. |
 | `zone_refund_minted` | Verified Zone refund mint. |

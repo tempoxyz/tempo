@@ -16,7 +16,7 @@ use std::{fmt::Display, sync::Arc};
 use tempo_chainspec::{
     TempoChainSpec, TempoConsensusSpec,
     hardfork::TempoHardfork,
-    spec::{DEV, TempoHardforks, chainspec_from_chain_id},
+    spec::{DEV, TempoHardforks, chainspec_from_chain_id, tempo_t7_next_block_base_fee},
 };
 use tempo_primitives::TempoHeader;
 use zone_primitives::constants::{ZoneChainIdError, decode_l1_chain_id, decode_zone_chain_id};
@@ -173,8 +173,15 @@ impl EthChainSpec for ZoneChainSpec {
         self.inner.final_paris_total_difficulty()
     }
 
-    fn next_block_base_fee(&self, _parent: &TempoHeader, _target_timestamp: u64) -> Option<u64> {
-        Some(0)
+    fn next_block_base_fee(&self, parent: &TempoHeader, target_timestamp: u64) -> Option<u64> {
+        if !self.tempo_hardfork_at(target_timestamp).is_t14() {
+            return Some(0);
+        }
+        // A missing parent base fee is treated as zero, which the T7 floor clamps up.
+        Some(tempo_t7_next_block_base_fee(
+            parent.inner.base_fee_per_gas.unwrap_or_default(),
+            parent.inner.gas_used,
+        ))
     }
 }
 
@@ -255,12 +262,35 @@ mod tests {
     use super::*;
     #[cfg(feature = "cli")]
     use reth_cli::chainspec::ChainSpecParser;
-    use tempo_chainspec::spec::{DEV, MODERATO};
+    use tempo_chainspec::spec::{
+        DEV, MODERATO, TEMPO_T7_BASE_FEE_CAP, TEMPO_T7_BASE_FEE_FLOOR, TEMPO_T7_BASE_FEE_GAS_TARGET,
+    };
     use zone_primitives::constants::zone_chain_id;
 
     fn dev_zone_spec(zone_id: u32) -> ZoneChainSpec {
         let mut genesis = DEV.genesis().clone();
         genesis.config.chain_id = zone_chain_id(DEV.chain_id(), zone_id).unwrap();
+        ZoneChainSpec::from_genesis(genesis).unwrap()
+    }
+
+    fn header(timestamp: u64, base_fee: u64, gas_used: u64) -> TempoHeader {
+        let mut header = TempoHeader::default();
+        header.inner.timestamp = timestamp;
+        header.inner.base_fee_per_gas = Some(base_fee);
+        header.inner.gas_used = gas_used;
+        header
+    }
+
+    /// Activates T13 at genesis and schedules T14 at `timestamp`, or disables T14 if `None`.
+    fn dev_zone_spec_with_t14_at(zone_id: u32, timestamp: Option<u64>) -> ZoneChainSpec {
+        let mut genesis = DEV.genesis().clone();
+        genesis.config.chain_id = zone_chain_id(DEV.chain_id(), zone_id).unwrap();
+        match timestamp {
+            Some(timestamp) => {
+                test_utils::set_tempo_fork(&mut genesis, TempoHardfork::T14, timestamp)
+            }
+            None => test_utils::set_tempo_fork(&mut genesis, TempoHardfork::T13, 0),
+        }
         ZoneChainSpec::from_genesis(genesis).unwrap()
     }
 
@@ -378,13 +408,74 @@ mod tests {
     }
 
     #[test]
-    fn next_block_base_fee_is_zero() {
-        let zone = dev_zone_spec(2);
+    fn next_block_base_fee_is_zero_without_t14() {
+        let zone = dev_zone_spec_with_t14_at(2, None);
         let parent = zone.genesis_header();
         let timestamp = parent.inner.timestamp;
 
         assert_ne!(DEV.next_block_base_fee(parent, timestamp), Some(0));
         assert_eq!(zone.next_block_base_fee(parent, timestamp), Some(0));
+    }
+
+    #[test]
+    fn next_block_base_fee_is_zero_before_t14() {
+        let zone = dev_zone_spec_with_t14_at(2, Some(100));
+        let busy_parent = header(98, TEMPO_T7_BASE_FEE_CAP, TEMPO_T7_BASE_FEE_GAS_TARGET * 3);
+
+        assert_eq!(zone.tempo_hardfork_at(99), TempoHardfork::T13);
+        assert_eq!(zone.next_block_base_fee(&busy_parent, 99), Some(0));
+    }
+
+    #[test]
+    fn next_block_base_fee_starts_at_floor_on_t14_activation() {
+        let zone = dev_zone_spec_with_t14_at(2, Some(100));
+        let mut parent = header(99, 0, 0);
+
+        assert_eq!(
+            zone.next_block_base_fee(&parent, 100),
+            Some(TEMPO_T7_BASE_FEE_FLOOR)
+        );
+        parent.inner.base_fee_per_gas = None;
+        assert_eq!(
+            zone.next_block_base_fee(&parent, 100),
+            Some(TEMPO_T7_BASE_FEE_FLOOR)
+        );
+    }
+
+    #[test]
+    fn next_block_base_fee_follows_t7_controller_after_t14_activation() {
+        let zone = dev_zone_spec_with_t14_at(2, Some(100));
+        let busy_parent = header(
+            100,
+            TEMPO_T7_BASE_FEE_FLOOR,
+            TEMPO_T7_BASE_FEE_GAS_TARGET * 3,
+        );
+        let expected =
+            tempo_t7_next_block_base_fee(TEMPO_T7_BASE_FEE_FLOOR, TEMPO_T7_BASE_FEE_GAS_TARGET * 3);
+
+        assert!(expected > TEMPO_T7_BASE_FEE_FLOOR);
+        assert_eq!(zone.next_block_base_fee(&busy_parent, 101), Some(expected));
+    }
+
+    #[test]
+    fn dynamic_fees_follow_inherited_t14_activation() {
+        let mut l1_genesis = DEV.genesis().clone();
+        test_utils::set_tempo_fork(&mut l1_genesis, TempoHardfork::T14, 100);
+        let l1 = TempoChainSpec::from_genesis(l1_genesis);
+        let mut genesis = DEV.genesis().clone();
+        genesis.config.chain_id = zone_chain_id(DEV.chain_id(), 2).unwrap();
+        genesis.config.extra_fields.remove("t14Time");
+        let zone = ZoneChainSpec::from_genesis_with_l1(genesis, &l1).unwrap();
+
+        assert_eq!(
+            zone.tempo_fork_activation(TempoHardfork::T14),
+            ForkCondition::Timestamp(100)
+        );
+        assert_eq!(zone.next_block_base_fee(&header(98, 0, 0), 99), Some(0));
+        assert_eq!(
+            zone.next_block_base_fee(&header(99, 0, 0), 100),
+            Some(TEMPO_T7_BASE_FEE_FLOOR)
+        );
     }
 
     #[test]

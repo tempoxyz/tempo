@@ -95,6 +95,7 @@ vergen.workspace = true
 vergen-git2.workspace = true
 
 [dev-dependencies]
+exithatch.workspace = true
 zone-chainspec = { workspace = true, features = ["test-utils"] }
 zone-node = { path = ".", features = ["test-utils"] }
 
@@ -176,4 +177,5 @@ test-utils = [
   "zone-chainspec/test-utils",
   "zone-node/test-utils",
   "zone-precompiles/test-utils",
+  "exithatch/test-utils",
 ]

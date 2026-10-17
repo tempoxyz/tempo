@@ -26,8 +26,9 @@ use alloy_sol_types::SolCall;
 use eyre::{OptionExt as _, WrapErr};
 use futures::StreamExt;
 use jsonrpsee::{RpcModule, core::RpcResult, proc_macros::rpc, types::ErrorObjectOwned};
+use reth_chainspec::EthChainSpec as _;
 use reth_evm::{ConfigureEvm as _, execute::Executor as _};
-use reth_provider::{BlockReader, CanonStateSubscriptions, HeaderProvider};
+use reth_provider::{BlockReader, CanonStateSubscriptions, ChainSpecProvider, HeaderProvider};
 use reth_revm::{db::State, witness::ExecutionWitnessRecord};
 use reth_rpc::{EthFilter, eth::filter::EthFilterError};
 use reth_rpc_api::Web3ApiServer;
@@ -37,14 +38,16 @@ use reth_rpc_eth_api::{
     helpers::{EthApiSpec, EthBlocks, EthCall, EthFees, EthState, EthTransactions, FullEthApi},
 };
 use reth_rpc_eth_types::{EthApiError, logs_utils};
-use reth_storage_api::StateProviderFactory;
+use reth_storage_api::{BlockReaderIdExt, StateProviderFactory};
 use reth_trie_common::{ExecutionWitnessMode, HashedPostState, HashedStorage};
 use tempo_alloy::{
     TempoNetwork,
     provider::ext::TempoProviderExt as _,
     rpc::{TempoCallBuilderExt as _, TempoHeaderResponse, TempoTransactionRequest},
 };
-use tempo_chainspec::spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE};
+use tempo_chainspec::spec::{
+    TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE, TEMPO_T7_BASE_FEE_CAP, TempoHardforks,
+};
 use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     account_keychain::IAccountKeychain::{self, KeyInfo, getKeyCall},
@@ -54,6 +57,7 @@ use tokio::{
     sync::Mutex,
     time::{MissedTickBehavior, interval},
 };
+use zone_chainspec::ZoneChainSpec;
 use zone_l1::{TempoStateExt as _, state::EnabledTokenRegistry};
 
 use alloy_rpc_client::{ConnectionConfig, WebSocketConfig};
@@ -849,8 +853,30 @@ impl<Api: EthApiTypes + 'static> ZoneRpc<Api> {
 
 impl<Api> ZoneRpc<Api>
 where
-    Api: FullEthApi + EthApiTypes<NetworkTypes = TempoNetwork>,
+    Api: FullEthApi + EthApiTypes<NetworkTypes = TempoNetwork> + Send + Sync + 'static,
+    Api::Provider: ChainSpecProvider<ChainSpec = ZoneChainSpec>,
 {
+    /// Returns the next block's base fee if T14 is active, or `None` before T14, where the public
+    /// fee policy's fixed values apply instead.
+    fn t14_base_fee(&self) -> Result<Option<u64>, JsonRpcError> {
+        let provider = self.eth.api.provider();
+        let header = provider
+            .latest_header()
+            .map_err(internal)?
+            .ok_or_else(|| JsonRpcError::internal("latest block not found"))?;
+        if !provider
+            .chain_spec()
+            .tempo_hardfork_at(header.timestamp())
+            .is_t14()
+        {
+            return Ok(None);
+        }
+        // T14 is already active, so the latest timestamp selects the same fork as the next block's.
+        Ok(provider
+            .chain_spec()
+            .next_block_base_fee(header.header(), header.timestamp()))
+    }
+
     fn block_by_id(&self, id: BlockId) -> BoxFut<'_> {
         Box::pin(async move {
             let block = EthBlocks::rpc_block(&self.eth.api, id, false)
@@ -870,7 +896,8 @@ where
 
 impl<Api> zone_rpc::ZoneRpcApi for ZoneRpc<Api>
 where
-    Api: FullEthApi + EthApiTypes<NetworkTypes = TempoNetwork>,
+    Api: FullEthApi + EthApiTypes<NetworkTypes = TempoNetwork> + Send + Sync + 'static,
+    Api::Provider: ChainSpecProvider<ChainSpec = ZoneChainSpec>,
 {
     fn get_keychain_key(&self, account: Address, key_id: Address) -> BoxEyreFut<'_, KeyInfo> {
         Box::pin(async move {
@@ -940,7 +967,10 @@ where
     }
 
     fn gas_price(&self) -> BoxFut<'_> {
-        Box::pin(async move { to_raw(&U256::from(TEMPO_T1_BASE_FEE)) })
+        Box::pin(async move {
+            let gas_price = self.t14_base_fee()?.unwrap_or(TEMPO_T1_BASE_FEE);
+            to_raw(&U256::from(gas_price))
+        })
     }
 
     fn max_priority_fee_per_gas(&self) -> BoxFut<'_> {
@@ -958,8 +988,27 @@ where
                 EthFees::fee_history(&self.eth.api, block_count, newest_block, reward_percentiles)
                     .await
                     .map_err(internal)?;
+            let is_t14 = self.t14_base_fee()?.is_some();
+            // reth derives the trailing next-block fee using the newest block's own timestamp, so a
+            // range ending on the last pre-T14 block reports a zero fee. Prefer the successor's
+            // actual base fee when it already exists.
+            if is_t14
+                && !history.gas_used_ratio.is_empty()
+                && let Some(successor) = EthBlocks::rpc_block_header(
+                    &self.eth.api,
+                    BlockId::number(history.oldest_block + history.gas_used_ratio.len() as u64),
+                )
+                .await
+                .map_err(internal)?
+                && let (Some(trailing_fee), Some(successor_fee)) = (
+                    history.base_fee_per_gas.last_mut(),
+                    successor.base_fee_per_gas(),
+                )
+            {
+                *trailing_fee = u128::from(successor_fee);
+            }
             // Redact gas fields (like `gas_used_ratio`) that can be used to guess tx counts
-            redact_fee_history(&mut history);
+            redact_fee_history(&mut history, !is_t14);
             to_raw(&history)
         })
     }
@@ -1142,9 +1191,8 @@ where
         Box::pin(async move {
             self.enforce_authorized(&mut request, &auth)?;
 
-            // Prefill the users request so the `fill_transaction` doesnt leak dynamic fee estimates via
-            // missing fee fields.
-            apply_public_fee_policy(&mut request);
+            let (gas_price, max_fee_per_gas) = public_fee_quote(self.t14_base_fee()?);
+            apply_public_fee_policy(&mut request, gas_price, max_fee_per_gas);
 
             let result = EthTransactions::fill_transaction(&self.eth.api, request)
                 .await
@@ -1549,8 +1597,10 @@ fn redact_header(header: &mut TempoHeaderResponse) {
 }
 
 /// Clear gas related fields that leak the size (and therefore tx counts)
-fn redact_fee_history(history: &mut FeeHistory) {
-    history.base_fee_per_gas.fill(u128::from(TEMPO_T0_BASE_FEE));
+fn redact_fee_history(history: &mut FeeHistory, redact_base_fee: bool) {
+    if redact_base_fee {
+        history.base_fee_per_gas.fill(u128::from(TEMPO_T0_BASE_FEE));
+    }
     history.gas_used_ratio.fill(0.0);
     history.base_fee_per_blob_gas.fill(0);
     history.blob_gas_used_ratio.fill(0.0);
@@ -1561,10 +1611,29 @@ fn redact_fee_history(history: &mut FeeHistory) {
     }
 }
 
+/// Returns the `(gas_price, max_fee_per_gas)` defaults for `eth_fillTransaction`.
+///
+/// From T14, the max fee leaves headroom for the base fee to rise, capped at the protocol's maximum
+/// base fee so payers aren't required to hold balance for a fee that can never be charged. Before
+/// T14, keep the fixed public values, where the max fee intentionally equals the gas price.
+fn public_fee_quote(t14_base_fee: Option<u64>) -> (u128, u128) {
+    match t14_base_fee {
+        Some(base_fee) => (
+            u128::from(base_fee),
+            u128::from(base_fee.saturating_mul(2).min(TEMPO_T7_BASE_FEE_CAP)),
+        ),
+        None => (u128::from(TEMPO_T0_BASE_FEE), u128::from(TEMPO_T0_BASE_FEE)),
+    }
+}
+
 /// Prefill missing transaction fee fields with public, deterministic values before calling reth's
 /// transaction filler, so `eth_fillTransaction` does not expose dynamic fee estimates derived from
 /// private zone activity.
-fn apply_public_fee_policy(request: &mut TempoTransactionRequest) {
+fn apply_public_fee_policy(
+    request: &mut TempoTransactionRequest,
+    gas_price: u128,
+    max_fee_per_gas: u128,
+) {
     if request.inner.has_eip4844_fields() && request.inner.max_fee_per_blob_gas.is_none() {
         request.inner.max_fee_per_blob_gas = Some(0);
     }
@@ -1574,7 +1643,7 @@ fn apply_public_fee_policy(request: &mut TempoTransactionRequest) {
     }
 
     if matches!(request.inner.transaction_type, Some(0 | 1)) {
-        request.set_gas_price(u128::from(TEMPO_T0_BASE_FEE));
+        request.set_gas_price(gas_price);
         return;
     }
 
@@ -1583,7 +1652,7 @@ fn apply_public_fee_policy(request: &mut TempoTransactionRequest) {
         request.set_max_priority_fee_per_gas(0);
     }
     if request.max_fee_per_gas().is_none() {
-        request.set_max_fee_per_gas(u128::from(TEMPO_T0_BASE_FEE) + priority_fee);
+        request.set_max_fee_per_gas(max_fee_per_gas.saturating_add(priority_fee));
     }
 }
 
@@ -1609,6 +1678,8 @@ pub(crate) fn rpc_connection_config(retry_connection_interval: Duration) -> Conn
 mod tests {
     use super::*;
     use alloy_provider::ProviderBuilder;
+
+    const T0_BASE_FEE: u128 = TEMPO_T0_BASE_FEE as u128;
 
     #[test]
     fn records_block_hashes_as_eip2935_storage_targets() {
@@ -1842,7 +1913,7 @@ mod tests {
             reward: Some(vec![vec![7, 8], vec![9, 10]]),
         };
 
-        redact_fee_history(&mut history);
+        redact_fee_history(&mut history, true);
 
         assert_eq!(history.oldest_block, 42);
         assert_eq!(
@@ -1856,10 +1927,22 @@ mod tests {
     }
 
     #[test]
+    fn redact_fee_history_preserves_base_fees_at_t14() {
+        let mut history = FeeHistory {
+            base_fee_per_gas: vec![1, 2, 3],
+            ..Default::default()
+        };
+
+        redact_fee_history(&mut history, false);
+
+        assert_eq!(history.base_fee_per_gas, vec![1, 2, 3]);
+    }
+
+    #[test]
     fn apply_public_fee_policy_prefills_missing_fees() {
         let mut request = TempoTransactionRequest::default();
 
-        apply_public_fee_policy(&mut request);
+        apply_public_fee_policy(&mut request, T0_BASE_FEE, T0_BASE_FEE);
 
         assert_eq!(request.gas_price(), None);
         assert_eq!(
@@ -1870,11 +1953,42 @@ mod tests {
     }
 
     #[test]
+    fn apply_public_fee_policy_defaults_to_zero_tip_with_dynamic_base_fee() {
+        let mut request = TempoTransactionRequest::default();
+
+        apply_public_fee_policy(&mut request, 600_000_000, 1_200_000_000);
+
+        assert_eq!(request.gas_price(), None);
+        assert_eq!(request.max_fee_per_gas(), Some(1_200_000_000));
+        assert_eq!(request.max_priority_fee_per_gas(), Some(0));
+    }
+
+    #[test]
+    fn public_fee_quote_caps_max_fee_at_protocol_cap() {
+        let cap = u128::from(TEMPO_T7_BASE_FEE_CAP);
+
+        assert_eq!(
+            public_fee_quote(None),
+            (T0_BASE_FEE, T0_BASE_FEE),
+            "pre-T14 quotes keep the fixed public values"
+        );
+        assert_eq!(
+            public_fee_quote(Some(600_000_000)),
+            (600_000_000, 1_200_000_000)
+        );
+        assert_eq!(
+            public_fee_quote(Some(TEMPO_T7_BASE_FEE_CAP / 2 + 1)),
+            (cap / 2 + 1, cap)
+        );
+        assert_eq!(public_fee_quote(Some(TEMPO_T7_BASE_FEE_CAP)), (cap, cap));
+    }
+
+    #[test]
     fn apply_public_fee_policy_prefills_legacy_gas_price() {
         let mut request = TempoTransactionRequest::default();
         request.inner.transaction_type = Some(0);
 
-        apply_public_fee_policy(&mut request);
+        apply_public_fee_policy(&mut request, T0_BASE_FEE, T0_BASE_FEE);
 
         assert_eq!(request.gas_price(), Some(u128::from(TEMPO_T0_BASE_FEE)));
         assert_eq!(request.max_fee_per_gas(), None);
@@ -1886,7 +2000,7 @@ mod tests {
         let mut request = TempoTransactionRequest::default();
         request.set_max_priority_fee_per_gas(7);
 
-        apply_public_fee_policy(&mut request);
+        apply_public_fee_policy(&mut request, T0_BASE_FEE, T0_BASE_FEE);
 
         assert_eq!(request.max_priority_fee_per_gas(), Some(7));
         assert_eq!(
@@ -1900,7 +2014,7 @@ mod tests {
         let mut request = TempoTransactionRequest::default();
         request.inner.blob_versioned_hashes = Some(Vec::new());
 
-        apply_public_fee_policy(&mut request);
+        apply_public_fee_policy(&mut request, T0_BASE_FEE, T0_BASE_FEE);
 
         assert_eq!(request.inner.max_fee_per_blob_gas, Some(0));
     }

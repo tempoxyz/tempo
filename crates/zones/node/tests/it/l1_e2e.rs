@@ -2501,7 +2501,7 @@ async fn test_deposit_old_key_during_grace_mints_after_rotation() -> eyre::Resul
     reth_tracing::init_test_tracing();
 
     use k256::{AffinePoint, ProjectivePoint, Scalar};
-    use tempo_contracts::{precompiles::ITIP20, zones::DepositPayload};
+    use tempo_contracts::precompiles::ITIP20;
     use zone_precompiles::ecies;
 
     let l1 = L1TestNode::start().await?;
@@ -2570,13 +2570,7 @@ async fn test_deposit_old_key_during_grace_mints_after_rotation() -> eyre::Resul
             PATH_USD_ADDRESS,
             current_amount,
             U256::ONE,
-            DepositPayload {
-                ephemeralPubkeyX: current.eph_pub_x,
-                ephemeralPubkeyYParity: current.eph_pub_y_parity,
-                ciphertext: current.ciphertext.into(),
-                nonce: alloy_primitives::FixedBytes(current.nonce),
-                tag: alloy_primitives::FixedBytes(current.tag),
-            },
+            current,
             depositor.address(),
         )
         .send()
@@ -2604,13 +2598,7 @@ async fn test_deposit_old_key_during_grace_mints_after_rotation() -> eyre::Resul
             PATH_USD_ADDRESS,
             historical_amount,
             U256::ZERO,
-            DepositPayload {
-                ephemeralPubkeyX: historical.eph_pub_x,
-                ephemeralPubkeyYParity: historical.eph_pub_y_parity,
-                ciphertext: historical.ciphertext.into(),
-                nonce: alloy_primitives::FixedBytes(historical.nonce),
-                tag: alloy_primitives::FixedBytes(historical.tag),
-            },
+            historical,
             depositor.address(),
         )
         .send()

@@ -1,12 +1,9 @@
 use alloy::{
-    primitives::{Address, B256, Bytes, U256},
+    primitives::{Address, B256, U256},
     providers::{Provider, ProviderBuilder},
     signers::local::PrivateKeySigner,
 };
-use tempo_contracts::{
-    precompiles::ITIP20,
-    zones::{DepositPayload, ZonePortal},
-};
+use tempo_contracts::{precompiles::ITIP20, zones::ZonePortal};
 use tempo_precompiles::PATH_USD_ADDRESS;
 use zone_precompiles::ecies::encrypt_deposit;
 
@@ -102,13 +99,7 @@ async fn test_l1_deposit_mints_on_zone() -> eyre::Result<()> {
             l1_token_address,
             deposit_amount,
             key_index,
-            DepositPayload {
-                ephemeralPubkeyX: encrypted.eph_pub_x,
-                ephemeralPubkeyYParity: encrypted.eph_pub_y_parity,
-                ciphertext: Bytes::from(encrypted.ciphertext),
-                nonce: encrypted.nonce.into(),
-                tag: encrypted.tag.into(),
-            },
+            encrypted,
             depositor,
         )
         .send()

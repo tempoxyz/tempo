@@ -162,6 +162,7 @@ panic = "unwind"
 
 [workspace.dependencies]
 # Zones
+exithatch = { path = "crates/zones/exithatch", default-features = false }
 zone-chainspec = { path = "crates/zones/chainspec" }
 zone-evm = { path = "crates/zones/evm" }
 zone-l1 = { path = "crates/zones/l1" }

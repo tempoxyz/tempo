@@ -7,7 +7,8 @@
 use alloy::primitives::{Address, U256, address};
 use alloy_provider::{Provider, ProviderBuilder};
 use alloy_rpc_types_eth::TransactionRequest;
-use tempo_chainspec::spec::TEMPO_T0_BASE_FEE;
+use alloy_signer_local::PrivateKeySigner;
+use tempo_chainspec::spec::{TEMPO_T0_BASE_FEE, TEMPO_T7_BASE_FEE_CAP};
 use tempo_contracts::precompiles::{
     ITIP20,
     ITIP403Registry::{self, PolicyType},
@@ -161,6 +162,114 @@ async fn test_l1_blacklisted_sender_cannot_pay_for_empty_transaction() -> eyre::
     );
 
     Ok(())
+}
+
+/// From T14 every fee-paying transaction collects a fee, which requires the sequencer's fee
+/// recipient to be an authorized recipient of the fee token. The transaction is rejected until the
+/// policy admits the sequencer.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_policy_gated_fee_token_requires_authorized_fee_recipient() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    // The local harness sequencer signs with this throwaway key and receives block fees.
+    let sequencer = PrivateKeySigner::from_slice(&[0x01; 32])?.address();
+    let (zone, mut fixture) = start_local_zone_with_fixture(10).await?;
+    let alice_signer = l1_dev_signer();
+    let alice = alice_signer.address();
+
+    let deposit_amount = 1_000_000u128;
+    let deposit = fixture.make_deposit(PATH_USD_ADDRESS, alice, alice, deposit_amount);
+    fixture.inject_deposits(zone.deposit_queue(), vec![deposit]);
+    zone.wait_for_balance(
+        PATH_USD_ADDRESS,
+        alice,
+        U256::from(deposit_amount),
+        DEFAULT_TIMEOUT,
+    )
+    .await?;
+    let anchor = zone.wait_for_tempo_block_number(1, DEFAULT_TIMEOUT).await?;
+
+    // Gate pathUSD behind a whitelist that admits Alice but not the sequencer.
+    const WHITELIST_POLICY_ID: u64 = 42;
+    seed_raw_tip403_token_policy(
+        &mut zone.l1_state_cache().lock(),
+        anchor,
+        PATH_USD_ADDRESS,
+        WHITELIST_POLICY_ID,
+    );
+    seed_raw_tip403_policy(
+        zone.l1_state_cache(),
+        anchor,
+        &[PolicySeed::simple(
+            WHITELIST_POLICY_ID,
+            PolicyType::WHITELIST,
+            &[(alice, true), (sequencer, false)],
+        )],
+    )?;
+
+    let alice_provider = ProviderBuilder::new()
+        .wallet(alice_signer)
+        .connect_http(zone.http_url().clone());
+    let request = TransactionRequest::default()
+        .to(alice)
+        .gas_limit(TIP20_TX_GAS)
+        .max_fee_per_gas(u128::from(TEMPO_T7_BASE_FEE_CAP))
+        .max_priority_fee_per_gas(0);
+    let error = within(
+        "send with unauthorized fee recipient",
+        alice_provider.send_transaction(request.clone()),
+    )
+    .await?
+    .expect_err("fee collection must reject an unauthorized fee recipient");
+    assert!(
+        error.to_string().contains("PolicyForbids"),
+        "unexpected pool rejection: {error}"
+    );
+
+    // Admitting the sequencer at the next anchor clears the transaction.
+    let next_anchor = anchor + 1;
+    seed_raw_tip403_token_policy(
+        &mut zone.l1_state_cache().lock(),
+        next_anchor,
+        PATH_USD_ADDRESS,
+        WHITELIST_POLICY_ID,
+    );
+    seed_raw_tip403_policy(
+        zone.l1_state_cache(),
+        next_anchor,
+        &[PolicySeed::simple(
+            WHITELIST_POLICY_ID,
+            PolicyType::WHITELIST,
+            &[(alice, true), (sequencer, true)],
+        )],
+    )?;
+    fixture.inject_empty_block(zone.deposit_queue());
+    zone.wait_for_tempo_block_number(next_anchor, DEFAULT_TIMEOUT)
+        .await?;
+
+    // Pin the nonce: the rejected send must not have consumed it.
+    let nonce = alice_provider.get_transaction_count(alice).await?;
+    let pending = within(
+        "send with authorized fee recipient",
+        alice_provider.send_transaction(request.nonce(nonce)),
+    )
+    .await??;
+    fixture.inject_empty_block(zone.deposit_queue());
+    let receipt = within("fee-paying receipt", pending.get_receipt()).await??;
+    assert!(receipt.status(), "fee-paying transaction should succeed");
+    assert!(
+        receipt.effective_gas_price > 0,
+        "T14 must charge a base fee"
+    );
+
+    Ok(())
+}
+
+/// Bounds a test step so a stalled RPC fails with the step name instead of hanging.
+async fn within<T>(step: &str, future: impl std::future::Future<Output = T>) -> eyre::Result<T> {
+    tokio::time::timeout(DEFAULT_TIMEOUT, future)
+        .await
+        .map_err(|_| eyre::eyre!("timed out: {step}"))
 }
 
 /// Whitelist policy: set entries are authorized, non-set entries are not (fail-closed).

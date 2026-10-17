@@ -27,7 +27,7 @@ use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
     InitialZoneFactoryAccount, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
     STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
-    initial_zone_factory_state, t13_zone_factory_state,
+    initial_zone_factory_state, t13_zone_factory_state, t14_zone_factory_state,
 };
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tempo_revm::{ExecutionContext, evm::TempoContext};
@@ -273,9 +273,32 @@ where
         Ok(())
     }
 
-    /// Exercises the shared runtime upgrade path at T13.
-    fn upgrade_zone_runtimes_at_boundary(&mut self) -> Result<(), BlockExecutionError> {
-        let [_, portal, verifier, messenger] = t13_zone_factory_state(INITIAL_FACTORY_OWNER);
+    /// Installs the shared runtimes of the newest runtime-upgrade fork (T13 or T14) active at
+    /// `timestamp`.
+    ///
+    /// Chains starting at that fork supply their runtime code in genesis. Preserve those
+    /// allocations (including locally compiled contracts on test chains). Chains that activate
+    /// the fork later still follow the normal runtime upgrade path.
+    fn upgrade_zone_runtimes_at_boundary(
+        &mut self,
+        timestamp: u64,
+    ) -> Result<(), BlockExecutionError> {
+        let spec = &self.inner.spec;
+        let genesis_timestamp = spec.genesis().timestamp;
+        let state = if spec.is_t14_active_at_timestamp(timestamp) {
+            if spec.is_t14_active_at_timestamp(genesis_timestamp) {
+                return Ok(());
+            }
+            t14_zone_factory_state(INITIAL_FACTORY_OWNER)
+        } else if spec.is_t13_active_at_timestamp(timestamp) {
+            if spec.is_t13_active_at_timestamp(genesis_timestamp) {
+                return Ok(());
+            }
+            t13_zone_factory_state(INITIAL_FACTORY_OWNER)
+        } else {
+            return Ok(());
+        };
+        let [_, portal, verifier, messenger] = state;
         self.install_zone_runtimes_at_boundary([portal, verifier, messenger])
     }
 
@@ -542,17 +565,7 @@ where
         if self.inner.spec.is_t10_active_at_timestamp(timestamp) {
             self.deploy_zone_factory_at_boundary()?;
         }
-        // Chains starting at T13 supply their runtime code in genesis. Preserve those
-        // allocations (including locally compiled contracts on test chains). Chains
-        // that activate T13 later still follow the normal runtime upgrade path.
-        if self.inner.spec.is_t13_active_at_timestamp(timestamp)
-            && !self
-                .inner
-                .spec
-                .is_t13_active_at_timestamp(self.inner.spec.genesis().timestamp)
-        {
-            self.upgrade_zone_runtimes_at_boundary()?;
-        }
+        self.upgrade_zone_runtimes_at_boundary(timestamp)?;
 
         Ok(())
     }
@@ -762,7 +775,8 @@ mod tests {
         },
         zones::{
             T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-            ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
+            T14_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
+            ZONE_VERIFIER_RUNTIME,
         },
     };
     use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -2102,6 +2116,7 @@ mod tests {
                 .extra_fields
                 .insert_value("t13Time".into(), activation)
                 .unwrap();
+            genesis.config.extra_fields.remove("t14Time");
             let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
             let mut db = State::builder().with_bundle_update().build();
             let mut expected = Vec::new();
@@ -2202,6 +2217,7 @@ mod tests {
                 .extra_fields
                 .insert_value("t13Time".into(), activation)
                 .unwrap();
+            genesis.config.extra_fields.remove("t14Time");
             let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
             let mut db = State::builder().with_bundle_update().build();
             let mut executor = TestExecutorBuilder::default()
@@ -2236,13 +2252,183 @@ mod tests {
         }
     }
 
+    /// Returns a DEV chainspec with T13 and T14 at the given timestamps (`None` disables T14).
+    fn zone_runtime_fork_spec(t13: u64, t14: Option<u64>) -> Arc<TempoChainSpec> {
+        let mut genesis = DEV.genesis().clone();
+        let fields = &mut genesis.config.extra_fields;
+        fields.insert_value("t13Time".into(), t13).unwrap();
+        match t14 {
+            Some(t14) => fields.insert_value("t14Time".into(), t14).unwrap(),
+            None => {
+                fields.remove("t14Time");
+            }
+        }
+        Arc::new(TempoChainSpec::from_genesis(genesis))
+    }
+
+    /// Runs block-start changes at `timestamp` and returns the installed shared runtimes.
+    fn installed_zone_runtimes(
+        db: &mut State<EmptyDB>,
+        chainspec: &Arc<TempoChainSpec>,
+        timestamp: u64,
+    ) -> [Bytes; 3] {
+        let mut executor = TestExecutorBuilder::default()
+            .with_spec(chainspec.tempo_hardfork_at(timestamp))
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut *db, chainspec);
+        executor.evm_mut().ctx_mut().block.timestamp = U256::from(timestamp);
+        executor.apply_pre_execution_changes().unwrap();
+        drop(executor);
+        [
+            ZONE_PORTAL_IMPL_ADDRESS,
+            ZONE_VERIFIER_ADDRESS,
+            ZONE_MESSENGER_ADDRESS,
+        ]
+        .map(|address| {
+            db.load_cache_account(address)
+                .unwrap()
+                .account_info()
+                .unwrap()
+                .code
+                .unwrap()
+                .original_bytes()
+        })
+    }
+
+    #[test]
+    fn zone_runtime_upgrade_activates_at_t14() {
+        let t13 = [
+            T13_ZONE_PORTAL_RUNTIME,
+            T13_ZONE_VERIFIER_RUNTIME,
+            T13_ZONE_MESSENGER_RUNTIME,
+        ];
+        let t14 = [
+            T14_ZONE_PORTAL_RUNTIME,
+            T13_ZONE_VERIFIER_RUNTIME,
+            T13_ZONE_MESSENGER_RUNTIME,
+        ];
+        let initial = [
+            ZONE_PORTAL_RUNTIME,
+            ZONE_VERIFIER_RUNTIME,
+            ZONE_MESSENGER_RUNTIME,
+        ];
+        for (t13_time, t14_time, timestamp, expected) in [
+            // T13 after genesis, then T14.
+            (10, 20, 19, &t13),
+            (10, 20, 20, &t14),
+            (10, 20, 21, &t14),
+            // Both forks at once install the T14 set, including the T13 verifier and messenger.
+            (20, 20, 19, &initial),
+            (20, 20, 20, &t14),
+            // T13 at genesis keeps its genesis runtimes until T14 upgrades them.
+            (0, 20, 19, &initial),
+            (0, 20, 20, &t14),
+        ] {
+            let chainspec = zone_runtime_fork_spec(t13_time, Some(t14_time));
+            let mut db = State::builder().with_bundle_update().build();
+            assert_eq!(
+                &installed_zone_runtimes(&mut db, &chainspec, timestamp),
+                expected,
+                "t13={t13_time} t14={t14_time} timestamp={timestamp}"
+            );
+        }
+    }
+
+    #[test]
+    fn t14_at_genesis_preserves_zone_runtimes() {
+        for (genesis_timestamp, activation) in [(0, 0), (100, 50), (100, 100)] {
+            let mut genesis = DEV.genesis().clone();
+            genesis.timestamp = genesis_timestamp;
+            genesis
+                .config
+                .extra_fields
+                .insert_value("t14Time".into(), activation)
+                .unwrap();
+            let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
+            let mut db = State::builder().with_bundle_update().build();
+            let custom = [0, 1, 2].map(|index| Bytes::from(vec![0x00, index]));
+            // A present factory marks the T10 installation as complete.
+            for (address, code) in [
+                ZONE_PORTAL_IMPL_ADDRESS,
+                ZONE_VERIFIER_ADDRESS,
+                ZONE_MESSENGER_ADDRESS,
+                ZONE_FACTORY_ADDRESS,
+            ]
+            .into_iter()
+            .zip(custom.iter().cloned().chain([Bytes::from_static(&[0xef])]))
+            {
+                let code = Bytecode::new_legacy(code);
+                db.insert_account(
+                    address,
+                    AccountInfo {
+                        code_hash: code.hash_slow(),
+                        code: Some(code),
+                        ..Default::default()
+                    },
+                );
+            }
+            for block in [1, 2] {
+                assert_eq!(
+                    installed_zone_runtimes(&mut db, &chainspec, genesis_timestamp + block),
+                    custom
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn t14_zone_runtime_upgrade_is_written_once() {
+        let chainspec = zone_runtime_fork_spec(10, Some(20));
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_spec(TempoHardfork::T14)
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+        executor.deploy_zone_factory_at_boundary().unwrap();
+        executor.upgrade_zone_runtimes_at_boundary(19).unwrap();
+
+        let hook_calls: Arc<Mutex<Vec<EvmState>>> = Arc::new(Mutex::new(Vec::new()));
+        let hook_calls_clone = hook_calls.clone();
+        executor
+            .evm_mut()
+            .db_mut()
+            .set_state_hook(Some(Box::new(move |state: EvmState| {
+                hook_calls_clone.lock().unwrap().push(state);
+            })));
+        for timestamp in [20, 21, 22] {
+            executor
+                .upgrade_zone_runtimes_at_boundary(timestamp)
+                .unwrap();
+        }
+        drop(executor);
+
+        let calls = hook_calls.lock().unwrap();
+        assert_eq!(
+            calls.len(),
+            1,
+            "T14 upgrade must dispatch exactly one update"
+        );
+        assert_eq!(
+            calls[0].keys().copied().collect::<Vec<_>>(),
+            [ZONE_PORTAL_IMPL_ADDRESS],
+            "T14 replaces only the portal on a T13 chain"
+        );
+    }
+
     #[test]
     fn test_zone_runtime_hardfork_installation() {
         assert_eq!(
             INITIAL_FACTORY_OWNER,
             address!("0xaF571FD4B3AD43a5807A5E58bFb25ea1aB327A14")
         );
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let mut genesis = DEV.genesis().clone();
+        genesis
+            .config
+            .extra_fields
+            .insert_value("t13Time".into(), 1)
+            .unwrap();
+        genesis.config.extra_fields.remove("t14Time");
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(genesis));
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
@@ -2259,8 +2445,8 @@ mod tests {
 
         executor.deploy_zone_factory_at_boundary().unwrap();
         executor.deploy_zone_factory_at_boundary().unwrap();
-        executor.upgrade_zone_runtimes_at_boundary().unwrap();
-        executor.upgrade_zone_runtimes_at_boundary().unwrap();
+        executor.upgrade_zone_runtimes_at_boundary(1).unwrap();
+        executor.upgrade_zone_runtimes_at_boundary(1).unwrap();
         drop(executor);
 
         let factory = db.load_cache_account(ZONE_FACTORY_ADDRESS).unwrap();

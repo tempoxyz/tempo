@@ -262,8 +262,10 @@ where
             .flat_map(|receipt| receipt.logs())
             .any(|log| {
                 log.address == ZONE_OUTBOX_ADDRESS
-                    && log.topics().first()
-                        == Some(&IZoneOutbox::WithdrawalRequested::SIGNATURE_HASH)
+                    && log.topics().first().is_some_and(|topic| {
+                        *topic == IZoneOutbox::WithdrawalRequested::SIGNATURE_HASH
+                            || *topic == IZoneOutbox::ForcedWithdrawalRequested::SIGNATURE_HASH
+                    })
             });
         if requested_withdrawal && self.phase != ZoneBlockPhase::WithdrawalsFinalized {
             return Err(BlockValidationError::msg(
@@ -584,41 +586,53 @@ mod tests {
 
     #[test]
     fn withdrawal_requests_require_same_block_finalization() {
-        let mut zone_genesis = DEV.genesis().clone();
-        zone_genesis.config.chain_id = zone_chain_id(DEV.chain_id(), 2).unwrap();
-        let chain_spec = std::sync::Arc::new(ZoneChainSpec::from_genesis(zone_genesis).unwrap());
-        let factory = ZoneEvmFactory::new(MockL1Reader::default(), Address::ZERO);
-        let evm = factory.create_evm(InMemoryDB::default(), EvmEnv::default());
-        let ctx = TempoBlockExecutionCtx {
-            inner: EthBlockExecutionCtx {
-                parent_hash: B256::ZERO,
-                parent_beacon_block_root: None,
-                ommers: &[],
-                withdrawals: None,
-                extra_data: Bytes::new(),
-                tx_count_hint: Some(1),
-                slot_number: None,
-            },
-            general_gas_limit: 0,
-            shared_gas_limit: 0,
-            consensus_context: None,
-        };
-        let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec);
-        executor.phase = ZoneBlockPhase::Executing;
-        executor
-            .inner
-            .receipts
-            .push(withdrawal_requested_receipt(ZONE_OUTBOX_ADDRESS));
+        for forced in [false, true] {
+            let mut zone_genesis = DEV.genesis().clone();
+            zone_genesis.config.chain_id = zone_chain_id(DEV.chain_id(), 2).unwrap();
+            let chain_spec =
+                std::sync::Arc::new(ZoneChainSpec::from_genesis(zone_genesis).unwrap());
+            let factory = ZoneEvmFactory::new(MockL1Reader::default(), Address::ZERO);
+            let evm = factory.create_evm(InMemoryDB::default(), EvmEnv::default());
+            let ctx = TempoBlockExecutionCtx {
+                inner: EthBlockExecutionCtx {
+                    parent_hash: B256::ZERO,
+                    parent_beacon_block_root: None,
+                    ommers: &[],
+                    withdrawals: None,
+                    extra_data: Bytes::new(),
+                    tx_count_hint: Some(1),
+                    slot_number: None,
+                },
+                general_gas_limit: 0,
+                shared_gas_limit: 0,
+                consensus_context: None,
+            };
+            let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec);
+            executor.phase = ZoneBlockPhase::Executing;
+            let mut receipt = withdrawal_requested_receipt(ZONE_OUTBOX_ADDRESS);
+            if forced {
+                receipt.logs[0].data = IZoneOutbox::ForcedWithdrawalRequested {
+                    withdrawalIndex: 0,
+                    token: Address::repeat_byte(1),
+                    senderTag: B256::repeat_byte(2),
+                    to: Address::repeat_byte(3),
+                    amount: 1,
+                    fallbackNonce: 1,
+                }
+                .encode_log_data();
+            }
+            executor.inner.receipts.push(receipt);
 
-        let error = match executor.finish() {
-            Ok(_) => panic!("withdrawal request block without finalization was accepted"),
-            Err(error) => error,
-        };
-        assert_eq!(
-            error.to_string(),
-            "zone block with withdrawal requests is missing its finalizeWithdrawalBatch system \
+            let error = match executor.finish() {
+                Ok(_) => panic!("withdrawal request block without finalization was accepted"),
+                Err(error) => error,
+            };
+            assert_eq!(
+                error.to_string(),
+                "zone block with withdrawal requests is missing its finalizeWithdrawalBatch system \
              transaction"
-        );
+            );
+        }
     }
 
     #[test]

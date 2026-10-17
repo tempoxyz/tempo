@@ -5,14 +5,14 @@
 
 use alloy::{
     network::primitives::ReceiptResponse,
-    primitives::{Address, B256, Bytes},
+    primitives::{Address, B256},
     providers::{Provider, ProviderBuilder},
     rpc::types::Filter,
     sol_types::SolEvent,
 };
 use eyre::{WrapErr as _, eyre};
 use tempo_alloy::TempoNetwork;
-use tempo_contracts::zones::{DepositPayload, IZoneInbox, ZonePortal};
+use tempo_contracts::zones::{IZoneInbox, ZonePortal};
 use tempo_precompiles::PATH_USD_ADDRESS;
 use zone_precompiles::ecies::encrypt_deposit;
 
@@ -92,7 +92,7 @@ impl Deposit {
         );
 
         // Encrypt (to, memo) to the sequencer's public key
-        let enc = encrypt_deposit(
+        let payload = encrypt_deposit(
             &seq_pub_x,
             seq_pub_y_parity,
             to,
@@ -102,14 +102,6 @@ impl Deposit {
             key_index,
         )
         .ok_or_else(|| eyre!("ECIES encryption failed — invalid sequencer public key?"))?;
-
-        let payload = DepositPayload {
-            ephemeralPubkeyX: enc.eph_pub_x,
-            ephemeralPubkeyYParity: enc.eph_pub_y_parity,
-            ciphertext: Bytes::from(enc.ciphertext),
-            nonce: enc.nonce.into(),
-            tag: enc.tag.into(),
-        };
 
         println!("Sending deposit of {} to {to}...", self.amount);
         let receipt = portal

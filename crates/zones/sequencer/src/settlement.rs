@@ -1783,10 +1783,32 @@ pub(crate) async fn fetch_finalized_batch_boundaries<P: ZoneSequencerProvider>(
     Ok(boundaries)
 }
 
+enum WithdrawalRequest {
+    Ordinary(B256, IZoneOutbox::WithdrawalRequested),
+    Forced(IZoneOutbox::ForcedWithdrawalRequested),
+}
+
+impl WithdrawalRequest {
+    fn into_withdrawal(self, encrypted_sender: Bytes) -> Result<abi::Withdrawal> {
+        Ok(match self {
+            Self::Ordinary(tx_hash, event) => {
+                abi::Withdrawal::from_requested_event(&event, tx_hash, encrypted_sender)
+            }
+            Self::Forced(event) => {
+                eyre::ensure!(
+                    encrypted_sender.is_empty(),
+                    "forced withdrawal cannot include an encrypted sender"
+                );
+                abi::Withdrawal::from_forced_requested_event(&event)
+            }
+        })
+    }
+}
+
 /// Fetch one finalized L2 withdrawal batch.
 ///
 /// The submitted hash and index come from the supplied `BatchFinalized` event.
-/// Withdrawal structs are reconstructed from `WithdrawalRequested` logs in the
+/// Withdrawal structs are reconstructed from ordinary and forced withdrawal request logs in the
 /// same block: every non-empty withdrawal batch is finalized in the block that
 /// contains its requests.
 pub(crate) async fn fetch_finalized_batch<P: ZoneSequencerProvider>(
@@ -1798,9 +1820,23 @@ pub(crate) async fn fetch_finalized_batch<P: ZoneSequencerProvider>(
     let mut requests = Vec::new();
     for (tx, receipt) in block.body.transactions.iter().zip(&receipts) {
         for log in receipt.logs() {
-            if log.address != outbox_address
-                || log.topics().first() != Some(&IZoneOutbox::WithdrawalRequested::SIGNATURE_HASH)
+            if log.address != outbox_address {
+                continue;
+            }
+            if log.topics().first() == Some(&IZoneOutbox::ForcedWithdrawalRequested::SIGNATURE_HASH)
             {
+                let event = IZoneOutbox::ForcedWithdrawalRequested::decode_log(log)
+                    .map_err(|err| {
+                        eyre::eyre!(
+                            "invalid ForcedWithdrawalRequested log in zone block {}: {err}",
+                            target.block_number
+                        )
+                    })?
+                    .data;
+                requests.push(WithdrawalRequest::Forced(event));
+                continue;
+            }
+            if log.topics().first() != Some(&IZoneOutbox::WithdrawalRequested::SIGNATURE_HASH) {
                 continue;
             }
             let event = IZoneOutbox::WithdrawalRequested::decode_log(log)
@@ -1811,7 +1847,7 @@ pub(crate) async fn fetch_finalized_batch<P: ZoneSequencerProvider>(
                     )
                 })?
                 .data;
-            requests.push((*tx.tx_hash(), event));
+            requests.push(WithdrawalRequest::Ordinary(*tx.tx_hash(), event));
         }
     }
 
@@ -1849,10 +1885,8 @@ pub(crate) async fn fetch_finalized_batch<P: ZoneSequencerProvider>(
     let withdrawals = requests
         .into_iter()
         .zip(encrypted_senders)
-        .map(|((tx_hash, event), encrypted_sender)| {
-            abi::Withdrawal::from_requested_event(&event, tx_hash, encrypted_sender)
-        })
-        .collect::<Vec<_>>();
+        .map(|(request, encrypted_sender)| request.into_withdrawal(encrypted_sender))
+        .collect::<Result<Vec<_>>>()?;
 
     let recomputed_hash = abi::Withdrawal::queue_hash(&withdrawals);
     if recomputed_hash != target.withdrawal_queue_hash {
@@ -1954,6 +1988,38 @@ mod tests {
     use tempo_alloy::rpc::TempoHeaderResponse;
     use tempo_primitives::{Block, TempoHeader, TempoPrimitives};
     use zone_chainspec::test_utils::set_tempo_fork;
+
+    #[test]
+    fn forced_withdrawal_reconstruction_preserves_public_tag_and_plain_fields() {
+        let event = IZoneOutbox::ForcedWithdrawalRequested {
+            withdrawalIndex: 17,
+            token: Address::repeat_byte(1),
+            senderTag: B256::repeat_byte(2),
+            to: Address::repeat_byte(3),
+            amount: 42,
+            fallbackNonce: 8,
+        };
+        let reconstructed = WithdrawalRequest::Forced(event.clone())
+            .into_withdrawal(Bytes::new())
+            .unwrap();
+        let expected = abi::Withdrawal {
+            token: event.token,
+            senderTag: event.senderTag,
+            to: event.to,
+            amount: event.amount,
+            memo: B256::ZERO,
+            gasLimit: 0,
+            fallbackNonce: event.fallbackNonce,
+            callbackData: Bytes::new(),
+            encryptedSender: Bytes::new(),
+        };
+        assert_eq!(reconstructed, expected);
+        assert!(
+            WithdrawalRequest::Forced(event)
+                .into_withdrawal(Bytes::from_static(&[1]))
+                .is_err()
+        );
+    }
 
     fn mock_l1(asserter: Asserter) -> DynProvider<TempoNetwork> {
         ProviderBuilder::new_with_network::<TempoNetwork>()

@@ -49,7 +49,8 @@ impl L1BlockDeposits {
 
     /// Prepare all deposits for the payload builder.
     ///
-    /// Decrypts deposits and ABI-encodes the types the `advanceTempo` call expects.
+    /// Decrypts ordinary deposits and proves ECDH for forced requests without interpreting
+    /// their plaintext. Preserves the complete mixed queue for `advanceTempo`.
     /// Mint-recipient policy is enforced by upstream TIP-20 after the L1 state is anchored.
     /// The resulting [`PreparedL1Block`] is ready to be passed via payload attributes to the
     /// builder.
@@ -66,11 +67,14 @@ impl L1BlockDeposits {
         let mut keys: BTreeMap<U256, k256::SecretKey> = BTreeMap::new();
         let mut encrypted_deposits = 0;
         for deposit in &deposits {
-            if let L1Deposit::Deposit(d) = deposit {
-                encrypted_deposits += 1;
-                if let Entry::Vacant(entry) = keys.entry(d.key_index) {
-                    entry.insert(encryption_keys.key(d.key_index)?);
-                }
+            let key_index = match deposit {
+                L1Deposit::Deposit(d) => d.key_index,
+                L1Deposit::ForcedExit(d) => d.entry.keyIndex,
+                L1Deposit::WithdrawalBounceBack(_) => continue,
+            };
+            encrypted_deposits += 1;
+            if let Entry::Vacant(entry) = keys.entry(key_index) {
+                entry.insert(encryption_keys.key(key_index)?);
             }
         }
 
@@ -91,7 +95,8 @@ impl L1BlockDeposits {
 
         let mut queued_deposits: Vec<abi::QueuedDeposit> = Vec::with_capacity(prepared.len());
         let mut decryptions: Vec<abi::DecryptionData> = Vec::with_capacity(encrypted_deposits);
-        for (queued, decryption) in prepared {
+        for result in prepared {
+            let (queued, decryption) = result?;
             queued_deposits.push(queued);
             decryptions.extend(decryption);
         }
@@ -126,16 +131,16 @@ impl L1BlockDeposits {
 
 /// An L1 block with deposits fully prepared for the payload builder.
 ///
-/// All ECIES decryption and ABI encoding have been performed.
+/// Ordinary deposits are decrypted; forced requests carry ECDH proofs and remain encrypted.
 /// The builder only needs to RLP-encode the header and assemble the `advanceTempo` calldata.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PreparedL1Block {
     /// The sealed L1 block header.
     pub header: SealedHeader<TempoHeader>,
-    /// ABI-encoded user deposits and internal withdrawal bounce-backs.
+    /// ABI-encoded deposits, forced requests, and internal withdrawal bounce-backs.
     #[serde(skip)]
     pub queued_deposits: Vec<abi::QueuedDeposit>,
-    /// Decryption data for every user deposit submitted for on-chain verification, in order.
+    /// Decryption data for every encrypted queue entry, in order.
     #[serde(skip)]
     pub decryptions: Vec<abi::DecryptionData>,
     /// Tokens newly enabled for bridging in this block.
@@ -154,12 +159,38 @@ fn prepare_deposit(
     keys: &BTreeMap<U256, k256::SecretKey>,
     portal_address: Address,
     l1_block_number: u64,
-) -> (abi::QueuedDeposit, Option<abi::DecryptionData>) {
+) -> eyre::Result<(abi::QueuedDeposit, Option<abi::DecryptionData>)> {
     use crate::precompiles::ecies;
 
     let queued = deposit.to_abi_queued_deposit();
+    if let L1Deposit::ForcedExit(d) = deposit {
+        let key = keys
+            .get(&d.entry.keyIndex)
+            .expect("every forced request key is resolved before preparation");
+        let encrypted = &d.entry.encrypted;
+        let proof = ecies::compute_ecdh_proof(
+            key,
+            &encrypted.ephemeralPubkeyX,
+            encrypted.ephemeralPubkeyYParity,
+        )
+        .ok_or_else(|| {
+            eyre::eyre!(
+                "cannot prepare ECDH proof for forced request {} at deposit {}",
+                d.entry.requestId,
+                d.deposit_number,
+            )
+        })?;
+        return Ok((
+            queued,
+            Some(abi::DecryptionData {
+                sharedSecret: proof.shared_secret,
+                sharedSecretYParity: proof.shared_secret_y_parity,
+                cpProof: proof.cp_proof,
+            }),
+        ));
+    }
     let L1Deposit::Deposit(d) = deposit else {
-        return (queued, None);
+        return Ok((queued, None));
     };
     let decryption_key = keys
         .get(&d.key_index)
@@ -189,14 +220,14 @@ fn prepare_deposit(
             "Decrypted deposit"
         );
 
-        return (
+        return Ok((
             queued,
             Some(abi::DecryptionData {
                 sharedSecret: dec.proof.shared_secret,
                 sharedSecretYParity: dec.proof.shared_secret_y_parity,
                 cpProof: dec.proof.cp_proof,
             }),
-        );
+        ));
     }
 
     // Full decryption failed — try ECDH proof for on-chain refund.
@@ -213,14 +244,14 @@ fn prepare_deposit(
             amount = %d.amount,
             "Encrypted deposit decryption failed, providing valid proof for on-chain refund"
         );
-        return (
+        return Ok((
             queued,
             Some(abi::DecryptionData {
                 sharedSecret: proof.shared_secret,
                 sharedSecretYParity: proof.shared_secret_y_parity,
                 cpProof: proof.cp_proof,
             }),
-        );
+        ));
     }
 
     warn!(
@@ -229,7 +260,7 @@ fn prepare_deposit(
         amount = %d.amount,
         "Encrypted deposit has invalid ephemeral pubkey, using zeroed DecryptionData"
     );
-    (
+    Ok((
         queued,
         Some(abi::DecryptionData {
             sharedSecret: B256::ZERO,
@@ -239,5 +270,5 @@ fn prepare_deposit(
                 c: B256::ZERO,
             },
         }),
-    )
+    ))
 }

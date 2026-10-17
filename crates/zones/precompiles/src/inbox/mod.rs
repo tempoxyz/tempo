@@ -5,13 +5,11 @@
 //! Zone EVM database adapter: `finalizeTempo` selects the child anchor used by sequencer
 //! admission and every subsequent deposit, policy, and portal read.
 //!
-//! Runtime execution processes a contiguous prefix of the portal deposit queue and reads its
-//! canonical head at the selected child anchor. The batch proof, not this precompile, proves that
-//! the post-state processed hash is an ancestor of that head by validating the unprocessed suffix.
-//! Observing the head read in the execution witness is not sufficient without that explicit proof
-//! constraint.
+//! Runtime execution processes every portal queue entry through the canonical head read at the
+//! selected child anchor, and requires the resulting processed hash to equal that head.
 
 mod dispatch;
+mod forced;
 
 #[cfg(test)]
 mod tests;
@@ -22,7 +20,7 @@ use alloy_evm::precompiles::DynPrecompile;
 use alloy_primitives::{Address, B256, U256};
 use alloy_sol_types::{SolCall, SolValue, abi::AbiDecoderConfig};
 use tempo_contracts::zones::{
-    DecryptionData, Deposit, DepositType, EnabledToken, IZoneInbox, IZoneOutbox,
+    DecryptionData, Deposit, DepositType, EnabledToken, ForcedExit, IZoneInbox, IZoneOutbox,
     LegacyTempoAdvanced, QueuedDeposit, TempoAdvanced, WithdrawalBounceBackDeposit, ZoneInboxError,
     ZoneInboxEvent,
 };
@@ -63,6 +61,8 @@ pub struct ZoneInbox {
     processed_token_enablement_hash: B256,
     /// Number of entries from the portal's append-only enabled-token array applied by this zone.
     processed_enabled_token_count: u64,
+    /// Private, token-independent authorization replay protection.
+    forced_exit_nonces: Mapping<Address, Mapping<U256, bool>>,
 }
 
 impl ZoneInbox {
@@ -92,15 +92,32 @@ impl ZoneInbox {
             return Err(ZoneInboxError::only_sequencer().into());
         }
 
+        let checkpoint = self.storage.checkpoint();
         let deposit_count = u64::try_from(call.deposits.len())
             .map_err(|_| TempoPrecompileError::under_overflow())?;
         let deposits = decode_deposits(call.deposits)?;
+        // Forced exits activate at T14, after the T13 prover transition.
+        // Reject the whole transition before anchoring L1 or changing any inbox state.
+        let has_forced_exits = deposits
+            .iter()
+            .any(|entry| matches!(entry, DecodedQueuedDeposit::ForcedExit(_)));
+        if has_forced_exits && !self.storage.spec().is_t14() {
+            return Err(ZonePrecompileError::MalformedCalldata);
+        }
 
         let mut tempo_state = TempoState::new();
 
         // Step 1: Advance Tempo state and select the child anchor used by all L1-backed reads.
         tempo_state.finalize_checkpoints(l1, &[call.header])?;
         let tempo_block_number = tempo_state.tempo_block_number()?;
+
+        // Activation is authenticated at the imported L1 anchor, including historical replay.
+        if has_forced_exits {
+            let portal = crate::forced_exit_storage::ForcedExitPortalStorage::new(l1.portal());
+            if l1.read_l1(&portal.forced_exit_version)? != 1 {
+                return Err(ZonePrecompileError::MalformedCalldata);
+            }
+        }
 
         let has_token_enablements = !call.enabledTokens.is_empty();
         let enabled_token_count = call.enabledTokens.len();
@@ -160,10 +177,20 @@ impl ZoneInbox {
         let mut decryptions = call.decryptions.into_iter();
         let mut outbox = ZoneOutbox::new();
 
+        let previous_number = self.processed_deposit_number.read()?;
         for queued in deposits {
             current_hash = queued.hash_with_tail(current_hash)?;
 
             match queued {
+                DecodedQueuedDeposit::ForcedExit(entry) => {
+                    let decryption = decryptions
+                        .next()
+                        .ok_or_else(ZoneInboxError::missing_decryption_data)?;
+                    // Every terminal classification consumes its entry through the common cursor
+                    // update below. Fatal errors roll back the complete inbox transition.
+                    self.process_forced_exit(l1, &mut outbox, entry, decryption)
+                        .map(forced::observe)
+                }
                 DecodedQueuedDeposit::WithdrawalBounceBack(deposit) => {
                     self.process_withdrawal_bounce_back(&mut outbox, deposit)
                 }
@@ -188,12 +215,8 @@ impl ZoneInbox {
             return Err(ZoneInboxError::extra_decryption_data().into());
         }
 
-        // Step 3: Bind the canonical Tempo queue head into the execution witness.
-        //
-        // `current_hash` may be an ancestor of this value when the sequencer processes only a
-        // bounded prefix of pending deposits. The batch proof validates that hashing the
-        // unprocessed suffix from `current_hash` reaches `tempo_current_hash`; requiring equality
-        // here would incorrectly forbid partial processing.
+        // Step 3: Require the processed hash to equal the canonical Tempo queue head at the
+        // imported anchor. Every entry queued by that anchor must be processed in this call.
         //
         // NOTE: A zero portal denotes the explicit no-L1 mode used by local development and offline
         // execution. There is no canonical queue to bind in that mode.
@@ -206,7 +229,6 @@ impl ZoneInbox {
 
         // Step 4: Update state
         self.processed_deposit_queue_hash.write(current_hash)?;
-        let previous_number = self.processed_deposit_number.read()?;
         let processed_number = previous_number
             .checked_add(deposit_count)
             .ok_or_else(TempoPrecompileError::under_overflow)?;
@@ -231,6 +253,7 @@ impl ZoneInbox {
             })?;
         }
 
+        checkpoint.commit();
         Ok(())
     }
 
@@ -430,6 +453,7 @@ impl ZoneInbox {
 
 /// A queue entry whose nested ABI payload has been validated before execution begins.
 enum DecodedQueuedDeposit {
+    ForcedExit(ForcedExit),
     WithdrawalBounceBack(WithdrawalBounceBackDeposit),
     Deposit(Deposit),
 }
@@ -437,6 +461,9 @@ enum DecodedQueuedDeposit {
 impl DecodedQueuedDeposit {
     fn hash_with_tail(&self, tail: B256) -> tempo_precompiles::Result<B256> {
         let encoded = match self {
+            Self::ForcedExit(entry) => {
+                (DepositType::ForcedExit, entry.clone(), tail).abi_encode_params()
+            }
             Self::WithdrawalBounceBack(deposit) => {
                 (DepositType::WithdrawalBounceBack, deposit.clone(), tail).abi_encode_params()
             }
@@ -448,27 +475,43 @@ impl DecodedQueuedDeposit {
     }
 }
 
-fn decode_deposits(deposits: Vec<QueuedDeposit>) -> ZoneResult<Vec<DecodedQueuedDeposit>> {
-    // Nested deposits must match their canonical L1 event encoding on every hardfork.
-    let config = AbiDecoderConfig::new().strict(true);
+impl TryFrom<QueuedDeposit> for DecodedQueuedDeposit {
+    type Error = ZonePrecompileError;
 
-    deposits
-        .into_iter()
-        .map(|queued| {
-            match queued.depositType {
-                DepositType::WithdrawalBounceBack => {
-                    WithdrawalBounceBackDeposit::abi_decode_with_config(&queued.depositData, config)
-                        .map(DecodedQueuedDeposit::WithdrawalBounceBack)
+    fn try_from(queued: QueuedDeposit) -> Result<Self, Self::Error> {
+        // Nested deposits must match their canonical L1 event encoding on every hardfork.
+        let config = AbiDecoderConfig::new().strict(true);
+
+        match queued.depositType {
+            DepositType::ForcedExit => {
+                let entry = ForcedExit::abi_decode_with_config(&queued.depositData, config)
+                    .map_err(|_| ZonePrecompileError::MalformedCalldata)?;
+                if entry.abi_encode() != queued.depositData
+                    || entry.requestId == 0
+                    || entry.token.is_zero()
+                    || entry.feePayer.is_zero()
+                    || !exithatch::valid_ciphertext_length(entry.encrypted.ciphertext.len())
+                    || !matches!(entry.encrypted.ephemeralPubkeyYParity, 2 | 3)
+                {
+                    return Err(ZonePrecompileError::MalformedCalldata);
                 }
-                DepositType::Deposit => {
-                    Deposit::abi_decode_with_config(&queued.depositData, config)
-                        .map(DecodedQueuedDeposit::Deposit)
-                }
-                _ => return Err(ZonePrecompileError::MalformedCalldata),
+                Ok(Self::ForcedExit(entry))
             }
-            .map_err(|_| ZonePrecompileError::MalformedCalldata)
-        })
-        .collect()
+            DepositType::WithdrawalBounceBack => {
+                WithdrawalBounceBackDeposit::abi_decode_with_config(&queued.depositData, config)
+                    .map(Self::WithdrawalBounceBack)
+            }
+            DepositType::Deposit => {
+                Deposit::abi_decode_with_config(&queued.depositData, config).map(Self::Deposit)
+            }
+            _ => return Err(ZonePrecompileError::MalformedCalldata),
+        }
+        .map_err(|_| ZonePrecompileError::MalformedCalldata)
+    }
+}
+
+fn decode_deposits(deposits: Vec<QueuedDeposit>) -> ZoneResult<Vec<DecodedQueuedDeposit>> {
+    deposits.into_iter().map(TryInto::try_into).collect()
 }
 
 fn recover_encrypted_payload(
@@ -495,6 +538,7 @@ fn recover_encrypted_payload(
         &deposit.keyIndex,
         &deposit.encrypted.ephemeralPubkeyX,
         &deposit.sender,
+        None,
     );
     let key = hkdf_sha256(&decryption.sharedSecret.0, b"ecies-aes-key", &info);
     aes_gcm::charge_gas(deposit.encrypted.ciphertext.len(), 0)?;
