@@ -1,6 +1,4 @@
-use revm::interpreter::gas::{
-    COLD_SLOAD_COST, STANDARD_TOKEN_COST, get_tokens_in_calldata_istanbul,
-};
+use evm2::interpreter::gas::{COLD_SLOAD_COST, STANDARD_TOKEN_COST};
 use tempo_primitives::transaction::{PrimitiveSignature, TempoSignature};
 
 /// Additional gas for P256 signature verification.
@@ -10,7 +8,7 @@ use tempo_primitives::transaction::{PrimitiveSignature, TempoSignature};
 pub(crate) const P256_VERIFY_GAS: u64 = 5_000;
 
 /// Additional gas for keychain signatures (key validation overhead: cold SLOAD + processing).
-const KEYCHAIN_VALIDATION_GAS: u64 = COLD_SLOAD_COST + 900;
+const KEYCHAIN_VALIDATION_GAS: u64 = COLD_SLOAD_COST as u64 + 900;
 
 /// Calculates the gas cost for verifying a primitive signature.
 ///
@@ -24,8 +22,8 @@ pub(crate) fn primitive_signature_verification_gas(signature: &PrimitiveSignatur
         PrimitiveSignature::Secp256k1(_) => 0,
         PrimitiveSignature::P256(_) => P256_VERIFY_GAS,
         PrimitiveSignature::WebAuthn(webauthn_sig) => {
-            let tokens = get_tokens_in_calldata_istanbul(&webauthn_sig.webauthn_data);
-            P256_VERIFY_GAS + tokens * STANDARD_TOKEN_COST
+            let tokens = calldata_tokens(&webauthn_sig.webauthn_data);
+            P256_VERIFY_GAS + tokens * u64::from(STANDARD_TOKEN_COST)
         }
     }
 }
@@ -42,4 +40,11 @@ pub(crate) fn tempo_signature_verification_gas(signature: &TempoSignature) -> u6
             primitive_signature_verification_gas(&keychain_sig.signature) + KEYCHAIN_VALIDATION_GAS
         }
     }
+}
+
+pub(crate) fn calldata_tokens(input: &[u8]) -> u64 {
+    input
+        .iter()
+        .map(|byte| if *byte == 0 { 1 } else { 4 })
+        .sum()
 }

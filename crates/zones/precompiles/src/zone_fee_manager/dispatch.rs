@@ -1,7 +1,7 @@
 //! ABI dispatch for the [`ZoneFeeManager`] precompile.
 
 use alloy_primitives::Address;
-use revm::precompile::PrecompileResult;
+use evm2::precompiles::PrecompileResult;
 use tempo_precompiles::{
     Precompile as TempoPrecompile, charge_input_cost,
     dispatch::{missing_selector_result, selector_from_calldata, unknown_selector_result},

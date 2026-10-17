@@ -2508,7 +2508,7 @@ impl L1TestNode {
             .await?
         {
             let receipt = roles
-                .grantRole(ISSUER_ROLE, self.dev_address())
+                .grantRole(B256::from(*ISSUER_ROLE), self.dev_address())
                 .send()
                 .await?
                 .get_receipt()

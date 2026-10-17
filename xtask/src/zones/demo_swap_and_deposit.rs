@@ -462,7 +462,7 @@ async fn configure_and_mint_demo_token<P: Provider<TempoNetwork>>(
     check(&receipt, "setSupplyCap")?;
 
     let receipt = IRolesAuth::new(token, l1)
-        .grantRole(ISSUER_ROLE, admin)
+        .grantRole((*ISSUER_ROLE).into(), admin)
         .send_sync()
         .await
         .wrap_err("grantRole failed")?;

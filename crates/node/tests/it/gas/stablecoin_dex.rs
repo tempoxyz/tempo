@@ -5,6 +5,7 @@ use alloy::{
     providers::{Provider, ProviderBuilder},
     sol_types::SolEvent,
 };
+use evm2::PrecompileError;
 use reth_e2e_test_utils::{receipt::await_successful_receipts, wallet::test_signer};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
@@ -38,10 +39,10 @@ struct DexGasOutcome {
 }
 
 fn under_overflow_revert() -> Bytes {
-    TempoPrecompileError::under_overflow()
-        .into_precompile_result(0, 0)
-        .unwrap()
-        .bytes
+    match TempoPrecompileError::under_overflow().into_precompile_result() {
+        Err(PrecompileError::Revert(bytes)) => bytes,
+        result => panic!("expected precompile revert, got {result:?}"),
+    }
 }
 
 async fn approve<P: Provider + Clone>(

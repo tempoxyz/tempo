@@ -16,13 +16,13 @@ use commonware_cryptography::{
 };
 use commonware_math::algebra::Random as _;
 use commonware_utils::{N3f1, TryFromIterator as _, ordered};
+use evm2::bytecode::Bytecode;
 use eyre::{WrapErr as _, eyre};
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 use itertools::Itertools;
 use rand::SeedableRng as _;
 use rand_08::SeedableRng as _;
 use rayon::prelude::*;
-use reth_evm::revm::context_interface::JournalTr as _;
 use std::{
     collections::BTreeMap,
     iter::repeat_with,
@@ -36,8 +36,7 @@ use tempo_chainspec::{
 };
 use tempo_consensus_config::{SigningKey, SigningShare};
 use tempo_contracts::{
-    ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
-    SAFE_DEPLOYER_ADDRESS,
+    CREATEX_ADDRESS, MULTICALL3_ADDRESS, SAFE_DEPLOYER_ADDRESS,
     contracts::{CreateX, Multicall3, SafeDeployer},
     precompiles::{
         INITIAL_FACTORY_OWNER, IValidatorConfigV2, createTokenCall, initial_zone_factory_state,
@@ -439,25 +438,38 @@ impl GenesisArgs {
             println!("Skipping pairwise liquidity (--no-pairwise-liquidity)");
         }
 
-        evm.ctx_mut()
-            .journaled_state
-            .load_account(ARACHNID_CREATE2_FACTORY_ADDRESS)?;
-        evm.ctx_mut()
-            .journaled_state
-            .load_account(PERMIT2_ADDRESS)?;
-
         // Save EVM state to allocation
         println!("Saving EVM state to allocation");
-        let evm_state = evm.ctx_mut().journaled_state.evm_state();
-        let mut genesis_alloc: BTreeMap<Address, GenesisAccount> = evm_state
-            .iter()
+        let state = &evm.overlay_db().cache;
+        let addresses = state
+            .accounts
+            .keys()
+            .chain(state.storage.keys())
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut genesis_alloc: BTreeMap<Address, GenesisAccount> = addresses
+            .into_iter()
             .progress()
-            .map(|(address, account)| {
-                let storage = account
+            .map(|address| {
+                let account = state
+                    .accounts
+                    .get(&address)
+                    .and_then(Option::as_ref)
+                    .cloned()
+                    .unwrap_or_default();
+                let storage = state
                     .storage
-                    .iter()
-                    .map(|(key, val)| (*key, val.present_value));
-                (*address, genesis_account(&account.info, storage))
+                    .get(&address)
+                    .into_iter()
+                    .flat_map(|storage| storage.slots.iter())
+                    .map(|(key, value)| (*key, *value));
+                let mut genesis_account = genesis_account(&account, storage);
+                genesis_account.code = state
+                    .contracts
+                    .get(&account.code_hash)
+                    .filter(|code| !code.is_empty())
+                    .map(Bytecode::original_bytes);
+                (address, genesis_account)
             })
             .collect();
 

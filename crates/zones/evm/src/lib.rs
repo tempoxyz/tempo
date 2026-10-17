@@ -1,8 +1,8 @@
 //! Zone-specific EVM configuration.
 //!
 //! Wraps [`TempoEvmConfig`] with a [`ZoneEvmFactory`] that installs the L1-anchored database,
-//! registers Zone-native precompiles, and preserves the original database at the
-//! [`Evm`](alloy_evm::Evm) boundary.
+//! registers Zone-native precompiles, and preserves the original database inside
+//! [`L1OverlayDB`].
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
@@ -16,28 +16,22 @@ mod zone_evm;
 
 pub use database::{L1OverlayDB, ZoneDbError};
 pub use executor::{ZoneBlockExecutor, ZoneTxResult};
-pub use zone_evm::{ZoneEvm, validate_transaction};
+pub use zone_evm::validate_transaction;
 
 use crate::{
     fee_manager::ZoneProtocolFeeManager,
-    precompiles::{L1StorageReader, zone_precompiles},
-};
-use alloy_evm::{
-    Database, EvmEnv, EvmFactory,
-    block::BlockExecutorFactory,
-    precompiles::PrecompilesMap,
-    revm::{Inspector, context::DBErrorMarker, inspector::NoOpInspector},
+    precompiles::{L1StorageReader, ZonePrecompiles},
+    zone_evm::{zone_execution_config, zone_tx_registry},
 };
 use alloy_primitives::{Address, B256};
 use alloy_provider::{Provider, ProviderBuilder};
+use evm2::evm::DynDatabase;
 use reth_chainspec::EthChainSpec;
 use reth_evm::{
-    ConfigureEngineEvm, ConfigureEvm, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor,
-    block::StateDB,
-    execute::{BlockAssembler, BlockAssemblerInput},
+    BlockAssembler, BlockAssemblerInput, BlockExecutorFactory, ConfigureEngineEvm, ConfigureEvm,
+    EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor,
 };
 use reth_primitives_traits::{SealedBlock, SealedHeader};
-use revm::context::result::HaltReason;
 use std::{
     collections::HashSet,
     fmt,
@@ -47,20 +41,18 @@ use std::{
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
 use tempo_evm::{
-    FeeTokenResolver, TempoBlockAssembler, TempoBlockEnv, TempoBlockExecutionCtx, TempoEvmConfig,
-    TempoEvmError, TempoNextBlockEnvAttributes, TempoStateAccess,
-    evm::{TempoEvm, TempoEvmFactory},
+    FeeTokenResolver, TempoBlockAssembler, TempoBlockExecutionCtx, TempoEvmConfig, TempoEvmEnv,
+    TempoEvmError, TempoEvmExt, TempoEvmTypes, TempoNextBlockEnvAttributes, TempoStateAccess,
+    TempoTxEnv, evm::TempoEvm,
 };
 use tempo_payload_types::TempoExecutionData;
 use tempo_precompiles::{error::Result as TempoResult, storage::actions::StorageActions};
-use tempo_primitives::{
-    Block, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope, TempoTxType,
-};
-use tempo_revm::TempoTxEnv;
+use tempo_primitives::{Block, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope};
 use zone_chainspec::ZoneChainSpec;
 use zone_l1::state::{L1StateCache, L1StateProvider, L1StateProviderConfig};
 
-type TempoCtx<DB> = <TempoEvmFactory as EvmFactory>::Context<DB>;
+/// Zone execution uses Tempo's EVM2 type family and a Zone-configured database and precompile set.
+pub type ZoneEvm<'a> = TempoEvm<'a>;
 
 /// Zone EVM factory that adapts caller databases and registers the zone-native precompiles.
 #[derive(Debug, Clone)]
@@ -79,52 +71,6 @@ where
             l1_reader,
             portal_address,
         }
-    }
-
-    /// Builds the Tempo EVM over the L1-anchored database with only the Zone precompiles, keeping
-    /// L1-only code (e.g. the ZoneVerifier PCR policy) out of the prover binary.
-    fn create_tempo_evm<DB: Database>(
-        &self,
-        db: DB,
-        input: EvmEnv<TempoHardfork, TempoBlockEnv>,
-    ) -> TempoEvm<L1OverlayDB<DB, L1>> {
-        let db = L1OverlayDB::new(db, self.l1_reader.clone(), self.portal_address);
-        TempoEvm::new_with_precompiles(db, input, |ctx, actions, non_creditable_slots| {
-            let l1 = ctx.journaled_state.database.l1_state().clone();
-            zone_precompiles(&ctx.cfg, l1, actions, non_creditable_slots)
-        })
-        .with_fee_manager(ZoneProtocolFeeManager::new())
-    }
-}
-
-impl<L1> EvmFactory for ZoneEvmFactory<L1>
-where
-    L1: L1StorageReader,
-{
-    type Evm<DB: Database, I: Inspector<Self::Context<DB>>> = ZoneEvm<DB, I, L1>;
-    type Context<DB: Database> = TempoCtx<L1OverlayDB<DB, L1>>;
-    type Tx = <TempoEvmFactory as EvmFactory>::Tx;
-    type Error<DBError: DBErrorMarker> = <TempoEvmFactory as EvmFactory>::Error<DBError>;
-    type HaltReason = HaltReason;
-    type Spec = tempo_chainspec::hardfork::TempoHardfork;
-    type BlockEnv = TempoBlockEnv;
-    type Precompiles = PrecompilesMap;
-
-    fn create_evm<DB: Database>(
-        &self,
-        db: DB,
-        input: EvmEnv<Self::Spec, Self::BlockEnv>,
-    ) -> Self::Evm<DB, NoOpInspector> {
-        ZoneEvm::new(self.create_tempo_evm(db, input))
-    }
-
-    fn create_evm_with_inspector<DB: Database, I: Inspector<Self::Context<DB>>>(
-        &self,
-        db: DB,
-        input: EvmEnv<Self::Spec, Self::BlockEnv>,
-        inspector: I,
-    ) -> Self::Evm<DB, I> {
-        ZoneEvm::new(self.create_tempo_evm(db, input).with_inspector(inspector))
     }
 }
 
@@ -145,21 +91,21 @@ impl ZoneBlockAssembler {
 
 impl<L1> BlockAssembler<ZoneEvmConfig<L1>> for ZoneBlockAssembler
 where
-    L1: L1StorageReader,
+    L1: L1StorageReader + 'static,
 {
     type Block = Block;
 
     fn assemble_block(
         &self,
         input: BlockAssemblerInput<'_, '_, ZoneEvmConfig<L1>, TempoHeader>,
-    ) -> Result<Self::Block, alloy_evm::block::BlockExecutionError> {
+    ) -> Result<Self::Block, reth_evm::BlockExecutionError> {
         let BlockAssemblerInput {
             evm_env,
             execution_ctx,
             parent,
             transactions,
             output,
-            bundle_state,
+            execution_state,
             state_provider,
             state_root,
             block_access_list_hash,
@@ -173,7 +119,7 @@ where
                 parent,
                 transactions,
                 output,
-                bundle_state,
+                execution_state,
                 state_provider,
                 state_root,
                 block_access_list_hash,
@@ -288,30 +234,58 @@ impl<L1> fmt::Debug for ZoneEvmConfig<L1> {
 
 impl<L1> BlockExecutorFactory for ZoneEvmConfig<L1>
 where
-    L1: L1StorageReader,
+    L1: L1StorageReader + 'static,
 {
     type EvmFactory = ZoneEvmFactory<L1>;
-    type ExecutionCtx<'a> = TempoBlockExecutionCtx<'a>;
+    type EvmTypes = TempoEvmTypes;
     type Transaction = TempoTxEnvelope;
     type Receipt = TempoReceipt;
-    type TxExecutionResult = ZoneTxResult<HaltReason, TempoTxType>;
-    type Executor<'a, DB: StateDB, I: Inspector<TempoCtx<L1OverlayDB<DB, L1>>>> =
-        ZoneBlockExecutor<'a, DB, I, L1>;
+    type Evm<'a> = ZoneEvm<'a>;
+    type EvmEnv = TempoEvmEnv;
+    type ExecutionCtx<'a> = TempoBlockExecutionCtx<'a>;
+    type Executor<'a> = ZoneBlockExecutor<'a>;
+
+    fn create_executor<'a>(
+        &'a self,
+        evm: Self::Evm<'a>,
+        ctx: Self::ExecutionCtx<'a>,
+    ) -> Self::Executor<'a>
+    where
+        Self: 'a,
+    {
+        ZoneBlockExecutor::new(evm, ctx, self.chain_spec())
+    }
 
     fn evm_factory(&self) -> &Self::EvmFactory {
         &self.zone_factory
     }
 
-    fn create_executor<'a, DB, I>(
-        &'a self,
-        evm: ZoneEvm<DB, I, L1>,
-        ctx: Self::ExecutionCtx<'a>,
-    ) -> Self::Executor<'a, DB, I>
+    fn evm_with_env<'a, DB>(&self, db: DB, env: Self::EvmEnv) -> Self::Evm<'a>
     where
-        DB: StateDB,
-        I: Inspector<TempoCtx<L1OverlayDB<DB, L1>>>,
+        DB: DynDatabase + 'a,
     {
-        ZoneBlockExecutor::new(evm, ctx, self.chain_spec())
+        let db = L1OverlayDB::new(
+            db,
+            self.zone_factory.l1_reader.clone(),
+            self.zone_factory.portal_address,
+        );
+        let l1 = db.l1_state().clone();
+        let ext = TempoEvmExt::default().with_fee_manager(ZoneProtocolFeeManager::new());
+        let precompiles = ZonePrecompiles::<TempoEvmTypes, L1>::new(
+            env.spec,
+            ext.actions.clone(),
+            ext.non_creditable_slots.clone(),
+            l1.clone(),
+        );
+        evm2::Evm::new_with_execution_config_and_ext(
+            zone_execution_config(env.spec, env.version),
+            env.spec,
+            env.block,
+            zone_tx_registry(env.spec, l1),
+            db,
+            precompiles,
+            ext,
+        )
     }
 }
 
@@ -345,19 +319,23 @@ where
         let mut env = self.inner.next_evm_env(parent, attributes)?;
         // TempoEvmConfig is concrete over TempoChainSpec, so apply the Zone fee policy after
         // delegating the rest of the environment construction.
-        env.block_env.inner.basefee = self
+        let basefee = self
             .chain_spec
             .next_block_base_fee(parent, attributes.timestamp)
             .unwrap_or_default();
+        env.block.basefee = alloy_primitives::U256::from_limbs([basefee, 0, 0, 0]);
         Ok(env)
     }
 
     fn context_for_block<'a>(
         &self,
         block: &'a SealedBlock<Block>,
-    ) -> Result<TempoBlockExecutionCtx<'a>, Self::Error> {
+    ) -> Result<TempoBlockExecutionCtx<'a>, Self::Error>
+    where
+        Self: 'a,
+    {
         use alloy_consensus::BlockHeader;
-        use alloy_evm::eth::EthBlockExecutionCtx;
+        use reth_evm_ethereum::EthBlockExecutionCtx;
         use std::borrow::Cow;
 
         Ok(TempoBlockExecutionCtx {
@@ -465,20 +443,28 @@ pub struct TempoStorageRead {
 mod tests {
     use super::*;
 
-    use alloy_consensus::Sealable as _;
-    use alloy_evm::Evm as _;
-    use alloy_primitives::{B256, U256, address};
+    use alloy_consensus::{Sealable as _, Signed, TxLegacy};
+    use alloy_primitives::{B256, Bytes, U256, address};
     use alloy_sol_types::SolCall;
+    use evm2::{
+        bytecode::Bytecode,
+        evm::{AccountInfo, InMemoryDB},
+    };
     use reth_chainspec::EthChainSpec;
-    use revm::database::{EmptyDB, InMemoryDB};
+    use reth_primitives_traits::Recovered;
     use tempo_chainspec::{
         hardfork::TempoHardfork,
         spec::{MODERATO, TempoHardforks},
     };
     use tempo_contracts::zones::IZoneInbox;
     use tempo_precompiles::{
-        TIP403_REGISTRY_ADDRESS, storage::StorageKey, tip403_registry::tip403_registry_slots,
+        TIP403_REGISTRY_ADDRESS,
+        storage::StorageKey,
+        tip403_registry::{ITIP403Registry, tip403_registry_slots},
         zone_factory::ZonePortalStorage,
+    };
+    use tempo_primitives::transaction::envelope::{
+        TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE,
     };
     use zone_precompiles::{
         tempo_state::{TEMPO_BLOCK_NUMBER_SLOT, slots::TEMPO_BLOCK_HASH},
@@ -505,8 +491,32 @@ mod tests {
         assert!(failing.take_reads().is_empty());
     }
 
+    fn system_tx_env(to: Address, input: Bytes) -> Recovered<TempoTxEnv> {
+        let tx = Recovered::new_unchecked(
+            TempoTxEnvelope::Legacy(Signed::new_unhashed(
+                TxLegacy {
+                    to: to.into(),
+                    input,
+                    ..Default::default()
+                },
+                TEMPO_SYSTEM_TX_SIGNATURE,
+            )),
+            TEMPO_SYSTEM_TX_SENDER,
+        );
+        Recovered::new_unchecked(tx.into(), TEMPO_SYSTEM_TX_SENDER)
+    }
+
     #[test]
     fn advance_tempo_keeps_overlay_reads_on_child_anchor() {
+        check_registry_reads_after_advance(true);
+    }
+
+    #[test]
+    fn discarded_advance_tempo_preserves_parent_registry_anchor() {
+        check_registry_reads_after_advance(false);
+    }
+
+    fn check_registry_reads_after_advance(commit_advance: bool) {
         const PARENT: u64 = 0;
         const CHILD: u64 = 1;
         let portal = Address::repeat_byte(0x42);
@@ -535,6 +545,20 @@ mod tests {
         reader.insert(TIP403_REGISTRY_ADDRESS, policy_slot, PARENT, parent_policy);
         reader.insert(TIP403_REGISTRY_ADDRESS, policy_slot, CHILD, child_policy);
 
+        let counter_slot = tip403_registry_slots::POLICY_ID_COUNTER;
+        reader.insert(
+            TIP403_REGISTRY_ADDRESS,
+            counter_slot,
+            PARENT,
+            U256::from(100),
+        );
+        reader.insert(
+            TIP403_REGISTRY_ADDRESS,
+            counter_slot,
+            CHILD,
+            U256::from(200),
+        );
+
         let genesis = TempoHeader::default();
         let genesis_hash = genesis.hash_slow();
         let child = TempoHeader {
@@ -546,20 +570,38 @@ mod tests {
             ..Default::default()
         };
         let mut db = InMemoryDB::default();
-        db.insert_account_storage(TEMPO_STATE_ADDRESS, TEMPO_BLOCK_HASH, genesis_hash.into())
-            .unwrap();
+        db.insert_account_info(&TEMPO_STATE_ADDRESS, Default::default());
+        db.insert_account_info(
+            &TIP403_REGISTRY_ADDRESS,
+            AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(&[0xef]))),
+        );
         db.insert_account_storage(
-            TEMPO_STATE_ADDRESS,
-            TEMPO_BLOCK_NUMBER_SLOT,
-            U256::from(PARENT),
-        )
-        .unwrap();
+            &TEMPO_STATE_ADDRESS,
+            &TEMPO_BLOCK_HASH,
+            &genesis_hash.into(),
+        );
+        db.insert_account_storage(
+            &TEMPO_STATE_ADDRESS,
+            &TEMPO_BLOCK_NUMBER_SLOT,
+            &U256::from(PARENT),
+        );
 
-        let factory = ZoneEvmFactory::new(reader.clone(), portal);
-        let mut env = EvmEnv::<TempoHardfork, TempoBlockEnv>::default();
-        env.block_env.inner.timestamp = U256::from(child.inner.timestamp);
-        env.block_env.timestamp_millis_part = child.timestamp_millis_part;
-        let mut evm = factory.create_evm(db, env);
+        let mut zone_genesis = tempo_chainspec::spec::DEV.genesis().clone();
+        zone_genesis.config.chain_id =
+            zone_chain_id(tempo_chainspec::spec::DEV.chain_id(), 1).unwrap();
+        let config = ZoneEvmConfig::new(
+            Arc::new(ZoneChainSpec::from_genesis(zone_genesis).unwrap()),
+            reader.clone(),
+            portal,
+        );
+        let mut env = TempoEvmEnv::default();
+        env.block.timestamp = U256::from(child.inner.timestamp);
+        env.block.ext.timestamp_millis_part = child.timestamp_millis_part;
+        let mut evm = BlockExecutorFactory::evm_with_env(&config, db, env);
+        let counter_tx = system_tx_env(
+            TIP403_REGISTRY_ADDRESS,
+            ITIP403Registry::policyIdCounterCall {}.abi_encode().into(),
+        );
         let calldata = IZoneInbox::advanceTempoCall {
             header: alloy_rlp::encode(&child).into(),
             deposits: Vec::new(),
@@ -568,12 +610,21 @@ mod tests {
         }
         .abi_encode();
 
-        let result = evm
-            .transact_system_call(Address::ZERO, ZONE_INBOX_ADDRESS, calldata.into())
+        let tx = system_tx_env(ZONE_INBOX_ADDRESS, calldata.into());
+        let executed = evm
+            .transact(&tx)
             .expect("advanceTempo execution must not fail");
-        assert!(result.result.is_success());
+        let result = if commit_advance {
+            executed.commit()
+        } else {
+            executed.discard()
+        };
+        assert!(result.status, "advanceTempo reverted: {result:?}");
         assert_eq!(
-            evm.ctx().journaled_state.database.l1_state().get_anchor(),
+            evm.database_as::<L1OverlayDB<InMemoryDB, MockL1Reader>>()
+                .unwrap()
+                .l1_state()
+                .get_anchor(),
             None,
             "transaction completion must clear the shared L1 anchor"
         );
@@ -587,6 +638,28 @@ mod tests {
         assert!(requests.contains(&child_policy_request));
         assert!(!requests.contains(&parent_policy_request));
         assert!(reader.requested(CHILD, &portal.current_deposit_queue_hash));
+
+        // A second transaction must read the checkpoint accepted by EVM2, not the backing DB.
+        // The counter is not read by advanceTempo, so this also exercises an uncached L1 slot.
+        let expected_anchor = if commit_advance { CHILD } else { PARENT };
+        assert_eq!(
+            evm.state_mut()
+                .storage_slot_untracked(&TEMPO_STATE_ADDRESS, &TEMPO_BLOCK_NUMBER_SLOT)
+                .unwrap(),
+            U256::from(expected_anchor),
+        );
+        let reads_before = reader.storage_requests().len();
+        let result = evm.transact(&counter_tx).unwrap().discard();
+        assert!(result.status, "registry read reverted: {result:?}");
+        assert_eq!(
+            ITIP403Registry::policyIdCounterCall::abi_decode_returns(&result.output).unwrap(),
+            if commit_advance { 200 } else { 100 },
+        );
+        assert!(reader.storage_requests()[reads_before..].contains(&(
+            TIP403_REGISTRY_ADDRESS,
+            B256::from(counter_slot),
+            expected_anchor,
+        )));
     }
 
     #[test]
@@ -614,18 +687,10 @@ mod tests {
             };
             let env = config.evm_env(&header).expect("valid EVM environment");
             let expected = MODERATO.tempo_hardfork_at(timestamp);
-            assert_eq!(env.cfg_env.spec, expected);
+            assert_eq!(env.spec, expected);
 
-            let evm = config
-                .zone_factory
-                .create_evm(EmptyDB::default(), env.clone());
-            assert_eq!(evm.ctx().cfg.spec, expected);
-            let evm = config.zone_factory.create_evm_with_inspector(
-                EmptyDB::default(),
-                env,
-                NoOpInspector,
-            );
-            assert_eq!(evm.ctx().cfg.spec, expected);
+            let evm = BlockExecutorFactory::evm_with_env(&config, InMemoryDB::default(), env);
+            assert_eq!(evm.config_spec_id(), expected);
         }
     }
 }

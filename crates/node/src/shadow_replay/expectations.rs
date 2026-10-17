@@ -182,8 +182,8 @@ mod tests {
     };
     use crate::shadow_replay::analysis::{MAX_SAMPLES, Report};
     use alloy::primitives::{Address, Signature};
+    use evm2::evm::TxResultExt;
     use reth_revm::{
-        context::result::ResultGas,
         db::states::{StorageSlot, TransitionAccount},
         state::AccountInfo,
     };
@@ -263,7 +263,10 @@ mod tests {
                 .map(|&gas_used| {
                     Ok(ObservedTx {
                         outcome: TxOutcome::Success,
-                        gas: ResultGas::default().with_total_gas_spent(gas_used),
+                        gas: TxResultExt {
+                            total_gas_spent: gas_used,
+                            ..Default::default()
+                        },
                         ..Default::default()
                     })
                 })

@@ -33,7 +33,6 @@ impl CallRules for Tip403Rules {
 mod tests {
     use super::*;
 
-    use alloy_evm::precompiles::DynPrecompile;
     use alloy_primitives::{Bytes, U256, address};
     use alloy_sol_types::SolCall;
     use revm::precompile::{PrecompileError, PrecompileOutput};
@@ -43,7 +42,10 @@ mod tests {
 
     use crate::{
         tempo_state::slots::TEMPO_BLOCK_NUMBER,
-        test_utils::{TestContext, call_precompile, test_context, test_env, test_storage_provider},
+        test_utils::{
+            TestContext, TestPrecompiles, call_precompile, test_context, test_precompiles,
+            test_storage_provider,
+        },
     };
 
     const ANCHOR: u64 = 77;
@@ -51,7 +53,7 @@ mod tests {
 
     struct RegistryHarness {
         ctx: TestContext,
-        precompile: DynPrecompile,
+        precompile: TestPrecompiles,
     }
 
     impl RegistryHarness {
@@ -65,14 +67,12 @@ mod tests {
                     U256::from(ANCHOR),
                 )
                 .unwrap();
-            let env = test_env(&ctx);
             Self {
-                ctx,
-                precompile: zone_precompile!(
-                    env,
-                    tempo_precompiles::tip403_registry::TIP403Registry,
-                    Tip403Rules
+                precompile: test_precompiles(
+                    &ctx,
+                    crate::L1State::new(Default::default(), Address::ZERO),
                 ),
+                ctx,
             }
         }
 
@@ -89,7 +89,7 @@ mod tests {
         ) -> Result<PrecompileOutput, PrecompileError> {
             call_precompile(
                 &mut self.ctx,
-                &self.precompile,
+                &mut self.precompile,
                 CALLER,
                 data,
                 gas,
@@ -135,8 +135,8 @@ mod tests {
         let output = harness.call_as(
             &call,
             u64::MAX,
-            TIP403_REGISTRY_ADDRESS,
             Address::repeat_byte(0x44),
+            TIP403_REGISTRY_ADDRESS,
         )?;
 
         assert!(output.is_revert());

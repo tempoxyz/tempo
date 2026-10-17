@@ -3,12 +3,10 @@ use alloy::{
     signers::{SignerSync, local::PrivateKeySigner},
 };
 use alloy_eips::{Decodable2718, Encodable2718};
-use alloy_primitives::{Address, TxKind, U64, U256};
+use alloy_primitives::{Address, TxKind, U64, U256, hex};
 use reth_chainspec::EthChainSpec;
 use reth_e2e_test_utils::{node::Finality, wait::assert_holds_for, wallet::test_signer};
-use reth_ethereum::{
-    evm::revm::primitives::hex, pool::TransactionPool, primitives::SignerRecoverable,
-};
+use reth_ethereum::{pool::TransactionPool, primitives::SignerRecoverable};
 use reth_node_builder::BuiltPayload;
 use reth_primitives_traits::transaction::{TxHashRef, error::InvalidTransactionError};
 use reth_transaction_pool::{

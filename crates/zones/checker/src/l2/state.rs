@@ -7,11 +7,11 @@ use alloy_primitives::{Address, B256, U256};
 use eyre::WrapErr as _;
 use reth_storage_api::{StateProviderFactory, errors::provider::ProviderError};
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_evm::TempoStateAccess as _;
 use tempo_precompiles::{
     storage::{ContractStorage, StorageActions},
     tip20::{ITIP20, TIP20Token},
 };
-use tempo_revm::TempoStateAccess as _;
 use zone_precompiles::zone_state::ZoneStateSnapshot;
 
 use crate::AttemptError;

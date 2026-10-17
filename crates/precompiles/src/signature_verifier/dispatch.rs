@@ -1,7 +1,7 @@
 use super::SignatureVerifier;
 use crate::{Precompile, charge_input_cost, dispatch, view};
 use alloy::primitives::Address;
-use revm::precompile::PrecompileResult;
+use evm2::precompiles::PrecompileResult;
 use tempo_contracts::precompiles::{ISignatureVerifier, SignatureVerifierError};
 use tempo_primitives::MAX_WEBAUTHN_SIGNATURE_LENGTH;
 
@@ -18,9 +18,9 @@ impl Precompile for SignatureVerifier {
         }
 
         if calldata.len() > MAX_CALLDATA_LEN {
-            return Ok(self
+            return self
                 .storage
-                .abi_revert(SignatureVerifierError::invalid_format()));
+                .abi_revert(SignatureVerifierError::invalid_format());
         }
 
         dispatch!(
@@ -53,7 +53,7 @@ mod tests {
         account_keychain::{AccountKeychain, KeyRestrictions, SignatureType},
         expect_precompile_revert,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{assert_full_coverage, check_selector_coverage},
+        test_util::{assert_full_coverage, check_selector_coverage, revert_bytes},
     };
     use alloy::{
         primitives::B256,
@@ -83,7 +83,7 @@ mod tests {
         .abi_encode();
 
         let output = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
-        let ret = ISignatureVerifier::verifyKeychainCall::abi_decode_returns(&output.bytes)?;
+        let ret = ISignatureVerifier::verifyKeychainCall::abi_decode_returns(output.bytes())?;
         Ok(ret)
     }
 
@@ -100,7 +100,7 @@ mod tests {
         .abi_encode();
 
         let output = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
-        let ret = ISignatureVerifier::verifyKeychainAdminCall::abi_decode_returns(&output.bytes)?;
+        let ret = ISignatureVerifier::verifyKeychainAdminCall::abi_decode_returns(output.bytes())?;
         Ok(ret)
     }
 
@@ -148,10 +148,9 @@ mod tests {
             }
             .abi_encode();
 
-            let result = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
-            assert!(result.is_revert());
+            let result = SignatureVerifier::new().call(&calldata, Address::ZERO);
             assert!(
-                UnknownFunctionSelector::abi_decode(&result.bytes).is_ok(),
+                UnknownFunctionSelector::abi_decode(revert_bytes(&result)).is_ok(),
                 "verifyKeychain should be selector-gated before T6"
             );
             Ok(())
@@ -169,10 +168,9 @@ mod tests {
             }
             .abi_encode();
 
-            let result = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
-            assert!(result.is_revert());
+            let result = SignatureVerifier::new().call(&calldata, Address::ZERO);
             assert!(
-                UnknownFunctionSelector::abi_decode(&result.bytes).is_ok(),
+                UnknownFunctionSelector::abi_decode(revert_bytes(&result)).is_ok(),
                 "verifyKeychainAdmin should be selector-gated before T6"
             );
             Ok(())
@@ -195,7 +193,7 @@ mod tests {
             .abi_encode();
 
             let output = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
-            let ret = ISignatureVerifier::verifyCall::abi_decode_returns(&output.bytes)?;
+            let ret = ISignatureVerifier::verifyCall::abi_decode_returns(output.bytes())?;
             assert!(ret, "verify should return true for the correct signer");
             Ok(())
         })
@@ -217,7 +215,7 @@ mod tests {
             .abi_encode();
 
             let output = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
-            let ret = ISignatureVerifier::verifyCall::abi_decode_returns(&output.bytes)?;
+            let ret = ISignatureVerifier::verifyCall::abi_decode_returns(output.bytes())?;
             assert!(!ret, "verify should return false for a wrong signer");
             Ok(())
         })
@@ -475,10 +473,10 @@ mod tests {
             }
             .abi_encode();
 
-            let result = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
+            let result = SignatureVerifier::new().call(&calldata, Address::ZERO);
             // Should NOT be rejected by the size guard, should fail later at signature validation
             assert!(
-                SignatureVerifierError::abi_decode(&result.bytes)
+                SignatureVerifierError::abi_decode(revert_bytes(&result))
                     .map(|e| e != SignatureVerifierError::invalid_format())
                     .unwrap_or(true),
                 "max-size WebAuthn calldata was wrongly rejected by size guard"
@@ -495,11 +493,10 @@ mod tests {
             // decode instead). A zeroed selector is unknown, so we expect an
             // UnknownFunctionSelector revert — not InvalidFormat.
             let calldata = vec![0u8; MAX_CALLDATA_LEN];
-            let result = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
+            let result = SignatureVerifier::new().call(&calldata, Address::ZERO);
 
-            assert!(result.is_revert());
             assert!(
-                SignatureVerifierError::abi_decode(&result.bytes).is_err(),
+                SignatureVerifierError::abi_decode(revert_bytes(&result)).is_err(),
                 "should not be an InvalidFormat revert"
             );
             Ok(())

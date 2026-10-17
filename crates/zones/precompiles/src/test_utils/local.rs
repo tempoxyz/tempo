@@ -1,17 +1,18 @@
-use alloy_evm::{
-    EvmInternals,
-    precompiles::{DynPrecompile, Precompile as _, PrecompileInput},
+use alloy_primitives::{Address, B256, Bytes, U256};
+use evm2::{
+    Evm, ExecutionConfig, SpecId,
+    evm::{
+        InMemoryDB, StateCheckpoint,
+        precompile::{NoPrecompiles, PrecompileProvider},
+    },
+    interpreter::{GasTracker, Message, MessageKind},
+    precompiles::{PrecompileError as Evm2PrecompileError, PrecompileHalt as Evm2PrecompileHalt},
 };
-use alloy_primitives::{Address, B256, U256};
 use k256::{AffinePoint, ProjectivePoint, Scalar, elliptic_curve::ops::Reduce};
-use revm::{
-    Context,
-    context::{CfgEnv, TxEnv},
-    database::InMemoryDB,
-    precompile::PrecompileResult,
-};
+use revm::precompile::{PrecompileError, PrecompileHalt, PrecompileOutput, PrecompileResult};
 use std::{cell::RefCell, rc::Rc};
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_evm::{TempoEvmExt, TempoEvmTypes, tempo_tx_registry};
 use tempo_precompiles::{
     storage::{actions::StorageActions, evm::EvmPrecompileStorageProvider},
     storage_credits::NonCreditableSlots,
@@ -19,15 +20,28 @@ use tempo_precompiles::{
 use tempo_primitives::TempoBlockEnv;
 
 use crate::{
-    ZonePrecompileEnv,
+    ZonePrecompiles,
     chaum_pedersen::{challenge_hash, recover_point},
     ecies::DecryptedDeposit,
 };
 
 pub(crate) use crate::ecies::{build_plaintext, compressed_x_and_parity, encrypt_plaintext};
 
+use super::MockL1Reader;
+
+pub(crate) struct TestCfg {
+    pub(crate) spec: TempoHardfork,
+}
+
 /// EVM context used by local precompile unit tests.
-pub(crate) type TestContext = Context<TempoBlockEnv, TxEnv, CfgEnv<TempoHardfork>, InMemoryDB>;
+pub(crate) struct TestContext {
+    pub(crate) cfg: TestCfg,
+    pub(crate) block: TempoBlockEnv,
+    evm: Evm<'static, TempoEvmTypes>,
+    gas: GasTracker,
+}
+
+pub(crate) type TestPrecompiles = ZonePrecompiles<TempoEvmTypes, MockL1Reader>;
 
 /// Create an empty test EVM context at the latest Tempo hardfork affecting Zones.
 pub(crate) fn test_context() -> TestContext {
@@ -36,7 +50,22 @@ pub(crate) fn test_context() -> TestContext {
 
 /// Create a test EVM context with the specified hardfork.
 pub(crate) fn test_context_with_hardfork(hardfork: TempoHardfork) -> TestContext {
-    Context::new(InMemoryDB::default(), hardfork)
+    let version = tempo_chainspec::gas_params::version(SpecId::OSAKA, hardfork, false);
+    let block = TempoBlockEnv::default();
+    TestContext {
+        cfg: TestCfg { spec: hardfork },
+        block,
+        evm: Evm::new_with_execution_config_and_ext(
+            ExecutionConfig::for_spec_and_version(hardfork, version),
+            hardfork,
+            block,
+            tempo_tx_registry(SpecId::OSAKA),
+            InMemoryDB::default(),
+            NoPrecompiles::default(),
+            TempoEvmExt::default(),
+        ),
+        gas: GasTracker::new(u64::MAX),
+    }
 }
 
 /// Create an EVM-backed precompile storage provider over `ctx`.
@@ -44,32 +73,55 @@ pub(crate) fn test_storage_provider(
     ctx: &mut TestContext,
     gas_limit: u64,
     is_static: bool,
-) -> EvmPrecompileStorageProvider<'_> {
-    let cfg = ctx.cfg.clone();
-    EvmPrecompileStorageProvider::new(
-        EvmInternals::from_context(ctx),
-        gas_limit,
-        0,
-        cfg.spec,
-        cfg.enable_amsterdam_eip8037,
-        is_static,
-        cfg.gas_params,
-    )
+) -> EvmPrecompileStorageProvider<'_, '_, 'static, TempoEvmTypes> {
+    ctx.sync();
+    ctx.gas = GasTracker::new(gas_limit);
+    EvmPrecompileStorageProvider::new(&mut ctx.evm, &mut ctx.gas, ctx.cfg.spec, is_static)
 }
 
-/// Create the ordinary precompile environment for a local unit test.
-pub(crate) fn test_env(ctx: &TestContext) -> ZonePrecompileEnv {
-    ZonePrecompileEnv::new(
-        &ctx.cfg,
+pub(crate) fn test_precompiles(
+    ctx: &TestContext,
+    l1: crate::L1State<MockL1Reader>,
+) -> TestPrecompiles {
+    ZonePrecompiles::new(
+        ctx.cfg.spec,
         StorageActions::disabled(),
         Rc::new(RefCell::new(NonCreditableSlots::empty())),
+        l1,
     )
 }
 
-/// Call a dynamic precompile with test defaults for value and reservoir.
+impl TestContext {
+    fn sync(&mut self) {
+        let version = tempo_chainspec::gas_params::version(SpecId::OSAKA, self.cfg.spec, false);
+        self.evm.set_block_and_execution_config(
+            self.block,
+            ExecutionConfig::for_spec_and_version(self.cfg.spec, version),
+            self.cfg.spec,
+            tempo_tx_registry(SpecId::OSAKA),
+            NoPrecompiles::default(),
+        );
+    }
+
+    pub(crate) fn checkpoint(&mut self) -> StateCheckpoint {
+        self.evm.state_mut().checkpoint()
+    }
+
+    pub(crate) fn checkpoint_revert(&mut self, checkpoint: StateCheckpoint) {
+        let features = self.evm.version().features;
+        self.evm.state_mut().rollback(checkpoint, features);
+    }
+
+    pub(crate) fn evm(&mut self) -> &mut Evm<'static, TempoEvmTypes> {
+        self.sync();
+        &mut self.evm
+    }
+}
+
+/// Call a precompile with test defaults for value and reservoir.
 pub(crate) fn call_precompile(
     ctx: &mut TestContext,
-    precompile: &DynPrecompile,
+    precompiles: &mut TestPrecompiles,
     caller: Address,
     data: &[u8],
     gas: u64,
@@ -77,17 +129,48 @@ pub(crate) fn call_precompile(
     target: Address,
     bytecode_address: Address,
 ) -> PrecompileResult {
-    precompile.call(PrecompileInput {
-        data,
-        gas,
-        reservoir: 0,
+    ctx.sync();
+    let kind = if is_static {
+        MessageKind::StaticCall
+    } else {
+        MessageKind::Call
+    };
+    let message = Message::<TempoEvmTypes> {
+        kind,
+        gas_limit: gas,
         caller,
+        input: Bytes::copy_from_slice(data),
         value: U256::ZERO,
-        target_address: target,
-        is_static,
-        bytecode_address,
-        internals: EvmInternals::from_context(ctx),
-    })
+        destination: target,
+        code_address: bytecode_address,
+        ..Default::default()
+    };
+    let mut gas_tracker = GasTracker::new(gas);
+    let result = precompiles
+        .execute(&mut ctx.evm, &message, &mut gas_tracker)
+        .expect("test precompile must be registered");
+    let gas_used = gas_tracker.spent();
+    let gas_refunded = gas_tracker.refunded();
+    let reservoir = gas_tracker.reservoir();
+    match result {
+        Ok(output) => {
+            let mut output = PrecompileOutput::new(gas_used, output.into_bytes(), reservoir);
+            output.gas_refunded = gas_refunded;
+            Ok(output)
+        }
+        Err(Evm2PrecompileError::Revert(bytes)) => {
+            Ok(PrecompileOutput::revert(gas_used, bytes, reservoir))
+        }
+        Err(Evm2PrecompileError::Halt(Evm2PrecompileHalt::OutOfGas)) => {
+            Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, reservoir))
+        }
+        Err(Evm2PrecompileError::Halt(reason)) => Ok(PrecompileOutput::halt(
+            PrecompileHalt::other(reason.to_string()),
+            reservoir,
+        )),
+        Err(Evm2PrecompileError::Database(error)) => Err(PrecompileError::Fatal(error.to_string())),
+        Err(Evm2PrecompileError::Fatal(error)) => Err(PrecompileError::Fatal(error.to_string())),
+    }
 }
 
 /// Assert that the Chaum-Pedersen proof inside a [`DecryptedDeposit`] is valid.

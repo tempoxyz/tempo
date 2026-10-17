@@ -239,7 +239,10 @@ impl DemoBlacklist {
         println!("  {L1_EXPLORER}/{}", receipt.transaction_hash);
 
         let roles = IRolesAuth::new(token_addr, &l1);
-        let receipt = roles.grantRole(ISSUER_ROLE, admin).send_sync().await?;
+        let receipt = roles
+            .grantRole((*ISSUER_ROLE).into(), admin)
+            .send_sync()
+            .await?;
         check(&receipt, "grantRole")?;
         println!("  ISSUER_ROLE granted to {admin}");
         println!("  {L1_EXPLORER}/{}", receipt.transaction_hash);

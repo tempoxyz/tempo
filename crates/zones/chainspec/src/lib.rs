@@ -4,9 +4,8 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 use alloy_eips::{eip1559::BaseFeeParams, eip7840::BlobParams};
-use alloy_evm::eth::spec::EthExecutorSpec;
 use alloy_genesis::Genesis;
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{B256, U256};
 use reth_chainspec::{
     Chain, DepositContract, EthChainSpec, EthereumHardfork, EthereumHardforks, ForkCondition,
     ForkFilter, ForkId, Hardfork, Hardforks, Head,
@@ -202,12 +201,6 @@ impl TempoConsensusSpec for ZoneChainSpec {
         _shared_gas_limit: u64,
     ) -> u64 {
         0
-    }
-}
-
-impl EthExecutorSpec for ZoneChainSpec {
-    fn deposit_contract_address(&self) -> Option<Address> {
-        self.inner.deposit_contract_address()
     }
 }
 

@@ -2,7 +2,7 @@
 
 use crate::{Precompile, charge_input_cost, dispatch, mutate, tip20_factory::TIP20Factory, view};
 use alloy::primitives::Address;
-use revm::precompile::PrecompileResult;
+use evm2::precompiles::PrecompileResult;
 use tempo_contracts::precompiles::ITIP20Factory;
 
 impl Precompile for TIP20Factory {
@@ -31,7 +31,7 @@ mod tests {
     use super::*;
     use crate::{
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{assert_full_coverage, check_selector_coverage},
+        test_util::{assert_full_coverage, check_selector_coverage, revert_bytes},
     };
     use alloy::{
         primitives::B256,
@@ -81,9 +81,8 @@ mod tests {
             }
             .abi_encode();
 
-            let result = factory.call(&calldata, sender)?;
-            assert!(result.is_revert());
-            assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
+            let result = factory.call(&calldata, sender);
+            assert!(UnknownFunctionSelector::abi_decode(revert_bytes(&result)).is_ok());
 
             Ok(())
         })
