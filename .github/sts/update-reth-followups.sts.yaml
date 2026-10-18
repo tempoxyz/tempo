@@ -1,0 +1,8 @@
+# Caller-only follow-ups may label the validated update PR, but cannot push.
+subject: repo:tempoxyz@211589300/tempo@994992847:environment:dependency-updates
+claim_pattern:
+  workflow_ref: tempoxyz/tempo/\.github/workflows/update-reth\.yml@refs/heads/main
+  job_workflow_ref: tempoxyz/tempo/\.github/workflows/update-reth\.yml@refs/heads/main
+permissions:
+  pull_requests: write
+max_ttl: 15m
