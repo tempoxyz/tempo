@@ -224,7 +224,7 @@ jobs:
           persist-credentials: false
       - name: Initialize Earn fixture dependencies
         working-directory: earn
-        run: git submodule update --init lib/forge-std lib/openzeppelin-contracts lib/openzeppelin-contracts-upgradeable
+        run: git submodule update --init lib/forge-std lib/openzeppelin-contracts
       - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
         with:
           toolchain: stable
