@@ -12,20 +12,22 @@ use crate::utils::{
 };
 use alloy::{
     primitives::{Address, B256, Bytes, TxKind, U256, keccak256},
-    providers::{Provider, ProviderBuilder},
+    providers::{DynProvider, PendingTransactionBuilder, Provider, ProviderBuilder},
 };
 use alloy_network::{ReceiptResponse, TransactionBuilder as _};
 use alloy_rpc_types_eth::{Filter, TransactionRequest};
+use alloy_signer_local::PrivateKeySigner;
 use alloy_sol_types::{SolCall, SolConstructor, SolValue};
 use eyre::WrapErr;
 use std::time::Duration;
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionRequest};
 use tempo_contracts::{
-    precompiles::{ITIP20, ITIP403Registry},
+    precompiles::{IRolesAuth, ITIP20, ITIP20Factory, ITIP403Registry},
     zones::{DepositPayload, ZONE_OUTBOX_ADDRESS, ZonePortal},
 };
 use tempo_precompiles::{
-    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, tip403_registry::AuthRole,
+    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, tip20::ISSUER_ROLE,
+    tip403_registry::AuthRole,
 };
 use tempo_primitives::transaction::Call;
 
@@ -46,6 +48,7 @@ const REWARD_FUNDING_TX_GAS_LIMIT: u64 = 5_000_000;
 const MIGRATION_TX_GAS_LIMIT: u64 = 10_000_000;
 // Tempo's transaction cap is 30M.
 const CONTRACT_DEPLOYMENT_TX_GAS_LIMIT: u64 = 30_000_000;
+const SETUP_CALL_GAS_LIMIT: u64 = 5_000_000;
 const MIN_GAS_HEADROOM_PERCENT: u64 = 15;
 const E2E_TIMEOUT: Duration = Duration::from_secs(90);
 const BOUNCE_TIMEOUT: Duration = Duration::from_secs(180);
@@ -314,65 +317,157 @@ impl EarnZoneFixture {
         reth_tracing::init_test_tracing();
 
         let l1 = L1TestNode::start().await?;
-        let vault_asset = l1
-            .create_tip20("Earn Vault USD", "evUSD", B256::with_last_byte(0xE1))
-            .await?;
-        let alternate_asset = l1
-            .create_tip20("Earn Alternate USD", "eaUSD", B256::with_last_byte(0xE2))
-            .await?;
-        l1.mint_tip20(vault_asset, l1.dev_address(), TOKEN_SUPPLY)
-            .await?;
-        l1.mint_tip20(alternate_asset, l1.dev_address(), TOKEN_SUPPLY)
-            .await?;
-
         let portal = l1.deploy_zone().await?;
-        let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal).await?;
-        zone.wait_for_l2_tempo_finalized(0, E2E_TIMEOUT).await?;
-
-        let messenger = ZonePortal::new(portal, l1.provider())
-            .messenger()
-            .call()
-            .await?;
+        let portal_contract = ZonePortal::new(portal, l1.provider());
+        let messenger = portal_contract.messenger().call().await?;
+        let zone_id = portal_contract.zoneId().call().await?;
         let owner = l1.dev_address();
         let user_address = l1.user_signer().address();
 
-        let venue_vault = deploy_contract(
-            &l1,
-            "Simple4626Vault",
-            VenueVault::constructorCall {
-                asset_: vault_asset,
-                name_: "Tempo Earn Zone Vault".to_string(),
-                symbol_: "teZONE".to_string(),
-                decimals_: 6,
-            }
-            .abi_encode(),
-        )
-        .await?;
-        let engine = deploy_contract(
-            &l1,
-            "ERC4626Engine",
-            EarnEngine::constructorCall {
-                vault_: venue_vault,
-                owner_: owner,
-                nameOverride_: String::new(),
-                symbolOverride_: String::new(),
-            }
-            .abi_encode(),
-        )
-        .await?;
-        let earn_vault_implementation = deploy_contract(&l1, "EarnVault", Vec::new()).await?;
-        let earn_fees_implementation = deploy_contract(&l1, "EarnFees", Vec::new()).await?;
-        let factory = deploy_contract(
-            &l1,
-            "EarnFactory",
-            EarnFactory::constructorCall {
-                tip20Factory_: TIP20_FACTORY_ADDRESS,
-                earnVaultImplementation_: earn_vault_implementation,
-                earnFeesImplementation_: earn_fees_implementation,
-            }
-            .abi_encode(),
-        )
-        .await?;
+        // Setup transactions are submitted back to back and awaited only before a step reads the
+        // state they create, so independent ones share L1 blocks while the zone node starts.
+        let mut setup = L1Batch::new(&l1, l1.dev_signer()).await?;
+        let vault_asset = setup
+            .create_tip20("Earn Vault USD", "evUSD", B256::with_last_byte(0xE1))
+            .await?;
+        let alternate_asset = setup
+            .create_tip20("Earn Alternate USD", "eaUSD", B256::with_last_byte(0xE2))
+            .await?;
+        for token in [vault_asset, alternate_asset] {
+            setup
+                .call(
+                    format!("{token} supply mint"),
+                    token,
+                    ITIP20::mintCall {
+                        to: owner,
+                        amount: U256::from(TOKEN_SUPPLY),
+                    },
+                    SETUP_CALL_GAS_LIMIT,
+                )
+                .await?;
+        }
+
+        let venue_vault = setup
+            .deploy(
+                "Simple4626Vault",
+                VenueVault::constructorCall {
+                    asset_: vault_asset,
+                    name_: "Tempo Earn Zone Vault".to_string(),
+                    symbol_: "teZONE".to_string(),
+                    decimals_: 6,
+                }
+                .abi_encode(),
+            )
+            .await?;
+        let engine = setup
+            .deploy(
+                "ERC4626Engine",
+                EarnEngine::constructorCall {
+                    vault_: venue_vault,
+                    owner_: owner,
+                    nameOverride_: String::new(),
+                    symbolOverride_: String::new(),
+                }
+                .abi_encode(),
+            )
+            .await?;
+        let earn_vault_implementation = setup.deploy("EarnVault", Vec::new()).await?;
+        let earn_fees_implementation = setup.deploy("EarnFees", Vec::new()).await?;
+        let factory = setup
+            .deploy(
+                "EarnFactory",
+                EarnFactory::constructorCall {
+                    tip20Factory_: TIP20_FACTORY_ADDRESS,
+                    earnVaultImplementation_: earn_vault_implementation,
+                    earnFeesImplementation_: earn_fees_implementation,
+                }
+                .abi_encode(),
+            )
+            .await?;
+
+        // The router converts the private asset to the vault asset 1:1 through a par pool. CI builds
+        // Earn without the private DirectPropAMM artifact, so use Earn's public stand-in pool.
+        let pool = setup
+            .deploy(
+                "DemoParPool",
+                DemoParPool::constructorCall {
+                    baseToken_: alternate_asset,
+                    quoteToken_: vault_asset,
+                    owner_: owner,
+                }
+                .abi_encode(),
+            )
+            .await?;
+        for token in [vault_asset, alternate_asset] {
+            setup
+                .call(
+                    format!("{token} par pool inventory mint"),
+                    token,
+                    ITIP20::mintCall {
+                        to: pool,
+                        amount: U256::from(POOL_INVENTORY),
+                    },
+                    SETUP_CALL_GAS_LIMIT,
+                )
+                .await?;
+        }
+
+        let access_policy = if protected {
+            let policy_id = ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, l1.provider())
+                .policyIdCounter()
+                .call()
+                .await?;
+            setup
+                .call(
+                    "Earn access policy creation",
+                    TIP403_REGISTRY_ADDRESS,
+                    ITIP403Registry::createPolicyCall {
+                        admin: owner,
+                        policyType: ITIP403Registry::PolicyType::WHITELIST,
+                    },
+                    SETUP_CALL_GAS_LIMIT,
+                )
+                .await?;
+            Some(EarnAccessPolicy { policy_id })
+        } else {
+            None
+        };
+
+        setup
+            .call(
+                "public user pathUSD funding",
+                PATH_USD_ADDRESS,
+                ITIP20::transferCall {
+                    to: user_address,
+                    amount: U256::from(PUBLIC_USER_BALANCE),
+                },
+                SETUP_CALL_GAS_LIMIT,
+            )
+            .await?;
+        for token in [vault_asset, alternate_asset] {
+            // A transfer would otherwise use the called token as its fee token, and new test
+            // tokens have no FeeAMM pool.
+            let request = TempoTransactionRequest::default()
+                .with_to(token)
+                .with_input(
+                    ITIP20::transferCall {
+                        to: user_address,
+                        amount: U256::from(PUBLIC_USER_BALANCE),
+                    }
+                    .abi_encode(),
+                )
+                .with_fee_token(PATH_USD_ADDRESS);
+            setup
+                .send(
+                    format!("public user {token} funding"),
+                    request,
+                    SETUP_CALL_GAS_LIMIT,
+                )
+                .await?;
+        }
+
+        let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal).await?;
+        setup.finish().await?;
 
         let fees = FeeConfig {
             fixedFeeCount: 0,
@@ -386,13 +481,6 @@ impl EarnZoneFixture {
                 annualTargetRateBps: Default::default(),
                 excessFeeRateBps: Default::default(),
             },
-        };
-        let access_policy = if protected {
-            Some(EarnAccessPolicy {
-                policy_id: l1.create_whitelist_policy().await?,
-            })
-        } else {
-            None
         };
         let params = EarnDeployParams {
             deploymentId: keccak256("zones-earn-e2e-v1"),
@@ -412,97 +500,71 @@ impl EarnZoneFixture {
             transferPolicyId: access_policy.map_or(0, |policy| policy.policy_id),
         };
 
-        let provider = l1.dev_provider();
-        let factory_contract = EarnFactory::new(factory, &provider);
-        let predicted = factory_contract.deploy_call(params.clone()).call().await?;
-        let receipt = factory_contract
-            .deploy_call(params)
-            .gas(CONTRACT_DEPLOYMENT_TX_GAS_LIMIT)
-            .send()
-            .await?
-            .get_receipt()
-            .await?;
-        eyre::ensure!(receipt.status(), "deploying the Earn stack failed");
-        ensure_gas_headroom(
-            receipt.gas_used,
-            CONTRACT_DEPLOYMENT_TX_GAS_LIMIT,
-            "Earn stack deployment",
-        )?;
-        let earn_share = predicted.earnShare;
-        let earn_vault = predicted.earnVault;
-
-        let receipt = EarnEngine::new(engine, &provider)
-            .initializeEarnVault(earn_vault)
-            .send()
-            .await?
-            .get_receipt()
-            .await?;
-        eyre::ensure!(receipt.status(), "initializing the Earn engine failed");
-
-        // The router converts the private asset to the vault asset 1:1 through a par pool. CI builds
-        // Earn without the private DirectPropAMM artifact, so use Earn's public stand-in pool.
-        let pool = deploy_contract(
-            &l1,
-            "DemoParPool",
-            DemoParPool::constructorCall {
-                baseToken_: alternate_asset,
-                quoteToken_: vault_asset,
-                owner_: owner,
-            }
-            .abi_encode(),
-        )
-        .await?;
-        for token in [vault_asset, alternate_asset] {
-            l1.mint_tip20(token, pool, POOL_INVENTORY).await?;
-        }
-        let zone_id = ZonePortal::new(portal, l1.provider())
-            .zoneId()
+        let predicted = EarnFactory::new(factory, l1.provider())
+            .deploy_call(params.clone())
             .call()
             .await?;
-        let router = deploy_contract(
-            &l1,
-            "SingleZoneEarnRouter",
-            SingleZoneEarnRouter::constructorCall {
-                allowedZoneId_: zone_id,
-                earnVault_: earn_vault,
-                privateAsset_: alternate_asset,
-                pool_: pool,
-                customerId_: EARN_ROUTER_CUSTOMER_ID,
-            }
-            .abi_encode(),
-        )
-        .await?;
-        let provider = l1.dev_provider();
-        let pool_contract = DemoParPool::new(pool, &provider);
-        let receipt = pool_contract
-            .setTakerAllowed(router, true)
-            .send()
-            .await?
-            .get_receipt()
+        let earn_share = predicted.earnShare;
+        let earn_vault = predicted.earnVault;
+        setup
+            .call(
+                "Earn stack deployment",
+                factory,
+                EarnFactory::deployCall { params },
+                CONTRACT_DEPLOYMENT_TX_GAS_LIMIT,
+            )
             .await?;
-        eyre::ensure!(receipt.status(), "admitting router as pool taker failed");
-        let receipt = pool_contract
-            .setRecipientAllowed(router, true)
-            .send()
-            .await?
-            .get_receipt()
+        setup
+            .call(
+                "Earn engine initialization",
+                engine,
+                EarnEngine::initializeEarnVaultCall {
+                    earnVault: earn_vault,
+                },
+                SETUP_CALL_GAS_LIMIT,
+            )
             .await?;
-        eyre::ensure!(
-            receipt.status(),
-            "admitting router as pool recipient failed"
-        );
-        assert_router_pool_binding(&l1, router, pool, alternate_asset).await?;
-        let router_block = l1.set_zone_gateway_on_portal(portal, router, true).await?;
-        zone.wait_for_l2_tempo_finalized(router_block, E2E_TIMEOUT)
+        let router = setup
+            .deploy(
+                "SingleZoneEarnRouter",
+                SingleZoneEarnRouter::constructorCall {
+                    allowedZoneId_: zone_id,
+                    earnVault_: earn_vault,
+                    privateAsset_: alternate_asset,
+                    pool_: pool,
+                    customerId_: EARN_ROUTER_CUSTOMER_ID,
+                }
+                .abi_encode(),
+            )
             .await?;
-        zone.assert_zone_gateway(router, true).await?;
-        let contribution_controller = deploy_contract(
-            &l1,
-            "EarnContributionController",
-            (earn_vault, user_address).abi_encode(),
-        )
-        .await?;
-
+        setup
+            .call(
+                "router pool taker admission",
+                pool,
+                DemoParPool::setTakerAllowedCall {
+                    taker: router,
+                    allowed: true,
+                },
+                SETUP_CALL_GAS_LIMIT,
+            )
+            .await?;
+        setup
+            .call(
+                "router pool recipient admission",
+                pool,
+                DemoParPool::setRecipientAllowedCall {
+                    recipient: router,
+                    allowed: true,
+                },
+                SETUP_CALL_GAS_LIMIT,
+            )
+            .await?;
+        let contribution_controller = setup
+            .deploy(
+                "EarnContributionController",
+                (earn_vault, user_address).abi_encode(),
+            )
+            .await?;
         if let Some(policy) = access_policy {
             let outsider = l1.signer_at(3).address();
             for account in [
@@ -515,27 +577,62 @@ impl EarnZoneFixture {
                 user_address,
                 outsider,
             ] {
-                l1.whitelist_address(policy.policy_id, account).await?;
+                setup
+                    .call(
+                        format!("Earn access whitelisting of {account}"),
+                        TIP403_REGISTRY_ADDRESS,
+                        ITIP403Registry::modifyPolicyWhitelistCall {
+                            policyId: policy.policy_id,
+                            account,
+                            allowed: true,
+                        },
+                        SETUP_CALL_GAS_LIMIT,
+                    )
+                    .await?;
             }
         }
+        zone.wait_for_l2_tempo_finalized(0, E2E_TIMEOUT).await?;
+        setup.finish().await?;
+        assert_router_pool_binding(&l1, router, pool, alternate_asset).await?;
 
-        l1.enable_token_on_portal(portal, vault_asset).await?;
-        l1.enable_token_on_portal(portal, alternate_asset).await?;
-        l1.enable_token_on_portal(portal, earn_share).await?;
+        let mut admin = L1Batch::new(&l1, l1.admin_signer()).await?;
+        admin
+            .call(
+                "router gateway registration",
+                portal,
+                ZonePortal::setGatewayCall {
+                    account: router,
+                    allowed: true,
+                },
+                SETUP_CALL_GAS_LIMIT,
+            )
+            .await?;
+        for token in [vault_asset, alternate_asset, earn_share] {
+            admin
+                .call(
+                    format!("{token} portal enablement"),
+                    portal,
+                    ZonePortal::enableTokenCall { token },
+                    SETUP_CALL_GAS_LIMIT,
+                )
+                .await?;
+        }
+        let mut user = ZoneAccount::from_l1_and_zone(&l1, &zone, portal);
+        user.deposit(PRIVATE_FEE_BALANCE, E2E_TIMEOUT, &zone)
+            .await?;
+        admin.finish().await?;
+        eyre::ensure!(
+            portal_contract
+                .hasRole(router, ZonePortal::Role::CallbackGateway)
+                .call()
+                .await?,
+            "L1 ZonePortal did not register the router as a callback gateway"
+        );
 
         let configured_at = l1.provider().get_block_number().await?;
         zone.wait_for_l2_tempo_finalized(configured_at, E2E_TIMEOUT)
             .await?;
-
-        l1.fund_user(user_address, PUBLIC_USER_BALANCE).await?;
-        l1.fund_user_token(vault_asset, user_address, PUBLIC_USER_BALANCE)
-            .await?;
-        l1.fund_user_token(alternate_asset, user_address, PUBLIC_USER_BALANCE)
-            .await?;
-
-        let mut user = ZoneAccount::from_l1_and_zone(&l1, &zone, portal);
-        user.deposit(PRIVATE_FEE_BALANCE, E2E_TIMEOUT, &zone)
-            .await?;
+        zone.assert_zone_gateway(router, true).await?;
 
         let sequencer = spawn_sequencer(&l1, &zone, portal, l1.dev_signer()).await;
 
@@ -704,13 +801,21 @@ impl EarnZoneFixture {
     async fn deposit_entry(&mut self, token: Address, amount: u128) -> eyre::Result<()> {
         let recipient = self.user.address();
         let provider = self.user.l1_provider();
-        let receipt = ITIP20::new(token, provider)
-            .approve(self.portal, U256::MAX)
-            .send()
+        let token_contract = ITIP20::new(token, provider);
+        if token_contract
+            .allowance(recipient, self.portal)
+            .call()
             .await?
-            .get_receipt()
-            .await?;
-        eyre::ensure!(receipt.status(), "encrypted entry approval failed");
+            != U256::MAX
+        {
+            let receipt = token_contract
+                .approve(self.portal, U256::MAX)
+                .send()
+                .await?
+                .get_receipt()
+                .await?;
+            eyre::ensure!(receipt.status(), "encrypted entry approval failed");
+        }
 
         let (key_index, encrypted) = self
             .l1
@@ -1535,39 +1640,160 @@ impl EarnZoneFixture {
     }
 }
 
-async fn deploy_contract(
-    l1: &L1TestNode,
-    contract: &str,
-    constructor_args: Vec<u8>,
-) -> eyre::Result<Address> {
-    let mut deployment = forge_bytecode(contract)?.to_vec();
-    deployment.extend_from_slice(&constructor_args);
-    // Contract-to-contract constructor calls are valid on Tempo but can be under-estimated by the
-    // generic Ethereum gas estimator. Earn's local deployer likewise applies explicit headroom.
-    let request = TransactionRequest::default()
-        .with_deploy_code(deployment)
-        .gas_limit(CONTRACT_DEPLOYMENT_TX_GAS_LIMIT);
-    let receipt = l1
-        .dev_provider()
-        .send_transaction(request)
-        .await
-        .wrap_err_with(|| format!("submitting {contract} deployment"))?
-        .get_receipt()
-        .await
-        .wrap_err_with(|| format!("waiting for {contract} deployment receipt"))?;
-    eyre::ensure!(
-        receipt.status(),
-        "{contract} deployment failed after using {} gas",
-        receipt.gas_used
-    );
-    ensure_gas_headroom(
-        receipt.gas_used,
-        CONTRACT_DEPLOYMENT_TX_GAS_LIMIT,
-        &format!("{contract} deployment"),
-    )?;
-    receipt
-        .contract_address
-        .ok_or_else(|| eyre::eyre!("{contract} deployment returned no contract address"))
+/// Submits one account's L1 transactions back to back with explicit nonces and gas limits.
+///
+/// Gas estimation runs against the latest block and fails for calls that depend on unmined
+/// predecessors, so every transaction carries a fixed limit and is checked for headroom instead.
+struct L1Batch {
+    sender: Address,
+    provider: DynProvider<TempoNetwork>,
+    nonce: u64,
+    pending: Vec<PendingL1Transaction>,
+}
+
+impl L1Batch {
+    async fn new(l1: &L1TestNode, signer: PrivateKeySigner) -> eyre::Result<Self> {
+        let sender = signer.address();
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .wallet(signer)
+            .connect_http(l1.http_url().clone())
+            .erased();
+        let nonce = provider.get_transaction_count(sender).await?;
+        Ok(Self {
+            sender,
+            provider,
+            nonce,
+            pending: Vec::new(),
+        })
+    }
+
+    /// Creates a USD TIP-20 administered by the sender and grants the sender `ISSUER_ROLE`.
+    async fn create_tip20(
+        &mut self,
+        name: &str,
+        symbol: &str,
+        salt: B256,
+    ) -> eyre::Result<Address> {
+        let token = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, &self.provider)
+            .getTokenAddress(self.sender, salt)
+            .call()
+            .await?;
+        self.call(
+            format!("{symbol} creation"),
+            TIP20_FACTORY_ADDRESS,
+            ITIP20Factory::createToken_0Call {
+                name: name.to_string(),
+                symbol: symbol.to_string(),
+                currency: "USD".to_string(),
+                quoteToken: PATH_USD_ADDRESS,
+                admin: self.sender,
+                salt,
+            },
+            SETUP_CALL_GAS_LIMIT,
+        )
+        .await?;
+        self.call(
+            format!("{symbol} issuer grant"),
+            token,
+            IRolesAuth::grantRoleCall {
+                role: ISSUER_ROLE,
+                account: self.sender,
+            },
+            SETUP_CALL_GAS_LIMIT,
+        )
+        .await?;
+        Ok(token)
+    }
+
+    /// Deploys a forge artifact and returns the address derived from the sender's nonce.
+    async fn deploy(&mut self, contract: &str, constructor_args: Vec<u8>) -> eyre::Result<Address> {
+        let address = self.sender.create(self.nonce);
+        let mut deployment = forge_bytecode(contract)?.to_vec();
+        deployment.extend_from_slice(&constructor_args);
+        // Contract-to-contract constructor calls are valid on Tempo but can be under-estimated by the
+        // generic Ethereum gas estimator. Earn's local deployer likewise applies explicit headroom.
+        self.send(
+            format!("{contract} deployment"),
+            TempoTransactionRequest::default().with_deploy_code(deployment),
+            CONTRACT_DEPLOYMENT_TX_GAS_LIMIT,
+        )
+        .await?;
+        Ok(address)
+    }
+
+    async fn call(
+        &mut self,
+        label: impl Into<String>,
+        to: Address,
+        call: impl SolCall,
+        gas_limit: u64,
+    ) -> eyre::Result<()> {
+        let request = TempoTransactionRequest::default()
+            .with_to(to)
+            .with_input(call.abi_encode());
+        self.send(label, request, gas_limit).await
+    }
+
+    async fn send(
+        &mut self,
+        label: impl Into<String>,
+        request: TempoTransactionRequest,
+        gas_limit: u64,
+    ) -> eyre::Result<()> {
+        let label = label.into();
+        let contract_address =
+            (request.kind() == Some(TxKind::Create)).then(|| self.sender.create(self.nonce));
+        let tx = self
+            .provider
+            .send_transaction(request.with_nonce(self.nonce).with_gas_limit(gas_limit))
+            .await
+            .wrap_err_with(|| format!("submitting {label}"))?
+            .with_timeout(Some(E2E_TIMEOUT));
+        self.nonce += 1;
+        self.pending.push(PendingL1Transaction {
+            label,
+            gas_limit,
+            contract_address,
+            tx,
+        });
+        Ok(())
+    }
+
+    /// Waits for every submitted transaction and checks its status, gas headroom, and created
+    /// contract address.
+    async fn finish(&mut self) -> eyre::Result<()> {
+        for PendingL1Transaction {
+            label,
+            gas_limit,
+            contract_address,
+            tx,
+        } in self.pending.drain(..)
+        {
+            let receipt = tx
+                .get_receipt()
+                .await
+                .wrap_err_with(|| format!("waiting for {label} receipt"))?;
+            eyre::ensure!(
+                receipt.status(),
+                "{label} failed after using {} gas",
+                receipt.gas_used
+            );
+            ensure_gas_headroom(receipt.gas_used, gas_limit, &label)?;
+            eyre::ensure!(
+                receipt.contract_address == contract_address,
+                "{label} created {:?} instead of {contract_address:?}",
+                receipt.contract_address
+            );
+        }
+        Ok(())
+    }
+}
+
+struct PendingL1Transaction {
+    label: String,
+    gas_limit: u64,
+    contract_address: Option<Address>,
+    tx: PendingTransactionBuilder<TempoNetwork>,
 }
 
 async fn assert_router_pool_binding(

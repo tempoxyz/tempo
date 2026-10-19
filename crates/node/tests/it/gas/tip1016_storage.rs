@@ -234,7 +234,7 @@ async fn test_tip1016_tip20_transfer_existing_no_storage_creation() -> eyre::Res
     let mint_raw = account
         .call(tempo_precompiles::PATH_USD_ADDRESS, mint_calldata)
         .await;
-    setup.node.rpc.inject_tx(mint_raw).await?;
+    setup.node.inject_tx(mint_raw).await?;
     let mint_calldata: Bytes = token
         .mint(receiver, U256::from(1_000_000))
         .calldata()

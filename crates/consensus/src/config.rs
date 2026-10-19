@@ -32,7 +32,10 @@ pub const DKG_CHANNEL_IDENT: commonware_p2p::Channel = 5;
 /// `max_peers_per_set * tracked_peer_sets * burst`) at one third of the cost.
 pub(crate) const PEERSETS_TO_TRACK: NonZeroUsize = NZUsize!(1);
 
+#[cfg(not(test))]
 pub(crate) const BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES: u32 = 2u32.pow(21); // 100MB
+#[cfg(test)]
+pub(crate) const BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES: u32 = 2u32.pow(8);
 
 pub const BROADCASTER_LIMIT: Quota =
     Quota::per_second(NonZeroU32::new(8).expect("value is not zero"));

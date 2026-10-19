@@ -10,8 +10,16 @@ use parking_lot::Mutex;
 
 use crate::P2pPeerId;
 
+#[cfg(not(test))]
 pub(crate) const ANNOUNCEMENT_INTERVAL: Duration = Duration::from_secs(5);
+#[cfg(not(test))]
 pub(crate) const ANNOUNCEMENT_TTL: Duration = Duration::from_secs(15);
+// Unit tests wait out real announcement rounds and lease expiry. The TTL still
+// spans several intervals so a busy runner doesn't drop a live lease.
+#[cfg(test)]
+pub(crate) const ANNOUNCEMENT_INTERVAL: Duration = Duration::from_millis(250);
+#[cfg(test)]
+pub(crate) const ANNOUNCEMENT_TTL: Duration = Duration::from_millis(1500);
 /// Version 1 advertises witness-envelope v1 decoding. Unknown versions are not interpreted.
 pub(crate) const LOCAL_CAPABILITIES_VERSION: u8 = 1;
 

@@ -7,6 +7,10 @@ use tempo_contracts::precompiles::TIP_FEE_MANAGER_ADDRESS;
 pub enum StorageAction {
     /// Records an SLOAD opcode.
     Sload(Address, U256, U256),
+    /// Records whether a fee-token balance covers the maximum transaction fee.
+    ///
+    /// Fields: token address, balance slot, observed balance, required fee, and affordability.
+    FeeTokenBalanceCheck(Address, U256, U256, U256, bool),
     /// Records an SSTORE opcode.
     ///
     /// `address` - Account address
@@ -56,6 +60,7 @@ impl StorageAction {
     pub fn address(&self) -> Address {
         match self {
             Self::Sload(address, ..)
+            | Self::FeeTokenBalanceCheck(address, ..)
             | Self::Sstore(address, ..)
             | Self::Sinc(address, ..)
             | Self::Sdec(address, ..) => *address,

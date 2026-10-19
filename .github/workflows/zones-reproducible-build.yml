@@ -23,13 +23,14 @@ on:
 
 jobs:
   build:
-    # The shared recipe runs ./scripts/reproducible-build.sh, which in this repository builds
-    # `tempo`. Keep it inert until the Zones recipe moves (zones/MIGRATION.md).
-    if: github.repository == 'tempoxyz/zones'
-    uses: tempoxyz/gh-actions/.github/workflows/reproducible-build.yml@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+    if: >-
+      github.repository == 'tempoxyz/tempo' &&
+      (github.event_name == 'workflow_dispatch' || vars.ZONES_REPRODUCIBLE_ENABLED == 'true')
+    uses: tempoxyz/gh-actions/.github/workflows/reproducible-build.yml@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
     permissions:
       contents: read
       id-token: write
     with:
       binary-name: tempo-zone
+      build-script: ./zones/scripts/reproducible-build.sh
       ref: ${{ inputs.ref }}

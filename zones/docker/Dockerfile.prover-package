@@ -1,11 +1,18 @@
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 # CI packages the exact early-compiled binary; this Dockerfile has no Rust stage.
 FROM scratch AS prover-binary
 FROM scratch AS tempo-genesis
 FROM debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d
 WORKDIR /data
 COPY --from=prover-binary /tempo-zone-prover-enclave /usr/local/bin/tempo-zone-prover-enclave
+ARG SOURCE_DATE_EPOCH
 ARG PROVER_BINARY_SHA256
-RUN echo "${PROVER_BINARY_SHA256}  /usr/local/bin/tempo-zone-prover-enclave" | sha256sum --check --strict
+RUN if [ -n "$PROVER_BINARY_SHA256" ]; then \
+        echo "${PROVER_BINARY_SHA256}  /usr/local/bin/tempo-zone-prover-enclave" | sha256sum --check --strict; \
+    fi
 COPY --from=tempo-genesis / /etc/tempo/genesis/
+# Normalize copied paths even when COPY reuses a layer with older timestamps.
+RUN find /etc/tempo /data /usr/local/bin/tempo-zone-prover-enclave \
+        -exec touch --no-dereference --date="@${SOURCE_DATE_EPOCH}" {} +
 USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/tempo-zone-prover-enclave", "--tempo-genesis", "/etc/tempo/genesis"]

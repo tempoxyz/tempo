@@ -171,7 +171,7 @@ impl super::types::TestEnv for Localnet {
         expected_reason: Option<&str>,
     ) -> eyre::Result<()> {
         // Handler-level rejection
-        let handler_result = self.setup.node.rpc.inject_tx(encoded.clone().into()).await;
+        let handler_result = self.setup.node.inject_tx(encoded.clone().into()).await;
         assert!(handler_result.is_err(), "Handler should reject the tx");
 
         // RPC-level rejection
@@ -245,6 +245,18 @@ impl super::types::TestEnv for Localnet {
             .await?
             .ok_or_else(|| eyre::eyre!("latest block missing"))?;
         Ok(block.header.timestamp())
+    }
+
+    /// Mined block timestamps advance by one second per block, so mining
+    /// reaches `target` without waiting on wall time.
+    async fn wait_for_block_timestamp(&mut self, target: u64) -> eyre::Result<u64> {
+        let mut timestamp = self.current_block_timestamp().await?;
+        while timestamp < target {
+            let next = self.current_block_timestamp().await?;
+            eyre::ensure!(next > timestamp, "local block timestamps stopped advancing");
+            timestamp = next;
+        }
+        Ok(timestamp)
     }
 
     async fn submit_tx_unchecked(
@@ -665,11 +677,7 @@ async fn send_tx(
     let signature = sign_aa_tx_secp256k1(&tx, signer)?;
     let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
     let tx_hash = *envelope.tx_hash();
-    setup
-        .node
-        .rpc
-        .inject_tx(envelope.encoded_2718().into())
-        .await?;
+    setup.node.inject_tx(envelope.encoded_2718().into()).await?;
     println!(
         "  ✓ Sent tx: nonce_key={nonce_key}, nonce={nonce}, priority_fee={} gwei",
         priority_fee / 1_000_000_000
@@ -958,7 +966,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     let envelope1: TempoTxEnvelope = signed_tx1.into();
     let mut encoded1 = Vec::new();
     envelope1.encode_2718(&mut encoded1);
-    let inject_result1 = setup.node.rpc.inject_tx(encoded1.into()).await;
+    let inject_result1 = setup.node.inject_tx(encoded1.into()).await;
     assert!(
         inject_result1.is_err(),
         "Tx with wrong public key should be rejected by pool"
@@ -1020,7 +1028,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     let envelope2: TempoTxEnvelope = signed_tx2.into();
     let mut encoded2 = Vec::new();
     envelope2.encode_2718(&mut encoded2);
-    let inject_result2 = setup.node.rpc.inject_tx(encoded2.into()).await;
+    let inject_result2 = setup.node.inject_tx(encoded2.into()).await;
     assert!(
         inject_result2.is_err(),
         "Tx with wrong private key should be rejected by pool"
@@ -1082,7 +1090,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     let envelope3: TempoTxEnvelope = signed_tx3.into();
     let mut encoded3 = Vec::new();
     envelope3.encode_2718(&mut encoded3);
-    let inject_result3 = setup.node.rpc.inject_tx(encoded3.into()).await;
+    let inject_result3 = setup.node.inject_tx(encoded3.into()).await;
     assert!(
         inject_result3.is_err(),
         "Tx with wrong challenge should be rejected by pool"
@@ -1143,7 +1151,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     let envelope4: TempoTxEnvelope = signed_tx4.into();
     let mut encoded4 = Vec::new();
     envelope4.encode_2718(&mut encoded4);
-    let inject_result4 = setup.node.rpc.inject_tx(encoded4.into()).await;
+    let inject_result4 = setup.node.inject_tx(encoded4.into()).await;
     assert!(
         inject_result4.is_err(),
         "Tx with wrong authenticator data should be rejected by pool"
@@ -1199,7 +1207,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     bad_envelope.encode_2718(&mut encoded_bad);
 
     // Try to inject - should fail
-    let inject_result = setup.node.rpc.inject_tx(encoded_bad.clone().into()).await;
+    let inject_result = setup.node.inject_tx(encoded_bad.clone().into()).await;
     assert!(
         inject_result.is_err(),
         "Transaction with invalid signature should be rejected"
@@ -1405,7 +1413,6 @@ async fn test_key_authorization_witness_burn_evicts_pending_replay() -> eyre::Re
 
     setup
         .node
-        .rpc
         .inject_tx(delayed_envelope.encoded_2718().into())
         .await?;
     assert!(setup.node.inner.pool.contains(&delayed_hash));
@@ -1615,7 +1622,6 @@ async fn test_t6_admin_key_authorization_cross_account_replay_rejected_e2e() -> 
 
     let result = setup
         .node
-        .rpc
         .inject_tx(replay_envelope.encoded_2718().into())
         .await;
     assert!(
@@ -1746,7 +1752,6 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
     let delayed_tx_hash = *delayed_tx_envelope.tx_hash();
     setup
         .node
-        .rpc
         .inject_tx(delayed_tx_envelope.encoded_2718().into())
         .await?;
     // Note: We don't increment nonce here because the delayed tx won't be mined until valid_after.
@@ -1966,7 +1971,7 @@ async fn test_aa_expiring_nonce_replay_protection() -> eyre::Result<()> {
     println!("\nSecond submission - attempting replay with same tx hash...");
 
     // Try to inject the same transaction again - should be rejected at pool level
-    let replay_result = setup.node.rpc.inject_tx(encoded.clone().into()).await;
+    let replay_result = setup.node.inject_tx(encoded.clone().into()).await;
 
     // The replay MUST be rejected at pool validation (we check seen[tx_hash] in validator)
     assert!(
@@ -2107,7 +2112,6 @@ async fn test_aa_keychain_spending_limit_toctou_dos() -> eyre::Result<()> {
     let delayed_tx_hash = *delayed_tx_envelope.tx_hash();
     setup
         .node
-        .rpc
         .inject_tx(delayed_tx_envelope.encoded_2718().into())
         .await?;
 
@@ -2251,7 +2255,6 @@ async fn test_v1_keychain_in_auth_list_rejected_post_t1c() -> eyre::Result<()> {
 
     setup
         .node
-        .rpc
         .inject_tx(envelope.encoded_2718().into())
         .await
         .expect_err("V1 keychain sig in auth list must be rejected post-T1C");
@@ -2363,7 +2366,6 @@ async fn test_v2_keychain_blocks_cross_account_replay() -> eyre::Result<()> {
     let replay_tx: TempoTxEnvelope = bob_tx.into_signed(replay_sig).into();
     setup
         .node
-        .rpc
         .inject_tx(replay_tx.encoded_2718().into())
         .await
         .expect_err("secp256k1 cross-account replay must be rejected at pool level");
@@ -2399,7 +2401,6 @@ async fn test_v2_keychain_blocks_cross_account_replay() -> eyre::Result<()> {
     let replay_env: TempoTxEnvelope = bob_tx.into_signed(replay_sig).into();
     setup
         .node
-        .rpc
         .inject_tx(replay_env.encoded_2718().into())
         .await
         .expect_err("P256 cross-account replay must be rejected at pool level");
@@ -2504,7 +2505,6 @@ async fn test_aa_keychain_v2_signature() -> eyre::Result<()> {
     let envelope_v1: TempoTxEnvelope = signed_v1.into();
     let inject_result = setup
         .node
-        .rpc
         .inject_tx(envelope_v1.encoded_2718().into())
         .await;
 

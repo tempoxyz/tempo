@@ -38,3 +38,18 @@ also keeps the transfer-only series under its existing state key.
 Reports resolve aliases to the concrete scenario and record the selected preset.
 The original alias is retained separately as `requested_preset`; workload category
 metadata describes the mix without changing historical transfer-only labels.
+
+`tip20-policy` isolates the successful policy-heavy payment case: pathUSD transfers
+to configured receivers in a disjoint account pool, paid in AlphaUSD through the FeeAMM, with protocol nonces.
+It requires at least two selected tokens. Setup installs distinct blacklist leaves
+under a separate compound issuer policy per token and both address-level receiver
+filters, using the current TIP-403 APIs on T13 and T14. Empty blacklists
+allow every user while forcing membership reads. All account pools are faucet-funded
+even with state bloat, so receiver setup can pay fees. Setup runs outside measurement.
+Runs require nonzero submitted payments, full inclusion, and no reverted receipts.
+For example: `derek bench preset=tip20-policy bloat=100` (E2E), or
+`nu tempo.nu bench --preset tip20-policy` (local). Compare the same preset on
+`main` and candidate changes; the policy-payment snapshots record storage actions
+and transaction gas on T13/T14, while benchmark timings use normal node caches.
+The snapshots create a fresh recipient balance and initial validator fee accrual;
+benchmark receivers already have balances from faucet funding.

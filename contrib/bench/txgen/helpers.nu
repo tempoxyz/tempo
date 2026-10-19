@@ -10,6 +10,7 @@ const TXGEN_HELPER_ALWAYS_FUND_PRESETS = [
     "neobank-deposit"
     "neobank-swap"
     "neobank-withdraw"
+    "tip20-policy"
     "vault-deposit"
     "vault-withdraw"
 ]
@@ -25,6 +26,9 @@ const TXGEN_HELPER_FEE_AMM_LIQUIDITY_AMOUNT = 10000000000
 const TXGEN_HELPER_FEE_AMM_2D_LIQUIDITY_AMOUNT = 10000000000000
 const TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR = ".bench-tmp/txgen-specs"
 const TXGEN_HELPER_CLICKHOUSE_METRICS_FILE = "contrib/bench/clickhouse-metrics.txt"
+const TXGEN_HELPER_TIP403_REGISTRY = "0x403c000000000000000000000000000000000000"
+const TXGEN_HELPER_POLICY_ABI = "contrib/bench/txgen/tip403-policy.abi.json"
+const TXGEN_HELPER_POLICY_SETUP_GAS_LIMIT = 10000000
 
 def txgen-tip20-base-scenario [] {
     {
@@ -666,6 +670,62 @@ def txgen-prepare-zones-preset [spec_path: string, count: int, accounts: int, zo
     $output
 }
 
+# Empty, distinct blacklists exercise every successful authorization lookup without
+# requiring per-member setup. Policy IDs come from the live registry counter.
+def txgen-tip20-policy-calls [token_count: int, policy_start: int] {
+    let registry_call = {|function, args| {to: $TXGEN_HELPER_TIP403_REGISTRY, abi: TIP403Policy, function: $function, args: $args} }
+    let blacklist = {|| do $registry_call createPolicy [{pool: {pool: policy_admin, select: {index: 0}}} 1] }
+    let issuer_calls = (0..<$token_count | each { |id|
+        let start = $policy_start + 4 * $id
+        (0..<3 | each { do $blacklist })
+            | append (do $registry_call createCompoundPolicy [$start ($start + 1) ($start + 2)])
+            | append {to: (txgen-tip20-token-address $id), abi: TIP403Policy, function: changeTransferPolicyId, args: [($start + 3 | into string)]}
+    } | flatten)
+    let receive_start = $policy_start + 4 * $token_count
+    {
+        admin_calls: ($issuer_calls | append (0..<2 | each { do $blacklist }))
+        receive_call: (do $registry_call setReceivePolicy [$receive_start ($receive_start + 1) "0x0000000000000000000000000000000000000000"])
+    }
+}
+
+# All issuer and receiver setup is funded and confirmed before measurement.
+def txgen-prepare-tip20-policy [spec_path: string, rpc_url: string, token_count: int, accounts: int] {
+    if $token_count < 2 or $accounts < 1 {
+        error make { msg: "tip20-policy requires at least two TIP20 tokens and one user account" }
+    }
+    let counter = (txgen-rpc-call $rpc_url $'{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"($TXGEN_HELPER_TIP403_REGISTRY)","data":"0x3cc32f9c"},"latest"]}')
+    let policy = (txgen-tip20-policy-calls $token_count ($counter.result | into int))
+    let setup_tx = {
+        type: tempo
+        from: {pool: policy_admin, select: {index: 0}}
+        gas_limit: $TXGEN_HELPER_POLICY_SETUP_GAS_LIMIT
+        fee_token: (txgen-tip20-token-address 0)
+        calls: $policy.admin_calls
+    }
+    let steps = [{id: issuer_policies, tx: $setup_tx}] | append (0..<$accounts | each { |index|
+        {id: $"receive_policy_($index)", depends_on: [issuer_policies], tx: ($setup_tx | merge {
+            from: {pool: policy_receivers, select: {index: $index}}
+            calls: [$policy.receive_call]
+        })}
+    })
+    let output_dir = ([ (txgen-repo-root) $TXGEN_HELPER_DEFAULT_RENDERED_SPECS_DIR (random uuid) ] | path join)
+    mkdir $output_dir
+    let fragment = ($output_dir | path join "policy-setup.yml")
+    {
+        merge: {
+            artifacts: {TIP403Policy: ([ (txgen-repo-root) $TXGEN_HELPER_POLICY_ABI ] | path join)}
+            accounts: {
+                policy_admin: {mnemonic: $TXGEN_HELPER_ACCOUNT_MNEMONIC, range: [0 1]}
+                policy_receivers: {mnemonic: $TXGEN_HELPER_ACCOUNT_MNEMONIC, range: [$accounts ($accounts * 2)]}
+            }
+        }
+        append: {setup: {steps: $steps}}
+    } | to json | save -f $fragment
+    let output = ($output_dir | path join ($spec_path | path basename))
+    {include: [($spec_path | path expand) $fragment]} | to json | save -f $output
+    $output
+}
+
 def txgen-prepare-vault-preset [spec_path: string, accounts: int, chain_id: int] {
     if $chain_id != 1337 or $accounts <= 0 or $accounts > 100000 {
         error make { msg: "Vault presets require chain ID 1337 and 1..100000 user accounts" }
@@ -797,13 +857,18 @@ def txgen-run-preset-pipeline [
     let existing_recipient_start = ($env | get --optional TXGEN_EXISTING_RECIPIENTS_START | default "0" | into int)
     let existing_recipient_end = ($env | get --optional TXGEN_EXISTING_RECIPIENTS_END | default "0" | into int)
     let uses_existing_recipients = (txgen-spec-effective-text $spec_path) =~ '(?m)^\s*existing_recipients:\s*$'
-    let recipient_accounts = if $uses_existing_recipients and $existing_recipient_end > $existing_recipient_start {
+    let recipient_accounts = if $preset_name == "tip20-policy" {
+        $accounts
+    } else if $uses_existing_recipients and $existing_recipient_end > $existing_recipient_start {
         $existing_recipient_end - $existing_recipient_start
     } else {
         0
     }
     let total_accounts = $accounts + $recipient_accounts
     let workload_metadata = (txgen-workload-metadata-args $preset_name $spec_path)
+    if $preset_name == "tip20-policy" {
+        $spec_path = (txgen-prepare-tip20-policy $spec_path $generate_rpc_url $tx_token_count $accounts)
+    }
     if not $skip_faucet_funding {
         txgen-fund-accounts $txgen_tempo_bin $spec_path $generate_rpc_url
     }
@@ -909,7 +974,8 @@ def txgen-run-preset-pipeline [
     } else {
         print $"  Streaming up to ($tx_count) txgen transaction\(s\) over ($txgen_duration) into bench send..."
     }
-    let vault_start_block = if $is_vault {
+    let check_receipts = $is_vault or $preset_name == "tip20-policy"
+    let workload_start_block = if $check_receipts {
         (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}').result | into int
     } else { 0 }
     let result = (bash -lc $pipeline | complete)
@@ -924,18 +990,19 @@ def txgen-run-preset-pipeline [
         return { ok: false, exit_code: 1, report_path: $report_path }
     }
 
-    if $preset_name in ["zones" "vault-deposit" "vault-withdraw"] and (open $report_path).failed > 0 {
+    if $preset_name in ["zones" "vault-deposit" "vault-withdraw" "tip20-policy"] and (open $report_path).failed > 0 {
         print $"ERROR: ($preset_name) workload contains sender failures; see ($report_path)"
         return { ok: false, exit_code: 1, report_path: $report_path }
     }
-    if $is_vault {
+    if $check_receipts {
         # Check block receipts after bench drains the pool, without polling every transaction.
         let report = (open $report_path)
+        let expected = if $is_vault { $tx_count } else { $report.sent }
         let deadline = (date now) + 60sec
-        mut next_block = $vault_start_block + 1
+        mut next_block = $workload_start_block + 1
         mut included = 0
         mut reverted = 0
-        while $included < $tx_count and (date now) < $deadline {
+        while $included < $expected and (date now) < $deadline {
             let last = (txgen-rpc-call $generate_rpc_url '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}').result | into int
             while $next_block <= $last {
                 let block = ($next_block | format number | get lowerhex)
@@ -946,11 +1013,11 @@ def txgen-run-preset-pipeline [
                 $next_block = $next_block + 1
             }
             # An empty pool can precede canonical inclusion of the last built block.
-            if $included < $tx_count { sleep 200ms }
+            if $included < $expected { sleep 200ms }
         }
-        print $"  Vault receipts: ($included) included, ($reverted) reverted, ($report.sent) submitted"
-        if $included != $tx_count or $reverted != 0 {
-            error make { msg: "Vault workload did not include the full transaction count successfully" }
+        print $"  ($preset_name) receipts: ($included) included, ($reverted) reverted, ($report.sent) submitted"
+        if $expected == 0 or $included != $expected or $reverted != 0 {
+            error make { msg: $"($preset_name) workload did not include the full transaction count successfully" }
         }
     }
     print $"  Report saved: ($report_path)"

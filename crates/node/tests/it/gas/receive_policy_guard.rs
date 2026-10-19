@@ -175,6 +175,7 @@ async fn test_receive_policy_guard_gas_snapshots() -> eyre::Result<()> {
 
     let setup = TestNodeBuilder::new()
         .with_instant_mining()
+        .with_block_timestamps_from(0x1111_1111)
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
