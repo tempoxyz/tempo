@@ -117,11 +117,8 @@ impl ProverAddresses {
         now: u64,
     ) -> Option<(TempoHardfork, u64)> {
         let deadline = now.saturating_add(PROVER_UPGRADE_LOOKAHEAD_SECS);
-        TempoHardfork::VARIANTS.iter().copied().find_map(|fork| {
-            let activation = chain_spec.tempo_fork_activation(fork).as_timestamp()?;
-            (fork > active && activation <= deadline && !self.0.contains_key(&fork))
-                .then_some((fork, activation))
-        })
+        scheduled_hardforks_after(chain_spec, active)
+            .find(|(fork, activation)| *activation <= deadline && !self.0.contains_key(fork))
     }
 
     async fn monitor_upgrade_readiness_with_gauge(
@@ -161,12 +158,55 @@ pub(crate) async fn active_l1_hardfork(
     provider: &DynProvider<TempoNetwork>,
     chain_spec: &impl TempoHardforks,
 ) -> Result<TempoHardfork> {
-    let header = provider
-        .get_header_by_number(BlockNumberOrTag::Latest)
-        .await
-        .wrap_err("failed reading the latest Tempo L1 header")?
-        .ok_or_else(|| eyre::eyre!("latest Tempo L1 header is unavailable"))?;
-    Ok(chain_spec.tempo_hardfork_at(header.timestamp()))
+    Ok(L1HardforkView::latest(provider, chain_spec).await?.active)
+}
+
+/// Fork schedule of the settlement chain as remote prover routing sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct L1HardforkView {
+    /// Timestamp of the latest Tempo L1 header, in Unix seconds.
+    pub l1_head_timestamp: u64,
+    /// Fork active at `l1_head_timestamp`; this fork selects the remote prover.
+    pub active: TempoHardfork,
+    /// Lowest later fork with a timestamp activation, and that activation in Unix seconds.
+    pub next: Option<(TempoHardfork, u64)>,
+}
+
+impl L1HardforkView {
+    /// Fork view at an L1 head timestamp.
+    pub fn at(chain_spec: &impl TempoHardforks, l1_head_timestamp: u64) -> Self {
+        let active = chain_spec.tempo_hardfork_at(l1_head_timestamp);
+        Self {
+            l1_head_timestamp,
+            active,
+            next: scheduled_hardforks_after(chain_spec, active).next(),
+        }
+    }
+
+    /// Fork view at the latest Tempo L1 header, using the same read as prover routing.
+    pub async fn latest(
+        provider: &DynProvider<TempoNetwork>,
+        chain_spec: &impl TempoHardforks,
+    ) -> Result<Self> {
+        let header = provider
+            .get_header_by_number(BlockNumberOrTag::Latest)
+            .await
+            .wrap_err("failed reading the latest Tempo L1 header")?
+            .ok_or_else(|| eyre::eyre!("latest Tempo L1 header is unavailable"))?;
+        Ok(Self::at(chain_spec, header.timestamp()))
+    }
+}
+
+/// Forks after `active` with a timestamp activation, in fork order.
+fn scheduled_hardforks_after(
+    chain_spec: &impl TempoHardforks,
+    active: TempoHardfork,
+) -> impl Iterator<Item = (TempoHardfork, u64)> + '_ {
+    TempoHardfork::VARIANTS
+        .iter()
+        .copied()
+        .filter(move |fork| *fork > active)
+        .filter_map(|fork| Some((fork, chain_spec.tempo_fork_activation(fork).as_timestamp()?)))
 }
 
 #[cfg(test)]
@@ -231,6 +271,69 @@ mod tests {
                 after
             );
         }
+    }
+
+    #[test]
+    fn hardfork_view_reports_active_and_next_scheduled_fork() {
+        for (before, after) in TRANSITIONS {
+            let spec = scheduled(after, 1_000);
+            for (head, active, next) in [
+                // Next fork scheduled in the future.
+                (999, before, Some((after, 1_000))),
+                // Head exactly at activation: the fork is active, as in prover routing.
+                (1_000, after, None),
+                // After activation, with no later fork scheduled.
+                (1_001, after, None),
+            ] {
+                assert_eq!(
+                    L1HardforkView::at(&spec, head),
+                    L1HardforkView {
+                        l1_head_timestamp: head,
+                        active,
+                        next,
+                    }
+                );
+                assert_eq!(active, spec.tempo_hardfork_at(head));
+            }
+        }
+    }
+
+    #[test]
+    fn hardfork_view_next_is_the_lowest_later_timestamp_fork() {
+        let mut genesis = tempo_chainspec::spec::DEV.inner.genesis.clone();
+        set_tempo_fork(&mut genesis, TempoHardfork::T13, 1_000);
+        genesis
+            .config
+            .extra_fields
+            .insert("t14Time".to_owned(), serde_json::json!(2_000));
+        let spec = tempo_chainspec::TempoChainSpec::from_genesis(genesis);
+        for (head, active, next) in [
+            (999, TempoHardfork::T12, Some((TempoHardfork::T13, 1_000))),
+            (1_000, TempoHardfork::T13, Some((TempoHardfork::T14, 2_000))),
+            (2_000, TempoHardfork::T14, None),
+        ] {
+            let view = L1HardforkView::at(&spec, head);
+            assert_eq!((view.active, view.next), (active, next));
+        }
+    }
+
+    #[tokio::test]
+    async fn hardfork_view_reads_latest_l1_header_and_fails_without_it() {
+        let asserter = Asserter::new();
+        asserter.push_success(&mock_l1_header(1_000));
+        asserter.push_success(&serde_json::Value::Null);
+        asserter.push_failure_msg("L1 unavailable");
+        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+            .connect_mocked_client(asserter.clone())
+            .erased();
+        let spec = scheduled(TempoHardfork::T13, 1_000);
+        assert_eq!(
+            L1HardforkView::latest(&provider, &spec).await.unwrap(),
+            L1HardforkView::at(&spec, 1_000)
+        );
+        assert!(L1HardforkView::latest(&provider, &spec).await.is_err());
+        assert!(L1HardforkView::latest(&provider, &spec).await.is_err());
+        assert!(asserter.read_q().is_empty());
     }
 
     #[derive(Default)]

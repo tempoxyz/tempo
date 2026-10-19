@@ -47,7 +47,7 @@ pub use prover::{
     ShadowProofAnchor, ShadowProver, ShadowProverConfig, spawn_settlement_prover,
     spawn_shadow_prover,
 };
-pub use prover_config::{HardforkProverAddress, ProverAddresses};
+pub use prover_config::{HardforkProverAddress, L1HardforkView, ProverAddresses};
 pub use settlement::{
     BatchAnchor, BatchAnchorConfig, BatchData, BatchSubmitter, PortalZoneAnchor, PreparedBatch,
     SettlementAbi, resolve_portal_zone_anchor,

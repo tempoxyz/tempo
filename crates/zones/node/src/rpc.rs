@@ -44,7 +44,10 @@ use tempo_alloy::{
     provider::ext::TempoProviderExt as _,
     rpc::{TempoCallBuilderExt as _, TempoHeaderResponse, TempoTransactionRequest},
 };
-use tempo_chainspec::spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE};
+use tempo_chainspec::{
+    TempoHardforks,
+    spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE},
+};
 use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     account_keychain::IAccountKeychain::{self, KeyInfo, getKeyCall},
@@ -66,9 +69,9 @@ use zone_rpc::{
     types::{
         ActiveLeaderInfo, AuthorizationTokenInfoResponse, BoundDecryptionKey, BoxEyreFut, BoxFut,
         DecryptionKeyCandidate, DecryptionKeyStatus, JsonRpcError, LocalSequencerInfo, PeerTipInfo,
-        SequencerInfoResponse, SequencerPeerInfo, SequencerProgress, SequencerReadiness,
-        SetLeaderResponse, ZoneExecutionWitness, ZoneInfoResponse, internal, raw_null, raw_zero,
-        to_raw,
+        SequencerHardforkInfo, SequencerInfoResponse, SequencerPeerInfo, SequencerProgress,
+        SequencerReadiness, SetLeaderResponse, ZoneExecutionWitness, ZoneInfoResponse, internal,
+        raw_null, raw_zero, to_raw,
     },
 };
 
@@ -200,15 +203,21 @@ where
     }
 }
 
+/// Upper bound on the L1 header read behind `zone_getSequencerInfo.hardfork`.
+const SEQUENCER_INFO_L1_HEADER_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Build the unauthenticated Zone extension installed on the node's operator HTTP RPC.
-pub(crate) fn operator_zone_rpc_module<P>(
+pub(crate) fn operator_zone_rpc_module<P, C>(
     zone_id: u32,
     portal_address: Address,
     sequencer: Arc<std::sync::OnceLock<SequencerRpcContext>>,
     provider: P,
+    l1_provider: DynProvider<TempoNetwork>,
+    chain_spec: Arc<C>,
 ) -> Result<RpcModule<()>, jsonrpsee::core::RegisterMethodError>
 where
     P: HeaderProvider + StateProviderFactory + Clone + 'static,
+    C: TempoHardforks + Send + Sync + 'static,
 {
     let mut module = RpcModule::new(());
     let set_leader_sequencer = sequencer.clone();
@@ -224,9 +233,18 @@ where
     module.register_async_method("zone_getSequencerInfo", move |_, _, _| {
         let sequencer = sequencer.clone();
         let provider = provider.clone();
+        let l1_provider = l1_provider.clone();
+        let chain_spec = chain_spec.clone();
         async move {
-            get_sequencer_info(zone_id, portal_address, sequencer.as_ref(), &provider)
-                .map_err(operator_rpc_error)
+            let hardfork = sequencer_hardfork_info(&l1_provider, chain_spec.as_ref()).await;
+            get_sequencer_info(
+                zone_id,
+                portal_address,
+                sequencer.as_ref(),
+                &provider,
+                hardfork,
+            )
+            .map_err(operator_rpc_error)
         }
     })?;
     Ok(module)
@@ -537,11 +555,44 @@ async fn encryption_key(
         .map_err(internal)
 }
 
+/// Report the L1 fork view that remote prover routing uses, or `None` when L1 is unreadable.
+///
+/// This reads the latest L1 header exactly as [`zone_sequencer::ProverAddresses`] routing does
+/// rather than a cached head, so the reported `active` fork is the one routing would select.
+async fn sequencer_hardfork_info(
+    l1_provider: &DynProvider<TempoNetwork>,
+    chain_spec: &impl TempoHardforks,
+) -> Option<SequencerHardforkInfo> {
+    let view = match tokio::time::timeout(
+        SEQUENCER_INFO_L1_HEADER_TIMEOUT,
+        zone_sequencer::L1HardforkView::latest(l1_provider, chain_spec),
+    )
+    .await
+    {
+        Ok(Ok(view)) => view,
+        Ok(Err(error)) => {
+            tracing::debug!(%error, "zone_getSequencerInfo: L1 hardfork view unavailable");
+            return None;
+        }
+        Err(_) => {
+            tracing::debug!("zone_getSequencerInfo: timed out reading the latest L1 header");
+            return None;
+        }
+    };
+    Some(SequencerHardforkInfo {
+        active: view.active.to_string(),
+        l1_head_timestamp: U64::from(view.l1_head_timestamp),
+        next: view.next.map(|(fork, _)| fork.to_string()),
+        next_activation: view.next.map(|(_, activation)| U64::from(activation)),
+    })
+}
+
 fn get_sequencer_info<P>(
     zone_id: u32,
     portal_address: Address,
     sequencer: &std::sync::OnceLock<SequencerRpcContext>,
     provider: &P,
+    hardfork: Option<SequencerHardforkInfo>,
 ) -> Result<SequencerInfoResponse, JsonRpcError>
 where
     P: HeaderProvider + StateProviderFactory,
@@ -561,6 +612,7 @@ where
             peers: Vec::new(),
             progress: None,
             readiness: None,
+            hardfork,
         });
     };
 
@@ -667,6 +719,7 @@ where
             ready_for_promotion: status.ready_for_promotion,
             reasons: status.promotion_reasons,
         }),
+        hardfork,
     })
 }
 
@@ -1758,15 +1811,100 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn operator_rpc_module_exposes_sequencer_methods_without_auth() {
-        let module = operator_zone_rpc_module(
+    fn mock_l1_header(timestamp: u64) -> serde_json::Value {
+        serde_json::to_value(TempoHeaderResponse {
+            inner: alloy_rpc_types_eth::Header {
+                hash: Default::default(),
+                inner: TempoHeader {
+                    inner: alloy_consensus::Header {
+                        timestamp,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                total_difficulty: None,
+                size: None,
+            },
+            timestamp_millis: 0,
+        })
+        .unwrap()
+    }
+
+    /// Chainspec with T13 scheduled at `activation` and no later fork.
+    fn t13_at(activation: u64) -> Arc<tempo_chainspec::TempoChainSpec> {
+        let mut genesis = tempo_chainspec::spec::DEV.inner.genesis.clone();
+        zone_chainspec::test_utils::set_tempo_fork(
+            &mut genesis,
+            tempo_chainspec::hardfork::TempoHardfork::T13,
+            activation,
+        );
+        Arc::new(tempo_chainspec::TempoChainSpec::from_genesis(genesis))
+    }
+
+    fn sequencer_info_module(l1: alloy_provider::mock::Asserter, activation: u64) -> RpcModule<()> {
+        operator_zone_rpc_module(
             7,
             Address::repeat_byte(0x11),
             Arc::new(std::sync::OnceLock::new()),
             Arc::new(reth_provider::test_utils::MockEthProvider::default()),
+            ProviderBuilder::new_with_network::<TempoNetwork>()
+                .connect_mocked_client(l1)
+                .erased(),
+            t13_at(activation),
         )
-        .expect("operator zone RPC module should register");
+        .expect("operator zone RPC module should register")
+    }
+
+    #[tokio::test]
+    async fn sequencer_info_reports_l1_hardfork_view_or_null() {
+        let l1 = alloy_provider::mock::Asserter::new();
+        l1.push_success(&mock_l1_header(0x3e7));
+        l1.push_success(&mock_l1_header(0x3e8));
+        l1.push_failure_msg("L1 unavailable");
+        let module = sequencer_info_module(l1.clone(), 0x3e8);
+        let call = || {
+            module.call::<_, serde_json::Value>(
+                "zone_getSequencerInfo",
+                jsonrpsee::core::EmptyServerParams::new(),
+            )
+        };
+        let expected = |hardfork: serde_json::Value| {
+            serde_json::json!({
+                "mode": "single",
+                "portal": Address::repeat_byte(0x11),
+                "peers": [],
+                "hardfork": hardfork,
+            })
+        };
+
+        assert_eq!(
+            call().await.unwrap(),
+            expected(serde_json::json!({
+                "active": "T12",
+                "l1HeadTimestamp": "0x3e7",
+                "next": "T13",
+                "nextActivation": "0x3e8",
+            }))
+        );
+        assert_eq!(
+            call().await.unwrap(),
+            expected(serde_json::json!({
+                "active": "T13",
+                "l1HeadTimestamp": "0x3e8",
+                "next": null,
+                "nextActivation": null,
+            }))
+        );
+        // An unreadable L1 head nulls only the fork view; the rest of the response is served.
+        assert_eq!(call().await.unwrap(), expected(serde_json::Value::Null));
+        assert!(l1.read_q().is_empty());
+    }
+
+    #[tokio::test]
+    async fn operator_rpc_module_exposes_sequencer_methods_without_auth() {
+        let l1 = alloy_provider::mock::Asserter::new();
+        l1.push_failure_msg("L1 unavailable");
+        let module = sequencer_info_module(l1, 1_000);
 
         let methods = module.method_names().collect::<HashSet<_>>();
         assert_eq!(methods.len(), 2);
@@ -1782,6 +1920,7 @@ mod tests {
             .expect("single-sequencer info should be available without authentication");
         assert_eq!(info.mode, "single");
         assert_eq!(info.portal, Address::repeat_byte(0x11));
+        assert_eq!(info.hardfork, None);
 
         let error = module
             .call::<_, SetLeaderResponse>("zone_setLeader", [Address::repeat_byte(0x22)])

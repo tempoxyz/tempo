@@ -384,6 +384,27 @@ pub struct SequencerInfoResponse {
     /// Promotion-readiness snapshot (multi-sequencer mode only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub readiness: Option<SequencerReadiness>,
+    /// Settlement-chain fork view used for remote prover routing, or `null` when the latest
+    /// Tempo L1 header cannot be read.
+    #[serde(default)]
+    pub hardfork: Option<SequencerHardforkInfo>,
+}
+
+/// Settlement-chain fork view for `zone_getSequencerInfo`.
+///
+/// Computed from the latest Tempo L1 header timestamp and the Zone chainspec, exactly as the
+/// sequencer selects its remote prover; the local clock is not used.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SequencerHardforkInfo {
+    /// Fork active at `l1HeadTimestamp`, e.g. `T12`.
+    pub active: String,
+    /// Timestamp of the latest Tempo L1 header, in Unix seconds.
+    pub l1_head_timestamp: U64,
+    /// Lowest later fork with a scheduled activation timestamp, or `null`.
+    pub next: Option<String>,
+    /// Activation timestamp of `next`, in Unix seconds, or `null` when `next` is `null`.
+    pub next_activation: Option<U64>,
 }
 
 /// Response payload for `zone_setLeader`.
@@ -492,4 +513,24 @@ pub fn to_raw<T: serde::Serialize>(value: &T) -> Result<Box<RawValue>, JsonRpcEr
 /// Shorthand for wrapping any `Display` error into a [`JsonRpcError::internal`].
 pub fn internal(e: impl std::fmt::Display) -> JsonRpcError {
     JsonRpcError::internal(e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sequencer_info_without_hardfork_still_parses() {
+        let legacy = serde_json::json!({
+            "mode": "single",
+            "portal": Address::repeat_byte(0x11),
+            "peers": [],
+        });
+        let info: SequencerInfoResponse = serde_json::from_value(legacy).unwrap();
+        assert_eq!(info.hardfork, None);
+        assert_eq!(
+            serde_json::to_value(&info).unwrap()["hardfork"],
+            serde_json::Value::Null
+        );
+    }
 }

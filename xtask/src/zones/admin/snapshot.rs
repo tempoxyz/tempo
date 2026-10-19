@@ -537,5 +537,6 @@ pub(crate) fn test_sequencer_info(
                 vec!["rpc-only nodes cannot get promoted".to_owned()]
             },
         }),
+        hardfork: None,
     }
 }

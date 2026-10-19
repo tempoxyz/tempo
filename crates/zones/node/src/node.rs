@@ -800,6 +800,8 @@ where
         let portal_address = self.portal_address;
         let debug_l1_provider = l1_provider.clone();
         let evm_chain_spec = ctx.node.evm_config().chain_spec().clone();
+        let operator_rpc_l1_provider = l1_provider.clone();
+        let operator_rpc_chain_spec = evm_chain_spec.clone();
         let datadir = ctx.config.datadir().data_dir().to_path_buf();
         let handle = self
             .inner
@@ -820,6 +822,8 @@ where
                     portal_address,
                     operator_rpc_slot,
                     operator_rpc_provider,
+                    operator_rpc_l1_provider,
+                    operator_rpc_chain_spec,
                 )?)?;
                 Ok(())
             })
