@@ -9,8 +9,7 @@ env:
 jobs:
   build-and-push:
     name: Build and Push Profiling Docker Images
-    # Enable after Depot and registry access are transferred to Tempo.
-    if: github.repository == 'tempoxyz/tempo' && vars.ZONES_PUBLISH_ENABLED == 'true'
+    if: github.repository == 'tempoxyz/tempo'
     runs-on: depot-ubuntu-latest-16
     permissions:
       contents: read

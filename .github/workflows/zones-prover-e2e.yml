@@ -23,7 +23,7 @@ permissions:
 # Every main push gets its own full run; newer commits do not cancel ancestry.
 jobs:
   dispatch:
-    if: github.repository == 'tempoxyz/tempo' && vars.ZONES_PROVER_E2E_ENABLED == 'true'
+    if: github.repository == 'tempoxyz/tempo'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

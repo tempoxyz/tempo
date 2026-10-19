@@ -7,8 +7,7 @@ candidate image with an independent clean rebuild of the same source commit.
 The orchestration lives in `tempoxyz/gh-actions`; Zones owns the Dockerfile, Bake
 target, Cargo profile, and `zones/scripts/reproducible-build.sh`.
 
-After the migration PRs are merged and `ZONES_PUBLISH_ENABLED=true` is set
-following the external cutover in [MIGRATION.md](../MIGRATION.md), dispatch from `main`:
+Dispatch from `main`:
 
 ```sh
 gh workflow run zones-docker.yml --repo tempoxyz/tempo --ref main \
