@@ -1,3 +1,7 @@
+variable "SOURCE_DATE_EPOCH" {
+  default = ""
+}
+
 variable "VERGEN_GIT_SHA" {
   default = ""
 }
@@ -28,17 +32,10 @@ target "chef" {
 }
 
 target "_common" {
-  dockerfile = "Dockerfile"
+  dockerfile = "Dockerfile.reproducible"
   context = "."
-  contexts = {
-    chef = "target:chef"
-  }
   args = {
-    CHEF_IMAGE = "chef"
-    RUST_PROFILE = "profiling"
-    RUST_FEATURES = "asm-keccak,jemalloc,otlp"
-    VERGEN_GIT_SHA = "${VERGEN_GIT_SHA}"
-    VERGEN_GIT_SHA_SHORT = "${VERGEN_GIT_SHA_SHORT}"
+    SOURCE_DATE_EPOCH = "${SOURCE_DATE_EPOCH}"
   }
   platforms = ["linux/amd64", "linux/arm64"]
 }

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Reproducible-build wrapper. Single source of truth for how the byte-deterministic
-# `tempo` binary on x86_64-unknown-linux-gnu is produced from this checkout.
+# Linux `tempo` / `tempo-sidecar` binary is produced from this checkout.
 #
 # Called identically by:
 #   * .github/workflows/reproducible-build.yml (push-on-main canary +
-#     manual workflow_dispatch; future workflow_call from release.yml)
+#     manual workflow_dispatch), release.yml, and independent rebuild jobs
 #   * any independent rebuilder verifying a release hash from outside CI
 #
 # Keeping the docker invocation here — instead of inlined in each caller —
@@ -18,8 +18,11 @@
 #   DEBIAN_SNAPSHOT — pin the Debian apt snapshot used inside the image
 #                     (default: the value baked into Dockerfile.reproducible)
 #
+# Additional inputs: PLATFORM (linux/amd64 or linux/arm64), BINARY (tempo or
+# tempo-sidecar), FEATURES (including an empty string), NO_CACHE (0 or 1).
+#
 # Output:
-#   $OUT_DIR/tempo   — the byte-deterministic binary
+#   $OUT_DIR/$BINARY   — the byte-deterministic binary
 #   stdout           — the inputs that determined this build, for audit logs
 set -euo pipefail
 
@@ -28,6 +31,15 @@ cd "$(git rev-parse --show-toplevel)"
 VERSION="${VERSION:-dev}"
 OUT_DIR="${OUT_DIR:-./out}"
 DEBIAN_SNAPSHOT="${DEBIAN_SNAPSHOT:-}"
+PLATFORM="${PLATFORM:-linux/amd64}"
+BINARY="${BINARY:-tempo}"
+FEATURES="${FEATURES-asm-keccak,jemalloc,otlp}"
+NO_CACHE="${NO_CACHE:-0}"
+[[ "$PLATFORM" == linux/amd64 || "$PLATFORM" == linux/arm64 ]]
+[[ "$BINARY" == tempo || "$BINARY" == tempo-sidecar ]]
+[[ "$NO_CACHE" == 0 || "$NO_CACHE" == 1 ]]
+cache_args=()
+if [[ "$NO_CACHE" == 1 ]]; then cache_args+=(--no-cache --pull); fi
 
 SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
 COMMIT="$(git rev-parse HEAD)"
@@ -48,18 +60,24 @@ mkdir -p "$OUT_DIR"
 build_args=(
   --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
   --build-arg "VERSION=$VERSION"
+  --build-arg "BINARY=$BINARY"
+  --build-arg "FEATURES=$FEATURES"
 )
+if [[ -n "${CARGO_BUILD_JOBS:-}" ]]; then
+  build_args+=(--build-arg "CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS")
+fi
 if [[ -n "$DEBIAN_SNAPSHOT" ]]; then
   build_args+=( --build-arg "DEBIAN_SNAPSHOT=$DEBIAN_SNAPSHOT" )
 fi
 
-docker build \
-  --platform linux/amd64 \
+docker buildx build \
+  --platform "$PLATFORM" \
+  "${cache_args[@]}" \
   "${build_args[@]}" \
   -f Dockerfile.reproducible \
   --target artifacts \
   --output "type=local,dest=$OUT_DIR" \
   .
 
-echo "Reproducible binary written to $OUT_DIR/tempo"
-sha256sum "$OUT_DIR/tempo"
+echo "Reproducible binary written to $OUT_DIR/$BINARY"
+sha256sum "$OUT_DIR/$BINARY"

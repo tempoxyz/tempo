@@ -1,6 +1,6 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 #
-# Reproducible build of the `tempo` binary for x86_64-unknown-linux-gnu.
+# Reproducible build of the `tempo` binary for Linux amd64 and arm64.
 #
 # Goal: any party with this Dockerfile + the source tree at a given commit
 # can produce the *byte-identical* binary that this repo's release.yml
@@ -29,10 +29,14 @@
 #     emits no debuginfo, and inherits `release`'s fat LTO + 1 codegen-unit.
 
 ARG RUST_TOOLCHAIN=1.96.0
-FROM rust:${RUST_TOOLCHAIN}-bookworm@sha256:64d9b7f60e3abb08d477cad983d0a3743acc53a19369ba4482510184c9c807e5 AS builder
+FROM rust:${RUST_TOOLCHAIN}-bookworm@sha256:19817ead3289c8c631c73df281e18b59b172f6a31f4f563290f69cddd06c30e9 AS build-base
 
 ARG SOURCE_DATE_EPOCH
 ARG VERSION
+ARG TARGETARCH
+ARG BINARY=tempo
+ARG FEATURES=asm-keccak,jemalloc,otlp
+ARG CARGO_BUILD_JOBS
 # Pinned snapshot of the Debian package archive. Bumping this is the *only*
 # legitimate reason for a Debian-side byte change between two builds of the
 # same source tree. Without it, an `apt-get install libjemalloc-dev` between
@@ -43,6 +47,9 @@ ARG VERSION
 # defaulted here so an external rebuilder running `docker build` from a
 # checked-out tag with no extra args reproduces what CI did at that tag.
 ARG DEBIAN_SNAPSHOT=20260501T000000Z
+
+RUN test -n "$SOURCE_DATE_EPOCH" && \
+    case "$SOURCE_DATE_EPOCH" in *[!0-9]*) exit 1 ;; esac
 
 # Repoint apt at snapshot.debian.org and disable the validity check (snapshots
 # carry stale Release files by design). The base image's pinned-by-digest
@@ -74,15 +81,92 @@ COPY . .
 ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
     LC_ALL=C \
     TZ=UTC \
-    JEMALLOC_OVERRIDE=/usr/lib/x86_64-linux-gnu/libjemalloc.a \
+    VERGEN_GIT_DIRTY=false \
     RUSTFLAGS="-C symbol-mangling-version=v0 -C strip=none -C link-arg=-Wl,--build-id=none -C link-arg=-fuse-ld=mold -C metadata= --remap-path-prefix /app=. --remap-path-prefix /usr/local/cargo/registry=/registry --remap-path-prefix /usr/local/rustup=/rustup"
 
-RUN cargo build --locked --bin tempo \
-        --features asm-keccak,jemalloc,otlp \
-        --profile reproducible \
-        --target x86_64-unknown-linux-gnu
+FROM build-base AS builder
+# Resolve the native target and system allocator for each supported architecture.
+RUN case "$TARGETARCH" in \
+      amd64) target=x86_64-unknown-linux-gnu; multiarch=x86_64-linux-gnu ;; \
+      arm64) target=aarch64-unknown-linux-gnu; multiarch=aarch64-linux-gnu ;; \
+      *) echo "Unsupported architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac && \
+    JEMALLOC_OVERRIDE=/usr/lib/$multiarch/libjemalloc.a \
+      cargo build --locked --bin "$BINARY" --features "$FEATURES" \
+        --profile reproducible --target "$target" && \
+    mkdir /out && cp "target/$target/reproducible/$BINARY" "/out/$BINARY"
 
-# `--target artifacts` extracts just the binary; `--target builder` (the
-# default) keeps the full Rust environment for debugging.
 FROM scratch AS artifacts
-COPY --from=builder /app/target/x86_64-unknown-linux-gnu/reproducible/tempo /tempo
+COPY --from=builder /out/ /
+
+# Docker builds compile the same production feature set as the existing images.
+FROM build-base AS docker-builder
+RUN mkdir -p /out && \
+    case "$TARGETARCH" in \
+      amd64) target=x86_64-unknown-linux-gnu; multiarch=x86_64-linux-gnu ;; \
+      arm64) target=aarch64-unknown-linux-gnu; multiarch=aarch64-linux-gnu ;; \
+    esac && \
+    JEMALLOC_OVERRIDE=/usr/lib/$multiarch/libjemalloc.a \
+      cargo build --locked --profile reproducible --target "$target" \
+        --features asm-keccak,jemalloc,otlp,localnet \
+        --bin tempo --bin tempo-localnet --bin tempo-sidecar --bin tempo-xtask && \
+    for binary in tempo tempo-localnet tempo-sidecar tempo-xtask; do \
+      cp "target/$target/reproducible/$binary" "/out/$binary"; \
+    done
+
+FROM build-base AS devnet-builder
+RUN case "$TARGETARCH" in \
+      amd64) target=x86_64-unknown-linux-gnu; multiarch=x86_64-linux-gnu ;; \
+      arm64) target=aarch64-unknown-linux-gnu; multiarch=aarch64-linux-gnu ;; \
+    esac && \
+    JEMALLOC_OVERRIDE=/usr/lib/$multiarch/libjemalloc.a \
+      cargo build --locked --profile reproducible --target "$target" \
+        --bin tempo --features asm-keccak,jemalloc,otlp,localnet,custom-pcrs && \
+    mkdir -p /out && cp target/$target/reproducible/tempo /out/tempo-devnet
+
+FROM scratch AS docker-production-artifacts
+COPY --from=docker-builder /out/ /
+
+FROM scratch AS docker-devnet-artifacts
+COPY --from=devnet-builder /out/tempo-devnet /tempo-devnet
+
+FROM scratch AS docker-artifacts
+COPY --from=docker-builder /out/ /
+COPY --from=devnet-builder /out/tempo-devnet /tempo-devnet
+
+FROM debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d AS base
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /data
+
+# tempo
+FROM base AS tempo
+COPY --from=docker-builder /out/tempo /usr/local/bin/tempo
+ENTRYPOINT ["/usr/local/bin/tempo"]
+
+# tempo-devnet
+FROM base AS tempo-devnet
+COPY --from=devnet-builder /out/tempo-devnet /usr/local/bin/tempo
+ENTRYPOINT ["/usr/local/bin/tempo"]
+
+# tempo-localnet
+FROM base AS tempo-localnet
+COPY --from=docker-builder /out/tempo /usr/local/bin/tempo
+COPY --from=docker-builder /out/tempo-localnet /usr/local/bin/tempo-localnet
+EXPOSE 8545
+VOLUME ["/data"]
+HEALTHCHECK --interval=2s --timeout=2s --start-period=120s --retries=5 CMD ["/usr/local/bin/tempo-localnet", "--health"]
+ENTRYPOINT ["/usr/local/bin/tempo-localnet"]
+
+# tempo-sidecar
+FROM base AS tempo-sidecar
+COPY --from=docker-builder /out/tempo-sidecar /usr/local/bin/tempo-sidecar
+ENTRYPOINT ["/usr/local/bin/tempo-sidecar"]
+
+# tempo-xtask
+FROM base AS tempo-xtask
+COPY --from=docker-builder /out/tempo-xtask /usr/local/bin/tempo-xtask
+ENTRYPOINT ["/usr/local/bin/tempo-xtask"]

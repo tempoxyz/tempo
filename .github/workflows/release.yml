@@ -14,8 +14,16 @@ on:
         description: "Tag to release (e.g., v0.1.0)"
         required: true
         type: string
+      source_sha:
+        description: "Full release commit to prepare before creating the tag (optional)"
+        type: string
+        default: ""
+      prepared_run_id:
+        description: "Promote a successful dry run from the same commit and version (blank rebuilds)"
+        type: string
+        default: ""
       profile:
-        description: "Build profile"
+        description: "macOS build profile (Linux always uses the canonical reproducible profile)"
         default: "profiling"
         type: choice
         options:
@@ -39,7 +47,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       id-token: write
+      contents: read
+      actions: read
     outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      prepared_run_id: ${{ steps.prepared.outputs.prepared_run_id }}
+      artifact_run_id: ${{ steps.prepared.outputs.artifact_run_id || github.run_id }}
+      macos_profile: ${{ github.event_name == 'workflow_dispatch' && inputs.profile || 'maxperf' }}
       version: ${{ steps.get_version.outputs.version }}
     steps:
       - name: Secure runner
@@ -59,6 +73,37 @@ jobs:
           else
             echo "version=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Resolve immutable release source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.source_sha || (github.event_name == 'workflow_dispatch' && inputs.tag || github.sha) }}
+          persist-credentials: false
+
+      - name: Record release commit
+        id: source
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [[ -n "$SOURCE_SHA" ]]; then
+            [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ && "$DRY_RUN" == true ]]
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Validate prepared release run
+        if: inputs.prepared_run_id != '' || github.ref_type == 'tag'
+        id: prepared
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREPARED_RUN_ID: ${{ inputs.prepared_run_id }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          WORKFLOW_PATH: .github/workflows/release.yml
+          AUTO_REUSE: ${{ github.ref_type == 'tag' }}
+          VERSION: ${{ steps.get_version.outputs.version }}
+          MACOS_PROFILE: ${{ github.event_name == 'workflow_dispatch' && inputs.profile || 'maxperf' }}
+        run: bash scripts/select-prepared-run.sh
+
   check-version:
     name: check version
     runs-on: ubuntu-latest
@@ -73,6 +118,7 @@ jobs:
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ needs.get-version.outputs.sha }}
           persist-credentials: false
       - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
       - name: Verify crate version matches tag
@@ -87,9 +133,9 @@ jobs:
           [[ "$tag" == "$cargo_ver"* ]] || { echo "Tag $tag doesn't match the Cargo version $cargo_ver"; exit 1; }
 
   build-release:
+    if: needs.get-version.outputs.prepared_run_id == ''
     name: Build Release Binaries
     needs: get-version
-    environment: release
     runs-on: ${{ matrix.platform.os }}
     permissions:
       contents: read
@@ -121,7 +167,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ needs.get-version.outputs.sha }}
           persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        if: matrix.platform.target != 'aarch64-apple-darwin'
+        uses: tempoxyz/gh-actions/vendor/docker/setup-buildx-action@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
 
       - name: Install Rust toolchain
         uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
@@ -134,14 +186,26 @@ jobs:
       - name: Get build profile
         id: profile
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [[ "${{ matrix.platform.target }}" != aarch64-apple-darwin ]]; then
+            echo "profile=reproducible" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "profile=${{ inputs.profile }}" >> "$GITHUB_OUTPUT"
           else
             echo "profile=maxperf" >> "$GITHUB_OUTPUT"
           fi
         shell: bash
 
+      - name: Build canonical Linux binary
+        if: matrix.platform.target != 'aarch64-apple-darwin'
+        env:
+          PLATFORM: ${{ matrix.platform.target == 'x86_64-unknown-linux-gnu' && 'linux/amd64' || 'linux/arm64' }}
+          BINARY: ${{ matrix.binary.name }}
+          FEATURES: ${{ matrix.binary.features }}
+          OUT_DIR: target/${{ matrix.platform.target }}/${{ steps.profile.outputs.profile }}
+        run: scripts/reproducible-build.sh
+
       - name: Build binary
+        if: matrix.platform.target == 'aarch64-apple-darwin'
         env:
           CARGO_TARGET_DIR: target
           BIN_NAME: ${{ matrix.binary.name }}
@@ -184,9 +248,8 @@ jobs:
         # Two separate single-line .sha256 files, one per artifact, so that
         # `sha256sum -c <file>.sha256` works cleanly for whichever artifact
         # the user downloaded. The bare-binary checksum is what an
-        # independent rebuilder will compare against once the reproducible
-        # build path lands (ELF hashes reproduce far more reliably than
-        # tar/gzip hashes).
+        # independent rebuild is compared against before publication
+        # (ELF hashes reproduce more reliably than tar/gzip hashes).
         env:
           ARCHIVE_PATH: ${{ steps.prepare.outputs.archive_path }}
           ARCHIVE_NAME: ${{ steps.prepare.outputs.archive_name }}
@@ -194,18 +257,6 @@ jobs:
         run: |
           shasum -a 256 "$ARCHIVE_PATH" > "${ARCHIVE_NAME}.sha256"
           shasum -a 256 "$BINARY_NAME"  > "${BINARY_NAME}.sha256"
-
-      - name: GPG sign archive
-        shell: bash
-        env:
-          GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
-          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-          ARCHIVE_PATH: ${{ steps.prepare.outputs.archive_path }}
-        run: |
-          GNUPGHOME=$(mktemp -d)
-          export GNUPGHOME
-          echo -n "$GPG_SIGNING_KEY" | base64 --decode | gpg --batch --import
-          printf '%s' "$GPG_PASSPHRASE" | gpg --passphrase-fd 0 --pinentry-mode loopback --batch -ab "$ARCHIVE_PATH"
 
       - name: Generate SBOM (SPDX-JSON) for archive
         uses: tempoxyz/gh-actions/vendor/anchore/sbom-action@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
@@ -247,15 +298,197 @@ jobs:
           path: |
             ${{ steps.prepare.outputs.archive_path }}
             ${{ steps.prepare.outputs.archive_name }}.sha256
-            ${{ steps.prepare.outputs.archive_name }}.asc
             ${{ steps.prepare.outputs.archive_name }}.spdx.json
             ${{ steps.prepare.outputs.binary_name }}.sha256
           if-no-files-found: error
 
+  rebuild-linux-release:
+    if: needs.get-version.outputs.prepared_run_id == ''
+    name: Clean rebuild ${{ matrix.binary.name }} (${{ matrix.platform.target }})
+    needs: get-version
+    runs-on: ${{ matrix.platform.platform == 'linux/amd64' && (vars.REPRO_RUNNER_AMD64 || 'ubuntu-latest') || (vars.REPRO_RUNNER_ARM64 || 'ubuntu-24.04-arm') }}
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        binary:
+          - {name: tempo, features: 'asm-keccak,jemalloc,otlp'}
+          - {name: tempo-sidecar, features: ''}
+        platform:
+          - {os: ubuntu-latest, target: x86_64-unknown-linux-gnu, platform: linux/amd64}
+          - {os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, platform: linux/arm64}
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
+
+      - name: Checkout release commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.get-version.outputs.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up isolated Docker builder
+        uses: tempoxyz/gh-actions/vendor/docker/setup-buildx-action@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
+        with:
+          driver-opts: image=moby/buildkit:v0.29.0@sha256:0039c1d47e8748b5afea56f4e85f14febaf34452bd99d9552d2daa82262b5cc5
+
+      - name: Free space for independent rebuild
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+
+      - name: Rebuild without Depot or shared cache
+        env:
+          NO_CACHE: "1"
+          CARGO_BUILD_JOBS: ${{ vars.REPRO_BUILD_JOBS || (matrix.platform.platform == 'linux/arm64' && '2' || '4') }}
+          PLATFORM: ${{ matrix.platform.platform }}
+          BINARY: ${{ matrix.binary.name }}
+          FEATURES: ${{ matrix.binary.features }}
+          OUT_DIR: ${{ runner.temp }}/clean-binary
+        run: |
+          set -euo pipefail
+          scripts/reproducible-build.sh
+          cd "$OUT_DIR"
+          sha256sum "$BINARY" > "$RUNNER_TEMP/clean.sha256"
+
+      - name: Upload independent checksum
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: clean-${{ matrix.binary.name }}-${{ matrix.platform.target }}
+          path: ${{ runner.temp }}/clean.sha256
+          if-no-files-found: error
+
+  verify-linux-release:
+    name: Compare packaged Linux releases with independent rebuilds
+    needs: [get-version, build-release, rebuild-linux-release]
+    if: ${{ !cancelled() && needs.get-version.result == 'success' && ((needs.build-release.result == 'success' && needs.rebuild-linux-release.result == 'success') || (needs.get-version.outputs.prepared_run_id != '' && needs.build-release.result == 'skipped' && needs.rebuild-linux-release.result == 'skipped')) }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      actions: read
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
+
+      - name: Checkout verification scripts
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.get-version.outputs.sha }}
+          persist-credentials: false
+
+      - name: Download release archives and independent checksums
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: ${{ runner.temp }}/release-verification
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.get-version.outputs.artifact_run_id }}
+
+      - name: Validate prepared release identity
+        if: needs.get-version.outputs.prepared_run_id != ''
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/release-verification
+          SOURCE_SHA: ${{ needs.get-version.outputs.sha }}
+          VERSION: ${{ needs.get-version.outputs.version }}
+          MACOS_PROFILE: ${{ needs.get-version.outputs.macos_profile }}
+        run: |
+          jq -e --arg sha "$SOURCE_SHA" --arg version "$VERSION" --arg profile "$MACOS_PROFILE" \
+            '.sha == $sha and .version == $version and .macos_profile == $profile and .dry_run == true' \
+            "$ARTIFACT_DIR/release-preparation/manifest.json"
+
+      - name: Verify actual archived executables
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/release-verification
+          VERSION: ${{ needs.get-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          for binary in tempo tempo-sidecar; do
+            for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+              name="$binary-$VERSION-$target"
+              archive="$ARTIFACT_DIR/$binary-$target/$name.tar.gz"
+              checksum="$ARTIFACT_DIR/clean-$binary-$target/clean.sha256"
+              extracted="$(mktemp -d)"
+              tar -xzf "$archive" -C "$extracted" -- "$name"
+              expected="$(awk '{print $1}' "$checksum")"
+              [[ "$expected" =~ ^[0-9a-f]{64}$ ]]
+              printf '%s  %s\n' "$expected" "$extracted/$name" | sha256sum --check
+              # Validate the published bare-binary checksum against the archive too.
+              (cd "$extracted" && sha256sum --check "$ARTIFACT_DIR/$binary-$target/$name.sha256")
+              rm -rf "$extracted"
+            done
+          done
+
+      - name: Record prepared release identity
+        if: needs.get-version.outputs.prepared_run_id == ''
+        env:
+          SOURCE_SHA: ${{ needs.get-version.outputs.sha }}
+          VERSION: ${{ needs.get-version.outputs.version }}
+          MACOS_PROFILE: ${{ needs.get-version.outputs.macos_profile }}
+          DRY_RUN: ${{ inputs.dry_run || false }}
+        run: |
+          jq -n --arg sha "$SOURCE_SHA" --arg version "$VERSION" --arg profile "$MACOS_PROFILE" \
+            --argjson dry_run "$DRY_RUN" \
+            '{sha: $sha, version: $version, macos_profile: $profile, dry_run: $dry_run}' \
+            > "$RUNNER_TEMP/manifest.json"
+
+      - name: Upload prepared release identity
+        if: needs.get-version.outputs.prepared_run_id == ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-preparation
+          path: ${{ runner.temp }}/manifest.json
+          if-no-files-found: error
+
+  sign-release:
+    name: Sign verified release archives
+    needs: [get-version, check-version, verify-linux-release]
+    if: ${{ !cancelled() && needs.verify-linux-release.result == 'success' && (needs.check-version.result == 'success' || (startsWith(github.ref, 'refs/heads/rc/') && needs.check-version.result == 'skipped')) && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false)) }}
+    environment: release
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      id-token: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
+
+      - name: Download verified archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: tempo-*
+          path: ${{ runner.temp }}/release-signing
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.get-version.outputs.artifact_run_id }}
+
+      - name: GPG sign verified archives
+        env:
+          GPG_SIGNING_KEY: ${{ secrets.GPG_SIGNING_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          GNUPGHOME=$(mktemp -d)
+          export GNUPGHOME
+          trap 'rm -rf "$GNUPGHOME"' EXIT
+          echo -n "$GPG_SIGNING_KEY" | base64 --decode | gpg --batch --import
+          mkdir -p "$RUNNER_TEMP/release-signatures"
+          for archive in "$RUNNER_TEMP"/release-signing/tempo-*/*.tar.gz; do
+            printf '%s' "$GPG_PASSPHRASE" | gpg --passphrase-fd 0 --pinentry-mode loopback \
+              --batch --output "$RUNNER_TEMP/release-signatures/$(basename "$archive").asc" -ab "$archive"
+          done
+
+      - name: Upload release signatures
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-signatures
+          path: ${{ runner.temp }}/release-signatures/*.asc
+          if-no-files-found: error
+
   create-release:
     name: Create Release
-    needs: [get-version, build-release]
-    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false) }}
+    needs: [get-version, check-version, build-release, verify-linux-release, sign-release]
+    if: ${{ !cancelled() && needs.verify-linux-release.result == 'success' && needs.sign-release.result == 'success' && (needs.check-version.result == 'success' || (startsWith(github.ref, 'refs/heads/rc/') && needs.check-version.result == 'skipped')) && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false)) }}
     runs-on: depot-ubuntu-latest
     permissions:
       id-token: write
@@ -270,6 +503,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ needs.get-version.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -278,11 +512,20 @@ jobs:
         with:
           pattern: tempo-*
           path: artifacts
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.get-version.outputs.artifact_run_id }}
+
+      - name: Download release signatures
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-signatures
+          path: artifacts/signatures
 
       - name: Create Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.get-version.outputs.version }}
+          SOURCE_SHA: ${{ needs.get-version.outputs.sha }}
         run: |
           # Determine if this is a prerelease
           PRERELEASE=""
@@ -294,6 +537,7 @@ jobs:
           gh release create "$VERSION" \
             --repo ${{ github.repository }} \
             --title "Release $VERSION" \
+            --target "$SOURCE_SHA" \
             --draft \
             --notes "" \
             $PRERELEASE \
@@ -402,9 +646,9 @@ jobs:
             --body-file "$body_file"
   upload-cloudflare:
     name: Upload to R2 bucket
-    needs: [get-version, build-release]
+    needs: [get-version, check-version, build-release, verify-linux-release, sign-release]
     environment: upload-binaries
-    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false) }}
+    if: ${{ !cancelled() && needs.verify-linux-release.result == 'success' && needs.sign-release.result == 'success' && (needs.check-version.result == 'success' || (startsWith(github.ref, 'refs/heads/rc/') && needs.check-version.result == 'skipped')) && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false)) }}
     runs-on: depot-ubuntu-latest
     permissions:
       id-token: write
@@ -417,6 +661,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ needs.get-version.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -425,6 +670,14 @@ jobs:
         with:
           pattern: tempo-*
           path: artifacts
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.get-version.outputs.artifact_run_id }}
+
+      - name: Download release signatures
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-signatures
+          path: artifacts/signatures
 
       - name: Create binary directory
         env:
@@ -437,7 +690,7 @@ jobs:
         id: dest
         env:
           VERSION: ${{ needs.get-version.outputs.version }}
-          SHA: ${{ github.sha }}
+          SHA: ${{ needs.get-version.outputs.sha }}
         run: |
           if [[ "${{ github.repository }}" == "tempoxyz/tempo-private-fork" ]]; then
             echo "dir=${SHA}/${VERSION}" >> "$GITHUB_OUTPUT"
