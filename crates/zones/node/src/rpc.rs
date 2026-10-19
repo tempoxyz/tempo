@@ -204,7 +204,10 @@ where
 }
 
 /// Upper bound on the L1 header read behind `zone_getSequencerInfo.hardfork`.
-const SEQUENCER_INFO_L1_HEADER_TIMEOUT: Duration = Duration::from_secs(5);
+///
+/// Kept well below caller timeouts so a slow or hanging L1 only nulls `hardfork` instead of
+/// delaying the locally built fields past the caller's deadline.
+const SEQUENCER_INFO_L1_HEADER_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Build the unauthenticated Zone extension installed on the node's operator HTTP RPC.
 pub(crate) fn operator_zone_rpc_module<P, C>(
