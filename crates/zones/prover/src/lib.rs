@@ -16,5 +16,5 @@ pub use protocol::{
     VerifierMode, VerifierModeError, VerifyRequest, VerifyResponse, nitro_batch_attestation_hash,
 };
 
-/// Default frame limit and fixed decoding budget, including estimated per-value overhead.
+/// Default encoded request limit, also used to derive the CBOR value-count limit.
 pub const DEFAULT_MAX_REQUEST_BYTES: usize = 2 * 1024 * 1024 * 1024;
