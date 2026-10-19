@@ -102,6 +102,7 @@ where
         system_contract_address: Address,
         data: Bytes,
     ) -> Result<Self::ExecutionResult, Self::Error> {
+        self.ensure_supported_spec()?;
         let mut tx = TxEnv::new_system_tx_with_caller(caller, system_contract_address, data);
         tx.set_gas_limit(SYSTEM_CALL_GAS_LIMIT);
         self.inner.ctx.set_tx(tx.into());
@@ -121,6 +122,7 @@ where
         system_contract_address: Address,
         data: Bytes,
     ) -> Result<Self::ExecutionResult, Self::Error> {
+        self.ensure_supported_spec()?;
         let mut tx = TxEnv::new_system_tx_with_caller(caller, system_contract_address, data);
         tx.set_gas_limit(SYSTEM_CALL_GAS_LIMIT);
         self.inner.ctx.set_tx(tx.into());

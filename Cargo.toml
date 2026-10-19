@@ -14,6 +14,7 @@ publish = false
 exclude = ["crates/nitro-attestation/fuzz"]
 members = [
   "bin/tempo",
+  "bin/tempo-metabinary",
   "bin/tempo-sidecar",
   "crates/alloy",
   "crates/chainspec",
@@ -207,6 +208,7 @@ tempo-faucet = { path = "crates/faucet", default-features = false }
 tempo-evm = { path = "crates/evm", default-features = false }
 tempo-eyre = { path = "crates/eyre", default-features = false }
 tempo-hardfork = { path = "crates/hardfork", default-features = false }
+tempo-metabinary = { path = "bin/tempo-metabinary" }
 tempo-ext = { path = "crates/ext" }
 tempo-revm = { path = "crates/revm", default-features = false }
 tempo-payload-builder = { path = "crates/payload/builder", default-features = false }

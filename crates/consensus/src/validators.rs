@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     net::{IpAddr, SocketAddr},
+    num::NonZeroU64,
 };
 
 use alloy_consensus::BlockHeader;
@@ -10,12 +11,22 @@ use commonware_cryptography::ed25519::PublicKey;
 use commonware_p2p::Ingress;
 use commonware_utils::{TryFromIterator, ordered};
 use eyre::{OptionExt as _, WrapErr as _};
-use reth_ethereum::evm::revm::{State, database::StateProviderDatabase};
-use reth_node_builder::ConfigureEvm as _;
+use reth_ethereum::{
+    chainspec::EthChainSpec as _,
+    evm::revm::{
+        Journal,
+        context::{BlockEnv, CfgEnv, TxEnv},
+        context_interface::JournalTr as _,
+        database::StateProviderDatabase,
+        primitives::U256,
+    },
+};
 use reth_provider::{
     EvmStateProviderBox, HeaderProvider as _, StateProvider as _, StateProviderFactory as _,
 };
-use tempo_node::{TempoFullNode, evm::evm::TempoEvm};
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks as _};
+use tempo_evm::TempoBlockEnv;
+use tempo_node::TempoFullNode;
 use tempo_precompiles::{
     storage::{StorageActions, StorageCtx},
     validator_config_v2::{IValidatorConfigV2, ValidatorConfigV2},
@@ -26,20 +37,13 @@ use tracing::{Level, debug, instrument, warn};
 
 /// Minimal execution-node interface needed to read validator config state.
 ///
-/// Production code uses [`TempoFullNode`]. This trait exists so unit tests can
-/// use a mock that only provides a historical state provider and an EVM
-/// configured for the corresponding block, while still exercising the same
-/// validator config reader used in production.
+/// Production code uses [`TempoFullNode`], unit tests mock the state provider and chain spec.
 pub(crate) trait ExecutionNode {
     fn header(&self, block_hash: B256) -> eyre::Result<TempoHeader>;
 
     fn state_by_block_hash(&self, block_hash: B256) -> eyre::Result<EvmStateProviderBox>;
 
-    fn evm_for_block(
-        &self,
-        db: State<StateProviderDatabase<EvmStateProviderBox>>,
-        header: &TempoHeader,
-    ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<EvmStateProviderBox>>>>;
+    fn chain_spec(&self) -> &TempoChainSpec;
 }
 
 impl ExecutionNode for TempoFullNode {
@@ -58,14 +62,8 @@ impl ExecutionNode for TempoFullNode {
         Ok(Box::new(provider.into_evm_state_provider()))
     }
 
-    fn evm_for_block(
-        &self,
-        db: State<StateProviderDatabase<EvmStateProviderBox>>,
-        header: &TempoHeader,
-    ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<EvmStateProviderBox>>>> {
-        self.evm_config
-            .evm_for_block(db, header)
-            .map_err(eyre::Report::new)
+    fn chain_spec(&self) -> &TempoChainSpec {
+        self.evm_config.chain_spec()
     }
 }
 
@@ -81,12 +79,8 @@ where
         (*self).state_by_block_hash(block_hash)
     }
 
-    fn evm_for_block(
-        &self,
-        db: State<StateProviderDatabase<EvmStateProviderBox>>,
-        header: &TempoHeader,
-    ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<EvmStateProviderBox>>>> {
-        (*self).evm_for_block(db, header)
+    fn chain_spec(&self) -> &TempoChainSpec {
+        (*self).chain_spec()
     }
 }
 
@@ -152,20 +146,28 @@ pub(crate) fn read_validator_config_with_state<C, T>(
 where
     C: Default,
 {
-    let db = State::builder()
-        .with_database(StateProviderDatabase::new(state))
-        .build();
-
-    let mut evm = node
-        .evm_for_block(db, header)
-        .wrap_err("failed instantiating evm for block")?;
-
-    let ctx = evm.ctx_mut();
+    // Reads storage directly instead of constructing an EVM, so consensus can read historical
+    // validator state at blocks whose hardfork this release no longer executes.
+    let chain_spec = node.chain_spec();
+    let spec = chain_spec.tempo_hardfork_at(header.timestamp());
+    let cfg = CfgEnv::new_with_spec(spec).with_chain_id(chain_spec.chain_id());
+    let block = TempoBlockEnv {
+        inner: BlockEnv {
+            number: U256::from(header.number()),
+            timestamp: U256::from(header.timestamp()),
+            ..Default::default()
+        },
+        timestamp_millis_part: header.timestamp_millis_part,
+        epoch_length: chain_spec.info.epoch_length().unwrap_or(NonZeroU64::MIN),
+        proposer_public_key: header.consensus_context.map(|ctx| ctx.proposer),
+    };
+    let mut journal: Journal<_> = Journal::new(StateProviderDatabase::new(state));
+    journal.set_spec_id(spec.into());
     let res = StorageCtx::enter_evm(
-        &mut ctx.journaled_state,
-        &ctx.block,
-        &ctx.cfg,
-        &ctx.tx,
+        &mut journal,
+        &block,
+        &cfg,
+        &TxEnv::default(),
         StorageActions::disabled(),
         || read_fn(&C::default()),
     )?;

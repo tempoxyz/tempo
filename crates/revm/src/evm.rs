@@ -1,9 +1,13 @@
-use crate::{ProtocolFeeManager, TempoBlockEnv, TempoFeeManager, TempoTxEnv, instructions};
+use crate::{
+    ProtocolFeeManager, TempoBlockEnv, TempoFeeManager, TempoInvalidTransaction, TempoTxEnv,
+    instructions,
+};
 use alloy_evm::{Database, precompiles::PrecompilesMap};
 use alloy_primitives::{Address, U256};
 use revm::{
     Context, Inspector,
     context::{Cfg, CfgEnv, ContextError, Evm, FrameStack},
+    context_interface::result::EVMError,
     handler::{
         EthFrame, EvmTr, FrameInitOrResult, FrameTr, ItemOrResult, instructions::EthInstructions,
     },
@@ -245,6 +249,19 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     /// Returns the transaction-local protocol slots whose clears must not mint storage credits.
     pub fn non_creditable_slots(&self) -> Rc<RefCell<NonCreditableSlots>> {
         self.non_creditable_slots.clone()
+    }
+
+    /// Fails if `cfg.spec` predates [`TempoHardfork::MINIMUM_SUPPORTED`], at execution time.
+    pub fn ensure_supported_spec(
+        &self,
+    ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
+        if self.inner.ctx.cfg.spec < TempoHardfork::MINIMUM_SUPPORTED {
+            return Err(EVMError::Custom(format!(
+                "pre-{} execution requires a historical binary",
+                TempoHardfork::MINIMUM_SUPPORTED
+            )));
+        }
+        Ok(())
     }
 
     /// Clears all intermediate state from the EVM.

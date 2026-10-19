@@ -1,5 +1,5 @@
 use alloy_consensus::{BlockHeader as _, Header};
-use commonware_consensus::types::{Epoch, FixedEpocher};
+use commonware_consensus::types::{Epoch, FixedEpocher, Height};
 use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, deterministic};
 use reth_node_core::primitives::SealedBlock;
@@ -23,6 +23,18 @@ fn tracks_boundary_identity() {
             },
             FixedEpocher::new(EPOCH_LENGTH),
         );
+        let length = EPOCH_LENGTH.get();
+        for (height, boundary) in [
+            (0, 0),
+            (length - 1, 0),
+            (length, length - 1),
+            (2 * length + 5, 2 * length - 1),
+        ] {
+            assert_eq!(
+                verifier.boundary_height(Height::new(height)).unwrap(),
+                Height::new(boundary)
+            );
+        }
 
         let boundary = make_block(EPOCH_LENGTH.get() - 1, Some(&next.outcome));
         let finalization = make_finalization(&boundary, Epoch::zero(), &current.schemes);

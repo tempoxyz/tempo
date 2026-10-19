@@ -36,6 +36,7 @@ tempo-evm.workspace = true
 tempo-faucet.workspace = true
 tempo-telemetry-util.workspace = true
 tempo-state-bloat.workspace = true
+tempo-metabinary.workspace = true
 
 alloy = { workspace = true, default-features = false, features = [
 	"network",
@@ -99,6 +100,7 @@ reth-node-builder.workspace = true
 reth-primitives-traits.workspace = true
 reth-provider.workspace = true
 reth-prune-types.workspace = true
+reth-rpc-eth-api.workspace = true
 reth-rpc-server-types.workspace = true
 secp256k1.workspace = true
 reth-storage-api.workspace = true
@@ -108,6 +110,7 @@ reth-trie-db.workspace = true
 revm.workspace = true
 clap.workspace = true
 eyre.workspace = true
+jsonrpsee.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
 jiff.workspace = true
 tokio.workspace = true
@@ -121,9 +124,6 @@ tracy-client = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.30.1", features = ["signal"], optional = true }
-
-[dev-dependencies]
-jsonrpsee.workspace = true
 
 [[bin]]
 name = "tempo"
@@ -166,6 +166,7 @@ otlp = [
 pyroscope = ["dep:pyroscope", "dep:pyroscope_pprofrs"]
 js-tracer = [
 	"reth-node-builder/js-tracer",
+	"reth-rpc-eth-api/js-tracer",
 	"reth-ethereum/js-tracer",
 	"tempo-node/js-tracer",
 ]

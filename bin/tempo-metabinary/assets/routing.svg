@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 420" font-family="ui-sans-serif, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="14">
+  <style>
+    .bg { fill: #ffffff; }
+    .box { fill: #f6f8fa; stroke: #57606a; stroke-width: 1.5; }
+    .live { fill: #ddf4ff; stroke: #0969da; stroke-width: 1.5; }
+    .frozen { fill: #fff8c5; stroke: #9a6700; stroke-width: 1.5; }
+    .text { fill: #1f2328; }
+    .muted { fill: #57606a; font-size: 12px; }
+    .edge { stroke: #57606a; stroke-width: 1.5; fill: none; marker-end: url(#arrow); }
+    .head { fill: #57606a; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #0d1117; }
+      .box { fill: #161b22; stroke: #8b949e; }
+      .live { fill: #0c2d6b; stroke: #58a6ff; }
+      .frozen { fill: #3b2e00; stroke: #d29922; }
+      .text { fill: #e6edf3; }
+      .muted { fill: #8b949e; }
+      .edge { stroke: #8b949e; }
+      .head { fill: #8b949e; }
+    }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="head" d="M 0 0 L 10 5 L 0 10 z"/>
+    </marker>
+  </defs>
+  <rect class="bg" width="880" height="420"/>
+
+  <rect class="box" x="20" y="170" width="140" height="60" rx="8"/>
+  <text class="text" x="90" y="205" text-anchor="middle">client</text>
+
+  <rect class="box" x="210" y="40" width="300" height="340" rx="10"/>
+  <text class="text" x="360" y="65" text-anchor="middle" font-weight="600">tempo node (live binary)</text>
+
+  <rect class="box" x="235" y="85" width="250" height="56" rx="8"/>
+  <text class="text" x="360" y="108" text-anchor="middle">HTTP / WS / IPC / auth</text>
+  <text class="muted" x="360" y="127" text-anchor="middle">limits, auth, batching unchanged</text>
+
+  <rect class="box" x="235" y="165" width="250" height="70" rx="8"/>
+  <text class="text" x="360" y="190" text-anchor="middle">router</text>
+  <text class="muted" x="360" y="209" text-anchor="middle">classify method, resolve block,</text>
+  <text class="muted" x="360" y="225" text-anchor="middle">pick rule era</text>
+
+  <rect class="live" x="235" y="270" width="250" height="80" rx="8"/>
+  <text class="text" x="360" y="295" text-anchor="middle">native callback</text>
+  <text class="muted" x="360" y="314" text-anchor="middle">live era, original params</text>
+  <text class="muted" x="360" y="332" text-anchor="middle">live segments of split requests</text>
+
+  <rect class="frozen" x="590" y="120" width="270" height="110" rx="10"/>
+  <text class="text" x="725" y="148" text-anchor="middle" font-weight="600">frozen era worker</text>
+  <text class="muted" x="725" y="170" text-anchor="middle">&lt;era binary&gt; rpc-only</text>
+  <text class="muted" x="725" y="188" text-anchor="middle">127.0.0.1, HTTP + WS, read-only</text>
+  <text class="muted" x="725" y="206" text-anchor="middle">started lazily, reaped when idle</text>
+
+  <rect class="box" x="590" y="280" width="270" height="70" rx="10"/>
+  <text class="text" x="725" y="308" text-anchor="middle">shared datadir</text>
+  <text class="muted" x="725" y="328" text-anchor="middle">MDBX, static files, RocksDB</text>
+
+  <path class="edge" d="M 160 200 L 230 113"/>
+  <path class="edge" d="M 360 141 L 360 160"/>
+  <path class="edge" d="M 360 235 L 360 265"/>
+  <path class="edge" d="M 485 190 L 585 175"/>
+  <text class="muted" x="535" y="168" text-anchor="middle">frozen era</text>
+  <path class="edge" d="M 485 330 L 585 318"/>
+  <path class="edge" d="M 725 230 L 725 275"/>
+  <text class="muted" x="735" y="257">reads</text>
+</svg>

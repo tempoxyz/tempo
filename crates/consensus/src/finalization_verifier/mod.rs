@@ -7,18 +7,20 @@ use commonware_codec::{DecodeExt as _, ReadExt as _};
 use commonware_consensus::{
     Epochable as _,
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization},
-    types::{Epocher as _, FixedEpocher, Height},
+    types::{Epoch, Epocher as _, FixedEpocher, Height},
 };
 use commonware_cryptography::{
     bls12381::primitives::variant::MinSig, certificate::Provider as _, ed25519::PublicKey,
 };
 use commonware_parallel::Sequential;
+use eyre::{WrapErr as _, ensure, eyre};
 use rand_core::CryptoRng;
 use reth_consensus::ConsensusError;
 use tempo_chainspec::NetworkIdentity;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::consensus::validate_body_against_header;
 use tempo_node::rpc::consensus::CertifiedBlock;
+use tempo_primitives::TempoHeader;
 
 use crate::{config::NAMESPACE, consensus::Digest, epoch::SchemeProvider};
 
@@ -58,6 +60,16 @@ impl FinalizationVerifier {
             scheme_provider,
             ..self
         }
+    }
+
+    /// Returns the boundary whose DKG outcome authenticates certificates at `height`.
+    pub(crate) fn boundary_height(&self, height: Height) -> eyre::Result<Height> {
+        let epoch = self
+            .epoch_strategy
+            .containing(height)
+            .ok_or_else(|| eyre!("epoch strategy does not contain height `{height}`"))?
+            .epoch();
+        boundary_for_epoch(&self.epoch_strategy, epoch)
     }
 
     /// Return the verifier's authoritative network identity.
@@ -157,6 +169,47 @@ impl FinalizationVerifier {
 
         Ok(())
     }
+}
+
+/// Returns the last block of the epoch before `epoch`, or genesis for the first epoch.
+pub(crate) fn boundary_for_epoch(
+    epoch_strategy: &FixedEpocher,
+    epoch: Epoch,
+) -> eyre::Result<Height> {
+    let Some(previous) = epoch.previous() else {
+        return Ok(Height::zero());
+    };
+    epoch_strategy
+        .last(previous)
+        .ok_or_else(|| eyre!("epoch strategy did not provide a boundary for epoch `{previous}`"))
+}
+
+/// Verifies `certificate` against the DKG outcome of its epoch's `boundary` header.
+///
+/// The executed chain authenticates the boundary, so no boundary certificate is needed.
+pub(crate) fn verify_boundary(
+    rng: &mut impl CryptoRng,
+    certificate: &Finalization<Scheme<PublicKey, MinSig>, Digest>,
+    boundary: &TempoHeader,
+) -> eyre::Result<Scheme<PublicKey, MinSig>> {
+    let epoch = certificate.epoch();
+    let outcome = OnchainDkgOutcome::read(&mut boundary.extra_data().as_ref())
+        .wrap_err("failed to read DKG outcome from boundary header")?;
+    ensure!(
+        outcome.epoch() == epoch,
+        "boundary outcome is for epoch `{}`, expected finalization epoch `{epoch}`",
+        outcome.epoch,
+    );
+    let scheme = Scheme::verifier(
+        NAMESPACE,
+        outcome.players().clone(),
+        outcome.sharing().clone(),
+    );
+    ensure!(
+        certificate.verify(rng, &scheme, &Sequential),
+        "finalized floor failed verification"
+    );
+    Ok(scheme)
 }
 
 /// Why an already decoded certificate could not be verified.

@@ -837,6 +837,8 @@ where
         _checkpoint: JournalCheckpoint,
         gas: &mut GasTracker,
     ) -> Result<Option<FrameResult>, Self::Error> {
+        evm.ensure_supported_spec()?;
+
         // Tempo keeps the EIP-2780 runtime gas phase disabled: first-frame
         // creation charges nothing, so the phase checkpoint opened by
         // `pre_execution` (or `run_system_call`) commits immediately. The
@@ -1775,6 +1777,8 @@ where
     /// - Time window validation (validAfter/validBefore)
     #[inline]
     fn validate_env(&self, evm: &mut Self::Evm) -> Result<(), Self::Error> {
+        evm.ensure_supported_spec()?;
+
         // Reset per-tx fee state.
         evm.collected_fee = U256::ZERO;
         evm.validator_fee = U256::ZERO;
@@ -2484,6 +2488,8 @@ where
         _checkpoint: JournalCheckpoint,
         gas: &mut GasTracker,
     ) -> Result<Option<FrameResult>, Self::Error> {
+        evm.ensure_supported_spec()?;
+
         // See `Handler::execution`: EIP-2780 is disabled, commit the phase
         // checkpoint immediately.
         evm.ctx().journal_mut().checkpoint_commit();

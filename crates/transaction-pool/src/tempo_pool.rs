@@ -29,6 +29,7 @@ use reth_transaction_pool::{
     blobstore::InMemoryBlobStore,
     error::{PoolError, PoolErrorKind},
     identifier::TransactionId,
+    noop::NoopTransactionPool,
 };
 use revm::database::BundleAccount;
 use std::{sync::Arc, time::Instant};
@@ -1301,6 +1302,17 @@ where
             .read()
             .get_pending_transactions_by_address_and_nonce_key(address, nonce_key)
             .collect()
+    }
+}
+
+/// A pool without transactions, for RPC servers that only read stored chain data.
+impl TempoTransactionPoolExt for NoopTransactionPool<TempoPooledTransaction> {
+    fn get_pending_transactions_by_address_and_nonce_key(
+        &self,
+        _address: Address,
+        _nonce_key: U256,
+    ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
+        Vec::new()
     }
 }
 

@@ -23,7 +23,14 @@ use commonware_runtime::{
 use futures::{channel::oneshot, future::join_all};
 use jsonrpsee::{core::client::ClientT as _, http_client::HttpClientBuilder, rpc_params};
 use rand_core::CryptoRng;
-use reth_ethereum::provider::BlockIdReader as _;
+use reth_db::Database as _;
+use reth_ethereum::{
+    network::{
+        Peers as _,
+        api::{PeerKind, PeersInfo as _},
+    },
+    provider::{BlockIdReader as _, BlockNumReader as _, RocksDBProviderFactory as _},
+};
 use tempo_consensus::{feed::FeedStateHandle, follow};
 use tempo_node::rpc::consensus::{ConsensusFeed as _, Event, Query, types::Response};
 
@@ -165,8 +172,10 @@ struct FollowerBuilder {
     partition_prefix: Option<String>,
     runtime: Option<ExecutionRuntimeHandle>,
     donor: Option<TestingNode<Context>>,
+    stopped: Option<StoppedFollower>,
     with_gossip: bool,
     silent_upstream: bool,
+    historical_bootstrap: bool,
 }
 
 impl FollowerBuilder {
@@ -195,6 +204,24 @@ impl FollowerBuilder {
     fn silent_upstream(self) -> Self {
         Self {
             silent_upstream: true,
+            ..self
+        }
+    }
+
+    /// Runs the historical consensus bootstrap before the follow engine starts.
+    fn historical_bootstrap(self) -> Self {
+        Self {
+            historical_bootstrap: true,
+            ..self
+        }
+    }
+
+    /// Restarts a stopped follower on its consensus partition and execution database.
+    fn resume(self, stopped: StoppedFollower) -> Self {
+        Self {
+            name: Some(stopped.name.clone()),
+            partition_prefix: Some(stopped.name.clone()),
+            stopped: Some(stopped),
             ..self
         }
     }
@@ -235,8 +262,10 @@ impl FollowerBuilder {
             partition_prefix,
             runtime,
             donor,
+            stopped,
             with_gossip,
             silent_upstream,
+            historical_bootstrap,
         } = self;
         let runtime = runtime.expect("must pass a runtime handle to start a follower");
 
@@ -260,7 +289,9 @@ impl FollowerBuilder {
             gossip: with_gossip.then(|| crate::execution_runtime::gossip_config(true)),
         };
 
-        let (spawn_name, db, rocksdb) = if let Some(donor) = donor {
+        let (spawn_name, db, rocksdb) = if let Some(stopped) = stopped {
+            (stopped.name, stopped.database, Some(stopped.rocksdb))
+        } else if let Some(donor) = donor {
             (
                 donor.execution_node_name,
                 donor
@@ -277,9 +308,39 @@ impl FollowerBuilder {
         };
 
         let mut node = runtime
-            .spawn_node(&spawn_name, config, db, rocksdb)
+            .spawn_node(&spawn_name, config, db.clone(), rocksdb)
             .await
             .expect("must be able to spawn follower execution node");
+
+        if historical_bootstrap {
+            let upstream_node = upstream.execution_node();
+            let record = upstream_node.network.local_node_record();
+            node.node.network.connect_peer_kind(
+                record.id,
+                PeerKind::Basic,
+                record.tcp_addr(),
+                None,
+            );
+            let feed = upstream.feed_state();
+            let latest_finalization = async move {
+                if silent_upstream {
+                    return std::future::pending().await;
+                }
+                match feed.get_finalization(Query::Latest).await {
+                    Response::Success(block) => Ok(block),
+                    other => Err(eyre::eyre!("upstream has no finalization: {other:?}")),
+                }
+            };
+            tempo_consensus::storage::bootstrap::bootstrap(
+                context.child("historical_bootstrap"),
+                &partition_prefix,
+                None,
+                &node.node,
+                latest_finalization,
+            )
+            .await
+            .expect("historical bootstrap failed");
+        }
 
         let (in_process_actor, upstream_mailbox) = in_process::init(
             context.child("upstream"),
@@ -339,6 +400,7 @@ impl FollowerBuilder {
         Follower {
             name,
             feed: feed_state,
+            database: db,
             execution_node: node,
             _handle: handle,
         }
@@ -348,13 +410,42 @@ impl FollowerBuilder {
 struct Follower {
     name: String,
     feed: FeedStateHandle,
+    database: reth_db::DatabaseEnv,
     execution_node: ExecutionNode,
     _handle: Handle<eyre::Result<()>>,
+}
+
+/// The storage of a stopped follower, see [`FollowerBuilder::resume`].
+struct StoppedFollower {
+    name: String,
+    database: reth_db::DatabaseEnv,
+    rocksdb: reth_ethereum::provider::providers::RocksDBProvider,
 }
 
 impl Follower {
     fn builder() -> FollowerBuilder {
         FollowerBuilder::new()
+    }
+
+    /// Stops the follow engine and execution node, flushing pending database writes.
+    async fn stop(self) -> StoppedFollower {
+        let Self {
+            name,
+            database,
+            execution_node,
+            _handle,
+            ..
+        } = self;
+        _handle.abort();
+        let _ = _handle.await;
+        let rocksdb = execution_node.node.provider().rocksdb_provider();
+        execution_node.shutdown().await;
+        drop(database.tx_mut().expect("failed to acquire rw transaction"));
+        StoppedFollower {
+            name,
+            database,
+            rocksdb,
+        }
     }
 
     async fn connect_peers<T: Clock>(&self, peers: &[TestingNode<T>]) {
@@ -666,5 +757,56 @@ fn follower_starts_from_validator_archives() {
         // With an archive, the follower syncs from that state. All historical state remains
         let historical_cert = follower.feed.get_finalization(Query::Height(1)).await;
         historical_cert.unwrap();
+    });
+}
+
+/// A historically bootstrapped follower starts from a sparse archive and restarts offline.
+#[test_traced]
+fn historical_bootstrap_anchors_followers_and_recovers_offline() {
+    let _ = tempo_eyre::install();
+
+    let start_height = 2 * EPOCH_LENGTH + 5;
+
+    let setup = Setup::new(crate::VERIFICATION_MODE)
+        .how_many_signers(1)
+        .epoch_length(EPOCH_LENGTH);
+    let cfg = deterministic::Config::default().with_seed(setup.seed);
+
+    let executor = Runner::from(cfg);
+    executor.start(|mut context| async move {
+        let (mut validators, execution_runtime) = setup_validators(&mut context, setup).await;
+        join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+        wait_for_height(&context, &validators[0], start_height).await;
+
+        let follower = Follower::builder()
+            .runtime(execution_runtime.handle())
+            .historical_bootstrap()
+            .follow(&mut context, &validators[0])
+            .await;
+        let provider = &follower.execution_node.node.provider;
+        let floor = provider.finalized_block_number().unwrap().unwrap();
+        assert!(floor >= start_height, "{floor}");
+        assert!(provider.best_block_number().unwrap() >= floor);
+
+        // The marshal starts from the lone floor certificate and keeps following.
+        follower.connect_peers(&validators).await;
+        wait_for_height(&context, &follower, floor + EPOCH_LENGTH).await;
+
+        let stopped = follower.stop().await;
+        let follower = Follower::builder()
+            .runtime(execution_runtime.handle())
+            .resume(stopped)
+            .historical_bootstrap()
+            .silent_upstream()
+            .follow(&mut context, &validators[0])
+            .await;
+        let finalized = follower
+            .execution_node
+            .node
+            .provider
+            .finalized_block_number()
+            .unwrap()
+            .unwrap();
+        assert!(finalized >= floor, "{finalized} < {floor}");
     });
 }

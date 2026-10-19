@@ -486,13 +486,15 @@ mod tests {
     use commonware_runtime::{Runner as _, deterministic::Runner};
     use commonware_utils::{N3f1, TryFromIterator as _};
     use rand::SeedableRng as _;
-    use reth_ethereum::evm::revm::{State, database::StateProviderDatabase};
-    use reth_node_builder::ConfigureEvm as _;
+    use reth_ethereum::chainspec::EthChainSpec as _;
     use reth_provider::{
         EvmStateProviderBox, StateProvider as _,
         test_utils::{ExtendedAccount, MockEthProvider},
     };
-    use tempo_node::evm::{TempoEvmConfig, evm::TempoEvm};
+    use tempo_chainspec::{
+        TempoChainSpec, constants::moderato::MODERATO_T11_TIMESTAMP, hardfork::TempoHardfork,
+        spec::MODERATO,
+    };
     use tempo_precompiles::{
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         validator_config_v2::{IValidatorConfigV2, VALIDATOR_NS_ADD},
@@ -523,14 +525,8 @@ mod tests {
             Ok(Box::new(self.provider.clone().into_evm_state_provider()))
         }
 
-        fn evm_for_block(
-            &self,
-            db: State<StateProviderDatabase<EvmStateProviderBox>>,
-            header: &TempoHeader,
-        ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<EvmStateProviderBox>>>> {
-            TempoEvmConfig::moderato()
-                .evm_for_block(db, header)
-                .map_err(eyre::Report::new)
+        fn chain_spec(&self) -> &TempoChainSpec {
+            &MODERATO
         }
     }
 
@@ -748,6 +744,30 @@ mod tests {
         execution.finalized = Some(height);
         execution.headers = HashMap::from([(boundary, boundary_header), (height, tip_header)]);
         execution
+    }
+
+    #[test]
+    fn reads_validator_config_below_the_execution_floor() {
+        let execution = execution_with_validators(&[peer(1), peer(2)]).unwrap();
+        let mut header = execution_header(execution.height);
+        header.inner.timestamp = MODERATO_T11_TIMESTAMP - 1;
+
+        let read = crate::validators::read_validator_config_with_state(
+            &execution,
+            Box::new(execution.provider.clone().into_evm_state_provider()),
+            &header,
+            |config: &ValidatorConfigV2| {
+                let ctx = StorageCtx;
+                Ok((
+                    ctx.spec(),
+                    ctx.chain_id(),
+                    ctx.block_number(),
+                    config.validator_count()?,
+                ))
+            },
+        );
+        let expected = (TempoHardfork::T10, MODERATO.chain_id(), execution.height, 2);
+        assert_eq!(read.unwrap(), expected);
     }
 
     #[test]

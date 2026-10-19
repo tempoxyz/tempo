@@ -1,0 +1,39 @@
+[package]
+name = "tempo-metabinary"
+description = "Routes execution of frozen Tempo eras to their historical binaries"
+
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+publish.workspace = true
+
+[lib]
+name = "tempo_metabinary"
+
+[lints]
+workspace = true
+
+[dependencies]
+tempo-hardfork = { workspace = true, features = ["std", "serde"] }
+
+alloy-eips = { workspace = true, features = ["serde"] }
+alloy-primitives = { workspace = true, features = ["serde"] }
+eyre.workspace = true
+futures.workspace = true
+jsonrpsee.workspace = true
+libc.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["std"] }
+tokio = { workspace = true, features = ["macros", "net", "process", "rt", "signal", "sync", "time"] }
+tokio-util = { workspace = true, features = ["rt"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["full", "test-util"] }

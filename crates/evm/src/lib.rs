@@ -165,6 +165,7 @@ impl ConfigureEvm for TempoEvmConfig {
     }
 
     fn evm_env(&self, header: &TempoHeader) -> Result<EvmEnvFor<Self>, Self::Error> {
+        let spec = supported_hardfork_at(self.chain_spec(), header.timestamp())?;
         let EvmEnv { cfg_env, block_env } = EvmEnv::for_eth_block(
             header,
             self.chain_spec(),
@@ -172,8 +173,6 @@ impl ConfigureEvm for TempoEvmConfig {
             self.chain_spec()
                 .blob_params_at_timestamp(header.timestamp()),
         );
-
-        let spec = self.chain_spec().tempo_hardfork_at(header.timestamp());
 
         // Apply TIP-1000 gas params for T1 hardfork.
         //
@@ -213,6 +212,7 @@ impl ConfigureEvm for TempoEvmConfig {
         parent: &TempoHeader,
         attributes: &Self::NextBlockEnvCtx,
     ) -> Result<EvmEnvFor<Self>, Self::Error> {
+        let spec = supported_hardfork_at(self.chain_spec(), attributes.timestamp)?;
         let EvmEnv { cfg_env, block_env } = EvmEnv::for_eth_next_block(
             parent,
             NextEvmEnvAttributes {
@@ -230,8 +230,6 @@ impl ConfigureEvm for TempoEvmConfig {
             self.chain_spec()
                 .blob_params_at_timestamp(attributes.timestamp),
         );
-
-        let spec = self.chain_spec().tempo_hardfork_at(attributes.timestamp);
 
         // Apply TIP-1000 gas params for T1 hardfork. TIP-1016 is gated by
         // `cfg_env.enable_amsterdam_eip8037`, independent of the T4 hardfork
@@ -313,6 +311,18 @@ impl ConfigureEvm for TempoEvmConfig {
     }
 }
 
+/// Returns the hardfork at `timestamp`, failing if it predates the supported floor.
+fn supported_hardfork_at(
+    chain_spec: &TempoChainSpec,
+    timestamp: u64,
+) -> Result<TempoHardfork, TempoEvmError> {
+    let spec = chain_spec.tempo_hardfork_at(timestamp);
+    if spec < TempoHardfork::MINIMUM_SUPPORTED {
+        return Err(TempoEvmError::UnsupportedHardfork(spec));
+    }
+    Ok(spec)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,6 +336,63 @@ mod tests {
         BlockBody, SubBlockMetadata, TempoConsensusContext, ed25519::PublicKey,
         subblock::SubBlockVersion, transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
     };
+
+    #[test]
+    fn evm_env_rejects_forks_below_the_floor() {
+        let evm_config = TempoEvmConfig::new(test_chainspec());
+        let chain_spec = evm_config.chain_spec();
+        let parent = TempoHeader {
+            inner: alloy_consensus::Header {
+                base_fee_per_gas: Some(1),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        for timestamp in TempoHardfork::VARIANTS
+            .iter()
+            .filter_map(|fork| fork.activation_timestamp(chain_spec.chain_id()))
+        {
+            let spec = chain_spec.tempo_hardfork_at(timestamp);
+            let mut header = parent.clone();
+            header.inner.timestamp = timestamp;
+            let attributes = TempoNextBlockEnvAttributes {
+                inner: NextBlockEnvAttributes {
+                    timestamp,
+                    suggested_fee_recipient: Address::ZERO,
+                    prev_randao: B256::ZERO,
+                    gas_limit: 30_000_000,
+                    parent_beacon_block_root: None,
+                    withdrawals: None,
+                    extra_data: Default::default(),
+                    slot_number: None,
+                },
+                general_gas_limit: 0,
+                shared_gas_limit: 0,
+                timestamp_millis_part: 0,
+                consensus_context: None,
+            };
+            for result in [
+                evm_config.evm_env(&header).map(|env| env.cfg_env.spec),
+                evm_config
+                    .next_evm_env(&parent, &attributes)
+                    .map(|env| env.cfg_env.spec),
+            ] {
+                match result {
+                    Ok(actual) => {
+                        assert!(actual == spec && spec >= TempoHardfork::MINIMUM_SUPPORTED)
+                    }
+                    Err(err) => assert!(
+                        matches!(err, TempoEvmError::UnsupportedHardfork(f) if f == spec)
+                            && spec < TempoHardfork::MINIMUM_SUPPORTED
+                    ),
+                }
+            }
+        }
+        assert_eq!(
+            TempoEvmError::UnsupportedHardfork(TempoHardfork::T10).to_string(),
+            "T10 blocks are executed by their frozen era binary, not this release"
+        );
+    }
 
     #[test]
     fn test_evm_config_can_query_tempo_hardforks() {

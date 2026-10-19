@@ -500,6 +500,11 @@ where
     type Result = TempoTxResult;
 
     fn apply_pre_execution_changes(&mut self) -> Result<(), alloy_evm::block::BlockExecutionError> {
+        self.evm_mut()
+            .inner_mut()
+            .ensure_supported_spec()
+            .map_err(BlockValidationError::msg)?;
+
         if self
             .inner
             .ctx

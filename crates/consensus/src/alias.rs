@@ -5,12 +5,11 @@ pub(crate) mod marshal {
     use std::{num::NonZeroUsize, sync::Arc};
 
     use alloy_consensus::{BlockHeader as _, Sealable as _};
-    use commonware_codec::ReadExt as _;
     use commonware_consensus::{
         Epochable as _,
-        marshal::{self, core, standard::Standard},
+        marshal::{self, core, standard::Standard, store::Blocks as _},
         simplex::scheme::bls12381_threshold::vrf::Scheme,
-        types::{Epoch, Epocher as _, FixedEpocher, Height, Round, ViewDelta},
+        types::{FixedEpocher, Height, Round, ViewDelta},
     };
     use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
     use commonware_parallel::Sequential;
@@ -24,7 +23,6 @@ pub(crate) mod marshal {
     use reth_ethereum::{chainspec::EthChainSpec, provider::db::DatabaseEnv};
     use reth_node_builder::NodeTypesWithDBAdapter;
     use reth_provider::{BlockReader as _, providers::BlockchainProvider};
-    use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
     use tempo_node::{TempoFullNode, node::TempoNode};
     use tempo_primitives::TempoHeader;
     use tracing::{info, instrument};
@@ -32,6 +30,7 @@ pub(crate) mod marshal {
     use crate::{
         consensus::{Digest, block::Block},
         epoch::SchemeProvider,
+        finalization_verifier::{boundary_for_epoch, verify_boundary},
         gossip::Certificate,
         storage::{self, Hybrid},
     };
@@ -288,13 +287,25 @@ pub(crate) mod marshal {
             "genesis must not have a finalization certificate"
         );
 
+        // Certificate archives can be sparse, for example after a historical bootstrap. Start
+        // from the tip only if every block up to it is available without backfill.
+        let (execution_finalized, _) = execution_finalized_point(execution_node);
+        let floor_index = if blocks
+            .next_gap(execution_finalized)
+            .0
+            .is_some_and(|end| end.get() >= last)
+        {
+            last
+        } else {
+            first
+        };
         let floor_certificate = certificates
-            .get(Identifier::Index(first))
+            .get(Identifier::Index(floor_index))
             .await
             .wrap_err("failed reading finalized floor certificate")?
             .ok_or_eyre("archive did not contain finalized floor certificate")?;
-        let floor = (Height::new(first), floor_certificate.proposal.payload);
-        let certificate = if first == last {
+        let floor = (Height::new(floor_index), floor_certificate.proposal.payload);
+        let certificate = if floor_index == last {
             floor_certificate
         } else {
             certificates
@@ -386,37 +397,9 @@ pub(crate) mod marshal {
             .ok_or_else(|| {
                 eyre!("missing boundary header at height `{boundary}` in hybrid store")
             })?;
-
-        let onchain_outcome = OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
-            .wrap_err("failed to read DKG outcome from boundary header")?;
-        ensure!(
-            onchain_outcome.epoch() == epoch,
-            "boundary outcome is for epoch `{}`, expected finalization epoch `{epoch}`",
-            onchain_outcome.epoch,
-        );
-
-        let scheme = Scheme::verifier(
-            crate::config::NAMESPACE,
-            onchain_outcome.players().clone(),
-            onchain_outcome.sharing().clone(),
-        );
-
-        ensure!(
-            finalization.verify(context, &scheme, &Sequential),
-            "finalized floor failed verification"
-        );
-
+        let scheme = verify_boundary(context, finalization, &header)?;
         scheme_provider.register(epoch, scheme);
         Ok(())
-    }
-
-    fn boundary_for_epoch(epoch_strategy: &FixedEpocher, epoch: Epoch) -> eyre::Result<Height> {
-        let Some(previous) = epoch.previous() else {
-            return Ok(Height::zero());
-        };
-        epoch_strategy.last(previous).ok_or_else(|| {
-            eyre!("epoch strategy did not provide a boundary for epoch `{previous}`")
-        })
     }
 
     fn execution_finalized_point(execution_node: &TempoFullNode) -> (Height, Digest) {

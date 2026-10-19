@@ -17,6 +17,7 @@ ignore = [
     "tempo-ext",
     "tempo-eyre",
     "tempo-faucet",
+    "tempo-metabinary",
     "tempo-node",
     "tempo-payload-builder",
     "tempo-payload-types",

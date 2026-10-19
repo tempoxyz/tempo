@@ -27,10 +27,14 @@ use opentelemetry_otlp as _;
 
 pub mod cli;
 mod defaults;
+mod eras;
 mod follow;
+mod history;
 mod overrides;
 pub mod p2p_proxy;
+mod re_execute;
 pub mod regenesis;
+pub mod rpc_only;
 pub mod shadow_replay;
 mod snapshot_download;
 mod snapshot_manifest;
@@ -61,10 +65,12 @@ use futures::{
     future::{Either, FusedFuture as _},
 };
 use reth_cli_runner::CliRunner;
-use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands};
+use reth_ethereum::{
+    chainspec::EthChainSpec as _, cli::Commands, rpc::builder::config::RethRpcServerConfig as _,
+};
 use reth_network_api::Peers;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
-use std::{sync::Arc, thread};
+use std::{ops::ControlFlow, sync::Arc, thread};
 use tempo_chainspec::{
     hardfork::TempoHardfork,
     spec::{DEV, TempoChainSpec},
@@ -174,14 +180,7 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
     tempo_node::init_version_metadata();
     defaults::init_defaults();
 
-    // `tempo snapshot-manifest` and `tempo download` wrap the Reth variants, so they
-    // cannot be added without colliding. Mutate those subcommands with the wrapped ones.
-    let matches = match TempoCli::command()
-        .about("Tempo")
-        .mut_subcommand("snapshot-manifest", |_| snapshot_manifest::Args::command())
-        .mut_subcommand("download", |_| snapshot_download::Args::command())
-        .try_get_matches_from(std::env::args_os())
-    {
+    let matches = match tempo_command().try_get_matches_from(std::env::args_os()) {
         Ok(matches) => matches,
         Err(err) => {
             if err.kind() == clap::error::ErrorKind::InvalidSubcommand {
@@ -208,6 +207,16 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
             err.exit();
         }
+    };
+
+    // Frozen ranges are re-executed by their era binaries before dispatch.
+    let matches = match re_execute::delegate(&matches)? {
+        ControlFlow::Break(()) => return Ok(()),
+        ControlFlow::Continue(None) => matches,
+        ControlFlow::Continue(Some(args)) => match tempo_command().try_get_matches_from(args) {
+            Ok(matches) => matches,
+            Err(err) => err.exit(),
+        },
     };
 
     // Detect overwritten subcommands and directly run them as
@@ -255,6 +264,12 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             node_cmd.builder.max_payload_tasks
         );
     }
+
+    // Frozen eras are synced by their own binaries before this node opens storage for writing.
+    let needs_history_anchor = match history::prepare(&cli)? {
+        ControlFlow::Continue(needs_history_anchor) => needs_history_anchor,
+        ControlFlow::Break(()) => return Ok(()),
+    };
 
     // If telemetry is enabled, set logs OTLP (conflicts_with in TelemetryArgs prevents both being set)
     let mut telemetry_config = None;
@@ -375,6 +390,31 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
 
         let runner = commonware_runtime::tokio::Runner::new(runtime_config);
         let ret = runner.start(async move |ctx| {
+            if needs_history_anchor {
+                let upstream = args
+                    .follow
+                    .as_ref()
+                    .unwrap_or(&follow::FollowMode::Auto)
+                    .resolve_url(&node.chain_spec())
+                    .ok_or_eyre("historical handoff requires a consensus RPC upstream")?;
+                tokio::select! {
+                    biased;
+
+                    () = shutdown_token_clone.cancelled() => return Ok(()),
+
+                    ret = tempo_consensus::storage::bootstrap::bootstrap(
+                        ctx.child("history_bootstrap"),
+                        tempo_consensus::PARTITION_PREFIX,
+                        args.consensus.network_identity(),
+                        &node,
+                        tempo_consensus::storage::bootstrap::latest_finalization(
+                            &upstream,
+                            args.follow_upstream_request_timeout.into_duration(),
+                        ),
+                    ) => ret.wrap_err("failed to bootstrap consensus after historical sync")?,
+                }
+            }
+
             let mut metrics_server = tempo_consensus::metrics::install(
                 ctx.child("metrics"),
                 args.consensus.metrics_address,
@@ -529,6 +569,26 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             None
         };
         let chain_id = builder.config().chain.chain_id();
+        let eras = match eras::release_schedule(&builder.config().chain)? {
+            Some(schedule) => {
+                let config = builder.config();
+                Some(Arc::new(eras::EraRuntime::new(
+                    schedule,
+                    &config.chain,
+                    config
+                        .datadir
+                        .clone()
+                        .resolve_datadir(config.chain.chain())
+                        .data_dir()
+                        .to_path_buf(),
+                    config.datadir.static_files_path.clone(),
+                    config.datadir.rocksdb_path.clone(),
+                    &config.rpc.eth_config(),
+                )?))
+            }
+            None => None,
+        };
+        let eras_for_rpc = eras.clone();
 
         #[cfg(feature = "custom-pcrs")]
         if let Some(policy) = args.custom_pcrs.clone() {
@@ -590,6 +650,12 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
                         let consensus_rpc = TempoConsensusRpc::new(cl_feed_state);
                         ctx.modules.merge_configured(consensus_rpc.into_rpc())
                             .wrap_err("failed to register consensus rpc module")?;
+                    }
+
+                    // Last, so every registered method is routed.
+                    if let Some(eras) = &eras_for_rpc {
+                        eras.install(ctx.modules, ctx.auth_module, ctx.registry.eth_api().clone())
+                            .wrap_err("failed to route historical execution")?;
                     }
 
                     Ok(())
@@ -672,6 +738,10 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
             }
         }
 
+        if let Some(eras) = eras {
+            eras.shutdown().await;
+        }
+
         #[cfg(feature = "pyroscope")]
         if let Some(agent) = pyroscope_agent {
             agent.shutdown();
@@ -689,6 +759,16 @@ pub fn tempo_main_with(mut overrides: TempoOverrides) -> eyre::Result<()> {
         Err(unwind) => std::panic::resume_unwind(unwind),
     }
     Ok(())
+}
+
+/// Returns the Tempo CLI with the wrapped `snapshot-manifest` and `download` subcommands.
+fn tempo_command() -> clap::Command {
+    // `tempo snapshot-manifest` and `tempo download` wrap the Reth variants, so they
+    // cannot be added without colliding. Mutate those subcommands with the wrapped ones.
+    TempoCli::command()
+        .about("Tempo")
+        .mut_subcommand("snapshot-manifest", |_| snapshot_manifest::Args::command())
+        .mut_subcommand("download", |_| snapshot_download::Args::command())
 }
 
 /// Creates a temporary directory on tmpfs where available.
