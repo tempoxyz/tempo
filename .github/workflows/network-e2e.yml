@@ -24,7 +24,7 @@ jobs:
       sha: ${{ steps.target.outputs.sha }}
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/secure-runner@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
       - name: Resolve exact revision
         id: target
         env:
@@ -45,7 +45,7 @@ jobs:
             -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" --silent
       - name: Detect consensus changes
         id: paths
-        uses: tempoxyz/gh-actions/actions/changed-paths@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/changed-paths@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
         with:
           base: ${{ steps.target.outputs.base }}
           head: ${{ steps.target.outputs.sha }}
@@ -54,7 +54,7 @@ jobs:
               - 'crates/consensus/**'
       - name: Detect Reth revision changes
         id: reth
-        uses: tempoxyz/gh-actions/actions/cargo-dependency-changes@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/cargo-dependency-changes@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
         with:
           base: ${{ steps.target.outputs.base }}
           head: ${{ steps.target.outputs.sha }}
@@ -96,7 +96,7 @@ jobs:
       id-token: write
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/secure-runner@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
       - name: Initialize status for this dispatch attempt
         env:
           GH_TOKEN: ${{ github.token }}

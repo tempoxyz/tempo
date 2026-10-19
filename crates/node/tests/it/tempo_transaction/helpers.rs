@@ -864,7 +864,7 @@ where
     Ok(value)
 }
 
-async fn settled_balance(
+pub(crate) async fn settled_balance(
     provider: &impl Provider,
     token: Address,
     who: Address,

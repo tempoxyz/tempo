@@ -80,7 +80,7 @@ jobs:
       pr-head-ref: ${{ steps.args.outputs.pr-head-ref }}
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/secure-runner@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
 
       - name: Detect bench command
         id: command
@@ -96,7 +96,7 @@ jobs:
       - name: Fetch GitHub token via STS
         id: github-sts
         if: steps.command.outputs.is-bench-command == 'true' || steps.command.outputs.is-clear-command == 'true'
-        uses: tempoxyz/gh-actions/actions/github-sts@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/github-sts@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
         with:
           policy: bench-ack
 
@@ -626,7 +626,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: ./.github/workflows/bench-e2e.yml
+    uses: ./.github/workflows/bench-e2e.yml # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
     with:
       pr: ${{ needs.tempo-bench-ack.outputs.pr }}
       actor: ${{ needs.tempo-bench-ack.outputs.actor }}
@@ -690,7 +690,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: ./.github/workflows/bench-replay.yml
+    uses: ./.github/workflows/bench-replay.yml # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
     with:
       chain: ${{ needs.tempo-bench-ack.outputs.chain }}
       pr: ${{ needs.tempo-bench-ack.outputs.pr }}

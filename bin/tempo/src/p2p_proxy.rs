@@ -814,16 +814,21 @@ mod tests {
         consensus::{BlockHeader, Header},
         primitives::Sealable,
         providers::mock::Asserter,
-        rpc::types::BlockTransactions,
+        rpc::{client::RpcClient, types::BlockTransactions},
+        transports::layers::RetryBackoffLayer,
     };
     use reth_eth_wire_types::GetBlockHeaders;
     use tempo_alloy::rpc::TempoHeaderResponse;
 
     const MODERATO_RPC: &str = "https://rpc.moderato.tempo.xyz";
+    const TIP_MARGIN: u64 = 64;
 
     fn moderato_provider() -> impl Provider<TempoNetwork> {
-        ProviderBuilder::new_with_network::<TempoNetwork>()
-            .connect_http(MODERATO_RPC.parse().unwrap())
+        ProviderBuilder::new_with_network::<TempoNetwork>().connect_client(
+            RpcClient::builder()
+                .layer(RetryBackoffLayer::new(10, 100, u64::MAX))
+                .http(MODERATO_RPC.parse().unwrap()),
+        )
     }
 
     fn cached_body_with_min_size(min_size: usize) -> tempo_primitives::BlockBody {
@@ -1032,7 +1037,7 @@ mod tests {
         let provider = moderato_provider();
         let cache = SharedCache::from(BlockCache::new(100));
 
-        let latest = provider.get_block_number().await.unwrap();
+        let latest = provider.get_block_number().await.unwrap() - TIP_MARGIN;
         let start = latest.saturating_sub(4);
 
         // Fetch 5 rising headers
@@ -1066,11 +1071,11 @@ mod tests {
         let mut cache = BlockCache::new(100);
 
         // Learn a hash, then clear cache to force RPC fetch
-        let latest = provider.get_block_number().await.unwrap();
-        fetch_and_cache_block(&provider, &mut cache, latest)
+        let number = provider.get_block_number().await.unwrap() - TIP_MARGIN;
+        fetch_and_cache_block(&provider, &mut cache, number)
             .await
             .unwrap();
-        let hash = cache.get_by_number(latest).unwrap().hash;
+        let hash = cache.get_by_number(number).unwrap().hash;
         let cache = SharedCache::from(BlockCache::new(100));
 
         let bodies = resolve_bodies(&provider, &cache, &[hash]).await;
@@ -1086,7 +1091,7 @@ mod tests {
         let provider = moderato_provider();
         let cache = SharedCache::from(BlockCache::new(100));
 
-        let latest = provider.get_block_number().await.unwrap();
+        let latest = provider.get_block_number().await.unwrap() - TIP_MARGIN;
         let start = latest.saturating_sub(2);
         let start_block = provider
             .get_block_by_number(start.into())

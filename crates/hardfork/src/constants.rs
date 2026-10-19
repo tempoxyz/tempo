@@ -3,6 +3,14 @@
 //! Gas-accounting constants are grouped under [`gas`].
 //! Hardfork activation schedules live in [`mainnet`] and [`moderato`].
 
+use alloy_primitives::{Address, address};
+
+/// Protocol pathUSD token address.
+pub const PATH_USD_ADDRESS: Address = address!("0x20C0000000000000000000000000000000000000");
+
+/// OpenUSD token address, shared by Tempo mainnet and testnet.
+pub const OUSD_ADDRESS: Address = address!("0x20c0000000000000000000006a37da5c996874be");
+
 pub mod gas {
     //! Gas-accounting constants shared with `spec.rs`.
 

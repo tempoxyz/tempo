@@ -54,6 +54,7 @@ where
         journal: &mut Journal<DB>,
         tx: &TempoTxEnv,
         _fee_payer: Address,
+        _max_fee: U256,
         spec: TempoHardfork,
         actions: StorageActions,
     ) -> Result<Address> {

@@ -274,14 +274,17 @@ use alloy::{
     sol_types::SolEvent,
     transports::http::reqwest::Url,
 };
+use alloy_eips::Encodable2718;
 use alloy_primitives::{B256, Bytes};
 use eyre::WrapErr;
 use reth_e2e_test_utils::{
     E2ETestSetupBuilder,
+    node::MinedBlock,
     wallet::{TestAccount, Wallet},
 };
 use reth_rpc_builder::RpcModuleSelection;
 use std::{
+    ops::{Deref, DerefMut},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -298,8 +301,8 @@ use tempo_contracts::precompiles::{
     ITIP20::{self, ITIP20Instance},
     ITIP20Factory,
 };
-use tempo_node::node::TempoNode;
-use tempo_payload_types::TempoPayloadAttributes;
+use tempo_node::{node::TempoNode, rpc::error::TempoEthApiError};
+use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::ISSUER_ROLE};
 
 /// Creates a test TIP20 token with issuer role granted to the caller
@@ -353,6 +356,82 @@ pub(crate) enum NodeSource {
 
 /// A local test node, kept alive for the duration of a test.
 pub(crate) type LocalTestNode = reth_e2e_test_utils::NodeHelperType<TempoNode>;
+
+pub(crate) type TestMinedBlock = MinedBlock<TempoBuiltPayload, TempoTransactionReceipt>;
+
+pub(crate) struct TestNode(LocalTestNode);
+
+impl TestNode {
+    pub(crate) fn into_inner(self) -> LocalTestNode {
+        self.0
+    }
+
+    pub(crate) async fn mine(
+        &mut self,
+        txs: impl IntoIterator<Item = Bytes>,
+    ) -> eyre::Result<TestMinedBlock> {
+        self.0.mine(txs).await
+    }
+
+    pub(crate) async fn mine_signed<T: Encodable2718>(
+        &mut self,
+        txs: impl IntoIterator<Item = T>,
+    ) -> eyre::Result<TestMinedBlock> {
+        self.0.mine_signed(txs).await
+    }
+
+    pub(crate) async fn mine_pooled(
+        &mut self,
+        hashes: impl IntoIterator<Item = B256>,
+    ) -> eyre::Result<TestMinedBlock> {
+        self.0.mine_pooled(hashes).await
+    }
+
+    pub(crate) async fn inject_and_advance(
+        &mut self,
+        raw_tx: Bytes,
+    ) -> eyre::Result<(B256, TempoBuiltPayload)> {
+        self.0.inject_and_advance(raw_tx).await
+    }
+
+    pub(crate) async fn advance_until_receipt(
+        &mut self,
+        hash: B256,
+    ) -> eyre::Result<TempoTransactionReceipt> {
+        self.0.advance_until_receipt(hash).await
+    }
+
+    pub(crate) async fn inject_tx(&self, raw_tx: Bytes) -> Result<B256, TempoEthApiError> {
+        self.0.rpc.inject_tx(raw_tx).await
+    }
+
+    pub(crate) async fn transaction_receipt(
+        &self,
+        hash: B256,
+    ) -> Result<Option<TempoTransactionReceipt>, TempoEthApiError> {
+        self.0.rpc.transaction_receipt(hash).await
+    }
+}
+
+impl From<LocalTestNode> for TestNode {
+    fn from(node: LocalTestNode) -> Self {
+        Self(node)
+    }
+}
+
+impl Deref for TestNode {
+    type Target = LocalTestNode;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for TestNode {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
 
 /// Returns the harness setup for `num_nodes` Tempo nodes on `chain_spec`.
 ///
@@ -430,7 +509,7 @@ pub(crate) fn t1_account(wallet: &Wallet, index: u32) -> TestAccount {
 /// Result type for single node setup
 pub(crate) struct SingleNodeSetup {
     /// The node handle for direct manipulation (inject_tx, advance_block, etc.)
-    pub node: reth_e2e_test_utils::NodeHelperType<TempoNode>,
+    pub node: TestNode,
     /// Latest Tempo hardfork active at genesis (timestamp 0).
     pub hardfork: TempoHardfork,
 }
@@ -438,7 +517,7 @@ pub(crate) struct SingleNodeSetup {
 /// Result type for multi-node setup
 pub(crate) struct MultiNodeSetup {
     /// Node handles for direct manipulation
-    pub nodes: Vec<reth_e2e_test_utils::NodeHelperType<TempoNode>>,
+    pub nodes: Vec<TestNode>,
 }
 
 /// Result type for HTTP-only setup (no direct node access)
@@ -548,7 +627,10 @@ impl TestNodeBuilder {
             .build_single()
             .await?;
 
-        Ok(SingleNodeSetup { node, hardfork })
+        Ok(SingleNodeSetup {
+            node: node.into(),
+            hardfork,
+        })
     }
 
     /// Build multiple nodes with direct access
@@ -572,7 +654,9 @@ impl TestNodeBuilder {
             .build()
             .await?;
 
-        Ok(MultiNodeSetup { nodes })
+        Ok(MultiNodeSetup {
+            nodes: nodes.into_iter().map(Into::into).collect(),
+        })
     }
 
     /// Build HTTP-only setup

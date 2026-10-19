@@ -42,7 +42,7 @@ use crate::utils::{
 #[tokio::test(flavor = "multi_thread")]
 async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
-    let activation = now_secs() + 60;
+    let activation = now_secs() + 30;
     let mut portal_address = Address::ZERO;
     let l1 = L1TestNode::start_with(|cfg| {
         let mut genesis = cfg.chain.genesis().clone();
