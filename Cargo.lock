@@ -14825,6 +14825,7 @@ dependencies = [
 name = "tempo-zone"
 version = "0.3.5"
 dependencies = [
+ "alloy-primitives",
  "reth-cli-util",
  "reth-node-core",
  "rustls",
