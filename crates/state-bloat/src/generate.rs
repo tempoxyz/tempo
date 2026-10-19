@@ -27,7 +27,7 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
     NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager, storage::StorageKey, tip20::tip20_slots,
 };
-use tempo_primitives::transaction::TIP20_PAYMENT_PREFIX;
+use tempo_primitives::TempoAddressExt;
 
 /// Magic bytes for the state bloat binary format (8 bytes)
 const MAGIC: &[u8; 8] = b"TEMPOSB\x00";
@@ -166,7 +166,8 @@ impl GenerateStateBloat {
         let seed = keccak256(mnemonic.as_bytes());
 
         // Step 2: Generate token addresses
-        let token_addresses: Vec<Address> = tokens.iter().map(|&id| token_address(id)).collect();
+        let token_addresses: Vec<Address> =
+            tokens.iter().copied().map(Address::new_tip20).collect();
 
         println!("\nToken addresses:");
         for (id, addr) in tokens.iter().zip(&token_addresses) {
@@ -289,15 +290,6 @@ fn write_nonce_ring(writer: &mut impl Write, indices: std::ops::Range<u32>) -> e
     Ok(())
 }
 
-/// Compute a reserved TIP20 token address from a token ID.
-/// Reserved addresses use the TIP20 prefix with the token ID in the last 8 bytes.
-fn token_address(token_id: u64) -> Address {
-    let mut bytes = [0u8; 20];
-    bytes[..12].copy_from_slice(&TIP20_PAYMENT_PREFIX);
-    bytes[12..].copy_from_slice(&token_id.to_be_bytes());
-    Address::from(bytes)
-}
-
 /// Fast address derivation using keccak256(seed || index).
 /// This is much faster than BIP32 but the resulting addresses are NOT signable.
 /// Used for generating bloat addresses beyond the signable count.
@@ -338,7 +330,7 @@ fn write_header(writer: &mut impl Write, address: Address, pair_count: u64) -> e
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::{B256, address};
+    use alloy::primitives::B256;
     use clap::Parser;
     use std::io::{BufReader, Seek};
     use tempo_precompiles::storage::{
@@ -412,15 +404,6 @@ mod tests {
             })?;
         }
         Ok(())
-    }
-
-    #[test]
-    fn test_token_address() {
-        let addr = token_address(0);
-        assert_eq!(addr, address!("0x20C0000000000000000000000000000000000000"));
-
-        let addr = token_address(1);
-        assert_eq!(addr, address!("0x20C0000000000000000000000000000000000001"));
     }
 
     #[test]

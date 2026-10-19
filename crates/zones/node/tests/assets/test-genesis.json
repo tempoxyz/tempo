@@ -20,6 +20,7 @@
     "terminalTotalDifficulty": 0,
     "terminalTotalDifficultyPassed": true,
     "epochLength": 302400,
+    "generalGasLimit": 500000000,
     "t0Time": 0,
     "t1Time": 0,
     "t1aTime": 0,

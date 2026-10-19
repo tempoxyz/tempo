@@ -733,7 +733,7 @@ jobs:
       - name: Log in to Docker Hub
         uses: tempoxyz/gh-actions/vendor/docker/login-action@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
         with:
-          username: ${{ secrets.DOCKER_HUB_USER }}
+          username: ${{ vars.DOCKER_HUB_USER }}
           password: ${{ secrets.DOCKER_HUB_TOKEN }}
       - name: Docker metadata for tempo-zone-xtask
         id: meta-tempo-zone-xtask
@@ -1080,7 +1080,7 @@ jobs:
       - name: Log in to Docker Hub
         uses: tempoxyz/gh-actions/vendor/docker/login-action@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
         with:
-          username: ${{ secrets.DOCKER_HUB_USER }}
+          username: ${{ vars.DOCKER_HUB_USER }}
           password: ${{ secrets.DOCKER_HUB_TOKEN }}
 
       - name: Docker metadata for promoted tempo-zone
