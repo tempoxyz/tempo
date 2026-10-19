@@ -48,14 +48,14 @@ variable (each is disabled unless set to `true`):
 
 | Variable | Required external cutover |
 | --- | --- |
-| `ZONES_PUBLISH_ENABLED` | Authorize Tempo in Depot project `0c6tg19qsp`, transfer GHCR/Docker Hub package access and secrets, and verify the prover genesis/artifact consumers against the new workflow paths. |
 | `ZONES_EVENTS_ENABLED` | Transfer event credentials and update Zones sensors to accept `event: zones_registry_package` and `repository: tempoxyz/tempo` and fetch Tempo commit SHAs. |
 | `ZONES_BENCHMARK_ENABLED` | Provision the benchmark runner and ClickHouse credentials for Tempo, and verify the imported benchmark helper paths. |
 | `ZONES_PROVER_BENCHMARK_ENABLED` | Update the benchmark repository's STS policy and AWS `benchmark-runner` trust, and migrate `scripts/zones_prover/run.sh` to Tempo checkouts, `crates/zones/contracts`, and `tempo-zone-xtask`. |
-| `ZONES_PROVER_E2E_ENABLED` | Deploy the prover event sensor and pinned templates for Tempo commit/status ownership, workflow filenames, and imported source paths; transfer event credentials. |
 
-The gates deliberately separate repository changes from external cutover. These
-PRs do not deploy sensors, alter AWS/Depot trust, or enable publishing variables.
+The remaining gates separate repository changes from external cutover. They do
+not deploy sensors or alter AWS/Depot trust. Docker publishing, automatic
+reproducible builds and prover E2E have completed their cutover and no longer
+require enablement variables.
 
 The Zones reproducible workflow invokes `zones/scripts/reproducible-build.sh`
 with the root workspace as context. Its `zones-reproducible` profile preserves
@@ -63,10 +63,9 @@ Zones' unwind behavior while Tempo's `reproducible` profile keeps abort behavior
 The workflows retain separate concurrency groups. Independent Linux rebuilds are
 still required to establish byte-for-byte reproducibility after the import.
 
-Automatic reproducible builds on `main` require `ZONES_REPRODUCIBLE_ENABLED=true`.
-Manual dispatch remains available for validating the root-context build before
-turning on automatic builds. The separate profile enables SPF's `catch_unwind`
-recovery for invalid MPT proofs.
+Reproducible builds run automatically on pushes to `main`; manual dispatch
+remains available. The separate profile enables SPF's `catch_unwind` recovery
+for invalid MPT proofs.
 
 The final reproducible publication pipeline from
 [tempoxyz/zones#1264](https://github.com/tempoxyz/zones/pull/1264) builds and compares
@@ -74,5 +73,5 @@ complete production node image IDs before promotion, delays companion tags until
 verification succeeds, and verifies archived Linux x86_64 release binaries against
 an independent clean rebuild. Production and verification share the canonical
 prover compiler and timestamp-normalizing EIF packager. The Docker pipeline keeps
-`ZONES_PUBLISH_ENABLED` and `ZONES_EVENTS_ENABLED` as external cutover gates.
+`ZONES_EVENTS_ENABLED` as an external cutover gate for downstream CI triggers.
 See [reproduction instructions](docs/REPRODUCIBLE_BUILDS.md).

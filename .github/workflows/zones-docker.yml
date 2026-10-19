@@ -101,7 +101,7 @@ jobs:
   validate-verification-dispatch:
     name: Validate verification dispatch
     if: >-
-      github.repository == 'tempoxyz/tempo' && vars.ZONES_PUBLISH_ENABLED == 'true' &&
+      github.repository == 'tempoxyz/tempo' &&
       (github.event_name == 'workflow_dispatch' &&
       (inputs.reproducible_verify == true || inputs.reproducible_eif_verify == true ||
       inputs.production_image_verify_only == true))
@@ -140,9 +140,8 @@ jobs:
 
   resolve-production-build-inputs:
     name: Resolve production Docker build inputs
-    # Enable after Depot, registry access, and genesis consumers are migrated.
     if: >-
-      github.repository == 'tempoxyz/tempo' && vars.ZONES_PUBLISH_ENABLED == 'true' &&
+      github.repository == 'tempoxyz/tempo' &&
       ((github.event_name != 'workflow_dispatch' ||
       (inputs.reproducible_verify != true && inputs.reproducible_eif_verify != true)) &&
       (github.repository == 'tempoxyz/tempo' ||
@@ -199,7 +198,7 @@ jobs:
   reproducible-verify:
     name: Verify reproducible candidate
     if: >-
-      github.repository == 'tempoxyz/tempo' && vars.ZONES_PUBLISH_ENABLED == 'true' &&
+      github.repository == 'tempoxyz/tempo' &&
       (github.event_name == 'workflow_dispatch' &&
       inputs.reproducible_verify == true && inputs.reproducible_eif_verify != true &&
       github.repository == 'tempoxyz/tempo' &&
@@ -229,7 +228,7 @@ jobs:
   eif-toolchain:
     name: Resolve trusted EIF toolchain
     if: >-
-      github.repository == 'tempoxyz/tempo' && vars.ZONES_PUBLISH_ENABLED == 'true' &&
+      github.repository == 'tempoxyz/tempo' &&
       (github.repository == 'tempoxyz/tempo' &&
       ((github.event_name == 'workflow_dispatch' && inputs.reproducible_eif_verify == true &&
       inputs.reproducible_verify != true && github.ref == 'refs/heads/main') ||
@@ -305,7 +304,7 @@ jobs:
     name: Verify reproducible prover EIF
     needs: eif-toolchain
     if: >-
-      github.repository == 'tempoxyz/tempo' && vars.ZONES_PUBLISH_ENABLED == 'true' &&
+      github.repository == 'tempoxyz/tempo' &&
       (github.event_name == 'workflow_dispatch' && inputs.reproducible_eif_verify == true &&
       inputs.reproducible_verify != true && github.repository == 'tempoxyz/tempo' &&
       github.ref == 'refs/heads/main')
@@ -335,9 +334,8 @@ jobs:
     needs:
       - eif-toolchain
       - resolve-production-build-inputs
-    # Enable after Depot, registry access, and genesis consumers are migrated.
     if: >-
-      github.repository == 'tempoxyz/tempo' && vars.ZONES_PUBLISH_ENABLED == 'true' &&
+      github.repository == 'tempoxyz/tempo' &&
       (always() &&
       (needs.resolve-production-build-inputs.result == 'success' &&
       (needs.eif-toolchain.result == 'success' ||
@@ -707,7 +705,7 @@ jobs:
       - build-and-push
       - production-reproducible-verify
     if: >-
-      github.repository == 'tempoxyz/tempo' && vars.ZONES_PUBLISH_ENABLED == 'true' &&
+      github.repository == 'tempoxyz/tempo' &&
       (needs.production-reproducible-verify.result == 'success' &&
       github.repository == 'tempoxyz/tempo' &&
       github.event_name != 'pull_request' && github.event_name != 'merge_group' &&
@@ -830,7 +828,7 @@ jobs:
     name: Rebuild production tempo-zone image without cache
     needs: resolve-production-build-inputs
     if: >-
-      github.repository == 'tempoxyz/tempo' && vars.ZONES_PUBLISH_ENABLED == 'true' &&
+      github.repository == 'tempoxyz/tempo' &&
       (github.repository == 'tempoxyz/tempo' &&
       (github.event_name == 'push' || github.event_name == 'schedule' ||
       (github.event_name == 'workflow_dispatch' && inputs.reproducible_verify != true && inputs.reproducible_eif_verify != true)))
@@ -887,7 +885,7 @@ jobs:
       - build-and-push
       - production-reproducible-clean-rebuild
     if: >-
-      github.repository == 'tempoxyz/tempo' && vars.ZONES_PUBLISH_ENABLED == 'true' &&
+      github.repository == 'tempoxyz/tempo' &&
       (github.repository == 'tempoxyz/tempo' &&
       (github.event_name == 'push' || github.event_name == 'schedule' ||
       (github.event_name == 'workflow_dispatch' && inputs.reproducible_verify != true && inputs.reproducible_eif_verify != true)))
@@ -1053,7 +1051,7 @@ jobs:
       - production-reproducible-verify
       - publish-companion-images
     if: >-
-      github.repository == 'tempoxyz/tempo' && vars.ZONES_PUBLISH_ENABLED == 'true' &&
+      github.repository == 'tempoxyz/tempo' &&
       (needs.production-reproducible-verify.result == 'success' &&
       github.repository == 'tempoxyz/tempo' &&
       (github.event_name == 'push' || github.event_name == 'schedule' ||
