@@ -97,7 +97,7 @@ small entries cannot bypass the limit. This budget is shared across the entire m
 both node pools and the bytecode pool. An allocation-free preflight checks declared collection
 lengths and counts entries in indefinite-length arrays before deserialization. Requests exceeding
 the budget return `request_too_large`, even when their encoded frame fits. The budget estimates
-resource use; it is not a ceiling on process memory or execution time. Changing
+resource use. It is not a ceiling on process memory or execution time. Changing
 `SPF_MAX_REQUEST_BYTES` only changes the encoded frame limit.
 
 The enclave applies separate absolute deadlines to request reception and response transmission.
