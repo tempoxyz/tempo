@@ -1,11 +1,15 @@
 use std::{convert::Infallible, io};
 
 use futures::{SinkExt as _, StreamExt as _};
+use minicbor::data::Type;
 use serde::{Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::codec::{Framed, LengthDelimitedCodec, LengthDelimitedCodecError};
 
-use crate::{ErrorCode, PROTOCOL_VERSION, VerifyResponse};
+use crate::{DEFAULT_MAX_REQUEST_BYTES, ErrorCode, PROTOCOL_VERSION, VerifyResponse};
+
+// Charge for owned values, vector slack, and the witness hash indexes in addition to wire bytes.
+const DECODED_VALUE_OVERHEAD: usize = 256;
 
 /// A typed connection using the prover's length-delimited CBOR protocol.
 pub struct ProverConnection<T> {
@@ -73,6 +77,12 @@ where
 pub enum ProverConnectionError {
     #[error("message exceeds the maximum of {maximum} bytes")]
     MessageTooLarge { maximum: usize },
+    /// The encoded contents and estimated per-value overhead exceed the decoding budget.
+    #[error("message exceeds the decoding budget of {maximum} bytes")]
+    DecodeBudgetExceeded {
+        /// Maximum permitted encoded contents plus estimated per-value overhead.
+        maximum: usize,
+    },
     #[error("message frame is truncated")]
     TruncatedFrame,
     #[error("message CBOR encoding failed: {0}")]
@@ -89,6 +99,7 @@ pub enum ProverConnectionError {
 
 /// Decodes one schema-driven CBOR value and requires it to consume the complete frame.
 fn decode_exact<T: DeserializeOwned>(payload: &[u8]) -> Result<T, ProverConnectionError> {
+    check_decode_budget(payload, DEFAULT_MAX_REQUEST_BYTES)?;
     let decoder = minicbor::Decoder::new(payload);
     let mut deserializer = minicbor_serde::Deserializer::from(decoder);
     let value = T::deserialize(&mut deserializer).map_err(ProverConnectionError::CborDecode)?;
@@ -96,6 +107,50 @@ fn decode_exact<T: DeserializeOwned>(payload: &[u8]) -> Result<T, ProverConnecti
         return Err(ProverConnectionError::TrailingCborData);
     }
     Ok(value)
+}
+
+/// Checks collection lengths and accounts for values without allocating or hashing their contents.
+fn check_decode_budget(payload: &[u8], maximum: usize) -> Result<(), ProverConnectionError> {
+    let exceeded = || ProverConnectionError::DecodeBudgetExceeded { maximum };
+    let invalid = |error: minicbor::decode::Error| ProverConnectionError::CborDecode(error.into());
+    let mut remaining = maximum.checked_sub(payload.len()).ok_or_else(exceeded)?;
+    let mut decoder = minicbor::Decoder::new(payload);
+    while decoder.position() < payload.len() {
+        remaining = remaining
+            .checked_sub(DECODED_VALUE_OVERHEAD)
+            .ok_or_else(exceeded)?;
+        let length = match decoder.datatype().map_err(invalid)? {
+            Type::Array | Type::ArrayIndef => decoder.array().map_err(invalid)?,
+            Type::Map | Type::MapIndef => decoder
+                .map()
+                .map_err(invalid)?
+                .map(|length| length.checked_mul(2).ok_or_else(exceeded))
+                .transpose()?,
+            Type::Bytes | Type::BytesIndef => {
+                decoder.bytes().map_err(invalid)?;
+                None
+            }
+            Type::String | Type::StringIndef => {
+                decoder.str().map_err(invalid)?;
+                None
+            }
+            Type::Tag => {
+                decoder.tag().map_err(invalid)?;
+                None
+            }
+            _ => {
+                decoder.skip().map_err(invalid)?;
+                None
+            }
+        };
+        if let Some(length) = length {
+            let length = usize::try_from(length).map_err(|_| exceeded())?;
+            if length > remaining / DECODED_VALUE_OVERHEAD {
+                return Err(exceeded());
+            }
+        }
+    }
+    Ok(())
 }
 
 fn classify_io_error(error: io::Error, maximum: usize) -> ProverConnectionError {
@@ -119,6 +174,10 @@ pub fn request_error_response(error: &ProverConnectionError) -> VerifyResponse {
         ProverConnectionError::MessageTooLarge { maximum } => (
             ErrorCode::RequestTooLarge,
             format!("request payload exceeds the maximum of {maximum} bytes"),
+        ),
+        ProverConnectionError::DecodeBudgetExceeded { maximum } => (
+            ErrorCode::RequestTooLarge,
+            format!("request exceeds the decoding budget of {maximum} bytes"),
         ),
         ProverConnectionError::TruncatedFrame => (
             ErrorCode::TruncatedFrame,
@@ -165,6 +224,95 @@ mod tests {
 
     use super::*;
     use crate::VerifyRequest;
+
+    #[test]
+    fn decode_budget_boundaries() {
+        let mut scenarios = vec![
+            (vec![0x44, 1, 2, 3, 4], 1),
+            (vec![0xa1, 0x61, b'a', 0x40], 3),
+            (vec![0xbf, 0x61, b'a', 0x40, 0xff], 4),
+            (vec![0xc0, 0x00], 2),
+        ];
+        for count in 0_u32..128 {
+            let entries: Vec<Bytes> = (0..count)
+                .map(|entry| Bytes::from(entry.to_be_bytes().to_vec()))
+                .collect();
+            let definite = minicbor_serde::to_vec(&entries).unwrap();
+            let mut indefinite = vec![0x9f];
+            for entry in &entries {
+                indefinite.extend(minicbor_serde::to_vec(entry).unwrap());
+            }
+            indefinite.push(0xff);
+            assert_eq!(decode_exact::<Vec<Bytes>>(&indefinite).unwrap(), entries);
+            scenarios.extend([
+                (definite, entries.len() + 1),
+                (indefinite, entries.len() + 2),
+            ]);
+        }
+        for (payload, tokens) in scenarios {
+            let maximum = payload.len() + tokens * DECODED_VALUE_OVERHEAD;
+            check_decode_budget(&payload, maximum).unwrap();
+            for maximum in [payload.len() - 1, maximum - 1] {
+                assert!(matches!(
+                    check_decode_budget(&payload, maximum),
+                    Err(ProverConnectionError::DecodeBudgetExceeded { maximum: limit })
+                        if limit == maximum
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn decode_budget_rejects_declared_lengths_before_decoding() {
+        for (header, length) in [(0x9b, u64::MAX), (0xbb, u64::MAX), (0xbb, u64::MAX / 2)] {
+            let mut payload = vec![header];
+            payload.extend_from_slice(&length.to_be_bytes());
+            let error = decode_exact::<VerifyRequest>(&payload).unwrap_err();
+            assert!(matches!(
+                error,
+                ProverConnectionError::DecodeBudgetExceeded {
+                    maximum: DEFAULT_MAX_REQUEST_BYTES
+                }
+            ));
+            assert!(matches!(
+                request_error_response(&error),
+                VerifyResponse::Error {
+                    code: ErrorCode::RequestTooLarge,
+                    request_id: None,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn decode_budget_is_shared_between_pools() {
+        const MAXIMUM: usize = 128 * 1024;
+        let entries: Vec<Bytes> = (0_u32..192)
+            .map(|entry| Bytes::from(entry.to_be_bytes().to_vec()))
+            .collect();
+        for ([zone_nodes, bytecodes, tempo_nodes], accepted) in [
+            ([entries.clone(), vec![], vec![]], true),
+            ([vec![], entries.clone(), vec![]], true),
+            ([vec![], vec![], entries.clone()], true),
+            ([entries.clone(), entries.clone(), entries], false),
+        ] {
+            let mut witness = empty_witness();
+            witness.zone_state_witness.node_pool = zone_nodes;
+            witness.zone_state_witness.bytecodes = bytecodes;
+            witness.tempo_state_witness.node_pool = tempo_nodes;
+            let payload = minicbor_serde::to_vec(&witness).unwrap();
+            let result = check_decode_budget(&payload, MAXIMUM);
+            if accepted {
+                result.unwrap();
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(ProverConnectionError::DecodeBudgetExceeded { maximum: MAXIMUM })
+                ));
+            }
+        }
+    }
 
     #[tokio::test]
     async fn request_round_trip() {
@@ -286,7 +434,13 @@ mod tests {
 
     #[tokio::test]
     async fn malformed_cbor_has_a_stable_error() {
-        for payload in [&[0xff][..], &[0x01, 0x02][..]] {
+        for payload in [
+            &[0xff][..],
+            &[0x01, 0x02][..],
+            &[0x44, 0x01][..],
+            &[0x64, b'a'][..],
+            &[0x18][..],
+        ] {
             let (mut writer, reader) = tokio::io::duplex(1024);
             writer
                 .write_all(&u32::try_from(payload.len()).unwrap().to_be_bytes())

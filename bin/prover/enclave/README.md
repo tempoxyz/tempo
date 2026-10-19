@@ -90,6 +90,16 @@ pass `--port` to change the selected transport's port. The maximum request paylo
 GiB and can be changed with `SPF_MAX_REQUEST_BYTES` or `--max-request-bytes`. The host runner
 allocates 10 GiB to the enclave by default; override it with `ENCLAVE_MEMORY_MIB`.
 
+Before typed decoding, the receiver also enforces a fixed 2 GiB resource budget: the encoded
+payload size plus 256 bytes per CBOR value, including collection headers and map keys. The
+per-value charge accounts for owned values, vector capacity, and witness hash indexing, so many
+small entries cannot bypass the limit. This budget is shared across the entire message, including
+both node pools and the bytecode pool. An allocation-free preflight checks declared collection
+lengths and counts entries in indefinite-length arrays before deserialization. Requests exceeding
+the budget return `request_too_large`, even when their encoded frame fits. The budget estimates
+resource use; it is not a ceiling on process memory or execution time. Changing
+`SPF_MAX_REQUEST_BYTES` only changes the encoded frame limit.
+
 The enclave applies separate absolute deadlines to request reception and response transmission.
 `--request-timeout-secs` (`SPF_REQUEST_TIMEOUT_SECS`, default 300) covers reception and decoding of
 the complete CBOR request. `--response-timeout-secs` (`SPF_RESPONSE_TIMEOUT_SECS`, default 300)
