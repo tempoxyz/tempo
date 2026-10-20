@@ -1224,7 +1224,7 @@ impl BatchSubmitter {
 /// The Zone builds on L1 blocks from its own subscription, so `eth_blockNumber` can trail the
 /// block a batch anchors to for a few hundred milliseconds. Errors if the RPC fails or has not
 /// reached `block_number` within `L1_CATCH_UP_TIMEOUT`.
-pub async fn wait_for_l1_block(
+pub(crate) async fn wait_for_l1_block(
     l1_provider: &DynProvider<TempoNetwork>,
     block_number: u64,
 ) -> Result<u64> {
