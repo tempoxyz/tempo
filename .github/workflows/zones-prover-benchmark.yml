@@ -203,7 +203,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
-          ref: 9a36a896d293cda29cb6aa4e06524c2d9f877c77 # matched prover-off/on reporting
+          ref: 9834cfc76aa0426f8f52844a8050dcf6f11801b3 # matched prover-off/on reporting
           path: benchmark
           token: ${{ steps.benchmark-token.outputs.token }}
           persist-credentials: false
