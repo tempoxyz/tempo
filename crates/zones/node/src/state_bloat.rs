@@ -61,19 +61,6 @@ impl InitZoneFromBinaryDump {
             .data_dir()
             .to_path_buf();
         ensure!(
-            !datadir.exists(),
-            "state bloat requires a nonexistent datadir: {}",
-            datadir.display()
-        );
-        ensure!(
-            !self.output_genesis.exists() && !self.manifest.exists(),
-            "output genesis and manifest must not exist"
-        );
-        ensure!(
-            self.output_genesis != self.manifest,
-            "genesis and manifest paths must differ"
-        );
-        ensure!(
             self.env.chain.genesis_header().number() == 0,
             "state bloat requires block-zero genesis"
         );
@@ -81,17 +68,23 @@ impl InitZoneFromBinaryDump {
         let result = async {
             // Reserve every output atomically and only clean up paths we own.
             // A concurrent initializer must never remove another process's outputs.
-            if let Some(parent) = datadir.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::create_dir(&datadir)?;
-            created.push(datadir.clone());
+            // Files go first so an existing output fails before any directory is created.
             let genesis_file =
                 File::create_new(&self.output_genesis).wrap_err("creating output genesis")?;
             created.push(self.output_genesis.clone());
             let manifest_file =
                 File::create_new(&self.manifest).wrap_err("creating initialization manifest")?;
             created.push(self.manifest.clone());
+            if let Some(parent) = datadir.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::create_dir(&datadir).wrap_err_with(|| {
+                format!(
+                    "state bloat requires a nonexistent datadir: {}",
+                    datadir.display()
+                )
+            })?;
+            created.push(datadir.clone());
             self.initialize(started, &datadir, runtime, genesis_file, manifest_file)
                 .await
         }

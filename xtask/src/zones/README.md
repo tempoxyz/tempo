@@ -84,8 +84,9 @@ cannot become usable before the portal enables them.
 The manifest includes dump SHA-256, per-token and total entry counts, database
 file bytes, import time, configuration digest, genesis hash, and committed/database state roots. A full
 hashed-state traversal verifies the root independently of cached trie nodes, and
-the stores are reopened before publishing the success manifest. Failed initialization
-may leave a partial datadir/output genesis; use a new disposable path when retrying.
+the stores are reopened before publishing the success manifest. A failed initialization
+removes the datadir and output files it created; an interrupted one may leave them, so use
+a new disposable path when retrying.
 
 This is synthetic benchmark state: generated balances have no corresponding L1
 escrow. Use disposable local databases and keep the generated accounts separate
