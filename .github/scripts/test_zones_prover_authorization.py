@@ -19,7 +19,7 @@ def run_step(job, name, *, actor="member", triggering_actor="member", members=No
     step = next(s for s in WORKFLOW["jobs"][job]["steps"] if s.get("name") == name)
     payload = {
         "script": step["with"]["script"],
-        "context": {"actor": actor, "eventName": event,
+        "context": {"actor": actor, "eventName": event, "sha": SHA,
                     "payload": {"comment": {"body": body if body is not None else f"derek bench {SHA}"}},
                     "issue": {"number": 1507}, "repo": {"owner": "tempoxyz", "repo": "tempo"}},
         "members": members if members is not None else ["member", "other-member"],
@@ -77,6 +77,11 @@ class AuthorizationTests(unittest.TestCase):
                 result = run_step("authorize", "Resolve PR SHA", **case)
                 self.assertTrue(result["failures"])
                 self.assertEqual(result["outputs"], {})
+
+    def test_schedule_uses_immutable_event_sha(self):
+        result = run_step("authorize", "Resolve PR SHA", event="schedule", feature_sha=OTHER_SHA)
+        self.assertEqual(result["outputs"], {"feature-sha": SHA})
+        self.assertFalse(result["failures"])
 
     def test_dispatch(self):
         for sha, allowed in ((SHA, True), ("main", False), ("", False)):

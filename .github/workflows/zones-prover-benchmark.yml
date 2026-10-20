@@ -1,14 +1,22 @@
 name: Zones Nitro prover benchmark
 
 on:
+  schedule:
+    - cron: "45 3 * * *"
   issue_comment:
     types: [created]
   workflow_dispatch:
     inputs:
       feature-sha:
-        description: Exact 40-character Tempo monorepo commit to compare with main.
+        description: Exact 40-character Tempo monorepo commit for the feature phase (both phases in prover mode).
         type: string
         required: true
+      comparison-mode:
+        description: Compare revisions with Nitro, or one revision with proving off/on.
+        type: choice
+        required: true
+        default: revision
+        options: [revision, prover]
       tempo-hardfork:
         description: Tempo L1 hardfork for both phases (for example, t14).
         type: string
@@ -64,7 +72,8 @@ jobs:
     if: >-
       github.repository == 'tempoxyz/tempo' &&
       github.ref == 'refs/heads/main' &&
-      (github.event_name == 'workflow_dispatch' ||
+      ((github.event_name == 'schedule' && vars.ZONES_PROVER_NIGHTLY_ENABLED == 'true') ||
+       github.event_name == 'workflow_dispatch' ||
        (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
         startsWith(github.event.comment.body, 'derek bench ')))
     runs-on: ubuntu-latest
@@ -106,7 +115,9 @@ jobs:
           FEATURE_SHA: ${{ inputs.feature-sha || '' }}
         with:
           script: |
-            if (context.eventName === 'issue_comment') {
+            if (context.eventName === 'schedule') {
+              core.setOutput('feature-sha', context.sha);
+            } else if (context.eventName === 'issue_comment') {
               // Bind approval to the event's immutable comment payload, including on reruns.
               const match = /^derek bench(?: prover)? ([0-9a-f]{40})$/.exec(context.payload.comment.body);
               if (!match) {
@@ -145,6 +156,7 @@ jobs:
       FEATURE_ZONES_ROOT: ${{ github.workspace }}/feature-zones
       BENCH_TEMPO_ROOT: ${{ github.workspace }}/tempo
       BENCH_EARN_ROOT: ${{ github.workspace }}/earn
+      BENCH_COMPARISON_MODE: ${{ github.event_name == 'schedule' && 'prover' || inputs.comparison-mode || 'revision' }}
       BENCH_REGION: ${{ inputs.region || 'us-east-1' }}
       BENCH_TEMPO_HARDFORK: ${{ inputs['tempo-hardfork'] || 't13' }}
       BENCH_PRESET: ${{ inputs.preset || 'full-journey' }}
@@ -191,7 +203,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
-          ref: main
+          ref: 5c9f0c262acdc0387c25a75e74a65bd6ad20b108 # matched prover-off/on reporting
           path: benchmark
           token: ${{ steps.benchmark-token.outputs.token }}
           persist-credentials: false
@@ -199,7 +211,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: tempoxyz/tempo
-          ref: main
+          ref: ${{ env.BENCH_COMPARISON_MODE == 'prover' && needs.authorize.outputs.feature-sha || 'main' }}
           path: baseline-zones
           submodules: recursive
           persist-credentials: false
@@ -215,7 +227,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: tempoxyz/tempo
-          ref: main
+          ref: ${{ env.BENCH_COMPARISON_MODE == 'prover' && needs.authorize.outputs.feature-sha || 'main' }}
           path: tempo
           submodules: recursive
           persist-credentials: false
@@ -252,7 +264,7 @@ jobs:
           role-duration-seconds: 21600
       - name: Configure S3 transfers
         run: bash benchmark/scripts/configure_aws_s3_transfer.sh
-      - name: Run matched baseline and PR phases
+      - name: Run matched benchmark phases
         id: bench
         run: bash benchmark/scripts/zones_prover/run.sh
       - name: Attach comparison to PR
@@ -269,6 +281,69 @@ jobs:
               issue_number: Number(process.env.PR_NUMBER),
               body: fs.readFileSync(process.env.SUMMARY_PATH, 'utf8') + `\n[Workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
             });
+      - name: Publish latency metrics and nightly status
+        if: always() && (github.event_name == 'schedule' || env.BENCH_COMPARISON_MODE == 'prover')
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          BENCH_OUTCOME: ${{ steps.bench.outcome }}
+          BENCH_METRICS_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}
+          SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
+          SLACK_BENCH_CHANNEL: ${{ vars.ZONES_BENCH_SLACK_CHANNEL || 'C0B96B0RRMJ' }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            const path = require('node:path');
+            const root = path.join(process.env.BENCH_RESULTS_PATH, 'results');
+            const success = process.env.BENCH_OUTCOME === 'success';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}/attempts/${process.env.GITHUB_RUN_ATTEMPT}`;
+            let published = false;
+            if (process.env.BENCH_METRICS_URL) core.setSecret(process.env.BENCH_METRICS_URL);
+            if (success) {
+              try {
+                if (!process.env.BENCH_METRICS_URL) throw new Error('missing metrics destination');
+                const url = new URL(process.env.BENCH_METRICS_URL);
+                const headers = {'Content-Type': 'text/plain'};
+                if (url.username || url.password) {
+                  const credentials = `${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`;
+                  headers.Authorization = `Basic ${Buffer.from(credentials).toString('base64')}`;
+                  core.setSecret(headers.Authorization);
+                  url.username = ''; url.password = '';
+                }
+                url.pathname = url.pathname.replace(/\/$/, '') + '/api/v1/import/prometheus';
+                // Manual smoke runs must not overwrite the nightly series.
+                const kind = context.eventName === 'schedule' ? 'nightly' : 'manual';
+                const body = fs.readFileSync(path.join(root, 'comparison.prom'), 'utf8')
+                  .replace(/^(tempo_zone_benchmark_\w+)\{/gm, `$1{run_kind="${kind}",`);
+                const response = await fetch(url, {method: 'POST', headers, body, signal: AbortSignal.timeout(30000)});
+                if (!response.ok) throw new Error(`metrics HTTP ${response.status}`);
+                published = true;
+              } catch {
+                // Do not log URLs or request errors that might contain credentials.
+                core.setFailed('Zone latency metrics publication failed; comparison evidence remains in the artifact');
+              }
+            }
+            if (context.eventName !== 'schedule') return;
+            if (!process.env.SLACK_BENCH_BOT_TOKEN) {
+              core.setFailed('Missing SLACK_BENCH_BOT_TOKEN for nightly Zone reporting');
+              return;
+            }
+            let text = `*Zone prover off/on nightly: ${success ? 'benchmark passed' : 'benchmark failed or did not run'}*\n<${runUrl}|Workflow and raw evidence>`;
+            if (success) {
+              const comparison = JSON.parse(fs.readFileSync(path.join(root, 'comparison.json'), 'utf8'));
+              text += `\nRevision: \`${comparison.metadata.feature}\`; ${comparison.metadata.count} full journeys per phase.`;
+              for (const name of ['journey', 'deposit', 'withdrawal']) {
+                const off = comparison.latencies.baseline[name], on = comparison.latencies.feature[name];
+                text += `\n${name} p50/p95 (ms), off → on: ${off.p50_ms.toFixed(1)}/${off.p95_ms.toFixed(1)} → ${on.p50_ms.toFixed(1)}/${on.p95_ms.toFixed(1)}`;
+              }
+              text += '\nDeposit/withdrawal measure source-event observation → destination-event observation.';
+              text += published ? '\nGrafana metrics published.' : '\nGrafana metrics publication FAILED; see the artifact.';
+            }
+            const response = await fetch('https://slack.com/api/chat.postMessage', {
+              method: 'POST', signal: AbortSignal.timeout(30000),
+              headers: {Authorization: `Bearer ${process.env.SLACK_BENCH_BOT_TOKEN}`, 'Content-Type': 'application/json'},
+              body: JSON.stringify({channel: process.env.SLACK_BENCH_CHANNEL, text, unfurl_links: false, unfurl_media: false}),
+            });
+            if (!response.ok || !(await response.json()).ok) core.setFailed('Nightly Zone Slack delivery failed');
       - name: Upload benchmark evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
