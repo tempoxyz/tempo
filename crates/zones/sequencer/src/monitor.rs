@@ -761,6 +761,10 @@ impl<P: ZoneSequencerProvider> ZoneMonitor<P> {
                     info!(
                         last_zone_block,
                         blocks_in_batch,
+                        zone_from = previous_zone_block + 1,
+                        zone_to = last_zone_block,
+                        prev_block_hash = %batch_data.prev_block_hash,
+                        ?verifier_mode,
                         tempo_block_number = batch_data.tempo_block_number,
                         withdrawal_batch_index = event.withdrawalBatchIndex,
                         withdrawal_queue_index = %event.withdrawalQueueIndex,
