@@ -2,14 +2,16 @@
 
 use alloy_primitives::{Address, B256, Bytes, Signature, U256, address, b256, keccak256};
 use alloy_rlp::{Decodable, Encodable, Error as RlpError, Header, decode_exact};
+use alloy_signer::SignerSync;
+use alloy_signer_local::PrivateKeySigner;
 use proptest::prelude::*;
 use tempo_primitives::transaction::{
     ACCOUNT_PROXY_INIT_CODE_HASH, KeychainSignature, MAX_MULTISIG_OWNER_SIGNATURE_BYTES,
     MAX_MULTISIG_OWNERS, MAX_MULTISIG_SIGNATURES, MULTISIG_ACCOUNT_CREATE2_PREIMAGE_LEN,
     MULTISIG_ACCOUNT_DOMAIN, MULTISIG_CONFIG_DOMAIN, MULTISIG_SIGNATURE_DOMAIN, MultisigConfig,
     MultisigConfigError, MultisigOwner, MultisigQuorumError, MultisigSignature,
-    MultisigSignatureError, MultisigWeightAccumulator, PrimitiveSignature, SIGNATURE_TYPE_MULTISIG,
-    TempoSignature, multisig_digest,
+    MultisigSignatureError, MultisigStateError, MultisigWeightAccumulator, PrimitiveSignature,
+    SIGNATURE_TYPE_MULTISIG, TempoSignature, multisig_digest,
     tt_signature::{SIGNATURE_TYPE_WEBAUTHN, WebAuthnSignature},
 };
 
@@ -819,6 +821,182 @@ fn multisig_quorum_reports_the_first_broken_rule() {
         },
     ] {
         assert_eq!(quorum(threshold, approvals), expected, "{case}");
+    }
+}
+
+#[test]
+fn multisig_approvals_report_the_first_broken_rule() {
+    let [first, second, outsider] = [1, 2, 3].map(|seed| {
+        PrivateKeySigner::from_bytes(&B256::repeat_byte(seed)).expect("nonzero scalar is a key")
+    });
+    let mut owners = [first.address(), second.address()];
+    owners.sort();
+    let config = multisig_config(0, 2, &owners.map(|owner| (owner, 1)));
+    let account = config.derive_account(TEST_FACTORY).unwrap();
+    let inner_digest = B256::repeat_byte(0x42);
+    let digest = multisig_digest(inner_digest, account, config.version);
+    let approve = |signer: &PrivateKeySigner| {
+        PrimitiveSignature::Secp256k1(signer.sign_hash_sync(&digest).unwrap())
+    };
+    let [low, high] = owners.map(|owner| {
+        approve(if owner == first.address() {
+            &first
+        } else {
+            &second
+        })
+    });
+    let unrecoverable =
+        PrimitiveSignature::Secp256k1(Signature::new(U256::ZERO, U256::ZERO, false));
+
+    struct ApprovalCase {
+        case: &'static str,
+        threshold: u8,
+        approvals: Vec<PrimitiveSignature>,
+        expected: Result<(), MultisigQuorumError>,
+    }
+
+    for ApprovalCase {
+        case,
+        threshold,
+        approvals,
+        expected,
+    } in [
+        ApprovalCase {
+            case: "owners in ascending order reaching the threshold",
+            threshold: 2,
+            approvals: vec![low.clone(), high.clone()],
+            expected: Ok(()),
+        },
+        ApprovalCase {
+            case: "weight below the threshold",
+            threshold: 2,
+            approvals: vec![low.clone()],
+            expected: Err(MultisigQuorumError::WeightBelowThreshold),
+        },
+        ApprovalCase {
+            case: "owners in descending order",
+            threshold: 2,
+            approvals: vec![high.clone(), low.clone()],
+            expected: Err(MultisigQuorumError::SignersNotAscending),
+        },
+        ApprovalCase {
+            case: "an approval that recovers no signer",
+            threshold: 2,
+            approvals: vec![low.clone(), unrecoverable],
+            expected: Err(MultisigQuorumError::OwnerSignatureRecoveryFailed { approval_index: 1 }),
+        },
+        ApprovalCase {
+            case: "a signer outside the owner set",
+            threshold: 2,
+            approvals: vec![approve(&outsider), high.clone()],
+            expected: Err(MultisigQuorumError::SignerNotOwner),
+        },
+        ApprovalCase {
+            case: "an approval after quorum",
+            threshold: 1,
+            approvals: vec![low, high],
+            expected: Err(MultisigQuorumError::ExcessSignatures),
+        },
+    ] {
+        let signature = MultisigSignature::try_new(
+            account,
+            multisig_config(config.version, threshold, &owners.map(|owner| (owner, 1))),
+            approvals,
+        )
+        .unwrap();
+        assert_eq!(signature.verify_approvals(inner_digest), expected, "{case}");
+    }
+}
+
+#[test]
+fn multisig_account_commitment_reports_the_first_broken_rule() {
+    let owners = [(indexed_owner(1), 1)];
+    let account = multisig_config(0, 1, &owners)
+        .derive_account(TEST_FACTORY)
+        .unwrap();
+    let other_factory = Address::repeat_byte(0x98);
+    let signature = |version: u64| {
+        MultisigSignature::try_new(
+            account,
+            multisig_config(version, 1, &owners),
+            vec![owner_approval()],
+        )
+        .unwrap()
+    };
+    let [initial_commitment, current_commitment] =
+        [0, 1].map(|version| signature(version).config_commitment());
+
+    struct CommitmentCase {
+        case: &'static str,
+        version: u64,
+        stored: B256,
+        factory: Option<Address>,
+        expected: Result<(), MultisigStateError>,
+    }
+
+    for CommitmentCase {
+        case,
+        version,
+        stored,
+        factory,
+        expected,
+    } in [
+        CommitmentCase {
+            case: "a stored commitment equal to the witness",
+            version: 1,
+            stored: current_commitment,
+            factory: None,
+            expected: Ok(()),
+        },
+        CommitmentCase {
+            case: "a stored commitment differing from the witness",
+            version: 1,
+            stored: initial_commitment,
+            factory: Some(TEST_FACTORY),
+            expected: Err(MultisigStateError::CommitmentMismatch {
+                expected: initial_commitment,
+                actual: current_commitment,
+            }),
+        },
+        CommitmentCase {
+            case: "first use of the account the factory derives",
+            version: 0,
+            stored: B256::ZERO,
+            factory: Some(TEST_FACTORY),
+            expected: Ok(()),
+        },
+        CommitmentCase {
+            case: "first use at a version above zero",
+            version: 1,
+            stored: B256::ZERO,
+            factory: Some(TEST_FACTORY),
+            expected: Err(MultisigStateError::UnregisteredVersion { actual: 1 }),
+        },
+        CommitmentCase {
+            case: "first use without a configured factory",
+            version: 0,
+            stored: B256::ZERO,
+            factory: None,
+            expected: Err(MultisigStateError::FactoryNotConfigured),
+        },
+        CommitmentCase {
+            case: "first use against a factory deriving another account",
+            version: 0,
+            stored: B256::ZERO,
+            factory: Some(other_factory),
+            expected: Err(MultisigStateError::InitialAccountMismatch {
+                expected: multisig_config(0, 1, &owners)
+                    .derive_account(other_factory)
+                    .unwrap(),
+                actual: account,
+            }),
+        },
+    ] {
+        assert_eq!(
+            signature(version).validate_account_commitment(stored, factory),
+            expected,
+            "{case}"
+        );
     }
 }
 
