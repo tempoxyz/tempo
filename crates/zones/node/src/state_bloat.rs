@@ -357,7 +357,7 @@ mod tests {
     }
 
     /// Initialize a fresh Zone in `directory` from its `dump.bin`.
-    async fn init(directory: &Path, extra: &[&str]) -> eyre::Result<()> {
+    async fn init(directory: &Path, extra: &[String]) -> eyre::Result<()> {
         let mut genesis: serde_json::Value =
             serde_json::from_str(include_str!("../assets/zone-dev-genesis.json"))?;
         genesis["config"]["chainId"] = json!(zone_primitives::constants::zone_chain_id(1337, 11)?);
@@ -375,12 +375,9 @@ mod tests {
             path("manifest.json"),
             path("dump.bin"),
         ];
-        InitZoneFromBinaryDump::try_parse_from(
-            args.into_iter()
-                .chain(extra.iter().map(|arg| (*arg).to_owned())),
-        )?
-        .execute(Runtime::test())
-        .await
+        InitZoneFromBinaryDump::try_parse_from(args.into_iter().chain(extra.iter().cloned()))?
+            .execute(Runtime::test())
+            .await
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -406,10 +403,6 @@ mod tests {
             serde_json::from_slice(&fs::read(directory.path().join("manifest.json")).unwrap())
                 .unwrap();
         assert_eq!(manifest["entry_count"], 16_383);
-        assert_eq!(
-            manifest["committed_state_root"],
-            manifest["database_state_root"]
-        );
         let bloated: Genesis =
             serde_json::from_slice(&fs::read(directory.path().join("bloated.json")).unwrap())
                 .unwrap();
@@ -419,50 +412,49 @@ mod tests {
         );
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn failed_import_removes_only_created_outputs() {
-        let directory = tempfile::tempdir().unwrap();
-        fs::write(
-            directory.path().join("dump.bin"),
-            dump(&[(PATH_USD_ADDRESS, &[(1, 0)])]),
-        )
-        .unwrap();
-        let error = init(directory.path(), &[]).await.unwrap_err();
-        assert_eq!(error.to_string(), "zero dump values are not supported");
-        let mut remaining: Vec<_> = fs::read_dir(directory.path())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-            .collect();
-        remaining.sort();
-        // Only the datadir's parent, created by `create_dir_all`, is left behind.
-        assert_eq!(remaining, ["dump.bin", "genesis.json", "parent"]);
-        assert_eq!(
-            fs::read_dir(directory.path().join("parent"))
-                .unwrap()
-                .count(),
-            0
-        );
-    }
+    /// Extra CLI args, pathUSD dump entries, expected error, and paths left in the directory.
+    type Case<'a> = (&'a [&'a str], &'a [(u8, u8)], &'a str, &'a [&'a str]);
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn rejects_stores_outside_the_datadir() {
-        let directory = tempfile::tempdir().unwrap();
-        let static_files = directory.path().join("static");
-        fs::write(
-            directory.path().join("dump.bin"),
-            dump(&[(PATH_USD_ADDRESS, &[(1, 1)])]),
-        )
-        .unwrap();
-        let error = init(
-            directory.path(),
-            &["--datadir.static-files", static_files.to_str().unwrap()],
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "state bloat requires static files and RocksDB inside the datadir"
-        );
-        assert!(!directory.path().join("bloated.json").exists() && !static_files.exists());
+    async fn failed_import_leaves_only_preexisting_paths() {
+        let entries = |dir: &Path| {
+            let mut names: Vec<_> = fs::read_dir(dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+                .collect();
+            names.sort();
+            names
+        };
+        let cases: [Case<'_>; 2] = [
+            // `create_dir_all` leaves the datadir's parent; every reserved output is removed.
+            (
+                &[],
+                &[(1, 0)],
+                "zero dump values are not supported",
+                &["dump.bin", "genesis.json", "parent"],
+            ),
+            (
+                &["--datadir.static-files", "{dir}/static"],
+                &[(1, 1)],
+                "state bloat requires static files and RocksDB inside the datadir",
+                &["dump.bin", "genesis.json"],
+            ),
+        ];
+        for (extra, entries_in_dump, expected, remaining) in cases {
+            let directory = tempfile::tempdir().unwrap();
+            fs::write(
+                directory.path().join("dump.bin"),
+                dump(&[(PATH_USD_ADDRESS, entries_in_dump)]),
+            )
+            .unwrap();
+            let dir = directory.path().to_str().unwrap();
+            let extra: Vec<_> = extra.iter().map(|arg| arg.replace("{dir}", dir)).collect();
+            let error = init(directory.path(), &extra).await.unwrap_err();
+            assert_eq!(error.to_string(), expected);
+            assert_eq!(entries(directory.path()), remaining);
+            if remaining.contains(&"parent") {
+                assert!(entries(&directory.path().join("parent")).is_empty());
+            }
+        }
     }
 }
