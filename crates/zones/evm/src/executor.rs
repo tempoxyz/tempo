@@ -350,6 +350,7 @@ mod tests {
     use reth_chainspec::{EthChainSpec as _, EthereumHardfork, ForkCondition};
     use reth_primitives_traits::Recovered;
     use revm::{
+        Database as _,
         database::InMemoryDB,
         state::{AccountInfo, Bytecode},
     };
@@ -1186,7 +1187,7 @@ mod tests {
                     );
                 }
                 let factory = ZoneEvmFactory::new(MockL1Reader::default(), Address::ZERO);
-                let mut env = EvmEnv::default();
+                let mut env = EvmEnv::<TempoHardfork, TempoBlockEnv>::default();
                 env.block_env.inner.number = U256::from(block_number);
                 env.cfg_env.enable_amsterdam_eip8037 = has_code;
                 let evm = factory.create_evm(&mut db, env);
