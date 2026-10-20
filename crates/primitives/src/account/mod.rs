@@ -2,6 +2,7 @@
 
 use alloy_primitives::{B256, Bytes};
 use alloy_rlp::Error;
+use tempo_contracts::TempoHardfork;
 
 const COMMITMENT_FORMAT_TAG: u8 = 0;
 
@@ -16,12 +17,15 @@ pub fn encode_config_commitment(hash: B256) -> Bytes {
     }
 }
 
-/// Validates the entire extension at the requested block's hardfork.
-pub fn decode_config_commitment(payload: &[u8], t14_active: bool) -> alloy_rlp::Result<B256> {
+/// Validates the entire extension under `hardfork`: a non-empty payload is rejected before T14.
+pub fn decode_config_commitment(
+    payload: &[u8],
+    hardfork: TempoHardfork,
+) -> alloy_rlp::Result<B256> {
     if payload.is_empty() {
         return Ok(B256::ZERO);
     }
-    if !t14_active {
+    if !hardfork.is_t14() {
         return Err(Error::Custom("account commitment before T14"));
     }
     if payload[0] != COMMITMENT_FORMAT_TAG {
