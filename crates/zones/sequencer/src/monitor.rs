@@ -63,8 +63,11 @@ const MAX_RETRIES: u32 = 3;
 /// Initial delay between retries (doubles on each attempt).
 const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(200);
 
-/// Backoff before rebuilding the monitor after a start or run failure.
-const RESTART_BACKOFF: Duration = Duration::from_secs(5);
+/// First backoff before rebuilding the monitor after a start or run failure.
+const INITIAL_RESTART_BACKOFF: Duration = Duration::from_millis(200);
+
+/// Longest backoff between consecutive monitor rebuilds.
+const MAX_RESTART_BACKOFF: Duration = Duration::from_secs(5);
 
 /// Configuration for the [`ZoneMonitor`].
 #[derive(Debug, Clone)]
@@ -169,6 +172,36 @@ struct ReadyBatch {
     verifier_mode: VerifierMode,
     certificate: Option<SettlementCertificate>,
     withdrawals: Vec<abi::Withdrawal>,
+}
+
+/// Exponential delay between consecutive monitor rebuilds.
+#[derive(Debug)]
+struct RestartBackoff {
+    next: Duration,
+}
+
+impl RestartBackoff {
+    const fn new() -> Self {
+        Self {
+            next: INITIAL_RESTART_BACKOFF,
+        }
+    }
+
+    /// Returns the delay before the next rebuild and doubles the following one, up to
+    /// [`MAX_RESTART_BACKOFF`].
+    fn next_delay(&mut self) -> Duration {
+        let delay = self.next;
+        self.next = (delay * 2).min(MAX_RESTART_BACKOFF);
+        delay
+    }
+
+    /// Starts over at [`INITIAL_RESTART_BACKOFF`] after a monitor ran at least as long as the
+    /// longest backoff, so an isolated failure after a healthy run is rebuilt quickly.
+    fn reset_after_run(&mut self, ran_for: Duration) {
+        if ran_for >= MAX_RESTART_BACKOFF {
+            self.next = INITIAL_RESTART_BACKOFF;
+        }
+    }
 }
 
 /// Discovers persisted batch boundaries and prepares the next submission independently of L1.
@@ -955,6 +988,7 @@ where
         repair_notify,
     } = shared_state;
     tokio::spawn(async move {
+        let mut backoff = RestartBackoff::new();
         loop {
             if shutdown.is_cancelled() {
                 info!("Zone monitor stopped before start");
@@ -974,9 +1008,10 @@ where
             {
                 Ok(monitor) => monitor,
                 Err(e) => {
-                    error!(error = %e, "Zone monitor failed to start, retrying in 5s");
+                    let delay = backoff.next_delay();
+                    error!(error = %e, ?delay, "Zone monitor failed to start, retrying");
                     if shutdown
-                        .run_until_cancelled(tokio::time::sleep(RESTART_BACKOFF))
+                        .run_until_cancelled(tokio::time::sleep(delay))
                         .await
                         .is_none()
                     {
@@ -987,18 +1022,22 @@ where
                 }
             };
 
+            let started = tokio::time::Instant::now();
             match monitor.run(&shutdown).await {
                 Ok(()) => {
                     info!("Zone monitor stopped");
                     return;
                 }
                 Err(e) => {
+                    backoff.reset_after_run(started.elapsed());
+                    let delay = backoff.next_delay();
                     error!(
                         error = %e,
-                        "Zone monitor failed; rebuilding from the portal anchor in 5s"
+                        ?delay,
+                        "Zone monitor failed; rebuilding from the portal anchor"
                     );
                     if shutdown
-                        .run_until_cancelled(tokio::time::sleep(RESTART_BACKOFF))
+                        .run_until_cancelled(tokio::time::sleep(delay))
                         .await
                         .is_none()
                     {
@@ -1550,5 +1589,30 @@ mod tests {
             batch_data.next_processed_deposit_hash
         );
         assert!(l1.read_q().is_empty());
+    }
+
+    #[test]
+    fn restart_backoff_doubles_up_to_max() {
+        let mut backoff = RestartBackoff::new();
+        let delays: Vec<_> = (0..7).map(|_| backoff.next_delay()).collect();
+
+        assert_eq!(
+            delays,
+            [200, 400, 800, 1_600, 3_200, 5_000, 5_000].map(Duration::from_millis)
+        );
+    }
+
+    #[test]
+    fn restart_backoff_resets_after_healthy_run() {
+        let mut backoff = RestartBackoff::new();
+        for expected in [200, 400, 800] {
+            assert_eq!(backoff.next_delay(), Duration::from_millis(expected));
+        }
+
+        backoff.reset_after_run(MAX_RESTART_BACKOFF - Duration::from_millis(1));
+        assert_eq!(backoff.next_delay(), Duration::from_millis(1_600));
+
+        backoff.reset_after_run(MAX_RESTART_BACKOFF);
+        assert_eq!(backoff.next_delay(), INITIAL_RESTART_BACKOFF);
     }
 }
