@@ -49,8 +49,8 @@ pub use prover::{
 };
 pub use prover_config::{HardforkProverAddress, ProverAddresses};
 pub use settlement::{
-    BatchAnchor, BatchAnchorConfig, BatchData, BatchSubmitter, PortalZoneAnchor, PreparedBatch,
-    SettlementAbi, resolve_portal_zone_anchor,
+    AtomicWithdrawalSlot, BatchAnchor, BatchAnchorConfig, BatchData, BatchSubmission,
+    BatchSubmitter, PortalZoneAnchor, PreparedBatch, SettlementAbi, resolve_portal_zone_anchor,
 };
 pub use settlement_manager::SettlementManager;
 pub use withdrawals::{
@@ -136,9 +136,9 @@ pub struct ZoneSequencerHandle {
 /// This is the top-level POC entrypoint that starts:
 /// - **Zone monitor** — prepares the next persisted Zone batch while the preceding batch is being
 ///   submitted to the ZonePortal. Submission remains ordered, and confirmed state only advances
-///   after a successful L1 receipt.
+///   after a successful L1 receipt. Eligible withdrawal slots are processed in that transaction.
 /// - **Withdrawal processor** — polls the ZonePortal withdrawal queue on Tempo L1 and calls
-///   `processWithdrawals` for each pending withdrawal.
+///   `processWithdrawals` for pending withdrawals the batch submitter left behind.
 /// - **Settlement prover** — when `settlement_prover` is set, settlement waits for a successful
 ///   SPF execution and Nitro NSM attestation before submitting the batch. The prover is owned by
 ///   the caller so it outlives individual leader generations.
@@ -190,6 +190,7 @@ where
         portal_address: config.portal_address,
         batch_anchor_config: config.batch_anchor_config,
         settlements,
+        withdrawal_batch_limits: config.withdrawal_batch_limits,
     };
     let withdrawal_handle = withdrawals::spawn_withdrawal_processor(
         withdrawal_config,

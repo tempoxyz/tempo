@@ -200,6 +200,62 @@ async fn test_zone_advances_with_real_l1() -> eyre::Result<()> {
     Ok(())
 }
 
+/// A withdrawal slot that fits one `processWithdrawals` call is consumed by the same L1
+/// transaction that submits its batch, instead of waiting for the standalone processor.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_eligible_withdrawal_settles_atomically_with_batch() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let l1 = L1TestNode::start().await?;
+    let portal_address = l1.deploy_zone().await?;
+    let zone = ZoneTestNode::start_from_l1(l1.http_url(), l1.ws_url(), portal_address).await?;
+    zone.wait_for_l2_tempo_finalized(0, L1_TIMEOUT).await?;
+
+    let mut account = ZoneAccount::from_l1_and_zone(&l1, &zone, portal_address);
+    let deposit_amount: u128 = 1_000_000;
+    l1.fund_user(account.address(), deposit_amount).await?;
+    account.deposit(deposit_amount, L1_TIMEOUT, &zone).await?;
+
+    let _sequencer = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
+    let withdrawal_amount: u128 = 400_000;
+    let l1_balance_before = l1.balance_of(PATH_USD_ADDRESS, account.address()).await?;
+    account.withdraw(withdrawal_amount).await?;
+    l1.wait_for_withdrawal_on_l1(
+        portal_address,
+        account.address(),
+        l1_balance_before,
+        withdrawal_amount,
+        Duration::from_secs(60),
+    )
+    .await?;
+
+    let portal = ZonePortal::new(portal_address, l1.provider());
+    let (_, processed_log) = portal
+        .WithdrawalProcessed_filter()
+        .from_block(0)
+        .query()
+        .await?
+        .into_iter()
+        .find(|(event, _)| event.to == account.address() && event.amount == withdrawal_amount)
+        .ok_or_else(|| eyre::eyre!("missing WithdrawalProcessed event"))?;
+    let processed_tx = processed_log
+        .transaction_hash
+        .ok_or_else(|| eyre::eyre!("WithdrawalProcessed log missing transaction hash"))?;
+    let batch_in_same_transaction = portal
+        .BatchSubmitted_1_filter()
+        .from_block(0)
+        .query()
+        .await?
+        .iter()
+        .any(|(_, log)| log.transaction_hash == Some(processed_tx));
+    assert!(
+        batch_in_same_transaction,
+        "eligible withdrawal should be processed in the transaction that submitted its batch"
+    );
+
+    Ok(())
+}
+
 /// The quorum path must settle a batch emitted by the real role controller, not merely accept
 /// manually assembled calldata. All three nodes independently execute the boundary, then the
 /// Portal accepts the leader's 2-of-3-or-more certificate.

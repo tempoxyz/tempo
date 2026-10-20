@@ -567,7 +567,8 @@ pub struct ZoneArgs {
     pub withdrawal_poll_interval_secs: u64,
 
     /// Maximum gas reserved by one processWithdrawals transaction, up to 20,000,000. An oversized
-    /// withdrawal is submitted alone.
+    /// withdrawal is submitted alone. Also bounds the withdrawal slot that batch settlement may
+    /// process in its own transaction, subject to the sequencer's fixed settlement gas ceiling.
     #[arg(
         long = "withdrawal-max-batch-gas",
         env = "WITHDRAWAL_MAX_BATCH_GAS",

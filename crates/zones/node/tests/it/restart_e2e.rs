@@ -7,8 +7,14 @@
 //! - Withdrawals continue to be processed after a sequencer restart
 //! - Multiple restart cycles don't corrupt state
 
-use crate::utils::{L1TestNode, ZoneAccount, ZoneTestNode, batch_count, spawn_sequencer};
-use alloy::primitives::{Address, U256};
+use crate::utils::{
+    L1TestNode, ZoneAccount, ZoneTestNode, batch_count, spawn_sequencer,
+    spawn_sequencer_with_config,
+};
+use alloy::{
+    primitives::{Address, U256},
+    providers::Provider,
+};
 use tempo_contracts::zones::{IZoneOutbox, ZONE_OUTBOX_ADDRESS, ZONE_TOKEN_ADDRESS, ZonePortal};
 use tempo_precompiles::PATH_USD_ADDRESS;
 
@@ -186,10 +192,24 @@ async fn test_sequencer_restart_with_pending_withdrawal_queue() -> eyre::Result<
     l1.fund_user(account.address(), deposit_amount).await?;
     account.deposit(deposit_amount, L1_TIMEOUT, &zone).await?;
 
+    // A tiny gas budget makes every slot ineligible for atomic settlement processing, so this
+    // test deterministically exercises the standalone pending-queue path across the restart.
+    let withdrawal_batch_limits = zone_sequencer::WithdrawalBatchLimits {
+        max_batch_gas: 1,
+        ..Default::default()
+    };
     let zone_sequencer::ZoneSequencerHandle {
         withdrawal_handle,
         monitor_handle,
-    } = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
+    } = spawn_sequencer_with_config(
+        &l1,
+        &zone,
+        portal_address,
+        l1.dev_signer(),
+        zone_sequencer::BatchAnchorConfig::default(),
+        withdrawal_batch_limits,
+    )
+    .await;
 
     // Keep batch submission running, but stop L1 processing so the portal queue
     // is guaranteed to remain pending until after the restart.
@@ -225,7 +245,15 @@ async fn test_sequencer_restart_with_pending_withdrawal_queue() -> eyre::Result<
     abort_task(monitor_handle).await;
 
     // --- Respawn sequencer (fetch_pending_withdrawals runs during init) ---
-    let seq_handle2 = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
+    let seq_handle2 = spawn_sequencer_with_config(
+        &l1,
+        &zone,
+        portal_address,
+        l1.dev_signer(),
+        zone_sequencer::BatchAnchorConfig::default(),
+        withdrawal_batch_limits,
+    )
+    .await;
 
     // The OLD withdrawal from before the restart should be processed via
     // restored data (withdrawal processor was aborted before head advanced).
@@ -463,7 +491,25 @@ async fn test_finalized_withdrawal_survives_sequencer_restart() -> eyre::Result<
     l1.fund_user(account.address(), deposit_amount).await?;
     account.deposit(deposit_amount, L1_TIMEOUT, &zone).await?;
 
-    let seq_handle = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
+    // The first generation may enqueue the slot but must not pay it out: a tiny gas budget keeps
+    // the atomic fast path out of its batch submission and its standalone processor is stopped
+    // immediately, so only the restarted sequencer can process the withdrawal.
+    let zone_sequencer::ZoneSequencerHandle {
+        withdrawal_handle,
+        monitor_handle,
+    } = spawn_sequencer_with_config(
+        &l1,
+        &zone,
+        portal_address,
+        l1.dev_signer(),
+        zone_sequencer::BatchAnchorConfig::default(),
+        zone_sequencer::WithdrawalBatchLimits {
+            max_batch_gas: 1,
+            ..Default::default()
+        },
+    )
+    .await;
+    abort_task(withdrawal_handle).await;
 
     let withdrawal_amount: u128 = 500_000;
     let l1_balance_before = l1.balance_of(PATH_USD_ADDRESS, account.address()).await?;
@@ -484,9 +530,9 @@ async fn test_finalized_withdrawal_survives_sequencer_restart() -> eyre::Result<
     );
 
     // Restart the batch submitter after proving the request block finalized its withdrawal.
-    seq_handle.monitor_handle.abort();
-    seq_handle.withdrawal_handle.abort();
+    abort_task(monitor_handle).await;
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    let restart_block = l1.provider().get_block_number().await?;
     let _seq_handle2 = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
 
     l1.wait_for_withdrawal_on_l1(
@@ -497,6 +543,20 @@ async fn test_finalized_withdrawal_survives_sequencer_restart() -> eyre::Result<
         WITHDRAWAL_TIMEOUT,
     )
     .await?;
+
+    // The payout must come from the restarted sequencer's recovery, not from the first
+    // generation.
+    let processed_after_restart = ZonePortal::new(portal_address, l1.provider())
+        .WithdrawalProcessed_filter()
+        .from_block(restart_block)
+        .query()
+        .await?
+        .into_iter()
+        .any(|(event, _)| event.to == account.address() && event.amount == withdrawal_amount);
+    assert!(
+        processed_after_restart,
+        "withdrawal was not processed by the restarted sequencer"
+    );
 
     Ok(())
 }
