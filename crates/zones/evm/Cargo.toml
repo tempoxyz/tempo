@@ -48,6 +48,7 @@ thiserror.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+alloy-eips.workspace = true
 alloy-genesis.workspace = true
 alloy-rlp.workspace = true
 eyre.workspace = true

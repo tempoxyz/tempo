@@ -17001,6 +17001,7 @@ name = "zone-evm"
 version = "0.3.5"
 dependencies = [
  "alloy-consensus",
+ "alloy-eips",
  "alloy-evm",
  "alloy-genesis",
  "alloy-primitives",
