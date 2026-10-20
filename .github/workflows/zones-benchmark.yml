@@ -819,6 +819,9 @@ jobs:
           if ! ulimit -l unlimited; then
             sudo -n prlimit --pid "$BASHPID" --memlock=unlimited:unlimited
           fi
+          # The batch holding the last measured block reaches L1 at the next batch boundary.
+          # Allow 1 s per Zone block (twice Tempo's 500 ms target) plus 120 s for submission.
+          spf_wait_timeout=$((120 + 10#$ZONES_BENCH_ZONE_BATCH_INTERVAL_BLOCKS))
           set +e
           samply "${samply_args[@]}" -- \
             taskset --cpu-list "$ZONES_BENCH_CPUSET" \
@@ -830,6 +833,7 @@ jobs:
               --from-block "$ZONES_BENCH_SPF_FROM_BLOCK" \
               --to-block "$ZONES_BENCH_SPF_TO_BLOCK" \
               --output "$ZONES_BENCH_SPF_OUTPUT" \
+              --wait-timeout "$spf_wait_timeout" \
             > "$ZONES_BENCH_SPF_REPORT" \
             2> target/zones-benchmark/spf.log
           spf_status=$?
@@ -860,7 +864,7 @@ jobs:
           fi
           if (( spf_status == 0 )) &&
              [[ "$ZONES_BENCH_NEOBANK_PRESET" != encrypted-deposit ]] &&
-             ! grep -Eq '^  User transactions: +[1-9][0-9]*$' "$ZONES_BENCH_SPF_REPORT"
+             ! jq -e '.user_transactions > 0' "$ZONES_BENCH_SPF_OUTPUT" >/dev/null
           then
             echo "selected SPF range contains no measured Zone user transactions" \
               >> target/zones-benchmark/spf.log

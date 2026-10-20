@@ -14,6 +14,7 @@ def validate_range(first, last, output, generate):
     if first < 1 or last < first:
         raise ValueError("requires a nonempty range after genesis")
     batches = []
+    user_transactions = 0
     cursor = first
     with tempfile.TemporaryDirectory(prefix="zones-spf-") as directory:
         witness = Path(directory) / "witness.json"
@@ -28,10 +29,13 @@ def validate_range(first, last, output, generate):
                     or (batches and numbers[0] != cursor)):
                 raise ValueError(f"validated batch does not cover the next block {cursor} contiguously")
             batches.append({"from_block": numbers[0], "to_block": numbers[-1]})
+            # Submitted batches may extend past the measured range on either side.
+            user_transactions += sum(len(block["transactions"]) for block in blocks
+                                     if first <= block["number"] <= last)
             print(f"Validated submitted batch {numbers[0]}..{numbers[-1]}", flush=True)
             cursor = numbers[-1] + 1
     result = {"status": "complete", "from_block": first, "to_block": last,
-              "batches": batches}
+              "user_transactions": user_transactions, "batches": batches}
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, indent=2) + "\n")
     return result
@@ -43,10 +47,14 @@ def wait_for_submission(last, portal, tempo_rpc, zone_rpc, timeout):
         block_hash = subprocess.check_output([
             "cast", "call", portal, "blockHash()(bytes32)", "--rpc-url", tempo_rpc],
             text=True, timeout=30).strip()
-        number = subprocess.check_output([
-            "cast", "block", block_hash, "--field", "number", "--rpc-url", zone_rpc],
-            text=True, timeout=30).strip()
-        committed = int(number, 16) if number.startswith("0x") else int(number)
+        if int(block_hash, 16) == 0:
+            # A fresh portal holds the zero hash until its first batch is submitted.
+            committed = 0
+        else:
+            number = subprocess.check_output([
+                "cast", "block", block_hash, "--field", "number", "--rpc-url", zone_rpc],
+                text=True, timeout=30).strip()
+            committed = int(number, 16) if number.startswith("0x") else int(number)
         if committed >= last:
             return
         if time.monotonic() >= deadline:
