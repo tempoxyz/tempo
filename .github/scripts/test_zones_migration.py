@@ -1,15 +1,19 @@
 """Regression coverage for the shared workspace's CI and benchmark boundaries."""
 
 import fnmatch
+import json
 import os
 from pathlib import Path
+import runpy
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
+SPF_RANGE = runpy.run_path(str(ROOT / 'zones/contrib/bench/validate-spf-range.py'))
 
 
 class SnapshotCacheTests(unittest.TestCase):
@@ -75,3 +79,43 @@ class DockerIgnoreTests(unittest.TestCase):
         for dockerfile in dockerfiles:
             with self.subTest(dockerfile=dockerfile.name):
                 self.assertEqual(dockerfile.with_name(dockerfile.name + '.dockerignore').read_bytes(), expected)
+
+
+class SpfRangeTests(unittest.TestCase):
+    def test_zero_portal_hash_polls_until_the_first_submission(self):
+        submitted = '0x' + 'ab' * 32
+        hashes = iter(['0x' + '00' * 32] * 2 + [submitted])
+        commands = []
+
+        def check_output(command, **_):
+            commands.append(command[:3])
+            return (next(hashes) if command[1] == 'call' else '7') + '\n'
+
+        with mock.patch('subprocess.check_output', side_effect=check_output), mock.patch('time.sleep'):
+            SPF_RANGE['wait_for_submission'](5, 'portal', 'l1', 'zone', 120)
+        self.assertEqual(commands, [['cast', 'call', 'portal']] * 3 + [['cast', 'block', submitted]])
+
+    def test_user_transactions_count_only_measured_blocks(self):
+        # Setup traffic in block 1 and later traffic in block 5 share batches with the range.
+        batches = {
+            2: [(1, 2), (2, 0), (3, 1)],
+            4: [(4, 0), (5, 3)],
+        }
+
+        def generate(cursor, output):
+            blocks = [{'number': number, 'transactions': ['0x00'] * count}
+                      for number, count in batches[cursor]]
+            output.write_text(json.dumps({'zoneBlocks': blocks}))
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'manifest.json'
+            with mock.patch('builtins.print'):
+                result = SPF_RANGE['validate_range'](2, 4, output, generate)
+            self.assertEqual(json.loads(output.read_text()), result)
+        self.assertEqual(result, {
+            'status': 'complete',
+            'from_block': 2,
+            'to_block': 4,
+            'user_transactions': 1,
+            'batches': [{'from_block': 1, 'to_block': 3}, {'from_block': 4, 'to_block': 5}],
+        })
