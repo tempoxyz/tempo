@@ -11,7 +11,7 @@ use tempo_precompiles_macros::{Storable, contract};
 
 use crate::{
     error::Result,
-    ip::{IpAddr, IpAddrWithPort, IpWithPortParseError},
+    ip::{IpAddr, IpAddrWithPort, IpParseError, IpWithPortParseError},
     storage::{Handler, Mapping},
     validator_config::ValidatorConfig,
 };
@@ -310,6 +310,35 @@ impl ValidatorConfigV2 {
         self.next_network_identity_rotation_epoch.read()
     }
 
+    fn validate_endpoints<'a>(
+        &self,
+        ingress: &'a str,
+        egress: &'a str,
+    ) -> Result<(IpAddrWithPort<'a>, IpAddr<'a>)> {
+        let is_t14 = self.storage.spec().is_t14();
+        let parsed_ingress = if is_t14 {
+            IpAddrWithPort::try_from(ingress)
+        } else {
+            IpAddrWithPort::parse_legacy(ingress)
+        };
+        let parsed_ingress = parsed_ingress.map_err(|err| match err {
+            IpWithPortParseError::TooLong => ValidatorConfigV2Error::invalid_ip(ingress.into()),
+            err => ValidatorConfigV2Error::not_ip_port(ingress.into(), err.to_string()),
+        })?;
+
+        let parsed_egress = if is_t14 {
+            IpAddr::try_from(egress)
+        } else {
+            IpAddr::parse_legacy(egress)
+        };
+        let parsed_egress = parsed_egress.map_err(|err| match err {
+            IpParseError::TooLong => ValidatorConfigV2Error::invalid_ip(egress.into()),
+            err => ValidatorConfigV2Error::not_ip(egress.into(), err.to_string()),
+        })?;
+
+        Ok((parsed_ingress, parsed_egress))
+    }
+
     /// Parses `ingress` as an `<ip>:<port>` pair and returns the hash of the
     /// ingress' binary representation.
     ///
@@ -492,7 +521,8 @@ impl ValidatorConfigV2 {
     /// - `PublicKeyAlreadyExists` — the public key is already registered
     /// - `InvalidValidatorAddress` — `validatorAddress` is zero
     /// - `AddressAlreadyHasValidator` — the address belongs to an active validator
-    /// - `NotIpPort` / `NotIp` — endpoints fail validation
+    /// - `NotIp` / `NotIpPort` — endpoints are malformed
+    /// - `InvalidIp` — an endpoint exceeds 255 bytes (T14+)
     /// - `IngressAlreadyExists` — the new ingress is already in use
     /// - `InvalidSignature` — signature verification fails
     pub fn add_validator(
@@ -504,12 +534,7 @@ impl ValidatorConfigV2 {
         self.require_new_pubkey(call.publicKey)?;
         self.require_new_address(call.validatorAddress)?;
 
-        let ingress = IpAddrWithPort::try_from(call.ingress.as_str()).map_err(|err| {
-            ValidatorConfigV2Error::not_ip_port(call.ingress.clone(), err.to_string())
-        })?;
-        let egress = IpAddr::try_from(call.egress.as_str())
-            .map_err(|err| ValidatorConfigV2Error::not_ip(call.egress.clone(), err.to_string()))?;
-
+        let (ingress, egress) = self.validate_endpoints(&call.ingress, &call.egress)?;
         let ingress_hash = self.require_unique_ingress(&call.ingress)?;
 
         self.verify_validator_signature(
@@ -668,7 +693,8 @@ impl ValidatorConfigV2 {
     /// - `ValidatorNotFound` / `ValidatorAlreadyDeleted` — `idx` is invalid
     /// - `NotInitialized` / `Unauthorized` — auth failure
     /// - `InvalidPublicKey` / `PublicKeyAlreadyExists` — the new key is invalid
-    /// - `NotIpPort` / `NotIp` / `IngressAlreadyExists` — endpoint validation failure
+    /// - `NotIp` / `NotIpPort` / `IngressAlreadyExists` — endpoint validation failure
+    /// - `InvalidIp` — an endpoint exceeds 255 bytes (T14+)
     /// - `InvalidSignature` — signature verification fails
     pub fn rotate_validator(
         &mut self,
@@ -682,11 +708,7 @@ impl ValidatorConfigV2 {
             .require_owner_or_validator(sender, v.validator_address)?;
         self.require_new_pubkey(call.publicKey)?;
 
-        let ingress = IpAddrWithPort::try_from(call.ingress.as_str()).map_err(|err| {
-            ValidatorConfigV2Error::not_ip_port(call.ingress.clone(), err.to_string())
-        })?;
-        let egress = IpAddr::try_from(call.egress.as_str())
-            .map_err(|err| ValidatorConfigV2Error::not_ip(call.egress.clone(), err.to_string()))?;
+        let (ingress, egress) = self.validate_endpoints(&call.ingress, &call.egress)?;
 
         self.require_unique_ingress(&call.ingress)?;
         self.verify_validator_signature(
@@ -776,7 +798,8 @@ impl ValidatorConfigV2 {
     /// - `NotInitialized` — the contract has not been initialized
     /// - `ValidatorNotFound` / `ValidatorAlreadyDeleted` — `idx` is invalid
     /// - `Unauthorized` — `sender` is neither the owner nor the validator
-    /// - `NotIpPort` / `NotIp` — the new endpoints fail validation
+    /// - `NotIp` / `NotIpPort` — the new endpoints are malformed
+    /// - `InvalidIp` — an endpoint exceeds 255 bytes (T14+)
     /// - `IngressAlreadyExists` — the new ingress is already in use.
     pub fn set_ip_addresses(
         &mut self,
@@ -789,11 +812,7 @@ impl ValidatorConfigV2 {
             .require_init()?
             .require_owner_or_validator(sender, v.validator_address)?;
 
-        IpAddrWithPort::try_from(call.ingress.as_str()).map_err(|err| {
-            ValidatorConfigV2Error::not_ip_port(call.ingress.clone(), err.to_string())
-        })?;
-        IpAddr::try_from(call.egress.as_str())
-            .map_err(|err| ValidatorConfigV2Error::not_ip(call.egress.clone(), err.to_string()))?;
+        self.validate_endpoints(&call.ingress, &call.egress)?;
 
         self.update_ingress_ip_tracking(&v.ingress, &call.ingress)?;
 
@@ -1036,6 +1055,7 @@ mod tests {
     use alloy_primitives::FixedBytes;
     use commonware_codec::Encode;
     use commonware_cryptography::{Signer, ed25519::PrivateKey};
+    use tempo_contracts::TempoHardfork;
 
     /// Generate a test Ed25519 key pair and create a valid signature
     fn make_test_keypair_and_signature(
@@ -1854,7 +1874,14 @@ mod tests {
                     sig1,
                 ),
             );
-            assert!(result.is_err(), "egress with port should be rejected");
+            assert_eq!(
+                result,
+                Err(ValidatorConfigV2Error::not_ip(
+                    "192.168.1.1:9000".into(),
+                    "input was not a valid IP address".into(),
+                )
+                .into())
+            );
 
             // Plain IP for egress should succeed
             vc.storage.set_block_number(200);
@@ -1869,6 +1896,154 @@ mod tests {
             );
             assert!(result.is_ok(), "egress with plain IP should succeed");
 
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t14_rejects_oversized_endpoints() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+        let owner = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner)?;
+            let validator = Address::random();
+            let idx = vc.add_validator(
+                owner,
+                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1", validator),
+            )?;
+            let oversized_ingress = format!("192.168.1.2:{}80", "0".repeat(242));
+            assert_eq!(oversized_ingress.len(), 256);
+            assert!(oversized_ingress.parse::<std::net::SocketAddr>().is_ok());
+            let oversized_egress = "0".repeat(256);
+
+            for (ingress, egress, invalid) in [
+                (
+                    oversized_ingress.as_str(),
+                    "192.168.1.2",
+                    oversized_ingress.as_str(),
+                ),
+                (
+                    "192.168.1.2:8000",
+                    oversized_egress.as_str(),
+                    oversized_egress.as_str(),
+                ),
+            ] {
+                let mut call = make_valid_add_call(
+                    Address::random(),
+                    "192.168.1.2:8000",
+                    "192.168.1.2",
+                    validator,
+                );
+                call.ingress = ingress.to_string();
+                call.egress = egress.to_string();
+                let error = ValidatorConfigV2Error::invalid_ip(invalid.into());
+                assert_eq!(
+                    vc.add_validator(owner, call.clone()),
+                    Err(error.clone().into())
+                );
+                assert_eq!(
+                    vc.rotate_validator(
+                        owner,
+                        IValidatorConfigV2::rotateValidatorCall {
+                            idx,
+                            publicKey: call.publicKey,
+                            ingress: call.ingress.clone(),
+                            egress: call.egress.clone(),
+                            signature: call.signature,
+                        }
+                    ),
+                    Err(error.clone().into()),
+                );
+                assert_eq!(
+                    vc.set_ip_addresses(
+                        owner,
+                        IValidatorConfigV2::setIpAddressesCall {
+                            idx,
+                            ingress: call.ingress,
+                            egress: call.egress,
+                        }
+                    ),
+                    Err(error.into()),
+                );
+            }
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_endpoint_length_limit_activates_at_t14() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
+        StorageCtx::enter(&mut storage, || {
+            let owner = Address::random();
+            let validator = Address::random();
+            let mut vc = ValidatorConfigV2::new();
+            vc.initialize(owner)?;
+            let idx = vc.add_validator(
+                owner,
+                make_valid_add_call(validator, "192.168.1.1:8000", "192.168.1.1", validator),
+            )?;
+            let oversized = format!("192.168.1.2:{}80", "0".repeat(242));
+            assert_eq!(oversized.len(), 256);
+
+            // Before T14, add/rotate retain their signature-length panic for oversized ingress.
+            let mut add = make_valid_add_call(
+                Address::random(),
+                "192.168.1.2:8000",
+                "192.168.1.2",
+                validator,
+            );
+            add.ingress = oversized.clone();
+            let rotate = IValidatorConfigV2::rotateValidatorCall {
+                idx,
+                publicKey: add.publicKey,
+                ingress: add.ingress.clone(),
+                egress: add.egress.clone(),
+                signature: add.signature.clone(),
+            };
+            assert!(
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    vc.add_validator(owner, add.clone())
+                }))
+                .is_err()
+            );
+            assert!(
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    vc.rotate_validator(owner, rotate.clone())
+                }))
+                .is_err()
+            );
+
+            // The unsigned setter accepted the same oversized input before T14.
+            let call = IValidatorConfigV2::setIpAddressesCall {
+                idx,
+                ingress: oversized.clone(),
+                egress: "192.168.1.2".to_string(),
+            };
+            assert_eq!(vc.set_ip_addresses(owner, call.clone()), Ok(()));
+            assert_eq!(vc.validator_by_index(idx)?.ingress, oversized);
+
+            // Post T14
+            vc.storage.set_spec(TempoHardfork::T14);
+
+            let error = ValidatorConfigV2Error::invalid_ip(oversized.clone());
+            assert_eq!(vc.add_validator(owner, add), Err(error.clone().into()));
+            assert_eq!(
+                vc.rotate_validator(owner, rotate),
+                Err(error.clone().into())
+            );
+            assert_eq!(vc.set_ip_addresses(owner, call), Err(error.into()));
+            assert_eq!(vc.validator_by_index(idx)?.ingress, oversized);
+
+            // A 255-byte endpoint remains valid, including its exact signed text.
+            let max_length = format!("192.168.1.3:{}80", "0".repeat(241));
+            assert_eq!(max_length.len(), 255);
+            let next_validator = Address::random();
+            let next_idx = vc.add_validator(
+                owner,
+                make_valid_add_call(next_validator, &max_length, "192.168.1.3", next_validator),
+            )?;
+            assert_eq!(vc.validator_by_index(next_idx)?.ingress, max_length);
             Ok(())
         })
     }

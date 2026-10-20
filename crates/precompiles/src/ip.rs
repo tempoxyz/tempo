@@ -22,8 +22,15 @@ pub(crate) struct IpAddr<'a> {
 }
 
 impl<'a> IpAddr<'a> {
+    /// Preserves pre-T14 format validation without imposing a length limit.
+    pub(crate) fn parse_legacy(input: &'a str) -> Result<Self, IpParseError> {
+        ensure_address_is_ip(input)?;
+        Ok(Self { input })
+    }
+
+    /// Panics for oversized legacy input, as pre-T14 signature encoding did.
     pub(crate) fn len(&self) -> u8 {
-        self.input.len() as u8
+        u8::try_from(self.input.len()).expect("validator egress length must fit in uint8")
     }
 
     pub(crate) fn as_bytes(&self) -> &[u8] {
@@ -36,9 +43,7 @@ impl<'a> TryFrom<&'a str> for IpAddr<'a> {
 
     fn try_from(input: &'a str) -> Result<Self, Self::Error> {
         u8::try_from(input.len()).map_err(|_| IpParseError::TooLong)?;
-        ensure_address_is_ip(input)?;
-
-        Ok(Self { input })
+        Self::parse_legacy(input)
     }
 }
 
@@ -59,8 +64,15 @@ pub(crate) struct IpAddrWithPort<'a> {
 }
 
 impl<'a> IpAddrWithPort<'a> {
+    /// Preserves pre-T14 format validation without imposing a length limit.
+    pub(crate) fn parse_legacy(input: &'a str) -> Result<Self, IpWithPortParseError> {
+        ensure_address_is_ip_port(input)?;
+        Ok(Self { input })
+    }
+
+    /// Panics for oversized legacy input, as pre-T14 signature encoding did.
     pub(crate) fn len(&self) -> u8 {
-        self.input.len() as u8
+        u8::try_from(self.input.len()).expect("validator ingress length must fit in uint8")
     }
 
     pub(crate) fn as_bytes(&self) -> &[u8] {
@@ -73,9 +85,7 @@ impl<'a> TryFrom<&'a str> for IpAddrWithPort<'a> {
 
     fn try_from(input: &'a str) -> Result<Self, Self::Error> {
         u8::try_from(input.len()).map_err(|_| IpWithPortParseError::TooLong)?;
-        ensure_address_is_ip_port(input)?;
-
-        Ok(Self { input })
+        Self::parse_legacy(input)
     }
 }
 
