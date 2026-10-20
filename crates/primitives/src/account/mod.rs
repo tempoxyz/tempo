@@ -5,7 +5,7 @@ use alloy_rlp::Error;
 
 const COMMITMENT_FORMAT_TAG: u8 = 0;
 
-/// Returns the raw fifth-field payload; the trie adds RLP framing. Zero omits the field.
+/// Returns the format tag followed by `hash`, or an empty payload when `hash` is zero.
 pub fn encode_config_commitment(hash: B256) -> Bytes {
     if hash.is_zero() {
         Bytes::new()
