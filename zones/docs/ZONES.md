@@ -779,7 +779,6 @@ cast code 0x5A4d000000000000000000000000000000000000 --rpc-url "$ETH_RPC_URL"
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--l1.rpc-url` | (required) | Certified Tempo follower WebSocket RPC URL |
-| `--l1.portal-address` | Derived from genesis chain ID | Deprecated consistency check; if supplied, must match the derived ZonePortal address |
 | `--zone.id` | (deprecated) | Optional compatibility check against the zone ID encoded in the genesis chain ID. |
 | `--sequencer` | false | Enable sequencer mode for block production and withdrawal batch submission |
 | `--sequencer-key-file` | (required for sequencing) | Owner-readable file or FIFO containing the sequencer private key |
