@@ -11,6 +11,7 @@ use reth_ethereum::cli::Cli;
 use reth_tracing::tracing::{info, warn};
 use tempo_alloy::TempoNetwork;
 use tempo_evm::consensus::TempoConsensus;
+use tempo_precompiles::zone_factory::portal_address;
 use zeroize::Zeroizing;
 use zone_chainspec::{ZoneChainSpec, ZoneChainSpecParser};
 use zone_evm::ZoneEvmConfig;
@@ -127,6 +128,7 @@ fn run_node(mut cli: Cli<ZoneChainSpecParser, ZoneArgs>) -> eyre::Result<()> {
 
         let zone_id = builder.config().chain.zone_id();
         validate_deprecated_zone_id(args.zone_id, zone_id)?;
+        let portal_address = resolve_portal_address(args.portal_address, zone_id)?;
 
         let manifest_mode = args.sequencer_manifest.is_some();
         validate_p2p_transaction_size_limit(
@@ -149,7 +151,7 @@ fn run_node(mut cli: Cli<ZoneChainSpecParser, ZoneArgs>) -> eyre::Result<()> {
 
         let mut node = ZoneNode::new(
             args.l1_rpc_url.clone(),
-            args.portal_address,
+            portal_address,
             args.l1_fetch_concurrency,
             Duration::from_millis(args.l1_retry_connection_interval_ms),
         )
@@ -181,7 +183,7 @@ fn run_node(mut cli: Cli<ZoneChainSpecParser, ZoneArgs>) -> eyre::Result<()> {
                 let node = node.with_portal_evidence_retention();
                 let checker = CheckerExEx::new(CheckerConfig {
                     l1_rpc_url: args.l1_rpc_url.clone(),
-                    portal_address: args.portal_address,
+                    portal_address,
                     zone_id,
                     zone_chain_id: builder.config().chain.chain_id(),
                     database_path: builder.config().datadir().data_dir().join("checker"),
@@ -205,13 +207,16 @@ fn cli_evm_config(chain_spec: Arc<ZoneChainSpec>, l1_rpc_url: Option<url::Url>) 
         return ZoneEvmConfig::new_without_l1(chain_spec);
     };
 
-    let portal_address = tempo_precompiles::zone_factory::portal_address(chain_spec.zone_id());
+    let portal_address = portal_address(chain_spec.zone_id());
     let cache = L1StateCache::default();
     let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
         .connect_http(l1_rpc_url)
         .erased();
     let runtime_handle = tokio::runtime::Handle::current();
-    let config = L1StateProviderConfig::default();
+    let config = L1StateProviderConfig {
+        portal_address,
+        ..Default::default()
+    };
     let l1_provider = L1StateProvider::new_raw(config, cache, provider, runtime_handle);
     ZoneEvmConfig::new(chain_spec, l1_provider, portal_address)
 }
@@ -383,13 +388,14 @@ pub struct ZoneArgs {
     )]
     pub l1_rpc_url: String,
 
-    /// ZonePortal contract address on L1.
+    /// Deprecated consistency check against the L1 portal derived from the genesis chain ID.
+    /// If supplied, this must match the derived address; it cannot override it.
     #[arg(
         long = "l1.portal-address",
         env = "L1_PORTAL_ADDRESS",
         value_parser = parse_portal_address
     )]
-    pub portal_address: Address,
+    pub portal_address: Option<Address>,
 
     /// Deprecated compatibility flag. Ignored.
     #[arg(
@@ -671,16 +677,26 @@ fn validate_deprecated_zone_id(configured: Option<u32>, derived: u32) -> eyre::R
     Ok(())
 }
 
+fn resolve_portal_address(configured: Option<Address>, zone_id: u32) -> eyre::Result<Address> {
+    let derived = portal_address(zone_id);
+    if let Some(configured) = configured {
+        eyre::ensure!(
+            configured == derived,
+            "deprecated --l1.portal-address / L1_PORTAL_ADDRESS value {configured} does not match portal address {derived} derived from zone ID {zone_id} encoded in the genesis chain ID"
+        );
+        warn!(target: "reth::cli", "--l1.portal-address / L1_PORTAL_ADDRESS is deprecated; remove it to derive the portal address from genesis");
+    }
+    Ok(derived)
+}
+
 #[cfg(test)]
 mod tests {
     use std::{io::Write as _, process::Command, thread, time::Duration};
 
     use clap::Parser as _;
 
-    use super::{
-        Role, ZoneArgs, ZoneCli, load_decryption_keys, load_sequencer_signer, parse_l1_rpc_url,
-        parse_portal_address, validate_deprecated_zone_id, validate_p2p_transaction_size_limit,
-    };
+    use super::*;
+    use tempo_chainspec::spec::{DEV, MODERATO, PRESTO};
     use zone_sequencer::MAX_WITHDRAWAL_BATCH_GAS;
 
     #[derive(Debug, clap::Parser)]
@@ -1245,5 +1261,39 @@ mod tests {
     fn l1_rpc_url_rejects_non_websocket_schemes() {
         assert!(parse_l1_rpc_url("http://localhost:8545").is_err());
         assert!(parse_l1_rpc_url("https://rpc.moderato.tempo.xyz").is_err());
+    }
+
+    #[test]
+    fn portal_address_is_derived_from_genesis_without_an_argument() {
+        let parsed =
+            ZoneArgsParser::try_parse_from(["tempo-zone", "--l1.rpc-url", "ws://localhost:8546"])
+                .unwrap();
+        assert_eq!(parsed.zone.portal_address, None);
+
+        for parent in [DEV.clone(), MODERATO.clone(), PRESTO.clone()] {
+            let mut genesis = parent.genesis().clone();
+            genesis.config.chain_id =
+                zone_primitives::constants::zone_chain_id(parent.chain_id(), 0x0102_0304).unwrap();
+            let spec = ZoneChainSpec::from_genesis(genesis).unwrap();
+            let expected = alloy_primitives::address!("5ad0000000000000000000000000000001020304");
+            assert_eq!(
+                resolve_portal_address(None, spec.zone_id()).unwrap(),
+                expected
+            );
+            assert_eq!(
+                resolve_portal_address(Some(expected), spec.zone_id()).unwrap(),
+                expected
+            );
+            let wrong = Address::repeat_byte(0x11);
+            assert_eq!(
+                resolve_portal_address(Some(wrong), spec.zone_id())
+                    .unwrap_err()
+                    .to_string(),
+                format!(
+                    "deprecated --l1.portal-address / L1_PORTAL_ADDRESS value {wrong} does not match portal address {expected} derived from zone ID {} encoded in the genesis chain ID",
+                    spec.zone_id()
+                )
+            );
+        }
     }
 }
