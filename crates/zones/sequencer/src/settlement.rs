@@ -54,7 +54,7 @@ use alloy_rlp::Encodable;
 use alloy_rpc_types_eth::Filter;
 use alloy_signer_local::PrivateKeySigner;
 use alloy_sol_types::{SolCall, SolEvent, SolValue};
-use eyre::{OptionExt as _, Result, WrapErr as _};
+use eyre::{OptionExt as _, Result, WrapErr as _, ensure};
 use futures::{StreamExt, TryStreamExt};
 use parking_lot::RwLock;
 use reth_storage_api::BlockNumReader;
@@ -62,6 +62,7 @@ use schnellru::{ByLength, LruMap};
 use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderExt, rpc::TempoCallBuilderExt};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::{Block, TempoReceipt};
+use tokio::time::{Instant, sleep};
 use tracing::{info, instrument, warn};
 use zone_chainspec::ZoneChainSpec;
 use zone_prover::{ProofBundle, VerifierMode};
@@ -1222,21 +1223,22 @@ impl BatchSubmitter {
 ///
 /// The Zone builds on L1 blocks from its own subscription, so `eth_blockNumber` can trail the
 /// block a batch anchors to for a few hundred milliseconds. Errors if the RPC fails or has not
-/// reached `block_number` within [`L1_CATCH_UP_TIMEOUT`].
+/// reached `block_number` within `L1_CATCH_UP_TIMEOUT`.
 pub async fn wait_for_l1_block(
     l1_provider: &DynProvider<TempoNetwork>,
     block_number: u64,
 ) -> Result<u64> {
-    let deadline = tokio::time::Instant::now() + L1_CATCH_UP_TIMEOUT;
+    let deadline = Instant::now() + L1_CATCH_UP_TIMEOUT;
     loop {
         let tip = l1_provider.get_block_number().await?;
         if tip >= block_number {
             return Ok(tip);
         }
-        if tokio::time::Instant::now() >= deadline {
-            eyre::bail!("L1 block {block_number} is not yet confirmed on L1 (tip={tip})");
-        }
-        tokio::time::sleep(L1_CATCH_UP_POLL_INTERVAL).await;
+        ensure!(
+            Instant::now() < deadline,
+            "L1 block {block_number} is not yet confirmed on L1 (tip={tip})"
+        );
+        sleep(L1_CATCH_UP_POLL_INTERVAL).await;
     }
 }
 
@@ -2583,7 +2585,7 @@ mod tests {
         asserter.push_success(&100_u64);
         asserter.push_success(&101_u64);
         asserter.push_success(&header);
-        let started = tokio::time::Instant::now();
+        let started = Instant::now();
         let anchor = submitter.resolve_batch_anchor(101).await.unwrap();
 
         assert_eq!(anchor.block_hash(), hash);
