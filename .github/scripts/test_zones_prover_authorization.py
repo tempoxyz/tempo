@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 import subprocess
+import tempfile
 import unittest
 
 import yaml
@@ -14,26 +15,15 @@ SHA = "a" * 40
 OTHER_SHA = "b" * 40
 
 
-def run_step(job, name, *, actor="member", triggering_actor="member", members=None,
-             body=None, head=SHA, repo="tempoxyz/tempo", event="issue_comment", feature_sha=""):
-    step = next(s for s in WORKFLOW["jobs"][job]["steps"] if s.get("name") == name)
-    payload = {
-        "script": step["with"]["script"],
-        "context": {"actor": actor, "eventName": event, "sha": SHA,
-                    "payload": {"comment": {"body": body if body is not None else f"derek bench {SHA}"}},
-                    "issue": {"number": 1507}, "repo": {"owner": "tempoxyz", "repo": "tempo"}},
-        "members": members if members is not None else ["member", "other-member"],
-        "head": {"sha": head, "repo": {"full_name": repo} if repo else None},
-        "env": {"TRIGGERING_ACTOR": triggering_actor, "FEATURE_SHA": feature_sha},
-    }
-    result = subprocess.run(["node", "-e", """
+HARNESS = """
 const fs = require('node:fs');
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
 Object.assign(process.env, input.env);
-const result = {failures: [], outputs: {}, checked: []};
+const result = {failures: [], outputs: {}, checked: [], calls: []};
 const core = {
   setFailed: message => result.failures.push(message),
   setOutput: (key, value) => result.outputs[key] = value,
+  setSecret: () => {},
 };
 const github = {rest: {
   orgs: {checkMembershipForUser: async ({username}) => {
@@ -42,12 +32,60 @@ const github = {rest: {
   }},
   pulls: {get: async () => ({data: {head: input.head}})},
 }};
+const fetch = async (url, request) => {
+  result.calls.push({url: String(url), ...request, signal: undefined});
+  return String(url).includes('slack.com')
+    ? {ok: true, json: async () => ({ok: input.slackOk})}
+    : {ok: input.metricsStatus === 204, status: input.metricsStatus};
+};
 const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
-new AsyncFunction('github', 'core', 'context', input.script)(github, core, input.context)
+new AsyncFunction('github', 'core', 'context', 'require', 'fetch', input.script)(github, core, input.context, require, fetch)
   .then(() => console.log(JSON.stringify(result)))
   .catch(error => { console.error(error); process.exit(1); });
-"""], input=json.dumps(payload), text=True, capture_output=True, check=True)
+"""
+
+
+def run_script(job, name, **payload):
+    """Run a workflow github-script step against fake GitHub, Actions core, and fetch."""
+    step = next(s for s in WORKFLOW["jobs"][job]["steps"] if s.get("name") == name)
+    result = subprocess.run(["node", "-e", HARNESS], input=json.dumps({"script": step["with"]["script"], **payload}),
+                            text=True, capture_output=True, check=True)
     return json.loads(result.stdout)
+
+
+def run_step(job, name, *, actor="member", triggering_actor="member", members=None,
+             body=None, head=SHA, repo="tempoxyz/tempo", event="issue_comment", feature_sha=""):
+    return run_script(
+        job, name,
+        context={"actor": actor, "eventName": event, "sha": SHA,
+                 "payload": {"comment": {"body": body if body is not None else f"derek bench {SHA}"}},
+                 "issue": {"number": 1507}, "repo": {"owner": "tempoxyz", "repo": "tempo"}},
+        members=members if members is not None else ["member", "other-member"],
+        head={"sha": head, "repo": {"full_name": repo} if repo else None},
+        env={"TRIGGERING_ACTOR": triggering_actor, "FEATURE_SHA": feature_sha},
+    )
+
+
+def run_report(*, event="schedule", outcome="success", metrics_status=204, slack_ok=True, missing_metrics=False):
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory) / "results"
+        root.mkdir()
+        if outcome == "success":
+            (root / "comparison.prom").write_text(
+                'tempo_zone_benchmark_latency_seconds{prover="on"} 0.2\n'
+                'tempo_zone_benchmark_completed_timestamp_seconds{comparison="prover"} 1\n')
+            latency = {key: dict(p50_ms=100.0, p95_ms=200.0) for key in ("journey", "deposit", "withdrawal")}
+            (root / "comparison.json").write_text(json.dumps(dict(
+                metadata=dict(feature="a" * 40, count=20), latencies=dict(baseline=latency, feature=latency))))
+        return run_script(
+            "benchmark", "Publish latency metrics and nightly status",
+            context={"eventName": event, "serverUrl": "https://github.com",
+                     "repo": {"owner": "tempoxyz", "repo": "tempo"}, "runId": 123},
+            metricsStatus=metrics_status, slackOk=slack_ok,
+            env=dict(BENCH_RESULTS_PATH=directory, BENCH_OUTCOME=outcome,
+                     BENCH_METRICS_URL="" if missing_metrics else "https://user:p%40ss@metrics.test/insert/0/prometheus/",
+                     SLACK_BENCH_BOT_TOKEN="secret", GITHUB_RUN_ATTEMPT="2"),
+        )
 
 
 class AuthorizationTests(unittest.TestCase):
@@ -97,3 +135,41 @@ class AuthorizationTests(unittest.TestCase):
             self.assertLess(check, names.index(name))
         checkout = steps[names.index("Check out feature Tempo with Zones")]
         self.assertEqual(checkout["with"]["ref"], "${{ needs.authorize.outputs.feature-sha }}")
+
+
+class ReportingTests(unittest.TestCase):
+    def test_success_publishes_metrics_and_observed_latency_summary(self):
+        result = run_report()
+        self.assertEqual(result["failures"], [])
+        metrics, slack = result["calls"]
+        self.assertEqual(metrics["url"], "https://metrics.test/insert/0/prometheus/api/v1/import/prometheus")
+        self.assertEqual(metrics["headers"]["Authorization"], "Basic dXNlcjpwQHNz")
+        self.assertIn('tempo_zone_benchmark_latency_seconds{run_kind="nightly",', metrics["body"])
+        self.assertIn('tempo_zone_benchmark_completed_timestamp_seconds{run_kind="nightly",', metrics["body"])
+        message = json.loads(slack["body"])
+        self.assertEqual(message["channel"], "C0B96B0RRMJ")
+        self.assertIn("/actions/runs/123/attempts/2", message["text"])
+        self.assertIn("withdrawal p50/p95 (ms), off → on: 100.0/200.0 → 100.0/200.0", message["text"])
+
+    def test_manual_metrics_do_not_overwrite_nightlies_or_notify(self):
+        result = run_report(event="workflow_dispatch")
+        self.assertEqual(result["failures"], [])
+        self.assertEqual(len(result["calls"]), 1)
+        self.assertIn('run_kind="manual"', result["calls"][0]["body"])
+
+    def test_failed_benchmark_does_not_import_or_claim_measurements(self):
+        result = run_report(outcome="failure")
+        self.assertEqual(len(result["calls"]), 1)
+        message = json.loads(result["calls"][0]["body"])["text"]
+        self.assertIn("benchmark failed or did not run", message)
+        self.assertNotIn("p50", message)
+
+    def test_metric_failure_still_notifies_and_fails_publication(self):
+        for missing in (False, True):
+            result = run_report(metrics_status=503, missing_metrics=missing)
+            self.assertEqual(len(result["failures"]), 1)
+            self.assertIn("Grafana metrics publication FAILED", json.loads(result["calls"][-1]["body"])["text"])
+
+    def test_slack_rejection_fails_delivery(self):
+        result = run_report(slack_ok=False)
+        self.assertEqual(result["failures"], ["Nightly Zone Slack delivery failed"])

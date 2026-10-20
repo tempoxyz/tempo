@@ -42,7 +42,6 @@ same storage. No-data panels are not zero latency.
 
 Only after that smoke succeeds, set `ZONES_PROVER_NIGHTLY_ENABLED=true`. The nightly
 runs at 03:45 UTC, snapshots the event's exact main SHA, and reports pass/fail to
-`C0B96B0RRMJ` using `SLACK_BENCH_BOT_TOKEN`. Override the channel with the repository
-variable `ZONES_BENCH_SLACK_CHANNEL` if needed. Manual series use a separate label
+`C0B96B0RRMJ` using `SLACK_BENCH_BOT_TOKEN`. Manual series use a separate label
 and do not overwrite nightly data. Verify the first nightly Slack post and Grafana
 series before declaring reporting operational; unit tests do not replace that check.
