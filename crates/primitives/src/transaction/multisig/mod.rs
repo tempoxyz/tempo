@@ -294,6 +294,30 @@ impl MultisigSignature {
         multisig_digest(inner_digest, self.account(), self.config.version)
     }
 
+    /// Computes the commitment of the configuration validated at construction or decoding.
+    pub fn config_commitment(&self) -> B256 {
+        self.config.commitment_validated()
+    }
+
+    fn validate_shape(&self) -> Result<(), MultisigSignatureError> {
+        if self.account().is_zero() {
+            return Err(MultisigSignatureError::ZeroAccount);
+        }
+        self.config.validate_for_account(self.account())?;
+        if self.signatures.is_empty() {
+            return Err(MultisigSignatureError::EmptySignatures);
+        }
+        if self.signatures.len() > MAX_MULTISIG_SIGNATURES {
+            return Err(MultisigSignatureError::TooManySignatures);
+        }
+        for signature in &self.signatures {
+            if signature.encoded_length() > MAX_MULTISIG_OWNER_SIGNATURE_BYTES {
+                return Err(MultisigSignatureError::OwnerSignatureTooLarge);
+            }
+        }
+        Ok(())
+    }
+
     /// Verifies the owner approvals against this configuration, without checking account state.
     pub fn verify_approvals(&self, inner_digest: B256) -> Result<(), MultisigQuorumError> {
         let digest = self.digest(inner_digest);
@@ -312,11 +336,6 @@ impl MultisigSignature {
             }
         }
         weight.finish()
-    }
-
-    /// Computes the commitment of the configuration validated at construction or decoding.
-    pub fn config_commitment(&self) -> B256 {
-        self.config.commitment_validated()
     }
 
     /// Checks the stored commitment or, on first use, derives the named account.
@@ -349,25 +368,6 @@ impl MultisigSignature {
                     expected,
                     actual: self.account,
                 });
-            }
-        }
-        Ok(())
-    }
-
-    fn validate_shape(&self) -> Result<(), MultisigSignatureError> {
-        if self.account().is_zero() {
-            return Err(MultisigSignatureError::ZeroAccount);
-        }
-        self.config.validate_for_account(self.account())?;
-        if self.signatures.is_empty() {
-            return Err(MultisigSignatureError::EmptySignatures);
-        }
-        if self.signatures.len() > MAX_MULTISIG_SIGNATURES {
-            return Err(MultisigSignatureError::TooManySignatures);
-        }
-        for signature in &self.signatures {
-            if signature.encoded_length() > MAX_MULTISIG_OWNER_SIGNATURE_BYTES {
-                return Err(MultisigSignatureError::OwnerSignatureTooLarge);
             }
         }
         Ok(())
@@ -549,8 +549,6 @@ pub enum MultisigQuorumError {
     EmptySignatures,
     /// The signature list exceeds [`MAX_MULTISIG_SIGNATURES`].
     TooManySignatures,
-    /// An owner approval could not recover a signer.
-    OwnerSignatureRecoveryFailed { approval_index: usize },
     /// The signature list has entries after quorum is reached.
     ExcessSignatures,
     /// A recovered signer is not a configured owner.
@@ -559,6 +557,8 @@ pub enum MultisigQuorumError {
     SignersNotAscending,
     /// Recovered signer weight does not meet the threshold.
     WeightBelowThreshold,
+    /// An owner approval could not recover a signer.
+    OwnerSignatureRecoveryFailed { approval_index: usize },
 }
 
 impl MultisigQuorumError {
@@ -568,11 +568,11 @@ impl MultisigQuorumError {
             Self::ZeroThreshold => "multisig threshold cannot be zero",
             Self::EmptySignatures => "multisig signatures cannot be empty",
             Self::TooManySignatures => "too many multisig signatures",
-            Self::OwnerSignatureRecoveryFailed { .. } => "invalid multisig owner signature",
             Self::ExcessSignatures => "excess multisig owner signatures",
             Self::SignerNotOwner => "multisig signer is not an owner",
             Self::SignersNotAscending => "multisig recovered owners must be strictly ascending",
             Self::WeightBelowThreshold => "multisig signature weight below threshold",
+            Self::OwnerSignatureRecoveryFailed { .. } => "invalid multisig owner signature",
         }
     }
 }
