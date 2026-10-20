@@ -68,10 +68,11 @@ upstream).
 | Whole class of valid transactions rejected, or expired keys admitted | High |
 | Bounded accounting drift, pool or RPC resource leaks, mispriced gas constants | Medium |
 | Validator-reachable corruption of the validator set | Medium |
-| Narrow edge cases, misclassified transactions, restart-recoverable liveness, wrong error semantics | Low |
+| Narrow edge cases, misclassified transactions, restart-recoverable liveness that cannot simply be retriggered, wrong error semantics | Low |
 | Spec or documentation divergence, hardening, efficiency, latent defects with no caller | Informational |
 
-The table wins: the adjustments below move a finding within what its row intends, never out of it.
+Start from the row that matches the impact; the adjustments below then shift it, but none overrides a row that names
+the case outright.
 
 Adjust for:
 - The same defect rates higher when the vulnerable path is live on mainnet, and lower when it sits only behind an
