@@ -32,6 +32,7 @@ pub struct TempoBlockEnv {
     pub proposer_public_key: Option<PublicKey>,
     /// Recovery factory explicitly selected by chain configuration. Native authorization is
     /// unavailable when absent; there is no default production factory address.
+    // TODO: set the canonical TIP-1110 recovery factory for public networks before T14 activation
     #[cfg_attr(feature = "serde", serde(default))]
     pub multisig_recovery_factory: Option<Address>,
 }
