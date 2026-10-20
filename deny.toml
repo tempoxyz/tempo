@@ -19,6 +19,10 @@ ignore = [
   # https://rustsec.org/advisories/RUSTSEC-2024-0449
   # It is used only by serde_yaml in xtask to parse local benchmark scenarios.
   "RUSTSEC-2024-0449",
+  # basic-toml is unmaintained with no patched release:
+  # https://rustsec.org/advisories/RUSTSEC-2026-0374
+  # It is pulled in by age's i18n-config translation macros.
+  "RUSTSEC-2026-0374",
 ]
 
 # This section is considered when running `cargo deny check bans`.
