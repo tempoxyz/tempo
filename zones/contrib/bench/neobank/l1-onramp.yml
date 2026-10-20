@@ -24,7 +24,6 @@ setup: { steps: [] }
 templates:
   approve_portal:
     type: tempo
-    from: { var: account.ref }
     gas_limit: 2000000
     fee_token: "${ZONES_BENCH_TOKEN}"
     call:
@@ -37,7 +36,6 @@ templates:
 
   encrypted_onramp:
     type: tempo
-    from: { var: account.ref }
     gas_limit: 2000000
     fee_token: "${ZONES_BENCH_TOKEN}"
     expiring_nonce: true
@@ -55,7 +53,6 @@ templates:
 
   reward_approval:
     type: tempo
-    from: { var: account.ref }
     gas_limit: 2000000
     fee_token: "${ZONES_BENCH_PATHUSD}"
     call:
@@ -68,7 +65,6 @@ templates:
 
   reward_fund:
     type: tempo
-    from: { var: account.ref }
     gas_limit: 5000000
     fee_token: "${ZONES_BENCH_PATHUSD}"
     call:

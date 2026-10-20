@@ -4,7 +4,7 @@
 //! It reuses Tempo's EVM, primitives, and pool, but with noop consensus/network/payload.
 
 use crate::{
-    ZoneEngine,
+    ZoneConsensus, ZoneEngine,
     follower::PeerTipRegistry,
     replication::{BACKFILL_SERVE_QUEUE_CAPACITY, serve_backfill_requests},
     role::{
@@ -68,7 +68,7 @@ use tempo_contracts::zones::{
     LegacyTempoAdvanced, TempoAdvanced, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
     ZonePortal::{self},
 };
-use tempo_evm::{TempoInvalidTransaction, consensus::TempoConsensus};
+use tempo_evm::TempoInvalidTransaction;
 use tempo_node::{
     DEFAULT_AA_VALID_AFTER_MAX_SECS, engine::TempoEngineValidator, rpc::TempoEthApiBuilder,
 };
@@ -1814,7 +1814,7 @@ impl ZoneExecutorBuilder {
     }
 }
 
-/// Builds Tempo consensus from the Zone chain spec with Tempo fork activations inherited from L1.
+/// Builds Zone consensus from the Zone chain spec with Tempo fork activations inherited from L1.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ZoneConsensusBuilder;
@@ -1829,10 +1829,10 @@ impl<Node> ConsensusBuilder<Node> for ZoneConsensusBuilder
 where
     Node: FullNodeTypes<Types = ZoneNode>,
 {
-    type Consensus = TempoConsensus<ZoneChainSpec>;
+    type Consensus = ZoneConsensus;
 
     async fn build_consensus(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Consensus> {
-        Ok(TempoConsensus::new(ctx.chain_spec()).with_allow_equal_timestamps(true))
+        Ok(ZoneConsensus::new(ctx.chain_spec()))
     }
 }
 

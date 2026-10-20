@@ -35,6 +35,7 @@ zone-checker = { workspace = true, optional = true }
 # reth
 reth-chain-state.workspace = true
 reth-chainspec = { workspace = true, default-features = true }
+reth-consensus.workspace = true
 reth-eth-wire-types.workspace = true
 reth-ethereum = { workspace = true, features = ["cli", "node"], optional = true }
 reth-evm.workspace = true
@@ -61,6 +62,7 @@ reth-trie-common = { workspace = true, features = ["std"] }
 alloy-chains.workspace = true
 alloy-consensus.workspace = true
 alloy-eips.workspace = true
+alloy-evm.workspace = true
 alloy-genesis.workspace = true
 alloy-network.workspace = true
 alloy-primitives.workspace = true
@@ -85,6 +87,7 @@ k256.workspace = true
 metrics.workspace = true
 serde = { workspace = true, features = ["alloc"] }
 serde_json = { workspace = true, default-features = true }
+thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 url = { version = "2", optional = true }
@@ -100,7 +103,6 @@ zone-node = { path = ".", features = ["test-utils"] }
 
 alloy = { workspace = true, features = ["full", "genesis", "providers", "rpc-types", "signer-local", "signer-mnemonic-all-languages", "signers"] }
 alloy-contract.workspace = true
-alloy-evm.workspace = true
 alloy-signer.workspace = true
 base64 = { workspace = true, default-features = true }
 const-hex.workspace = true
@@ -117,7 +119,6 @@ sha2 = { workspace = true, default-features = true }
 tempo-payload-types.workspace = true
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempo-revm.workspace = true
-thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 tokio-tungstenite.workspace = true
 zone-spf.workspace = true
@@ -159,6 +160,7 @@ keccak-cache-global = [
 ]
 test-utils = [
   "reth-chainspec/test-utils",
+  "reth-consensus/test-utils",
   "reth-ethereum?/test-utils",
   "reth-node-builder/test-utils",
   "reth-payload-builder/test-utils",
