@@ -214,10 +214,14 @@ where
             return Err(BlockValidationError::msg("withdrawals are not permitted").into());
         }
 
-        // TIP-1119: Zones explicitly select history storage and omit Ethereum system calls.
-        self.inner
-            .system_caller
-            .apply_blockhashes_contract_call(self.inner.ctx.parent_hash, &mut self.inner.evm)
+        if self.inner.evm.cfg_env().spec.is_t13() {
+            // TIP-1119: Zones explicitly select history storage and omit Ethereum system calls.
+            self.inner
+                .system_caller
+                .apply_blockhashes_contract_call(self.inner.ctx.parent_hash, &mut self.inner.evm)
+        } else {
+            self.inner.apply_pre_execution_changes()
+        }
     }
 
     fn execute_transaction_without_commit(
@@ -296,6 +300,10 @@ where
                  system transaction",
             )
             .into());
+        }
+
+        if !self.inner.evm.cfg_env().spec.is_t13() {
+            return self.inner.finish();
         }
 
         let gas_used = if self.inner.evm.cfg_env().enable_amsterdam_eip8037 {
@@ -1153,7 +1161,7 @@ mod tests {
     }
 
     #[test]
-    fn system_calls_select_history_only() {
+    fn system_calls_activation_selects_history_only() {
         let mut genesis = DEV.genesis().clone();
         genesis.config.chain_id = zone_chain_id(DEV.chain_id(), 2).unwrap();
         let mut chain_spec = ZoneChainSpec::from_genesis(genesis).unwrap();
@@ -1169,7 +1177,11 @@ mod tests {
             BUILDER_EXIT_REQUEST_PREDEPLOY_ADDRESS,
         ];
         for block_number in [0, 1] {
-            for has_code in [false, true] {
+            for (fork, has_code) in [
+                (TempoHardfork::T12, true),
+                (TempoHardfork::T13, false),
+                (TempoHardfork::T13, true),
+            ] {
                 let mut db = InMemoryDB::default();
                 if has_code {
                     // Every excluded contract writes slot zero if automatically called.
@@ -1189,6 +1201,7 @@ mod tests {
                 let factory = ZoneEvmFactory::new(MockL1Reader::default(), Address::ZERO);
                 let mut env = EvmEnv::<TempoHardfork, TempoBlockEnv>::default();
                 env.block_env.inner.number = U256::from(block_number);
+                env.cfg_env.spec = fork;
                 env.cfg_env.enable_amsterdam_eip8037 = has_code;
                 let evm = factory.create_evm(&mut db, env);
                 let ctx = TempoBlockExecutionCtx {
@@ -1246,8 +1259,10 @@ mod tests {
                 for address in excluded {
                     assert_eq!(
                         db.storage(address, U256::ZERO).unwrap(),
-                        U256::ZERO,
-                        "{address}"
+                        U256::from(u64::from(
+                            !fork.is_t13() && (address != BEACON_ROOTS_ADDRESS || block_number > 0),
+                        )),
+                        "{address} at {fork:?}, block {block_number}"
                     );
                 }
             }
