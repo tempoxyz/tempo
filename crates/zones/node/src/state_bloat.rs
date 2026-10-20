@@ -197,7 +197,7 @@ impl InitZoneFromBinaryDump {
 /// Add isolated TIP20 working sets before constructing the Zone chain spec.
 ///
 /// PathUSD must already be deployed in genesis. Other TIP20 tokens are seeded as storage-only
-/// accounts: they stay uninitialized until the portal enables them, and the Zone inbox's
+/// accounts with nonce 1: they stay uninitialized until the portal enables them, and the Zone inbox's
 /// initialization writes metadata and roles without touching the seeded supply or balances.
 ///
 /// Existing nonzero state and duplicate entries are rejected, not overwritten.
@@ -229,6 +229,11 @@ pub fn apply_dump(
             address == PATH_USD_ADDRESS || account.code.as_ref().is_none_or(|code| code.is_empty()),
             "token {address} must be enabled through the portal, not deployed in genesis"
         );
+        // revm treats a nonce-0, code-less account as empty and, once enablement installs code,
+        // serves its unloaded storage from cache as zero; a nonzero nonce keeps the seeded slots.
+        if address != PATH_USD_ADDRESS && account.nonce.unwrap_or_default() == 0 {
+            account.nonce = Some(1);
+        }
         ensure!(
             seen.insert((address, slot)),
             "duplicate dump slot {slot} for token {address}"
@@ -305,6 +310,7 @@ mod tests {
         let storage = genesis.alloc[&TOKEN].storage.as_ref().unwrap();
         assert_eq!(storage[&B256::with_last_byte(2)], B256::with_last_byte(9));
         assert!(genesis.alloc[&TOKEN].code.is_none());
+        assert_eq!(genesis.alloc[&TOKEN].nonce, Some(1));
     }
 
     #[test]
