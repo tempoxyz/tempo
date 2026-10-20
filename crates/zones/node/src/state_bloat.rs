@@ -27,7 +27,7 @@ use reth_trie_db::{
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use tempo_precompiles::{PATH_USD_ADDRESS, tip20::is_tip20_prefix};
+use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, tip20::is_tip20_prefix};
 use tempo_state_bloat::read_dump;
 use zone_chainspec::{ZoneChainSpec, ZoneChainSpecParser};
 
@@ -53,6 +53,11 @@ impl InitZoneFromBinaryDump {
     pub async fn execute(self, runtime: Runtime) -> eyre::Result<()> {
         let started = Instant::now();
         ensure!(self.env.storage.v2, "Zone state bloat requires storage v2");
+        // Freshness checks, cleanup, and size evidence cover only the datadir.
+        ensure!(
+            self.env.datadir.static_files_path.is_none() && self.env.datadir.rocksdb_path.is_none(),
+            "state bloat requires static files and RocksDB inside the datadir"
+        );
         let datadir = self
             .env
             .datadir
@@ -121,6 +126,7 @@ impl InitZoneFromBinaryDump {
         let dump_bytes = dump.len() as u64;
         let dump_sha256 = format!("{:x}", Sha256::digest(&dump));
         let tokens = apply_dump(&mut genesis, dump.as_slice())?;
+        drop(dump);
         let entries = tokens.values().sum::<u64>();
         self.env.chain = Arc::new(ZoneChainSpec::from_genesis(genesis)?);
         let expected = self.env.chain.genesis_header().state_root();
@@ -212,6 +218,10 @@ pub fn apply_dump(
     let mut seen = BTreeSet::new();
     let mut tokens = BTreeMap::new();
     read_dump(reader, |address, slot, value| {
+        ensure!(
+            address != NONCE_PRECOMPILE_ADDRESS,
+            "Zone genesis cannot hold the expiring nonce ring; generate the dump with --no-nonce-ring"
+        );
         ensure!(is_tip20_prefix(address), "{address} is not a TIP20 address");
         let account = genesis.alloc.entry(address).or_default();
         // Genesis code would make the token usable before the portal enables it.
@@ -248,4 +258,211 @@ fn directory_bytes(path: &Path) -> eyre::Result<u64> {
         };
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_genesis::GenesisAccount;
+    use alloy_primitives::{Bytes, U256, address};
+    use clap::Parser;
+    use tempo_state_bloat::GenerateStateBloat;
+
+    const TOKEN: Address = address!("20c0000000000000000000000000000000000009");
+
+    fn genesis() -> Genesis {
+        let mut genesis = Genesis::default();
+        genesis.alloc.insert(
+            PATH_USD_ADDRESS,
+            GenesisAccount::default().with_code(Some(Bytes::from_static(&[0xef]))),
+        );
+        genesis
+    }
+
+    fn dump(blocks: &[(Address, &[(u8, u8)])]) -> Vec<u8> {
+        let mut dump = Vec::new();
+        for (address, entries) in blocks {
+            dump.extend_from_slice(b"TEMPOSB\0\0\x01\0\0");
+            dump.extend_from_slice(address.as_slice());
+            dump.extend_from_slice(&(entries.len() as u64).to_be_bytes());
+            for (slot, value) in *entries {
+                dump.extend_from_slice(B256::with_last_byte(*slot).as_slice());
+                dump.extend_from_slice(&U256::from(*value).to_be_bytes::<32>());
+            }
+        }
+        dump
+    }
+
+    #[test]
+    fn apply_dump_seeds_tip20_storage() {
+        let mut genesis = genesis();
+        let tokens = apply_dump(
+            &mut genesis,
+            dump(&[(PATH_USD_ADDRESS, &[(1, 7)]), (TOKEN, &[(1, 8), (2, 9)])]).as_slice(),
+        )
+        .unwrap();
+        assert_eq!(tokens, BTreeMap::from([(PATH_USD_ADDRESS, 1), (TOKEN, 2)]));
+        let storage = genesis.alloc[&TOKEN].storage.as_ref().unwrap();
+        assert_eq!(storage[&B256::with_last_byte(2)], B256::with_last_byte(9));
+        assert!(genesis.alloc[&TOKEN].code.is_none());
+    }
+
+    #[test]
+    fn apply_dump_rejects_unsafe_entries() {
+        let mut deployed = genesis();
+        deployed.alloc.insert(
+            TOKEN,
+            GenesisAccount::default().with_code(Some(Bytes::from_static(&[0xef]))),
+        );
+        let mut seeded = genesis();
+        seeded.alloc.get_mut(&PATH_USD_ADDRESS).unwrap().storage = Some(BTreeMap::from([(
+            B256::with_last_byte(1),
+            B256::with_last_byte(1),
+        )]));
+        let cases = [
+            (Genesis::default(), dump(&[(TOKEN, &[(1, 1)])]), "PathUSD has no genesis code".to_owned()),
+            (
+                genesis(),
+                dump(&[(NONCE_PRECOMPILE_ADDRESS, &[(1, 1)])]),
+                "Zone genesis cannot hold the expiring nonce ring; generate the dump with --no-nonce-ring".to_owned(),
+            ),
+            (genesis(), dump(&[(Address::ZERO, &[(1, 1)])]), format!("{} is not a TIP20 address", Address::ZERO)),
+            (
+                deployed,
+                dump(&[(TOKEN, &[(1, 1)])]),
+                format!("token {TOKEN} must be enabled through the portal, not deployed in genesis"),
+            ),
+            (
+                genesis(),
+                dump(&[(TOKEN, &[(1, 1), (1, 2)])]),
+                format!("duplicate dump slot {} for token {TOKEN}", B256::with_last_byte(1)),
+            ),
+            (genesis(), dump(&[(TOKEN, &[(1, 0)])]), "zero dump values are not supported".to_owned()),
+            (
+                seeded,
+                dump(&[(PATH_USD_ADDRESS, &[(1, 2)])]),
+                format!("dump conflicts with genesis slot {} for token {PATH_USD_ADDRESS}", B256::with_last_byte(1)),
+            ),
+        ];
+        for (mut genesis, dump, expected) in cases {
+            let error = apply_dump(&mut genesis, dump.as_slice()).unwrap_err();
+            assert_eq!(error.to_string(), expected);
+        }
+    }
+
+    #[derive(Parser)]
+    struct GeneratorCli {
+        #[command(flatten)]
+        args: GenerateStateBloat,
+    }
+
+    /// Initialize a fresh Zone in `directory` from its `dump.bin`.
+    async fn init(directory: &Path, extra: &[&str]) -> eyre::Result<()> {
+        let mut genesis: serde_json::Value =
+            serde_json::from_str(include_str!("../assets/zone-dev-genesis.json"))?;
+        genesis["config"]["chainId"] = json!(zone_primitives::constants::zone_chain_id(1337, 11)?);
+        fs::write(directory.join("genesis.json"), genesis.to_string())?;
+        let path = |name: &str| directory.join(name).to_str().unwrap().to_owned();
+        let args = [
+            "init-from-binary-dump".to_owned(),
+            "--chain".to_owned(),
+            path("genesis.json"),
+            "--datadir".to_owned(),
+            path("parent/db"),
+            "--output-genesis".to_owned(),
+            path("bloated.json"),
+            "--manifest".to_owned(),
+            path("manifest.json"),
+            path("dump.bin"),
+        ];
+        InitZoneFromBinaryDump::try_parse_from(
+            args.into_iter()
+                .chain(extra.iter().map(|arg| (*arg).to_owned())),
+        )?
+        .execute(Runtime::test())
+        .await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn imports_a_generated_dump_end_to_end() {
+        let directory = tempfile::tempdir().unwrap();
+        let dump = directory.path().join("dump.bin");
+        let generator = [
+            "generate",
+            "--size",
+            "1",
+            "--signable-count",
+            "1",
+            "--no-nonce-ring",
+            "--out",
+        ];
+        GeneratorCli::parse_from(generator.into_iter().chain([dump.to_str().unwrap()]))
+            .args
+            .run()
+            .await
+            .unwrap();
+        init(directory.path(), &[]).await.unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(directory.path().join("manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest["entry_count"], 16_383);
+        assert_eq!(
+            manifest["committed_state_root"],
+            manifest["database_state_root"]
+        );
+        let bloated: Genesis =
+            serde_json::from_slice(&fs::read(directory.path().join("bloated.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            manifest["genesis_hash"],
+            json!(ZoneChainSpec::from_genesis(bloated).unwrap().genesis_hash())
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn failed_import_removes_only_created_outputs() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("dump.bin"),
+            dump(&[(PATH_USD_ADDRESS, &[(1, 0)])]),
+        )
+        .unwrap();
+        let error = init(directory.path(), &[]).await.unwrap_err();
+        assert_eq!(error.to_string(), "zero dump values are not supported");
+        let mut remaining: Vec<_> = fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        remaining.sort();
+        // Only the datadir's parent, created by `create_dir_all`, is left behind.
+        assert_eq!(remaining, ["dump.bin", "genesis.json", "parent"]);
+        assert_eq!(
+            fs::read_dir(directory.path().join("parent"))
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rejects_stores_outside_the_datadir() {
+        let directory = tempfile::tempdir().unwrap();
+        let static_files = directory.path().join("static");
+        fs::write(
+            directory.path().join("dump.bin"),
+            dump(&[(PATH_USD_ADDRESS, &[(1, 1)])]),
+        )
+        .unwrap();
+        let error = init(
+            directory.path(),
+            &["--datadir.static-files", static_files.to_str().unwrap()],
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "state bloat requires static files and RocksDB inside the datadir"
+        );
+        assert!(!directory.path().join("bloated.json").exists() && !static_files.exists());
+    }
 }

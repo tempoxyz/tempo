@@ -49,7 +49,7 @@ The bundled dev genesis regeneration recipe explicitly selects T14.
 Generate a dump and initialize a **nonexistent** Zone database:
 
 ```bash
-cargo zone-xtask generate-state-bloat --size 1 --token 0 --out zone-state-bloat.bin \
+cargo zone-xtask generate-state-bloat --size 1 --token 0 --no-nonce-ring --out zone-state-bloat.bin \
   --mnemonic 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
 cargo run --bin tempo-zone -- init-from-binary-dump \
   --chain zone-genesis.json --datadir zone-data zone-state-bloat.bin \
@@ -58,8 +58,9 @@ cargo run --bin tempo-zone -- init-from-binary-dump \
 cargo run --bin tempo-zone -- init --chain bloated-genesis.json --datadir zone-data
 ```
 
-The example uses a public test-only mnemonic distinct from the default dev
-mnemonic. Choose accounts not already funded in your genesis; the benchmark
+`--no-nonce-ring` is required: the importer rejects the expiring nonce ring, which
+would commit up to 6M extra slots into the saved genesis file. The example uses a
+public test-only mnemonic distinct from the default dev mnemonic. Choose accounts not already funded in your genesis; the benchmark
 workflow generates its own private mnemonic.
 
 `--size` is the target dump size in MiB, not the resulting database size; it is
