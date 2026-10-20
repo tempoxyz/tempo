@@ -50,31 +50,11 @@ impl ZoneChainSpec {
     /// Converts a genesis configuration using an already-resolved L1 chain specification.
     ///
     /// This supports custom L1 chains whose hardfork schedule is not globally registered.
-    /// Public-network zones reject explicit nulls for forks scheduled by their parent; local
-    /// development and custom chains may explicitly disable forks.
     pub fn from_genesis_with_l1(
         mut genesis: Genesis,
         l1: &TempoChainSpec,
     ) -> Result<Self, ZoneChainSpecError> {
-        let parent_chain_id = decode_l1_chain_id(genesis.config.chain_id)?;
-        if chainspec_from_chain_id(parent_chain_id).is_some() {
-            for &fork in TempoHardfork::VARIANTS {
-                if let Some(genesis_key) = fork.genesis_key()
-                    && genesis
-                        .config
-                        .extra_fields
-                        .get(genesis_key)
-                        .is_some_and(|value| value.is_null())
-                    && let Some(activation_timestamp) = l1.info.fork_time(fork)
-                {
-                    return Err(ZoneChainSpecError::DisabledParentFork {
-                        parent_chain_id,
-                        genesis_key,
-                        activation_timestamp,
-                    });
-                }
-            }
-        }
+        decode_l1_chain_id(genesis.config.chain_id)?;
         inherit_parent_fork_activations(&mut genesis, l1)?;
         Ok(Self::from_explicit_genesis(genesis))
     }
@@ -257,18 +237,6 @@ pub enum ZoneChainSpecError {
     /// The inherited parent fork activations could not be applied to the Zone genesis.
     #[error("failed to compose Zone genesis config: {0}")]
     InvalidGenesisConfig(#[from] serde_json::Error),
-    /// A public-network Zone explicitly disables a fork scheduled on its parent.
-    #[error(
-        "Zone genesis sets {genesis_key} to null, but parent chain {parent_chain_id} schedules it at {activation_timestamp}; set {genesis_key} to {activation_timestamp} in genesis.json before restarting"
-    )]
-    DisabledParentFork {
-        /// Parent Tempo chain ID.
-        parent_chain_id: u64,
-        /// Genesis configuration field that explicitly disables the fork.
-        genesis_key: &'static str,
-        /// Activation timestamp required by the parent schedule.
-        activation_timestamp: u64,
-    },
 }
 
 /// Returns the Tempo chain specification whose hardfork schedule a parent uses.
@@ -285,11 +253,10 @@ pub fn tempo_chain_spec_for_l1(chain_id: u64) -> Option<Arc<TempoChainSpec>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempo_chainspec::spec::{DEV, MODERATO, PRESTO};
-    use zone_primitives::constants::zone_chain_id;
-
     #[cfg(feature = "cli")]
     use reth_cli::chainspec::ChainSpecParser;
+    use tempo_chainspec::spec::{DEV, MODERATO};
+    use zone_primitives::constants::zone_chain_id;
 
     fn dev_zone_spec(zone_id: u32) -> ZoneChainSpec {
         let mut genesis = DEV.genesis().clone();
@@ -495,64 +462,6 @@ mod tests {
             ZoneChainSpec::from_genesis(genesis),
             Err(ZoneChainSpecError::InvalidChainId(_))
         ));
-    }
-
-    #[test]
-    fn public_genesis_rejects_disabled_parent_forks() {
-        for parent in [&*MODERATO, &*PRESTO] {
-            let mut genesis = parent.genesis().clone();
-            genesis.config.chain_id = zone_chain_id(parent.chain_id(), 12).unwrap();
-            genesis
-                .config
-                .extra_fields
-                .insert("t13Time".into(), serde_json::Value::Null);
-            let activation_timestamp = parent.info.fork_time(TempoHardfork::T13).unwrap();
-            let error = ZoneChainSpec::from_genesis(genesis.clone()).unwrap_err();
-
-            assert_eq!(
-                error.to_string(),
-                format!(
-                    "Zone genesis sets t13Time to null, but parent chain {} schedules it at {activation_timestamp}; set t13Time to {activation_timestamp} in genesis.json before restarting",
-                    parent.chain_id()
-                )
-            );
-            assert!(matches!(
-                ZoneChainSpec::from_genesis_with_l1(genesis, parent),
-                Err(ZoneChainSpecError::DisabledParentFork {
-                    genesis_key: "t13Time",
-                    ..
-                })
-            ));
-        }
-    }
-
-    #[test]
-    fn public_genesis_accepts_updated_or_omitted_parent_forks() {
-        for parent in [&*MODERATO, &*PRESTO] {
-            for omit_t13 in [false, true] {
-                let mut genesis = parent.genesis().clone();
-                genesis.config.chain_id = zone_chain_id(parent.chain_id(), 13).unwrap();
-                if omit_t13 {
-                    genesis.config.extra_fields.remove("t13Time");
-                }
-                genesis
-                    .config
-                    .extra_fields
-                    .insert("t14Time".into(), serde_json::Value::Null);
-                let zone = ZoneChainSpec::from_genesis(genesis).unwrap();
-                let activation_timestamp = parent.info.fork_time(TempoHardfork::T13).unwrap();
-
-                assert_eq!(
-                    zone.tempo_hardfork_at(activation_timestamp - 1),
-                    TempoHardfork::T12
-                );
-                assert_eq!(
-                    zone.tempo_hardfork_at(activation_timestamp),
-                    TempoHardfork::T13
-                );
-                assert_eq!(zone.tempo_hardfork_at(u64::MAX), TempoHardfork::T13);
-            }
-        }
     }
 
     fn historical_custom_genesis() -> Genesis {

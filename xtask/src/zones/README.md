@@ -36,18 +36,6 @@ Fork settings are persisted in `genesis.json`; restarting nodes does not fetch
 a new schedule. L1 upgrades not present in the snapshot require a coordinated
 configuration update. Existing Zone databases are not modified by generation.
 
-Public-network Zone startup rejects an explicit `null` for any fork scheduled on
-its parent, with an error naming the field and required activation timestamp.
-Local development and custom chains may still explicitly disable forks.
-
-Before deploying this T13 schedule, update `config.t13Time` in the existing
-`genesis.json` on every Zone node to `1793286000` for Moderato (29 October 2026,
-15:00 UTC) or `1793718000` for mainnet (3 November 2026, 15:00 UTC), then restart
-with the updated binary and configuration before the respective activation.
-Change the fork field in the existing genesis; do not regenerate allocations or
-reset the Zone database. A missing field inherits the parent schedule, while an
-explicit `null` must be updated before startup can succeed.
-
 For offline development or tests, `--hardfork T11` enables forks through T11 at
 timestamp zero and disables T12/T13/T14. Individual `--t*-time` flags still take
 precedence in offline mode, but cannot be combined with RPC-derived schedules.
