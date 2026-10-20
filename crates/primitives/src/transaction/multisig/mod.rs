@@ -359,10 +359,9 @@ impl MultisigSignature {
                 });
             }
             let factory = factory.ok_or(MultisigStateError::FactoryNotConfigured)?;
-            let expected = self
-                .config
-                .derive_account(factory)
-                .map_err(MultisigStateError::InvalidInitialConfig)?;
+            // The config was validated against `account` at construction, which excludes a zero or
+            // owner account, so a derived collision with either is reported as a mismatch.
+            let expected = multisig_account_address(factory, self.config.account_salt_validated());
             if expected != self.account {
                 return Err(MultisigStateError::InitialAccountMismatch {
                     expected,
@@ -502,8 +501,6 @@ pub enum MultisigStateError {
     },
     /// First use requires a configured recovery factory.
     FactoryNotConfigured,
-    /// The initial configuration cannot derive a valid account.
-    InvalidInitialConfig(MultisigConfigError),
     /// The initial configuration derives a different address.
     InitialAccountMismatch {
         /// Derived account.
@@ -529,7 +526,6 @@ impl core::fmt::Display for MultisigStateError {
             Self::FactoryNotConfigured => {
                 f.write_str("native multisig recovery factory is not configured")
             }
-            Self::InvalidInitialConfig(error) => error.fmt(f),
             Self::InitialAccountMismatch { expected, actual } => {
                 write!(
                     f,
