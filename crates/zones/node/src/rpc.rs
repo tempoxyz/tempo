@@ -26,8 +26,9 @@ use alloy_sol_types::SolCall;
 use eyre::{OptionExt as _, WrapErr};
 use futures::StreamExt;
 use jsonrpsee::{RpcModule, core::RpcResult, proc_macros::rpc, types::ErrorObjectOwned};
+use reth_chainspec::Hardforks;
 use reth_evm::{ConfigureEvm as _, execute::Executor as _};
-use reth_provider::{BlockReader, CanonStateSubscriptions, HeaderProvider};
+use reth_provider::{BlockReader, CanonStateSubscriptions, ChainSpecProvider, HeaderProvider};
 use reth_revm::{db::State, witness::ExecutionWitnessRecord};
 use reth_rpc::{EthFilter, eth::filter::EthFilterError};
 use reth_rpc_api::Web3ApiServer;
@@ -44,11 +45,15 @@ use tempo_alloy::{
     provider::ext::TempoProviderExt as _,
     rpc::{TempoCallBuilderExt as _, TempoHeaderResponse, TempoTransactionRequest},
 };
-use tempo_chainspec::spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE};
+use tempo_chainspec::{
+    TempoHardforks,
+    spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE},
+};
 use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     account_keychain::IAccountKeychain::{self, KeyInfo, getKeyCall},
 };
+use tempo_node::rpc::{TempoForkScheduleApiServer as _, TempoForkScheduleRpc};
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope};
 use tokio::{
     sync::Mutex,
@@ -208,9 +213,14 @@ pub(crate) fn operator_zone_rpc_module<P>(
     provider: P,
 ) -> Result<RpcModule<()>, jsonrpsee::core::RegisterMethodError>
 where
-    P: HeaderProvider + StateProviderFactory + Clone + 'static,
+    P: HeaderProvider
+        + StateProviderFactory
+        + ChainSpecProvider<ChainSpec: Hardforks + TempoHardforks>
+        + Clone
+        + 'static,
 {
     let mut module = RpcModule::new(());
+    module.merge(TempoForkScheduleRpc::new(provider.clone()).into_rpc())?;
     let set_leader_sequencer = sequencer.clone();
     module.register_async_method("zone_setLeader", move |params, _, _| {
         let sequencer = set_leader_sequencer.clone();
@@ -1609,6 +1619,11 @@ pub(crate) fn rpc_connection_config(retry_connection_interval: Duration) -> Conn
 mod tests {
     use super::*;
     use alloy_provider::ProviderBuilder;
+    use reth_provider::test_utils::MockEthProvider;
+    use tempo_alloy::rpc::ForkSchedule;
+    use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
+    use zone_chainspec::{ZoneChainSpec, test_utils::set_tempo_fork};
+    use zone_primitives::constants::zone_chain_id;
 
     #[test]
     fn records_block_hashes_as_eip2935_storage_targets() {
@@ -1760,18 +1775,51 @@ mod tests {
 
     #[tokio::test]
     async fn operator_rpc_module_exposes_sequencer_methods_without_auth() {
+        let mut genesis = DEV.inner.genesis.clone();
+        genesis.config.chain_id = zone_chain_id(1_337, 7).unwrap();
+        set_tempo_fork(&mut genesis, TempoHardfork::T13, 1_000);
+        let provider = MockEthProvider::<TempoPrimitives>::new()
+            .with_chain_spec(ZoneChainSpec::from_genesis(genesis).unwrap());
         let module = operator_zone_rpc_module(
             7,
             Address::repeat_byte(0x11),
             Arc::new(std::sync::OnceLock::new()),
-            Arc::new(reth_provider::test_utils::MockEthProvider::default()),
+            provider.clone(),
         )
         .expect("operator zone RPC module should register");
 
         let methods = module.method_names().collect::<HashSet<_>>();
-        assert_eq!(methods.len(), 2);
+        assert_eq!(methods.len(), 3);
         assert!(methods.contains("zone_getSequencerInfo"));
         assert!(methods.contains("zone_setLeader"));
+        assert!(methods.contains("tempo_forkSchedule"));
+
+        for (timestamp, active, next) in [(999, "T12", Some(("T13", 1_000))), (1_000, "T13", None)]
+        {
+            let header = TempoHeader {
+                inner: alloy_consensus::Header {
+                    number: timestamp,
+                    timestamp,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            provider.add_header(header.hash_slow(), header);
+            let schedule = module
+                .call::<_, ForkSchedule>(
+                    "tempo_forkSchedule",
+                    jsonrpsee::core::EmptyServerParams::new(),
+                )
+                .await
+                .expect("fork schedule should be available without authentication");
+            assert_eq!(schedule.active, active);
+            assert_eq!(
+                schedule
+                    .next_activation()
+                    .map(|fork| (fork.name.as_str(), fork.activation_time)),
+                next
+            );
+        }
 
         let info = module
             .call::<_, SequencerInfoResponse>(

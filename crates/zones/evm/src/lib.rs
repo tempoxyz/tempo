@@ -258,21 +258,24 @@ where
 impl ZoneEvmConfig {
     /// Creates a Zone EVM config without a usable L1 provider.
     ///
-    /// Intended for CLI subcommands (import, stage, re-execute) that need a type-compatible
-    /// EVM config but don't have access to an L1 RPC connection. Tempo hardfork conditions come
-    /// from `chain_spec` because the parent L1 spec cannot be resolved in this mode.
+    /// Intended for CLI subcommands (import, stage, re-execute) run with `--l1.offline`. The
+    /// zero portal selects the inbox's no-L1 mode, so blocks execute without the deposit queue
+    /// and token enablement checks against the L1 portal. Tempo hardfork conditions come from
+    /// `chain_spec` because the parent L1 spec cannot be resolved in this mode.
     pub fn new_without_l1(chain_spec: Arc<ZoneChainSpec>) -> Self {
+        let portal_address = Address::ZERO;
         let cache = L1StateCache::default();
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
             .connect_http("http://127.0.0.1:1".parse().expect("valid fallback URL"))
             .erased();
         let runtime_handle = tokio::runtime::Handle::current();
         let config = L1StateProviderConfig {
+            portal_address,
             max_sync_attempts: Some(NonZeroU32::MIN),
             ..Default::default()
         };
         let l1_provider = L1StateProvider::new_raw(config, cache, provider, runtime_handle);
-        Self::new(chain_spec, l1_provider, Address::ZERO)
+        Self::new(chain_spec, l1_provider, portal_address)
     }
 }
 
@@ -627,5 +630,14 @@ mod tests {
             );
             assert_eq!(evm.ctx().cfg.spec, expected);
         }
+    }
+
+    #[tokio::test]
+    async fn offline_evm_uses_no_l1_portal() {
+        let mut genesis = MODERATO.genesis().clone();
+        genesis.config.chain_id = zone_chain_id(MODERATO.chain_id(), 7).unwrap();
+        let chain_spec = Arc::new(ZoneChainSpec::from_genesis(genesis).unwrap());
+        let config = ZoneEvmConfig::new_without_l1(chain_spec);
+        assert_eq!(config.zone_factory.portal_address, Address::ZERO);
     }
 }

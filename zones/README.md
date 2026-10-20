@@ -88,6 +88,16 @@ Tempo forks remain inactive. `ZONE_L1_DEV_CHAIN_IDS` is ignored and can be remov
 after upgrading to a binary with this behavior. Mainnet, Moderato, and local
 development chain IDs 1337/31337 retain their existing parent-schedule inheritance.
 
+Zone nodes derive their L1 ZonePortal address from the zone ID encoded in the
+genesis chain ID, using Tempo's deterministic ZoneFactory address scheme. The
+sequencer, RPC follower, checker, and CLI EVM use this derived address; the node
+no longer accepts `--l1.portal-address`, and ignores `L1_PORTAL_ADDRESS`.
+Portals deployed from an EOA instead of ZoneFactory cannot be used.
+
+Omit `--zone.id` / `ZONE_ID` to follow the downloaded genesis after regenesis.
+An explicit zone ID remains accepted as a deprecated consistency check and must
+match genesis.
+
 ### Depositing into a Zone
 
 ```bash

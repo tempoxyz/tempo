@@ -2,15 +2,15 @@
 
 use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
-use alloy_primitives::Address;
 use alloy_provider::{Provider, ProviderBuilder};
 use alloy_signer_local::PrivateKeySigner;
-use clap::{Args, CommandFactory, FromArgMatches};
+use clap::{Arg, ArgAction, Args, CommandFactory, FromArgMatches};
 use reth_chainspec::EthChainSpec as _;
 use reth_ethereum::cli::Cli;
 use reth_tracing::tracing::{info, warn};
 use tempo_alloy::TempoNetwork;
 use tempo_evm::consensus::TempoConsensus;
+use tempo_precompiles::zone_factory::portal_address;
 use zeroize::Zeroizing;
 use zone_chainspec::{ZoneChainSpec, ZoneChainSpecParser};
 use zone_evm::ZoneEvmConfig;
@@ -30,6 +30,9 @@ use zone_sequencer::{
 
 const MAX_LOGS_PER_RESPONSE: u64 = 1_000_000;
 const MAX_BLOCKS_PER_FILTER: u64 = 1_000_000;
+const L1_OFFLINE: &str = "l1.offline";
+/// Subcommands that build the CLI EVM config to execute zone blocks.
+const BLOCK_EXECUTION_SUBCOMMANDS: [&str; 3] = ["import", "re-execute", "stage"];
 
 const ZONE_LOG_FILTER_DIRECTIVES: &str = concat!(
     "tungstenite=warn,",
@@ -40,15 +43,43 @@ const ZONE_LOG_FILTER_DIRECTIVES: &str = concat!(
 
 /// Tempo Zone CLI entry point.
 pub enum ZoneCli {
-    Node(Box<Cli<ZoneChainSpecParser, ZoneArgs>>),
+    Node {
+        cli: Box<Cli<ZoneChainSpecParser, ZoneArgs>>,
+        /// How the parsed subcommand reads L1 state while executing zone blocks.
+        l1_access: CliL1Access,
+    },
     Dev(Box<DevCommand>),
+}
+
+/// L1 access of subcommands that execute zone blocks outside a running node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CliL1Access {
+    /// The subcommand never executes zone blocks.
+    Unused,
+    /// L1 state is read over `L1_HTTP_RPC_URL`, which must be set.
+    Rpc,
+    /// `--l1.offline`: execute without L1 reads. Deposit queue and token enablement checks
+    /// against the L1 portal are skipped.
+    Offline,
 }
 
 impl ZoneCli {
     fn command() -> clap::Command {
-        Cli::<ZoneChainSpecParser, ZoneArgs>::command()
-            .about("Tempo Zone")
-            .subcommand(DevCommand::command())
+        let mut command = Cli::<ZoneChainSpecParser, ZoneArgs>::command().about("Tempo Zone");
+        for name in BLOCK_EXECUTION_SUBCOMMANDS {
+            command = command.mut_subcommand(name, |subcommand| {
+                subcommand.arg(
+                    Arg::new(L1_OFFLINE)
+                        .long(L1_OFFLINE)
+                        .env("L1_OFFLINE")
+                        .action(ArgAction::SetTrue)
+                        // Lets `stage` accept the flag after its nested subcommand.
+                        .global(true)
+                        .help("Execute zone blocks without L1 access instead of reading L1 state over L1_HTTP_RPC_URL. Skips the deposit queue and token enablement checks against the L1 portal. Cannot be combined with L1_HTTP_RPC_URL."),
+                )
+            });
+        }
+        command.subcommand(DevCommand::command())
     }
 
     /// Parse CLI arguments from the environment.
@@ -77,9 +108,20 @@ impl ZoneCli {
                 .map(Box::new)
                 .map(Self::Dev);
         }
-        Cli::from_arg_matches(&matches)
-            .map(Box::new)
-            .map(Self::Node)
+        let l1_access = match matches.subcommand() {
+            Some((name, subcommand)) if BLOCK_EXECUTION_SUBCOMMANDS.contains(&name) => {
+                if subcommand.get_flag(L1_OFFLINE) {
+                    CliL1Access::Offline
+                } else {
+                    CliL1Access::Rpc
+                }
+            }
+            _ => CliL1Access::Unused,
+        };
+        Cli::from_arg_matches(&matches).map(|cli| Self::Node {
+            cli: Box::new(cli),
+            l1_access,
+        })
     }
 
     /// Run the Tempo Zone node.
@@ -88,14 +130,17 @@ impl ZoneCli {
     /// background tasks, and blocks until exit.
     pub fn run(self) -> eyre::Result<()> {
         match self {
-            Self::Node(cli) => run_node(*cli),
+            Self::Node { cli, l1_access } => run_node(*cli, l1_access),
             Self::Dev(command) => (*command).run(),
         }
     }
 }
 
 /// Main entry point for the `node` command.
-fn run_node(mut cli: Cli<ZoneChainSpecParser, ZoneArgs>) -> eyre::Result<()> {
+fn run_node(
+    mut cli: Cli<ZoneChainSpecParser, ZoneArgs>,
+    l1_access: CliL1Access,
+) -> eyre::Result<()> {
     prepend_log_filter(&mut cli.logs.log_stdout_filter, ZONE_LOG_FILTER_DIRECTIVES);
     prepend_log_filter(&mut cli.logs.log_file_filter, ZONE_LOG_FILTER_DIRECTIVES);
 
@@ -109,6 +154,7 @@ fn run_node(mut cli: Cli<ZoneChainSpecParser, ZoneArgs>) -> eyre::Result<()> {
         Ok(_) | Err(std::env::VarError::NotPresent) => None,
         Err(error) => return Err(eyre::eyre!("invalid L1_HTTP_RPC_URL: {error}")),
     };
+    validate_l1_access(l1_access, l1_rpc_url.is_some())?;
 
     let components = move |spec: Arc<ZoneChainSpec>| {
         let evm_config = cli_evm_config(spec.clone(), l1_rpc_url.clone());
@@ -127,6 +173,7 @@ fn run_node(mut cli: Cli<ZoneChainSpecParser, ZoneArgs>) -> eyre::Result<()> {
 
         let zone_id = builder.config().chain.zone_id();
         validate_deprecated_zone_id(args.zone_id, zone_id)?;
+        let portal_address = portal_address(zone_id);
 
         let manifest_mode = args.sequencer_manifest.is_some();
         validate_p2p_transaction_size_limit(
@@ -149,7 +196,7 @@ fn run_node(mut cli: Cli<ZoneChainSpecParser, ZoneArgs>) -> eyre::Result<()> {
 
         let mut node = ZoneNode::new(
             args.l1_rpc_url.clone(),
-            args.portal_address,
+            portal_address,
             args.l1_fetch_concurrency,
             Duration::from_millis(args.l1_retry_connection_interval_ms),
         )
@@ -181,7 +228,7 @@ fn run_node(mut cli: Cli<ZoneChainSpecParser, ZoneArgs>) -> eyre::Result<()> {
                 let node = node.with_portal_evidence_retention();
                 let checker = CheckerExEx::new(CheckerConfig {
                     l1_rpc_url: args.l1_rpc_url.clone(),
-                    portal_address: args.portal_address,
+                    portal_address,
                     zone_id,
                     zone_chain_id: builder.config().chain.chain_id(),
                     database_path: builder.config().datadir().data_dir().join("checker"),
@@ -199,19 +246,41 @@ fn run_node(mut cli: Cli<ZoneChainSpecParser, ZoneArgs>) -> eyre::Result<()> {
     })
 }
 
-/// Creates the EVM config used by CLI subcommands, deriving the portal from the chain's zone ID.
+/// Rejects block-executing subcommands that would otherwise run without L1 access implicitly.
+fn validate_l1_access(l1_access: CliL1Access, has_l1_rpc_url: bool) -> eyre::Result<()> {
+    match l1_access {
+        CliL1Access::Rpc => eyre::ensure!(
+            has_l1_rpc_url,
+            "set L1_HTTP_RPC_URL to read L1 state while executing zone blocks, or pass --l1.offline to execute without L1 access"
+        ),
+        CliL1Access::Offline => eyre::ensure!(
+            !has_l1_rpc_url,
+            "--l1.offline cannot be combined with L1_HTTP_RPC_URL"
+        ),
+        CliL1Access::Unused => {}
+    }
+    Ok(())
+}
+
+/// Creates the EVM config used by CLI subcommands.
+///
+/// With an L1 RPC URL, the portal is derived from the chain's zone ID. Without one, the config
+/// runs in the explicit no-L1 mode that `validate_l1_access` only admits with `--l1.offline`.
 fn cli_evm_config(chain_spec: Arc<ZoneChainSpec>, l1_rpc_url: Option<url::Url>) -> ZoneEvmConfig {
     let Some(l1_rpc_url) = l1_rpc_url else {
         return ZoneEvmConfig::new_without_l1(chain_spec);
     };
 
-    let portal_address = tempo_precompiles::zone_factory::portal_address(chain_spec.zone_id());
+    let portal_address = portal_address(chain_spec.zone_id());
     let cache = L1StateCache::default();
     let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
         .connect_http(l1_rpc_url)
         .erased();
     let runtime_handle = tokio::runtime::Handle::current();
-    let config = L1StateProviderConfig::default();
+    let config = L1StateProviderConfig {
+        portal_address,
+        ..Default::default()
+    };
     let l1_provider = L1StateProvider::new_raw(config, cache, provider, runtime_handle);
     ZoneEvmConfig::new(chain_spec, l1_provider, portal_address)
 }
@@ -382,14 +451,6 @@ pub struct ZoneArgs {
         value_parser = parse_l1_rpc_url
     )]
     pub l1_rpc_url: String,
-
-    /// ZonePortal contract address on L1.
-    #[arg(
-        long = "l1.portal-address",
-        env = "L1_PORTAL_ADDRESS",
-        value_parser = parse_portal_address
-    )]
-    pub portal_address: Address,
 
     /// Deprecated compatibility flag. Ignored.
     #[arg(
@@ -651,16 +712,6 @@ fn parse_l1_rpc_url(l1_rpc_url: &str) -> Result<String, String> {
     Ok(l1_rpc_url.to_owned())
 }
 
-fn parse_portal_address(value: &str) -> Result<Address, String> {
-    let address = value
-        .parse::<Address>()
-        .map_err(|err| format!("invalid --l1.portal-address: {err}"))?;
-    if address.is_zero() {
-        return Err("--l1.portal-address must be nonzero".to_owned());
-    }
-    Ok(address)
-}
-
 fn validate_deprecated_zone_id(configured: Option<u32>, derived: u32) -> eyre::Result<()> {
     if let Some(configured) = configured {
         eyre::ensure!(
@@ -677,10 +728,7 @@ mod tests {
 
     use clap::Parser as _;
 
-    use super::{
-        Role, ZoneArgs, ZoneCli, load_decryption_keys, load_sequencer_signer, parse_l1_rpc_url,
-        parse_portal_address, validate_deprecated_zone_id, validate_p2p_transaction_size_limit,
-    };
+    use super::*;
     use zone_sequencer::MAX_WITHDRAWAL_BATCH_GAS;
 
     #[derive(Debug, clap::Parser)]
@@ -700,7 +748,91 @@ mod tests {
         let genesis = serde_json::to_string(&genesis).unwrap();
         let parsed =
             ZoneCli::try_parse_from(["tempo-zone", "re-execute", "--chain", &genesis]).unwrap();
-        assert!(matches!(parsed, ZoneCli::Node(_)));
+        assert!(matches!(
+            parsed,
+            ZoneCli::Node {
+                l1_access: CliL1Access::Rpc,
+                ..
+            }
+        ));
+    }
+
+    fn parse_l1_access(args: &[&str]) -> Result<CliL1Access, clap::Error> {
+        let parent = tempo_chainspec::spec::MODERATO.clone();
+        let mut genesis = parent.genesis().clone();
+        genesis.config.chain_id =
+            zone_primitives::constants::zone_chain_id(parent.chain_id(), 11).unwrap();
+        let genesis = serde_json::to_string(&genesis).unwrap();
+        let argv = std::iter::once("tempo-zone")
+            .chain(args.iter().copied())
+            .chain(["--chain", genesis.as_str()]);
+        match ZoneCli::try_parse_from(argv)? {
+            ZoneCli::Node { l1_access, .. } => Ok(l1_access),
+            ZoneCli::Dev(_) => panic!("expected a node CLI command"),
+        }
+    }
+
+    #[test]
+    fn block_execution_subcommands_accept_l1_offline() {
+        for args in [
+            &["re-execute"][..],
+            &["import", "blocks.rlp"],
+            &["stage", "run", "--from", "1", "--to", "2", "execution"],
+        ] {
+            assert_eq!(parse_l1_access(args).unwrap(), CliL1Access::Rpc, "{args:?}");
+            let offline = [args, &["--l1.offline"]].concat();
+            assert_eq!(
+                parse_l1_access(&offline).unwrap(),
+                CliL1Access::Offline,
+                "{offline:?}"
+            );
+        }
+        assert_eq!(
+            parse_l1_access(&[
+                "stage",
+                "--l1.offline",
+                "run",
+                "--from",
+                "1",
+                "--to",
+                "2",
+                "execution",
+            ])
+            .unwrap(),
+            CliL1Access::Offline
+        );
+        assert_eq!(parse_l1_access(&["init"]).unwrap(), CliL1Access::Unused);
+    }
+
+    #[test]
+    fn l1_offline_is_rejected_outside_block_execution_subcommands() {
+        for args in [&["init", "--l1.offline"][..], &["node", "--l1.offline"]] {
+            let error = parse_l1_access(args).unwrap_err();
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::UnknownArgument,
+                "{args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn block_execution_requires_l1_rpc_url_or_explicit_offline() {
+        validate_l1_access(CliL1Access::Rpc, true).unwrap();
+        validate_l1_access(CliL1Access::Offline, false).unwrap();
+        validate_l1_access(CliL1Access::Unused, false).unwrap();
+        assert_eq!(
+            validate_l1_access(CliL1Access::Rpc, false)
+                .unwrap_err()
+                .to_string(),
+            "set L1_HTTP_RPC_URL to read L1 state while executing zone blocks, or pass --l1.offline to execute without L1 access"
+        );
+        assert_eq!(
+            validate_l1_access(CliL1Access::Offline, true)
+                .unwrap_err()
+                .to_string(),
+            "--l1.offline cannot be combined with L1_HTTP_RPC_URL"
+        );
     }
 
     #[tokio::test]
@@ -739,13 +871,7 @@ mod tests {
 
     #[test]
     fn shadow_verification_requires_remote_proving_and_complete_measurements() {
-        let common = [
-            "tempo-zone",
-            "--l1.rpc-url",
-            "ws://localhost:8546",
-            "--l1.portal-address",
-            "0x5ad0000000000000000000000000000000000002",
-        ];
+        let common = ["tempo-zone", "--l1.rpc-url", "ws://localhost:8546"];
         let pcr = "11".repeat(48);
         let pcrs = format!("{pcr},{pcr},{pcr}");
         assert!(
@@ -787,8 +913,6 @@ mod tests {
             "tempo-zone",
             "--l1.rpc-url",
             "ws://localhost:8546",
-            "--l1.portal-address",
-            "0x0000000000000000000000000000000000000001",
             "--sequencer.enable-prover",
             "--sequencer.prover-attestation-policy",
             "policy.json",
@@ -843,15 +967,10 @@ mod tests {
 
     #[test]
     fn checker_mode_defaults_to_off() {
-        let args = ZoneArgsParser::try_parse_from([
-            "tempo-zone",
-            "--l1.rpc-url",
-            "ws://localhost:8546",
-            "--l1.portal-address",
-            "0x0000000000000000000000000000000000000001",
-        ])
-        .unwrap()
-        .zone;
+        let args =
+            ZoneArgsParser::try_parse_from(["tempo-zone", "--l1.rpc-url", "ws://localhost:8546"])
+                .unwrap()
+                .zone;
         assert_eq!(args.checker_mode, zone_checker::CheckerMode::Off);
     }
 
@@ -861,8 +980,6 @@ mod tests {
             "tempo-zone",
             "--l1.rpc-url",
             "ws://localhost:8546",
-            "--l1.portal-address",
-            "0x0000000000000000000000000000000000000001",
             "--checker.mode",
             "observe",
         ])
@@ -877,8 +994,6 @@ mod tests {
             "tempo-zone",
             "--l1.rpc-url",
             "ws://localhost:8546",
-            "--l1.portal-address",
-            "0x0000000000000000000000000000000000000001",
             "--checker.mode",
             "enforce",
         ]);
@@ -900,12 +1015,6 @@ mod tests {
     }
 
     #[test]
-    fn portal_address_must_be_nonzero() {
-        assert!(parse_portal_address("0x0000000000000000000000000000000000000000").is_err());
-        assert!(parse_portal_address("0x1111111111111111111111111111111111111111").is_ok());
-    }
-
-    #[test]
     fn deprecated_zone_id_is_accepted_and_validated() {
         assert!(validate_deprecated_zone_id(None, 7).is_ok());
         assert!(validate_deprecated_zone_id(Some(7), 7).is_ok());
@@ -915,8 +1024,6 @@ mod tests {
             "tempo-zone",
             "--l1.rpc-url",
             "ws://localhost:8546",
-            "--l1.portal-address",
-            "0x0000000000000000000000000000000000000001",
             "--zone.id",
             "7",
         ])
@@ -946,13 +1053,7 @@ mod tests {
 
     #[test]
     fn sequencer_key_file_is_accepted_and_inline_key_option_is_rejected() {
-        let common = [
-            "tempo-zone",
-            "--l1.rpc-url",
-            "ws://localhost:8546",
-            "--l1.portal-address",
-            "0x0000000000000000000000000000000000000001",
-        ];
+        let common = ["tempo-zone", "--l1.rpc-url", "ws://localhost:8546"];
 
         let parsed = ZoneArgsParser::try_parse_from(
             common
@@ -1060,13 +1161,7 @@ mod tests {
 
     #[test]
     fn manifest_mode_requires_the_p2p_key_and_conflicts_with_legacy_sequencer() {
-        let common = [
-            "tempo-zone",
-            "--l1.rpc-url",
-            "ws://localhost:8546",
-            "--l1.portal-address",
-            "0x0000000000000000000000000000000000000001",
-        ];
+        let common = ["tempo-zone", "--l1.rpc-url", "ws://localhost:8546"];
 
         let missing_key = ZoneArgsParser::try_parse_from(
             common
@@ -1110,8 +1205,6 @@ mod tests {
             "tempo-zone",
             "--l1.rpc-url",
             "ws://localhost:8546",
-            "--l1.portal-address",
-            "0x0000000000000000000000000000000000000001",
             "--sequencer",
         ])
         .unwrap();
@@ -1121,13 +1214,7 @@ mod tests {
 
     #[test]
     fn zone_poll_interval_keeps_one_second_default_and_accepts_override() {
-        let common = [
-            "tempo-zone",
-            "--l1.rpc-url",
-            "ws://localhost:8546",
-            "--l1.portal-address",
-            "0x0000000000000000000000000000000000000001",
-        ];
+        let common = ["tempo-zone", "--l1.rpc-url", "ws://localhost:8546"];
 
         let default = ZoneArgsParser::try_parse_from(common).unwrap();
         assert_eq!(default.zone.zone_poll_interval_secs, 1);
@@ -1141,13 +1228,7 @@ mod tests {
 
     #[test]
     fn private_rpc_port_alias_is_accepted() {
-        let common = [
-            "tempo-zone",
-            "--l1.rpc-url",
-            "ws://localhost:8546",
-            "--l1.portal-address",
-            "0x0000000000000000000000000000000000000001",
-        ];
+        let common = ["tempo-zone", "--l1.rpc-url", "ws://localhost:8546"];
 
         let redacted = ZoneArgsParser::try_parse_from(
             common.into_iter().chain(["--redacted-rpc.port", "9544"]),
@@ -1169,8 +1250,6 @@ mod tests {
             "tempo-zone",
             "--l1.rpc-url",
             "ws://localhost:8546",
-            "--l1.portal-address",
-            "0x0000000000000000000000000000000000000001",
             "--withdrawal-max-batch-gas",
             &above_limit,
         ])
@@ -1180,13 +1259,7 @@ mod tests {
 
     #[test]
     fn p2p_ip_check_bypass_is_explicit_and_requires_manifest_mode() {
-        let common = [
-            "tempo-zone",
-            "--l1.rpc-url",
-            "ws://localhost:8546",
-            "--l1.portal-address",
-            "0x0000000000000000000000000000000000000001",
-        ];
+        let common = ["tempo-zone", "--l1.rpc-url", "ws://localhost:8546"];
 
         let without_manifest =
             ZoneArgsParser::try_parse_from(common.into_iter().chain(["--p2p.bypass-ip-check"]))
@@ -1218,8 +1291,6 @@ mod tests {
             "tempo-zone",
             "--l1.rpc-url",
             "ws://localhost:8546",
-            "--l1.portal-address",
-            "0x0000000000000000000000000000000000000001",
             "--sequencer.manifest",
             "zone.toml",
             "--p2p.key",
@@ -1239,6 +1310,19 @@ mod tests {
     fn l1_rpc_url_accepts_websocket_schemes() {
         parse_l1_rpc_url("ws://localhost:8546").unwrap();
         parse_l1_rpc_url("wss://rpc.moderato.tempo.xyz").unwrap();
+    }
+
+    #[test]
+    fn portal_address_argument_is_rejected() {
+        let error = ZoneArgsParser::try_parse_from([
+            "tempo-zone",
+            "--l1.rpc-url",
+            "ws://localhost:8546",
+            "--l1.portal-address",
+            "0x5ad0000000000000000000000000000000000002",
+        ])
+        .unwrap_err();
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
     }
 
     #[test]

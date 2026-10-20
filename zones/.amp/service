@@ -32,11 +32,10 @@ case "${1:?service name required}" in
         fi
         # `dev` wipes its datadir; resume the provisioned node instead.
         node .amp/runtime.mjs validate-zone
-        portal=$(jq -er .portal "$state/zone/zone.json")
         exec target/debug/tempo-zone node \
             --chain "$state/zone/genesis.json" --datadir "$state/zone/node" \
             --log.file.directory "$state/zone/logs" \
-            --l1.rpc-url ws://127.0.0.1:8545 --l1.portal-address "$portal" \
+            --l1.rpc-url ws://127.0.0.1:8545 \
             --http --http.addr 127.0.0.1 --http.port "$PORT" --http.api all \
             --ws --ws.addr 127.0.0.1 --ws.port "$((PORT + 1))" --ws.api all \
             --port "$((PORT + 2))" --redacted-rpc.port 8544 \
