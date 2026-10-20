@@ -24,6 +24,7 @@ use zone_prover::VerifierMode;
 use zone_sequencer::{
     BatchAnchorConfig, SettlementAbi,
     attestation::{AttestationDomain, SettlementAttestation},
+    settlement::wait_for_l1_block,
 };
 
 /// Shared signing and L1-validation context for settlement attestations.
@@ -370,7 +371,7 @@ async fn validate_settlement_anchor(
     anchor_block_number: u64,
     anchor_block_hash: B256,
 ) -> eyre::Result<()> {
-    let current_l1_block = context.l1_provider.get_block_number().await?;
+    let current_l1_block = wait_for_l1_block(&context.l1_provider, anchor_block_number).await?;
     validate_settlement_anchor_height(
         tempo_block_number,
         anchor_block_number,
