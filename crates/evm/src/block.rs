@@ -660,6 +660,57 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         })
     }
 
+    fn try_commit_prewarmed(
+        &mut self,
+        tx: &impl reth_evm::RecoveredTx<Self::Transaction>,
+        output: reth_evm::execute::PrewarmResult,
+    ) -> Result<bool, BlockExecutionError> {
+        let Ok(result) = output
+            .result
+            .downcast::<(B256, evm2::TxResult<TempoEvmTypes>)>()
+        else {
+            return Ok(false);
+        };
+        let (tx_hash, result) = *result;
+        let original = tx.tx();
+        if tx_hash != *original.tx_hash() {
+            return Ok(false);
+        }
+        let is_system_tx = self.validate_tx_pre_execution(original)?;
+        if is_system_tx {
+            return Ok(false);
+        }
+        self.validate_transaction_gas_limit(original.gas_limit())?;
+        let tx_type = original.tx_type();
+        let is_payment = self.is_payment(original);
+        let block_gas_used = if self.evm().version().feature(evm2::EvmFeatures::EIP8037) {
+            result.execution_gas_spent()
+        } else {
+            result.tx_gas_used()
+        };
+        let validator_fee = result.ext.validator_fee;
+        let inner = EthTransactionResultWithState::new(
+            evm2::TxResultWithState {
+                result,
+                pending_state: output.state,
+                _non_exhaustive: (),
+            },
+            tx_type,
+            original.blob_gas_used().unwrap_or_default(),
+        );
+        self.commit_transaction(TempoTxResult {
+            inner,
+            tx_type,
+            tx_hash,
+            execution_context: ExecutionContext::Transaction { tx_hash },
+            is_system_tx,
+            is_payment,
+            block_gas_used,
+            validator_fee,
+        })?;
+        Ok(true)
+    }
+
     fn commit_transaction(
         &mut self,
         output: Self::TransactionResultWithState,
@@ -2822,5 +2873,36 @@ mod tests {
              not block_regular_gas_used ({})",
             result.gas_used, cumulative, regular
         );
+    }
+
+    #[test]
+    fn prewarm_reuse_preserves_receipts_and_rejects_wrong_transaction() {
+        let chainspec = test_chainspec();
+        let mut db = InMemoryDB::default();
+        let mut executor = TestExecutorBuilder::default()
+            .with_general_gas_limit(30_000_000)
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+        executor.apply_pre_execution_changes().unwrap();
+        let tx = Recovered::new_unchecked(create_legacy_tx(), Address::ZERO);
+        let result = TxResult::<TempoEvmTypes> {
+            status: true,
+            total_gas_spent: 21_000,
+            ..Default::default()
+        };
+        let wrong = reth_evm::execute::PrewarmResult {
+            state: Default::default(),
+            result: Box::new((B256::ZERO, result.clone())),
+        };
+        assert!(!executor.try_commit_prewarmed(&tx, wrong).unwrap());
+        let output = reth_evm::execute::PrewarmResult {
+            state: Default::default(),
+            result: Box::new((*tx.tx_hash(), result)),
+        };
+        assert!(executor.try_commit_prewarmed(&tx, output).unwrap());
+        let output = executor.finish().unwrap();
+        assert_eq!(output.gas_used, 21_000);
+        assert_eq!(output.receipts.len(), 1);
+        assert_eq!(output.receipts[0].cumulative_gas_used, 21_000);
     }
 }

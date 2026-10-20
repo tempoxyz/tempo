@@ -56,6 +56,13 @@ derive_more.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
+# jit
+evm2-jit-runtime = { workspace = true, optional = true }
+evm2-jit-builtins = { workspace = true, features = ["ir"], optional = true }
+evm2-jit-context = { workspace = true, optional = true }
+metrics = { workspace = true, optional = true }
+reth-metrics = { workspace = true, optional = true }
+
 [dev-dependencies]
 alloy-eips.workspace = true
 alloy-genesis = { workspace = true, features = ["std"] }
@@ -93,6 +100,8 @@ rpc = ["dep:alloy-rpc-types-eth", "dep:reth-rpc-eth-api", "tempo-primitives/serd
 engine = ["dep:tempo-payload-types", "dep:rayon"]
 # Shared genesis state initialization helpers for genesis generators.
 genesis = ["dep:alloy-genesis", "dep:eyre"]
+
+jit = ["dep:evm2-jit-runtime", "dep:evm2-jit-builtins", "dep:evm2-jit-context", "dep:metrics", "dep:reth-metrics"]
 
 [[bench]]
 name = "tip20_execution"

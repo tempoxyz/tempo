@@ -179,7 +179,7 @@ impl BlockExecutorFactory for TempoEvmConfig {
     {
         let ext = self.evm_factory.evm_ext(TempoEvmExt::default());
         let precompiles = self.evm_factory.precompiles(&env, &ext);
-        evm2::Evm::new_with_execution_config_and_ext(
+        let evm = evm2::Evm::new_with_execution_config_and_ext(
             ExecutionConfig::for_spec_and_version(env.spec, env.version),
             env.spec,
             env.block,
@@ -187,7 +187,14 @@ impl BlockExecutorFactory for TempoEvmConfig {
             db,
             precompiles,
             ext,
-        )
+        );
+        #[cfg(feature = "jit")]
+        let evm = {
+            let mut evm = evm;
+            self.evm_factory.configure_jit(&mut evm);
+            evm
+        };
+        evm
     }
 }
 
@@ -204,6 +211,25 @@ impl ConfigureEvm for TempoEvmConfig {
 
     fn block_assembler(&self) -> &Self::BlockAssembler {
         &self.block_assembler
+    }
+
+    fn supports_prewarm_reuse(&self) -> bool {
+        true
+    }
+
+    fn prewarm_transaction(
+        &self,
+        evm: &mut reth_evm::EvmFor<'_, Self>,
+        mut transaction: reth_evm::TxEnvFor<Self>,
+    ) -> Result<Option<reth_evm::execute::PrewarmResult>, reth_evm::execute::BlockExecutionError>
+    {
+        transaction.inner_mut().set_expiring_nonce_idx(None);
+        let hash = transaction.inner().tx_hash();
+        let output = reth_evm::Evm::transact(evm, &transaction)?;
+        Ok(Some(reth_evm::execute::PrewarmResult {
+            state: output.pending_state,
+            result: Box::new((hash, output.result)),
+        }))
     }
 
     fn evm_env(&self, header: &TempoHeader) -> Result<EvmEnvFor<Self>, Self::Error> {
@@ -668,3 +694,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(feature = "jit")]
+pub mod jit;

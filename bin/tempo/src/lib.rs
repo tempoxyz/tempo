@@ -1267,4 +1267,29 @@ mod tests {
                 .enable_prewarming
         );
     }
+
+    #[test]
+    #[cfg(feature = "jit")]
+    fn jit_and_prewarm_runtime_flags_parse_once() {
+        for flags in [
+            vec![],
+            vec!["--jit"],
+            vec!["--engine.prewarm-reuse"],
+            vec!["--jit", "--engine.prewarm-reuse"],
+            vec!["--jit.hot-threshold", "8"],
+        ] {
+            let mut args = vec!["tempo", "node", "--dev"];
+            args.extend_from_slice(&flags);
+            let cli = TempoCli::try_parse_from(args).unwrap();
+            let Commands::Node(node) = cli.command else {
+                panic!("expected node command")
+            };
+            assert_eq!(node.jit.enabled, flags.contains(&"--jit"));
+            assert_eq!(
+                node.engine.prewarm_reuse,
+                flags.contains(&"--engine.prewarm-reuse")
+            );
+            assert_eq!(node.jit.hot_threshold, 8);
+        }
+    }
 }

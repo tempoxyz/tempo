@@ -48,3 +48,6 @@ type TempoNodeAdapter = NodeAdapter<TempoFullNodeTypes>;
 
 /// Type alias for a launched tempo node.
 pub type TempoFullNode = FullNode<TempoNodeAdapter, TempoAddOns<TempoFullNodeTypes>>;
+
+#[cfg(feature = "jit")]
+pub mod jit;

@@ -17,6 +17,11 @@ pub type PrecompilesBuilder =
 pub struct TempoEvmFactory {
     fee_manager: Arc<dyn ProtocolFeeManager>,
     precompiles_builder: PrecompilesBuilder,
+    #[cfg(feature = "jit")]
+    jit: Option<(
+        crate::jit::JitBackend,
+        tempo_chainspec::hardfork::TempoHardfork,
+    )>,
 }
 
 impl Default for TempoEvmFactory {
@@ -37,6 +42,20 @@ impl TempoEvmFactory {
         Self {
             fee_manager: Arc::new(TempoFeeManager::new()),
             precompiles_builder: builder,
+            #[cfg(feature = "jit")]
+            jit: None,
+        }
+    }
+
+    /// Creates a factory using compiled execution for the selected hardfork.
+    #[cfg(feature = "jit")]
+    pub fn with_jit(
+        backend: crate::jit::JitBackend,
+        spec: tempo_chainspec::hardfork::TempoHardfork,
+    ) -> Self {
+        Self {
+            jit: Some((backend, spec)),
+            ..Self::default()
         }
     }
 
@@ -57,6 +76,20 @@ impl TempoEvmFactory {
     pub(crate) fn evm_ext(&self, mut ext: TempoEvmExt) -> TempoEvmExt {
         ext.fee_manager = self.fee_manager.clone();
         ext
+    }
+
+    /// Installs compiled execution for the configured Tempo hardfork.
+    #[cfg(feature = "jit")]
+    pub(crate) fn configure_jit(&self, evm: &mut TempoEvm<'_>) {
+        let spec = evm.config_spec_id();
+        if let Some((backend, expected_spec)) = &self.jit
+            && spec == *expected_spec
+            && spec.is_t1c()
+        {
+            evm.set_interpreter_runner(evm2_jit_runtime::evm2_evm::JitInterpreterRunner::new(
+                backend.clone(),
+            ));
+        }
     }
 }
 
@@ -91,6 +124,8 @@ impl reth_evm_ethereum::EvmFactory for TempoEvmFactory {
         let precompiles = self.precompiles(&env, &ext);
         *evm.ext_mut() = ext;
         evm.set_precompiles(precompiles);
+        #[cfg(feature = "jit")]
+        self.configure_jit(evm);
     }
 }
 

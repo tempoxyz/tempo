@@ -165,3 +165,5 @@ trie-debug = [
 	"reth-node-core/trie-debug",
 	"tempo-payload-builder/trie-debug",
 ]
+
+jit = ["tempo-evm/jit"]

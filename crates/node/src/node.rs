@@ -62,6 +62,9 @@ use tempo_transaction_pool::{
     },
 };
 
+#[cfg(feature = "jit")]
+use tempo_chainspec::TempoHardforks;
+
 /// 500M gas limit
 pub const BLOCK_GAS_LIMIT_500M: u64 = 500_000_000;
 
@@ -557,6 +560,31 @@ where
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
         let mut evm_config = TempoEvmConfig::new(ctx.chain_spec());
+        #[cfg(feature = "jit")]
+        if ctx.config().jit.enabled || ctx.config().jit.blocking {
+            let spec = ctx.chain_spec().tempo_hardfork_at(u64::MAX);
+            let backend = crate::jit::backend(&ctx.config().jit, spec)?;
+            let stats_backend = backend.clone();
+            ctx.task_executor().spawn_with_graceful_shutdown_signal(|shutdown| async move {
+                let mut shutdown = std::pin::pin!(shutdown);
+                let metrics = tempo_evm::jit::Evm2Metrics::default();
+                loop {
+                    tokio::select! {
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+                            let stats = stats_backend.stats();
+                            metrics.record(&stats);
+                            info!(target: "tempo::jit", hits = stats.lookup_hits,
+                                misses = stats.lookup_misses, compiled = stats.compilations_succeeded,
+                                failed = stats.compilations_failed, "JIT runtime stats");
+                        }
+                        _ = &mut shutdown => break,
+                    }
+                }
+            });
+            evm_config = TempoEvmConfig::new(ctx.chain_spec())
+                .with_evm_factory(tempo_evm::TempoEvmFactory::with_jit(backend, spec));
+        }
+
         if let Some(cache) = ctx.sender_recovery_cache() {
             evm_config = evm_config.with_sender_recovery_cache(cache.clone());
         }

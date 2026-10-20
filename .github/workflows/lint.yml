@@ -48,6 +48,13 @@ jobs:
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           version: v0.15.0
+      - name: Install LLVM for JIT targets
+        run: |
+          if [ ! -x /usr/lib/llvm-22/bin/llvm-config ]; then
+            sudo .github/scripts/install_llvm_ubuntu.sh
+          fi
+          echo "LLVM_SYS_221_PREFIX=/usr/lib/llvm-22" >> "$GITHUB_ENV"
+          /usr/lib/llvm-22/bin/llvm-config --version
       - uses: ./.github/actions/native-libs # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
         with:
           cargo-args: --workspace --all-features
@@ -141,6 +148,13 @@ jobs:
       - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           version: v0.15.0
+      - name: Install LLVM for JIT targets
+        run: |
+          if [ ! -x /usr/lib/llvm-22/bin/llvm-config ]; then
+            sudo .github/scripts/install_llvm_ubuntu.sh
+          fi
+          echo "LLVM_SYS_221_PREFIX=/usr/lib/llvm-22" >> "$GITHUB_ENV"
+          /usr/lib/llvm-22/bin/llvm-config --version
       - uses: ./.github/actions/native-libs # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
         with:
           cargo-args: --workspace --all-features
