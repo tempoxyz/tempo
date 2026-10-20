@@ -220,7 +220,9 @@ impl SettlementManager {
                 "prepared L1 anchor predates the batch Tempo block"
             )));
         }
-        let current = wait_for_l1_block(&self.l1_provider, anchor_number).await?;
+        let current = wait_for_l1_block(&self.l1_provider, anchor_number)
+            .await
+            .map_err(BatchSubmitError::PreparedAnchorInvalid)?;
         if current.saturating_sub(anchor_number) >= self.anchor_config.history_window() {
             return Err(BatchSubmitError::PreparedAnchorInvalid(eyre::eyre!(
                 "prepared L1 anchor block fell outside the EIP-2935 history window"
