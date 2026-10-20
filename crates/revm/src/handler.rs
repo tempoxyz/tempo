@@ -60,7 +60,7 @@ use tempo_primitives::{
 };
 
 use crate::{
-    ProtocolFeeContext, TempoBatchCallEnv, TempoEvm, TempoInvalidTransaction,
+    ProtocolFeeContext, ResolvedFeeToken, TempoBatchCallEnv, TempoEvm, TempoInvalidTransaction,
     error::FeePaymentError,
     evm::TempoContext,
     gas_credits,
@@ -991,11 +991,26 @@ where
         let journal = &mut evm.inner.ctx.journaled_state;
 
         let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
-        let fee_token = fee_manager
-            .get_fee_token(journal, tx, fee_payer, cfg.spec, actions.clone())
-            .map_err(|err| EVMError::Custom(err.to_string()))?;
-
-        evm.fee_token = Some(fee_token);
+        let max_fee = if cfg.is_balance_check_disabled() {
+            U256::ZERO
+        } else {
+            calc_gas_balance_spending(tx.gas_limit(), tx.max_fee_per_gas())
+        };
+        let resolved_fee_token = fee_manager
+            .get_fee_token(journal, tx, fee_payer, max_fee, cfg.spec, actions.clone())
+            .map_err(|err| match err {
+                TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(err)) => {
+                    InvalidTransaction::LackOfFundForMaxFee {
+                        fee: err.required.into(),
+                        balance: err.available.into(),
+                    }
+                    .into()
+                }
+                TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
+                err => FeePaymentError::Other(err.to_string()).into(),
+            })?;
+        evm.fee_token = Some(resolved_fee_token);
+        let fee_token = resolved_fee_token.address();
 
         // Always validate TIP20 prefix to prevent panics in get_token_balance.
         // This is a protocol-level check since validators could bypass initial validation.
@@ -1716,7 +1731,8 @@ where
             let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
             let fee_token = evm
                 .fee_token
-                .expect("set in `validate_against_state_and_deduct_caller`");
+                .expect("set in `validate_against_state_and_deduct_caller`")
+                .address();
             fee_manager
                 .collect_fee_post_tx(
                     ProtocolFeeContext {
@@ -2214,8 +2230,8 @@ where
 /// fee token and key expiry information for use by the transaction pool.
 #[derive(Debug, Clone)]
 pub struct ValidationContext {
-    /// The resolved fee token address used to pay for this transaction.
-    pub fee_token: Address,
+    /// The resolved fee token used to pay for this transaction.
+    pub fee_token: ResolvedFeeToken,
     /// The expiry timestamp of the access key used by this transaction.
     /// Populated for keychain-signed transactions or transactions carrying a KeyAuthorization.
     pub key_expiry: Option<u64>,

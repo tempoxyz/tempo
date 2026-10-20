@@ -40,6 +40,9 @@ mod tests {
     use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
     use alloy::primitives::{B256, Bytes, U256};
     use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_contracts::zones::{
+        BlockTransition, DepositQueueTransition, TokenEnablementTransition,
+    };
 
     fn call(proof: Vec<u8>) -> IZoneVerifier::verifyCall {
         IZoneVerifier::verifyCall {
@@ -49,17 +52,17 @@ mod tests {
             anchorBlockHash: B256::ZERO,
             expectedWithdrawalBatchIndex: 0,
             nextZoneHeight: U256::ZERO,
-            blockTransition: IZoneVerifier::BlockTransition {
+            blockTransition: BlockTransition {
                 prevBlockHash: B256::ZERO,
                 nextBlockHash: B256::ZERO,
             },
-            depositQueueTransition: IZoneVerifier::DepositQueueTransition {
+            depositQueueTransition: DepositQueueTransition {
                 prevProcessedHash: B256::ZERO,
                 nextProcessedHash: B256::ZERO,
                 prevDepositNumber: 0,
                 nextDepositNumber: 0,
             },
-            tokenEnablementTransition: IZoneVerifier::TokenEnablementTransition {
+            tokenEnablementTransition: TokenEnablementTransition {
                 prevProcessedTokenCount: 0,
                 nextProcessedTokenCount: 0,
             },

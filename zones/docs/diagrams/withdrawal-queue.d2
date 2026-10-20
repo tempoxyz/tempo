@@ -1,0 +1,81 @@
+direction: right
+
+title: {
+  label: Withdrawal Queue (Oldest Outermost)
+  near: top-center
+  shape: text
+  style.font-size: 24
+  style.bold: true
+}
+
+# Structure explanation
+structure: {
+  label: "Hash Chain Structure"
+  shape: rectangle
+  style.fill: "#fce4ec"
+  style.stroke: "#E91E63"
+
+  formula: |md
+    ```
+    withdrawalQueue = hash(w1, hash(w2, hash(w3, 0)))
+                           ↑         ↑         ↑
+                        oldest    newer     newest
+    ```
+  |
+}
+
+# Before state
+before: {
+  label: "Before: 3 withdrawals"
+  shape: rectangle
+  style.fill: "#fff3e0"
+  style.stroke: "#FF9800"
+
+  w1_outer: "hash(w1, ...)" {
+    style.fill: "#ffcc80"
+  }
+  w2_middle: "hash(w2, ...)" {
+    style.fill: "#ffe0b2"
+  }
+  w3_inner: "hash(w3, 0)" {
+    style.fill: "#fff8e1"
+  }
+  w1_outer -> w2_middle: "inner"
+  w2_middle -> w3_inner: "inner"
+}
+
+# Removal operation
+remove_op: {
+  label: "On-chain Removal (O(1))"
+  shape: rectangle
+  style.fill: "#e8f5e9"
+  style.stroke: "#4CAF50"
+  style.font-size: 18
+
+  code: |md
+    ```solidity
+    require(hash(w, remainingQueue) == queue);
+    _executeWithdrawal(w);
+    queue = remainingQueue;
+    ```
+  |
+}
+
+# After state
+after: {
+  label: "After: 2 withdrawals"
+  shape: rectangle
+  style.fill: "#e3f2fd"
+  style.stroke: "#2196F3"
+
+  w2_outer: "hash(w2, ...)" {
+    style.fill: "#90caf9"
+  }
+  w3_inner: "hash(w3, 0)" {
+    style.fill: "#bbdefb"
+  }
+  w2_outer -> w3_inner: "inner"
+}
+
+before -> remove_op: "process w1" {style.stroke: "#4CAF50"}
+remove_op -> after: "unwrap outside" {style.stroke: "#4CAF50"}

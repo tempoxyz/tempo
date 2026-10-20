@@ -111,10 +111,10 @@ fn fast_sync_after_full_dkg(update_network_identity: bool) {
 
         let blocks_before_late_join = (full_dkg_epoch + 2) * epoch_length + 1;
 
-        // wait for chain to advance
+        // Wait for canonical execution; the persisted head can lag by a full persistence batch.
         while validators[0]
             .execution_provider()
-            .last_block_number()
+            .best_block_number()
             .unwrap()
             < blocks_before_late_join
         {
@@ -145,7 +145,7 @@ fn fast_sync_after_full_dkg(update_network_identity: bool) {
         // wait for late validator to catch up
         while late_validator
             .execution_provider()
-            .last_block_number()
+            .best_block_number()
             .unwrap()
             < blocks_before_late_join
         {
@@ -154,12 +154,12 @@ fn fast_sync_after_full_dkg(update_network_identity: bool) {
         // verify continued progress
         let block_after_sync = late_validator
             .execution_provider()
-            .last_block_number()
+            .best_block_number()
             .unwrap();
         loop {
             let block_later = late_validator
                 .execution_provider()
-                .last_block_number()
+                .best_block_number()
                 .unwrap();
             if block_later > block_after_sync {
                 break;
@@ -171,7 +171,7 @@ fn fast_sync_after_full_dkg(update_network_identity: bool) {
         // catch-up, allowing another epoch when too few dealer logs reached the chain.
         let mut epoch = late_validator
             .execution_provider()
-            .last_block_number()
+            .best_block_number()
             .unwrap()
             / epoch_length;
         let late_validators = std::slice::from_ref(&late_validator);

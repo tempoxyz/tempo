@@ -184,7 +184,7 @@ def load-bloat-into-node [tempo_bin: string, genesis_path: string, datadir: stri
 
     # Remove existing reth database files while preserving key files (signing.key, signing.share, etc.)
     if ($datadir | path exists) {
-        for subdir in [db static_files rocksdb consensus invalid_block_hooks] {
+        for subdir in [db static_files rocksdb consensus invalid_block_hooks etl .bench-sharded-storage] {
             let path = $"($datadir)/($subdir)"
             if ($path | path exists) { rm -rf $path }
         }
@@ -226,7 +226,7 @@ def schelk-force-unmount-state [] {
 
 # Clean database files from a datadir (db, static_files, rocksdb, etc.)
 def bench-clean-datadir [datadir: string] {
-    for subdir in [db static_files rocksdb consensus invalid_block_hooks] {
+    for subdir in [db static_files rocksdb consensus invalid_block_hooks etl .bench-sharded-storage] {
         let path = $"($datadir)/($subdir)"
         if ($path | path exists) { rm -rf $path }
     }

@@ -79,7 +79,7 @@ jobs:
       samply: ${{ steps.config.outputs.samply }}
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -223,7 +223,7 @@ jobs:
       needs.resolve-refs.outputs.should-skip != 'true' &&
       needs.resolve-refs.outputs.is-stale != 'true'
     name: bench-replay (${{ needs.resolve-refs.outputs.chain }})
-    uses: ./.github/workflows/bench-replay.yml
+    uses: ./.github/workflows/bench-replay.yml # zizmor: ignore[self-repository] actionlint does not support $/ references yet.
     permissions:
       actions: read
       contents: read
@@ -265,7 +265,7 @@ jobs:
       id-token: write
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - name: Prepare benchmark state
         env:

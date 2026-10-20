@@ -66,6 +66,7 @@ tempo-evm.workspace = true
 tempo-dkg-onchain-artifacts.workspace = true
 tempo-consensus.workspace = true
 tempo-node.workspace = true
+tempo-node-launcher.workspace = true
 tempo-precompiles = { workspace = true, features = ["rpc"] }
 
 tokio.workspace = true

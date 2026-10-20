@@ -28,7 +28,7 @@ jobs:
       pull-requests: write
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       # This workflow only calls GitHub APIs; it never checks out or runs PR code.
       - name: Detect Docker command
@@ -59,7 +59,7 @@ jobs:
       - name: Fetch GitHub token via STS
         id: github-sts
         if: steps.command.outputs.recognized == 'true'
-        uses: tempoxyz/gh-actions/actions/github-sts@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/github-sts@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           policy: docker-pr
 

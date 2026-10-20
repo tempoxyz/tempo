@@ -1,0 +1,46 @@
+version: 1
+
+chains:
+  zone:
+    network: tempo
+    rpc_url: "${ZONE_REDACTED_RPC_URL}"
+    query_rpc_url: "${ZONE_RPC_URL}"
+    observation:
+      mode: auto
+      websocket_url: "${ZONE_WS_RPC_URL}"
+      poll_interval: 50ms
+    request_auth:
+      sender_header:
+        name: X-Authorization-Token
+        map: "${ZONES_BENCH_ZONE_AUTH_MAP}"
+        reload_interval: 1s
+    chain_id: ${ZONES_BENCH_EXPECTED_ZONE_CHAIN_ID}
+    workload: ./zone-flow.yml
+
+scenario:
+  name: neobank-zone-outbox-approvals
+  execution: dag
+  timeout: 2m
+
+  bindings:
+    account:
+      account: { pool: users, select: lease }
+
+  steps:
+    - id: approve_base_token
+      submit:
+        chain: zone
+        template: approve_base_token
+        with:
+          from: { var: account.ref }
+        await: receipt
+      save: base_token_approval
+
+    - id: approve_earn_token
+      submit:
+        chain: zone
+        template: approve_earn_token
+        with:
+          from: { var: account.ref }
+        await: receipt
+      save: earn_token_approval

@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+source .amp/versions.env
+export PATH="$HOME/.foundry/bin:$HOME/.cargo/bin:$PATH"
+state="$PWD/.amp/state"
+mkdir -p "$state"
+
+wait_http() {
+    local url="$1"
+    for ((attempt=0; attempt<120; attempt++)); do
+        if node .amp/runtime.mjs ready "$url"; then return; fi
+        sleep 1
+    done
+    echo "Timed out waiting for $url" >&2
+    exit 1
+}
+
+case "${1:?service name required}" in
+    l1)
+        node .amp/runtime.mjs seed-l1
+        chain_id=$(jq -er .config.chainId .amp/deps/l1-genesis.json)
+        exec anvil --network tempo --hardfork t12 --chain-id "$chain_id" \
+            --host 127.0.0.1 --port "$PORT" --block-time 1 --slots-in-an-epoch 1 \
+            --state "$state/l1.json" --state-interval 1 --preserve-historical-states
+        ;;
+    zone)
+        node .amp/runtime.mjs wait-rpc http://127.0.0.1:8545
+        if [[ ! -f "$state/zone/zone.json" ]]; then
+            exec target/debug/tempo-zone dev --l1.rpc-url ws://127.0.0.1:8545 \
+                --datadir "$state/zone" --http.addr 127.0.0.1 --http.port "$PORT"
+        fi
+        # `dev` wipes its datadir; resume the provisioned node instead.
+        node .amp/runtime.mjs validate-zone
+        portal=$(jq -er .portal "$state/zone/zone.json")
+        exec target/debug/tempo-zone node \
+            --chain "$state/zone/genesis.json" --datadir "$state/zone/node" \
+            --log.file.directory "$state/zone/logs" \
+            --l1.rpc-url ws://127.0.0.1:8545 --l1.portal-address "$portal" \
+            --http --http.addr 127.0.0.1 --http.port "$PORT" --http.api all \
+            --ws --ws.addr 127.0.0.1 --ws.port "$((PORT + 1))" --ws.api all \
+            --port "$((PORT + 2))" --redacted-rpc.port 8544 \
+            --sequencer --sequencer-key-file "$state/zone/sequencer.key"
+        ;;
+    postgres)
+        exec sudo docker run --rm --init --network host \
+            -e POSTGRES_USER=orb -e POSTGRES_PASSWORD=orb -e POSTGRES_DB=orb \
+            -v "$state/postgres:/var/lib/postgresql/data" "$POSTGRES_IMAGE" \
+            postgres -p "$PORT" -c listen_addresses=127.0.0.1
+        ;;
+    clickhouse)
+        exec sudo docker run --rm --init \
+            -p "127.0.0.1:$PORT:8123" -p 127.0.0.1:19000:9000 \
+            -e CLICKHOUSE_SKIP_USER_SETUP=1 \
+            -v "$state/clickhouse:/var/lib/clickhouse" "$CLICKHOUSE_IMAGE"
+        ;;
+    tidx)
+        node .amp/runtime.mjs wait-rpc http://127.0.0.1:9545
+        wait_http http://127.0.0.1:18123/ping
+        node .amp/runtime.mjs tidx-config
+        exec sudo docker run --rm --init --network host \
+            --user "$(id -u):$(id -g)" -v "$state/tidx.toml:/config.toml:ro" \
+            "$TIDX_IMAGE" up --config /config.toml
+        ;;
+    api)
+        wait_http http://127.0.0.1:18080/health
+        exec node .amp/api.mjs
+        ;;
+    explorer)
+        wait_http http://127.0.0.1:18787/health
+        exec node .amp/explorer.mjs
+        ;;
+    *) echo "Unknown service: $1" >&2; exit 1 ;;
+esac

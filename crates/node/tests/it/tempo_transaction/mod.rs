@@ -51,10 +51,22 @@ mod rpc;
 
 /// Run all matrix tests and scenario runners against a single environment.
 async fn run_all_matrices(env: &mut impl TestEnv) -> eyre::Result<()> {
+    run_submission_matrices(env).await?;
+    run_fill_matrices(env).await?;
+    run_scenarios(env).await
+}
+
+async fn run_submission_matrices(env: &mut impl TestEnv) -> eyre::Result<()> {
     env.run_send_matrix().await?;
-    env.run_raw_send_matrix().await?;
+    env.run_raw_send_matrix().await
+}
+
+async fn run_fill_matrices(env: &mut impl TestEnv) -> eyre::Result<()> {
     env.run_fill_transaction_matrix().await?;
-    env.run_fill_sign_send_matrix().await?;
+    env.run_fill_sign_send_matrix().await
+}
+
+async fn run_scenarios(env: &mut impl TestEnv) -> eyre::Result<()> {
     env.run_fee_payer_cosign_scenario().await?;
     env.run_authorization_list_scenario().await?;
     env.run_keychain_auth_list_skipped_scenario().await?;
@@ -126,26 +138,37 @@ async fn test_gas_estimation_snapshots() -> eyre::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_matrices_testnet() -> eyre::Result<()> {
-    let Some(mut env) = rpc::RpcEnv::testnet().await? else {
+    let Some(env) = rpc::RpcEnv::testnet().await? else {
         eprintln!("TEMPO_TESTNET_RPC_URL not set, skipping");
         return Ok(());
     };
 
-    run_all_matrices(&mut env).await?;
-    env.run_estimate_gas_matrix().await?;
-
-    Ok(())
+    run_rpc_matrices(env).await
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_matrices_devnet() -> eyre::Result<()> {
-    let Some(mut env) = rpc::RpcEnv::devnet().await? else {
+    let Some(env) = rpc::RpcEnv::devnet().await? else {
         eprintln!("TEMPO_DEVNET_RPC_URL not set, skipping");
         return Ok(());
     };
 
-    run_all_matrices(&mut env).await?;
-    env.run_estimate_gas_matrix().await?;
+    run_rpc_matrices(env).await
+}
 
+async fn run_rpc_matrices(env: rpc::RpcEnv) -> eyre::Result<()> {
+    // Each group creates its own accounts; clones share the client's rate limiter.
+    let mut submissions = env.clone();
+    let mut fills = env.clone();
+    let mut scenarios = env;
+    tokio::try_join!(
+        run_submission_matrices(&mut submissions),
+        async {
+            run_fill_matrices(&mut fills).await?;
+            fills.run_estimate_gas_matrix().await?;
+            Ok::<_, eyre::Report>(())
+        },
+        run_scenarios(&mut scenarios),
+    )?;
     Ok(())
 }

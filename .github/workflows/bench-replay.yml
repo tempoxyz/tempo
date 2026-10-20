@@ -215,7 +215,7 @@ jobs:
       BENCHMARK_ID: bench-replay-${{ github.run_id }}
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - name: Resolve benchmark config
         env:
@@ -262,7 +262,7 @@ jobs:
 
       - name: Fetch GitHub token via STS
         id: github-sts
-        uses: tempoxyz/gh-actions/actions/github-sts@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+        uses: tempoxyz/gh-actions/actions/github-sts@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           policy: bench-replay
 
@@ -380,8 +380,8 @@ jobs:
               body: buildBody('Resolving refs...'),
             });
 
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
-      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@e813067e922303348ee5aad965f745803cc24f1f # 2026-10-02T09-56-31Z-e813067e
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         continue-on-error: true
 
       - name: Install GitHub CLI

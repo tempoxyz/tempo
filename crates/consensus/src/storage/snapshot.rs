@@ -66,7 +66,7 @@ pub async fn prepare<TContext, P>(
 ) -> eyre::Result<State>
 where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
-    P: BlockIdReader + BlockReader<Block = tempo_primitives::Block> + Send + Sync,
+    P: BlockIdReader + BlockReader<Block = tempo_primitives::Block>,
 {
     let page_cache = CacheRef::from_pooler(context, BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
     let execution_finalized = execution_provider

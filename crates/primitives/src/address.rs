@@ -42,6 +42,12 @@ pub trait TempoAddressExt {
     /// [TIP-20]: <https://docs.tempo.xyz/protocol/tip20>
     fn is_tip20(&self) -> bool;
 
+    /// Returns the 8-byte ID suffix of a TIP-20 address, or `None` without the TIP-20 prefix.
+    fn tip20_id(&self) -> Option<u64>;
+
+    /// Builds the TIP-20 address with the given 8-byte ID suffix (`0` is pathUSD).
+    fn new_tip20(id: u64) -> Self;
+
     /// Returns the nonzero zone ID encoded in a ZonePortal address.
     ///
     /// Returns `None` if the address does not match the ZonePortal format.
@@ -74,11 +80,23 @@ pub trait TempoAddressExt {
 
 impl TempoAddressExt for Address {
     const TIP20_PREFIX: [u8; 12] = TIP20_TOKEN_PREFIX;
-    const ZONE_PORTAL_PREFIX: [u8; 12] = hex!("5AD000000000000000000000");
+    const ZONE_PORTAL_PREFIX: [u8; 12] = tempo_contracts::precompiles::ZONE_PORTAL_PREFIX.0;
     const VIRTUAL_MAGIC: [u8; 10] = [0xFD; 10];
 
     fn is_tip20(&self) -> bool {
         is_tip20_prefix(*self)
+    }
+
+    fn tip20_id(&self) -> Option<u64> {
+        self.is_tip20()
+            .then(|| u64::from_be_bytes(self.0[12..].try_into().expect("8-byte suffix")))
+    }
+
+    fn new_tip20(id: u64) -> Self {
+        let mut bytes = [0u8; 20];
+        bytes[..12].copy_from_slice(&TIP20_TOKEN_PREFIX);
+        bytes[12..].copy_from_slice(&id.to_be_bytes());
+        Self::from(bytes)
     }
 
     fn zone_portal_id(&self) -> Option<u64> {
@@ -133,6 +151,18 @@ mod tests {
     use super::*;
     use alloy_primitives::address;
     use tempo_contracts::precompiles::PATH_USD_ADDRESS;
+
+    #[test]
+    fn tip20_id_roundtrip() {
+        assert_eq!(Address::new_tip20(0), PATH_USD_ADDRESS);
+        assert_eq!(PATH_USD_ADDRESS.tip20_id(), Some(0));
+        for id in [1, 0xdead_beef, u64::MAX] {
+            let token = Address::new_tip20(id);
+            assert!(token.is_tip20());
+            assert_eq!(token.tip20_id(), Some(id));
+        }
+        assert_eq!(Address::repeat_byte(0x11).tip20_id(), None);
+    }
 
     #[test]
     fn is_tip20_prefix_variations() {

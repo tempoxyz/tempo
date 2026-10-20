@@ -31,7 +31,7 @@ impl<N, ChainSpec, Pool> TempoOperatorRpc<N, ChainSpec, Pool> {
 impl<N, ChainSpec, Pool> TempoOperatorApiServer for TempoOperatorRpc<N, ChainSpec, Pool>
 where
     N: NetworkInfo + Peers + 'static,
-    ChainSpec: EthChainSpec + EthereumHardforks + Send + Sync + 'static,
+    ChainSpec: EthChainSpec + EthereumHardforks + 'static,
     Pool: TransactionPool + 'static,
 {
     async fn peers(&self) -> RpcResult<Vec<PeerInfo>> {

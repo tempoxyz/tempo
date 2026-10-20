@@ -22,3 +22,23 @@ crates/revm/ @klkvr @mattsse @rakita @0xKitsune
 crates/telemetry-util/ @SuperFluffy
 crates/transaction-pool/ @0xKitsune @klkvr @mattsse
 tips/ @legion2002 @0xKitsune @danrobinson @dankrad @jenpaff @horsefacts @0xalpharush @samczsun
+
+# Zones (imported from tempoxyz/zones)
+bin/tempo-zone/ @0xKitsune @mattsse @klkvr
+bin/prover/ @rkrasiuk @shekhirin
+crates/zones/chainspec/ @0xrusowsky @0xKitsune @klkvr @mattsse
+crates/zones/contracts/ @0xrusowsky @0xKitsune @klkvr @mattsse @legion2002 @0xalpharush
+crates/zones/evm/ @0xrusowsky @klkvr @0xKitsune
+crates/zones/l1/ @0xKitsune @mattsse @klkvr @0xrusowsky @adityapk00
+crates/zones/node/ @mattsse @0xKitsune @klkvr @0xrusowsky @adityapk00 @legion2002
+crates/zones/p2p/ @adityapk00 @legion2002 @klkvr
+crates/zones/payload/ @mattsse @0xKitsune @0xrusowsky @adityapk00 @klkvr
+crates/zones/precompiles/ @0xrusowsky @0xKitsune @klkvr @mattsse @legion2002
+crates/zones/primitives/ @mattsse @0xKitsune @0xrusowsky @klkvr
+crates/zones/prover/ @rkrasiuk @shekhirin
+crates/zones/rpc/ @mattsse @0xKitsune @klkvr @adityapk00
+crates/zones/sequencer/ @mattsse @0xKitsune @adityapk00 @rkrasiuk @klkvr
+crates/zones/spf/ @rkrasiuk @shekhirin @klkvr
+xtask/src/zones/ @mattsse @0xKitsune @adityapk00 @klkvr @legion2002
+zones/zone-genesis/ @mattsse @0xKitsune @klkvr @0xrusowsky
+zones/specs/ @dankrad @danrobinson

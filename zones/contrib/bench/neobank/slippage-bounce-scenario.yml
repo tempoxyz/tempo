@@ -1,0 +1,71 @@
+version: 1
+
+include:
+  - ./neobank-scenario-fragments.yml
+
+chains:
+  l1:
+    network: tempo
+    rpc_url: "${L1_RPC_URL}"
+    query_rpc_url: "${ZONES_BENCH_L1_QUERY_RPC_URL}"
+    observation:
+      mode: auto
+      websocket_url: "${L1_WS_RPC_URL}"
+      poll_interval: 50ms
+    chain_id: ${ZONES_BENCH_EXPECTED_L1_CHAIN_ID}
+    workload: ./l1-onramp.yml
+
+  zone:
+    network: tempo
+    rpc_url: "${ZONE_REDACTED_RPC_URL}"
+    query_rpc_url: "${ZONE_RPC_URL}"
+    observation:
+      mode: auto
+      websocket_url: "${ZONE_WS_RPC_URL}"
+      poll_interval: 50ms
+    request_auth:
+      sender_header:
+        name: X-Authorization-Token
+        map: "${ZONES_BENCH_ZONE_AUTH_MAP}"
+        reload_interval: 1s
+    chain_id: ${ZONES_BENCH_EXPECTED_ZONE_CHAIN_ID}
+    workload: ./zone-flow.yml
+
+scenario:
+  name: neobank-slippage-bounce
+  execution: dag
+  timeout: 10m
+
+  bindings:
+    account:
+      account: { pool: users, select: lease }
+    onramp_action_id:
+      bytes32: { random_bytes: 32 }
+    earn_deposit_action_id:
+      bytes32: { random_bytes: 32 }
+
+  steps:
+    - use: encrypted-zone-entry
+      as: onramp
+      with:
+        sender: { var: account.ref }
+        sender_address: { var: account.address }
+        recipient: { var: account.address }
+        token: "${ZONES_BENCH_DLUSD}"
+        fee_token: "${ZONES_BENCH_DLUSD}"
+        amount: ${ZONES_BENCH_DEPOSIT_AMOUNT}
+        memo: { var: onramp_action_id }
+
+    - use: earn-deposit-expect-bounce
+      as: earn_deposit_bounce
+      depends_on: [onramp.zone_deposit.processed]
+      with:
+        sender: { var: account.ref }
+        sender_address: { var: account.address }
+        recipient: { var: account.address }
+        input_token: "${ZONES_BENCH_DLUSD}"
+        fee_token: "${ZONES_BENCH_DLUSD}"
+        amount: ${ZONES_BENCH_WITHDRAWAL_AMOUNT}
+        action_id: { var: earn_deposit_action_id }
+        fallback_recipient: { var: account.address }
+        refund_recipient: { var: account.address }

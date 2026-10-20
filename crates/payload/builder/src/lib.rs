@@ -292,7 +292,7 @@ where
         best_txs: impl FnOnce(BestTransactionsAttributes) -> Txs,
     ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError>
     where
-        Txs: BestTransactions<Item = BestTransaction> + Send + 'static,
+        Txs: BestTransactions<Item = BestTransaction> + 'static,
     {
         let BuildArguments {
             cached_reads,
@@ -473,10 +473,14 @@ where
             } else {
                 PayloadTransactions::Prewarming(StateAwareBestTransactions::new(
                     BestTransactionsPrewarming::new(prewarm_ctx, raw_best_txs),
+                    hardfork.fallback_fee_tokens(),
                 ))
             }
         } else {
-            PayloadTransactions::Sequential(StateAwareBestTransactions::new(Box::new(raw_best_txs)))
+            PayloadTransactions::Sequential(StateAwareBestTransactions::new(
+                Box::new(raw_best_txs),
+                hardfork.fallback_fee_tokens(),
+            ))
         };
         self.metrics
             .pool_fetch_duration_seconds
@@ -1064,8 +1068,9 @@ where
 
         self.executor
             .spawn_blocking_named("builder-roots-task", move || {
-                let _span = debug_span!(target: "payload_builder", parent: parent, "builder_roots")
-                    .entered();
+                let _span =
+                    debug_span!(target: "payload_builder", parent: &parent, "builder_roots")
+                        .entered();
                 let mut transactions = Vec::new();
                 let mut senders = Vec::new();
 

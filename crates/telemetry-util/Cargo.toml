@@ -12,6 +12,9 @@ categories.workspace = true
 keywords.workspace = true
 publish.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 eyre.workspace = true
 jiff.workspace = true

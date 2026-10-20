@@ -23,7 +23,10 @@ use std::{marker::PhantomData, sync::Arc};
 pub use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
 use tempo_evm::{FeeTokenResolver, TempoStateAccess};
-use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager, storage::StorageActions};
+use tempo_precompiles::{
+    NONCE_PRECOMPILE_ADDRESS, error::TempoPrecompileError, nonce::NonceManager,
+    storage::StorageActions, tip20::TIP20Error,
+};
 use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
 pub use token::{TempoToken, TempoTokenApiServer};
 
@@ -89,7 +92,6 @@ pub trait TempoEthApiBounds:
         Primitives = TempoPrimitives,
         Pool: TempoTransactionPoolExt<Transaction: PoolTransaction<Pooled = TempoTxEnvelope>>,
         Evm: ConfigureEvm<
-            Primitives = TempoPrimitives,
             BlockExecutorFactory: BlockExecutorFactory<
                 EvmFactory: EvmFactory<
                     Tx = TempoTxEnv,
@@ -112,7 +114,6 @@ impl<N> TempoEthApiBounds for N where
             Primitives = TempoPrimitives,
             Pool: TempoTransactionPoolExt<Transaction: PoolTransaction<Pooled = TempoTxEnvelope>>,
             Evm: ConfigureEvm<
-                Primitives = TempoPrimitives,
                 BlockExecutorFactory: BlockExecutorFactory<
                     EvmFactory: EvmFactory<
                         Tx = TempoTxEnv,
@@ -141,10 +142,7 @@ impl<N> TempoEthApiBounds for N where
 /// This type implements the [`FullEthApi`](reth_rpc_eth_api::helpers::FullEthApi) by implemented
 /// all the `Eth` helper traits and prerequisite traits.
 #[derive(Debug, Clone)]
-pub struct TempoEthApi<N>
-where
-    N: TempoEthApiBounds,
-{
+pub struct TempoEthApi<N: RpcNodeCore<Primitives = TempoPrimitives>> {
     /// Gateway to node's core components.
     inner: EthApi<N, DynRpcConverter<N::Evm, TempoNetwork>>,
 }
@@ -401,19 +399,22 @@ where
             .map_err(EVMError::<ProviderError, _>::from)?;
 
         let actions = StorageActions::disabled();
-        let fee_token = self
-            .evm_config()
-            .resolve_fee_token(
-                &mut db,
-                tx_env,
-                fee_payer,
-                evm_env.cfg_env.spec,
-                actions.clone(),
-            )
-            .map_err(ProviderError::other)?;
-        let fee_token_balance = db
-            .get_token_balance(fee_token, fee_payer, evm_env.cfg_env.spec, actions)
-            .map_err(ProviderError::other)?;
+        let fee_token_balance = match self.evm_config().resolve_fee_token(
+            &mut db,
+            tx_env,
+            fee_payer,
+            evm_env.cfg_env.spec,
+            actions.clone(),
+        ) {
+            Ok(fee_token) => db
+                .get_token_balance(fee_token, fee_payer, evm_env.cfg_env.spec, actions)
+                .map_err(ProviderError::other)?,
+            // No token covers the initial gas bound; cap it by the largest candidate balance.
+            Err(TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(error))) => {
+                error.available
+            }
+            Err(error) => return Err(ProviderError::other(error).into()),
+        };
 
         Ok(fee_token_balance
             // multiply by the scaling factor
@@ -592,7 +593,6 @@ where
             Evm = <N as RpcNodeCore>::Evm,
         > + FullNodeTypes<Provider = <N as RpcNodeCore>::Provider>
         + TempoEthApiBounds,
-    <N as RpcNodeCore>::Provider: ChainSpecProvider<ChainSpec = <N::Types as NodeTypes>::ChainSpec>,
     <<N as RpcNodeCore>::Evm as ConfigureEvm>::NextBlockEnvCtx: BuildPendingEnv<TempoHeader>,
     <N::Types as NodeTypes>::ChainSpec: Hardforks + EthereumHardforks,
 {
@@ -602,7 +602,6 @@ where
         let chain_spec = FullNodeComponents::provider(ctx.components).chain_spec();
         let eth_api = ctx
             .eth_api_builder()
-            .modify_gas_oracle_config(|config| config.default_suggested_fee = Some(U256::ZERO))
             .map_converter(|_| RpcConverter::new(TempoReceiptConverter::new(chain_spec)).erased())
             .build();
 
