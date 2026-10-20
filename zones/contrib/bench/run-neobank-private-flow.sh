@@ -816,7 +816,7 @@ if [[ "$ZONES_BENCH_NEOBANK_PRESET" == full-journey-pathusd-fees ]]; then
     bigint_true "$pathusd_after < $pathusd_before" || die "measured journey did not spend seeded PathUSD"
     jq -n --arg before "$pathusd_before" --arg after "$pathusd_after" \
         --arg token "$ZONES_BENCH_PATHUSD" \
-        '{token:$token,balance_before:$before,balance_after:$after,seeded_balance_spent:true}' \
+        '{token:$token,balance_before:$before,balance_after:$after}' \
         >"$ZONES_BENCH_OUTPUT/seeded-fee-balances.json"
 fi
 
