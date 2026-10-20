@@ -717,7 +717,7 @@ pathusd_working_set_balance() {
     local total=0 account balance
     while IFS= read -r account; do
         balance="$(cast call "$ZONES_BENCH_PATHUSD" 'balanceOf(address)(uint256)' \
-            "$account" --rpc-url "$ZONE_RPC_URL" | awk '{print $1}')"
+            "$account" --from "$account" --rpc-url "$ZONE_RPC_URL" | awk '{print $1}')"
         [[ "$balance" =~ ^[0-9]+$ ]] || die "invalid PathUSD working-set balance"
         total="$(bigint_eval "$total + $balance")"
     done < <(jq -r '.[]' "$ZONES_BENCH_OUTPUT/accounts.json")
@@ -728,13 +728,12 @@ if [[ "$ZONES_BENCH_NEOBANK_PRESET" == full-journey-pathusd-fees ]]; then
 fi
 [[ -z "${ZONES_BENCH_SETTLEMENT_FILE:-}" || -n "${ZONES_BENCH_SETTLEMENT_START_FILE:-}" ]] ||
     die "ZONES_BENCH_SETTLEMENT_FILE requires ZONES_BENCH_SETTLEMENT_START_FILE"
+metrics_url="${ZONES_BENCH_METRICS_URL:-http://127.0.0.1:9201/metrics}"
 # Optional prover-benchmark snapshot, after setup and before measured traffic.
 snapshot_metrics_before() {
     [[ -n "${ZONES_BENCH_METRICS_BEFORE_FILE:-}" ]] || return 0
     mkdir -p "$(dirname -- "$ZONES_BENCH_METRICS_BEFORE_FILE")"
-    curl --fail --silent --show-error \
-        "${ZONES_BENCH_METRICS_URL:-http://127.0.0.1:9201/metrics}" \
-        >"$ZONES_BENCH_METRICS_BEFORE_FILE"
+    curl --fail --silent --show-error "$metrics_url" >"$ZONES_BENCH_METRICS_BEFORE_FILE"
     [[ -s "$ZONES_BENCH_METRICS_BEFORE_FILE" ]] ||
         die "Zone metrics were empty before the measured private flow"
 }
@@ -757,6 +756,7 @@ if [[ -n "${ZONES_BENCH_SETTLEMENT_START_FILE:-}" ]]; then
         snapshot_metrics_before
         settlement_started_at="$(date +%s)"
         [[ "$(read_l1_uint "$L1_PORTAL_ADDRESS" 'withdrawalBatchIndex()(uint64)')" == "$settlement_start_index" ]] && break
+        (( SECONDS < setup_deadline )) || die "portal batches kept landing during the start snapshot"
     done
 else
     snapshot_metrics_before
@@ -792,11 +792,13 @@ if [[ -n "${ZONES_BENCH_SETTLEMENT_FILE:-}" ]]; then
     workload_done_at="$(date +%s)"
     settlement_deadline=$((SECONDS + 600))
     while :; do
-        end_index="$(read_l1_uint "$L1_PORTAL_ADDRESS" 'withdrawalBatchIndex()(uint64)')"
-        settled_height="$(read_l1_uint "$L1_PORTAL_ADDRESS" 'zoneHeight()(uint256)')"
+        # Read both from one L1 block so the index and height describe the same portal state.
+        l1_block="$(cast block-number --rpc-url "$L1_RPC_URL")"
+        end_index="$(read_l1_uint "$L1_PORTAL_ADDRESS" 'withdrawalBatchIndex()(uint64)' --block "$l1_block")"
+        settled_height="$(read_l1_uint "$L1_PORTAL_ADDRESS" 'zoneHeight()(uint256)' --block "$l1_block")"
         if (( 10#$end_index > 10#$settlement_start_index && 10#$settled_height >= 10#$private_flow_tip_block )); then
             settled_at="$(date +%s)"
-            curl --fail --silent --show-error "$ZONES_BENCH_METRICS_URL" >"${ZONES_BENCH_METRICS_AFTER_FILE:?}"
+            curl --fail --silent --show-error "$metrics_url" >"${ZONES_BENCH_METRICS_AFTER_FILE:?}"
             [[ -s "$ZONES_BENCH_METRICS_AFTER_FILE" ]] || die "empty metrics after settlement"
             jq -n --argjson before "$settlement_start_index" --argjson after "$end_index" \
                 --argjson started_at "$(jq -er .timestamp "$ZONES_BENCH_SETTLEMENT_START_FILE")" \
