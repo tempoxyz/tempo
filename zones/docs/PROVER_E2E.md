@@ -1,7 +1,7 @@
 # Prover E2E
 
 The publisher resolves exact commit SHAs without executing candidate code.
-There is no cron schedule. Dispatch requires `ZONES_PROVER_E2E_ENABLED=true`.
+There is no cron schedule.
 
 | Trigger | Coverage | GitHub status |
 | --- | --- | --- |
@@ -16,11 +16,11 @@ fail the check. Main runs use the pushed SHA, not a later resolution of `main`;
 newer merges do not cancel earlier ancestry runs. T14 remains a separate opt-in
 scenario requiring distinct prover versions.
 
-Deploy the matching `prover-tests`, `prover-tests-full` and provisioning templates,
-then the event sensor, before enabling `ZONES_PROVER_E2E_ENABLED`. The sensor pins the workflow
-code and prebuilt Tempo image. Configure `Tempo Zone Prover E2E` as the merge-queue
-required status after verifying both dispatch and irrelevant-change success. The
-full status is post-merge and must not be a merge-queue requirement.
+The publisher requires the matching `prover-tests`, `prover-tests-full` and
+provisioning templates and event sensor to be deployed. The sensor pins the
+workflow code and prebuilt Tempo image. Configure `Tempo Zone Prover E2E` as the
+merge-queue required status after verifying both dispatch and irrelevant-change
+success. The full status is post-merge and must not be a merge-queue requirement.
 
 Argo reports the selected tests' result before deletion, checks cleanup separately,
 and updates only the publisher-owned status for that suite. No Slack notifications

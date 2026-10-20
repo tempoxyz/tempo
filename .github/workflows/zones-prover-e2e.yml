@@ -23,7 +23,7 @@ permissions:
 # Every main push gets its own full run; newer commits do not cancel ancestry.
 jobs:
   dispatch:
-    if: github.repository == 'tempoxyz/tempo' && vars.ZONES_PROVER_E2E_ENABLED == 'true'
+    if: github.repository == 'tempoxyz/tempo'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -32,7 +32,7 @@ jobs:
       id-token: write
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
       # Never check out or execute candidate code in this privileged publisher.
       - name: Resolve candidate and seed owned pending status
         id: candidate
@@ -69,7 +69,7 @@ jobs:
       - name: Detect merge-queue changes
         id: paths
         if: github.event_name == 'merge_group'
-        uses: tempoxyz/gh-actions/actions/changed-paths@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
+        uses: tempoxyz/gh-actions/actions/changed-paths@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           base: ${{ steps.candidate.outputs.base }}
           head: ${{ steps.candidate.outputs.sha }}

@@ -1,10 +1,12 @@
+use alloy_primitives::U256;
 use base64::{Engine, prelude::BASE64_STANDARD};
 use eyre::Context as _;
 use jiff::SignedDuration;
 use reth_cli_commands::download::DownloadDefaults;
 use reth_ethereum::node::core::args::{
     DefaultDiscoveryArgs, DefaultEngineValues, DefaultNetworkArgs, DefaultPayloadBuilderValues,
-    DefaultPruningValues, DefaultTraceValues, DefaultTxPoolValues,
+    DefaultPruningValues, DefaultRpcServerArgs, DefaultTraceValues, DefaultTxPoolValues,
+    GasPriceOracleArgs,
 };
 use reth_prune_types::{PruneMode, PruneModes};
 use std::{borrow::Cow, str::FromStr, time::Duration};
@@ -156,6 +158,7 @@ fn init_download_urls() {
         default_chain_aware_base_url: None,
         snapshot_api_url: Cow::Borrowed(SNAPSHOT_API_URL),
         long_help: None,
+        full_preset_includes_rocksdb_indices: false,
     };
 
     download_defaults
@@ -277,6 +280,18 @@ fn init_discovery_defaults() {
         .expect("failed to initialize discovery defaults");
 }
 
+fn init_rpc_defaults() {
+    DefaultRpcServerArgs::default()
+        .with_gas_price_oracle(GasPriceOracleArgs {
+            // Include zero-tip transactions regardless of the Reth SDK defaults.
+            ignore_price: 0,
+            default_suggested_fee: Some(U256::ZERO),
+            ..Default::default()
+        })
+        .try_init()
+        .expect("failed to initialize RPC defaults");
+}
+
 pub(crate) fn init_defaults() {
     init_download_urls();
     init_payload_builder_defaults();
@@ -287,4 +302,5 @@ pub(crate) fn init_defaults() {
     init_otlp_defaults();
     init_network_defaults();
     init_discovery_defaults();
+    init_rpc_defaults();
 }

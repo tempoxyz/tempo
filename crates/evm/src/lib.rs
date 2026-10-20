@@ -53,8 +53,8 @@ use tempo_precompiles::{error::Result as TempoResult, storage::StorageActions};
 use tempo_revm::{TempoTxEnv, evm::TempoContext, gas_params::tempo_gas_params_with_amsterdam};
 
 pub use tempo_revm::{
-    FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, TempoBlockEnv, TempoFeeManager,
-    TempoInvalidTransaction, TempoStateAccess,
+    FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, ResolvedFeeToken, TempoBlockEnv,
+    TempoFeeManager, TempoInvalidTransaction, TempoStateAccess,
 };
 
 #[cfg(test)]

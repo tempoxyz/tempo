@@ -582,7 +582,7 @@ where
         if !self.disable_fee_amm_check {
             let fee = transaction.fee_token_cost();
             match self.amm_liquidity_cache.has_enough_liquidity(
-                validation_ctx.fee_token,
+                validation_ctx.fee_token.address(),
                 fee,
                 evm.db_mut(),
             ) {
@@ -593,7 +593,7 @@ where
                         InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(
                             TempoInvalidTransaction::CollectFeePreTx(
                                 FeePaymentError::InsufficientAmmLiquidity {
-                                    user_token: Some(validation_ctx.fee_token),
+                                    user_token: Some(validation_ctx.fee_token.address()),
                                     validator_token: None,
                                     fee,
                                 },
