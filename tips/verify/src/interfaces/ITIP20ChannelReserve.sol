@@ -158,7 +158,6 @@ interface ITIP20ChannelReserve {
     error CaptureAmountInvalid();
     error CloseNotReady();
     error DepositOverflow();
-    /// @notice The voucher's expected signer has a retired root key (a configuration commitment).
     error RootKeyRetired(address account);
 
 }
