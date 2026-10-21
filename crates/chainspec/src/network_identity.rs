@@ -1,5 +1,7 @@
 //! Compiled network identities.
 
+use std::sync::OnceLock;
+
 use alloy_primitives::hex;
 use commonware_codec::ReadExt as _;
 use commonware_cryptography::bls12381::primitives::variant::{MinSig, Variant};
@@ -18,11 +20,19 @@ pub struct NetworkIdentity {
 
 impl NetworkIdentity {
     pub(crate) fn mainnet() -> Self {
-        Self::from_json(include_str!("../../../mainnet-network-identity.json"))
+        static IDENTITY: OnceLock<NetworkIdentity> = OnceLock::new();
+
+        IDENTITY
+            .get_or_init(|| Self::from_json(include_str!("../../../mainnet-network-identity.json")))
+            .clone()
     }
 
     pub(crate) fn testnet() -> Self {
-        Self::from_json(include_str!("../../../testnet-network-identity.json"))
+        static IDENTITY: OnceLock<NetworkIdentity> = OnceLock::new();
+
+        IDENTITY
+            .get_or_init(|| Self::from_json(include_str!("../../../testnet-network-identity.json")))
+            .clone()
     }
 
     pub(crate) fn from_extra_data(extra_data: &[u8]) -> eyre::Result<Self> {
