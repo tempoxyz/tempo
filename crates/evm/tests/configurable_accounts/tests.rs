@@ -2708,7 +2708,7 @@ fn retired_root_rejects_delegated_roles() {
     let new_key = signer(7);
     let other = signer(2).address();
 
-    // G22 (a): the bootstrap flow, a root-signed grant used by the new key in the same
+    // The bootstrap flow, a root-signed grant used by the new key in the same
     // transaction, is accepted before the migration and rejected after it.
     for migrated in [false, true] {
         let mut f = Fixture::with_parent(false);
@@ -2733,7 +2733,7 @@ fn retired_root_rejects_delegated_roles() {
         }
     }
 
-    // G22 (b): a native transaction of the migrated account may not carry a grant signed by its
+    // A native transaction of the migrated account may not carry a grant signed by its
     // retired root; the configurable-account-signed grant is accepted (see the guard test).
     let mut f = Fixture::with_parent(false);
     let root = f.owner.address();
@@ -2749,7 +2749,7 @@ fn retired_root_rejects_delegated_roles() {
         retired(account, RootKeyRole::KeyAuthorizationSigner)
     );
 
-    // G22 (c) and G21: an admin access key that migrated can neither sign a grant nor sign
+    // An admin access key that migrated can neither sign a grant nor sign
     // transactions; its parent is not affected.
     let mut f = Fixture::with_parent(false);
     let admin = signer(4);
@@ -2784,7 +2784,7 @@ fn retired_root_rejects_delegated_roles() {
         retired(admin.address(), RootKeyRole::AccessKey)
     );
 
-    // G20: a sponsor that migrates after signing can no longer pay, even for a transaction
+    // A sponsor that migrates after signing can no longer pay, even for a transaction
     // it signed earlier.
     let mut f = Fixture::with_parent(false);
     let sponsor = signer(5);
@@ -2810,7 +2810,7 @@ fn retired_root_rejects_delegated_roles() {
         "{error:?}"
     );
 
-    // G21, G47 and G49: the treasury granted the primitive key B, then B migrates.
+    // The treasury granted the primitive key B, then B migrates.
     let mut f = Fixture::with_parent(false);
     let key = signer(6);
     grant_key(&mut f, 3, &key, false, 0);
@@ -2857,11 +2857,11 @@ fn retired_root_rejects_delegated_roles() {
 
 #[test]
 fn retired_root_keeps_owner_parent_and_sender_authority() {
-    // G23: what stays valid for a migrated account X.
+    // What stays valid for a migrated account X.
     let mut f = Fixture::with_parent(false);
     let old_key = signer(2);
     grant_key(&mut f, 3, &old_key, false, 0);
-    // X lists its retired root as the owner of its new configuration (G24).
+    // X lists its retired root as the owner of its new configuration.
     let root = f.owner.address();
     f.config = migrate(&mut f, 4, root);
     let account = f.account;
@@ -2941,7 +2941,7 @@ fn retired_root_keeps_owner_parent_and_sender_authority() {
     let result = f.run(&tx);
     assert!(result.status, "{result:?}");
 
-    // G24: another configurable account M that lists the retired X accepts X's approval.
+    // Another configurable account M that lists the retired X accepts X's approval.
     let mut m = Fixture::new();
     let owner = m.owner.address();
     retire(&mut m, owner);
@@ -3512,7 +3512,7 @@ fn retired_root_authorization_list_variants() {
 
 #[test]
 fn retired_root_address_remains_a_delegation_target() {
-    // G30: only the retired authority is skipped; another EOA may delegate to its address.
+    // Only the retired authority is skipped; another EOA may delegate to its address.
     let sender = signer(2);
     let x = Entry::new(SigKind::Secp256k1, 9, Address::ZERO, 5).address();
     let other = Entry::new(SigKind::Secp256k1, 6, x, 0);
