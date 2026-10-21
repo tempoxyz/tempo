@@ -634,8 +634,12 @@ fn assert_call_reverts(result: Result<Bytes, TransportError>, expected: Vec<u8>)
     assert_eq!(data, Some(Bytes::from(expected)), "{error:?}");
 }
 
+/// An EOA migrates through the RPC, for a root of each signature type: simulations of the upgrade
+/// write nothing and a contract cannot be upgraded, the root signs the upgrade, the retired root
+/// can no longer send but the witness can, calls and estimates from the retired address stay
+/// allowed, and the witness rotates the configuration (TIP-1112).
 #[tokio::test(flavor = "multi_thread")]
-async fn eoa_migration_rpc_estimate_send_and_rotate() -> eyre::Result<()> {
+async fn eoa_migration_rpc_lifecycle() -> eyre::Result<()> {
     let mut env = environment().await?;
     for (index, kind) in [
         SignatureType::Secp256k1,
@@ -652,24 +656,7 @@ async fn eoa_migration_rpc_estimate_send_and_rotate() -> eyre::Result<()> {
         assert_eq!(commitment(&env, account.address).await?, B256::ZERO);
         let expected = account.config.commitment().unwrap();
         let call = account.upgrade_call();
-        let request = TransactionRequest {
-            from: Some(account.address),
-            to: Some(CONFIGURABLE_ACCOUNT_ADDRESS.into()),
-            gas_price: None,
-            max_fee_per_gas: None,
-            max_priority_fee_per_gas: None,
-            max_fee_per_blob_gas: None,
-            gas: Some(GAS_LIMIT),
-            value: None,
-            input: call.input.clone().into(),
-            nonce: None,
-            chain_id: None,
-            access_list: None,
-            transaction_type: None,
-            blob_versioned_hashes: None,
-            sidecar: None,
-            authorization_list: None,
-        };
+        let request = call_request(account.address, call.input.clone());
 
         // A simulation returns the commitment and the gas, and writes nothing.
         let simulated = env.provider().call(request.clone()).latest().await?;
@@ -720,56 +707,6 @@ async fn eoa_migration_rpc_estimate_send_and_rotate() -> eyre::Result<()> {
             }
         );
 
-        // The account is configured now, so a second upgrade reverts when simulated.
-        assert_call_reverts(
-            env.provider().call(request).latest().await,
-            IConfigurableAccount::AccountAlreadyConfigurable {}.abi_encode(),
-        );
-
-        // The version-one witness signs the next transaction, which rotates to version two.
-        let replacement = ConfigurableAccount::new(seed + 8, 2);
-        let (next, rotate) = account.rotate_to(&replacement);
-        let tx = account.transaction(&env, vec![rotate]);
-        let signature = account.sign(&tx)?;
-        account.submit(&mut env, tx, signature, true).await?;
-        assert_eq!(
-            commitment(&env, account.address).await?,
-            next.commitment().unwrap()
-        );
-    }
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn retired_root_rpc_rejects_send_and_allows_calls() -> eyre::Result<()> {
-    let mut env = environment().await?;
-    for (index, kind) in [
-        SignatureType::Secp256k1,
-        SignatureType::P256,
-        SignatureType::WebAuthn,
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let seed = 0x30 + 0x10 * index as u8;
-        let root = OwnerKey::new(seed, kind);
-        let mut account = ConfigurableAccount::migrated(root.address(), seed + 1, 3);
-        env.fund_account(account.address).await?;
-
-        // Before the migration the root key is the account's authority.
-        let tx = account.transaction(&env, vec![noop()]);
-        let signature = TempoSignature::Primitive(root.sign(tx.signature_hash())?);
-        account.submit(&mut env, tx, signature, true).await?;
-
-        let call = account.upgrade_call();
-        let tx = account.transaction(&env, vec![call]);
-        let signature = TempoSignature::Primitive(root.sign(tx.signature_hash())?);
-        account.submit(&mut env, tx, signature, true).await?;
-        assert_eq!(
-            commitment(&env, account.address).await?,
-            account.config.commitment().unwrap()
-        );
-
         // The root key cannot send any more, whatever the transaction does.
         let tx = account.transaction(&env, vec![noop()]);
         let signature = TempoSignature::Primitive(root.sign(tx.signature_hash())?);
@@ -789,29 +726,21 @@ async fn retired_root_rpc_rejects_send_and_allows_calls() -> eyre::Result<()> {
         let signature = account.sign(&tx)?;
         account.submit(&mut env, tx, signature, true).await?;
 
+        // The account is configured now, so a second upgrade reverts when simulated.
+        assert_call_reverts(
+            env.provider().call(request).latest().await,
+            IConfigurableAccount::AccountAlreadyConfigurable {}.abi_encode(),
+        );
+
         // Calls and gas estimates from the retired address are simulations, which stay allowed.
-        let request = TransactionRequest {
-            from: Some(account.address),
-            to: Some(CONFIGURABLE_ACCOUNT_ADDRESS.into()),
-            gas_price: None,
-            max_fee_per_gas: None,
-            max_priority_fee_per_gas: None,
-            max_fee_per_blob_gas: None,
-            gas: Some(GAS_LIMIT),
-            value: None,
-            input: IConfigurableAccount::getConfigCommitmentCall {
+        let request = call_request(
+            account.address,
+            IConfigurableAccount::getConfigCommitmentCall {
                 account: account.address,
             }
             .abi_encode()
             .into(),
-            nonce: None,
-            chain_id: None,
-            access_list: None,
-            transaction_type: None,
-            blob_versioned_hashes: None,
-            sidecar: None,
-            authorization_list: None,
-        };
+        );
         let output = env.provider().call(request.clone()).latest().await?;
         assert_eq!(
             output,
@@ -822,6 +751,17 @@ async fn retired_root_rpc_rejects_send_and_allows_calls() -> eyre::Result<()> {
             )
         );
         assert!(env.provider().estimate_gas(request).latest().await? > 0);
+
+        // The version-one witness signs the next transaction, which rotates to version two.
+        let replacement = ConfigurableAccount::new(seed + 8, 2);
+        let (next, rotate) = account.rotate_to(&replacement);
+        let tx = account.transaction(&env, vec![rotate]);
+        let signature = account.sign(&tx)?;
+        account.submit(&mut env, tx, signature, true).await?;
+        assert_eq!(
+            commitment(&env, account.address).await?,
+            next.commitment().unwrap()
+        );
     }
     Ok(())
 }

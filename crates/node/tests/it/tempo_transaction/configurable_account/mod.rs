@@ -120,17 +120,14 @@ impl ConfigurableAccount {
 
     fn simulation_request(&self) -> TempoTransactionRequest {
         TempoTransactionRequest {
-            inner: TransactionRequest {
-                from: Some(self.address),
-                to: Some(CONFIGURABLE_ACCOUNT_ADDRESS.into()),
-                input: IConfigurableAccount::getConfigCommitmentCall {
+            inner: call_request(
+                self.address,
+                IConfigurableAccount::getConfigCommitmentCall {
                     account: self.address,
                 }
                 .abi_encode()
                 .into(),
-                gas: Some(GAS_LIMIT),
-                ..Default::default()
-            },
+            ),
             fee_token: Some(DEFAULT_FEE_TOKEN),
             configurable_account_simulation: Some(ConfigurableAccountSimulationSpec {
                 signer: None,
@@ -292,6 +289,29 @@ fn abi_owners(
             weight: owner.weight,
         })
         .collect()
+}
+
+/// A call of the configurable account precompile with `input` from `from`, with every other field
+/// left to the node.
+fn call_request(from: Address, input: Bytes) -> TransactionRequest {
+    TransactionRequest {
+        from: Some(from),
+        to: Some(CONFIGURABLE_ACCOUNT_ADDRESS.into()),
+        gas_price: None,
+        max_fee_per_gas: None,
+        max_priority_fee_per_gas: None,
+        max_fee_per_blob_gas: None,
+        gas: Some(GAS_LIMIT),
+        value: None,
+        input: input.into(),
+        nonce: None,
+        chain_id: None,
+        access_list: None,
+        transaction_type: None,
+        blob_versioned_hashes: None,
+        sidecar: None,
+        authorization_list: None,
+    }
 }
 
 fn noop() -> Call {
