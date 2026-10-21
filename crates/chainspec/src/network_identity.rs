@@ -6,15 +6,18 @@ use alloy_primitives::hex;
 use commonware_codec::ReadExt as _;
 use commonware_cryptography::bls12381::primitives::variant::{MinSig, Variant};
 use eyre::Context;
+use serde::{Deserialize, Deserializer, de::Error as _};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 
 /// This holds the key that is known to be active. The genesis-derived
 /// value must be updated with a newer identity after a full DKG rotation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NetworkIdentity {
     /// First epoch for which `identity` is expected to verify finalizations.
     pub from_epoch: u64,
     /// BLS threshold public key.
+    #[serde(deserialize_with = "deserialize_identity")]
     pub identity: <MinSig as Variant>::Public,
 }
 
@@ -23,7 +26,10 @@ impl NetworkIdentity {
         static IDENTITY: OnceLock<NetworkIdentity> = OnceLock::new();
 
         IDENTITY
-            .get_or_init(|| Self::from_json(include_str!("../../../mainnet-network-identity.json")))
+            .get_or_init(|| {
+                serde_json::from_str(include_str!("../../../mainnet-network-identity.json"))
+                    .expect("valid mainnet network identity")
+            })
             .clone()
     }
 
@@ -31,7 +37,10 @@ impl NetworkIdentity {
         static IDENTITY: OnceLock<NetworkIdentity> = OnceLock::new();
 
         IDENTITY
-            .get_or_init(|| Self::from_json(include_str!("../../../testnet-network-identity.json")))
+            .get_or_init(|| {
+                serde_json::from_str(include_str!("../../../testnet-network-identity.json"))
+                    .expect("valid testnet network identity")
+            })
             .clone()
     }
 
@@ -45,26 +54,14 @@ impl NetworkIdentity {
             identity: *outcome.network_identity(),
         })
     }
-
-    fn from_json(json: &str) -> Self {
-        let config = serde_json::from_str::<Config>(json).expect("valid network identity JSON");
-        let bytes = hex::decode_to_array::<_, 96>(config.identity)
-            .expect("network identity must be a 96-byte hex string");
-        let identity =
-            <MinSig as Variant>::Public::read(&mut bytes.as_ref()).expect("valid network identity");
-
-        Self {
-            identity,
-            from_epoch: config.from_epoch,
-        }
-    }
 }
 
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Config {
-    from_epoch: u64,
-    identity: String,
+fn deserialize_identity<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<<MinSig as Variant>::Public, D::Error> {
+    let encoded = String::deserialize(deserializer)?;
+    let bytes = hex::decode_to_array::<_, 96>(encoded).map_err(D::Error::custom)?;
+    <MinSig as Variant>::Public::read(&mut bytes.as_ref()).map_err(D::Error::custom)
 }
 
 #[cfg(test)]
@@ -94,6 +91,23 @@ mod tests {
                 hex::encode_prefixed(identity.identity.encode()),
                 published["identity"]
             );
+        }
+    }
+
+    #[test]
+    fn deserialize_rejects_invalid_identity() {
+        for (encoded, expected) in [
+            ("0x00".to_owned(), "invalid string length"),
+            ("gg".repeat(96), "invalid character 'g' at position 0"),
+            (
+                "00".repeat(96),
+                "Validation Error: Context(G2), Message(Bad encoding)",
+            ),
+        ] {
+            let json = serde_json::json!({ "from_epoch": 2042, "identity": encoded });
+            let error = serde_json::from_value::<NetworkIdentity>(json).unwrap_err();
+
+            assert_eq!(error.to_string(), expected);
         }
     }
 }
