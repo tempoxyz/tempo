@@ -192,6 +192,12 @@ impl ConfigurableAccount {
         )))
     }
 
+    /// Makes the rotation to `replacement`, whose configuration is `next`, the account's own.
+    fn adopt(&mut self, next: ConfigurableAccountConfig, replacement: Self) {
+        self.config = next;
+        self.owners = replacement.owners;
+    }
+
     fn rotate_to(&self, replacement: &Self) -> (ConfigurableAccountConfig, Call) {
         let mut next = replacement.config.clone();
         next.salt = self.config.salt;
@@ -243,7 +249,7 @@ impl OwnerKey {
     fn new(seed: u8, kind: SignatureType) -> Self {
         let sign: P256Signer = match kind {
             SignatureType::Secp256k1 => {
-                return Self::Secp(PrivateKeySigner::from_bytes(&B256::repeat_byte(seed)).unwrap());
+                return Self::Secp(signer(seed));
             }
             SignatureType::P256 => sign_p256_primitive,
             SignatureType::WebAuthn => |digest, key, x, y| {
@@ -312,6 +318,11 @@ fn call_request(from: Address, input: Bytes) -> TransactionRequest {
         sidecar: None,
         authorization_list: None,
     }
+}
+
+/// The key that `seed` determines, for the tests that need keys they can name.
+fn signer(seed: u8) -> PrivateKeySigner {
+    PrivateKeySigner::from_bytes(&B256::repeat_byte(seed)).unwrap()
 }
 
 fn noop() -> Call {

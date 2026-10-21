@@ -238,8 +238,7 @@ async fn configurable_account_rpc_registration_revert_retry_and_rotation() -> ey
         ),
     )
     .await?;
-    account.config = next;
-    account.owners = replacement.owners;
+    account.adopt(next, replacement);
     let signature = account.sign(&tx)?;
     account.submit(&mut env, tx, signature, true).await?;
     Ok(())
@@ -290,8 +289,7 @@ async fn configurable_account_rpc_historical_state_and_account_overrides() -> ey
         .await?;
     assert!(historical_gas > 0);
 
-    account.config = next;
-    account.owners = replacement.owners;
+    account.adopt(next, replacement);
     let request = account.simulation_request();
     // Ordinary account overrides must merge with, rather than erase, the stored extension.
     let overrides = StateOverridesBuilder::default()
@@ -517,8 +515,7 @@ async fn configurable_account_rpc_delegate_rotation_preserves_grant_and_spending
         ),
     )
     .await?;
-    delegate.config = next;
-    delegate.owners = replacement.owners;
+    delegate.adopt(next, replacement);
     let signature = delegate.as_delegate(&tx, parent.address, false)?;
     parent.submit(&mut env, tx, signature, true).await?;
     assert!(
@@ -814,6 +811,40 @@ fn legacy_signed(
     Ok(TempoTxEnvelope::Legacy(tx.into_signed(signature)))
 }
 
+/// A delegation that the primitive key `root` signs for its account with `nonce`, the nonce the
+/// account has after its migration, so a block that did not skip the entry would install it.
+fn retired_entry(
+    chain_id: u64,
+    root: &PrivateKeySigner,
+    nonce: u64,
+) -> eyre::Result<TempoSignedAuthorization> {
+    let delegation = Authorization {
+        chain_id: U256::from(chain_id),
+        address: Address::repeat_byte(0x7d),
+        nonce,
+    };
+    let signature = root.sign_hash_sync(&delegation.signature_hash())?;
+    Ok(TempoSignedAuthorization::new_unchecked(
+        delegation,
+        signature.into(),
+    ))
+}
+
+/// Mines a transaction of `account` that its root key signs and that grants `key`, which is not
+/// committed.
+async fn grant_uncommitted_key(
+    env: &mut Localnet,
+    account: &mut ConfigurableAccount,
+    root: &PrivateKeySigner,
+    key: &PrivateKeySigner,
+) -> eyre::Result<()> {
+    let mut tx = account.transaction(env, vec![noop()]);
+    tx.key_authorization = Some(grant_signed(env.chain_id(), key.address(), root)?);
+    let signature = TempoSignature::from(root.sign_hash_sync(&tx.signature_hash())?);
+    account.submit(env, tx, signature, true).await?;
+    Ok(())
+}
+
 /// The migration of `account` (nonce `account.nonce`), signed by its root key. It pays a higher
 /// tip than the default, so the builder runs it before the other transactions.
 fn migration(
@@ -885,8 +916,8 @@ async fn retired_root_pending_transactions_evicted() -> eyre::Result<()> {
     let provider = tempo_provider(&env);
     for (index, role) in RootRole::ALL.into_iter().enumerate() {
         let seed = 0x20 + 0x10 * index as u8;
-        let root = PrivateKeySigner::from_bytes(&B256::repeat_byte(seed)).unwrap();
-        let other = PrivateKeySigner::from_bytes(&B256::repeat_byte(seed + 4)).unwrap();
+        let root = signer(seed);
+        let other = signer(seed + 4);
         let account = ConfigurableAccount::migrated(root.address(), seed + 1, 3);
         env.fund_account(account.address).await?;
         env.fund_account(other.address()).await?;
@@ -924,10 +955,9 @@ async fn retired_root_leaves_unrelated_pending_transactions_valid() -> eyre::Res
     let mut env = environment().await?;
     let chain_id = env.chain_id();
     let provider = tempo_provider(&env);
-    let root = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x30)).unwrap();
-    let key = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x34)).unwrap();
-    let bystanders =
-        [0x40, 0x50].map(|seed| PrivateKeySigner::from_bytes(&B256::repeat_byte(seed)).unwrap());
+    let root = signer(0x30);
+    let key = signer(0x34);
+    let bystanders = [0x40, 0x50].map(signer);
     let mut account = ConfigurableAccount::migrated(root.address(), 0x31, 3);
     for address in [
         account.address,
@@ -938,23 +968,11 @@ async fn retired_root_leaves_unrelated_pending_transactions_valid() -> eyre::Res
     }
 
     // Before the migration the account grants `key`, which is not committed.
-    let mut tx = account.transaction(&env, vec![noop()]);
-    tx.key_authorization = Some(grant_signed(chain_id, key.address(), &root)?);
-    let signature = TempoSignature::from(root.sign_hash_sync(&tx.signature_hash())?);
-    account.submit(&mut env, tx, signature, true).await?;
+    grant_uncommitted_key(&mut env, &mut account, &root, &key).await?;
 
     let migrate = migration(&env, &account, &root)?;
-    // The entry has the nonce that the account has after the migration, so the block would
-    // install the delegation if it did not skip the entry.
-    let delegation = Authorization {
-        chain_id: U256::from(chain_id),
-        address: Address::repeat_byte(0x7d),
-        nonce: account.nonce + 1,
-    };
-    let signature = root.sign_hash_sync(&delegation.signature_hash())?;
-    let entry = TempoSignedAuthorization::new_unchecked(delegation, signature.into());
     let mut with_entry = create_basic_aa_tx(chain_id, 0, vec![noop()], GAS_LIMIT);
-    with_entry.tempo_authorization_list = vec![entry];
+    with_entry.tempo_authorization_list = vec![retired_entry(chain_id, &root, account.nonce + 1)?];
     let with_entry = root_signed(with_entry, &bystanders[0])?;
     let bystander = root_signed(
         create_basic_aa_tx(chain_id, 0, vec![noop()], GAS_LIMIT),
@@ -1000,12 +1018,12 @@ async fn retired_root_reorg_evicts_pending_transactions() -> eyre::Result<()> {
     // Keep genesis finalized, so the blocks below can be reorged.
     env.setup.node.set_finality(Finality::Keep);
     let chain_id = env.chain_id();
-    let root = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x30)).unwrap();
-    let key = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x34)).unwrap();
-    let bystander = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x40)).unwrap();
-    let sponsor = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x41)).unwrap();
-    let grantor = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x42)).unwrap();
-    let grantee = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x43)).unwrap();
+    let root = signer(0x30);
+    let key = signer(0x34);
+    let bystander = signer(0x40);
+    let sponsor = signer(0x41);
+    let grantor = signer(0x42);
+    let grantee = signer(0x43);
     let mut account = ConfigurableAccount::migrated(root.address(), 0x31, 3);
     for address in [
         account.address,
@@ -1016,10 +1034,7 @@ async fn retired_root_reorg_evicts_pending_transactions() -> eyre::Result<()> {
         env.fund_account(address).await?;
     }
     // Before the migration the account grants `key`, whose grant outlives the commitment (R17).
-    let mut tx = account.transaction(&env, vec![noop()]);
-    tx.key_authorization = Some(grant_signed(chain_id, key.address(), &root)?);
-    let signature = TempoSignature::from(root.sign_hash_sync(&tx.signature_hash())?);
-    account.submit(&mut env, tx, signature, true).await?;
+    grant_uncommitted_key(&mut env, &mut account, &root, &key).await?;
     let fork_point = latest_block_hash(&env).await?;
 
     // All transactions wait for a nonce that nothing has mined: the root key's and the access
@@ -1037,17 +1052,9 @@ async fn retired_root_reorg_evicts_pending_transactions() -> eyre::Result<()> {
         create_basic_aa_tx(chain_id, account.nonce + 1, vec![noop()], GAS_LIMIT),
         &root,
     )?;
-    let delegation = Authorization {
-        chain_id: U256::from(chain_id),
-        address: Address::repeat_byte(0x7d),
-        nonce: account.nonce + 1,
-    };
-    let signature = root.sign_hash_sync(&delegation.signature_hash())?;
     let mut bystander_tx = create_basic_aa_tx(chain_id, 1, vec![noop()], GAS_LIMIT);
-    bystander_tx.tempo_authorization_list = vec![TempoSignedAuthorization::new_unchecked(
-        delegation,
-        signature.into(),
-    )];
+    bystander_tx.tempo_authorization_list =
+        vec![retired_entry(chain_id, &root, account.nonce + 1)?];
     sign_fee_payer(&mut bystander_tx, bystander.address(), &sponsor)?;
     let bystander_tx = root_signed(bystander_tx, &bystander)?;
     let legacy_tx = legacy_signed(chain_id, 1, &sponsor)?;
@@ -1154,9 +1161,9 @@ async fn reorg_without_migration_evicts_configurable_account_transactions() -> e
     // Keep genesis finalized, so the blocks below can be reorged.
     env.setup.node.set_finality(Finality::Keep);
     let chain_id = env.chain_id();
-    let root = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x30)).unwrap();
-    let key = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x34)).unwrap();
-    let parent = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x40)).unwrap();
+    let root = signer(0x30);
+    let key = signer(0x34);
+    let parent = signer(0x40);
     let mut account = ConfigurableAccount::migrated(root.address(), 0x31, 3);
     for address in [account.address, parent.address()] {
         env.fund_account(address).await?;
