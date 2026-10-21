@@ -1076,34 +1076,37 @@ fn activation_config() -> TempoEvmConfig {
     TempoEvmConfig::new(Arc::new(TempoChainSpec::from_genesis(genesis)))
 }
 
-#[test]
-fn native_signed_parent_delegate_combinations() {
-    native_signed_parent_delegate_case(GrantOutcome::Success, 0);
+/// Names the row of a table test that is running when it panics.
+struct Case(String);
+
+impl Drop for Case {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            eprintln!("failing case: {}", self.0);
+        }
+    }
 }
 
 #[test]
-fn native_signed_parent_delegate_revert_and_retry() {
-    native_signed_parent_delegate_case(GrantOutcome::RevertAndRetry, 0);
-}
-
-#[test]
-fn native_signed_parent_delegate_scope_rejection_and_retry() {
-    native_signed_parent_delegate_case(GrantOutcome::ScopeRejectionAndRetry, 0);
-}
-
-#[test]
-fn native_signed_parent_delegate_revert_preserves_fees() {
-    native_signed_parent_delegate_case(GrantOutcome::RevertAndRetry, 1_000_000_000_000);
-}
-
-#[test]
-fn native_signed_parent_delegate_scope_rejection_preserves_fees() {
-    native_signed_parent_delegate_case(GrantOutcome::ScopeRejectionAndRetry, 1_000_000_000_000);
+fn native_signed_parent_delegate_grant_outcomes() {
+    const FEE_GAS_PRICE: u128 = 1_000_000_000_000;
+    for (outcome, gas_price) in [
+        (GrantOutcome::Success, 0),
+        (GrantOutcome::RevertAndRetry, 0),
+        (GrantOutcome::ScopeRejectionAndRetry, 0),
+        (GrantOutcome::RevertAndRetry, FEE_GAS_PRICE),
+        (GrantOutcome::ScopeRejectionAndRetry, FEE_GAS_PRICE),
+    ] {
+        native_signed_parent_delegate_case(outcome, gas_price);
+    }
 }
 
 fn native_signed_parent_delegate_case(outcome: GrantOutcome, gas_price: u128) {
     for parent_native in [false, true] {
         for delegate_native in [false, true] {
+            let _case = Case(format!(
+                "{outcome:?}, gas price {gas_price}, parent_native={parent_native}, delegate_native={delegate_native}"
+            ));
             let mut f = Fixture::with_parent(parent_native);
             let signer = signer(2);
             let config = ConfigurableAccountConfig {
@@ -1482,26 +1485,14 @@ fn native_rotation_authorizes_next_transaction_in_same_block() {
 }
 
 #[test]
-fn native_batch_rotation_writes_and_events_revert_together() {
-    native_batch_rotation_failure(true, false);
-}
-
-#[test]
-fn native_batch_rotation_writes_and_events_halt_together() {
-    native_batch_rotation_failure(true, true);
-}
-
-#[test]
-fn native_first_rotation_revert_preserves_registration() {
-    native_batch_rotation_failure(false, false);
-}
-
-#[test]
-fn native_first_rotation_halt_preserves_registration() {
-    native_batch_rotation_failure(false, true);
+fn native_batch_rotation_failures_roll_back_together() {
+    for (registered, halt) in [(true, false), (true, true), (false, false), (false, true)] {
+        native_batch_rotation_failure(registered, halt);
+    }
 }
 
 fn native_batch_rotation_failure(registered: bool, halt: bool) {
+    let _case = Case(format!("registered={registered}, halt={halt}"));
     let mut f = Fixture::new();
     let mut nonce = 3;
     if registered {
