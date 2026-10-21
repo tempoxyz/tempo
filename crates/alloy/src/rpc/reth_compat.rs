@@ -10,7 +10,9 @@ use reth_rpc_convert::{
     FromConsensusHeader, SignTxRequestError, SignableTxRequest, TryIntoSimTx, TryIntoTxEnv,
 };
 use reth_rpc_eth_types::EthApiError;
-use tempo_evm::{RecoveredTxEnvelope, TempoEvmEnv, TempoTxEnv};
+use tempo_evm::{
+    RecoveredTxEnvelope, TempoEvmEnv, TempoTxEnv, transaction_error::ConfigurableAccountError,
+};
 use tempo_primitives::{
     SignatureType, TempoHeader, TempoSignature, TempoTxEnvelope, TempoTxType,
     transaction::{
@@ -32,18 +34,13 @@ const MAX_OWNER_WEBAUTHN_DATA_LEN: usize = MAX_WEBAUTHN_SIGNATURE_LENGTH - 128;
 
 impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
     fn try_into_sim_tx(self) -> Result<TempoTxEnvelope, ValueError<Self>> {
-        if self.has_configurable_simulation() {
-            return Err(ValueError::new(
-                self,
-                "configurable roles are unsupported in simulateV1 until evolving-position state validation is available",
-            ));
-        }
         match self.output_tx_type() {
             TempoTxType::AA => {
+                let signature = match self.simulated_block_signature() {
+                    Ok(signature) => signature,
+                    Err(error) => return Err(ValueError::new(self, error)),
+                };
                 let tx = self.build_aa()?;
-
-                // Create an empty signature for the transaction.
-                let signature = TempoSignature::default();
 
                 Ok(tx.into_signed(signature).into())
             }
@@ -170,11 +167,7 @@ impl TryIntoTxEnv<Recovered<TempoTxEnv>, TempoEvmEnv> for TempoTransactionReques
         let key_id = self.key_id;
         let signature =
             if let Some(signature) = self.configurable_account_simulation_signature.take() {
-                if key_id.is_some() {
-                    TempoSignature::Keychain(KeychainSignature::new(caller_addr, signature))
-                } else {
-                    TempoSignature::ConfigurableAccount(signature)
-                }
+                configurable_account_tempo_sig(signature, key_id, caller_addr)
             } else {
                 create_mock_tempo_sig(
                     &key_type,
@@ -203,6 +196,68 @@ impl TryIntoTxEnv<Recovered<TempoTxEnv>, TempoEvmEnv> for TempoTransactionReques
         ))
         .with_simulation_overrides(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER, fee_payer, key_id);
         Ok(Recovered::new_unchecked(env, caller_addr))
+    }
+}
+
+impl TempoTransactionRequest {
+    /// Outer signature for a call in a simulated block.
+    ///
+    /// Stateful configurable account checks run when the call executes at its position, so only
+    /// the stateless ones are done here.
+    fn simulated_block_signature(&self) -> Result<TempoSignature, EthApiError> {
+        if !self.has_configurable_simulation() {
+            return Ok(TempoSignature::default());
+        }
+        let invalid = |message: &str| EthApiError::InvalidParams(message.into());
+        if self.key_authorization_simulation.is_some() {
+            return Err(invalid(
+                "keyAuthorizationSimulation is unsupported in simulateV1",
+            ));
+        }
+        let parent = self.inner.from.unwrap_or_default();
+        if let Some(grant) = &self.key_authorization
+            && let Some(signature) = grant.signature.as_configurable_account()
+        {
+            signature
+                .verify_approvals(grant.signature_hash())
+                .map_err(|error| {
+                    EthApiError::InvalidParams(ConfigurableAccountError::from(error).to_string())
+                })?;
+        }
+        let Some(spec) = self.configurable_account_simulation.as_ref() else {
+            return if self.key_type == Some(SignatureType::ConfigurableAccount) {
+                Err(invalid(
+                    "configurable account simulation requires a configuration witness",
+                ))
+            } else {
+                Ok(TempoSignature::default())
+            };
+        };
+        if self.key_id == Some(parent) {
+            return Err(invalid("a configurable delegate cannot be its own parent"));
+        }
+        let signature = spec
+            .mock_signature(self.key_id.unwrap_or(parent))
+            .map_err(|error| EthApiError::InvalidParams(error.to_string()))?;
+        Ok(configurable_account_tempo_sig(
+            signature,
+            self.key_id,
+            parent,
+        ))
+    }
+}
+
+/// Wraps a configurable account approval as the outer signature: a delegate under `key_id`, else
+/// the account itself.
+fn configurable_account_tempo_sig(
+    signature: ConfigurableAccountSignature,
+    key_id: Option<Address>,
+    caller_addr: Address,
+) -> TempoSignature {
+    if key_id.is_some() {
+        TempoSignature::Keychain(KeychainSignature::new(caller_addr, signature))
+    } else {
+        TempoSignature::ConfigurableAccount(signature)
     }
 }
 
@@ -927,7 +982,7 @@ mod tests {
     #[test_case::test_case(0; "direct")]
     #[test_case::test_case(1; "delegate")]
     #[test_case::test_case(2; "inline grant")]
-    fn native_roles_keep_transaction_context_with_empty_encoding(role: u8) {
+    fn native_roles_keep_transaction_context_with_encoding(role: u8) {
         let account = Address::repeat_byte(9);
         let account_signature = spec().mock_signature(account).unwrap();
         let mut tx = TempoTransaction::default();
@@ -952,7 +1007,7 @@ mod tests {
         let env = TempoTxEnv::from_tx_with_encoded(
             TempoTxEnvelope::AA(tx.into_signed(signature))
                 .with_signer(account)
-                .into_encoded_with(Bytes::new()),
+                .into_encoded_with(Bytes::from_static(&[1])),
         );
         assert!(matches!(
             env.execution_context(),
@@ -960,19 +1015,23 @@ mod tests {
         ));
     }
 
-    #[test_case::test_case(false; "direct")]
-    #[test_case::test_case(true; "delegate")]
-    fn block_simulation_rejects_configurable_roles(delegate: bool) {
-        let request = TempoTransactionRequest {
-            configurable_account_simulation: Some(spec()),
-            key_id: delegate.then_some(Address::repeat_byte(9)),
-            ..Default::default()
-        };
+    #[test_case::test_case(0, "keyAuthorizationSimulation is unsupported in simulateV1"; "grant simulation")]
+    #[test_case::test_case(1, "configurable account simulation requires a configuration witness"; "no witness")]
+    #[test_case::test_case(2, "a configurable delegate cannot be its own parent"; "own parent")]
+    fn block_simulation_rejects_unsupported_configurable_roles(role: u8, message: &str) {
+        let account = Address::repeat_byte(9);
+        let mut request = TempoTransactionRequest::default();
+        request.inner.from = Some(account);
+        match role {
+            0 => request.key_authorization_simulation = Some(spec()),
+            1 => request.set_key_type(SignatureType::ConfigurableAccount),
+            _ => {
+                request.configurable_account_simulation = Some(spec());
+                request.set_key_id(account);
+            }
+        }
         let error = TryIntoSimTx::<TempoTxEnvelope>::try_into_sim_tx(request).unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "configurable roles are unsupported in simulateV1 until evolving-position state validation is available"
-        );
+        assert_eq!(error.to_string(), message);
     }
 
     #[tokio::test]

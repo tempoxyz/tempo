@@ -10,6 +10,7 @@ use alloy_network::TransactionResponse;
 use reth_e2e_test_utils::{receipt::PendingTransactionExt, wallet::test_signer};
 use reth_primitives_traits::SignerRecoverable;
 use reth_rpc_eth_api::helpers::LoadState;
+use reth_tracing::init_test_tracing;
 use reth_transaction_pool::{TransactionOrigin, TransactionPool};
 use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
@@ -139,6 +140,37 @@ async fn test_next_available_nonce_for_2d_key_includes_pending_txs() -> eyre::Re
             .next_available_nonce_for(&request(nonce_key))
             .await?,
         1
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_fill_transaction_chain_id_mismatch_keeps_reth_error() -> eyre::Result<()> {
+    init_test_tracing();
+
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let provider = ProviderBuilder::new().connect_http(setup.http_url);
+    let chain_id = provider.get_chain_id().await?;
+
+    let request = TransactionRequest {
+        from: Some(test_signer(0).address()),
+        to: Some(TxKind::Call(Address::random())),
+        chain_id: Some(chain_id + 1),
+        ..Default::default()
+    };
+    let err = provider
+        .fill_transaction(request)
+        .await
+        .expect_err("a wrong chain id must be rejected");
+    assert_eq!(
+        err.as_error_resp()
+            .unwrap_or_else(|| panic!("{err}"))
+            .message,
+        format!(
+            "chainId does not match node's (have={}, want={chain_id})",
+            chain_id + 1
+        )
     );
 
     Ok(())
