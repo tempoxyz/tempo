@@ -4,6 +4,7 @@
 //! to expected IP address formats (with or without ports).
 
 use std::net::SocketAddr;
+use tempo_chainspec::TempoHardfork;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum IpParseError {
@@ -22,8 +23,11 @@ pub(crate) struct IpAddr<'a> {
 }
 
 impl<'a> IpAddr<'a> {
-    /// Preserves pre-T14 format validation without imposing a length limit.
-    pub(crate) fn parse_legacy(input: &'a str) -> Result<Self, IpParseError> {
+    /// Validates the IP format, enforcing the 255-byte limit from T14 onward.
+    pub(crate) fn parse(input: &'a str, spec: TempoHardfork) -> Result<Self, IpParseError> {
+        if spec.is_t14() {
+            u8::try_from(input.len()).map_err(|_| IpParseError::TooLong)?;
+        }
         ensure_address_is_ip(input)?;
         Ok(Self { input })
     }
@@ -35,15 +39,6 @@ impl<'a> IpAddr<'a> {
 
     pub(crate) fn as_bytes(&self) -> &[u8] {
         self.input.as_bytes()
-    }
-}
-
-impl<'a> TryFrom<&'a str> for IpAddr<'a> {
-    type Error = IpParseError;
-
-    fn try_from(input: &'a str) -> Result<Self, Self::Error> {
-        u8::try_from(input.len()).map_err(|_| IpParseError::TooLong)?;
-        Self::parse_legacy(input)
     }
 }
 
@@ -64,8 +59,11 @@ pub(crate) struct IpAddrWithPort<'a> {
 }
 
 impl<'a> IpAddrWithPort<'a> {
-    /// Preserves pre-T14 format validation without imposing a length limit.
-    pub(crate) fn parse_legacy(input: &'a str) -> Result<Self, IpWithPortParseError> {
+    /// Validates the IP and port format, enforcing the 255-byte limit from T14 onward.
+    pub(crate) fn parse(input: &'a str, spec: TempoHardfork) -> Result<Self, IpWithPortParseError> {
+        if spec.is_t14() {
+            u8::try_from(input.len()).map_err(|_| IpWithPortParseError::TooLong)?;
+        }
         ensure_address_is_ip_port(input)?;
         Ok(Self { input })
     }
@@ -77,15 +75,6 @@ impl<'a> IpAddrWithPort<'a> {
 
     pub(crate) fn as_bytes(&self) -> &[u8] {
         self.input.as_bytes()
-    }
-}
-
-impl<'a> TryFrom<&'a str> for IpAddrWithPort<'a> {
-    type Error = IpWithPortParseError;
-
-    fn try_from(input: &'a str) -> Result<Self, Self::Error> {
-        u8::try_from(input.len()).map_err(|_| IpWithPortParseError::TooLong)?;
-        Self::parse_legacy(input)
     }
 }
 
