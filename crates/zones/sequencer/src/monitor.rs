@@ -744,9 +744,10 @@ impl<P: ZoneSequencerProvider> ZoneMonitor<P> {
             }
 
             // Only the first attempt may drain the slot atomically. A combined transaction
-            // declares more gas than settlement alone, so after any failure, including bounded
-            // non-inclusion of that transaction, retries submit the batch by itself and leave
-            // the slot to the standalone processor.
+            // declares more gas than settlement alone, so after any failure retries submit the
+            // batch by itself and leave the slot to the standalone processor. A retry cannot
+            // replace a combined transaction that is still pending, since it reuses that nonce
+            // without a fee bump.
             let atomic_slot = (attempt == 1).then_some(AtomicWithdrawalSlot {
                 withdrawals: &withdrawals,
                 max_batch_gas: self.config.withdrawal_batch_limits.max_batch_gas,

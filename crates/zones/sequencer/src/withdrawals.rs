@@ -871,7 +871,7 @@ impl WithdrawalProcessor {
 /// Return the number of withdrawals that can each append one deposit without exceeding the
 /// portal's unprocessed-deposit cap. This mirrors the `processWithdrawals` preflight using a live
 /// portal snapshot; the portal revalidates the bound when the transaction executes.
-fn withdrawal_deposit_headroom(
+pub(crate) fn withdrawal_deposit_headroom(
     deposit_count: u64,
     last_processed_deposit_number: u64,
 ) -> eyre::Result<usize> {
