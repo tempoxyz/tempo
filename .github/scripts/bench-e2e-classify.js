@@ -133,7 +133,10 @@ function bootstrapCiPct(baseline, feature, base, rand) {
     diffs.push((f / feature.length) - (b / baseline.length));
   }
   diffs.sort((a, b) => a - b);
-  return ((quantile(diffs, 0.975) - quantile(diffs, 0.025)) / 2) / base * 100;
+  return {
+    lower: quantile(diffs, 0.025) / base * 100,
+    upper: quantile(diffs, 0.975) / base * 100,
+  };
 }
 
 function axisChange(axis, summary, baselineRuns, featureRuns, rand) {
@@ -147,7 +150,10 @@ function axisChange(axis, summary, baselineRuns, featureRuns, rand) {
   const ciPct = bootstrapCiPct(baseline, featureValues, base, rand);
   const change = {
     pct: Number(changePct.toFixed(4)),
-    ci_pct: ciPct == null ? null : Number(ciPct.toFixed(4)),
+    // Retain the half-width for existing report consumers.
+    ci_pct: ciPct == null ? null : Number(((ciPct.upper - ciPct.lower) / 2).toFixed(4)),
+    ci_lower_pct: ciPct == null ? null : Number(ciPct.lower.toFixed(4)),
+    ci_upper_pct: ciPct == null ? null : Number(ciPct.upper.toFixed(4)),
     floor_pct: meta.floor,
     sig: 'neutral',
   };
@@ -164,10 +170,12 @@ function axisChange(axis, summary, baselineRuns, featureRuns, rand) {
     return change;
   }
 
-  const improvement = meta.lower ? -changePct : changePct;
-  if (improvement - ciPct > meta.floor) {
+  // Reverse both endpoints for metrics where a decrease is an improvement.
+  const improvementLower = meta.lower ? -ciPct.upper : ciPct.lower;
+  const improvementUpper = meta.lower ? -ciPct.lower : ciPct.upper;
+  if (improvementLower > meta.floor) {
     change.sig = 'good';
-  } else if (improvement + ciPct < -meta.floor) {
+  } else if (improvementUpper < -meta.floor) {
     change.sig = 'bad';
   }
   return change;
