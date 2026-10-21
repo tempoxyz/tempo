@@ -40,7 +40,7 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      rust: ${{ contains(fromJSON(steps.filter.outputs.changes), 'rust') || contains(fromJSON(steps.filter.outputs.changes), 'rust_config') || contains(fromJSON(steps.filter.outputs.changes), 'ci') }}
+      rust: ${{ contains(fromJSON(steps.filter.outputs.changes), 'rust') }}
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -48,39 +48,15 @@ jobs:
       - uses: tempoxyz/gh-actions/actions/changed-paths@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         id: filter
         with:
-          # Rust jobs are skipped only when every changed file is in the ignore list below; any
-          # other file, including ones added later, runs them.
+          # Run the Rust jobs when Rust sources, manifests, Cargo.lock or their CI config change.
           filters: |
             rust:
-              - '**'
-              - '!*.md'
-              - '!docs/**'
-              - '!tips/**/*.md'
-              - '!zones/*.md'
-              - '!zones/docs/**'
-              - '!.changelog/**'
-              - '!.github/**'
-              - '!{.agents,.amp,.codex,.vscode}/**'
-              - '!zones/{.agents,.amp,.codex,.vscode}/**'
-              - '!contrib/bench/**'
-              - '!*.nu'
-              - '!.gitignore'
-              - '!{Dockerfile,docker-bake}*'
-            # Already covered by `rust`; listed so a future ignore pattern cannot hide them.
-            rust_config:
+              - '{bin,crates,examples,scripts,xtask,tips/verify}/**'
               - 'Cargo.lock'
-              - '**/Cargo.toml'
-              - '.cargo/**'
-              - '.config/nextest.toml'
-              - '**/clippy.toml'
-              - 'rustfmt.toml'
-              - 'deny.toml'
-              - 'rust-toolchain*'
-            ci:
-              - '.github/workflows/test.yml'
-              - '.github/actions/**'
-              - '.github/scripts/native-libs.sh'
-              - '.github/scripts/*flaky_e2e.py'
+              - '*.toml'
+              - '{.cargo,.config,.github/actions}/**'
+              - '.github/scripts/{native-libs.sh,check_no_std.sh,warn_flaky_e2e.py,test_warn_flaky_e2e.py}'
+              - '.github/workflows/{test,lint}.yml'
 
   zones-artifacts:
     name: Build Zones test artifacts
