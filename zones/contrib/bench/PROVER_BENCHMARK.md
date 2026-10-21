@@ -18,12 +18,12 @@ The two settings are never compared with each other. Runs start from:
   the last commit that completed the nightly successfully, with the prover on.
 - **Manual dispatch** of `zones-prover-benchmark.yml` on main, with every workload input.
 
-For `preset=full-journey`, the controller reports deposit, withdrawal, and
-complete-journey p50/p95. Deposit latency runs from observing the L1 enqueue event to
-observing Zone processing. Withdrawal latency runs from observing the Zone withdrawal
-request to observing L1 processing. These include observation delay and exclude
-submission before the first event. Complete journeys include client orchestration.
-Percentiles are calculated from paired observations, never by adding step percentiles.
+For `preset=full-journey`, the controller reports p50/p95 for withdrawal submit → L1
+funds (split into submit → Zone inclusion and Zone → L1 processing), deposit submit →
+Zone credit (split into submit → L1 enqueue and L1 enqueue → Zone credit), and the full
+private journey. Each is one paired txgen edge between client observations, so it
+includes observation delay; percentiles are never added together. Only the three
+end-to-end rows decide whether results post to the Slack channel.
 
 Results update the PR comment. Slack uses `bench-slack-notify.js` like the other
 benchmarks: results post to `SLACK_BENCH_CHANNEL` when a latency improves

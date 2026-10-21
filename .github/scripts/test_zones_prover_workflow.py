@@ -159,21 +159,29 @@ class ReportingTests(unittest.TestCase):
     def test_slack_posts_improvements_to_the_channel_and_otherwise_dms(self):
         actor = next(key for key in json.loads((ROOT / ".github/scripts/bench-slack-users.json").read_text())
                      if not key.startswith("_"))
-        latency = lambda ms: {name: {"p50_ms": ms, "p95_ms": ms} for name in ("journey", "deposit", "withdrawal")}
+        rows = [{"key": "withdrawal", "label": "Withdrawal: submit → L1 funds", "end_to_end": True},
+                {"key": "withdrawal_zone_to_l1", "label": "↳ Zone → L1 processed", "end_to_end": False}]
+        latency = lambda ms: {"p50_ms": ms, "p95_ms": ms}
         metadata = {"baseline": OTHER_SHA, "feature": SHA, "prover": True, "preset": "full-journey",
                     "tempoHardfork": "t13", "count": 20, "tps": 5, "region": "us-east-1"}
         env = {"SLACK_BENCH_BOT_TOKEN": "token", "SLACK_BENCH_CHANNEL": "CHANNEL", "BENCH_ACTOR": actor,
                "GITHUB_WORKSPACE": str(ROOT)}
-        for feature_ms, destination in ((50.0, "CHANNEL"), (100.0, "DM")):
-            with self.subTest(feature_ms=feature_ms):
-                comparison = {"metadata": metadata, "latencies": {"baseline": latency(100.0), "feature": latency(feature_ms)}}
+        # Only end-to-end rows gate the channel post; a faster sub-leg alone is informational.
+        for end_to_end_ms, sub_leg_ms, destination, verdict in ((50.0, 100.0, "CHANNEL", "Improvement"),
+                                                                 (100.0, 50.0, "DM", "No Significant Change"),
+                                                                 (100.0, 100.0, "DM", "No Significant Change")):
+            with self.subTest(end_to_end_ms=end_to_end_ms, sub_leg_ms=sub_leg_ms):
+                comparison = {"metadata": metadata, "rows": rows, "latencies": {
+                    "baseline": {"withdrawal": latency(100.0), "withdrawal_zone_to_l1": latency(100.0)},
+                    "feature": {"withdrawal": latency(end_to_end_ms), "withdrawal_zone_to_l1": latency(sub_leg_ms)}}}
                 result = run_with_results("Send Slack notification (success)", {"comparison.json": json.dumps(comparison)},
                                           env=env)
                 [call] = result["calls"]
                 message = json.loads(call["body"])
                 self.assertEqual(message["channel"] == "CHANNEL", destination == "CHANNEL")
-                self.assertIn("Improvement" if destination == "CHANNEL" else "No Significant Change",
-                              message["blocks"][0]["text"]["text"])
+                self.assertIn(verdict, message["blocks"][0]["text"]["text"])
+                table = [[cell["text"] for cell in row] for row in message["blocks"][2]["rows"]]
+                self.assertEqual(table[1][:3], ["Withdrawal: submit → L1 funds", "100 | 100", f"{end_to_end_ms:.0f} | {end_to_end_ms:.0f}"])
         result = run_with_results("Send Slack notification (success)", {}, env=env)
         self.assertEqual((result["calls"], result["warnings"]),
                          ([], ["Could not read comparison.json for Zones Slack notification"]))

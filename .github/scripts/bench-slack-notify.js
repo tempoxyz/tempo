@@ -625,18 +625,25 @@ async function replayFailure({ core, context, failedStep }) {
   }
 }
 
-const ZONE_LATENCIES = [['journey', 'Journey'], ['deposit', 'Deposit'], ['withdrawal', 'Withdrawal']];
-
-function zonesChanges(latencies) {
+// comparison.json lists the rows; only end-to-end legs gate improvements.
+function zonesChanges({ rows, latencies }) {
   const changes = {};
-  for (const [journey] of ZONE_LATENCIES) {
+  for (const { key, end_to_end: endToEnd } of rows) {
     for (const quantile of ['p50', 'p95']) {
-      const baseline = latencies.baseline[journey][`${quantile}_ms`];
-      const feature = latencies.feature[journey][`${quantile}_ms`];
-      changes[`${journey}_${quantile}`] = changeFromPct(baseline ? (feature / baseline - 1) * 100 : null, true);
+      const baseline = latencies.baseline[key][`${quantile}_ms`];
+      const feature = latencies.feature[key][`${quantile}_ms`];
+      const change = changeFromPct(baseline ? (feature / baseline - 1) * 100 : null, true);
+      changes[`${key}_${quantile}`] = endToEnd ? change : { ...change, informational: true };
     }
   }
   return changes;
+}
+
+function fmtZonesChange(p50, p95, endToEnd) {
+  const pct = change => (change.pct == null ? '-' : `${change.pct >= 0 ? '+' : ''}${change.pct.toFixed(1)}%`);
+  const sigs = [p50.sig, p95.sig];
+  const sig = sigs.includes('bad') ? 'bad' : sigs.includes('good') ? 'good' : 'neutral';
+  return `${pct(p50)} | ${pct(p95)}${endToEnd ? ` ${SIG_EMOJI[sig]}` : ''}`;
 }
 
 function buildZonesSuccessBlocks({ comparison, changes, prNumber, actor, actorSlackId, jobUrl, repo }) {
@@ -656,12 +663,13 @@ function buildZonesSuccessBlocks({ comparison, changes, prNumber, actor, actorSl
     `*Prover:* \`${metadata.prover ? 'on' : 'off'}\` | *Preset:* \`${metadata.preset}\` | *Hardfork:* \`${metadata.tempoHardfork}\``,
     `*Journeys:* \`${metadata.count}\` | *Target TPS:* \`${metadata.tps}\` | *Region:* \`${metadata.region}\``,
   ].join('\n');
-  const rows = ZONE_LATENCIES.flatMap(([journey, label]) => ['p50', 'p95'].map(quantile => [
-    cell(`${label} ${quantile.toUpperCase()}`),
-    cell(fmtMs(latencies.baseline[journey][`${quantile}_ms`])),
-    cell(fmtMs(latencies.feature[journey][`${quantile}_ms`])),
-    cell(fmtChange(changes[`${journey}_${quantile}`]) || ' '),
-  ]));
+  const latencyCell = latency => `${latency.p50_ms.toFixed(0)} | ${latency.p95_ms.toFixed(0)}`;
+  const rows = comparison.rows.map(({ key, label, end_to_end: endToEnd }) => [
+    cell(label),
+    cell(latencyCell(latencies.baseline[key])),
+    cell(latencyCell(latencies.feature[key])),
+    cell(fmtZonesChange(changes[`${key}_p50`], changes[`${key}_p95`], endToEnd)),
+  ]);
   const buttons = [{ type: 'button', text: { type: 'plain_text', text: 'CI :github:', emoji: true }, url: jobUrl, action_id: 'ci_button' }];
   if (prNumber) {
     buttons.push({ type: 'button', text: { type: 'plain_text', text: 'Diff :github:', emoji: true }, url: `https://github.com/${repo}/pull/${prNumber}/files`, action_id: 'diff_button' });
@@ -672,7 +680,7 @@ function buildZonesSuccessBlocks({ comparison, changes, prNumber, actor, actorSl
     {
       type: 'table',
       column_settings: [{ align: 'left' }, { align: 'right' }, { align: 'right' }, { align: 'right' }],
-      rows: [[cell('Latency'), cell('Baseline'), cell('Feature'), cell('Change')], ...rows],
+      rows: [[cell('Latency (p50 | p95, ms)'), cell('Baseline'), cell('Feature'), cell('Change')], ...rows],
     },
     { type: 'actions', elements: buttons },
   ];
@@ -701,7 +709,7 @@ async function zonesSuccess({ core, context }) {
 
   const slackUsers = loadSlackUsers(process.env.GITHUB_WORKSPACE || '.');
   const actorSlackId = slackUsers[actor];
-  const changes = zonesChanges(comparison.latencies);
+  const changes = zonesChanges(comparison);
   const blocks = buildZonesSuccessBlocks({ comparison, changes, prNumber, actor, actorSlackId, jobUrl, repo });
   const text = `Tempo Zones bench: baseline vs feature (prover ${comparison.metadata.prover ? 'on' : 'off'})`;
 
