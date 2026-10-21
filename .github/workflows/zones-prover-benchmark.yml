@@ -124,9 +124,8 @@ permissions: {}
 jobs:
   bench-zones:
     name: bench-zones
-    if: >-
-      github.repository == 'tempoxyz/tempo' &&
-      github.ref == 'refs/heads/main'
+    # SMOKE TEST BRANCH ONLY: main gate removed. Do not merge.
+    if: github.repository == 'tempoxyz/tempo'
     runs-on: depot-ubuntu-latest-16
     timeout-minutes: 360
     concurrency:
