@@ -2,9 +2,10 @@
 
 `parse_attestation` feeds arbitrary COSE/CBOR documents into the consensus parser. Whenever the
 structural parser extracts certificates, it also runs `x509-parser` and `rustls-webpki` over every
-DER value. If Tempo accepts the complete non-cryptographic X.509 profile, both independent parsers
-must accept the same certificates and `rustls-webpki` must also accept the pinned root as a trust
-anchor.
+DER value. If Tempo accepts the complete non-cryptographic X.509 profile, `x509-parser` must accept
+the same certificates. `rustls-webpki` is exercised for parser coverage but is not an acceptance
+oracle because it validates extension bodies that Tempo intentionally ignores when they are
+non-critical.
 
 Signature checks are intentionally stubbed so mutations can reach the certificate-profile logic;
 SHA-384 hashing remains real.

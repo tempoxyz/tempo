@@ -13,7 +13,7 @@ use x509_parser::parse_x509_certificate;
 
 /// Cryptography is deliberately accepted here so the target can isolate the consensus parser and
 /// X.509 profile. Public-key shape and all non-cryptographic certificate rules remain enforced by
-/// `verify_parsed` before an input is compared with the independent parser oracles.
+/// `verify_parsed` before an input is compared with the `x509-parser` acceptance oracle.
 struct ParserOnlyBackend;
 
 impl P384Verifier for ParserOnlyBackend {
@@ -46,25 +46,16 @@ impl Sha384Hasher for ParserOnlyBackend {
     }
 }
 
-#[derive(Clone, Copy)]
-struct OracleResult {
-    x509_parser: bool,
-    rustls_webpki: bool,
-}
-
-fn parse_with_oracles(der: &[u8]) -> OracleResult {
+fn parse_with_independent_parsers(der: &[u8]) -> bool {
     let x509_parser = matches!(
         parse_x509_certificate(der),
         Ok((remaining, _)) if remaining.is_empty()
     );
 
     let certificate = CertificateDer::from(der);
-    let rustls_webpki = EndEntityCert::try_from(&certificate).is_ok();
+    black_box(EndEntityCert::try_from(&certificate).is_ok());
 
-    black_box(OracleResult {
-        x509_parser,
-        rustls_webpki,
-    })
+    black_box(x509_parser)
 }
 
 fuzz_target!(|document: &[u8]| {
@@ -74,11 +65,11 @@ fuzz_target!(|document: &[u8]| {
 
     // Exercise both independent DER parsers for every structurally valid attestation, including
     // inputs whose certificate bytes are intentionally invalid.
-    let leaf_oracles = parse_with_oracles(&parsed.certificate);
-    let bundle_oracles: Vec<_> = parsed
+    let leaf_accepted_by_x509_parser = parse_with_independent_parsers(&parsed.certificate);
+    let bundle_accepted_by_x509_parser: Vec<_> = parsed
         .cabundle
         .iter()
-        .map(|certificate| parse_with_oracles(certificate))
+        .map(|certificate| parse_with_independent_parsers(certificate))
         .collect();
 
     let root_der = parsed
@@ -86,7 +77,7 @@ fuzz_target!(|document: &[u8]| {
         .first()
         .expect("the structural parser requires a non-empty CA bundle");
     let root_certificate = CertificateDer::from(root_der.as_slice());
-    let root_anchor_parsed = black_box(anchor_from_trusted_cert(&root_certificate).is_ok());
+    black_box(anchor_from_trusted_cert(&root_certificate).is_ok());
 
     // The attestation timestamp is the best available validity-time seed and keeps the known-good
     // production corpus on the successful path. Signatures are accepted by ParserOnlyBackend so a
@@ -101,25 +92,14 @@ fuzz_target!(|document: &[u8]| {
     .is_ok()
     {
         assert!(
-            leaf_oracles.x509_parser,
+            leaf_accepted_by_x509_parser,
             "Tempo accepted a leaf certificate rejected by x509-parser"
         );
         assert!(
-            leaf_oracles.rustls_webpki,
-            "Tempo accepted a leaf certificate rejected by rustls-webpki"
-        );
-        assert!(
-            bundle_oracles.iter().all(|result| result.x509_parser),
+            bundle_accepted_by_x509_parser
+                .iter()
+                .all(|accepted| *accepted),
             "Tempo accepted a CA certificate rejected by x509-parser"
-        );
-        assert!(
-            bundle_oracles.iter().all(|result| result.rustls_webpki),
-            "Tempo accepted a CA certificate rejected by rustls-webpki"
-        );
-        assert!(
-            root_anchor_parsed,
-            "Tempo accepted a root certificate rejected by rustls-webpki"
         );
     }
 });
-
