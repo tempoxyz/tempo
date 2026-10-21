@@ -5214,14 +5214,16 @@ fn native_signature_verification_is_intrinsic_gas() {
     assert!(native.status, "{native:?}");
     assert!(!f.commitment().is_zero());
 
+    // K(n) = 30 + 6 * ceil(n / 32); one owner, one secp256k1 approval.
+    let keccak = |len: u64| 30 + 6 * len.div_ceil(32);
     let calldata: u64 = witness
         .iter()
         .map(|byte| if *byte == 0 { 4 } else { 16 })
         .sum();
     // V - 3,000: witness calldata, commitment K(75 + 21), digest K(96), approval 3,000 - 3,000.
-    let verification = calldata + keccak_cost(75 + 21).unwrap() + keccak_cost(96).unwrap();
+    let verification = calldata + keccak(75 + 21) + keccak(96);
     // First use: derivation K(68 + 21) + K(85), plus the 20,000 registration write.
-    let first_use = keccak_cost(68 + 21).unwrap() + keccak_cost(85).unwrap() + 20_000;
+    let first_use = keccak(68 + 21) + keccak(85) + 20_000;
     assert_eq!(
         native.tx_gas_used() - primitive.tx_gas_used(),
         verification + first_use
