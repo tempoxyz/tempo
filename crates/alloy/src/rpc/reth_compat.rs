@@ -32,6 +32,10 @@ const RPC_SIMULATION_UNIQUE_TX_IDENTIFIER: B256 = B256::new(*b"TEMPO_RPC_SIMULAT
 /// the public key).
 const MAX_OWNER_WEBAUTHN_DATA_LEN: usize = MAX_WEBAUTHN_SIGNATURE_LENGTH - 128;
 
+/// Error text for a configurable account call simulated without its configuration witness.
+const MISSING_CONFIGURATION_WITNESS: &str =
+    "configurable account simulation requires a configuration witness";
+
 impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
     fn try_into_sim_tx(self) -> Result<TempoTxEnvelope, ValueError<Self>> {
         match self.output_tx_type() {
@@ -176,11 +180,7 @@ impl TryIntoTxEnv<Recovered<TempoTxEnv>, TempoEvmEnv> for TempoTransactionReques
                     caller_addr,
                     evm_env.spec.is_t1c(),
                 )
-                .ok_or_else(|| {
-                    EthApiError::InvalidParams(
-                        "configurable account simulation requires a configuration witness".into(),
-                    )
-                })?
+                .ok_or_else(|| EthApiError::InvalidParams(MISSING_CONFIGURATION_WITNESS.into()))?
             };
         let has_fee_payer_signature = self.fee_payer_signature.is_some();
         let tx = self
@@ -226,9 +226,7 @@ impl TempoTransactionRequest {
         }
         let Some(spec) = self.configurable_account_simulation.as_ref() else {
             return if self.key_type == Some(SignatureType::ConfigurableAccount) {
-                Err(invalid(
-                    "configurable account simulation requires a configuration witness",
-                ))
+                Err(invalid(MISSING_CONFIGURATION_WITNESS))
             } else {
                 Ok(TempoSignature::default())
             };
