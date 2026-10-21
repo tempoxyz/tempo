@@ -162,7 +162,7 @@ fn key_type_reverts_like_an_unknown_type_before_t14() {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Delegate {
+enum DelegateCase {
     CodeFree,
     SelfGrant,
     Bytecode,
@@ -175,12 +175,12 @@ enum Delegate {
 fn delegate_grants_are_guarded_from_t14() {
     for spec in TempoHardfork::VARIANTS.iter().copied() {
         for case in [
-            Delegate::CodeFree,
-            Delegate::SelfGrant,
-            Delegate::Bytecode,
-            Delegate::Delegation,
+            DelegateCase::CodeFree,
+            DelegateCase::SelfGrant,
+            DelegateCase::Bytecode,
+            DelegateCase::Delegation,
         ] {
-            let delegate = if case == Delegate::SelfGrant {
+            let delegate = if case == DelegateCase::SelfGrant {
                 PARENT
             } else {
                 DELEGATE
@@ -190,7 +190,7 @@ fn delegate_grants_are_guarded_from_t14() {
             for (entrypoint, calldata) in calls.iter().skip(1) {
                 let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
                 match case {
-                    Delegate::Bytecode => StorageCtx::enter(&mut storage, || {
+                    DelegateCase::Bytecode => StorageCtx::enter(&mut storage, || {
                         StorageCtx
                             .set_code(
                                 delegate,
@@ -198,16 +198,16 @@ fn delegate_grants_are_guarded_from_t14() {
                             )
                             .unwrap()
                     }),
-                    Delegate::Delegation => StorageCtx::enter(&mut storage, || {
+                    DelegateCase::Delegation => StorageCtx::enter(&mut storage, || {
                         StorageCtx
                             .set_code(delegate, Bytecode::new_eip7702(Address::repeat_byte(0x33)))
                             .unwrap()
                     }),
-                    Delegate::CodeFree | Delegate::SelfGrant => {}
+                    DelegateCase::CodeFree | DelegateCase::SelfGrant => {}
                 }
 
                 let output = call_as_parent(&mut storage, calldata);
-                let granted = spec.is_t14() && case == Delegate::CodeFree;
+                let granted = spec.is_t14() && case == DelegateCase::CodeFree;
                 assert_eq!(
                     !output.is_revert(),
                     granted,
