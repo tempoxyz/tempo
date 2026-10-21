@@ -244,7 +244,21 @@ fn delegate_grants_are_guarded_from_t14() {
                     granted,
                     "{spec}, {entrypoint}, {case:?}"
                 );
-                if !granted {
+                if granted {
+                    let get_key = getKeyCall {
+                        account: PARENT,
+                        keyId: delegate,
+                    }
+                    .abi_encode();
+                    let output = call_as_parent(&mut storage, &get_key);
+                    assert!(!output.is_revert(), "{spec}, {entrypoint}");
+                    let key = getKeyCall::abi_decode_returns(&output.bytes).unwrap();
+                    assert_eq!(
+                        key.signatureType,
+                        SignatureType::ConfigurableAccount,
+                        "{spec}, {entrypoint}"
+                    );
+                } else {
                     if spec.is_t14() {
                         assert_eq!(
                             AccountKeychainError::abi_decode(&output.bytes).unwrap(),
