@@ -30,7 +30,7 @@ env:
   RUST_TOOLCHAIN: "1.96.0"
 
 concurrency:
-  group: zones-release-${{ inputs.sha || (inputs.tag && format('refs/tags/{0}', inputs.tag)) || github.ref }}
+  group: zones-release-${{ inputs.sha || (inputs.tag && format('refs/tags/{0}', inputs.tag)) || (github.event_name == 'workflow_dispatch' && github.sha) || github.ref }}
   cancel-in-progress: false
 
 jobs:
