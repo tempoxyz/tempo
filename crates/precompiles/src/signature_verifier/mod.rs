@@ -51,56 +51,59 @@ impl SignatureVerifier {
 
     /// Returns whether `signature` is an active access-key signature for `account`.
     ///
-    /// From T14, `false` when the recovered key ID has a nonzero account commitment (TIP-1112):
-    /// its bare root authority is retired, whichever grant it is used under. Also `false` from T14
-    /// when the inner signature type differs from the stored key type.
+    /// From T14, `false` when the recovered key ID has a nonzero configuration commitment
+    /// (TIP-1112), even under a stored grant, or when the inner signature type differs from the
+    /// stored key type.
     pub fn verify_keychain(&self, account: Address, hash: B256, signature: Bytes) -> Result<bool> {
-        let key = self.recover_keychain_key(hash, signature)?;
-        if key.account != account || self.storage.is_retired_root(key.key_id)? {
+        let recovered = self.recover_keychain_key(hash, signature)?;
+        if recovered.account != account || self.storage.is_retired_root(recovered.key_id)? {
             return Ok(false);
         }
 
         Ok(self
-            .registered_key(account, key.key_id, key.signature_type)?
+            .active_key(account, recovered.key_id, recovered.signature_type)?
             .is_some())
     }
 
     /// Returns whether `signature` is an active admin access-key signature for `account`, or its
     /// root key's.
     ///
-    /// From T14, `false` when the recovered key ID has a nonzero account commitment (TIP-1112),
-    /// including the implicit root of `account` itself. Also `false` from T14 when the inner
-    /// signature type of an access-key signature differs from the stored key type.
+    /// From T14, `false` when the recovered key ID has a nonzero configuration commitment
+    /// (TIP-1112), including the implicit root of `account` itself, or when the inner signature
+    /// type of an access-key signature differs from the stored key type.
     pub fn verify_keychain_admin(
         &self,
         account: Address,
         hash: B256,
         signature: Bytes,
     ) -> Result<bool> {
-        let key = self.recover_keychain_key(hash, signature)?;
-        if key.account != account || self.storage.is_retired_root(key.key_id)? {
+        let recovered = self.recover_keychain_key(hash, signature)?;
+        if recovered.account != account || self.storage.is_retired_root(recovered.key_id)? {
             return Ok(false);
         }
 
         // The root is implicitly admin without a stored access-key grant.
-        if key.key_id == account {
+        if recovered.key_id == account {
             return Ok(true);
         }
         Ok(self
-            .registered_key(account, key.key_id, key.signature_type)?
+            .active_key(account, recovered.key_id, recovered.signature_type)?
             .is_some_and(|key| key.is_admin))
     }
 
     /// Returns the active access key, or `None` when the keychain rejects it.
-    fn registered_key(
+    fn active_key(
         &self,
         account: Address,
         key_id: Address,
-        signature_type: u8,
+        signature_type: SignatureType,
     ) -> Result<Option<AuthorizedKey>> {
         let timestamp = self.storage.timestamp().saturating_to::<u64>();
-        // Pre-T14 verification ignored the stored type; preserve that behavior on replay.
-        let expected_type = self.storage.spec().is_t14().then_some(signature_type);
+        let expected_type = self
+            .storage
+            .spec()
+            .is_t14()
+            .then_some(signature_type.into());
         match AccountKeychain::new().validate_keychain_authorization(
             account,
             key_id,
@@ -128,12 +131,12 @@ impl SignatureVerifier {
         }
 
         let signing_hash = KeychainSignature::signing_hash(hash, keychain_sig.user_address);
-        let signature = &keychain_sig.signature;
-        let key_id = self.recover(signing_hash, signature.to_bytes())?;
+        let inner = &keychain_sig.signature;
+        let key_id = self.recover(signing_hash, inner.to_bytes())?;
         Ok(RecoveredKeychainKey {
             account: keychain_sig.user_address,
             key_id,
-            signature_type: signature.signature_type().into(),
+            signature_type: inner.signature_type(),
         })
     }
 }
@@ -144,8 +147,8 @@ struct RecoveredKeychainKey {
     account: Address,
     /// Key ID recovered from the inner primitive signature.
     key_id: Address,
-    /// Signature type byte of the inner primitive signature.
-    signature_type: u8,
+    /// Type of the inner primitive signature.
+    signature_type: SignatureType,
 }
 
 #[cfg(test)]

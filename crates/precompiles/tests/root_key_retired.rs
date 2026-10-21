@@ -69,8 +69,8 @@ fn permit(spec: TempoHardfork, committed: bool) -> PermitOutcome {
     let signer = PrivateKeySigner::random();
     let owner = signer.address();
     let spender = Address::repeat_byte(0x22);
-    let committed: &[Address] = if committed { &[owner] } else { &[] };
-    let mut storage = storage_at(spec, committed);
+    let committed_accounts: &[Address] = if committed { &[owner] } else { &[] };
+    let mut storage = storage_at(spec, committed_accounts);
     StorageCtx::enter(&mut storage, || {
         let admin = Address::repeat_byte(0x33);
         let mut token = TIP20Setup::create("Test", "TST", admin).apply().unwrap();
@@ -174,18 +174,18 @@ fn settle(
 ) -> (Address, Result<(), TempoPrecompileError>) {
     let payer_signer = PrivateKeySigner::random();
     let payer = payer_signer.address();
-    let delegate = PrivateKeySigner::random();
-    let delegate_address = delegate.address();
-    let committed = match committed {
+    let delegate_signer = PrivateKeySigner::random();
+    let delegate = delegate_signer.address();
+    let committed_account = match committed {
         Payer => payer,
-        Delegate => delegate_address,
+        Delegate => delegate,
     };
     let (authorized_signer, voucher_signer) = match signer {
         Payer => (Address::ZERO, payer_signer),
-        Delegate => (delegate_address, delegate),
+        Delegate => (delegate, delegate_signer),
     };
     let payee = Address::repeat_byte(0x44);
-    let mut storage = storage_at(spec, &[committed]);
+    let mut storage = storage_at(spec, &[committed_account]);
     let result = StorageCtx::enter(&mut storage, || {
         let token = TIP20Setup::path_usd(payer)
             .with_issuer(payer)
