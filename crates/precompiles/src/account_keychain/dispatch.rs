@@ -103,7 +103,7 @@ impl Precompile for AccountKeychain {
 }
 
 impl AccountKeychain {
-    /// Whether `calldata` authorizes a ConfigurableAccount key on a fork that rejects the type.
+    /// Whether `calldata` authorizes a ConfigurableAccount key from T11 until T14.
     ///
     /// From T11 the strict ABI decoder reverts on an out-of-range `signatureType`; until T14,
     /// value 3 reverts the same way. Every authorization entrypoint puts `signatureType` in its
