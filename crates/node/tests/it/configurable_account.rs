@@ -503,72 +503,77 @@ fn block_simulation_checks_each_call_against_its_position() {
         ..config.clone()
     };
     // Builds the call as reth's simulation does: an empty encoding marks it as simulated.
-    let sim =
-        |nonce: u64, config: &ConfigurableAccountConfig, approver: &PrivateKeySigner, to: Call| {
-            let request = TempoTransactionRequest {
-                inner: TransactionRequest {
-                    chain_id: Some(CHAIN_ID),
-                    from: Some(account),
-                    nonce: Some(nonce),
-                    gas: Some(5_000_000),
-                    max_fee_per_gas: Some(0),
-                    max_priority_fee_per_gas: Some(0),
-                    ..Default::default()
-                },
-                calls: vec![to],
-                fee_token: Some(PATH_USD_ADDRESS),
-                key_type: Some(SignatureType::ConfigurableAccount),
-                configurable_account_simulation: Some(ConfigurableAccountSimulationSpec {
-                    signer: None,
-                    config: config.clone(),
-                    approvals: vec![ConfigurableAccountSimulationApproval {
-                        owner: approver.address(),
-                        key_type: Some(SignatureType::Secp256k1),
-                        key_data: None,
-                    }],
-                }),
+    let sim = |nonce: u64,
+               config: &ConfigurableAccountConfig,
+               approver: &PrivateKeySigner,
+               to: Address,
+               input: Bytes| {
+        let request = TempoTransactionRequest {
+            inner: TransactionRequest {
+                chain_id: Some(CHAIN_ID),
+                from: Some(account),
+                to: Some(to.into()),
+                input: input.into(),
+                nonce: Some(nonce),
+                gas: Some(5_000_000),
+                max_fee_per_gas: Some(0),
+                max_priority_fee_per_gas: Some(0),
                 ..Default::default()
-            };
-            let tx = TryIntoSimTx::<TempoTxEnvelope>::try_into_sim_tx(request).unwrap();
-            let env = TempoTxEnv::from_tx_with_encoded(
-                tx.with_signer(account).into_encoded_with(Bytes::new()),
-            );
-            assert_eq!(env.execution_context(), ExecutionContext::Simulation);
-            Recovered::new_unchecked(env, account)
-        };
-
-    let rotate = call(
-        CONFIGURABLE_ACCOUNT_ADDRESS,
-        IConfigurableAccount::updateConfigCall {
-            current: IConfigurableAccount::ConfigurableAccountConfig {
-                salt: config.salt,
-                version: config.version,
-                threshold: 1,
-                owners: vec![IConfigurableAccount::ConfigurableAccountOwner {
-                    owner: owner.address(),
-                    weight: 1,
-                }],
             },
+            fee_token: Some(PATH_USD_ADDRESS),
+            key_type: Some(SignatureType::ConfigurableAccount),
+            configurable_account_simulation: Some(ConfigurableAccountSimulationSpec {
+                signer: None,
+                config: config.clone(),
+                approvals: vec![ConfigurableAccountSimulationApproval {
+                    owner: approver.address(),
+                    key_type: Some(SignatureType::Secp256k1),
+                    key_data: None,
+                }],
+            }),
+            ..Default::default()
+        };
+        let tx = TryIntoSimTx::<TempoTxEnvelope>::try_into_sim_tx(request).unwrap();
+        let env = TempoTxEnv::from_tx_with_encoded(
+            tx.with_signer(account).into_encoded_with(Bytes::new()),
+        );
+        assert_eq!(env.execution_context(), ExecutionContext::Simulation);
+        Recovered::new_unchecked(env, account)
+    };
+
+    let rotate = IConfigurableAccount::updateConfigCall {
+        current: IConfigurableAccount::ConfigurableAccountConfig {
+            salt: config.salt,
+            version: config.version,
             threshold: 1,
             owners: vec![IConfigurableAccount::ConfigurableAccountOwner {
-                owner: rotated_owner.address(),
+                owner: owner.address(),
                 weight: 1,
             }],
-        }
-        .abi_encode()
-        .into(),
-    );
+        },
+        threshold: 1,
+        owners: vec![IConfigurableAccount::ConfigurableAccountOwner {
+            owner: rotated_owner.address(),
+            weight: 1,
+        }],
+    }
+    .abi_encode();
     let result = evm
-        .transact(&sim(0, &config, &owner, rotate))
+        .transact(&sim(
+            0,
+            &config,
+            &owner,
+            CONFIGURABLE_ACCOUNT_ADDRESS,
+            rotate.into(),
+        ))
         .unwrap()
         .commit();
     assert!(result.status, "{result:?}");
     let registered = commitment(&mut evm, account);
     assert_eq!(registered, rotated.commitment().unwrap());
 
-    let noop = call(DELEGATE, Bytes::new());
     assert_eq!(
-        invalid(&mut evm, &sim(1, &config, &owner, noop.clone())),
+        invalid(&mut evm, &sim(1, &config, &owner, DELEGATE, Bytes::new())),
         TempoInvalidTransaction::ConfigurableAccount(
             ConfigurableAccountError::ConfigurationCommitmentMismatch {
                 expected: registered,
@@ -577,7 +582,7 @@ fn block_simulation_checks_each_call_against_its_position() {
         )
     );
     let result = evm
-        .transact(&sim(1, &rotated, &rotated_owner, noop))
+        .transact(&sim(1, &rotated, &rotated_owner, DELEGATE, Bytes::new()))
         .unwrap()
         .commit();
     assert!(result.status, "{result:?}");
