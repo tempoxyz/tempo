@@ -161,6 +161,84 @@ fn validator_catches_up_with_gap_of_three_epochs() {
     .run();
 }
 
+/// Restarts a validator while its execution layer has finalized an epoch
+/// boundary that marshal has not yet processed, because the boundary is not
+/// yet durable. After the restart, marshal re-delivers the boundary to the
+/// DKG manager, which must neither stall nor produce bad dealings.
+///
+/// The restart point depends on timing across the deterministic and the
+/// execution layer's runtimes, so the test asserts that it reached the
+/// intended state instead of assuming it.
+#[test_traced]
+fn node_recovers_after_restart_with_unprocessed_boundary() {
+    let _ = tempo_eyre::install();
+
+    let epoch_length = 30;
+    // The second boundary, once the execution layer persists in steady state.
+    let boundary = 2 * epoch_length - 1;
+    let setup = Setup::new(crate::VERIFICATION_MODE)
+        .how_many_signers(4)
+        .epoch_length(epoch_length);
+
+    let cfg = deterministic::Config::default().with_seed(setup.seed);
+    Runner::from(cfg).start(|mut context| async move {
+        let (mut validators, _execution_runtime) =
+            setup_validators(&mut context, setup.clone()).await;
+        join_all(validators.iter_mut().map(|node| node.start(&context))).await;
+
+        let restarted = 0;
+        let mut attempts = 0;
+        while validators[restarted]
+            .execution()
+            .provider
+            .canonical_in_memory_state()
+            .get_finalized_num_hash()
+            .is_none_or(|finalized| finalized.number < boundary)
+        {
+            attempts += 1;
+            assert!(
+                attempts < 3_000,
+                "execution layer did not finalize the boundary `{boundary}` in time"
+            );
+            context.sleep(Duration::from_millis(20)).await;
+        }
+        let processed = context
+            .to_metrics()
+            .for_scope(&validators[restarted])
+            .latest_consensus_height()
+            .unwrap_or_default();
+        assert!(
+            processed < boundary,
+            "marshal already processed height `{processed}`, so the restart \
+            would not replay the boundary `{boundary}`",
+        );
+
+        validators[restarted].stop().await;
+        validators[restarted].start(&context).await;
+
+        for attempt in 0.. {
+            context.sleep(Duration::from_secs(1)).await;
+            let metrics = context.to_metrics();
+            assert!(
+                metrics
+                    .values::<u64>("ceremony_bad_dealings")
+                    .all(|bad_dealings| bad_dealings == 0)
+            );
+            if metrics
+                .for_scope(&validators[restarted])
+                .latest_consensus_height()
+                .is_some_and(|height| height > boundary + 10)
+            {
+                break;
+            }
+            assert!(
+                attempt < 30,
+                "restarted validator did not progress past the replayed boundary"
+            );
+        }
+    });
+}
+
 /// Test configuration for restart scenarios
 #[derive(Clone)]
 struct RestartSetup {
