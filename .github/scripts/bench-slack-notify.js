@@ -21,6 +21,8 @@
 const fs = require('fs');
 const path = require('path');
 
+const { FLOOR_PCT, classify: zonesClassify, readReports } = require('./bench-zones-classify');
+
 const SLACK_API = 'https://slack.com/api/chat.postMessage';
 
 // Significance thresholds (percentage change)
@@ -625,23 +627,14 @@ async function replayFailure({ core, context, failedStep }) {
   }
 }
 
-// comparison.json lists the rows; only end-to-end legs gate improvements.
-function zonesChanges({ rows, latencies }) {
-  const changes = {};
-  for (const { key, end_to_end: endToEnd } of rows) {
-    for (const quantile of ['p50', 'p95']) {
-      const baseline = latencies.baseline[key][`${quantile}_ms`];
-      const feature = latencies.feature[key][`${quantile}_ms`];
-      const change = changeFromPct(baseline ? (feature / baseline - 1) * 100 : null, true);
-      changes[`${key}_${quantile}`] = endToEnd ? change : { ...change, informational: true };
-    }
-  }
-  return changes;
-}
-
-function fmtZonesChange(change, endToEnd) {
-  const pct = change.pct == null ? '-' : `${change.pct >= 0 ? '+' : ''}${change.pct.toFixed(1)}%`;
-  return endToEnd ? `${pct} ${SIG_EMOJI[change.sig]}` : pct;
+// Rows are classified on per-journey means with a bootstrap CI (bench-zones-classify.js);
+// only end-to-end rows gate improvements. p50/p95 are shown for context only.
+function fmtZonesChange(change) {
+  if (!change || change.pct == null) return '-';
+  const sign = change.pct >= 0 ? '+' : '';
+  const ci = change.ci_pct != null ? ` (±${change.ci_pct.toFixed(1)}%)` : '';
+  const mark = change.informational ? '' : ` ${SIG_EMOJI[change.sig]}`;
+  return `${sign}${change.pct.toFixed(1)}%${ci}${mark}`;
 }
 
 function buildZonesSuccessBlocks({ comparison, changes, prNumber, actor, actorSlackId, jobUrl, repo }) {
@@ -661,13 +654,11 @@ function buildZonesSuccessBlocks({ comparison, changes, prNumber, actor, actorSl
     `*Prover:* \`${metadata.prover ? 'on' : 'off'}\` | *Preset:* \`${metadata.preset}\` | *Hardfork:* \`${metadata.tempoHardfork}\``,
     `*Journeys:* \`${metadata.count}\` | *Target TPS:* \`${metadata.tps}\` | *Region:* \`${metadata.region}\``,
   ].join('\n');
-  const rows = comparison.rows.map(({ key, label, end_to_end: endToEnd }) => [
+  const rows = comparison.rows.map(({ key, label }) => [
     cell(label),
-    ...['p50', 'p95'].flatMap(quantile => [
-      cell((latencies.baseline[key][`${quantile}_ms`] / 1000).toFixed(3)),
-      cell((latencies.feature[key][`${quantile}_ms`] / 1000).toFixed(3)),
-      cell(fmtZonesChange(changes[`${key}_${quantile}`], endToEnd)),
-    ]),
+    ...['p50', 'p95'].flatMap(quantile => ['baseline', 'feature']
+      .map(phase => cell((latencies[phase][key][`${quantile}_ms`] / 1000).toFixed(3)))),
+    cell(fmtZonesChange(changes[key])),
   ]);
   const buttons = [{ type: 'button', text: { type: 'plain_text', text: 'CI :github:', emoji: true }, url: jobUrl, action_id: 'ci_button' }];
   if (prNumber) {
@@ -678,9 +669,10 @@ function buildZonesSuccessBlocks({ comparison, changes, prNumber, actor, actorSl
     { type: 'section', text: { type: 'mrkdwn', text: sectionText } },
     {
       type: 'table',
-      column_settings: [{ align: 'left' }, ...Array(6).fill({ align: 'right' })],
-      rows: [['Latency (s)', 'base (p50)', 'feat (p50)', 'change', 'base (p95)', 'feat (p95)', 'change'].map(cell), ...rows],
+      column_settings: [{ align: 'left' }, ...Array(5).fill({ align: 'right' })],
+      rows: [['Latency (s)', 'base (p50)', 'feat (p50)', 'base (p95)', 'feat (p95)', 'mean change (95% CI)'].map(cell), ...rows],
     },
+    { type: 'context', elements: [{ type: 'mrkdwn', text: `Verdict: end-to-end rows whose mean change clears its 95% bootstrap CI plus a ${FLOOR_PCT}% floor. Percentiles are context only.` }] },
     { type: 'actions', elements: buttons },
   ];
 }
@@ -708,18 +700,28 @@ async function zonesSuccess({ core, context }) {
 
   const slackUsers = loadSlackUsers(process.env.GITHUB_WORKSPACE || '.');
   const actorSlackId = slackUsers[actor];
-  const changes = zonesChanges(comparison);
+  let changes;
+  try {
+    changes = zonesClassify(comparison, readReports(process.env.BENCH_WORK_DIR));
+  } catch (e) {
+    core.warning(`Could not classify Zones latency, reporting it as informational: ${e.message}`);
+    changes = Object.fromEntries(comparison.rows.map(({ key }) => [key, { pct: null, sig: 'neutral', informational: true }]));
+  }
   const blocks = buildZonesSuccessBlocks({ comparison, changes, prNumber, actor, actorSlackId, jobUrl, repo });
   const text = `Tempo Zones bench: baseline vs feature (prover ${comparison.metadata.prover ? 'on' : 'off'})`;
 
   const channel = process.env.SLACK_BENCH_CHANNEL;
   const slackMode = process.env.BENCH_SLACK || 'always';
   let postedToChannel = false;
-  if (channel && hasImprovement(changes)) {
+  // Benchmarking a commit against itself measures noise; never announce it.
+  const sameCommit = comparison.metadata.baseline === comparison.metadata.feature;
+  if (channel && !sameCommit && hasImprovement(changes)) {
     await postToSlack(token, channel, blocks, text, core);
     postedToChannel = true;
   } else if (channel) {
-    core.info('No significant Zones improvement, skipping public channel notification');
+    core.info(sameCommit
+      ? 'Baseline and feature are the same commit, skipping public channel notification'
+      : 'No significant Zones improvement, skipping public channel notification');
   }
 
   if (slackMode === 'on-win') {

@@ -23,7 +23,12 @@ funds (split into submit → Zone inclusion and Zone → L1 processing), deposit
 Zone credit (split into submit → L1 enqueue and L1 enqueue → Zone credit), and the full
 private journey. Each is one paired txgen edge between client observations, so it
 includes observation delay; percentiles are never added together. Only the three
-end-to-end rows decide whether results post to the Slack channel.
+end-to-end rows decide whether results post to the Slack channel, and only on their
+mean: journeys cluster around block-timing values, so a p50 can jump between clusters
+with no code change. `bench-zones-classify.js` rebuilds each journey's latency from the
+traced instances in both phases' `report.json` and counts a change only when it clears
+its 95% bootstrap CI plus a 2% floor. A run whose baseline and feature are the same
+commit never posts to the channel.
 
 Results update the PR comment. Slack uses `bench-slack-notify.js` like the other
 benchmarks: results post to `SLACK_BENCH_CHANNEL` when a latency improves

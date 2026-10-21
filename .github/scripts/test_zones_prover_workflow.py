@@ -82,6 +82,7 @@ def run_with_results(name, files, **payload):
         results = Path(directory) / "results"
         results.mkdir()
         for file, content in files.items():
+            (results / file).parent.mkdir(parents=True, exist_ok=True)
             (results / file).write_text(content)
         payload["env"] = {"BENCH_RESULTS_PATH": directory, "BENCH_WORK_DIR": str(results)} | payload.get("env", {})
         return run_script("zones-prover-benchmark.yml", "bench-zones", name,
@@ -154,38 +155,137 @@ class MembershipTests(unittest.TestCase):
             self.assertLess(names.index("Check org membership"), names.index(name))
 
 
+# Run 11 of #8488 (one commit on both sides): the deposit p50 moved 29.5% between phases.
+# These are its feature phase's traced deposit latencies (ms), which cluster on block timing.
+DEPOSIT_MS = [122, 934, 733, 1047, 971, 770, 569, 513, 513, 311]
+
+
+def traced_report(journeys):
+    """A txgen report.json tracing every journey; each journey maps row key -> latency in ms."""
+    instances = []
+    for index, journey in enumerate(journeys):
+        steps = [{"id": "start", "finished_offset_ms": 0, "milestones": []}]
+        for key, (source, destination) in (("withdrawal", ("offramp", "offramp_processed")),
+                                           ("deposit", ("onramp.zone_before", "onramp.zone_deposit.processed"))):
+            steps.append({"id": source, "finished_offset_ms": 999_999, "milestones": [{"kind": "submit", "run_offset_ms": 100}]})
+            # The last milestone, not the step's command finish, is the edge's endpoint.
+            steps.append({"id": destination, "depends_on": [source], "finished_offset_ms": 999_999,
+                          "milestones": [{"kind": "included", "run_offset_ms": 1},
+                                         {"kind": "observed", "run_offset_ms": 100 + journey[key]}]})
+        instances.append({"instance": index, "outcome": "completed",
+                          "client_observed_e2e_latency_ms": journey["journey"], "steps": steps})
+    return {"completed": len(journeys), "sampled_instances": instances}
+
+
+def classify(rows, baseline, feature):
+    script = ("const c = require('./.github/scripts/bench-zones-classify.js');"
+              "const i = JSON.parse(require('fs').readFileSync(0, 'utf8'));"
+              "console.log(JSON.stringify(c.classify({rows: i.rows}, i.reports)));")
+    result = subprocess.run(["node", "-e", script], input=json.dumps({"rows": rows, "reports": {
+        "baseline": baseline, "feature": feature}}), text=True, capture_output=True, check=True, cwd=ROOT)
+    return json.loads(result.stdout)
+
+
+ROWS = [{"key": "withdrawal", "label": "Withdrawal: submit → L1 funds", "end_to_end": True},
+        {"key": "deposit", "label": "Deposit: submit → zone credited", "end_to_end": True},
+        {"key": "journey", "label": "Full private journey", "end_to_end": True}]
+
+
+def journeys(deposits, withdrawal=2000.0, journey=None):
+    return [{"deposit": d, "withdrawal": withdrawal, "journey": journey or 6000.0 + d} for d in deposits]
+
+
+class ClassifyTests(unittest.TestCase):
+    def test_clustered_median_flip_is_not_significant(self):
+        baseline = journeys(DEPOSIT_MS * 2)
+        # Same clusters, two journeys moved down one block: the p50 drops ~25%.
+        feature = journeys(sorted(DEPOSIT_MS * 2)[:9] + [311, 311] + sorted(DEPOSIT_MS * 2)[11:])
+        p50 = lambda js: sorted(j["deposit"] for j in js)[len(js) // 2]
+        self.assertLess(p50(feature) / p50(baseline) - 1, -0.05)
+        changes = classify(ROWS, traced_report(baseline), traced_report(feature))
+        self.assertEqual({key: change["sig"] for key, change in changes.items()},
+                         {"withdrawal": "neutral", "deposit": "neutral", "journey": "neutral"})
+
+    def test_mean_change_beyond_ci_and_floor_is_classified(self):
+        baseline = journeys(DEPOSIT_MS * 2)
+        for factor, sig in ((0.6, "good"), (1.4, "bad"), (0.99, "neutral")):
+            with self.subTest(factor=factor):
+                feature = journeys([d * factor for d in DEPOSIT_MS * 2])
+                change = classify(ROWS, traced_report(baseline), traced_report(feature))["deposit"]
+                self.assertEqual(change["sig"], sig)
+                self.assertAlmostEqual(change["pct"], (factor - 1) * 100)
+                self.assertGreater(change["ci_pct"], 0)
+
+    def test_tight_rows_need_more_than_the_floor(self):
+        baseline = journeys(DEPOSIT_MS * 2, withdrawal=2000.0)
+        for withdrawal, sig in ((1970.0, "neutral"), (1900.0, "good")):
+            with self.subTest(withdrawal=withdrawal):
+                feature = journeys(DEPOSIT_MS * 2, withdrawal=withdrawal)
+                self.assertEqual(classify(ROWS, traced_report(baseline), traced_report(feature))["withdrawal"]["sig"], sig)
+
+    def test_sub_legs_and_partial_traces_are_informational(self):
+        rows = ROWS + [{"key": "withdrawal_zone_to_l1", "label": "> zone → L1 processed", "end_to_end": False}]
+        full = traced_report(journeys(DEPOSIT_MS * 2))
+        partial = dict(full, sampled_instances=full["sampled_instances"][:10])
+        changes = classify(rows, partial, full)
+        self.assertTrue(all(change["informational"] and change["pct"] is None for change in changes.values()))
+        self.assertTrue(changes["withdrawal_zone_to_l1"]["informational"])
+
+
 class ReportingTests(unittest.TestCase):
-    def test_slack_posts_improvements_to_the_channel_and_otherwise_dms(self):
+    def test_slack_posts_significant_improvements_to_the_channel_and_otherwise_dms(self):
         actor = next(key for key in json.loads((ROOT / ".github/scripts/bench-slack-users.json").read_text())
                      if not key.startswith("_"))
-        rows = [{"key": "withdrawal", "label": "Withdrawal: submit → L1 funds", "end_to_end": True},
-                {"key": "withdrawal_zone_to_l1", "label": "> zone → L1 processed", "end_to_end": False},
-                {"key": "journey", "label": "Full private journey", "end_to_end": True}]
+        rows = ROWS + [{"key": "withdrawal_zone_to_l1", "label": "> zone → L1 processed", "end_to_end": False}]
         latency = lambda ms: {"p50_ms": ms, "p95_ms": ms}
-        metadata = {"baseline": OTHER_SHA, "feature": SHA, "prover": True, "preset": "full-journey",
-                    "tempoHardfork": "t13", "count": 20, "tps": 5, "region": "us-east-1"}
         env = {"SLACK_BENCH_BOT_TOKEN": "token", "SLACK_BENCH_CHANNEL": "CHANNEL", "BENCH_ACTOR": actor,
                "GITHUB_WORKSPACE": str(ROOT)}
-        # Only end-to-end rows gate the channel post; a faster sub-leg alone is informational.
-        for end_to_end_ms, sub_leg_ms, destination, verdict in ((50.0, 100.0, "CHANNEL", "Improvement"),
-                                                                 (100.0, 50.0, "DM", "No Significant Change"),
-                                                                 (100.0, 100.0, "DM", "No Significant Change")):
-            with self.subTest(end_to_end_ms=end_to_end_ms, sub_leg_ms=sub_leg_ms):
+        baseline = journeys(DEPOSIT_MS * 2)
+        faster = journeys([d * 0.6 for d in DEPOSIT_MS * 2])
+        # A faster mean posts only between different commits; noise and self-comparisons DM the actor.
+        for name, feature_sha, feature, destination, verdict in (
+                ("improvement", SHA, faster, "CHANNEL", "Improvement"),
+                ("same commit", OTHER_SHA, faster, "DM", "Improvement"),
+                ("no change", SHA, baseline, "DM", "No Significant Change")):
+            with self.subTest(name):
+                metadata = {"baseline": OTHER_SHA, "feature": feature_sha, "prover": True, "preset": "full-journey",
+                            "tempoHardfork": "t13", "count": 20, "tps": 5, "region": "us-east-1"}
                 comparison = {"metadata": metadata, "rows": rows, "latencies": {
-                    "baseline": {"withdrawal": latency(100.0), "withdrawal_zone_to_l1": latency(100.0),
-                                 "journey": latency(7121.0)},
-                    "feature": {"withdrawal": latency(end_to_end_ms), "withdrawal_zone_to_l1": latency(sub_leg_ms),
-                                "journey": latency(7125.4)}}}
-                result = run_with_results("Send Slack notification (success)", {"comparison.json": json.dumps(comparison)},
-                                          env=env)
+                    phase: {row["key"]: latency(100.0) for row in rows} | {"journey": latency(7121.0)}
+                    for phase in ("baseline", "feature")}}
+                result = run_with_results("Send Slack notification (success)", {
+                    "comparison.json": json.dumps(comparison),
+                    "baseline/report.json": json.dumps(traced_report(baseline)),
+                    "feature/report.json": json.dumps(traced_report(feature))}, env=env)
                 [call] = result["calls"]
                 message = json.loads(call["body"])
                 self.assertEqual(message["channel"] == "CHANNEL", destination == "CHANNEL")
                 self.assertIn(verdict, message["blocks"][0]["text"]["text"])
                 table = [[cell["text"] for cell in row] for row in message["blocks"][2]["rows"]]
-                self.assertEqual(table[0], ["Latency (s)", "base (p50)", "feat (p50)", "change", "base (p95)", "feat (p95)", "change"])
-                self.assertEqual(table[1][:3], ["Withdrawal: submit → L1 funds", "0.100", f"{end_to_end_ms / 1000:.3f}"])
-                self.assertEqual(table[3][:3], ["Full private journey", "7.121", "7.125"])
+                self.assertEqual(table[0], ["Latency (s)", "base (p50)", "feat (p50)", "base (p95)", "feat (p95)",
+                                            "mean change (95% CI)"])
+                self.assertEqual(table[3][:3], ["Full private journey", "7.121", "7.121"])
+                self.assertEqual(table[4][5], "-")
+                if feature is faster:
+                    self.assertRegex(table[2][5], r"^-40\.0% \(±[0-9.]+%\) ✅$")
+
+    def test_missing_traces_dm_without_a_verdict(self):
+        actor = next(key for key in json.loads((ROOT / ".github/scripts/bench-slack-users.json").read_text())
+                     if not key.startswith("_"))
+        env = {"SLACK_BENCH_BOT_TOKEN": "token", "SLACK_BENCH_CHANNEL": "CHANNEL", "BENCH_ACTOR": actor,
+               "GITHUB_WORKSPACE": str(ROOT)}
+        metadata = {"baseline": OTHER_SHA, "feature": SHA, "prover": True, "preset": "full-journey",
+                    "tempoHardfork": "t13", "count": 20, "tps": 5, "region": "us-east-1"}
+        comparison = {"metadata": metadata, "rows": ROWS, "latencies": {
+            "baseline": {row["key"]: {"p50_ms": 100.0, "p95_ms": 100.0} for row in ROWS},
+            "feature": {row["key"]: {"p50_ms": 50.0, "p95_ms": 50.0} for row in ROWS}}}
+        result = run_with_results("Send Slack notification (success)", {"comparison.json": json.dumps(comparison)}, env=env)
+        [call] = result["calls"]
+        message = json.loads(call["body"])
+        self.assertNotEqual(message["channel"], "CHANNEL")
+        self.assertIn("No Significant Change", message["blocks"][0]["text"]["text"])
+        self.assertEqual(len(result["warnings"]), 1)
+        self.assertIn("Could not classify Zones latency", result["warnings"][0])
         result = run_with_results("Send Slack notification (success)", {}, env=env)
         self.assertEqual((result["calls"], result["warnings"]),
                          ([], ["Could not read comparison.json for Zones Slack notification"]))
