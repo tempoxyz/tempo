@@ -679,7 +679,7 @@ function buildZonesSuccessBlocks({ comparison, changes, prNumber, actor, actorSl
     {
       type: 'table',
       column_settings: [{ align: 'left' }, ...Array(6).fill({ align: 'right' })],
-      rows: [['Latency (ms)', 'base(p50)', 'feat(p50)', 'change', 'base(p95)', 'feat(p95)', 'change'].map(cell), ...rows],
+      rows: [['Latency (ms)', 'base (p50)', 'feat (p50)', 'change', 'base (p95)', 'feat (p95)', 'change'].map(cell), ...rows],
     },
     { type: 'actions', elements: buttons },
   ];
