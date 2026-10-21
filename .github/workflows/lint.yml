@@ -312,7 +312,13 @@ jobs:
       - name: Install README generator dependencies
         run: npm --prefix scripts/readme ci --ignore-scripts
       - name: Check generated README
-        run: npm --prefix scripts/readme run check
+        run: |
+          npm --prefix scripts/readme run generate
+          if [[ -n "$(git status --porcelain -- README.md)" ]]; then
+            git diff -- README.md
+            echo "README.md is stale; run: npm --prefix scripts/readme run generate"
+            exit 1
+          fi
 
   lint-success:
     name: lint success

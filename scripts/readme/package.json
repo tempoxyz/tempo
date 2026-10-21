@@ -2,8 +2,7 @@
   "name": "tempo-readme",
   "private": true,
   "scripts": {
-    "generate": "node generate.mjs",
-    "check": "node generate.mjs --check"
+    "generate": "node generate.mjs"
   },
   "dependencies": {
     "handlebars": "4.7.10"
