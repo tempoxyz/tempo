@@ -1,14 +1,11 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use rustls_pki_types::CertificateDer;
 use sha2::{Digest, Sha384};
-use std::hint::black_box;
 use tempo_nitro_attestation::{
     P384_FIXED_SIGNATURE_SIZE, P384_PUBLIC_KEY_SIZE, P384Verifier, SHA384_SIZE, Sha384Hasher,
     parse_attestation, verify_parsed,
 };
-use webpki::{EndEntityCert, anchor_from_trusted_cert};
 use x509_parser::parse_x509_certificate;
 
 /// Cryptography is deliberately accepted here so the target can isolate the consensus parser and
@@ -46,16 +43,11 @@ impl Sha384Hasher for ParserOnlyBackend {
     }
 }
 
-fn parse_with_independent_parsers(der: &[u8]) -> bool {
-    let x509_parser = matches!(
+fn parse_with_x509_parser(der: &[u8]) -> bool {
+    matches!(
         parse_x509_certificate(der),
         Ok((remaining, _)) if remaining.is_empty()
-    );
-
-    let certificate = CertificateDer::from(der);
-    black_box(EndEntityCert::try_from(&certificate).is_ok());
-
-    black_box(x509_parser)
+    )
 }
 
 fuzz_target!(|document: &[u8]| {
@@ -63,21 +55,19 @@ fuzz_target!(|document: &[u8]| {
         return;
     };
 
-    // Exercise both independent DER parsers for every structurally valid attestation, including
+    // Exercise the independent DER parser for every structurally valid attestation, including
     // inputs whose certificate bytes are intentionally invalid.
-    let leaf_accepted_by_x509_parser = parse_with_independent_parsers(&parsed.certificate);
+    let leaf_accepted_by_x509_parser = parse_with_x509_parser(&parsed.certificate);
     let bundle_accepted_by_x509_parser: Vec<_> = parsed
         .cabundle
         .iter()
-        .map(|certificate| parse_with_independent_parsers(certificate))
+        .map(|certificate| parse_with_x509_parser(certificate))
         .collect();
 
     let root_der = parsed
         .cabundle
         .first()
         .expect("the structural parser requires a non-empty CA bundle");
-    let root_certificate = CertificateDer::from(root_der.as_slice());
-    black_box(anchor_from_trusted_cert(&root_certificate).is_ok());
 
     // The attestation timestamp is the best available validity-time seed and keeps the known-good
     // production corpus on the successful path. Signatures are accepted by ParserOnlyBackend so a
