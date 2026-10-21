@@ -1,0 +1,12 @@
+# Run Rust validation for every path except repository-local agent configuration.
+# Keep unknown paths, CI changes, manifests, fixtures, and embedded Markdown covered.
+rust:
+  - '**'
+  - '!.agents/**'
+  - '!.claude/**'
+  - '!AGENTS.md'
+
+precompiles:
+  - 'crates/precompiles/**'
+  - 'crates/contracts/**'
+  - 'tips/verify/**'
