@@ -22,7 +22,7 @@ use itertools::Itertools;
 use rand::SeedableRng as _;
 use rand_08::SeedableRng as _;
 use rayon::prelude::*;
-use reth_evm::revm::context_interface::JournalTr as _;
+use reth_evm::{Evm as _, revm::context_interface::JournalTr as _};
 use std::{
     collections::BTreeMap,
     iter::repeat_with,
@@ -37,7 +37,7 @@ use tempo_chainspec::{
 use tempo_consensus_config::{SigningKey, SigningShare};
 use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
-    SAFE_DEPLOYER_ADDRESS,
+    SAFE_DEPLOYER_ADDRESS, TopOfBlockRegistry,
     contracts::{CreateX, Multicall3, SafeDeployer},
     precompiles::{
         INITIAL_FACTORY_OWNER, IValidatorConfigV2, createTokenCall, initial_zone_factory_state,
@@ -47,8 +47,8 @@ use tempo_contracts::{
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::genesis::{
     GenesisEvm, create_genesis_evm, deploy_arachnid_create2_factory, deploy_permit2,
-    ethereum_chain_config, genesis_account, genesis_evm_env, predeployed_contract,
-    with_genesis_storage,
+    deploy_top_of_block_registry, ethereum_chain_config, genesis_account, genesis_evm_env,
+    predeployed_contract, top_of_block_registry_address, with_genesis_storage,
 };
 use tempo_precompiles::{
     PATH_USD_ADDRESS,
@@ -158,6 +158,18 @@ pub(crate) struct GenesisArgs {
     #[arg(long)]
     no_pairwise_liquidity: bool,
 
+    /// Top-of-block operator as `<hex ed25519 public key>@<ip>`; repeatable.
+    ///
+    /// Deploys a `TopOfBlockRegistry` (TIP-1147) owned by the first generated
+    /// account and lists these operators. Pass its address to validators with
+    /// `--consensus.top-of-block-registry`.
+    #[arg(long = "top-of-block-operator", value_name = "KEY@IP")]
+    top_of_block_operators: Vec<String>,
+
+    /// Lane window written to the top-of-block registry.
+    #[arg(long, default_value_t = 100)]
+    top_of_block_window_ms: u64,
+
     /// Tempo hardfork schedule. Individual `--<fork>-time` flags default to genesis (0).
     #[command(flatten)]
     hardforks: TempoHardforkArgs,
@@ -265,6 +277,7 @@ impl GenesisArgs {
 
         deploy_arachnid_create2_factory(&mut evm);
         deploy_permit2(&mut evm)?;
+        let top_of_block_registry = self.deploy_top_of_block_registry(&mut evm, addresses[0])?;
 
         println!("Initializing registry");
         with_genesis_storage(&mut evm, || TIP403Registry::new().initialize())?;
@@ -470,6 +483,16 @@ impl GenesisArgs {
             genesis_alloc.insert(address, predeployed_contract(code));
         }
         insert_zone_state_at_genesis(&self.hardforks, &mut genesis_alloc);
+        if let Some(address) = top_of_block_registry {
+            let account = &evm.db_mut().cache.accounts[&address];
+            genesis_alloc.insert(
+                address,
+                genesis_account(
+                    &account.info,
+                    account.storage.iter().map(|(slot, value)| (*slot, *value)),
+                ),
+            );
+        }
 
         let mut chain_config = ethereum_chain_config(self.chain_id);
         chain_config
@@ -509,6 +532,47 @@ impl GenesisArgs {
         genesis.config = chain_config;
 
         Ok((genesis, consensus_config))
+    }
+
+    /// Address of the top-of-block registry this genesis deploys, if any.
+    pub(crate) fn top_of_block_registry(&self) -> eyre::Result<Option<Address>> {
+        if self.top_of_block_operators.is_empty() {
+            return Ok(None);
+        }
+        let owner = secret_key_to_address(
+            MnemonicBuilder::from_phrase_nth(&self.resolved_mnemonic()?, 0).credential(),
+        );
+        Ok(Some(top_of_block_registry_address(
+            owner,
+            self.top_of_block_window_ms,
+        )))
+    }
+
+    fn deploy_top_of_block_registry(
+        &self,
+        evm: &mut GenesisEvm,
+        owner: Address,
+    ) -> eyre::Result<Option<Address>> {
+        if self.top_of_block_operators.is_empty() {
+            return Ok(None);
+        }
+        let operators = self
+            .top_of_block_operators
+            .iter()
+            .map(|value| {
+                let (key, ip) = value
+                    .split_once('@')
+                    .ok_or_else(|| eyre!("expected `<public key>@<ip>`, got `{value}`"))?;
+                Ok(TopOfBlockRegistry::Operator {
+                    publicKey: key.parse().wrap_err("public key is not 32 hex bytes")?,
+                    ip: ip.parse::<std::net::IpAddr>()?.to_string(),
+                    expiresAt: 0,
+                    maxTxsPerBlock: 1000,
+                    maxGasPerBlock: 100_000_000,
+                })
+            })
+            .collect::<eyre::Result<Vec<_>>>()?;
+        deploy_top_of_block_registry(evm, owner, self.top_of_block_window_ms, &operators).map(Some)
     }
 
     fn resolved_mnemonic(&self) -> eyre::Result<String> {

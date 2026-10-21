@@ -20,7 +20,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-
         --bin tempo --features "${RUST_FEATURES},localnet" \
         --bin tempo-localnet --features "${RUST_FEATURES},localnet" \
         --bin tempo-sidecar \
-        --bin tempo-xtask
+        --bin tempo-xtask \
+        --bin tempo-tob-operator
 
 # Reuse the regular build artifacts, enabling custom PCRs only for the devnet binary.
 FROM builder AS devnet-builder
@@ -49,6 +50,8 @@ ENTRYPOINT ["/usr/local/bin/tempo"]
 FROM base AS tempo-devnet
 ARG RUST_PROFILE=profiling
 COPY --from=devnet-builder /app/target/${RUST_PROFILE}/tempo /usr/local/bin/tempo
+# Reference top-of-block operator (TIP-1147) for devnets.
+COPY --from=builder /app/target/${RUST_PROFILE}/tempo-tob-operator /usr/local/bin/tempo-tob-operator
 ENTRYPOINT ["/usr/local/bin/tempo"]
 
 # tempo-localnet
