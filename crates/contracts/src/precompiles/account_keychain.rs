@@ -12,7 +12,7 @@ crate::sol! {
     /// Account Keychain interface for managing authorized keys
     ///
     /// This precompile allows accounts to authorize secondary keys with:
-    /// - Different signature types (secp256k1, P256, WebAuthn)
+    /// - Different signature types (secp256k1, P256, WebAuthn, ConfigurableAccount)
     /// - Expiry times for key rotation
     /// - Per-token spending limits for security
     ///
