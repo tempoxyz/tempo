@@ -210,7 +210,7 @@ fn delegate_grants_are_guarded_from_t14() {
                     granted,
                     "{spec}, {entrypoint}, {case:?}"
                 );
-                if !granted && delegate != PARENT {
+                if !granted {
                     assert_eq!(
                         key_expiry(&mut storage, delegate),
                         0,
