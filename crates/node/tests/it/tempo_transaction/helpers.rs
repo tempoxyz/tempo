@@ -25,8 +25,8 @@ use tempo_precompiles::tip20::ITIP20::{self, transferCall};
 use tempo_primitives::{
     SignatureType, TempoTransaction,
     transaction::{
-        CallScope, KeyAuthorization, SelectorRule, SignedKeyAuthorization,
-        TEMPO_EXPIRING_NONCE_KEY, TokenLimit,
+        CallScope, FEE_PAYER_SIGNATURE_MARKER, KeyAuthorization, SelectorRule,
+        SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, TokenLimit,
         tempo_transaction::Call,
         tt_signature::{
             KeychainSignature, P256SignatureWithPreHash, PrimitiveSignature, TempoSignature,
@@ -922,11 +922,12 @@ pub(crate) async fn assert_batch_recipient_balances(
 
 /// Raises the gas limit of a transaction that a fee payer is about to sign.
 ///
-/// `eth_fillTransaction` estimates without a fee payer, so its gas limit lacks the charge for the
-/// sponsor's account access: from T14 a fee payer signature reads the sponsor's account to check
-/// that its root key is still active, which costs one cold account access. Before T14 the extra
-/// limit only goes unused.
-pub(crate) fn add_fee_payer_access_gas(tx: &mut TempoTransaction) {
+/// From T14 a fee payer signature costs one cold account access: the sponsor's account is read to
+/// check that its root key is still active. Callers that take their gas limit from the RPC send
+/// [`FEE_PAYER_SIGNATURE_MARKER`] with the request instead
+/// (see [`fill_sponsored_gas_limit`]), so the estimate includes that charge; this is for callers
+/// that set the limit by hand. Before T14 the extra limit only goes unused.
+fn add_fee_payer_access_gas(tx: &mut TempoTransaction) {
     tx.gas_limit += COLD_ACCOUNT_ACCESS_COST;
 }
 
@@ -1269,6 +1270,51 @@ pub(crate) async fn fill_transaction_from_case(
     let tx = parse_filled_tx(&filled)?;
 
     Ok((tx, request_context))
+}
+
+/// Fills `request` with `eth_fillTransaction`.
+pub(crate) async fn fill_request(
+    provider: &impl Provider,
+    request: &TempoTransactionRequest,
+) -> eyre::Result<TempoTransaction> {
+    let filled = legacy_compat::raw_request(provider, "eth_fillTransaction", request)
+        .await
+        .map_err(normalize_tempo_rpc_error)?;
+    parse_filled_tx(&filled)
+}
+
+/// The request for `test_case` when a fee payer that has not signed yet sponsors it: it carries
+/// [`FEE_PAYER_SIGNATURE_MARKER`]. Only T14 and later accept the marker.
+pub(crate) fn sponsored_fill_request(
+    test_case: &FillTestCase,
+    signer_addr: Address,
+    current_timestamp: u64,
+    max_expiry_secs: u64,
+) -> TempoTransactionRequest {
+    let mut request = build_fill_request_context(
+        test_case,
+        signer_addr,
+        Address::random(),
+        current_timestamp,
+        max_expiry_secs,
+    )
+    .request;
+    request.set_fee_payer_signature(FEE_PAYER_SIGNATURE_MARKER);
+    request
+}
+
+/// The gas limit `eth_fillTransaction` returns for the sponsored request of `test_case`, which
+/// includes the fee payer's cold account access.
+pub(crate) async fn fill_sponsored_gas_limit(
+    provider: &impl Provider,
+    test_case: &FillTestCase,
+    signer_addr: Address,
+    current_timestamp: u64,
+    max_expiry_secs: u64,
+) -> eyre::Result<u64> {
+    let request =
+        sponsored_fill_request(test_case, signer_addr, current_timestamp, max_expiry_secs);
+    Ok(fill_request(provider, &request).await?.gas_limit)
 }
 
 pub(crate) fn assert_fill_request_expectations(

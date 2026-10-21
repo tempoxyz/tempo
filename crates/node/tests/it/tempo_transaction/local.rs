@@ -4,7 +4,7 @@
 //! which spins up an in-process node with direct pool/block access, plus tests
 //! that require pool introspection or controlled block mining.
 
-use super::types::TestEnv;
+use super::types::{FillTestCase, KeyType, NonceMode, TestEnv};
 use crate::utils::{ForkSchedule, SingleNodeSetup, TestNodeBuilder};
 use alloy::{
     consensus::{BlockHeader, Transaction},
@@ -16,12 +16,13 @@ use alloy::{
     sol_types::SolCall,
 };
 use alloy_eips::Encodable2718;
-use eyre::{OptionExt, WrapErr};
+use eyre::{OptionExt, WrapErr, eyre};
 use reth_e2e_test_utils::wallet::test_signer;
 use reth_ethereum::network::{NetworkSyncUpdater, SyncState};
 use reth_node_api::BuiltPayload;
 use reth_primitives_traits::transaction::TxHashRef;
 use reth_provider::{AccountReader, StateProviderFactory};
+use reth_revm::context_interface::cfg::gas::COLD_ACCOUNT_ACCESS_COST;
 use reth_transaction_pool::TransactionPool;
 use tempo_alloy::{TempoNetwork, provider::TempoProviderBuilderExt, rpc::TempoTransactionReceipt};
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
@@ -351,6 +352,105 @@ async fn test_fill_uses_fee_token_gas_allowance() -> eyre::Result<()> {
         .ok_or_eyre("filled transaction is not AA")?
         .tx();
     assert_eq!(tx.gas_limit, 1);
+    Ok(())
+}
+
+/// From T14 a fee payer signature costs one cold account access. `TempoGasFiller` estimates a
+/// sponsored request without the fee payer marker, so it must add that access itself: the filled
+/// gas limit equals the node's estimate for the marked request, and the fee payer's transaction
+/// with that limit is included.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_gas_filler_fills_the_fee_payer_access_at_t14() -> eyre::Result<()> {
+    let mut env = Localnet::new().await?;
+    assert!(env.hardfork().is_t14(), "the devnet schedule starts at T14");
+    let signer = PrivateKeySigner::random();
+    let fee_payer_signer = PrivateKeySigner::random();
+    env.fund_account(fee_payer_signer.address()).await?;
+    let current_timestamp = env.current_block_timestamp().await?;
+    let test_case = FillTestCase::new(NonceMode::Protocol, KeyType::Secp256k1);
+    let mut request = sponsored_fill_request(
+        &test_case,
+        signer.address(),
+        current_timestamp,
+        env.hardfork().expiring_nonce_max_expiry_secs(),
+    );
+    request.set_fee_token(DEFAULT_FEE_TOKEN);
+
+    let provider = env.setup.node.rpc_provider_for::<TempoNetwork>();
+    let filled = provider.fill(request.clone()).await?;
+    let filled = filled
+        .as_builder()
+        .ok_or_eyre("the filler built the transaction")?
+        .clone();
+
+    let unsponsored_estimate = estimate_gas(
+        &env.provider,
+        &TempoTransactionRequest {
+            fee_payer_signature: None,
+            ..request.clone()
+        },
+    )
+    .await?;
+    let sponsored_estimate = estimate_gas(&env.provider, &request).await?;
+    assert_eq!(
+        sponsored_estimate,
+        unsponsored_estimate + COLD_ACCOUNT_ACCESS_COST
+    );
+    assert_eq!(filled.inner.gas, Some(sponsored_estimate));
+
+    let mut tx = filled
+        .build_aa()
+        .map_err(|err| eyre!("failed to build the filled transaction: {err:?}"))?;
+    sign_fee_payer(&mut tx, signer.address(), &fee_payer_signer)?;
+    let signature = sign_aa_tx_secp256k1(&tx, &signer)?;
+    let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+    let receipt = env
+        .submit_tx(envelope.encoded_2718(), *envelope.tx_hash())
+        .await?;
+    assert_eq!(receipt["status"], "0x1");
+    Ok(())
+}
+
+/// `SponsorFiller` marks a request only when it fills, after `TempoGasFiller` prepared in the same
+/// round. A request that carries its chain id, as `ChainIdFiller` sets it from its cache on every
+/// request after a provider's first, is prepared in that first round, so the gas filler must add
+/// the fee payer access when it fills: a provider built with `sponsor` fills the node's estimate
+/// for the marked request.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_sponsor_provider_fills_the_fee_payer_access_at_t14() -> eyre::Result<()> {
+    let mut env = Localnet::new().await?;
+    assert!(env.hardfork().is_t14(), "the devnet schedule starts at T14");
+    let signer = PrivateKeySigner::random();
+    let current_timestamp = env.current_block_timestamp().await?;
+    let test_case = FillTestCase::new(NonceMode::Protocol, KeyType::Secp256k1);
+    let mut marked = sponsored_fill_request(
+        &test_case,
+        signer.address(),
+        current_timestamp,
+        env.hardfork().expiring_nonce_max_expiry_secs(),
+    );
+    marked.set_fee_token(DEFAULT_FEE_TOKEN);
+    marked.inner.chain_id = Some(env.chain_id);
+    let request = TempoTransactionRequest {
+        fee_payer_signature: None,
+        ..marked.clone()
+    };
+
+    let rpc_url = env.setup.node.rpc_url();
+    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+        .sponsor(rpc_url.as_str())
+        .connect(rpc_url.as_str())
+        .await?;
+    let filled = provider.fill(request).await?;
+    let filled = filled
+        .as_builder()
+        .ok_or_eyre("the filler built the transaction")?;
+
+    assert_eq!(filled.fee_payer_signature, marked.fee_payer_signature);
+    assert_eq!(
+        filled.inner.gas,
+        Some(estimate_gas(&env.provider, &marked).await?)
+    );
     Ok(())
 }
 

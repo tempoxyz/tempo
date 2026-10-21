@@ -490,19 +490,19 @@ impl TempoConsensusSpec for TempoChainSpec {
 
 #[cfg(test)]
 mod tests {
-    use super::{Genesis, TempoChainSpec};
+    use super::{DEV, Genesis, TempoChainSpec};
     use crate::{
         TempoHardfork,
         spec::{TEMPO_T1_BASE_FEE, TEMPO_T7_BASE_FEE_CAP, TEMPO_T7_BASE_FEE_FLOOR, TempoHardforks},
     };
-    use alloy_primitives::hex;
+    use alloy_primitives::{Address, B256, U256, hex};
     use commonware_codec::Encode as _;
-    use reth_chainspec::EthChainSpec;
+    use reth_chainspec::{ChainSpec, EthChainSpec};
     #[cfg(feature = "cli")]
     use reth_chainspec::{ForkCondition, Hardforks};
     #[cfg(feature = "cli")]
     use reth_cli::chainspec::ChainSpecParser as _;
-    use serde_json::from_str;
+    use serde_json::{from_str, json};
     use tempo_primitives::Header;
 
     #[test]
@@ -1111,5 +1111,40 @@ mod tests {
 
             assert_eq!(spec.chain(), resolved.chain(), "chain mismatch for {name}");
         }
+    }
+
+    #[test]
+    fn configurable_account_recovery_factory_genesis_reservation() {
+        let factory = Address::repeat_byte(0x71);
+        let mut genesis = DEV.genesis().clone();
+        genesis
+            .config
+            .extra_fields
+            .insert("t14Time".into(), json!(0));
+        genesis
+            .config
+            .extra_fields
+            .insert("configurableAccountRecoveryFactory".into(), json!(factory));
+        let account = genesis.alloc.entry(factory).or_default();
+        account.balance = U256::from(42);
+        account.nonce = Some(7);
+        account.storage = Some([(B256::ZERO, B256::repeat_byte(9))].into());
+        let spec = TempoChainSpec::from_genesis(genesis.clone());
+        let account = &spec.genesis().alloc[&factory];
+        assert_eq!(account.balance, U256::from(42));
+        assert_eq!(account.nonce, Some(7));
+        assert_eq!(account.code.as_ref().unwrap().as_ref(), &[0xef]);
+        assert_eq!(
+            account.storage.as_ref().unwrap()[&B256::ZERO],
+            B256::repeat_byte(9)
+        );
+        assert_eq!(
+            spec.info.configurable_account_recovery_factory(),
+            Some(factory)
+        );
+        assert_ne!(
+            spec.genesis_header().inner.state_root,
+            ChainSpec::from_genesis(genesis).genesis_header().state_root
+        );
     }
 }
