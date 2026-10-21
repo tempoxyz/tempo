@@ -15,27 +15,7 @@ impl Precompile for AccountKeychain {
             return err;
         }
 
-        // From T11 the strict ABI decoder reverts on an out-of-range `signatureType`; until T14,
-        // value 3 reverts the same way. Every authorization entrypoint puts `signatureType` in its
-        // second ABI word.
-        if self.storage.spec().is_t11()
-            && !self.storage.spec().is_t14()
-            && [
-                IAccountKeychain::authorizeKey_0Call::SELECTOR,
-                IAccountKeychain::authorizeKey_1Call::SELECTOR,
-                IAccountKeychain::authorizeKey_2Call::SELECTOR,
-                IAccountKeychain::authorizeAdminKeyCall::SELECTOR,
-            ]
-            .iter()
-            .any(|selector| calldata.starts_with(selector))
-            && calldata.get(36..68)
-                == Some(
-                    B256::with_last_byte(
-                        IAccountKeychain::SignatureType::ConfigurableAccount as u8,
-                    )
-                    .as_slice(),
-                )
-        {
+        if self.rejects_configurable_account_type(calldata) {
             return Ok(self.storage.revert_output(Bytes::new()));
         }
 
@@ -119,6 +99,33 @@ impl Precompile for AccountKeychain {
                 }
             }
         )
+    }
+}
+
+impl AccountKeychain {
+    /// Whether `calldata` authorizes a ConfigurableAccount key on a fork that rejects the type.
+    ///
+    /// From T11 the strict ABI decoder reverts on an out-of-range `signatureType`; until T14,
+    /// value 3 reverts the same way. Every authorization entrypoint puts `signatureType` in its
+    /// second ABI word.
+    fn rejects_configurable_account_type(&self, calldata: &[u8]) -> bool {
+        self.storage.spec().is_t11()
+            && !self.storage.spec().is_t14()
+            && [
+                IAccountKeychain::authorizeKey_0Call::SELECTOR,
+                IAccountKeychain::authorizeKey_1Call::SELECTOR,
+                IAccountKeychain::authorizeKey_2Call::SELECTOR,
+                IAccountKeychain::authorizeAdminKeyCall::SELECTOR,
+            ]
+            .iter()
+            .any(|selector| calldata.starts_with(selector))
+            && calldata.get(36..68)
+                == Some(
+                    B256::with_last_byte(
+                        IAccountKeychain::SignatureType::ConfigurableAccount as u8,
+                    )
+                    .as_slice(),
+                )
     }
 }
 
