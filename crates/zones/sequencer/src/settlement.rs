@@ -139,7 +139,12 @@ const DEFAULT_ANCESTRY_HEADER_CACHE_CAPACITY: u32 = 262_144;
 const SUBMIT_BATCH_GAS_LIMIT: u64 = 2_000_000;
 
 /// Withdrawal gas a settlement transaction may reserve on top of [`SUBMIT_BATCH_GAS_LIMIT`].
-/// Block builders count declared gas and settlement bids no tip, so larger slots could starve it.
+///
+/// The planner budget is an operator knob that grows with user-supplied callback gas, so
+/// settlement liveness must not depend on it. Block builders account a transaction by its declared
+/// gas limit and settlement bids no priority fee, so an oversized combined transaction could be
+/// starved by paying traffic. This keeps it at or below 6M gas; larger slots stay on the
+/// standalone processor.
 const MAX_ATOMIC_WITHDRAWAL_GAS: u64 = 4_000_000;
 
 /// Maximum number of pending withdrawal slots reconstructed in one recovery page.
