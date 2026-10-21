@@ -61,9 +61,10 @@ use tempo_primitives::{
     Block as TempoBlock, SignatureType, TempoHeader, TempoTxEnvelope,
     account::encode_config_commitment,
     transaction::{
-        AccountSignature, CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN, CallScope, KeyAuthorization,
-        KeychainSignature, KeychainVersion, SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY,
-        TempoSignedAuthorization, TokenLimit, calc_gas_balance_spending, derive_p256_address,
+        AccountSignature, CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN, CallScope,
+        ConfigurableAccountStateError, KeyAuthorization, KeychainSignature, KeychainVersion,
+        SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, TempoSignedAuthorization, TokenLimit,
+        calc_gas_balance_spending, derive_p256_address,
         tt_signature::{P256SignatureWithPreHash, WebAuthnSignature, normalize_p256_s},
     },
 };
@@ -5207,5 +5208,72 @@ fn native_signer_with_code_is_rejected() {
         TempoInvalidTransaction::ConfigurableAccount(ConfigurableAccountError::InvalidAccount {
             account
         })
+    );
+}
+
+/// A configurable-account signature adds its TIP-1114 verification cost `V - 3,000` to intrinsic
+/// gas, on top of the first-use account proof and the TIP-1108 registration write.
+#[test]
+fn native_signature_verification_is_intrinsic_gas() {
+    let calls = vec![Call {
+        to: TxKind::Call(Address::repeat_byte(0x44)),
+        value: U256::ZERO,
+        input: Bytes::new(),
+    }];
+    // The root and the configurable account both hold nonce 3, so no new-account cost differs.
+    let mut root = Fixture::with_parent(false);
+    let tx = root.primitive(3, calls.clone());
+    let primitive = root.run(&tx);
+    assert!(primitive.status, "{primitive:?}");
+
+    let mut f = Fixture::new();
+    let witness = [alloy_rlp::encode(f.account), alloy_rlp::encode(&f.config)].concat();
+    let tx = f.signed(3, calls);
+    let native = f.run(&tx);
+    assert!(native.status, "{native:?}");
+    assert!(!f.commitment().is_zero());
+
+    let calldata: u64 = witness
+        .iter()
+        .map(|byte| if *byte == 0 { 4 } else { 16 })
+        .sum();
+    // V - 3,000: witness calldata, commitment K(75 + 21), digest K(96), approval 3,000 - 3,000.
+    let verification = calldata + keccak_cost(75 + 21).unwrap() + keccak_cost(96).unwrap();
+    // First use: derivation K(68 + 21) + K(85), plus the 20,000 registration write.
+    let first_use = keccak_cost(68 + 21).unwrap() + keccak_cost(85).unwrap() + 20_000;
+    assert_eq!(
+        native.tx_gas_used() - primitive.tx_gas_used(),
+        verification + first_use
+    );
+}
+
+/// A registered account signing with another configuration fails with the commitment mismatch
+/// that the account state reports, worded as the state error is.
+#[test]
+fn native_commitment_mismatch_reads_as_the_state_error() {
+    let mut f = Fixture::new();
+    let account = f.account;
+    let tx = f.signed(3, vec![f.getter()]);
+    let result = f.run(&tx);
+    assert!(result.status, "{result:?}");
+    let registered = f.commitment();
+
+    let stale = ConfigurableAccountConfig {
+        salt: B256::repeat_byte(0x5b),
+        ..f.config.clone()
+    };
+    let tx = configurable_account_signed_by(account, &stale, &f.owner, aa_tx(4, vec![f.getter()]));
+    let error = rejection(&mut f, &tx, account);
+    let TempoInvalidTransaction::ConfigurableAccount(
+        ConfigurableAccountError::ConfigurationCommitmentMismatch { expected, actual },
+    ) = error
+    else {
+        panic!("{error:?}");
+    };
+    assert_eq!(expected, registered);
+    assert_ne!(actual, registered);
+    assert_eq!(
+        error.to_string(),
+        ConfigurableAccountStateError::CommitmentMismatch { expected, actual }.to_string()
     );
 }
