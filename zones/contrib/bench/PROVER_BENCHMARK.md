@@ -35,8 +35,8 @@ benchmark host, which joins with its workload identity.
 
 ## Activation
 
-Manual runs need no enablement. Keep `ZONES_PROVER_NIGHTLY_ENABLED` unset until a
-manual run succeeds:
+No repository variables gate these workflows, so the nightly starts as soon as this
+lands. After it lands:
 
 1. Dispatch a smoke run:
 
@@ -52,5 +52,5 @@ manual run succeeds:
    benchmark Grafana folder and verify the **manual** series against the artifact. An
    import HTTP success does not verify that the Grafana read datasource is connected to
    the same storage. No-data panels are not zero latency.
-3. Set `ZONES_PROVER_NIGHTLY_ENABLED=true`, then verify the first nightly's Grafana
-   series and Slack delivery; unit tests do not replace that check.
+3. Verify the first nightly's Grafana series and Slack delivery; unit tests do not
+   replace that check.
