@@ -27,9 +27,10 @@ end-to-end rows decide whether results post to the Slack channel, and only on th
 p95: journeys cluster around block-timing values, so a raw percentile can jump between
 clusters with no code change. `bench-zones-classify.js` rebuilds each journey's latency
 from the traced instances in both phases' `report.json` and counts a p95 change only when
-it clears its 95% bootstrap CI plus a 2% floor. Runs with fewer than 100 journeys get no
-verdict, since their p95 is one of the slowest few journeys. A run whose baseline and feature are the same
-commit never posts to the channel.
+it clears its 95% bootstrap CI plus a 2% floor. Runs are reported as Unclassified when
+journeys are missing traces or number under 100 (the p95 is one of the slowest few) or over
+1000 (the trace cap). A run whose baseline and feature are the same commit never posts to
+the channel.
 
 Results update the PR comment. Slack uses `bench-slack-notify.js` like the other
 benchmarks: results post to `SLACK_BENCH_CHANNEL` when a latency improves

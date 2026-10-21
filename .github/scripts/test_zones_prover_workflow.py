@@ -191,9 +191,9 @@ class ReportingTests(unittest.TestCase):
                 ("clustered noise", base, noise, "No Significant Change", SHA),
                 ("within floor", base, traced_report(DEPOSIT_MS * 10, withdrawal=1970.0), "No Significant Change", SHA),
                 ("tight row beyond floor", base, traced_report(DEPOSIT_MS * 10, withdrawal=1900.0), "Improvement", SHA),
-                ("under 100 journeys", scaled(1, 2), scaled(0.5, 2), "No Significant Change", SHA),
-                ("partial traces", base, dict(scaled(0.6), completed=200), "No Significant Change", SHA),
-                ("missing traces", None, None, "No Significant Change", SHA)):
+                ("under 100 journeys", scaled(1, 2), scaled(0.5, 2), "Unclassified", SHA),
+                ("partial traces", base, dict(scaled(0.6), completed=200), "Unclassified", SHA),
+                ("missing traces", None, None, "Unclassified", SHA)):
             with self.subTest(name):
                 comparison = {"rows": rows, "metadata": {
                     "baseline": OTHER_SHA, "feature": feature_sha, "prover": True, "preset": "full-journey",

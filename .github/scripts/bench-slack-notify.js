@@ -629,7 +629,8 @@ async function replayFailure({ core, context, failedStep }) {
 
 function buildZonesSuccessBlocks({ comparison, changes, prNumber, actor, actorSlackId, jobUrl, repo }) {
   const { metadata, latencies } = comparison;
-  const verdict = verdictFromChanges(changes, 'No Significant Change');
+  // No scored row (missing or partial traces, under 100 journeys) is not a measured no-change.
+  const verdict = verdictFromChanges(changes, Object.keys(changes).length ? 'No Significant Change' : 'Unclassified');
   const commitUrl = `https://github.com/${repo}/commit`;
   const metaParts = [];
   if (prNumber) metaParts.push(`*<https://github.com/${repo}/pull/${prNumber}|PR #${prNumber}>*`);
