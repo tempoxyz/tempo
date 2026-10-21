@@ -9,11 +9,18 @@ use alloy::{
     transports::TransportError,
 };
 use alloy_eips::{BlockId, BlockNumberOrTag, Decodable2718, eip7702::Authorization};
+use evm2::registry::HandlerError;
 use eyre::OptionExt;
 use futures::{FutureExt, StreamExt};
-use jsonrpsee::types::ErrorObject;
+use jsonrpsee::types::{ErrorObject, error::INVALID_PARAMS_CODE};
 use reth_e2e_test_utils::{node::Finality, wait::WAIT_TIMEOUT};
-use reth_ethereum::pool::{TransactionEvent, TransactionPool};
+use reth_ethereum::{
+    pool::{
+        TransactionEvent, TransactionOrigin, TransactionPool,
+        error::{PoolError, PoolErrorKind},
+    },
+    primitives::SignerRecoverable,
+};
 use reth_node_builder::BuiltPayload;
 use reth_rpc_eth_types::{EthApiError, RpcInvalidTransactionError};
 use serde_json::{from_value, json};
@@ -27,6 +34,7 @@ use tempo_primitives::{
         SignedKeyAuthorization, TempoSignedAuthorization, TokenLimit, calc_gas_balance_spending,
     },
 };
+use tempo_transaction_pool::transaction::TempoPoolTransactionError;
 use tokio::time::timeout;
 
 /// What a pending transaction needs from the root key of an account that migrates.
@@ -311,9 +319,8 @@ async fn configurable_account_rpc_historical_state_and_account_overrides() -> ey
         .latest()
         .overrides(code_override)
         .await
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("code"), "{error}");
+        .unwrap_err();
+    assert_rpc_error_code(&error, INVALID_PARAMS_CODE)?;
     assert_eq!(commitment(&env, account.address).await?, current);
     assert_eq!(
         env.provider()
@@ -405,12 +412,8 @@ async fn configurable_account_rpc_fill_and_access_list_preserve_authority() -> e
         assert!(filled["tx"].get(field).is_none(), "{filled}");
     }
     request.key_authorization_simulation = request.configurable_account_simulation.clone();
-    let error = provider
-        .fill_transaction(request)
-        .await
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("real signed grant"), "{error}");
+    let error = provider.fill_transaction(request).await.unwrap_err();
+    assert_rpc_error_code(&error, INVALID_PARAMS_CODE)?;
     assert_eq!(commitment(&env, account.address).await?, B256::ZERO);
     tx.gas_limit = estimate;
     let signature = account.sign(&tx)?;
@@ -553,15 +556,30 @@ async fn configurable_account_rpc_maximum_mixed_quorums_and_validation_cost_orde
     // approval of the grant signs the wrong digest, so the funded rejection reaches check 16.
     let mut low_gas = tx.clone();
     low_gas.gas_limit = 21_000;
-    let error = reject(
-        &env,
-        low_gas.clone(),
-        delegate.as_delegate(&low_gas, parent.address, false)?,
-    )
-    .await?;
+    let signature = delegate.as_delegate(&low_gas, parent.address, false)?;
+    let low_gas: TempoTxEnvelope = low_gas.into_signed(signature).into();
+    let PoolError {
+        kind: PoolErrorKind::InvalidTransaction(error),
+        ..
+    } = env
+        .setup
+        .node
+        .inner
+        .pool
+        .add_consensus_transaction(low_gas.try_into_recovered()?, TransactionOrigin::External)
+        .await
+        .unwrap_err()
+    else {
+        panic!("the pool must reject the transaction as invalid");
+    };
     assert!(
-        error.contains("intrinsic") || error.contains("gas limit"),
-        "{error}"
+        matches!(
+            error.downcast_other_ref::<TempoPoolTransactionError>(),
+            Some(TempoPoolTransactionError::Evm(
+                HandlerError::IntrinsicGasTooLow { .. }
+            ))
+        ),
+        "{error:?}"
     );
     let error = rejection(
         &env,
