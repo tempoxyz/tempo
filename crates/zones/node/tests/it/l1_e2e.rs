@@ -2729,7 +2729,7 @@ async fn test_rpc_node_relays_deposit_allowlist_to_every_sequencer() -> eyre::Re
             .as_error_resp()
             .unwrap()
             .code,
-        jsonrpsee::types::error::INVALID_PARAMS_CODE,
+        i64::from(jsonrpsee::types::error::INVALID_PARAMS_CODE),
     );
     let error = error.to_string();
     assert_eq!(
