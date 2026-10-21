@@ -511,6 +511,7 @@ mod tests {
             let key_id = Address::random();
             StorageCtx::enter(&mut storage, || {
                 let mut keychain = AccountKeychain::new();
+                keychain.set_tx_origin(account)?;
                 keychain.authorize_key(
                     account,
                     key_id,
