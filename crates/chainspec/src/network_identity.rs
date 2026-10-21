@@ -6,20 +6,6 @@ use commonware_cryptography::bls12381::primitives::variant::{MinSig, Variant};
 use eyre::Context;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 
-const TESTNET_NETWORK_IDENTITY_EPOCH: u64 = 1747;
-const TESTNET_NETWORK_IDENTITY: [u8; 96] = hex!(
-    "0x967ae1a6d3ddbe5cb0fe5e6fc58e74249787b4a277619b549fed6609d0466054"
-    "0dd2449cd7174def35e40f544e5ad72d15d064191a205ed6e0c49619c68f9751"
-    "08b614d0d51def9a8416a10a07c4193bea0cbbc4252ec1b33f21095a5d7aa590"
-);
-
-const MAINNET_NETWORK_IDENTITY_EPOCH: u64 = 2042;
-const MAINNET_NETWORK_IDENTITY: [u8; 96] = hex!(
-    "0x8627d33753b0d90a8eae75363d6b393ab9204076545b3af6caf831903e4bedde"
-    "4374f1106551b481fb5ea35e59d51c92165c963881c718216e3e4570a307c088"
-    "85af55c274f19488f709afe021ca3d9e567138ab097860d9146e895407bea182"
-);
-
 /// This holds the key that is known to be active. The genesis-derived
 /// value must be updated with a newer identity after a full DKG rotation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,23 +18,11 @@ pub struct NetworkIdentity {
 
 impl NetworkIdentity {
     pub(crate) fn mainnet() -> Self {
-        let identity = <MinSig as Variant>::Public::read(&mut MAINNET_NETWORK_IDENTITY.as_ref())
-            .expect("valid network identity");
-
-        Self {
-            identity,
-            from_epoch: MAINNET_NETWORK_IDENTITY_EPOCH,
-        }
+        Self::from_json(include_str!("../../../mainnet-network-identity.json"))
     }
 
     pub(crate) fn testnet() -> Self {
-        let identity = <MinSig as Variant>::Public::read(&mut TESTNET_NETWORK_IDENTITY.as_ref())
-            .expect("valid network identity");
-
-        Self {
-            identity,
-            from_epoch: TESTNET_NETWORK_IDENTITY_EPOCH,
-        }
+        Self::from_json(include_str!("../../../testnet-network-identity.json"))
     }
 
     pub(crate) fn from_extra_data(extra_data: &[u8]) -> eyre::Result<Self> {
@@ -61,6 +35,26 @@ impl NetworkIdentity {
             identity: *outcome.network_identity(),
         })
     }
+
+    fn from_json(json: &str) -> Self {
+        let config = serde_json::from_str::<Config>(json).expect("valid network identity JSON");
+        let bytes = hex::decode_to_array::<_, 96>(config.identity)
+            .expect("network identity must be a 96-byte hex string");
+        let identity =
+            <MinSig as Variant>::Public::read(&mut bytes.as_ref()).expect("valid network identity");
+
+        Self {
+            identity,
+            from_epoch: config.from_epoch,
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Config {
+    from_epoch: u64,
+    identity: String,
 }
 
 #[cfg(test)]
@@ -69,57 +63,26 @@ mod tests {
     use commonware_codec::Encode as _;
 
     #[test]
-    fn compiled_identity_decodes() {
-        let identity = NetworkIdentity::testnet();
-
-        assert_eq!(identity.from_epoch, TESTNET_NETWORK_IDENTITY_EPOCH);
-        assert_eq!(
-            identity.identity.encode().as_ref(),
-            TESTNET_NETWORK_IDENTITY.as_ref()
-        );
-
-        let identity = NetworkIdentity::mainnet();
-
-        assert_eq!(identity.from_epoch, MAINNET_NETWORK_IDENTITY_EPOCH);
-        assert_eq!(
-            identity.identity.encode().as_ref(),
-            MAINNET_NETWORK_IDENTITY.as_ref()
-        );
-    }
-
-    #[test]
-    fn published_identities_match_compiled() {
-        let readme =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md"))
-                .expect("repository README must be readable");
-
-        for (network, epoch, identity) in [
+    fn compiled_identities_match_files() {
+        for (identity, json) in [
             (
-                "Mainnet",
-                MAINNET_NETWORK_IDENTITY_EPOCH,
-                MAINNET_NETWORK_IDENTITY,
+                NetworkIdentity::mainnet(),
+                include_str!("../../../mainnet-network-identity.json"),
             ),
             (
-                "Testnet (Moderato)",
-                TESTNET_NETWORK_IDENTITY_EPOCH,
-                TESTNET_NETWORK_IDENTITY,
+                NetworkIdentity::testnet(),
+                include_str!("../../../testnet-network-identity.json"),
             ),
         ] {
-            let (_, section) = readme
-                .split_once(&format!("**{network} — from epoch "))
-                .expect("network identity heading must be documented");
-            let (published_epoch, section) = section
-                .split_once("**\n\n```text\n")
-                .expect("network identity must follow its epoch");
-            let (published_identity, _) = section
-                .split_once("\n```")
-                .expect("network identity code block must be closed");
+            let published = serde_json::from_str::<serde_json::Value>(json).unwrap();
 
-            assert_eq!(published_epoch, epoch.to_string(), "{network} epoch");
             assert_eq!(
-                published_identity,
-                hex::encode_prefixed(identity),
-                "{network} identity"
+                identity.from_epoch,
+                published["from_epoch"].as_u64().unwrap()
+            );
+            assert_eq!(
+                hex::encode_prefixed(identity.identity.encode()),
+                published["identity"]
             );
         }
     }
