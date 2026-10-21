@@ -160,6 +160,35 @@ fn key_type_reverts_like_an_unknown_type_before_t14() {
     }
 }
 
+/// Between T11 and T14, authorization calldata that ends right after the key type word reverts
+/// with empty output, whether the type is 3 or an unknown 4: it fails the regular ABI decode.
+#[test]
+fn truncated_authorization_reverts_empty_between_t11_and_t14() {
+    let configurable_type = SignatureType::ConfigurableAccount as u8;
+    let unknown_type = configurable_type + 1;
+    for spec in TempoHardfork::VARIANTS
+        .iter()
+        .copied()
+        .filter(|spec| spec.is_t11() && !spec.is_t14())
+    {
+        let calls = authorization_calls(DELEGATE, SignatureType::ConfigurableAccount, u64::MAX);
+        for (entrypoint, calldata) in calls {
+            // Selector, `keyId` word and `signatureType` word.
+            let mut truncated = calldata[..68].to_vec();
+            let case = format!("{spec}, {entrypoint}");
+            let mut run = |signature_type: u8| {
+                truncated[67] = signature_type;
+                call_as_parent_in_evm(spec, &truncated)
+            };
+            let configurable = run(configurable_type);
+            let unknown = run(unknown_type);
+            assert!(configurable.is_revert(), "{case}");
+            assert!(configurable.bytes.is_empty(), "{case}");
+            assert_eq!(configurable, unknown, "{case}");
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DelegateCase {
     CodeFree,
