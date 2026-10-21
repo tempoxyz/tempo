@@ -220,7 +220,7 @@ jobs:
           policy: bench-e2e-multi-region
       # bench.yml checks PR commenters; dispatches and reruns must also come from members.
       - name: Check org membership
-        if: github.event_name != 'schedule'
+        if: github.event_name != 'schedule' || github.run_attempt != '1'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           TRIGGERING_ACTOR: ${{ github.triggering_actor }}
