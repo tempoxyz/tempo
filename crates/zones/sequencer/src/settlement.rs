@@ -72,6 +72,7 @@ use crate::nonce_keys::SUBMIT_BATCH_NONCE_KEY;
 #[derive(Debug)]
 pub enum BatchSubmitError {
     PortalAdvanced,
+    PortalPaused,
     PreparedAnchorInvalid(eyre::Report),
     /// The attestation was generated using a prover selected under a different L1 policy.
     ProverHardforkChanged {
@@ -93,6 +94,7 @@ impl fmt::Display for BatchSubmitError {
             Self::PortalAdvanced => {
                 formatter.write_str("portal already committed the batch height")
             }
+            Self::PortalPaused => formatter.write_str("portal is paused"),
             Self::PreparedAnchorInvalid(error) => error.fmt(formatter),
             Self::ProverHardforkChanged { proved, current } => write!(
                 formatter,
@@ -107,7 +109,7 @@ impl std::error::Error for BatchSubmitError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::PreparedAnchorInvalid(error) | Self::Other(error) => Some(error.as_ref()),
-            Self::PortalAdvanced | Self::ProverHardforkChanged { .. } => None,
+            Self::PortalAdvanced | Self::PortalPaused | Self::ProverHardforkChanged { .. } => None,
         }
     }
 }
@@ -294,6 +296,16 @@ impl BatchSubmitter {
         &self.l1_provider
     }
 
+    /// Returns whether the active portal runtime blocks settlement while paused.
+    pub(crate) async fn settlement_paused(&self) -> Result<bool> {
+        if active_l1_hardfork(&self.l1_provider, self.chain_spec.as_ref()).await?
+            < TempoHardfork::T14
+        {
+            return Ok(false);
+        }
+        Ok(self.portal.paused().call().await?)
+    }
+
     /// Create a batch submitter without a certificate signer.
     ///
     /// This is useful for read-only operations and tests. Batch submission returns an error.
@@ -411,6 +423,18 @@ impl BatchSubmitter {
                 proved,
                 current: active,
             });
+        }
+        // Pre-T14 portals allow settlement while paused. Remove this gate after every supported
+        // L1 network has activated T14.
+        if active >= TempoHardfork::T14
+            && self
+                .portal
+                .paused()
+                .call()
+                .await
+                .map_err(|error| BatchSubmitError::Other(error.into()))?
+        {
+            return Err(BatchSubmitError::PortalPaused);
         }
         let settlement_abi = SettlementAbi::from_hardfork(active);
         let batch = &prepared.batch;

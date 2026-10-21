@@ -223,8 +223,14 @@ where
         // Subscribe before reading the head so a block persisted during startup cannot be missed.
         let mut persisted = self.provider.persisted_block_stream();
         let mut fallback = tokio::time::interval(self.config.poll_interval);
+        fallback.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
+            if read_settlement_paused(&self.batch_submitter, &self.metrics).await != Some(false) {
+                debug!("Portal settlement is unavailable; batch preparation is idle");
+                tokio::time::sleep(self.config.poll_interval).await;
+                continue;
+            }
             self.process_available_blocks(&ready_tx).await?;
 
             tokio::select! {
@@ -391,7 +397,7 @@ impl<P: ZoneSequencerProvider> ZoneMonitor<P> {
                         let Some(ready) = ready else {
                             return Err(eyre::eyre!("batch preparation channel closed"));
                         };
-                        self.submit_ready_batch(ready).await?;
+                        self.submit_ready_batch(ready, shutdown).await?;
                     }
                 }
             }
@@ -718,7 +724,11 @@ impl<P: ZoneSequencerProvider> ZoneMonitor<P> {
     /// A portal mismatch or exhausted retries invalidates the pipeline so the monitor can restart
     /// from portal-confirmed state. The verifier mode, proof, and certificate stay fixed across
     /// retries.
-    async fn submit_ready_batch(&mut self, ready: ReadyBatch) -> Result<()> {
+    async fn submit_ready_batch(
+        &mut self,
+        ready: ReadyBatch,
+        shutdown: &sync::CancellationToken,
+    ) -> Result<()> {
         let ReadyBatch {
             prepared,
             proof,
@@ -730,7 +740,8 @@ impl<P: ZoneSequencerProvider> ZoneMonitor<P> {
         let last_zone_block = batch_data.zone_height;
         let mut delay = INITIAL_RETRY_DELAY;
 
-        for attempt in 1..=MAX_RETRIES {
+        let mut attempt = 1;
+        while attempt <= MAX_RETRIES {
             // A prior transaction may have landed even if its receipt timed out. Check the portal
             // before each attempt and rebuild the whole pipeline if its predecessor has changed.
             let portal_hash = match self.batch_submitter.read_portal_block_hash().await {
@@ -747,6 +758,7 @@ impl<P: ZoneSequencerProvider> ZoneMonitor<P> {
                         );
                         tokio::time::sleep(delay).await;
                         delay *= 2;
+                        attempt += 1;
                         continue;
                     }
                     self.metrics.batch_submit_failure_total.increment(1);
@@ -860,6 +872,20 @@ impl<P: ZoneSequencerProvider> ZoneMonitor<P> {
                     self.metrics.prover_hardfork_rebuild_total.increment(1);
                     return Err(error.into());
                 }
+                Err(BatchSubmitError::PortalPaused) => {
+                    loop {
+                        match read_settlement_paused(&self.batch_submitter, &self.metrics).await {
+                            Some(false) => break,
+                            Some(true) => debug!("Portal is paused; batch submission is idle"),
+                            None => {}
+                        }
+                        tokio::select! {
+                            () = shutdown.cancelled() => return Ok(()),
+                            () = tokio::time::sleep(self.config.poll_interval) => {}
+                        }
+                    }
+                    continue;
+                }
                 Err(BatchSubmitError::Other(error)) => {
                     self.metrics
                         .batch_submit_latency_seconds
@@ -913,6 +939,7 @@ impl<P: ZoneSequencerProvider> ZoneMonitor<P> {
                     }
                 }
             }
+            attempt += 1;
         }
 
         Err(eyre::eyre!(
@@ -939,6 +966,20 @@ impl<P: ZoneSequencerProvider> ZoneMonitor<P> {
 
     fn submitted_zone_block(&self) -> u64 {
         self.submitted_zone_block.load(Ordering::Relaxed)
+    }
+}
+
+async fn read_settlement_paused(
+    batch_submitter: &BatchSubmitter,
+    metrics: &crate::metrics::ZoneMonitorMetrics,
+) -> Option<bool> {
+    match batch_submitter.settlement_paused().await {
+        Ok(paused) => Some(paused),
+        Err(error) => {
+            metrics.portal_pause_read_failure_total.increment(1);
+            warn!(%error, "Failed reading portal pause state, retrying");
+            None
+        }
     }
 }
 
@@ -1252,7 +1293,10 @@ mod tests {
         assert_eq!(ready.verifier_mode, VerifierMode::NoProof);
         assert!(ready.proof.is_none());
 
-        let error = monitor.submit_ready_batch(ready).await.unwrap_err();
+        let error = monitor
+            .submit_ready_batch(ready, &sync::CancellationToken::new())
+            .await
+            .unwrap_err();
 
         assert!(
             error
@@ -1399,7 +1443,10 @@ mod tests {
         assert_eq!(ready.verifier_mode, VerifierMode::NoProof);
         assert!(ready.proof.is_none());
 
-        let error = monitor.submit_ready_batch(ready).await.unwrap_err();
+        let error = monitor
+            .submit_ready_batch(ready, &sync::CancellationToken::new())
+            .await
+            .unwrap_err();
 
         assert!(
             error
@@ -1449,7 +1496,10 @@ mod tests {
             withdrawals: Vec::new(),
         };
 
-        let error = monitor.submit_ready_batch(ready).await.unwrap_err();
+        let error = monitor
+            .submit_ready_batch(ready, &sync::CancellationToken::new())
+            .await
+            .unwrap_err();
 
         assert!(matches!(
             error.downcast_ref::<BatchSubmitError>(),
@@ -1569,7 +1619,10 @@ mod tests {
         };
 
         let error = monitor
-            .submit_ready_batch(ready_batch(batch_data.clone()))
+            .submit_ready_batch(
+                ready_batch(batch_data.clone()),
+                &sync::CancellationToken::new(),
+            )
             .await
             .unwrap_err();
 
