@@ -86,4 +86,41 @@ mod tests {
             MAINNET_NETWORK_IDENTITY.as_ref()
         );
     }
+
+    #[test]
+    fn published_identities_match_compiled() {
+        let readme =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md"))
+                .expect("repository README must be readable");
+
+        for (network, epoch, identity) in [
+            (
+                "Mainnet",
+                MAINNET_NETWORK_IDENTITY_EPOCH,
+                MAINNET_NETWORK_IDENTITY,
+            ),
+            (
+                "Testnet (Moderato)",
+                TESTNET_NETWORK_IDENTITY_EPOCH,
+                TESTNET_NETWORK_IDENTITY,
+            ),
+        ] {
+            let (_, section) = readme
+                .split_once(&format!("**{network} — from epoch "))
+                .expect("network identity heading must be documented");
+            let (published_epoch, section) = section
+                .split_once("**\n\n```text\n")
+                .expect("network identity must follow its epoch");
+            let (published_identity, _) = section
+                .split_once("\n```")
+                .expect("network identity code block must be closed");
+
+            assert_eq!(published_epoch, epoch.to_string(), "{network} epoch");
+            assert_eq!(
+                published_identity,
+                hex::encode_prefixed(identity),
+                "{network} identity"
+            );
+        }
+    }
 }

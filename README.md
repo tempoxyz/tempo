@@ -167,10 +167,10 @@ Our contributor guidelines can be found in [`CONTRIBUTING.md`](https://github.co
 
 These BLS threshold public keys are built into Tempo nodes and used by both follow/RPC nodes and validators to verify consensus finalisation certificates, including those used to authenticate snapshots.
 
-**Mainnet — from epoch 0**
+**Mainnet — from epoch 2042**
 
 ```text
-0xa217bb85001d4dcf8e5c50136f77af88cb2cab1857279b91c6240f41cca95c4f43f6dcab3e0dfb87dafb3ecbeb6251e90a5df2e6c47432482821cd8b84665ee4642589d2d9628a92b03e2bbfb00e006d038cd98def76d2a41b7c228c05f5a193
+0x8627d33753b0d90a8eae75363d6b393ab9204076545b3af6caf831903e4bedde4374f1106551b481fb5ea35e59d51c92165c963881c718216e3e4570a307c08885af55c274f19488f709afe021ca3d9e567138ab097860d9146e895407bea182
 ```
 
 **Testnet (Moderato) — from epoch 1747**
