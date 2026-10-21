@@ -594,12 +594,7 @@ impl FromTxWithEncoded<TempoTxEnvelope> for TempoTxEnv {
     fn from_tx_with_encoded(tx: WithEncoded<Recovered<TempoTxEnvelope>>) -> Self {
         let is_simulation = tx.encoded_bytes().is_empty();
         let mut tx_env = Self::from_recovered_tx(tx.1);
-        // Configurable-account cryptography may only be skipped by an explicit simulation caller.
-        if is_simulation
-            && tx_env
-                .as_aa()
-                .is_none_or(|aa| aa.native_authorizations().iter().all(Option::is_none))
-        {
+        if is_simulation {
             tx_env.execution_context = ExecutionContext::Simulation;
         }
         tx_env

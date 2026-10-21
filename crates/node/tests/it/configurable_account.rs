@@ -17,9 +17,9 @@ use evm2::{
     bytecode::Bytecode,
     evm::{AccountInfo, InMemoryDB},
 };
-use reth_evm::{ConfigureEvm, EvmEnvFor};
+use reth_evm::{ConfigureEvm, EvmEnvFor, FromTxWithEncoded};
 use reth_primitives_traits::{Recovered, SignedTransaction};
-use reth_rpc_eth_api::TryIntoTxEnv;
+use reth_rpc_eth_api::{TryIntoSimTx, TryIntoTxEnv};
 use serde_json::{Value, from_str, from_value, json};
 use tempo_alloy::rpc::{
     ConfigurableAccountSimulationApproval, ConfigurableAccountSimulationSpec,
@@ -484,4 +484,101 @@ fn configurable_account_commitment_mismatch_reads_as_the_state_error() {
         error.to_string(),
         ConfigurableAccountStateError::CommitmentMismatch { expected, actual }.to_string()
     );
+}
+
+/// Each call of a simulated block is checked against the account state at its position: a
+/// configuration rotated by one call is stale for the next call that still names it.
+#[test]
+fn block_simulation_checks_each_call_against_its_position() {
+    let mut evm = evm(InMemoryDB::default());
+    let owner = PrivateKeySigner::random();
+    let rotated_owner = PrivateKeySigner::random();
+    let (config, account) = configurable_account(&owner);
+    let rotated = ConfigurableAccountConfig {
+        version: 1,
+        owners: vec![ConfigurableAccountOwner {
+            owner: rotated_owner.address(),
+            weight: 1,
+        }],
+        ..config.clone()
+    };
+    // Builds the call as reth's simulation does: an empty encoding marks it as simulated.
+    let sim =
+        |nonce: u64, config: &ConfigurableAccountConfig, approver: &PrivateKeySigner, to: Call| {
+            let request = TempoTransactionRequest {
+                inner: TransactionRequest {
+                    chain_id: Some(CHAIN_ID),
+                    from: Some(account),
+                    nonce: Some(nonce),
+                    gas: Some(5_000_000),
+                    max_fee_per_gas: Some(0),
+                    max_priority_fee_per_gas: Some(0),
+                    ..Default::default()
+                },
+                calls: vec![to],
+                fee_token: Some(PATH_USD_ADDRESS),
+                key_type: Some(SignatureType::ConfigurableAccount),
+                configurable_account_simulation: Some(ConfigurableAccountSimulationSpec {
+                    signer: None,
+                    config: config.clone(),
+                    approvals: vec![ConfigurableAccountSimulationApproval {
+                        owner: approver.address(),
+                        key_type: Some(SignatureType::Secp256k1),
+                        key_data: None,
+                    }],
+                }),
+                ..Default::default()
+            };
+            let tx = TryIntoSimTx::<TempoTxEnvelope>::try_into_sim_tx(request).unwrap();
+            let env = TempoTxEnv::from_tx_with_encoded(
+                tx.with_signer(account).into_encoded_with(Bytes::new()),
+            );
+            assert_eq!(env.execution_context(), ExecutionContext::Simulation);
+            Recovered::new_unchecked(env, account)
+        };
+
+    let rotate = call(
+        CONFIGURABLE_ACCOUNT_ADDRESS,
+        IConfigurableAccount::updateConfigCall {
+            current: IConfigurableAccount::ConfigurableAccountConfig {
+                salt: config.salt,
+                version: config.version,
+                threshold: 1,
+                owners: vec![IConfigurableAccount::ConfigurableAccountOwner {
+                    owner: owner.address(),
+                    weight: 1,
+                }],
+            },
+            threshold: 1,
+            owners: vec![IConfigurableAccount::ConfigurableAccountOwner {
+                owner: rotated_owner.address(),
+                weight: 1,
+            }],
+        }
+        .abi_encode()
+        .into(),
+    );
+    let result = evm
+        .transact(&sim(0, &config, &owner, rotate))
+        .unwrap()
+        .commit();
+    assert!(result.status, "{result:?}");
+    let registered = commitment(&mut evm, account);
+    assert_eq!(registered, rotated.commitment().unwrap());
+
+    let noop = call(DELEGATE, Bytes::new());
+    assert_eq!(
+        invalid(&mut evm, &sim(1, &config, &owner, noop.clone())),
+        TempoInvalidTransaction::ConfigurableAccount(
+            ConfigurableAccountError::ConfigurationCommitmentMismatch {
+                expected: registered,
+                actual: config.commitment().unwrap(),
+            }
+        )
+    );
+    let result = evm
+        .transact(&sim(1, &rotated, &rotated_owner, noop))
+        .unwrap()
+        .commit();
+    assert!(result.status, "{result:?}");
 }
