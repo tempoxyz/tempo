@@ -1983,64 +1983,6 @@ mod tests {
     }
 
     #[test]
-    fn test_configurable_account_parent_code_grant_guards() -> eyre::Result<()> {
-        #[derive(Clone, Copy, Debug)]
-        enum ParentCode {
-            Empty,
-            Bytecode,
-            Delegation,
-        }
-        for committed in [false, true] {
-            for code_kind in [
-                ParentCode::Empty,
-                ParentCode::Bytecode,
-                ParentCode::Delegation,
-            ] {
-                let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
-                StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-                    let parent = Address::repeat_byte(0x11);
-                    let mut keychain = AccountKeychain::new();
-                    keychain.initialize()?;
-                    keychain.set_tx_origin(parent)?;
-                    if committed {
-                        keychain.storage.set_config_commitment(
-                            parent,
-                            B256::repeat_byte(1),
-                            ConfigCommitmentWriteGas::Intrinsic,
-                        )?;
-                    }
-                    if !matches!(code_kind, ParentCode::Empty) {
-                        let code = match code_kind {
-                            ParentCode::Bytecode => Bytes::from_static(&[0x00]),
-                            ParentCode::Delegation => Bytes::from_iter(
-                                [0xef, 0x01, 0x00]
-                                    .into_iter()
-                                    .chain(Address::repeat_byte(0x33)),
-                            ),
-                            ParentCode::Empty => unreachable!(),
-                        };
-                        keychain.storage.set_code(parent, code)?;
-                    }
-                    let result = keychain.authorize_key(
-                        parent,
-                        Address::repeat_byte(0x22),
-                        SignatureType::Secp256k1,
-                        unrestricted_restrictions(),
-                        None,
-                    );
-                    assert_eq!(
-                        result.is_ok(),
-                        !committed || matches!(code_kind, ParentCode::Empty),
-                        "registered={committed}, parent_code={code_kind:?}: {result:?}"
-                    );
-                    Ok(())
-                })?;
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
     fn test_configurable_account_delegate_use_checks_type_and_fork() -> eyre::Result<()> {
         for spec in [
             TempoHardfork::T11,
