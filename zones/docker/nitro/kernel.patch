@@ -1,0 +1,36 @@
+diff --git a/kernel/kernel.nix b/kernel/kernel.nix
+index b655be2..7125d52 100644
+--- a/kernel/kernel.nix
++++ b/kernel/kernel.nix
+@@ -82,2 +82,7 @@ pkgs.stdenv.mkDerivation rec {
+     ( cat $files; echo CONFIG_NSM=m ) > .config
++    ${if arch == "x86_64" then
++      "sh ./scripts/kconfig/merge_config.sh -m .config ${./zones-hardening-x86_64.config}"
++    else
++      "true"
++    }
+   '';
+@@ -92,2 +97,23 @@ pkgs.stdenv.mkDerivation rec {
+       CC="$CC" LD="$LD" OBJCOPY="$OBJCOPY" OBJDUMP="$OBJDUMP" READELF="$READELF" STRIP="$STRIP"
++
++    ${if arch == "x86_64" then ''
++    # Check only the Zones delta. Existing AWS defaults are not duplicated as Zones policy.
++    for option in EXPERT RANDOMIZE_BASE RANDOMIZE_MEMORY HARDENED_USERCOPY \
++      SLAB_FREELIST_RANDOM SECURITY_DMESG_RESTRICT; do
++      grep -Fqx "CONFIG_$option=y" .config || {
++        echo "expected CONFIG_$option=y after olddefconfig" >&2
++        exit 1
++      }
++    done
++    grep -Fqx 'CONFIG_NSM=m' .config
++
++    for option in DEBUG_FS MAGIC_SYSRQ KEXEC KEXEC_FILE IO_URING BPF_SYSCALL BPF_JIT \
++      USERFAULTFD USER_NS NET_NS IA32_EMULATION X86_X32_ABI COMPAT \
++      MODIFY_LDT_SYSCALL DEVMEM PROC_KCORE; do
++      if grep -Eq "^CONFIG_$option=[ym]$" .config; then
++        echo "expected CONFIG_$option to be disabled after olddefconfig" >&2
++        exit 1
++      fi
++    done
++    '' else ""}
+   '';

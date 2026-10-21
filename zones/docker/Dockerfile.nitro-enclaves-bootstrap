@@ -1,0 +1,22 @@
+# syntax=docker/dockerfile:1.7
+
+# Keep the Nix implementation as a content-addressed build input. The AWS bootstrap source is
+# supplied separately as the pinned `nitro-bootstrap-source` named context in docker-bake.hcl.
+ARG NIX_IMAGE=nixos/nix:2.21.4@sha256:91b689f94a101aa67f95034dffd9a4858e85d0946f67c64dd65ed241644454b9
+FROM ${NIX_IMAGE} AS build
+
+ARG TARGET=all
+
+COPY --from=nitro-bootstrap-source / /build/
+# Keep AWS's pinned kernel expression as the source of truth and apply only the reviewed Zones
+# hardening delta. git apply fails if the pinned source no longer matches the patch.
+COPY zones/docker/nitro/kernel.patch /tmp/kernel.patch
+COPY zones/docker/nitro/zones-hardening-x86_64.config /build/kernel/zones-hardening-x86_64.config
+
+WORKDIR /build
+RUN git apply /tmp/kernel.patch
+RUN nix-build -A "${TARGET}"
+
+FROM scratch AS artifacts
+COPY --from=build /build/result/ /blobs/
+CMD ["dummy"]
