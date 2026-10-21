@@ -282,14 +282,13 @@ impl AccountKeychain {
         if key_id.is_zero() {
             return Err(AccountKeychainError::zero_public_key().into());
         }
+        let is_delegate_grant =
+            signature_type == SignatureType::ConfigurableAccount && self.storage.spec().is_t14();
         // Admin keys are explicit access-key rows; the root key remains implicit.
-        if is_admin && key_id == msg_sender {
+        if (is_admin || is_delegate_grant) && key_id == msg_sender {
             return Err(AccountKeychainError::invalid_key_id().into());
         }
-        if signature_type == SignatureType::ConfigurableAccount && self.storage.spec().is_t14() {
-            if key_id == msg_sender {
-                return Err(AccountKeychainError::invalid_key_id().into());
-            }
+        if is_delegate_grant {
             // Naming a delegate does not register it or require a configuration witness.
             // Its direct owner quorum is checked when the grant is used.
             if self
@@ -1206,7 +1205,6 @@ impl AccountKeychain {
     /// - Key doesn't exist (expiry == 0)
     /// - Key has been revoked
     /// - Key has expired at or before `current_timestamp`
-    /// - Key is a ConfigurableAccount key before T14
     fn load_active_key(
         &self,
         account: Address,
@@ -1227,8 +1225,6 @@ impl AccountKeychain {
             return Err(AccountKeychainError::key_expired().into());
         }
 
-        self.ensure_signature_type_active(key.signature_type)?;
-
         Ok(key)
     }
 
@@ -1246,7 +1242,6 @@ impl AccountKeychain {
     /// - `KeyAlreadyRevoked` — the key has been permanently revoked
     /// - `KeyNotFound` — no key is registered under the given `key_id`
     /// - `KeyExpired` — `current_timestamp` is at or past the key's expiry
-    /// - `InvalidSignatureType` — the key is a ConfigurableAccount key before T14
     /// - `SignatureTypeMismatch` — the key's stored type differs from `expected_sig_type`
     pub fn validate_keychain_authorization(
         &self,
@@ -1872,35 +1867,27 @@ mod tests {
     }
 
     #[test]
-    fn test_configurable_account_delegate_use_checks_type_and_fork() -> eyre::Result<()> {
-        for spec in [
-            TempoHardfork::T11,
-            TempoHardfork::T12,
-            TempoHardfork::T13,
-            TempoHardfork::T14,
-        ] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
-            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-                let mut keychain = AccountKeychain::new();
-                let parent = Address::repeat_byte(1);
-                let delegate = Address::repeat_byte(2);
-                keychain.keys[parent][delegate].write(AuthorizedKey {
-                    signature_type: StoredSignatureType::ConfigurableAccount,
-                    expiry: u64::MAX,
-                    ..Default::default()
-                })?;
-                for expected in [None, Some(0), Some(3)] {
-                    assert_eq!(
-                        keychain
-                            .validate_keychain_authorization(parent, delegate, 0, expected)
-                            .is_ok(),
-                        spec.is_t14() && expected != Some(0),
-                    );
-                }
-                Ok(())
+    fn test_configurable_account_delegate_use_checks_type() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut keychain = AccountKeychain::new();
+            let parent = Address::repeat_byte(1);
+            let delegate = Address::repeat_byte(2);
+            keychain.keys[parent][delegate].write(AuthorizedKey {
+                signature_type: StoredSignatureType::ConfigurableAccount,
+                expiry: u64::MAX,
+                ..Default::default()
             })?;
-        }
-        Ok(())
+            for expected in [None, Some(0), Some(3)] {
+                assert_eq!(
+                    keychain
+                        .validate_keychain_authorization(parent, delegate, 0, expected)
+                        .is_ok(),
+                    expected != Some(0),
+                );
+            }
+            Ok(())
+        })
     }
 
     #[test]
