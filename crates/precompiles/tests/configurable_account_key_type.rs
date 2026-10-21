@@ -2,14 +2,17 @@
 
 use alloy::{
     primitives::{Address, B256, Bytes},
-    sol_types::SolCall,
+    sol_types::{SolCall, SolInterface},
 };
 use alloy_evm::EvmEnv;
 use revm::{context::CfgEnv, database::InMemoryDB, precompile::PrecompileOutput, state::Bytecode};
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::IAccountKeychain::{
-    KeyRestrictions, SignatureType, authorizeAdminKeyCall, authorizeKey_0Call, authorizeKey_1Call,
-    authorizeKey_2Call, getKeyCall,
+use tempo_contracts::precompiles::{
+    AccountKeychainError,
+    IAccountKeychain::{
+        KeyRestrictions, SignatureType, authorizeAdminKeyCall, authorizeKey_0Call,
+        authorizeKey_1Call, authorizeKey_2Call, getKeyCall,
+    },
 };
 use tempo_evm::{TempoBlockEnv, evm::TempoEvm};
 use tempo_precompiles::{
@@ -210,6 +213,13 @@ fn delegate_grants_are_guarded_from_t14() {
                     granted,
                     "{spec}, {entrypoint}, {case:?}"
                 );
+                if spec.is_t14() && !granted {
+                    assert_eq!(
+                        AccountKeychainError::abi_decode(&output.bytes).unwrap(),
+                        AccountKeychainError::invalid_key_id(),
+                        "{spec}, {entrypoint}, {case:?}"
+                    );
+                }
                 if !granted {
                     assert_eq!(
                         key_expiry(&mut storage, delegate),
