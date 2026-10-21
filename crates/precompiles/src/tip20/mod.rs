@@ -839,8 +839,8 @@ impl TIP20Token {
             return Err(TIP20Error::invalid_signature().into());
         }
 
-        // TIP-1112: the signature proves the owner's root key, which a committed account retired.
-        if self.storage.spec().is_t14() && !self.storage.config_commitment(call.owner)?.is_zero() {
+        // The signature proves the owner's root key.
+        if self.storage.is_retired_root(call.owner)? {
             return Err(TIP20Error::root_key_retired(call.owner).into());
         }
 

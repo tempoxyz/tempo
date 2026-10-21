@@ -10,7 +10,7 @@ use evm2::{
 };
 use tempo_precompiles::{
     PATH_USD_ADDRESS,
-    account_keychain::{AccountKeychain, SignatureType as KeychainSignatureType},
+    account_keychain::{AccountKeychain, SignatureType as KeychainSignatureType, getKeyCall},
     test_util::TIP20Setup,
 };
 use tempo_primitives::transaction::{KeychainSignature, SignatureType, SignedKeyAuthorization};
@@ -458,7 +458,13 @@ fn configurable_account_admin_can_sign_inline_grant(case: GrantCase) {
 
     assert!(setup.run().unwrap().0);
     StorageCtx::enter_evm_without_tip1060_accounting(&mut setup.evm, || {
-        assert!(AccountKeychain::new().is_active_key(parent, child).unwrap());
+        let info = AccountKeychain::new()
+            .get_key(getKeyCall {
+                account: parent,
+                keyId: child,
+            })
+            .unwrap();
+        assert!(info.expiry != 0 && !info.isRevoked);
     });
 }
 

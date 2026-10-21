@@ -848,8 +848,8 @@ impl TIP20ChannelReserve {
         if signer != self.expected_signer(descriptor) {
             return Err(TIP20ChannelReserveError::invalid_signature().into());
         }
-        // TIP-1112: the signature proves the signer's root key, which a committed account retired.
-        if self.storage.spec().is_t14() && !self.storage.config_commitment(signer)?.is_zero() {
+        // The signature proves the signer's root key.
+        if self.storage.is_retired_root(signer)? {
             return Err(TIP20ChannelReserveError::root_key_retired(signer).into());
         }
         Ok(())
