@@ -3074,6 +3074,8 @@ mod keychain {
 
     #[test]
     fn test_same_tx_authorization_requires_root_signature() {
+        use tempo_precompiles::account_keychain::getKeyCall;
+
         for spec in [TempoHardfork::T6, TempoHardfork::T13] {
             for is_admin in [false, true] {
                 for root_signed in [false, true] {
@@ -3133,10 +3135,13 @@ mod keychain {
                         );
                     }
                     StorageCtx::enter_evm_without_tip1060_accounting(&mut evm, || {
-                        assert_eq!(
-                            AccountKeychain::new().is_active_key(user, key).unwrap(),
-                            root_signed
-                        );
+                        let info = AccountKeychain::new()
+                            .get_key(getKeyCall {
+                                account: user,
+                                keyId: key,
+                            })
+                            .unwrap();
+                        assert_eq!(info.expiry != 0 && !info.isRevoked, root_signed);
                     });
                 }
             }

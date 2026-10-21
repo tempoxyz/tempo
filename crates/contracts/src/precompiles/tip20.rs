@@ -179,10 +179,9 @@ crate::sol! {
         error InvalidTransferPolicyId();
         error PermitExpired();
         error InvalidSignature();
-        /// The account's root key is retired because it has a configuration commitment.
-        error RootKeyRetired(address account);
         error LogoURITooLong();
         error InvalidLogoURI();
+        error RootKeyRetired(address account);
     }
 }
 
