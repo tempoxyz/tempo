@@ -797,6 +797,7 @@ fn pool_head_caught_up(
 }
 
 /// Waits until Reth's pool head is canonical at or above the latest maintenance tip.
+/// Stops waiting on a provider error, so the caller still re-adds its transactions.
 /// Returns false if the tip channel closes.
 async fn wait_for_canonical_pool_head<Client, EvmConfig>(
     pool: &TempoTransactionPool<Client, EvmConfig>,
@@ -812,11 +813,25 @@ where
     loop {
         let head = pool.block_info();
         let latest = *tip.borrow_and_update();
-        if pool_head_caught_up(
+        let mut provider_failed = false;
+        let caught_up = pool_head_caught_up(
             (head.last_seen_block_number, head.last_seen_block_hash),
             latest,
-            |number| pool.client().block_hash(number).ok().flatten(),
-        ) {
+            |number| match pool.client().block_hash(number) {
+                Ok(hash) => hash,
+                Err(err) => {
+                    error!(
+                        target: "txpool",
+                        ?err,
+                        number,
+                        "Failed to read canonical block hash while waiting for pool head"
+                    );
+                    provider_failed = true;
+                    None
+                }
+            },
+        );
+        if caught_up || provider_failed {
             return true;
         }
         select! {
