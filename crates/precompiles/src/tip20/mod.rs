@@ -796,6 +796,8 @@ impl TIP20Token {
     /// # Errors
     /// - `PermitExpired` — current timestamp exceeds permit deadline
     /// - `InvalidSignature` — ECDSA recovery failed or recovered signer ≠ owner
+    /// - `RootKeyRetired` — from T14, the owner has a configuration commitment, so its root key
+    ///   can no longer authorize a permit
     pub fn permit(&mut self, call: ITIP20::permitCall) -> Result<()> {
         // 1. Check deadline
         if self.storage.timestamp() > call.deadline {
@@ -835,6 +837,11 @@ impl TIP20Token {
             .ok_or(TIP20Error::invalid_signature())?;
         if recovered != call.owner {
             return Err(TIP20Error::invalid_signature().into());
+        }
+
+        // The signature proves the owner's root key.
+        if self.storage.is_retired_root(call.owner)? {
+            return Err(TIP20Error::root_key_retired(call.owner).into());
         }
 
         // 5. Increment nonce

@@ -1,15 +1,27 @@
 //! ABI dispatch for the [`AccountKeychain`] precompile.
 
 use super::{AccountKeychain, KeyRestrictions, TokenLimit, authorizeKeyCall};
-use crate::{Precompile, charge_input_cost, dispatch, mutate, view};
-use alloy::{primitives::Address, sol_types::SolCall};
+use crate::{
+    Precompile, charge_input_cost, dispatch, dispatch::abi_decoder_config_for_spec, mutate, view,
+};
+use alloy::{
+    primitives::{Address, Bytes},
+    sol_types::{SolCall, SolInterface},
+};
 use evm2::precompiles::PrecompileResult;
-use tempo_contracts::precompiles::{AccountKeychainError, IAccountKeychain};
+use tempo_contracts::precompiles::{
+    AccountKeychainError, IAccountKeychain,
+    IAccountKeychain::{IAccountKeychainCalls, SignatureType},
+};
 
 impl Precompile for AccountKeychain {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
             return err;
+        }
+
+        if self.rejects_configurable_account_type(calldata) {
+            return self.storage.revert_result(Bytes::new());
         }
 
         dispatch!(
@@ -92,6 +104,38 @@ impl Precompile for AccountKeychain {
                 }
             }
         )
+    }
+}
+
+impl AccountKeychain {
+    /// Whether `calldata` authorizes a ConfigurableAccount key from T11 until T14.
+    ///
+    /// From T11 the strict ABI decoder reverts on an out-of-range `signatureType`; until T14,
+    /// value 3 reverts the same way. Calldata that does not decode as an authorization call, or
+    /// that authorizes another key type, is left to the regular dispatch.
+    fn rejects_configurable_account_type(&self, calldata: &[u8]) -> bool {
+        let spec = self.storage.spec();
+        if !spec.is_t11() || spec.is_t14() {
+            return false;
+        }
+
+        // A decode failure is not handled here: the regular dispatch fails the same decode and
+        // reverts with empty output.
+        let Ok(call) = IAccountKeychainCalls::abi_decode_with_config(
+            calldata,
+            abi_decoder_config_for_spec(spec),
+        ) else {
+            return false;
+        };
+
+        let signature_type = match call {
+            IAccountKeychainCalls::authorizeKey_0(call) => call.signatureType,
+            IAccountKeychainCalls::authorizeKey_1(call) => call.signatureType,
+            IAccountKeychainCalls::authorizeKey_2(call) => call.signatureType,
+            IAccountKeychainCalls::authorizeAdminKey(call) => call.signatureType,
+            _ => return false,
+        };
+        signature_type == SignatureType::ConfigurableAccount
     }
 }
 

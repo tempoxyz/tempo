@@ -32,7 +32,7 @@ use crate::{
     storage::{Handler, Mapping, Set},
     tip20_factory::TIP20Factory,
 };
-use alloy::primitives::{Address, B256, FixedBytes, TxKind, U256, keccak256};
+use alloy::primitives::{Address, B256, FixedBytes, KECCAK256_EMPTY, TxKind, U256, keccak256};
 use tempo_precompiles_macros::{Storable, contract};
 
 /// Allowed TIP-20 selectors for recipient-constrained rules.
@@ -81,6 +81,7 @@ pub enum StoredSignatureType {
     Secp256k1,
     P256,
     WebAuthn,
+    ConfigurableAccount,
 }
 
 impl TryFrom<SignatureType> for StoredSignatureType {
@@ -91,6 +92,7 @@ impl TryFrom<SignatureType> for StoredSignatureType {
             SignatureType::Secp256k1 => Ok(Self::Secp256k1),
             SignatureType::P256 => Ok(Self::P256),
             SignatureType::WebAuthn => Ok(Self::WebAuthn),
+            SignatureType::ConfigurableAccount => Ok(Self::ConfigurableAccount),
             _ => Err(AccountKeychainError::invalid_signature_type().into()),
         }
     }
@@ -102,6 +104,7 @@ impl From<StoredSignatureType> for SignatureType {
             StoredSignatureType::Secp256k1 => Self::Secp256k1,
             StoredSignatureType::P256 => Self::P256,
             StoredSignatureType::WebAuthn => Self::WebAuthn,
+            StoredSignatureType::ConfigurableAccount => Self::ConfigurableAccount,
         }
     }
 }
@@ -239,7 +242,8 @@ impl AccountKeychain {
     /// - `ExpiryInPast` — expiry must be in the future (enforced since T0)
     /// - `KeyAlreadyExists` — a key with this ID is already registered
     /// - `KeyAlreadyRevoked` — revoked keys cannot be re-authorized
-    /// - `InvalidSignatureType` — must be Secp256k1, P256, or WebAuthn
+    /// - `InvalidKeyId` — from T14, a ConfigurableAccount `keyId` that is the caller or has code
+    /// - `InvalidSignatureType` — unsupported type, including ConfigurableAccount before T14
     pub fn authorize_key(
         &mut self,
         msg_sender: Address,
@@ -272,6 +276,18 @@ impl AccountKeychain {
         if is_admin && key_id == msg_sender {
             return Err(AccountKeychainError::invalid_key_id().into());
         }
+        if signature_type == SignatureType::ConfigurableAccount && self.storage.spec().is_t14() {
+            if key_id == msg_sender {
+                return Err(AccountKeychainError::invalid_key_id().into());
+            }
+            // Naming a delegate does not register it or require a configuration witness.
+            if self
+                .storage
+                .with_account_info(key_id, |info| Ok(info.code_hash != KECCAK256_EMPTY))?
+            {
+                return Err(AccountKeychainError::invalid_key_id().into());
+            }
+        }
 
         // T0+: Expiry must be in the future (also catches expiry == 0 which means "key doesn't exist")
         if self.storage.spec().is_t0() {
@@ -293,6 +309,8 @@ impl AccountKeychain {
         }
 
         let signature_type = StoredSignatureType::try_from(signature_type)?;
+        // Before T14, ConfigurableAccount fails at the same point as an unsupported type.
+        self.ensure_signature_type_active(signature_type)?;
 
         // TIP-1011 fields are hardfork-gated at T3, so reject them before mutating state.
         let allowed_call_configs = if is_t3 {
@@ -1128,8 +1146,11 @@ impl AccountKeychain {
     ///
     /// Warning: this returns true when `key_id == account`, because the root key
     /// is implicitly admin even when it is not stored as an access key.
+    ///
+    /// From T14 the root key of an account with a nonzero configuration commitment (TIP-1112) is
+    /// not, and the keychain never stores it as an admin key, so this returns false for it.
     pub fn is_admin_key(&self, account: Address, key_id: Address) -> Result<bool> {
-        if key_id == account {
+        if key_id == account && !self.storage.is_retired_root(account)? {
             return Ok(true);
         }
 
@@ -1141,16 +1162,6 @@ impl AccountKeychain {
         };
 
         Ok(key.is_admin)
-    }
-
-    /// Internal predicate for active key status.
-    pub fn is_active_key(&self, account: Address, key_id: Address) -> Result<bool> {
-        let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
-        match self.load_active_key(account, key_id, current_timestamp) {
-            Ok(_) => Ok(true),
-            Err(err) if err.is_system_error() => Err(err),
-            Err(_) => Ok(false),
-        }
     }
 
     fn ensure_key_authorization_witness_not_burned(
@@ -1184,6 +1195,7 @@ impl AccountKeychain {
     /// - Key doesn't exist (expiry == 0)
     /// - Key has been revoked
     /// - Key has expired at or before `current_timestamp`
+    /// - Key is a ConfigurableAccount key before T14
     fn load_active_key(
         &self,
         account: Address,
@@ -1204,6 +1216,8 @@ impl AccountKeychain {
             return Err(AccountKeychainError::key_expired().into());
         }
 
+        self.ensure_signature_type_active(key.signature_type)?;
+
         Ok(key)
     }
 
@@ -1214,12 +1228,14 @@ impl AccountKeychain {
     /// * `key_id` - The key identifier to validate
     /// * `current_timestamp` - Current block timestamp for expiry check
     /// * `expected_sig_type` - The signature type from the actual signature (0=Secp256k1, 1=P256,
-    ///   2=WebAuthn). Pass `None` to skip validation (for backward compatibility pre-T1).
+    ///   2=WebAuthn, 3=ConfigurableAccount). Pass `None` to skip validation (for backward
+    ///   compatibility pre-T1).
     ///
     /// # Errors
     /// - `KeyAlreadyRevoked` — the key has been permanently revoked
     /// - `KeyNotFound` — no key is registered under the given `key_id`
     /// - `KeyExpired` — `current_timestamp` is at or past the key's expiry
+    /// - `InvalidSignatureType` — the key is a ConfigurableAccount key before T14
     /// - `SignatureTypeMismatch` — the key's stored type differs from `expected_sig_type`
     pub fn validate_keychain_authorization(
         &self,
@@ -1579,6 +1595,16 @@ impl AccountKeychain {
 
         // Verify and update spending limits for this access key
         self.verify_and_update_spending(account, transaction_key, token, approval_increase)
+    }
+
+    /// Rejects the ConfigurableAccount signature type before T14.
+    fn ensure_signature_type_active(&self, signature_type: StoredSignatureType) -> Result<()> {
+        if signature_type == StoredSignatureType::ConfigurableAccount
+            && !self.storage.spec().is_t14()
+        {
+            return Err(AccountKeychainError::invalid_signature_type().into());
+        }
+        Ok(())
     }
 }
 
