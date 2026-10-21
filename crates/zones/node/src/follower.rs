@@ -116,21 +116,21 @@ struct PendingBlocks {
 
 impl PendingBlocks {
     /// Adds a block unless its height is already present. When full, retains blocks closest to
-    /// the local head and returns the height that was dropped.
-    fn insert(&mut self, number: u64, block: PendingPeerBlock) -> Option<u64> {
+    /// the local head and returns all dropped heights, farthest first.
+    fn insert(&mut self, number: u64, block: PendingPeerBlock) -> Vec<u64> {
         if self.blocks.contains_key(&number) {
-            return None;
+            return Vec::new();
         }
         if block.block.encoded_size > MAX_PENDING_BYTES {
-            return Some(number);
+            return vec![number];
         }
         self.bytes += block.block.encoded_size;
         self.blocks.insert(number, block);
-        let mut dropped = None;
+        let mut dropped = Vec::new();
         while self.blocks.len() > MAX_PENDING_BLOCKS || self.bytes > MAX_PENDING_BYTES {
             let (height, block) = self.blocks.pop_last().expect("pending buffer is nonempty");
             self.bytes -= block.block.encoded_size;
-            dropped = Some(height);
+            dropped.push(height);
         }
         dropped
     }
@@ -281,10 +281,14 @@ where
                             {
                                 return;
                             }
-                            if let (Ok(previous), Ok(current)) = (previous_head, self.context.provider.best_block_number())
-                                && current > previous
-                            {
-                                inactivity.as_mut().reset(tokio::time::Instant::now() + BLOCK_INACTIVITY_TIMEOUT);
+                            match (previous_head, self.context.provider.best_block_number()) {
+                                (Ok(previous), Ok(current)) if current > previous => {
+                                    inactivity.as_mut().reset(tokio::time::Instant::now() + BLOCK_INACTIVITY_TIMEOUT);
+                                }
+                                (Err(err), _) | (_, Err(err)) => {
+                                    tracing::error!(target: "zone::p2p", %err, "Failed reading local head for inactivity tracking; leaving deadline unchanged");
+                                }
+                                (Ok(_), Ok(_)) => {}
                             }
                         }
                         BackfillResponse::Completed { peer, tip } => {
@@ -332,10 +336,14 @@ where
                             {
                                 return;
                             }
-                            if let (Ok(previous), Ok(current)) = (previous_head, self.context.provider.best_block_number())
-                                && current > previous
-                            {
-                                inactivity.as_mut().reset(tokio::time::Instant::now() + BLOCK_INACTIVITY_TIMEOUT);
+                            match (previous_head, self.context.provider.best_block_number()) {
+                                (Ok(previous), Ok(current)) if current > previous => {
+                                    inactivity.as_mut().reset(tokio::time::Instant::now() + BLOCK_INACTIVITY_TIMEOUT);
+                                }
+                                (Err(err), _) | (_, Err(err)) => {
+                                    tracing::error!(target: "zone::p2p", %err, "Failed reading local head for inactivity tracking; leaving deadline unchanged");
+                                }
+                                (Ok(_), Ok(_)) => {}
                             }
                         }
                         P2pEvent::TransactionReceived { .. } => {
@@ -479,7 +487,7 @@ where
             return true;
         }
         self.backfill.observe_block(number, best);
-        if let Some(dropped) = self.pending.insert(number, peer_block) {
+        for dropped in self.pending.insert(number, peer_block) {
             tracing::warn!(target: "zone::p2p", dropped, pending_limit = MAX_PENDING_BLOCKS, pending_byte_limit = MAX_PENDING_BYTES, "Dropped far-future peer block because the pending block buffer is full");
         }
         if number > best.saturating_add(1) {
@@ -1551,13 +1559,13 @@ mod tests {
     fn pending_block_limit_keeps_blocks_closest_to_local_head() {
         let mut pending = PendingBlocks::default();
         for number in 100..100 + MAX_PENDING_BLOCKS as u64 {
-            assert_eq!(pending.insert(number, pending_block(number)), None);
+            assert!(pending.insert(number, pending_block(number)).is_empty());
         }
         assert_eq!(pending.len(), MAX_PENDING_BLOCKS);
         assert_eq!(pending.first_number(), Some(100));
 
         let farthest = 100 + MAX_PENDING_BLOCKS as u64 - 1;
-        assert_eq!(pending.insert(99, pending_block(99)), Some(farthest));
+        assert_eq!(pending.insert(99, pending_block(99)), vec![farthest]);
         assert_eq!(pending.len(), MAX_PENDING_BLOCKS);
         assert!(pending.contains(99));
         assert!(!pending.contains(farthest));
@@ -1565,7 +1573,7 @@ mod tests {
         let farther = farthest + 1;
         assert_eq!(
             pending.insert(farther, pending_block(farther)),
-            Some(farther)
+            vec![farther]
         );
         assert_eq!(pending.len(), MAX_PENDING_BLOCKS);
         assert!(!pending.contains(farther));
@@ -1582,11 +1590,27 @@ mod tests {
         let mut pending = PendingBlocks::default();
         let mut far = pending_block(2);
         far.block.encoded_size = MAX_PENDING_BYTES;
-        assert_eq!(pending.insert(2, far), None);
-        assert_eq!(pending.insert(1, pending_block(1)), Some(2));
+        assert!(pending.insert(2, far).is_empty());
+        assert_eq!(pending.insert(1, pending_block(1)), vec![2]);
         assert_eq!(pending.bytes, 1);
         pending.take_next_after(0).unwrap();
         assert_eq!(pending.bytes, 0);
+    }
+
+    #[test]
+    fn pending_byte_limit_reports_every_eviction() {
+        let mut pending = PendingBlocks::default();
+        for number in 2..=4 {
+            let mut block = pending_block(number);
+            block.block.encoded_size = MAX_PENDING_BYTES / 3;
+            assert!(pending.insert(number, block).is_empty());
+        }
+        let mut near = pending_block(1);
+        near.block.encoded_size = MAX_PENDING_BYTES;
+        assert_eq!(pending.insert(1, near), vec![4, 3, 2]);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending.bytes, MAX_PENDING_BYTES);
+        assert!(pending.contains(1));
     }
 
     #[test]
