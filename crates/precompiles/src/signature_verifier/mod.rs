@@ -99,7 +99,6 @@ impl SignatureVerifier {
         signature_type: SignatureType,
     ) -> Result<Option<AuthorizedKey>> {
         let timestamp = self.storage.timestamp().saturating_to::<u64>();
-        // The stored key type is checked only from T14.
         let expected_type = self
             .storage
             .spec()
