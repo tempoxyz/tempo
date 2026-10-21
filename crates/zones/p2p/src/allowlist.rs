@@ -330,10 +330,10 @@ where
         retry.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
             // New requests wait while the pacer has no frame to spare.
-            let ready_at = self.pacer.ready_at(Instant::now());
+            let ready_at = self.prepare_calls();
             let ready = ready_at <= Instant::now();
             tokio::select! {
-                _ = retry.tick() => self.retry(),
+                _ = retry.tick() => {}
                 () = tokio::time::sleep_until(ready_at), if !ready => {}
                 Some(call) = self.calls.recv(), if ready => self.start(call),
                 Some(answer) = self.answers.recv() => self.answer(answer),
@@ -344,6 +344,12 @@ where
                 }
             }
         }
+    }
+
+    /// Service due resends before allowing a new call to spend a pacing token.
+    fn prepare_calls(&mut self) -> Instant {
+        self.retry();
+        self.pacer.ready_at(Instant::now())
     }
 
     fn policy(&self) -> RoutingPolicy<'_> {
@@ -405,7 +411,7 @@ where
         let mut requests = self.outstanding.iter_mut().collect::<Vec<_>>();
         requests.sort_by_key(|(id, request)| (request.last_sent, **id));
         for (_, request) in requests {
-            if !self.pacer.try_take(now) {
+            if now < request.last_sent + RETRY_INTERVAL || !self.pacer.try_take(now) {
                 break;
             }
             send_frame(
@@ -521,9 +527,77 @@ fn send_frame(sender: &mut CommonwareSender, peers: Vec<PublicKey>, frame: Vec<u
 
 #[cfg(test)]
 mod tests {
-    use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
-
     use super::*;
+
+    use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
+    use commonware_runtime::Runner as _;
+
+    use crate::{P2pNetworkId, ZoneManifest, network};
+
+    #[test]
+    fn due_retries_take_tokens_before_queued_calls_and_rotate() {
+        commonware_runtime::tokio::Runner::new(Default::default()).start(|context| async move {
+            let keys = [1, 2, 3, 4].map(PrivateKey::from_seed);
+            let mut input = format!("leader_ed25519_public_key = \"{}\"\n", keys[0].public_key());
+            for (index, key) in keys.iter().enumerate() {
+                input.push_str(&format!(
+                    "\n[[nodes]]\nname = \"node-{index}\"\ned25519_public_key = \"{}\"\naddress = \"127.0.0.1:{}\"\nrpc_only = {}\n",
+                    key.public_key(), 9200 + index, index == 3,
+                ));
+                if index != 3 {
+                    input.push_str(&format!("secp256k1_address = \"0x{:040x}\"\n", index + 1));
+                }
+            }
+            let manifest = ZoneManifest::parse(&input).unwrap();
+            let leadership = manifest.leadership_schedule();
+            leadership.publish(manifest.bootstrap_leadership()).unwrap();
+            let (mut network, blocker, _) = network::instantiate(
+                &context, &manifest, 1, keys[3].clone(), "127.0.0.1:9203".parse().unwrap(),
+                false, P2pNetworkId::new(1, alloy_primitives::Address::repeat_byte(1)),
+            ).unwrap();
+            let channel = network.register(network::ALLOWLIST_CHANNEL, network::allowlist_quota());
+            let (ports, node) = allowlist_ports();
+            let mut coordinator = AllowlistCoordinator::new(
+                keys[3].public_key(), RoutingMembership::from_manifest(&manifest), leadership,
+                blocker, channel, node,
+            );
+            let now = Instant::now();
+            let old = now - RETRY_INTERVAL;
+            let mut replies = Vec::new();
+            // Four unanswered reads and a later write all need retransmission.
+            for id in 0..5 {
+                let (reply, response) = oneshot::channel();
+                replies.push(response);
+                coordinator.outstanding.insert(id, Outstanding {
+                    frame: AllowlistFrame::Request { id, payload: vec![] }.encode(),
+                    answers: vec![], unanswered: vec![keys[0].public_key()],
+                    deadline: now + REQUEST_TIMEOUT, last_sent: old, reply,
+                });
+            }
+            // New read calls are always available to consume fresh pacing tokens.
+            for _ in 0..PORT_BACKLOG {
+                let (reply, response) = oneshot::channel();
+                replies.push(response);
+                ports.client.calls.try_send(Call { payload: vec![], reply }).unwrap();
+            }
+            // Each iteration earns one token. All five outstanding requests, including the
+            // last write, must get a resend before any queued call can consume that token.
+            for id in 0..5 {
+                coordinator.pacer.available = 0;
+                coordinator.pacer.refilled_at = Instant::now() - FRAME_INTERVAL;
+                let ready_at = coordinator.prepare_calls();
+                assert!(coordinator.outstanding[&id].last_sent >= now);
+                assert!(ready_at > Instant::now(), "new calls must wait for the next token");
+                assert_eq!(coordinator.calls.len(), PORT_BACKLOG);
+            }
+            // Before the next retry is due, a fresh token is available to new calls.
+            coordinator.pacer.available = 0;
+            coordinator.pacer.refilled_at = Instant::now() - FRAME_INTERVAL;
+            assert!(coordinator.prepare_calls() <= Instant::now());
+            assert!(coordinator.pacer.try_take(Instant::now()));
+            drop(replies);
+        });
+    }
 
     #[test]
     fn pacer_holds_frames_to_the_channel_rate() {

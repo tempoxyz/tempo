@@ -325,6 +325,8 @@ fn relay_error(message: String) -> ErrorObjectOwned {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     use std::{net::TcpListener, time::Duration};
 
     use alloy::signers::{SignerSync as _, local::PrivateKeySigner};
@@ -334,7 +336,6 @@ mod tests {
         MAX_ALLOWLIST_PAYLOAD_SIZE, P2pConfig, P2pHandleParts, P2pNetworkId, spawn_p2p,
     };
 
-    use super::*;
     use crate::deposit_allowlist::{MAX_DEPOSIT_ALLOWLIST_LEN, status_of};
 
     struct RelayFixture {
