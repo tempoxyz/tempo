@@ -1,17 +1,18 @@
 //! ABI dispatch for the [`AccountKeychain`] precompile.
 
 use super::{AccountKeychain, KeyRestrictions, TokenLimit, authorizeKeyCall};
-use crate::{
-    Precompile, charge_input_cost, dispatch, dispatch::abi_decoder_config_for_spec, mutate, view,
-};
+use crate::{Precompile, charge_input_cost, dispatch, mutate, view};
 use alloy::{
-    primitives::{Address, Bytes},
-    sol_types::{SolCall, SolInterface},
+    primitives::{Address, Bytes, U256},
+    sol_types::SolCall,
 };
 use evm2::precompiles::PrecompileResult;
 use tempo_contracts::precompiles::{
     AccountKeychainError, IAccountKeychain,
-    IAccountKeychain::{IAccountKeychainCalls, SignatureType},
+    IAccountKeychain::{
+        SignatureType, authorizeAdminKeyCall, authorizeKey_0Call, authorizeKey_1Call,
+        authorizeKey_2Call,
+    },
 };
 
 impl Precompile for AccountKeychain {
@@ -111,31 +112,32 @@ impl AccountKeychain {
     /// Whether `calldata` authorizes a ConfigurableAccount key from T11 until T14.
     ///
     /// From T11 the strict ABI decoder reverts on an out-of-range `signatureType`; until T14,
-    /// value 3 reverts the same way. Calldata that does not decode as an authorization call, or
-    /// that authorizes another key type, is left to the regular dispatch.
+    /// value 3 reverts the same way. Peeks the `signatureType` head word (second parameter of all
+    /// four calls) instead of decoding the call twice.
     fn rejects_configurable_account_type(&self, calldata: &[u8]) -> bool {
         let spec = self.storage.spec();
         if !spec.is_t11() || spec.is_t14() {
             return false;
         }
 
-        // A decode failure is not handled here: the regular dispatch fails the same decode and
-        // reverts with empty output.
-        let Ok(call) = IAccountKeychainCalls::abi_decode_with_config(
-            calldata,
-            abi_decoder_config_for_spec(spec),
-        ) else {
+        let Some(&selector) = calldata.first_chunk::<4>() else {
             return false;
         };
+        if !matches!(
+            selector,
+            authorizeKey_0Call::SELECTOR
+                | authorizeKey_1Call::SELECTOR
+                | authorizeKey_2Call::SELECTOR
+                | authorizeAdminKeyCall::SELECTOR
+        ) {
+            return false;
+        }
 
-        let signature_type = match call {
-            IAccountKeychainCalls::authorizeKey_0(call) => call.signatureType,
-            IAccountKeychainCalls::authorizeKey_1(call) => call.signatureType,
-            IAccountKeychainCalls::authorizeKey_2(call) => call.signatureType,
-            IAccountKeychainCalls::authorizeAdminKey(call) => call.signatureType,
-            _ => return false,
+        // Too short to hold the word: the regular dispatch fails the decode and reverts.
+        let Some(signature_type) = calldata.get(36..68) else {
+            return false;
         };
-        signature_type == SignatureType::ConfigurableAccount
+        U256::from_be_slice(signature_type) == U256::from(SignatureType::ConfigurableAccount as u8)
     }
 }
 
