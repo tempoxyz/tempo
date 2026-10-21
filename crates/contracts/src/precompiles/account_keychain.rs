@@ -175,6 +175,10 @@ crate::sol! {
         /// @return Key information
         function getKey(address account, address keyId) external view returns (KeyInfo memory);
 
+        /// Returns the funding policy ID for an access key (T13+).
+        /// Zero means no funding permission; currently all keys return zero.
+        function getFundingPolicyId(address account, address keyId) external view returns (uint64);
+
         /// Get remaining spending limit using the legacy pre-T3 return shape.
         /// @param account The account address
         /// @param publicKey The public key

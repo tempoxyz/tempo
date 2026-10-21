@@ -475,6 +475,8 @@ These are checked after every fuzz run:
 
 The AccountKeychain precompile manages authorized Access Keys for accounts, enabling Root Keys to provision scoped secondary keys with expiry timestamps and per-TIP20 token spending limits.
 
+From T13, `getFundingPolicyId(account, keyId)` always returns zero without reading or writing storage until delegated funding is implemented. Native dispatch tests cover this compatibility invariant and rejection before T13.
+
 ### Global Invariants
 
 These are checked after every fuzz run:

@@ -78,6 +78,8 @@ impl Precompile for AccountKeychain {
                         self.remove_allowed_calls(sender, c)
                     }),
                     getKey(call) => view(call, |c| self.get_key(c)),
+                    #[schedule(since = T13)]
+                    getFundingPolicyId(call) => view(call, |_| Ok(0)),
                     #[schedule(until = T3)]
                     getRemainingLimit(call) => view(call, |c| self.get_remaining_limit(c)),
                     #[schedule(since = T3)]
@@ -110,7 +112,8 @@ mod tests {
     };
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
-        IAccountKeychain::IAccountKeychainCalls, UnknownFunctionSelector, legacyAuthorizeKeyCall,
+        IAccountKeychain::{IAccountKeychainCalls, getFundingPolicyIdCall},
+        UnknownFunctionSelector, legacyAuthorizeKeyCall,
     };
 
     #[test]
@@ -121,7 +124,10 @@ mod tests {
             let selectors: Vec<_> = IAccountKeychainCalls::SELECTORS
                 .iter()
                 .copied()
-                .filter(|selector| *selector != getRemainingLimitCall::SELECTOR)
+                .filter(|selector| {
+                    *selector != getRemainingLimitCall::SELECTOR
+                        && *selector != getFundingPolicyIdCall::SELECTOR
+                })
                 .collect();
 
             let unsupported = check_selector_coverage(
@@ -468,5 +474,84 @@ mod tests {
 
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_funding_policy_getter_rejected_pre_t13() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T12);
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            let calldata = getFundingPolicyIdCall {
+                account: Address::random(),
+                keyId: Address::random(),
+            }
+            .abi_encode();
+
+            // Both complete and malformed calls retain the pre-fork unknown-selector error.
+            for data in [&calldata[..], &calldata[..4]] {
+                let output = keychain.call(data, Address::ZERO)?;
+                assert!(output.is_revert());
+                assert_eq!(
+                    output.bytes.as_ref(),
+                    UnknownFunctionSelector {
+                        selector: getFundingPolicyIdCall::SELECTOR.into(),
+                    }
+                    .abi_encode(),
+                );
+            }
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_funding_policy_getter_returns_zero_from_t13() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T13, TempoHardfork::T14] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            let account = Address::random();
+            let key_id = Address::random();
+            StorageCtx::enter(&mut storage, || {
+                let mut keychain = AccountKeychain::new();
+                keychain.authorize_key(
+                    account,
+                    key_id,
+                    IAccountKeychain::SignatureType::Secp256k1,
+                    KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: false,
+                        limits: vec![],
+                        allowAnyCalls: true,
+                        allowedCalls: vec![],
+                    },
+                    None,
+                )?;
+                Ok::<_, eyre::Report>(())
+            })?;
+
+            storage.set_is_static(true);
+            storage.reset_counters();
+            StorageCtx::enter(&mut storage, || {
+                let mut keychain = AccountKeychain::new();
+                for key in [key_id, Address::random(), Address::ZERO] {
+                    let output = keychain.call(
+                        &getFundingPolicyIdCall {
+                            account,
+                            keyId: key,
+                        }
+                        .abi_encode(),
+                        Address::random(),
+                    )?;
+                    assert!(!output.is_revert());
+                    assert_eq!(output.bytes.as_ref(), &[0_u8; 32]);
+                    assert_eq!(
+                        getFundingPolicyIdCall::abi_decode_returns(&output.bytes)?,
+                        0
+                    );
+                }
+                Ok::<_, eyre::Report>(())
+            })?;
+            assert_eq!(storage.counter_sload(), 0);
+            assert_eq!(storage.counter_sstore(), 0);
+        }
+        Ok(())
     }
 }

@@ -26,6 +26,8 @@ const UNRESTRICTED_SELECTORS: &[[u8; 4]] = &[
     IAccountKeychain::setAllowedCallsCall::SELECTOR,
     IAccountKeychain::removeAllowedCallsCall::SELECTOR,
     IAccountKeychain::getTransactionKeyCall::SELECTOR,
+    // The funding-policy getter returns a constant zero and reveals no account state.
+    IAccountKeychain::getFundingPolicyIdCall::SELECTOR,
 ];
 
 impl CallRules for AccountKeychainRules {
@@ -79,7 +81,8 @@ impl CallRules for AccountKeychainRules {
             | IAccountKeychain::IAccountKeychainCalls::updateSpendingLimit(_)
             | IAccountKeychain::IAccountKeychainCalls::setAllowedCalls(_)
             | IAccountKeychain::IAccountKeychainCalls::removeAllowedCalls(_)
-            | IAccountKeychain::IAccountKeychainCalls::getTransactionKey(_) => CallCheck::Continue,
+            | IAccountKeychain::IAccountKeychainCalls::getTransactionKey(_)
+            | IAccountKeychain::IAccountKeychainCalls::getFundingPolicyId(_) => CallCheck::Continue,
         }
     }
 }
@@ -265,6 +268,30 @@ mod tests {
                     admit_at(&rules, data, Address::ZERO, spec),
                     CallCheck::Continue
                 ));
+            }
+        }
+    }
+
+    #[test]
+    fn funding_policy_getter_defers_to_upstream() {
+        let rules = AccountKeychainRules;
+        let owner = Address::repeat_byte(0x11);
+        let outsider = Address::repeat_byte(0x22);
+        let data = IAccountKeychain::getFundingPolicyIdCall {
+            account: owner,
+            keyId: Address::repeat_byte(0x33),
+        }
+        .abi_encode();
+
+        // Preserve upstream fork scheduling and decoding, including for non-owner calls.
+        for spec in [TempoHardfork::T12, TempoHardfork::T13, TempoHardfork::T14] {
+            for caller in [owner, outsider] {
+                for input in [&data[..], &data[..4]] {
+                    assert!(matches!(
+                        admit_at(&rules, input, caller, spec),
+                        CallCheck::Continue
+                    ));
+                }
             }
         }
     }
