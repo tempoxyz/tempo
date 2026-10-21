@@ -23,6 +23,7 @@ reth-node-api.workspace = true
 reth-payload-primitives.workspace = true
 reth-primitives-traits.workspace = true
 
+alloy-consensus.workspace = true
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
@@ -31,6 +32,7 @@ alloy-rpc-types-engine.workspace = true
 
 derive_more.workspace = true
 serde.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
