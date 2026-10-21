@@ -315,23 +315,13 @@ impl ValidatorConfigV2 {
         ingress: &'a str,
         egress: &'a str,
     ) -> Result<(IpAddrWithPort<'a>, IpAddr<'a>)> {
-        let is_t14 = self.storage.spec().is_t14();
-        let parsed_ingress = if is_t14 {
-            IpAddrWithPort::try_from(ingress)
-        } else {
-            IpAddrWithPort::parse_legacy(ingress)
-        };
-        let parsed_ingress = parsed_ingress.map_err(|err| match err {
+        let spec = self.storage.spec();
+        let parsed_ingress = IpAddrWithPort::parse(ingress, spec).map_err(|err| match err {
             IpWithPortParseError::TooLong => ValidatorConfigV2Error::invalid_ip(ingress.into()),
             err => ValidatorConfigV2Error::not_ip_port(ingress.into(), err.to_string()),
         })?;
 
-        let parsed_egress = if is_t14 {
-            IpAddr::try_from(egress)
-        } else {
-            IpAddr::parse_legacy(egress)
-        };
-        let parsed_egress = parsed_egress.map_err(|err| match err {
+        let parsed_egress = IpAddr::parse(egress, spec).map_err(|err| match err {
             IpParseError::TooLong => ValidatorConfigV2Error::invalid_ip(egress.into()),
             err => ValidatorConfigV2Error::not_ip(egress.into(), err.to_string()),
         })?;
