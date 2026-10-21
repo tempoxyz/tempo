@@ -4,7 +4,7 @@ use super::{AccountKeychain, KeyRestrictions, TokenLimit, authorizeKeyCall};
 use crate::{Precompile, charge_input_cost, dispatch, mutate, view};
 use alloy::{
     primitives::{Address, Bytes, U256},
-    sol_types::{SolCall, SolInterface},
+    sol_types::SolCall,
 };
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::{
