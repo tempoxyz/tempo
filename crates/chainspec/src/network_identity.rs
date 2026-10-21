@@ -27,8 +27,11 @@ impl NetworkIdentity {
 
         IDENTITY
             .get_or_init(|| {
-                serde_json::from_str(include_str!("../../../mainnet-network-identity.json"))
-                    .expect("valid mainnet network identity")
+                serde_json::from_str(include_str!(concat!(
+                    env!("TEMPO_REPO_ROOT"),
+                    "/mainnet-network-identity.json"
+                )))
+                .expect("valid mainnet network identity")
             })
             .clone()
     }
@@ -38,8 +41,11 @@ impl NetworkIdentity {
 
         IDENTITY
             .get_or_init(|| {
-                serde_json::from_str(include_str!("../../../testnet-network-identity.json"))
-                    .expect("valid testnet network identity")
+                serde_json::from_str(include_str!(concat!(
+                    env!("TEMPO_REPO_ROOT"),
+                    "/testnet-network-identity.json"
+                )))
+                .expect("valid testnet network identity")
             })
             .clone()
     }
@@ -73,11 +79,17 @@ mod tests {
         for (identity, json) in [
             (
                 NetworkIdentity::mainnet(),
-                include_str!("../../../mainnet-network-identity.json"),
+                include_str!(concat!(
+                    env!("TEMPO_REPO_ROOT"),
+                    "/mainnet-network-identity.json"
+                )),
             ),
             (
                 NetworkIdentity::testnet(),
-                include_str!("../../../testnet-network-identity.json"),
+                include_str!(concat!(
+                    env!("TEMPO_REPO_ROOT"),
+                    "/testnet-network-identity.json"
+                )),
             ),
         ] {
             let published = serde_json::from_str::<serde_json::Value>(json).unwrap();
