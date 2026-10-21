@@ -1127,10 +1127,9 @@ impl AccountKeychain {
     /// Internal predicate for root/admin status.
     ///
     /// Warning: this returns true when `key_id == account`, because the root key
-    /// is implicitly admin even when it is not stored as an access key. From T14 that holds
-    /// unless the root is retired; a retired root falls through to the stored row, which is never
-    /// an admin row for `key_id == account` (`authorize_key_internal` rejects it). The retirement
-    /// check runs only on the `key_id == account` branch.
+    /// is implicitly admin even when it is not stored as an access key. From T14 a retired root
+    /// (TIP-1112) is not, and the keychain never stores an admin key under `key_id == account`, so
+    /// it returns false.
     pub fn is_admin_key(&self, account: Address, key_id: Address) -> Result<bool> {
         if key_id == account && !self.storage.is_retired_root(account)? {
             return Ok(true);

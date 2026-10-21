@@ -51,9 +51,9 @@ impl SignatureVerifier {
 
     /// Returns whether `signature` is an active access-key signature for `account`.
     ///
-    /// From T14, `false` when the recovered key ID has a nonzero account commitment (TIP-1112):
-    /// its bare root authority is retired, whichever grant it is used under. Also `false` from T14
-    /// when the inner signature type differs from the stored key type.
+    /// From T14, `false` when the recovered key ID has a nonzero configuration commitment
+    /// (TIP-1112), even under a stored grant, or when the inner signature type differs from the
+    /// stored key type.
     pub fn verify_keychain(&self, account: Address, hash: B256, signature: Bytes) -> Result<bool> {
         let recovered = self.recover_keychain_key(hash, signature)?;
         if recovered.account != account || self.storage.is_retired_root(recovered.key_id)? {
@@ -68,9 +68,9 @@ impl SignatureVerifier {
     /// Returns whether `signature` is an active admin access-key signature for `account`, or its
     /// root key's.
     ///
-    /// From T14, `false` when the recovered key ID has a nonzero account commitment (TIP-1112),
-    /// including the implicit root of `account` itself. Also `false` from T14 when the inner
-    /// signature type of an access-key signature differs from the stored key type.
+    /// From T14, `false` when the recovered key ID has a nonzero configuration commitment
+    /// (TIP-1112), including the implicit root of `account` itself, or when the inner signature
+    /// type of an access-key signature differs from the stored key type.
     pub fn verify_keychain_admin(
         &self,
         account: Address,
@@ -99,7 +99,7 @@ impl SignatureVerifier {
         signature_type: SignatureType,
     ) -> Result<Option<AuthorizedKey>> {
         let timestamp = self.storage.timestamp().saturating_to::<u64>();
-        // Pre-T14 verification ignored the stored type; preserve that behavior on replay.
+        // The stored key type is checked only from T14.
         let expected_type = self
             .storage
             .spec()

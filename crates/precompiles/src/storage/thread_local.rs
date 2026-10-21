@@ -361,8 +361,8 @@ impl StorageCtx {
     }
 
     /// Returns whether `address` is a retired root key (TIP-1112): from T14, an address with a
-    /// nonzero account commitment no longer acts through its own key. Reads the commitment at call
-    /// time, so a migration earlier in the block counts.
+    /// nonzero configuration commitment no longer acts through its own key. Reads the commitment
+    /// at call time, so a migration earlier in the block counts.
     pub fn is_retired_root(&self, address: Address) -> Result<bool> {
         Ok(self.spec().is_t14() && !self.config_commitment(address)?.is_zero())
     }
