@@ -44,7 +44,7 @@ impl ZoneChainSpec {
         if let Some(parent) = tempo_chain_spec_for_l1(parent_chain_id) {
             return Self::from_genesis_with_l1(genesis, parent.as_ref());
         }
-        Ok(Self::from_explicit_genesis(genesis))
+        Self::from_explicit_genesis(genesis)
     }
 
     /// Converts a genesis configuration using an already-resolved L1 chain specification.
@@ -56,7 +56,7 @@ impl ZoneChainSpec {
     ) -> Result<Self, ZoneChainSpecError> {
         decode_l1_chain_id(genesis.config.chain_id)?;
         inherit_parent_fork_activations(&mut genesis, l1)?;
-        Ok(Self::from_explicit_genesis(genesis))
+        Self::from_explicit_genesis(genesis)
     }
 
     /// Zone identifier encoded in the genesis chain ID.
@@ -66,11 +66,11 @@ impl ZoneChainSpec {
             .1
     }
 
-    fn from_explicit_genesis(genesis: Genesis) -> Self {
-        let zone = TempoChainSpec::from_genesis(genesis);
-        Self {
+    fn from_explicit_genesis(genesis: Genesis) -> Result<Self, ZoneChainSpecError> {
+        let zone = TempoChainSpec::from_genesis(genesis)?;
+        Ok(Self {
             inner: Arc::new(zone),
-        }
+        })
     }
 }
 
@@ -234,8 +234,9 @@ pub enum ZoneChainSpecError {
     /// The zone chain ID is not a valid encoding of its parent and zone IDs.
     #[error(transparent)]
     InvalidChainId(#[from] ZoneChainIdError),
-    /// The inherited parent fork activations could not be applied to the Zone genesis.
-    #[error("failed to compose Zone genesis config: {0}")]
+    /// The Zone genesis config is malformed, or the inherited parent fork activations could
+    /// not be applied to it.
+    #[error("invalid Zone genesis config: {0}")]
     InvalidGenesisConfig(#[from] serde_json::Error),
 }
 
@@ -311,7 +312,7 @@ mod tests {
         genesis.config.shanghai_time = None;
         genesis.config.cancun_time = None;
         genesis.config.prague_time = None;
-        let raw = TempoChainSpec::from_genesis(genesis.clone());
+        let raw = TempoChainSpec::from_genesis(genesis.clone()).unwrap();
         let zone = ZoneChainSpec::from_genesis(genesis).unwrap();
 
         assert_eq!(zone.chain_id(), raw.chain_id());
@@ -355,7 +356,7 @@ mod tests {
         let mut l1_genesis = DEV.genesis().clone();
         l1_genesis.config.chain_id = CUSTOM_L1_CHAIN_ID;
         l1_genesis.config.osaka_time = Some(456);
-        let l1 = TempoChainSpec::from_genesis(l1_genesis);
+        let l1 = TempoChainSpec::from_genesis(l1_genesis).unwrap();
 
         let mut zone_genesis = DEV.genesis().clone();
         zone_genesis.config.chain_id = zone_chain_id(CUSTOM_L1_CHAIN_ID, 8).unwrap();
@@ -416,7 +417,7 @@ mod tests {
     #[test]
     fn custom_genesis_preserves_historical_schedule() {
         let genesis = historical_custom_genesis();
-        let expected = TempoChainSpec::from_genesis(genesis.clone());
+        let expected = TempoChainSpec::from_genesis(genesis.clone()).unwrap();
         let zone = ZoneChainSpec::from_genesis(genesis.clone()).unwrap();
 
         assert_eq!(zone.genesis(), &genesis);

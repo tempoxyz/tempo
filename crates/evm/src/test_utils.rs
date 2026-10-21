@@ -14,7 +14,7 @@ use alloy_evm::eth::EthBlockExecutionCtx;
 use alloy_primitives::U256;
 
 pub(crate) fn test_chainspec() -> Arc<TempoChainSpec> {
-    Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()))
+    Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()).unwrap())
 }
 
 pub(crate) fn test_evm<DB: Database>(db: DB) -> TempoEvm<DB, NoOpInspector> {

@@ -1164,7 +1164,7 @@ mod tests {
         set_tempo_fork(&mut genesis, TempoHardfork::T13, 1_000);
         let config = ZoneMonitorConfig {
             chain_spec: Arc::new(zone_chainspec::ZoneChainSpec {
-                inner: Arc::new(tempo_chainspec::TempoChainSpec::from_genesis(genesis)),
+                inner: Arc::new(tempo_chainspec::TempoChainSpec::from_genesis(genesis).unwrap()),
             }),
             outbox_address: Address::repeat_byte(0x22),
             inbox_address: Address::repeat_byte(0x33),

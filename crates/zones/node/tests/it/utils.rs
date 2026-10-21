@@ -2737,7 +2737,7 @@ impl L1TestNode {
             serde_json::from_str(include_str!("../assets/test-genesis.json"))?;
         let mut genesis = serde_json::from_value(genesis)?;
         install_native_zone_factory(&mut genesis, l1_dev_signer().address())?;
-        let chain_spec = TempoChainSpec::from_genesis(genesis);
+        let chain_spec = TempoChainSpec::from_genesis(genesis)?;
 
         let mut node_config = NodeConfig::new(Arc::new(chain_spec))
             .with_unused_ports()

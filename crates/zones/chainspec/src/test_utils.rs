@@ -52,7 +52,7 @@ mod tests {
             set_tempo_fork(&mut genesis, after, 1_000);
             assert_eq!(genesis.alloc, alloc);
 
-            let tempo = TempoChainSpec::from_genesis(genesis.clone());
+            let tempo = TempoChainSpec::from_genesis(genesis.clone()).unwrap();
             let zone = ZoneChainSpec::from_genesis_with_l1(genesis, &DEV).unwrap();
             for (timestamp, expected) in [
                 (0, before),

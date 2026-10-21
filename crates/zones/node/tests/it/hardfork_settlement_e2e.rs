@@ -48,7 +48,7 @@ async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
         let mut genesis = cfg.chain.genesis().clone();
         portal_address =
             init_migration_portal(&mut genesis, activation).expect("valid T12 migration genesis");
-        cfg.chain = Arc::new(TempoChainSpec::from_genesis(genesis));
+        cfg.chain = Arc::new(TempoChainSpec::from_genesis(genesis).unwrap());
         cfg.dev.block_time = None;
     })
     .await?;

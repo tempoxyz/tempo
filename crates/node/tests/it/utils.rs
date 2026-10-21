@@ -719,6 +719,6 @@ impl TestNodeBuilder {
 
         Ok(TempoChainSpec::from_genesis(serde_json::from_value(
             genesis,
-        )?))
+        )?)?)
     }
 }
