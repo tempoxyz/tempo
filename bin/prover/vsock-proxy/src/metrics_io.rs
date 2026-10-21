@@ -62,17 +62,17 @@ mod tests {
                 inner,
                 bytes: Counter::from_arc(Arc::clone(&count)),
             };
-            assert_eq!(stream.write(b"hello").await.unwrap(), 3);
+            assert_eq!(stream.write(b"catnip").await.unwrap(), 3);
             let mut cx = Context::from_waker(std::task::Waker::noop());
             assert!(
                 Pin::new(&mut stream)
-                    .poll_write(&mut cx, b"lo")
+                    .poll_write(&mut cx, b"nip")
                     .is_pending()
             );
             assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 3);
             let mut buf = [0; 3];
             peer.read_exact(&mut buf).await.unwrap();
-            assert_eq!(&buf, b"hel");
+            assert_eq!(&buf, b"cat");
 
             peer.write_all(b"ok").await.unwrap();
             let mut reply = [0; 2];
