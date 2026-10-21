@@ -30,7 +30,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use tempo_chainspec::{
-    TempoHardfork,
+    TempoChainSpec, TempoHardfork,
     cli::TempoHardforkArgs,
     spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE},
 };
@@ -160,6 +160,10 @@ pub(crate) struct GenesisArgs {
     /// Tempo hardfork schedule. Individual `--<fork>-time` flags default to genesis (0).
     #[command(flatten)]
     hardforks: TempoHardforkArgs,
+
+    /// Development-only TIP-1110 recovery factory address for configurable accounts.
+    #[arg(long, value_name = "ADDRESS")]
+    configurable_account_recovery_factory: Option<Address>,
 }
 
 #[derive(Clone, Debug)]
@@ -493,6 +497,11 @@ impl GenesisArgs {
                 .insert_value("generalGasLimit".to_string(), general_gas_limit)?;
         }
         self.hardforks.write_to(&mut chain_config);
+        if let Some(factory) = self.configurable_account_recovery_factory {
+            chain_config
+                .extra_fields
+                .insert_value("configurableAccountRecoveryFactory".to_string(), factory)?;
+        }
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
@@ -519,6 +528,11 @@ impl GenesisArgs {
 
         genesis.alloc = genesis_alloc;
         genesis.config = chain_config;
+
+        if self.configurable_account_recovery_factory.is_some() {
+            // Apply the node's protocol reservations so the written genesis matches the chainspec.
+            genesis = TempoChainSpec::from_genesis(genesis).inner.genesis;
+        }
 
         Ok((genesis, consensus_config))
     }
