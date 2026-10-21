@@ -50,9 +50,9 @@ use crate::{
     prover_config::active_l1_hardfork,
     resolve_portal_zone_anchor,
     settlement::{
-        AtomicWithdrawalSlot, BatchAnchorConfig, BatchData, BatchSubmission, BatchSubmitError,
-        BatchSubmitter, FinalizedBatchLog, PreparedBatch, WithdrawalPage, ZoneBlockSnapshot,
-        fetch_finalized_batch, fetch_finalized_batch_boundaries, read_zone_block_snapshot,
+        AtomicWithdrawalSlot, BatchAnchorConfig, BatchData, BatchSubmitError, BatchSubmitter,
+        FinalizedBatchLog, PreparedBatch, WithdrawalPage, ZoneBlockSnapshot, fetch_finalized_batch,
+        fetch_finalized_batch_boundaries, read_zone_block_snapshot,
     },
     withdrawals::{SharedWithdrawalStore, WithdrawalBatchLimits},
 };
@@ -764,13 +764,7 @@ impl<P: ZoneSequencerProvider> ZoneMonitor<P> {
                 )
                 .await
             {
-                Ok(BatchSubmission {
-                    event,
-                    transaction_hash,
-                    block_number,
-                    gas_used,
-                    withdrawals_processed,
-                }) => {
+                Ok((event, withdrawals_processed)) => {
                     let portal_index = if event.withdrawalQueueIndex == NO_QUEUE_INDEX {
                         None
                     } else {
@@ -791,10 +785,6 @@ impl<P: ZoneSequencerProvider> ZoneMonitor<P> {
                         withdrawal_batch_index = event.withdrawalBatchIndex,
                         withdrawal_queue_index = %event.withdrawalQueueIndex,
                         withdrawal_queue_hash = %batch_data.withdrawal_queue_hash,
-                        %transaction_hash,
-                        l1_block = ?block_number,
-                        gas_used,
-                        withdrawals_processed,
                         "Batch successfully submitted to L1"
                     );
                     self.metrics.batch_submit_success_total.increment(1);

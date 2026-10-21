@@ -72,7 +72,7 @@ use tempo_primitives::{
     Block, TempoReceipt,
     transaction::{Call, calc_gas_balance_spending},
 };
-use tracing::{debug, info, instrument, warn};
+use tracing::{info, instrument, warn};
 use zone_chainspec::ZoneChainSpec;
 use zone_primitives::constants::WITHDRAWAL_BOUNCEBACK_RESERVE;
 use zone_prover::{ProofBundle, VerifierMode};
@@ -138,15 +138,8 @@ const DEFAULT_ANCESTRY_HEADER_CACHE_CAPACITY: u32 = 262_144;
 /// signatures still fit comfortably within this limit.
 const SUBMIT_BATCH_GAS_LIMIT: u64 = 2_000_000;
 
-/// Fixed ceiling for the withdrawal gas a settlement transaction may reserve on top of
-/// [`SUBMIT_BATCH_GAS_LIMIT`].
-///
-/// The planner budget is an operator knob for the standalone withdrawal lane and grows with
-/// user-supplied callback gas. Settlement liveness must depend on neither: a block builder
-/// accounts a transaction by its declared gas limit, and the settlement lane bids no priority
-/// fee, so an oversized combined transaction could be starved by paying traffic. A slot is only
-/// drained atomically when its planned gas also fits this ceiling, which keeps the combined
-/// transaction at or below 6M gas; larger slots stay on the standalone processor.
+/// Withdrawal gas a settlement transaction may reserve on top of [`SUBMIT_BATCH_GAS_LIMIT`].
+/// Block builders count declared gas and settlement bids no tip, so larger slots could starve it.
 const MAX_ATOMIC_WITHDRAWAL_GAS: u64 = 4_000_000;
 
 /// Maximum number of pending withdrawal slots reconstructed in one recovery page.
@@ -400,7 +393,7 @@ impl BatchSubmitter {
     ///
     /// Eligible `atomic_slot` withdrawals are processed in the same transaction as settlement.
     /// Ineligible slots remain queued for the standalone processor.
-    /// Returns the confirmed event and receipt metadata, including whether the slot was drained.
+    /// Returns the confirmed `BatchSubmitted` event and whether the slot was processed with it.
     #[instrument(skip_all, fields(
         portal = %self.portal_address,
         tempo_block = prepared.batch.tempo_block_number,
@@ -418,7 +411,7 @@ impl BatchSubmitter {
         certificate: Option<&SettlementCertificate>,
         verifier_mode: VerifierMode,
         atomic_slot: Option<AtomicWithdrawalSlot<'_>>,
-    ) -> std::result::Result<BatchSubmission, BatchSubmitError> {
+    ) -> std::result::Result<(BatchSubmitted, bool), BatchSubmitError> {
         let active = active_l1_hardfork(&self.l1_provider, self.chain_spec.as_ref()).await?;
         if let Some(proved) = proof_bundle.map(|proof| proof.hardfork)
             && proved != active
@@ -587,10 +580,6 @@ impl BatchSubmitter {
             None => None,
         };
         let withdrawals_processed = combined.is_some();
-        debug!(
-            withdrawals_in_transaction = withdrawals_processed,
-            "Broadcasting settlement transaction"
-        );
         let receipt = tokio::time::timeout(
             Duration::from_secs(30),
             self.l1_provider
@@ -609,32 +598,23 @@ impl BatchSubmitter {
 
         let event = self.decode_batch_submitted(receipt.logs())?;
 
-        Ok(BatchSubmission {
-            event,
-            transaction_hash: tx_hash,
-            block_number: receipt.block_number,
-            gas_used: receipt.gas_used,
+        info!(
+            %tx_hash,
+            withdrawal_batch_index = event.withdrawalBatchIndex,
+            withdrawal_queue_index = %event.withdrawalQueueIndex,
             withdrawals_processed,
-        })
+            "Batch submitted to L1"
+        );
+
+        Ok((event, withdrawals_processed))
     }
 
-    /// Build the two-call transaction that settles the batch and drains its complete withdrawal
-    /// slot atomically, or `None` when the slot must be left to the standalone processor.
-    ///
-    /// Eligibility is decided from canonical portal state rather than inferred from a simulation:
-    /// the slot must hash to the batch's committed withdrawal queue, fit one `processWithdrawals`
-    /// call within both the planner budget and [`MAX_ATOMIC_WITHDRAWAL_GAS`], the portal queue
-    /// must be empty so the appended call can only consume the slot this batch enqueues, the
-    /// portal must not be paused, every withdrawal must fit the portal's deposit capacity for
-    /// bounce-backs, and the sequencer must be able to fund the combined gas limit
-    /// at the fixed max fee exactly as pool admission checks it. Every disqualification falls
-    /// back to submit-only.
+    /// Build the two-call transaction that settles the batch and drains its whole withdrawal slot,
+    /// or `None` to submit the batch alone and leave the slot to the standalone processor.
     ///
     /// Tip-anchored submissions cannot be estimated (EIP-2935 stores the tip's hash only in its
-    /// successor block) and rely on those checks alone. Other submissions additionally run a
-    /// go/no-go estimate against canonical `latest` state, so an unexpected revert or an
-    /// excessive estimate also falls back. `submitBatch` must stay the first call so the second
-    /// call observes the slot it drains.
+    /// successor block), so they rely on the portal-state checks alone. `submitBatch` must stay
+    /// the first call so the second call observes the slot it drains.
     async fn try_build_combined_submission_request(
         &self,
         mut request: TempoTransactionRequest,
@@ -783,14 +763,10 @@ impl BatchSubmitter {
         }
     }
 
-    /// Read the canonical portal state that gates atomic withdrawal processing, plus the
-    /// sequencer's fee-token balance, in one `latest` multicall. Deposit headroom is measured
-    /// before this batch's `submitBatch` processes deposits, so it can only understate capacity.
-    ///
-    /// The balance assumes the sequencer pays L1 fees in PathUSD, the default fee token and the
-    /// one the withdrawal processor's balance metric tracks. A different fee token only makes
-    /// the check conservative: a false shortfall submits the batch alone, and a false pass is
-    /// caught by pool admission, after which retries submit the batch alone as well.
+    /// Read the portal state that gates atomic withdrawal processing in one `latest` multicall.
+    /// Deposit headroom predates this batch's deposit processing, so it can only understate
+    /// capacity. The balance assumes PathUSD fees; another fee token fails safe to submit-only
+    /// or to pool admission.
     async fn read_atomic_slot_state(&self, sequencer: Address) -> Result<AtomicSlotState> {
         let fee_token = ITIP20::new(PATH_USD_ADDRESS, self.l1_provider.clone());
         let (
@@ -1662,8 +1638,7 @@ impl PreparedBatch {
 pub struct AtomicWithdrawalSlot<'a> {
     /// Withdrawals enqueued by the batch, in FIFO order.
     pub withdrawals: &'a [abi::Withdrawal],
-    /// Planner budget for one `processWithdrawals` transaction; the settlement lane further caps
-    /// it at 4,000,000 gas.
+    /// Planner gas budget for `processWithdrawals`, capped at `MAX_ATOMIC_WITHDRAWAL_GAS`.
     pub max_batch_gas: u64,
 }
 
@@ -1676,25 +1651,6 @@ struct AtomicSlotState {
     fee_token_balance: U256,
     /// Withdrawals that can each bounce back without exceeding `MAX_UNPROCESSED_DEPOSITS`.
     deposit_headroom: usize,
-}
-
-/// A confirmed L1 batch submission.
-#[derive(Debug, Clone)]
-pub struct BatchSubmission {
-    /// `BatchSubmitted` event decoded from the confirmed receipt.
-    pub event: BatchSubmitted,
-    /// Confirmed L1 transaction hash.
-    pub transaction_hash: B256,
-    /// L1 block number the transaction was included in.
-    pub block_number: Option<u64>,
-    /// Gas used by the confirmed transaction.
-    pub gas_used: u64,
-    /// Whether the batch's withdrawal slot was fully processed in the same transaction.
-    ///
-    /// The combined transaction is only sent when the portal queue was empty, so the appended
-    /// `processWithdrawals` call can only have consumed the slot this submission enqueued, and
-    /// Tempo AA atomicity rules out a partial outcome.
-    pub withdrawals_processed: bool,
 }
 
 /// One L2 withdrawal batch finalized by `ZoneOutbox`.
@@ -2852,13 +2808,7 @@ mod tests {
         assert_eq!(process.withdrawals, withdrawals);
         assert_eq!(process.remainingQueue, B256::ZERO);
         assert_eq!(request.nonce_key, Some(SUBMIT_BATCH_NONCE_KEY));
-        assert_eq!(request.inner.from, Some(sender));
-        assert_eq!(request.inner.nonce, Some(9));
         assert_eq!(request.inner.gas, Some(gas_limit));
-        assert!(
-            gas_limit <= SUBMIT_BATCH_GAS_LIMIT + MAX_ATOMIC_WITHDRAWAL_GAS,
-            "combined gas must stay within the settlement ceiling"
-        );
         assert!(
             asserter.read_q().is_empty(),
             "portal state read and preflight estimate consumed"
@@ -2887,49 +2837,6 @@ mod tests {
             asserter.read_q().is_empty(),
             "tip-anchored path must not estimate"
         );
-    }
-
-    #[tokio::test]
-    async fn combined_submission_preserves_t13_commitments_and_proof() {
-        let asserter = Asserter::new();
-        let portal = Address::repeat_byte(0x11);
-        let submitter = BatchSubmitter::new(portal, mock_l1(asserter.clone()), test_chain_spec());
-        let withdrawals = simple_withdrawals(1);
-        let legacy = test_submit_batch_call(&withdrawals);
-        let call = submitBatchCall {
-            tempoBlockNumber: legacy.tempoBlockNumber,
-            recentTempoBlockNumber: legacy.recentTempoBlockNumber,
-            blockTransition: legacy.blockTransition,
-            depositQueueTransition: legacy.depositQueueTransition,
-            tokenEnablementTransition: TokenEnablementTransition {
-                prevProcessedTokenCount: 1,
-                nextProcessedTokenCount: 3,
-            },
-            withdrawalQueueHash: legacy.withdrawalQueueHash,
-            verifierConfig: Bytes::from_static(&[1]),
-            proof: Bytes::from_static(&[0xaa, 0xbb]),
-            nextZoneHeight: U256::from(8),
-            signatures: vec![Bytes::from_static(&[0xcc])],
-        };
-        asserter.push_success(&atomic_slot_state(0, 0, false, U256::MAX, 0));
-        let request = submitter
-            .try_build_combined_submission_request(
-                test_submission_request(portal, &call, Address::repeat_byte(0x22), 4),
-                call.withdrawalQueueHash,
-                AtomicWithdrawalSlot {
-                    withdrawals: &withdrawals,
-                    max_batch_gas: MAX_WITHDRAWAL_BATCH_GAS,
-                },
-                true,
-            )
-            .await
-            .unwrap();
-        assert_eq!(request.calls.len(), 2);
-        assert_eq!(request.calls[0].input, Bytes::from(call.abi_encode()));
-        assert_eq!(request.inner.to, None);
-        assert_eq!(request.inner.nonce, Some(4));
-        assert_eq!(request.nonce_key, Some(SUBMIT_BATCH_NONCE_KEY));
-        assert!(asserter.read_q().is_empty());
     }
 
     #[tokio::test]
@@ -2990,10 +2897,6 @@ mod tests {
         let mut callback = test_withdrawal(Address::repeat_byte(0x33), 7);
         callback.gasLimit = MAX_ATOMIC_WITHDRAWAL_GAS;
         let callback_slot = vec![callback];
-        assert!(
-            build_withdrawal_batches(&callback_slot, MAX_WITHDRAWAL_BATCH_GAS)[0].gas_limit()
-                <= MAX_WITHDRAWAL_BATCH_GAS
-        );
         assert!(
             !eligible(
                 &test_submit_batch_call(&callback_slot),

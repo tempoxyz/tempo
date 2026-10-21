@@ -16,9 +16,8 @@
 //!    [`WithdrawalStore`].
 //! 3. At batch finalization, the sequencer calls `finalizeWithdrawalBatch` on L2, which builds a
 //!    hash chain. The proof then enqueues this hash chain into the portal's withdrawal queue on L1.
-//! 4. When the portal queue is otherwise empty, the portal is not paused, and the slot fits one
-//!    `processWithdrawals` call within the settlement gas ceiling, batch settlement appends that
-//!    call to its own L1 transaction and consumes the slot atomically with `submitBatch`.
+//! 4. Batch settlement processes an eligible slot in its own L1 transaction (see
+//!    `BatchSubmitter::submit_batch`).
 //! 5. Otherwise, the [`WithdrawalProcessor`] polls the portal queue on L1 and processes each
 //!    withdrawal by providing the original data and the remaining queue hash.
 //!
