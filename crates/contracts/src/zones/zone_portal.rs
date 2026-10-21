@@ -26,7 +26,8 @@ crate::sol! {
             Sequencer,
             Account,
             CallbackGateway,
-            PauseGuardian
+            PauseGuardian,
+            DepositAuthorizer
         }
 
         enum Capability {
@@ -63,6 +64,13 @@ crate::sol! {
             address tempoRefundRecipient;
             uint256 keyIndex;
             DepositPayload encrypted;
+        }
+
+        /// Short-lived deposit permission signed by a `DepositAuthorizer` (TIP-1151).
+        struct DepositAuthorization {
+            uint64 nonce;
+            uint64 validBefore;
+            bytes signature;
         }
 
         struct EncryptionKeyEntry {
@@ -201,6 +209,13 @@ crate::sol! {
 
         event RoleUpdated(address indexed account, Role prev, Role next);
         event EnforcementModesUpdated(bool accessMode, bool gatewayMode);
+        event DepositAuthModeUpdated(bool enforced);
+        event DepositAuthorized(
+            uint64 indexed depositNumber,
+            address indexed depositor,
+            address indexed authorizer,
+            uint64 nonce
+        );
         event SequencerSetUpdated(uint64 indexed nonce, uint8 threshold, address[] sequencers);
 
         /// Emitted when block-production leadership transitions to a new sequencer.
@@ -256,6 +271,13 @@ crate::sol! {
         error DepositBlockCapacityExceeded(uint64 maximum);
         error InvalidCallbackTarget();
         error AccountNotAllowed(address account);
+        error DepositAuthorizationRequired();
+        error DepositAuthorizationNotEnforced();
+        error DepositAuthorizationExpired(uint64 validBefore);
+        error DepositAuthorizationTooLong(uint64 validBefore);
+        error DepositAuthorizationNonceInvalid(uint64 nonce, uint64 minimum);
+        error InvalidDepositAuthorization();
+        error UnauthorizedDepositAuthorizer(address signer);
         error InvalidLeader();
         error ActiveLeaderRemoved();
         error LeaderAlreadyUpdatedThisBlock();
@@ -274,6 +296,22 @@ crate::sol! {
         function setAllowedAccount(address account, bool allowed) external;
         function setGateway(address account, bool allowed) external;
         function setPauseGuardian(address account, bool allowed) external;
+        function MAX_DEPOSIT_AUTHORIZATION_TTL() external view returns (uint64);
+        function DOMAIN_SEPARATOR() external view returns (bytes32);
+        function isDepositAuthEnforced() external view returns (bool);
+        function setDepositAuthMode(bool enforced) external;
+        function setDepositAuthorizer(address account, bool allowed) external;
+        function depositAuthorizationNonce(address depositor) external view returns (uint64);
+        function depositAuthorizationDigest(
+            address depositor,
+            address token,
+            uint128 amount,
+            uint256 keyIndex,
+            DepositPayload calldata encrypted,
+            address tempoRefundRecipient,
+            uint64 nonce,
+            uint64 validBefore
+        ) external view returns (bytes32);
         function setSequencerSet(address[] calldata newSequencers, uint8 newThreshold) external;
         function verifier() external view returns (address);
         function sequencerSetVersion() external view returns (uint64);
@@ -376,6 +414,15 @@ crate::sol! {
             address tempoRefundRecipient
         ) external returns (bytes32 newCurrentDepositQueueHash);
 
+        function depositAuthorized(
+            address token,
+            uint128 amount,
+            uint256 keyIndex,
+            DepositPayload calldata encrypted,
+            address tempoRefundRecipient,
+            DepositAuthorization calldata authorization
+        ) external returns (bytes32 newCurrentDepositQueueHash);
+
         function setSequencerEncryptionKey(
             bytes32 x,
             uint8 yParity,
@@ -431,6 +478,57 @@ crate::sol! {
             bytes calldata verifierConfig,
             bytes calldata proof
         ) external view returns (bool);
+    }
+}
+
+/// EIP-712 types signed by TIP-1151 deposit authorizers.
+pub mod eip712 {
+    use alloy_primitives::{Address, B256};
+    use alloy_sol_types::{SolStruct, eip712_domain};
+
+    crate::sol! {
+        /// Message a `DepositAuthorizer` signs to admit one deposit.
+        #[derive(Debug, PartialEq, Eq)]
+        struct DepositAuthorization {
+            address depositor;
+            address token;
+            uint128 amount;
+            uint256 keyIndex;
+            bytes32 payloadHash;
+            address tempoRefundRecipient;
+            uint64 nonce;
+            uint64 validBefore;
+        }
+    }
+
+    impl DepositAuthorization {
+        /// Digest `ZonePortal.depositAuthorizationDigest` returns for this message on the
+        /// portal at `portal` on Tempo chain `chain_id`.
+        pub fn signing_hash(&self, chain_id: u64, portal: Address) -> B256 {
+            self.eip712_signing_hash(&eip712_domain! {
+                name: "ZonePortal",
+                version: "1",
+                chain_id: chain_id,
+                verifying_contract: portal,
+            })
+        }
+    }
+}
+
+impl DepositPayload {
+    /// Hash that binds a TIP-1151 deposit authorization to this encrypted payload.
+    pub fn authorization_hash(&self) -> B256 {
+        // A `uint8` ABI-encodes to the same word as a `uint256`.
+        keccak256(
+            (
+                self.ephemeralPubkeyX,
+                alloy_primitives::U256::from(self.ephemeralPubkeyYParity),
+                keccak256(&self.ciphertext),
+                self.nonce,
+                self.tag,
+            )
+                .abi_encode(),
+        )
     }
 }
 
@@ -594,6 +692,42 @@ mod tests {
     use alloy_transport::mock::Asserter;
     use k256::elliptic_curve::sec1::ToEncodedPoint as _;
 
+    /// Pins the TIP-1151 digest to a vector computed independently with `cast`.
+    #[test]
+    fn deposit_authorization_signing_hash_matches_portal_encoding() {
+        let payload = DepositPayload {
+            ephemeralPubkeyX: B256::repeat_byte(0x44),
+            ephemeralPubkeyYParity: 2,
+            ciphertext: Bytes::from_static(&[0xaa; 5]),
+            nonce: [0x55; 12].into(),
+            tag: [0x66; 16].into(),
+        };
+        let payload_hash = payload.authorization_hash();
+        assert_eq!(
+            payload_hash,
+            alloy_primitives::b256!(
+                "0xa86a25dc28e676f394ebbf6aba2f28bf86de21c5c22a332ee55c01247e0557d6"
+            )
+        );
+
+        let message = eip712::DepositAuthorization {
+            depositor: Address::repeat_byte(0x22),
+            token: Address::repeat_byte(0x33),
+            amount: 1_000_000,
+            keyIndex: U256::from(7),
+            payloadHash: payload_hash,
+            tempoRefundRecipient: Address::repeat_byte(0x77),
+            nonce: 9,
+            validBefore: 1_700_000_120,
+        };
+        assert_eq!(
+            message.signing_hash(42431, Address::repeat_byte(0x11)),
+            alloy_primitives::b256!(
+                "0xb5b2c1a7973b9b95c2c21d7d9e8795360774782637e9c1461498002d031595c9"
+            )
+        );
+    }
+
     #[tokio::test]
     async fn encryption_key_reads_key_and_index_from_one_snapshot() {
         let asserter = Asserter::new();
@@ -685,6 +819,17 @@ impl core::fmt::Display for ZonePortal::ZonePortalErrors {
             Self::DepositBlockCapacityExceeded(_) => f.write_str("DepositBlockCapacityExceeded"),
             Self::InvalidCallbackTarget(_) => f.write_str("InvalidCallbackTarget"),
             Self::AccountNotAllowed(_) => f.write_str("AccountNotAllowed"),
+            Self::DepositAuthorizationRequired(_) => f.write_str("DepositAuthorizationRequired"),
+            Self::DepositAuthorizationNotEnforced(_) => {
+                f.write_str("DepositAuthorizationNotEnforced")
+            }
+            Self::DepositAuthorizationExpired(_) => f.write_str("DepositAuthorizationExpired"),
+            Self::DepositAuthorizationTooLong(_) => f.write_str("DepositAuthorizationTooLong"),
+            Self::DepositAuthorizationNonceInvalid(_) => {
+                f.write_str("DepositAuthorizationNonceInvalid")
+            }
+            Self::InvalidDepositAuthorization(_) => f.write_str("InvalidDepositAuthorization"),
+            Self::UnauthorizedDepositAuthorizer(_) => f.write_str("UnauthorizedDepositAuthorizer"),
             Self::InvalidLeader(_) => f.write_str("InvalidLeader"),
             Self::ActiveLeaderRemoved(_) => f.write_str("ActiveLeaderRemoved"),
             Self::LeaderAlreadyUpdatedThisBlock(_) => f.write_str("LeaderAlreadyUpdatedThisBlock"),

@@ -5,6 +5,7 @@ import {
     BlockTransition,
     Capability,
     Deposit,
+    DepositAuthorization,
     DepositPayload,
     DepositQueueTransition,
     DepositType,
@@ -99,11 +100,18 @@ contract ZonePortal is IZonePortal {
     /// @notice Delay before a capability abdication becomes effective.
     uint64 public constant ABDICATION_DELAY = PAUSE_DURATION;
 
+    /// @notice Maximum lifetime of a deposit authorization.
+    /// @dev Bounds how long an authorizer's policy decision stays usable after it changes.
+    uint64 public constant MAX_DEPOSIT_AUTHORIZATION_TTL = 1 hours;
+
     bytes32 internal constant EIP712_DOMAIN_TYPEHASH = keccak256(
         "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
     );
     bytes32 internal constant NAME_HASH = keccak256("ZonePortal");
     bytes32 internal constant VERSION_HASH = keccak256("1");
+    bytes32 internal constant DEPOSIT_AUTHORIZATION_TYPEHASH = keccak256(
+        "DepositAuthorization(address depositor,address token,uint128 amount,uint256 keyIndex,bytes32 payloadHash,address tempoRefundRecipient,uint64 nonce,uint64 validBefore)"
+    );
     bytes32 internal constant SETTLEMENT_ATTESTATION_TYPEHASH = keccak256(
         "SettlementAttestation(uint32 zoneId,uint64 sequencerSetVersion,uint256 zoneHeight,uint256 withdrawalBatchIndex,address verifier,uint64 tempoBlockNumber,uint64 anchorBlockNumber,bytes32 anchorBlockHash,bytes32 blockTransitionHash,bytes32 depositQueueTransitionHash,bytes32 tokenEnablementTransitionHash,bytes32 withdrawalQueueHash,bytes32 verifierConfigHash)"
     );
@@ -188,12 +196,13 @@ contract ZonePortal is IZonePortal {
     /// @dev Mutually exclusive Portal roles. Sequencer membership is derived from this mapping.
     mapping(address => Role) internal role;
 
-    /// @dev Solidity packs both enforcement booleans into slot 21.
+    /// @dev Solidity packs the enforcement booleans into slot 21.
     bool internal _isAccessEnforced;
     bool internal _isGatewayEnforced;
+    bool internal _isDepositAuthEnforced;
 
     /// @dev Reserve the remainder of slot 21 so the cross-domain fee cap has a dedicated slot.
-    uint240 private _enforcementModesPadding;
+    uint232 private _enforcementModesPadding;
 
     /// @notice Maximum Tempo gas rate a sequencer may configure on the zone-side outbox.
     /// @dev Defaults to zero and is read from finalized Tempo state by zone system contracts.
@@ -237,6 +246,10 @@ contract ZonePortal is IZonePortal {
 
     /// @notice Whether the T13 token cursor has been authenticated by an operational batch.
     bool public tokenEnablementCursorInitialized;
+
+    /// @notice Lowest deposit authorization nonce still accepted for each depositor.
+    /// @dev Stored at slot 29. Using nonce `n` sets the depositor's entry to `n + 1`.
+    mapping(address => uint64) public depositAuthorizationNonce;
 
     /*//////////////////////////////////////////////////////////////
                              INITIALIZATION
@@ -565,6 +578,34 @@ contract ZonePortal is IZonePortal {
         Role next = allowed ? Role.PauseGuardian : Role.None;
         if (previous == next) return;
         require(previous == (allowed ? Role.None : Role.PauseGuardian));
+        role[account] = next;
+        emit RoleUpdated(account, previous, next);
+    }
+
+    /// @notice Enable or disable signed deposit authorizations.
+    function setDepositAuthMode(bool enforced) external onlyAdmin {
+        _requireCapabilityActive(Capability.AccessPolicy);
+        _isDepositAuthEnforced = enforced;
+        emit DepositAuthModeUpdated(enforced);
+    }
+
+    /// @notice Return whether deposits require a signed deposit authorization.
+    function isDepositAuthEnforced() external view returns (bool) {
+        return _isDepositAuthEnforced;
+    }
+
+    /// @notice Add or remove a deposit authorizer.
+    /// @dev Returns without emitting when already configured. Access-policy abdication freezes
+    ///      additions, but removal stays available so a compromised key can always be revoked.
+    function setDepositAuthorizer(address account, bool allowed) external onlyAdmin {
+        if (allowed) {
+            _requireCapabilityActive(Capability.AccessPolicy);
+            require(account != address(0) && account != messenger);
+        }
+        Role previous = role[account];
+        Role next = allowed ? Role.DepositAuthorizer : Role.None;
+        if (previous == next) return;
+        require(previous == (allowed ? Role.None : Role.DepositAuthorizer));
         role[account] = next;
         emit RoleUpdated(account, previous, next);
     }
@@ -989,6 +1030,129 @@ contract ZonePortal is IZonePortal {
         return _deposit(_token, amount, keyIndex, encrypted, tempoRefundRecipient);
     }
 
+    /// @notice Deposit with a signed deposit authorization (TIP-1151)
+    /// @dev The authorization replaces the `Account` role checks on the caller and refund
+    ///      recipient. Every other deposit check still applies.
+    function depositAuthorized(
+        address _token,
+        uint128 amount,
+        uint256 keyIndex,
+        DepositPayload calldata encrypted,
+        address tempoRefundRecipient,
+        DepositAuthorization calldata authorization
+    )
+        external
+        whenNotPaused
+        returns (bytes32 newCurrentDepositQueueHash)
+    {
+        if (!_isDepositAuthEnforced) revert DepositAuthorizationNotEnforced();
+
+        uint64 validBefore = authorization.validBefore;
+        if (block.timestamp >= validBefore) revert DepositAuthorizationExpired(validBefore);
+        if (validBefore > block.timestamp + MAX_DEPOSIT_AUTHORIZATION_TTL) {
+            revert DepositAuthorizationTooLong(validBefore);
+        }
+
+        uint64 nonce = authorization.nonce;
+        uint64 minimum = depositAuthorizationNonce[msg.sender];
+        if (nonce < minimum || nonce == type(uint64).max) {
+            revert DepositAuthorizationNonceInvalid(nonce, minimum);
+        }
+
+        bytes32 digest = _depositAuthorizationDigest(
+            msg.sender,
+            _token,
+            amount,
+            keyIndex,
+            encrypted,
+            tempoRefundRecipient,
+            nonce,
+            validBefore
+        );
+        address signer;
+        // The shared TIP-1020 verifier owns signature-format and canonicality checks.
+        try StdPrecompiles.SIGNATURE_VERIFIER.recover(digest, authorization.signature) returns (
+            address recoveredSigner
+        ) {
+            signer = recoveredSigner;
+        } catch {
+            revert InvalidDepositAuthorization();
+        }
+        if (!hasRole(signer, Role.DepositAuthorizer)) revert UnauthorizedDepositAuthorizer(signer);
+
+        depositAuthorizationNonce[msg.sender] = nonce + 1;
+
+        if (tempoRefundRecipient == address(0)) revert InvalidBouncebackRecipient();
+        uint64 depositNumber;
+        (newCurrentDepositQueueHash, depositNumber) =
+            _enqueueDeposit(_token, amount, keyIndex, encrypted, tempoRefundRecipient);
+        emit DepositAuthorized(depositNumber, msg.sender, signer, nonce);
+    }
+
+    /// @notice EIP-712 domain separator for this portal.
+    function DOMAIN_SEPARATOR() external view returns (bytes32) {
+        return _domainSeparator();
+    }
+
+    /// @notice EIP-712 digest a deposit authorizer signs for these deposit arguments.
+    function depositAuthorizationDigest(
+        address depositor,
+        address _token,
+        uint128 amount,
+        uint256 keyIndex,
+        DepositPayload calldata encrypted,
+        address tempoRefundRecipient,
+        uint64 nonce,
+        uint64 validBefore
+    )
+        external
+        view
+        returns (bytes32)
+    {
+        return _depositAuthorizationDigest(
+            depositor, _token, amount, keyIndex, encrypted, tempoRefundRecipient, nonce, validBefore
+        );
+    }
+
+    function _depositAuthorizationDigest(
+        address depositor,
+        address _token,
+        uint128 amount,
+        uint256 keyIndex,
+        DepositPayload calldata encrypted,
+        address tempoRefundRecipient,
+        uint64 nonce,
+        uint64 validBefore
+    )
+        internal
+        view
+        returns (bytes32)
+    {
+        bytes32 payloadHash = keccak256(
+            abi.encode(
+                encrypted.ephemeralPubkeyX,
+                encrypted.ephemeralPubkeyYParity,
+                keccak256(encrypted.ciphertext),
+                encrypted.nonce,
+                encrypted.tag
+            )
+        );
+        bytes32 structHash = keccak256(
+            abi.encode(
+                DEPOSIT_AUTHORIZATION_TYPEHASH,
+                depositor,
+                _token,
+                amount,
+                keyIndex,
+                payloadHash,
+                tempoRefundRecipient,
+                nonce,
+                validBefore
+            )
+        );
+        return keccak256(abi.encodePacked("\x19\x01", _domainSeparator(), structHash));
+    }
+
     function _deposit(
         address _token,
         uint128 amount,
@@ -1000,10 +1164,29 @@ contract ZonePortal is IZonePortal {
         returns (bytes32 newCurrentDepositQueueHash)
     {
         if (tempoRefundRecipient == address(0)) revert InvalidBouncebackRecipient();
+        bool enforcedGateway = _isGatewayEnforced && hasRole(msg.sender, Role.CallbackGateway);
+        // Enforced gateways deposit synchronous callback returns and cannot fetch authorizations.
+        if (_isDepositAuthEnforced && !enforcedGateway) revert DepositAuthorizationRequired();
         // Enforced gateways may deposit callback returns without also being allowed accounts.
         _requireAllowedDepositor(msg.sender);
         _requireAllowed(tempoRefundRecipient);
 
+        (newCurrentDepositQueueHash,) =
+            _enqueueDeposit(_token, amount, keyIndex, encrypted, tempoRefundRecipient);
+    }
+
+    /// @dev Applies every deposit check except caller and refund-recipient admission, then
+    ///      collects funds and appends the deposit to the queue.
+    function _enqueueDeposit(
+        address _token,
+        uint128 amount,
+        uint256 keyIndex,
+        DepositPayload calldata encrypted,
+        address tempoRefundRecipient
+    )
+        internal
+        returns (bytes32 newCurrentDepositQueueHash, uint64 thisDeposit)
+    {
         _validateDepositsActive(_token);
 
         uint64 policyId = ITIP20(_token).transferPolicyId();
@@ -1064,7 +1247,7 @@ contract ZonePortal is IZonePortal {
             maximum = MAX_UNPROCESSED_DEPOSITS;
         }
 
-        uint64 thisDeposit = _recordDeposit(newCurrentDepositQueueHash, maximum);
+        thisDeposit = _recordDeposit(newCurrentDepositQueueHash, maximum);
 
         emit DepositMade(
             newCurrentDepositQueueHash,
@@ -1226,8 +1409,9 @@ contract ZonePortal is IZonePortal {
         }
         uint128 refundAmount = withdrawal.amount - collectedFee;
 
-        bool success =
-            _isAllowed(withdrawal.to) && _tryTransfer(_token, withdrawal.to, refundAmount);
+        // Refund recipients are vetted at deposit time; authorized ones normally hold no role.
+        bool success = (_isDepositAuthEnforced || _isAllowed(withdrawal.to))
+            && _tryTransfer(_token, withdrawal.to, refundAmount);
 
         if (success) {
             emit DepositBounceBack(withdrawal.to, _token, refundAmount, collectedFee);
@@ -1238,7 +1422,7 @@ contract ZonePortal is IZonePortal {
     }
 
     function claimRefund(address token) external returns (uint128 amount) {
-        _requireAllowed(msg.sender);
+        if (!_isDepositAuthEnforced) _requireAllowed(msg.sender);
         amount = refunds[token][msg.sender];
         refunds[token][msg.sender] = 0;
 

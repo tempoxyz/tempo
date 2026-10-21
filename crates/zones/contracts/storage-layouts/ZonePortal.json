@@ -235,10 +235,18 @@
     {
       "astId": 217,
       "contract": "src/runtime/tempo/ZonePortal.sol:ZonePortal",
-      "label": "_enforcementModesPadding",
+      "label": "_isDepositAuthEnforced",
       "offset": 2,
       "slot": "21",
-      "type": "t_uint240"
+      "type": "t_bool"
+    },
+    {
+      "astId": 218,
+      "contract": "src/runtime/tempo/ZonePortal.sol:ZonePortal",
+      "label": "_enforcementModesPadding",
+      "offset": 3,
+      "slot": "21",
+      "type": "t_uint232"
     },
     {
       "astId": 220,
@@ -343,6 +351,14 @@
       "offset": 8,
       "slot": "28",
       "type": "t_bool"
+    },
+    {
+      "astId": 267,
+      "contract": "src/runtime/tempo/ZonePortal.sol:ZonePortal",
+      "label": "depositAuthorizationNonce",
+      "offset": 0,
+      "slot": "29",
+      "type": "t_mapping(t_address,t_uint64)"
     }
   ],
   "types": {
@@ -410,6 +426,13 @@
       "label": "mapping(address => uint128)",
       "numberOfBytes": "32",
       "value": "t_uint128"
+    },
+    "t_mapping(t_address,t_uint64)": {
+      "encoding": "mapping",
+      "key": "t_address",
+      "label": "mapping(address => uint64)",
+      "numberOfBytes": "32",
+      "value": "t_uint64"
     },
     "t_mapping(t_enum(Capability)4918,t_uint64)": {
       "encoding": "mapping",
@@ -520,10 +543,10 @@
       "label": "uint128",
       "numberOfBytes": "16"
     },
-    "t_uint240": {
+    "t_uint232": {
       "encoding": "inplace",
-      "label": "uint240",
-      "numberOfBytes": "30"
+      "label": "uint232",
+      "numberOfBytes": "29"
     },
     "t_uint256": {
       "encoding": "inplace",

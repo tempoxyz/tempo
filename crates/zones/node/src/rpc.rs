@@ -69,11 +69,11 @@ use zone_primitives::constants::MAX_WS_FRAME_AND_MESSAGE_SIZE;
 use zone_rpc::{
     auth::AuthContext,
     types::{
-        ActiveLeaderInfo, AuthorizationTokenInfoResponse, BoundDecryptionKey, BoxEyreFut, BoxFut,
-        DecryptionKeyCandidate, DecryptionKeyStatus, JsonRpcError, LocalSequencerInfo, PeerTipInfo,
-        SequencerInfoResponse, SequencerPeerInfo, SequencerProgress, SequencerReadiness,
-        SetLeaderResponse, ZoneExecutionWitness, ZoneInfoResponse, internal, raw_null, raw_zero,
-        to_raw,
+        ActiveLeaderInfo, AuthorizationTokenInfoResponse, AuthorizeDepositRequest,
+        BoundDecryptionKey, BoxEyreFut, BoxFut, DecryptionKeyCandidate, DecryptionKeyStatus,
+        JsonRpcError, LocalSequencerInfo, PeerTipInfo, SequencerInfoResponse, SequencerPeerInfo,
+        SequencerProgress, SequencerReadiness, SetLeaderResponse, ZoneExecutionWitness,
+        ZoneInfoResponse, internal, raw_null, raw_zero, to_raw,
     },
 };
 
@@ -503,29 +503,42 @@ async fn zone_info(
     l1_provider: &DynProvider<TempoNetwork>,
 ) -> Result<ZoneInfoResponse, JsonRpcError> {
     let portal = ZonePortal::new(portal_address, l1_provider);
-    let (zone_tokens, sequencers, is_access_enforced, is_gateway_open) = tokio::try_join!(
-        zone_tokens(portal_address, l1_provider),
-        zone_sequencers(portal_address, l1_provider),
-        async {
-            if portal_address.is_zero() {
-                Ok(false)
-            } else {
-                portal.isAccessEnforced().call().await.map_err(internal)
-            }
-        },
-        async {
-            if portal_address.is_zero() {
-                Ok(true)
-            } else {
-                portal.isGatewayOpen().call().await.map_err(internal)
-            }
-        },
-    )?;
+    let (zone_tokens, sequencers, is_access_enforced, is_gateway_open, is_deposit_auth_enforced) =
+        tokio::try_join!(
+            zone_tokens(portal_address, l1_provider),
+            zone_sequencers(portal_address, l1_provider),
+            async {
+                if portal_address.is_zero() {
+                    Ok(false)
+                } else {
+                    portal.isAccessEnforced().call().await.map_err(internal)
+                }
+            },
+            async {
+                if portal_address.is_zero() {
+                    Ok(true)
+                } else {
+                    portal.isGatewayOpen().call().await.map_err(internal)
+                }
+            },
+            async {
+                if portal_address.is_zero() {
+                    Ok(false)
+                } else {
+                    portal
+                        .isDepositAuthEnforced()
+                        .call()
+                        .await
+                        .map_err(internal)
+                }
+            },
+        )?;
 
     Ok(ZoneInfoResponse {
         zone_id: U64::from(zone_id),
         is_access_enforced,
         is_gateway_open,
+        is_deposit_auth_enforced,
         zone_tokens,
         sequencers,
         chain_id: U64::from(chain_id),
@@ -759,6 +772,8 @@ pub struct ZoneRpc<Api: EthApiTypes> {
     config: zone_rpc::RedactedRpcConfig,
     enabled_tokens: EnabledTokenRegistry,
     l1_provider: DynProvider<TempoNetwork>,
+    /// Signs TIP-1151 deposit authorizations when this node is a deposit authorizer.
+    deposit_authorizer: Option<Arc<DepositAuthorizer>>,
     /// Maps filter IDs to the authenticated account that created them.
     /// The reth filter registry remains the source of truth for filter liveness.
     filter_owners: Arc<Mutex<HashMap<FilterId, Address>>>,
@@ -777,10 +792,17 @@ impl<Api: EthApiTypes + 'static> ZoneRpc<Api> {
             config,
             enabled_tokens,
             l1_provider,
+            deposit_authorizer: None,
             filter_owners: Arc::new(Mutex::new(HashMap::new())),
         };
         rpc.spawn_filter_owner_pruner();
         rpc
+    }
+
+    /// Serves `zone_authorizeDeposit` with `authorizer`.
+    pub fn with_deposit_authorizer(mut self, authorizer: Option<Arc<DepositAuthorizer>>) -> Self {
+        self.deposit_authorizer = authorizer;
+        self
     }
 
     /// Returns a reference to the inner [`EthFilter`] handler.
@@ -1404,6 +1426,26 @@ where
         Box::pin(async move {
             let key = encryption_key(self.config.zone_portal, &self.l1_provider).await?;
             to_raw(&key)
+        })
+    }
+
+    fn zone_authorize_deposit(
+        &self,
+        request: AuthorizeDepositRequest,
+        auth: AuthContext,
+    ) -> BoxFut<'_> {
+        Box::pin(async move {
+            let Some(authorizer) = &self.deposit_authorizer else {
+                return Err(JsonRpcError::method_disabled());
+            };
+            // Concurrent requests from one depositor get the same nonce; only the first
+            // `depositAuthorized` call consumes it.
+            let nonce = ZonePortal::new(self.config.zone_portal, &self.l1_provider)
+                .depositAuthorizationNonce(auth.caller)
+                .call()
+                .await
+                .map_err(internal)?;
+            to_raw(&authorizer.authorize(auth.caller, &request, nonce).await?)
         })
     }
 }

@@ -2,10 +2,11 @@
 
 use std::{future::Future, pin::Pin};
 
-use alloy_primitives::{Address, B256, Bytes, U64, U256};
+use alloy_primitives::{Address, B256, Bytes, U64, U128, U256};
 use alloy_rpc_types_debug::ExecutionWitness;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, value::RawValue};
+use tempo_contracts::zones::ZonePortal::DepositPayload;
 use tempo_primitives::TempoHeader;
 
 /// Shorthand for the boxed future returned by [`ZoneRpcApi`](crate::handlers::ZoneRpcApi) methods.
@@ -170,6 +171,15 @@ impl JsonRpcError {
         }
     }
 
+    /// The deposit authorizer refused to sign (-32007).
+    pub fn deposit_not_authorized() -> Self {
+        Self {
+            code: -32007,
+            message: "Deposit not authorized".to_string(),
+            data: None,
+        }
+    }
+
     /// Account mismatch — `from` does not match authenticated account (-32004).
     pub fn account_mismatch() -> Self {
         Self {
@@ -218,6 +228,8 @@ pub struct ZoneInfoResponse {
     pub is_access_enforced: bool,
     /// Whether callback gateway registration enforcement is disabled.
     pub is_gateway_open: bool,
+    /// Whether deposits require a TIP-1151 deposit authorization.
+    pub is_deposit_auth_enforced: bool,
     /// The enabled zone token contract addresses.
     pub zone_tokens: Vec<Address>,
     /// The active sequencer addresses.
@@ -226,6 +238,42 @@ pub struct ZoneInfoResponse {
     pub chain_id: U64,
     /// The latest Tempo block imported into the zone.
     pub tempo_block_number: U64,
+}
+
+/// Request payload for `zone_authorizeDeposit` (TIP-1151).
+///
+/// Carries the exact `depositAuthorized` arguments the authorization will bind. The depositor
+/// is the authenticated caller.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AuthorizeDepositRequest {
+    /// Tempo token to deposit.
+    pub token: Address,
+    /// Deposit amount.
+    pub amount: U128,
+    /// Sequencer encryption key index the payload targets.
+    pub key_index: U256,
+    /// Encrypted recipient and memo.
+    pub encrypted: DepositPayload,
+    /// Tempo address that receives a bounced deposit.
+    pub tempo_refund_recipient: Address,
+    /// Operator-defined credentials, such as an OIDC ID token, forwarded to the policy hook.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<Value>,
+}
+
+/// Response payload for `zone_authorizeDeposit` (TIP-1151).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DepositAuthorizationResponse {
+    /// Address of the `DepositAuthorizer` that signed.
+    pub authorizer: Address,
+    /// Authorization nonce for the depositor.
+    pub nonce: U64,
+    /// Unix timestamp before which the authorization must be used.
+    pub valid_before: U64,
+    /// Signature over the portal's EIP-712 deposit authorization digest.
+    pub signature: Bytes,
 }
 
 /// Local view of one sequencer node for `zone_getSequencerInfo`.
@@ -459,6 +507,7 @@ define_methods! {
     ZoneGetAuthorizationTokenInfo => "zone_getAuthorizationTokenInfo",
     ZoneGetZoneInfo => "zone_getZoneInfo",
     ZoneGetEncryptionKey => "zone_getEncryptionKey",
+    ZoneAuthorizeDeposit => "zone_authorizeDeposit",
     EthGetTransactionByHash => "eth_getTransactionByHash",
     EthGetTransactionReceipt => "eth_getTransactionReceipt",
     EthGetLogs => "eth_getLogs",

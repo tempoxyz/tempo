@@ -479,6 +479,7 @@ pub(crate) fn test_node_snapshot(name: &str, sequencer: SequencerInfoResponse) -
             zone_id: U64::from(1),
             is_access_enforced: false,
             is_gateway_open: false,
+            is_deposit_auth_enforced: false,
             zone_tokens: Vec::new(),
             sequencers: Vec::new(),
             chain_id: U64::from(1),

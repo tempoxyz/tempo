@@ -13,7 +13,10 @@ use crate::{
     generate_p2p_key::GenerateP2pKey,
     generate_zone_genesis::GenerateZoneGenesis,
     install_reference_zone_factory::InstallReferenceZoneFactory,
-    portal_access::{EnableToken, SetAccessMode, SetAllowedAccount, SetGateway, SetGatewayMode},
+    portal_access::{
+        EnableToken, SetAccessMode, SetAllowedAccount, SetDepositAuthMode, SetDepositAuthorizer,
+        SetGateway, SetGatewayMode,
+    },
     portal_pause::PausePortal,
     set_encryption_key::SetEncryptionKey,
     spam_deposits::SpamDeposits,
@@ -89,6 +92,14 @@ async fn main() -> eyre::Result<()> {
         Action::SetAllowedAccount(args) => {
             args.run().await.wrap_err("failed to update account role")
         }
+        Action::SetDepositAuthMode(args) => args
+            .run()
+            .await
+            .wrap_err("failed to set deposit authorization mode"),
+        Action::SetDepositAuthorizer(args) => args
+            .run()
+            .await
+            .wrap_err("failed to update deposit authorizer role"),
         Action::SetGateway(args) => args.run().await.wrap_err("failed to update gateway role"),
         Action::SetGatewayMode(args) => args.run().await.wrap_err("failed to set gateway mode"),
         Action::SetEncryptionKey(args) => args.run().await.wrap_err("failed to set encryption key"),
@@ -137,6 +148,8 @@ enum Action {
     PausePortal(PausePortal),
     SetAccessMode(SetAccessMode),
     SetAllowedAccount(SetAllowedAccount),
+    SetDepositAuthMode(SetDepositAuthMode),
+    SetDepositAuthorizer(SetDepositAuthorizer),
     SetGateway(SetGateway),
     SetGatewayMode(SetGatewayMode),
     SetEncryptionKey(SetEncryptionKey),

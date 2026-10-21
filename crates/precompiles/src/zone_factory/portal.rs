@@ -81,8 +81,10 @@ pub struct ZonePortalStorage {
     role: Mapping<Address, u8>,
     is_access_enforced: bool,
     is_gateway_enforced: bool,
+    /// Whether deposits require a signed TIP-1151 authorization, packed into slot 21.
+    is_deposit_auth_enforced: bool,
     /// Reserved remainder of the enforcement modes slot.
-    _reserved: FixedBytes<30>,
+    _reserved: FixedBytes<29>,
     /// Maximum Tempo gas rate, stored in slot 22.
     max_tempo_gas_rate: u128,
     /// Active block-producing leader, stored in slot 23.
@@ -106,6 +108,8 @@ pub struct ZonePortalStorage {
     last_processed_enabled_token_count: u64,
     /// Whether the token cursor has been initialized, packed into slot 28.
     token_enablement_cursor_initialized: bool,
+    /// Lowest TIP-1151 deposit authorization nonce accepted per depositor, stored in slot 29.
+    deposit_authorization_nonce: Mapping<Address, u64>,
 }
 
 impl ZonePortalStorage {

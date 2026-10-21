@@ -266,6 +266,17 @@ contract BaseTest is PortalRuntimeTest {
         internal
         returns (bytes32)
     {
+        return portal.deposit(
+            token,
+            amount,
+            _ensureEncryptionKey(portal),
+            _depositPayload(to, memo),
+            tempoRefundRecipient
+        );
+    }
+
+    /// @notice Returns the latest encryption key index, installing a test key if none exists.
+    function _ensureEncryptionKey(ZonePortal portal) internal returns (uint256) {
         uint256 keyCount = uint256(vm.load(address(portal), PORTAL_ENCRYPTION_KEYS_SLOT));
         if (keyCount == 0) {
             bytes32 entriesBase = keccak256(abi.encode(uint256(PORTAL_ENCRYPTION_KEYS_SLOT)));
@@ -282,9 +293,7 @@ contract BaseTest is PortalRuntimeTest {
             );
             keyCount = 1;
         }
-        return portal.deposit(
-            token, amount, keyCount - 1, _depositPayload(to, memo), tempoRefundRecipient
-        );
+        return keyCount - 1;
     }
 
     function _singleWithdrawal(Withdrawal memory withdrawal)

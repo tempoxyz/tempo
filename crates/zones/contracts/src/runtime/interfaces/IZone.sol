@@ -14,7 +14,8 @@ enum Role {
     Sequencer,
     Account,
     CallbackGateway,
-    PauseGuardian
+    PauseGuardian,
+    DepositAuthorizer
 }
 
 /// @notice Independently abdicated Portal configuration surfaces.
@@ -117,6 +118,15 @@ struct DepositPayload {
     bytes ciphertext; // AES-256-GCM encrypted (to || memo || padding)
     bytes12 nonce; // GCM nonce
     bytes16 tag; // GCM authentication tag
+}
+
+/// @notice Short-lived deposit permission signed by an account with the `DepositAuthorizer` role
+/// @dev The signed EIP-712 message also binds the depositor, token, amount, encrypted payload,
+///      and refund recipient, which are taken from the deposit call itself.
+struct DepositAuthorization {
+    uint64 nonce; // Must be at least the depositor's next accepted nonce
+    uint64 validBefore; // Unix time in seconds after which the authorization is invalid
+    bytes signature; // TIP-1020 secp256k1, P256, or WebAuthn signature over the digest
 }
 
 /// @notice User deposit stored in the queue
@@ -542,6 +552,17 @@ interface IZonePortal {
     /// @notice Emitted when the independently mutable enforcement flags are initialized or updated.
     event EnforcementModesUpdated(bool accessMode, bool gatewayMode);
 
+    /// @notice Emitted when the admin turns signed deposit authorizations on or off.
+    event DepositAuthModeUpdated(bool enforced);
+
+    /// @notice Emitted alongside `DepositMade` for a deposit admitted by an authorization.
+    event DepositAuthorized(
+        uint64 indexed depositNumber,
+        address indexed depositor,
+        address indexed authorizer,
+        uint64 nonce
+    );
+
     error NotSequencer();
     error NotAdmin();
     error NotPauseAuthority();
@@ -588,6 +609,13 @@ interface IZonePortal {
     error InvalidCallbackTarget();
     error CallbackDidNotReturnToZone();
     error AccountNotAllowed(address account);
+    error DepositAuthorizationRequired();
+    error DepositAuthorizationNotEnforced();
+    error DepositAuthorizationExpired(uint64 validBefore);
+    error DepositAuthorizationTooLong(uint64 validBefore);
+    error DepositAuthorizationNonceInvalid(uint64 nonce, uint64 minimum);
+    error InvalidDepositAuthorization();
+    error UnauthorizedDepositAuthorizer(address signer);
     /// @notice Emitted when an account's portal role is initialized or updated.
     event RoleUpdated(address indexed account, Role prev, Role next);
 
@@ -653,6 +681,39 @@ interface IZonePortal {
 
     /// @notice Add or remove a pause guardian.
     function setPauseGuardian(address account, bool allowed) external;
+
+    /// @notice Maximum lifetime of a deposit authorization, in seconds.
+    function MAX_DEPOSIT_AUTHORIZATION_TTL() external view returns (uint64);
+
+    /// @notice EIP-712 domain separator for this portal.
+    function DOMAIN_SEPARATOR() external view returns (bytes32);
+
+    /// @notice Whether deposits require a signed deposit authorization.
+    function isDepositAuthEnforced() external view returns (bool);
+
+    /// @notice Change deposit authorization enforcement. Only callable by the admin.
+    function setDepositAuthMode(bool enforced) external;
+
+    /// @notice Add or remove a deposit authorizer. Only callable by the admin.
+    function setDepositAuthorizer(address account, bool allowed) external;
+
+    /// @notice Lowest authorization nonce the portal still accepts for `depositor`.
+    function depositAuthorizationNonce(address depositor) external view returns (uint64);
+
+    /// @notice EIP-712 digest a deposit authorizer signs for these deposit arguments.
+    function depositAuthorizationDigest(
+        address depositor,
+        address token,
+        uint128 amount,
+        uint256 keyIndex,
+        DepositPayload calldata encrypted,
+        address tempoRefundRecipient,
+        uint64 nonce,
+        uint64 validBefore
+    )
+        external
+        view
+        returns (bytes32);
 
     function admin() external view returns (address);
 
@@ -899,6 +960,20 @@ interface IZonePortal {
         uint256 keyIndex,
         DepositPayload calldata encrypted,
         address tempoRefundRecipient
+    )
+        external
+        returns (bytes32 newCurrentDepositQueueHash);
+
+    /// @notice Deposit with a signed deposit authorization (TIP-1151)
+    /// @dev Requires deposit authorization mode. Replaces the `Account` role checks on the
+    ///      caller and refund recipient with the authorization; all other deposit checks apply.
+    function depositAuthorized(
+        address token,
+        uint128 amount,
+        uint256 keyIndex,
+        DepositPayload calldata encrypted,
+        address tempoRefundRecipient,
+        DepositAuthorization calldata authorization
     )
         external
         returns (bytes32 newCurrentDepositQueueHash);

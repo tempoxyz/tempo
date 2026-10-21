@@ -102,6 +102,29 @@ pub(crate) struct SetGateway {
     allowed: bool,
 }
 
+#[derive(Debug, clap::Parser)]
+pub(crate) struct SetDepositAuthMode {
+    #[command(flatten)]
+    args: PortalAccessArgs,
+
+    /// Require a TIP-1151 deposit authorization for deposits.
+    #[arg(long)]
+    enforced: bool,
+}
+
+#[derive(Debug, clap::Parser)]
+pub(crate) struct SetDepositAuthorizer {
+    #[command(flatten)]
+    args: PortalAccessArgs,
+
+    /// Key whose TIP-1151 deposit authorizer role should be updated.
+    account: Address,
+
+    /// Add the DepositAuthorizer role. Omit to remove it.
+    #[arg(long)]
+    allowed: bool,
+}
+
 impl EnableToken {
     pub(crate) async fn run(self) -> eyre::Result<()> {
         if let Some(proposal) = self.args.safe_proposal() {
@@ -340,6 +363,106 @@ impl SetGateway {
             "portal gateway role did not update"
         );
         print_success("callback gateway", &receipt.transaction_hash());
+        drop(provider);
+        Ok(())
+    }
+}
+
+impl SetDepositAuthMode {
+    pub(crate) async fn run(self) -> eyre::Result<()> {
+        if let Some(proposal) = self.args.safe_proposal() {
+            let (portal, provider) = connect_safe(&self.args, proposal.safe).await?;
+            portal
+                .setDepositAuthMode(self.enforced)
+                .from(proposal.safe)
+                .call()
+                .await
+                .wrap_err("ZonePortal.setDepositAuthMode Safe simulation failed")?;
+            let calldata = ZonePortal::setDepositAuthModeCall {
+                enforced: self.enforced,
+            }
+            .abi_encode();
+            return write_safe_proposal(
+                &provider,
+                &proposal,
+                "ZonePortal.setDepositAuthMode",
+                self.args.portal,
+                calldata,
+            )
+            .await;
+        }
+
+        let (portal, provider, nonce) = connect(self.args).await?;
+        let receipt = portal
+            .setDepositAuthMode(self.enforced)
+            .nonce_key(ADMIN_OPS_NONCE_KEY)
+            .nonce(nonce)
+            .send()
+            .await
+            .wrap_err("failed sending ZonePortal.setDepositAuthMode")?
+            .get_receipt()
+            .await
+            .wrap_err("failed waiting for setDepositAuthMode receipt")?;
+        ensure!(receipt.status(), "setDepositAuthMode transaction reverted");
+        ensure!(
+            portal.isDepositAuthEnforced().call().await? == self.enforced,
+            "portal deposit authorization mode did not update"
+        );
+        print_success("deposit authorization mode", &receipt.transaction_hash());
+        drop(provider);
+        Ok(())
+    }
+}
+
+impl SetDepositAuthorizer {
+    pub(crate) async fn run(self) -> eyre::Result<()> {
+        if let Some(proposal) = self.args.safe_proposal() {
+            let (portal, provider) = connect_safe(&self.args, proposal.safe).await?;
+            portal
+                .setDepositAuthorizer(self.account, self.allowed)
+                .from(proposal.safe)
+                .call()
+                .await
+                .wrap_err("ZonePortal.setDepositAuthorizer Safe simulation failed")?;
+            let calldata = ZonePortal::setDepositAuthorizerCall {
+                account: self.account,
+                allowed: self.allowed,
+            }
+            .abi_encode();
+            return write_safe_proposal(
+                &provider,
+                &proposal,
+                "ZonePortal.setDepositAuthorizer",
+                self.args.portal,
+                calldata,
+            )
+            .await;
+        }
+
+        let (portal, provider, nonce) = connect(self.args).await?;
+        let receipt = portal
+            .setDepositAuthorizer(self.account, self.allowed)
+            .nonce_key(ADMIN_OPS_NONCE_KEY)
+            .nonce(nonce)
+            .send()
+            .await
+            .wrap_err("failed sending ZonePortal.setDepositAuthorizer")?
+            .get_receipt()
+            .await
+            .wrap_err("failed waiting for setDepositAuthorizer receipt")?;
+        ensure!(
+            receipt.status(),
+            "setDepositAuthorizer transaction reverted"
+        );
+        ensure!(
+            portal
+                .hasRole(self.account, Role::DepositAuthorizer)
+                .call()
+                .await?
+                == self.allowed,
+            "portal deposit authorizer role did not update"
+        );
+        print_success("deposit authorizer", &receipt.transaction_hash());
         drop(provider);
         Ok(())
     }

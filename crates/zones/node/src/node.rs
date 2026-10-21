@@ -250,6 +250,8 @@ pub struct ZoneRedactedRpcConfig {
     pub zone_id: u32,
     /// Max duration for redacted RPC auth.
     pub max_auth_token_validity: Duration,
+    /// Serves `zone_authorizeDeposit` with this TIP-1151 deposit authorizer when set.
+    pub deposit_authorizer: Option<zone_rpc::DepositAuthorizerConfig>,
 }
 
 /// Tempo Zone node type configuration.
@@ -1596,12 +1598,28 @@ where
             max_response_size,
             zone_portal: portal_address,
         };
-        let api: Arc<dyn ZoneRpcApi> = Arc::new(ZoneRpc::new(
-            eth_handlers,
-            redacted_rpc_config.clone(),
-            enabled_tokens,
-            l1_provider,
-        ));
+        let deposit_authorizer = match config.deposit_authorizer {
+            Some(authorizer) => {
+                let authorizer = zone_rpc::DepositAuthorizer::new(
+                    authorizer,
+                    config.zone_id,
+                    l1_provider.get_chain_id().await?,
+                    portal_address,
+                )?;
+                info!(target: "reth::cli", address = %authorizer.address(), "Deposit authorizer enabled");
+                Some(Arc::new(authorizer))
+            }
+            None => None,
+        };
+        let api: Arc<dyn ZoneRpcApi> = Arc::new(
+            ZoneRpc::new(
+                eth_handlers,
+                redacted_rpc_config.clone(),
+                enabled_tokens,
+                l1_provider,
+            )
+            .with_deposit_authorizer(deposit_authorizer),
+        );
         let local_addr = start_redacted_rpc(redacted_rpc_config, api).await?;
         info!(target: "reth::cli", %local_addr, "Redacted zone RPC server started");
 

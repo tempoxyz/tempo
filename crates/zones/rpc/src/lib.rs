@@ -9,6 +9,7 @@
 pub mod auth;
 pub mod config;
 pub mod debug;
+pub mod deposit_auth;
 pub mod error;
 pub mod filter;
 pub mod handlers;
@@ -22,6 +23,7 @@ mod ws;
 
 pub use config::RedactedRpcConfig;
 pub use debug::{ZoneDebugApi, ZoneDebugApiRpcServer};
+pub use deposit_auth::{DepositAuthorizer, DepositAuthorizerConfig};
 pub use handlers::ZoneRpcApi;
 pub use provider::{ZoneProvider, ZoneProviderConfig};
 pub use server::start_redacted_rpc;

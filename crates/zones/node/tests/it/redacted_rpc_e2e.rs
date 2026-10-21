@@ -8,8 +8,9 @@
 //! - Method tier enforcement (restricted/disabled/unknown methods)
 
 use crate::utils::{
-    DEFAULT_TIMEOUT, TIP20_TX_GAS, l1_dev_signer, now_secs, start_zone_with_redacted_rpc,
-    start_zone_with_redacted_rpc_l1, start_zone_with_redacted_rpc_l1_with_encryption,
+    DEFAULT_TIMEOUT, TIP20_TX_GAS, l1_dev_signer, now_secs, redacted_rpc_call,
+    start_zone_with_redacted_rpc, start_zone_with_redacted_rpc_l1,
+    start_zone_with_redacted_rpc_l1_with_encryption,
 };
 use alloy::{
     primitives::{Address, B256, TxKind, U256, address, hex},
@@ -32,7 +33,7 @@ use tempo_contracts::{
     },
     zones::{
         IZoneInbox, TEMPO_STATE_ADDRESS, TempoState, Unauthorized, ZONE_INBOX_ADDRESS,
-        ZONE_TOKEN_ADDRESS,
+        ZONE_TOKEN_ADDRESS, ZonePortal,
     },
 };
 use tempo_precompiles::{
@@ -1545,6 +1546,170 @@ async fn test_zone_get_encryption_key_reads_latest_l1_key() -> eyre::Result<()> 
             "yParity": second_prefix,
             "keyIndex": "0x1",
         })
+    );
+
+    Ok(())
+}
+
+/// TIP-1151: an account outside the portal allowlist deposits with an authorization issued by
+/// `zone_authorizeDeposit`, and the zone mints it. The authorization is single-use.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_zone_authorize_deposit_admits_unlisted_depositor() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let ctx = start_zone_with_redacted_rpc_l1_with_encryption().await?;
+    let l1 = ctx.l1();
+    let portal_address = ctx.portal_address();
+    let depositor_signer = l1.signer_at(3);
+    let depositor = depositor_signer.address();
+    let amount = 500_000_u128;
+
+    let authorizer_signer = PrivateKeySigner::random();
+    let admin_portal = ZonePortal::new(portal_address, l1.admin_provider());
+    let receipt = admin_portal
+        .setDepositAuthorizer(authorizer_signer.address(), true)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(receipt.status());
+    let receipt = admin_portal
+        .setDepositAuthMode(true)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(receipt.status());
+    let authorizer_url = ctx
+        .start_deposit_authorizer_rpc(zone_node::rpc::DepositAuthorizerConfig {
+            signer: authorizer_signer.clone(),
+            ttl: Duration::from_secs(120),
+            policy_url: None,
+        })
+        .await?;
+
+    let zone_info = ctx
+        .call_as_user("zone_getZoneInfo", json!([]), &depositor_signer)
+        .await?;
+    assert_eq!(zone_info["result"]["isAccessEnforced"], true);
+    assert_eq!(zone_info["result"]["isDepositAuthEnforced"], true);
+
+    l1.fund_user(depositor, amount * 2).await?;
+    let depositor_provider = l1.provider_with_signer(depositor_signer.clone());
+    let receipt = ContractTip20::new(PATH_USD_ADDRESS, &depositor_provider)
+        .approve(portal_address, U256::MAX)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(receipt.status());
+    let portal = ZonePortal::new(portal_address, &depositor_provider);
+    let (key_index, encrypted) = l1
+        .encrypt_deposit_for_portal(portal_address, depositor, depositor, B256::ZERO)
+        .await?;
+
+    let legacy = portal
+        .deposit(
+            PATH_USD_ADDRESS,
+            amount,
+            key_index,
+            encrypted.clone(),
+            depositor,
+        )
+        .call()
+        .await
+        .expect_err("legacy deposit must need an authorization");
+    assert!(
+        matches!(
+            legacy.as_decoded_interface_error::<ZonePortal::ZonePortalErrors>(),
+            Some(ZonePortal::ZonePortalErrors::DepositAuthorizationRequired(
+                _
+            ))
+        ),
+        "{legacy}"
+    );
+
+    let request = json!([{
+        "token": PATH_USD_ADDRESS,
+        "amount": U256::from(amount),
+        "keyIndex": key_index,
+        "encrypted": encrypted,
+        "tempoRefundRecipient": depositor,
+    }]);
+    let disabled = ctx
+        .call_as_user("zone_authorizeDeposit", request.clone(), &depositor_signer)
+        .await?;
+    assert_eq!(disabled["error"]["code"], -32006, "{disabled}");
+
+    let response = redacted_rpc_call(
+        &authorizer_url,
+        "zone_authorizeDeposit",
+        request,
+        &ctx.user_token(&depositor_signer),
+    )
+    .await?;
+    let issued = &response["result"];
+    assert_eq!(
+        issued["authorizer"],
+        json!(authorizer_signer.address()),
+        "{response}"
+    );
+    assert_eq!(issued["nonce"], "0x0");
+    let authorization = ZonePortal::DepositAuthorization {
+        nonce: 0,
+        validBefore: u64::from_str_radix(
+            issued["validBefore"]
+                .as_str()
+                .unwrap()
+                .trim_start_matches("0x"),
+            16,
+        )?,
+        signature: serde_json::from_value(issued["signature"].clone())?,
+    };
+
+    let balance_before = ctx.zone.balance_of(ZONE_TOKEN_ADDRESS, depositor).await?;
+    let receipt = portal
+        .depositAuthorized(
+            PATH_USD_ADDRESS,
+            amount,
+            key_index,
+            encrypted.clone(),
+            depositor,
+            authorization.clone(),
+        )
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(receipt.status(), "authorized deposit reverted");
+    assert_eq!(portal.depositAuthorizationNonce(depositor).call().await?, 1);
+    ctx.zone
+        .wait_for_balance(
+            ZONE_TOKEN_ADDRESS,
+            depositor,
+            balance_before + U256::from(amount),
+            DEFAULT_TIMEOUT,
+        )
+        .await?;
+
+    let replay = portal
+        .depositAuthorized(
+            PATH_USD_ADDRESS,
+            amount,
+            key_index,
+            encrypted,
+            depositor,
+            authorization,
+        )
+        .call()
+        .await
+        .expect_err("a used authorization must not admit a second deposit");
+    assert!(
+        matches!(
+            replay.as_decoded_interface_error::<ZonePortal::ZonePortalErrors>(),
+            Some(ZonePortal::ZonePortalErrors::DepositAuthorizationNonceInvalid(_))
+        ),
+        "{replay}"
     );
 
     Ok(())

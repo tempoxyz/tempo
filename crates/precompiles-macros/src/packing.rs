@@ -443,8 +443,9 @@ pub(crate) fn gen_collision_check_fn(
     }
 
     let check_fn = quote! {
+        // Not inlined: one frame per field keeps the constructor's debug-build stack linear in
+        // the field count instead of quadratic.
         #[cfg(all(debug_assertions, not(feature = "dst")))]
-        #[inline(always)]
         #[allow(non_snake_case)]
         fn #check_fn_name() {
             #checks
