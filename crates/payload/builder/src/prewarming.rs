@@ -15,10 +15,7 @@ use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
 use tempo_chainspec::TempoHardfork;
-use tempo_evm::{
-    ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::TempoEvm,
-    supports_storage_action_replay,
-};
+use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::TempoEvm};
 use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
 use tracing::{instrument, trace};
 
@@ -501,15 +498,15 @@ fn is_invalidated_buffered_transaction(
 
 /// Returns true if the transaction is a candidate for parallel prewarming in a block at `spec`.
 fn is_parallel_candidate(tx: &BestTransaction, spec: TempoHardfork) -> bool {
-    // Payment lane transactions
-    tx.transaction.is_payment()
+    // Storage action replay is unsupported from T14
+    !spec.is_t14()
+        // Payment lane transactions
+        && tx.transaction.is_payment()
         // 2D or expiring nonces, no protocol nonces
         && tx
             .transaction
             .nonce_key_ref()
             .is_some_and(|nonce_key| !nonce_key.is_zero())
-        // Only transactions whose storage actions replay can reproduce
-        && supports_storage_action_replay(tx.transaction.inner(), spec)
 }
 
 #[cfg(test)]

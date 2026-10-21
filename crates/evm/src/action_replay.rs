@@ -1,10 +1,9 @@
-use crate::{TempoBlockExecutor, TempoEvmTypes, TempoTxEnv, TempoTxResult};
+use crate::{TempoBlockExecutor, TempoEvmTypes, TempoTxResult};
 use alloy_consensus::transaction::TxHashRef;
 use alloy_primitives::{
-    Address, B256, TxKind, U256,
+    Address, B256, U256,
     map::{AddressMap, U256Map, hash_map::Entry},
 };
-use alloy_sol_types::SolCall;
 use evm2::{
     TxResult,
     evm::{CacheDB, DynDatabase, PendingState},
@@ -13,35 +12,31 @@ use reth_evm::{
     BlockExecutionError, BlockExecutor, ExecutorTx, InternalBlockExecutionError, RecoveredTx,
     execute::map_database_error,
 };
-use tempo_chainspec::TempoHardfork;
-use tempo_contracts::precompiles::{
-    ISignatureVerifier, ITIP20ChannelReserve, SIGNATURE_VERIFIER_ADDRESS,
-    TIP20_CHANNEL_RESERVE_ADDRESS,
-};
 use tempo_precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, CONFIGURABLE_ACCOUNT_ADDRESS, NONCE_PRECOMPILE_ADDRESS,
+    NONCE_PRECOMPILE_ADDRESS,
     nonce::NonceManager,
     storage::StorageAction,
     tip_fee_manager::amm::{Pool, compute_amount_out},
 };
-use tempo_primitives::{TempoSignature, TempoTxEnvelope, account::decode_config_commitment};
 
 impl TempoBlockExecutor<'_> {
     /// Commits a precomputed transaction by replaying recorded storage actions.
     ///
     /// `result_closure` observes the synthesized result before the replayed state is committed.
+    ///
+    /// From T14 a replay is rejected with [`StorageActionReplayError::UnsupportedHardfork`]; the
+    /// transaction must execute through the handler instead.
     pub fn execute_transaction_with_actions(
         &mut self,
         tx: impl ExecutorTx<Self>,
         replay: StorageActionReplay,
         result_closure: impl FnOnce(&TempoTxResult),
     ) -> Result<(), BlockExecutionError> {
+        if self.evm().config_spec_id().is_t14() {
+            return Err(StorageActionReplayError::UnsupportedHardfork.into());
+        }
         let (tx_env, recovered) = tx.into_parts();
         let original = recovered.tx();
-        if !supports_storage_action_replay(original, self.evm().config_spec_id()) {
-            return Err(StorageActionReplayError::UnsupportedAuthorization.into());
-        }
-        self.ensure_root_keys_active(tx_env.inner())?;
 
         let StorageActionReplay {
             result,
@@ -95,35 +90,6 @@ impl TempoBlockExecutor<'_> {
 
         self.commit_transaction(result)?;
 
-        Ok(())
-    }
-
-    /// Rejects a replay whose sender or fee payer committed to a configuration after the replay
-    /// was recorded.
-    ///
-    /// The replay ran on the parent state, so a migration earlier in this block is invisible to
-    /// it, and replay skips the handler check that retires the root key from T14. These are the
-    /// only primitive roots a replay can name: [`supports_storage_action_replay`] admits neither a
-    /// keychain signature nor a key authorization.
-    fn ensure_root_keys_active(&mut self, tx_env: &TempoTxEnv) -> Result<(), BlockExecutionError> {
-        let spec = self.evm().config_spec_id();
-        if !spec.is_t14() {
-            return Ok(());
-        }
-        // Without a fee payer signature the fee payer is the sender.
-        let fee_payer = tx_env.fee_payer().map_err(BlockExecutionError::other)?;
-        for account in [tx_env.recovered().signer(), fee_payer] {
-            let info = match self.evm_mut().state_mut().account_info_untracked(&account) {
-                Ok(Some(info)) => info,
-                Ok(None) => continue,
-                Err(error) => return Err(map_database_error(error)),
-            };
-            let commitment = decode_config_commitment(&info.extension, spec)
-                .map_err(BlockExecutionError::other)?;
-            if !commitment.is_zero() {
-                return Err(StorageActionReplayError::RootKeyRetired.into());
-            }
-        }
         Ok(())
     }
 
@@ -363,10 +329,8 @@ pub struct ExpiringNonceReplay {
 /// Reason a precomputed storage-action replay cannot be used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum StorageActionReplayError {
-    #[error("authorization requires account-state execution")]
-    UnsupportedAuthorization,
-    #[error("sender or fee payer root key is retired")]
-    RootKeyRetired,
+    #[error("storage action replay is unsupported from T14")]
+    UnsupportedHardfork,
     #[error("transaction execution failed")]
     TransactionExecutionFailed,
     #[error("storage action conflict")]
@@ -622,33 +586,6 @@ impl ExpiringNonceReplayState {
     fn set_next_ring_ptr(&mut self, next: U256) {
         self.pending_ring_ptr = Some(next);
     }
-}
-
-/// Storage actions do not represent configurable account reads/writes or keychain
-/// parent or named grant-recipient eligibility. Such authorizations and direct calls to
-/// `AccountKeychain`, `ConfigurableAccount`, or `verifyConfigurableAccount` must execute
-/// through the handler.
-/// These exclusions apply even before T14; this only disables the
-/// replay optimization, not historical transaction execution.
-///
-/// From T14, `TIP20ChannelReserve` `settle` and `close` are excluded too: their voucher signer's
-/// commitment must be read at the transaction's position in the block (TIP-1112), and a replay
-/// that skips the handler or errors would drop the transaction instead of including it reverted.
-pub fn supports_storage_action_replay(tx: &TempoTxEnvelope, spec: TempoHardfork) -> bool {
-    tx.as_aa().is_none_or(|aa| {
-        matches!(aa.signature(), TempoSignature::Primitive(_))
-            && aa.tx().key_authorization.is_none()
-    }) && !tx.calls().any(|(to, input)| {
-        matches!(
-            to,
-            TxKind::Call(ACCOUNT_KEYCHAIN_ADDRESS | CONFIGURABLE_ACCOUNT_ADDRESS)
-        ) || (to == TxKind::Call(SIGNATURE_VERIFIER_ADDRESS)
-            && input.starts_with(&ISignatureVerifier::verifyConfigurableAccountCall::SELECTOR))
-            || (spec.is_t14()
-                && to == TxKind::Call(TIP20_CHANNEL_RESERVE_ADDRESS)
-                && (input.starts_with(&ITIP20ChannelReserve::settleCall::SELECTOR)
-                    || input.starts_with(&ITIP20ChannelReserve::closeCall::SELECTOR)))
-    })
 }
 
 #[cfg(test)]
