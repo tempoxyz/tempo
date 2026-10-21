@@ -255,12 +255,6 @@ impl Fixture {
         );
     }
 
-    /// Records the storage actions of later transactions.
-    fn enable_actions(&mut self) {
-        self.evm.ext_mut().actions.enable();
-        self.reconfigure(|_| {});
-    }
-
     /// A database holding the accepted state, for a block executor.
     fn chain_db(&self) -> InMemoryDB {
         InMemoryDB {

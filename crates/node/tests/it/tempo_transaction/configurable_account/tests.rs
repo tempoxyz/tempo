@@ -4,7 +4,6 @@ use crate::tempo_transaction::helpers::{
 };
 use alloy::{
     consensus::{BlockHeader, SignableTransaction, TxEip1559, TxLegacy},
-    primitives::aliases::U96,
     rpc::types::state::StateOverridesBuilder,
     sol_types::{SolError, SolEvent},
     transports::TransportError,
@@ -19,10 +18,7 @@ use reth_node_builder::BuiltPayload;
 use reth_rpc_eth_types::{EthApiError, RpcInvalidTransactionError};
 use serde_json::{from_value, json};
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-use tempo_contracts::precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, IAccountKeychain, ITIP20, ITIP20ChannelReserve,
-    TIP20_CHANNEL_RESERVE_ADDRESS,
-};
+use tempo_contracts::precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, IAccountKeychain, ITIP20};
 use tempo_evm::transaction_error::ConfigurableAccountError;
 use tempo_primitives::{
     account::encode_config_commitment,
@@ -32,10 +28,6 @@ use tempo_primitives::{
     },
 };
 use tokio::time::timeout;
-
-/// A voucher channel funds a deposit in the fee token and pays out a signed cumulative amount.
-const VOUCHER_DEPOSIT: u64 = 1_000;
-const VOUCHER_AMOUNT: u64 = 60;
 
 /// What a pending transaction needs from the root key of an account that migrates.
 #[derive(Clone, Copy, Debug)]
@@ -128,18 +120,6 @@ impl RootRole {
             }
         })
     }
-}
-
-#[derive(Clone, Copy, Debug)]
-enum Redeem {
-    Settle,
-    Close,
-}
-
-/// A channel of `payer`, opened in the next block, and the descriptor that identifies it.
-struct VoucherChannel {
-    id: B256,
-    descriptor: ITIP20ChannelReserve::ChannelDescriptor,
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1358,15 +1338,15 @@ async fn reorg_without_migration_evicts_configurable_account_transactions() -> e
     Ok(())
 }
 
-/// The parallel builder replays payments recorded on the parent state, so it must not commit a
-/// payment whose sender or fee payer is a root key that a same-block migration retires.
+/// From T14 the parallel builder does not replay payments recorded on the parent state, so a
+/// payment whose sender or fee payer is a root key that a same-block migration retires runs after
+/// the migration and is rejected.
 #[tokio::test(flavor = "multi_thread")]
 async fn parallel_builder_skips_root_payment_after_same_block_migration() -> eyre::Result<()> {
     let mut env = environment_with(TestNodeBuilder::new().with_parallel_builder()).await?;
     // Three root-signed payments on a 2D nonce lane: one from an account that migrates in this
     // block, one that account's root key sponsors, and one from a bystander. The migration pays a
-    // higher tip, so the builder executes it first. Each payment has its own fresh recipient, so
-    // no replayed payment conflicts with another and only the root-key check can skip one.
+    // higher tip, so the builder executes it first.
     let migrating = OwnerKey::new(0x30, SignatureType::Secp256k1);
     let OwnerKey::Secp(root) = &migrating else {
         unreachable!("the migrating owner is a secp256k1 key")
@@ -1453,223 +1433,4 @@ async fn parallel_builder_skips_root_payment_after_same_block_migration() -> eyr
         assert_eq!(token.balanceOf(recipient).call().await?, U256::ZERO);
     }
     Ok(())
-}
-
-/// The parallel builder replays only payments it can gate on the parent state. A channel `settle`
-/// or `close` carries a voucher whose signer's root key a same-block migration retires, so it must
-/// run in order after the migration, where the precompile rejects the voucher.
-async fn parallel_builder_runs_voucher_redemption_after_same_block_migration(
-    redeem: Redeem,
-    seed: u8,
-) -> eyre::Result<()> {
-    let mut env = environment_with(TestNodeBuilder::new().with_parallel_builder()).await?;
-    let chain_id = env.chain_id();
-    let key = |offset: u8| PrivateKeySigner::from_bytes(&B256::repeat_byte(seed + offset)).unwrap();
-    let owner = |key: &PrivateKeySigner| OwnerKey::Secp(key.clone());
-    // Fresh accounts per variant: the migrating payer, a live payer and one payee for each.
-    let (migrating, live) = (key(0), key(1));
-    let (migrating_payee, live_payee) = (key(2), key(3));
-    let mut account = ConfigurableAccount::migrated(migrating.address(), seed + 4, 3);
-    for address in [
-        migrating.address(),
-        live.address(),
-        migrating_payee.address(),
-        live_payee.address(),
-    ] {
-        env.fund_account(address).await?;
-    }
-    let provider = tempo_provider(&env);
-
-    // Each payer opens a channel to its payee.
-    let pairs = [(&migrating, &migrating_payee), (&live, &live_payee)];
-    let mut opens = Vec::new();
-    for (payer, payee) in pairs {
-        let tx = create_basic_aa_tx(
-            chain_id,
-            0,
-            vec![Call {
-                to: TIP20_CHANNEL_RESERVE_ADDRESS.into(),
-                value: U256::ZERO,
-                input: ITIP20ChannelReserve::openCall {
-                    payee: payee.address(),
-                    operator: Address::ZERO,
-                    token: DEFAULT_FEE_TOKEN,
-                    deposit: U96::from(VOUCHER_DEPOSIT),
-                    salt: B256::repeat_byte(seed),
-                    authorizedSigner: Address::ZERO,
-                }
-                .abi_encode()
-                .into(),
-            }],
-            GAS_LIMIT,
-        );
-        let signature = TempoSignature::Primitive(owner(payer).sign(tx.signature_hash())?);
-        let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
-        opens.push(
-            *provider
-                .send_raw_transaction(&envelope.encoded_2718())
-                .await?
-                .tx_hash(),
-        );
-    }
-    env.setup.node.advance_block().await?;
-    let mut channels = Vec::new();
-    for (hash, (payer, payee)) in opens.into_iter().zip(pairs) {
-        let receipt = provider
-            .get_transaction_receipt(hash)
-            .await?
-            .ok_or_eyre("channel open not included")?;
-        assert!(receipt.status(), "{receipt:?}");
-        let opened = receipt
-            .logs()
-            .iter()
-            .filter(|log| log.address() == TIP20_CHANNEL_RESERVE_ADDRESS)
-            .find_map(|log| ITIP20ChannelReserve::ChannelOpened::decode_log(&log.inner).ok())
-            .ok_or_eyre("channel open emitted no event")?
-            .data;
-        channels.push(VoucherChannel {
-            id: opened.channelId,
-            descriptor: ITIP20ChannelReserve::ChannelDescriptor {
-                payer: payer.address(),
-                payee: payee.address(),
-                operator: Address::ZERO,
-                token: DEFAULT_FEE_TOKEN,
-                salt: opened.salt,
-                authorizedSigner: Address::ZERO,
-                expiringNonceHash: opened.expiringNonceHash,
-            },
-        });
-    }
-    account.nonce = 1;
-
-    // In one block the payer migrates, which pays a higher tip and so executes first, and both
-    // payees redeem a voucher on a 2D nonce lane, each from a root-signed payment.
-    let mut migrate = account.transaction(&env, vec![account.upgrade_call()]);
-    migrate.max_priority_fee_per_gas *= 2;
-    migrate.max_fee_per_gas *= 2;
-    let signature = TempoSignature::Primitive(owner(&migrating).sign(migrate.signature_hash())?);
-    let migrate: TempoTxEnvelope = migrate.into_signed(signature).into();
-    let reserve = ITIP20ChannelReserve::new(TIP20_CHANNEL_RESERVE_ADDRESS, env.provider());
-    let mut redemptions = Vec::new();
-    for (channel, (payer, payee)) in channels.iter().zip(pairs) {
-        let digest = reserve
-            .getVoucherDigest(channel.id, U96::from(VOUCHER_AMOUNT))
-            .call()
-            .await?;
-        let voucher = Bytes::from(payer.sign_hash_sync(&digest)?.as_bytes());
-        let descriptor = channel.descriptor.clone();
-        let amount = U96::from(VOUCHER_AMOUNT);
-        let input = match redeem {
-            Redeem::Settle => ITIP20ChannelReserve::settleCall {
-                descriptor,
-                cumulativeAmount: amount,
-                signature: voucher,
-            }
-            .abi_encode(),
-            Redeem::Close => ITIP20ChannelReserve::closeCall {
-                descriptor,
-                cumulativeAmount: amount,
-                captureAmount: amount,
-                signature: voucher,
-            }
-            .abi_encode(),
-        };
-        let mut tx = create_basic_aa_tx(
-            chain_id,
-            0,
-            vec![Call {
-                to: TIP20_CHANNEL_RESERVE_ADDRESS.into(),
-                value: U256::ZERO,
-                input: input.into(),
-            }],
-            GAS_LIMIT,
-        );
-        tx.nonce_key = U256::ONE;
-        let signature = TempoSignature::Primitive(owner(payee).sign(tx.signature_hash())?);
-        redemptions.push(TempoTxEnvelope::from(tx.into_signed(signature)));
-    }
-    let mut hashes = Vec::new();
-    for tx in [&migrate, &redemptions[0], &redemptions[1]] {
-        hashes.push(
-            *provider
-                .send_raw_transaction(&tx.encoded_2718())
-                .await?
-                .tx_hash(),
-        );
-    }
-    env.setup.node.advance_block().await?;
-
-    let migrated = provider
-        .get_transaction_receipt(hashes[0])
-        .await?
-        .ok_or_eyre("migration not included")?;
-    assert!(migrated.status(), "{migrated:?}");
-    assert_eq!(
-        commitment(&env, account.address).await?,
-        account.config.commitment().unwrap()
-    );
-    let rejected = provider
-        .get_transaction_receipt(hashes[1])
-        .await?
-        .ok_or_else(|| eyre!("{redeem:?} of the migrated payer's voucher not included"))?;
-    assert_eq!(rejected.block_number, migrated.block_number);
-    assert!(
-        !rejected.status(),
-        "{redeem:?} of a migrated payer's voucher succeeded: {rejected:?}"
-    );
-    // The receipt carries no revert data, so replay the transaction for it: it must have reverted
-    // because the payer's root key is retired, not for any other reason. The reverting frame is
-    // the call into the channel reserve itself, with no frame below it.
-    let trace: Value = provider
-        .raw_request(
-            "debug_traceTransaction".into(),
-            (hashes[1], json!({ "tracer": "callTracer" })),
-        )
-        .await?;
-    assert_eq!(
-        from_value::<Address>(trace["to"].clone())?,
-        TIP20_CHANNEL_RESERVE_ADDRESS,
-        "{redeem:?}: {trace}"
-    );
-    assert!(trace.get("calls").is_none(), "{redeem:?}: {trace}");
-    let reverted = from_value::<Bytes>(trace["output"].clone())?;
-    let retired = ITIP20ChannelReserve::RootKeyRetired {
-        account: migrating.address(),
-    };
-    assert_eq!(
-        reverted,
-        Bytes::from(retired.abi_encode()),
-        "{redeem:?}: {trace}"
-    );
-    let accepted = provider
-        .get_transaction_receipt(hashes[2])
-        .await?
-        .ok_or_else(|| eyre!("{redeem:?} of the live payer's voucher not included"))?;
-    assert_eq!(accepted.block_number, migrated.block_number);
-    assert!(accepted.status(), "{accepted:?}");
-
-    // The migrated payer's channel is untouched, and the live payer's paid out.
-    let reserve = ITIP20ChannelReserve::new(TIP20_CHANNEL_RESERVE_ADDRESS, env.provider());
-    let untouched = reserve.getChannelState(channels[0].id).call().await?;
-    assert_eq!(untouched.settled, U96::ZERO, "{redeem:?}");
-    assert_eq!(untouched.deposit, U96::from(VOUCHER_DEPOSIT), "{redeem:?}");
-    let paid = reserve.getChannelState(channels[1].id).call().await?;
-    match redeem {
-        Redeem::Settle => {
-            assert_eq!(paid.settled, U96::from(VOUCHER_AMOUNT));
-            assert_eq!(paid.deposit, U96::from(VOUCHER_DEPOSIT));
-        }
-        Redeem::Close => assert_eq!(paid.deposit, U96::ZERO, "the channel is closed"),
-    }
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn parallel_builder_runs_settle_after_same_block_migration() -> eyre::Result<()> {
-    parallel_builder_runs_voucher_redemption_after_same_block_migration(Redeem::Settle, 0x10).await
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn parallel_builder_runs_close_after_same_block_migration() -> eyre::Result<()> {
-    parallel_builder_runs_voucher_redemption_after_same_block_migration(Redeem::Close, 0x20).await
 }

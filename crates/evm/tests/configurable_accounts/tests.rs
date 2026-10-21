@@ -4,9 +4,7 @@ use alloy_eips::{
     eip2930::{AccessList, AccessListItem},
     eip7702::{Authorization, SignedAuthorization},
 };
-use alloy_primitives::{
-    Bytes, KECCAK256_EMPTY, LogData, Signature, aliases::U96, bytes, keccak256,
-};
+use alloy_primitives::{Bytes, KECCAK256_EMPTY, LogData, aliases::U96, bytes, keccak256};
 use alloy_sol_types::{SolError, SolEvent, SolValue};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use commonware_utils::NZU64;
@@ -38,10 +36,7 @@ use reth_trie_db::{
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{num::NonZeroU64, sync::Arc};
-use tempo_chainspec::{
-    TempoChainSpec,
-    spec::{DEV, MODERATO},
-};
+use tempo_chainspec::{TempoChainSpec, spec::DEV};
 use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, AccountKeychainError, ISignatureVerifier, ITIP20ChannelReserve,
     PATH_USD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
@@ -49,7 +44,7 @@ use tempo_contracts::precompiles::{
 };
 use tempo_evm::{
     EXPIRING_NONCE_GAS, StorageActionReplay, StorageActionReplayError, TempoEvmConfig,
-    TempoInvalidTransaction, supports_storage_action_replay,
+    TempoInvalidTransaction,
     transaction_error::{ConfigurableAccountError, FeePaymentError, RootKeyRole},
 };
 use tempo_precompiles::{
@@ -1017,267 +1012,49 @@ fn registration_charges_the_new_account_cost_once_for_every_nonce_type() {
 }
 
 #[test]
-fn native_replay_rejects_account_authorization() {
-    let mut f = Fixture::new();
-    let signed = f.signed(3, vec![f.getter()]);
-    let native: TempoTxEnvelope = signed.clone().into();
-    assert!(!supports_storage_action_replay(&native, TempoHardfork::T14));
-    let primitive = TempoSignature::from(Signature::test_signature());
-    let mut ordinary_tx = signed.tx().clone();
-    ordinary_tx.calls[0].to = TxKind::Call(PATH_USD_ADDRESS);
-    let ordinary: TempoTxEnvelope = ordinary_tx.clone().into_signed(primitive.clone()).into();
-    assert!(supports_storage_action_replay(
-        &ordinary,
-        TempoHardfork::T14
-    ));
-    let mut rejected = vec![native];
-    for target in [ACCOUNT_KEYCHAIN_ADDRESS, CONFIGURABLE_ACCOUNT_ADDRESS] {
-        for index in 0..2 {
-            let mut tx = ordinary_tx.clone();
-            tx.calls.push(tx.calls[0].clone());
-            tx.calls[index].to = TxKind::Call(target);
-            let envelope = tx.into_signed(primitive.clone()).into();
-            assert!(!supports_storage_action_replay(
-                &envelope,
-                TempoHardfork::T14
-            ));
-            rejected.push(envelope);
-        }
-    }
-    let mut verifier_tx = ordinary_tx.clone();
-    verifier_tx.calls[0].to = TxKind::Call(SIGNATURE_VERIFIER_ADDRESS);
-    verifier_tx.calls[0].input = ISignatureVerifier::verifyConfigurableAccountCall {
-        account: f.account,
-        hash: signed.tx().signature_hash(),
-        signature: signed.signature().to_bytes(),
-    }
-    .abi_encode()
-    .into();
-    let verifier: TempoTxEnvelope = verifier_tx.into_signed(primitive.clone()).into();
-    assert!(!supports_storage_action_replay(
-        &verifier,
-        TempoHardfork::T14
-    ));
-    rejected.push(verifier);
-    let mut pure_verifier = ordinary_tx.clone();
-    pure_verifier.calls[0].to = TxKind::Call(SIGNATURE_VERIFIER_ADDRESS);
-    pure_verifier.calls[0].input = ISignatureVerifier::verifyCall {
-        signer: f.account,
-        hash: B256::ZERO,
-        signature: Default::default(),
-    }
-    .abi_encode()
-    .into();
-    assert!(supports_storage_action_replay(
-        &pure_verifier.into_signed(primitive.clone()).into(),
-        TempoHardfork::T14
-    ));
-    // Only a primitive root signature is replayed, even for an ordinary call.
-    for signature in [
-        signed.signature().clone(),
-        TempoSignature::Keychain(KeychainSignature::new(
-            f.account,
-            PrimitiveSignature::Secp256k1(Signature::test_signature()),
-        )),
-    ] {
-        let envelope: TempoTxEnvelope = ordinary_tx.clone().into_signed(signature).into();
-        assert!(!supports_storage_action_replay(
-            &envelope,
-            TempoHardfork::T14
-        ));
-        rejected.push(envelope);
-    }
-    let mut tx = ordinary_tx;
-    tx.key_authorization = Some(
-        KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::repeat_byte(2))
-            .into_signed(
-                signed
-                    .signature()
-                    .as_configurable_account()
-                    .unwrap()
-                    .clone(),
-            ),
-    );
-    assert!(!supports_storage_action_replay(
-        &tx.clone().into_signed(primitive.clone()).into(),
-        TempoHardfork::T14
-    ));
-    // Even a primitive-signed primitive grant reads parent metadata at T14.
-    tx.key_authorization.as_mut().unwrap().signature =
-        AccountSignature::try_from(primitive.clone()).unwrap();
-    assert!(!supports_storage_action_replay(
-        &tx.into_signed(primitive).into(),
-        TempoHardfork::T14
-    ));
-    let output = f
-        .evm
-        .transact(&tx_env(&signed, f.account))
-        .unwrap()
-        .detach();
-    let config = TempoEvmConfig::new(MODERATO.clone());
-    let block = TempoBlock::default().seal_slow();
-    let mut executor = config
-        .executor_for_block(InMemoryDB::default(), &block)
-        .unwrap();
-    for envelope in rejected {
-        let recovered = envelope.with_signer(f.account);
-        let error = executor
-            .execute_transaction_with_actions(
-                recovered.as_recovered_ref(),
-                StorageActionReplay {
-                    result: output.result.clone(),
-                    actions: vec![],
-                    expiring_nonce: None,
-                    validator_fee: U256::ZERO,
-                },
-                |_| panic!("unsupported replay must not commit"),
-            )
-            .unwrap_err();
-        assert_eq!(
-            StorageActionReplayError::from_block_execution_error(&error),
-            Some(StorageActionReplayError::UnsupportedAuthorization)
-        );
-    }
-}
-
-#[test]
-fn native_grant_recipient_code_change_rejects_stale_replay() {
+fn replay_is_rejected_from_t14() {
+    let config = activation_config();
     let mut f = Fixture::with_parent(false);
-    f.enable_actions();
-    let recipient = Address::repeat_byte(0x22);
-    let grant = KeyAuthorization::unrestricted(1, SignatureType::ConfigurableAccount, recipient);
-    let approval = f.owner.sign_hash_sync(&grant.signature_hash()).unwrap();
-    let tx = TempoTransaction {
-        chain_id: 1,
-        nonce: 3,
-        gas_limit: 1_000_000,
-        calls: vec![f.getter()],
-        key_authorization: Some(grant.into_signed(approval)),
-        ..Default::default()
-    };
-    let signed = f.sign_primitive(tx);
-    let output = f
-        .evm
-        .transact(&tx_env(&signed, f.account))
-        .unwrap()
-        .detach();
-    assert!(output.result.status);
-    let actions = f.evm.ext().actions.take().unwrap();
-    assert!(
-        !actions.is_empty(),
-        "the precomputed grant must have real recorded writes"
-    );
-
-    // The precomputed result is not committed. Only its separate recipient gains code.
-    f.evm.overlay_db_mut().insert_account_info(
-        &recipient,
-        AccountInfo {
-            code_hash: keccak256([0x00]),
-            code: Some(Bytecode::new_raw(vec![0x00].into())),
+    let tx = f.primitive(3, vec![f.getter()]);
+    let result = f.run(&tx);
+    assert!(result.status, "{result:?}");
+    let recovered = TempoTxEnvelope::AA(tx).with_signer(f.account);
+    // The chain activates T14 at timestamp 10.
+    for (timestamp, spec) in [(9, TempoHardfork::T13), (10, TempoHardfork::T14)] {
+        let block = TempoBlock::uncle(TempoHeader {
+            inner: Header {
+                number: 1,
+                timestamp,
+                gas_limit: 30_000_000,
+                base_fee_per_gas: Some(0),
+                parent_beacon_block_root: Some(B256::ZERO),
+                ..Default::default()
+            },
+            general_gas_limit: 30_000_000,
             ..Default::default()
-        },
-    );
-    assert!(
-        f.evm.transact(&tx_env(&signed, f.account)).is_err(),
-        "ordinary execution must reject the now-ineligible grant recipient"
-    );
-
-    let config = TempoEvmConfig::new(MODERATO.clone());
-    let block = TempoBlock::default().seal_slow();
-    let mut executor = config.executor_for_block(f.chain_db(), &block).unwrap();
-    let recovered = TempoTxEnvelope::AA(signed).with_signer(f.account);
-    let error = executor
-        .execute_transaction_with_actions(
+        })
+        .seal_slow();
+        let mut executor = config.executor_for_block(f.chain_db(), &block).unwrap();
+        assert_eq!(executor.evm().config_spec_id(), spec);
+        let outcome = executor.execute_transaction_with_actions(
             recovered.as_recovered_ref(),
             StorageActionReplay {
-                result: output.result,
-                actions,
+                result: result.clone(),
+                actions: vec![],
                 expiring_nonce: None,
                 validator_fee: U256::ZERO,
             },
-            |_| panic!("stale grant replay must not commit"),
-        )
-        .unwrap_err();
-    assert_eq!(
-        StorageActionReplayError::from_block_execution_error(&error),
-        Some(StorageActionReplayError::UnsupportedAuthorization)
-    );
-}
-
-#[test]
-fn replay_rejects_a_root_key_retired_since_the_parent_state() {
-    let config = activation_config();
-    let block = TempoBlock::uncle(TempoHeader {
-        inner: Header {
-            number: 1,
-            timestamp: 10,
-            gas_limit: 30_000_000,
-            base_fee_per_gas: Some(0),
-            parent_beacon_block_root: Some(B256::ZERO),
-            ..Default::default()
-        },
-        general_gas_limit: 30_000_000,
-        ..Default::default()
-    })
-    .seal_slow();
-    let mut f = Fixture::with_parent(false);
-    let account = f.account;
-    let executed = f.primitive(3, vec![f.getter()]);
-    let result = f.run(&executed);
-    assert!(result.status, "{result:?}");
-    let call = Call {
-        to: TxKind::Call(PATH_USD_ADDRESS),
-        value: U256::ZERO,
-        input: Bytes::new(),
-    };
-    // The account's root key signs as the sender, then as the fee payer of another sender.
-    let sent = f.primitive(4, vec![call.clone()]);
-    let sender = signer(5);
-    let sponsored_tx = sponsored(aa_tx(0, vec![call]), &f.owner, sender.address());
-    let signature = sender
-        .sign_hash_sync(&sponsored_tx.signature_hash())
-        .unwrap();
-    let sponsored_tx = sponsored_tx.into_signed(signature.into());
-    let cases = [
-        ("sender", TempoTxEnvelope::AA(sent).with_signer(account)),
-        (
-            "fee payer",
-            TempoTxEnvelope::AA(sponsored_tx).with_signer(sender.address()),
-        ),
-    ];
-    let replay_error = |f: &Fixture, recovered: &Recovered<TempoTxEnvelope>| {
-        let mut executor = config.executor_for_block(f.chain_db(), &block).unwrap();
-        assert_eq!(executor.evm().config_spec_id(), TempoHardfork::T14);
-        executor
-            .execute_transaction_with_actions(
-                recovered.as_recovered_ref(),
-                StorageActionReplay {
-                    result: result.clone(),
-                    actions: vec![],
-                    expiring_nonce: None,
-                    validator_fee: U256::ZERO,
-                },
-                |_| {},
-            )
-            .err()
-            .and_then(|error| StorageActionReplayError::from_block_execution_error(&error))
-    };
-    for (role, recovered) in &cases {
-        assert_ne!(
-            replay_error(&f, recovered),
-            Some(StorageActionReplayError::RootKeyRetired),
-            "{role} before the retirement"
+            |_| {},
         );
-    }
-    // The recorded actions came from the parent state, so only the executor sees a root key
-    // retired since: replay must reject it in both roles rather than commit the actions.
-    retire(&mut f, account);
-    for (role, recovered) in &cases {
-        assert_eq!(
-            replay_error(&f, recovered),
-            Some(StorageActionReplayError::RootKeyRetired),
-            "{role}"
-        );
+        if spec == TempoHardfork::T14 {
+            let error = outcome.unwrap_err();
+            assert_eq!(
+                StorageActionReplayError::from_block_execution_error(&error),
+                Some(StorageActionReplayError::UnsupportedHardfork)
+            );
+        } else {
+            outcome.unwrap();
+        }
     }
 }
 
@@ -1431,10 +1208,6 @@ fn native_signed_parent_delegate_case(outcome: GrantOutcome, gas_price: u128) {
                     )))
             };
             let signed = sign(&tx);
-            assert!(!supports_storage_action_replay(
-                &signed.clone().into(),
-                TempoHardfork::T14
-            ));
             let output = f.evm.transact(&tx_env(&signed, parent)).unwrap().commit();
             assert_eq!(
                 output.status,
@@ -4344,65 +4117,6 @@ fn retired_root_channel_voucher_inactive_before_t14() {
             before.payee_balance + U256::from(60)
         );
     }
-}
-
-#[test]
-fn channel_settle_and_close_replay_only_from_t14() {
-    let (payer, payee) = (signer(4), signer(5).address());
-    let mut f = Fixture::with_parent(false);
-    let (channel, signature) = voucher_setup(&mut f, &payer, &payer);
-    let primitive = TempoSignature::from(Signature::test_signature());
-    let envelope = |calls: Vec<Call>| -> TempoTxEnvelope {
-        aa_tx(0, calls).into_signed(primitive.clone()).into()
-    };
-    let transfer = Call {
-        to: TxKind::Call(PATH_USD_ADDRESS),
-        value: U256::ZERO,
-        input: ITIP20::transferCall {
-            to: payee,
-            amount: U256::ONE,
-        }
-        .abi_encode()
-        .into(),
-    };
-    assert!(supports_storage_action_replay(
-        &envelope(vec![transfer.clone()]),
-        TempoHardfork::T13
-    ));
-    for redeem in [Redeem::Settle, Redeem::Close] {
-        let call = redeem.call(&channel, 60, signature.clone());
-        // Settle and close verify a signature the replay cannot gate, so they run sequentially.
-        for calls in [
-            vec![call.clone()],
-            vec![transfer.clone(), call.clone()],
-            vec![call, transfer.clone()],
-        ] {
-            let tx = envelope(calls);
-            assert!(
-                supports_storage_action_replay(&tx, TempoHardfork::T13),
-                "{redeem:?} before T14"
-            );
-            assert!(
-                !supports_storage_action_replay(&tx, TempoHardfork::T14),
-                "{redeem:?} from T14"
-            );
-        }
-    }
-    // The other channel calls verify no voucher.
-    let top_up = Call {
-        to: TxKind::Call(TIP20_CHANNEL_RESERVE_ADDRESS),
-        value: U256::ZERO,
-        input: ITIP20ChannelReserve::topUpCall {
-            descriptor: channel.descriptor,
-            additionalDeposit: U96::ONE,
-        }
-        .abi_encode()
-        .into(),
-    };
-    assert!(supports_storage_action_replay(
-        &envelope(vec![top_up]),
-        TempoHardfork::T14
-    ));
 }
 
 /// Gas of one `action` verifying the signature of an uncommitted key, with that key's account

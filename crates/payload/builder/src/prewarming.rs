@@ -15,10 +15,7 @@ use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
 use tempo_chainspec::TempoHardfork;
-use tempo_evm::{
-    ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::TempoEvm,
-    supports_storage_action_replay,
-};
+use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::TempoEvm};
 use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
 use tracing::{instrument, trace};
 
@@ -501,15 +498,15 @@ fn is_invalidated_buffered_transaction(
 
 /// Returns true if the transaction is a candidate for parallel prewarming in a block at `spec`.
 fn is_parallel_candidate(tx: &BestTransaction, spec: TempoHardfork) -> bool {
-    // Payment lane transactions
-    tx.transaction.is_payment()
+    // Storage action replay is unsupported from T14
+    !spec.is_t14()
+        // Payment lane transactions
+        && tx.transaction.is_payment()
         // 2D or expiring nonces, no protocol nonces
         && tx
             .transaction
             .nonce_key_ref()
             .is_some_and(|nonce_key| !nonce_key.is_zero())
-        // Only transactions whose storage actions replay can reproduce
-        && supports_storage_action_replay(tx.transaction.inner(), spec)
 }
 
 #[cfg(test)]
@@ -519,7 +516,7 @@ mod tests {
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
     use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
     use reth_primitives_traits::{
-        Recovered, SealedHeader, SignedTransaction, transaction::error::InvalidTransactionError,
+        Recovered, SealedHeader, transaction::error::InvalidTransactionError,
     };
     use reth_storage_api::noop::NoopProvider;
     use reth_transaction_pool::{
@@ -536,8 +533,7 @@ mod tests {
     use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
     use tempo_precompiles::storage::actions::StorageAction;
     use tempo_primitives::{
-        SignatureType, TempoHeader, TempoPrimitives, TempoTransaction, TempoTxEnvelope,
-        transaction::{Call, KeyAuthorization},
+        TempoHeader, TempoPrimitives, TempoTransaction, TempoTxEnvelope, transaction::Call,
     };
     use tempo_transaction_pool::transaction::TempoPooledTransaction;
 
@@ -666,37 +662,6 @@ mod tests {
             origin: TransactionOrigin::External,
             authority_ids: None,
         })
-    }
-
-    #[test]
-    fn inline_grants_disable_parallel_replay() {
-        let sender = Address::repeat_byte(0x11);
-        let payment = test_payment_tx(sender, 500_000);
-        assert!(is_parallel_candidate(&payment, TempoHardfork::T14));
-        for key_type in [SignatureType::Secp256k1, SignatureType::ConfigurableAccount] {
-            let mut tx = payment.transaction.inner().as_aa().unwrap().tx().clone();
-            tx.key_authorization = Some(
-                KeyAuthorization::unrestricted(42431, key_type, Address::repeat_byte(0x22))
-                    .into_signed(Signature::test_signature()),
-            );
-            let envelope = TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()));
-            let candidate = ValidPoolTransaction {
-                transaction: TempoPooledTransaction::new(envelope.with_signer(sender)),
-                transaction_id: payment.transaction_id,
-                propagate: payment.propagate,
-                timestamp: payment.timestamp,
-                origin: payment.origin,
-                authority_ids: None,
-            };
-            assert!(
-                candidate.transaction.is_payment(),
-                "grant must reach the replay classifier"
-            );
-            assert!(
-                !is_parallel_candidate(&Arc::new(candidate), TempoHardfork::T14),
-                "inline {key_type:?} grant must execute through the handler"
-            );
-        }
     }
 
     struct TestPrewarming {
