@@ -10,7 +10,13 @@
 use std::sync::Arc;
 
 use alloy_primitives::{Address, Bytes};
-use jsonrpsee::{core::RpcResult, types::ErrorObjectOwned};
+use jsonrpsee::{
+    core::RpcResult,
+    types::{
+        ErrorObjectOwned,
+        error::{INTERNAL_ERROR_CODE, INVALID_PARAMS_CODE},
+    },
+};
 use reth_tasks::TaskExecutor;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Semaphore, mpsc, oneshot};
@@ -92,29 +98,29 @@ impl AllowlistRelay {
             .map_err(|err| relay_error(err.to_string()))?;
         let mut responses = Vec::with_capacity(answers.len());
         let mut errors = Vec::new();
-        let mut code = jsonrpsee::types::error::INVALID_PARAMS_CODE;
+        // Invalid params only when every sequencer that failed rejected the request itself.
+        let mut code = INVALID_PARAMS_CODE;
         for (peer, answer) in answers {
             match serde_json::from_slice::<Answer>(&answer) {
                 Ok(Ok(response)) => responses.push((peer, response)),
                 Ok(Err(error)) => {
-                    let error = ErrorObjectOwned::from(error);
-                    if error.code() == jsonrpsee::types::error::INTERNAL_ERROR_CODE {
-                        code = error.code();
+                    if error.code() != INVALID_PARAMS_CODE {
+                        code = INTERNAL_ERROR_CODE;
                     }
-                    errors.push(format!("{peer}: {}", error.message()));
+                    errors.push(format!("{peer}: {error}"));
                 }
                 Err(err) => {
-                    code = jsonrpsee::types::error::INTERNAL_ERROR_CODE;
+                    code = INTERNAL_ERROR_CODE;
                     errors.push(format!("{peer}: malformed answer: {err}"));
                 }
             }
         }
         if !unanswered.is_empty() {
-            code = jsonrpsee::types::error::INTERNAL_ERROR_CODE;
             let unanswered = unanswered
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>();
+            code = INTERNAL_ERROR_CODE;
             errors.push(format!(
                 "no acknowledgement from sequencers {}",
                 unanswered.join(", ")
@@ -127,9 +133,12 @@ impl AllowlistRelay {
         }
     }
 
-    /// Keep the limit on work in flight even if the RPC caller disconnects.
-    async fn relay_limited(&self, request: Request, limit: &Arc<Semaphore>) -> RelayResult {
-        let permit = limit
+    /// Relay `request` in a free `lane` slot, failing fast with `Busy` when there is none. The
+    /// relay runs to completion even if the caller disconnects, keeping the slot until every
+    /// sequencer answered or timed out: a cancelled read cannot free its slot early, and the next
+    /// write cannot overtake this one.
+    async fn relay_in(&self, lane: &Arc<Semaphore>, request: Request) -> RelayResult {
+        let permit = lane
             .clone()
             .try_acquire_owned()
             .map_err(|_| DepositAllowlistError::Busy)?;
@@ -149,17 +158,12 @@ impl AllowlistRelay {
     }
 
     async fn relay_read(&self, request: Request) -> RelayResult {
-        self.relay_limited(request, &self.reads).await
+        self.relay_in(&self.reads, request).await
     }
 
-    /// Relay a write, failing fast with `Busy` while another write is in flight.
     async fn relay_write(&self, write: SignedWrite) -> RpcResult<()> {
         self.admin.authorize(&write)?;
-        // The task retains the write permit through completion, so cancellation cannot let
-        // a later write overtake it.
-        let responses = self
-            .relay_limited(Request::Write(write), &self.write)
-            .await?;
+        let responses = self.relay_in(&self.write, Request::Write(write)).await?;
         let unexpected = responses
             .into_iter()
             .filter(|(_, response)| !matches!(response, Response::Applied(_)))
@@ -316,11 +320,7 @@ pub(crate) async fn apply_relayed_requests(
 }
 
 fn relay_error(message: String) -> ErrorObjectOwned {
-    ErrorObjectOwned::owned(
-        jsonrpsee::types::error::INTERNAL_ERROR_CODE,
-        message,
-        None::<()>,
-    )
+    ErrorObjectOwned::owned(INTERNAL_ERROR_CODE, message, None::<()>)
 }
 
 #[cfg(test)]

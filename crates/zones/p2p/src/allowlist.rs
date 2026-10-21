@@ -2,7 +2,7 @@
 //! RPC-only members relay to every quorum member.
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -16,7 +16,10 @@ use tracing::{debug, warn};
 
 use crate::{
     LeadershipSchedule, P2pPeerId,
-    network::{MAX_ALLOWLIST_MESSAGE_SIZE, MAX_ALLOWLIST_PAYLOAD_SIZE},
+    network::{
+        ALLOWLIST_FRAME_BURST, ALLOWLIST_FRAMES_PER_SECOND, MAX_ALLOWLIST_MESSAGE_SIZE,
+        MAX_ALLOWLIST_PAYLOAD_SIZE,
+    },
     protocol::AllowlistFrame,
     routing::{RoutingMembership, RoutingPolicy},
 };
@@ -29,6 +32,12 @@ const RETRY_INTERVAL: Duration = Duration::from_millis(500);
 /// handled again. Covers more requests than one relayer keeps in flight at once.
 const ANSWERS_PER_RELAYER: usize = 8;
 const PORT_BACKLOG: usize = 16;
+/// Interval between paced request frames, matching the channel quota's rate.
+const FRAME_INTERVAL: Duration =
+    Duration::from_nanos(1_000_000_000 / ALLOWLIST_FRAMES_PER_SECOND as u64);
+/// Paced frames that may be sent back to back. Half the quota's burst, leaving room for frames
+/// that arrive bunched together.
+const PACED_BURST: u32 = ALLOWLIST_FRAME_BURST / 2;
 
 type CommonwareSender = lookup::Sender<PublicKey, commonware_runtime::tokio::Context>;
 type CommonwareReceiver = lookup::Receiver<PublicKey>;
@@ -144,6 +153,7 @@ struct Outstanding {
     answers: Vec<(PublicKey, Vec<u8>)>,
     unanswered: Vec<PublicKey>,
     deadline: Instant,
+    last_sent: Instant,
     reply: Reply,
 }
 
@@ -156,12 +166,14 @@ impl Outstanding {
     }
 }
 
-/// A relayed request retained only while the relayer can resend it.
+/// A request a relayer sent recently.
 #[derive(Debug)]
 struct AnsweredRequest {
     id: u64,
+    /// The encoded answer frame, once the node has answered.
     answer: Option<Vec<u8>>,
-    deadline: Instant,
+    /// When the request may be forgotten: the relayer stops resending it by then.
+    expires_at: Instant,
 }
 
 /// Requests each relayer sent recently, oldest first.
@@ -176,7 +188,7 @@ impl Answered {
             .find_map(|request| (request.id == id).then_some(&request.answer))
     }
 
-    fn insert_pending(&mut self, peer: PublicKey, id: u64) {
+    fn insert_pending(&mut self, peer: PublicKey, id: u64, now: Instant) {
         let requests = self.0.entry(peer).or_default();
         if requests.len() == ANSWERS_PER_RELAYER {
             requests.pop_front();
@@ -184,7 +196,7 @@ impl Answered {
         requests.push_back(AnsweredRequest {
             id,
             answer: None,
-            deadline: Instant::now() + REQUEST_TIMEOUT,
+            expires_at: now + REQUEST_TIMEOUT,
         });
     }
 
@@ -198,11 +210,62 @@ impl Answered {
         }
     }
 
+    /// Forget requests the relayer no longer resends, so answers such as full snapshots are not
+    /// kept for the life of the process.
     fn expire(&mut self, now: Instant) {
         self.0.retain(|_, requests| {
-            requests.retain(|request| now < request.deadline);
+            requests.retain(|request| request.expires_at > now);
             !requests.is_empty()
         });
+    }
+}
+
+/// Paces request frames to the allowlist channel quota. A receiver enforces the quota by pausing
+/// every channel from the sender, which would also delay blocks and transactions.
+#[derive(Debug)]
+struct Pacer {
+    available: u32,
+    refilled_at: Instant,
+}
+
+impl Pacer {
+    fn new(now: Instant) -> Self {
+        Self {
+            available: PACED_BURST,
+            refilled_at: now,
+        }
+    }
+
+    fn refill(&mut self, now: Instant) {
+        let earned =
+            now.saturating_duration_since(self.refilled_at).as_nanos() / FRAME_INTERVAL.as_nanos();
+        if earned == 0 {
+            return;
+        }
+        let earned = u32::try_from(earned).unwrap_or(u32::MAX);
+        self.available = self.available.saturating_add(earned).min(PACED_BURST);
+        self.refilled_at = if self.available == PACED_BURST {
+            now
+        } else {
+            self.refilled_at + FRAME_INTERVAL * earned
+        };
+    }
+
+    /// When the next frame may be sent; in the past if one may be sent now.
+    fn ready_at(&mut self, now: Instant) -> Instant {
+        self.refill(now);
+        if self.available > 0 {
+            now
+        } else {
+            self.refilled_at + FRAME_INTERVAL
+        }
+    }
+
+    fn try_take(&mut self, now: Instant) -> bool {
+        self.refill(now);
+        let available = self.available > 0;
+        self.available -= u32::from(available);
+        available
     }
 }
 
@@ -219,7 +282,9 @@ pub(crate) struct AllowlistCoordinator<B, R = CommonwareReceiver> {
     answers_tx: mpsc::Sender<Answer>,
     answers: mpsc::Receiver<Answer>,
     next_id: u64,
-    outstanding: HashMap<u64, Outstanding>,
+    /// Stable IDs break ties when requests were last sent at the same time.
+    outstanding: BTreeMap<u64, Outstanding>,
+    pacer: Pacer,
     answered: Answered,
 }
 
@@ -254,7 +319,8 @@ where
             answers_tx,
             answers,
             next_id,
-            outstanding: HashMap::new(),
+            outstanding: BTreeMap::new(),
+            pacer: Pacer::new(Instant::now()),
             answered: Answered::default(),
         }
     }
@@ -263,9 +329,13 @@ where
         let mut retry = tokio::time::interval(RETRY_INTERVAL);
         retry.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
+            // New requests wait while the pacer has no frame to spare.
+            let ready_at = self.pacer.ready_at(Instant::now());
+            let ready = ready_at <= Instant::now();
             tokio::select! {
                 _ = retry.tick() => self.retry(),
-                Some(call) = self.calls.recv() => self.start(call),
+                () = tokio::time::sleep_until(ready_at), if !ready => {}
+                Some(call) = self.calls.recv(), if ready => self.start(call),
                 Some(answer) = self.answers.recv() => self.answer(answer),
                 result = self.receiver.recv() => {
                     let (peer, bytes) = result
@@ -294,12 +364,16 @@ where
         self.next_id = self.next_id.wrapping_add(1);
         let id = self.next_id;
         let frame = AllowlistFrame::Request { id, payload }.encode();
-        send_frame(&mut self.sender, unanswered.clone(), frame.clone());
+        // Without a frame to spare, the next retry sends it.
+        if self.pacer.try_take(Instant::now()) {
+            send_frame(&mut self.sender, unanswered.clone(), frame.clone());
+        }
         let request = Outstanding {
             frame,
             answers: Vec::with_capacity(unanswered.len()),
             unanswered,
             deadline: Instant::now() + REQUEST_TIMEOUT,
+            last_sent: Instant::now(),
             reply,
         };
         if request.unanswered.is_empty() {
@@ -309,8 +383,9 @@ where
         }
     }
 
-    /// Resend outstanding requests to the members that have not answered, return the ones past
-    /// their deadline, and drop the ones whose caller is gone.
+    /// Resend outstanding requests to the members that have not answered, as far as the pacer
+    /// allows, return the ones past their deadline, and drop the ones whose caller is gone. Also
+    /// forgets served requests that have expired.
     fn retry(&mut self) {
         let now = Instant::now();
         self.answered.expire(now);
@@ -325,12 +400,20 @@ where
                 request.finish();
             }
         }
-        for request in self.outstanding.values() {
+        // Rotate retries by the last send, so unanswered reads cannot repeatedly consume
+        // every paced frame ahead of a later write.
+        let mut requests = self.outstanding.iter_mut().collect::<Vec<_>>();
+        requests.sort_by_key(|(id, request)| (request.last_sent, **id));
+        for (_, request) in requests {
+            if !self.pacer.try_take(now) {
+                break;
+            }
             send_frame(
                 &mut self.sender,
                 request.unanswered.clone(),
                 request.frame.clone(),
             );
+            request.last_sent = now;
         }
     }
 
@@ -381,7 +464,7 @@ where
                     answers: self.answers_tx.clone(),
                 };
                 if self.requests.try_send(request).is_ok() {
-                    self.answered.insert_pending(peer, id);
+                    self.answered.insert_pending(peer, id, Instant::now());
                 } else {
                     // The relayer resends it.
                     metrics::counter!("zone_p2p_allowlist_frames_dropped_total").increment(1);
@@ -443,22 +526,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn answered_expires_without_more_requests() {
-        let relayer = PrivateKey::from_seed(1).public_key();
-        let other = PrivateKey::from_seed(2).public_key();
-        let mut answered = Answered::default();
-        answered.insert_pending(relayer.clone(), 1);
-        answered.complete(&relayer, 1, b"snapshot");
-        answered.insert_pending(other.clone(), 2);
-        let deadline = answered.0[&relayer][0].deadline;
-
-        answered.expire(deadline - Duration::from_nanos(1));
-        assert_eq!(answered.get(&relayer, 1), Some(&Some(b"snapshot".to_vec())));
-        answered.expire(deadline);
-        assert_eq!(answered.get(&relayer, 1), None);
-        assert!(!answered.0.contains_key(&relayer));
-        answered.expire(Instant::now() + REQUEST_TIMEOUT);
-        assert!(answered.0.is_empty(), "pending requests must expire too");
+    fn pacer_holds_frames_to_the_channel_rate() {
+        let start = Instant::now();
+        let mut pacer = Pacer::new(start);
+        for _ in 0..PACED_BURST {
+            assert!(pacer.try_take(start));
+        }
+        assert!(!pacer.try_take(start));
+        assert_eq!(pacer.ready_at(start), start + FRAME_INTERVAL);
+        assert!(!pacer.try_take(start + FRAME_INTERVAL - Duration::from_nanos(1)));
+        assert!(pacer.try_take(start + FRAME_INTERVAL));
+        assert!(!pacer.try_take(start + FRAME_INTERVAL));
+        // Idle time refills at most a burst.
+        let later = start + FRAME_INTERVAL * 100;
+        for _ in 0..PACED_BURST {
+            assert!(pacer.try_take(later));
+        }
+        assert!(!pacer.try_take(later));
+        // Partial progress toward the next frame carries over.
+        let partial = later + FRAME_INTERVAL / 2;
+        assert!(!pacer.try_take(partial));
+        assert!(pacer.try_take(later + FRAME_INTERVAL));
     }
 
     #[test]
@@ -466,8 +554,9 @@ mod tests {
         let relayer = PrivateKey::from_seed(1).public_key();
         let other = PrivateKey::from_seed(2).public_key();
         let mut answered = Answered::default();
+        let now = Instant::now();
 
-        answered.insert_pending(relayer.clone(), 7);
+        answered.insert_pending(relayer.clone(), 7, now);
         assert_eq!(answered.get(&relayer, 7), Some(&None));
         assert_eq!(answered.get(&other, 7), None);
         answered.complete(&relayer, 7, b"answer");
@@ -477,9 +566,27 @@ mod tests {
         assert_eq!(answered.get(&relayer, 8), None);
 
         for id in 100..100 + ANSWERS_PER_RELAYER as u64 {
-            answered.insert_pending(relayer.clone(), id);
+            answered.insert_pending(relayer.clone(), id, now);
         }
         assert_eq!(answered.get(&relayer, 7), None);
         assert_eq!(answered.get(&relayer, 100), Some(&None));
+    }
+
+    #[test]
+    fn answered_forgets_requests_the_relayer_stopped_resending() {
+        let relayer = PrivateKey::from_seed(1).public_key();
+        let mut answered = Answered::default();
+        let start = Instant::now();
+        answered.insert_pending(relayer.clone(), 1, start);
+        answered.complete(&relayer, 1, b"snapshot");
+        answered.insert_pending(relayer.clone(), 2, start + Duration::from_secs(1));
+
+        answered.expire(start + REQUEST_TIMEOUT - Duration::from_nanos(1));
+        assert_eq!(answered.get(&relayer, 1), Some(&Some(b"snapshot".to_vec())));
+        answered.expire(start + REQUEST_TIMEOUT);
+        assert_eq!(answered.get(&relayer, 1), None);
+        assert_eq!(answered.get(&relayer, 2), Some(&None));
+        answered.expire(start + Duration::from_secs(1) + REQUEST_TIMEOUT);
+        assert!(answered.0.is_empty());
     }
 }

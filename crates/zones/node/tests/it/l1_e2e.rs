@@ -2837,7 +2837,7 @@ async fn test_rpc_node_allowlist_write_fails_with_offline_sequencer() -> eyre::R
     )
     .await?;
     assert!(
-        error.contains("no acknowledgement from sequencers"),
+        error.contains("no acknowledgement from sequencers") && error.contains("error code -32603"),
         "unexpected relay error: {error}"
     );
     for (index, node) in cluster.nodes.iter().enumerate() {
