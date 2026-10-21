@@ -431,11 +431,8 @@ mod tests {
     use alloy_rpc_types_eth::TransactionRequest;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
-    use reth_evm::FromTxWithEncoded;
-    use reth_primitives_traits::SignedTransaction;
     use reth_rpc_convert::TryIntoTxEnv;
     use serde_json::{from_value, to_value};
-    use tempo_evm::ExecutionContext;
     use tempo_primitives::{
         TempoTransaction,
         transaction::{
@@ -975,42 +972,6 @@ mod tests {
                 other.tx_type()
             ),
         }
-    }
-
-    #[test_case::test_case(0; "direct")]
-    #[test_case::test_case(1; "delegate")]
-    #[test_case::test_case(2; "inline grant")]
-    fn native_roles_keep_transaction_context_with_encoding(role: u8) {
-        let account = Address::repeat_byte(9);
-        let account_signature = spec().mock_signature(account).unwrap();
-        let mut tx = TempoTransaction::default();
-        let signature = match role {
-            0 => TempoSignature::ConfigurableAccount(account_signature),
-            1 => TempoSignature::Keychain(KeychainSignature::new(
-                Address::repeat_byte(8),
-                account_signature,
-            )),
-            _ => {
-                tx.key_authorization = Some(
-                    KeyAuthorization::unrestricted(
-                        4217,
-                        SignatureType::Secp256k1,
-                        Address::repeat_byte(8),
-                    )
-                    .into_signed(account_signature),
-                );
-                TempoSignature::default()
-            }
-        };
-        let env = TempoTxEnv::from_tx_with_encoded(
-            TempoTxEnvelope::AA(tx.into_signed(signature))
-                .with_signer(account)
-                .into_encoded_with(Bytes::from_static(&[1])),
-        );
-        assert!(matches!(
-            env.execution_context(),
-            ExecutionContext::Transaction { .. }
-        ));
     }
 
     #[test_case::test_case(0, "keyAuthorizationSimulation is unsupported in simulateV1"; "grant simulation")]

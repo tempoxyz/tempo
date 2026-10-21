@@ -61,7 +61,6 @@ http.workspace = true
 [dev-dependencies]
 alloy = { workspace = true, features = ["providers", "reqwest", "rpc-client", "rpc-types-eth", "signers", "signer-local", "sol-types", "transport-http"] }
 eyre.workspace = true
-reth-evm.workspace = true
 serde_json.workspace = true
 test-case.workspace = true
 tokio.workspace = true
@@ -80,5 +79,4 @@ reth = [
 asm-keccak = [
     "alloy-primitives/asm-keccak",
     "alloy/asm-keccak",
-    "reth-evm/asm-keccak",
 ]
