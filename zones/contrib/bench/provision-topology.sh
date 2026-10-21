@@ -580,7 +580,7 @@ provision_up() {
     local run_key="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}"
     local neobank_preset="${ZONES_BENCH_NEOBANK_PRESET:-full-journey}"
     case "$neobank_preset" in
-        encrypted-deposit|private-withdrawal|full-journey|slippage-bounce|swapped-lifecycle|swapped-redemption) ;;
+        encrypted-deposit|private-withdrawal|full-journey|full-journey-pathusd-fees|slippage-bounce|swapped-lifecycle|swapped-redemption) ;;
         *) die "unsupported neobank preset for provisioning: $neobank_preset" ;;
     esac
 
@@ -674,7 +674,7 @@ provision_up() {
     (( withdrawal_amount > 0 )) || die "ZONES_BENCH_WITHDRAWAL_AMOUNT must be greater than zero"
     local required_swap_uses=0
     case "$neobank_preset" in
-        full-journey|swapped-lifecycle) required_swap_uses="$max_concurrent" ;;
+        full-journey|full-journey-pathusd-fees|swapped-lifecycle) required_swap_uses="$max_concurrent" ;;
         private-withdrawal|swapped-redemption)
             local setup_journeys_per_account
             setup_journeys_per_account=$(((count + accounts - 1) / accounts))
@@ -790,7 +790,7 @@ provision_up() {
     provision_secret_files+=("$neobank_allowed_accounts_file")
     printf '%s\n' "${neobank_allowed_accounts[@]}" >"$neobank_allowed_accounts_file"
 
-    mkdir -p "$zone_db" "$zone_dir"
+    mkdir -p "$zone_dir"
 
     local validator_a="$localnet_dir/127.0.0.2:8000"
     local validator_b="$localnet_dir/127.0.0.3:8100"
@@ -904,6 +904,19 @@ provision_up() {
     local zone_genesis="$zone_dir/genesis.json"
     require_file "$zone_json"
     require_file "$zone_genesis"
+    # Commit synthetic storage through normal genesis initialization, never mutate
+    # a database behind an already committed block-0 header.
+    if [[ -n "${ZONES_BENCH_ZONE_BLOAT_DUMP:-}" ]]; then
+        require_file "$ZONES_BENCH_ZONE_BLOAT_DUMP"
+        local bloated_genesis="$zone_dir/bloated-genesis.json"
+        "$ZONE_BIN" init-from-binary-dump --chain "$zone_genesis" --datadir "$zone_db" \
+            --output-genesis "$bloated_genesis" \
+            --manifest "${ZONES_BENCH_ZONE_BLOAT_MANIFEST:?Zone bloat manifest path required}" \
+            "$ZONES_BENCH_ZONE_BLOAT_DUMP"
+        zone_genesis="$bloated_genesis"
+        # A separate process must accept the saved specification and database.
+        "$ZONE_BIN" init --chain "$zone_genesis" --datadir "$zone_db"
+    fi
     local portal zone_id zone_chain_id anchor_block
     portal="$(jq -er '.portal' "$zone_json")"
     zone_id="$(jq -er '.zoneId' "$zone_json")"
@@ -991,6 +1004,15 @@ provision_up() {
     local zone_rpc="http://127.0.0.1:8546"
     local zone_redacted_rpc="http://127.0.0.1:8544"
     wait_for_rpc "$zone_rpc" "Zone" "$zone_timeout"
+    if [[ -n "${ZONES_BENCH_ZONE_BLOAT_DUMP:-}" ]]; then
+        local live_genesis expected_genesis expected_root
+        live_genesis="$(rpc "$zone_rpc" eth_getBlockByNumber '["0x0",false]')"
+        expected_genesis="$(jq -er '.genesis_hash' "$ZONES_BENCH_ZONE_BLOAT_MANIFEST")"
+        expected_root="$(jq -er '.committed_state_root' "$ZONES_BENCH_ZONE_BLOAT_MANIFEST")"
+        [[ "$(jq -r .hash <<<"$live_genesis")" == "$expected_genesis" && \
+           "$(jq -r .stateRoot <<<"$live_genesis")" == "$expected_root" ]] \
+            || die "running Zone genesis does not match verified bloat manifest"
+    fi
     wait_for_chain_advance "$zone_rpc" "Zone" "$zone_timeout"
     wait_for_zone_enabled_token "$zone_rpc" "$(jq -er '.earnToken' "$fixture_metadata")" "$zone_timeout"
     neobank_allowed_accounts+=("$(jq -er '.bridgeWallet' "$fixture_metadata")")

@@ -13,12 +13,8 @@
 
 use std::time::Duration;
 
-#[cfg(test)]
-use tempo_payload_types::ValidationLatencyEstimator;
-use tempo_payload_types::{ValidationLatencyEstimate, ValidationLatencyWorkload};
+use tempo_payload_types::BUILD_TIME_MULTIPLIER_SCALE;
 
-/// Fixed-point scale for build time multipliers.
-pub(crate) const BUILD_TIME_MULTIPLIER_SCALE: u64 = 1_000_000;
 #[cfg(test)]
 const DEFAULT_BUILD_TIME_MULTIPLIER_SCALED: u64 = 1_350_000;
 const MAX_BUILD_TIME_MULTIPLIER: u64 = 1_700_000;
@@ -39,60 +35,6 @@ pub(crate) fn scaled_build_time_multiplier(multiplier: f64) -> u64 {
     );
 
     (multiplier * BUILD_TIME_MULTIPLIER_SCALE as f64).round() as u64
-}
-
-fn scaled_duration(elapsed: Duration, multiplier: u64) -> Duration {
-    Duration::from_nanos(
-        (elapsed.as_nanos().saturating_mul(u128::from(multiplier))
-            / u128::from(BUILD_TIME_MULTIPLIER_SCALE))
-        .min(u128::from(u64::MAX)) as u64,
-    )
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct PayloadBudgetDecision {
-    pub(crate) predicted_builder_work: Duration,
-    pub(crate) predicted_validator_work: Duration,
-    pub(crate) total_reserved: Duration,
-}
-
-/// Builds the shared proposer/validator budget decision for the current payload.
-///
-/// `elapsed` is wall-clock time spent in the builder so far. `idle_elapsed` is
-/// the proposer-only time spent waiting for more transactions, which is not
-/// replayed by validators and therefore counts once.
-/// `validation_latency` is an estimate of validator-side replay work from
-/// previously validated proposals. If no latency estimate is usable for the
-/// current workload, the validator reserve falls back to
-/// `predicted_builder_work`, which is the replayable proposer work projected
-/// from this build.
-/// `current_workload` describes the block currently being assembled.
-///
-/// The budget is not split into fixed leader/validator buckets. Instead, we
-/// charge proposer idle once, projected builder work once, and learned
-/// validator work once capped at the conservative builder-work projection.
-pub(crate) fn payload_budget_decision(
-    elapsed: Duration,
-    idle_elapsed: Duration,
-    multiplier: u64,
-    validation_latency: Option<ValidationLatencyEstimate>,
-    current_workload: ValidationLatencyWorkload,
-) -> PayloadBudgetDecision {
-    let work_elapsed = elapsed.saturating_sub(idle_elapsed);
-    let predicted_builder_work = scaled_duration(work_elapsed, multiplier);
-    let validation_latency_estimate =
-        validation_latency.and_then(|estimate| estimate.estimate(current_workload));
-    let predicted_validator_work = validation_latency_estimate
-        .map(|estimate| estimate.min(predicted_builder_work))
-        .unwrap_or(predicted_builder_work);
-    let total_reserved = idle_elapsed
-        .saturating_add(predicted_builder_work)
-        .saturating_add(predicted_validator_work);
-    PayloadBudgetDecision {
-        predicted_builder_work,
-        predicted_validator_work,
-        total_reserved,
-    }
 }
 
 /// Computes the observed total-work to tx-cutoff-work multiplier.
@@ -129,15 +71,6 @@ pub(crate) fn decay_build_time_multiplier(current: u64, observed: u64) -> u64 {
 mod tests {
     use super::*;
 
-    fn validation_latency_estimate(
-        workload: ValidationLatencyWorkload,
-        elapsed: Duration,
-    ) -> Option<ValidationLatencyEstimate> {
-        let mut estimator = ValidationLatencyEstimator::default();
-        estimator.observe(1, workload, elapsed);
-        estimator.estimate()
-    }
-
     #[test]
     fn observed_build_multiplier_tracks_tail_cost() {
         assert_eq!(
@@ -153,75 +86,6 @@ mod tests {
             Some(MAX_BUILD_TIME_MULTIPLIER)
         );
         assert_eq!(decay_build_time_multiplier(1_500_000, 1_300_000), 1_475_000);
-    }
-
-    #[test]
-    fn payload_budget_accounts_for_leader_idle_once() {
-        let decision = payload_budget_decision(
-            Duration::from_millis(100),
-            Duration::ZERO,
-            1_350_000,
-            None,
-            ValidationLatencyWorkload::default(),
-        );
-        assert_eq!(decision.predicted_builder_work, Duration::from_millis(135));
-        assert_eq!(
-            decision.predicted_validator_work,
-            Duration::from_millis(135)
-        );
-        assert_eq!(decision.total_reserved, Duration::from_millis(270));
-
-        let decision = payload_budget_decision(
-            Duration::from_millis(350),
-            Duration::from_millis(250),
-            1_350_000,
-            None,
-            ValidationLatencyWorkload::default(),
-        );
-        assert_eq!(decision.predicted_builder_work, Duration::from_millis(135));
-        assert_eq!(
-            decision.predicted_validator_work,
-            Duration::from_millis(135)
-        );
-        assert_eq!(decision.total_reserved, Duration::from_millis(520));
-    }
-
-    #[test]
-    fn payload_budget_uses_validator_feedback_when_available() {
-        let workload = ValidationLatencyWorkload::new(100, 0);
-        let validation_latency = validation_latency_estimate(workload, Duration::from_millis(80));
-        let decision = payload_budget_decision(
-            Duration::from_millis(100),
-            Duration::ZERO,
-            1_350_000,
-            validation_latency,
-            workload,
-        );
-
-        assert_eq!(decision.predicted_builder_work, Duration::from_millis(135));
-        assert_eq!(decision.predicted_validator_work, Duration::from_millis(80));
-        assert_eq!(decision.total_reserved, Duration::from_millis(215));
-    }
-
-    #[test]
-    fn payload_budget_caps_scaled_validator_feedback_at_builder_projection() {
-        let validation_latency = validation_latency_estimate(
-            ValidationLatencyWorkload::new(100, 10),
-            Duration::from_millis(100),
-        );
-        let decision = payload_budget_decision(
-            Duration::from_millis(100),
-            Duration::ZERO,
-            1_350_000,
-            validation_latency,
-            ValidationLatencyWorkload::new(200, 10),
-        );
-
-        assert_eq!(
-            decision.predicted_validator_work,
-            Duration::from_millis(135)
-        );
-        assert_eq!(decision.total_reserved, Duration::from_millis(270));
     }
 
     #[test]

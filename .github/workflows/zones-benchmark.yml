@@ -169,8 +169,7 @@ jobs:
       contents: read
       id-token: write
     name: Resolve benchmark request
-    # Enable after the Tempo benchmark runner and credentials are provisioned.
-    if: github.repository == 'tempoxyz/tempo' && vars.ZONES_BENCHMARK_ENABLED == 'true'
+    if: github.repository == 'tempoxyz/tempo'
     runs-on: ubuntu-latest
     outputs:
       neobank-preset: ${{ steps.config.outputs.neobank-preset }}

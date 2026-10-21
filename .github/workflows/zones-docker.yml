@@ -1207,7 +1207,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Publish Zones CI event
-        if: github.ref == 'refs/heads/main' && vars.ZONES_EVENTS_ENABLED == 'true'
+        if: github.ref == 'refs/heads/main'
         shell: bash
         env:
           EVENTS_KEY: ${{ secrets.EVENTS_KEY }}

@@ -217,13 +217,7 @@ pub trait PrecompileStorageProvider {
     ///
     /// Implementations should use this over naked `keccak256` call to ensure gas is accounted for.
     fn keccak256(&mut self, data: &[u8]) -> Result<B256> {
-        let num_words =
-            u64::try_from(data.len().div_ceil(32)).map_err(|_| TempoPrecompileError::OutOfGas)?;
-        let price = KECCAK256WORD
-            .checked_mul(num_words)
-            .and_then(|w| w.checked_add(KECCAK256))
-            .ok_or(TempoPrecompileError::OutOfGas)?;
-        self.deduct_gas(price)?;
+        self.deduct_gas(keccak_cost(data.len())?)?;
         Ok(keccak256(data))
     }
 
@@ -322,4 +316,15 @@ pub trait ContractStorage {
         self.storage()
             .with_account_info(self.address(), |info| Ok(!info.is_empty_code_hash()))
     }
+}
+
+/// Gas for one `KECCAK256` over `len` bytes of input.
+///
+/// Fails with [`TempoPrecompileError::OutOfGas`] if the cost overflows `u64`.
+pub fn keccak_cost(len: usize) -> Result<u64> {
+    let num_words = u64::try_from(len.div_ceil(32)).map_err(|_| TempoPrecompileError::OutOfGas)?;
+    KECCAK256WORD
+        .checked_mul(num_words)
+        .and_then(|w| w.checked_add(KECCAK256))
+        .ok_or(TempoPrecompileError::OutOfGas)
 }

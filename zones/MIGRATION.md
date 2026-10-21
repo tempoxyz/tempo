@@ -43,19 +43,17 @@ release. Docker recipes live under `zones/docker` and build the root workspace.
 The Zones tooling image keeps its `tempo-xtask` entrypoint but contains the
 `tempo-zone-xtask` executable.
 
-External consumers must be migrated before enabling the corresponding repository
-variable (each is disabled unless set to `true`):
+Zones workflows no longer require repository enablement variables. External
+consumers must maintain the following integrations:
 
-| Variable | Required external cutover |
+| Workflow | External integration |
 | --- | --- |
-| `ZONES_EVENTS_ENABLED` | Transfer event credentials and update Zones sensors to accept `event: zones_registry_package` and `repository: tempoxyz/tempo` and fetch Tempo commit SHAs. |
-| `ZONES_BENCHMARK_ENABLED` | Provision the benchmark runner and ClickHouse credentials for Tempo, and verify the imported benchmark helper paths. |
-| `ZONES_PROVER_BENCHMARK_ENABLED` | Update the benchmark repository's STS policy and AWS `benchmark-runner` trust, and migrate `scripts/zones_prover/run.sh` to Tempo checkouts, `crates/zones/contracts`, and `tempo-zone-xtask`. |
+| CI events | Event credentials and Zones sensors accepting `event: zones_registry_package` and `repository: tempoxyz/tempo` and fetching Tempo commit SHAs. |
+| Benchmarks | The benchmark runner, ClickHouse credentials for Tempo, and imported benchmark helper paths. |
+| Prover benchmarks | The benchmark repository's STS policy, AWS `benchmark-runner` trust, and `scripts/zones_prover/run.sh` using Tempo checkouts, `crates/zones/contracts`, and `tempo-zone-xtask`. |
 
-The remaining gates separate repository changes from external cutover. They do
-not deploy sensors or alter AWS/Depot trust. Docker publishing, automatic
-reproducible builds and prover E2E have completed their cutover and no longer
-require enablement variables.
+The workflows do not deploy sensors or alter AWS/Depot trust. Docker publishing,
+automatic reproducible builds and prover E2E also run without enablement variables.
 
 The Zones reproducible workflow invokes `zones/scripts/reproducible-build.sh`
 with the root workspace as context. Its `zones-reproducible` profile preserves
@@ -72,6 +70,6 @@ The final reproducible publication pipeline from
 complete production node image IDs before promotion, delays companion tags until
 verification succeeds, and verifies archived Linux x86_64 release binaries against
 an independent clean rebuild. Production and verification share the canonical
-prover compiler and timestamp-normalizing EIF packager. The Docker pipeline keeps
-`ZONES_EVENTS_ENABLED` as an external cutover gate for downstream CI triggers.
+prover compiler and timestamp-normalizing EIF packager. The Docker pipeline
+publishes downstream CI events on `main` without an enablement variable.
 See [reproduction instructions](docs/REPRODUCIBLE_BUILDS.md).

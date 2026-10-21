@@ -88,7 +88,7 @@ class AuthorizationTests(unittest.TestCase):
         steps = WORKFLOW["jobs"]["benchmark"]["steps"]
         names = [step.get("name") for step in steps]
         check = names.index("Check org membership")
-        for name in ("Mint Earn read token", "Check out feature Zones", "Configure AWS benchmark role"):
+        for name in ("Mint Earn read token", "Check out feature Tempo with Zones", "Configure AWS benchmark role"):
             self.assertLess(check, names.index(name))
-        checkout = steps[names.index("Check out feature Zones")]
+        checkout = steps[names.index("Check out feature Tempo with Zones")]
         self.assertEqual(checkout["with"]["ref"], "${{ needs.authorize.outputs.feature-sha }}")

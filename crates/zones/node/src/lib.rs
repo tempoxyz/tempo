@@ -23,6 +23,9 @@ mod shadow_prover;
 mod tx_forwarding;
 pub mod version;
 
+#[cfg(feature = "cli")]
+pub mod state_bloat;
+
 pub use consensus::ZoneConsensus;
 pub use deposit_allowlist::{DepositAllowlist, DepositAllowlistAdmin, DepositAllowlistError};
 pub use engine::{EngineExit, ProductionPermit, ZoneEngine};

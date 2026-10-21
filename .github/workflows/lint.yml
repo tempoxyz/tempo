@@ -209,6 +209,36 @@ jobs:
       rust-toolchain: nightly
       flags: --all-features --locked
 
+  # The fuzz crate is excluded from the root workspace and has its own Cargo.lock,
+  # which the deny job above does not see.
+  deny-fuzz:
+    name: cargo deny check (nitro-attestation fuzz)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - uses: tempoxyz/gh-actions/vendor/EmbarkStudios/cargo-deny-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        env:
+          # The action container does not include sccache.
+          RUSTC_WRAPPER: ""
+        with:
+          manifest-path: crates/nitro-attestation/fuzz/Cargo.toml
+          rust-version: stable
+          command: check all
+          arguments: --all-features --locked
+
   zepter:
     name: zepter
     runs-on: depot-ubuntu-latest
@@ -274,6 +304,7 @@ jobs:
       - docs
       - typos
       - deny
+      - deny-fuzz
       - zepter
       - no-std
     timeout-minutes: 30

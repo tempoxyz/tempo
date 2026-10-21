@@ -104,6 +104,10 @@ required-features = ["test-utils"]
 name = "config_commitment"
 required-features = ["test-utils"]
 
+[[test]]
+name = "configurable_account"
+required-features = ["test-utils"]
+
 [[bench]]
 name = "tempo_precompiles"
 harness = false
