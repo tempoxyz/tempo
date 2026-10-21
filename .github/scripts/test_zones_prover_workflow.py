@@ -38,9 +38,7 @@ const github = {rest: {
 }};
 globalThis.fetch = async (url, request) => {
   result.calls.push({url: String(url), ...request, signal: undefined});
-  return String(url).includes('slack.com')
-    ? {ok: true, json: async () => ({ok: true})}
-    : {ok: input.metricsStatus === 204, status: input.metricsStatus};
+  return {ok: true, json: async () => ({ok: true})};
 };
 const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
 new AsyncFunction('github', 'core', 'context', 'require', input.script)(github, core, input.context, require)
@@ -158,28 +156,6 @@ class MembershipTests(unittest.TestCase):
 
 
 class ReportingTests(unittest.TestCase):
-    PROM = 'tempo_zone_benchmark_latency_seconds{prover="on"} 0.2\n'
-
-    def publish(self, files, status=204, url="https://user:p%40ss@metrics.test/insert/0/prometheus/"):
-        return run_with_results("Publish latency metrics", files, metricsStatus=status,
-                                env={"BENCH_METRICS_URL": url, "BENCH_RUN_KIND": "nightly"})
-
-    def test_publishes_labelled_latency(self):
-        result = self.publish({"comparison.prom": self.PROM})
-        self.assertEqual(result["failures"], [])
-        [call] = result["calls"]
-        self.assertEqual(call["url"], "https://metrics.test/insert/0/prometheus/api/v1/import/prometheus")
-        self.assertEqual(call["headers"]["Authorization"], "Basic dXNlcjpwQHNz")
-        self.assertEqual(call["body"], 'tempo_zone_benchmark_latency_seconds{run_kind="nightly",prover="on"} 0.2\n')
-
-    def test_skips_runs_without_latency_and_only_warns_on_publication_errors(self):
-        self.assertEqual(self.publish({})["calls"], [])
-        for status, url in ((503, "https://metrics.test/"), (204, "")):
-            with self.subTest(status=status, url=url):
-                result = self.publish({"comparison.prom": self.PROM}, status, url)
-                self.assertEqual((result["failures"], result["warnings"]),
-                                 ([], ["Zone latency metrics publication failed; comparison evidence remains in the artifact"]))
-
     def test_slack_posts_improvements_to_the_channel_and_otherwise_dms(self):
         actor = next(key for key in json.loads((ROOT / ".github/scripts/bench-slack-users.json").read_text())
                      if not key.startswith("_"))

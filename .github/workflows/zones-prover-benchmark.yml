@@ -239,7 +239,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
-          ref: 52fec08be1c94f05bde205a2eba5e8935243bc80 # prover on/off for both phases
+          ref: c157437a6da71e7422b8cb90842ae554536f0365 # prover on/off for both phases
           path: benchmark
           token: ${{ steps.benchmark-token.outputs.token }}
           persist-credentials: false
@@ -308,6 +308,9 @@ jobs:
         run: bash benchmark/scripts/configure_aws_s3_transfer.sh
       - name: Run matched benchmark phases
         id: bench
+        env:
+          # The controller imports latency from the Tailscale-joined benchmark host.
+          BENCH_METRICS_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}
         run: bash benchmark/scripts/zones_prover/run.sh
       - name: Post results to PR
         if: success() && env.BENCH_COMMENT_ID
@@ -321,42 +324,6 @@ jobs:
               comment_id: Number(process.env.BENCH_COMMENT_ID),
               body: `cc @${process.env.BENCH_ACTOR}\n\n✅ Zones benchmark complete! [View job](${process.env.BENCH_JOB_URL})\n\n${summary}`,
             });
-      - name: Publish latency metrics
-        if: success()
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          BENCH_METRICS_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}
-        with:
-          script: |
-            const fs = require('node:fs');
-            const path = require('node:path');
-            const root = path.join(process.env.BENCH_RESULTS_PATH, 'results');
-            const promPath = path.join(root, 'comparison.prom');
-            // Only full-journey runs export latency.
-            if (fs.existsSync(promPath)) {
-              try {
-                if (!process.env.BENCH_METRICS_URL) throw new Error('missing metrics destination');
-                const url = new URL(process.env.BENCH_METRICS_URL);
-                const headers = {'Content-Type': 'text/plain'};
-                if (url.username || url.password) {
-                  const credentials = `${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`;
-                  headers.Authorization = `Basic ${Buffer.from(credentials).toString('base64')}`;
-                  core.setSecret(headers.Authorization);
-                  url.username = ''; url.password = '';
-                }
-                url.pathname = url.pathname.replace(/\/$/, '') + '/api/v1/import/prometheus';
-                // Manual runs must not overwrite the nightly series.
-                const kind = process.env.BENCH_RUN_KIND;
-                const body = fs.readFileSync(promPath, 'utf8')
-                  .replace(/^(tempo_zone_benchmark_\w+)\{/gm, `$1{run_kind="${kind}",`);
-                const response = await fetch(url, {method: 'POST', headers, body, signal: AbortSignal.timeout(30000)});
-                if (!response.ok) throw new Error(`metrics HTTP ${response.status}`);
-              } catch {
-                // Do not log URLs or request errors that might contain credentials. A failed
-                // import must not replace the posted results with a failure.
-                core.warning('Zone latency metrics publication failed; comparison evidence remains in the artifact');
-              }
-            }
       - name: Send Slack notification (success)
         if: success() && (env.BENCH_SLACK == 'always' || env.BENCH_SLACK == 'on-win')
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0

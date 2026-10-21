@@ -29,7 +29,9 @@ Results update the PR comment. Slack uses `bench-slack-notify.js` like the other
 benchmarks: results post to `SLACK_BENCH_CHANNEL` when a latency improves
 significantly, and otherwise DM the mapped actor; failures DM the actor. Full-journey
 latency is imported into `BENCH_VICTORIAMETRICS_URL` with `run_kind=manual|nightly`
-and `prover=on|off` labels, so manual runs never overwrite the nightly series.
+and `prover=on|off` labels, so manual runs never overwrite the nightly series. That
+address is only reachable over Tailscale, so the controller imports from the AWS
+benchmark host, which joins with its workload identity.
 
 ## Activation
 
