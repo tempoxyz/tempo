@@ -239,7 +239,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: tempoxyz/tempo-multi-region-benchmark
-          ref: 23a59aa9229cef197b57ce2c86f5b875641cb5da # prover on/off for both phases
+          ref: c1dc1ca1181e8abf3bfe1135ad4ff44e9a359568 # prover on/off for both phases
           path: benchmark
           token: ${{ steps.benchmark-token.outputs.token }}
           persist-credentials: false
