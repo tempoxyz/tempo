@@ -394,17 +394,25 @@ async fn test_fill_includes_the_fee_payer_access_at_t14() -> eyre::Result<()> {
         .fill(marked.clone())
         .await?;
     let filled_by_sponsor_provider = sponsor_provider.fill(unmarked).await?;
-    for (filled, marked) in [
-        (filled_by_gas_filler, &marked),
-        (filled_by_sponsor_provider, &marked_with_chain_id),
+    for (provider, filled, marked) in [
+        ("gas filler", filled_by_gas_filler, &marked),
+        (
+            "sponsor provider",
+            filled_by_sponsor_provider,
+            &marked_with_chain_id,
+        ),
     ] {
         let filled = filled
             .as_builder()
             .ok_or_eyre("the filler built the transaction")?;
-        assert_eq!(filled.fee_payer_signature, marked.fee_payer_signature);
+        assert_eq!(
+            filled.fee_payer_signature, marked.fee_payer_signature,
+            "{provider}"
+        );
         assert_eq!(
             filled.inner.gas,
-            Some(estimate_gas(&env.provider, marked).await?)
+            Some(estimate_gas(&env.provider, marked).await?),
+            "{provider}"
         );
     }
     Ok(())
