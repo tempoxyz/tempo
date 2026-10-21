@@ -140,7 +140,9 @@ pub(crate) mod tests {
     use tempo_primitives::{
         TempoTxEnvelope,
         transaction::{
-            Authorization, TempoSignature, TempoSignedAuthorization, TempoTransaction,
+            Authorization, ConfigurableAccountConfig, ConfigurableAccountOwner,
+            ConfigurableAccountSignature, KeyAuthorization, KeychainSignature, PrimitiveSignature,
+            SignatureType, TempoSignature, TempoSignedAuthorization, TempoTransaction,
             envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
         },
     };
@@ -221,6 +223,84 @@ pub(crate) mod tests {
             transaction(Address::ZERO, eip7702),
             transaction(Address::ZERO, tempo),
         ]
+    }
+
+    /// Configurable account as the outer signer, as an access key, and as a key grant's parent.
+    fn transactions_with_configurable_accounts() -> [Recovered<TempoTxEnv>; 3] {
+        let account = Address::repeat_byte(0x55);
+        let configurable = ConfigurableAccountSignature::try_new(
+            account,
+            ConfigurableAccountConfig {
+                salt: B256::ZERO,
+                version: 1,
+                threshold: 1,
+                owners: vec![ConfigurableAccountOwner {
+                    owner: Address::repeat_byte(0x66),
+                    weight: 1,
+                }],
+            },
+            vec![PrimitiveSignature::default()],
+        )
+        .unwrap();
+        let grant =
+            KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::repeat_byte(0x77))
+                .into_signed(configurable.clone());
+        [
+            (
+                account,
+                TempoTransaction::default(),
+                TempoSignature::ConfigurableAccount(configurable.clone()),
+            ),
+            (
+                Address::repeat_byte(0x88),
+                TempoTransaction::default(),
+                TempoSignature::Keychain(KeychainSignature::new(
+                    Address::repeat_byte(0x88),
+                    configurable,
+                )),
+            ),
+            (
+                account,
+                TempoTransaction {
+                    key_authorization: Some(grant),
+                    ..Default::default()
+                },
+                TempoSignature::default(),
+            ),
+        ]
+        .map(|(caller, tx, signature)| {
+            transaction(caller, TempoTxEnvelope::AA(tx.into_signed(signature)))
+        })
+    }
+
+    #[test]
+    fn pool_validation_rejects_configurable_accounts() {
+        for tx in transactions_with_configurable_accounts() {
+            let result = test_evm(InMemoryDB::default())
+                .validate_tx(&tx)
+                .unwrap_err();
+            assert!(matches!(
+                result.external_ref::<TempoInvalidTransaction>(),
+                Some(TempoInvalidTransaction::CallsValidation(
+                    "configurable accounts are not supported"
+                ))
+            ));
+        }
+    }
+
+    #[test]
+    fn block_execution_rejects_configurable_accounts() {
+        for tx in transactions_with_configurable_accounts() {
+            let err = test_evm(InMemoryDB::default())
+                .transact(&tx)
+                .expect_err("configurable account must be rejected before execution");
+            assert!(matches!(
+                err.external_ref::<TempoInvalidTransaction>(),
+                Some(TempoInvalidTransaction::CallsValidation(
+                    "configurable accounts are not supported"
+                ))
+            ));
+        }
     }
 
     #[test]

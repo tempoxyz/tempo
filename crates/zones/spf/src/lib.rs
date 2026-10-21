@@ -694,20 +694,33 @@ mod tests {
     use crate::execution::evm::next_block_env_attributes;
 
     use super::*;
-    use alloy_consensus::Header;
+    use alloy_consensus::{Header, transaction::Recovered};
     use alloy_eips::eip2935::{HISTORY_SERVE_WINDOW, HISTORY_STORAGE_ADDRESS};
     use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
+    use alloy_sol_types::{SolCall as _, SolError as _};
     use evm2::{
         PendingState,
-        evm::{AccountInfo, CacheDB, Db, StateChangeSource},
+        evm::{AccountInfo, CacheDB, Db, StateChangeSource, SystemTx},
     };
-    use reth_evm::{ConfigureEvm, Database as _, DynDatabase};
+    use reth_evm::{BlockExecutorFactory, ConfigureEvm, Database as _, DynDatabase};
     use reth_execution_types::{BlockState, BundleSource, TransactionChanges};
     use reth_trie_common::{
         EMPTY_ROOT_HASH, LeafNode, Nibbles, TrieAccount, TrieNode, root::state_root_unhashed,
     };
     use std::sync::Arc;
-    use tempo_primitives::TempoHeader;
+    use tempo_contracts::{
+        precompiles::{CONFIGURABLE_ACCOUNT_ADDRESS, IConfigurableAccount},
+        zones::ConfigurableAccountsNotSupported,
+    };
+    use tempo_evm::{TempoInvalidTransaction, TempoTxEnv};
+    use tempo_primitives::{
+        TempoHeader, TempoTxEnvelope,
+        transaction::{
+            ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
+            KeyAuthorization, KeychainSignature, PrimitiveSignature, SignatureType, TempoSignature,
+            TempoTransaction,
+        },
+    };
     use zone_evm::ZoneEvmConfig;
     use zone_precompiles::L1StorageReader as _;
     use zone_primitives::constants::zone_chain_id;
@@ -1277,6 +1290,139 @@ mod tests {
             next_block_evm_env(&config, tempo_database, &witness.parent_header, &block).unwrap();
         assert_eq!(env.version.chain_id, config.chain_spec().chain_id());
         assert_eq!(env.block.basefee, U256::ZERO);
+    }
+
+    /// The prover's Zone EVM rejects every configurable account role and update.
+    #[test]
+    fn rejects_configurable_accounts() {
+        let witness = minimal_batch_witness();
+        let block = ZoneBlock {
+            number: 1,
+            parent_hash: witness.parent_header.hash_slow(),
+            timestamp: 0,
+            timestamp_millis_part: 0,
+            beneficiary: Address::ZERO,
+            tempo_import: full_import(witness.tempo_state_witness.initial_tempo_header_rlp.clone()),
+            finalize_withdrawal_batch_count: None,
+            finalize_withdrawal_batch_encrypted_senders: Vec::new(),
+            transactions: Vec::new(),
+        };
+        let config = test_config();
+        let tempo_database =
+            || TempoWitnessDatabase::from_tempo_state_witness(witness.tempo_state_witness.clone());
+        let env = next_block_evm_env(
+            &config,
+            tempo_database().unwrap(),
+            &witness.parent_header,
+            &block,
+        )
+        .unwrap();
+        let evm_config = config.evm_config(tempo_database().unwrap());
+        let zone_database = WitnessDatabase::from_zone_state_witness(
+            ZoneStateWitness {
+                node_pool: Vec::new(),
+                bytecodes: Vec::new(),
+            },
+            EMPTY_ROOT_HASH,
+        )
+        .unwrap();
+        let mut evm = BlockExecutorFactory::evm_with_env(
+            &evm_config,
+            CacheDB::new(Db::new(zone_database)),
+            env,
+        );
+
+        let account = Address::repeat_byte(0x55);
+        let configurable = ConfigurableAccountSignature::try_new(
+            account,
+            ConfigurableAccountConfig {
+                salt: B256::ZERO,
+                version: 1,
+                threshold: 1,
+                owners: vec![ConfigurableAccountOwner {
+                    owner: Address::repeat_byte(0x66),
+                    weight: 1,
+                }],
+            },
+            vec![PrimitiveSignature::default()],
+        )
+        .unwrap();
+        let grant = KeyAuthorization::unrestricted(
+            config.chain_spec().chain_id(),
+            SignatureType::Secp256k1,
+            Address::repeat_byte(0x77),
+        )
+        .into_signed(configurable.clone());
+        for (caller, tx, signature) in [
+            (
+                account,
+                TempoTransaction::default(),
+                TempoSignature::ConfigurableAccount(configurable.clone()),
+            ),
+            (
+                Address::repeat_byte(0x88),
+                TempoTransaction::default(),
+                TempoSignature::Keychain(KeychainSignature::new(
+                    Address::repeat_byte(0x88),
+                    configurable,
+                )),
+            ),
+            (
+                account,
+                TempoTransaction {
+                    key_authorization: Some(grant),
+                    ..Default::default()
+                },
+                TempoSignature::default(),
+            ),
+        ] {
+            let envelope = TempoTxEnvelope::AA(tx.into_signed(signature));
+            let tx = Recovered::new_unchecked(
+                TempoTxEnv::from(Recovered::new_unchecked(envelope, caller)),
+                caller,
+            );
+            let error = evm
+                .transact(&tx)
+                .expect_err("configurable account must be rejected before execution");
+            assert!(matches!(
+                error.external_ref::<TempoInvalidTransaction>(),
+                Some(TempoInvalidTransaction::CallsValidation(
+                    "configurable accounts are not supported"
+                ))
+            ));
+        }
+
+        let owners = vec![IConfigurableAccount::ConfigurableAccountOwner {
+            owner: Address::repeat_byte(0x66),
+            weight: 1,
+        }];
+        for data in [
+            IConfigurableAccount::updateConfigCall {
+                current: IConfigurableAccount::ConfigurableAccountConfig {
+                    salt: B256::ZERO,
+                    version: 1,
+                    threshold: 1,
+                    owners: owners.clone(),
+                },
+                threshold: 1,
+                owners: owners.clone(),
+            }
+            .abi_encode(),
+            IConfigurableAccount::upgradeAccountCall {
+                threshold: 1,
+                owners,
+            }
+            .abi_encode(),
+        ] {
+            let result = evm
+                .execute_system_call(SystemTx::new(CONFIGURABLE_ACCOUNT_ADDRESS, data.into()))
+                .unwrap();
+            assert!(result.stop.is_revert());
+            assert_eq!(
+                result.output,
+                Bytes::from(ConfigurableAccountsNotSupported {}.abi_encode())
+            );
+        }
     }
 
     #[test]

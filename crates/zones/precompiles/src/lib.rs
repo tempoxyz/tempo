@@ -23,6 +23,8 @@
 //!   read rules.
 //! - **StorageCredits** (`storage_credits`) — upstream storage-credit accounting with
 //!   account-scoped read rules.
+//! - **ConfigurableAccount** (`configurable_account`) — upstream configurable account views;
+//!   updates and migrations revert.
 //! - **Zone Inbox** ([`inbox`]) — advances Tempo state and processes the deposit queue.
 //! - **TIP-403 Registry** ([`tip403_proxy`]) — upstream registry over finalized L1 state.
 //! - **Zone TIP-20** ([`ztip20`]) — upstream TIP-20 with zone call rules.
@@ -67,6 +69,7 @@ mod execution;
 mod privacy;
 pub use execution::ZonePrecompileEnv;
 mod account_keychain;
+mod configurable_account;
 pub mod inbox;
 mod nonce;
 pub mod receive_policy_guard;
@@ -101,9 +104,10 @@ use evm2::{
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::zones::{TEMPO_STATE_ADDRESS, ZONE_INBOX_ADDRESS};
 use tempo_precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS, Precompile as _,
-    RECEIVE_POLICY_GUARD_ADDRESS, STORAGE_CREDITS_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, CONFIGURABLE_ACCOUNT_ADDRESS, NONCE_PRECOMPILE_ADDRESS,
+    Precompile as _, RECEIVE_POLICY_GUARD_ADDRESS, STORAGE_CREDITS_ADDRESS,
     account_keychain::AccountKeychain,
+    configurable_account::ConfigurableAccount,
     nonce::NonceManager,
     receive_policy_guard::ReceivePolicyGuard,
     storage::actions::StorageActions,
@@ -185,6 +189,7 @@ where
                     | TIP403_REGISTRY_ADDRESS
                     | NONCE_PRECOMPILE_ADDRESS
                     | ACCOUNT_KEYCHAIN_ADDRESS
+                    | CONFIGURABLE_ACCOUNT_ADDRESS
                     | RECEIVE_POLICY_GUARD_ADDRESS
                     | STORAGE_CREDITS_ADDRESS
             )
@@ -270,6 +275,15 @@ where
                 &self.env,
                 AccountKeychain,
                 account_keychain::AccountKeychainRules
+            )
+        } else if address == CONFIGURABLE_ACCOUNT_ADDRESS {
+            zone_precompile!(
+                evm,
+                message,
+                gas,
+                &self.env,
+                ConfigurableAccount,
+                configurable_account::ConfigurableAccountRules
             )
         } else if address == RECEIVE_POLICY_GUARD_ADDRESS {
             zone_precompile!(
