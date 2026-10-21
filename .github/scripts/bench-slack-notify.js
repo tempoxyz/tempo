@@ -21,7 +21,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const { FLOOR_PCT, classify: zonesClassify, readReports } = require('./bench-zones-classify');
+const { classify: zonesClassify, readReports } = require('./bench-zones-classify');
 
 const SLACK_API = 'https://slack.com/api/chat.postMessage';
 
@@ -627,14 +627,12 @@ async function replayFailure({ core, context, failedStep }) {
   }
 }
 
-// Rows are classified on per-journey means with a bootstrap CI (bench-zones-classify.js);
-// only end-to-end rows gate improvements. p50/p95 are shown for context only.
-function fmtZonesChange(change) {
-  if (!change || change.pct == null) return '-';
-  const sign = change.pct >= 0 ? '+' : '';
-  const ci = change.ci_pct != null ? ` (±${change.ci_pct.toFixed(1)}%)` : '';
-  const mark = change.informational ? '' : ` ${SIG_EMOJI[change.sig]}`;
-  return `${sign}${change.pct.toFixed(1)}%${ci}${mark}`;
+// The verdict comes from per-journey means with a bootstrap CI (bench-zones-classify.js);
+// the table's percentile changes are raw context and carry no significance mark.
+function fmtZonesChange(baseline, feature) {
+  if (!baseline) return '-';
+  const pct = (feature / baseline - 1) * 100;
+  return `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`;
 }
 
 function buildZonesSuccessBlocks({ comparison, changes, prNumber, actor, actorSlackId, jobUrl, repo }) {
@@ -656,9 +654,11 @@ function buildZonesSuccessBlocks({ comparison, changes, prNumber, actor, actorSl
   ].join('\n');
   const rows = comparison.rows.map(({ key, label }) => [
     cell(label),
-    ...['p50', 'p95'].flatMap(quantile => ['baseline', 'feature']
-      .map(phase => cell((latencies[phase][key][`${quantile}_ms`] / 1000).toFixed(3)))),
-    cell(fmtZonesChange(changes[key])),
+    ...['p50', 'p95'].flatMap(quantile => {
+      const baseline = latencies.baseline[key][`${quantile}_ms`];
+      const feature = latencies.feature[key][`${quantile}_ms`];
+      return [cell((baseline / 1000).toFixed(3)), cell((feature / 1000).toFixed(3)), cell(fmtZonesChange(baseline, feature))];
+    }),
   ]);
   const buttons = [{ type: 'button', text: { type: 'plain_text', text: 'CI :github:', emoji: true }, url: jobUrl, action_id: 'ci_button' }];
   if (prNumber) {
@@ -669,10 +669,9 @@ function buildZonesSuccessBlocks({ comparison, changes, prNumber, actor, actorSl
     { type: 'section', text: { type: 'mrkdwn', text: sectionText } },
     {
       type: 'table',
-      column_settings: [{ align: 'left' }, ...Array(5).fill({ align: 'right' })],
-      rows: [['Latency (s)', 'base (p50)', 'feat (p50)', 'base (p95)', 'feat (p95)', 'mean change (95% CI)'].map(cell), ...rows],
+      column_settings: [{ align: 'left' }, ...Array(6).fill({ align: 'right' })],
+      rows: [['Latency (s)', 'base (p50)', 'feat (p50)', 'change', 'base (p95)', 'feat (p95)', 'change'].map(cell), ...rows],
     },
-    { type: 'context', elements: [{ type: 'mrkdwn', text: `Verdict: end-to-end rows whose mean change clears its 95% bootstrap CI plus a ${FLOOR_PCT}% floor. Percentiles are context only.` }] },
     { type: 'actions', elements: buttons },
   ];
 }

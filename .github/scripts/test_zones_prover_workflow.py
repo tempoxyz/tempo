@@ -262,12 +262,8 @@ class ReportingTests(unittest.TestCase):
                 self.assertEqual(message["channel"] == "CHANNEL", destination == "CHANNEL")
                 self.assertIn(verdict, message["blocks"][0]["text"]["text"])
                 table = [[cell["text"] for cell in row] for row in message["blocks"][2]["rows"]]
-                self.assertEqual(table[0], ["Latency (s)", "base (p50)", "feat (p50)", "base (p95)", "feat (p95)",
-                                            "mean change (95% CI)"])
-                self.assertEqual(table[3][:3], ["Full private journey", "7.121", "7.121"])
-                self.assertEqual(table[4][5], "-")
-                if feature is faster:
-                    self.assertRegex(table[2][5], r"^-40\.0% \(±[0-9.]+%\) ✅$")
+                self.assertEqual(table[0], ["Latency (s)", "base (p50)", "feat (p50)", "change", "base (p95)", "feat (p95)", "change"])
+                self.assertEqual(table[3], ["Full private journey", "7.121", "7.121", "+0.0%", "7.121", "7.121", "+0.0%"])
 
     def test_missing_traces_dm_without_a_verdict(self):
         actor = next(key for key in json.loads((ROOT / ".github/scripts/bench-slack-users.json").read_text())
