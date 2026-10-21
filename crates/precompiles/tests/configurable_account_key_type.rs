@@ -229,9 +229,13 @@ fn stored_key_type_is_checked_on_use() {
     let configurable_type = SignatureType::ConfigurableAccount as u8;
     let secp256k1_type = SignatureType::Secp256k1 as u8;
     let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
-    let (_, grant) =
-        &authorization_calls(DELEGATE, SignatureType::ConfigurableAccount, u64::MAX)[1];
-    assert!(!call_as_parent(&mut storage, grant).is_revert());
+    let grant = authorizeKey_1Call {
+        keyId: DELEGATE,
+        signatureType: SignatureType::ConfigurableAccount,
+        config: restrictions(u64::MAX),
+    }
+    .abi_encode();
+    assert!(!call_as_parent(&mut storage, &grant).is_revert());
 
     let validate = |storage: &mut HashMapStorageProvider, expected_sig_type| {
         StorageCtx::enter(storage, || {
