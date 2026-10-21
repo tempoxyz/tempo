@@ -106,6 +106,8 @@ pub struct ZonePortalStorage {
     last_processed_enabled_token_count: u64,
     /// Whether the token cursor has been initialized, packed into slot 28.
     token_enablement_cursor_initialized: bool,
+    /// Whether zone-internal TIP-20 transfers are enabled, packed into slot 28.
+    transfers_enabled: bool,
 }
 
 impl ZonePortalStorage {

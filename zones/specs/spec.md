@@ -220,6 +220,7 @@ The following table lists every privileged action and the role authorized to inv
 | `abdicate(capability)` | [`ZonePortal`](#izoneportal) | **admin** |
 | `setAccessMode(mode)` | [`ZonePortal`](#izoneportal) | **admin** |
 | `setGatewayMode(mode)` | [`ZonePortal`](#izoneportal) | **admin** |
+| `setTransfersEnabled(enabled)` | [`ZonePortal`](#izoneportal) | **admin** |
 | `transferAdmin(newAdmin)` | [`ZonePortal`](#izoneportal) | **admin** |
 | `acceptAdmin()` | [`ZonePortal`](#izoneportal) | **pending admin** |
 | `setSequencerSet(sequencers, threshold)` | [`ZonePortal`](#izoneportal) | **admin** |
@@ -427,8 +428,9 @@ The admin manages which TIP-20 tokens are available on the zone (see [Access Con
 - `abdicate(Capability.PausePortal)`: Permanently disable future portal-wide pauses after one
   `ABDICATION_DELAY` (30 days). It does not clear an active pause; any pause started before
   abdication takes effect runs to its own expiry.
-- `abdicate(Capability.AccessPolicy)`: Permanently freeze account roles, gateway roles, and
-  enforcement modes after the same delay. Existing access roles cannot be revoked afterward.
+- `abdicate(Capability.AccessPolicy)`: Permanently freeze account roles, gateway roles,
+  enforcement modes, and the zone transfer opt-in (`transfersEnabled`) after the same delay.
+  Existing access roles cannot be revoked afterward.
 
 The portal maintains a `TokenConfig` per token with an `enabled` flag and a configurable `depositsActive` flag, along with an append-only `enabledTokens` list. The admin can halt deposits but cannot disable withdrawals for an enabled token. At most `MAX_UNPROCESSED_TOKEN_ENABLEMENTS` (8) entries may remain enabled on Tempo but unprocessed by an accepted zone batch. This keeps the `advanceTempo()` call within its execution and proof budget even when checkpoint-only blocks defer work across many Tempo blocks. Each metadata string copied into the zone (`name`, `symbol`, and `currency`) is bounded to 31 encoded bytes. Note that token issuers can independently restrict transfers via TIP-403 policies, which may cause withdrawals to fail and bounce back (see [Withdrawal Failures and Bounce-Back](#withdrawal-failures-and-bounce-back)).
 
@@ -922,7 +924,7 @@ be recreated.
 
 Zone execution differs from standard Tempo execution in three areas. These changes are enforced at the EVM level, not just at the RPC layer, so they apply to all code paths including user transactions, `eth_call` simulations, and prover re-execution.
 
-- **Account-indexed state access control.** Every getter on a zone system contract or precompile that selects privacy-bearing state by account must authorize that account against `msg.sender`. Unless a getter explicitly defines additional legitimate readers, it reverts unless `msg.sender` is the selected account. This includes AccountKeychain key configuration and limits, TIP-20 permit nonces, Nonce Manager lanes, Permit2 allowances and nonce bitmaps, FeeManager preferences and collected fees, FeeAMM liquidity balances, and ZoneInbox refund balances. The `ZoneInbox.refunds` mapping is not publicly readable; its explicit `refunds(token, owner)` getter authorizes only `owner` or the sequencer. `balanceOf(account)` authorizes only the account owner; `allowance(owner, spender)` authorizes the owner or spender. Enforcement applies to nested calls, including calls forwarded by Multicall3 or another contract, as well as direct calls.
+- **Account-indexed state access control.** Every getter on a zone system contract or precompile that selects privacy-bearing state by account must authorize that account against `msg.sender`. Unless a getter explicitly defines additional legitimate readers, it reverts unless `msg.sender` is the selected account. This includes AccountKeychain key configuration and limits, TIP-20 permit nonces, Nonce Manager lanes, FeeManager preferences and collected fees, FeeAMM liquidity balances, and ZoneInbox refund balances. The `ZoneInbox.refunds` mapping is not publicly readable; its explicit `refunds(token, owner)` getter authorizes only `owner` or the sequencer. `balanceOf(account)` authorizes only the account owner; `allowance(owner, spender)` authorizes the owner or spender. Enforcement applies to nested calls, including calls forwarded by Multicall3 or another contract, as well as direct calls. The Permit2 predeploy is the unmodified upstream contract, so its `allowance` and `nonceBitmap` getters are public. Zone TIP-20 tokens reject transfers whose caller is Permit2 (see [TIP-20 Token Precompile](#tip-20-token-precompile)), so Permit2 state cannot move zone funds.
 - **Fixed gas for transfers.** All TIP-20 transfer and approve operations charge a fixed 100,000 gas regardless of storage layout. This eliminates a side channel where variable gas costs reveal whether a recipient has previously received tokens.
 - **Contract creation disabled.** `CREATE` and `CREATE2` revert. The zone runs only predeploys and TIP-20 token precompiles. Arbitrary contract deployment would allow users to circumvent the execution-level privacy controls.
 
@@ -1618,7 +1620,10 @@ Each enabled TIP-20 token is deployed as a precompile at the same address as on 
 
 - `balanceOf` is restricted to the account owner; `allowance` is restricted to its owner or spender.
 - Transfer-family operations (`transfer`, `transferFrom`, `approve`) charge a fixed 100,000 gas.
-- Before T14, `transfer`, `transferFrom`, `transferWithMemo`, and `transferFromWithMemo` revert with `Unauthorized`. From T14 they follow the standard TIP-20 rules, including TIP-403 policy checks.
+- `transfer`, `transferFrom`, `transferWithMemo`, and `transferFromWithMemo` revert with `Unauthorized` unless T14 is active and the zone's `ZonePortal.transfersEnabled` flag, read from finalized Tempo state at the transaction's anchor, is true. The flag defaults to false and is set by the portal admin with `setTransfersEnabled`, which `Capability.AccessPolicy` abdication freezes. They also revert with `Unauthorized` when the caller is Permit2, so Permit2 allowances and signature nonces cannot move funds. Admitted transfers follow the standard TIP-20 rules, including TIP-403 policy checks, with two zone differences:
+  - They revert with `ContractPaused` while the token is paused on Tempo, read at the transaction's anchor. The zone token's own pause flag is never set, since `pause` is disabled on the zone.
+  - A transfer that the recipient's TIP-1028 receive policy blocks reverts with `PolicyForbids` instead of diverting funds to `ReceivePolicyGuard`, matching deposits. The policy's recovery authority may be an address that cannot act on the zone, such as an L1 contract, and could never claim the receipt. Virtual recipients are resolved to their master before the check.
+- Whether `transferFrom` succeeds depends on the owner's balance, so an approved spender can learn `min(balance, allowance)` by simulating it. Approving a spender discloses that much of the owner's balance to it.
 - `mint` is restricted to `ZoneInbox`, `burn` is restricted to `ZoneOutbox`.
 
 ## Encrypted Deposit Cryptography
@@ -1903,6 +1908,7 @@ interface IZonePortal {
     event AbdicationScheduled(Capability indexed capability, uint64 effectiveAt);
     event RoleUpdated(address indexed account, Role prev, Role next);
     event EnforcementModesUpdated(bool accessMode, bool gatewayMode);
+    event TransfersEnabledUpdated(bool enabled);
 
     error NotSequencer();
     error NotAdmin();
@@ -1970,6 +1976,8 @@ interface IZonePortal {
     function setAccessMode(bool enforced) external; // admin-only
     function isGatewayOpen() external view returns (bool);
     function setGatewayMode(bool enforced) external; // admin-only
+    function transfersEnabled() external view returns (bool);
+    function setTransfersEnabled(bool enabled) external; // admin-only, T14+
     function hasRole(address account, Role role) external view returns (bool);
     function setAllowedAccount(address account, bool allowed) external; // admin-only
     function setGateway(address account, bool allowed) external; // admin-only

@@ -7,14 +7,15 @@ use super::analysis::{AccountDelta, Field};
 use crate::shadow_replay::{Boundary, Evidence, ObservedTx, fees::post_fee_slot_change};
 use alloy::{
     consensus::Transaction as _,
-    primitives::{B256, KECCAK256_EMPTY, U256, keccak256},
+    primitives::{Address, B256, Bytes, KECCAK256_EMPTY, U256, keccak256},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::{
     precompiles::*,
     zones::{
         T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-        ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
+        T14_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
+        ZONE_VERIFIER_RUNTIME,
     },
 };
 use tempo_precompiles::{storage::StorageAction, tip_fee_manager::amm::compute_amount_out};
@@ -122,42 +123,71 @@ const FEE_STATE: Expectation = Expectation {
 const T13_ZONE_RUNTIME_UPGRADE: Expectation = Expectation {
     id: "t13.zone-runtime-upgrade",
     check: |ctx, field| {
-        if ctx.boundary != Boundary::PreBlock || field.name != "code" || field.slot.is_some() {
-            return None;
-        }
-        let address = field.address?;
-        let (old_runtime, new_runtime) = match address {
-            ZONE_PORTAL_IMPL_ADDRESS => (ZONE_PORTAL_RUNTIME, T13_ZONE_PORTAL_RUNTIME),
-            ZONE_VERIFIER_ADDRESS => (ZONE_VERIFIER_RUNTIME, T13_ZONE_VERIFIER_RUNTIME),
-            ZONE_MESSENGER_ADDRESS => (ZONE_MESSENGER_RUNTIME, T13_ZONE_MESSENGER_RUNTIME),
-            _ => return None,
-        };
-        let real = ctx.real.pre_block.as_ref()?;
-        let shadow = ctx.shadow.pre_block.as_ref()?;
-
-        // The canonical arm must not change code. The shadow arm activates the new bytecode.
-        if AccountDelta(real.transitions.get(&address))
-            .info(|info| info.code_hash)
-            .is_some()
-        {
-            return None;
-        }
-        let transition = shadow.transitions.get(&address)?;
-        let before = transition
-            .previous_info
-            .as_ref()
-            .map_or(KECCAK256_EMPTY, |info| info.code_hash);
-        let after = transition.info.as_ref()?.code_hash;
-
-        ((before == KECCAK256_EMPTY || before == keccak256(&old_runtime))
-            && after == keccak256(&new_runtime))
-        .then_some(())
+        shadow_runtime_upgrade(ctx, field, |address| match address {
+            ZONE_PORTAL_IMPL_ADDRESS => Some((vec![ZONE_PORTAL_RUNTIME], T13_ZONE_PORTAL_RUNTIME)),
+            ZONE_VERIFIER_ADDRESS => Some((vec![ZONE_VERIFIER_RUNTIME], T13_ZONE_VERIFIER_RUNTIME)),
+            ZONE_MESSENGER_ADDRESS => {
+                Some((vec![ZONE_MESSENGER_RUNTIME], T13_ZONE_MESSENGER_RUNTIME))
+            }
+            _ => None,
+        })
     },
 };
 
+const T14_ZONE_RUNTIME_UPGRADE: Expectation = Expectation {
+    id: "t14.zone-runtime-upgrade",
+    check: |ctx, field| {
+        // T14 replaces only the portal runtime. A shadow arm that skips T13 upgrades directly.
+        shadow_runtime_upgrade(ctx, field, |address| {
+            (address == ZONE_PORTAL_IMPL_ADDRESS).then(|| {
+                (
+                    vec![ZONE_PORTAL_RUNTIME, T13_ZONE_PORTAL_RUNTIME],
+                    T14_ZONE_PORTAL_RUNTIME,
+                )
+            })
+        })
+    },
+};
+
+/// Accepts a pre-block code change made only by the shadow arm, from empty code or one of the
+/// selected old runtimes to the selected new runtime.
+fn shadow_runtime_upgrade(
+    ctx: &Context<'_>,
+    field: &Field,
+    runtimes: impl FnOnce(Address) -> Option<(Vec<Bytes>, Bytes)>,
+) -> Option<()> {
+    if ctx.boundary != Boundary::PreBlock || field.name != "code" || field.slot.is_some() {
+        return None;
+    }
+    let address = field.address?;
+    let (old_runtimes, new_runtime) = runtimes(address)?;
+    let real = ctx.real.pre_block.as_ref()?;
+    let shadow = ctx.shadow.pre_block.as_ref()?;
+
+    // The canonical arm must not change code. The shadow arm activates the new bytecode.
+    if AccountDelta(real.transitions.get(&address))
+        .info(|info| info.code_hash)
+        .is_some()
+    {
+        return None;
+    }
+    let transition = shadow.transitions.get(&address)?;
+    let before = transition
+        .previous_info
+        .as_ref()
+        .map_or(KECCAK256_EMPTY, |info| info.code_hash);
+    let after = transition.info.as_ref()?.code_hash;
+
+    ((before == KECCAK256_EMPTY || old_runtimes.iter().any(|old| before == keccak256(old)))
+        && after == keccak256(&new_runtime))
+    .then_some(())
+}
+
 /// Fork-specific checks are ordered oldest-first; baseline fee normalization is added separately.
-const REGISTRY: &[(TempoHardfork, &[Expectation])] =
-    &[(TempoHardfork::T13, &[T13_ZONE_RUNTIME_UPGRADE])];
+const REGISTRY: &[(TempoHardfork, &[Expectation])] = &[
+    (TempoHardfork::T13, &[T13_ZONE_RUNTIME_UPGRADE]),
+    (TempoHardfork::T14, &[T14_ZONE_RUNTIME_UPGRADE]),
+];
 
 pub(crate) fn between(
     canonical: TempoHardfork,
@@ -228,6 +258,60 @@ mod tests {
         assert!((T13_ZONE_RUNTIME_UPGRADE.check)(&ctx(&upgraded), &code).is_some());
         let unexpected = transition(None, keccak256(&ZONE_VERIFIER_RUNTIME));
         assert!((T13_ZONE_RUNTIME_UPGRADE.check)(&ctx(&unexpected), &code).is_none());
+        // T14 leaves the verifier on its T13 runtime.
+        assert!((T14_ZONE_RUNTIME_UPGRADE.check)(&ctx(&upgraded), &code).is_none());
+    }
+
+    #[test]
+    fn accepts_t14_portal_upgrade_from_either_earlier_runtime() {
+        let address = ZONE_PORTAL_IMPL_ADDRESS;
+        let transition = |before: &Bytes, after: &Bytes| {
+            let mut state = reth_revm::db::TransitionState::default();
+            state.transitions.insert(
+                address,
+                TransitionAccount {
+                    previous_info: Some(AccountInfo {
+                        code_hash: keccak256(before),
+                        ..Default::default()
+                    }),
+                    info: Some(AccountInfo {
+                        code_hash: keccak256(after),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            );
+            Evidence {
+                pre_block: Some(state),
+                ..Default::default()
+            }
+        };
+        let real = Evidence {
+            pre_block: Some(reth_revm::db::TransitionState::default()),
+            ..Default::default()
+        };
+        let code = Field {
+            name: "code",
+            address: Some(address),
+            slot: None,
+            fee_associated: false,
+        };
+        let check = |shadow: &Evidence| {
+            (T14_ZONE_RUNTIME_UPGRADE.check)(
+                &Context {
+                    boundary: Boundary::PreBlock,
+                    real: &real,
+                    shadow,
+                    base_fee: None,
+                    tx: None,
+                },
+                &code,
+            )
+        };
+        for before in [ZONE_PORTAL_RUNTIME, T13_ZONE_PORTAL_RUNTIME] {
+            assert!(check(&transition(&before, &T14_ZONE_PORTAL_RUNTIME)).is_some());
+        }
+        assert!(check(&transition(&ZONE_PORTAL_RUNTIME, &T13_ZONE_PORTAL_RUNTIME)).is_none());
     }
 
     #[test]
@@ -244,6 +328,15 @@ mod tests {
         assert_eq!(ids(T11, T13), ids(T12, T13));
         assert_eq!(ids(T12, T12), [FEE_STATE.id]);
         assert_eq!(ids(T13, T12), [FEE_STATE.id]);
+        assert_eq!(ids(T13, T14), [FEE_STATE.id, T14_ZONE_RUNTIME_UPGRADE.id]);
+        assert_eq!(
+            ids(T12, T14),
+            [
+                FEE_STATE.id,
+                T13_ZONE_RUNTIME_UPGRADE.id,
+                T14_ZONE_RUNTIME_UPGRADE.id
+            ]
+        );
     }
 
     fn block(txs: Vec<TempoTxEnvelope>) -> RecoveredBlock<Block> {

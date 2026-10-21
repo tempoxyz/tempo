@@ -41,7 +41,7 @@ use tempo_contracts::{
     contracts::{CreateX, Multicall3, SafeDeployer},
     precompiles::{
         INITIAL_FACTORY_OWNER, IValidatorConfigV2, createTokenCall, initial_zone_factory_state,
-        t13_zone_factory_state,
+        t13_zone_factory_state, t14_zone_factory_state,
     },
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -531,7 +531,11 @@ fn insert_zone_state_at_genesis(
 ) {
     if hardforks.active_at_genesis(TempoHardfork::T10) {
         println!("Initializing ZoneFactory and shared runtimes");
-        let accounts = if hardforks.active_at_genesis(TempoHardfork::T13) {
+        // A later runtime set applies only when every earlier upgrade is also active at genesis.
+        let t13_at_genesis = hardforks.active_at_genesis(TempoHardfork::T13);
+        let accounts = if t13_at_genesis && hardforks.active_at_genesis(TempoHardfork::T14) {
+            t14_zone_factory_state(INITIAL_FACTORY_OWNER)
+        } else if t13_at_genesis {
             t13_zone_factory_state(INITIAL_FACTORY_OWNER)
         } else {
             initial_zone_factory_state(INITIAL_FACTORY_OWNER)
@@ -884,7 +888,8 @@ mod tests {
         },
         zones::{
             T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-            ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
+            T14_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
+            ZONE_VERIFIER_RUNTIME,
         },
     };
 
@@ -988,11 +993,29 @@ mod tests {
     #[test]
     fn t13_genesis_installs_t13_shared_runtimes() {
         let mut alloc = BTreeMap::new();
-        let hardforks = TempoHardforkArgs::default();
+        let hardforks = TempoHardforkArgs {
+            hardfork: Some(TempoHardfork::T13),
+            ..Default::default()
+        };
         insert_zone_state_at_genesis(&hardforks, &mut alloc);
 
         for (destination, expected) in [
             (ZONE_PORTAL_IMPL_ADDRESS, T13_ZONE_PORTAL_RUNTIME),
+            (ZONE_VERIFIER_ADDRESS, T13_ZONE_VERIFIER_RUNTIME),
+            (ZONE_MESSENGER_ADDRESS, T13_ZONE_MESSENGER_RUNTIME),
+        ] {
+            assert_eq!(alloc[&destination].code.as_ref(), Some(&expected));
+        }
+    }
+
+    #[test]
+    fn t14_genesis_installs_t14_shared_runtimes() {
+        let mut alloc = BTreeMap::new();
+        let hardforks = TempoHardforkArgs::default();
+        insert_zone_state_at_genesis(&hardforks, &mut alloc);
+
+        for (destination, expected) in [
+            (ZONE_PORTAL_IMPL_ADDRESS, T14_ZONE_PORTAL_RUNTIME),
             (ZONE_VERIFIER_ADDRESS, T13_ZONE_VERIFIER_RUNTIME),
             (ZONE_MESSENGER_ADDRESS, T13_ZONE_MESSENGER_RUNTIME),
         ] {
