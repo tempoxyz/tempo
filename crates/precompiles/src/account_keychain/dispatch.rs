@@ -109,6 +109,7 @@ impl Precompile for AccountKeychain {
 }
 
 impl AccountKeychain {
+    // TODO: remove after T14 is active.
     /// Whether `calldata` authorizes a ConfigurableAccount key from T11 until T14.
     ///
     /// From T11 the strict ABI decoder reverts on an out-of-range `signatureType`; until T14,
