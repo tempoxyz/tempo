@@ -24,10 +24,11 @@ Zone credit (split into submit → L1 enqueue and L1 enqueue → Zone credit), a
 private journey. Each is one paired txgen edge between client observations, so it
 includes observation delay; percentiles are never added together. Only the three
 end-to-end rows decide whether results post to the Slack channel, and only on their
-mean: journeys cluster around block-timing values, so a p50 can jump between clusters
-with no code change. `bench-zones-classify.js` rebuilds each journey's latency from the
-traced instances in both phases' `report.json` and counts a change only when it clears
-its 95% bootstrap CI plus a 2% floor. A run whose baseline and feature are the same
+p95: journeys cluster around block-timing values, so a raw percentile can jump between
+clusters with no code change. `bench-zones-classify.js` rebuilds each journey's latency
+from the traced instances in both phases' `report.json` and counts a p95 change only when
+it clears its 95% bootstrap CI plus a 2% floor. Runs with fewer than 100 journeys get no
+verdict, since their p95 is one of the slowest few journeys. A run whose baseline and feature are the same
 commit never posts to the channel.
 
 Results update the PR comment. Slack uses `bench-slack-notify.js` like the other

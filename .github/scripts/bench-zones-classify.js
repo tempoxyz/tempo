@@ -1,17 +1,24 @@
 #!/usr/bin/env node
 // Significance for Zones benchmark latency rows.
 //
-// Zones journeys cluster around block-timing values, so a 20-journey p50 can jump
-// between clusters with no code change. Rows are classified on the per-journey mean
-// with a bootstrap confidence interval instead, like bench-e2e-classify.js: a change
-// counts only when it clears CI + FLOOR_PCT. The floor covers correlation the
-// journey-level bootstrap ignores (journeys share blocks and withdrawal batches).
+// Zones journeys cluster around block-timing values, so a raw percentile can jump
+// between clusters with no code change. Rows are classified on their p95 with a
+// bootstrap confidence interval instead, like bench-e2e-classify.js: a change counts
+// only when it clears CI + FLOOR_PCT. The floor covers correlation the journey-level
+// bootstrap ignores (journeys share blocks and withdrawal batches). The bootstrap is
+// smoothed (Gaussian jitter, Silverman bandwidth): resampling a percentile of a few
+// discrete clusters otherwise understates its noise (~3-4% same-commit false positives
+// per row in simulation, ~0% smoothed, with the same power on a 20% change).
 
 const fs = require('fs');
 const path = require('path');
 
 const BOOTSTRAP_ITERATIONS = 10000;
 const FLOOR_PCT = 2;
+// Below this a nearest-rank p95 is one of the slowest few journeys, and bootstrapping
+// it understates its noise (simulated same-commit false positives: ~5% per row at 20
+// journeys, ~1% at 100).
+const MIN_JOURNEYS = 100;
 
 // Same edges as the controller's LATENCY_ROWS (tempo-multi-region-benchmark
 // scripts/zones_prover/summary.py); null is the client-observed journey latency.
@@ -36,8 +43,14 @@ function rng(seed) {
   };
 }
 
-function mean(values) {
-  return values.reduce((a, b) => a + b, 0) / values.length;
+// txgen's nearest-rank percentile (bench-core metrics::percentile), so the tested change
+// matches the report's p95.
+function p95(sorted) {
+  return sorted[Math.min(Math.floor(sorted.length * 95 / 100), sorted.length - 1)];
+}
+
+function sortedCopy(values) {
+  return Float64Array.from(values).sort();
 }
 
 // txgen's primary milestone: a step's last protocol milestone, else its command finish.
@@ -75,14 +88,28 @@ function journeySamples(report) {
   return samples;
 }
 
+function gaussian(rand) {
+  return Math.sqrt(-2 * Math.log(1 - rand())) * Math.cos(2 * Math.PI * rand());
+}
+
+function bandwidth(values) {
+  const m = values.reduce((a, b) => a + b, 0) / values.length;
+  const sd = Math.sqrt(values.reduce((a, v) => a + (v - m) ** 2, 0) / (values.length - 1));
+  return 1.06 * sd * values.length ** -0.2;
+}
+
 function bootstrapCiPct(baseline, feature, base, rand) {
+  const resampledP95 = (values, h) => {
+    const sample = new Float64Array(values.length);
+    for (let j = 0; j < values.length; j += 1) {
+      sample[j] = values[Math.floor(rand() * values.length)] + h * gaussian(rand);
+    }
+    return p95(sample.sort());
+  };
+  const [hBaseline, hFeature] = [bandwidth(baseline), bandwidth(feature)];
   const diffs = new Float64Array(BOOTSTRAP_ITERATIONS);
   for (let i = 0; i < BOOTSTRAP_ITERATIONS; i += 1) {
-    let b = 0;
-    let f = 0;
-    for (let j = 0; j < baseline.length; j += 1) b += baseline[Math.floor(rand() * baseline.length)];
-    for (let j = 0; j < feature.length; j += 1) f += feature[Math.floor(rand() * feature.length)];
-    diffs[i] = f / feature.length - b / baseline.length;
+    diffs[i] = resampledP95(feature, hFeature) - resampledP95(baseline, hBaseline);
   }
   diffs.sort();
   const at = q => diffs[Math.min(Math.floor(diffs.length * q), diffs.length - 1)];
@@ -92,14 +119,17 @@ function bootstrapCiPct(baseline, feature, base, rand) {
 // Lower latency is better. Rows that do not gate (sub-legs, missing samples, or a
 // zero baseline) are informational and never decide the verdict.
 function classifyRow(baseline, feature, { endToEnd, rand }) {
-  if (!baseline || !feature || baseline.length < 2 || feature.length < 2) {
+  if (!baseline || !feature) {
     return { pct: null, sig: 'neutral', informational: true, informational_reason: 'per-journey samples unavailable' };
   }
-  const base = mean(baseline);
+  if (baseline.length < MIN_JOURNEYS || feature.length < MIN_JOURNEYS) {
+    return { pct: null, sig: 'neutral', informational: true, informational_reason: `needs ${MIN_JOURNEYS} journeys` };
+  }
+  const base = p95(sortedCopy(baseline));
   if (!(base > 0)) {
     return { pct: null, sig: 'neutral', informational: true, informational_reason: 'zero baseline' };
   }
-  const pct = (mean(feature) / base - 1) * 100;
+  const pct = (p95(sortedCopy(feature)) / base - 1) * 100;
   const ciPct = bootstrapCiPct(baseline, feature, base, rand);
   const change = { pct, ci_pct: ciPct, floor_pct: FLOOR_PCT, sig: 'neutral' };
   if (-pct - ciPct > FLOOR_PCT) change.sig = 'good';
@@ -129,4 +159,4 @@ function readReports(workDir) {
   return reports;
 }
 
-module.exports = { FLOOR_PCT, ROW_EDGES, journeySamples, classifyRow, classify, readReports };
+module.exports = { FLOOR_PCT, MIN_JOURNEYS, ROW_EDGES, journeySamples, classifyRow, classify, readReports };

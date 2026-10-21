@@ -627,7 +627,7 @@ async function replayFailure({ core, context, failedStep }) {
   }
 }
 
-// The verdict comes from per-journey means with a bootstrap CI (bench-zones-classify.js);
+// The verdict comes from each row's p95 with a bootstrap CI (bench-zones-classify.js);
 // the table's percentile changes are raw context and carry no significance mark.
 function fmtZonesChange(baseline, feature) {
   if (!baseline) return '-';

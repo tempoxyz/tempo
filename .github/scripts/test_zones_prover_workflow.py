@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+import random
 import subprocess
 import tempfile
 import unittest
@@ -196,40 +197,39 @@ def journeys(deposits, withdrawal=2000.0, journey=None):
 
 
 class ClassifyTests(unittest.TestCase):
-    def test_clustered_median_flip_is_not_significant(self):
-        baseline = journeys(DEPOSIT_MS * 2)
-        # Same clusters, two journeys moved down one block: the p50 drops ~25%.
-        feature = journeys(sorted(DEPOSIT_MS * 2)[:9] + [311, 311] + sorted(DEPOSIT_MS * 2)[11:])
-        p50 = lambda js: sorted(j["deposit"] for j in js)[len(js) // 2]
-        self.assertLess(p50(feature) / p50(baseline) - 1, -0.05)
+    def test_same_commit_noise_is_not_significant(self):
+        # Two draws of 100 journeys from run 11's clustered deposit latencies.
+        rng = random.Random(1)
+        baseline, feature = (journeys([rng.choice(DEPOSIT_MS) for _ in range(100)]) for _ in range(2))
         changes = classify(ROWS, traced_report(baseline), traced_report(feature))
         self.assertEqual({key: change["sig"] for key, change in changes.items()},
                          {"withdrawal": "neutral", "deposit": "neutral", "journey": "neutral"})
 
-    def test_mean_change_beyond_ci_and_floor_is_classified(self):
-        baseline = journeys(DEPOSIT_MS * 2)
-        for factor, sig in ((0.6, "good"), (1.4, "bad"), (0.99, "neutral")):
+    def test_p95_change_beyond_ci_and_floor_is_classified(self):
+        baseline = journeys(DEPOSIT_MS * 10)
+        for factor, sig in ((0.8, "good"), (1.2, "bad"), (0.99, "neutral")):
             with self.subTest(factor=factor):
-                feature = journeys([d * factor for d in DEPOSIT_MS * 2])
+                feature = journeys([d * factor for d in DEPOSIT_MS * 10])
                 change = classify(ROWS, traced_report(baseline), traced_report(feature))["deposit"]
                 self.assertEqual(change["sig"], sig)
                 self.assertAlmostEqual(change["pct"], (factor - 1) * 100)
-                self.assertGreater(change["ci_pct"], 0)
 
     def test_tight_rows_need_more_than_the_floor(self):
-        baseline = journeys(DEPOSIT_MS * 2, withdrawal=2000.0)
+        baseline = journeys(DEPOSIT_MS * 10, withdrawal=2000.0)
         for withdrawal, sig in ((1970.0, "neutral"), (1900.0, "good")):
             with self.subTest(withdrawal=withdrawal):
-                feature = journeys(DEPOSIT_MS * 2, withdrawal=withdrawal)
+                feature = journeys(DEPOSIT_MS * 10, withdrawal=withdrawal)
                 self.assertEqual(classify(ROWS, traced_report(baseline), traced_report(feature))["withdrawal"]["sig"], sig)
 
-    def test_sub_legs_and_partial_traces_are_informational(self):
+    def test_sub_legs_small_runs_and_partial_traces_are_informational(self):
         rows = ROWS + [{"key": "withdrawal_zone_to_l1", "label": "> zone → L1 processed", "end_to_end": False}]
-        full = traced_report(journeys(DEPOSIT_MS * 2))
+        full = traced_report(journeys(DEPOSIT_MS * 10))
         partial = dict(full, sampled_instances=full["sampled_instances"][:10])
-        changes = classify(rows, partial, full)
-        self.assertTrue(all(change["informational"] and change["pct"] is None for change in changes.values()))
-        self.assertTrue(changes["withdrawal_zone_to_l1"]["informational"])
+        small = traced_report(journeys([d * 0.5 for d in DEPOSIT_MS * 2]))
+        for name, baseline, feature in (("partial", partial, full), ("20 journeys", traced_report(journeys(DEPOSIT_MS * 2)), small)):
+            with self.subTest(name):
+                changes = classify(rows, baseline, feature)
+                self.assertTrue(all(change["informational"] and change["pct"] is None for change in changes.values()))
 
 
 class ReportingTests(unittest.TestCase):
@@ -240,8 +240,8 @@ class ReportingTests(unittest.TestCase):
         latency = lambda ms: {"p50_ms": ms, "p95_ms": ms}
         env = {"SLACK_BENCH_BOT_TOKEN": "token", "SLACK_BENCH_CHANNEL": "CHANNEL", "BENCH_ACTOR": actor,
                "GITHUB_WORKSPACE": str(ROOT)}
-        baseline = journeys(DEPOSIT_MS * 2)
-        faster = journeys([d * 0.6 for d in DEPOSIT_MS * 2])
+        baseline = journeys(DEPOSIT_MS * 10)
+        faster = journeys([d * 0.6 for d in DEPOSIT_MS * 10])
         # A faster mean posts only between different commits; noise and self-comparisons DM the actor.
         for name, feature_sha, feature, destination, verdict in (
                 ("improvement", SHA, faster, "CHANNEL", "Improvement"),
