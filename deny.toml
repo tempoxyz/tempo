@@ -90,6 +90,8 @@ exceptions = [
   { allow = ["MPL-2.0"], name = "bitmaps" },
   { allow = ["MPL-2.0"], name = "imbl" },
   { allow = ["MPL-2.0"], name = "imbl-sized-chunks" },
+  # Fuzzing only: libFuzzer is bundled under NCSA (crates/nitro-attestation/fuzz).
+  { allow = ["NCSA"], name = "libfuzzer-sys" },
 ]
 
 [[licenses.clarify]]
