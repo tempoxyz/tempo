@@ -59,8 +59,7 @@ impl NetworkIdentity {
 fn deserialize_identity<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<<MinSig as Variant>::Public, D::Error> {
-    let encoded = String::deserialize(deserializer)?;
-    let bytes = hex::decode_to_array::<_, 96>(encoded).map_err(D::Error::custom)?;
+    let bytes = hex::deserialize::<_, [u8; 96]>(deserializer)?;
     <MinSig as Variant>::Public::read(&mut bytes.as_ref()).map_err(D::Error::custom)
 }
 
