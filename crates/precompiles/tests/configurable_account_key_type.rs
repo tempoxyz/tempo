@@ -31,15 +31,19 @@ fn restrictions(expiry: u64) -> KeyRestrictions {
     }
 }
 
+/// Runs `calldata` from `PARENT` as both the sender and the transaction origin, in the entered
+/// storage context.
+fn keychain_call_as_parent(calldata: &[u8]) -> PrecompileOutput {
+    let mut keychain = AccountKeychain::new();
+    keychain.set_tx_origin(PARENT).unwrap();
+    keychain
+        .call(calldata, PARENT)
+        .expect("keychain calls never fail the frame")
+}
+
 /// Runs `calldata` from `PARENT` as both the sender and the transaction origin.
 fn call_as_parent(storage: &mut HashMapStorageProvider, calldata: &[u8]) -> PrecompileOutput {
-    StorageCtx::enter(storage, || {
-        let mut keychain = AccountKeychain::new();
-        keychain.set_tx_origin(PARENT).unwrap();
-        keychain
-            .call(calldata, PARENT)
-            .expect("keychain calls never fail the frame")
-    })
+    StorageCtx::enter(storage, || keychain_call_as_parent(calldata))
 }
 
 /// Runs `calldata` from `PARENT` as both the sender and the transaction origin, on an EVM at
@@ -55,48 +59,57 @@ fn call_as_parent_in_evm(spec: TempoHardfork, calldata: &[u8]) -> PrecompileOutp
         },
     );
     StorageCtx::enter_ctx(evm.ctx_mut(), StorageActions::disabled(), || {
-        let mut keychain = AccountKeychain::new();
-        keychain.set_tx_origin(PARENT).unwrap();
-        keychain
-            .call(calldata, PARENT)
-            .expect("keychain calls never fail the frame")
+        keychain_call_as_parent(calldata)
     })
 }
 
-/// One calldata per authorization entrypoint that carries a `signatureType`.
+/// The signature and calldata of each authorization entrypoint that carries a `signatureType`,
+/// legacy `authorizeKey` first.
 fn authorization_calls(
     key_id: Address,
     signature_type: SignatureType,
     expiry: u64,
-) -> [Vec<u8>; 4] {
+) -> [(&'static str, Vec<u8>); 4] {
     [
-        authorizeKey_0Call {
-            keyId: key_id,
-            signatureType: signature_type,
-            expiry,
-            enforceLimits: false,
-            limits: vec![],
-        }
-        .abi_encode(),
-        authorizeKey_1Call {
-            keyId: key_id,
-            signatureType: signature_type,
-            config: restrictions(expiry),
-        }
-        .abi_encode(),
-        authorizeKey_2Call {
-            keyId: key_id,
-            signatureType: signature_type,
-            config: restrictions(expiry),
-            witness: B256::ZERO,
-        }
-        .abi_encode(),
-        authorizeAdminKeyCall {
-            keyId: key_id,
-            signatureType: signature_type,
-            witness: B256::ZERO,
-        }
-        .abi_encode(),
+        (
+            authorizeKey_0Call::SIGNATURE,
+            authorizeKey_0Call {
+                keyId: key_id,
+                signatureType: signature_type,
+                expiry,
+                enforceLimits: false,
+                limits: vec![],
+            }
+            .abi_encode(),
+        ),
+        (
+            authorizeKey_1Call::SIGNATURE,
+            authorizeKey_1Call {
+                keyId: key_id,
+                signatureType: signature_type,
+                config: restrictions(expiry),
+            }
+            .abi_encode(),
+        ),
+        (
+            authorizeKey_2Call::SIGNATURE,
+            authorizeKey_2Call {
+                keyId: key_id,
+                signatureType: signature_type,
+                config: restrictions(expiry),
+                witness: B256::ZERO,
+            }
+            .abi_encode(),
+        ),
+        (
+            authorizeAdminKeyCall::SIGNATURE,
+            authorizeAdminKeyCall {
+                keyId: key_id,
+                signatureType: signature_type,
+                witness: B256::ZERO,
+            }
+            .abi_encode(),
+        ),
     ]
 }
 
@@ -116,6 +129,8 @@ fn key_expiry(storage: &mut HashMapStorageProvider, key_id: Address) -> u64 {
 /// authorization entrypoint: same status, bytes and gas.
 #[test]
 fn key_type_reverts_like_an_unknown_type_before_t14() {
+    let configurable_type = SignatureType::ConfigurableAccount as u8;
+    let unknown_type = configurable_type + 1;
     for spec in TempoHardfork::VARIANTS
         .iter()
         .copied()
@@ -123,19 +138,20 @@ fn key_type_reverts_like_an_unknown_type_before_t14() {
     {
         for key_id in [Address::ZERO, PARENT, DELEGATE] {
             for expiry in [0, u64::MAX] {
-                let known = authorization_calls(key_id, SignatureType::ConfigurableAccount, expiry);
-                for mut calldata in known {
+                let calls = authorization_calls(key_id, SignatureType::ConfigurableAccount, expiry);
+                for (entrypoint, mut calldata) in calls {
+                    let case = format!("{spec}, {entrypoint}, key {key_id}, expiry {expiry}");
                     // The `signatureType` word follows the `keyId` word, after the selector.
-                    assert_eq!(calldata[67], 3);
+                    assert_eq!(calldata[67], configurable_type, "{case}");
                     let mut run = |signature_type: u8| {
                         calldata[67] = signature_type;
                         call_as_parent_in_evm(spec, &calldata)
                     };
-                    let configurable = run(3);
-                    let unknown = run(4);
-                    assert!(unknown.is_revert(), "{spec}: {calldata:?}");
-                    assert!(unknown.gas_used > 0, "{spec}: {calldata:?}");
-                    assert_eq!(configurable, unknown, "{spec}: {calldata:?}");
+                    let configurable = run(configurable_type);
+                    let unknown = run(unknown_type);
+                    assert!(unknown.is_revert(), "{case}");
+                    assert!(unknown.gas_used > 0, "{case}");
+                    assert_eq!(configurable, unknown, "{case}");
                 }
             }
         }
@@ -154,21 +170,22 @@ enum Delegate {
 /// delegate other than the granting account.
 #[test]
 fn delegate_grants_are_guarded_from_t14() {
-    for spec in TempoHardfork::VARIANTS {
-        // Skips the legacy `authorizeKey` selector, which every fork since T3 rejects outright.
-        for index in 1..4 {
-            for case in [
-                Delegate::CodeFree,
-                Delegate::SelfGrant,
-                Delegate::Bytecode,
-                Delegate::Delegation,
-            ] {
-                let mut storage = HashMapStorageProvider::new_with_spec(1, *spec);
-                let delegate = if case == Delegate::SelfGrant {
-                    PARENT
-                } else {
-                    DELEGATE
-                };
+    for spec in TempoHardfork::VARIANTS.iter().copied() {
+        for case in [
+            Delegate::CodeFree,
+            Delegate::SelfGrant,
+            Delegate::Bytecode,
+            Delegate::Delegation,
+        ] {
+            let delegate = if case == Delegate::SelfGrant {
+                PARENT
+            } else {
+                DELEGATE
+            };
+            let calls = authorization_calls(delegate, SignatureType::ConfigurableAccount, u64::MAX);
+            // Skips the legacy `authorizeKey` selector, which every fork since T3 rejects outright.
+            for (entrypoint, calldata) in calls.iter().skip(1) {
+                let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
                 match case {
                     Delegate::Bytecode => StorageCtx::enter(&mut storage, || {
                         StorageCtx
@@ -186,21 +203,18 @@ fn delegate_grants_are_guarded_from_t14() {
                     Delegate::CodeFree | Delegate::SelfGrant => {}
                 }
 
-                let calldata =
-                    &authorization_calls(delegate, SignatureType::ConfigurableAccount, u64::MAX)
-                        [index];
                 let output = call_as_parent(&mut storage, calldata);
                 let granted = spec.is_t14() && case == Delegate::CodeFree;
                 assert_eq!(
                     !output.is_revert(),
                     granted,
-                    "{spec}, entrypoint {index}, {case:?}"
+                    "{spec}, {entrypoint}, {case:?}"
                 );
                 if !granted && delegate != PARENT {
                     assert_eq!(
                         key_expiry(&mut storage, delegate),
                         0,
-                        "{spec}, entrypoint {index}, {case:?}"
+                        "{spec}, {entrypoint}, {case:?}"
                     );
                 }
             }
@@ -212,8 +226,11 @@ fn delegate_grants_are_guarded_from_t14() {
 /// declares the same type.
 #[test]
 fn stored_key_type_is_checked_on_use() {
+    let configurable_type = SignatureType::ConfigurableAccount as u8;
+    let secp256k1_type = SignatureType::Secp256k1 as u8;
     let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
-    let grant = &authorization_calls(DELEGATE, SignatureType::ConfigurableAccount, u64::MAX)[1];
+    let (_, grant) =
+        &authorization_calls(DELEGATE, SignatureType::ConfigurableAccount, u64::MAX)[1];
     assert!(!call_as_parent(&mut storage, grant).is_revert());
 
     let validate = |storage: &mut HashMapStorageProvider, expected_sig_type| {
@@ -229,12 +246,15 @@ fn stored_key_type_is_checked_on_use() {
         .filter(|spec| spec.is_t14())
     {
         storage.set_spec(spec);
-        assert!(validate(&mut storage, None));
-        assert!(validate(&mut storage, Some(3)));
-        assert!(!validate(&mut storage, Some(0)));
+        assert!(validate(&mut storage, None), "{spec}");
+        assert!(validate(&mut storage, Some(configurable_type)), "{spec}");
+        assert!(!validate(&mut storage, Some(secp256k1_type)), "{spec}");
     }
     storage.set_spec(TempoHardfork::T13);
-    for expected_sig_type in [None, Some(0), Some(3)] {
-        assert!(!validate(&mut storage, expected_sig_type));
+    for expected_sig_type in [None, Some(secp256k1_type), Some(configurable_type)] {
+        assert!(
+            !validate(&mut storage, expected_sig_type),
+            "{expected_sig_type:?}"
+        );
     }
 }
