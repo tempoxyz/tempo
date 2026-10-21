@@ -32,7 +32,7 @@ use crate::{
     storage::{Handler, Mapping, Set},
     tip20_factory::TIP20Factory,
 };
-use alloy::primitives::{Address, B256, FixedBytes, KECCAK256_EMPTY, TxKind, U256, keccak256};
+use alloy::primitives::{Address, B256, FixedBytes, TxKind, U256, keccak256};
 use tempo_precompiles_macros::{Storable, contract};
 
 /// Allowed TIP-20 selectors for recipient-constrained rules.
@@ -283,7 +283,7 @@ impl AccountKeychain {
             // Naming a delegate does not register it or require a configuration witness.
             if self
                 .storage
-                .with_account_info(key_id, |info| Ok(info.code_hash != KECCAK256_EMPTY))?
+                .with_account_info(key_id, |info| Ok(!info.is_empty_code_hash()))?
             {
                 return Err(AccountKeychainError::invalid_key_id().into());
             }
