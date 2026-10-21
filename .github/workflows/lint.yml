@@ -230,6 +230,9 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
       - uses: tempoxyz/gh-actions/vendor/EmbarkStudios/cargo-deny-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        env:
+          # The action container does not include sccache.
+          RUSTC_WRAPPER: ""
         with:
           manifest-path: crates/nitro-attestation/fuzz/Cargo.toml
           rust-version: stable
