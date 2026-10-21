@@ -1,30 +1,37 @@
-//! Gas of the simulated configurable-account owner approvals that RPC preprocessing builds.
+//! Simulated configurable-account owner approvals that RPC preprocessing builds: their gas and the
+//! per-call state checks of a simulated block.
 //!
-//! The test runs a request through the production [`TempoEvmConfig`] EVM for a T14 chain with the
+//! Each test runs a request through the production [`TempoEvmConfig`] EVM for a T14 chain with the
 //! recovery factory configured.
 
 use std::sync::Arc;
 
 use alloy::{
     consensus::Header,
-    primitives::{Address, B256, Bytes},
+    primitives::{Address, B256, Bytes, TxKind, U256},
     rpc::types::TransactionRequest,
     signers::local::PrivateKeySigner,
+    sol_types::SolCall,
 };
 use evm2::evm::InMemoryDB;
-use reth_evm::{ConfigureEvm, EvmEnvFor};
-use reth_rpc_eth_api::TryIntoTxEnv;
+use reth_evm::{ConfigureEvm, EvmEnvFor, FromTxWithEncoded};
+use reth_primitives_traits::{Recovered, SignedTransaction};
+use reth_rpc_eth_api::{TryIntoSimTx, TryIntoTxEnv};
 use serde_json::{Value, from_str, from_value, json};
 use tempo_alloy::rpc::{
     ConfigurableAccountSimulationApproval, ConfigurableAccountSimulationSpec,
     TempoTransactionRequest,
 };
 use tempo_chainspec::TempoChainSpec;
-use tempo_evm::{TempoEvm, TempoEvmConfig};
+use tempo_contracts::precompiles::{CONFIGURABLE_ACCOUNT_ADDRESS, IConfigurableAccount};
+use tempo_evm::{
+    ExecutionContext, TempoEvm, TempoEvmConfig, TempoInvalidTransaction, TempoTxEnv,
+    transaction_error::ConfigurableAccountError,
+};
 use tempo_precompiles::{PATH_USD_ADDRESS, storage::StorageCtx, test_util::TIP20Setup};
 use tempo_primitives::{
-    TempoHeader,
-    transaction::{ConfigurableAccountConfig, ConfigurableAccountOwner, SignatureType},
+    TempoHeader, TempoTxEnvelope,
+    transaction::{Call, ConfigurableAccountConfig, ConfigurableAccountOwner, SignatureType},
 };
 
 const CHAIN_ID: u64 = 1337;
@@ -83,6 +90,20 @@ fn configurable_account(owner: &PrivateKeySigner) -> (ConfigurableAccountConfig,
     (config, account)
 }
 
+fn commitment(evm: &mut TempoEvm<'static>, account: Address) -> B256 {
+    StorageCtx::enter_evm_without_tip1060_accounting(evm, || StorageCtx.config_commitment(account))
+        .unwrap()
+}
+
+#[track_caller]
+fn invalid(evm: &mut TempoEvm<'static>, tx: &Recovered<TempoTxEnv>) -> TempoInvalidTransaction {
+    let error = evm.transact(tx).map(|_| ()).unwrap_err();
+    error
+        .external_ref::<TempoInvalidTransaction>()
+        .unwrap_or_else(|| panic!("{error:?}"))
+        .clone()
+}
+
 /// A simulated `WebAuthn` owner approval is charged its modeled data as nonzero calldata.
 #[test]
 fn simulated_webauthn_approvals_charge_worst_case_data() {
@@ -126,4 +147,106 @@ fn simulated_webauthn_approvals_charge_worst_case_data() {
         );
         assert_eq!(webauthn - empty, u64::from(size) * 16, "size {size}");
     }
+}
+
+/// Each call of a simulated block is checked against the account state at its position: a
+/// configuration rotated by one call is stale for the next call that still names it.
+#[test]
+fn block_simulation_checks_each_call_against_its_position() {
+    let mut evm = evm(InMemoryDB::default());
+    let owner = PrivateKeySigner::random();
+    let rotated_owner = PrivateKeySigner::random();
+    let (config, account) = configurable_account(&owner);
+    let rotated = ConfigurableAccountConfig {
+        version: 1,
+        owners: vec![ConfigurableAccountOwner {
+            owner: rotated_owner.address(),
+            weight: 1,
+        }],
+        ..config.clone()
+    };
+    // Builds the call as reth's simulation does: an empty encoding marks it as simulated.
+    let sim =
+        |nonce: u64, config: &ConfigurableAccountConfig, approver: &PrivateKeySigner, to: Call| {
+            let request = TempoTransactionRequest {
+                inner: TransactionRequest {
+                    chain_id: Some(CHAIN_ID),
+                    from: Some(account),
+                    nonce: Some(nonce),
+                    gas: Some(5_000_000),
+                    max_fee_per_gas: Some(0),
+                    max_priority_fee_per_gas: Some(0),
+                    ..Default::default()
+                },
+                calls: vec![to],
+                fee_token: Some(PATH_USD_ADDRESS),
+                key_type: Some(SignatureType::ConfigurableAccount),
+                configurable_account_simulation: Some(ConfigurableAccountSimulationSpec {
+                    signer: None,
+                    config: config.clone(),
+                    approvals: vec![ConfigurableAccountSimulationApproval {
+                        owner: approver.address(),
+                        key_type: Some(SignatureType::Secp256k1),
+                        key_data: None,
+                    }],
+                }),
+                ..Default::default()
+            };
+            let tx = TryIntoSimTx::<TempoTxEnvelope>::try_into_sim_tx(request).unwrap();
+            let env = TempoTxEnv::from_tx_with_encoded(
+                tx.with_signer(account).into_encoded_with(Bytes::new()),
+            );
+            assert_eq!(env.execution_context(), ExecutionContext::Simulation);
+            Recovered::new_unchecked(env, account)
+        };
+
+    let rotate = Call {
+        to: TxKind::Call(CONFIGURABLE_ACCOUNT_ADDRESS),
+        value: U256::ZERO,
+        input: IConfigurableAccount::updateConfigCall {
+            current: IConfigurableAccount::ConfigurableAccountConfig {
+                salt: config.salt,
+                version: config.version,
+                threshold: 1,
+                owners: vec![IConfigurableAccount::ConfigurableAccountOwner {
+                    owner: owner.address(),
+                    weight: 1,
+                }],
+            },
+            threshold: 1,
+            owners: vec![IConfigurableAccount::ConfigurableAccountOwner {
+                owner: rotated_owner.address(),
+                weight: 1,
+            }],
+        }
+        .abi_encode()
+        .into(),
+    };
+    let result = evm
+        .transact(&sim(0, &config, &owner, rotate))
+        .unwrap()
+        .commit();
+    assert!(result.status, "{result:?}");
+    let registered = commitment(&mut evm, account);
+    assert_eq!(registered, rotated.commitment().unwrap());
+
+    let noop = Call {
+        to: TxKind::Call(DELEGATE),
+        value: U256::ZERO,
+        input: Bytes::new(),
+    };
+    assert_eq!(
+        invalid(&mut evm, &sim(1, &config, &owner, noop.clone())),
+        TempoInvalidTransaction::ConfigurableAccount(
+            ConfigurableAccountError::ConfigurationCommitmentMismatch {
+                expected: registered,
+                actual: config.commitment().unwrap(),
+            }
+        )
+    );
+    let result = evm
+        .transact(&sim(1, &rotated, &rotated_owner, noop))
+        .unwrap()
+        .commit();
+    assert!(result.status, "{result:?}");
 }
