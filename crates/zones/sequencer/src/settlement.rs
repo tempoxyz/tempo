@@ -398,7 +398,7 @@ impl BatchSubmitter {
     ///
     /// Eligible `atomic_slot` withdrawals are processed in the same transaction as settlement.
     /// Ineligible slots remain queued for the standalone processor.
-    /// Returns the confirmed `BatchSubmitted` event and whether the slot was processed with it.
+    /// Returns the confirmed event and whether the slot was processed in the same transaction.
     #[instrument(skip_all, fields(
         portal = %self.portal_address,
         tempo_block = prepared.batch.tempo_block_number,
@@ -416,7 +416,7 @@ impl BatchSubmitter {
         certificate: Option<&SettlementCertificate>,
         verifier_mode: VerifierMode,
         atomic_slot: Option<AtomicWithdrawalSlot<'_>>,
-    ) -> std::result::Result<(BatchSubmitted, bool), BatchSubmitError> {
+    ) -> std::result::Result<BatchSubmission, BatchSubmitError> {
         let active = active_l1_hardfork(&self.l1_provider, self.chain_spec.as_ref()).await?;
         if let Some(proved) = proof_bundle.map(|proof| proof.hardfork)
             && proved != active
@@ -611,7 +611,10 @@ impl BatchSubmitter {
             "Batch submitted to L1"
         );
 
-        Ok((event, withdrawals_processed))
+        Ok(BatchSubmission {
+            event,
+            withdrawals_processed,
+        })
     }
 
     /// Build the two-call transaction that settles the batch and drains its whole withdrawal slot,
@@ -1656,6 +1659,15 @@ struct AtomicSlotState {
     fee_token_balance: U256,
     /// Withdrawals that can each bounce back without exceeding `MAX_UNPROCESSED_DEPOSITS`.
     deposit_headroom: usize,
+}
+
+/// A confirmed L1 batch submission.
+#[derive(Debug, Clone)]
+pub struct BatchSubmission {
+    /// `BatchSubmitted` event decoded from the confirmed receipt.
+    pub event: BatchSubmitted,
+    /// Whether the batch's withdrawal slot was processed in the same transaction.
+    pub withdrawals_processed: bool,
 }
 
 /// One L2 withdrawal batch finalized by `ZoneOutbox`.

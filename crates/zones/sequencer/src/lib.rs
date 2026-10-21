@@ -49,8 +49,8 @@ pub use prover::{
 };
 pub use prover_config::{HardforkProverAddress, ProverAddresses};
 pub use settlement::{
-    AtomicWithdrawalSlot, BatchAnchor, BatchAnchorConfig, BatchData, BatchSubmitter,
-    PortalZoneAnchor, PreparedBatch, SettlementAbi, resolve_portal_zone_anchor,
+    AtomicWithdrawalSlot, BatchAnchor, BatchAnchorConfig, BatchData, BatchSubmission,
+    BatchSubmitter, PortalZoneAnchor, PreparedBatch, SettlementAbi, resolve_portal_zone_anchor,
 };
 pub use settlement_manager::SettlementManager;
 pub use withdrawals::{

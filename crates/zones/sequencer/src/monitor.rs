@@ -50,9 +50,9 @@ use crate::{
     prover_config::active_l1_hardfork,
     resolve_portal_zone_anchor,
     settlement::{
-        AtomicWithdrawalSlot, BatchAnchorConfig, BatchData, BatchSubmitError, BatchSubmitter,
-        FinalizedBatchLog, PreparedBatch, WithdrawalPage, ZoneBlockSnapshot, fetch_finalized_batch,
-        fetch_finalized_batch_boundaries, read_zone_block_snapshot,
+        AtomicWithdrawalSlot, BatchAnchorConfig, BatchData, BatchSubmission, BatchSubmitError,
+        BatchSubmitter, FinalizedBatchLog, PreparedBatch, WithdrawalPage, ZoneBlockSnapshot,
+        fetch_finalized_batch, fetch_finalized_batch_boundaries, read_zone_block_snapshot,
     },
     withdrawals::{SharedWithdrawalStore, WithdrawalBatchLimits},
 };
@@ -764,7 +764,10 @@ impl<P: ZoneSequencerProvider> ZoneMonitor<P> {
                 )
                 .await
             {
-                Ok((event, withdrawals_processed)) => {
+                Ok(BatchSubmission {
+                    event,
+                    withdrawals_processed,
+                }) => {
                     let portal_index = if event.withdrawalQueueIndex == NO_QUEUE_INDEX {
                         None
                     } else {

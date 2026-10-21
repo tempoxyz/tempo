@@ -312,7 +312,7 @@ async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
     let batch = batch_from_output(end, zone.tempo_block_number().await?, &output);
     let prepared = submitter.prepare_batch(batch).await?;
     // This harness has no Nitro attestation service. Use `NoProof` explicitly.
-    let (settled, _) = submitter
+    let settled = submitter
         .submit_batch(
             &prepared,
             None,
@@ -322,10 +322,10 @@ async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
         )
         .await
         .map_err(|err| eyre::eyre!("T13 settlement: {err:?}"))?;
-    assert_eq!(settled.lastProcessedEnabledTokenCount, 3);
-    assert_eq!(settled.withdrawalBatchIndex, 3);
+    assert_eq!(settled.event.lastProcessedEnabledTokenCount, 3);
+    assert_eq!(settled.event.withdrawalBatchIndex, 3);
     assert_eq!(
-        settled.withdrawalQueueIndex,
+        settled.event.withdrawalQueueIndex,
         U256::MAX,
         "empty batch must not create a withdrawal queue"
     );
