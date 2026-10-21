@@ -132,12 +132,16 @@ export STATE_TEST_EVENT=pull_request
 unset STATE_TEST_EVENT
 echo 'PASS: pagination, newest state, expiry, branch/mode/fork/workflow/event isolation, and run outcomes'
 
-for series in replay e2e; do
-  export STATE_TEST_WORKFLOW=".github/workflows/bench-$series-scheduled.yml"
-  if [[ "$series" == replay ]]; then keys=(mainnet testnet); else keys=(default tip20-existing-any); fi
+for series in replay e2e zones; do
+  export STATE_TEST_WORKFLOW=".github/workflows/bench-$series-scheduled.yml" BENCH_STATE_SERIES="$series"
+  resolver="$scripts/bench-$series-scheduled-refs.sh"
+  case "$series" in
+    replay) keys=(mainnet testnet) ;;
+    e2e) keys=(default tip20-existing-any) ;;
+    zones) keys=(prover); resolver="$scripts/bench-e2e-scheduled-refs.sh" ;;
+  esac
   for key in "${keys[@]}"; do
     export BENCH_REPLAY_CHAIN="$key"
-    resolver="$scripts/bench-$series-scheduled-refs.sh"
     for value in "" "$feature" "$previous"; do
       export STATE_TEST_VALUE="$value"
       : > "$GITHUB_OUTPUT"
@@ -149,6 +153,7 @@ for series in replay e2e; do
       fi
       baseline="${value:-$feature}"
       grep -q "^baseline-ref=$baseline$" "$GITHUB_OUTPUT"
+      [[ "$series" != zones ]] || grep -q '^actor=zones-nightly$' "$GITHUB_OUTPUT"
     done
     export STATE_TEST_VALUE="$feature"
     : > "$GITHUB_OUTPUT"

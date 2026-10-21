@@ -15,6 +15,8 @@
 //   await notify.e2e.failure({ core, context, failedStep: '...' });
 //   await notify.replay.success({ core, context });
 //   await notify.replay.failure({ core, context, failedStep: '...' });
+//   await notify.zones.success({ core, context });  // reads comparison.json from BENCH_WORK_DIR
+//   await notify.zones.failure({ core, context, failedStep: '...' });
 
 const fs = require('fs');
 const path = require('path');
@@ -623,6 +625,114 @@ async function replayFailure({ core, context, failedStep }) {
   }
 }
 
+const ZONE_LATENCIES = [['journey', 'Journey'], ['deposit', 'Deposit'], ['withdrawal', 'Withdrawal']];
+
+function zonesChanges(latencies) {
+  const changes = {};
+  for (const [journey] of ZONE_LATENCIES) {
+    for (const quantile of ['p50', 'p95']) {
+      const baseline = latencies.baseline[journey][`${quantile}_ms`];
+      const feature = latencies.feature[journey][`${quantile}_ms`];
+      changes[`${journey}_${quantile}`] = changeFromPct(baseline ? (feature / baseline - 1) * 100 : null, true);
+    }
+  }
+  return changes;
+}
+
+function buildZonesSuccessBlocks({ comparison, changes, prNumber, actor, actorSlackId, jobUrl, repo }) {
+  const { metadata, latencies } = comparison;
+  const verdict = verdictFromChanges(changes, 'No Significant Change');
+  const commitUrl = `https://github.com/${repo}/commit`;
+  const metaParts = [];
+  if (prNumber) metaParts.push(`*<https://github.com/${repo}/pull/${prNumber}|PR #${prNumber}>*`);
+  metaParts.push(`triggered by ${actorSlackId ? `<@${actorSlackId}>` : `@${actor}`}`);
+  const sectionText = [
+    `*Repo:* ${repoLink(repo)}`,
+    metaParts.join(' | '),
+    '',
+    `*Baseline:* ${refLink(commitUrl, metadata.baseline, process.env.BENCH_BASELINE_NAME, 'baseline')}`,
+    `*Feature:* ${refLink(commitUrl, metadata.feature, process.env.BENCH_FEATURE_NAME, 'feature')}`,
+    '',
+    `*Prover:* \`${metadata.prover ? 'on' : 'off'}\` | *Preset:* \`${metadata.preset}\` | *Hardfork:* \`${metadata.tempoHardfork}\``,
+    `*Journeys:* \`${metadata.count}\` | *Target TPS:* \`${metadata.tps}\` | *Region:* \`${metadata.region}\``,
+  ].join('\n');
+  const rows = ZONE_LATENCIES.flatMap(([journey, label]) => ['p50', 'p95'].map(quantile => [
+    cell(`${label} ${quantile.toUpperCase()}`),
+    cell(fmtMs(latencies.baseline[journey][`${quantile}_ms`])),
+    cell(fmtMs(latencies.feature[journey][`${quantile}_ms`])),
+    cell(fmtChange(changes[`${journey}_${quantile}`]) || ' '),
+  ]));
+  const buttons = [{ type: 'button', text: { type: 'plain_text', text: 'CI :github:', emoji: true }, url: jobUrl, action_id: 'ci_button' }];
+  if (prNumber) {
+    buttons.push({ type: 'button', text: { type: 'plain_text', text: 'Diff :github:', emoji: true }, url: `https://github.com/${repo}/pull/${prNumber}/files`, action_id: 'diff_button' });
+  }
+  return [
+    { type: 'header', text: { type: 'plain_text', text: `${verdict.emoji} Zones Bench ${verdict.label}`, emoji: true } },
+    { type: 'section', text: { type: 'mrkdwn', text: sectionText } },
+    {
+      type: 'table',
+      column_settings: [{ align: 'left' }, { align: 'right' }, { align: 'right' }, { align: 'right' }],
+      rows: [[cell('Latency'), cell('Baseline'), cell('Feature'), cell('Change')], ...rows],
+    },
+    { type: 'actions', elements: buttons },
+  ];
+}
+
+async function zonesSuccess({ core, context }) {
+  const token = process.env.SLACK_BENCH_BOT_TOKEN;
+  if (!token) {
+    core.info('SLACK_BENCH_BOT_TOKEN not set, skipping Zones Slack notification');
+    return;
+  }
+
+  let comparison;
+  try {
+    comparison = JSON.parse(fs.readFileSync(process.env.BENCH_WORK_DIR + '/comparison.json', 'utf8'));
+  } catch (e) {
+    core.warning('Could not read comparison.json for Zones Slack notification');
+    return;
+  }
+
+  const repo = `${context.repo.owner}/${context.repo.repo}`;
+  const prNumber = process.env.BENCH_PR;
+  const actor = process.env.BENCH_ACTOR;
+  const jobUrl = process.env.BENCH_JOB_URL ||
+    `${context.serverUrl}/${repo}/actions/runs/${context.runId}`;
+
+  const slackUsers = loadSlackUsers(process.env.GITHUB_WORKSPACE || '.');
+  const actorSlackId = slackUsers[actor];
+  const changes = zonesChanges(comparison.latencies);
+  const blocks = buildZonesSuccessBlocks({ comparison, changes, prNumber, actor, actorSlackId, jobUrl, repo });
+  const text = `Tempo Zones bench: baseline vs feature (prover ${comparison.metadata.prover ? 'on' : 'off'})`;
+
+  const channel = process.env.SLACK_BENCH_CHANNEL;
+  const slackMode = process.env.BENCH_SLACK || 'always';
+  let postedToChannel = false;
+  if (channel && hasImprovement(changes)) {
+    await postToSlack(token, channel, blocks, text, core);
+    postedToChannel = true;
+  } else if (channel) {
+    core.info('No significant Zones improvement, skipping public channel notification');
+  }
+
+  if (slackMode === 'on-win') {
+    if (!postedToChannel) {
+      core.info('on-win mode: no Zones improvement detected, skipping all notifications');
+    }
+    return;
+  }
+
+  if (!postedToChannel) {
+    if (actorSlackId) {
+      await postToSlack(token, actorSlackId, blocks, text, core);
+    } else {
+      core.info(`No Slack user mapping for GitHub user '${actor}', skipping DM`);
+    }
+  } else {
+    core.info(`Zones results posted to channel, skipping DM to ${actor}`);
+  }
+}
+
 module.exports = {
   success,
   failure,
@@ -633,5 +743,9 @@ module.exports = {
   replay: {
     success: replaySuccess,
     failure: replayFailure,
+  },
+  zones: {
+    success: zonesSuccess,
+    failure,
   },
 };

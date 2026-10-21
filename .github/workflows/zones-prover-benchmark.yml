@@ -1,152 +1,131 @@
+# Zone Nitro benchmark job.
+#
+# Called by bench.yml for `derek bench zones [prover=true|false]` and by
+# bench-zones-scheduled.yml for nightlies. Compares a baseline and a feature Tempo
+# revision on AWS with the prover on (NitroV1) or off (NoProof) in both phases.
+
 name: Zones Nitro prover benchmark
 
 on:
-  schedule:
-    - cron: "45 3 * * *"
-  issue_comment:
-    types: [created]
   workflow_dispatch:
     inputs:
-      feature-sha:
-        description: Exact 40-character Tempo monorepo commit for the feature phase (both phases in prover mode).
+      baseline:
+        description: Baseline git ref (default main).
         type: string
-        required: true
-      comparison-mode:
-        description: Compare revisions with Nitro, or one revision with proving off/on.
-        type: choice
-        required: true
-        default: revision
-        options: [revision, prover]
+        default: ""
+      feature:
+        description: Feature git ref (default the dispatched commit).
+        type: string
+        default: ""
+      prover:
+        description: Prove every measured batch with Nitro in both phases.
+        type: boolean
+        default: true
       tempo-hardfork:
         description: Tempo L1 hardfork for both phases (for example, t14).
         type: string
-        required: true
         default: t13
       region:
         description: Existing AWS benchmark region.
         type: choice
-        required: true
         default: us-east-1
         options: [us-east-1, us-west-2, eu-central-1, ap-southeast-1, ap-northeast-1]
       preset:
         description: Neobank scenario containing a withdrawal.
         type: choice
-        required: true
         default: full-journey
         options: [full-journey, full-journey-pathusd-fees, private-withdrawal, swapped-lifecycle, swapped-redemption]
       accounts:
         type: string
-        required: true
         default: "20"
       count:
         type: string
-        required: true
         default: "20"
       tps:
         type: string
-        required: true
         default: "5"
       max-concurrent:
         type: string
-        required: true
         default: "4"
       state-bloat-mib:
         description: Tempo L1 bloat. Start with 0 for the Nitro smoke test.
         type: string
-        required: true
         default: "0"
       zone-state-bloat-mib:
         description: Zone PathUSD dump MiB (0-16). Use full-journey-pathusd-fees; start with 1 and L1 bloat 0.
         type: string
-        required: true
         default: "0"
+      slack:
+        description: Slack notification policy
+        type: choice
+        default: never
+        options: [always, on-win, on-error, never]
+  workflow_call:
+    inputs:
+      pr:
+        type: string
+        required: false
+      actor:
+        type: string
+        required: true
+      baseline:
+        type: string
+        required: false
+      feature:
+        type: string
+        required: false
+      baseline-name:
+        type: string
+        required: false
+      feature-name:
+        type: string
+        required: false
+      prover:
+        type: string
+        required: false
+        default: "true"
+      preset:
+        type: string
+        required: false
+        default: full-journey
+      run-type:
+        description: manual or nightly; separates the exported metric series.
+        type: string
+        required: false
+        default: manual
+      comment-id:
+        type: string
+        required: false
+      pr-head-sha:
+        description: Pinned PR head SHA from the ack job.
+        type: string
+        required: false
+        default: ""
+      slack:
+        type: string
+        required: false
+        default: never
+    secrets:
+      SLACK_BENCH_BOT_TOKEN:
+        required: false
+      SLACK_BENCH_CHANNEL:
+        required: false
+      BENCH_VICTORIAMETRICS_URL:
+        required: false
 
 permissions: {}
 
-concurrency:
-  group: zones-prover-benchmark-${{ github.event.issue.number || github.ref }}
-  cancel-in-progress: false
-
 jobs:
-  authorize:
+  bench-zones:
+    name: bench-zones
     if: >-
       github.repository == 'tempoxyz/tempo' &&
-      github.ref == 'refs/heads/main' &&
-      ((github.event_name == 'schedule' && vars.ZONES_PROVER_NIGHTLY_ENABLED == 'true') ||
-       github.event_name == 'workflow_dispatch' ||
-       (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
-        startsWith(github.event.comment.body, 'derek bench ')))
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
-      pull-requests: read
-    outputs:
-      feature-sha: ${{ steps.request.outputs.feature-sha }}
-      pr-number: ${{ steps.request.outputs.pr-number }}
-    steps:
-      - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-      - name: Mint benchmark repository read token
-        id: benchmark-token
-        uses: tempoxyz/gh-actions/actions/github-sts@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-        with:
-          scope: tempoxyz/tempo-multi-region-benchmark
-          policy: bench-e2e-multi-region
-      - name: Check org membership
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
-        with:
-          github-token: ${{ steps.benchmark-token.outputs.token }}
-          script: |
-            for (const username of new Set([context.actor, process.env.TRIGGERING_ACTOR])) {
-              try {
-                await github.rest.orgs.checkMembershipForUser({org: 'tempoxyz', username});
-              } catch {
-                core.setFailed(`@${username} must be a tempoxyz member`);
-                return;
-              }
-            }
-      - name: Resolve PR SHA
-        id: request
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          FEATURE_SHA: ${{ inputs.feature-sha || '' }}
-        with:
-          script: |
-            if (context.eventName === 'schedule') {
-              core.setOutput('feature-sha', context.sha);
-            } else if (context.eventName === 'issue_comment') {
-              // Bind approval to the event's immutable comment payload, including on reruns.
-              const match = /^derek bench(?: prover)? ([0-9a-f]{40})$/.exec(context.payload.comment.body);
-              if (!match) {
-                core.setFailed('Use derek bench <40-character SHA> or derek bench prover <40-character SHA>');
-                return;
-              }
-              const sha = match[1];
-              const number = context.issue.number;
-              const {data: pr} = await github.rest.pulls.get({...context.repo, pull_number: number});
-              if (pr.head.repo?.full_name !== 'tempoxyz/tempo') {
-                core.setFailed('Benchmark PR head must be in tempoxyz/tempo');
-                return;
-              }
-              if (pr.head.sha !== sha) {
-                core.setFailed('PR head must match the approved SHA; post a new benchmark comment for the current head');
-                return;
-              }
-              core.setOutput('feature-sha', sha);
-              core.setOutput('pr-number', number);
-            } else if (/^[0-9a-f]{40}$/.test(process.env.FEATURE_SHA)) {
-              core.setOutput('feature-sha', process.env.FEATURE_SHA);
-            } else {
-              core.setFailed('feature-sha must be an exact 40-character commit SHA');
-            }
-
-  benchmark:
-    needs: authorize
+      github.ref == 'refs/heads/main'
     runs-on: depot-ubuntu-latest-16
     timeout-minutes: 360
+    concurrency:
+      group: zones-prover-benchmark-${{ inputs.pr || github.ref }}
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
@@ -156,7 +135,12 @@ jobs:
       FEATURE_ZONES_ROOT: ${{ github.workspace }}/feature-zones
       BENCH_TEMPO_ROOT: ${{ github.workspace }}/tempo
       BENCH_EARN_ROOT: ${{ github.workspace }}/earn
-      BENCH_COMPARISON_MODE: ${{ github.event_name == 'schedule' && 'prover' || inputs.comparison-mode || 'revision' }}
+      BENCH_PR: ${{ inputs.pr }}
+      BENCH_ACTOR: ${{ inputs.actor || github.actor }}
+      BENCH_COMMENT_ID: ${{ inputs.comment-id }}
+      BENCH_SLACK: ${{ inputs.slack || 'never' }}
+      BENCH_RUN_KIND: ${{ inputs.run-type || 'manual' }}
+      BENCH_PROVER: ${{ (inputs.prover == false || inputs.prover == 'false') && 'false' || 'true' }}
       BENCH_REGION: ${{ inputs.region || 'us-east-1' }}
       BENCH_TEMPO_HARDFORK: ${{ inputs['tempo-hardfork'] || 't13' }}
       BENCH_PRESET: ${{ inputs.preset || 'full-journey' }}
@@ -168,50 +152,83 @@ jobs:
       BENCH_ZONE_BLOAT_MIB: ${{ inputs.zone-state-bloat-mib || '0' }}
       BENCH_BATCH_INTERVAL_BLOCKS: "20"
       BENCH_RESULTS_PATH: ${{ github.workspace }}/zones-prover-${{ github.run_id }}-${{ github.run_attempt }}
+      BENCH_WORK_DIR: ${{ github.workspace }}/zones-prover-${{ github.run_id }}-${{ github.run_attempt }}/results
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - name: Check out benchmark scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: true
+      - name: Resolve baseline and feature refs
+        id: refs
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          INPUT_BASELINE: ${{ inputs.baseline }}
+          INPUT_FEATURE: ${{ inputs.feature }}
+          INPUT_BASELINE_NAME: ${{ inputs.baseline-name }}
+          INPUT_FEATURE_NAME: ${{ inputs.feature-name }}
+          INPUT_PR_HEAD_SHA: ${{ inputs.pr-head-sha }}
+        with:
+          script: |
+            const resolve = async ref => (await github.rest.repos.getCommit({...context.repo, ref})).data.sha;
+            const pinned = process.env.INPUT_PR_HEAD_SHA;
+            if (process.env.BENCH_PR && !/^[0-9a-f]{40}$/.test(pinned)) {
+              core.setFailed('PR benchmarks require the PR head SHA pinned by the ack job');
+              return;
+            }
+            const feature = process.env.INPUT_FEATURE ? await resolve(process.env.INPUT_FEATURE) : (pinned || context.sha);
+            let baseline;
+            if (process.env.INPUT_BASELINE) {
+              baseline = await resolve(process.env.INPUT_BASELINE);
+            } else if (process.env.BENCH_PR) {
+              const {data} = await github.rest.repos.compareCommitsWithBasehead({...context.repo, basehead: `main...${feature}`});
+              baseline = data.merge_base_commit.sha;
+            } else {
+              baseline = await resolve('main');
+            }
+            const baselineName = process.env.INPUT_BASELINE_NAME || process.env.INPUT_BASELINE || (process.env.BENCH_PR ? 'merge-base' : 'main');
+            const featureName = process.env.INPUT_FEATURE_NAME || process.env.INPUT_FEATURE || feature.slice(0, 8);
+            core.setOutput('baseline-sha', baseline);
+            core.setOutput('feature-sha', feature);
+            core.exportVariable('BENCH_BASELINE_NAME', baselineName);
+            core.exportVariable('BENCH_FEATURE_NAME', featureName);
+            core.exportVariable('BENCH_JOB_URL', `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`);
+            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`zones\`, prover: \`${process.env.BENCH_PROVER}\`, preset: \`${process.env.BENCH_PRESET}\`, baseline: \`${baselineName}\`, feature: \`${featureName}\``);
+      - name: Update status (running)
+        if: env.BENCH_COMMENT_ID
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const updateStatus = require('./.github/scripts/bench-update-status.js');
+            await updateStatus({github, context, status: 'Running Zones benchmark on AWS...'});
       - name: Mint benchmark repository read token
         id: benchmark-token
         uses: tempoxyz/gh-actions/actions/github-sts@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           scope: tempoxyz/tempo-multi-region-benchmark
           policy: bench-e2e-multi-region
-      # A benchmark-only rerun can reuse authorize outputs, so recheck membership here.
-      - name: Check org membership
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+      - name: Check out benchmark infrastructure
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          github-token: ${{ steps.benchmark-token.outputs.token }}
-          script: |
-            for (const username of new Set([context.actor, process.env.TRIGGERING_ACTOR])) {
-              try {
-                await github.rest.orgs.checkMembershipForUser({org: 'tempoxyz', username});
-              } catch {
-                core.setFailed(`@${username} must be a tempoxyz member`);
-                return;
-              }
-            }
+          repository: tempoxyz/tempo-multi-region-benchmark
+          ref: c075e602e26ad3377e564ec9a1da8499fef6cc5f # prover on/off for both phases
+          path: benchmark
+          token: ${{ steps.benchmark-token.outputs.token }}
+          persist-credentials: false
       - name: Mint Earn read token
         id: earn-token
         uses: tempoxyz/gh-actions/actions/github-sts@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           scope: tempoxyz/earn
           policy: zones-read
-      - name: Check out benchmark infrastructure
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: tempoxyz/tempo-multi-region-benchmark
-          ref: 9834cfc76aa0426f8f52844a8050dcf6f11801b3 # matched prover-off/on reporting
-          path: benchmark
-          token: ${{ steps.benchmark-token.outputs.token }}
-          persist-credentials: false
       - name: Check out baseline Tempo with Zones
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: tempoxyz/tempo
-          ref: ${{ env.BENCH_COMPARISON_MODE == 'prover' && needs.authorize.outputs.feature-sha || 'main' }}
+          ref: ${{ steps.refs.outputs.baseline-sha }}
           path: baseline-zones
           submodules: recursive
           persist-credentials: false
@@ -219,7 +236,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: tempoxyz/tempo
-          ref: ${{ needs.authorize.outputs.feature-sha }}
+          ref: ${{ steps.refs.outputs.feature-sha }}
           path: feature-zones
           submodules: recursive
           persist-credentials: false
@@ -227,7 +244,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: tempoxyz/tempo
-          ref: ${{ env.BENCH_COMPARISON_MODE == 'prover' && needs.authorize.outputs.feature-sha || 'main' }}
+          ref: main
           path: tempo
           submodules: recursive
           persist-credentials: false
@@ -267,36 +284,31 @@ jobs:
       - name: Run matched benchmark phases
         id: bench
         run: bash benchmark/scripts/zones_prover/run.sh
-      - name: Attach comparison to PR
-        if: steps.bench.outcome == 'success' && needs.authorize.outputs.pr-number != ''
+      - name: Post results to PR
+        if: success() && env.BENCH_COMMENT_ID
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          SUMMARY_PATH: ${{ env.BENCH_RESULTS_PATH }}/summary.md
-          PR_NUMBER: ${{ needs.authorize.outputs.pr-number }}
         with:
           script: |
-            const fs = require('fs');
-            await github.rest.issues.createComment({
+            const fs = require('node:fs');
+            const summary = fs.readFileSync(`${process.env.BENCH_RESULTS_PATH}/summary.md`, 'utf8');
+            await github.rest.issues.updateComment({
               ...context.repo,
-              issue_number: Number(process.env.PR_NUMBER),
-              body: fs.readFileSync(process.env.SUMMARY_PATH, 'utf8') + `\n[Workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+              comment_id: Number(process.env.BENCH_COMMENT_ID),
+              body: `cc @${process.env.BENCH_ACTOR}\n\n✅ Zones benchmark complete! [View job](${process.env.BENCH_JOB_URL})\n\n${summary}`,
             });
-      - name: Publish latency metrics and nightly status
-        if: always() && (github.event_name == 'schedule' || env.BENCH_COMPARISON_MODE == 'prover')
+      - name: Publish latency metrics
+        if: success()
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          BENCH_OUTCOME: ${{ steps.bench.outcome }}
           BENCH_METRICS_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}
-          SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
         with:
           script: |
             const fs = require('node:fs');
             const path = require('node:path');
             const root = path.join(process.env.BENCH_RESULTS_PATH, 'results');
-            const success = process.env.BENCH_OUTCOME === 'success';
-            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}/attempts/${process.env.GITHUB_RUN_ATTEMPT}`;
-            let published = false;
-            if (success) {
+            const promPath = path.join(root, 'comparison.prom');
+            // Only full-journey runs export latency.
+            if (fs.existsSync(promPath)) {
               try {
                 if (!process.env.BENCH_METRICS_URL) throw new Error('missing metrics destination');
                 const url = new URL(process.env.BENCH_METRICS_URL);
@@ -308,40 +320,59 @@ jobs:
                   url.username = ''; url.password = '';
                 }
                 url.pathname = url.pathname.replace(/\/$/, '') + '/api/v1/import/prometheus';
-                // Manual smoke runs must not overwrite the nightly series.
-                const kind = context.eventName === 'schedule' ? 'nightly' : 'manual';
-                const body = fs.readFileSync(path.join(root, 'comparison.prom'), 'utf8')
+                // Manual runs must not overwrite the nightly series.
+                const kind = process.env.BENCH_RUN_KIND;
+                const body = fs.readFileSync(promPath, 'utf8')
                   .replace(/^(tempo_zone_benchmark_\w+)\{/gm, `$1{run_kind="${kind}",`);
                 const response = await fetch(url, {method: 'POST', headers, body, signal: AbortSignal.timeout(30000)});
                 if (!response.ok) throw new Error(`metrics HTTP ${response.status}`);
-                published = true;
               } catch {
                 // Do not log URLs or request errors that might contain credentials.
                 core.setFailed('Zone latency metrics publication failed; comparison evidence remains in the artifact');
               }
             }
-            if (context.eventName !== 'schedule') return;
-            if (!process.env.SLACK_BENCH_BOT_TOKEN) {
-              core.setFailed('Missing SLACK_BENCH_BOT_TOKEN for nightly Zone reporting');
-              return;
-            }
-            let text = `*Zone prover off/on nightly: ${success ? 'benchmark passed' : 'benchmark failed or did not run'}*\n<${runUrl}|Workflow and raw evidence>`;
-            if (success) {
-              const comparison = JSON.parse(fs.readFileSync(path.join(root, 'comparison.json'), 'utf8'));
-              text += `\nRevision: \`${comparison.metadata.feature}\`; ${comparison.metadata.count} full journeys per phase.`;
-              for (const name of ['journey', 'deposit', 'withdrawal']) {
-                const off = comparison.latencies.baseline[name], on = comparison.latencies.feature[name];
-                text += `\n${name} p50/p95 (ms), off → on: ${off.p50_ms.toFixed(1)}/${off.p95_ms.toFixed(1)} → ${on.p50_ms.toFixed(1)}/${on.p95_ms.toFixed(1)}`;
-              }
-              text += '\nDeposit/withdrawal measure source-event observation → destination-event observation.';
-              text += published ? '\nGrafana metrics published.' : '\nGrafana metrics publication FAILED; see the artifact.';
-            }
-            const response = await fetch('https://slack.com/api/chat.postMessage', {
-              method: 'POST', signal: AbortSignal.timeout(30000),
-              headers: {Authorization: `Bearer ${process.env.SLACK_BENCH_BOT_TOKEN}`, 'Content-Type': 'application/json'},
-              body: JSON.stringify({channel: 'C0B96B0RRMJ', text, unfurl_links: false, unfurl_media: false}),
+      - name: Send Slack notification (success)
+        if: success() && (env.BENCH_SLACK == 'always' || env.BENCH_SLACK == 'on-win')
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
+          SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
+        with:
+          script: |
+            const notify = require('./.github/scripts/bench-slack-notify.js');
+            await notify.zones.success({ core, context });
+      - name: Send Slack notification (failure)
+        if: failure() && env.BENCH_SLACK != 'never' && env.BENCH_SLACK != 'on-win'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
+          SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
+          STEP_BENCH_OUTCOME: ${{ steps.bench.outcome }}
+        with:
+          script: |
+            const notify = require('./.github/scripts/bench-slack-notify.js');
+            const failedStep = process.env.STEP_BENCH_OUTCOME === 'success' ? 'publishing Zones results' : 'running Zones benchmark';
+            await notify.zones.failure({ core, context, failedStep });
+      - name: Update status (failed)
+        if: failure() && env.BENCH_COMMENT_ID
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            await github.rest.issues.updateComment({
+              ...context.repo,
+              comment_id: Number(process.env.BENCH_COMMENT_ID),
+              body: `cc @${process.env.BENCH_ACTOR}\n\n❌ Zones benchmark failed. [View logs](${process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`})`,
             });
-            if (!response.ok || !(await response.json()).ok) core.setFailed('Nightly Zone Slack delivery failed');
+      - name: Update status (cancelled)
+        if: cancelled() && env.BENCH_COMMENT_ID
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            await github.rest.issues.updateComment({
+              ...context.repo,
+              comment_id: Number(process.env.BENCH_COMMENT_ID),
+              body: `cc @${process.env.BENCH_ACTOR}\n\n⚠️ Zones benchmark cancelled. [View logs](${process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`})`,
+            });
       - name: Upload benchmark evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

@@ -1,47 +1,55 @@
-# Prover latency comparison
+# Zone Nitro benchmark
 
-The `Zones Nitro prover benchmark` workflow supports two comparisons:
+`zones-prover-benchmark.yml` compares a baseline and a feature Tempo revision on AWS
+with the prover setting applied to both phases:
 
-- `revision` (default): Tempo main versus an exact feature SHA, with Nitro in both phases. The existing `derek bench <SHA>` PR command retains this behavior.
-- `prover`: the same exact feature SHA and L1 binary with proving disabled, then enabled. This requires `full-journey` and measures deposit, withdrawal, and complete-journey p50/p95.
+- `prover=true` (default): every measured batch must be proven with NitroV1; a NoProof
+  fallback fails the run.
+- `prover=false`: no enclave or prover runs, and every measured batch must settle with
+  NoProof.
 
-Deposit latency runs from observing the L1 enqueue event to observing Zone processing.
-Withdrawal latency runs from observing the Zone withdrawal request to observing L1
-processing. These include observation delay and exclude submission before the first
-event. Complete journeys include client orchestration. Percentiles are calculated
-from paired observations, never by adding step percentiles.
+The two settings are never compared with each other. Runs start from:
+
+- **PR comments**: `derek bench zones [prover=true|false] [preset=NAME] [baseline=REF] [feature=REF] [no-slack]`,
+  parsed by `bench.yml` like the e2e and replay commands. The feature is the pinned PR
+  head and the baseline defaults to its merge base with main.
+- **Nightly** (`bench-zones-scheduled.yml`, 03:45 UTC): the latest main commit against
+  the last commit that completed the nightly successfully, with the prover on.
+- **Manual dispatch** of `zones-prover-benchmark.yml` on main, with every workload input.
+
+For `preset=full-journey`, the controller reports deposit, withdrawal, and
+complete-journey p50/p95. Deposit latency runs from observing the L1 enqueue event to
+observing Zone processing. Withdrawal latency runs from observing the Zone withdrawal
+request to observing L1 processing. These include observation delay and exclude
+submission before the first event. Complete journeys include client orchestration.
+Percentiles are calculated from paired observations, never by adding step percentiles.
+
+Results update the PR comment. Slack uses `bench-slack-notify.js` like the other
+benchmarks: results post to `SLACK_BENCH_CHANNEL` when a latency improves
+significantly, and otherwise DM the mapped actor; failures DM the actor. Full-journey
+latency is imported into `BENCH_VICTORIAMETRICS_URL` with `run_kind=manual|nightly`
+and `prover=on|off` labels, so manual runs never overwrite the nightly series.
 
 ## Activation
 
-Keep both repository flags disabled until the monorepo journey/settlement changes
-and the pinned benchmark controller are available on main. The workflow deliberately
-retains main-only authorization and checks org membership, including on reruns.
-Branch dispatches do not bypass that gate.
+Keep both repository flags disabled until a manual run succeeds:
 
-After the dependencies land, enable `ZONES_PROVER_BENCHMARK_ENABLED=true` and run:
+1. The benchmark repository's STS policy and the AWS `benchmark-runner` trust must
+   accept this workflow when it is called from `bench.yml` and
+   `bench-zones-scheduled.yml` (see `zones/MIGRATION.md`).
+2. Set `ZONES_PROVER_BENCHMARK_ENABLED=true` and dispatch a smoke run:
 
-```sh
-gh workflow run zones-prover-benchmark.yml --repo tempoxyz/tempo --ref main \
-  -f feature-sha=<exact-main-commit> -f comparison-mode=prover \
-  -f preset=full-journey -f tempo-hardfork=t14 \
-  -f accounts=20 -f count=20 -f tps=5 -f max-concurrent=4 \
-  -f state-bloat-mib=0
-```
+   ```sh
+   gh workflow run zones-prover-benchmark.yml --repo tempoxyz/tempo --ref main \
+     -f baseline=<main-commit> -f feature=<main-commit> -f preset=full-journey
+   ```
 
-Require both phases to pass, inspect each `batch-evidence.json`, raw reports, and
-`comparison.json`, and confirm the feature's Nitro journal. Every baseline batch must
-settle with NoProof; every feature batch must match Nitro validation and verification.
-A fallback in the feature phase fails the run. The same virgin L1 snapshot, seed,
-accounts, workload, Zone revision, and L1 binary are used in both phases.
-
-The workflow imports validated metrics into `BENCH_VICTORIAMETRICS_URL`. Import the
-controller's `scripts/zones_prover/dashboard.json` into the persistent benchmark
-Grafana folder and verify the **manual** series against the artifact. An import
-HTTP success does not verify that the Grafana read datasource is connected to the
-same storage. No-data panels are not zero latency.
-
-Only after that smoke succeeds, set `ZONES_PROVER_NIGHTLY_ENABLED=true`. The nightly
-runs at 03:45 UTC, snapshots the event's exact main SHA, and reports pass/fail to
-`C0B96B0RRMJ` using `SLACK_BENCH_BOT_TOKEN`. Manual series use a separate label
-and do not overwrite nightly data. Verify the first nightly Slack post and Grafana
-series before declaring reporting operational; unit tests do not replace that check.
+   It uses the same workload defaults as PR and nightly runs. Inspect each
+   `batch-evidence.json`, the raw reports, and `comparison.json`, and confirm the
+   feature's Nitro journal. Repeat with `-f prover=false`.
+3. Import the controller's `scripts/zones_prover/dashboard.json` into the persistent
+   benchmark Grafana folder and verify the **manual** series against the artifact. An
+   import HTTP success does not verify that the Grafana read datasource is connected to
+   the same storage. No-data panels are not zero latency.
+4. Set `ZONES_PROVER_NIGHTLY_ENABLED=true`, then verify the first nightly's Grafana
+   series and Slack delivery; unit tests do not replace that check.
