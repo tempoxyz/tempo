@@ -1,9 +1,9 @@
 pub mod admin;
+mod configurable_account;
 pub mod consensus;
 pub mod error;
 pub mod eth_ext;
 pub mod fork_schedule;
-mod native_multisig;
 pub mod operator;
 pub mod simulate;
 pub mod token;
@@ -25,8 +25,7 @@ use reth_transaction_pool::{PoolTransaction, PoolTx, TransactionOrigin};
 pub use simulate::{TempoSimulate, TempoSimulateApiServer, TempoSimulateV1Response};
 use std::{marker::PhantomData, sync::Arc};
 pub use tempo_alloy::rpc::TempoTransactionRequest;
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
-use tempo_evm::{FeeTokenResolver, TempoStateAccess};
+use tempo_chainspec::TempoChainSpec;
 use tempo_precompiles::{
     NONCE_PRECOMPILE_ADDRESS, error::TempoPrecompileError, nonce::NonceManager,
     storage::StorageActions, tip20::TIP20Error,
@@ -36,20 +35,12 @@ pub use token::{TempoToken, TempoTokenApiServer};
 
 use crate::rpc::error::TempoEthApiError;
 use alloy::primitives::{U256, uint};
-use alloy_evm::{EvmFactory, block::BlockExecutorFactory};
 use reth_chainspec::{EthChainSpec, EthereumHardforks, Hardforks};
 use reth_ethereum::tasks::{
     Runtime,
     pool::{BlockingTaskGuard, BlockingTaskPool},
 };
-use reth_evm::{
-    ConfigureEvm, EvmEnvFor, TxEnvFor,
-    revm::{
-        Database,
-        context::result::{EVMError, HaltReason},
-        database_interface::bal::EvmDatabaseError,
-    },
-};
+use reth_evm::{BlockExecutorFactory, ConfigureEvm, Database, EvmEnvFor, TxEnvFor};
 use reth_node_api::{FullNodeComponents, FullNodeTypes, NodeTypes};
 use reth_node_builder::rpc::{EthApiBuilder, EthApiCtx};
 use reth_provider::{ChainSpecProvider, ProviderError};
@@ -73,11 +64,12 @@ use reth_rpc_eth_types::{
     receipt::EthReceiptConverter,
 };
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
-use tempo_evm::{TempoBlockEnv, TempoInvalidTransaction};
+use tempo_evm::{
+    FeeTokenResolver, TempoEvmEnv, TempoEvmTypes, TempoStateAccess, account_access_gas,
+};
 use tempo_primitives::{
     TEMPO_GAS_PRICE_SCALING_FACTOR, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
 };
-use tempo_revm::{TempoTxEnv, native_multisig::account_access_gas};
 use tempo_transaction_pool::TempoTransactionPoolExt;
 use tokio::sync::Mutex;
 
@@ -97,16 +89,9 @@ pub trait TempoEthApiBounds:
         Pool: TempoTransactionPoolExt<Transaction: PoolTransaction<Pooled = TempoTxEnvelope>>,
         Evm: ConfigureEvm<
             BlockExecutorFactory: BlockExecutorFactory<
-                EvmFactory: EvmFactory<
-                    Tx = TempoTxEnv,
-                    Spec = TempoHardfork,
-                    BlockEnv = TempoBlockEnv,
-                    HaltReason = HaltReason,
-                    Error<EvmDatabaseError<ProviderError>> = EVMError<
-                        EvmDatabaseError<ProviderError>,
-                        TempoInvalidTransaction,
-                    >,
-                >,
+                EvmTypes = TempoEvmTypes,
+                Transaction = TempoTxEnvelope,
+                EvmEnv = TempoEvmEnv,
             >,
         > + FeeTokenResolver,
     >
@@ -119,16 +104,9 @@ impl<N> TempoEthApiBounds for N where
             Pool: TempoTransactionPoolExt<Transaction: PoolTransaction<Pooled = TempoTxEnvelope>>,
             Evm: ConfigureEvm<
                 BlockExecutorFactory: BlockExecutorFactory<
-                    EvmFactory: EvmFactory<
-                        Tx = TempoTxEnv,
-                        Spec = TempoHardfork,
-                        BlockEnv = TempoBlockEnv,
-                        HaltReason = HaltReason,
-                        Error<EvmDatabaseError<ProviderError>> = EVMError<
-                            EvmDatabaseError<ProviderError>,
-                            TempoInvalidTransaction,
-                        >,
-                    >,
+                    EvmTypes = TempoEvmTypes,
+                    Transaction = TempoTxEnvelope,
+                    EvmEnv = TempoEvmEnv,
                 >,
             > + FeeTokenResolver,
         >
@@ -384,10 +362,10 @@ where
             return EstimateCall::estimate_gas_at(self, request, at, overrides).await;
         }
         let (evm_env, _) = self.evm_env_at(at).await?;
-        if !evm_env.cfg_env.spec.is_t14() {
+        if !evm_env.spec.is_t14() {
             return EstimateCall::estimate_gas_at(self, request, at, overrides).await;
         }
-        let fee_payer_access = account_access_gas(&evm_env.cfg_env.gas_params, true);
+        let fee_payer_access = account_access_gas(&evm_env.version.gas_params, true);
         request.fee_payer_signature = None;
         request.inner.gas = request
             .inner
@@ -433,18 +411,18 @@ where
     ) -> Result<u64, Self::Error> {
         let fee_payer = tx_env
             .fee_payer()
-            .map_err(EVMError::<ProviderError, _>::from)?;
+            .map_err(|_| Self::Error::from_eth_err(EthApiError::InvalidTransactionSignature))?;
 
         let actions = StorageActions::disabled();
         let fee_token_balance = match self.evm_config().resolve_fee_token(
             &mut db,
-            tx_env,
+            tx_env.inner(),
             fee_payer,
-            evm_env.cfg_env.spec,
+            evm_env.spec,
             actions.clone(),
         ) {
             Ok(fee_token) => db
-                .get_token_balance(fee_token, fee_payer, evm_env.cfg_env.spec, actions)
+                .get_token_balance(fee_token, fee_payer, evm_env.spec, actions)
                 .map_err(ProviderError::other)?,
             // No token covers the initial gas bound; cap it by the largest candidate balance.
             Err(TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(error))) => {
@@ -452,12 +430,15 @@ where
             }
             Err(error) => return Err(ProviderError::other(error).into()),
         };
+        let gas_price = tx_env
+            .evm_tx()
+            .effective_gas_price(Some(evm_env.block.basefee.to()));
 
         Ok(fee_token_balance
             // multiply by the scaling factor
             .saturating_mul(TEMPO_GAS_PRICE_SCALING_FACTOR)
             // Calculate the amount of gas the caller can afford with the specified gas price.
-            .checked_div(U256::from(tx_env.inner.gas_price))
+            .checked_div(U256::from(gas_price))
             // This will be 0 if gas price is 0. It is fine, because we check it before.
             .unwrap_or_default()
             .saturating_to())
@@ -469,10 +450,10 @@ where
         mut request: TempoTransactionRequest,
         mut db: impl Database<Error: Into<EthApiError>>,
     ) -> Result<TxEnvFor<Self::Evm>, Self::Error> {
-        native_multisig::prepare_native_multisig_simulation(
+        configurable_account::prepare_configurable_account_simulation(
             &mut request,
-            evm_env.cfg_env.spec,
-            evm_env.block_env(),
+            evm_env.spec,
+            &evm_env.block.ext,
             &mut db,
         )
         .map_err(Self::Error::from_eth_err)?;
@@ -486,7 +467,7 @@ where
                 // 2D nonce: fetch from storage
                 let slot =
                     NonceManager::new().nonces[request.from.unwrap_or_default()][nonce_key].slot();
-                db.storage(NONCE_PRECOMPILE_ADDRESS, slot)
+                db.get_storage(&NONCE_PRECOMPILE_ADDRESS, &slot)
                     .map_err(Into::into)?
                     .saturating_to()
             };
@@ -555,12 +536,12 @@ where
                     .await
                     .map_err(Self::Error::from_eth_err);
             }
-            let authorization = native_multisig::prepare_fill_output(&mut request)
+            let authorization = configurable_account::prepare_fill_output(&mut request)
                 .map_err(Self::Error::from_eth_err)?;
             let filled = EthTransactions::fill_transaction(&this.inner, request)
                 .await
                 .map_err(Self::Error::from_eth_err)?;
-            let tx = native_multisig::restore_fill_authorization(filled.tx, authorization)
+            let tx = configurable_account::restore_fill_authorization(filled.tx, authorization)
                 .map_err(Self::Error::from_eth_err)?;
             Ok(FillTransaction {
                 raw: tx.encoded_2718().into(),
@@ -706,7 +687,6 @@ where
         let chain_spec = FullNodeComponents::provider(ctx.components).chain_spec();
         let eth_api = ctx
             .eth_api_builder()
-            .modify_gas_oracle_config(|config| config.default_suggested_fee = Some(U256::ZERO))
             .map_converter(|_| RpcConverter::new(TempoReceiptConverter::new(chain_spec)).erased())
             .build();
 

@@ -924,7 +924,6 @@ fn genesis_storage_entries(account: &GenesisAccount) -> Vec<StorageEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reth_primitives_traits::AccountExtension;
     use reth_provider::{
         ProviderResult,
         providers::{StaticFileProvider, StaticFileProviderRWRefMut},
@@ -978,13 +977,10 @@ mod tests {
         let value = B256::repeat_byte(0x33);
         let account = GenesisAccount {
             storage: Some(BTreeMap::from([(raw_slot, value), (zero_slot, B256::ZERO)])),
-            extension: AccountExtension::copy_from_slice(&[0x42; 32]),
             ..Default::default()
         };
 
         let replacement = genesis_account_replacement(Address::ZERO, &account).unwrap();
-
-        assert_eq!(replacement.account.extension, account.extension);
 
         assert_eq!(replacement.hashed_storage.len(), 1);
         assert_eq!(replacement.hashed_storage[0].key, keccak256(raw_slot));

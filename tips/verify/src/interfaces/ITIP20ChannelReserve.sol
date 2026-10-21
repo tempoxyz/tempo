@@ -158,5 +158,6 @@ interface ITIP20ChannelReserve {
     error CaptureAmountInvalid();
     error CloseNotReady();
     error DepositOverflow();
+    error RootKeyRetired(address account);
 
 }

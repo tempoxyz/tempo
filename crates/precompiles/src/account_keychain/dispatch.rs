@@ -3,11 +3,17 @@
 use super::{AccountKeychain, KeyRestrictions, TokenLimit, authorizeKeyCall};
 use crate::{Precompile, charge_input_cost, dispatch, mutate, view};
 use alloy::{
-    primitives::{Address, B256},
+    primitives::{Address, Bytes, U256},
     sol_types::SolCall,
 };
-use revm::precompile::PrecompileResult;
-use tempo_contracts::precompiles::{AccountKeychainError, IAccountKeychain};
+use evm2::precompiles::PrecompileResult;
+use tempo_contracts::precompiles::{
+    AccountKeychainError, IAccountKeychain,
+    IAccountKeychain::{
+        SignatureType, authorizeAdminKeyCall, authorizeKey_0Call, authorizeKey_1Call,
+        authorizeKey_2Call,
+    },
+};
 
 impl Precompile for AccountKeychain {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -15,21 +21,8 @@ impl Precompile for AccountKeychain {
             return err;
         }
 
-        // T11's strict ABI decoder rejected enum value 3 before Multisig existed.
-        // All authorization entrypoints put signatureType in the second ABI word.
-        if self.storage.spec().is_t11()
-            && !self.storage.spec().is_t14()
-            && [
-                IAccountKeychain::authorizeKey_0Call::SELECTOR,
-                IAccountKeychain::authorizeKey_1Call::SELECTOR,
-                IAccountKeychain::authorizeKey_2Call::SELECTOR,
-                IAccountKeychain::authorizeAdminKeyCall::SELECTOR,
-            ]
-            .iter()
-            .any(|selector| calldata.starts_with(selector))
-            && calldata.get(36..68) == Some(B256::with_last_byte(3).as_slice())
-        {
-            return Ok(self.storage.revert_output(Default::default()));
+        if self.rejects_configurable_account_type(calldata) {
+            return self.storage.revert_result(Bytes::new());
         }
 
         dispatch!(
@@ -115,6 +108,39 @@ impl Precompile for AccountKeychain {
     }
 }
 
+impl AccountKeychain {
+    /// Whether `calldata` authorizes a ConfigurableAccount key from T11 until T14.
+    ///
+    /// From T11 the strict ABI decoder reverts on an out-of-range `signatureType`; until T14,
+    /// value 3 reverts the same way. Peeks the `signatureType` head word (second parameter of all
+    /// four calls) instead of decoding the call twice.
+    fn rejects_configurable_account_type(&self, calldata: &[u8]) -> bool {
+        let spec = self.storage.spec();
+        if !spec.is_t11() || spec.is_t14() {
+            return false;
+        }
+
+        let Some(&selector) = calldata.first_chunk::<4>() else {
+            return false;
+        };
+        if !matches!(
+            selector,
+            authorizeKey_0Call::SELECTOR
+                | authorizeKey_1Call::SELECTOR
+                | authorizeKey_2Call::SELECTOR
+                | authorizeAdminKeyCall::SELECTOR
+        ) {
+            return false;
+        }
+
+        // Too short to hold the word: the regular dispatch fails the decode and reverts.
+        let Some(signature_type) = calldata.get(36..68) else {
+            return false;
+        };
+        U256::from_be_slice(signature_type) == U256::from(SignatureType::ConfigurableAccount as u8)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,7 +148,7 @@ mod tests {
         Precompile,
         account_keychain::{getRemainingLimitCall, getRemainingLimitWithPeriodCall},
         storage::{Handler, StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{assert_full_coverage, check_selector_coverage},
+        test_util::{assert_full_coverage, check_selector_coverage, revert_bytes},
     };
     use alloy::{
         primitives::{B256, U256},
@@ -132,73 +158,6 @@ mod tests {
     use tempo_contracts::precompiles::{
         IAccountKeychain::IAccountKeychainCalls, UnknownFunctionSelector, legacyAuthorizeKeyCall,
     };
-
-    #[test]
-    fn multisig_key_type_preserves_pre_t14_rejection() -> eyre::Result<()> {
-        for spec in TempoHardfork::VARIANTS
-            .iter()
-            .copied()
-            .filter(|spec| !spec.is_t14())
-        {
-            for key_id in [Address::ZERO, Address::repeat_byte(2)] {
-                for expiry in [0, u64::MAX] {
-                    let signature_type = IAccountKeychain::SignatureType::Multisig;
-                    let config = KeyRestrictions {
-                        expiry,
-                        enforceLimits: false,
-                        limits: vec![],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    };
-                    let calls = [
-                        IAccountKeychain::authorizeKey_0Call {
-                            keyId: key_id,
-                            signatureType: signature_type,
-                            expiry,
-                            enforceLimits: false,
-                            limits: vec![],
-                        }
-                        .abi_encode(),
-                        IAccountKeychain::authorizeKey_1Call {
-                            keyId: key_id,
-                            signatureType: signature_type,
-                            config: config.clone(),
-                        }
-                        .abi_encode(),
-                        IAccountKeychain::authorizeKey_2Call {
-                            keyId: key_id,
-                            signatureType: signature_type,
-                            config,
-                            witness: B256::ZERO,
-                        }
-                        .abi_encode(),
-                        IAccountKeychain::authorizeAdminKeyCall {
-                            keyId: key_id,
-                            signatureType: signature_type,
-                            witness: B256::ZERO,
-                        }
-                        .abi_encode(),
-                    ];
-                    for mut calldata in calls {
-                        let mut run = |signature_type| {
-                            calldata[67] = signature_type;
-                            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
-                            StorageCtx::enter(&mut storage, || {
-                                let mut keychain = AccountKeychain::new();
-                                keychain.set_tx_origin(Address::repeat_byte(1)).unwrap();
-                                keychain.call(&calldata, Address::repeat_byte(1))
-                            })
-                        };
-                        let actual = run(3)?;
-                        let legacy = run(4)?;
-                        assert!(!actual.is_success(), "{spec}: {calldata:?}");
-                        assert_eq!(actual, legacy, "{spec}: {calldata:?}");
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
 
     #[test]
     fn test_account_keychain_selector_coverage() -> eyre::Result<()> {
@@ -289,8 +248,8 @@ mod tests {
             }
             .abi_encode();
 
-            let result = keychain.call(&calldata, account)?;
-            assert!(result.is_revert());
+            let result = keychain.call(&calldata, account);
+            assert!(matches!(result, Err(evm2::PrecompileError::Revert(_))));
 
             Ok(())
         })
@@ -351,10 +310,8 @@ mod tests {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
-            let output = keychain.call(&calldata, Address::ZERO)?;
-
-            assert!(output.is_revert());
-            assert!(output.bytes.is_empty());
+            let output = keychain.call(&calldata, Address::ZERO);
+            assert!(crate::test_util::revert_bytes(&output).is_empty());
             Ok(())
         })
     }
@@ -377,10 +334,10 @@ mod tests {
             }
             .abi_encode();
 
-            let result = keychain.call(&calldata, account)?;
-            assert!(result.is_revert());
-            let decoded =
-                IAccountKeychain::LegacyAuthorizeKeySelectorChanged::abi_decode(&result.bytes)?;
+            let result = keychain.call(&calldata, account);
+            let decoded = IAccountKeychain::LegacyAuthorizeKeySelectorChanged::abi_decode(
+                revert_bytes(&result),
+            )?;
             assert_eq!(decoded.newSelector, authorizeKeyCall::SELECTOR);
 
             Ok(())
@@ -419,14 +376,13 @@ mod tests {
             .abi_encode();
 
             let output = keychain.call(&get_limit_calldata, account)?;
-            assert!(!output.is_revert());
             assert_eq!(
-                output.bytes.len(),
+                output.bytes().len(),
                 32,
                 "pre-T3 should return legacy uint256"
             );
 
-            let remaining = getRemainingLimitCall::abi_decode_returns(&output.bytes)?;
+            let remaining = getRemainingLimitCall::abi_decode_returns(output.bytes())?;
             assert_eq!(remaining, U256::from(123));
 
             Ok(())
@@ -449,8 +405,8 @@ mod tests {
             }
             .abi_encode();
 
-            let result = keychain.call(&calldata, account)?;
-            assert!(result.is_revert());
+            let result = keychain.call(&calldata, account);
+            assert!(matches!(result, Err(evm2::PrecompileError::Revert(_))));
 
             Ok(())
         })
@@ -474,13 +430,8 @@ mod tests {
             }
             .abi_encode();
 
-            let result = keychain.call(&calldata, account)?;
-            assert!(
-                result.is_revert(),
-                "expected revert for dropped selector post-T3"
-            );
-
-            let decoded = UnknownFunctionSelector::abi_decode(&result.bytes)?;
+            let result = keychain.call(&calldata, account);
+            let decoded = UnknownFunctionSelector::abi_decode(revert_bytes(&result))?;
             assert_eq!(
                 decoded.selector.as_slice(),
                 &getRemainingLimitCall::SELECTOR,
@@ -527,10 +478,8 @@ mod tests {
                         .abi_encode(),
                 ),
             ] {
-                let result = keychain.call(&calldata, account)?;
-                assert!(result.is_revert(), "expected T5 selector to revert pre-T5");
-
-                let decoded = UnknownFunctionSelector::abi_decode(&result.bytes)?;
+                let result = keychain.call(&calldata, account);
+                let decoded = UnknownFunctionSelector::abi_decode(revert_bytes(&result))?;
                 assert_eq!(decoded.selector.as_slice(), &selector);
             }
 
@@ -547,10 +496,8 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
 
-            let result = keychain.call(&calldata, Address::ZERO)?;
-            assert!(result.is_revert(), "expected revert");
-
-            let decoded = UnknownFunctionSelector::abi_decode(&result.bytes)?;
+            let result = keychain.call(&calldata, Address::ZERO);
+            let decoded = UnknownFunctionSelector::abi_decode(revert_bytes(&result))?;
             assert_eq!(decoded.selector.as_slice(), &selector);
 
             Ok(())

@@ -8,6 +8,7 @@ use eyre as _;
 
 #[cfg(feature = "cli")]
 pub mod cli;
+mod consensus;
 pub mod dev;
 pub mod engine;
 mod follower;
@@ -21,6 +22,10 @@ mod shadow_prover;
 mod tx_forwarding;
 pub mod version;
 
+#[cfg(feature = "cli")]
+pub mod state_bloat;
+
+pub use consensus::ZoneConsensus;
 pub use engine::{EngineExit, ProductionPermit, ZoneEngine};
 pub use node::{
     ZoneExecutorBuilder, ZoneNode, ZoneProverConfig, ZoneRedactedRpcConfig,

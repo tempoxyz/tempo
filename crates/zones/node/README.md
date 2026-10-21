@@ -5,9 +5,13 @@ derives its state from Tempo L1.
 
 ## Re-execution
 
-For `tempo-zone re-execute`, set `L1_HTTP_RPC_URL` to enable anchored L1 reads.
-The portal address is derived from the zone ID encoded in the `--chain` genesis;
-`L1_PORTAL_ADDRESS` is not required or used by re-execution.
+`tempo-zone re-execute`, `import` and `stage` read L1 state over
+`L1_HTTP_RPC_URL` and fail at startup without it. To execute without L1 access,
+pass `--l1.offline` or set `L1_OFFLINE=true`; blocks then skip the deposit queue
+and token enablement checks against the L1 portal.
+
+With `L1_HTTP_RPC_URL`, the portal address is derived from the zone ID encoded in
+the `--chain` genesis.
 
 ## Overview
 

@@ -3,25 +3,23 @@ pub mod dispatch;
 use crate::{
     SIGNATURE_VERIFIER_ADDRESS,
     account_keychain::{AccountKeychain, AuthorizedKey},
+    configurable_account::{initial_account_proof_gas, valid_account},
     error::{Result, TempoPrecompileError},
-    native_multisig::{initial_account_proof_gas, keccak_cost, valid_account},
+    storage::{account_config_commitment, keccak_cost},
 };
 use alloy::{
-    primitives::{Address, B256, Bytes},
+    primitives::{Address, B256, Bytes, KECCAK256_EMPTY},
     rlp::{self, Encodable},
 };
-use revm::interpreter::gas::{STANDARD_TOKEN_COST, get_tokens_in_calldata_istanbul};
+use evm2::interpreter::gas::STANDARD_TOKEN_COST;
 use tempo_contracts::precompiles::SignatureVerifierError;
 use tempo_precompiles_macros::contract;
-use tempo_primitives::{
-    TempoBlockEnv,
-    account::decode_config_commitment,
-    transaction::{
-        MultisigSignature,
-        multisig::MULTISIG_SIGNATURE_DOMAIN,
-        tt_signature::{AccountSignature, KeychainSignature, PrimitiveSignature, TempoSignature},
-    },
+use tempo_primitives::transaction::{
+    ConfigurableAccountSignature, SignatureType,
+    configurable_account::CONFIGURABLE_ACCOUNT_SIGNATURE_DOMAIN,
+    tt_signature::{AccountSignature, KeychainSignature, PrimitiveSignature, TempoSignature},
 };
+use tracing::trace;
 
 #[contract(addr = SIGNATURE_VERIFIER_ADDRESS)]
 pub struct SignatureVerifier {}
@@ -46,64 +44,77 @@ impl SignatureVerifier {
 
     /// Returns whether `signature` is an active access-key signature for `account`.
     ///
-    /// From T14, `false` when the recovered key ID has a nonzero account commitment (TIP-1112):
-    /// its bare root authority is retired, whichever grant it is used under.
+    /// From T14, `false` when the recovered key ID has a nonzero configuration commitment
+    /// (TIP-1112), even under a stored grant, or when the inner signature type differs from the
+    /// stored key type.
     pub fn verify_keychain(&self, account: Address, hash: B256, signature: Bytes) -> Result<bool> {
-        let key = self.recover_keychain_key(hash, signature)?;
-        if key.account != account || self.is_retired_root(key.key_id)? {
+        let recovered = self.recover_keychain_key(hash, signature)?;
+        if recovered.account != account || self.storage.is_retired_root(recovered.key_id)? {
             return Ok(false);
         }
 
         Ok(self
-            .registered_key(account, key.key_id, key.signature_type)?
+            .active_key(account, recovered.key_id, recovered.signature_type)?
             .is_some())
     }
 
     /// Returns whether `signature` is an active admin access-key signature for `account`, or its
     /// root key's.
     ///
-    /// From T14, `false` when the recovered key ID has a nonzero account commitment (TIP-1112),
-    /// including the implicit root of `account` itself.
+    /// From T14, `false` when the recovered key ID has a nonzero configuration commitment
+    /// (TIP-1112), including the implicit root of `account` itself, or when the inner signature
+    /// type of an access-key signature differs from the stored key type.
     pub fn verify_keychain_admin(
         &self,
         account: Address,
         hash: B256,
         signature: Bytes,
     ) -> Result<bool> {
-        let key = self.recover_keychain_key(hash, signature)?;
-        if key.account != account || self.is_retired_root(key.key_id)? {
+        let recovered = self.recover_keychain_key(hash, signature)?;
+        if recovered.account != account || self.storage.is_retired_root(recovered.key_id)? {
             return Ok(false);
         }
 
         // The root is implicitly admin without a stored access-key grant.
-        if key.key_id == account {
+        if recovered.key_id == account {
             return Ok(true);
         }
         Ok(self
-            .registered_key(account, key.key_id, key.signature_type)?
+            .active_key(account, recovered.key_id, recovered.signature_type)?
             .is_some_and(|key| key.is_admin))
     }
 
-    fn verify_multisig(&self, account: Address, hash: B256, bytes: &[u8]) -> Result<bool> {
-        let signature = TempoSignature::from_bytes(bytes)
-            .map_err(|_| SignatureVerifierError::invalid_format())?;
-        let Some(signature) = signature.as_multisig() else {
+    fn verify_configurable_account(
+        &self,
+        account: Address,
+        hash: B256,
+        bytes: &[u8],
+    ) -> Result<bool> {
+        let signature = TempoSignature::from_bytes(bytes).map_err(|error| {
+            trace!(%error, "malformed configurable account signature");
+            SignatureVerifierError::invalid_format()
+        })?;
+        let Some(signature) = signature.as_configurable_account() else {
             return Err(SignatureVerifierError::invalid_format().into());
         };
         let config = signature.config();
+        let spec = self.storage.spec();
         let (commitment, has_code) = self.storage.with_account_info(account, |info| {
-            let commitment = decode_config_commitment(&info.extension, true)
-                .map_err(|error| TempoPrecompileError::Fatal(error.to_string()))?;
-            Ok((commitment, !info.is_empty_code_hash()))
+            Ok((
+                account_config_commitment(info, spec)?,
+                info.code_hash != KECCAK256_EMPTY,
+            ))
         })?;
 
         let initial_proof_gas = if commitment.is_zero() {
-            initial_account_proof_gas(config)
+            initial_account_proof_gas(config)?
         } else {
             0
         };
-        self.storage
-            .deduct_gas(multisig_verification_gas(signature) + initial_proof_gas)?;
+        let verification_gas = configurable_account_verification_gas(signature)?
+            .checked_add(initial_proof_gas)
+            .ok_or(TempoPrecompileError::OutOfGas)?;
+        self.storage.deduct_gas(verification_gas)?;
         if signature.account() != account
             || !valid_account(account, self.storage.spec())
             || has_code
@@ -112,7 +123,7 @@ impl SignatureVerifier {
         }
         let factory = self
             .storage
-            .with_block_env(TempoBlockEnv::configured_multisig_recovery_factory);
+            .with_block_env(|block_env| block_env.ext.configurable_account_recovery_factory());
         if signature
             .validate_account_commitment(commitment, factory)
             .is_err()
@@ -120,29 +131,27 @@ impl SignatureVerifier {
             return Ok(false);
         }
 
-        signature
-            .verify_approvals(hash)
-            .map_err(|_| SignatureVerifierError::invalid_signature())?;
+        signature.verify_approvals(hash).map_err(|error| {
+            trace!(%error, "invalid configurable account approvals");
+            SignatureVerifierError::invalid_signature()
+        })?;
         Ok(true)
     }
 
-    /// Returns whether `key_id` is a retired root key (TIP-1112): from T14, an address with a
-    /// nonzero account commitment no longer acts through its own key. Reads the commitment at call
-    /// time, so a migration earlier in the block counts.
-    fn is_retired_root(&self, key_id: Address) -> Result<bool> {
-        Ok(self.storage.spec().is_t14() && !self.storage.config_commitment(key_id)?.is_zero())
-    }
-
     /// Returns the active access key, or `None` when the keychain rejects it.
-    fn registered_key(
+    fn active_key(
         &self,
         account: Address,
         key_id: Address,
-        signature_type: u8,
+        signature_type: SignatureType,
     ) -> Result<Option<AuthorizedKey>> {
         let timestamp = self.storage.timestamp().saturating_to::<u64>();
         // Pre-T14 verification ignored the stored type; preserve that behavior on replay.
-        let expected_type = self.storage.spec().is_t14().then_some(signature_type);
+        let expected_type = self
+            .storage
+            .spec()
+            .is_t14()
+            .then_some(signature_type.into());
         match AccountKeychain::new().validate_keychain_authorization(
             account,
             key_id,
@@ -151,7 +160,10 @@ impl SignatureVerifier {
         ) {
             Ok(key) => Ok(Some(key)),
             Err(err) if err.is_system_error() => Err(err),
-            Err(_) => Ok(None),
+            Err(err) => {
+                trace!(?err, %account, %key_id, "keychain rejected the key");
+                Ok(None)
+            }
         }
     }
 
@@ -174,7 +186,7 @@ impl SignatureVerifier {
         Ok(RecoveredKeychainKey {
             account: keychain_sig.user_address,
             key_id,
-            signature_type: signature.signature_type().into(),
+            signature_type: signature.signature_type(),
         })
     }
 }
@@ -183,38 +195,53 @@ impl SignatureVerifier {
 struct RecoveredKeychainKey {
     /// Account embedded in the keychain signature.
     account: Address,
+    /// Key ID recovered from the inner primitive signature.
     key_id: Address,
-    /// Signature type byte of the inner primitive signature.
-    signature_type: u8,
+    /// Type of the inner primitive signature.
+    signature_type: SignatureType,
 }
 
-/// Full multisig verification cost for a registered account, before account access.
+/// Full configurable account verification cost for a registered account, before account access.
 /// Initial address derivation is charged separately when the stored commitment is zero.
-pub fn multisig_verification_gas(signature: &MultisigSignature) -> u64 {
+///
+/// Fails with `OutOfGas` if the cost overflows `u64`.
+pub fn configurable_account_verification_gas(
+    signature: &ConfigurableAccountSignature,
+) -> Result<u64> {
     let mut witness = rlp::encode(signature.account());
     signature.config().encode(&mut witness);
-    get_tokens_in_calldata_istanbul(&witness) * STANDARD_TOKEN_COST
-        + keccak_cost(signature.config().commitment_preimage_len())
-        + keccak_cost(MULTISIG_SIGNATURE_DOMAIN.len() + 32 + 20 + 8)
-        + signature
-            .signatures()
-            .iter()
-            .map(primitive_verification_gas)
-            .sum::<u64>()
+    signature
+        .signatures()
+        .iter()
+        .map(primitive_verification_gas)
+        .chain([
+            calldata_gas(&witness),
+            keccak_cost(signature.config().commitment_preimage_len())?,
+            keccak_cost(CONFIGURABLE_ACCOUNT_SIGNATURE_DOMAIN.len() + 32 + 20 + 8)?,
+        ])
+        .try_fold(0u64, u64::checked_add)
+        .ok_or(TempoPrecompileError::OutOfGas)
 }
 
 /// Full primitive verification cost, including `WebAuthn` data calldata.
 ///
-/// Unlike `tempo_revm`'s `primitive_signature_verification_gas`, this does not subtract the
+/// Unlike `tempo_evm`'s `primitive_signature_verification_gas`, this does not subtract the
 /// ecrecover baseline already covered by ordinary intrinsic gas.
-pub fn primitive_verification_gas(signature: &PrimitiveSignature) -> u64 {
+fn primitive_verification_gas(signature: &PrimitiveSignature) -> u64 {
     let webauthn_data_gas = match signature {
-        PrimitiveSignature::WebAuthn(sig) => {
-            get_tokens_in_calldata_istanbul(&sig.webauthn_data) * STANDARD_TOKEN_COST
-        }
-        _ => 0,
+        PrimitiveSignature::WebAuthn(sig) => calldata_gas(&sig.webauthn_data),
+        PrimitiveSignature::Secp256k1(_) | PrimitiveSignature::P256(_) => 0,
     };
     signature.base_verification_gas() + webauthn_data_gas
+}
+
+/// Istanbul calldata cost of `input`: one token per zero byte, four per nonzero byte.
+fn calldata_gas(input: &[u8]) -> u64 {
+    input
+        .iter()
+        .map(|byte| if *byte == 0 { 1 } else { 4 })
+        .sum::<u64>()
+        * u64::from(STANDARD_TOKEN_COST)
 }
 
 #[cfg(test)]

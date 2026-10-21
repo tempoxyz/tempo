@@ -1,7 +1,7 @@
 [package]
 name = "zone-node"
 description = "Tempo Zone node assembly"
-version = "0.3.5"
+version = "0.3.6"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -20,6 +20,7 @@ tempo-primitives.workspace = true
 tempo-transaction-pool.workspace = true
 tempo-alloy.workspace = true
 tempo-contracts = { workspace = true, features = ["std", "serde", "rpc"] }
+tempo-state-bloat = { workspace = true, optional = true }
 zone-chainspec.workspace = true
 zone-evm.workspace = true
 zone-l1.workspace = true
@@ -35,9 +36,11 @@ zone-checker = { workspace = true, optional = true }
 # reth
 reth-chain-state.workspace = true
 reth-chainspec = { workspace = true, default-features = true }
+reth-consensus.workspace = true
 reth-eth-wire-types.workspace = true
 reth-ethereum = { workspace = true, features = ["cli", "node"], optional = true }
-reth-evm.workspace = true
+reth-evm = { workspace = true, features = ["witness"] }
+reth-execution-types.workspace = true
 reth-node-api.workspace = true
 reth-node-builder.workspace = true
 reth-node-core.workspace = true
@@ -45,7 +48,6 @@ reth-payload-builder.workspace = true
 reth-payload-primitives.workspace = true
 reth-primitives-traits.workspace = true
 reth-provider.workspace = true
-reth-revm = { workspace = true, features = ["witness"] }
 reth-rpc.workspace = true
 reth-rpc-api.workspace = true
 reth-rpc-builder.workspace = true
@@ -56,6 +58,12 @@ reth-tasks.workspace = true
 reth-tracing = { workspace = true, optional = true }
 reth-transaction-pool.workspace = true
 reth-trie-common = { workspace = true, features = ["std"] }
+reth-cli-runner = { workspace = true, optional = true }
+reth-rpc-server-types = { workspace = true, optional = true }
+reth-cli-commands = { workspace = true, optional = true }
+reth-db-api = { workspace = true, optional = true }
+reth-trie = { workspace = true, optional = true }
+reth-trie-db = { workspace = true, optional = true }
 
 # alloy
 alloy-chains.workspace = true
@@ -72,6 +80,7 @@ alloy-rpc-types-eth.workspace = true
 alloy-signer-local.workspace = true
 alloy-sol-types.workspace = true
 alloy-transport.workspace = true
+evm2.workspace = true
 
 # misc
 minicbor.workspace = true
@@ -85,10 +94,12 @@ k256.workspace = true
 metrics.workspace = true
 serde = { workspace = true, features = ["alloc"] }
 serde_json = { workspace = true, default-features = true }
+thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 url = { version = "2", optional = true }
 zeroize = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
 
 [build-dependencies]
 vergen.workspace = true
@@ -100,7 +111,6 @@ zone-node = { path = ".", features = ["test-utils"] }
 
 alloy = { workspace = true, features = ["full", "genesis", "providers", "rpc-types", "signer-local", "signer-mnemonic-all-languages", "signers"] }
 alloy-contract.workspace = true
-alloy-evm.workspace = true
 alloy-signer.workspace = true
 base64 = { workspace = true, default-features = true }
 const-hex.workspace = true
@@ -116,8 +126,7 @@ serde = { workspace = true, features = ["alloc", "derive"] }
 sha2 = { workspace = true, default-features = true }
 tempo-payload-types.workspace = true
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
-tempo-revm.workspace = true
-thiserror.workspace = true
+tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 tokio-tungstenite.workspace = true
 zone-spf.workspace = true
@@ -127,15 +136,27 @@ url = "2"
 default = []
 asm-keccak = [
   "alloy/asm-keccak",
-  "alloy-evm/asm-keccak",
   "alloy-primitives/asm-keccak",
   "reth-node-core/asm-keccak",
   "revm/asm-keccak",
   "tempo-alloy/asm-keccak",
   "tempo-node/asm-keccak",
   "zone-node/asm-keccak",
+  "evm2/asm-keccak",
+  "reth-ethereum?/asm-keccak",
+  "reth-evm/asm-keccak",
+  "reth-execution-types/asm-keccak",
+  "reth-storage-api/asm-keccak",
 ]
 cli = [
+  "dep:reth-cli-commands",
+  "dep:reth-db-api",
+  "dep:reth-trie",
+  "dep:reth-trie-db",
+  "dep:sha2",
+  "dep:tempo-state-bloat",
+  "dep:reth-cli-runner",
+  "dep:reth-rpc-server-types",
   "dep:clap",
   "dep:reth-ethereum",
   "dep:reth-tracing",
@@ -158,7 +179,11 @@ keccak-cache-global = [
   "zone-node/keccak-cache-global",
 ]
 test-utils = [
+  "reth-db-api?/test-utils",
+  "reth-trie?/test-utils",
+  "reth-trie-db?/test-utils",
   "reth-chainspec/test-utils",
+  "reth-consensus/test-utils",
   "reth-ethereum?/test-utils",
   "reth-node-builder/test-utils",
   "reth-payload-builder/test-utils",
@@ -169,7 +194,6 @@ test-utils = [
   "tempo-transaction-pool/test-utils",
   "reth-chain-state/test-utils",
   "reth-evm/test-utils",
-  "reth-revm/test-utils",
   "reth-tasks/test-utils",
   "reth-trie-common/test-utils",
   "tempo-primitives/test-utils",

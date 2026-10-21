@@ -1,18 +1,17 @@
 //! Adapter between Tempo's protocol fee hooks and the Zone fee manager.
 
-use alloy_evm::{
-    Database,
-    revm::context::{Journal, result::EVMError},
-};
 use alloy_primitives::{Address, U256};
+use evm2::{Evm, registry::HandlerResult};
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_evm::{ProtocolFeeContext, ProtocolFeeManager};
+use tempo_evm::{
+    ProtocolFeeContext, ProtocolFeeManager, ResolvedFeeToken, TempoEvmTypes,
+    TempoInvalidTransaction, TempoStateAccess, TempoTx, TempoTxEnv,
+};
 use tempo_precompiles::{
     error::Result,
     storage::{ContractStorage, StorageActions},
     tip20::TIP20Token,
 };
-use tempo_revm::{TempoInvalidTransaction, TempoStateAccess, TempoTx, TempoTxEnv};
 use zone_precompiles::ZoneFeeManager;
 
 /// Resolves the fee token selected by a Zone transaction against the supplied state view.
@@ -45,37 +44,32 @@ impl ZoneProtocolFeeManager {
     }
 }
 
-impl<DB> ProtocolFeeManager<DB> for ZoneProtocolFeeManager
-where
-    DB: Database,
-{
+impl ProtocolFeeManager for ZoneProtocolFeeManager {
     fn get_fee_token(
         &self,
-        journal: &mut Journal<DB>,
+        host: &mut Evm<'_, TempoEvmTypes>,
         tx: &TempoTxEnv,
         _fee_payer: Address,
         _max_fee: U256,
         spec: TempoHardfork,
-        actions: StorageActions,
-    ) -> Result<Address> {
+    ) -> Result<ResolvedFeeToken> {
         // Tempo's transaction handler calls this hook. The trait default reads the L1
         // TipFeeManager, so Zones must override it to resolve their genesis-configured default.
-        resolve_fee_token(journal, tx, spec, actions)
+        let actions = host.ext().actions.clone();
+        resolve_fee_token(host, tx, spec, actions).map(ResolvedFeeToken::Selected)
     }
 
     fn validate_fee_token(
         &self,
-        journal: &mut Journal<DB>,
+        host: &mut Evm<'_, TempoEvmTypes>,
         fee_token: Address,
         spec: TempoHardfork,
-        actions: StorageActions,
-    ) -> core::result::Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
-        let initialized = journal
-            .with_read_only_storage_ctx(spec, actions, || {
-                // The handler validates the TIP-20 prefix before entering this hook.
-                TIP20Token::from_address_unchecked(fee_token).is_initialized()
-            })
-            .map_err(|error| EVMError::Custom(error.to_string()))?;
+    ) -> HandlerResult<()> {
+        let actions = host.ext().actions.clone();
+        let initialized = host.with_read_only_storage_ctx(spec, actions, || {
+            // The handler validates the TIP-20 prefix before entering this hook.
+            TIP20Token::from_address_unchecked(fee_token).is_initialized()
+        })?;
 
         if !initialized {
             return Err(TempoInvalidTransaction::InvalidFeeToken(fee_token).into());
@@ -86,7 +80,7 @@ where
 
     fn collect_fee_pre_tx(
         &self,
-        ctx: ProtocolFeeContext<'_, DB>,
+        ctx: ProtocolFeeContext<'_, '_>,
         fee_payer: Address,
         fee_token: Address,
         max_amount: U256,
@@ -100,7 +94,7 @@ where
 
     fn collect_fee_post_tx(
         &self,
-        ctx: ProtocolFeeContext<'_, DB>,
+        ctx: ProtocolFeeContext<'_, '_>,
         fee_payer: Address,
         actual_spending: U256,
         refund_amount: U256,
@@ -123,29 +117,53 @@ where
 mod tests {
     use super::*;
     use alloy_primitives::{Bytes, U256, address};
-    use revm::{
-        context::JournalTr,
-        database::InMemoryDB,
-        state::{AccountInfo, Bytecode},
+    use evm2::{
+        bytecode::Bytecode,
+        evm::{AccountInfo, InMemoryDB},
+        registry::HandlerError,
+    };
+    use reth_evm::BlockExecutorFactory;
+    use reth_primitives_traits::Recovered;
+    use tempo_evm::TempoEvmEnv;
+    use tempo_primitives::{
+        TempoTxEnvelope,
+        transaction::{TempoSignature, TempoTransaction},
     };
     use zone_precompiles::{ZONE_FEE_MANAGER_ADDRESS, zone_fee_manager};
+
+    use crate::zone_evm::tests::config;
+
+    fn tx_env(fee_token: Option<Address>) -> TempoTxEnv {
+        Recovered::new_unchecked(
+            TempoTxEnvelope::AA(
+                TempoTransaction {
+                    fee_token,
+                    ..Default::default()
+                }
+                .into_signed(TempoSignature::default()),
+            ),
+            Address::ZERO,
+        )
+        .into()
+    }
 
     #[test]
     fn resolves_explicit_token_or_zone_default() {
         let default_token = address!("0x20c00000000000000000000000000000000000d1");
         let explicit_token = address!("0x20c00000000000000000000000000000000000e1");
         let mut db = InMemoryDB::default();
+        db.insert_account_info(&ZONE_FEE_MANAGER_ADDRESS, AccountInfo::default());
         db.insert_account_storage(
-            ZONE_FEE_MANAGER_ADDRESS,
-            zone_fee_manager::slots::DEFAULT_FEE_TOKEN,
-            U256::from_be_slice(default_token.as_slice()),
-        )
-        .unwrap();
+            &ZONE_FEE_MANAGER_ADDRESS,
+            &zone_fee_manager::slots::DEFAULT_FEE_TOKEN,
+            &U256::from_be_slice(default_token.as_slice()),
+        );
+        let mut evm = config().evm_with_env(db, TempoEvmEnv::default());
 
         assert_eq!(
             resolve_fee_token(
-                &mut db,
-                &TempoTxEnv::default(),
+                &mut evm,
+                &tx_env(None),
                 TempoHardfork::T1,
                 StorageActions::disabled(),
             )
@@ -154,11 +172,8 @@ mod tests {
         );
         assert_eq!(
             resolve_fee_token(
-                &mut db,
-                &TempoTxEnv {
-                    fee_token: Some(explicit_token),
-                    ..Default::default()
-                },
+                &mut evm,
+                &tx_env(Some(explicit_token)),
                 TempoHardfork::T1,
                 StorageActions::disabled(),
             )
@@ -173,31 +188,22 @@ mod tests {
         let missing_token = address!("0x20c00000000000000000000000000000000000e2");
         let mut db = InMemoryDB::default();
         db.insert_account_info(
-            initialized_token,
-            AccountInfo::from_bytecode(Bytecode::new_raw(Bytes::from_static(&[0xef]))),
+            &initialized_token,
+            AccountInfo::default().with_code(Bytecode::new_raw(Bytes::from_static(&[0xef]))),
         );
-        let mut journal = Journal::new(db);
+        let mut evm = config().evm_with_env(db, TempoEvmEnv::default());
         let manager = ZoneProtocolFeeManager::new();
 
         assert!(
             manager
-                .validate_fee_token(
-                    &mut journal,
-                    initialized_token,
-                    TempoHardfork::T9,
-                    StorageActions::disabled(),
-                )
+                .validate_fee_token(&mut evm, initialized_token, TempoHardfork::T9)
                 .is_ok()
         );
         assert!(matches!(
-            manager.validate_fee_token(
-                &mut journal,
-                missing_token,
-                TempoHardfork::T9,
-                StorageActions::disabled(),
-            ),
-            Err(EVMError::Transaction(TempoInvalidTransaction::InvalidFeeToken(address)))
-                if address == missing_token
+            manager.validate_fee_token(&mut evm, missing_token, TempoHardfork::T9),
+            Err(HandlerError::External(error))
+                if error.downcast_ref::<TempoInvalidTransaction>()
+                    == Some(&TempoInvalidTransaction::InvalidFeeToken(missing_token))
         ));
     }
 }

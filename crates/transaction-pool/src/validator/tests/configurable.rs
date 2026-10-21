@@ -17,13 +17,14 @@ use revm::{
     state::AccountInfo,
 };
 use std::time::Duration;
+use tempo_evm::{tempo_execution_config, transaction_error::ConfigurableAccountError};
 use tempo_primitives::{
     account::encode_config_commitment,
     transaction::{
-        MultisigConfig, MultisigOwner, MultisigSignature, TempoSignature, multisig_digest,
+        ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
+        TempoSignature, configurable_account_digest,
     },
 };
-use tempo_revm::{gas_params::tempo_gas_params, native_multisig::NativeMultisigError};
 use tokio::{
     spawn,
     time::{sleep, timeout},
@@ -32,13 +33,13 @@ use tokio::{
 const FACTORY: Address = Address::repeat_byte(0x71);
 
 #[tokio::test]
-async fn reorg_and_rotation_revalidate_native_transaction() {
+async fn reorg_and_rotation_revalidate_configurable_account_transaction() {
     let owner = PrivateKeySigner::random();
-    let config = MultisigConfig {
+    let config = ConfigurableAccountConfig {
         salt: B256::ZERO,
         version: 0,
         threshold: 1,
-        owners: vec![MultisigOwner {
+        owners: vec![ConfigurableAccountOwner {
             owner: owner.address(),
             weight: 1,
         }],
@@ -52,16 +53,20 @@ async fn reorg_and_rotation_revalidate_native_transaction() {
         .tx()
         .clone();
     let approval = owner
-        .sign_hash_sync(&multisig_digest(tx.signature_hash(), account, 0))
+        .sign_hash_sync(&configurable_account_digest(
+            tx.signature_hash(),
+            account,
+            0,
+        ))
         .unwrap();
-    let signature = MultisigSignature::try_new(
+    let signature = ConfigurableAccountSignature::try_new(
         account,
         config.clone(),
         vec![PrimitiveSignature::Secp256k1(approval)],
     )
     .unwrap();
     let transaction = TempoPooledTransaction::new(
-        TempoTxEnvelope::AA(tx.into_signed(TempoSignature::Multisig(signature)))
+        TempoTxEnvelope::AA(tx.into_signed(TempoSignature::ConfigurableAccount(signature)))
             .with_signer(account),
     );
 
@@ -100,11 +105,11 @@ async fn reorg_and_rotation_revalidate_native_transaction() {
             .active_hardfork
             .store(TempoHardfork::T14.variant_index(), Ordering::Relaxed);
         let mut env = validator.cached_evm_env.write();
-        env.cfg_env = env
-            .cfg_env
-            .clone()
-            .with_spec_and_gas_params(TempoHardfork::T14, tempo_gas_params(TempoHardfork::T14));
-        env.block_env.multisig_recovery_factory = Some(FACTORY);
+        env.spec = TempoHardfork::T14;
+        env.version.gas_params = tempo_execution_config(TempoHardfork::T14, env.version.chain_id)
+            .version()
+            .gas_params;
+        env.block.ext.configurable_account_recovery_factory = Some(FACTORY);
     };
     restore_t14();
     let hash = *transaction.hash();
@@ -151,7 +156,7 @@ async fn reorg_and_rotation_revalidate_native_transaction() {
         }
     })
     .await
-    .expect("native transaction should be revalidated and restored");
+    .expect("configurable account transaction should be revalidated and restored");
 
     let mut rotated_config = config.clone();
     rotated_config.version += 1;
@@ -216,11 +221,13 @@ async fn reorg_and_rotation_revalidate_native_transaction() {
             PoolErrorKind::InvalidTransaction(error)
                 if matches!(
                     error.downcast_other_ref::<TempoPoolTransactionError>(),
-                    Some(TempoPoolTransactionError::Evm(
-                        TempoInvalidTransaction::NativeMultisig(
-                            NativeMultisigError::ConfigurationCommitmentMismatch { .. }
+                    Some(TempoPoolTransactionError::Evm(error))
+                        if matches!(
+                            error.external_ref::<TempoInvalidTransaction>(),
+                            Some(TempoInvalidTransaction::ConfigurableAccount(
+                                ConfigurableAccountError::ConfigurationCommitmentMismatch { .. }
+                            ))
                         )
-                    ))
                 )
         ),
         "unexpected rejection after rotation: {rejection:?}"

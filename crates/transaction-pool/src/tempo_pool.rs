@@ -33,7 +33,7 @@ use reth_transaction_pool::{
 use revm::database::BundleAccount;
 use std::{sync::Arc, time::Instant};
 use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
-use tempo_evm::TempoEvmConfig;
+use tempo_evm::{TempoEvmConfig, TempoStateAccess};
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
@@ -43,7 +43,6 @@ use tempo_precompiles::{
     tip403_registry::{REJECT_ALL_POLICY_ID, TIP403Registry},
 };
 use tempo_primitives::{Block, TempoHeader};
-use tempo_revm::TempoStateAccess;
 
 /// Transaction pool operations for Tempo nonce lanes.
 pub trait TempoTransactionPoolExt: TransactionPool {
@@ -1489,7 +1488,7 @@ mod tests {
         spec::{MODERATO, TEMPO_T1_TX_GAS_LIMIT_CAP},
     };
     use tempo_contracts::precompiles::ITIP403Registry;
-    use tempo_evm::TempoEvmConfig;
+    use tempo_evm::{ResolvedFeeToken, TempoEvmConfig};
     use tempo_precompiles::{
         PATH_USD_ADDRESS,
         account_keychain::{
@@ -2086,7 +2085,7 @@ mod tests {
         );
         let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
 
-        pooled.set_resolved_fee_token(PATH_USD_ADDRESS);
+        pooled.set_resolved_fee_token(ResolvedFeeToken::Selected(PATH_USD_ADDRESS));
         let validated = TransactionValidationOutcome::Valid {
             balance: *pooled.cost(),
             state_nonce: pooled.nonce(),
@@ -2128,7 +2127,7 @@ mod tests {
         let pooled = crate::test_utils::TxBuilder::aa(sender).build();
 
         assert_eq!(pooled.inner().fee_token(), None);
-        pooled.set_resolved_fee_token(resolved_fee_token);
+        pooled.set_resolved_fee_token(ResolvedFeeToken::Selected(resolved_fee_token));
 
         let provider = MockEthProvider::<TempoPrimitives>::new()
             .with_chain_spec(std::sync::Arc::unwrap_or_clone(MODERATO.clone()));
@@ -2167,7 +2166,7 @@ mod tests {
         let pooled = crate::test_utils::TxBuilder::aa(sender).build();
 
         assert_eq!(pooled.inner().fee_token(), None);
-        pooled.set_resolved_fee_token(resolved_fee_token);
+        pooled.set_resolved_fee_token(ResolvedFeeToken::Selected(resolved_fee_token));
 
         let provider = MockEthProvider::<TempoPrimitives>::new()
             .with_chain_spec(std::sync::Arc::unwrap_or_clone(MODERATO.clone()));
@@ -2206,7 +2205,7 @@ mod tests {
         let pooled = crate::test_utils::TxBuilder::aa(sender).build();
 
         assert_eq!(pooled.inner().fee_token(), None);
-        pooled.set_resolved_fee_token(resolved_fee_token);
+        pooled.set_resolved_fee_token(ResolvedFeeToken::Selected(resolved_fee_token));
 
         let provider = MockEthProvider::<TempoPrimitives>::new()
             .with_chain_spec(std::sync::Arc::unwrap_or_clone(MODERATO.clone()));

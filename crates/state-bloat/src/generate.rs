@@ -61,6 +61,10 @@ pub struct GenerateStateBloat {
     #[arg(long, default_value_t = *TempoHardfork::VARIANTS.last().unwrap())]
     nonce_ring_hardfork: TempoHardfork,
 
+    /// Omit the expiring nonce ring, e.g. for dumps committed into a derived chain's genesis.
+    #[arg(long, conflicts_with = "nonce_ring_hardfork")]
+    no_nonce_ring: bool,
+
     /// Token IDs to generate storage for (can be specified multiple times)
     /// Uses reserved TIP20 addresses: 0x20C0...{token_id}
     #[arg(short, long, default_values_t = vec![0u64])]
@@ -92,6 +96,7 @@ impl GenerateStateBloat {
             mnemonic_file,
             size,
             nonce_ring_hardfork,
+            no_nonce_ring,
             token: tokens,
             out,
             balance,
@@ -152,11 +157,15 @@ impl GenerateStateBloat {
         println!("  Tokens: {num_tokens}");
         println!("  Accounts per token: {accounts_per_token}");
         println!("  Estimated TIP20 size: {estimated_size_mib:.2} MiB");
-        let capacity = nonce_ring_hardfork.expiring_nonce_set_capacity();
-        println!(
-            "  Nonce ring: {capacity} entries ({nonce_ring_hardfork}), {:.2} MiB additional",
-            f64::from(capacity) * 128.0 / (1024.0 * 1024.0)
-        );
+        let ring_capacity =
+            (!no_nonce_ring).then(|| nonce_ring_hardfork.expiring_nonce_set_capacity());
+        match ring_capacity {
+            Some(capacity) => println!(
+                "  Nonce ring: {capacity} entries ({nonce_ring_hardfork}), {:.2} MiB additional",
+                f64::from(capacity) * 128.0 / (1024.0 * 1024.0)
+            ),
+            None => println!("  Nonce ring: omitted"),
+        }
         println!("  Chunk size: {chunk_size} entries ({num_chunks} chunks)");
         println!("  Output: {out_display}");
 
@@ -251,7 +260,9 @@ impl GenerateStateBloat {
         }
 
         pb.finish_with_message("done");
-        write_nonce_ring(&mut writer, 0..capacity)?;
+        if let Some(capacity) = ring_capacity {
+            write_nonce_ring(&mut writer, 0..capacity)?;
+        }
         writer.flush()?;
 
         let file_size = std::fs::metadata(&out)?.len();
@@ -444,6 +455,40 @@ mod tests {
     struct GeneratorCli {
         #[command(flatten)]
         args: GenerateStateBloat,
+    }
+
+    #[tokio::test]
+    async fn no_nonce_ring_writes_only_tip20_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("state.bin");
+        let args = [
+            "generate",
+            "--size",
+            "1",
+            "--signable-count",
+            "1",
+            "--no-nonce-ring",
+            "--out",
+        ];
+        let args = args.into_iter().chain([output.to_str().unwrap()]);
+        GeneratorCli::parse_from(args.clone())
+            .args
+            .run()
+            .await
+            .unwrap();
+        let entries = crate::read_dump(
+            std::fs::read(&output).unwrap().as_slice(),
+            |address, _, _| {
+                assert_ne!(address, NONCE_PRECOMPILE_ADDRESS);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(entries, 16_383);
+        let error = GeneratorCli::try_parse_from(args.chain(["--nonce-ring-hardfork", "T10"]))
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[tokio::test]

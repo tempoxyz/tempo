@@ -30,11 +30,14 @@
 
 pub mod constants;
 
+#[cfg(feature = "evm")]
+pub mod gas_params;
+
 use crate::constants::gas;
 use alloy_eips::eip7825::MAX_TX_GAS_LIMIT_OSAKA;
-#[cfg(feature = "evm")]
-use alloy_evm::revm::primitives::hardfork::SpecId;
 use alloy_hardforks::hardfork;
+#[cfg(feature = "evm")]
+use evm2::SpecId;
 
 /// Single-source hardfork definition macro. Append a new variant and everything else is generated:
 ///
@@ -427,7 +430,7 @@ impl TempoHardfork {
             Self::T10 => Some(MAINNET_T10_TIMESTAMP),
             Self::T11 => Some(MAINNET_T11_TIMESTAMP),
             Self::T12 => Some(MAINNET_T12_TIMESTAMP),
-            Self::T13 => None,
+            Self::T13 => Some(MAINNET_T13_TIMESTAMP),
             Self::T14 => None,
         }
     }
@@ -479,7 +482,7 @@ impl TempoHardfork {
             Self::T10 => Some(MODERATO_T10_TIMESTAMP),
             Self::T11 => Some(MODERATO_T11_TIMESTAMP),
             Self::T12 => Some(MODERATO_T12_TIMESTAMP),
-            Self::T13 => None,
+            Self::T13 => Some(MODERATO_T13_TIMESTAMP),
             Self::T14 => None,
         }
     }

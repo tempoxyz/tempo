@@ -1,12 +1,13 @@
 use super::SignatureVerifier;
 use crate::{Precompile, charge_input_cost, dispatch, view};
 use alloy::{primitives::Address, rlp::Header, sol_types::SolCall};
-use revm::precompile::PrecompileResult;
+use evm2::precompiles::PrecompileResult;
 use tempo_contracts::precompiles::{ISignatureVerifier, SignatureVerifierError};
 use tempo_primitives::{
     MAX_WEBAUTHN_SIGNATURE_LENGTH,
-    transaction::multisig::{
-        MAX_MULTISIG_OWNER_SIGNATURE_BYTES, MAX_MULTISIG_OWNERS, MAX_MULTISIG_SIGNATURES,
+    transaction::configurable_account::{
+        MAX_CONFIGURABLE_ACCOUNT_OWNER_SIGNATURE_BYTES, MAX_CONFIGURABLE_ACCOUNT_OWNERS,
+        MAX_CONFIGURABLE_ACCOUNT_SIGNATURES,
     },
 };
 
@@ -17,7 +18,7 @@ const MAX_CALLDATA_LEN: usize =
     4 + 32 * 4 + (MAX_WEBAUTHN_SIGNATURE_LENGTH + 1).next_multiple_of(32);
 
 // Upper bound for 0x05 || rlp([account, config, approvals]) with 48 owners and 8 approvals.
-const MAX_OWNERS_RLP_PAYLOAD: usize = MAX_MULTISIG_OWNERS * (1 + 21 + 2);
+const MAX_OWNERS_RLP_PAYLOAD: usize = MAX_CONFIGURABLE_ACCOUNT_OWNERS * (1 + 21 + 2);
 const MAX_CONFIG_RLP_PAYLOAD: usize = 33
     + 9
     + 2
@@ -26,13 +27,13 @@ const MAX_CONFIG_RLP_PAYLOAD: usize = 33
         payload_length: MAX_OWNERS_RLP_PAYLOAD,
     }
     .length_with_payload();
-const MAX_APPROVALS_RLP_PAYLOAD: usize = MAX_MULTISIG_SIGNATURES
+const MAX_APPROVALS_RLP_PAYLOAD: usize = MAX_CONFIGURABLE_ACCOUNT_SIGNATURES
     * Header {
         list: false,
-        payload_length: MAX_MULTISIG_OWNER_SIGNATURE_BYTES,
+        payload_length: MAX_CONFIGURABLE_ACCOUNT_OWNER_SIGNATURE_BYTES,
     }
     .length_with_payload();
-const MAX_MULTISIG_RLP_PAYLOAD: usize = 21
+const MAX_CONFIGURABLE_ACCOUNT_RLP_PAYLOAD: usize = 21
     + Header {
         list: true,
         payload_length: MAX_CONFIG_RLP_PAYLOAD,
@@ -43,11 +44,11 @@ const MAX_MULTISIG_RLP_PAYLOAD: usize = 21
         payload_length: MAX_APPROVALS_RLP_PAYLOAD,
     }
     .length_with_payload();
-const MAX_MULTISIG_CALLDATA_LEN: usize = 4
+const MAX_CONFIGURABLE_ACCOUNT_CALLDATA_LEN: usize = 4
     + 32 * 4
     + (1 + Header {
         list: true,
-        payload_length: MAX_MULTISIG_RLP_PAYLOAD,
+        payload_length: MAX_CONFIGURABLE_ACCOUNT_RLP_PAYLOAD,
     }
     .length_with_payload())
     .next_multiple_of(32);
@@ -59,16 +60,16 @@ impl Precompile for SignatureVerifier {
         }
 
         let max_len = if self.storage.spec().is_t14()
-            && calldata.starts_with(&ISignatureVerifier::verifyMultisigCall::SELECTOR)
+            && calldata.starts_with(&ISignatureVerifier::verifyConfigurableAccountCall::SELECTOR)
         {
-            MAX_MULTISIG_CALLDATA_LEN
+            MAX_CONFIGURABLE_ACCOUNT_CALLDATA_LEN
         } else {
             MAX_CALLDATA_LEN
         };
         if calldata.len() > max_len {
-            return Ok(self
+            return self
                 .storage
-                .abi_revert(SignatureVerifierError::invalid_format()));
+                .abi_revert(SignatureVerifierError::invalid_format());
         }
 
         dispatch!(
@@ -88,8 +89,8 @@ impl Precompile for SignatureVerifier {
                         self.verify_keychain_admin(c.account, c.hash, c.signature)
                     }),
                     #[schedule(since = T14)]
-                    verifyMultisig(call) => view(call, |c| {
-                        self.verify_multisig(c.account, c.hash, &c.signature)
+                    verifyConfigurableAccount(call) => view(call, |c| {
+                        self.verify_configurable_account(c.account, c.hash, &c.signature)
                     }),
                 }
             }
@@ -106,7 +107,7 @@ mod tests {
         expect_precompile_revert,
         signature_verifier::tests::{P256Key, random_p256_key},
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{assert_full_coverage, check_selector_coverage},
+        test_util::{assert_full_coverage, check_selector_coverage, revert_bytes},
     };
     use alloy::{
         primitives::B256,
@@ -120,7 +121,7 @@ mod tests {
         UnknownFunctionSelector,
     };
     use tempo_primitives::transaction::{
-        MultisigConfig, MultisigOwner, MultisigSignature,
+        ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
         tt_signature::{
             KeychainSignature, P256SignatureWithPreHash, PrimitiveSignature, TempoSignature,
             WebAuthnSignature,
@@ -140,7 +141,7 @@ mod tests {
         .abi_encode();
 
         let output = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
-        let ret = ISignatureVerifier::verifyKeychainCall::abi_decode_returns(&output.bytes)?;
+        let ret = ISignatureVerifier::verifyKeychainCall::abi_decode_returns(output.bytes())?;
         Ok(ret)
     }
 
@@ -157,7 +158,7 @@ mod tests {
         .abi_encode();
 
         let output = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
-        let ret = ISignatureVerifier::verifyKeychainAdminCall::abi_decode_returns(&output.bytes)?;
+        let ret = ISignatureVerifier::verifyKeychainAdminCall::abi_decode_returns(output.bytes())?;
         Ok(ret)
     }
 
@@ -205,10 +206,9 @@ mod tests {
             }
             .abi_encode();
 
-            let result = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
-            assert!(result.is_revert());
+            let result = SignatureVerifier::new().call(&calldata, Address::ZERO);
             assert!(
-                UnknownFunctionSelector::abi_decode(&result.bytes).is_ok(),
+                UnknownFunctionSelector::abi_decode(revert_bytes(&result)).is_ok(),
                 "verifyKeychain should be selector-gated before T6"
             );
             Ok(())
@@ -226,10 +226,9 @@ mod tests {
             }
             .abi_encode();
 
-            let result = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
-            assert!(result.is_revert());
+            let result = SignatureVerifier::new().call(&calldata, Address::ZERO);
             assert!(
-                UnknownFunctionSelector::abi_decode(&result.bytes).is_ok(),
+                UnknownFunctionSelector::abi_decode(revert_bytes(&result)).is_ok(),
                 "verifyKeychainAdmin should be selector-gated before T6"
             );
             Ok(())
@@ -237,17 +236,17 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_multisig_selector_rejected_before_t14() -> eyre::Result<()> {
+    fn test_verify_configurable_account_selector_rejected_before_t14() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T13);
         StorageCtx::enter(&mut storage, || {
-            let calldata = ISignatureVerifier::verifyMultisigCall {
+            let calldata = ISignatureVerifier::verifyConfigurableAccountCall {
                 account: Address::repeat_byte(0x71),
                 hash: B256::ZERO,
                 signature: vec![0x05].into(),
             }
             .abi_encode();
-            let result = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
-            assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
+            let result = SignatureVerifier::new().call(&calldata, Address::ZERO);
+            assert!(UnknownFunctionSelector::abi_decode(revert_bytes(&result)).is_ok());
             Ok(())
         })
     }
@@ -268,7 +267,7 @@ mod tests {
             .abi_encode();
 
             let output = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
-            let ret = ISignatureVerifier::verifyCall::abi_decode_returns(&output.bytes)?;
+            let ret = ISignatureVerifier::verifyCall::abi_decode_returns(output.bytes())?;
             assert!(ret, "verify should return true for the correct signer");
             Ok(())
         })
@@ -290,7 +289,7 @@ mod tests {
             .abi_encode();
 
             let output = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
-            let ret = ISignatureVerifier::verifyCall::abi_decode_returns(&output.bytes)?;
+            let ret = ISignatureVerifier::verifyCall::abi_decode_returns(output.bytes())?;
             assert!(!ret, "verify should return false for a wrong signer");
             Ok(())
         })
@@ -483,7 +482,7 @@ mod tests {
             },
             Case {
                 spec: TempoHardfork::T14,
-                stored_type: SignatureType::Multisig,
+                stored_type: SignatureType::ConfigurableAccount,
                 expected: false,
             },
         ] {
@@ -630,10 +629,10 @@ mod tests {
             }
             .abi_encode();
 
-            let result = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
+            let result = SignatureVerifier::new().call(&calldata, Address::ZERO);
             // Should NOT be rejected by the size guard, should fail later at signature validation
             assert!(
-                SignatureVerifierError::abi_decode(&result.bytes)
+                SignatureVerifierError::abi_decode(revert_bytes(&result))
                     .map(|e| e != SignatureVerifierError::invalid_format())
                     .unwrap_or(true),
                 "max-size WebAuthn calldata was wrongly rejected by size guard"
@@ -650,11 +649,10 @@ mod tests {
             // decode instead). A zeroed selector is unknown, so we expect an
             // UnknownFunctionSelector revert — not InvalidFormat.
             let calldata = vec![0u8; MAX_CALLDATA_LEN];
-            let result = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
+            let result = SignatureVerifier::new().call(&calldata, Address::ZERO);
 
-            assert!(result.is_revert());
             assert!(
-                SignatureVerifierError::abi_decode(&result.bytes).is_err(),
+                SignatureVerifierError::abi_decode(revert_bytes(&result)).is_err(),
                 "should not be an InvalidFormat revert"
             );
             Ok(())
@@ -662,9 +660,10 @@ mod tests {
     }
 
     #[test]
-    fn test_max_multisig_calldata_fits_size_guard() {
-        let owners = (1..=u8::try_from(MAX_MULTISIG_OWNERS).expect("owner count fits in u8"))
-            .map(|index| MultisigOwner {
+    fn test_max_configurable_account_calldata_fits_size_guard() {
+        let owners = (1..=u8::try_from(MAX_CONFIGURABLE_ACCOUNT_OWNERS)
+            .expect("owner count fits in u8"))
+            .map(|index| ConfigurableAccountOwner {
                 owner: Address::repeat_byte(index),
                 weight: 1,
             })
@@ -676,23 +675,23 @@ mod tests {
             pub_key_x: B256::ZERO,
             pub_key_y: B256::ZERO,
         });
-        let signature = MultisigSignature::try_new(
+        let signature = ConfigurableAccountSignature::try_new(
             Address::repeat_byte(0x71),
-            MultisigConfig {
+            ConfigurableAccountConfig {
                 salt: B256::repeat_byte(0xff),
                 version: u64::MAX,
                 threshold: 8,
                 owners,
             },
-            vec![approval; MAX_MULTISIG_SIGNATURES],
+            vec![approval; MAX_CONFIGURABLE_ACCOUNT_SIGNATURES],
         )
         .unwrap();
-        let calldata = ISignatureVerifier::verifyMultisigCall {
+        let calldata = ISignatureVerifier::verifyConfigurableAccountCall {
             account: signature.account(),
             hash: B256::ZERO,
-            signature: TempoSignature::Multisig(signature).to_bytes(),
+            signature: TempoSignature::ConfigurableAccount(signature).to_bytes(),
         }
         .abi_encode();
-        assert!(calldata.len() <= MAX_MULTISIG_CALLDATA_LEN);
+        assert!(calldata.len() <= MAX_CONFIGURABLE_ACCOUNT_CALLDATA_LEN);
     }
 }

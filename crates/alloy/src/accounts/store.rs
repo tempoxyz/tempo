@@ -11,7 +11,7 @@ use std::{
     sync::{Arc, LazyLock, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
-use tempo_primitives::transaction::MultisigSignature;
+use tempo_primitives::transaction::ConfigurableAccountSignature;
 
 use alloy_network::{NetworkTransactionBuilder, NetworkWallet, TransactionBuilder};
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256, keccak256};
@@ -696,9 +696,11 @@ pub enum TempoAuthorizationAccountError {
         /// Parent named in the authorization metadata.
         actual: Address,
     },
-    /// The multisig signature names a different account.
-    #[error("multisig signature account mismatch: expected {expected}, actual {actual}")]
-    MultisigAccountMismatch {
+    /// The configurable account signature names a different account.
+    #[error(
+        "configurable account signature account mismatch: expected {expected}, actual {actual}"
+    )]
+    ConfigurableAccountMismatch {
         /// Selected parent.
         expected: Address,
         /// Account named in the signature.
@@ -1827,7 +1829,7 @@ struct PersistedSignedKeyAuthorization {
 #[serde(untagged)]
 enum PersistedAuthorizationSignature {
     Primitive(PersistedPrimitiveSignature),
-    Multisig(MultisigSignature),
+    ConfigurableAccount(ConfigurableAccountSignature),
 }
 
 #[derive(Clone, Deserialize)]
@@ -2026,8 +2028,8 @@ impl TryFrom<PersistedSignedKeyAuthorization> for SignedKeyAuthorization {
             PersistedAuthorizationSignature::Primitive(signature) => {
                 AccountSignature::Primitive(PrimitiveSignature::try_from(signature)?)
             }
-            PersistedAuthorizationSignature::Multisig(signature) => {
-                AccountSignature::Multisig(signature)
+            PersistedAuthorizationSignature::ConfigurableAccount(signature) => {
+                AccountSignature::ConfigurableAccount(signature)
             }
         };
         Ok(authorization.into_signed(signature))
@@ -2381,7 +2383,7 @@ fn validate_stored_authorization(
         .map_err(TempoAccountsError::AuthorizationAccount)
 }
 
-/// Checks parent metadata; an unnamed multisig grant must be parent-signed.
+/// Checks parent metadata; an unnamed configurable account grant must be parent-signed.
 /// Does not verify signatures or on-chain authority.
 fn validate_authorization_for_account(
     account: Address,
@@ -2397,17 +2399,17 @@ fn validate_authorization_for_account(
     }
     match &authorization.signature {
         AccountSignature::Primitive(_) => Ok(()),
-        AccountSignature::Multisig(signature)
+        AccountSignature::ConfigurableAccount(signature)
             if signature.account() == account || authorization.account == Some(account) =>
         {
             Ok(())
         }
-        AccountSignature::Multisig(signature) => {
-            Err(TempoAuthorizationAccountError::MultisigAccountMismatch {
+        AccountSignature::ConfigurableAccount(signature) => Err(
+            TempoAuthorizationAccountError::ConfigurableAccountMismatch {
                 expected: account,
                 actual: signature.account(),
-            })
-        }
+            },
+        ),
     }
 }
 
@@ -2499,7 +2501,7 @@ struct WritableSignedKeyAuthorization {
 #[serde(untagged)]
 enum WritableAuthorizationSignature {
     Primitive(WritablePrimitiveSignature),
-    Multisig(MultisigSignature),
+    ConfigurableAccount(ConfigurableAccountSignature),
 }
 
 #[derive(Serialize)]
@@ -2565,8 +2567,10 @@ fn writable_signature(
 ) -> Result<WritableAuthorizationSignature, TempoAccountsError> {
     let signature = match signature {
         AccountSignature::Primitive(signature) => signature,
-        AccountSignature::Multisig(signature) => {
-            return Ok(WritableAuthorizationSignature::Multisig(signature.clone()));
+        AccountSignature::ConfigurableAccount(signature) => {
+            return Ok(WritableAuthorizationSignature::ConfigurableAccount(
+                signature.clone(),
+            ));
         }
     };
     Ok(WritableAuthorizationSignature::Primitive(match signature {
@@ -3334,7 +3338,7 @@ mod tests {
     use alloy_provider::{ProviderBuilder, SendableTx, fillers::TxFiller, mock::Asserter};
     use alloy_rpc_types_eth::{TransactionInput, TransactionRequest};
     use serde_json::{from_value, json, to_value};
-    use tempo_primitives::transaction::{MultisigConfig, MultisigOwner};
+    use tempo_primitives::transaction::{ConfigurableAccountConfig, ConfigurableAccountOwner};
 
     use super::*;
 
@@ -5003,19 +5007,23 @@ mod tests {
         account: Address,
         signer: &PrivateKeySigner,
     ) -> SignedKeyAuthorization {
-        let config = MultisigConfig {
+        let config = ConfigurableAccountConfig {
             salt: B256::ZERO,
             version: 1,
             threshold: 1,
-            owners: vec![MultisigOwner {
+            owners: vec![ConfigurableAccountOwner {
                 owner: Address::repeat_byte(1),
                 weight: 1,
             }],
         };
         KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, signer.address())
             .into_signed(
-                MultisigSignature::try_new(account, config, vec![PrimitiveSignature::default()])
-                    .unwrap(),
+                ConfigurableAccountSignature::try_new(
+                    account,
+                    config,
+                    vec![PrimitiveSignature::default()],
+                )
+                .unwrap(),
             )
     }
 
@@ -5053,11 +5061,11 @@ mod tests {
     }
 
     #[test_case::test_case(false; "primitive")]
-    #[test_case::test_case(true; "multisig")]
-    fn explicit_wrong_account_metadata_is_rejected(multisig: bool) {
+    #[test_case::test_case(true; "configurable_account")]
+    fn explicit_wrong_account_metadata_is_rejected(configurable_account: bool) {
         let account = Address::repeat_byte(2);
         let signer = PrivateKeySigner::random();
-        let mut authorization = if multisig {
+        let mut authorization = if configurable_account {
             configurable_authorization(account, &signer)
         } else {
             KeyAuthorization::unrestricted(4217, SignatureType::Secp256k1, signer.address())
@@ -5109,10 +5117,12 @@ mod tests {
                 Address::repeat_byte(3),
                 &configurable_authorization(account, &signer)
             ),
-            Err(TempoAuthorizationAccountError::MultisigAccountMismatch {
-                expected: Address::repeat_byte(3),
-                actual: account,
-            })
+            Err(
+                TempoAuthorizationAccountError::ConfigurableAccountMismatch {
+                    expected: Address::repeat_byte(3),
+                    actual: account,
+                }
+            )
         );
         let authorization = configurable_authorization(account, &signer);
         let writable = writable_access_key(account, &signer, &authorization).unwrap();

@@ -1,7 +1,7 @@
 [package]
 name = "zone-checker"
 description = "Observe-only Zone L2 checker ExEx"
-version = "0.3.5"
+version = "0.3.6"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -38,9 +38,9 @@ alloy-transport.workspace = true
 tempo-alloy.workspace = true
 tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-contracts = { workspace = true, features = ["rpc", "std"] }
+tempo-evm.workspace = true
 tempo-precompiles.workspace = true
 tempo-primitives = { workspace = true, features = ["reth-codec"] }
-tempo-revm = { workspace = true, features = ["reth"] }
 
 # zones
 zone-precompiles.workspace = true

@@ -26,9 +26,10 @@ use alloy_sol_types::SolCall;
 use eyre::{OptionExt as _, WrapErr};
 use futures::StreamExt;
 use jsonrpsee::{RpcModule, core::RpcResult, proc_macros::rpc, types::ErrorObjectOwned};
-use reth_evm::{ConfigureEvm as _, execute::Executor as _};
-use reth_provider::{BlockReader, CanonStateSubscriptions, HeaderProvider};
-use reth_revm::{db::State, witness::ExecutionWitnessRecord};
+use reth_chainspec::Hardforks;
+use reth_evm::{ConfigureEvm as _, execute::Executor as _, witness::ExecutionWitnessRecord};
+use reth_execution_types::BundleSource;
+use reth_provider::{BlockReader, CanonStateSubscriptions, ChainSpecProvider, HeaderProvider};
 use reth_rpc::{EthFilter, eth::filter::EthFilterError};
 use reth_rpc_api::Web3ApiServer;
 use reth_rpc_builder::EthHandlers;
@@ -44,11 +45,15 @@ use tempo_alloy::{
     provider::ext::TempoProviderExt as _,
     rpc::{TempoCallBuilderExt as _, TempoHeaderResponse, TempoTransactionRequest},
 };
-use tempo_chainspec::spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE};
+use tempo_chainspec::{
+    TempoHardforks,
+    spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE},
+};
 use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     account_keychain::IAccountKeychain::{self, KeyInfo, getKeyCall},
 };
+use tempo_node::rpc::{TempoForkScheduleApiServer as _, TempoForkScheduleRpc};
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope};
 use tokio::{
     sync::Mutex,
@@ -208,9 +213,14 @@ pub(crate) fn operator_zone_rpc_module<P>(
     provider: P,
 ) -> Result<RpcModule<()>, jsonrpsee::core::RegisterMethodError>
 where
-    P: HeaderProvider + StateProviderFactory + Clone + 'static,
+    P: HeaderProvider
+        + StateProviderFactory
+        + ChainSpecProvider<ChainSpec: Hardforks + TempoHardforks>
+        + Clone
+        + 'static,
 {
     let mut module = RpcModule::new(());
+    module.merge(TempoForkScheduleRpc::new(provider.clone()).into_rpc())?;
     let set_leader_sequencer = sequencer.clone();
     module.register_async_method("zone_setLeader", move |params, _, _| {
         let sequencer = set_leader_sequencer.clone();
@@ -308,28 +318,28 @@ where
         let (execution_witness, reads, initial_tempo) = self
             .eth_api
             .spawn_with_state_at_block(block.parent_hash(), move |eth_api, mut db| {
-                let initial_tempo = db.database.0.tempo_num_hash().map_err(EthApiError::from)?;
+                let initial_tempo = db
+                    .db
+                    .inner()
+                    .0
+                    .tempo_num_hash()
+                    .map_err(EthApiError::from)?;
                 let (evm_config, recorder) = eth_api.evm_config().with_l1_storage_recorder();
                 let block_executor = evm_config.executor(&mut db);
                 let mode = ExecutionWitnessMode::default();
-
-                let mut witness = None;
-                let _ = block_executor
-                    .execute_with_state_closure(&block, |statedb: &State<_>| {
-                        witness = Some(
-                            ExecutionWitnessRecord::new(statedb)
-                                .with_additional_state(spf_storage_targets(statedb))
-                                .into_execution_witness(
-                                    &statedb.database.database.0.0,
-                                    eth_api.provider(),
-                                    block_number,
-                                    mode,
-                                ),
-                        );
-                    })
+                let output = block_executor
+                    .execute(&block)
                     .map_err(|error| EthApiError::Internal(error.into()))?;
-                let witness = witness
-                    .expect("state closure is called after successful execution")
+                db.commit_source(&BundleSource(&output.state));
+
+                let witness = ExecutionWitnessRecord::new(&db)
+                    .with_additional_state(spf_storage_targets(&db.cache.block_hashes))
+                    .into_execution_witness(
+                        &db.db.inner().0.0,
+                        eth_api.provider(),
+                        block_number,
+                        mode,
+                    )
                     .map_err(EthApiError::from)?;
                 Ok((witness, recorder.take_reads(), initial_tempo))
             })
@@ -420,10 +430,10 @@ async fn collect_tempo_witness(
 
 /// Build storage targets for SPF reads not necessarily covered by execution.
 ///
-/// Reth records BLOCKHASH reads in REVM's block-hash cache and normally proves them with ancestor
+/// Reth records BLOCKHASH reads in the EVM block-hash cache and normally proves them with ancestor
 /// headers. Zones already commit the EIP-2935 history contract in state, so adding the matching
 /// storage targets lets the SPF authenticate the same values against the parent state root.
-fn spf_storage_targets<DB>(state: &State<DB>) -> HashedPostState {
+fn spf_storage_targets(block_hashes: &alloy_primitives::map::U256Map<B256>) -> HashedPostState {
     // SPF always reads the token cursor, but pre-T13 execution never touches it. Include its
     // absence proof explicitly; ExecutionWitnessRecord overrides this zero with any value
     // recorded during execution.
@@ -438,11 +448,12 @@ fn spf_storage_targets<DB>(state: &State<DB>) -> HashedPostState {
     );
 
     let mut history_storage = HashedStorage::default();
-    for (number, hash) in state.block_hashes.iter() {
-        let slot = U256::from(number % HISTORY_SERVE_WINDOW as u64);
-        history_storage
-            .storage
-            .insert(keccak256(slot.to_be_bytes::<32>()), hash.into());
+    for (number, hash) in block_hashes {
+        let slot = *number % U256::from(HISTORY_SERVE_WINDOW);
+        history_storage.storage.insert(
+            keccak256(slot.to_be_bytes::<32>()),
+            U256::from_be_bytes(hash.0),
+        );
     }
     if !history_storage.storage.is_empty() {
         targets.extend(HashedPostState::from_hashed_storage(
@@ -1609,16 +1620,19 @@ pub(crate) fn rpc_connection_config(retry_connection_interval: Duration) -> Conn
 mod tests {
     use super::*;
     use alloy_provider::ProviderBuilder;
+    use reth_provider::test_utils::MockEthProvider;
+    use tempo_alloy::rpc::ForkSchedule;
+    use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
+    use zone_chainspec::{ZoneChainSpec, test_utils::set_tempo_fork};
+    use zone_primitives::constants::zone_chain_id;
 
     #[test]
     fn records_block_hashes_as_eip2935_storage_targets() {
         let number = 42;
         let hash = B256::repeat_byte(0x42);
-        let mut state = State::builder()
-            .with_database(revm::database::EmptyDB::default())
-            .build();
-        state.block_hashes.insert(number, hash);
-        let targets = spf_storage_targets(&state);
+        let mut block_hashes = alloy_primitives::map::U256Map::default();
+        block_hashes.insert(U256::from(number), hash);
+        let targets = spf_storage_targets(&block_hashes);
 
         let storage = targets
             .storages
@@ -1760,18 +1774,51 @@ mod tests {
 
     #[tokio::test]
     async fn operator_rpc_module_exposes_sequencer_methods_without_auth() {
+        let mut genesis = DEV.inner.genesis.clone();
+        genesis.config.chain_id = zone_chain_id(1_337, 7).unwrap();
+        set_tempo_fork(&mut genesis, TempoHardfork::T13, 1_000);
+        let provider = MockEthProvider::<TempoPrimitives>::new()
+            .with_chain_spec(ZoneChainSpec::from_genesis(genesis).unwrap());
         let module = operator_zone_rpc_module(
             7,
             Address::repeat_byte(0x11),
             Arc::new(std::sync::OnceLock::new()),
-            Arc::new(reth_provider::test_utils::MockEthProvider::default()),
+            provider.clone(),
         )
         .expect("operator zone RPC module should register");
 
         let methods = module.method_names().collect::<HashSet<_>>();
-        assert_eq!(methods.len(), 2);
+        assert_eq!(methods.len(), 3);
         assert!(methods.contains("zone_getSequencerInfo"));
         assert!(methods.contains("zone_setLeader"));
+        assert!(methods.contains("tempo_forkSchedule"));
+
+        for (timestamp, active, next) in [(999, "T12", Some(("T13", 1_000))), (1_000, "T13", None)]
+        {
+            let header = TempoHeader {
+                inner: alloy_consensus::Header {
+                    number: timestamp,
+                    timestamp,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            provider.add_header(header.hash_slow(), header);
+            let schedule = module
+                .call::<_, ForkSchedule>(
+                    "tempo_forkSchedule",
+                    jsonrpsee::core::EmptyServerParams::new(),
+                )
+                .await
+                .expect("fork schedule should be available without authentication");
+            assert_eq!(schedule.active, active);
+            assert_eq!(
+                schedule
+                    .next_activation()
+                    .map(|fork| (fork.name.as_str(), fork.activation_time)),
+                next
+            );
+        }
 
         let info = module
             .call::<_, SequencerInfoResponse>(

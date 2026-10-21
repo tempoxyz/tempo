@@ -3,18 +3,16 @@
 mod header;
 pub use header::TempoHeaderResponse;
 
-mod native_multisig;
+mod configurable_account;
 mod request;
-pub use native_multisig::{
-    MultisigSimulationApproval, MultisigSimulationError, MultisigSimulationSpec,
+pub use configurable_account::{
+    ConfigurableAccountSimulationApproval, ConfigurableAccountSimulationError,
+    ConfigurableAccountSimulationSpec,
 };
 pub use request::{FeeToken, TempoCallBuilderExt, TempoTransactionRequest};
 
 mod receipt;
 pub use receipt::TempoTransactionReceipt;
-
-#[cfg(feature = "revm")]
-mod revm_compat;
 
 #[cfg(feature = "reth")]
 mod reth_compat;

@@ -328,7 +328,7 @@ pub(crate) async fn authenticate_token(
     let signature =
         TempoSignature::from_bytes(&token.signature).map_err(|_| AuthError::InvalidSignature)?;
     // Zone auth cannot validate configurable owner quorums.
-    if signature.is_multisig() {
+    if signature.is_configurable_account() {
         return Err(AuthError::InvalidSignature.into());
     }
     let caller = signature
@@ -409,8 +409,8 @@ mod tests {
         KeyInfo, SignatureType as KeyInfoSignatureType,
     };
     use tempo_primitives::transaction::{
-        KeychainSignature, MultisigConfig, MultisigOwner, MultisigSignature, PrimitiveSignature,
-        TempoSignature,
+        ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
+        KeychainSignature, PrimitiveSignature, TempoSignature,
     };
 
     #[allow(dead_code)]
@@ -509,18 +509,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn multisig_auth_tokens_are_rejected() {
+    async fn configurable_account_auth_tokens_are_rejected() {
         let parent = Address::repeat_byte(0x55);
         let delegate = Address::repeat_byte(0x66);
         let now = now_secs();
         let (fields, _) = build_token_fields(ZONE_ID, CHAIN_ID, now, now + 600);
-        let signature = MultisigSignature::try_new(
+        let signature = ConfigurableAccountSignature::try_new(
             delegate,
-            MultisigConfig {
+            ConfigurableAccountConfig {
                 salt: B256::ZERO,
                 version: 1,
                 threshold: 1,
-                owners: vec![MultisigOwner {
+                owners: vec![ConfigurableAccountOwner {
                     owner: Address::repeat_byte(3),
                     weight: 1,
                 }],
@@ -532,7 +532,7 @@ mod tests {
             parent,
             delegate,
             KeyInfo {
-                signatureType: KeyInfoSignatureType::Multisig,
+                signatureType: KeyInfoSignatureType::ConfigurableAccount,
                 keyId: delegate,
                 expiry: u64::MAX,
                 enforceLimits: false,
@@ -540,7 +540,7 @@ mod tests {
             },
         );
         for signature in [
-            TempoSignature::Multisig(signature.clone()),
+            TempoSignature::ConfigurableAccount(signature.clone()),
             TempoSignature::Keychain(KeychainSignature::new(parent, signature)),
         ] {
             let token = build_token_with_signature(signature, &fields);

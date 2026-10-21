@@ -10,6 +10,7 @@ use alloy_primitives::{Address, B256, Bytes, U256, keccak256, map::B256Map};
 use alloy_rlp::decode_exact;
 use reth_trie_common::{DecodedMultiProofV2, EMPTY_ROOT_HASH, HashedPostState, TrieAccount};
 use reth_trie_sparse::{LeafUpdate, RevealableSparseTrie, SparseStateTrie, TrieNodeEpoch};
+use tempo_contracts::TempoHardfork;
 use tempo_primitives::account::decode_config_commitment;
 
 /// Fully revealed, root-bound stateless trie.
@@ -234,7 +235,8 @@ fn decode_account(value: &[u8], address: Address) -> Result<TrieAccount, Statele
 
 fn decode_account_leaf(value: &[u8]) -> alloy_rlp::Result<TrieAccount> {
     let account: TrieAccount = decode_exact(value)?;
-    decode_config_commitment(&account.extension, true)?;
+    // A witness leaf carries no hardfork, so this checks the payload format as of T14.
+    decode_config_commitment(&account.extension, TempoHardfork::T14)?;
     Ok(account)
 }
 
@@ -312,8 +314,8 @@ mod tests {
             ..Default::default()
         };
         let encoded = alloy_rlp::encode(&account);
-        assert_eq!(decode_account(&encoded, address).unwrap(), account);
-        assert_eq!(decode_hashed_account(&encoded).unwrap(), account);
+        assert_eq!(decode_account(&encoded, address), Ok(account.clone()));
+        assert_eq!(decode_hashed_account(&encoded), Ok(account.clone()));
 
         let mut invalid = (0..encoded.len())
             .map(|len| encoded[..len].to_vec())

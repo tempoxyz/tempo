@@ -9,11 +9,11 @@ use alloy_eips::{
     eip7594::BlobTransactionSidecarVariant,
     eip7702::SignedAuthorization,
 };
-use alloy_evm::FromRecoveredTx;
 use alloy_primitives::{
     Address, B256, Bytes, TxHash, TxKind, U256, bytes, keccak256,
     map::{AddressMap, AddressSet},
 };
+use evm2::registry::HandlerError;
 use reth_evm::execute::WithTxEnv;
 use reth_primitives_traits::{InMemorySize, Recovered, SignerRecoverable};
 use reth_transaction_pool::{
@@ -26,6 +26,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 use tempo_contracts::precompiles::PaymentSlots;
+use tempo_evm::{ResolvedFeeToken, TempoInvalidTransaction, TempoTxEnv};
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN,
     nonce::NonceManager,
@@ -37,7 +38,6 @@ use tempo_primitives::{
     TempoSignature, TempoTxEnvelope,
     transaction::{InvalidValidAfter, InvalidValidBefore, calc_gas_balance_spending},
 };
-use tempo_revm::{TempoInvalidTransaction, TempoTxEnv};
 use thiserror::Error;
 
 /// Tempo pooled transaction representation.
@@ -67,7 +67,7 @@ pub struct TempoPooledTransaction {
     ///
     /// Used by `keychain_subject()` so pool maintenance matches against the same token
     /// that was validated without requiring state access.
-    resolved_fee_token: OnceLock<Address>,
+    resolved_fee_token: OnceLock<ResolvedFeeToken>,
     /// Cached keychain subject for the signer of an inline `KeyAuthorization`.
     key_authorization_signer_subject: OnceLock<Option<KeychainSubject>>,
     /// Cached target key of an inline `KeyAuthorization`.
@@ -278,12 +278,13 @@ impl TempoPooledTransaction {
 
     /// Whether a changed account commitment can stale this transaction's authority.
     ///
-    /// A native multisig signer matches when its account is in `changed_commitments`, or on any
-    /// `reorg`. A primitive authority matches only when its address is in `changed_commitments`
-    /// (a commitment change retires the bare key, TIP-1112). Primitive authorities are the sender
-    /// of a non-AA or primitive-signed transaction, a primitive key authorization signer, a
-    /// separate fee payer and the key ID of a primitive access key. The account that an access key
-    /// signs for is not one: a nonzero commitment does not revoke its grants.
+    /// A configurable account signer matches when its account is in `changed_commitments`, or on
+    /// any `reorg`. A primitive authority matches only when its address is in
+    /// `changed_commitments` (a commitment change retires the bare key, TIP-1112). Primitive
+    /// authorities are the sender of a non-AA or primitive-signed transaction, a primitive key
+    /// authorization signer, a separate fee payer and the key ID of a primitive access key. The
+    /// account that an access key signs for is not one: a nonzero commitment does not revoke its
+    /// grants.
     pub(crate) fn needs_configurable_revalidation(
         &self,
         changed_commitments: &AddressSet,
@@ -293,15 +294,14 @@ impl TempoPooledTransaction {
             return changed_commitments.contains(self.sender_ref());
         };
         let keychain = tx.signature().as_keychain();
-        let transaction_signer = tx
-            .signature()
-            .as_multisig()
-            .or_else(|| keychain.and_then(|signature| signature.signature.as_multisig()));
+        let transaction_signer = tx.signature().as_configurable_account().or_else(|| {
+            keychain.and_then(|signature| signature.signature.as_configurable_account())
+        });
         let grant_signer = tx
             .tx()
             .key_authorization
             .as_ref()
-            .and_then(|authorization| authorization.signature.as_multisig());
+            .and_then(|authorization| authorization.signature.as_configurable_account());
         if [transaction_signer, grant_signer]
             .into_iter()
             .flatten()
@@ -345,7 +345,7 @@ impl TempoPooledTransaction {
 
     /// Computes the [`TempoTxEnv`] for this transaction.
     pub(crate) fn tx_env_slow(&self) -> TempoTxEnv {
-        TempoTxEnv::from_recovered_tx(self.inner().inner(), self.sender())
+        TempoTxEnv::from(self.inner().clone())
     }
 
     /// Pre-computes and caches the [`TempoTxEnv`].
@@ -374,9 +374,15 @@ impl TempoPooledTransaction {
         self.tx_env().clone()
     }
 
-    /// Returns a tuple that can be passed to block executor.
-    pub fn executable(&self) -> (TempoTxEnv, &Recovered<TempoTxEnvelope>) {
-        (self.tx_env().clone(), &self.inner.transaction)
+    /// Returns the transaction environment consumed by the EVM2 block executor.
+    ///
+    /// The recovered transaction is borrowed because execution consumes this wrapper
+    /// synchronously, avoiding a clone of the original transaction envelope.
+    pub fn executable(&self) -> (Recovered<TempoTxEnv>, &Recovered<TempoTxEnvelope>) {
+        (
+            Recovered::new_unchecked(self.clone_tx_env(), self.sender()),
+            self.inner(),
+        )
     }
 
     /// Returns a [`WithTxEnv`] wrapper by cloning the cached [`TempoTxEnv`] and
@@ -384,9 +390,11 @@ impl TempoPooledTransaction {
     ///
     /// This avoids cloning the full pooled transaction when the caller only
     /// needs an owned executable transaction.
-    pub fn clone_into_with_tx_env(&self) -> WithTxEnv<TempoTxEnv, Recovered<TempoTxEnvelope>> {
+    pub fn clone_into_with_tx_env(
+        &self,
+    ) -> WithTxEnv<Recovered<TempoTxEnv>, Recovered<TempoTxEnvelope>> {
         WithTxEnv {
-            tx_env: self.clone_tx_env(),
+            tx_env: Recovered::new_unchecked(self.clone_tx_env(), self.sender()),
             tx: Arc::new(self.inner.transaction.clone()),
         }
     }
@@ -395,10 +403,13 @@ impl TempoPooledTransaction {
     ///
     /// If the [`TempoTxEnv`] was pre-computed via [`Self::tx_env`], the cached
     /// value is used. Otherwise, it is computed on-demand.
-    pub fn into_with_tx_env(mut self) -> WithTxEnv<TempoTxEnv, Recovered<TempoTxEnvelope>> {
+    pub fn into_with_tx_env(
+        mut self,
+    ) -> WithTxEnv<Recovered<TempoTxEnv>, Recovered<TempoTxEnvelope>> {
+        let signer = self.sender();
         let tx_env = self.tx_env.take().unwrap_or_else(|| self.tx_env_slow());
         WithTxEnv {
-            tx_env,
+            tx_env: Recovered::new_unchecked(tx_env, signer),
             tx: Arc::new(self.inner.transaction),
         }
     }
@@ -434,7 +445,7 @@ impl TempoPooledTransaction {
     /// The validator sets this after EVM validation resolves the token from the
     /// transaction's explicit `fee_token` field or from fee-manager state. Pool
     /// maintenance code should not call this directly.
-    pub fn set_resolved_fee_token(&self, fee_token: Address) {
+    pub fn set_resolved_fee_token(&self, fee_token: ResolvedFeeToken) {
         let _ = self.resolved_fee_token.set(fee_token);
     }
 
@@ -466,7 +477,17 @@ impl TempoPooledTransaction {
     /// the pool validator. Prefer [`Self::effective_fee_token`] in maintenance code
     /// that needs the token a transaction will actually use to pay fees.
     pub fn resolved_fee_token(&self) -> Option<Address> {
-        self.resolved_fee_token.get().copied()
+        self.resolved_fee_token.get().map(|token| token.address())
+    }
+
+    /// Returns whether validation took the fee token from the ordered fallback list.
+    ///
+    /// Only such tokens can change when the fee payer's fallback-token balances change. This is
+    /// `false` for transactions that have not completed validation.
+    pub fn is_fallback_fee_token(&self) -> bool {
+        self.resolved_fee_token
+            .get()
+            .is_some_and(|token| token.is_fallback())
     }
 
     /// Returns the effective fee token for pool maintenance and accounting.
@@ -787,18 +808,37 @@ pub enum TempoPoolTransactionError {
 
     /// A Tempo EVM validation error returned by the transaction pool.
     ///
-    /// Thrown when `TempoEvm::validate_transaction` rejects the transaction with
-    /// a [`TempoInvalidTransaction`] that is not mapped to a standard reth
-    /// pool error. The pool also uses this wrapper for AMM liquidity failures
-    /// detected after EVM validation, as `CollectFeePreTx(InsufficientAmmLiquidity)`.
+    /// Thrown when an EVM2 handler rejects the transaction with an error that is
+    /// not mapped to a standard reth pool error. Tempo-specific validation errors
+    /// are stored as [`HandlerError::External`].
     #[error(transparent)]
-    Evm(TempoInvalidTransaction),
+    Evm(HandlerError),
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
     fn is_bad_transaction(&self) -> bool {
         match self {
-            Self::Evm(err) => err.is_bad_transaction(),
+            Self::Evm(err) => err.external_ref::<TempoInvalidTransaction>().map_or_else(
+                || {
+                    matches!(
+                        err,
+                        HandlerError::InvalidChainId { .. }
+                            | HandlerError::MissingChainId
+                            | HandlerError::IntrinsicGasTooLow { .. }
+                            | HandlerError::NonceOverflow
+                            | HandlerError::TxGasLimitGreaterThanCap { .. }
+                            | HandlerError::CreateInitCodeSizeLimit { .. }
+                            | HandlerError::EmptyAuthorizationList
+                            | HandlerError::EmptyBlobs
+                            | HandlerError::TooManyBlobs { .. }
+                            | HandlerError::BlobVersionNotSupported
+                            | HandlerError::PriorityFeeGreaterThanMaxFee
+                            | HandlerError::UnsupportedTransactionType(_)
+                            | HandlerError::WrongTransactionType { .. }
+                    )
+                },
+                TempoInvalidTransaction::is_bad_transaction,
+            ),
             Self::ExceedsNonPaymentLimit
             | Self::InvalidValidBefore(_)
             | Self::InvalidValidAfter(_)
@@ -1232,7 +1272,7 @@ mod tests {
         let nonce_key_slot = transaction.nonce_key_slot();
         let _ = transaction.tx_env();
         transaction.set_key_expiry(Some(123));
-        transaction.set_resolved_fee_token(Address::random());
+        transaction.set_resolved_fee_token(ResolvedFeeToken::Selected(Address::random()));
 
         let fresh = transaction.with_discarded_caches();
 
@@ -1432,28 +1472,34 @@ mod tests {
             ),
             (TempoPoolTransactionError::Keychain("test error"), false),
             (
-                TempoPoolTransactionError::Evm(TempoInvalidTransaction::NonceManagerError(
-                    "nonce error".to_string(),
+                TempoPoolTransactionError::Evm(HandlerError::external(
+                    TempoInvalidTransaction::NonceManagerError("nonce error".to_string()),
                 )),
                 false,
             ),
             (
-                TempoPoolTransactionError::Evm(TempoInvalidTransaction::FeeTokenNotTip20 {
-                    address: Address::repeat_byte(0x20),
-                }),
+                TempoPoolTransactionError::Evm(HandlerError::external(
+                    TempoInvalidTransaction::FeeTokenNotTip20 {
+                        address: Address::repeat_byte(0x20),
+                    },
+                )),
                 false,
             ),
             (
-                TempoPoolTransactionError::Evm(TempoInvalidTransaction::FeeTokenNotUsdCurrency {
-                    address: Address::repeat_byte(0x20),
-                    currency: "EUR".to_string(),
-                }),
+                TempoPoolTransactionError::Evm(HandlerError::external(
+                    TempoInvalidTransaction::FeeTokenNotUsdCurrency {
+                        address: Address::repeat_byte(0x20),
+                        currency: "EUR".to_string(),
+                    },
+                )),
                 false,
             ),
             (
-                TempoPoolTransactionError::Evm(TempoInvalidTransaction::FeeTokenPaused {
-                    address: Address::repeat_byte(0x20),
-                }),
+                TempoPoolTransactionError::Evm(HandlerError::external(
+                    TempoInvalidTransaction::FeeTokenPaused {
+                        address: Address::repeat_byte(0x20),
+                    },
+                )),
                 false,
             ),
             (
@@ -1478,8 +1524,8 @@ mod tests {
             ),
             (TempoPoolTransactionError::SubblockNonceKey, true),
             (
-                TempoPoolTransactionError::Evm(TempoInvalidTransaction::CallsValidation(
-                    "calls error",
+                TempoPoolTransactionError::Evm(HandlerError::external(
+                    TempoInvalidTransaction::CallsValidation("calls error"),
                 )),
                 true,
             ),

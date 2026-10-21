@@ -5,7 +5,7 @@ Every edit asserts an expected match count. If a pattern matches 0 times,
 the source has drifted and the script fails — preventing silent breakage.
 
 Usage:
-    sanitize_source.py <primitives_dir> <alloy_dir> <chainspec_dir>
+    sanitize_source.py <primitives_dir> <alloy_dir> <chainspec_dir> <hardfork_dir>
 """
 import os
 import re
@@ -113,6 +113,8 @@ def sanitize_primitives(prim_dir):
     delete_lines(lib_rs, r'^#\[cfg\(feature = "reth"\)\]\nmod reth_compat;\n', expected=1)
     delete_lines(lib_rs, r'^#\[cfg\(feature = "reth"\)\]\npub use reth_compat::TempoReceipt;\n', expected=1)
     delete_lines(lib_rs, r'^#\[cfg\(not\(feature = "reth"\)\)\]\n', expected=1)
+
+    _delete_cfg_gated_block(lib_rs, '#[cfg(feature = "evm")]', expected=2)
 
     # ── Struct-level derive/test attributes (directory-wide scan) ──────────
     # Scan all .rs files for reth-specific cfg_attr patterns instead of
@@ -273,9 +275,16 @@ def _strip_rust_strings(line):
     return ''.join(result)
 
 
+def sanitize_hardfork(hardfork_dir):
+    """Strip the node-only gas schedule and EVM type conversions."""
+    _delete_cfg_gated_block(f"{hardfork_dir}/src/lib.rs", '#[cfg(feature = "evm")]', expected=5)
+
+
 def sanitize_chainspec(chainspec_dir):
     """Strip reth-gated code from tempo-chainspec source files."""
     lib_rs = f"{chainspec_dir}/src/lib.rs"
+
+    _delete_cfg_gated_block(lib_rs, '#[cfg(feature = "evm")]', expected=1)
 
     # Delete #![cfg_attr(all(not(test), feature = "reth"), warn(unused_crate_dependencies))]
     delete_lines(lib_rs, r'^#!\[cfg_attr\(all\(not\(test\), feature = "reth"\), warn\(unused_crate_dependencies\)\)\]\n', expected=1)
@@ -292,35 +301,30 @@ def sanitize_chainspec(chainspec_dir):
 def sanitize_alloy(alloy_dir):
     """Strip node-internal code from tempo-alloy source files.
 
-    The revm_compat.rs and reth_compat.rs files are already deleted by the shell
-    script (publish-crates.sh). This function removes their cfg-gated module
-    declarations from rpc/mod.rs so the crate compiles without those files.
+    The reth_compat.rs file is already deleted by publish-crates.sh. Remove its
+    cfg-gated module declaration so the crate compiles without that file.
     """
     src = f"{alloy_dir}/src"
 
     # Delete the cfg-gated compatibility module blocks from rpc/mod.rs
     delete_lines(
         f"{src}/rpc/mod.rs",
-        r'^#\[cfg\(feature = "revm"\)\]\nmod revm_compat;\n',
-        expected=1,
-    )
-    delete_lines(
-        f"{src}/rpc/mod.rs",
         r'^#\[cfg\(feature = "reth"\)\]\nmod reth_compat;\n',
         expected=1,
     )
-    print(f"  rpc/mod.rs: deleted revm/reth compatibility declarations", file=sys.stderr)
+    print(f"  rpc/mod.rs: deleted reth compatibility declaration", file=sys.stderr)
 
 
 if __name__ == '__main__':
-    if len(sys.argv) != 4:
-        print("Usage: sanitize_source.py <primitives_dir> <alloy_dir> <chainspec_dir>", file=sys.stderr)
+    if len(sys.argv) != 5:
+        print("Usage: sanitize_source.py <primitives_dir> <alloy_dir> <chainspec_dir> <hardfork_dir>", file=sys.stderr)
         sys.exit(1)
 
     prim_dir = sys.argv[1]
     alloy_dir = sys.argv[2]
     chainspec_dir = sys.argv[3]
 
+    sanitize_hardfork(sys.argv[4])
     sanitize_primitives(prim_dir)
     sanitize_alloy(alloy_dir)
     sanitize_chainspec(chainspec_dir)
