@@ -68,6 +68,10 @@ pub(in crate::consensus) struct Config<TContext> {
 
     /// The epoch strategy used by tempo, to map block heights to epochs.
     pub(in crate::consensus) epoch_strategy: FixedEpocher,
+
+    /// Opens the top-of-block lane when this node proposes, if operators are
+    /// configured.
+    pub(in crate::consensus) top_of_block: Option<crate::top_of_block::Mailbox>,
 }
 
 /// Tempo's block builder and verifier, see the module documentation.
@@ -82,6 +86,7 @@ pub(crate) struct Inner {
     dkg_manager: crate::dkg::manager::Mailbox,
     parent_state: TempoParentState,
     validation_latency_estimator: Arc<Mutex<ValidationLatencyEstimator>>,
+    top_of_block: Option<crate::top_of_block::Mailbox>,
 
     metrics: Metrics,
 }
@@ -98,6 +103,7 @@ impl Inner {
             dkg_manager: config.dkg_manager,
             parent_state: config.parent_state,
             validation_latency_estimator: Default::default(),
+            top_of_block: config.top_of_block,
             metrics: Metrics::init(&config.context),
         }
     }
@@ -129,6 +135,12 @@ impl Inner {
             leader,
             parent: (parent_view, parent_digest),
         } = context;
+
+        // Open the lane first: its window starts now, and operators keep
+        // submitting while the parent executes and the payload job starts.
+        if let Some(top_of_block) = &self.top_of_block {
+            top_of_block.open(round);
+        }
 
         let (extra_data, deferred_extra_data) = if self.is_boundary(parent.height().next()) {
             // The boundary block carries the DKG outcome.

@@ -89,9 +89,18 @@ pub mod contracts {
     /// Keccak256 hash of Multicall3 deployed bytecode
     pub const MULTICALL3_DEPLOYED_BYTECODE_HASH: B256 =
         b256!("0xd5c15df687b16f2ff992fc8d767b4216323184a2bbc6ee2f9c398c318e770891");
+
+    sol!(
+        /// Ownable registry of top-of-block operators (TIP-1147). Built from
+        /// `solidity/TopOfBlockRegistry.sol`.
+        #[allow(missing_docs)]
+        #[derive(Debug, PartialEq, Eq)]
+        TopOfBlockRegistry,
+        "abi/TopOfBlockRegistry.json",
+    );
 }
 
-pub use contracts::{CreateX, Multicall3, Permit2, SafeDeployer};
+pub use contracts::{CreateX, Multicall3, Permit2, SafeDeployer, TopOfBlockRegistry};
 
 pub mod precompiles;
 

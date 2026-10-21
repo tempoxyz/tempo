@@ -27,6 +27,7 @@ tempo-ext.workspace = true
 tempo-eyre.workspace = true
 tempo-node = { workspace = true, features = ["default"] }
 tempo-node-launcher.workspace = true
+tempo-payload-types.workspace = true
 tempo-consensus.workspace = true
 tempo-consensus-config.workspace = true
 tempo-precompiles.workspace = true

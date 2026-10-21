@@ -29,6 +29,7 @@ use tracing::{Span, debug, error, info_span, instrument, warn};
 
 use crate::{
     consensus::Digest,
+    top_of_block::Registry,
     utils::public_key_to_b256,
     validators::{DecodedValidatorV2, ExecutionNode, read_validator_config_at_block_hash},
 };
@@ -55,6 +56,11 @@ where
 
     peers: Gauge,
 
+    top_of_block_registry: Option<(
+        alloy_primitives::Address,
+        crate::top_of_block::RegistryHandle,
+    )>,
+
     last_tracked_peer_set: Option<LastTrackedPeerSet>,
 
     peer_update_timer: Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
@@ -73,6 +79,7 @@ where
             execution_node,
             epoch_strategy,
             finalized_tip,
+            top_of_block_registry,
         }: super::Config<TPeerManager, TExecutionNode>,
         mailbox: mpsc::UnboundedReceiver<MessageWithCause>,
     ) -> eyre::Result<Self> {
@@ -90,6 +97,7 @@ where
             latest_observed_finalized_tip: finalized_tip,
             mailbox,
             peers,
+            top_of_block_registry,
             last_tracked_peer_set: None,
 
             peer_update_timer,
@@ -222,12 +230,25 @@ where
                     )
                 })?;
 
-        let peers = PeersBuilder::with_dkg_outcome(&onchain_outcome)
+        let mut peers = PeersBuilder::with_dkg_outcome(&onchain_outcome)
             .resolve_at_hash(
                 self.execution_node.as_ref(),
                 highest_finalized_header.hash_slow(),
             )
             .wrap_err("failed reading peer set from execution layer")?;
+        if let Some((address, handle)) = &self.top_of_block_registry {
+            // Keep the last registry if this read fails, so a transient error
+            // does not disconnect operators.
+            match Registry::read(
+                self.execution_node.as_ref(),
+                highest_finalized_header.hash_slow(),
+                *address,
+            ) {
+                Ok(registry) => handle.set(registry),
+                Err(error) => warn!(%error, %address, "failed reading top-of-block registry"),
+            }
+            peers.add_secondary(&handle.get().peers());
+        }
 
         debug!(
             boundary.height = latest_boundary_header.number(),
@@ -319,6 +340,20 @@ impl Peers {
 
     fn len(&self) -> usize {
         self.primary.len().saturating_add(self.secondary.len())
+    }
+
+    /// Adds `peers` that are not primary to the secondary peers.
+    fn add_secondary(&mut self, peers: &ordered::Map<PublicKey, Address>) {
+        if peers.is_empty() {
+            return;
+        }
+        self.secondary = ordered::Map::from_iter_dedup(
+            self.secondary
+                .iter_pairs()
+                .chain(peers.iter_pairs())
+                .filter(|(key, _)| self.primary.position(key).is_none())
+                .map(|(key, address)| (key.clone(), address.clone())),
+        );
     }
 
     fn to_flat_map(&self) -> ordered::Map<PublicKey, Address> {
@@ -499,6 +534,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::top_of_block::RegistryHandle;
 
     const VALIDATOR_CONFIG_V2_ADDRESS: AlloyAddress =
         alloy_primitives::address!("0xCCCCCCCC00000000000000000000000000000001");
@@ -722,6 +758,57 @@ mod tests {
         );
     }
 
+    fn operator_ip(operator: &ValidatorFixture) -> IpAddr {
+        operator.egress.parse().unwrap()
+    }
+
+    /// Deploys a `TopOfBlockRegistry` listing `operators` into the execution
+    /// state and returns its address.
+    fn deploy_registry(
+        execution: &TestExecutionNode,
+        operators: &[&ValidatorFixture],
+    ) -> AlloyAddress {
+        use alloy_evm::Evm as _;
+        use tempo_contracts::TopOfBlockRegistry;
+        use tempo_evm::genesis::{
+            create_genesis_evm, deploy_arachnid_create2_factory, deploy_top_of_block_registry,
+            genesis_evm_env,
+        };
+
+        let mut evm = create_genesis_evm(genesis_evm_env(1));
+        deploy_arachnid_create2_factory(&mut evm);
+        let operators: Vec<_> = operators
+            .iter()
+            .map(|operator| TopOfBlockRegistry::Operator {
+                publicKey: B256::from_slice(operator.public_key.as_ref()),
+                ip: operator_ip(operator).to_string(),
+                expiresAt: 0,
+                maxTxsPerBlock: 10,
+                maxGasPerBlock: 1_000_000,
+            })
+            .collect();
+        let address = deploy_top_of_block_registry(
+            &mut evm,
+            AlloyAddress::repeat_byte(0xAA),
+            100,
+            &operators,
+        )
+        .unwrap();
+        let account = &evm.db_mut().cache.accounts[&address];
+        execution.provider.add_account(
+            address,
+            ExtendedAccount::new(1, U256::ZERO)
+                .with_bytecode(account.info.code.as_ref().unwrap().original_bytes())
+                .extend_storage(
+                    account
+                        .storage
+                        .iter()
+                        .map(|(slot, value)| (B256::from(*slot), *value)),
+                ),
+        );
+        address
+    }
+
     fn assert_no_peer(map: &ordered::Map<PublicKey, Address>, validator: &ValidatorFixture) {
         assert!(map.get_value(&validator.public_key).is_none());
     }
@@ -763,6 +850,10 @@ mod tests {
             Runner::default().start(|context| async move {
                 let mut execution = bootstrap_execution(available, 1);
                 execution.finalized = finalized;
+                // An operator that is also a primary peer stays primary only.
+                let (operator, primary) = (peer(9), peer(1));
+                let registry = RegistryHandle::default();
+                let registry_address = deploy_registry(&execution, &[&operator, &primary]);
                 let execution = Arc::new(execution);
                 let oracle = RecordingOracle::default();
                 let (_actor, _mailbox) = crate::peer_manager::init(
@@ -775,6 +866,7 @@ mod tests {
                             Height::new(consensus_tip),
                             Digest(B256::repeat_byte(0xFF)),
                         ),
+                        top_of_block_registry: Some((registry_address, registry.clone())),
                     },
                 )
                 .unwrap();
@@ -784,6 +876,20 @@ mod tests {
                 assert_eq!(tracked[0].0, available);
                 assert_peer(&tracked[0].1.primary, &peer(1));
                 assert_peer(&tracked[0].1.secondary, &peer(2));
+                assert_eq!(
+                    tracked[0].1.secondary.get_value(&operator.public_key),
+                    Some(&Address::Symmetric(SocketAddr::new(
+                        operator_ip(&operator),
+                        0
+                    ))),
+                );
+                assert_no_peer(&tracked[0].1.secondary, &primary);
+                assert!(
+                    registry
+                        .get()
+                        .authorize(&operator.public_key, std::time::SystemTime::now())
+                        .is_some()
+                );
                 assert!(
                     execution
                         .header_reads
@@ -809,6 +915,7 @@ mod tests {
                     oracle: oracle.clone(),
                     epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(10)),
                     finalized_tip: (Height::new(100), Digest(B256::ZERO)),
+                    top_of_block_registry: None,
                 },
             );
             let error = result
@@ -831,6 +938,7 @@ mod tests {
                     oracle: oracle.clone(),
                     epoch_strategy: FixedEpocher::new(commonware_utils::NZU64!(10)),
                     finalized_tip: (Height::new(100), Digest(B256::ZERO)),
+                    top_of_block_registry: None,
                 },
             )
             .unwrap();

@@ -7,7 +7,8 @@
 
 use crate::evm::{TempoEvm, TempoEvmFactory};
 use alloy_genesis::{ChainConfig, GenesisAccount};
-use alloy_primitives::{Address, Bytes, U256};
+use alloy_primitives::{Address, B256, Bytes, U256};
+use alloy_sol_types::{SolCall as _, SolConstructor as _};
 use reth_evm::{
     Evm as _, EvmEnv, EvmFactory as _,
     revm::{
@@ -18,7 +19,7 @@ use reth_evm::{
 };
 use tempo_chainspec::TempoHardfork;
 use tempo_contracts::{
-    ARACHNID_CREATE2_FACTORY_ADDRESS, PERMIT2_ADDRESS, PERMIT2_SALT,
+    ARACHNID_CREATE2_FACTORY_ADDRESS, PERMIT2_ADDRESS, PERMIT2_SALT, TopOfBlockRegistry,
     contracts::ARACHNID_CREATE2_FACTORY_BYTECODE,
 };
 use tempo_precompiles::storage::{StorageActions, StorageCtx};
@@ -92,6 +93,62 @@ pub fn deploy_permit2(evm: &mut GenesisEvm) -> eyre::Result<()> {
 
     println!("Permit2 deployed successfully at {PERMIT2_ADDRESS}");
     Ok(())
+}
+
+/// Salt for deploying the top-of-block registry through the Arachnid CREATE2 factory.
+pub const TOP_OF_BLOCK_REGISTRY_SALT: B256 = B256::ZERO;
+
+/// Deploys a [`TopOfBlockRegistry`] owned by `owner` through the Arachnid CREATE2 factory and
+/// registers `operators` as the owner. Returns the registry address.
+///
+/// The CREATE2 factory must already be deployed.
+pub fn deploy_top_of_block_registry(
+    evm: &mut GenesisEvm,
+    owner: Address,
+    window_ms: u64,
+    operators: &[TopOfBlockRegistry::Operator],
+) -> eyre::Result<Address> {
+    let init_code: Bytes = TopOfBlockRegistry::BYTECODE
+        .iter()
+        .copied()
+        .chain(
+            TopOfBlockRegistry::constructorCall {
+                initialOwner: owner,
+                windowMs_: window_ms,
+            }
+            .abi_encode(),
+        )
+        .collect();
+    let address =
+        ARACHNID_CREATE2_FACTORY_ADDRESS.create2_from_code(TOP_OF_BLOCK_REGISTRY_SALT, &init_code);
+    let calldata: Bytes = TOP_OF_BLOCK_REGISTRY_SALT
+        .iter()
+        .chain(init_code.iter())
+        .copied()
+        .collect();
+
+    let mut call = |caller, contract, data: Bytes| -> eyre::Result<()> {
+        let result = evm.transact_system_call(caller, contract, data)?;
+        if !result.result.is_success() {
+            eyre::bail!("top-of-block registry call failed: {result:?}");
+        }
+        evm.db_mut().commit(result.state);
+        Ok(())
+    };
+    call(Address::ZERO, ARACHNID_CREATE2_FACTORY_ADDRESS, calldata)?;
+    for operator in operators {
+        call(
+            owner,
+            address,
+            TopOfBlockRegistry::setOperatorCall {
+                operator: operator.clone(),
+            }
+            .abi_encode()
+            .into(),
+        )?;
+    }
+    println!("Deployed top-of-block registry at {address} owned by {owner}");
+    Ok(address)
 }
 
 /// Converts EVM account state into a genesis account, omitting empty storage.
