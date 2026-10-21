@@ -181,7 +181,8 @@ class ReportingTests(unittest.TestCase):
                 self.assertEqual(message["channel"] == "CHANNEL", destination == "CHANNEL")
                 self.assertIn(verdict, message["blocks"][0]["text"]["text"])
                 table = [[cell["text"] for cell in row] for row in message["blocks"][2]["rows"]]
-                self.assertEqual(table[1][:3], ["Withdrawal: submit → L1 funds", "100 | 100", f"{end_to_end_ms:.0f} | {end_to_end_ms:.0f}"])
+                self.assertEqual(table[0], ["Latency (ms)", "base(p50)", "feat(p50)", "change", "base(p95)", "feat(p95)", "change"])
+                self.assertEqual(table[1][:3], ["Withdrawal: submit → L1 funds", "100", f"{end_to_end_ms:.0f}"])
         result = run_with_results("Send Slack notification (success)", {}, env=env)
         self.assertEqual((result["calls"], result["warnings"]),
                          ([], ["Could not read comparison.json for Zones Slack notification"]))
