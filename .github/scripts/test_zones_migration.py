@@ -55,6 +55,42 @@ class SnapshotCacheTests(unittest.TestCase):
 
 
 class ProverPathTests(unittest.TestCase):
+    def test_prover_publisher_keeps_merge_queue_and_manual_dispatch_without_pushes(self):
+        workflow = yaml.safe_load((ROOT / '.github/workflows/zones-prover-e2e.yml').read_text())
+        self.assertEqual(set(workflow['on']), {'workflow_dispatch', 'merge_group'})
+        script = next(step['with']['script'] for step in workflow['jobs']['dispatch']['steps']
+                      if step.get('id') == 'candidate')
+        harness = r"""
+const script = JSON.parse(process.env.CANDIDATE_SCRIPT);
+const eventName = process.env.TEST_EVENT;
+const sha = 'a'.repeat(40), base = 'b'.repeat(40);
+const outputs = {}, statuses = [];
+const context = {eventName, payload: {merge_group: {head_sha: sha, base_sha: base}},
+  repo: {owner: 'tempoxyz', repo: 'tempo'}, runId: 123, serverUrl: 'https://github.com'};
+const github = {rest: {repos: {
+  getCommit: async () => ({data: {sha}}),
+  createCommitStatus: async value => statuses.push(value),
+}}};
+try {
+  await new (Object.getPrototypeOf(async function(){}).constructor)('context', 'github', 'core', script)(
+    context, github, {setOutput: (key, value) => {outputs[key] = value}});
+  console.log(JSON.stringify({outputs, statuses}));
+} catch (error) { console.log(JSON.stringify({error: error.message, statuses})); }
+"""
+        for event, suite in [('merge_group', 'fast'), ('workflow_dispatch', 'full'), ('push', None)]:
+            with self.subTest(event=event):
+                result = json.loads(subprocess.check_output(
+                    ['node', '--input-type=module', '-e', harness], text=True,
+                    env=dict(os.environ, CANDIDATE_SCRIPT=json.dumps(script), TEST_EVENT=event,
+                             INPUT_SHA='a' * 40, INPUT_SUITE='full', GITHUB_RUN_ATTEMPT='1')))
+                if suite is None:
+                    self.assertEqual(result['error'], 'Unsupported trigger')
+                    self.assertEqual(result['statuses'], [])
+                else:
+                    self.assertEqual(result['outputs']['suite'], suite)
+                    self.assertEqual(result['outputs']['sha'], 'a' * 40)
+                    self.assertEqual(len(result['statuses']), 1)
+
     def test_shared_runtime_and_packaging_changes_dispatch_e2e(self):
         workflow = yaml.safe_load((ROOT / '.github/workflows/zones-prover-e2e.yml').read_text())
         step = next(step for step in workflow['jobs']['dispatch']['steps']

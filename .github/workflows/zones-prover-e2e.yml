@@ -13,14 +13,12 @@ name: Prover E2E
         options: [fast, full]
         default: fast
   merge_group:
-  push:
-    branches: [main]
 
 permissions:
   contents: read
 
 # Merge/deploy the sensor and pinned workflow templates before this publisher.
-# Every main push gets its own full run; newer commits do not cancel ancestry.
+# Full ancestry runs are scheduled nightly in dev-eu; manual dispatch can select either suite.
 jobs:
   dispatch:
     if: github.repository == 'tempoxyz/tempo'
@@ -43,15 +41,14 @@ jobs:
         with:
           script: |
             const event = context.eventName;
-            if (!['workflow_dispatch', 'merge_group', 'push'].includes(event)) throw new Error('Unsupported trigger');
-            if (event === 'push' && context.ref !== 'refs/heads/main') throw new Error('Full suite requires a main push');
+            if (!['workflow_dispatch', 'merge_group'].includes(event)) throw new Error('Unsupported trigger');
             const sha = event === 'workflow_dispatch' ? process.env.INPUT_SHA
-              : event === 'merge_group' ? context.payload.merge_group.head_sha : context.sha;
+              : context.payload.merge_group.head_sha;
             const base = event === 'merge_group' ? context.payload.merge_group.base_sha : '';
             if (!/^[0-9a-f]{40}$/.test(sha) || (event === 'merge_group' && !/^[0-9a-f]{40}$/.test(base))) {
               throw new Error('Exact lowercase commit SHAs are required');
             }
-            const suite = event === 'push' ? 'full' : event === 'merge_group' ? 'fast' : (process.env.INPUT_SUITE || 'fast');
+            const suite = event === 'merge_group' ? 'fast' : (process.env.INPUT_SUITE || 'fast');
             if (!['fast', 'full'].includes(suite)) throw new Error('Unknown suite');
             const {data: commit} = await github.rest.repos.getCommit({...context.repo, ref: sha});
             if (commit.sha !== sha) throw new Error('Candidate SHA mismatch');
