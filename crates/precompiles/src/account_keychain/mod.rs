@@ -272,14 +272,13 @@ impl AccountKeychain {
         if key_id.is_zero() {
             return Err(AccountKeychainError::zero_public_key().into());
         }
+        let is_delegate_grant =
+            signature_type == SignatureType::ConfigurableAccount && self.storage.spec().is_t14();
         // Admin keys are explicit access-key rows; the root key remains implicit.
-        if is_admin && key_id == msg_sender {
+        if (is_admin || is_delegate_grant) && key_id == msg_sender {
             return Err(AccountKeychainError::invalid_key_id().into());
         }
-        if signature_type == SignatureType::ConfigurableAccount && self.storage.spec().is_t14() {
-            if key_id == msg_sender {
-                return Err(AccountKeychainError::invalid_key_id().into());
-            }
+        if is_delegate_grant {
             // Naming a delegate does not register it or require a configuration witness.
             if self
                 .storage
@@ -1195,7 +1194,6 @@ impl AccountKeychain {
     /// - Key doesn't exist (expiry == 0)
     /// - Key has been revoked
     /// - Key has expired at or before `current_timestamp`
-    /// - Key is a ConfigurableAccount key before T14
     fn load_active_key(
         &self,
         account: Address,
@@ -1216,8 +1214,6 @@ impl AccountKeychain {
             return Err(AccountKeychainError::key_expired().into());
         }
 
-        self.ensure_signature_type_active(key.signature_type)?;
-
         Ok(key)
     }
 
@@ -1235,7 +1231,6 @@ impl AccountKeychain {
     /// - `KeyAlreadyRevoked` — the key has been permanently revoked
     /// - `KeyNotFound` — no key is registered under the given `key_id`
     /// - `KeyExpired` — `current_timestamp` is at or past the key's expiry
-    /// - `InvalidSignatureType` — the key is a ConfigurableAccount key before T14
     /// - `SignatureTypeMismatch` — the key's stored type differs from `expected_sig_type`
     pub fn validate_keychain_authorization(
         &self,
