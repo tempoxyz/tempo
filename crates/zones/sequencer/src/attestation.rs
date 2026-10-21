@@ -1,10 +1,9 @@
-//! EIP-712 replication ACKs and settlement attestations.
+//! EIP-712 settlement attestations verified by `ZonePortal.submitBatch`.
 
-use alloy_primitives::{Address, B256, Bytes, Signature};
+use alloy_primitives::{Address, B256};
 use alloy_signer::SignerSync as _;
 use alloy_signer_local::PrivateKeySigner;
-use alloy_sol_types::{Eip712Domain, SolStruct as _, SolValue as _, eip712_domain, sol};
-use eyre::WrapErr as _;
+use alloy_sol_types::{Eip712Domain, SolStruct as _, eip712_domain, sol};
 
 sol! {
     /// Exact settlement statement verified by ZonePortal.
@@ -25,7 +24,7 @@ sol! {
         bytes32 verifierConfigHash;
     }
 
-    /// Settlement signature returned to the leader for quorum collection.
+    /// Settlement statement with the submitting sequencer's signature.
     #[derive(Debug, PartialEq, Eq)]
     struct SignedSettlementAttestation {
         SettlementAttestation attestation;
@@ -52,27 +51,16 @@ mod legacy {
             bytes32 withdrawalQueueHash;
             bytes32 verifierConfigHash;
         }
-
-        /// Signed settlement statement used by the pre-T13 portal ABI.
-        #[derive(Debug, PartialEq, Eq)]
-        struct SignedSettlementAttestation {
-            SettlementAttestation attestation;
-            bytes signature;
-        }
     }
 }
 
-use legacy::{
-    SettlementAttestation as LegacySettlementAttestation,
-    SignedSettlementAttestation as LegacySignedSettlementAttestation,
-};
+use legacy::SettlementAttestation as LegacySettlementAttestation;
 
 /// Immutable values that domain-separate one zone's attestations.
 #[derive(Debug, Clone, Copy)]
-pub struct AttestationDomain {
-    pub l1_chain_id: u64,
-    pub portal_address: Address,
-    pub zone_id: u32,
+pub(crate) struct AttestationDomain {
+    pub(crate) l1_chain_id: u64,
+    pub(crate) portal_address: Address,
 }
 
 impl AttestationDomain {
@@ -85,7 +73,7 @@ impl AttestationDomain {
         }
     }
 
-    pub fn settlement_digest(self, attestation: &SettlementAttestation) -> B256 {
+    pub(crate) fn settlement_digest(self, attestation: &SettlementAttestation) -> B256 {
         if attestation.is_legacy() {
             attestation.as_legacy().eip712_signing_hash(&self.eip712())
         } else {
@@ -116,42 +104,10 @@ impl SettlementAttestation {
             verifierConfigHash: self.verifierConfigHash,
         }
     }
-
-    fn from_legacy(attestation: LegacySettlementAttestation) -> Self {
-        Self {
-            zoneId: attestation.zoneId,
-            sequencerSetVersion: attestation.sequencerSetVersion,
-            zoneHeight: attestation.zoneHeight,
-            withdrawalBatchIndex: attestation.withdrawalBatchIndex,
-            verifier: attestation.verifier,
-            tempoBlockNumber: attestation.tempoBlockNumber,
-            anchorBlockNumber: attestation.anchorBlockNumber,
-            anchorBlockHash: attestation.anchorBlockHash,
-            blockTransitionHash: attestation.blockTransitionHash,
-            depositQueueTransitionHash: attestation.depositQueueTransitionHash,
-            tokenEnablementTransitionHash: B256::ZERO,
-            withdrawalQueueHash: attestation.withdrawalQueueHash,
-            verifierConfigHash: attestation.verifierConfigHash,
-        }
-    }
-
-    pub fn encode(&self) -> Vec<u8> {
-        if self.is_legacy() {
-            self.as_legacy().abi_encode()
-        } else {
-            self.abi_encode()
-        }
-    }
-
-    pub fn decode(encoded: &[u8]) -> eyre::Result<Self> {
-        Self::abi_decode(encoded)
-            .or_else(|_| LegacySettlementAttestation::abi_decode(encoded).map(Self::from_legacy))
-            .wrap_err("invalid settlement proposal encoding")
-    }
 }
 
 impl SignedSettlementAttestation {
-    pub fn sign(
+    pub(crate) fn sign(
         attestation: SettlementAttestation,
         domain: AttestationDomain,
         signer: &PrivateKeySigner,
@@ -162,54 +118,13 @@ impl SignedSettlementAttestation {
             signature: signature.as_bytes().into(),
         })
     }
-
-    pub fn encode(&self) -> Vec<u8> {
-        if self.attestation.is_legacy() {
-            LegacySignedSettlementAttestation {
-                attestation: self.attestation.as_legacy(),
-                signature: self.signature.clone(),
-            }
-            .abi_encode()
-        } else {
-            self.abi_encode()
-        }
-    }
-
-    pub fn decode(encoded: &[u8]) -> eyre::Result<Self> {
-        Self::abi_decode(encoded)
-            .or_else(|_| {
-                LegacySignedSettlementAttestation::abi_decode(encoded).map(|signed| Self {
-                    attestation: SettlementAttestation::from_legacy(signed.attestation),
-                    signature: signed.signature,
-                })
-            })
-            .wrap_err("invalid settlement signature encoding")
-    }
-
-    pub fn recover_signer(&self, domain: AttestationDomain) -> eyre::Result<Address> {
-        let signature = Signature::try_from(self.signature.as_ref())
-            .wrap_err("invalid settlement signature")?;
-        alloy_consensus::crypto::secp256k1::recover_signer(
-            &signature,
-            domain.settlement_digest(&self.attestation),
-        )
-        .wrap_err("failed recovering settlement signer")
-    }
-}
-
-/// A settlement statement and its distinct signer signatures.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SettlementCertificate {
-    pub height: u64,
-    pub digest: B256,
-    pub attestation: SettlementAttestation,
-    pub signatures: Vec<Bytes>,
 }
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::{Address, B256, U256, keccak256, uint};
+    use alloy_primitives::{Address, B256, Signature, U256, keccak256};
     use alloy_signer_local::PrivateKeySigner;
+    use alloy_sol_types::SolValue as _;
 
     use super::*;
 
@@ -217,7 +132,6 @@ mod tests {
         AttestationDomain {
             l1_chain_id: 1337,
             portal_address: Address::repeat_byte(0x11),
-            zone_id: 7,
         }
     }
 
@@ -284,9 +198,7 @@ mod tests {
 
         let signer = PrivateKeySigner::random();
         let signed = SignedSettlementAttestation::sign(attestation, domain, &signer).unwrap();
-        let decoded = SignedSettlementAttestation::decode(&signed.encode()).unwrap();
-        assert_eq!(decoded, signed);
-        assert_eq!(decoded.recover_signer(domain).unwrap(), signer.address());
+        assert_eq!(recover(&signed, domain), signer.address());
     }
 
     #[test]
@@ -313,11 +225,6 @@ mod tests {
             verifierConfigHash: B256::repeat_byte(7),
         };
         let legacy = attestation.as_legacy();
-        assert_eq!(attestation.encode(), legacy.abi_encode());
-        assert_eq!(
-            SettlementAttestation::decode(&legacy.abi_encode()).unwrap(),
-            attestation
-        );
         assert_eq!(
             domain().settlement_digest(&attestation),
             legacy.eip712_signing_hash(&domain().eip712())
@@ -325,49 +232,15 @@ mod tests {
 
         let signer = PrivateKeySigner::random();
         let signed = SignedSettlementAttestation::sign(attestation, domain(), &signer).unwrap();
-        let legacy_signed = LegacySignedSettlementAttestation {
-            attestation: legacy,
-            signature: signed.signature.clone(),
-        };
-        assert_eq!(signed.encode(), legacy_signed.abi_encode());
-        assert_eq!(
-            SignedSettlementAttestation::decode(&legacy_signed.abi_encode()).unwrap(),
-            signed
-        );
-        assert_eq!(signed.recover_signer(domain()).unwrap(), signer.address());
+        assert_eq!(recover(&signed, domain()), signer.address());
     }
 
-    #[test]
-    fn rejects_high_s_settlement_signature() {
-        const SECP256K1_ORDER: U256 =
-            uint!(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141_U256);
-
-        let signer = PrivateKeySigner::random();
-        let domain = domain();
-        let attestation = SettlementAttestation {
-            zoneId: 7,
-            sequencerSetVersion: 3,
-            zoneHeight: U256::from(10),
-            withdrawalBatchIndex: U256::ONE,
-            verifier: Address::repeat_byte(2),
-            tempoBlockNumber: 100,
-            anchorBlockNumber: 100,
-            anchorBlockHash: B256::repeat_byte(3),
-            blockTransitionHash: B256::repeat_byte(4),
-            depositQueueTransitionHash: B256::repeat_byte(5),
-            tokenEnablementTransitionHash: B256::repeat_byte(8),
-            withdrawalQueueHash: B256::repeat_byte(6),
-            verifierConfigHash: B256::repeat_byte(7),
-        };
-        let mut signed = SignedSettlementAttestation::sign(attestation, domain, &signer).unwrap();
+    fn recover(signed: &SignedSettlementAttestation, domain: AttestationDomain) -> Address {
         let signature = Signature::try_from(signed.signature.as_ref()).unwrap();
-        let high_s_signature = Signature::new(
-            signature.r(),
-            SECP256K1_ORDER - signature.s(),
-            !signature.v(),
-        );
-        signed.signature = high_s_signature.as_bytes().into();
-
-        assert!(signed.recover_signer(domain).is_err());
+        alloy_consensus::crypto::secp256k1::recover_signer(
+            &signature,
+            domain.settlement_digest(&signed.attestation),
+        )
+        .unwrap()
     }
 }

@@ -1,10 +1,7 @@
 use std::{net::SocketAddr, num::NonZeroUsize, time::Duration};
 
 use alloy_primitives::Address as EthereumAddress;
-use commonware_cryptography::{
-    Signer as _,
-    ed25519::{PrivateKey, PublicKey},
-};
+use commonware_cryptography::ed25519::{PrivateKey, PublicKey};
 use commonware_p2p::{AddressableTrackedPeers, authenticated::lookup};
 use commonware_runtime::{Quota, Supervisor as _};
 use commonware_utils::{NZU32, NZUsize, ordered::Map};
@@ -12,18 +9,6 @@ use eyre::WrapErr as _;
 
 use crate::ZoneManifest;
 
-/// Leader-to-follower sealed block replication channel.
-pub(crate) const BLOCK_CHANNEL: u64 = 0;
-/// Catch-up range requests sent by a lagging node to eligible peers.
-pub(crate) const BACKFILL_REQUEST_CHANNEL: u64 = 1;
-/// Ordered block and completion frames returned for a catch-up request.
-pub(crate) const BACKFILL_RESPONSE_CHANNEL: u64 = 2;
-/// Raw transaction propagation channel into the sequencer quorum.
-pub(crate) const TRANSACTION_CHANNEL: u64 = 3;
-/// Leader-to-follower proposed settlement statement channel.
-pub(crate) const SETTLEMENT_PROPOSAL_CHANNEL: u64 = 4;
-/// Follower-to-leader settlement signature channel.
-pub(crate) const SETTLEMENT_SIGNATURE_CHANNEL: u64 = 5;
 /// Commonware derives receive capacity from this burst size and the retained peer count.
 /// Forwarded transactions are retried from the sender's pool, so a small per-peer burst bounds
 /// memory before the transaction-specific wire limit can run without sacrificing eventual relay.
@@ -65,7 +50,7 @@ pub(crate) type Oracle = lookup::Oracle<PublicKey>;
 /// Builds the synchronized Commonware configuration for the Zone's small, trusted peer set.
 ///
 /// Start from Commonware's production defaults and override only the settings required by the
-/// Zone's controlled 3-5 sequencer topology.
+/// Zone's controlled 4-8 sequencer topology.
 fn setup_commonware_config(
     ed25519_private_key: PrivateKey,
     namespace: &[u8],
@@ -94,7 +79,7 @@ fn setup_commonware_config(
     config.handshake_timeout = Duration::from_secs(5);
     // Trusted peers retry quickly instead of waiting Commonware's 60-second public default.
     config.peer_connection_cooldown = Duration::from_secs(1);
-    // At most four legitimate remote peers are expected, so 32 leaves generous rollout headroom.
+    // At most seven legitimate remote peers are expected, so 32 leaves generous rollout headroom.
     config.max_concurrent_handshakes = NZU32!(32);
     // Eight attempts per second permits fast restarts while limiting a single source IP.
     config.allowed_handshake_rate_per_ip = Quota::per_second(NZU32!(8));
@@ -102,7 +87,7 @@ fn setup_commonware_config(
     config.allowed_handshake_rate_per_subnet = Quota::per_second(NZU32!(32));
     // Ten-second pings detect idle broken connections with negligible overhead.
     config.ping_frequency = Duration::from_secs(10);
-    // One dial per 250 ms reconnects a small primary-peer set in about one second per node.
+    // One dial per 250 ms reconnects a small peer set in about one second per node.
     config.dial_frequency = Duration::from_millis(250);
 
     config
@@ -118,11 +103,10 @@ pub(crate) fn instantiate(
     network_id: P2pNetworkId,
 ) -> eyre::Result<(Network, Oracle, AddressableTrackedPeers<PublicKey>)> {
     let namespace = namespace(zone_id, network_id);
-    // Logged, not bound into the namespace: a mismatch between nodes stalls settlement loudly at
-    // the next batch boundary, and making it a handshake failure would turn every membership edit
+    // Logged, not bound into the namespace: a mismatch between nodes stalls consensus or
+    // settlement loudly, and making it a handshake failure would turn every membership edit
     // into a coordinated fleet restart. Compare this across nodes to diagnose one.
     tracing::info!(target: "zone::p2p", membership_digest = %manifest.membership_digest(), "Zone P2P membership");
-    let local_ed25519_public_key = ed25519_private_key.public_key();
     let max_peers = NonZeroUsize::new(manifest.nodes().len())
         .ok_or_else(|| eyre::eyre!("P2P manifest must contain at least one node"))?;
     let config = setup_commonware_config(
@@ -132,47 +116,30 @@ pub(crate) fn instantiate(
         max_peers,
         bypass_ip_check,
     );
-    let peers = peer_sets(manifest, &local_ed25519_public_key)?;
+    let peers = peer_set(manifest)?;
     let (network, oracle) = lookup::Network::new(context.child("network"), config);
     Ok((network, oracle, peers))
 }
 
-fn peer_sets(
-    manifest: &ZoneManifest,
-    local_ed25519_public_key: &PublicKey,
-) -> eyre::Result<AddressableTrackedPeers<PublicKey>> {
-    let (primary, secondary): (Vec<_>, Vec<_>) = manifest
-        .nodes()
-        .iter()
-        .map(|node| {
-            (
-                node.is_rpc_only(),
-                node.ed25519_public_key().clone(),
-                node.address().to_commonware(),
-            )
-        })
-        // RPC-only nodes initiate their own replication connections. Quorum members retain the
-        // RPC-only members as secondary peers so their inbound connection is authenticated, but
-        // they never create reverse P2P dials into the public RPC environment.
-        .partition(|(rpc_only, public_key, _)| !rpc_only || public_key == local_ed25519_public_key);
+/// Every participant dials every other participant; there are no secondary peers.
+fn peer_set(manifest: &ZoneManifest) -> eyre::Result<AddressableTrackedPeers<PublicKey>> {
     let primary = Map::try_from(
-        primary
-            .into_iter()
-            .map(|(_, public_key, address)| (public_key, address))
+        manifest
+            .nodes()
+            .iter()
+            .map(|node| {
+                (
+                    node.ed25519_public_key().clone(),
+                    node.address().to_commonware(),
+                )
+            })
             .collect::<Vec<_>>(),
     )
-    .wrap_err("manifest contains duplicate primary P2P identities")?;
-    let secondary = Map::try_from(
-        secondary
-            .into_iter()
-            .map(|(_, public_key, address)| (public_key, address))
-            .collect::<Vec<_>>(),
-    )
-    .wrap_err("manifest contains duplicate secondary P2P identities")?;
-    Ok(AddressableTrackedPeers::new(primary, secondary))
+    .wrap_err("manifest contains duplicate P2P identities")?;
+    Ok(AddressableTrackedPeers::new(primary, Map::default()))
 }
 
-fn namespace(zone_id: u32, network_id: P2pNetworkId) -> Vec<u8> {
+pub(crate) fn namespace(zone_id: u32, network_id: P2pNetworkId) -> Vec<u8> {
     // The protocol version and immutable L1 deployment identity keep keys or endpoints
     // accidentally reused across local, test, and production environments from authenticating
     // into one another's network.
@@ -187,62 +154,19 @@ fn namespace(zone_id: u32, network_id: P2pNetworkId) -> Vec<u8> {
     namespace
 }
 
-pub(crate) fn block_quota() -> Quota {
-    Quota::per_second(NZU32!(128))
-}
-
-pub(crate) fn backfill_request_quota() -> Quota {
-    Quota::per_second(NZU32!(1))
-}
-
-pub(crate) fn backfill_response_quota() -> Quota {
-    Quota::per_second(NZU32!(128))
-}
-
 pub(crate) fn transaction_quota() -> Quota {
     Quota::per_second(NZU32!(1024)).allow_burst(NZU32!(TRANSACTION_BURST))
-}
-
-/// ACKs are small fixed-shape EIP-712 statements plus one secp256k1 signature.
-pub(crate) fn settlement_quota() -> Quota {
-    Quota::per_second(NZU32!(8))
 }
 
 #[cfg(test)]
 mod tests {
 
     use alloy_primitives::Address;
-    use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
 
     use super::{
         MAX_MESSAGE_SIZE, MAX_TRANSACTION_MESSAGE_SIZE, NETWORK_NAMESPACE_PREFIX, P2pNetworkId,
-        TRANSACTION_BURST, WIRE_PROTOCOL_VERSION, namespace, peer_sets, transaction_quota,
+        TRANSACTION_BURST, WIRE_PROTOCOL_VERSION, namespace, transaction_quota,
     };
-    use crate::ZoneManifest;
-
-    fn ed25519_public_key(seed: u64) -> String {
-        let key = PrivateKey::from_seed(seed).public_key();
-        const_hex::encode_prefixed(key.as_ref())
-    }
-
-    fn manifest_with_rpc_follower() -> ZoneManifest {
-        let mut manifest = format!(
-            "leader_ed25519_public_key = \"{}\"\n",
-            ed25519_public_key(1)
-        );
-        for seed in 1..=3 {
-            manifest.push_str(&format!(
-                "\n[[nodes]]\nname = \"seq-{seed}\"\ned25519_public_key = \"{}\"\nsecp256k1_address = \"0x{seed:040x}\"\naddress = \"127.0.0.1:{}\"\n",
-                ed25519_public_key(seed),
-                9200 + seed,
-            ));
-        }
-        manifest.push_str(&format!(
-            "\n[[nodes]]\nname = \"rpc\"\ned25519_public_key = \"{}\"\naddress = \"rpc.example:19200\"\nrpc_only = true\n",
-            ed25519_public_key(4),
-        ));
-        ZoneManifest::parse(&manifest).unwrap()
-    }
 
     #[test]
     fn transaction_channel_bounds_pre_validation_memory() {
@@ -277,22 +201,5 @@ mod tests {
             namespace[NETWORK_NAMESPACE_PREFIX.len()],
             WIRE_PROTOCOL_VERSION
         );
-    }
-
-    #[test]
-    fn rpc_follower_dials_quorum_but_quorum_does_not_dial_rpc_follower() {
-        let manifest = manifest_with_rpc_follower();
-        let quorum_member = PrivateKey::from_seed(1).public_key();
-        let rpc_follower = PrivateKey::from_seed(4).public_key();
-
-        let quorum_peers = peer_sets(&manifest, &quorum_member).unwrap();
-        assert!(quorum_peers.primary.position(&quorum_member).is_some());
-        assert!(quorum_peers.primary.position(&rpc_follower).is_none());
-        assert!(quorum_peers.secondary.position(&rpc_follower).is_some());
-
-        let rpc_peers = peer_sets(&manifest, &rpc_follower).unwrap();
-        assert!(rpc_peers.primary.position(&quorum_member).is_some());
-        assert!(rpc_peers.primary.position(&rpc_follower).is_some());
-        assert!(rpc_peers.secondary.is_empty());
     }
 }

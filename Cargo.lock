@@ -16998,6 +16998,48 @@ dependencies = [
 ]
 
 [[package]]
+name = "zone-consensus"
+version = "0.3.5"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-primitives",
+ "alloy-rlp",
+ "alloy-rpc-types-engine",
+ "alloy-sol-types",
+ "commonware-actor",
+ "commonware-broadcast",
+ "commonware-consensus",
+ "commonware-cryptography",
+ "commonware-parallel",
+ "commonware-runtime",
+ "commonware-utils",
+ "eyre",
+ "futures",
+ "rand_core 0.10.1",
+ "reth-chainspec",
+ "reth-node-api",
+ "reth-payload-builder",
+ "reth-payload-primitives",
+ "reth-primitives-traits",
+ "reth-provider",
+ "reth-storage-api",
+ "tempo-chainspec",
+ "tempo-consensus",
+ "tempo-payload-types",
+ "tempo-precompiles",
+ "tempo-primitives",
+ "tokio",
+ "tracing",
+ "zone-chainspec",
+ "zone-l1",
+ "zone-p2p",
+ "zone-payload",
+ "zone-primitives",
+ "zone-sequencer",
+]
+
+[[package]]
 name = "zone-evm"
 version = "0.3.5"
 dependencies = [
@@ -17077,7 +17119,6 @@ name = "zone-node"
 version = "0.3.5"
 dependencies = [
  "alloy",
- "alloy-chains",
  "alloy-consensus",
  "alloy-contract",
  "alloy-eips",
@@ -17093,7 +17134,6 @@ dependencies = [
  "alloy-signer",
  "alloy-signer-local",
  "alloy-sol-types",
- "alloy-transport",
  "base64 0.22.1",
  "clap",
  "commonware-codec",
@@ -17104,12 +17144,11 @@ dependencies = [
  "jsonrpsee",
  "k256",
  "metrics",
- "minicbor",
- "minicbor-serde",
  "p256 0.13.2",
  "reqwest 0.13.5",
  "reth-chain-state",
  "reth-chainspec",
+ "reth-db",
  "reth-eth-wire-types",
  "reth-ethereum",
  "reth-evm",
@@ -17156,6 +17195,7 @@ dependencies = [
  "zeroize",
  "zone-chainspec",
  "zone-checker",
+ "zone-consensus",
  "zone-evm",
  "zone-l1",
  "zone-node",
@@ -17175,17 +17215,14 @@ version = "0.3.5"
 dependencies = [
  "alloy-primitives",
  "alloy-signer-local",
- "commonware-actor",
  "commonware-codec",
  "commonware-cryptography",
  "commonware-p2p",
  "commonware-runtime",
  "commonware-utils",
  "const-hex",
- "derive_more",
  "eyre",
  "metrics",
- "parking_lot",
  "serde",
  "thiserror 2.0.21",
  "tokio",
@@ -17389,7 +17426,6 @@ dependencies = [
  "tracing",
  "zone-chainspec",
  "zone-l1",
- "zone-p2p",
  "zone-primitives",
  "zone-prover",
  "zone-rpc",

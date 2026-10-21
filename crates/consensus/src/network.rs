@@ -26,7 +26,7 @@ use tracing::warn;
 
 /// A p2p sender that rejects messages larger than the configured network limit.
 #[derive(Clone)]
-pub(crate) struct SizeLimited<S> {
+pub struct SizeLimited<S> {
     inner: S,
     channel: Channel,
     max_size: usize,
@@ -45,7 +45,7 @@ impl<S> SizeLimited<S> {
 }
 
 /// Apply the outbound size limit to a registered p2p channel.
-pub(crate) fn limit_channel<S, R>(
+pub fn limit_channel<S, R>(
     context: &impl Metrics,
     (sender, receiver): (S, R),
     channel: Channel,
@@ -85,7 +85,7 @@ fn within_limit(
     Some(message)
 }
 
-pub(crate) struct SizeLimitedChecked<S> {
+pub struct SizeLimitedChecked<S> {
     inner: S,
     channel: Channel,
     max_size: usize,

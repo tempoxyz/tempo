@@ -90,7 +90,7 @@ development chain IDs 1337/31337 retain their existing parent-schedule inheritan
 
 Zone nodes derive their L1 ZonePortal address from the zone ID encoded in the
 genesis chain ID, using Tempo's deterministic ZoneFactory address scheme. The
-sequencer, RPC follower, checker, and CLI EVM use this derived address; the node
+sequencer, checker, and CLI EVM use this derived address; the node
 no longer accepts `--l1.portal-address`, and ignores `L1_PORTAL_ADDRESS`.
 Portals deployed from an EOA instead of ZoneFactory cannot be used.
 

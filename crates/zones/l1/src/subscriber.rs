@@ -138,16 +138,16 @@ const RECENT_PORTAL_EVIDENCE_BLOCKS: u64 = 256;
 /// L1 blocks whose headers and receipts have been independently validated and
 /// whose derived state has been applied to the local caches.
 ///
-/// Followers use this to gate zone-block import on the exact L1 anchor embedded in
+/// Simplex verification uses this to gate a proposal on the exact L1 anchor embedded in
 /// `advanceTempo`. The tracker also provides backpressure for the L1 subscriber: before fetching
 /// a block, the subscriber waits for capacity relative to the last checkpoint released by the
 /// Zone consumer. Queue-backed subscribers therefore retain observations until block production
-/// or follower import calls [`L1BlockTracker::prune_through`].
+/// or finalization calls [`L1BlockTracker::prune_through`].
 ///
-/// The tracker also holds the finalized Portal pause state that gates leader block production.
-/// While paused the leader consumes nothing, so its ingestion stops at the lookahead bound; the
+/// The tracker also holds the finalized Portal pause state that gates block production. While
+/// paused a proposer consumes nothing, so its ingestion stops at the lookahead bound; the
 /// finalized Portal state poller, not this pipeline, then observes `resume()` or expiry.
-/// Followers ignore the pause and import whatever the leader produces.
+/// Verifiers ignore the pause and accept whatever the leader proposes.
 ///
 /// This tracker deliberately assumes observed L1 blocks do not reorg: conflicting or
 /// non-contiguous observations are errors.
@@ -572,17 +572,6 @@ fn portal_event_cache_invalidation_address(topic0: Option<&B256>) -> Option<Addr
     (topic0 == Some(&TokenEnabled::SIGNATURE_HASH)).then_some(TIP403_REGISTRY_ADDRESS)
 }
 
-/// Sink for leadership transitions decoded from verified finalized receipts.
-///
-/// Implemented by the node over its `LeadershipSchedule`. The subscriber applies every
-/// transition **before** enqueueing the block that recorded it — enqueueing notifies the
-/// engine internally, so append-after-enqueue could race a producer waking on that notify.
-/// An error makes ingestion of the finalized L1 block fail.
-pub trait LeadershipSink: Send + Sync + std::fmt::Debug {
-    /// Apply one decoded leadership transition.
-    fn apply_leader_transition(&self, transition: &crate::LeaderTransition) -> eyre::Result<()>;
-}
-
 /// Configuration for the L1 subscriber.
 #[derive(Debug, Clone)]
 pub struct L1SubscriberConfig {
@@ -600,6 +589,10 @@ pub struct L1SubscriberConfig {
     /// First L1 block whose portal work was crossed by canonical checkpoint-only Zone blocks.
     /// Startup reconstructs this suffix before following new finalized blocks.
     pub deferred_work_start: Option<u64>,
+    /// Zone block whose post-state holds the ingestion checkpoint. `None` uses the canonical
+    /// head; Simplex nodes resume from their finalized block because an unfinalized canonical
+    /// head may still be replaced.
+    pub checkpoint_zone_block: Option<u64>,
 }
 
 /// L1 chain subscriber that listens for new blocks and extracts deposit events.
@@ -613,10 +606,8 @@ pub struct L1Subscriber<P> {
     pub(crate) enabled_tokens: EnabledTokenRegistry,
     /// Shared L1 state cache updated after each finalized block.
     pub(crate) l1_state_cache: L1StateCache,
-    /// Validated and applied L1 anchors shared with follower block import.
+    /// Validated and applied L1 anchors shared with block verification.
     pub(crate) block_tracker: L1BlockTracker,
-    /// Optional sink for leadership transitions.
-    pub(crate) leadership_sink: Option<Arc<dyn LeadershipSink>>,
     /// Optional observational channel for finalized accepted batch submissions.
     pub(crate) finalized_batch_submissions:
         Option<tokio::sync::mpsc::Sender<FinalizedBatchSubmission>>,
@@ -670,7 +661,6 @@ where
         enabled_tokens: EnabledTokenRegistry,
         l1_state_cache: L1StateCache,
         block_tracker: L1BlockTracker,
-        leadership_sink: Option<Arc<dyn LeadershipSink>>,
         finalized_batch_submissions: Option<tokio::sync::mpsc::Sender<FinalizedBatchSubmission>>,
         encryption_keys: Option<EncryptionKeyRing>,
     ) -> Self {
@@ -681,7 +671,6 @@ where
             enabled_tokens,
             l1_state_cache,
             block_tracker,
-            leadership_sink,
             finalized_batch_submissions,
             encryption_keys,
             subscriber_metrics: Default::default(),
@@ -752,7 +741,7 @@ where
     /// where ingestion resumes. A non-zero hash distinguishes an L1-anchored
     /// block-zero genesis from the unanchored template.
     pub(crate) fn resolve_start_block(&self) -> Result<u64, L1SubscriberError> {
-        let state = self.zone_provider.latest().map_err(eyre::Report::from)?;
+        let state = self.checkpoint_state()?;
         let local_checkpoint = state.tempo_num_hash().map_err(eyre::Report::from)?;
         if local_checkpoint.hash.is_zero() {
             return Err(eyre::eyre!("zone genesis is not anchored to an L1 block").into());
@@ -760,6 +749,15 @@ where
         let local_tempo_block_number = local_checkpoint.number;
         info!(local_tempo_block_number, "Resuming from local zone state");
         Ok(local_tempo_block_number + 1)
+    }
+
+    /// State of the Zone block that holds the ingestion checkpoint.
+    fn checkpoint_state(&self) -> Result<reth_storage_api::StateProviderBox, L1SubscriberError> {
+        let state = match self.config.checkpoint_zone_block {
+            Some(number) => self.zone_provider.history_by_block_number(number),
+            None => self.zone_provider.latest(),
+        };
+        Ok(state.map_err(eyre::Report::from)?)
     }
 
     /// Resolve the first L1 block that has not already been ingested.
@@ -901,29 +899,6 @@ where
             let anchor = sealed.num_hash();
             let portal_evidence =
                 portal_logs.map(|logs| (sealed.parent_hash(), sealed.timestamp_millis(), logs));
-            // Publish the leadership transition _before_ the activation block becomes
-            // consumable.
-            if let Some(sink) = &self.leadership_sink {
-                let transition =
-                    events
-                        .final_leader_transition()
-                        .map_err(L1SubscriberError::fatal_from_err(
-                            block_number,
-                            "leadership event validation",
-                        ))?;
-                if let Some(transition) = transition {
-                    sink.apply_leader_transition(transition)
-                        .wrap_err_with(|| {
-                            format!(
-                                "cannot apply the leadership transition from block {block_number}"
-                            )
-                        })
-                        .map_err(L1SubscriberError::fatal_from_err(
-                            block_number,
-                            "leadership transition application",
-                        ))?;
-                }
-            }
             if let Some(keys) = &self.encryption_keys {
                 for rotation in &events.encryption_key_rotations {
                     keys.apply_rotation(rotation)
@@ -1130,7 +1105,7 @@ where
         if self.deposit_queue.last_enqueued().is_some() {
             return Ok(());
         }
-        let state = self.zone_provider.latest().map_err(eyre::Report::from)?;
+        let state = self.checkpoint_state()?;
         let checkpoint = state.tempo_num_hash().map_err(eyre::Report::from)?;
         if from > checkpoint.number {
             return Ok(());
@@ -1244,11 +1219,6 @@ where
             self.subscriber_metrics
                 .token_enabled_events
                 .increment(portal_events.enabled_tokens.len() as u64);
-        }
-        if !portal_events.leader_transitions.is_empty() {
-            self.subscriber_metrics
-                .leader_updated_events
-                .increment(portal_events.leader_transitions.len() as u64);
         }
     }
 

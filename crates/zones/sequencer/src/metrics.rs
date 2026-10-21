@@ -184,6 +184,9 @@ pub(crate) struct ZoneMonitorMetrics {
     /// Retry attempts for batch submissions.
     pub batch_submit_retry_total: Counter,
 
+    /// Batches this node submitted in place of a Simplex settlement owner that did not.
+    pub batch_failover_total: Counter,
+
     /// Settlement attempts rebuilt because the live L1 prover hardfork changed.
     pub prover_hardfork_rebuild_total: Counter,
 

@@ -88,18 +88,16 @@ pub use deposit::{Deposit, L1Deposit, WithdrawalBounceBackDeposit};
 pub use encryption_keys::{
     BoundPublicKeyFingerprint, EncryptionKeyPublicStatus, EncryptionKeyRing, PublicKeyFingerprint,
 };
-pub use event::{
-    EnabledToken, EncryptionKeyRotation, L1PortalEvents, LeaderTransition, encryption_key_address,
-};
+pub use event::{EnabledToken, EncryptionKeyRotation, L1PortalEvents, encryption_key_address};
 pub use ext::{ChainTempoStateExt, TempoStateExt};
 pub use pause::{
     PORTAL_PAUSE_POLL_INTERVAL, initialize_portal_pause, refresh_portal_pause, watch_portal_pause,
 };
-pub use queue::DepositQueue;
+pub use queue::{DepositQueue, QueueSnapshot};
 pub use state::L1StateCache;
 pub use subscriber::{
     AuthenticatedPortalLogs, FinalizedBatchSubmission, FinalizedTarget, L1BlockTracker,
-    L1Subscriber, L1SubscriberConfig, L1SubscriberError, LeadershipSink, MAX_L1_LOOKAHEAD_BLOCKS,
+    L1Subscriber, L1SubscriberConfig, L1SubscriberError, MAX_L1_LOOKAHEAD_BLOCKS,
     extract_finalized_batch_submissions, verify_receipts_against_header,
 };
 

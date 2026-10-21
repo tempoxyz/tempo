@@ -21,13 +21,13 @@ tempo-transaction-pool.workspace = true
 tempo-alloy.workspace = true
 tempo-contracts = { workspace = true, features = ["std", "serde", "rpc"] }
 zone-chainspec.workspace = true
+zone-consensus.workspace = true
 zone-evm.workspace = true
 zone-l1.workspace = true
 zone-p2p.workspace = true
 zone-payload.workspace = true
 zone-precompiles = { workspace = true, features = ["std"] }
 zone-primitives = { workspace = true, features = ["serde", "std"] }
-zone-prover.workspace = true
 zone-rpc.workspace = true
 zone-sequencer.workspace = true
 zone-checker = { workspace = true, optional = true }
@@ -58,7 +58,6 @@ reth-transaction-pool.workspace = true
 reth-trie-common = { workspace = true, features = ["std"] }
 
 # alloy
-alloy-chains.workspace = true
 alloy-consensus.workspace = true
 alloy-eips.workspace = true
 alloy-genesis.workspace = true
@@ -71,11 +70,8 @@ alloy-rpc-types-engine.workspace = true
 alloy-rpc-types-eth.workspace = true
 alloy-signer-local.workspace = true
 alloy-sol-types.workspace = true
-alloy-transport.workspace = true
 
 # misc
-minicbor.workspace = true
-minicbor-serde.workspace = true
 clap = { workspace = true, optional = true }
 eyre.workspace = true
 tokio-util = { workspace = true, features = ["rt"] }
@@ -83,7 +79,6 @@ futures.workspace = true
 jsonrpsee.workspace = true
 k256.workspace = true
 metrics.workspace = true
-serde = { workspace = true, features = ["alloc"] }
 serde_json = { workspace = true, default-features = true }
 tokio.workspace = true
 tracing.workspace = true
@@ -108,6 +103,7 @@ commonware-codec.workspace = true
 commonware-cryptography = { workspace = true, default-features = true }
 p256 = { workspace = true, features = ["ecdsa"] }
 reth-ethereum = { workspace = true, features = ["node", "test-utils"] }
+reth-db = { workspace = true, features = ["test-utils"] }
 reth-tracing.workspace = true
 reth-trie-common = { workspace = true, features = ["std"] }
 reqwest = { workspace = true, features = ["json", "rustls"] }
@@ -120,6 +116,7 @@ tempo-revm.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 tokio-tungstenite.workspace = true
+zone-prover.workspace = true
 zone-spf.workspace = true
 url = "2"
 
@@ -159,6 +156,7 @@ keccak-cache-global = [
 ]
 test-utils = [
   "reth-chainspec/test-utils",
+  "reth-db/test-utils",
   "reth-ethereum?/test-utils",
   "reth-node-builder/test-utils",
   "reth-payload-builder/test-utils",

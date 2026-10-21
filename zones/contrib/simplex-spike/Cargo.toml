@@ -1,0 +1,25 @@
+[package]
+name = "zone-simplex-spike"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+commonware-consensus = "2026.9.0"
+commonware-cryptography = { version = "2026.9.0", default-features = false }
+commonware-codec = "2026.9.0"
+commonware-utils = "2026.9.0"
+commonware-runtime = { version = "2026.9.0" }
+commonware-p2p = "2026.9.0"
+commonware-broadcast = "2026.9.0"
+commonware-storage = "2026.9.0"
+commonware-parallel = "2026.9.0"
+commonware-actor = "2026.9.0"
+bytes = "1"
+rand_core = "0.10"
+futures = "0.3"
+
+[workspace]
+
+[dependencies.tokio]
+version = "1"
+features = ["sync"]

@@ -30,9 +30,6 @@ pub(crate) struct L1SubscriberMetrics {
     /// Number of `TokenEnabled` events observed on L1.
     pub token_enabled_events: Counter,
 
-    /// Number of `LeaderUpdated` events observed on L1.
-    pub leader_updated_events: Counter,
-
     /// Number of times L1 block was rejected because a  portal event failed to decode.
     pub decode_fence_failures: Counter,
 

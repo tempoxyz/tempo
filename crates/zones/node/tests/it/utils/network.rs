@@ -16,8 +16,6 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-const P2P_NODE_COUNT: usize = 3;
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct DirectionCondition {
     paused: bool,
@@ -59,118 +57,6 @@ pub(crate) struct TcpChaosProxy {
     listen_addr: SocketAddr,
     inner: Arc<ProxyInner>,
     accept_task: tokio::task::JoinHandle<()>,
-}
-
-#[derive(Debug)]
-struct DirectedP2pProxy {
-    from: usize,
-    to: usize,
-    proxy: TcpChaosProxy,
-}
-
-/// A controllable proxy for every directed link in a three-node P2P cluster.
-///
-/// Commonware peers can establish a connection in either direction. Giving each node a distinct
-/// proxied view of every remote address lets tests isolate a member without depending on which
-/// side happened to dial the live connection.
-#[derive(Debug)]
-pub(crate) struct P2pChaosNetwork {
-    links: Vec<DirectedP2pProxy>,
-}
-
-impl P2pChaosNetwork {
-    /// Start one proxy for each directed peer link.
-    ///
-    /// Returns the per-node manifest addresses. Row `from`, column `to` is the address node
-    /// `from` should use for node `to`; diagonal entries retain the node's real listen address.
-    pub(crate) async fn start(
-        node_addresses: [SocketAddr; P2P_NODE_COUNT],
-    ) -> eyre::Result<(Self, [[SocketAddr; P2P_NODE_COUNT]; P2P_NODE_COUNT])> {
-        let mut manifest_addresses = [node_addresses; P2P_NODE_COUNT];
-        let mut links = Vec::with_capacity(P2P_NODE_COUNT * (P2P_NODE_COUNT - 1));
-        for (from, manifest_row) in manifest_addresses.iter_mut().enumerate() {
-            for (to, (manifest_address, &node_address)) in
-                manifest_row.iter_mut().zip(&node_addresses).enumerate()
-            {
-                if from == to {
-                    continue;
-                }
-                let proxy = TcpChaosProxy::start(node_address).await?;
-                *manifest_address = proxy.listen_addr();
-                links.push(DirectedP2pProxy { from, to, proxy });
-            }
-        }
-        Ok((Self { links }, manifest_addresses))
-    }
-
-    fn links_for<'a>(&'a self, nodes: &'a [usize]) -> impl Iterator<Item = &'a TcpChaosProxy> + 'a {
-        self.links
-            .iter()
-            .filter(|link| nodes.contains(&link.from) || nodes.contains(&link.to))
-            .map(|link| &link.proxy)
-    }
-
-    pub(crate) fn disconnect_nodes(&self, nodes: &[usize]) {
-        for proxy in self.links_for(nodes) {
-            proxy.disconnect();
-        }
-    }
-
-    pub(crate) fn resume_nodes(&self, nodes: &[usize]) {
-        for proxy in self.links_for(nodes) {
-            proxy.resume();
-        }
-    }
-
-    /// Wait until every selected node has a live P2P stream with every other cluster member.
-    pub(crate) async fn wait_for_nodes_connected(
-        &self,
-        nodes: &[usize],
-        timeout: Duration,
-    ) -> eyre::Result<()> {
-        tokio::time::timeout(timeout, async {
-            loop {
-                let connected = nodes.iter().all(|&node| {
-                    (0..P2P_NODE_COUNT)
-                        .filter(|&peer| peer != node)
-                        .all(|peer| {
-                            self.links.iter().any(|link| {
-                                ((link.from == node && link.to == peer)
-                                    || (link.from == peer && link.to == node))
-                                    && link.proxy.active_connections() > 0
-                            })
-                        })
-                });
-                if connected {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .map_err(|_| {
-            eyre::eyre!("timed out after {timeout:?} waiting for selected P2P nodes to reconnect")
-        })
-    }
-
-    pub(crate) async fn wait_for_nodes_disconnected(
-        &self,
-        nodes: &[usize],
-        timeout: Duration,
-    ) -> eyre::Result<()> {
-        for proxy in self.links_for(nodes) {
-            proxy.wait_for_no_connections(timeout).await?;
-        }
-        Ok(())
-    }
-
-    /// Add symmetric latency to every P2P stream involving any of `nodes`.
-    pub(crate) fn set_nodes_latency(&self, nodes: &[usize], latency: Duration) {
-        for proxy in self.links_for(nodes) {
-            proxy.set_client_to_upstream_latency(latency);
-            proxy.set_upstream_to_client_latency(latency);
-        }
-    }
 }
 
 impl TcpChaosProxy {
@@ -272,11 +158,6 @@ impl TcpChaosProxy {
             .lock()
             .expect("proxy lock poisoned") = None;
         self.inner.changed.notify_waiters();
-    }
-
-    /// Close established streams without disabling the listener or rejecting new connections.
-    pub(crate) fn drop_active_connections(&self) {
-        self.rotate_generation();
     }
 
     pub(crate) fn disconnect(&self) {

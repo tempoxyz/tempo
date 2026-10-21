@@ -1,0 +1,58 @@
+[package]
+name = "zone-consensus"
+description = "Commonware Simplex consensus for multi-sequencer Tempo Zones"
+version = "0.3.5"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# tempo
+tempo-chainspec.workspace = true
+tempo-consensus.workspace = true
+tempo-payload-types.workspace = true
+tempo-precompiles.workspace = true
+tempo-primitives.workspace = true
+zone-chainspec.workspace = true
+zone-l1.workspace = true
+zone-p2p.workspace = true
+zone-payload.workspace = true
+zone-primitives.workspace = true
+zone-sequencer.workspace = true
+
+# commonware
+commonware-actor.workspace = true
+commonware-broadcast.workspace = true
+commonware-consensus.workspace = true
+commonware-cryptography = { workspace = true, default-features = true }
+commonware-parallel.workspace = true
+commonware-runtime = { workspace = true, features = ["external"] }
+commonware-utils.workspace = true
+
+# reth
+reth-chainspec.workspace = true
+reth-node-api.workspace = true
+reth-payload-builder.workspace = true
+reth-payload-primitives.workspace = true
+reth-primitives-traits.workspace = true
+reth-provider.workspace = true
+reth-storage-api.workspace = true
+
+# alloy
+alloy-consensus.workspace = true
+alloy-eips.workspace = true
+alloy-primitives.workspace = true
+alloy-rlp.workspace = true
+alloy-rpc-types-engine.workspace = true
+alloy-sol-types.workspace = true
+
+# misc
+eyre.workspace = true
+futures.workspace = true
+rand_core.workspace = true
+tokio.workspace = true
+tracing.workspace = true

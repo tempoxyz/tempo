@@ -69,6 +69,31 @@ pub(crate) struct PendingDeposits {
     /// `drain` so that reconnecting subscribers know where the queue left off,
     /// even if the engine has already consumed the blocks.
     last_enqueued: Option<NumHash>,
+    /// Tempo checkpoint through which canonical Zone blocks consumed the queue.
+    ///
+    /// Seeded from the Zone checkpoint at startup, then advanced by every confirm or deferral.
+    /// Pending blocks always start right after it.
+    consumed_through: Option<NumHash>,
+    /// Whether startup still has to restore deferred work crossed by checkpoint-only blocks.
+    /// Snapshots are withheld until it does, because they would omit owed portal events.
+    awaiting_deferred: bool,
+}
+
+/// Queue contents that Simplex proposal and verification read under one lock.
+///
+/// The queue only advances on finalization, so a proposal on an unfinalized parent combines this
+/// snapshot with the parent's unfinalized ancestry to find the portal work it owes.
+#[derive(Debug, Clone)]
+pub struct QueueSnapshot {
+    /// Tempo checkpoint through which finalized Zone blocks consumed the queue.
+    pub consumed_through: NumHash,
+    /// Portal work crossed by finalized checkpoint-only blocks since the last finalized full
+    /// import, aggregated into one block ending at `consumed_through`.
+    pub deferred: Option<L1BlockDeposits>,
+    /// Pending blocks after `consumed_through`, oldest first, bounded by the snapshot request.
+    pub pending: Vec<L1BlockDeposits>,
+    /// Latest queued header, including headers beyond `pending`.
+    pub latest_header: Option<SealedHeader<TempoHeader>>,
 }
 
 impl PendingDeposits {
@@ -85,6 +110,16 @@ impl PendingDeposits {
         let block_number = header.number();
         let block_hash = header.hash();
 
+        if self.last_enqueued.is_none()
+            && let Some(consumed) = self.consumed_through
+        {
+            eyre::ensure!(
+                block_number == consumed.number.saturating_add(1)
+                    && header.parent_hash() == consumed.hash,
+                "first finalized L1 block {block_number} does not extend the consumed checkpoint \
+                 {consumed:?}"
+            );
+        }
         if let Some(last) = self.last_enqueued {
             if block_number < last.number {
                 eyre::bail!(
@@ -167,6 +202,7 @@ impl PendingDeposits {
             "finalized L1 queue confirmation mismatch: expected {expected:?}, front is {:?}",
             front.header.num_hash()
         );
+        self.consumed_through = Some(expected);
         Ok(self
             .pending
             .pop_front()
@@ -187,6 +223,7 @@ impl PendingDeposits {
             );
             self.defer_front();
         }
+        self.advance_consumed_through(expected);
         if let Some(deferred) = &self.deferred
             && deferred.last_header.number() == expected.number
         {
@@ -199,6 +236,16 @@ impl PendingDeposits {
             );
         }
         Ok(())
+    }
+
+    /// Record a canonical consumption at `expected`, never moving backwards.
+    fn advance_consumed_through(&mut self, expected: NumHash) {
+        if self
+            .consumed_through
+            .is_none_or(|consumed| consumed.number < expected.number)
+        {
+            self.consumed_through = Some(expected);
+        }
     }
 
     /// Move the front block from the pending queue to the deferred state.
@@ -242,7 +289,7 @@ impl PendingDeposits {
 
     /// Confirm every pending L1 block up to and including `expected`.
     ///
-    /// Follower import calls this only after the corresponding zone block is
+    /// Finalization calls this only after the corresponding zone block is
     /// canonical. It is therefore idempotent and tolerates stale entries before
     /// `expected`, but rejects a different hash at the expected height.
     pub(crate) fn confirm_operational_through(&mut self, expected: NumHash) -> eyre::Result<()> {
@@ -260,6 +307,7 @@ impl PendingDeposits {
             self.confirm(front)
                 .expect("front was just read and matches by construction");
         }
+        self.advance_consumed_through(expected);
 
         if let Some(deferred) = &mut self.deferred {
             // A delayed duplicate of an older full block must not erase checkpoint work deferred by
@@ -274,6 +322,27 @@ impl PendingDeposits {
     /// Returns the most recently enqueued L1 block (number + hash), if any.
     pub(crate) fn last_enqueued(&self) -> Option<NumHash> {
         self.last_enqueued
+    }
+
+    /// Snapshot deferred work and every pending block numbered at most `through`.
+    fn snapshot(&self, through: u64) -> Option<QueueSnapshot> {
+        if self.awaiting_deferred {
+            return None;
+        }
+        Some(QueueSnapshot {
+            consumed_through: self.consumed_through?,
+            deferred: self
+                .deferred
+                .as_ref()
+                .map(DeferredPortalWork::aggregated_block),
+            pending: self
+                .pending
+                .iter()
+                .take_while(|block| block.header.number() <= through)
+                .cloned()
+                .collect(),
+            latest_header: self.latest_header().cloned(),
+        })
     }
 
     /// Drain all pending L1 block deposits.
@@ -410,9 +479,51 @@ impl DepositQueue {
             queue.pending.is_empty() && queue.deferred.is_none() && queue.last_enqueued.is_none(),
             "cannot seed deferred portal work into a nonempty queue"
         );
-        queue.last_enqueued = Some(deferred.last_num_hash());
+        let last = deferred.last_num_hash();
+        eyre::ensure!(
+            queue
+                .consumed_through
+                .is_none_or(|consumed| consumed == last),
+            "deferred portal work ends at {last:?}, but the queue was seeded at {:?}",
+            queue.consumed_through
+        );
+        queue.last_enqueued = Some(last);
+        queue.consumed_through = Some(last);
         queue.deferred = Some(deferred);
+        queue.awaiting_deferred = false;
         Ok(())
+    }
+
+    /// Seed the Tempo checkpoint of the Zone block the queue starts from.
+    ///
+    /// Simplex nodes call this at startup with their finalized checkpoint, before the subscriber
+    /// enqueues anything, so the first enqueued block must extend it. With `deferred_work`, the
+    /// checkpoint crossed portal work that the subscriber restores before following new blocks;
+    /// [`Self::snapshot`] returns `None` until it does.
+    pub fn seed_consumed_through(
+        &self,
+        checkpoint: NumHash,
+        deferred_work: bool,
+    ) -> eyre::Result<()> {
+        let mut queue = self.inner.lock();
+        eyre::ensure!(
+            queue.pending.is_empty()
+                && queue.deferred.is_none()
+                && queue.last_enqueued.is_none()
+                && queue.consumed_through.is_none(),
+            "cannot seed the consumed checkpoint of a used queue"
+        );
+        queue.consumed_through = Some(checkpoint);
+        queue.awaiting_deferred = deferred_work;
+        Ok(())
+    }
+
+    /// Atomically snapshot the queue for a Simplex proposal or verification.
+    ///
+    /// Returns `None` until the consumed checkpoint is seeded and any deferred work is restored.
+    /// `through` bounds the cloned pending blocks by Tempo block number.
+    pub fn snapshot(&self, through: u64) -> Option<QueueSnapshot> {
+        self.inner.lock().snapshot(through)
     }
 
     /// Confirm a full operational import and release all deferred work it consumed.

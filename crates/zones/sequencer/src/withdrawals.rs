@@ -44,6 +44,7 @@ use tokio_util::sync;
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::{
+    SettlementDuty,
     abi::{self, MAX_WITHDRAWAL_GAS_LIMIT, ZonePortal},
     metrics::{SequencerMetrics, WithdrawalProcessorMetrics},
     nonce_keys::PROCESS_WITHDRAWAL_NONCE_KEY,
@@ -137,6 +138,8 @@ pub struct WithdrawalProcessorConfig {
     pub sequencer_address: Address,
     /// Gas and concurrency limits for withdrawal transactions.
     pub batch_limits: WithdrawalBatchLimits,
+    /// Simplex duty rotation over queue slots; `None` processes every slot immediately.
+    pub settlement_duty: Option<SettlementDuty>,
 }
 
 /// Limits applied while packing and submitting `processWithdrawals` transactions.
@@ -331,6 +334,8 @@ pub struct WithdrawalProcessor {
     repair_notify: Arc<Notify>,
     metrics: WithdrawalProcessorMetrics,
     sequencer_metrics: SequencerMetrics,
+    /// Head slot owned by another sequencer and when this node first saw it pending.
+    foreign_head_since: Mutex<Option<(u64, Instant)>>,
 }
 
 impl WithdrawalProcessor {
@@ -356,7 +361,24 @@ impl WithdrawalProcessor {
             repair_notify,
             metrics: WithdrawalProcessorMetrics::default(),
             sequencer_metrics: SequencerMetrics::default(),
+            foreign_head_since: Mutex::new(None),
         }
+    }
+
+    /// Whether another Simplex sequencer still owns `slot` within its failover delay.
+    fn awaiting_slot_owner(&self, slot: u64) -> bool {
+        let Some(duty) = &self.config.settlement_duty else {
+            return false;
+        };
+        if duty.owns(slot) {
+            return false;
+        }
+        let mut since = self.foreign_head_since.lock();
+        let first_seen = match *since {
+            Some((seen_slot, at)) if seen_slot == slot => at,
+            _ => since.insert((slot, Instant::now())).1,
+        };
+        first_seen.elapsed() < duty.takeover_delay(slot)
     }
 
     /// Read the current store contents relevant to `slot` under a single lock.
@@ -488,6 +510,14 @@ impl WithdrawalProcessor {
 
             if head_val == tail_val {
                 debug!("Withdrawal queue empty, nothing to process");
+                return Ok(());
+            }
+
+            if self.awaiting_slot_owner(head_val) {
+                debug!(
+                    slot = head_val,
+                    "Another sequencer owns the head withdrawal slot"
+                );
                 return Ok(());
             }
 
@@ -1384,6 +1414,7 @@ mod tests {
             fallback_poll_interval: Duration::from_secs(1),
             sequencer_address: Address::repeat_byte(0x77),
             batch_limits: WithdrawalBatchLimits::default(),
+            settlement_duty: None,
         };
         WithdrawalProcessor::new(
             config,

@@ -44,7 +44,7 @@ fn finalizations_archive_tip_epoch_must_match_its_height() {
             drop(archive.sync().await.unwrap());
 
             let context = context.child("reopen");
-            let result = init_finalizations_archive(
+            let result = init_finalizations_archive::<_, Scheme<PublicKey, MinSig>>(
                 &context,
                 "test",
                 fresh_page_cache(&context),

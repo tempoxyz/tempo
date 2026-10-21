@@ -6,9 +6,9 @@
 
 use crate::utils::{
     L1TestNode, PolicySeed, RouterCallbackArgs, RouterDepositArgs, STABLECOIN_DEX_ADDRESS,
-    WithdrawalArgs, ZoneAccount, ZoneCreationConfig, ZoneTestNode, fetch_submit_batch_call,
-    poll_until, seed_raw_tip403_policy, seed_raw_tip403_token_policy, spawn_sequencer,
-    spawn_sequencer_with_config, start_real_p2p_cluster, start_real_p2p_cluster_with_active_nodes,
+    WithdrawalArgs, ZoneAccount, ZoneCreationConfig, ZoneTestNode, poll_until,
+    seed_raw_tip403_policy, seed_raw_tip403_token_policy, spawn_sequencer,
+    spawn_sequencer_with_config,
 };
 use alloy::{
     primitives::{Address, B256, U256},
@@ -23,7 +23,7 @@ use tempo_contracts::zones::{
     IZoneOutbox, TEMPO_STATE_ADDRESS, TempoState, ZONE_OUTBOX_ADDRESS, ZONE_TOKEN_ADDRESS,
     ZonePortal, ZonePortal::Role as PortalRole,
 };
-use tempo_precompiles::{PATH_USD_ADDRESS, zone_factory::portal};
+use tempo_precompiles::PATH_USD_ADDRESS;
 use zone_node::dev::{ProvisionConfig, provision_zone};
 
 /// Longer timeout for real L1 tests — the L1 dev node produces blocks every
@@ -195,211 +195,6 @@ async fn test_zone_advances_with_real_l1() -> eyre::Result<()> {
         zone.l1_block_tracker().observed_hash(zone_tempo_number),
         None,
         "the leader must prune L1 observations after consuming them"
-    );
-
-    Ok(())
-}
-
-/// The quorum path must settle a batch emitted by the real role controller, not merely accept
-/// manually assembled calldata. All three nodes independently execute the boundary, then the
-/// Portal accepts the leader's 2-of-3-or-more certificate.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_three_node_quorum_settles_real_batch_boundary() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
-    let cluster = start_real_p2p_cluster(4).await?;
-    let portal = ZonePortal::new(cluster.portal_address, cluster.l1.provider());
-    eyre::ensure!(
-        portal.sequencerThreshold().call().await? == 2,
-        "Portal threshold is not 2"
-    );
-    for signer in &cluster.attestation_signers {
-        eyre::ensure!(
-            portal.isSequencer(signer.address()).call().await?,
-            "Portal did not register quorum signer {}",
-            signer.address()
-        );
-    }
-
-    let submitted_height: u64 = poll_until(
-        L1_TIMEOUT,
-        Duration::from_millis(200),
-        "2-of-3 BatchSubmitted event from the real three-node cluster",
-        || {
-            let portal = &portal;
-            async move {
-                let events = portal
-                    .BatchSubmitted_1_filter()
-                    .from_block(0)
-                    .query()
-                    .await?;
-                if events.is_empty() {
-                    return Ok(None);
-                }
-                Ok(Some(portal.zoneHeight().call().await?))
-            }
-        },
-    )
-    .await?
-    .try_into()
-    .map_err(|_| eyre::eyre!("settled zone height does not fit in u64"))?;
-
-    eyre::ensure!(
-        submitted_height > 0,
-        "batch submission did not advance the settled zone height"
-    );
-    eyre::ensure!(
-        portal.withdrawalBatchIndex().call().await? >= 1,
-        "real batch boundary did not advance the withdrawal batch index"
-    );
-    cluster.wait_all_at(submitted_height, L1_TIMEOUT).await?;
-    cluster.assert_same_block(submitted_height).await?;
-
-    Ok(())
-}
-
-/// A three-member Portal must settle as soon as its two-signature threshold is met; the missing
-/// third node must neither block settlement nor appear as an unnecessary third certificate entry.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_two_online_sequencers_submit_two_signature_certificate() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
-    // The manifest and Portal retain all three registered members, but node C never starts.
-    let cluster = start_real_p2p_cluster_with_active_nodes(4, 2).await?;
-    eyre::ensure!(
-        cluster.nodes.len() == 2 && cluster.attestation_signers.len() == 3,
-        "fixture did not retain a three-member set with exactly two online nodes"
-    );
-    let portal = ZonePortal::new(cluster.portal_address, cluster.l1.provider());
-    eyre::ensure!(
-        portal.sequencerThreshold().call().await? == 2,
-        "Portal threshold is not 2"
-    );
-    for signer in &cluster.attestation_signers {
-        eyre::ensure!(
-            portal.isSequencer(signer.address()).call().await?,
-            "Portal did not register configured quorum signer {}",
-            signer.address()
-        );
-    }
-
-    let (submitted_height, tx_hash): (U256, B256) = poll_until(
-        L1_TIMEOUT,
-        Duration::from_millis(200),
-        "BatchSubmitted event from two online members of a 2-of-3 quorum",
-        || {
-            let portal = &portal;
-            async move {
-                let events = portal
-                    .BatchSubmitted_1_filter()
-                    .from_block(0)
-                    .query()
-                    .await?;
-                let Some((_, log)) = events.first() else {
-                    return Ok(None);
-                };
-                let tx_hash = log
-                    .transaction_hash
-                    .ok_or_else(|| eyre::eyre!("BatchSubmitted log missing transaction hash"))?;
-                Ok(Some((portal.zoneHeight().call().await?, tx_hash)))
-            }
-        },
-    )
-    .await?;
-    let submitted_height = u64::try_from(submitted_height)
-        .map_err(|_| eyre::eyre!("settled zone height does not fit in u64"))?;
-
-    let (call, _) = fetch_submit_batch_call(&cluster.l1, tx_hash).await?;
-    eyre::ensure!(
-        call.signatures.len() == 2,
-        "expected exactly the 2-of-3 threshold signatures, got {}",
-        call.signatures.len()
-    );
-    eyre::ensure!(
-        call.signatures[0] != call.signatures[1],
-        "submitted certificate contains duplicate signature bytes"
-    );
-    eyre::ensure!(
-        submitted_height > 0,
-        "batch submission did not advance the settled zone height"
-    );
-    cluster.wait_all_at(submitted_height, L1_TIMEOUT).await?;
-    cluster.assert_same_block(submitted_height).await?;
-
-    Ok(())
-}
-
-/// A follower signs only after it can independently reconstruct the leader's batch statement.
-/// Give both followers conflicting Portal queue hashes over the candidate operational-anchor
-/// window before the boundary. The other followers are independently prevented from replacing
-/// each other's share, so A remains below the 2-of-3 threshold at the configured boundary.
-/// Earlier catch-up boundaries may settle normally.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_divergent_follower_does_not_create_quorum() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
-    const DIVERGENT_BOUNDARY: u64 = 20;
-    const DIVERGENT_ANCHOR_WINDOW: u64 = 64;
-
-    // Leave enough Zone blocks to install the divergent state before the configured boundary.
-    let cluster = start_real_p2p_cluster(DIVERGENT_BOUNDARY).await?;
-    let portal = ZonePortal::new(cluster.portal_address, cluster.l1.provider());
-    // A newly started subscriber initializes its cache from the zone's L1 genesis anchor, not
-    // from block zero. Its first non-contiguous coverage update resets the cache, which used to
-    // race with the forged entry below and silently erase it. Wait for every member to complete
-    // that initial backfill before choosing a future anchor to corrupt. Wait for the block after
-    // the current tip because the current tip may be the genesis anchor, which is below the cache
-    // coverage floor once the first post-genesis block is ingested.
-    let covered_l1_block = cluster.l1.provider().get_block_number().await? + 1;
-    for node in &cluster.nodes {
-        poll_until(
-            L1_TIMEOUT,
-            Duration::from_millis(50),
-            "initial L1 cache coverage",
-            || async {
-                Ok(node
-                    .l1_state_cache()
-                    .lock()
-                    .has_coverage_at(covered_l1_block)
-                    .then_some(()))
-            },
-        )
-        .await?;
-    }
-
-    // Checkpoint-only blocks defer portal work, so a single corrupt height may be skipped before
-    // the next full import selects its operational anchor. Corrupt a bounded future window to
-    // guarantee that whichever finalized anchor closes the deferred range remains divergent.
-    let first_divergent_anchor = cluster.l1.provider().get_block_number().await? + 2;
-    let last_divergent_anchor = first_divergent_anchor + DIVERGENT_ANCHOR_WINDOW;
-    for (node, queue_hash) in [
-        (&cluster.nodes[1], B256::repeat_byte(0xD1)),
-        (&cluster.nodes[2], B256::repeat_byte(0xD2)),
-    ] {
-        let mut cache = node.l1_state_cache().lock();
-        for anchor in first_divergent_anchor..=last_divergent_anchor {
-            cache.set(
-                cluster.portal_address,
-                portal::slots::CURRENT_DEPOSIT_QUEUE_HASH.into(),
-                anchor,
-                queue_hash,
-            );
-        }
-    }
-
-    cluster.nodes[0]
-        .wait_for_block_number(DIVERGENT_BOUNDARY, L1_TIMEOUT)
-        .await?;
-    tokio::time::sleep(Duration::from_secs(2)).await;
-
-    let follower_height = cluster.nodes[1].provider().get_block_number().await?;
-    eyre::ensure!(
-        follower_height < DIVERGENT_BOUNDARY,
-        "divergent follower unexpectedly imported the leader boundary"
-    );
-    eyre::ensure!(
-        portal.zoneHeight().call().await? < U256::from(DIVERGENT_BOUNDARY),
-        "leader settled the divergent boundary despite only its own usable signature"
     );
 
     Ok(())

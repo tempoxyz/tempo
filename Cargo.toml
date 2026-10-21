@@ -47,6 +47,7 @@ members = [
   "bin/prover/vsock-proxy",
   "crates/zones/chainspec",
   "crates/zones/checker",
+  "crates/zones/consensus",
   "crates/zones/evm",
   "crates/zones/exithatch",
   "crates/zones/l1",
@@ -163,6 +164,7 @@ panic = "unwind"
 [workspace.dependencies]
 # Zones
 zone-chainspec = { path = "crates/zones/chainspec" }
+zone-consensus = { path = "crates/zones/consensus" }
 zone-evm = { path = "crates/zones/evm" }
 zone-l1 = { path = "crates/zones/l1" }
 zone-node = { path = "crates/zones/node" }

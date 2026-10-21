@@ -16,7 +16,7 @@ pub mod finalized_header_stream;
 pub mod follow;
 pub mod gossip;
 pub mod metrics;
-mod network;
+pub mod network;
 pub(crate) mod network_identity;
 pub(crate) mod peer_manager;
 pub mod storage;

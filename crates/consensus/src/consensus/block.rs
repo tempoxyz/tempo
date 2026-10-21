@@ -34,7 +34,7 @@ use tempo_evm::consensus::validate_body_against_header;
 /// The shared encoded-byte cache lets payload building, proposal broadcast, and commonware
 /// `EncodeSize` reuse the same execution-block RLP bytes once any path has encoded them.
 #[derive(Clone, Debug, derive_more::PartialEq, derive_more::Eq)]
-pub(crate) struct Block {
+pub struct Block {
     /// The execution-layer block, either sealed-only or fully recovered when built locally.
     execution_block: SealedOrRecoveredBlock<tempo_primitives::Block>,
     /// Cached execution-layer RLP bytes when already encoded by the caller or a payload clone.
@@ -44,7 +44,7 @@ pub(crate) struct Block {
 
 impl Block {
     /// Creates a block after validating its body and rejecting BAL header commitments.
-    pub(crate) fn try_from_execution_block<T>(execution_block: T) -> Result<Self, Error>
+    pub fn try_from_execution_block<T>(execution_block: T) -> Result<Self, Error>
     where
         T: Into<SealedOrRecoveredBlock<tempo_primitives::Block>>,
     {
@@ -74,7 +74,7 @@ impl Block {
     ///
     /// This is for reconstructing trusted blocks from persisted execution-layer data.
     /// Callers must not encode or broadcast a block whose header commits to a BAL.
-    pub(crate) fn from_execution_block_unchecked<T>(execution_block: T) -> Self
+    pub fn from_execution_block_unchecked<T>(execution_block: T) -> Self
     where
         T: Into<SealedOrRecoveredBlock<tempo_primitives::Block>>,
     {
@@ -86,7 +86,7 @@ impl Block {
 
     /// Wraps a trusted execution block and its encoded bytes without validating body or header
     /// commitments. Network and archive reads must use the validating constructor instead.
-    pub(crate) fn from_execution_block_unchecked_with_encoded_cache<T>(
+    pub fn from_execution_block_unchecked_with_encoded_cache<T>(
         execution_block: T,
         execution_block_encoded: EncodedBlock,
     ) -> Self
@@ -100,22 +100,22 @@ impl Block {
     }
 
     /// Consumes the block and returns the wrapped execution block handle.
-    pub(crate) fn into_execution_block(self) -> SealedOrRecoveredBlock<tempo_primitives::Block> {
+    pub fn into_execution_block(self) -> SealedOrRecoveredBlock<tempo_primitives::Block> {
         self.execution_block
     }
 
     /// Returns the hash of the wrapped block as a commonware [`Digest`].
-    pub(crate) fn digest(&self) -> Digest {
+    pub fn digest(&self) -> Digest {
         Digest(self.execution_block.hash())
     }
 
     /// Returns the parent hash of the wrapped block as a commonware [`Digest`].
-    pub(crate) fn parent_digest(&self) -> Digest {
+    pub fn parent_digest(&self) -> Digest {
         Digest(self.execution_block.parent_hash())
     }
 
     /// Returns the wrapped block.
-    pub(crate) fn block(&self) -> &SealedBlock<tempo_primitives::Block> {
+    pub fn block(&self) -> &SealedBlock<tempo_primitives::Block> {
         self.execution_block.sealed_block()
     }
 
@@ -260,7 +260,7 @@ pub(crate) fn round_from_context(context: TempoConsensusContext) -> Round {
 /// Error returned when validating an execution-layer consensus block.
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
-pub(crate) struct Error(#[from] ConsensusError);
+pub struct Error(#[from] ConsensusError);
 
 #[cfg(test)]
 mod tests {

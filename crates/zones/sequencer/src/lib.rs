@@ -21,7 +21,8 @@ pub mod abi {
     pub use tempo_contracts::zones::*;
 }
 
-pub mod attestation;
+mod attestation;
+mod duty;
 mod encryption_key;
 mod metrics;
 pub mod monitor;
@@ -31,9 +32,9 @@ mod prover;
 mod prover_config;
 mod rpc;
 pub mod settlement;
-mod settlement_manager;
 pub mod withdrawals;
 
+pub use duty::SettlementDuty;
 pub use encryption_key::{
     EncryptionKeyProof, encryption_key_identity, prove_encryption_key_possession,
     register_encryption_key,
@@ -52,7 +53,6 @@ pub use settlement::{
     BatchAnchor, BatchAnchorConfig, BatchData, BatchSubmitter, PortalZoneAnchor, PreparedBatch,
     SettlementAbi, resolve_portal_zone_anchor,
 };
-pub use settlement_manager::SettlementManager;
 pub use withdrawals::{
     DEFAULT_MAX_IN_FLIGHT_WITHDRAWAL_BATCHES, DEFAULT_MAX_WITHDRAWAL_BATCH_GAS,
     MAX_WITHDRAWAL_BATCH_GAS, SharedWithdrawalStore, WithdrawalBatchLimits,
@@ -121,6 +121,8 @@ pub struct ZoneSequencerConfig {
     pub inbox_address: Address,
     /// EIP-2935 history and safety-margin limits used by the batch submitter.
     pub batch_anchor_config: BatchAnchorConfig,
+    /// Simplex settlement duty; `None` for the single-sequencer development mode.
+    pub settlement_duty: Option<SettlementDuty>,
 }
 
 /// Handles returned by [`spawn_zone_sequencer`] for managing background tasks.
@@ -140,8 +142,7 @@ pub struct ZoneSequencerHandle {
 /// - **Withdrawal processor** — polls the ZonePortal withdrawal queue on Tempo L1 and calls
 ///   `processWithdrawals` for each pending withdrawal.
 /// - **Settlement prover** — when `settlement_prover` is set, settlement waits for a successful
-///   SPF execution and Nitro NSM attestation before submitting the batch. The prover is owned by
-///   the caller so it outlives individual leader generations.
+///   SPF execution and Nitro NSM attestation before submitting the batch.
 ///
 /// Both tasks share a single L1 provider and nonce manager to prevent signing/nonce contention
 /// when submitting concurrent L1 transactions.
@@ -153,7 +154,6 @@ pub async fn spawn_zone_sequencer<P>(
     signer: PrivateKeySigner,
     zone_provider: P,
     prover: Option<SettlementProver>,
-    settlements: Option<SettlementManager>,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> ZoneSequencerHandle
 where
@@ -180,6 +180,7 @@ where
         fallback_poll_interval: config.withdrawal_poll_interval,
         sequencer_address,
         batch_limits: config.withdrawal_batch_limits,
+        settlement_duty: config.settlement_duty.clone(),
     };
 
     let monitor_config = ZoneMonitorConfig {
@@ -189,7 +190,7 @@ where
         poll_interval: config.zone_poll_interval,
         portal_address: config.portal_address,
         batch_anchor_config: config.batch_anchor_config,
-        settlements,
+        settlement_duty: config.settlement_duty,
     };
     let withdrawal_handle = withdrawals::spawn_withdrawal_processor(
         withdrawal_config,

@@ -16,7 +16,7 @@ use tokio::{
     time::{Instant, MissedTickBehavior},
 };
 use tracing::{debug, warn};
-use zone_p2p::{P2pCommand, P2pEvent};
+use zone_p2p::{ForwardTransaction, ForwardedTransaction};
 
 #[cfg(not(test))]
 const RECONCILIATION_INTERVAL: Duration = Duration::from_secs(2);
@@ -31,12 +31,13 @@ enum QueueOutcome {
     Closed,
 }
 
-/// Immediately queue locally originated follower transactions for the quorum, then periodically
-/// reconcile local-origin pool entries to recover from intermittent connection issues / restarts.
+/// Immediately queue locally originated transactions for the other participants, then
+/// periodically reconcile local-origin pool entries to recover from intermittent connection
+/// issues / restarts.
 pub(crate) async fn forward_new_transactions<P>(
     pool: P,
     mut transactions: mpsc::Receiver<NewTransactionEvent<TempoPooledTransaction>>,
-    commands: mpsc::Sender<P2pCommand>,
+    commands: mpsc::Sender<ForwardTransaction>,
 ) where
     P: TransactionPool<Transaction = TempoPooledTransaction>,
 {
@@ -49,11 +50,11 @@ pub(crate) async fn forward_new_transactions<P>(
         tokio::select! {
             event = transactions.recv() => {
                 let Some(event) = event else {
-                    tracing::error!(target: "zone::p2p", "Follower transaction pool listener closed");
+                    tracing::error!(target: "zone::p2p", "Transaction pool listener closed");
                     return;
                 };
-                // Transactions admitted from P2P use `External` origin. Retain them for a future
-                // promotion, but do not relay them and create quorum-wide re-flooding.
+                // Transactions admitted from P2P use `External` origin. Do not relay them again
+                // and create quorum-wide re-flooding.
                 if !event.transaction.origin.is_local() {
                     continue;
                 }
@@ -84,22 +85,22 @@ pub(crate) async fn forward_new_transactions<P>(
 
 fn try_queue_transaction(
     transaction: &TempoPooledTransaction,
-    commands: &mpsc::Sender<P2pCommand>,
+    commands: &mpsc::Sender<ForwardTransaction>,
 ) -> QueueOutcome {
     let hash = *transaction.hash();
     let encoded = transaction.encoded_2718();
     let encoded_len = encoded.len();
-    match commands.try_send(P2pCommand::ForwardTransaction {
+    match commands.try_send(ForwardTransaction {
         transaction_hash: hash,
         transaction: encoded,
     }) {
         Ok(()) => {
             metrics::counter!("zone_node_transactions_queued_for_forwarding_total").increment(1);
-            debug!(target: "zone::p2p", ?hash, transaction_size_bytes = encoded_len, "Queued local follower transaction for quorum peers");
+            debug!(target: "zone::p2p", ?hash, transaction_size_bytes = encoded_len, "Queued local transaction for the other participants");
             QueueOutcome::Queued
         }
         Err(mpsc::error::TrySendError::Full(_)) => {
-            debug!(target: "zone::p2p", ?hash, "P2P command queue full; deferring follower transaction");
+            debug!(target: "zone::p2p", ?hash, "P2P command queue full; deferring transaction");
             QueueOutcome::Full
         }
         Err(mpsc::error::TrySendError::Closed(_)) => {
@@ -114,7 +115,7 @@ fn try_queue_transaction(
 /// stop when the command channel applies backpressure, and return `false` if that channel closes.
 fn reconcile_txpool<P>(
     pool: &P,
-    commands: &mpsc::Sender<P2pCommand>,
+    commands: &mpsc::Sender<ForwardTransaction>,
     retry_at: &mut HashMap<B256, Instant>,
 ) -> bool
 where
@@ -154,23 +155,14 @@ where
     true
 }
 
-/// Recover forwarded bytes and admit valid transactions to this replica's pool as external traffic.
-///
-/// The P2P layer emits these events only on quorum members, so promotable followers retain pending
-/// transactions while RPC-only standbys never receive their bodies.
-pub(crate) async fn insert_forwarded_transactions<P>(pool: P, mut events: mpsc::Receiver<P2pEvent>)
-where
+/// Recover forwarded bytes and admit valid transactions to this node's pool as external traffic.
+pub(crate) async fn insert_forwarded_transactions<P>(
+    pool: P,
+    mut events: mpsc::Receiver<ForwardedTransaction>,
+) where
     P: TransactionPool<Transaction = TempoPooledTransaction>,
 {
-    while let Some(event) = events.recv().await {
-        let P2pEvent::TransactionReceived {
-            follower_ed25519_public_key: peer,
-            transaction,
-        } = event
-        else {
-            continue;
-        };
-
+    while let Some(ForwardedTransaction { peer, transaction }) = events.recv().await {
         let transaction = match <TempoPooledTransaction as PoolTransaction>::recover_raw_transaction(
             &transaction,
         ) {
@@ -223,7 +215,7 @@ mod tests {
     use tempo_transaction_pool::{ordering::TempoTipOrdering, transaction::TempoPooledTransaction};
 
     use super::{forward_new_transactions, insert_forwarded_transactions, reconcile_txpool};
-    use zone_p2p::{P2pCommand, P2pEvent};
+    use zone_p2p::{ForwardTransaction, ForwardedTransaction};
 
     type TestPool = Pool<
         MockTransactionValidator<TempoPooledTransaction>,
@@ -282,7 +274,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             command,
-            P2pCommand::ForwardTransaction {
+            ForwardTransaction {
                 transaction_hash,
                 transaction: expected,
             }
@@ -386,7 +378,7 @@ mod tests {
                 .unwrap();
             assert!(matches!(
                 command,
-                P2pCommand::ForwardTransaction { transaction_hash: hash, .. }
+                ForwardTransaction { transaction_hash: hash, .. }
                     if hash == transaction_hash
             ));
         }
@@ -415,7 +407,7 @@ mod tests {
         assert!(reconcile_txpool(&pool, &commands, &mut retry_at));
         assert!(matches!(
             command_rx.recv().await,
-            Some(P2pCommand::ForwardTransaction { transaction_hash, .. })
+            Some(ForwardTransaction { transaction_hash, .. })
                 if transaction_hash == victim_hash
         ));
     }
@@ -448,8 +440,8 @@ mod tests {
             second_raw,
         ] {
             events
-                .send(P2pEvent::TransactionReceived {
-                    follower_ed25519_public_key: peer.clone(),
+                .send(ForwardedTransaction {
+                    peer: peer.clone(),
                     transaction,
                 })
                 .await
@@ -526,7 +518,7 @@ mod tests {
             loop {
                 if matches!(
                     command_rx.recv().await,
-                    Some(P2pCommand::ForwardTransaction { transaction_hash, .. })
+                    Some(ForwardTransaction { transaction_hash, .. })
                         if transaction_hash == victim_hash
                 ) {
                     return;

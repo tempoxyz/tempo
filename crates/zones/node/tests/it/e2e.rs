@@ -5,12 +5,12 @@
 //! subscriber retries a dummy URL in the background, but L2 execution is fully
 //! exercised via queue injection (with the L1 state cache seeded for precompile reads).
 
-use std::{net::TcpListener, time::Duration};
+use std::net::TcpListener;
 
 use alloy::primitives::{Address, B256, Bytes, U256, address};
 use alloy_consensus::Transaction;
 use alloy_eips::NumHash;
-use alloy_network::{ReceiptResponse, TransactionBuilder as _};
+use alloy_network::TransactionBuilder as _;
 use alloy_provider::{DynProvider, Provider};
 use alloy_rpc_types_eth::TransactionRequest;
 use alloy_sol_types::SolCall;
@@ -28,13 +28,11 @@ use zone_primitives::constants::zone_chain_id;
 
 use crate::utils::{
     DEFAULT_POLL, DEFAULT_TIMEOUT, L1Fixture, TIP20_TX_GAS, WITHDRAWAL_TX_GAS, ZoneTestNode,
-    approve_outbox, leader_p2p_config, local_dev_zone_account, poll_until, seed_fixture_for_zone,
-    start_chain_id_rpc, start_local_p2p_cluster, start_local_zone_with_fixture,
+    approve_outbox, local_dev_zone_account, poll_until, seed_fixture_for_zone, simplex_p2p_config,
+    start_chain_id_rpc, start_local_simplex_cluster, start_local_zone_with_fixture,
 };
 
 const CONTRACT_CREATION_TX_GAS: u64 = 1_000_000;
-const LEADER_INCLUSION_TIMEOUT: Duration = Duration::from_secs(30);
-const P2P_RECOVERY_TIMEOUT: Duration = Duration::from_secs(45);
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_zero_fee_transactions_are_admitted_and_included() -> eyre::Result<()> {
@@ -73,11 +71,11 @@ async fn test_zero_fee_transactions_are_admitted_and_included() -> eyre::Result<
 async fn test_sequencer_exposes_simulation_endpoints() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let cluster = start_local_p2p_cluster(10).await?;
+    let cluster = start_local_simplex_cluster(4, 10).await?;
 
     for method in ["eth_call", "eth_estimateGas"] {
         let response = reqwest::Client::new()
-            .post(cluster.nodes[0].http_url().clone())
+            .post(cluster.node(0).http_url().clone())
             .json(&serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -94,342 +92,13 @@ async fn test_sequencer_exposes_simulation_endpoints() -> eyre::Result<()> {
     Ok(())
 }
 
-/// A follower imports the leader's executed block and exposes the resulting state over RPC.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "TODO: re-enable once zones allow user transfers"]
-async fn test_p2p_follower_tracks_leader_balance() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
-    let mut cluster = start_local_p2p_cluster(10).await?;
-
-    // Commonware deliberately drops messages for offline peers. Wait for
-    // peer dial/handshake (loopback dials every 500ms) before producing the
-    // first block. The bootstrap leader also needs tip evidence from both
-    // followers before its first promotion.
-    tokio::time::sleep(Duration::from_secs(1)).await;
-
-    let mut fixture = std::mem::replace(&mut cluster.fixture, L1Fixture::new());
-    let [leader, follower, _third] = cluster
-        .nodes
-        .try_into()
-        .map_err(|_| eyre::eyre!("cluster must have three nodes"))?;
-
-    let anchor =
-        fixture.inject_empty_block_into(&[leader.deposit_queue(), follower.deposit_queue()]);
-    leader.wait_for_block_number(1, DEFAULT_TIMEOUT).await?;
-
-    // Receiving the peer block is not enough: the follower must independently
-    // observe its exact L1 anchor before importing it.
-    tokio::time::sleep(Duration::from_millis(250)).await;
-    assert_eq!(
-        follower.provider().get_block_number().await?,
-        0,
-        "follower imported a block before observing its L1 anchor"
-    );
-
-    follower.l1_block_tracker().record(anchor)?;
-    follower.wait_for_block_number(1, DEFAULT_TIMEOUT).await?;
-
-    let depositor = address!("0x0000000000000000000000000000000000001234");
-    let recipient = address!("0x0000000000000000000000000000000000005678");
-    let amount = 1_000_000_u128;
-    let deposit = fixture.make_deposit(PATH_USD_ADDRESS, depositor, recipient, amount);
-    let observed = fixture.portal_events_from_deposits(std::slice::from_ref(&deposit));
-    let anchor = fixture.inject_deposits_into(
-        &[leader.deposit_queue(), follower.deposit_queue()],
-        vec![deposit],
-    );
-    follower
-        .l1_block_tracker()
-        .record_with_portal_events(anchor, observed)?;
-
-    leader
-        .wait_for_balance(
-            PATH_USD_ADDRESS,
-            recipient,
-            U256::from(amount),
-            DEFAULT_TIMEOUT,
-        )
-        .await?;
-    let follower_balance = follower
-        .wait_for_balance(
-            PATH_USD_ADDRESS,
-            recipient,
-            U256::from(amount),
-            DEFAULT_TIMEOUT,
-        )
-        .await?;
-    follower.wait_for_block_number(2, DEFAULT_TIMEOUT).await?;
-    assert_eq!(follower_balance, U256::from(amount));
-
-    // Submit only to the follower. Its local pool admission is forwarded as canonical EIP-2718
-    // bytes, then independently validated by the leader pool for the next L1-derived build.
-    let (follower_wallet, sender) = local_dev_zone_account(&follower)?;
-    let transfer_recipient = address!("0x0000000000000000000000000000000000009abc");
-    fixture.seed_no_receive_policy(transfer_recipient)?;
-    let sender_deposit = fixture.make_deposit(PATH_USD_ADDRESS, sender, sender, amount);
-    let observed = fixture.portal_events_from_deposits(std::slice::from_ref(&sender_deposit));
-    let anchor = fixture.inject_deposits_into(
-        &[leader.deposit_queue(), follower.deposit_queue()],
-        vec![sender_deposit],
-    );
-    follower
-        .l1_block_tracker()
-        .record_with_portal_events(anchor, observed)?;
-    leader
-        .wait_for_balance(
-            PATH_USD_ADDRESS,
-            sender,
-            U256::from(amount),
-            DEFAULT_TIMEOUT,
-        )
-        .await?;
-    follower
-        .wait_for_balance(
-            PATH_USD_ADDRESS,
-            sender,
-            U256::from(amount),
-            DEFAULT_TIMEOUT,
-        )
-        .await?;
-
-    let transfer_amount = 123_456_u128;
-    let pending = ITIP20::new(PATH_USD_ADDRESS, follower_wallet)
-        .transfer(transfer_recipient, U256::from(transfer_amount))
-        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
-        .gas(TIP20_TX_GAS)
-        .send()
-        .await?;
-    let transaction_hash = *pending.tx_hash();
-
-    let leader_provider = leader.provider();
-    poll_until(
-        DEFAULT_TIMEOUT,
-        DEFAULT_POLL,
-        "forwarded transaction in leader pool",
-        || {
-            let leader_provider = &leader_provider;
-            async move {
-                Ok(leader_provider
-                    .get_transaction_by_hash(transaction_hash)
-                    .await?)
-            }
-        },
-    )
-    .await?;
-    // A transaction admitted to the pool is not guaranteed to make the very next payload under
-    // load. Produce blocks one at a time until it is included, with one overall timeout rather
-    // than spending the full timeout on every attempt.
-    let leader_receipt = tokio::time::timeout(LEADER_INCLUSION_TIMEOUT, async {
-        loop {
-            let next_block = leader_provider.get_block_number().await? + 1;
-            let anchor = fixture
-                .inject_empty_block_into(&[leader.deposit_queue(), follower.deposit_queue()]);
-            follower.l1_block_tracker().record(anchor)?;
-            leader
-                .wait_for_block_number(next_block, DEFAULT_TIMEOUT)
-                .await?;
-            if let Some(receipt) = leader_provider
-                .get_transaction_receipt(transaction_hash)
-                .await?
-            {
-                return Ok::<_, eyre::Report>(receipt);
-            }
-        }
-    })
-    .await
-    .map_err(|_| eyre::eyre!("timed out producing blocks for leader transaction inclusion"))??;
-    assert!(leader_receipt.status(), "leader receipt should succeed");
-    let inclusion_block = leader_receipt
-        .block_number
-        .ok_or_else(|| eyre::eyre!("leader receipt missing block number"))?;
-
-    // A live broadcast can be missed while the peer reconnects. Allow enough time for the
-    // follower's 30-second inactivity probe to recover the inclusion block through backfill.
-    follower
-        .wait_for_block_number(inclusion_block, P2P_RECOVERY_TIMEOUT)
-        .await?;
-    let follower_receipt = tokio::time::timeout(DEFAULT_TIMEOUT, pending.get_receipt())
-        .await
-        .map_err(|_| eyre::eyre!("timed out waiting for follower transaction receipt"))??;
-    assert!(
-        follower_receipt.status(),
-        "forwarded transfer should succeed"
-    );
-
-    for zone in [&leader, &follower] {
-        let balance = zone
-            .wait_for_balance(
-                PATH_USD_ADDRESS,
-                transfer_recipient,
-                U256::from(transfer_amount),
-                DEFAULT_TIMEOUT,
-            )
-            .await?;
-        assert_eq!(balance, U256::from(transfer_amount));
-    }
-    Ok(())
-}
-
-/// A follower must enforce a TIP-403 policy change at the *exact* L1 block its
-/// imported zone block is anchored to — never one block late.
-///
-/// Flow:
-/// 1. Zone block 1 (anchor L1#1, pathUSD still allow-all): a deposit funds Alice.
-/// 2. Between blocks, pathUSD's transfer policy switches to a blacklist that
-///    bans Bob as a recipient, effective at L1 block 2.
-/// 3. Zone block 2 (anchor L1#2): Alice's pathUSD transfer is included and
-///    reverts on the leader because policy now resolves at height 2.
-/// 4. The follower imports block 2 — only possible if it, too, reads policy at
-///    height 2 and reproduces the revert, matching the leader's state root.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "TODO: re-enable once zones allow user transfers"]
-async fn test_p2p_follower_enforces_policy_change_at_anchor_block() -> eyre::Result<()> {
-    use alloy_provider::ProviderBuilder;
-    use tempo_chainspec::spec::TEMPO_T0_BASE_FEE;
-    use tempo_contracts::precompiles::{
-        ITIP20, ITIP403Registry::PolicyType, TIP_FEE_MANAGER_ADDRESS,
-    };
-
-    use crate::utils::{
-        PolicySeed, TIP20_TX_GAS, seed_raw_tip403_policy, seed_raw_tip403_token_policy, signer_at,
-    };
-
-    reth_tracing::init_test_tracing();
-
-    let mut cluster = start_local_p2p_cluster(10).await?;
-
-    // Commonware drops messages for offline peers; wait for the dial/handshake
-    // before producing the first block (mirrors the sibling P2P test).
-    tokio::time::sleep(Duration::from_secs(1)).await;
-
-    // The block producer (fee recipient) must be covered by the seeded policy below.
-    let producer = cluster.sequencer_signers[0].address();
-    let mut fixture = std::mem::replace(&mut cluster.fixture, L1Fixture::new());
-    let [leader, follower, _third] = cluster
-        .nodes
-        .try_into()
-        .map_err(|_| eyre::eyre!("cluster must have three nodes"))?;
-
-    // Alice funds the transfer; Bob becomes blacklisted at the next L1 anchor.
-    let alice_signer = signer_at(1);
-    let alice = alice_signer.address();
-    let bob = address!("0x0000000000000000000000000000000000000B0B");
-
-    // --- Block 1: fund Alice while pathUSD is still allow-all (anchor L1#1). ---
-    let deposit_amount: u128 = 1_000_000;
-    let deposit = fixture.make_deposit(PATH_USD_ADDRESS, alice, alice, deposit_amount);
-    let observed = fixture.portal_events_from_deposits(std::slice::from_ref(&deposit));
-    let anchor = fixture.inject_deposits_into(
-        &[leader.deposit_queue(), follower.deposit_queue()],
-        vec![deposit],
-    );
-    leader
-        .wait_for_balance(
-            PATH_USD_ADDRESS,
-            alice,
-            U256::from(deposit_amount),
-            DEFAULT_TIMEOUT,
-        )
-        .await?;
-
-    follower
-        .l1_block_tracker()
-        .record_with_portal_events(anchor, observed)?;
-    follower
-        .wait_for_balance(
-            PATH_USD_ADDRESS,
-            alice,
-            U256::from(deposit_amount),
-            DEFAULT_TIMEOUT,
-        )
-        .await?;
-    follower.wait_for_block_number(1, DEFAULT_TIMEOUT).await?;
-
-    // --- Policy change effective at L1 block 2: blacklist Bob on pathUSD. ---
-    // Seed identically on both nodes, mirroring each node's L1 observer having
-    // made block-2 TIP-403 and TIP-20 storage available before publishing the
-    // anchor. The L1-backed execution database must select these values from
-    // the anchor advanced by the first `advanceTempo` transaction.
-    const BLACKLIST_POLICY_ID: u64 = 7;
-    const POLICY_L1_BLOCK: u64 = 2;
-    let policy_block = fixture.next_block();
-    assert_eq!(policy_block.header.inner.number, POLICY_L1_BLOCK);
-    fixture.seed_no_receive_policy(bob)?;
-    for node in [&leader, &follower] {
-        seed_raw_tip403_policy(
-            node.l1_state_cache(),
-            POLICY_L1_BLOCK,
-            &[PolicySeed::simple(
-                BLACKLIST_POLICY_ID,
-                PolicyType::BLACKLIST,
-                &[
-                    (alice, false),
-                    (bob, true),
-                    (producer, false),
-                    (TIP_FEE_MANAGER_ADDRESS, false),
-                ],
-            )],
-        )?;
-        seed_raw_tip403_token_policy(
-            &mut node.l1_state_cache().lock(),
-            POLICY_L1_BLOCK,
-            PATH_USD_ADDRESS,
-            BLACKLIST_POLICY_ID,
-        );
-    }
-
-    // --- Block 2: Alice's transfer is submitted, then the anchoring L1 block is
-    // injected to trigger the build that includes it. ---
-    let alice_provider = ProviderBuilder::new()
-        .wallet(alice_signer)
-        .connect_http(leader.http_url().clone());
-    let tip20 = ITIP20::new(PATH_USD_ADDRESS, &alice_provider);
-    let pending = tip20
-        .transfer(bob, U256::from(200_000u128))
-        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
-        .gas(TIP20_TX_GAS)
-        .send()
-        .await?;
-
-    let anchor =
-        reth_primitives_traits::SealedHeader::seal_slow(policy_block.header.clone()).num_hash();
-    fixture.enqueue(&policy_block, leader.deposit_queue(), vec![]);
-    fixture.enqueue(&policy_block, follower.deposit_queue(), vec![]);
-    leader.wait_for_block_number(2, DEFAULT_TIMEOUT).await?;
-
-    // The leader, resolving policy at height 2, must revert Alice's transfer
-    // (proves the exact-anchor policy behavior and that the tx was included, not dropped).
-    let receipt = pending.get_receipt().await?;
-    assert!(
-        !receipt.status(),
-        "leader should revert the blacklisted transfer in the block anchored at L1#2"
-    );
-
-    // --- The follower must independently reproduce that revert at height 2. ---
-    // If it read policy at height 1 (allow-all) it would replay the transfer as
-    // a success, diverge from the leader's state root, reject the block, and
-    // never reach block 2 — so this import succeeding proves exact-anchor policy reads.
-    follower.l1_block_tracker().record(anchor)?;
-    follower.wait_for_block_number(2, DEFAULT_TIMEOUT).await?;
-
-    // Bob received nothing on the follower: the reverted transfer moved no funds.
-    assert_eq!(
-        follower.balance_of(PATH_USD_ADDRESS, bob).await?,
-        U256::ZERO,
-        "follower must reflect the reverted transfer: Bob received nothing"
-    );
-
-    Ok(())
-}
-
 /// A P2P bind failure is fatal rather than leaving the node running without P2P.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_p2p_listener_failure_stops_node() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let occupied_listener = TcpListener::bind("127.0.0.1:0")?;
-    let p2p_config = leader_p2p_config(occupied_listener.local_addr()?)?;
+    let p2p_config = simplex_p2p_config(occupied_listener.local_addr()?)?;
     let l1_rpc_url = start_chain_id_rpc(1337).await?;
     match ZoneTestNode::start_local_with_p2p(l1_rpc_url.to_string(), p2p_config).await {
         Ok(mut zone) => {
@@ -585,59 +254,6 @@ async fn test_empty_l1_blocks_advance_zone() -> eyre::Result<()> {
 
     // Each L1 block advances tempoBlockNumber — wait for all 5
     zone.wait_for_tempo_block_number(5, DEFAULT_TIMEOUT).await?;
-
-    Ok(())
-}
-
-/// Cancelling the `ZoneEngine` must stop it only between zone blocks, leaving the deposit
-/// queue cursor and the local head in agreement.
-///
-/// This is the graceful-stop invariant needed by the future leadership handoff: an advance
-/// consumes an L1 block from the queue and canonicalizes the resulting zone block across several
-/// awaits. Stopping partway would either replay an L1 anchor (`advanceTempo` rejects it) or skip
-/// one, and either way the node could never build another block.
-#[tokio::test(flavor = "multi_thread")]
-async fn test_zone_engine_stops_cleanly_between_blocks() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
-    let (zone, mut fixture) = start_local_zone_with_fixture(20).await?;
-
-    // Produce a few blocks so the stop lands on a running engine, not an idle one.
-    fixture.inject_empty_blocks(zone.deposit_queue(), 5);
-    zone.wait_for_tempo_block_number(5, DEFAULT_TIMEOUT).await?;
-
-    // Keep feeding the queue while the engine is asked to stop, so cancellation races with
-    // block production instead of arriving during an idle period.
-    fixture.inject_empty_blocks(zone.deposit_queue(), 10);
-    let head = zone.stop_engine().await?;
-
-    // One Zone block may checkpoint several L1 headers, but cancellation must leave the imported
-    // Tempo cursor and queue front at the same atomic boundary.
-    let tempo_block_number = zone.tempo_block_number().await?;
-    assert!(
-        tempo_block_number >= head,
-        "the Tempo cursor cannot trail the Zone head: tempo={tempo_block_number}, zone={head}"
-    );
-    let next_anchor = zone
-        .deposit_queue()
-        .peek()
-        .map(|block| block.header.num_hash().number);
-    if let Some(next_anchor) = next_anchor {
-        assert_eq!(
-            next_anchor,
-            tempo_block_number + 1,
-            "the queue front must be the anchor of the next unbuilt zone block"
-        );
-    }
-
-    // A stopped engine stays stopped, and the node keeps serving RPC.
-    fixture.inject_empty_blocks(zone.deposit_queue(), 3);
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    assert_eq!(
-        zone.provider().get_block_number().await?,
-        head,
-        "a cancelled engine must not resume building"
-    );
 
     Ok(())
 }

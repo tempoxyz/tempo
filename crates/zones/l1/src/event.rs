@@ -10,11 +10,6 @@ pub struct L1PortalEvents {
     /// Encryption-key registrations in canonical log order.
     #[serde(default)]
     pub encryption_key_rotations: Vec<EncryptionKeyRotation>,
-    /// Leadership transitions in this block, in canonical log order.
-    ///
-    /// The portal allows at most one distinct transition per Tempo block.
-    #[serde(default)]
-    pub leader_transitions: Vec<LeaderTransition>,
     /// Portal-wide pause state left by this block's `PortalPaused`/`PortalResumed` events, if any.
     ///
     /// Automatic expiry emits no event, so this is only a lower bound on transitions; the
@@ -46,19 +41,6 @@ pub fn encryption_key_address(x: B256, y_parity: u8) -> eyre::Result<Address> {
     let verifying_key = k256::ecdsa::VerifyingKey::from_sec1_bytes(&compressed)
         .map_err(|err| eyre::eyre!("invalid compressed encryption public key: {err}"))?;
     Ok(Address::from_public_key(&verifying_key))
-}
-
-/// A decoded `LeaderUpdated` portal event.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct LeaderTransition {
-    /// The leader being replaced (`Address::ZERO` at initialization).
-    pub previous_leader: Address,
-    /// Individual sequencer address of the new block-production leader.
-    pub new_leader: Address,
-    /// New monotonic leadership epoch.
-    pub epoch: u64,
-    /// Tempo block that recorded the transition — the first anchor for the new leader.
-    pub activation_tempo_block: u64,
 }
 
 /// A token newly enabled for bridging, with metadata for L2 creation.
@@ -221,21 +203,16 @@ impl L1PortalEvents {
                     activation_block: event.activationBlock,
                 });
             }
+            // The portal's `leader` is vestigial under Simplex: leadership rotates every view
+            // inside consensus. Decode the event so a `setLeader` never fences ingestion.
             ZonePortalEvents::LeaderUpdated(event) => {
                 info!(
                     l1_block = block_number,
                     previous_leader = %event.previousLeader,
                     new_leader = %event.newLeader,
                     epoch = event.epoch,
-                    activation_tempo_block = event.activationTempoBlock,
-                    "Leadership transition on L1"
+                    "Ignoring portal leader update"
                 );
-                self.leader_transitions.push(LeaderTransition {
-                    previous_leader: event.previousLeader,
-                    new_leader: event.newLeader,
-                    epoch: event.epoch,
-                    activation_tempo_block: event.activationTempoBlock,
-                });
             }
             ZonePortalEvents::PortalPaused(event) => {
                 info!(l1_block = block_number, account = %event.account, "Portal-wide pause on L1");
@@ -248,16 +225,6 @@ impl L1PortalEvents {
             _ => {}
         }
         Ok(())
-    }
-
-    /// Return the leadership transition in this block, if any.
-    pub fn final_leader_transition(&self) -> eyre::Result<Option<&LeaderTransition>> {
-        eyre::ensure!(
-            self.leader_transitions.len() <= 1,
-            "L1 block contains {} leadership transitions; the portal permits at most one",
-            self.leader_transitions.len()
-        );
-        Ok(self.leader_transitions.first())
     }
 
     fn is_known_event(log: &Log) -> bool {

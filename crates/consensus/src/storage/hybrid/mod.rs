@@ -119,7 +119,7 @@ pub(in crate::storage) mod test;
 ///
 /// Exists to make unit testing easier. [`BlockchainProvider`] is used in
 /// production.
-pub(crate) trait FinalizedBlocksProvider: Send + Sync {
+pub trait FinalizedBlocksProvider: Send + Sync {
     /// Reth's last finalized block height, or `None` if reth has not yet
     /// finalized anything (fresh chain).
     fn finalized_height(&self) -> Option<u64>;
@@ -238,7 +238,7 @@ fn validate_execution_block(
 
 /// Error returned by [`Hybrid`]'s [`Blocks`] impl.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum Error {
+pub enum Error {
     #[error(transparent)]
     Archive(#[from] archive::Error),
 
@@ -249,7 +249,7 @@ pub(crate) enum Error {
 /// Backing prunable archive type.
 // TODO: Look into whether to take TwoCap or another translator. TwoCap is used
 // by commonware itself, but higher caps can reduce the likelihood of collisions.
-pub(crate) type Prunable<TContext> = prunable::Archive<TwoCap, TContext, Digest, Block>;
+pub type Prunable<TContext> = prunable::Archive<TwoCap, TContext, Digest, Block>;
 
 /// Configuration for [`Hybrid`].
 pub(crate) struct Config<TContext, TExecutionBlockProvider>
@@ -274,7 +274,7 @@ where
 /// Finalized blocks store backed by a prunable archive (a hot cache of
 /// the most recently finalized blocks) and reth (the source of truth for
 /// finalized blocks).
-pub(crate) struct Hybrid<TContext, TExecutionBlockProvider>
+pub struct Hybrid<TContext, TExecutionBlockProvider>
 where
     TContext: BufferPooler + Storage + Metrics + Clock,
 {

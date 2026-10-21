@@ -38,10 +38,7 @@ use crate::{
         LegacyBatchSubmitted, LegacyTempoAdvanced, TempoAdvanced, TokenEnablementTransition,
         ZonePortal,
     },
-    attestation::{
-        AttestationDomain, SettlementAttestation, SettlementCertificate,
-        SignedSettlementAttestation,
-    },
+    attestation::{AttestationDomain, SettlementAttestation, SignedSettlementAttestation},
     prover::SettlementProof,
     prover_config::active_l1_hardfork,
 };
@@ -393,7 +390,6 @@ impl BatchSubmitter {
         &self,
         prepared: &PreparedBatch,
         proof_bundle: Option<&SettlementProof>,
-        certificate: Option<&SettlementCertificate>,
         verifier_mode: VerifierMode,
     ) -> std::result::Result<BatchSubmitted, BatchSubmitError> {
         let active = active_l1_hardfork(&self.l1_provider, self.chain_spec.as_ref()).await?;
@@ -428,17 +424,7 @@ impl BatchSubmitter {
         let metadata = self
             .read_submission_metadata(signer.map_or(Address::ZERO, PrivateKeySigner::address))
             .await?;
-        self.validate_submission_metadata(batch, metadata, certificate.is_some())?;
-        if let Some(certificate) = certificate {
-            self.validate_certificate(
-                prepared,
-                settlement_abi,
-                batch.zone_height,
-                metadata,
-                verifier_mode,
-                certificate,
-            )?;
-        }
+        self.validate_submission_metadata(batch, metadata)?;
         let current_l1_block = self.validate_prepared_anchor(prepared).await?;
         let recent_tempo_block_number = prepared.anchor.recent_block_number();
         // EIP-2935 exposes hash(N) starting in N+1. A transaction built after observing head N
@@ -447,40 +433,33 @@ impl BatchSubmitter {
         let anchor_block_hash = prepared.anchor.block_hash();
         let anchors_to_current_tip = anchor_block_number == current_l1_block;
 
-        let signatures = if let Some(certificate) = certificate {
-            certificate.signatures.clone()
-        } else {
-            // Legacy mode, where the 1-of-1 sequencer will self-sign the attestation
-            let signer = signer
-                .ok_or_eyre("TIP-1091 batch submission requires the local sequencer signer")?;
-            if !metadata.signer_is_sequencer {
-                return Err(eyre::eyre!(
-                    "local sequencer signer {} is not active in the portal sequencer set",
-                    signer.address()
-                )
-                .into());
-            }
-            vec![self.sign_settlement_attestation(
-                signer,
-                metadata,
-                SettlementAttestationInput {
-                    batch,
-                    settlement_abi,
-                    anchor_block_number,
-                    anchor_block_hash,
-                    block_transition: &block_transition,
-                    deposit_transition: &deposit_transition,
-                    verifier_config: &verifier_config,
-                },
-            )?]
-        };
+        // The portal threshold is one: the submitting sequencer self-signs the attestation.
+        let signer = signer.ok_or_eyre("batch submission requires the local sequencer signer")?;
+        if !metadata.signer_is_sequencer {
+            return Err(eyre::eyre!(
+                "local sequencer signer {} is not active in the portal sequencer set",
+                signer.address()
+            )
+            .into());
+        }
+        let signatures = vec![self.sign_settlement_attestation(
+            signer,
+            metadata,
+            SettlementAttestationInput {
+                batch,
+                settlement_abi,
+                anchor_block_number,
+                anchor_block_hash,
+                block_transition: &block_transition,
+                deposit_transition: &deposit_transition,
+                verifier_config: &verifier_config,
+            },
+        )?];
 
         // Refetch the committed lane nonce for every submission attempt. The provider's
         // process-local nonce cache advances before a send is known to have succeeded, so
         // relying on it after a failed send can create an unfillable 2D-nonce gap.
-        let submission_address = signer
-            .ok_or_eyre("batch submission requires the local sequencer signer")?
-            .address();
+        let submission_address = signer.address();
         let nonce = self
             .l1_provider
             .get_transaction_count_with_nonce_key(submission_address, SUBMIT_BATCH_NONCE_KEY)
@@ -590,7 +569,6 @@ impl BatchSubmitter {
         let domain = AttestationDomain {
             l1_chain_id: metadata.stable.chain_id,
             portal_address: self.portal_address,
-            zone_id: metadata.stable.zone_id,
         };
         let message = SettlementAttestation {
             zoneId: metadata.stable.zone_id,
@@ -704,7 +682,6 @@ impl BatchSubmitter {
         &self,
         batch: &BatchData,
         metadata: PortalSubmissionMetadata,
-        has_certificate: bool,
     ) -> Result<()> {
         let expected_l2_index = metadata
             .withdrawal_batch_index
@@ -717,16 +694,10 @@ impl BatchSubmitter {
             batch.withdrawal_batch_index,
         );
         eyre::ensure!(
-            metadata.sequencer_threshold > 0,
-            "portal sequencer threshold is zero"
+            metadata.sequencer_threshold == 1,
+            "Simplex sequencers settle with one self-signed attestation; portal threshold is {}",
+            metadata.sequencer_threshold
         );
-        if !has_certificate {
-            eyre::ensure!(
-                metadata.sequencer_threshold == 1,
-                "minimal TIP-1091 compatibility supports only a 1-of-1 sequencer set; portal threshold is {}",
-                metadata.sequencer_threshold
-            );
-        }
         Ok(())
     }
 
@@ -739,101 +710,6 @@ impl BatchSubmitter {
             .ok_or_else(|| {
                 eyre::eyre!("confirmed submitBatch receipt is missing the BatchSubmitted event")
             })
-    }
-
-    /// Validate that a collected certificate commits to the exact calldata this submitter will
-    /// send, and derive the anchor mode from the signed statement instead of recomputing it.
-    fn validate_certificate(
-        &self,
-        prepared: &PreparedBatch,
-        settlement_abi: SettlementAbi,
-        zone_height: u64,
-        metadata: PortalSubmissionMetadata,
-        verifier_mode: VerifierMode,
-        certificate: &SettlementCertificate,
-    ) -> Result<()> {
-        let batch = &prepared.batch;
-        if certificate.height != zone_height {
-            return Err(eyre::eyre!(
-                "settlement certificate height {} does not match batch height {zone_height}",
-                certificate.height
-            ));
-        }
-        let attestation = &certificate.attestation;
-
-        let expected_block_transition_hash = alloy_primitives::keccak256(
-            (batch.prev_block_hash, batch.next_block_hash).abi_encode(),
-        );
-        let expected_deposit_transition_hash = alloy_primitives::keccak256(
-            (
-                batch.prev_processed_deposit_hash,
-                batch.next_processed_deposit_hash,
-                batch.prev_deposit_number,
-                batch.next_deposit_number,
-            )
-                .abi_encode(),
-        );
-        let expected_token_transition_hash = settlement_abi.token_transition_hash(
-            batch.prev_processed_token_count,
-            batch.next_processed_token_count,
-        );
-
-        // Run a bunch of checks to verify that whats in the attestation certificate is exactly what
-        // we expect. `submitBatch` will revert if any of these are wrong, so we should catch it early.
-        eyre::ensure!(
-            attestation.zoneId == metadata.stable.zone_id,
-            "certificate zone ID changed"
-        );
-        eyre::ensure!(
-            attestation.sequencerSetVersion == metadata.sequencer_set_version,
-            "certificate signer-set version changed"
-        );
-        eyre::ensure!(
-            attestation.zoneHeight == U256::from(zone_height),
-            "certificate zone height changed"
-        );
-        eyre::ensure!(
-            attestation.withdrawalBatchIndex == U256::from(batch.withdrawal_batch_index),
-            "certificate withdrawal batch index changed"
-        );
-        eyre::ensure!(
-            attestation.verifier == metadata.verifier,
-            "certificate verifier changed"
-        );
-        eyre::ensure!(
-            attestation.tempoBlockNumber == batch.tempo_block_number,
-            "certificate Tempo block changed"
-        );
-        eyre::ensure!(
-            attestation.blockTransitionHash == expected_block_transition_hash,
-            "certificate block transition changed"
-        );
-        eyre::ensure!(
-            attestation.depositQueueTransitionHash == expected_deposit_transition_hash,
-            "certificate deposit transition changed"
-        );
-        eyre::ensure!(
-            attestation.tokenEnablementTransitionHash == expected_token_transition_hash,
-            "certificate token transition changed"
-        );
-        eyre::ensure!(
-            attestation.withdrawalQueueHash == batch.withdrawal_queue_hash,
-            "certificate withdrawal queue hash changed"
-        );
-        eyre::ensure!(
-            VerifierMode::try_from(attestation.verifierConfigHash)? == verifier_mode,
-            "certificate verifier config changed"
-        );
-        eyre::ensure!(
-            attestation.anchorBlockNumber == prepared.anchor_block_number(),
-            "certificate anchor block changed"
-        );
-        eyre::ensure!(
-            attestation.anchorBlockHash == prepared.anchor.block_hash(),
-            "certificate anchor hash changed"
-        );
-
-        Ok(())
     }
 
     /// Resolve the anchor mode for the given `tempo_block_number`.
@@ -2049,7 +1925,6 @@ mod tests {
                 .submit_batch(
                     &test_prepared_batch(120, 100),
                     Some(&proof),
-                    None,
                     VerifierMode::NitroV1,
                 )
                 .await
@@ -2636,72 +2511,6 @@ mod tests {
     }
 
     #[test]
-    fn certificate_must_commit_the_prepared_anchor_exactly() {
-        let submitter =
-            BatchSubmitter::new(Address::ZERO, mock_l1(Asserter::new()), test_chain_spec());
-        let prepared = test_prepared_batch(120, 100);
-        let batch = &prepared.batch;
-        let metadata = PortalSubmissionMetadata {
-            withdrawal_batch_index: 0,
-            stable: StablePortalMetadata {
-                zone_id: 7,
-                chain_id: 1,
-            },
-            sequencer_set_version: 3,
-            sequencer_threshold: 1,
-            signer_is_sequencer: true,
-            verifier: Address::repeat_byte(2),
-        };
-        let attestation = SettlementAttestation {
-            zoneId: 7,
-            sequencerSetVersion: 3,
-            zoneHeight: U256::from(batch.zone_height),
-            withdrawalBatchIndex: U256::from(batch.withdrawal_batch_index),
-            verifier: metadata.verifier,
-            tempoBlockNumber: batch.tempo_block_number,
-            anchorBlockNumber: prepared.anchor_block_number() + 12,
-            anchorBlockHash: B256::repeat_byte(0x99),
-            blockTransitionHash: keccak256(
-                (batch.prev_block_hash, batch.next_block_hash).abi_encode(),
-            ),
-            depositQueueTransitionHash: keccak256(
-                (
-                    batch.prev_processed_deposit_hash,
-                    batch.next_processed_deposit_hash,
-                    batch.prev_deposit_number,
-                    batch.next_deposit_number,
-                )
-                    .abi_encode(),
-            ),
-            tokenEnablementTransitionHash: B256::ZERO,
-            withdrawalQueueHash: batch.withdrawal_queue_hash,
-            verifierConfigHash: VerifierMode::NitroV1.config_hash(),
-        };
-        let certificate = SettlementCertificate {
-            height: batch.zone_height,
-            digest: B256::ZERO,
-            attestation,
-            signatures: Vec::new(),
-        };
-
-        let error = submitter
-            .validate_certificate(
-                &prepared,
-                SettlementAbi::Legacy,
-                batch.zone_height,
-                metadata,
-                VerifierMode::NitroV1,
-                &certificate,
-            )
-            .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("certificate anchor block changed")
-        );
-    }
-
-    #[test]
     fn settlement_proof_enforces_verifier_mode_shape() {
         let (verifier_config, proof) = settlement_proof(VerifierMode::NoProof, None).unwrap();
         assert_eq!(verifier_config.as_ref(), &[2]);
@@ -2785,7 +2594,7 @@ mod tests {
     }
 
     #[test]
-    fn submission_metadata_requires_one_of_one_without_certificate() {
+    fn submission_metadata_requires_a_portal_threshold_of_one() {
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
             .connect_mocked_client(Asserter::new())
             .erased();
@@ -2817,15 +2626,18 @@ mod tests {
         };
 
         let err = submitter
-            .validate_submission_metadata(&batch, metadata, false)
+            .validate_submission_metadata(&batch, metadata)
             .unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("supports only a 1-of-1 sequencer set")
-        );
+        assert!(err.to_string().contains("portal threshold is 2"));
 
         submitter
-            .validate_submission_metadata(&batch, metadata, true)
+            .validate_submission_metadata(
+                &batch,
+                PortalSubmissionMetadata {
+                    sequencer_threshold: 1,
+                    ..metadata
+                },
+            )
             .unwrap();
     }
 

@@ -15,7 +15,11 @@ use k256::SecretKey;
 use p256::ecdsa::SigningKey as P256SigningKey;
 use reth_node_api::FullNodeComponents;
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle, rpc::RethRpcAddOns};
-use reth_node_core::{args::RpcServerArgs, exit::NodeExitFuture};
+use reth_node_core::{
+    args::{DatadirArgs, RpcServerArgs},
+    dirs::{DataDirPath, MaybePlatformPath},
+    exit::NodeExitFuture,
+};
 use reth_primitives_traits::SealedHeader;
 use reth_provider::{BlockNumReader, ChainSpecProvider, HeaderProvider};
 use reth_rpc_builder::RpcModuleSelection;
@@ -75,10 +79,11 @@ use zone_l1::{
     Deposit, DepositQueue, EnabledToken, EncryptionKeyRotation, L1BlockTracker, L1Deposit,
     L1PortalEvents, L1StateCache, encryption_key_address, state::EnabledTokenRegistry,
 };
-use zone_node::{ZoneNode, ZoneProverConfig, ZoneRedactedRpcConfig, ZoneSequencerAddOnsConfig};
-use zone_p2p::{LeadershipSchedule, LeadershipState, P2pConfig, P2pPeerId, Role};
+use zone_node::{ZoneNode, ZoneRedactedRpcConfig, ZoneSequencerAddOnsConfig};
+use zone_p2p::P2pConfig;
 use zone_precompiles::{ZONE_FEE_MANAGER_ADDRESS, ecies::compressed_x_and_parity};
 use zone_primitives::constants::{ZONE_INBOX_ADDRESS, zone_chain_id};
+use zone_sequencer::ProverAddresses;
 
 #[path = "../../../rpc/test-utils/auth_tokens.rs"]
 mod auth_tokens;
@@ -88,7 +93,7 @@ pub(crate) use auth_tokens::{
     build_signed_token_blob, now_secs, sign_keychain_signature, sign_p256_signature,
     sign_webauthn_signature,
 };
-pub(crate) use network::{P2pChaosNetwork, TcpChaosProxy};
+pub(crate) use network::TcpChaosProxy;
 
 /// Atomic counter for unique zone IDs across concurrent tests.
 static NEXT_ZONE_ID: AtomicU64 = AtomicU64::new(71_000);
@@ -634,7 +639,6 @@ where
                 signer,
                 provider,
                 None,
-                None,
                 tokio_util::sync::CancellationToken::new(),
             )
             .await
@@ -671,12 +675,8 @@ pub(crate) struct ZoneTestNode {
     l1_block_tracker: L1BlockTracker,
     rpc_api_factory: Arc<RpcApiFactory>,
     node_handle: Box<dyn TestNodeHandle>,
-    /// Cancels the `ZoneEngine`, when this node runs one.
-    ///
-    /// Exercises the graceful-stop path used by the leadership role controller.
+    /// Cancels the harness-driven `ZoneEngine`, when this node runs one.
     engine_stop: Option<CancellationToken>,
-    /// The shared leadership schedule
-    leadership: Option<LeadershipSchedule>,
     _tasks: Runtime,
 }
 
@@ -709,6 +709,9 @@ impl ZoneTestNode {
     /// actually ceased.
     ///
     /// Returns the head the engine stopped at.
+    /// Stop the harness-driven `ZoneEngine` and return the head it settles on.
+    ///
+    /// Tests that hand-craft settlement freeze the zone first so the head stops moving.
     pub(crate) async fn stop_engine(&self) -> eyre::Result<u64> {
         let stop = self
             .engine_stop
@@ -716,8 +719,7 @@ impl ZoneTestNode {
             .ok_or_else(|| eyre::eyre!("this test node does not run a ZoneEngine"))?;
         stop.cancel();
 
-        // The engine finishes the block in flight before returning, so poll until the head
-        // holds still rather than assuming it stops instantly.
+        // Poll until the head holds still rather than assuming it stops instantly.
         let provider = self.provider();
         let mut previous = provider.get_block_number().await?;
         for _ in 0..50 {
@@ -822,13 +824,6 @@ impl ZoneTestNode {
         &self.l1_block_tracker
     }
 
-    /// Returns this node's leadership schedule (multi-sequencer nodes only).
-    pub(crate) fn leadership(&self) -> &LeadershipSchedule {
-        self.leadership
-            .as_ref()
-            .expect("this test node was not started in multi-sequencer mode")
-    }
-
     /// Builds the real redacted RPC API backed by the node's EthHandlers.
     pub(crate) async fn rpc_api(
         &self,
@@ -931,7 +926,7 @@ impl ZoneTestNode {
     /// Wait for the zone L2 RPC head to reach at least `target`.
     ///
     /// This polls `eth_blockNumber`, which is useful when a test needs to assert
-    /// that a follower imported leader-produced zone blocks over P2P.
+    /// that a node applied zone blocks finalized by its peers.
     pub(crate) async fn wait_for_block_number(
         &self,
         target: u64,
@@ -948,6 +943,35 @@ impl ZoneTestNode {
                     let n = provider.get_block_number().await?;
                     if n >= target { Ok(Some(n)) } else { Ok(None) }
                 }
+            },
+        )
+        .await
+    }
+
+    /// Height of the block reth currently marks as finalized; zero before the first one.
+    pub(crate) async fn finalized_number(&self) -> eyre::Result<u64> {
+        Ok(self
+            .provider()
+            .get_block_by_number(BlockNumberOrTag::Finalized)
+            .await?
+            .map_or(0, |block| {
+                alloy_consensus::BlockHeader::number(&block.header)
+            }))
+    }
+
+    /// Wait until this node's finalized block reaches `target`.
+    pub(crate) async fn wait_for_finalized(
+        &self,
+        target: u64,
+        timeout: Duration,
+    ) -> eyre::Result<u64> {
+        poll_until(
+            timeout,
+            DEFAULT_POLL,
+            &format!("finalized block >= {target}"),
+            || async move {
+                let number = self.finalized_number().await?;
+                Ok((number >= target).then_some(number))
             },
         )
         .await
@@ -1095,6 +1119,7 @@ impl ZoneTestNode {
             None,
             true,
             additional_decryption_keys,
+            None,
             None,
         )
         .await
@@ -1277,6 +1302,7 @@ impl ZoneTestNode {
             spawn_engine,
             Vec::new(),
             None,
+            None,
         )
         .await
     }
@@ -1292,7 +1318,8 @@ impl ZoneTestNode {
         p2p_config: Option<P2pConfig>,
         spawn_engine: bool,
         additional_decryption_keys: Vec<SecretKey>,
-        prover_config: Option<ZoneProverConfig>,
+        prover_config: Option<ProverAddresses>,
+        datadir: Option<std::path::PathBuf>,
     ) -> eyre::Result<Self> {
         let tasks = Runtime::test();
         let is_local_dummy_l1 = l1_ws_url == DUMMY_L1_URL;
@@ -1357,30 +1384,19 @@ impl ZoneTestNode {
         }
         let p2p_enabled = p2p_config.is_some();
         if p2p_enabled && !is_local_dummy_l1 && portal_address.is_zero() {
-            // Synthetic multi-sequencer harness nodes run against an RPC that cannot serve
-            // storage reads: every read must come from the seeded cache. A real Portal must
-            // retain normal L1 retry behavior for its independent attestation reconstruction.
+            // Synthetic Simplex harness nodes run against an RPC that cannot serve storage
+            // reads: every read must come from the seeded cache. A real Portal must retain
+            // normal L1 retry behavior.
             zone_node = zone_node.with_l1_state_provider_retry_limits(0, NonZeroU32::MIN);
         }
-        let mut leadership = None;
         if let Some(p2p_config) = p2p_config {
-            // The finalized L1 subscriber never observes a portal in this harness, so seed
-            // the manifest's initial record unless the test pre-published a schedule.
-            let schedule = p2p_config.leadership();
-            if !schedule.is_initialized() {
-                schedule.publish(p2p_config.manifest().bootstrap_leadership())?;
-            }
-            leadership = Some(schedule);
-            let l1_transaction_signer = p2p_config.block_attestation_signer();
             let zone_id = p2p_config.zone_id();
-            // Every multi-sequencer node holds complete sequencer resources; the role
-            // controller decides at runtime whether this node's engine and sequencer
-            // background tasks are active.
+            // Every participant holds complete sequencer resources: consensus decides which
+            // node proposes each view and settlement duty rotates per batch.
             zone_node = zone_node
                 .with_p2p(p2p_config)
                 .with_sequencer(ZoneSequencerAddOnsConfig {
                     sequencer_signer: sequencer_signer.clone(),
-                    l1_transaction_signer,
                     zone_id,
                     zone_poll_interval: Duration::from_secs(1),
                     batch_anchor_config: Default::default(),
@@ -1391,8 +1407,8 @@ impl ZoneTestNode {
         if let Some(config) = prover_config {
             zone_node = zone_node.with_prover(config);
         }
-        // Multi-sequencer nodes run the real role controller, which owns the engine; the
-        // harness must not drive a second head writer against the same queue.
+        // Simplex nodes run consensus, which owns the engine; the harness must not drive a
+        // second head writer against the same queue.
         let spawn_engine = spawn_engine && !p2p_enabled;
         if spawn_engine {
             // The harness drives its own ZoneEngine against the shared queue below, so the
@@ -1449,8 +1465,34 @@ impl ZoneTestNode {
             seed_raw_tip403_token_policy(&mut cache, 0, PATH_USD_ADDRESS, ALLOW_ALL_POLICY_ID);
         }
 
-        let node_handle = NodeBuilder::new(node_config)
-            .testing_node(tasks.clone())
+        let builder = match datadir {
+            None => NodeBuilder::new(node_config).testing_node(tasks.clone()),
+            Some(datadir) => {
+                let path = MaybePlatformPath::<DataDirPath>::from(datadir.clone());
+                let node_config = node_config.with_datadir_args(DatadirArgs {
+                    datadir: path.clone(),
+                    ..Default::default()
+                });
+                let data_dir = path.unwrap_or_chain_default(
+                    reth_chainspec::EthChainSpec::chain(node_config.chain.as_ref()),
+                    node_config.datadir.clone(),
+                );
+                let db = reth_db::init_db(
+                    data_dir.data_dir().join("db"),
+                    reth_db::mdbx::DatabaseArguments::test(),
+                )?;
+                // `TempDatabase` deletes its path on drop. Point it at a scratch directory so
+                // the datadir survives a crash and restart.
+                let scratch = datadir.with_extension("scratch");
+                std::fs::create_dir_all(&scratch)?;
+                NodeBuilder::new(node_config)
+                    .with_database(Arc::new(reth_db::test_utils::TempDatabase::new(
+                        db, scratch,
+                    )))
+                    .with_launch_context(tasks.clone())
+            }
+        };
+        let node_handle = builder
             .node(zone_node)
             .launch_with_debug_capabilities()
             .await?;
@@ -1479,7 +1521,10 @@ impl ZoneTestNode {
                 .node
                 .task_executor
                 .spawn_critical_task("zone-engine", async move {
-                    engine.run_until(stop).await;
+                    tokio::select! {
+                        () = stop.cancelled() => {}
+                        () = engine.run() => {}
+                    }
                 });
         }
 
@@ -1522,7 +1567,6 @@ impl ZoneTestNode {
             rpc_api_factory,
             node_handle: Box::new(node_handle),
             engine_stop,
-            leadership,
             _tasks: tasks,
         })
     }
@@ -3401,35 +3445,6 @@ impl ZoneAccount {
         self.withdraw_with(WithdrawalArgs::new(amount)).await
     }
 
-    /// Submit a simple withdrawal to the L2 transaction pool without waiting for inclusion.
-    ///
-    /// The outbox must already be approved with [`Self::approve_outbox`]. Keeping approval
-    /// separate makes it possible to submit this transaction while block production is paused.
-    pub(crate) async fn submit_withdrawal(&self, amount: u128) -> eyre::Result<B256> {
-        use tempo_contracts::zones::{IZoneOutbox, ZONE_OUTBOX_ADDRESS, ZONE_TOKEN_ADDRESS};
-
-        eyre::ensure!(
-            self.l2_outbox_approved_tokens.contains(&ZONE_TOKEN_ADDRESS),
-            "zone outbox must be approved before submitting a non-blocking withdrawal"
-        );
-        let args = WithdrawalArgs::new(amount);
-        let pending = IZoneOutbox::new(ZONE_OUTBOX_ADDRESS, &self.l2_provider)
-            .requestWithdrawal(
-                ZONE_TOKEN_ADDRESS,
-                self.address,
-                args.amount,
-                args.memo,
-                args.gas_limit,
-                self.address,
-                args.data,
-                args.reveal_to,
-            )
-            .gas(WITHDRAWAL_TX_GAS)
-            .send()
-            .await?;
-        Ok(*pending.tx_hash())
-    }
-
     /// Approve the ZoneOutbox, then request a withdrawal on L2 with custom args.
     ///
     /// Skips approval if already approved in this session.
@@ -3629,6 +3644,7 @@ pub(crate) async fn spawn_sequencer_with_config(
         outbox_address: ZONE_OUTBOX_ADDRESS,
         inbox_address: ZONE_INBOX_ADDRESS,
         batch_anchor_config,
+        settlement_duty: None,
     };
 
     zone.spawn_sequencer(config, sequencer_signer).await
@@ -3685,302 +3701,6 @@ pub(crate) async fn start_local_zone_with_fixture_and_withdrawal_batch_interval(
     Ok((zone, fixture))
 }
 
-/// A three-node multi-sequencer cluster driven by the real role controller.
-///
-/// Node 0 is the manifest bootstrap leader. Each node runs the complete dynamic role
-/// machinery: the leader generation (engine with the per-anchor production permit,
-/// broadcast, settlement, sequencer background tasks) and the follower generation (import,
-/// transaction forwarding), switched by finalized leadership observations that tests publish
-/// directly into each node's [`LeadershipSchedule`].
-///
-/// Every node uses a distinct sequencer signer, so a block's beneficiary identifies its
-/// producer.
-pub(crate) struct P2pCluster {
-    pub(crate) nodes: Vec<ZoneTestNode>,
-    pub(crate) p2p_public_keys: Vec<P2pPeerId>,
-    pub(crate) sequencer_signers: Vec<PrivateKeySigner>,
-    pub(crate) fixture: L1Fixture,
-}
-
-impl P2pCluster {
-    /// The next Tempo anchor number the fixture will inject.
-    pub(crate) fn next_anchor_number(&self) -> u64 {
-        self.fixture.next_anchor_number()
-    }
-
-    /// Inject one L1 block into every node, simulating each node's finalized subscriber:
-    /// the anchor is recorded in every tracker and the block enqueued in every deposit
-    /// queue. Returns the anchor.
-    pub(crate) fn inject_block(&mut self, deposits: Vec<DepositFixture>) -> eyre::Result<NumHash> {
-        let all: Vec<usize> = (0..self.nodes.len()).collect();
-        self.inject_block_observed_by(deposits, &all)
-    }
-
-    /// Inject one L1 block into every deposit queue, but record the anchor observation only
-    /// on the given nodes. A node without the observation cannot import the corresponding
-    /// zone block (or produce it) until [`Self::record_anchor`] delivers it.
-    pub(crate) fn inject_block_observed_by(
-        &mut self,
-        deposits: Vec<DepositFixture>,
-        observers: &[usize],
-    ) -> eyre::Result<NumHash> {
-        let block = self.fixture.next_block();
-        let anchor = SealedHeader::seal_slow(block.header.clone()).num_hash();
-        let events = self.fixture.portal_events_from_deposits(&deposits);
-        for node in &self.nodes {
-            self.fixture
-                .enqueue(&block, node.deposit_queue(), deposits.clone());
-        }
-        for index in observers {
-            self.nodes[*index]
-                .l1_block_tracker()
-                .record_with_portal_events(anchor, events.clone())?;
-        }
-        Ok(anchor)
-    }
-
-    /// Deliver a previously withheld anchor observation to one node.
-    pub(crate) fn record_anchor(
-        &self,
-        index: usize,
-        anchor: NumHash,
-        deposits: Vec<DepositFixture>,
-    ) -> eyre::Result<()> {
-        let events = self.fixture.portal_events_from_deposits(&deposits);
-        self.nodes[index]
-            .l1_block_tracker()
-            .record_with_portal_events(anchor, events)?;
-        Ok(())
-    }
-
-    /// Publish a finalized leadership transition into every node's schedule, standing in
-    /// for each node's receipt-authenticated `LeaderUpdated` observation.
-    pub(crate) fn publish_transition(
-        &self,
-        epoch: u64,
-        leader_index: usize,
-        activation_tempo_block: u64,
-    ) -> eyre::Result<()> {
-        for node in &self.nodes {
-            node.leadership().publish(LeadershipState::new(
-                epoch,
-                self.p2p_public_keys[leader_index].clone(),
-                activation_tempo_block,
-            ))?;
-        }
-        Ok(())
-    }
-
-    /// Wait until every node's canonical head reaches `height`.
-    pub(crate) async fn wait_all_at(&self, height: u64, timeout: Duration) -> eyre::Result<()> {
-        for node in &self.nodes {
-            node.wait_for_block_number(height, timeout).await?;
-        }
-        Ok(())
-    }
-
-    /// Assert every node holds the same block at `height` and return its header.
-    pub(crate) async fn assert_same_block(&self, height: u64) -> eyre::Result<TempoHeaderResponse> {
-        let mut reference: Option<TempoHeaderResponse> = None;
-        for (index, node) in self.nodes.iter().enumerate() {
-            let block = node
-                .provider()
-                .get_block_by_number(BlockNumberOrTag::Number(height))
-                .await?
-                .ok_or_else(|| eyre::eyre!("node {index} is missing block {height}"))?;
-            match &reference {
-                None => reference = Some(block.header),
-                Some(reference) => eyre::ensure!(
-                    block.header.hash == reference.hash,
-                    "node {index} diverges at height {height}: {} != {}",
-                    block.header.hash,
-                    reference.hash,
-                ),
-            }
-        }
-        reference.ok_or_else(|| eyre::eyre!("cluster is empty"))
-    }
-}
-
-/// A real Tempo L1 and Portal paired with three P2P quorum nodes. Unlike [`P2pCluster`], this
-/// fixture exercises settlement against the actual `ZonePortal` contract rather than synthetic
-/// L1 cache injection.
-pub(crate) struct RealP2pCluster {
-    pub(crate) l1: L1TestNode,
-    pub(crate) portal_address: Address,
-    pub(crate) nodes: Vec<ZoneTestNode>,
-    pub(crate) attestation_signers: Vec<PrivateKeySigner>,
-}
-
-impl RealP2pCluster {
-    /// Wait for every node to independently execute through `height`.
-    pub(crate) async fn wait_all_at(&self, height: u64, timeout: Duration) -> eyre::Result<()> {
-        for node in &self.nodes {
-            node.wait_for_block_number(height, timeout).await?;
-        }
-        Ok(())
-    }
-
-    /// Assert all nodes have the same canonical block at `height`.
-    pub(crate) async fn assert_same_block(&self, height: u64) -> eyre::Result<TempoHeaderResponse> {
-        let mut reference: Option<TempoHeaderResponse> = None;
-        for (index, node) in self.nodes.iter().enumerate() {
-            let block = node
-                .provider()
-                .get_block_by_number(BlockNumberOrTag::Number(height))
-                .await?
-                .ok_or_else(|| eyre::eyre!("node {index} is missing block {height}"))?;
-            match &reference {
-                None => reference = Some(block.header),
-                Some(reference) => eyre::ensure!(
-                    block.header.hash == reference.hash,
-                    "node {index} diverges at height {height}: {} != {}",
-                    block.header.hash,
-                    reference.hash,
-                ),
-            }
-        }
-        reference.ok_or_else(|| eyre::eyre!("cluster is empty"))
-    }
-}
-
-/// Start a three-member P2P quorum against a real Tempo L1 and a Portal registered with the
-/// exact per-node attestation keys. The short interval bounds how long the tests wait for an
-/// empty batch boundary. A full import following checkpoint-only blocks may close a batch sooner.
-pub(crate) async fn start_real_p2p_cluster(
-    withdrawal_batch_interval_blocks: u64,
-) -> eyre::Result<RealP2pCluster> {
-    start_real_p2p_cluster_with_active_nodes(withdrawal_batch_interval_blocks, 3).await
-}
-
-/// Start a three-member P2P quorum against a real Tempo L1, launching only `active_nodes` of
-/// its configured members. This lets an integration test prove that a reachable 2-of-3 quorum
-/// settles without waiting for the offline third member.
-pub(crate) async fn start_real_p2p_cluster_with_active_nodes(
-    withdrawal_batch_interval_blocks: u64,
-    active_nodes: usize,
-) -> eyre::Result<RealP2pCluster> {
-    Ok(start_real_p2p_cluster_inner(
-        withdrawal_batch_interval_blocks,
-        active_nodes,
-        L1ProxyMode::Direct,
-        None,
-        false,
-        None,
-    )
-    .await?
-    .cluster)
-}
-
-/// Start a real-L1 cluster whose nodes run settlement proving, so every node persists witnesses
-/// before canonicalization.
-///
-/// No prover listens on the routed endpoint: every proof fails fast and settlement falls back to
-/// the `NoProof` verifier.
-pub(crate) async fn start_real_p2p_cluster_with_settlement_proving(
-    withdrawal_batch_interval_blocks: u64,
-    active_nodes: usize,
-) -> eyre::Result<RealP2pCluster> {
-    let unreachable = TempoHardfork::VARIANTS
-        .iter()
-        .map(|&hardfork| zone_sequencer::HardforkProverAddress {
-            hardfork,
-            address: "127.0.0.1:1".to_owned(),
-        })
-        .collect();
-    // Use a synthetic transport policy even for forks without approved enclave measurements.
-    // These endpoints never serve a proof; the tests exercise NoProof fallback.
-    let pcr = "11".repeat(48);
-    let policy = serde_json::to_vec(&serde_json::json!({
-        "pcrs": { "0": [&pcr], "1": [&pcr], "2": [&pcr] }
-    }))?;
-    let prover_addresses = zone_sequencer::ProverAddresses::new(unreachable, Some(&policy))?
-        .expect("hardforks are non-empty");
-    Ok(start_real_p2p_cluster_inner(
-        withdrawal_batch_interval_blocks,
-        active_nodes,
-        L1ProxyMode::Direct,
-        None,
-        false,
-        Some(ZoneProverConfig::Settlement(prover_addresses)),
-    )
-    .await?
-    .cluster)
-}
-
-/// Start the full three-member real-L1 cluster with one shared, controllable L1 proxy. Existing
-/// cluster constructors intentionally retain their direct-connect behavior.
-pub(crate) async fn start_real_p2p_cluster_with_l1_proxy(
-    withdrawal_batch_interval_blocks: u64,
-    l1_block_time: Duration,
-) -> eyre::Result<(RealP2pCluster, TcpChaosProxy)> {
-    let mut parts = start_real_p2p_cluster_inner(
-        withdrawal_batch_interval_blocks,
-        3,
-        L1ProxyMode::All,
-        Some(l1_block_time),
-        false,
-        None,
-    )
-    .await?;
-    Ok((
-        parts.cluster,
-        parts
-            .l1_proxies
-            .pop()
-            .expect("proxied cluster constructor must return its L1 proxy"),
-    ))
-}
-
-/// Start the full three-member cluster with one independently controllable L1 proxy per node.
-pub(crate) async fn start_real_p2p_cluster_with_per_node_l1_proxies(
-    withdrawal_batch_interval_blocks: u64,
-    l1_block_time: Duration,
-) -> eyre::Result<(RealP2pCluster, [TcpChaosProxy; 3])> {
-    let parts = start_real_p2p_cluster_inner(
-        withdrawal_batch_interval_blocks,
-        3,
-        L1ProxyMode::PerNode,
-        Some(l1_block_time),
-        false,
-        None,
-    )
-    .await?;
-    let proxies: [TcpChaosProxy; 3] = parts
-        .l1_proxies
-        .try_into()
-        .map_err(|_| eyre::eyre!("per-node proxy constructor must return three L1 proxies"))?;
-    Ok((parts.cluster, proxies))
-}
-
-/// Start a full three-member cluster with independently controllable P2P links and one
-/// controllable L1 proxy per node.
-pub(crate) async fn start_real_p2p_network_chaos_cluster(
-    withdrawal_batch_interval_blocks: u64,
-    l1_block_time: Duration,
-) -> eyre::Result<(RealP2pCluster, P2pChaosNetwork, [TcpChaosProxy; 3])> {
-    let parts = start_real_p2p_cluster_inner(
-        withdrawal_batch_interval_blocks,
-        3,
-        L1ProxyMode::PerNode,
-        Some(l1_block_time),
-        true,
-        None,
-    )
-    .await?;
-    let proxies = parts
-        .l1_proxies
-        .try_into()
-        .map_err(|_| eyre::eyre!("network-chaos cluster must return three L1 proxies"))?;
-    Ok((
-        parts.cluster,
-        parts
-            .p2p_network
-            .expect("network-chaos cluster must return its P2P proxy mesh"),
-        proxies,
-    ))
-}
-
 /// Returns a loopback address for a node's P2P listener, which Commonware binds later itself.
 ///
 /// The accepted side closes first and leaves the port in `TIME_WAIT`. Until the node binds it,
@@ -3995,281 +3715,341 @@ fn available_address() -> eyre::Result<SocketAddr> {
     Ok(address)
 }
 
-#[derive(Clone, Copy)]
-enum L1ProxyMode {
-    Direct,
-    All,
-    PerNode,
+/// Short Simplex views for local clusters, so idle views and a crashed leader cost little time.
+pub(crate) const SIMPLEX_TEST_CONSENSUS: &str = "[consensus]
+leader_timeout_ms = 1000
+certification_timeout_ms = 1500
+timeout_retry_ms = 1000
+skip_timeout_ms = 3000
+fetch_timeout_ms = 1000
+proposal_anchor_wait_ms = 500
+settlement_failover_ms = 5000
+";
+
+/// One synthetic L1 block delivered to a [`SimplexCluster`].
+struct InjectedBlock {
+    header: TempoHeader,
+    deposits: Vec<DepositFixture>,
+    events: L1PortalEvents,
 }
 
-struct RealP2pClusterParts {
-    cluster: RealP2pCluster,
-    l1_proxies: Vec<TcpChaosProxy>,
-    p2p_network: Option<P2pChaosNetwork>,
+/// A local Simplex quorum over synthetic L1 injection.
+///
+/// Every node runs the full Simplex stack (consensus, executor, marshal, transaction forwarding,
+/// settlement tasks). Each node uses a distinct sequencer signer declared as its manifest
+/// beneficiary, so a block's beneficiary identifies the view leader that proposed it.
+///
+/// Nodes keep their datadirs on disk so tests can crash, restart, and wipe them.
+pub(crate) struct SimplexCluster {
+    /// Live nodes; `None` while crashed.
+    pub(crate) nodes: Vec<Option<ZoneTestNode>>,
+    /// Beneficiary (sequencer signer) of each node, in node order.
+    pub(crate) beneficiaries: Vec<Address>,
+    pub(crate) fixture: L1Fixture,
+    configs: Vec<P2pConfig>,
+    signers: Vec<PrivateKeySigner>,
+    datadirs: Vec<std::path::PathBuf>,
+    root: std::path::PathBuf,
+    l1_rpc_url: String,
+    chain_id: u64,
+    genesis: Genesis,
+    seed_blocks: u64,
+    injected: Vec<InjectedBlock>,
+    /// Restarts performed so far; names fresh datadir copies.
+    generation: u64,
 }
 
-async fn start_real_p2p_cluster_inner(
-    withdrawal_batch_interval_blocks: u64,
-    active_nodes: usize,
-    proxy_mode: L1ProxyMode,
-    l1_block_time: Option<Duration>,
-    proxy_p2p: bool,
-    prover_config: Option<ZoneProverConfig>,
-) -> eyre::Result<RealP2pClusterParts> {
-    eyre::ensure!(
-        (2..=3).contains(&active_nodes),
-        "real P2P test cluster requires two or three active nodes, got {active_nodes}"
-    );
+impl Drop for SimplexCluster {
+    fn drop(&mut self) {
+        for node in self.nodes.iter().flatten() {
+            node.crash();
+        }
+        self.nodes.clear();
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
 
-    let l1 = match l1_block_time {
-        Some(block_time) => {
-            L1TestNode::start_with(|config| config.dev.block_time = Some(block_time)).await?
-        }
-        None => L1TestNode::start().await?,
-    };
-    let direct_url = l1.ws_url().to_string();
-    let (l1_proxies, l1_rpc_urls) = match proxy_mode {
-        L1ProxyMode::Direct => (Vec::new(), vec![direct_url; active_nodes]),
-        L1ProxyMode::All => {
-            let upstream = TcpChaosProxy::upstream_addr(l1.ws_url())?;
-            let proxy = TcpChaosProxy::start(upstream).await?;
-            let proxy_url = proxy.proxy_url(l1.ws_url())?.to_string();
-            (vec![proxy], vec![proxy_url; active_nodes])
-        }
-        L1ProxyMode::PerNode => {
-            let upstream = TcpChaosProxy::upstream_addr(l1.ws_url())?;
-            let mut proxies = Vec::with_capacity(active_nodes);
-            let mut urls = Vec::with_capacity(active_nodes);
-            for _ in 0..active_nodes {
-                let proxy = TcpChaosProxy::start(upstream).await?;
-                urls.push(proxy.proxy_url(l1.ws_url())?.to_string());
-                proxies.push(proxy);
+impl SimplexCluster {
+    /// The live node at `index`.
+    pub(crate) fn node(&self, index: usize) -> &ZoneTestNode {
+        self.nodes[index]
+            .as_ref()
+            .unwrap_or_else(|| panic!("node {index} is not running"))
+    }
+
+    /// Live nodes with their indices.
+    pub(crate) fn live(&self) -> impl Iterator<Item = (usize, &ZoneTestNode)> {
+        self.nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, node)| Some((index, node.as_ref()?)))
+    }
+
+    /// Inject the next L1 block into every live node, as each node's finalized subscriber would.
+    pub(crate) fn inject_block(&mut self, deposits: Vec<DepositFixture>) -> NumHash {
+        let observers: Vec<usize> = self.live().map(|(index, _)| index).collect();
+        self.inject_block_observed_by(deposits, &observers)
+    }
+
+    /// Enqueue the next L1 block on every live node but record its observation only on
+    /// `observers`. Others cannot verify or finalize it until [`Self::record_anchor`].
+    pub(crate) fn inject_block_observed_by(
+        &mut self,
+        deposits: Vec<DepositFixture>,
+        observers: &[usize],
+    ) -> NumHash {
+        let block = self.fixture.next_block();
+        let number = block.header.inner.number;
+        self.fixture
+            .seed_fixture_deposit_policy_state(number, &deposits);
+        let events = self.fixture.portal_events_from_deposits(&deposits);
+        let anchor = SealedHeader::seal_slow(block.header.clone()).num_hash();
+        for (index, node) in self.live() {
+            node.deposit_queue()
+                .enqueue(block.header.clone(), events.clone());
+            if observers.contains(&index) {
+                node.l1_block_tracker()
+                    .record_with_portal_events(anchor, events.clone())
+                    .expect("synthetic L1 observations are contiguous");
             }
-            (proxies, urls)
         }
-    };
-    let addresses = [
-        available_address()?,
-        available_address()?,
-        available_address()?,
-    ];
-    let (p2p_network, manifest_addresses) = if proxy_p2p {
-        let (network, manifest_addresses) = P2pChaosNetwork::start(addresses).await?;
-        (Some(network), manifest_addresses)
-    } else {
-        (None, [addresses; 3])
-    };
-    let identities = [
-        Ed25519PrivateKey::from_seed(301),
-        Ed25519PrivateKey::from_seed(302),
-        Ed25519PrivateKey::from_seed(303),
-    ];
-    let public_keys = identities.each_ref().map(|key| key.public_key());
-    let attestation_keys = [301_u64, 302, 303].map(|key| format!("0x{key:064x}"));
-    let attestation_signers = attestation_keys
-        .each_ref()
-        .map(|key| key.parse::<PrivateKeySigner>().expect("valid test signer"));
+        self.injected.push(InjectedBlock {
+            header: block.header,
+            deposits,
+            events,
+        });
+        anchor
+    }
 
-    let factory = l1.native_zone_factory().await?;
-    let portal_address = l1
-        .create_zone_with_admin_sequencers_and_config(
-            factory,
-            l1.admin_address(),
-            attestation_signers
-                .iter()
-                .map(PrivateKeySigner::address)
-                .collect(),
-            2,
-            ZoneCreationConfig::open(),
+    /// Deliver a withheld anchor observation to node `index`.
+    pub(crate) fn record_anchor(&self, index: usize, anchor: NumHash) -> eyre::Result<()> {
+        let block = self
+            .injected
+            .iter()
+            .find(|block| block.header.inner.number == anchor.number)
+            .ok_or_else(|| eyre::eyre!("anchor {anchor:?} was never injected"))?;
+        self.node(index)
+            .l1_block_tracker()
+            .record_with_portal_events(anchor, block.events.clone())
+    }
+
+    /// Stop node `index` and release its database. Its datadir stays on disk.
+    pub(crate) fn crash(&mut self, index: usize) {
+        if let Some(node) = self.nodes[index].take() {
+            node.crash();
+        }
+    }
+
+    /// Start node `index` again from its datadir, or from an empty one when `wipe` is set, and
+    /// replay the synthetic L1 history its subscriber would refetch.
+    ///
+    /// A crashed in-process node keeps its database locks until every background thread drops
+    /// its handle, so the restarted node opens a copy of the datadir at a fresh path.
+    pub(crate) async fn restart(&mut self, index: usize, wipe: bool) -> eyre::Result<()> {
+        self.crash(index);
+        self.generation += 1;
+        let datadir = self
+            .root
+            .join(format!("node-{index}-restart-{}", self.generation));
+        if !wipe {
+            copy_dir_all(&self.datadirs[index], &datadir)?;
+        }
+        self.datadirs[index] = datadir;
+        let node = launch_simplex_node(
+            &self.l1_rpc_url,
+            self.chain_id,
+            &self.genesis,
+            self.signers[index].clone(),
+            self.configs[index].clone(),
+            self.datadirs[index].clone(),
         )
         .await?;
-    for signer in &attestation_signers {
-        // Tempo's test genesis funds only the dev key. Settlement is submitted from the
-        // individual registered quorum key, so each member needs a gas balance of its own.
-        l1.fund_user(signer.address(), 10_000_000).await?;
-    }
-    let encryption_key = SecretKey::from(attestation_signers[0].credential());
-    l1.set_sequencer_encryption_key_with_signer(
-        portal_address,
-        &encryption_key,
-        attestation_signers[0].clone(),
-    )
-    .await?;
-
-    let portal = ZonePortal::new(portal_address, l1.provider());
-    let zone_id = portal.zoneId().call().await?;
-    let (genesis, _) = build_l1_anchored_genesis(l1.http_url(), portal_address).await?;
-    let chain_id = next_unique_chain_id();
-
-    let config_dir = std::env::temp_dir().join(format!(
-        "tempo-zone-real-p2p-test-{}-{}",
-        std::process::id(),
-        next_unique_chain_id()
-    ));
-    std::fs::create_dir_all(&config_dir)?;
-    let mut configs = Vec::with_capacity(3);
-    for (index, role) in [(0, Role::Leader), (1, Role::Follower), (2, Role::Follower)] {
-        let manifest_path = config_dir.join(format!("manifest-{index}.toml"));
-        let mut manifest = format!(
-            "zone_id = {zone_id}\nsequencer_set_version = 0\nleader_ed25519_public_key = \"{}\"\n",
-            const_hex::encode_prefixed(public_keys[0].as_ref())
+        self.fixture.seed_l1_cache(
+            node.l1_state_cache(),
+            node.enabled_tokens(),
+            Address::ZERO,
+            Address::ZERO,
+            self.seed_blocks,
         );
-        for (peer_index, (public_key, signer)) in
-            public_keys.iter().zip(&attestation_signers).enumerate()
-        {
-            let address = manifest_addresses[index][peer_index];
-            manifest.push_str(&format!(
-                "\n[[nodes]]\nname = \"node-{peer_index}\"\ned25519_public_key = \"{}\"\nsecp256k1_address = \"{}\"\naddress = \"{address}\"\n",
-                const_hex::encode_prefixed(public_key.as_ref()),
-                signer.address(),
-            ));
+        self.fixture.replay_cache_coverage(node.l1_state_cache());
+        // The node resumes from its finalized checkpoint and expects the subscriber to refetch
+        // every finalized L1 block after it.
+        let consumed = node
+            .deposit_queue()
+            .snapshot(0)
+            .ok_or_else(|| eyre::eyre!("restarted node did not seed its deposit queue"))?
+            .consumed_through;
+        for block in &self.injected {
+            let number = block.header.inner.number;
+            self.fixture
+                .seed_fixture_deposit_policy_state(number, &block.deposits);
+            if number <= consumed.number {
+                continue;
+            }
+            let anchor = SealedHeader::seal_slow(block.header.clone()).num_hash();
+            node.deposit_queue()
+                .enqueue(block.header.clone(), block.events.clone());
+            node.l1_block_tracker()
+                .record_with_portal_events(anchor, block.events.clone())?;
         }
-        std::fs::write(&manifest_path, manifest)?;
-        let key_path = config_dir.join(format!("node-{index}.key"));
-        std::fs::write(
-            &key_path,
-            const_hex::encode_prefixed(identities[index].encode().as_ref()),
-        )?;
-        let secp256k1_key_path = config_dir.join(format!("node-{index}-secp256k1.key"));
-        std::fs::write(&secp256k1_key_path, &attestation_keys[index])?;
-        configs.push(P2pConfig::load(
-            &manifest_path,
-            &key_path,
-            Some(&secp256k1_key_path),
-            addresses[index],
-            false,
-            zone_id,
-            Some(role),
-        )?);
+        self.nodes[index] = Some(node);
+        Ok(())
     }
-    let _ = std::fs::remove_dir_all(&config_dir);
 
-    let nodes = try_join_all(configs.into_iter().take(active_nodes).enumerate().map(
-        |(index, config)| {
-            let additional_decryption_keys = if index == 0 {
-                Vec::new()
-            } else {
-                vec![SecretKey::from(attestation_signers[0].credential())]
-            };
-            ZoneTestNode::launch_with_genesis_and_withdrawal_batch_interval_and_decryption_keys(
-                l1_rpc_urls[index].clone(),
-                portal_address,
-                chain_id,
-                Some(genesis.clone()),
-                attestation_signers[index].clone(),
-                withdrawal_batch_interval_blocks,
-                Some(config),
-                false,
-                additional_decryption_keys,
-                prover_config.clone(),
-            )
-        },
-    ))
-    .await?;
+    /// Wait until every live node's finalized block reaches `height`.
+    pub(crate) async fn wait_all_finalized(
+        &self,
+        height: u64,
+        timeout: Duration,
+    ) -> eyre::Result<()> {
+        for (_, node) in self.live() {
+            node.wait_for_finalized(height, timeout).await?;
+        }
+        Ok(())
+    }
 
-    Ok(RealP2pClusterParts {
-        cluster: RealP2pCluster {
-            l1,
-            portal_address,
-            nodes,
-            attestation_signers: attestation_signers.to_vec(),
-        },
-        l1_proxies,
-        p2p_network,
-    })
+    /// Assert every live node holds the same block at `height` and return its header.
+    pub(crate) async fn assert_same_block(&self, height: u64) -> eyre::Result<TempoHeaderResponse> {
+        let mut reference: Option<TempoHeaderResponse> = None;
+        for (index, node) in self.live() {
+            let block = node
+                .provider()
+                .get_block_by_number(BlockNumberOrTag::Number(height))
+                .await?
+                .ok_or_else(|| eyre::eyre!("node {index} is missing block {height}"))?;
+            match &reference {
+                None => reference = Some(block.header),
+                Some(reference) => eyre::ensure!(
+                    block.header.hash == reference.hash,
+                    "node {index} diverges at height {height}: {} != {}",
+                    block.header.hash,
+                    reference.hash,
+                ),
+            }
+        }
+        reference.ok_or_else(|| eyre::eyre!("cluster has no live node"))
+    }
+
+    /// Index of the node whose beneficiary proposed the block at `height`.
+    pub(crate) async fn proposer_of(&self, height: u64) -> eyre::Result<usize> {
+        let beneficiary =
+            alloy_consensus::BlockHeader::beneficiary(&self.assert_same_block(height).await?);
+        self.beneficiaries
+            .iter()
+            .position(|address| *address == beneficiary)
+            .ok_or_else(|| eyre::eyre!("block {height} has unknown beneficiary {beneficiary}"))
+    }
 }
 
-/// Start a three-node multi-sequencer cluster with identical genesis state and authenticated
-/// P2P identities. Node 0 bootstraps as the leader.
-pub(crate) async fn start_local_p2p_cluster(seed_blocks: u64) -> eyre::Result<P2pCluster> {
-    let addresses = [
-        available_address()?,
-        available_address()?,
-        available_address()?,
-    ];
-    let identities = [
-        Ed25519PrivateKey::from_seed(101),
-        Ed25519PrivateKey::from_seed(102),
-        Ed25519PrivateKey::from_seed(103),
-    ];
-    let public_keys = identities.each_ref().map(|key| key.public_key());
-    let secp256k1_keys = [101_u64, 102, 103].map(|key| format!("0x{key:064x}"));
-    let secp256k1_signers = secp256k1_keys
-        .each_ref()
-        .map(|key| key.parse::<PrivateKeySigner>().unwrap());
-    // Distinct shared-sequencer signers per node: the block beneficiary then identifies the
-    // producer, which handoff tests assert on.
-    let sequencer_signers: Vec<PrivateKeySigner> = (0x51u8..0x54)
-        .map(|byte| {
-            PrivateKeySigner::from_bytes(&B256::with_last_byte(byte))
+/// Start an `n`-node Simplex quorum (n >= 4) over synthetic L1 injection.
+pub(crate) async fn start_local_simplex_cluster(
+    n: usize,
+    seed_blocks: u64,
+) -> eyre::Result<SimplexCluster> {
+    start_local_simplex_cluster_inner(n, seed_blocks, None).await
+}
+
+/// Like [`start_local_simplex_cluster`], but node `rogue` loads a manifest that declares a different
+/// beneficiary for itself, so every proposal it makes is invalid for the other nodes.
+pub(crate) async fn start_local_simplex_cluster_with_rogue_proposer(
+    n: usize,
+    seed_blocks: u64,
+    rogue: usize,
+) -> eyre::Result<SimplexCluster> {
+    start_local_simplex_cluster_inner(n, seed_blocks, Some(rogue)).await
+}
+
+async fn start_local_simplex_cluster_inner(
+    n: usize,
+    seed_blocks: u64,
+    rogue: Option<usize>,
+) -> eyre::Result<SimplexCluster> {
+    let unique = NEXT_ZONE_ID.fetch_add(1, Ordering::Relaxed);
+    let root = std::env::temp_dir().join(format!(
+        "tempo-zone-simplex-test-{}-{unique}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root)?;
+
+    let addresses = (0..n)
+        .map(|_| available_address())
+        .collect::<eyre::Result<Vec<_>>>()?;
+    let identities: Vec<_> = (0..n)
+        .map(|index| Ed25519PrivateKey::from_seed(401 + index as u64))
+        .collect();
+    let secp256k1_keys: Vec<_> = (0..n)
+        .map(|index| format!("0x{:064x}", 401 + index))
+        .collect();
+    let signers: Vec<PrivateKeySigner> = (0..n)
+        .map(|index| {
+            PrivateKeySigner::from_bytes(&B256::with_last_byte(0x61 + index as u8))
                 .expect("valid test sequencer key")
         })
         .collect();
 
-    let unique = NEXT_ZONE_ID.fetch_add(1, Ordering::Relaxed);
-    let config_dir = std::env::temp_dir().join(format!(
-        "tempo-zone-p2p-test-{}-{unique}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&config_dir)?;
-    let manifest_path = config_dir.join("manifest.toml");
-    let mut manifest = format!(
-        "zone_id = 0\nleader_ed25519_public_key = \"{}\"\n",
-        const_hex::encode_prefixed(public_keys[0].as_ref())
-    );
-    for (index, ((public_key, secp256k1_signer), address)) in public_keys
-        .iter()
-        .zip(&secp256k1_signers)
-        .zip(addresses)
-        .enumerate()
-    {
-        manifest.push_str(&format!(
-            "\n[[nodes]]\nname = \"node-{index}\"\ned25519_public_key = \"{}\"\nsecp256k1_address = \"{}\"\naddress = \"{address}\"\n",
-            const_hex::encode_prefixed(public_key.as_ref()),
-            secp256k1_signer.address(),
-        ));
+    let write_manifest = |path: &std::path::Path, beneficiaries: &[Address]| -> eyre::Result<()> {
+        let mut manifest = SIMPLEX_TEST_CONSENSUS.to_owned();
+        for (index, (identity, address)) in identities.iter().zip(&addresses).enumerate() {
+            let secp256k1: PrivateKeySigner = secp256k1_keys[index].parse()?;
+            manifest.push_str(&format!(
+                "\n[[nodes]]\nname = \"node-{index}\"\ned25519_public_key = \"{}\"\nsecp256k1_address = \"{}\"\naddress = \"{address}\"\nbeneficiary = \"{}\"\n",
+                const_hex::encode_prefixed(identity.public_key().as_ref()),
+                secp256k1.address(),
+                beneficiaries[index],
+            ));
+        }
+        std::fs::write(path, manifest)?;
+        Ok(())
+    };
+    let beneficiaries: Vec<Address> = signers.iter().map(PrivateKeySigner::address).collect();
+    let manifest_path = root.join("manifest.toml");
+    write_manifest(&manifest_path, &beneficiaries)?;
+    let rogue_manifest_path = root.join("rogue-manifest.toml");
+    if let Some(rogue) = rogue {
+        let mut rogue_beneficiaries = beneficiaries.clone();
+        rogue_beneficiaries[rogue] = Address::repeat_byte(0x7f);
+        write_manifest(&rogue_manifest_path, &rogue_beneficiaries)?;
     }
-    std::fs::write(&manifest_path, manifest)?;
-    let mut configs = Vec::with_capacity(3);
-    for (index, role) in [(0, Role::Leader), (1, Role::Follower), (2, Role::Follower)] {
-        let key_path = config_dir.join(format!("node-{index}.key"));
+    let mut configs = Vec::with_capacity(n);
+    for index in 0..n {
+        let key_path = root.join(format!("node-{index}.key"));
         std::fs::write(
             &key_path,
             const_hex::encode_prefixed(identities[index].encode().as_ref()),
         )?;
-        let secp256k1_key_path = config_dir.join(format!("node-{index}-secp256k1.key"));
+        let secp256k1_key_path = root.join(format!("node-{index}-secp256k1.key"));
         std::fs::write(&secp256k1_key_path, &secp256k1_keys[index])?;
         configs.push(P2pConfig::load(
-            &manifest_path,
+            if rogue == Some(index) {
+                &rogue_manifest_path
+            } else {
+                &manifest_path
+            },
             &key_path,
-            Some(&secp256k1_key_path),
+            &secp256k1_key_path,
             addresses[index],
             false,
             0,
-            Some(role),
         )?);
     }
-    let _ = std::fs::remove_dir_all(&config_dir);
 
     let chain_id = next_unique_chain_id();
     let l1_rpc_url = spawn_test_l1_rpc(1337).await?;
     let genesis = zone_node::genesis::genesis_template()?;
-    let mut nodes = Vec::with_capacity(3);
-    for (index, config) in configs.into_iter().enumerate() {
-        nodes.push(
-            ZoneTestNode::launch_with_genesis_and_withdrawal_batch_interval(
-                l1_rpc_url.clone(),
-                Address::ZERO,
-                chain_id,
-                Some(genesis.clone()),
-                sequencer_signers[index].clone(),
-                8,
-                Some(config),
-                false,
-            )
-            .await?,
-        );
-    }
+    let datadirs: Vec<_> = (0..n)
+        .map(|index| root.join(format!("node-{index}")))
+        .collect();
+    let nodes = try_join_all((0..n).map(|index| {
+        launch_simplex_node(
+            &l1_rpc_url,
+            chain_id,
+            &genesis,
+            signers[index].clone(),
+            configs[index].clone(),
+            datadirs[index].clone(),
+        )
+    }))
+    .await?;
 
     let fixture = L1Fixture::new();
     for zone in &nodes {
@@ -4281,26 +4061,257 @@ pub(crate) async fn start_local_p2p_cluster(seed_blocks: u64) -> eyre::Result<P2
             seed_blocks,
         );
     }
-    Ok(P2pCluster {
-        nodes,
-        p2p_public_keys: public_keys.to_vec(),
-        sequencer_signers,
+    Ok(SimplexCluster {
+        nodes: nodes.into_iter().map(Some).collect(),
+        beneficiaries,
         fixture,
+        configs,
+        signers,
+        datadirs,
+        root,
+        l1_rpc_url,
+        chain_id,
+        genesis,
+        seed_blocks,
+        injected: Vec::new(),
+        generation: 0,
     })
 }
 
-pub(crate) fn leader_p2p_config(listen: SocketAddr) -> eyre::Result<P2pConfig> {
+fn copy_dir_all(from: &std::path::Path, to: &std::path::Path) -> eyre::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_all(&entry.path(), &target)?;
+        } else if entry.file_name() != "LOCK" {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
+/// A real Tempo L1 and Portal paired with a Simplex quorum. The Portal registers every node's
+/// individual key with a settlement threshold of one.
+pub(crate) struct RealSimplexCluster {
+    pub(crate) l1: L1TestNode,
+    pub(crate) portal_address: Address,
+    /// Live nodes; `None` once crashed.
+    pub(crate) nodes: Vec<Option<ZoneTestNode>>,
+    /// Individual settlement keys, in node order.
+    pub(crate) attestation_signers: Vec<PrivateKeySigner>,
+}
+
+impl RealSimplexCluster {
+    /// The live node at `index`.
+    pub(crate) fn node(&self, index: usize) -> &ZoneTestNode {
+        self.nodes[index]
+            .as_ref()
+            .unwrap_or_else(|| panic!("node {index} is not running"))
+    }
+
+    /// Stop node `index` for the rest of the test.
+    pub(crate) fn crash(&mut self, index: usize) {
+        if let Some(node) = self.nodes[index].take() {
+            node.crash();
+        }
+    }
+
+    /// Live nodes with their indices.
+    pub(crate) fn live(&self) -> impl Iterator<Item = (usize, &ZoneTestNode)> {
+        self.nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, node)| Some((index, node.as_ref()?)))
+    }
+}
+
+/// Start an `n`-member Simplex quorum against a real Tempo L1.
+///
+/// With `prover_addresses`, every node persists witnesses before finalizing and proves batches
+/// before settling them.
+pub(crate) async fn start_real_simplex_cluster(
+    n: usize,
+    withdrawal_batch_interval_blocks: u64,
+    settlement_failover_ms: u64,
+    prover_addresses: Option<ProverAddresses>,
+) -> eyre::Result<RealSimplexCluster> {
+    let l1 = L1TestNode::start().await?;
+    let addresses = (0..n)
+        .map(|_| available_address())
+        .collect::<eyre::Result<Vec<_>>>()?;
+    let identities: Vec<_> = (0..n)
+        .map(|index| Ed25519PrivateKey::from_seed(501 + index as u64))
+        .collect();
+    let attestation_keys: Vec<_> = (0..n)
+        .map(|index| format!("0x{:064x}", 501 + index))
+        .collect();
+    let attestation_signers: Vec<PrivateKeySigner> = attestation_keys
+        .iter()
+        .map(|key| key.parse().expect("valid test signer"))
+        .collect();
+
+    let factory = l1.native_zone_factory().await?;
+    let portal_address = l1
+        .create_zone_with_admin_sequencers_and_config(
+            factory,
+            l1.admin_address(),
+            attestation_signers
+                .iter()
+                .map(PrivateKeySigner::address)
+                .collect(),
+            1,
+            ZoneCreationConfig::open(),
+        )
+        .await?;
+    for signer in &attestation_signers {
+        // Every member may settle, so each needs gas for its individual key.
+        l1.fund_user(signer.address(), 10_000_000).await?;
+    }
+    // Deposits are encrypted to one shared key that every member holds.
+    let shared_encryption_key = SecretKey::from(attestation_signers[0].credential());
+    l1.set_sequencer_encryption_key_with_signer(
+        portal_address,
+        &shared_encryption_key,
+        attestation_signers[0].clone(),
+    )
+    .await?;
+
+    let portal = ZonePortal::new(portal_address, l1.provider());
+    let zone_id = portal.zoneId().call().await?;
+    let (genesis, _) = build_l1_anchored_genesis(l1.http_url(), portal_address).await?;
+    let chain_id = next_unique_chain_id();
+
+    let root = std::env::temp_dir().join(format!(
+        "tempo-zone-real-simplex-test-{}-{}",
+        std::process::id(),
+        next_unique_chain_id()
+    ));
+    std::fs::create_dir_all(&root)?;
+    let manifest_path = root.join("manifest.toml");
+    let mut manifest = SIMPLEX_TEST_CONSENSUS.replace(
+        "settlement_failover_ms = 5000",
+        &format!("settlement_failover_ms = {settlement_failover_ms}"),
+    );
+    for (index, (identity, signer)) in identities.iter().zip(&attestation_signers).enumerate() {
+        // Each node's sequencer signer is its individual key, so beneficiaries identify leaders.
+        manifest.push_str(&format!(
+            "\n[[nodes]]\nname = \"node-{index}\"\ned25519_public_key = \"{}\"\nsecp256k1_address = \"{}\"\naddress = \"{}\"\nbeneficiary = \"{}\"\n",
+            const_hex::encode_prefixed(identity.public_key().as_ref()),
+            signer.address(),
+            addresses[index],
+            signer.address(),
+        ));
+    }
+    std::fs::write(&manifest_path, manifest)?;
+    let mut configs = Vec::with_capacity(n);
+    for index in 0..n {
+        let key_path = root.join(format!("node-{index}.key"));
+        std::fs::write(
+            &key_path,
+            const_hex::encode_prefixed(identities[index].encode().as_ref()),
+        )?;
+        let secp256k1_key_path = root.join(format!("node-{index}-secp256k1.key"));
+        std::fs::write(&secp256k1_key_path, &attestation_keys[index])?;
+        configs.push(P2pConfig::load(
+            &manifest_path,
+            &key_path,
+            &secp256k1_key_path,
+            addresses[index],
+            false,
+            zone_id,
+        )?);
+    }
+    let _ = std::fs::remove_dir_all(&root);
+
+    let nodes = try_join_all(configs.into_iter().enumerate().map(|(index, config)| {
+        ZoneTestNode::launch_with_genesis_and_withdrawal_batch_interval_and_decryption_keys(
+            l1.ws_url().to_string(),
+            portal_address,
+            chain_id,
+            Some(genesis.clone()),
+            attestation_signers[index].clone(),
+            withdrawal_batch_interval_blocks,
+            Some(config),
+            false,
+            vec![shared_encryption_key.clone()],
+            prover_addresses.clone(),
+            None,
+        )
+    }))
+    .await?;
+
+    Ok(RealSimplexCluster {
+        l1,
+        portal_address,
+        nodes: nodes.into_iter().map(Some).collect(),
+        attestation_signers,
+    })
+}
+
+async fn launch_simplex_node(
+    l1_rpc_url: &str,
+    chain_id: u64,
+    genesis: &Genesis,
+    signer: PrivateKeySigner,
+    config: P2pConfig,
+    datadir: std::path::PathBuf,
+) -> eyre::Result<ZoneTestNode> {
+    ZoneTestNode::launch_with_genesis_and_withdrawal_batch_interval_and_decryption_keys(
+        l1_rpc_url.to_owned(),
+        Address::ZERO,
+        chain_id,
+        Some(genesis.clone()),
+        signer,
+        8,
+        Some(config),
+        false,
+        Vec::new(),
+        None,
+        Some(datadir),
+    )
+    .await
+}
+
+/// Prover routes that never answer, for tests of witness persistence and the `NoProof`
+/// fallback.
+///
+/// A synthetic transport policy is used even for forks without approved enclave measurements.
+pub(crate) fn unreachable_prover_addresses() -> eyre::Result<ProverAddresses> {
+    let unreachable = TempoHardfork::VARIANTS
+        .iter()
+        .map(|&hardfork| zone_sequencer::HardforkProverAddress {
+            hardfork,
+            address: "127.0.0.1:1".to_owned(),
+        })
+        .collect();
+    let pcr = "11".repeat(48);
+    let policy = serde_json::to_vec(&serde_json::json!({
+        "pcrs": { "0": [&pcr], "1": [&pcr], "2": [&pcr] }
+    }))?;
+    Ok(ProverAddresses::new(unreachable, Some(&policy))?.expect("hardforks are non-empty"))
+}
+
+/// A Simplex participant configuration whose own listener is `listen`; the other three members
+/// are placeholders that never start.
+pub(crate) fn simplex_p2p_config(listen: SocketAddr) -> eyre::Result<P2pConfig> {
     let identities = [
         Ed25519PrivateKey::from_seed(201),
         Ed25519PrivateKey::from_seed(202),
         Ed25519PrivateKey::from_seed(203),
+        Ed25519PrivateKey::from_seed(204),
     ];
-    let public_keys = identities.each_ref().map(|key| key.public_key());
-    let secp256k1_keys = [201_u64, 202, 203].map(|key| format!("0x{key:064x}"));
+    let secp256k1_keys = [201_u64, 202, 203, 204].map(|key| format!("0x{key:064x}"));
     let secp256k1_signers = secp256k1_keys
         .each_ref()
         .map(|key| key.parse::<PrivateKeySigner>().unwrap());
-    let addresses = [listen, available_address()?, available_address()?];
+    let addresses = [
+        listen,
+        available_address()?,
+        available_address()?,
+        available_address()?,
+    ];
     let config_dir = std::env::temp_dir().join(format!(
         "tempo-zone-p2p-config-{}-{}",
         std::process::id(),
@@ -4308,12 +4319,9 @@ pub(crate) fn leader_p2p_config(listen: SocketAddr) -> eyre::Result<P2pConfig> {
     ));
     std::fs::create_dir_all(&config_dir)?;
     let manifest_path = config_dir.join("manifest.toml");
-    let key_path = config_dir.join("leader.key");
-    let mut manifest = format!(
-        "zone_id = 0\nleader_ed25519_public_key = \"{}\"\n",
-        const_hex::encode_prefixed(public_keys[0].as_ref())
-    );
-    for (index, ((public_key, secp256k1_signer), address)) in public_keys
+    let key_path = config_dir.join("node-0.key");
+    let mut manifest = SIMPLEX_TEST_CONSENSUS.to_owned();
+    for (index, ((identity, secp256k1_signer), address)) in identities
         .iter()
         .zip(&secp256k1_signers)
         .zip(addresses)
@@ -4321,7 +4329,7 @@ pub(crate) fn leader_p2p_config(listen: SocketAddr) -> eyre::Result<P2pConfig> {
     {
         manifest.push_str(&format!(
             "\n[[nodes]]\nname = \"node-{index}\"\ned25519_public_key = \"{}\"\nsecp256k1_address = \"{}\"\naddress = \"{address}\"\n",
-            const_hex::encode_prefixed(public_key.as_ref()),
+            const_hex::encode_prefixed(identity.public_key().as_ref()),
             secp256k1_signer.address(),
         ));
     }
@@ -4330,16 +4338,15 @@ pub(crate) fn leader_p2p_config(listen: SocketAddr) -> eyre::Result<P2pConfig> {
         &key_path,
         const_hex::encode_prefixed(identities[0].encode().as_ref()),
     )?;
-    let secp256k1_key_path = config_dir.join("leader-secp256k1.key");
+    let secp256k1_key_path = config_dir.join("node-0-secp256k1.key");
     std::fs::write(&secp256k1_key_path, &secp256k1_keys[0])?;
     let config = P2pConfig::load(
         &manifest_path,
         &key_path,
-        Some(&secp256k1_key_path),
+        &secp256k1_key_path,
         listen,
         false,
         0,
-        Some(Role::Leader),
     )?;
     let _ = std::fs::remove_dir_all(config_dir);
     Ok(config)
@@ -5185,9 +5192,13 @@ impl L1Fixture {
         }
     }
 
-    /// The next L1 block number this fixture will inject.
-    pub(crate) fn next_anchor_number(&self) -> u64 {
-        self.next_block_number
+    /// Extend a freshly seeded cache's coverage through every block this fixture produced, as
+    /// the subscriber of a restarted node would while refetching history.
+    pub(crate) fn replay_cache_coverage(&self, cache: &L1StateCache) {
+        let mut cache = cache.lock();
+        for number in 1..self.next_block_number {
+            cache.invalidate_and_set_anchor(number, []);
+        }
     }
 
     /// Build a [`TempoHeader`] for the next L1 block.
@@ -5331,16 +5342,6 @@ impl L1Fixture {
         anchor
     }
 
-    /// Inject the same empty L1 block into multiple queues.
-    pub(crate) fn inject_empty_block_into(&mut self, queues: &[&DepositQueue]) -> NumHash {
-        let block = self.next_block();
-        let anchor = SealedHeader::seal_slow(block.header.clone()).num_hash();
-        for queue in queues {
-            self.enqueue(&block, queue, vec![]);
-        }
-        anchor
-    }
-
     /// Inject `n` empty L1 blocks (no deposits) into the queue.
     pub(crate) fn inject_empty_blocks(&mut self, queue: &DepositQueue, n: u64) {
         for _ in 0..n {
@@ -5375,20 +5376,6 @@ impl L1Fixture {
         let anchor = SealedHeader::seal_slow(header.clone()).num_hash();
         let events = self.portal_events_from_deposits(&deposits);
         queue.enqueue(header, events);
-        anchor
-    }
-
-    /// Inject the same L1 block and deposits into multiple queues.
-    pub(crate) fn inject_deposits_into(
-        &mut self,
-        queues: &[&DepositQueue],
-        deposits: Vec<DepositFixture>,
-    ) -> NumHash {
-        let block = self.next_block();
-        let anchor = SealedHeader::seal_slow(block.header.clone()).num_hash();
-        for queue in queues {
-            self.enqueue(&block, queue, deposits.clone());
-        }
         anchor
     }
 

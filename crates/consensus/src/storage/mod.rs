@@ -12,9 +12,7 @@ use commonware_consensus::{
     simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization},
     types::{Epocher as _, FixedEpocher, Height},
 };
-use commonware_cryptography::{
-    bls12381::primitives::variant::MinSig, certificate::Verifier as _, ed25519::PublicKey,
-};
+use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage, buffer::paged::CacheRef};
 use commonware_storage::{
     archive::{Archive as _, Identifier, immutable, prunable},
@@ -30,12 +28,12 @@ use crate::{
     consensus::{Digest, block::Block},
 };
 
-pub(crate) mod hybrid;
+pub mod hybrid;
 pub mod snapshot;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use hybrid::{FinalizedBlocksProvider, Hybrid};
+pub use hybrid::{FinalizedBlocksProvider, Hybrid};
 
 const FINALIZATIONS_BY_HEIGHT: &str = "finalizations-by-height";
 const PRUNABLE_FINALIZED_BLOCKS: &str = "finalized-blocks-prunable";
@@ -46,24 +44,26 @@ pub(in crate::storage) const FREEZER_TABLE_RESIZE_CHUNK_SIZE: u32 = 2u32.pow(16)
 pub(in crate::storage) const FREEZER_VALUE_TARGET_SIZE: u64 = 1024 * 1024 * 1024; // 1GB
 pub(in crate::storage) const FREEZER_VALUE_COMPRESSION: Option<u8> = Some(3);
 
-pub(crate) const REPLAY_BUFFER: std::num::NonZeroUsize = NZUsize!(8 * 1024 * 1024); // 8MB
-pub(crate) const WRITE_BUFFER: std::num::NonZeroUsize = NZUsize!(1024 * 1024); // 1MB
-pub(crate) const PRUNABLE_ITEMS_PER_SECTION: std::num::NonZeroU64 = NZU64!(4_096);
-pub(crate) const MAX_REPAIR: std::num::NonZeroUsize = NZUsize!(20);
-pub(crate) const BUFFER_POOL_PAGE_SIZE: std::num::NonZeroU16 = NZU16!(4_096); // 4KB
-pub(crate) const BUFFER_POOL_CAPACITY: std::num::NonZeroUsize = NZUsize!(8_192); // 32MB (8k page slots)
+pub const REPLAY_BUFFER: std::num::NonZeroUsize = NZUsize!(8 * 1024 * 1024); // 8MB
+pub const WRITE_BUFFER: std::num::NonZeroUsize = NZUsize!(1024 * 1024); // 1MB
+pub const PRUNABLE_ITEMS_PER_SECTION: std::num::NonZeroU64 = NZU64!(4_096);
+pub const MAX_REPAIR: std::num::NonZeroUsize = NZUsize!(20);
+pub const BUFFER_POOL_PAGE_SIZE: std::num::NonZeroU16 = NZU16!(4_096); // 4KB
+pub const BUFFER_POOL_CAPACITY: std::num::NonZeroUsize = NZUsize!(8_192); // 32MB (8k page slots)
 
 /// Open the finalization archive and ensure its tip certificate's epoch matches its stored height.
-pub(crate) async fn init_finalizations_archive<TContext>(
+///
+/// Generic over the signing scheme so chains that certify blocks with a different Simplex scheme
+/// (for example Tempo Zones' ed25519 scheme) share the archive layout.
+pub async fn init_finalizations_archive<TContext, TScheme>(
     context: &TContext,
     partition_prefix: &str,
     page_cache: CacheRef,
     epoch_strategy: &FixedEpocher,
-) -> eyre::Result<
-    immutable::Archive<TContext, Digest, Finalization<Scheme<PublicKey, MinSig>, Digest>>,
->
+) -> eyre::Result<immutable::Archive<TContext, Digest, Finalization<TScheme, Digest>>>
 where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
+    TScheme: commonware_cryptography::certificate::Scheme,
 {
     let start = Instant::now();
     let archive = immutable::Archive::init(
@@ -87,7 +87,7 @@ where
             freezer_value_compression: FREEZER_VALUE_COMPRESSION,
             ordinal_partition: format!("{partition_prefix}-{FINALIZATIONS_BY_HEIGHT}-ordinal"),
             items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
-            codec_config: Scheme::<PublicKey, MinSig>::certificate_codec_config_unbounded(),
+            codec_config: TScheme::certificate_codec_config_unbounded(),
             replay_buffer: REPLAY_BUFFER,
             freezer_key_write_buffer: WRITE_BUFFER,
             freezer_value_write_buffer: WRITE_BUFFER,
@@ -97,7 +97,7 @@ where
     .await?;
 
     if let Some(height) = archive.last_index() {
-        let certificate: Finalization<Scheme<PublicKey, MinSig>, Digest> = archive
+        let certificate: Finalization<TScheme, Digest> = archive
             .get(Identifier::Index(height))
             .await
             .wrap_err("failed reading finalized tip certificate")?
@@ -125,7 +125,7 @@ where
 /// archive (for `retention_blocks` recent items) and a reth provider lookup
 /// (for everything older).
 #[instrument(skip_all, fields(partition_prefix, retention_blocks), err(Display))]
-pub(crate) async fn init_finalized_blocks<TContext, P>(
+pub async fn init_finalized_blocks<TContext, P>(
     context: &TContext,
     partition_prefix: &str,
     page_cache: CacheRef,

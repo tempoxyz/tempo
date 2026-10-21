@@ -19,7 +19,6 @@ tempo-precompiles.workspace = true
 tempo-primitives.workspace = true
 zone-chainspec.workspace = true
 zone-l1.workspace = true
-zone-p2p.workspace = true
 zone-primitives.workspace = true
 zone-prover.workspace = true
 zone-rpc.workspace = true

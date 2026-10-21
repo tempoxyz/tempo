@@ -170,7 +170,6 @@ async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
             .submit_batch(
                 &submitter.prepare_batch(legacy).await?,
                 None,
-                None,
                 zone_prover::VerifierMode::NitroV1,
             )
             .await
@@ -312,7 +311,7 @@ async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
     let prepared = submitter.prepare_batch(batch).await?;
     // This harness has no Nitro attestation service. Use `NoProof` explicitly.
     let settled = submitter
-        .submit_batch(&prepared, None, None, zone_prover::VerifierMode::NoProof)
+        .submit_batch(&prepared, None, zone_prover::VerifierMode::NoProof)
         .await
         .map_err(|err| eyre::eyre!("T13 settlement: {err:?}"))?;
     assert_eq!(settled.lastProcessedEnabledTokenCount, 3);
@@ -331,7 +330,7 @@ async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
     );
     assert!(
         submitter
-            .submit_batch(&prepared, None, None, zone_prover::VerifierMode::NoProof)
+            .submit_batch(&prepared, None, zone_prover::VerifierMode::NoProof)
             .await
             .is_err(),
         "settlement cannot replay"
