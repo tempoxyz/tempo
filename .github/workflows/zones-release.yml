@@ -13,7 +13,7 @@ on:
         required: false
         type: string
       sha:
-        description: "Exact 40-character commit SHA on main to verify (dry-run only; omit tag)"
+        description: "Exact 40-character commit SHA on main to verify (dry-run only; omit tag). Defaults to the head of the selected ref"
         required: false
         type: string
       dry_run:
@@ -68,15 +68,15 @@ jobs:
               echo "sha must be an exact 40-character lowercase commit SHA" >&2
               exit 1
             }
-          elif [[ -z "$INPUT_TAG" ]]; then
-            echo "Provide a release tag or a commit SHA for a dry run" >&2
+          elif [[ -z "$INPUT_TAG" && "$DRY_RUN" != "true" ]]; then
+            echo "Provide a release tag, or set dry_run to verify a commit" >&2
             exit 1
           fi
 
       - name: Check out release source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && (inputs.sha || format('refs/tags/{0}', inputs.tag)) || github.ref }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && (inputs.sha || (inputs.tag && format('refs/tags/{0}', inputs.tag)) || github.sha) || github.ref }}
           fetch-depth: 0
           persist-credentials: false
           submodules: false
@@ -94,8 +94,10 @@ jobs:
           short_sha="$(git rev-parse --short=7 HEAD)"
           source_date_epoch="$(git show -s --format=%ct HEAD)"
 
-          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && -n "$INPUT_SHA" ]]; then
-            [[ "$commit_sha" == "$INPUT_SHA" ]] || {
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && -z "$INPUT_TAG" ]]; then
+            # Commit dry run: the requested SHA, or the head of the dispatched ref.
+            expected_sha="${INPUT_SHA:-$GITHUB_SHA}"
+            [[ "$commit_sha" == "$expected_sha" ]] || {
               echo "Checked-out commit does not match requested SHA" >&2
               exit 1
             }
