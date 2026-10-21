@@ -4,7 +4,10 @@ use crate::tempo_transaction::helpers::{
 };
 use alloy::{
     consensus::{BlockHeader, SignableTransaction, TxEip1559, TxLegacy},
-    rpc::types::state::StateOverridesBuilder,
+    rpc::types::{
+        simulate::{SimBlock, SimulatePayload, SimulatedBlock},
+        state::StateOverridesBuilder,
+    },
     sol_types::{SolError, SolEvent},
     transports::TransportError,
 };
@@ -249,6 +252,58 @@ async fn configurable_account_rpc_registration_revert_retry_and_rotation() -> ey
     account.adopt(next, replacement);
     let signature = account.sign(&tx)?;
     account.submit(&mut env, tx, signature, true).await?;
+
+    // A simulated block checks each call against the state the calls before it leave: once its
+    // first call rotates the configuration, the old one is stale and the new one signs. The
+    // rotation stays in the simulation's state (TIP-1114).
+    let stale = account.simulation_request();
+    let current = account.config.commitment().unwrap();
+    let replacement = ConfigurableAccount::new(0x22, 2);
+    let (next, rotate) = account.rotate_to(&replacement);
+    let mut rotation = stale.clone();
+    rotation.inner.input = rotate.input.into();
+    account.adopt(next, replacement);
+    let simulate = |call: TempoTransactionRequest| SimulatePayload {
+        block_state_calls: vec![SimBlock {
+            block_overrides: None,
+            state_overrides: None,
+            calls: vec![rotation.clone(), call],
+        }],
+        trace_transfers: false,
+        validation: false,
+        return_full_transactions: false,
+    };
+    let blocks: Vec<SimulatedBlock<Value>> = provider
+        .raw_request(
+            "eth_simulateV1".into(),
+            (simulate(account.simulation_request()),),
+        )
+        .await?;
+    let [rotated, read] = blocks[0].calls.as_slice() else {
+        panic!("{blocks:?}");
+    };
+    assert!(rotated.status, "{blocks:?}");
+    assert!(read.status, "{blocks:?}");
+    assert_eq!(
+        read.return_data,
+        Bytes::from(account.config.commitment().unwrap())
+    );
+    let error = provider
+        .raw_request::<_, Vec<SimulatedBlock<Value>>>("eth_simulateV1".into(), (simulate(stale),))
+        .await
+        .expect_err("a configuration rotated by an earlier call must be stale");
+    assert_rpc_error(
+        &error,
+        EthRpcErrorCode::TransactionRejected.code(),
+        &TempoInvalidTransaction::ConfigurableAccount(
+            ConfigurableAccountError::ConfigurationCommitmentMismatch {
+                expected: account.config.commitment().unwrap(),
+                actual: current,
+            },
+        )
+        .to_string(),
+    )?;
+    assert_eq!(commitment(&env, account.address).await?, current);
     Ok(())
 }
 
