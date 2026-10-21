@@ -170,11 +170,9 @@ jobs:
           persist-credentials: false
           submodules: recursive
 
-      - uses: tempoxyz/gh-actions/actions/setup-rust-build@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-          mold: "false"
-          sccache: "false"
 
       - name: Verify crate version matches tag
         # Check that the Cargo version starts with the tag, so Cargo version
@@ -524,12 +522,14 @@ jobs:
           submodules: recursive
 
       - name: Install Rust toolchain
-        uses: tempoxyz/gh-actions/actions/setup-rust-build@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.platform.target }}
-          mold: ${{ runner.os == 'Linux' }}
-          sccache: "false"
+
+      - name: Install mold linker
+        if: runner.os == 'Linux'
+        uses: tempoxyz/gh-actions/actions/setup-mold@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - name: Build binary
         env:
