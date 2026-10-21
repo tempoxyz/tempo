@@ -1,7 +1,7 @@
 //! The ConfigurableAccount keychain key type through the account keychain ABI.
 
 use alloy::{
-    primitives::{Address, B256, Bytes},
+    primitives::{Address, B256, Bytes, address},
     sol_types::{SolCall, SolInterface},
 };
 use alloy_evm::EvmEnv;
@@ -20,7 +20,7 @@ use tempo_precompiles::{
     account_keychain::AccountKeychain,
     storage::{StorageActions, StorageCtx, hashmap::HashMapStorageProvider},
 };
-use tempo_primitives::TempoAddressExt;
+use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
 
 const PARENT: Address = Address::repeat_byte(0x11);
 const DELEGATE: Address = Address::repeat_byte(0x22);
@@ -203,18 +203,18 @@ enum DelegateCase {
 /// delegate other than the granting account that is not in a reserved address range.
 #[test]
 fn delegate_grants_are_guarded_from_t14() {
-    let mut virtual_address_bytes = [0xAA; 20];
-    virtual_address_bytes[4..14].copy_from_slice(&Address::VIRTUAL_MAGIC);
     for spec in TempoHardfork::VARIANTS.iter().copied() {
         for case in [
             DelegateCase::CodeFree,
             DelegateCase::SelfGrant,
             DelegateCase::Bytecode,
             DelegateCase::Delegation,
-            // An Ethereum precompile, an uncreated TIP-20 and a virtual address carry no code.
+            // An Ethereum precompile, an uncreated TIP-20, a virtual and a zone portal address
+            // carry no code.
             DelegateCase::Reserved(Address::with_last_byte(1)),
             DelegateCase::Reserved(Address::new_tip20(1)),
-            DelegateCase::Reserved(Address::from(virtual_address_bytes)),
+            DelegateCase::Reserved(Address::new_virtual(MasterId::ZERO, UserTag::ZERO)),
+            DelegateCase::Reserved(address!("5ad0000000000000000000000000000000000001")),
         ] {
             let delegate = match case {
                 DelegateCase::SelfGrant => PARENT,
