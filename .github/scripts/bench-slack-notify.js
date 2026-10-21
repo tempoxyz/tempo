@@ -644,11 +644,6 @@ function fmtZonesChange(change, endToEnd) {
   return endToEnd ? `${pct} ${SIG_EMOJI[change.sig]}` : pct;
 }
 
-// The full journey spans several settlements, so it reads better in seconds.
-function fmtZonesLatency(key, ms) {
-  return key === 'journey' ? `${(ms / 1000).toFixed(2)}s` : ms.toFixed(0);
-}
-
 function buildZonesSuccessBlocks({ comparison, changes, prNumber, actor, actorSlackId, jobUrl, repo }) {
   const { metadata, latencies } = comparison;
   const verdict = verdictFromChanges(changes, 'No Significant Change');
@@ -669,8 +664,8 @@ function buildZonesSuccessBlocks({ comparison, changes, prNumber, actor, actorSl
   const rows = comparison.rows.map(({ key, label, end_to_end: endToEnd }) => [
     cell(label),
     ...['p50', 'p95'].flatMap(quantile => [
-      cell(fmtZonesLatency(key, latencies.baseline[key][`${quantile}_ms`])),
-      cell(fmtZonesLatency(key, latencies.feature[key][`${quantile}_ms`])),
+      cell((latencies.baseline[key][`${quantile}_ms`] / 1000).toFixed(2)),
+      cell((latencies.feature[key][`${quantile}_ms`] / 1000).toFixed(2)),
       cell(fmtZonesChange(changes[`${key}_${quantile}`], endToEnd)),
     ]),
   ]);
@@ -684,7 +679,7 @@ function buildZonesSuccessBlocks({ comparison, changes, prNumber, actor, actorSl
     {
       type: 'table',
       column_settings: [{ align: 'left' }, ...Array(6).fill({ align: 'right' })],
-      rows: [['Latency (ms)', 'base (p50)', 'feat (p50)', 'change', 'base (p95)', 'feat (p95)', 'change'].map(cell), ...rows],
+      rows: [['Latency (s)', 'base (p50)', 'feat (p50)', 'change', 'base (p95)', 'feat (p95)', 'change'].map(cell), ...rows],
     },
     { type: 'actions', elements: buttons },
   ];
