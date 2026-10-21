@@ -60,10 +60,14 @@ impl L2BlockEvidence {
 }
 
 /// Collect recognized events from one canonical L2 block.
+///
+/// `sponsored_fee_token` is the Zone default fee token that sponsors pay withdrawal fees in from
+/// T14, or `None` before T14, when sponsors paid in the withdrawal token.
 pub(crate) fn collect_l2_block_evidence<T, R>(
     transactions: &[T],
     receipts: &[R],
     block: BlockNumHash,
+    sponsored_fee_token: Option<Address>,
 ) -> eyre::Result<L2BlockEvidence>
 where
     T: TxHashRef + Transaction,
@@ -125,7 +129,7 @@ where
 
     let mut collector = EventCollector::default();
     for (transaction, receipt) in transactions.iter().zip(receipts) {
-        collector.extract_receipt(transaction, receipt, block.number)?;
+        collector.extract_receipt(transaction, receipt, block.number, sponsored_fee_token)?;
     }
 
     collector.finish(block.number)

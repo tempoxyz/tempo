@@ -188,7 +188,7 @@ This creates `generated/my-zone/` containing:
 - **`genesis.json`** — Zone L2 genesis state (system contracts, fee token, chain ID, etc.)
 - **`zone.json`** — Deployment metadata (portal address, zone ID, anchor block, `zoneFactory`, public `admin` / `sequencer` addresses, and optional saved keys/router metadata)
 
-This initial token controls the first L1 TIP-20 the portal accepts and mirrors onto the zone. The zone's fee token in genesis remains `pathUSD`.
+This initial token controls the first L1 TIP-20 the portal accepts and mirrors onto the zone. The zone stores this first enabled portal token in genesis as its default fee token for transaction gas and sponsored outbox withdrawal fees.
 
 You can also run the xtask directly for more control. Set `ZONE_FACTORY_OWNER_KEY` for that
 invocation instead of passing a key argument:

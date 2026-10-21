@@ -22,9 +22,10 @@ use zone_primitives::constants::{
 };
 
 use crate::{
-    ZoneResult,
+    ZoneFeeManager, ZoneResult,
     ecies::{AUTHENTICATED_WITHDRAWAL_ENCRYPTED_SIZE, decode_compressed_public_key},
     storage::{L1State, L1StorageReader},
+    tx_context::TransactionContext,
 };
 
 /// Maximum callback payload accepted by the Zone Outbox.
@@ -152,8 +153,7 @@ impl ZoneOutbox {
         &mut self,
         l1: &L1State<P>,
         caller: Address,
-        fee_payer: Address,
-        current_tx_hash: B256,
+        tx: TransactionContext,
         call: IZoneOutbox::requestWithdrawalCall,
     ) -> ZoneResult<()> {
         if call.zoneFallbackRecipient.is_zero() {
@@ -168,7 +168,7 @@ impl ZoneOutbox {
 
         validate_gas_limit(call.gasLimit)?;
 
-        if current_tx_hash.is_zero() {
+        if tx.tx_hash.is_zero() {
             return Err(ZoneOutboxError::invalid_current_tx_hash().into());
         }
         let mut zone_token = TIP20Token::from_address(call.token)?;
@@ -184,7 +184,17 @@ impl ZoneOutbox {
         }
 
         let fee = self.calculate_fee_unchecked(call.gasLimit)?;
-        if caller == fee_payer {
+        let is_t14 = self.storage.spec().is_t14();
+        // From T14, the withdrawing account pays its own fee in the withdrawal token unless a
+        // sponsor signed the transaction, so an unsponsored exit of an enabled token, direct or
+        // through a contract, never depends on another token. Before T14, the fee payer paid the
+        // fee in the withdrawal token.
+        let self_paid = if is_t14 {
+            !tx.is_sponsored()
+        } else {
+            caller == tx.fee_payer
+        };
+        if fee == 0 || self_paid {
             let total = call
                 .amount
                 .checked_add(fee)
@@ -192,8 +202,17 @@ impl ZoneOutbox {
             self.transfer_and_burn(&mut zone_token, caller, total)?;
         } else {
             self.transfer_and_burn(&mut zone_token, caller, call.amount)?;
-            if fee != 0 {
-                self.transfer_and_burn(&mut zone_token, fee_payer, fee)?;
+            if is_t14 {
+                // Sponsors pay in the Zone default fee token, so they need not hold the
+                // withdrawal token.
+                let mut fee_token =
+                    TIP20Token::from_address(ZoneFeeManager::new().default_fee_token()?)?;
+                if !fee_token.is_initialized()? {
+                    return Err(TempoPrecompileError::from(TIP20Error::uninitialized()).into());
+                }
+                self.transfer_and_burn(&mut fee_token, tx.fee_payer, fee)?;
+            } else {
+                self.transfer_and_burn(&mut zone_token, tx.fee_payer, fee)?;
             }
         }
 
@@ -205,7 +224,7 @@ impl ZoneOutbox {
         self.last_fallback_nonce.write(fallback_nonce)?;
         self.fallback_recipients[fallback_nonce].write(call.zoneFallbackRecipient)?;
         self.enqueue(
-            PendingWithdrawal::from_request(caller, current_tx_hash, fallback_nonce, call),
+            PendingWithdrawal::from_request(caller, tx.tx_hash, fallback_nonce, call),
             fee,
         )
     }

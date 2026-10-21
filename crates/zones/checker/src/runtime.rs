@@ -4,6 +4,7 @@ use std::{collections::BTreeSet, future::Future, time::Duration};
 
 use alloy_consensus::BlockHeader as _;
 use alloy_eips::BlockNumHash;
+use alloy_primitives::Address;
 use alloy_provider::{DynProvider, Provider as _, ProviderBuilder};
 use alloy_rpc_client::{ConnectionConfig, RpcClient, WebSocketConfig};
 use futures::{StreamExt as _, TryStreamExt as _, future};
@@ -139,6 +140,7 @@ where
         config: &config,
         metrics,
         latency: LatencyTracker::default(),
+        default_fee_token: bootstrap.default_fee_token,
     };
     while let Some(notification) = ctx.notifications.try_next().await? {
         if !matches!(&notification, ExExNotification::ChainCommitted { .. }) {
@@ -285,6 +287,8 @@ struct VerificationContext<'a> {
     config: &'a CheckerConfig,
     metrics: &'a CheckerMetrics,
     latency: LatencyTracker,
+    /// Zone default fee token that sponsors pay withdrawal fees in from T14.
+    default_fee_token: Address,
 }
 
 fn record_retry_attempt(
@@ -394,8 +398,16 @@ where
     let (config, metrics) = (context.config, context.metrics);
     let zone = BlockRef::from(block.num_hash());
     let fail = |error| BlockError::Finding { zone, error };
-    let l2 = collect_l2_block_evidence(&block.body().transactions, receipts, zone.into())
-        .map_err(fail)?;
+    let spec = provider
+        .chain_spec()
+        .tempo_hardfork_at(block.header().timestamp());
+    let l2 = collect_l2_block_evidence(
+        &block.body().transactions,
+        receipts,
+        zone.into(),
+        spec.is_t14().then_some(context.default_fee_token),
+    )
+    .map_err(fail)?;
     let tempo_parent = BlockNumHash::from(prior.metadata.imported_tempo);
     let mut l1_backoff = Backoff::new();
     let (tempo, tempo_block) = if let Some(anchor) = l2.l1_anchor() {
@@ -429,9 +441,6 @@ where
     for token in &tokens {
         accounts.entry(*token).or_default();
     }
-    let spec = provider
-        .chain_spec()
-        .tempo_hardfork_at(block.header().timestamp());
     let mut state_attempts = 0;
     let observed = loop {
         match read_accounting_state(provider, &accounts, zone.into(), spec) {

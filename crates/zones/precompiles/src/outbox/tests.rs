@@ -1,10 +1,14 @@
 use super::*;
 
-use alloy_evm::precompiles::DynPrecompile;
+use alloy_evm::{EvmInternals, precompiles::DynPrecompile};
 use alloy_primitives::{Bytes, address};
-use alloy_sol_types::{SolCall, SolInterface};
+use alloy_sol_types::{SolCall, SolEvent, SolInterface};
 use revm::precompile::{PrecompileHalt, PrecompileResult, PrecompileStatus};
-use tempo_contracts::zones::IZoneOutbox as ZoneOutboxAbi;
+use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_contracts::{
+    precompiles::{IRolesAuth, RolesAuthError},
+    zones::IZoneOutbox as ZoneOutboxAbi,
+};
 use tempo_precompiles::{
     storage::{StorageCtx, StorageKey},
     test_util::TIP20Setup,
@@ -16,7 +20,8 @@ use crate::{
     create_outbox_precompile,
     tempo_state::TEMPO_BLOCK_NUMBER_SLOT,
     test_utils::{
-        MockL1Reader, TestContext, call_precompile, test_context, test_env, test_storage_provider,
+        MockL1Reader, TestContext, call_precompile, test_context, test_context_with_hardfork,
+        test_env, test_storage_provider,
     },
     tx_context,
 };
@@ -41,7 +46,15 @@ struct Harness {
 
 impl Harness {
     fn new() -> eyre::Result<Self> {
-        let mut ctx = test_context();
+        Self::with_context(test_context())
+    }
+
+    /// Harness on T14, where sponsors pay withdrawal fees in the default fee token.
+    fn t14() -> eyre::Result<Self> {
+        Self::with_context(test_context_with_hardfork(TempoHardfork::T14))
+    }
+
+    fn with_context(mut ctx: TestContext) -> eyre::Result<Self> {
         let token = tempo_precompiles::PATH_USD_ADDRESS;
         let l1 = MockL1Reader::default();
         l1.insert(
@@ -72,6 +85,7 @@ impl Harness {
                 )?;
 
                 ZoneOutbox::new().initialize()?;
+                ZoneFeeManager::new().initialize(token)?;
                 TIP20Setup::path_usd(ALICE)
                     .with_issuer(ALICE)
                     .with_issuer(ZONE_OUTBOX_ADDRESS)
@@ -96,32 +110,51 @@ impl Harness {
     }
 
     #[rustfmt::skip]
-    fn call_inner(&mut self, caller: Address, fee_payer: Address, data: impl AsRef<[u8]>, with_context: bool, is_static: bool) -> PrecompileResult {
-        let _guard = with_context.then(|| tx_context::set_current_transaction(TX_HASH, fee_payer));
-        call_precompile(
+    fn call_inner(&mut self, origin: Address, caller: Address, fee_payer: Address, data: impl AsRef<[u8]>, with_context: bool, is_static: bool) -> PrecompileResult {
+        let _guard = with_context.then(|| tx_context::set_current_transaction(tx_context::TransactionContext { tx_hash: TX_HASH, origin, fee_payer }));
+        let checkpoint = EvmInternals::from_context(&mut self.ctx).checkpoint();
+        let result = call_precompile(
             &mut self.ctx, &self.precompile, caller, data.as_ref(), GAS, is_static, ZONE_OUTBOX_ADDRESS, ZONE_OUTBOX_ADDRESS
-        )
+        );
+        let mut internals = EvmInternals::from_context(&mut self.ctx);
+        if result.as_ref().is_ok_and(|output| output.is_success()) {
+            internals.checkpoint_commit();
+        } else {
+            internals.checkpoint_revert(checkpoint);
+        }
+        result
     }
 
     fn call_without_hash(&mut self, caller: Address, data: impl AsRef<[u8]>) -> PrecompileResult {
-        self.call_inner(caller, caller, data, false, false)
+        self.call_inner(caller, caller, caller, data, false, false)
     }
 
     fn call(&mut self, caller: Address, data: impl AsRef<[u8]>) -> PrecompileResult {
-        self.call_inner(caller, caller, data, true, false)
+        self.call_inner(caller, caller, caller, data, true, false)
     }
 
+    /// Calls as `caller` in a transaction sent by `caller` and sponsored by `fee_payer`.
     fn call_with_fee_payer(
         &mut self,
         caller: Address,
         fee_payer: Address,
         data: impl AsRef<[u8]>,
     ) -> PrecompileResult {
-        self.call_inner(caller, fee_payer, data, true, false)
+        self.call_inner(caller, caller, fee_payer, data, true, false)
+    }
+
+    /// Calls as contract `caller` in an unsponsored transaction sent by `origin`.
+    fn call_through_contract(
+        &mut self,
+        origin: Address,
+        caller: Address,
+        data: impl AsRef<[u8]>,
+    ) -> PrecompileResult {
+        self.call_inner(origin, caller, origin, data, true, false)
     }
 
     fn call_static(&mut self, caller: Address, data: impl AsRef<[u8]>) -> PrecompileResult {
-        self.call_inner(caller, caller, data, false, true)
+        self.call_inner(caller, caller, caller, data, false, true)
     }
 
     fn pending(&mut self) -> eyre::Result<Vec<ZoneOutboxAbi::PendingWithdrawal>> {
@@ -240,6 +273,44 @@ impl Harness {
         })
     }
 
+    fn add_withdrawal_token(&mut self, amount: u128) -> eyre::Result<Address> {
+        let mut storage = test_storage_provider(&mut self.ctx, u64::MAX, false);
+        let token = StorageCtx::enter(&mut storage, || -> eyre::Result<Address> {
+            Ok(TIP20Setup::create("Deel USD", "DEEL", ALICE)
+                .with_issuer(ALICE)
+                .with_issuer(ZONE_OUTBOX_ADDRESS)
+                .with_mint(ALICE, U256::from(amount))
+                .with_approval(ALICE, ZONE_OUTBOX_ADDRESS, U256::from(amount))
+                .apply()?
+                .address())
+        })?;
+        self.l1.insert(
+            PORTAL,
+            token.mapping_slot(portal::slots::TOKEN_CONFIGS),
+            ANCHOR,
+            U256::ONE,
+        );
+        Ok(token)
+    }
+
+    fn token_state(&mut self, token: Address, owner: Address) -> eyre::Result<TokenState> {
+        let mut storage = test_storage_provider(&mut self.ctx, u64::MAX, false);
+        StorageCtx::enter(&mut storage, || {
+            let token = TIP20Token::from_address(token)?;
+            Ok(TokenState {
+                balance: token.balance_of(ITIP20::balanceOfCall { account: owner })?,
+                allowance: token.allowance(ITIP20::allowanceCall {
+                    owner,
+                    spender: ZONE_OUTBOX_ADDRESS,
+                })?,
+                supply: token.total_supply()?,
+                outbox_balance: token.balance_of(ITIP20::balanceOfCall {
+                    account: ZONE_OUTBOX_ADDRESS,
+                })?,
+            })
+        })
+    }
+
     fn finalize(&mut self, count: usize) -> PrecompileResult {
         self.call(
             Address::ZERO,
@@ -251,6 +322,14 @@ impl Harness {
             .abi_encode(),
         )
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct TokenState {
+    balance: U256,
+    allowance: U256,
+    supply: U256,
+    outbox_balance: U256,
 }
 
 fn assert_revert(result: PrecompileResult, error: impl SolInterface) {
@@ -717,8 +796,14 @@ fn request_burns_amount_plus_fee_and_rejects_insufficient_funds() -> eyre::Resul
     harness.request(100, BOB, B256::ZERO)?;
     assert_eq!(harness.balance_of(ALICE)?, before - U256::from(100 + fee));
 
-    let result = harness.request(u128::MAX, BOB, B256::ZERO);
-    assert!(result.expect("precompile result").is_revert());
+    let result = harness.request(u128::MAX, BOB, B256::ZERO)?;
+    assert!(result.is_revert());
+    assert_eq!(
+        result.bytes,
+        TempoPrecompileError::under_overflow()
+            .into_precompile_result(0, 0)?
+            .bytes
+    );
     Ok(())
 }
 
@@ -752,6 +837,393 @@ fn request_charges_withdrawal_fee_to_effective_fee_payer() -> eyre::Result<()> {
         harness.balance_of(FEE_PAYER)?,
         fee_payer_before - U256::from(fee)
     );
+    Ok(())
+}
+
+#[test]
+fn sponsored_withdrawal_fee_uses_cached_default_token() -> eyre::Result<()> {
+    for amount in [100, u128::MAX] {
+        let mut harness = Harness::t14()?;
+        let withdrawal_token = harness.add_withdrawal_token(amount)?;
+        let fee_token = harness.token;
+        assert!(harness.set_gas_rate(2)?.is_success());
+        let fee_before = harness.token_state(fee_token, FEE_PAYER)?;
+        assert_eq!(
+            harness.token_state(withdrawal_token, FEE_PAYER)?.balance,
+            U256::ZERO
+        );
+        assert_eq!(
+            harness.token_state(withdrawal_token, FEE_PAYER)?.allowance,
+            U256::ZERO
+        );
+
+        let output = harness.call_with_fee_payer(
+            ALICE,
+            FEE_PAYER,
+            ZoneOutboxAbi::requestWithdrawalCall {
+                token: withdrawal_token,
+                to: BOB,
+                amount,
+                memo: B256::ZERO,
+                gasLimit: 10_000,
+                zoneFallbackRecipient: ALICE,
+                data: Bytes::new(),
+                revealTo: Bytes::new(),
+            }
+            .abi_encode(),
+        )?;
+        assert!(output.is_success());
+        assert_eq!(
+            harness.token_state(withdrawal_token, ALICE)?,
+            TokenState {
+                balance: U256::ZERO,
+                allowance: U256::ZERO,
+                supply: U256::ZERO,
+                outbox_balance: U256::ZERO,
+            }
+        );
+        let fee_after = harness.token_state(fee_token, FEE_PAYER)?;
+        assert_eq!(fee_after.balance, fee_before.balance - U256::from(120_000));
+        assert_eq!(fee_after.supply, fee_before.supply - U256::from(120_000));
+        assert_eq!(fee_after.outbox_balance, U256::ZERO);
+        assert_eq!(fee_after.allowance, fee_before.allowance);
+        let pending = harness.pending()?;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].token, withdrawal_token);
+        assert_eq!(pending[0].amount, amount);
+        let event = harness
+            .ctx
+            .journaled_state
+            .logs
+            .iter()
+            .find_map(|log| ZoneOutboxAbi::WithdrawalRequested::decode_log(log).ok())
+            .expect("withdrawal event");
+        assert_eq!(event.token, withdrawal_token);
+        assert_eq!(event.amount, amount);
+        assert_eq!(event.fee, 120_000);
+        assert_eq!(event.sender, ALICE);
+        let portal = ZonePortalStorage::new(PORTAL);
+        for slot in [
+            portal.enabled_tokens.len_slot(),
+            portal.enabled_tokens.data_slot(),
+        ] {
+            assert!(
+                !harness
+                    .l1
+                    .storage_requests()
+                    .contains(&(PORTAL, slot.into(), ANCHOR))
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn pre_t14_fee_payer_pays_withdrawal_fee_in_withdrawal_token() -> eyre::Result<()> {
+    // Before T14, whenever the caller is not the fee payer (a sponsored transaction, or a
+    // contract call in FEE_PAYER's own transaction), FEE_PAYER pays the fee in the withdrawal token.
+    for sponsored in [true, false] {
+        let mut harness = Harness::with_context(test_context_with_hardfork(TempoHardfork::T13))?;
+        let default_fee_token = harness.add_withdrawal_token(100)?;
+        let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
+        StorageCtx::enter(&mut storage, || {
+            ZoneFeeManager::new().initialize(default_fee_token)
+        })?;
+        drop(storage);
+        assert!(harness.set_gas_rate(2)?.is_success());
+        let token = harness.token;
+        let sender_before = harness.token_state(token, ALICE)?;
+        let fee_payer_before = harness.token_state(token, FEE_PAYER)?;
+        let default_before = harness.token_state(default_fee_token, FEE_PAYER)?;
+
+        let call = ZoneOutboxAbi::requestWithdrawalCall {
+            token,
+            to: BOB,
+            amount: 100,
+            memo: B256::ZERO,
+            gasLimit: 0,
+            zoneFallbackRecipient: ALICE,
+            data: Bytes::new(),
+            revealTo: Bytes::new(),
+        }
+        .abi_encode();
+        let output = if sponsored {
+            harness.call_with_fee_payer(ALICE, FEE_PAYER, call)?
+        } else {
+            harness.call_through_contract(FEE_PAYER, ALICE, call)?
+        };
+
+        assert!(output.is_success());
+        assert_eq!(
+            harness.token_state(token, ALICE)?.balance,
+            sender_before.balance - U256::from(100)
+        );
+        let fee_payer_after = harness.token_state(token, FEE_PAYER)?;
+        assert_eq!(
+            fee_payer_after.balance,
+            fee_payer_before.balance - U256::from(100_000)
+        );
+        assert_eq!(
+            fee_payer_after.supply,
+            fee_payer_before.supply - U256::from(100_100)
+        );
+        assert_eq!(
+            harness.token_state(default_fee_token, FEE_PAYER)?,
+            default_before
+        );
+        assert_eq!(harness.pending()?.len(), 1);
+    }
+    Ok(())
+}
+
+#[test]
+fn unsponsored_withdrawal_fee_does_not_depend_on_default_token() -> eyre::Result<()> {
+    // ALICE withdraws directly, then as a contract called by FEE_PAYER without a sponsor. Either
+    // way ALICE pays amount + fee in the withdrawal token and the paused default token is unused.
+    for origin in [ALICE, FEE_PAYER] {
+        let mut harness = Harness::t14()?;
+        let default_fee_token = harness.add_withdrawal_token(100_000)?;
+        let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
+        StorageCtx::enter(&mut storage, || -> TempoResult<()> {
+            ZoneFeeManager::new().initialize(default_fee_token)?;
+            let mut token = TIP20Token::from_address(default_fee_token)?;
+            token.grant_role(
+                ALICE,
+                IRolesAuth::grantRoleCall {
+                    role: TIP20Token::pause_role(),
+                    account: ALICE,
+                },
+            )?;
+            token.pause(ALICE, ITIP20::pauseCall {})?;
+            Ok(())
+        })?;
+        drop(storage);
+        assert!(harness.set_gas_rate(2)?.is_success());
+        let token = harness.token;
+        let default_before = harness.token_state(default_fee_token, ALICE)?;
+        let before = harness.token_state(token, ALICE)?;
+        let origin_before = harness.token_state(token, FEE_PAYER)?;
+
+        let call = ZoneOutboxAbi::requestWithdrawalCall {
+            token,
+            to: BOB,
+            amount: 100,
+            memo: B256::ZERO,
+            gasLimit: 0,
+            zoneFallbackRecipient: ALICE,
+            data: Bytes::new(),
+            revealTo: Bytes::new(),
+        }
+        .abi_encode();
+        assert!(
+            harness
+                .call_through_contract(origin, ALICE, call)?
+                .is_success()
+        );
+
+        let after = harness.token_state(token, ALICE)?;
+        assert_eq!(after.balance, before.balance - U256::from(100_100));
+        assert_eq!(after.supply, before.supply - U256::from(100_100));
+        assert_eq!(
+            harness.token_state(token, FEE_PAYER)?.balance,
+            origin_before.balance
+        );
+        assert_eq!(
+            harness.token_state(default_fee_token, ALICE)?,
+            default_before
+        );
+        assert_eq!(harness.pending()?.len(), 1);
+    }
+    Ok(())
+}
+
+#[test]
+fn fee_token_failures_revert_both_burns_and_withdrawal_state() -> eyre::Result<()> {
+    for insufficient_balance in [false, true] {
+        let mut harness = Harness::t14()?;
+        let withdrawal_token = harness.add_withdrawal_token(100)?;
+        let fee_token = harness.token;
+        assert!(harness.set_gas_rate(2)?.is_success());
+        assert!(harness.set_max_withdrawals(1)?.is_success());
+        let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
+        StorageCtx::enter(&mut storage, || -> TempoResult<()> {
+            let mut token = TIP20Token::from_address(fee_token)?;
+            if insufficient_balance {
+                assert!(token.transfer(
+                    FEE_PAYER,
+                    ITIP20::transferCall {
+                        to: BOB,
+                        amount: U256::from(1_000_000),
+                    },
+                )?);
+            } else {
+                assert!(token.approve(
+                    FEE_PAYER,
+                    ITIP20::approveCall {
+                        spender: ZONE_OUTBOX_ADDRESS,
+                        amount: U256::from(99_999)
+                    }
+                )?);
+            }
+            Ok(())
+        })?;
+        drop(storage);
+        let principal_before = harness.token_state(withdrawal_token, ALICE)?;
+        let fee_before = harness.token_state(fee_token, FEE_PAYER)?;
+        let call = ZoneOutboxAbi::requestWithdrawalCall {
+            token: withdrawal_token,
+            to: BOB,
+            amount: 100,
+            memo: B256::ZERO,
+            gasLimit: 0,
+            zoneFallbackRecipient: ALICE,
+            data: Bytes::new(),
+            revealTo: Bytes::new(),
+        }
+        .abi_encode();
+        let logs_before = harness.ctx.journaled_state.logs.len();
+        let result = harness.call_with_fee_payer(ALICE, FEE_PAYER, &call);
+        assert_revert(
+            result,
+            if insufficient_balance {
+                TIP20Error::insufficient_balance(U256::ZERO, U256::from(100_000), fee_token)
+            } else {
+                TIP20Error::insufficient_allowance()
+            },
+        );
+        assert_eq!(
+            harness.token_state(withdrawal_token, ALICE)?,
+            principal_before
+        );
+        assert_eq!(harness.token_state(fee_token, FEE_PAYER)?, fee_before);
+        assert_eq!(harness.ctx.journaled_state.logs.len(), logs_before);
+        assert!(harness.pending()?.is_empty());
+        assert_eq!(harness.last_fallback_nonce()?, 0);
+        let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
+        StorageCtx::enter(&mut storage, || -> TempoResult<()> {
+            assert_eq!(ZoneOutbox::new().next_withdrawal_index.read()?, 0);
+            assert_eq!(ZoneOutbox::new().withdrawals_this_block.read()?, 0);
+            assert_eq!(ZoneOutbox::new().fallback_recipient(1)?, Address::ZERO);
+            TIP20Setup::config(fee_token)
+                .with_admin(ALICE)
+                .with_mint(FEE_PAYER, U256::from(100_000))
+                .with_approval(FEE_PAYER, ZONE_OUTBOX_ADDRESS, U256::from(100_000))
+                .apply()?;
+            Ok(())
+        })?;
+        drop(storage);
+        assert!(
+            harness
+                .call_with_fee_payer(ALICE, FEE_PAYER, &call)?
+                .is_success()
+        );
+        assert_eq!(harness.pending()?.len(), 1);
+        assert_eq!(harness.last_fallback_nonce()?, 1);
+    }
+    Ok(())
+}
+
+#[test]
+fn fee_token_pause_and_burn_authorization_revert_withdrawal() -> eyre::Result<()> {
+    for paused in [true, false] {
+        let mut harness = Harness::t14()?;
+        let withdrawal_token = harness.add_withdrawal_token(100)?;
+        let fee_token = harness.token;
+        assert!(harness.set_gas_rate(2)?.is_success());
+        {
+            let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
+            StorageCtx::enter(&mut storage, || -> TempoResult<()> {
+                let mut token = TIP20Token::from_address(fee_token)?;
+                if paused {
+                    token.grant_role(
+                        ALICE,
+                        IRolesAuth::grantRoleCall {
+                            role: TIP20Token::pause_role(),
+                            account: ALICE,
+                        },
+                    )?;
+                    token.pause(ALICE, ITIP20::pauseCall {})?;
+                } else {
+                    token.revoke_role(
+                        ALICE,
+                        IRolesAuth::revokeRoleCall {
+                            role: TIP20Token::issuer_role(),
+                            account: ZONE_OUTBOX_ADDRESS,
+                        },
+                    )?;
+                }
+                Ok(())
+            })?;
+        }
+        let principal_before = harness.token_state(withdrawal_token, ALICE)?;
+        let fee_before = harness.token_state(fee_token, FEE_PAYER)?;
+        let result = harness.call_with_fee_payer(
+            ALICE,
+            FEE_PAYER,
+            ZoneOutboxAbi::requestWithdrawalCall {
+                token: withdrawal_token,
+                to: BOB,
+                amount: 100,
+                memo: B256::ZERO,
+                gasLimit: 0,
+                zoneFallbackRecipient: ALICE,
+                data: Bytes::new(),
+                revealTo: Bytes::new(),
+            }
+            .abi_encode(),
+        );
+        if paused {
+            assert_revert(result, TIP20Error::contract_paused());
+        } else {
+            assert_revert(result, RolesAuthError::unauthorized());
+        }
+        assert_eq!(
+            harness.token_state(withdrawal_token, ALICE)?,
+            principal_before
+        );
+        assert_eq!(harness.token_state(fee_token, FEE_PAYER)?, fee_before);
+        assert!(harness.pending()?.is_empty());
+        assert_eq!(harness.last_fallback_nonce()?, 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn zero_fee_skips_invalid_or_uninitialized_default_fee_token() -> eyre::Result<()> {
+    for (fee_token, error) in [
+        (Address::ZERO, TIP20Error::invalid_token()),
+        (
+            address!("20c0000000000000000000000000000000001234"),
+            TIP20Error::uninitialized(),
+        ),
+    ] {
+        let mut harness = Harness::t14()?;
+        let mut storage = test_storage_provider(&mut harness.ctx, u64::MAX, false);
+        StorageCtx::enter(&mut storage, || ZoneFeeManager::new().initialize(fee_token))?;
+        drop(storage);
+        let call = ZoneOutboxAbi::requestWithdrawalCall {
+            token: harness.token,
+            to: BOB,
+            amount: 100,
+            memo: B256::ZERO,
+            gasLimit: 0,
+            zoneFallbackRecipient: ALICE,
+            data: Bytes::new(),
+            revealTo: Bytes::new(),
+        }
+        .abi_encode();
+        assert!(
+            harness
+                .call_with_fee_payer(ALICE, FEE_PAYER, &call)?
+                .is_success()
+        );
+        assert!(harness.set_gas_rate(1)?.is_success());
+        let before = harness.token_state(harness.token, ALICE)?;
+        assert_revert(harness.call_with_fee_payer(ALICE, FEE_PAYER, &call), error);
+        assert_eq!(harness.token_state(harness.token, ALICE)?, before);
+        assert_eq!(harness.pending()?.len(), 1);
+        assert_eq!(harness.last_fallback_nonce()?, 1);
+    }
     Ok(())
 }
 

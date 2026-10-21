@@ -466,9 +466,9 @@ The admin configures Tempo-side deposit and bounce-back fees, while sequencers c
 | `maxTempoGasRate` | `ZonePortal.setMaxTempoGasRate()` | Admin ceiling for the sequencer-controlled withdrawal gas rate |
 | `tempoGasRate` | `ZoneOutbox.setTempoGasRate()` | Withdrawal fee reserve: `(WITHDRAWAL_BASE_GAS (50,000) + gasLimit) * tempoGasRate` |
 
-`zoneGasRate` and `maxTempoGasRate` live on `ZonePortal` on Tempo. `maxTempoGasRate` defaults to zero, so nonzero withdrawal pricing remains disabled until the admin explicitly configures a ceiling. `tempoGasRate` lives on the zone-side `ZoneOutbox`; the sequencer may update it only to a value less than or equal to the finalized portal maximum. The outbox reads `tempoGasRate` at withdrawal-request time. Deposit and withdrawal fees are snapshotted onto their queued entries, so in-flight rate changes never retroactively raise the fee on already-queued items.
+`zoneGasRate` and `maxTempoGasRate` live on `ZonePortal` on Tempo. `maxTempoGasRate` defaults to zero, so nonzero withdrawal pricing remains disabled until the admin explicitly configures a ceiling. `tempoGasRate` lives on the zone-side `ZoneOutbox`; the sequencer may update it only to a value less than or equal to the finalized portal maximum. The outbox reads `tempoGasRate` at withdrawal-request time. Deposit fees are snapshotted onto their queued entries; withdrawal fees are charged and burned when requested. In-flight rate changes never retroactively raise either fee.
 
-Deposit bounce-backs do not use `tempoGasRate`. Their fee is derived from the admin-configured `bouncebackGas`, Tempo `block.basefee`, and `TEMPO_BASE_FEE_SCALE (1e12)`. All rates are denominated in token units per gas unit and fees are paid in the same token being deposited or withdrawn. Tempo-side deposit and bounce-back fees are paid to the portal admin; the protocol does not distribute them among sequencers.
+Deposit bounce-backs do not use `tempoGasRate`. Their fee is derived from the admin-configured `bouncebackGas`, Tempo `block.basefee`, and `TEMPO_BASE_FEE_SCALE (1e12)`. All rates are denominated in token units per gas unit. Deposit and bounce-back fees use the deposited token. Withdrawal fees use the withdrawal token, except that from T14 a sponsored withdrawal's fee uses the Zone default fee token, captured from the portal's first enabled token at initialization and stored in canonical Zone state (see [Withdrawal Fees](#withdrawal-fees)). Tempo-side deposit and bounce-back fees are paid to the portal admin; the protocol does not distribute them among sequencers.
 
 The sequencer can also configure `maxWithdrawalsPerBlock` via `ZoneOutbox.setMaxWithdrawalsPerBlock(limit)`. This is a zone-side load-shedding limit for withdrawal requests, not a fee parameter. A value of `0` disables the limit.
 
@@ -730,13 +730,13 @@ flowchart LR
 
 ### Withdrawal Request
 
-A user withdraws by calling `requestWithdrawal(token, to, amount, memo, gasLimit, zoneFallbackRecipient, data, revealTo)` on the `ZoneOutbox`. The user must first approve the outbox to spend `amount + fee` of the token, and `amount` must be non-zero. The token must be enabled, and the `zoneFallbackRecipient` must be non-zero but need not be a Tempo allowed account. For a plain withdrawal (`gasLimit == 0`), closed access mode requires `to` to have the `Account` role; open access mode does not. Enforced gateway mode prevents accounts with the `CallbackGateway` role from receiving plain withdrawals and requires callback targets (`gasLimit > 0`) to have that role. Open gateway mode skips both role checks.
+A user withdraws by calling `requestWithdrawal(token, to, amount, memo, gasLimit, zoneFallbackRecipient, data, revealTo)` on the `ZoneOutbox`. Unless a sponsor signed the transaction, the caller approves the outbox to spend `amount + fee` of the withdrawal token. For a sponsored transaction, the caller approves `amount` of the withdrawal token and the sponsor approves `fee` of the Zone default fee token. Before T14 the rules differ; see [Withdrawal Fees](#withdrawal-fees). `amount` must be non-zero. The token must be enabled, and the `zoneFallbackRecipient` must be non-zero but need not be a Tempo allowed account. For a plain withdrawal (`gasLimit == 0`), closed access mode requires `to` to have the `Account` role; open access mode does not. Enforced gateway mode prevents accounts with the `CallbackGateway` role from receiving plain withdrawals and requires callback targets (`gasLimit > 0`) to have that role. Open gateway mode skips both role checks.
 
 Withdrawal requests are bounded before they enter the pending queue. `gasLimit` must be less than or equal to `MAX_WITHDRAWAL_GAS_LIMIT` or the request reverts with `GasLimitTooHigh`; `data.length` must be less than or equal to `MAX_CALLBACK_DATA_SIZE` (1,024 bytes) or the request reverts with `CallbackDataTooLarge`; and `revealTo`, when non-empty, must be a valid 33-byte compressed secp256k1 public key or the request reverts with `InvalidRevealTo`. The Zone EVM supplies the current transaction hash directly to the native outbox; if it is zero, the request reverts with `InvalidCurrentTxHash`, because the transaction hash is part of the authenticated-withdrawal sender tag.
 
 The sequencer can additionally configure `maxWithdrawalsPerBlock` on the outbox. A value of `0` means unlimited. When nonzero, only that many `requestWithdrawal` calls can be accepted in a single zone block; further requests in the same block revert with `TooManyWithdrawalsThisBlock` before any token transfer or burn. The outbox tracks the last block number counted and resets the per-block counter when `block.number` changes.
 
-Before transferring or burning tokens, the outbox reads the packed pause expiry from the portal at the latest finalized Tempo checkpoint. An active pause reverts the request with `PortalIsPaused`. Otherwise the outbox transfers `amount + fee` from the user via `transferFrom`, burns the tokens, assigns a monotonically increasing nonzero `uint64 fallbackNonce`, stores `fallbackNonce -> zoneFallbackRecipient`, and stores the withdrawal in a pending array. The `WithdrawalRequested` event is emitted with the plaintext sender and fallback nonce (zone events are private).
+Before transferring or burning tokens, the outbox reads the packed pause expiry from the portal at the latest finalized Tempo checkpoint. An active pause reverts the request with `PortalIsPaused`. Otherwise the outbox transfers `amount` and the withdrawal fee via `transferFrom` as described under [Withdrawal Fees](#withdrawal-fees), burns them, assigns a monotonically increasing nonzero `uint64 fallbackNonce`, stores `fallbackNonce -> zoneFallbackRecipient`, and stores the withdrawal in a pending array. The `WithdrawalRequested` event is emitted with the plaintext sender and fallback nonce (zone events are private).
 
 Keeping the recipient in zone state prevents the L1-visible withdrawal and any later bounce-back from revealing the user's private zone address. A monotonic nonce is deterministic under the zone's canonical transaction ordering, including multi-sequencer execution, while remaining collision-free; it reveals only relative withdrawal order and count, not the mapped recipient.
 
@@ -749,9 +749,17 @@ fee = (WITHDRAWAL_BASE_GAS + gasLimit) * tempoGasRate
     = (50,000 + gasLimit) * tempoGasRate
 ```
 
-`WITHDRAWAL_BASE_GAS` (50,000) covers the fixed overhead of processing a withdrawal on Tempo (queue dequeue, transfer, event emission). The user specifies `gasLimit` covering any additional Tempo callback gas. `gasLimit` must be at most `MAX_WITHDRAWAL_GAS_LIMIT` (10,000,000), which keeps the outer `processWithdrawals` transaction below the Tempo L1 block gas limit after portal overhead is added. For simple withdrawals with no callback, use `gasLimit = 0`. The fee is charged in the same token being withdrawn and burned with the withdrawal amount on the zone. It is not included in the cross-chain `Withdrawal` data and the portal does not transfer it from escrow. On success, `amount` goes to the recipient. Failed plain transfers and callbacks re-deposit `amount` using `fallbackNonce`.
+`WITHDRAWAL_BASE_GAS` (50,000) covers the fixed overhead of processing a withdrawal on Tempo (queue dequeue, transfer, event emission). The user specifies `gasLimit` covering any additional Tempo callback gas. `gasLimit` must be at most `MAX_WITHDRAWAL_GAS_LIMIT` (10,000,000), which keeps the outer `processWithdrawals` transaction below the Tempo L1 block gas limit after portal overhead is added. For simple withdrawals with no callback, use `gasLimit = 0`.
 
-`tempoGasRate` lives on the zone-side `ZoneOutbox` (see [Gas Rate Configuration](#gas-rate-configuration)). The outbox reads it at request time and snapshots it onto the queued withdrawal.
+From T14, a withdrawal is sponsored when the transaction's fee payer differs from its sender. An unsponsored withdrawal charges the fee to the caller in the withdrawal token, and one burn covers `amount + fee`. This applies whether the sender calls the outbox directly or through a contract, so exiting an enabled token without a sponsor never depends on any other token. A sponsored withdrawal burns the caller's `amount` in the withdrawal token and burns the fee from the sponsor in the Zone default fee token, so sponsors need not hold the withdrawal token. Before T14, the fee is burned from the transaction's fee payer in the withdrawal token: together with `amount` when the caller is the fee payer, otherwise as a separate burn. Replay of pre-T14 blocks keeps that rule.
+
+The Zone default fee token is the portal's first enabled token, captured at initialization and stored by `ZoneFeeManager`; the outbox reads that canonical value without fetching the portal token list. Later token enablements and the transaction's explicit gas `feeToken` do not change it.
+
+Each token's transfer policy, pause state, allowance, and burn authorization still apply. Any failure reverts both burns and the withdrawal state. A zero fee skips fee-token validation and collection.
+
+The fee is not included in the cross-chain `Withdrawal` data and the portal does not transfer it from escrow. On success, `amount` goes to the recipient. Failed plain transfers and callbacks re-deposit `amount` using `fallbackNonce`.
+
+`tempoGasRate` lives on the zone-side `ZoneOutbox` (see [Gas Rate Configuration](#gas-rate-configuration)). The outbox reads it at request time and records the charged fee in `WithdrawalRequested`; the pending withdrawal contains only the principal.
 
 ### Withdrawal Batching
 
@@ -2238,8 +2246,7 @@ interface IZoneOutbox {
 
     function setTempoGasRate(uint128 _tempoGasRate) external;
     function setMaxWithdrawalsPerBlock(uint32 _maxWithdrawalsPerBlock) external;
-    /// @notice Compute the withdrawal fee for the current Tempo gas rate. Reads
-    ///         zone-side `tempoGasRate` and snapshots it onto the queued withdrawal
+    /// @notice Compute the withdrawal fee using the current zone-side `tempoGasRate`
     ///         at request time.
     function calculateWithdrawalFee(uint64 gasLimit) external view returns (uint128);
 

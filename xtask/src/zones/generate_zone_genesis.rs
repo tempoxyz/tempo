@@ -74,7 +74,8 @@ pub(crate) struct GenerateZoneGenesis {
     #[arg(long, required_unless_present = "hardfork")]
     pub(crate) l1_rpc_url: Option<String>,
 
-    /// Canonical fee token used when a zone transaction omits `fee_token`.
+    /// Canonical fee token used when a zone transaction omits `fee_token`, and from T14 for
+    /// sponsored outbox withdrawal fees.
     #[arg(long, default_value_t = PATH_USD_ADDRESS)]
     pub(crate) default_fee_token: Address,
 

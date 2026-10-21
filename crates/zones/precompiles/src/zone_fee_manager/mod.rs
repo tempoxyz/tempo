@@ -26,7 +26,9 @@ impl ZoneFeeManager {
         self.default_fee_token.write(default_fee_token)
     }
 
-    /// Returns the canonical default token used when a transaction omits `fee_token`.
+    /// Returns the portal's first enabled token, captured in Zone genesis.
+    ///
+    /// Used for sponsored withdrawal fees and for transaction gas when `fee_token` is omitted.
     pub fn default_fee_token(&self) -> Result<Address> {
         self.default_fee_token.read()
     }
