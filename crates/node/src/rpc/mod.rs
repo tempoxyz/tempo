@@ -506,19 +506,11 @@ where
                     "fillTransaction requires a real signed grant; use keyAuthorizationSimulation only for call and estimateGas".into()
                 )));
             }
-            request.inner.value.get_or_insert_default();
             if request.inner.nonce.is_none() {
                 request.inner.nonce = Some(this.next_available_nonce_for(&request).await?);
             }
-            let chain_id = this.chain_id().to::<u64>();
-            if let Some(actual) = request.inner.chain_id
-                && actual != chain_id
-            {
-                return Err(Self::Error::from_eth_err(EthApiError::InvalidParams(
-                    format!("chain ID mismatch: expected {chain_id}, actual {actual}"),
-                )));
-            }
-            request.inner.chain_id = Some(chain_id);
+            // Estimation must not reject a mismatched chain id: the inner fill reports it.
+            let chain_id = request.inner.chain_id.take();
             // Preserve Tempo's nonce and fee-token allowance hooks before delegating
             // fee defaults/encoding. Native hints need validation even with explicit gas.
             if configurable || request.inner.gas.is_none() {
@@ -531,6 +523,7 @@ where
                 .await?;
                 request.inner.gas.get_or_insert(estimated_gas.to());
             }
+            request.inner.chain_id = chain_id;
             if !configurable {
                 return EthTransactions::fill_transaction(&this.inner, request)
                     .await
