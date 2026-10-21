@@ -66,8 +66,7 @@ fn call_as_parent_in_evm(spec: TempoHardfork, calldata: &[u8]) -> PrecompileOutp
     })
 }
 
-/// The signature and calldata of each authorization entrypoint that carries a `signatureType`,
-/// legacy `authorizeKey` first.
+/// The signature and calldata of each authorization entrypoint that carries a `signatureType`.
 fn authorization_calls(
     key_id: Address,
     signature_type: SignatureType,
@@ -186,8 +185,11 @@ fn delegate_grants_are_guarded_from_t14() {
                 DELEGATE
             };
             let calls = authorization_calls(delegate, SignatureType::ConfigurableAccount, u64::MAX);
-            // Skips the legacy `authorizeKey` selector, which every fork since T3 rejects outright.
-            for (entrypoint, calldata) in calls.iter().skip(1) {
+            // Every fork since T3 rejects the legacy `authorizeKey` selector outright.
+            for (entrypoint, calldata) in calls
+                .iter()
+                .filter(|(_, calldata)| !calldata.starts_with(&authorizeKey_0Call::SELECTOR))
+            {
                 let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
                 match case {
                     DelegateCase::Bytecode => StorageCtx::enter(&mut storage, || {
