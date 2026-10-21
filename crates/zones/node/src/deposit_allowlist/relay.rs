@@ -7,20 +7,15 @@
 //! every member acknowledged, so a success means every sequencer will enforce the change on its
 //! next block.
 
-use std::{
-    collections::HashMap,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::Duration,
-};
+use std::{collections::HashMap, time::Duration};
 
 use alloy_primitives::{Address, Bytes};
 use jsonrpsee::{core::RpcResult, types::ErrorObjectOwned};
-use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::{
+    mpsc::{self, error::TrySendError},
+    oneshot,
+};
 use tracing::{debug, info, warn};
 use zone_p2p::{MAX_ALLOWLIST_PAYLOAD_SIZE, P2pCommand, P2pEvent, P2pPeerId};
 
@@ -33,9 +28,8 @@ use super::{
 const RELAY_TIMEOUT: Duration = Duration::from_secs(10);
 /// How often an unacknowledged request is resent to the sequencers still missing.
 const RELAY_RETRY_INTERVAL: Duration = Duration::from_millis(500);
-/// Reads, and separately writes, relayed at once; more fail fast so clients cannot flood the
-/// allowlist channel.
-const MAX_IN_FLIGHT_RELAYS: usize = 4;
+/// Requests waiting behind the one in flight; more fail fast so clients cannot pile up work.
+const MAX_QUEUED_RELAYS: usize = 4;
 
 /// An allowlist request relayed over P2P, tagged so acknowledgements match their request.
 #[derive(Debug, Serialize, Deserialize)]
@@ -68,152 +62,52 @@ enum Response {
     Status(DepositAllowlistStatus),
 }
 
-type PendingAcks = Arc<Mutex<HashMap<u64, mpsc::UnboundedSender<(P2pPeerId, Ack)>>>>;
-
-/// Removes a request's acknowledgement route on every exit, including a cancelled RPC call.
-struct PendingGuard<'a> {
-    pending: &'a PendingAcks,
-    id: u64,
-}
-
-impl Drop for PendingGuard<'_> {
-    fn drop(&mut self) {
-        self.pending.lock().remove(&self.id);
-    }
-}
+type RelayResult = RpcResult<Vec<(P2pPeerId, Response)>>;
 
 /// `zoneAdmin` API on an RPC-only node, relaying requests to the sequencers it lists.
 #[derive(Clone)]
 pub(crate) struct AllowlistRelay {
-    sequencers: Vec<P2pPeerId>,
-    commands: mpsc::Sender<P2pCommand>,
     /// Rejects writes the sequencers would reject before they use P2P bandwidth.
     admin: DepositAllowlistAdmin,
-    /// Bounds unauthenticated reads apart from signed writes, so reads cannot starve writes.
-    reads: Arc<Semaphore>,
-    writes: Arc<Semaphore>,
-    pending: PendingAcks,
-    /// Starts at a random value so a sequencer's late acknowledgement for a request from before
-    /// a restart cannot match a new request.
-    next_id: Arc<AtomicU64>,
+    /// Requests for [`run_relay`], which relays one at a time.
+    calls: mpsc::Sender<(Request, oneshot::Sender<RelayResult>)>,
 }
 
 impl AllowlistRelay {
-    /// Create a relay to `sequencers`. Feed received acknowledgements through
-    /// [`Self::handle_event`].
+    /// Create a relay to `sequencers` and the worker task that serves it, reading
+    /// acknowledgements from `events`.
     pub(crate) fn new(
         sequencers: Vec<P2pPeerId>,
         commands: mpsc::Sender<P2pCommand>,
+        events: mpsc::Receiver<P2pEvent>,
         admin: DepositAllowlistAdmin,
-    ) -> Self {
-        Self {
-            sequencers,
-            commands,
-            admin,
-            reads: Arc::new(Semaphore::new(MAX_IN_FLIGHT_RELAYS)),
-            writes: Arc::new(Semaphore::new(MAX_IN_FLIGHT_RELAYS)),
-            pending: Default::default(),
-            next_id: Arc::new(AtomicU64::new(rand::random())),
-        }
+    ) -> (Self, impl Future<Output = ()> + Send + 'static) {
+        let (calls, queued) = mpsc::channel(MAX_QUEUED_RELAYS);
+        (
+            Self { admin, calls },
+            run_relay(sequencers, commands, queued, events),
+        )
     }
 
-    /// Route an [`P2pEvent::AllowlistAckReceived`] to the request waiting for it.
-    pub(crate) fn handle_event(&self, event: P2pEvent) {
-        let P2pEvent::AllowlistAckReceived { peer, ack } = event else {
-            return;
-        };
-        let ack: Ack = match serde_json::from_slice(&ack) {
-            Ok(ack) => ack,
-            Err(err) => {
-                warn!(target: "zone::allowlist", %peer, %err, "Ignoring malformed allowlist acknowledgement");
-                return;
-            }
-        };
-        let id = ack.id;
-        let Some(waiter) = self.pending.lock().get(&id).cloned() else {
-            debug!(target: "zone::allowlist", %peer, id, "Ignoring allowlist acknowledgement for a finished request");
-            return;
-        };
-        if waiter.send((peer, ack)).is_err() {
-            debug!(target: "zone::allowlist", id, "Allowlist request finished before its acknowledgement arrived");
-        }
-    }
-
-    /// Send `request` to every sequencer and return each one's result once all have answered.
-    /// Fails fast when `limit` has no free permit.
-    async fn relay(
-        &self,
-        request: Request,
-        limit: &Semaphore,
-    ) -> RpcResult<Vec<(P2pPeerId, Response)>> {
-        let _permit = limit
-            .try_acquire()
-            .map_err(|_| DepositAllowlistError::Busy)?;
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let update = serde_json::to_vec(&Update { id, request })
-            .map_err(|err| relay_error(format!("failed to encode request: {err}")))?;
-        if update.len() > MAX_ALLOWLIST_PAYLOAD_SIZE {
-            return Err(relay_error(format!(
-                "request encodes to {} bytes; the relay limit is {MAX_ALLOWLIST_PAYLOAD_SIZE}",
-                update.len()
-            )));
-        }
-        let (acks_tx, mut acks) = mpsc::unbounded_channel();
-        self.pending.lock().insert(id, acks_tx);
-        let _guard = PendingGuard {
-            pending: &self.pending,
-            id,
-        };
-        self.collect_acks(&update, &mut acks).await
-    }
-
-    async fn collect_acks(
-        &self,
-        update: &[u8],
-        acks: &mut mpsc::UnboundedReceiver<(P2pPeerId, Ack)>,
-    ) -> RpcResult<Vec<(P2pPeerId, Response)>> {
-        let mut missing = self.sequencers.clone();
-        let mut results = Vec::with_capacity(missing.len());
-        let mut errors = Vec::new();
-        let deadline = tokio::time::Instant::now() + RELAY_TIMEOUT;
-        let mut retry = tokio::time::interval(RELAY_RETRY_INTERVAL);
-        while !missing.is_empty() {
-            tokio::select! {
-                _ = retry.tick() => {
-                    for peer in &missing {
-                        self.commands
-                            .send(P2pCommand::SendAllowlistUpdate { peer: peer.clone(), update: update.to_vec() })
-                            .await
-                            .map_err(|_| relay_error("P2P command channel closed".to_owned()))?;
-                    }
-                }
-                Some((peer, ack)) = acks.recv() => {
-                    if let Some(index) = missing.iter().position(|missing| *missing == peer) {
-                        missing.swap_remove(index);
-                        match ack.result {
-                            Ok(response) => results.push((peer, response)),
-                            Err(error) => errors.push(format!("{peer}: {error}")),
-                        }
-                    }
-                }
-                () = tokio::time::sleep_until(deadline) => {
-                    let missing = missing.iter().map(ToString::to_string).collect::<Vec<_>>();
-                    errors.push(format!("no acknowledgement from sequencers {}", missing.join(", ")));
-                    break;
-                }
-            }
-        }
-        if errors.is_empty() {
-            Ok(results)
-        } else {
-            Err(relay_error(errors.join("; ")))
-        }
+    /// Queue `request` and return each sequencer's result once all have answered. Fails fast
+    /// when the queue is full.
+    async fn relay(&self, request: Request) -> RelayResult {
+        let (reply, result) = oneshot::channel();
+        self.calls
+            .try_send((request, reply))
+            .map_err(|err| match err {
+                TrySendError::Full(_) => DepositAllowlistError::Busy.into(),
+                TrySendError::Closed(_) => relay_error("allowlist relay stopped".to_owned()),
+            })?;
+        result
+            .await
+            .map_err(|_| relay_error("allowlist relay stopped".to_owned()))?
     }
 
     async fn relay_write(&self, write: SignedWrite) -> RpcResult<()> {
         self.admin.authorize(&write)?;
         let unexpected = self
-            .relay(Request::Write(write), &self.writes)
+            .relay(Request::Write(write))
             .await?
             .into_iter()
             .filter(|(_, response)| !matches!(response, Response::Applied(_)))
@@ -226,6 +120,102 @@ impl AllowlistRelay {
                 "unexpected write acknowledgement from {}",
                 unexpected.join(", ")
             )))
+        }
+    }
+}
+
+/// Relay queued requests one at a time, so every sequencer receives writes in the same order.
+async fn run_relay(
+    sequencers: Vec<P2pPeerId>,
+    commands: mpsc::Sender<P2pCommand>,
+    mut calls: mpsc::Receiver<(Request, oneshot::Sender<RelayResult>)>,
+    mut events: mpsc::Receiver<P2pEvent>,
+) {
+    // Starts at a random value so a sequencer's late acknowledgement for a request from before a
+    // restart cannot match a new request.
+    let mut next_id: u64 = rand::random();
+    while let Some((request, reply)) = calls.recv().await {
+        if reply.is_closed() {
+            continue;
+        }
+        next_id = next_id.wrapping_add(1);
+        let result = relay_one(next_id, request, &sequencers, &commands, &mut events).await;
+        let _ = reply.send(result);
+    }
+}
+
+/// Send `request` to every sequencer, resending to those that have not acknowledged it, and
+/// return each one's result once all have answered.
+async fn relay_one(
+    id: u64,
+    request: Request,
+    sequencers: &[P2pPeerId],
+    commands: &mpsc::Sender<P2pCommand>,
+    events: &mut mpsc::Receiver<P2pEvent>,
+) -> RelayResult {
+    let update = serde_json::to_vec(&Update { id, request })
+        .map_err(|err| relay_error(format!("failed to encode request: {err}")))?;
+    if update.len() > MAX_ALLOWLIST_PAYLOAD_SIZE {
+        return Err(relay_error(format!(
+            "request encodes to {} bytes; the relay limit is {MAX_ALLOWLIST_PAYLOAD_SIZE}",
+            update.len()
+        )));
+    }
+    let mut missing = sequencers.to_vec();
+    let mut results = Vec::with_capacity(missing.len());
+    let mut errors = Vec::new();
+    let deadline = tokio::time::Instant::now() + RELAY_TIMEOUT;
+    let mut retry = tokio::time::interval(RELAY_RETRY_INTERVAL);
+    while !missing.is_empty() {
+        tokio::select! {
+            _ = retry.tick() => {
+                for peer in &missing {
+                    commands
+                        .send(P2pCommand::SendAllowlistUpdate { peer: peer.clone(), update: update.clone() })
+                        .await
+                        .map_err(|_| relay_error("P2P command channel closed".to_owned()))?;
+                }
+            }
+            event = events.recv() => {
+                let Some(event) = event else {
+                    return Err(relay_error("allowlist acknowledgement stream closed".to_owned()));
+                };
+                let Some((peer, ack)) = decode_ack(event) else { continue };
+                if ack.id != id {
+                    debug!(target: "zone::allowlist", %peer, id = ack.id, "Ignoring allowlist acknowledgement for a finished request");
+                    continue;
+                }
+                if let Some(index) = missing.iter().position(|missing| *missing == peer) {
+                    missing.swap_remove(index);
+                    match ack.result {
+                        Ok(response) => results.push((peer, response)),
+                        Err(error) => errors.push(format!("{peer}: {error}")),
+                    }
+                }
+            }
+            () = tokio::time::sleep_until(deadline) => {
+                let missing = missing.iter().map(ToString::to_string).collect::<Vec<_>>();
+                errors.push(format!("no acknowledgement from sequencers {}", missing.join(", ")));
+                break;
+            }
+        }
+    }
+    if errors.is_empty() {
+        Ok(results)
+    } else {
+        Err(relay_error(errors.join("; ")))
+    }
+}
+
+fn decode_ack(event: P2pEvent) -> Option<(P2pPeerId, Ack)> {
+    let P2pEvent::AllowlistAckReceived { peer, ack } = event else {
+        return None;
+    };
+    match serde_json::from_slice(&ack) {
+        Ok(ack) => Some((peer, ack)),
+        Err(err) => {
+            warn!(target: "zone::allowlist", %peer, %err, "Ignoring malformed allowlist acknowledgement");
+            None
         }
     }
 }
@@ -273,7 +263,7 @@ impl DepositAllowlistApiServer for AllowlistRelay {
 
     async fn get_deposit_allowlist(&self) -> RpcResult<DepositAllowlistSnapshot> {
         let mut snapshots = Vec::new();
-        for (peer, response) in self.relay(Request::Get, &self.reads).await? {
+        for (peer, response) in self.relay(Request::Get).await? {
             let Response::Snapshot(snapshot) = response else {
                 return Err(relay_error(format!(
                     "unexpected read acknowledgement from {peer}"
@@ -311,7 +301,7 @@ impl DepositAllowlistApiServer for AllowlistRelay {
     }
 
     async fn get_deposit_allowlist_status(&self) -> RpcResult<Vec<SequencerAllowlistStatus>> {
-        self.relay(Request::Status, &self.reads)
+        self.relay(Request::Status)
             .await?
             .into_iter()
             .map(|(peer, response)| match response {

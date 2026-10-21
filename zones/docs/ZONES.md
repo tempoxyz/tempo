@@ -364,7 +364,9 @@ Unix seconds, at most 10 minutes ahead.
 An RPC follower relays each write to every sequencer. The call succeeds only after every
 sequencer acknowledges. If it fails, the sequencers that already applied the write keep it, so
 retry the same signed write: sequencers that already applied it acknowledge it without applying it
-again. Send writes one at a time, and wait for each to succeed before sending the next.
+again. Each RPC follower relays one request at a time, but writes sent through different
+followers can still reach sequencers in different orders, so send writes one at a time and wait
+for each to succeed before sending the next.
 `listHash` is the keccak-256 of the addresses concatenated in ascending order. Sequencers with the
 same `initialized`, `nonce`, and `listHash` hold the same list.
 

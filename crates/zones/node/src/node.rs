@@ -845,18 +845,13 @@ where
                     apply_relayed_updates(local_allowlist, events, runtime.commands.clone()),
                 );
             } else if let Some(admin) = self.deposit_allowlist_admin {
-                let relay = AllowlistRelay::new(
+                let (relay, worker) = AllowlistRelay::new(
                     runtime.allowlist_relay_targets.clone(),
                     runtime.commands.clone(),
+                    events,
                     admin,
                 );
-                let router = relay.clone();
-                task_executor.spawn_critical_task("zone-deposit-allowlist-relay", async move {
-                    let mut events = events;
-                    while let Some(event) = events.recv().await {
-                        router.handle_event(event);
-                    }
-                });
+                task_executor.spawn_critical_task("zone-deposit-allowlist-relay", worker);
                 allowlist_rpc = Some(relay.into_rpc().remove_context());
             }
         }

@@ -747,9 +747,10 @@ fn send_allowlist_frame(sender: &mut CommonwareSender, peer: PublicKey, frame: A
         warn!(target: "zone::p2p", %peer, allowlist_frame_size_bytes = frame.len(), max_allowlist_frame_size_bytes = MAX_ALLOWLIST_MESSAGE_SIZE, "Dropping oversized allowlist frame");
         return;
     }
-    // The relayer retries until acknowledged, so a frame that is not admitted is resent there.
+    // Low priority keeps admin traffic behind block replication; the relayer resends a frame that
+    // is not admitted or is delayed past its retry interval.
     if sender
-        .send(Recipients::Some(vec![peer.clone()]), frame, true)
+        .send(Recipients::Some(vec![peer.clone()]), frame, false)
         .is_empty()
     {
         metrics::counter!("zone_p2p_allowlist_frames_dropped_total").increment(1);

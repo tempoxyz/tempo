@@ -299,7 +299,9 @@ to every quorum member on a dedicated channel, so it needs no key. Each member a
 to its own persisted list and acknowledges it. The call returns only after every member
 acknowledges, and fails naming the members that did not; members that already applied a failed
 write keep it, so callers retry the same write, which those members acknowledge without
-reapplying. Callers must send writes one at a time.
+reapplying. An rpc-follower relays one request at a time and answers `Busy` when its short
+queue is full. Callers must still send writes one at a time, because writes through different
+rpc-followers can reach sequencers in different orders.
 
 Requests and acknowledgements must fit in one 4 MiB frame, so the list is capped at 80,000
 addresses. Senders check sizes before sending, because a receiver blocks a peer that sends an
