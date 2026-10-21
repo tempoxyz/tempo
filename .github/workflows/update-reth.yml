@@ -39,7 +39,7 @@ jobs:
     name: Update reth dependencies
     if: ${{ github.event_name != 'schedule' || github.repository == 'tempoxyz/tempo' }}
     runs-on: depot-ubuntu-latest-32
-    timeout-minutes: 120
+    timeout-minutes: 240
     steps:
       # ── checkout ───────────────────────────────────────────────
       - name: Secure runner
@@ -528,8 +528,9 @@ jobs:
           PR_BRANCH="reth-auto-bump"
 
           CI_TIMEOUT_MINUTES=30
+          EXTERNAL_CI_TIMEOUT_MINUTES=90  # Includes image building and the Argo run.
           MAX_CI_FIX_ATTEMPTS=10
-          CI_FIX_DEADLINE=$((SECONDS + 3600))  # 60 minutes for the whole fix cycle
+          CI_FIX_DEADLINE=$((SECONDS + 10800))  # 3 hours including CI after source fixes
           ci_fix_attempt=0
 
           while true; do
@@ -538,13 +539,18 @@ jobs:
               echo "::error::CI fix loop gave up after $((ci_fix_attempt - 1)) attempts / $((SECONDS / 60))m"
               exit 1
             fi
-            echo "Polling CI checks..."
+            HEAD_SHA=$(git rev-parse HEAD)
+            echo "Polling CI checks for $HEAD_SHA..."
             WAIT_START=$SECONDS
             while true; do
-              STATUS=$(gh pr checks "$PR_BRANCH" --json bucket,name,state 2>&1) || true
-              # gh pr checks may return non-JSON (e.g. "no checks reported") before CI starts
-              if ! echo "$STATUS" | jq empty 2>/dev/null; then
-                echo "Waiting for CI to start (gh pr checks returned non-JSON)..."
+              # Bound every polling path, including API errors and unregistered checks.
+              if [ "$SECONDS" -ge "$CI_FIX_DEADLINE" ]; then
+                echo "::error::CI did not finish within the 3-hour fix-cycle deadline"
+                exit 1
+              fi
+              ELAPSED=$(( (SECONDS - WAIT_START) / 60 ))
+              if ! STATUS=$(bash .github/scripts/reth-ci-status.sh "$GITHUB_REPOSITORY" "$HEAD_SHA"); then
+                echo "Unable to read CI for $HEAD_SHA; retrying..."
                 sleep 60
                 continue
               fi
@@ -564,7 +570,7 @@ jobs:
                 PR_NUMBER=$(gh pr view "$PR_BRANCH" --json number --jq '.number')
 
                 BENCH_COMMAND="derek bench preset=tip20"
-                EXISTING_BENCH_COMMENT=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+                EXISTING_BENCH_COMMENT=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
                   --paginate \
                   --jq ".[] | select(.body == \"${BENCH_COMMAND}\") | .id" \
                   | head -n1)
@@ -581,14 +587,22 @@ jobs:
                 exit 0
               fi
 
-              # Check for stuck jobs
-              ELAPSED=$(( (SECONDS - WAIT_START) / 60 ))
-              if [ "$ELAPSED" -ge "$CI_TIMEOUT_MINUTES" ]; then
+              # External statuses include image-build time and cannot be debugged from
+              # GitHub Actions logs. Keep waiting without asking Amp to change source.
+              EXTERNAL_PENDING=$(echo "$STATUS" | jq -r '[.[] | select(.external and .state == "PENDING")] | length')
+              LOCAL_PENDING=$(echo "$STATUS" | jq -r '[.[] | select((.external | not) and .state == "PENDING" and .name != "Review" and .name != "Cyclops audit run")] | length')
+              if [ "$EXTERNAL_PENDING" -gt 0 ] && [ "$ELAPSED" -ge "$EXTERNAL_CI_TIMEOUT_MINUTES" ]; then
+                echo "::error::External CI did not finish within ${EXTERNAL_CI_TIMEOUT_MINUTES}m for $HEAD_SHA"
+                echo "$STATUS" | jq -r '.[] | select(.external and .state == "PENDING") | .name'
+                exit 1
+              fi
+
+              # Investigate only GitHub-hosted checks after the shorter timeout.
+              if [ "$LOCAL_PENDING" -gt 0 ] && [ "$ELAPSED" -ge "$CI_TIMEOUT_MINUTES" ]; then
                 echo "CI checks stuck for ${ELAPSED}m — investigating with Amp..."
-                STUCK_NAMES=$(echo "$STATUS" | jq -r '[.[] | select((.state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS") and .name != "Review" and .name != "Cyclops audit run")] | map(.name) | join(", ")')
+                STUCK_NAMES=$(echo "$STATUS" | jq -r '[.[] | select((.external | not) and .state == "PENDING" and .name != "Review" and .name != "Cyclops audit run")] | map(.name) | join(", ")')
 
                 # Fetch logs from in-progress runs for the current HEAD commit
-                HEAD_SHA=$(gh pr view "$PR_BRANCH" --json headRefOid --jq '.headRefOid')
                 {
                   echo "Some CI jobs on this PR have been running for over ${CI_TIMEOUT_MINUTES} minutes and appear stuck."
                   echo "Investigate why these tests might be hanging. Look at the logs below for clues — common causes include"
@@ -638,7 +652,6 @@ jobs:
             echo "Failed checks: $FAILED_NAMES"
 
             # Fetch logs from failed runs for the current HEAD commit
-            HEAD_SHA=$(gh pr view "$PR_BRANCH" --json headRefOid --jq '.headRefOid')
             {
               echo "The CI checks on this PR are failing. Please fix the issues."
               echo "You may also bump non-reth dependency versions in Cargo.toml files if needed (e.g. revm, alloy),"

@@ -387,6 +387,26 @@ jobs:
         env:
           RUSTFLAGS: -D warnings
 
+  reth-updater:
+    name: Reth updater tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: tempoxyz/gh-actions/vendor/astral-sh/setup-uv@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
+        with:
+          version: "0.12.16"
+          enable-cache: false
+      - name: Test Reth CI polling
+        run: uv run --no-project python -m unittest discover -s .github/scripts -p test_reth_ci.py
+
   test-success:
     name: test success
     runs-on: ubuntu-latest
@@ -400,6 +420,7 @@ jobs:
       - cli
       - msrv
       - genesis
+      - reth-updater
     timeout-minutes: 30
     steps:
       - name: Secure runner
