@@ -36,7 +36,7 @@ jobs:
     # Mirror the benchmark job's gates: a skipped benchmark must not save state.
     if: >-
       github.repository == 'tempoxyz/tempo' && github.ref == 'refs/heads/main' &&
-      vars.ZONES_PROVER_BENCHMARK_ENABLED == 'true' && vars.ZONES_PROVER_NIGHTLY_ENABLED == 'true'
+      vars.ZONES_PROVER_NIGHTLY_ENABLED == 'true'
     runs-on: ubuntu-latest
     permissions:
       id-token: write

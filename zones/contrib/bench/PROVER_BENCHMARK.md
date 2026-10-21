@@ -35,9 +35,10 @@ benchmark host, which joins with its workload identity.
 
 ## Activation
 
-Keep both repository flags disabled until a manual run succeeds:
+Manual runs need no enablement. Keep `ZONES_PROVER_NIGHTLY_ENABLED` unset until a
+manual run succeeds:
 
-1. Set `ZONES_PROVER_BENCHMARK_ENABLED=true` and dispatch a smoke run:
+1. Dispatch a smoke run:
 
    ```sh
    gh workflow run zones-prover-benchmark.yml --repo tempoxyz/tempo --ref main \

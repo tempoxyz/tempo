@@ -183,7 +183,6 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           INPUT_REF_NAME: ${{ github.ref_name }}
-          ZONES_BENCHMARK_ENABLED: ${{ vars.ZONES_PROVER_BENCHMARK_ENABLED }}
         with:
           github-token: ${{ steps.github-sts.outputs.token }}
           script: |
@@ -392,8 +391,6 @@ jobs:
                 zonesError = `\`${unsupported.join('`, `')}\` is not supported with \`derek bench zones\`.`;
               } else if (!zonePresets.includes(preset)) {
                 zonesError = `\`preset=${preset}\` is not a Zone preset.`;
-              } else if (process.env.ZONES_BENCHMARK_ENABLED !== 'true') {
-                zonesError = 'Zone benchmarks are not enabled in this repository.';
               }
             } else if (provided.has('prover')) {
               zonesError = '`prover` is only supported with `derek bench zones`.';

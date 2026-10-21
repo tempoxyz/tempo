@@ -56,13 +56,13 @@ def run_script(workflow, job, name, **payload):
     return json.loads(result.stdout)
 
 
-def parse(body, enabled="true"):
+def parse(body):
     return run_script(
         "bench.yml", "tempo-bench-ack", "Parse arguments",
         context={"payload": {"comment": {"body": body, "user": {"login": "member"}}},
                  "issue": {"number": 7}, "repo": {"owner": "tempoxyz", "repo": "tempo"}},
         head={"sha": SHA, "ref": "feature-branch"},
-        env={"ZONES_BENCHMARK_ENABLED": enabled, "INPUT_REF_NAME": "main"},
+        env={"INPUT_REF_NAME": "main"},
     )
 
 
@@ -100,13 +100,12 @@ class BenchCommandTests(unittest.TestCase):
                                  {"mode": "zones", "prover": prover, "preset": preset, "pr-head-sha": SHA})
 
     def test_rejects_prover_and_unsupported_arguments(self):
-        for body, enabled, message in (
-                ("derek bench prover=false", "true", "`prover` is only supported with `derek bench zones`."),
-                ("derek bench zones duration=10", "true", "`duration` is not supported with `derek bench zones`."),
-                ("derek bench zones preset=default", "true", "`preset=default` is not a Zone preset."),
-                ("derek bench zones", "false", "Zone benchmarks are not enabled in this repository.")):
-            with self.subTest(body=body, enabled=enabled):
-                result = parse(body, enabled)
+        for body, message in (
+                ("derek bench prover=false", "`prover` is only supported with `derek bench zones`."),
+                ("derek bench zones duration=10", "`duration` is not supported with `derek bench zones`."),
+                ("derek bench zones preset=default", "`preset=default` is not a Zone preset.")):
+            with self.subTest(body=body):
+                result = parse(body)
                 self.assertEqual(len(result["failures"]), 1)
                 self.assertIn(message, result["failures"][0])
                 self.assertEqual(result["comments"], result["failures"])
