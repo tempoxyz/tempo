@@ -285,7 +285,21 @@ fn delegate_grants_are_guarded_from_t14() {
                     granted,
                     "{spec}, {entrypoint}, {case:?}"
                 );
-                if !granted {
+                if granted {
+                    let get_key = getKeyCall {
+                        account: PARENT,
+                        keyId: delegate,
+                    }
+                    .abi_encode();
+                    let output = call_as_parent(&mut storage, &get_key)
+                        .unwrap_or_else(|error| panic!("{spec}, {entrypoint}: {error:?}"));
+                    let key = getKeyCall::abi_decode_returns(output.bytes()).unwrap();
+                    assert_eq!(
+                        key.signatureType,
+                        SignatureType::ConfigurableAccount,
+                        "{spec}, {entrypoint}"
+                    );
+                } else {
                     if spec.is_t14() {
                         assert_eq!(
                             AccountKeychainError::abi_decode(revert_output(&output).unwrap())
@@ -305,8 +319,7 @@ fn delegate_grants_are_guarded_from_t14() {
     }
 }
 
-/// A stored ConfigurableAccount key is only usable from T14, and only when the signature
-/// declares the same type.
+/// A stored ConfigurableAccount key is only usable when the signature declares the same type.
 #[test]
 fn stored_key_type_is_checked_on_use() {
     let configurable_type = SignatureType::ConfigurableAccount as u8;
@@ -337,11 +350,40 @@ fn stored_key_type_is_checked_on_use() {
         assert!(validate(&mut storage, Some(configurable_type)), "{spec}");
         assert!(!validate(&mut storage, Some(secp256k1_type)), "{spec}");
     }
-    storage.set_spec(TempoHardfork::T13);
-    for expected_sig_type in [None, Some(secp256k1_type), Some(configurable_type)] {
-        assert!(
-            !validate(&mut storage, expected_sig_type),
-            "{expected_sig_type:?}"
-        );
+}
+
+/// From T6, an admin grant naming the granting account reverts with `InvalidKeyId` and stores
+/// no key, whatever its key type.
+#[test]
+fn admin_self_grants_are_rejected() {
+    for spec in TempoHardfork::VARIANTS
+        .iter()
+        .copied()
+        .filter(|spec| spec.is_t6())
+    {
+        for signature_type in [
+            SignatureType::Secp256k1,
+            SignatureType::P256,
+            SignatureType::WebAuthn,
+        ] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            let grant = authorizeAdminKeyCall {
+                keyId: PARENT,
+                signatureType: signature_type,
+                witness: B256::ZERO,
+            }
+            .abi_encode();
+            let output = call_as_parent(&mut storage, &grant);
+            assert_eq!(
+                AccountKeychainError::abi_decode(revert_output(&output).unwrap()).unwrap(),
+                AccountKeychainError::invalid_key_id(),
+                "{spec}, {signature_type:?}"
+            );
+            assert_eq!(
+                key_expiry(&mut storage, PARENT),
+                0,
+                "{spec}, {signature_type:?}"
+            );
+        }
     }
 }
