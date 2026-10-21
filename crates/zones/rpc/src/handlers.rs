@@ -29,6 +29,11 @@ pub trait ZoneRpcApi: Send + Sync + 'static {
     /// authorization for a recovered access key.
     fn get_keychain_key(&self, account: Address, key_id: Address) -> BoxEyreFut<'_, KeyInfo>;
 
+    /// Returns the TIP-1108 configuration commitment of `account` at the latest zone state, or
+    /// zero when the account has none. A nonzero commitment means the root key is retired
+    /// (TIP-1112).
+    fn config_commitment(&self, account: Address) -> BoxEyreFut<'_, B256>;
+
     /// `eth_blockNumber` — returns the latest block number.
     fn block_number(&self) -> BoxFut<'_>;
 
@@ -756,6 +761,10 @@ mod tests {
 
     impl ZoneRpcApi for MockZoneRpcApi {
         fn get_keychain_key(&self, _account: Address, _key_id: Address) -> BoxEyreFut<'_, KeyInfo> {
+            Box::pin(async { Err(eyre::eyre!("not implemented")) })
+        }
+
+        fn config_commitment(&self, _account: Address) -> BoxEyreFut<'_, B256> {
             Box::pin(async { Err(eyre::eyre!("not implemented")) })
         }
 

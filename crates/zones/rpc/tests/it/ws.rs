@@ -126,6 +126,10 @@ impl ZoneRpcApi for MockZoneRpcApi {
         Box::pin(async move { Ok(key_info) })
     }
 
+    fn config_commitment(&self, _account: Address) -> BoxEyreFut<'_, B256> {
+        Box::pin(async { Ok(B256::ZERO) })
+    }
+
     fn block_number(&self) -> BoxFut<'_> {
         Box::pin(async { zone_rpc::types::to_raw(&"0x42") })
     }

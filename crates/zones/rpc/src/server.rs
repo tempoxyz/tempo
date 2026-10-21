@@ -341,6 +341,16 @@ pub(crate) async fn authenticate_token(
         None
     };
 
+    // TIP-1112: a signer with a configuration commitment is a retired root, whether it signed
+    // directly or as an access key.
+    if !api
+        .config_commitment(keychain_key_id.unwrap_or(caller))
+        .await?
+        .is_zero()
+    {
+        return Err(AuthError::RetiredRootKey.into());
+    }
+
     Ok(AuthContext {
         caller,
         expires_at: token.expires_at,
@@ -421,14 +431,18 @@ mod tests {
         ));
     }
 
-    use auth_tokens::{build_token_with_signature, now_secs, sign_keychain_signature};
+    use auth_tokens::{
+        build_token_with_signature, now_secs, sign_keychain_signature, sign_p256_signature,
+    };
 
     const ZONE_ID: u32 = 7;
     const CHAIN_ID: u64 = 99;
     const PORTAL: Address = Address::repeat_byte(0x22);
 
+    #[derive(Default)]
     struct TestApi {
         key_infos: Mutex<HashMap<(Address, Address), KeyInfo>>,
+        commitments: HashMap<Address, B256>,
     }
 
     impl TestApi {
@@ -437,6 +451,7 @@ mod tests {
             key_infos.insert((account, key_id), key_info);
             Self {
                 key_infos: Mutex::new(key_infos),
+                ..Default::default()
             }
         }
     }
@@ -464,6 +479,11 @@ mod tests {
                     isRevoked: false,
                 });
             Box::pin(async move { Ok(key_info) })
+        }
+
+        fn config_commitment(&self, account: Address) -> BoxEyreFut<'_, B256> {
+            let commitment = self.commitments.get(&account).copied().unwrap_or_default();
+            Box::pin(async move { Ok(commitment) })
         }
 
         stub!(block_number);
@@ -612,9 +632,7 @@ mod tests {
         let mut blob = vec![0u8; 65];
         blob.extend_from_slice(&fields);
         let token = alloy_primitives::hex::encode(blob);
-        let api = TestApi {
-            key_infos: Mutex::new(HashMap::new()),
-        };
+        let api = TestApi::default();
 
         let err = authenticate_token(&token, &config, &api)
             .await
@@ -642,9 +660,7 @@ mod tests {
         let mut blob = vec![0u8; 65];
         blob.extend_from_slice(&fields);
         let token = alloy_primitives::hex::encode(blob);
-        let api = TestApi {
-            key_infos: Mutex::new(HashMap::new()),
-        };
+        let api = TestApi::default();
 
         let err = authenticate_token(&token, &config, &api)
             .await
@@ -718,5 +734,46 @@ mod tests {
             AuthenticateError::Invalid(crate::auth::AuthError::ExpiredKeychainKey)
         ));
         assert_eq!(err.status_code(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn retired_root_keys_are_rejected() {
+        let root_account = Address::repeat_byte(0x55);
+        let signer = P256SigningKey::random(&mut OsRng);
+        let now = now_secs();
+        let (fields, digest) = build_token_fields(ZONE_ID, CHAIN_ID, now, now + 600);
+
+        let direct = sign_p256_signature(digest, &signer).expect("p256 signing failed");
+        let direct_signer = direct
+            .recover_signer(&digest)
+            .expect("p256 signature recovers");
+        let (keychain, key_id) = sign_keychain_signature(digest, &signer, root_account, 0x04)
+            .expect("keychain signing failed");
+        let mut api = TestApi::with_key_info(
+            root_account,
+            key_id,
+            KeyInfo {
+                signatureType: KeyInfoSignatureType::P256,
+                keyId: key_id,
+                expiry: u64::MAX,
+                enforceLimits: false,
+                isRevoked: false,
+            },
+        );
+        // The P256 key is both the direct signer's root and the access key.
+        assert_eq!(direct_signer, key_id);
+        api.commitments.insert(key_id, B256::repeat_byte(1));
+
+        for signature in [direct, keychain] {
+            let token = build_token_with_signature(signature, &fields);
+            let err = authenticate_token(&token, &test_config(), &api)
+                .await
+                .expect_err("retired root key should fail authentication");
+            assert!(matches!(
+                err,
+                AuthenticateError::Invalid(AuthError::RetiredRootKey)
+            ));
+            assert_eq!(err.status_code(), StatusCode::FORBIDDEN);
+        }
     }
 }

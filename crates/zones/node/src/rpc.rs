@@ -38,7 +38,7 @@ use reth_rpc_eth_api::{
     helpers::{EthApiSpec, EthBlocks, EthCall, EthFees, EthState, EthTransactions, FullEthApi},
 };
 use reth_rpc_eth_types::{EthApiError, logs_utils};
-use reth_storage_api::StateProviderFactory;
+use reth_storage_api::{AccountReader as _, StateProviderFactory};
 use reth_trie_common::{ExecutionWitnessMode, HashedPostState, HashedStorage};
 use tempo_alloy::{
     TempoNetwork,
@@ -47,6 +47,7 @@ use tempo_alloy::{
 };
 use tempo_chainspec::{
     TempoHardforks,
+    hardfork::TempoHardfork,
     spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE},
 };
 use tempo_contracts::precompiles::{
@@ -54,7 +55,9 @@ use tempo_contracts::precompiles::{
     account_keychain::IAccountKeychain::{self, KeyInfo, getKeyCall},
 };
 use tempo_node::rpc::{TempoForkScheduleApiServer as _, TempoForkScheduleRpc};
-use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope};
+use tempo_primitives::{
+    TempoHeader, TempoPrimitives, TempoTxEnvelope, account::decode_config_commitment,
+};
 use tokio::{
     sync::Mutex,
     time::{MissedTickBehavior, interval},
@@ -905,6 +908,25 @@ where
                 .wrap_err("AccountKeychain.getKey eth_call failed")?;
 
             IAccountKeychain::getKeyCall::abi_decode_returns(output.as_ref()).map_err(Into::into)
+        })
+    }
+
+    fn config_commitment(&self, account: Address) -> BoxEyreFut<'_, B256> {
+        Box::pin(async move {
+            let Some(account) = self
+                .eth
+                .api
+                .provider()
+                .latest()
+                .wrap_err("failed to open latest zone state")?
+                .basic_account(&account)
+                .wrap_err("failed to read zone account")?
+            else {
+                return Ok(B256::ZERO);
+            };
+            // Zones have no hardfork of their own, so this checks the payload format as of T14.
+            decode_config_commitment(&account.extension, TempoHardfork::T14)
+                .wrap_err("invalid zone account configuration commitment")
         })
     }
 
