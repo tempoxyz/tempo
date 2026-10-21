@@ -1948,26 +1948,4 @@ mod tests {
 
         Ok(())
     }
-
-    #[test]
-    fn warm_caller_metadata_is_free_and_rejects_cold() {
-        let mut evm = TestEvm::new(TempoHardfork::T14);
-        let caller = Address::repeat_byte(0x12);
-        let mut provider = evm.provider_max_gas();
-        assert!(matches!(
-            provider.with_warm_caller_info(caller, &mut |_| {}),
-            Err(TempoPrecompileError::Fatal(_))
-        ));
-        provider.with_account_info(caller, &mut |_| {}).unwrap();
-        let before = provider.gas_used();
-        let mut read = false;
-        provider
-            .with_warm_caller_info(caller, &mut |info| {
-                assert!(info.extension.is_empty());
-                read = true;
-            })
-            .unwrap();
-        assert!(read);
-        assert_eq!(provider.gas_used(), before);
-    }
 }

@@ -85,7 +85,7 @@ const KEY_AUTH_EXTRA_EVENT_BUFFER: u64 = 1_500;
 /// - No permanent state growth, so the 20k penalty doesn't apply
 ///
 /// Total: 2*2100 + 100 + 3*2900 = 13,000 gas
-pub const EXPIRING_NONCE_GAS: u64 = 2 * COLD_SLOAD_COST + 100 + 3 * WARM_SSTORE_RESET;
+const EXPIRING_NONCE_GAS: u64 = 2 * COLD_SLOAD_COST + 100 + 3 * WARM_SSTORE_RESET;
 
 /// Counts the scope storage rows that pay the dynamic SSTORE-set path for the active spec.
 ///

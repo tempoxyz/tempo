@@ -13,14 +13,12 @@ use alloy::{
 use alloy_eips::{Decodable2718, Encodable2718};
 use alloy_primitives::TxKind;
 use reth_primitives_traits::transaction::TxHashRef;
-use reth_revm::context_interface::cfg::gas::COLD_ACCOUNT_ACCESS_COST;
 use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
 use tempo_node::rpc::TempoTransactionRequest;
 use tempo_primitives::{
     SignatureType, TempoTransaction, TempoTxEnvelope,
     transaction::{
-        FEE_PAYER_SIGNATURE_MARKER, KeyAuthorization, SignedKeyAuthorization,
-        TEMPO_EXPIRING_NONCE_KEY, TokenLimit,
+        KeyAuthorization, SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, TokenLimit,
         tempo_transaction::Call,
         tt_signature::{PrimitiveSignature, TempoSignature},
     },
@@ -798,29 +796,6 @@ pub(super) async fn run_fill_transaction_matrix<E: TestEnv>(env: &mut E) -> eyre
             }
         };
         assert_fill_request_expectations(&filled_tx, &request_context, test_case)?;
-
-        if test_case.fee_payer && env.hardfork().is_t14() {
-            // From T14 a request marked as sponsored by a fee payer that has not signed yet is
-            // filled and estimated with that fee payer's cold account access included.
-            let sponsored_request = TempoTransactionRequest {
-                fee_payer_signature: Some(FEE_PAYER_SIGNATURE_MARKER),
-                ..request_context.request.clone()
-            };
-            let sponsored_tx = fill_request(env.provider(), &sponsored_request).await?;
-            assert_eq!(
-                sponsored_tx.gas_limit,
-                filled_tx.gas_limit + COLD_ACCOUNT_ACCESS_COST,
-                "[{}] a sponsored fill should add one cold account access",
-                test_case.name
-            );
-            assert_eq!(
-                estimate_gas(env.provider(), &sponsored_request).await?,
-                estimate_gas(env.provider(), &request_context.request).await?
-                    + COLD_ACCOUNT_ACCESS_COST,
-                "[{}] a sponsored estimate should add one cold account access",
-                test_case.name
-            );
-        }
 
         if test_case.fee_payer {
             let fee_payer_sig_hash = filled_tx.fee_payer_signature_hash(signer_addr);
@@ -1814,16 +1789,7 @@ pub(super) async fn run_fill_sign_send<E: TestEnv>(
             "eth_fillTransaction should not set fee_token (client must set it)"
         );
         tx.fee_token = Some(DEFAULT_FEE_TOKEN);
-        if env.hardfork().is_t14() {
-            tx.gas_limit = fill_sponsored_gas_limit(
-                env.provider(),
-                test_case,
-                signer_addr,
-                current_timestamp,
-                max_expiry_secs,
-            )
-            .await?;
-        }
+        add_fee_payer_access_gas(&mut tx);
         sign_fee_payer(&mut tx, signer_addr, &fee_payer_signer)?;
 
         let signature = match test_case.key_type {
@@ -1891,16 +1857,7 @@ pub(super) async fn run_fill_sign_send<E: TestEnv>(
         let fee_payer_signer = PrivateKeySigner::random();
         if test_case.fee_payer {
             let _ = env.fund_account(fee_payer_signer.address()).await?;
-            if env.hardfork().is_t14() {
-                tx.gas_limit = fill_sponsored_gas_limit(
-                    env.provider(),
-                    test_case,
-                    signer_addr,
-                    current_timestamp,
-                    max_expiry_secs,
-                )
-                .await?;
-            }
+            add_fee_payer_access_gas(&mut tx);
             sign_fee_payer(&mut tx, signer_addr, &fee_payer_signer)?;
         }
 

@@ -46,7 +46,6 @@ mod runners;
 pub(crate) mod types;
 use types::TestEnv;
 
-mod configurable_account;
 mod local;
 mod rpc;
 
