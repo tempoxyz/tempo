@@ -159,7 +159,8 @@ class ReportingTests(unittest.TestCase):
         actor = next(key for key in json.loads((ROOT / ".github/scripts/bench-slack-users.json").read_text())
                      if not key.startswith("_"))
         rows = [{"key": "withdrawal", "label": "Withdrawal: submit → L1 funds", "end_to_end": True},
-                {"key": "withdrawal_zone_to_l1", "label": "> Zone → L1 processed", "end_to_end": False}]
+                {"key": "withdrawal_zone_to_l1", "label": "> zone → L1 processed", "end_to_end": False},
+                {"key": "journey", "label": "Full private journey", "end_to_end": True}]
         latency = lambda ms: {"p50_ms": ms, "p95_ms": ms}
         metadata = {"baseline": OTHER_SHA, "feature": SHA, "prover": True, "preset": "full-journey",
                     "tempoHardfork": "t13", "count": 20, "tps": 5, "region": "us-east-1"}
@@ -171,8 +172,10 @@ class ReportingTests(unittest.TestCase):
                                                                  (100.0, 100.0, "DM", "No Significant Change")):
             with self.subTest(end_to_end_ms=end_to_end_ms, sub_leg_ms=sub_leg_ms):
                 comparison = {"metadata": metadata, "rows": rows, "latencies": {
-                    "baseline": {"withdrawal": latency(100.0), "withdrawal_zone_to_l1": latency(100.0)},
-                    "feature": {"withdrawal": latency(end_to_end_ms), "withdrawal_zone_to_l1": latency(sub_leg_ms)}}}
+                    "baseline": {"withdrawal": latency(100.0), "withdrawal_zone_to_l1": latency(100.0),
+                                 "journey": latency(7121.0)},
+                    "feature": {"withdrawal": latency(end_to_end_ms), "withdrawal_zone_to_l1": latency(sub_leg_ms),
+                                "journey": latency(7125.4)}}}
                 result = run_with_results("Send Slack notification (success)", {"comparison.json": json.dumps(comparison)},
                                           env=env)
                 [call] = result["calls"]
@@ -182,6 +185,7 @@ class ReportingTests(unittest.TestCase):
                 table = [[cell["text"] for cell in row] for row in message["blocks"][2]["rows"]]
                 self.assertEqual(table[0], ["Latency (ms)", "base (p50)", "feat (p50)", "change", "base (p95)", "feat (p95)", "change"])
                 self.assertEqual(table[1][:3], ["Withdrawal: submit → L1 funds", "100", f"{end_to_end_ms:.0f}"])
+                self.assertEqual(table[3][:3], ["Full private journey", "7.12s", "7.13s"])
         result = run_with_results("Send Slack notification (success)", {}, env=env)
         self.assertEqual((result["calls"], result["warnings"]),
                          ([], ["Could not read comparison.json for Zones Slack notification"]))

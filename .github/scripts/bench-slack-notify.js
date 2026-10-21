@@ -644,6 +644,11 @@ function fmtZonesChange(change, endToEnd) {
   return endToEnd ? `${pct} ${SIG_EMOJI[change.sig]}` : pct;
 }
 
+// The full journey spans several settlements, so it reads better in seconds.
+function fmtZonesLatency(key, ms) {
+  return key === 'journey' ? `${(ms / 1000).toFixed(2)}s` : ms.toFixed(0);
+}
+
 function buildZonesSuccessBlocks({ comparison, changes, prNumber, actor, actorSlackId, jobUrl, repo }) {
   const { metadata, latencies } = comparison;
   const verdict = verdictFromChanges(changes, 'No Significant Change');
@@ -664,8 +669,8 @@ function buildZonesSuccessBlocks({ comparison, changes, prNumber, actor, actorSl
   const rows = comparison.rows.map(({ key, label, end_to_end: endToEnd }) => [
     cell(label),
     ...['p50', 'p95'].flatMap(quantile => [
-      cell(latencies.baseline[key][`${quantile}_ms`].toFixed(0)),
-      cell(latencies.feature[key][`${quantile}_ms`].toFixed(0)),
+      cell(fmtZonesLatency(key, latencies.baseline[key][`${quantile}_ms`])),
+      cell(fmtZonesLatency(key, latencies.feature[key][`${quantile}_ms`])),
       cell(fmtZonesChange(changes[`${key}_${quantile}`], endToEnd)),
     ]),
   ]);
