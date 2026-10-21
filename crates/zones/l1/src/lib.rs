@@ -28,7 +28,6 @@ use alloy_transport::Authorization;
 use futures::{Stream, StreamExt, TryStreamExt as _};
 use parking_lot::Mutex;
 // TODO: Remove this import and feature-only dependency after updating Reth's feature forwarding.
-// https://github.com/paradigmxyz/reth/pull/28054
 use reth_evm as _;
 use reth_primitives_traits::SealedHeader;
 use reth_storage_api::StateProviderFactory;
