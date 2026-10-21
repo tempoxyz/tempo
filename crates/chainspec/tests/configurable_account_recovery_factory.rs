@@ -1,7 +1,7 @@
 #![cfg(feature = "reth")]
 
-use alloy_primitives::{Address, Bytes};
-use reth_chainspec::EthChainSpec;
+use alloy_primitives::{Address, B256, Bytes, U256};
+use reth_chainspec::{ChainSpec, EthChainSpec};
 use serde_json::json;
 use tempo_chainspec::{
     TempoChainSpec,
@@ -33,7 +33,7 @@ fn public_networks_configure_no_configurable_account_recovery_factory() {
 }
 
 #[test]
-fn t14_genesis_reserves_the_marker_and_an_unallocated_recovery_factory() {
+fn t14_genesis_reserves_the_marker_and_the_recovery_factory() {
     let factory = Address::repeat_byte(0x72);
     let mut genesis = DEV.genesis().clone();
     genesis
@@ -47,14 +47,40 @@ fn t14_genesis_reserves_the_marker_and_an_unallocated_recovery_factory() {
     genesis.alloc.remove(&CONFIGURABLE_ACCOUNT_ADDRESS);
     genesis.alloc.remove(&factory);
 
-    let spec = TempoChainSpec::from_genesis(genesis);
+    // An unallocated factory is created with the marker's code and nonce one.
+    let spec = TempoChainSpec::from_genesis(genesis.clone());
 
     let alloc = &spec.genesis().alloc;
     let marker = &alloc[&CONFIGURABLE_ACCOUNT_ADDRESS];
     assert_eq!(marker.code, Some(Bytes::from_static(&[0xef])));
-    let factory = &alloc[&factory];
-    assert_eq!(factory.code, Some(Bytes::from_static(&[0xef])));
-    assert_eq!(factory.nonce, Some(1));
+    let account = &alloc[&factory];
+    assert_eq!(account.code, Some(Bytes::from_static(&[0xef])));
+    assert_eq!(account.nonce, Some(1));
+
+    // An allocated factory only gains the marker's code.
+    let account = genesis.alloc.entry(factory).or_default();
+    account.balance = U256::from(42);
+    account.nonce = Some(7);
+    account.storage = Some([(B256::ZERO, B256::repeat_byte(9))].into());
+
+    let spec = TempoChainSpec::from_genesis(genesis.clone());
+
+    let account = &spec.genesis().alloc[&factory];
+    assert_eq!(account.balance, U256::from(42));
+    assert_eq!(account.nonce, Some(7));
+    assert_eq!(account.code, Some(Bytes::from_static(&[0xef])));
+    assert_eq!(
+        account.storage.as_ref().unwrap()[&B256::ZERO],
+        B256::repeat_byte(9)
+    );
+    assert_eq!(
+        spec.info.configurable_account_recovery_factory(),
+        Some(factory)
+    );
+    assert_ne!(
+        spec.genesis_header().inner.state_root,
+        ChainSpec::from_genesis(genesis).genesis_header().state_root
+    );
 }
 
 #[test]
