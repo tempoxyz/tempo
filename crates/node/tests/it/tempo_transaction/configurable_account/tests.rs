@@ -965,7 +965,7 @@ async fn retired_root_pending_transactions_evicted() -> eyre::Result<()> {
 }
 
 /// What stays valid after a migration commits: a bystander's transaction, a transaction that an
-/// uncommitted access key of the migrated account signs (its grant outlives the commitment, R17),
+/// uncommitted access key of the migrated account signs (the migration leaves its grant valid),
 /// and a transaction that carries an authorization list entry of the migrated account, which the
 /// block skips (TIP-1112). All of them follow the migration in its block and succeed.
 #[tokio::test(flavor = "multi_thread")]
@@ -1051,7 +1051,7 @@ async fn retired_root_reorg_evicts_pending_transactions() -> eyre::Result<()> {
     ] {
         env.fund_account(address).await?;
     }
-    // Before the migration the account grants `key`, whose grant outlives the commitment (R17).
+    // Before the migration the account grants `key`, and the migration leaves that grant valid.
     grant_uncommitted_key(&mut env, &mut account, &root, &key).await?;
     let fork_point = latest_block_hash(&env).await?;
 
