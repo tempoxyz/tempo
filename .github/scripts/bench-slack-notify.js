@@ -664,8 +664,8 @@ function buildZonesSuccessBlocks({ comparison, changes, prNumber, actor, actorSl
   const rows = comparison.rows.map(({ key, label, end_to_end: endToEnd }) => [
     cell(label),
     ...['p50', 'p95'].flatMap(quantile => [
-      cell((latencies.baseline[key][`${quantile}_ms`] / 1000).toFixed(2)),
-      cell((latencies.feature[key][`${quantile}_ms`] / 1000).toFixed(2)),
+      cell((latencies.baseline[key][`${quantile}_ms`] / 1000).toFixed(3)),
+      cell((latencies.feature[key][`${quantile}_ms`] / 1000).toFixed(3)),
       cell(fmtZonesChange(changes[`${key}_${quantile}`], endToEnd)),
     ]),
   ]);
