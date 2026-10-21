@@ -309,3 +309,40 @@ fn stored_key_type_is_checked_on_use() {
         assert!(!validate(&mut storage, Some(secp256k1_type)), "{spec}");
     }
 }
+
+/// From T6, an admin grant naming the granting account reverts with `InvalidKeyId` and stores
+/// no key, whatever its key type.
+#[test]
+fn admin_self_grants_are_rejected() {
+    for spec in TempoHardfork::VARIANTS
+        .iter()
+        .copied()
+        .filter(|spec| spec.is_t6())
+    {
+        for signature_type in [
+            SignatureType::Secp256k1,
+            SignatureType::P256,
+            SignatureType::WebAuthn,
+        ] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            let grant = authorizeAdminKeyCall {
+                keyId: PARENT,
+                signatureType: signature_type,
+                witness: B256::ZERO,
+            }
+            .abi_encode();
+            let output = call_as_parent(&mut storage, &grant);
+            assert!(output.is_revert(), "{spec}, {signature_type:?}");
+            assert_eq!(
+                AccountKeychainError::abi_decode(&output.bytes).unwrap(),
+                AccountKeychainError::invalid_key_id(),
+                "{spec}, {signature_type:?}"
+            );
+            assert_eq!(
+                key_expiry(&mut storage, PARENT),
+                0,
+                "{spec}, {signature_type:?}"
+            );
+        }
+    }
+}
