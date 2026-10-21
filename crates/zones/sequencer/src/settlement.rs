@@ -72,6 +72,8 @@ use crate::nonce_keys::SUBMIT_BATCH_NONCE_KEY;
 #[derive(Debug)]
 pub enum BatchSubmitError {
     PortalAdvanced,
+    /// The active T14-or-later portal is paused; no submission was attempted.
+    /// The prepared batch can be retried after the portal resumes or its pause expires.
     PortalPaused,
     PreparedAnchorInvalid(eyre::Report),
     /// The attestation was generated using a prover selected under a different L1 policy.
