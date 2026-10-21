@@ -308,11 +308,9 @@ impl AccountKeychain {
             return Err(AccountKeychainError::key_already_revoked().into());
         }
 
-        // Before T14, value 3 followed the unsupported-type path after these reads.
-        self.ensure_configurable_account_type_active(
-            signature_type == SignatureType::ConfigurableAccount,
-        )?;
         let signature_type = StoredSignatureType::try_from(signature_type)?;
+        // Before T14, ConfigurableAccount fails at the same point as an unsupported type.
+        self.ensure_signature_type_active(signature_type)?;
 
         // TIP-1011 fields are hardfork-gated at T3, so reject them before mutating state.
         let allowed_call_configs = if is_t3 {
@@ -1228,9 +1226,7 @@ impl AccountKeychain {
             return Err(AccountKeychainError::key_expired().into());
         }
 
-        self.ensure_configurable_account_type_active(
-            key.signature_type == StoredSignatureType::ConfigurableAccount,
-        )?;
+        self.ensure_signature_type_active(key.signature_type)?;
 
         Ok(key)
     }
@@ -1611,9 +1607,11 @@ impl AccountKeychain {
         self.verify_and_update_spending(account, transaction_key, token, approval_increase)
     }
 
-    /// Rejects the configurable account signature type before T14.
-    fn ensure_configurable_account_type_active(&self, is_configurable_account: bool) -> Result<()> {
-        if is_configurable_account && !self.storage.spec().is_t14() {
+    /// Rejects the ConfigurableAccount signature type before T14.
+    fn ensure_signature_type_active(&self, signature_type: StoredSignatureType) -> Result<()> {
+        if signature_type == StoredSignatureType::ConfigurableAccount
+            && !self.storage.spec().is_t14()
+        {
             return Err(AccountKeychainError::invalid_signature_type().into());
         }
         Ok(())
