@@ -40,7 +40,7 @@ on:
         default: "20"
       count:
         type: string
-        default: "20"
+        default: "100"
       tps:
         type: string
         default: "5"
@@ -151,7 +151,7 @@ jobs:
       BENCH_TEMPO_HARDFORK: ${{ inputs['tempo-hardfork'] || 't13' }}
       BENCH_PRESET: ${{ inputs.preset || 'full-journey' }}
       BENCH_ACCOUNTS: ${{ inputs.accounts || '20' }}
-      BENCH_COUNT: ${{ inputs.count || '20' }}
+      BENCH_COUNT: ${{ inputs.count || '100' }}
       BENCH_TPS: ${{ inputs.tps || '5' }}
       BENCH_MAX_CONCURRENT: ${{ inputs.max-concurrent || '4' }}
       BENCH_L1_BLOAT_MIB: ${{ inputs.state-bloat-mib || '0' }}
