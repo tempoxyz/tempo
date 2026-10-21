@@ -306,8 +306,11 @@ different rpc-followers can reach sequencers in different orders.
 
 The runtime's allowlist coordinator owns delivery. It tags each request with an ID, resends it
 every 500 ms to the members that have not answered, and returns after 10 s with the members
-that did not answer. A quorum member hands each request to its node once and answers resent
-copies from a small per-relayer cache.
+that did not answer. It paces request frames below the channel quota, because a receiver enforces
+the quota by pausing every channel from the sender. A quorum member hands each request to its node
+once and answers resent copies from a small per-relayer cache, which forgets a request once the
+relayer's 10 s timeout has passed. An rpc-follower keeps a call's slot
+until the request finishes, even if the caller disconnects.
 
 Requests and acknowledgements must fit in one 4 MiB frame, so the list is capped at 80,000
 addresses. The coordinator checks sizes before sending, because a receiver blocks a peer that

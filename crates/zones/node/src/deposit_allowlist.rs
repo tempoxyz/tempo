@@ -179,16 +179,21 @@ pub enum DepositAllowlistError {
     Internal(String),
 }
 
+impl DepositAllowlistError {
+    /// JSON-RPC error code: invalid params for a rejected request, internal error otherwise.
+    pub(crate) const fn code(&self) -> i32 {
+        match self {
+            Self::Persist(_) | Self::Disabled | Self::Busy | Self::Internal(_) => {
+                jsonrpsee::types::error::INTERNAL_ERROR_CODE
+            }
+            _ => jsonrpsee::types::error::INVALID_PARAMS_CODE,
+        }
+    }
+}
+
 impl From<DepositAllowlistError> for ErrorObjectOwned {
     fn from(error: DepositAllowlistError) -> Self {
-        let code = match error {
-            DepositAllowlistError::Persist(_)
-            | DepositAllowlistError::Disabled
-            | DepositAllowlistError::Busy
-            | DepositAllowlistError::Internal(_) => jsonrpsee::types::error::INTERNAL_ERROR_CODE,
-            _ => jsonrpsee::types::error::INVALID_PARAMS_CODE,
-        };
-        Self::owned(code, error.to_string(), None::<()>)
+        Self::owned(error.code(), error.to_string(), None::<()>)
     }
 }
 

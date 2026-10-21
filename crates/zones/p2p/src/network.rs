@@ -213,9 +213,14 @@ pub(crate) fn transaction_quota() -> Quota {
     Quota::per_second(NZU32!(1024)).allow_burst(NZU32!(TRANSACTION_BURST))
 }
 
+/// Allowlist frames a receiver accepts from one peer per second, and in one burst.
+pub(crate) const ALLOWLIST_FRAMES_PER_SECOND: u32 = 16;
+pub(crate) const ALLOWLIST_FRAME_BURST: u32 = 4;
+
 /// Allowlist requests are operator calls that each wait for every quorum member's response.
 pub(crate) fn allowlist_quota() -> Quota {
-    Quota::per_second(NZU32!(16)).allow_burst(NZU32!(4))
+    Quota::per_second(NZU32!(ALLOWLIST_FRAMES_PER_SECOND))
+        .allow_burst(NZU32!(ALLOWLIST_FRAME_BURST))
 }
 
 /// ACKs are small fixed-shape EIP-712 statements plus one secp256k1 signature.

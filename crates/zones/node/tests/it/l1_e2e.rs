@@ -2730,6 +2730,8 @@ async fn test_rpc_node_relays_deposit_allowlist_to_every_sequencer() -> eyre::Re
         3,
         "every sequencer must reject the stale write: {error}"
     );
+    // Sequencer rejections keep their invalid-params code through the relay.
+    assert!(error.contains("error code -32602"), "{error}");
     for (index, node) in cluster.nodes.iter().enumerate() {
         assert_eq!(
             get_deposit_allowlist(node).await?,
@@ -2828,7 +2830,7 @@ async fn test_rpc_node_allowlist_write_fails_with_offline_sequencer() -> eyre::R
     )
     .await?;
     assert!(
-        error.contains("no acknowledgement from sequencers"),
+        error.contains("no acknowledgement from sequencers") && error.contains("error code -32603"),
         "unexpected relay error: {error}"
     );
     for (index, node) in cluster.nodes.iter().enumerate() {
