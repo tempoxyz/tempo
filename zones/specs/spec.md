@@ -1618,6 +1618,7 @@ Each enabled TIP-20 token is deployed as a precompile at the same address as on 
 
 - `balanceOf` is restricted to the account owner; `allowance` is restricted to its owner or spender.
 - Transfer-family operations (`transfer`, `transferFrom`, `approve`) charge a fixed 100,000 gas.
+- Before T14, `transfer`, `transferFrom`, `transferWithMemo`, and `transferFromWithMemo` revert with `Unauthorized`. From T14 they follow the standard TIP-20 rules, including TIP-403 policy checks.
 - `mint` is restricted to `ZoneInbox`, `burn` is restricted to `ZoneOutbox`.
 
 ## Encrypted Deposit Cryptography

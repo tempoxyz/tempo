@@ -169,6 +169,11 @@ The two controls are independent and remain mutable after creation:
 | Account access | Does not enforce account membership | `closed` requires the `Account` role for deposits, refunds, and plain withdrawals; no assigned accounts denies all accounts |
 | Callback targets | Does not enforce callback roles | `enforced` requires callback targets to have the `CallbackGateway` role |
 
+Account access gates L1 addresses only: depositors, refund recipients, and withdrawal
+destinations. It does not restrict addresses on the zone. A depositor can credit any zone
+recipient, and from T14 zone accounts can send TIP-20 transfers to any zone address. To
+restrict who can hold or move a token on the zone, use the token's TIP-403 transfer policy.
+
 Changing a mode does not clear the stored roles. To create and start a closed zone
 with enforced callback targets in one command:
 
