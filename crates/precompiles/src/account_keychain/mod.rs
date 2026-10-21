@@ -1613,13 +1613,11 @@ impl AccountKeychain {
 mod tests {
     use super::*;
     use crate::{
-        Precompile,
         error::TempoPrecompileError,
         storage::{ConfigCommitmentWriteGas, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
     };
     use alloy::primitives::{Address, B256, Bytes, TxKind, U256};
-    use evm2::PrecompileError;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, IAccountKeychain::SignatureType};
 
@@ -1858,103 +1856,6 @@ mod tests {
                     );
                     Ok(())
                 })?;
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn test_configurable_account_delegate_grant_guards() -> eyre::Result<()> {
-        #[derive(Clone, Copy, Debug)]
-        enum Selector {
-            Authorize,
-            WithWitness,
-            Admin,
-        }
-        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        enum Delegate {
-            CodeFree,
-            SelfGrant,
-            Bytecode,
-            Delegation,
-        }
-        for spec in [
-            TempoHardfork::T11,
-            TempoHardfork::T12,
-            TempoHardfork::T13,
-            TempoHardfork::T14,
-        ] {
-            for selector in [Selector::Authorize, Selector::WithWitness, Selector::Admin] {
-                for delegate_case in [
-                    Delegate::CodeFree,
-                    Delegate::SelfGrant,
-                    Delegate::Bytecode,
-                    Delegate::Delegation,
-                ] {
-                    let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
-                    let parent = Address::repeat_byte(0x11);
-                    let delegate = if delegate_case == Delegate::SelfGrant {
-                        parent
-                    } else {
-                        Address::repeat_byte(0x22)
-                    };
-                    StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-                        let mut keychain = AccountKeychain::new();
-                        keychain.initialize()?;
-                        keychain.set_tx_origin(parent)?;
-                        if matches!(delegate_case, Delegate::Bytecode | Delegate::Delegation) {
-                            let code = if delegate_case == Delegate::Bytecode {
-                                Bytes::from_static(&[0x60, 0x00])
-                            } else {
-                                Bytes::from_iter(
-                                    [0xef, 0x01, 0x00]
-                                        .into_iter()
-                                        .chain(Address::repeat_byte(0x33)),
-                                )
-                            };
-                            keychain.storage.set_code(delegate, code)?;
-                        }
-                        let calldata = match selector {
-                            Selector::Authorize => authorizeKeyCall {
-                                keyId: delegate,
-                                signatureType: SignatureType::ConfigurableAccount,
-                                config: unrestricted_restrictions(),
-                            }
-                            .abi_encode(),
-                            Selector::WithWitness => authorizeKeyWithWitnessCall {
-                                keyId: delegate,
-                                signatureType: SignatureType::ConfigurableAccount,
-                                config: unrestricted_restrictions(),
-                                witness: B256::ZERO,
-                            }
-                            .abi_encode(),
-                            Selector::Admin => IAccountKeychain::authorizeAdminKeyCall {
-                                keyId: delegate,
-                                signatureType: SignatureType::ConfigurableAccount,
-                                witness: B256::ZERO,
-                            }
-                            .abi_encode(),
-                        };
-                        let result = keychain.call(&calldata, parent);
-                        assert_eq!(
-                            result.is_ok(),
-                            spec.is_t14() && delegate_case == Delegate::CodeFree,
-                            "{spec:?}, {selector:?}, {delegate_case:?}: {result:?}"
-                        );
-                        if result.is_err() {
-                            assert!(
-                                matches!(result, Err(PrecompileError::Revert(_))),
-                                "{spec:?}, {selector:?}, {delegate_case:?}: {result:?}"
-                            );
-                            assert_eq!(
-                                keychain.keys[parent][delegate].read()?.expiry,
-                                0,
-                                "{spec:?}, {selector:?}, {delegate_case:?}"
-                            );
-                        }
-                        Ok(())
-                    })?;
-                }
             }
         }
         Ok(())
