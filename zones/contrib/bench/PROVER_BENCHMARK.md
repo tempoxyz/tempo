@@ -12,7 +12,8 @@ The two settings are never compared with each other. Runs start from:
 
 - **PR comments**: `derek bench zones [prover=true|false] [preset=NAME] [baseline=REF] [feature=REF] [no-slack]`,
   parsed by `bench.yml` like the e2e and replay commands. The feature is the pinned PR
-  head and the baseline defaults to its merge base with main.
+  head, which must be a `tempoxyz/tempo` branch; the baseline defaults to its merge base
+  with main.
 - **Nightly** (`bench-zones-scheduled.yml`, 03:45 UTC): the latest main commit against
   the last commit that completed the nightly successfully, with the prover on.
 - **Manual dispatch** of `zones-prover-benchmark.yml` on main, with every workload input.

@@ -175,9 +175,17 @@ jobs:
           script: |
             const resolve = async ref => (await github.rest.repos.getCommit({...context.repo, ref})).data.sha;
             const pinned = process.env.INPUT_PR_HEAD_SHA;
-            if (process.env.BENCH_PR && !/^[0-9a-f]{40}$/.test(pinned)) {
-              core.setFailed('PR benchmarks require the PR head SHA pinned by the ack job');
-              return;
+            if (process.env.BENCH_PR) {
+              if (!/^[0-9a-f]{40}$/.test(pinned)) {
+                core.setFailed('PR benchmarks require the PR head SHA pinned by the ack job');
+                return;
+              }
+              // The benchmark runs the head with AWS credentials; fork pushers are not vetted.
+              const {data: pr} = await github.rest.pulls.get({...context.repo, pull_number: Number(process.env.BENCH_PR)});
+              if (pr.head.repo?.full_name !== 'tempoxyz/tempo') {
+                core.setFailed('Zones benchmark PR head must be in tempoxyz/tempo');
+                return;
+              }
             }
             const feature = process.env.INPUT_FEATURE ? await resolve(process.env.INPUT_FEATURE) : (pinned || context.sha);
             let baseline;
@@ -344,8 +352,9 @@ jobs:
                 const response = await fetch(url, {method: 'POST', headers, body, signal: AbortSignal.timeout(30000)});
                 if (!response.ok) throw new Error(`metrics HTTP ${response.status}`);
               } catch {
-                // Do not log URLs or request errors that might contain credentials.
-                core.setFailed('Zone latency metrics publication failed; comparison evidence remains in the artifact');
+                // Do not log URLs or request errors that might contain credentials. A failed
+                // import must not replace the posted results with a failure.
+                core.warning('Zone latency metrics publication failed; comparison evidence remains in the artifact');
               }
             }
       - name: Send Slack notification (success)

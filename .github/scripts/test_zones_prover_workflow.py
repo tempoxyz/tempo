@@ -68,11 +68,12 @@ def parse(body, enabled="true"):
     )
 
 
-def resolve_refs(**env):
+def resolve_refs(head_repo="tempoxyz/tempo", **env):
     return run_script(
         "zones-prover-benchmark.yml", "bench-zones", "Resolve baseline and feature refs",
         context={"sha": OTHER_SHA, "serverUrl": "https://github.com", "runId": 9,
                  "repo": {"owner": "tempoxyz", "repo": "tempo"}},
+        head={"repo": {"full_name": head_repo}},
         commits={"main": OTHER_SHA, "release": "c" * 40, f"main...{SHA}": "d" * 40},
         env={"BENCH_PROVER": "true", "BENCH_PRESET": "full-journey"} | env,
     )
@@ -129,10 +130,14 @@ class RefTests(unittest.TestCase):
                 self.assertEqual(result["outputs"], {"baseline-sha": baseline, "feature-sha": feature})
                 self.assertEqual((result["exported"]["BENCH_BASELINE_NAME"], result["exported"]["BENCH_FEATURE_NAME"]), names)
 
-    def test_pr_runs_require_the_pinned_head(self):
-        result = resolve_refs(BENCH_PR="7")
-        self.assertEqual(result["failures"], ["PR benchmarks require the PR head SHA pinned by the ack job"])
-        self.assertEqual(result["outputs"], {})
+    def test_pr_runs_require_a_pinned_same_repository_head(self):
+        for head_repo, env, failure in (
+                ("tempoxyz/tempo", {}, "PR benchmarks require the PR head SHA pinned by the ack job"),
+                ("someone/tempo", {"INPUT_PR_HEAD_SHA": SHA}, "Zones benchmark PR head must be in tempoxyz/tempo")):
+            with self.subTest(head_repo=head_repo):
+                result = resolve_refs(head_repo, BENCH_PR="7", **env)
+                self.assertEqual(result["failures"], [failure])
+                self.assertEqual(result["outputs"], {})
 
 
 class MembershipTests(unittest.TestCase):
@@ -167,13 +172,13 @@ class ReportingTests(unittest.TestCase):
         self.assertEqual(call["headers"]["Authorization"], "Basic dXNlcjpwQHNz")
         self.assertEqual(call["body"], 'tempo_zone_benchmark_latency_seconds{run_kind="nightly",prover="on"} 0.2\n')
 
-    def test_skips_runs_without_latency_and_fails_on_publication_errors(self):
+    def test_skips_runs_without_latency_and_only_warns_on_publication_errors(self):
         self.assertEqual(self.publish({})["calls"], [])
         for status, url in ((503, "https://metrics.test/"), (204, "")):
             with self.subTest(status=status, url=url):
                 result = self.publish({"comparison.prom": self.PROM}, status, url)
-                self.assertEqual(result["failures"],
-                                 ["Zone latency metrics publication failed; comparison evidence remains in the artifact"])
+                self.assertEqual((result["failures"], result["warnings"]),
+                                 ([], ["Zone latency metrics publication failed; comparison evidence remains in the artifact"]))
 
     def test_slack_posts_improvements_to_the_channel_and_otherwise_dms(self):
         actor = next(key for key in json.loads((ROOT / ".github/scripts/bench-slack-users.json").read_text())
