@@ -17,6 +17,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     LeadershipSchedule, P2pNetworkId, Role, ZoneManifest,
+    allowlist::{AllowlistCoordinator, AllowlistNodeChannels, AllowlistPorts, allowlist_ports},
     backfill::{
         BackfillCommand, BackfillCoordinator, BackfillPorts, BackfillRequest, BackfillResponse,
         BackfillRuntimeChannels,
@@ -25,10 +26,10 @@ use crate::{
     identity::{Ed25519Identity, Secp256k1Identity},
     network::{
         self, ALLOWLIST_CHANNEL, BACKFILL_REQUEST_CHANNEL, BACKFILL_RESPONSE_CHANNEL,
-        BLOCK_CHANNEL, MAX_ALLOWLIST_MESSAGE_SIZE, MAX_MESSAGE_SIZE, MAX_TRANSACTION_MESSAGE_SIZE,
-        SETTLEMENT_PROPOSAL_CHANNEL, SETTLEMENT_SIGNATURE_CHANNEL, TRANSACTION_CHANNEL,
+        BLOCK_CHANNEL, MAX_MESSAGE_SIZE, MAX_TRANSACTION_MESSAGE_SIZE, SETTLEMENT_PROPOSAL_CHANNEL,
+        SETTLEMENT_SIGNATURE_CHANNEL, TRANSACTION_CHANNEL,
     },
-    protocol::{AllowlistFrame, EncodedBlock},
+    protocol::EncodedBlock,
     routing::{RoutingMembership, RoutingPolicy},
 };
 
@@ -54,7 +55,6 @@ struct P2pSenders {
     settlement_proposals: CommonwareSender,
     settlement_signatures: CommonwareSender,
     transactions: CommonwareSender,
-    allowlist: CommonwareSender,
 }
 
 struct P2pReceivers<R = CommonwareReceiver> {
@@ -62,7 +62,6 @@ struct P2pReceivers<R = CommonwareReceiver> {
     settlement_proposals: R,
     settlement_signatures: R,
     transactions: R,
-    allowlist: R,
 }
 
 struct BackfillNodeChannels {
@@ -234,10 +233,6 @@ pub enum P2pCommand {
         transaction_hash: B256,
         transaction: Vec<u8>,
     },
-    /// Relay an opaque deposit allowlist update from an RPC-only member to one quorum member.
-    SendAllowlistUpdate { peer: PublicKey, update: Vec<u8> },
-    /// Acknowledge a deposit allowlist update to the RPC-only member that relayed it.
-    SendAllowlistAck { peer: PublicKey, ack: Vec<u8> },
 }
 
 /// Observable lifecycle and block events emitted by the P2P runtime.
@@ -268,10 +263,6 @@ pub enum P2pEvent {
         follower_ed25519_public_key: PublicKey,
         transaction: Vec<u8>,
     },
-    /// A quorum member received a deposit allowlist update from an RPC-only member.
-    AllowlistUpdateReceived { peer: PublicKey, update: Vec<u8> },
-    /// An RPC-only member received a quorum member's allowlist acknowledgement.
-    AllowlistAckReceived { peer: PublicKey, ack: Vec<u8> },
 }
 
 /// Handle used to communicate with, supervise, and stop the dedicated P2P runtime.
@@ -293,6 +284,8 @@ pub struct P2pHandleParts {
     pub events: mpsc::Receiver<P2pEvent>,
     /// Typed backfill command, request, and response channels.
     pub backfill: BackfillPorts,
+    /// Deposit allowlist request client and relayed-request channel.
+    pub allowlist: AllowlistPorts,
 }
 
 impl P2pHandle {
@@ -314,12 +307,13 @@ impl P2pHandle {
             commands,
             events,
             backfill,
+            allowlist,
         } = self.parts.take().expect("P2P handle already consumed");
         shutdown.cancel();
 
         let stopped_result = stopped.await;
         join_runtime_thread(thread).await?;
-        drop((commands, events, backfill));
+        drop((commands, events, backfill, allowlist));
         stopped_result
             .map_err(|err| eyre::eyre!("P2P runtime dropped its completion channel: {err}"))?
             .map_err(|err| eyre::eyre!("P2P runtime failed: {err}"))
@@ -356,6 +350,7 @@ pub fn spawn_p2p(config: P2pConfig, network_id: P2pNetworkId) -> eyre::Result<P2
     let (backfill_commands, backfill_command_rx) = mpsc::channel(COMMAND_BACKLOG);
     let (backfill_requests_tx, backfill_requests) = mpsc::channel(EVENT_BACKLOG);
     let (backfill_responses_tx, backfill_responses) = mpsc::channel(EVENT_BACKLOG);
+    let (allowlist, allowlist_channels) = allowlist_ports();
 
     let thread = std::thread::Builder::new()
         .name("zone-p2p".to_owned())
@@ -371,6 +366,7 @@ pub fn spawn_p2p(config: P2pConfig, network_id: P2pNetworkId) -> eyre::Result<P2
                     requests: backfill_requests_tx,
                     responses: backfill_responses_tx,
                 },
+                allowlist_channels,
             )
             .map_err(|err| format!("{err:?}"));
             let _ = stopped_tx.send(result);
@@ -389,6 +385,7 @@ pub fn spawn_p2p(config: P2pConfig, network_id: P2pNetworkId) -> eyre::Result<P2
                 requests: backfill_requests,
                 responses: backfill_responses,
             },
+            allowlist,
         }),
     })
 }
@@ -400,6 +397,7 @@ fn run(
     command_rx: mpsc::Receiver<P2pCommand>,
     events: mpsc::Sender<P2pEvent>,
     backfill: BackfillNodeChannels,
+    allowlist: AllowlistNodeChannels,
 ) -> eyre::Result<()> {
     let mut runtime_config = commonware_runtime::tokio::Config::default()
         .with_tcp_nodelay(Some(true))
@@ -445,8 +443,7 @@ fn run(
             TRANSACTION_CHANNEL,
             network::transaction_quota(),
         );
-        let (allowlist_sender, allowlist_receiver) =
-            commonware.register(ALLOWLIST_CHANNEL, network::allowlist_quota());
+        let allowlist_channel = commonware.register(ALLOWLIST_CHANNEL, network::allowlist_quota());
         let mut network_task = commonware.start();
 
         if config.bypass_ip_check {
@@ -485,11 +482,21 @@ fn run(
                 settlement_proposals: settlement_proposal_sender,
                 settlement_signatures: settlement_signature_sender,
                 transactions: transaction_sender,
-                allowlist: allowlist_sender,
             },
             command_rx,
         );
         tokio::pin!(command_loop);
+
+        let allowlist_loop = AllowlistCoordinator::new(
+            local_ed25519_public_key.clone(),
+            membership.clone(),
+            leadership.clone(),
+            oracle.clone(),
+            allowlist_channel,
+            allowlist,
+        )
+        .run();
+        tokio::pin!(allowlist_loop);
 
         let receive_loop = run_receivers(
             local_ed25519_public_key.clone(),
@@ -501,7 +508,6 @@ fn run(
                 settlement_proposals: settlement_proposal_receiver,
                 settlement_signatures: settlement_signature_receiver,
                 transactions: transaction_receiver,
-                allowlist: allowlist_receiver,
             },
             events,
         );
@@ -535,6 +541,7 @@ fn run(
             result = &mut command_loop => result,
             result = &mut receive_loop => result,
             result = &mut backfill_loop => result,
+            result = &mut allowlist_loop => result,
         };
 
         context
@@ -707,55 +714,10 @@ async fn run_commands(
                     debug!(target: "zone::p2p", ?transaction_hash, admitted = admitted.len(), configured, transaction_size_bytes = transaction_size, "Submitted transaction forwarding to quorum peers");
                 }
             }
-
-            P2pCommand::SendAllowlistUpdate { peer, update } => {
-                let policy =
-                    RoutingPolicy::new(&local_ed25519_public_key, &membership, &leadership);
-                if !policy.may_relay_allowlist_update()
-                    || !policy.allowlist_update_recipients().contains(&peer)
-                {
-                    metrics::counter!("zone_p2p_role_invalid_messages_dropped_total").increment(1);
-                    warn!(target: "zone::p2p", %peer, "Ignoring allowlist update not addressed from an RPC-only member to a quorum member");
-                    continue;
-                }
-                send_allowlist_frame(&mut senders.allowlist, peer, AllowlistFrame::Update(update));
-            }
-
-            P2pCommand::SendAllowlistAck { peer, ack } => {
-                let may_send =
-                    RoutingPolicy::new(&local_ed25519_public_key, &membership, &leadership)
-                        .may_send_allowlist_ack(&peer);
-                if !may_send {
-                    metrics::counter!("zone_p2p_role_invalid_messages_dropped_total").increment(1);
-                    warn!(target: "zone::p2p", %peer, "Ignoring allowlist acknowledgement addressed to a non-RPC peer");
-                    continue;
-                }
-                send_allowlist_frame(&mut senders.allowlist, peer, AllowlistFrame::Ack(ack));
-            }
         }
     }
 
     Err(eyre::eyre!("P2P command channel closed unexpectedly"))
-}
-
-/// Send one allowlist frame to `peer`. An oversized frame is dropped rather than sent, because
-/// the receiver would block this node on every channel.
-fn send_allowlist_frame(sender: &mut CommonwareSender, peer: PublicKey, frame: AllowlistFrame) {
-    let frame = frame.encode();
-    if frame.len() > MAX_ALLOWLIST_MESSAGE_SIZE {
-        metrics::counter!("zone_p2p_allowlist_frames_dropped_total").increment(1);
-        warn!(target: "zone::p2p", %peer, allowlist_frame_size_bytes = frame.len(), max_allowlist_frame_size_bytes = MAX_ALLOWLIST_MESSAGE_SIZE, "Dropping oversized allowlist frame");
-        return;
-    }
-    // Low priority keeps admin traffic behind block replication; the relayer resends a frame that
-    // is not admitted or is delayed past its retry interval.
-    if sender
-        .send(Recipients::Some(vec![peer.clone()]), frame, false)
-        .is_empty()
-    {
-        metrics::counter!("zone_p2p_allowlist_frames_dropped_total").increment(1);
-        debug!(target: "zone::p2p", %peer, "Allowlist frame was not admitted");
-    }
 }
 
 async fn run_receivers<R, B>(
@@ -775,7 +737,6 @@ where
         mut settlement_proposals,
         mut settlement_signatures,
         mut transactions,
-        mut allowlist,
     } = receivers;
 
     loop {
@@ -866,41 +827,6 @@ where
                 P2pEvent::TransactionReceived {
                     follower_ed25519_public_key: peer,
                     transaction,
-                }
-            }
-
-            result = allowlist.recv() => {
-                let (peer, bytes) = result.wrap_err("allowlist channel receive failed")?;
-                let frame = match into_bounded_payload(bytes, MAX_ALLOWLIST_MESSAGE_SIZE) {
-                    Ok(bytes) => AllowlistFrame::decode(&bytes),
-                    Err(size) => {
-                        commonware_p2p::block!(
-                            blocker,
-                            peer,
-                            allowlist_frame_size_bytes = size,
-                            max_allowlist_frame_size_bytes = MAX_ALLOWLIST_MESSAGE_SIZE,
-                            "Blocking peer for oversized allowlist frame"
-                        );
-                        continue;
-                    }
-                };
-                let policy = RoutingPolicy::new(&local_ed25519_public_key, &membership, &leadership);
-                match frame {
-                    Ok(AllowlistFrame::Update(update)) if policy.may_accept_allowlist_update(&peer) => {
-                        P2pEvent::AllowlistUpdateReceived { peer, update }
-                    }
-                    Ok(AllowlistFrame::Ack(ack)) if policy.may_accept_allowlist_ack(&peer) => {
-                        P2pEvent::AllowlistAckReceived { peer, ack }
-                    }
-                    Ok(_) => {
-                        metrics::counter!("zone_p2p_role_invalid_messages_dropped_total").increment(1);
-                        warn!(target: "zone::p2p", %peer, "Ignoring allowlist frame from role-invalid peer");
-                        continue;
-                    }
-                    Err(err) => {
-                        warn!(target: "zone::p2p", %peer, %err, "Ignoring malformed allowlist frame");
-                        continue;
-                    }
                 }
             }
         };
@@ -1158,7 +1084,6 @@ mod tests {
         let (_proposals_tx, settlement_proposals) = mock_receiver();
         let (_signatures_tx, settlement_signatures) = mock_receiver();
         let (transactions_tx, transactions) = mock_receiver();
-        let (_allowlist_tx, allowlist) = mock_receiver();
         let (events_tx, mut events) = tokio::sync::mpsc::channel(4);
         let blocker = RecordingBlocker::default();
         let observed_blocker = blocker.clone();
@@ -1172,7 +1097,6 @@ mod tests {
                 settlement_proposals,
                 settlement_signatures,
                 transactions,
-                allowlist,
             },
             events_tx,
         ));
@@ -2047,6 +1971,8 @@ mod tests {
         let manifest = Arc::new(ZoneManifest::parse(&input).unwrap());
         let leader_peer = identities[LEADER].ed25519_public_key();
         let rpc_follower_peer = identities[RPC_FOLLOWER].ed25519_public_key();
+        let quorum = [LEADER, QUORUM_FOLLOWER, QUORUM_FOLLOWER_B]
+            .map(|index| (index, identities[index].ed25519_public_key()));
         let mut handles = identities
             .into_iter()
             .zip(addresses)
@@ -2193,66 +2119,71 @@ mod tests {
         .await;
         quorum_forwarder.abort();
 
-        // The RPC-only member relays allowlist updates to a quorum member, which acknowledges
-        // them back. Quorum members cannot send each other updates.
-        let leader_peer_for_update = leader_peer.clone();
-        let relayer = repeat(
-            rpc_commands.clone(),
-            P2pCommand::SendAllowlistUpdate {
-                peer: leader_peer_for_update,
-                update: b"update".to_vec(),
-            },
-        );
-        tokio::time::timeout(Duration::from_secs(15), async {
-            loop {
-                if let Some(P2pEvent::AllowlistUpdateReceived { peer, update }) =
-                    handles[LEADER].events_mut().recv().await
-                {
-                    assert_eq!(peer, rpc_follower_peer);
-                    assert_eq!(update, b"update");
-                    return;
-                }
+        // The RPC-only member relays an allowlist request to every quorum member and gets each
+        // one's answer. The leader answers after a resend, which must not reach its node twice.
+        let rpc_client = handles[RPC_FOLLOWER]
+            .parts
+            .as_ref()
+            .unwrap()
+            .allowlist
+            .client
+            .clone();
+        let relayed = tokio::spawn(async move { rpc_client.request(b"request".to_vec()).await });
+        for &(index, _) in &quorum {
+            let requests = &mut handles[index].parts.as_mut().unwrap().allowlist.requests;
+            let request = tokio::time::timeout(Duration::from_secs(15), requests.recv())
+                .await
+                .unwrap_or_else(|_| panic!("node-{index} did not receive the allowlist request"))
+                .expect("allowlist request channel closed");
+            assert_eq!(request.peer, rpc_follower_peer);
+            assert_eq!(request.payload, b"request");
+            if index == LEADER {
+                tokio::time::sleep(Duration::from_secs(2)).await;
             }
-        })
-        .await
-        .expect("leader did not receive the RPC-only member's allowlist update");
-        relayer.abort();
-        let acker = repeat(
-            leader_commands.clone(),
-            P2pCommand::SendAllowlistAck {
-                peer: rpc_follower_peer.clone(),
-                ack: b"ack".to_vec(),
-            },
+            request.respond(vec![index as u8]).await;
+        }
+        let responses = tokio::time::timeout(Duration::from_secs(15), relayed)
+            .await
+            .expect("allowlist request did not finish")
+            .unwrap()
+            .expect("allowlist request failed");
+        assert!(responses.unanswered.is_empty(), "{responses:?}");
+        let mut answers = responses.answers;
+        answers.sort_by_key(|(_, answer)| answer.clone());
+        assert_eq!(
+            answers,
+            quorum
+                .map(|(index, peer)| (peer, vec![index as u8]))
+                .to_vec()
         );
-        tokio::time::timeout(Duration::from_secs(15), async {
-            loop {
-                if let Some(P2pEvent::AllowlistAckReceived { peer, ack }) =
-                    handles[RPC_FOLLOWER].events_mut().recv().await
-                {
-                    assert_eq!(peer, leader_peer);
-                    assert_eq!(ack, b"ack");
-                    return;
-                }
-            }
-        })
-        .await
-        .expect("RPC-only member did not receive the leader's allowlist acknowledgement");
-        acker.abort();
-        let quorum_relayer = repeat(
-            quorum_follower_commands.clone(),
-            P2pCommand::SendAllowlistUpdate {
-                peer: leader_peer.clone(),
-                update: b"forged".to_vec(),
-            },
+        assert!(
+            tokio::time::timeout(
+                Duration::from_secs(1),
+                handles[LEADER]
+                    .parts
+                    .as_mut()
+                    .unwrap()
+                    .allowlist
+                    .requests
+                    .recv(),
+            )
+            .await
+            .is_err(),
+            "a resent allowlist request reached the leader's node twice"
         );
-        assert_no_event_matching(
-            handles[LEADER].events_mut(),
-            Duration::from_secs(2),
-            "a quorum member accepted an allowlist update from another quorum member",
-            |event| matches!(event, P2pEvent::AllowlistUpdateReceived { .. }),
-        )
-        .await;
-        quorum_relayer.abort();
+
+        // Quorum members cannot relay allowlist requests.
+        let quorum_client = handles[QUORUM_FOLLOWER]
+            .parts
+            .as_ref()
+            .unwrap()
+            .allowlist
+            .client
+            .clone();
+        assert_eq!(
+            quorum_client.request(b"forged".to_vec()).await,
+            Err(crate::AllowlistRequestError::NotRelayer)
+        );
 
         for handle in handles {
             tokio::time::timeout(Duration::from_secs(10), handle.shutdown())

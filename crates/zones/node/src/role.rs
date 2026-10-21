@@ -185,20 +185,8 @@ struct GenerationSinks {
 pub(crate) async fn route_events_to_generations(
     mut events: mpsc::Receiver<P2pEvent>,
     sinks: EventSinks,
-    allowlist: mpsc::Sender<P2pEvent>,
 ) {
     while let Some(event) = events.recv().await {
-        // Allowlist traffic is role-neutral and process-lifetime, like backfill serving.
-        if matches!(
-            event,
-            P2pEvent::AllowlistUpdateReceived { .. } | P2pEvent::AllowlistAckReceived { .. }
-        ) {
-            if allowlist.try_send(event).is_err() {
-                // The relayer retries until acknowledged, so a dropped frame is resent.
-                metrics::counter!("zone_allowlist_events_dropped_total").increment(1);
-            }
-            continue;
-        }
         let Some(sink) = sinks.sink_for(&event) else {
             metrics::counter!("zone_leadership_events_dropped_between_generations_total")
                 .increment(1);

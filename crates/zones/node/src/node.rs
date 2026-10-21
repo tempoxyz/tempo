@@ -5,7 +5,7 @@
 
 use crate::{
     DepositAllowlist, DepositAllowlistAdmin, ZoneConsensus, ZoneEngine,
-    deposit_allowlist::{AllowlistRelay, DepositAllowlistApiServer as _, apply_relayed_updates},
+    deposit_allowlist::{AllowlistRelay, DepositAllowlistApiServer as _, apply_relayed_requests},
     follower::PeerTipRegistry,
     replication::{BACKFILL_SERVE_QUEUE_CAPACITY, serve_backfill_requests},
     role::{
@@ -96,8 +96,8 @@ use zone_l1::{
     watch_portal_pause,
 };
 use zone_p2p::{
-    BackfillCommand, BackfillRequest, LeadershipSchedule, LeadershipState, P2pCommand, P2pConfig,
-    P2pEvent, P2pNetworkId, P2pPeerId, ZoneManifest, spawn_p2p,
+    AllowlistPorts, BackfillCommand, BackfillRequest, LeadershipSchedule, LeadershipState,
+    P2pCommand, P2pConfig, P2pNetworkId, P2pPeerId, ZoneManifest, spawn_p2p,
 };
 use zone_payload::{
     DEFAULT_WITHDRAWAL_BATCH_INTERVAL_BLOCKS, WithdrawalRevealEncryptor, ZonePayloadAttributes,
@@ -111,9 +111,6 @@ use zone_sequencer::{
     ZoneSequencerConfig, attestation::AttestationDomain, create_proof_collector,
     spawn_settlement_prover, spawn_shadow_prover, spawn_zone_sequencer,
 };
-
-/// Allowlist relay frames buffered between the P2P router and the relay or applier.
-const ALLOWLIST_EVENT_BACKLOG: usize = 64;
 
 fn validate_zone_chain_id(parent_chain_id: u64, zone_id: u32, chain_id: u64) -> eyre::Result<()> {
     let expected = zone_chain_id(parent_chain_id, zone_id)?;
@@ -588,12 +585,10 @@ struct P2PRuntime {
     role_status: SharedRoleStatus,
     peer_tips: PeerTipRegistry,
     backfill_requests_rx: Receiver<BackfillRequest>,
-    /// Deposit allowlist relay traffic, routed for the process lifetime. Taken when the relay or
-    /// applier task starts.
-    allowlist_events: Option<Receiver<P2pEvent>>,
-    /// Quorum members that apply relayed allowlist writes. Empty on a quorum member, which
-    /// applies writes instead of relaying them.
-    allowlist_relay_targets: Vec<P2pPeerId>,
+    /// Deposit allowlist ports, taken when the relay or applier task starts.
+    allowlist: Option<AllowlistPorts>,
+    /// RPC-only nodes relay allowlist requests; quorum members answer them.
+    is_rpc_only: bool,
 }
 
 impl<N> NodeAddOns<N> for ZoneAddOns<N>
@@ -837,22 +832,19 @@ where
             .clone()
             .map(|allowlist| allowlist.into_rpc().remove_context());
         if let Some(runtime) = p2p_runtime.as_mut()
-            && let Some(events) = runtime.allowlist_events.take()
+            && let Some(ports) = runtime.allowlist.take()
         {
-            if runtime.allowlist_relay_targets.is_empty() {
+            if !runtime.is_rpc_only {
                 task_executor.spawn_critical_task(
                     "zone-deposit-allowlist-applier",
-                    apply_relayed_updates(local_allowlist, events, runtime.commands.clone()),
+                    apply_relayed_requests(local_allowlist, ports.requests),
                 );
             } else if let Some(admin) = self.deposit_allowlist_admin {
-                let (relay, worker) = AllowlistRelay::new(
-                    runtime.allowlist_relay_targets.clone(),
-                    runtime.commands.clone(),
-                    events,
-                    admin,
+                allowlist_rpc = Some(
+                    AllowlistRelay::new(ports.client, admin)
+                        .into_rpc()
+                        .remove_context(),
                 );
-                task_executor.spawn_critical_task("zone-deposit-allowlist-relay", worker);
-                allowlist_rpc = Some(relay.into_rpc().remove_context());
             }
         }
         let handle = self
@@ -1334,26 +1326,13 @@ where
         let schedule = config.leadership();
         let local_ed25519_public_key = config.ed25519_public_key();
         let manifest = config.manifest().clone();
-        let allowlist_relay_targets = if config.is_rpc_only() {
-            manifest
-                .quorum_nodes()
-                .map(|(node, _)| node.ed25519_public_key().clone())
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let is_rpc_only = config.is_rpc_only();
         let local_secp256k1_address = config.secp256k1_address();
         let individual_signer = config.block_attestation_signer();
         let (backfill_requests_tx, backfill_requests_rx) =
             tokio::sync::mpsc::channel(BACKFILL_SERVE_QUEUE_CAPACITY);
-        let (allowlist_tx, allowlist_events) = tokio::sync::mpsc::channel(ALLOWLIST_EVENT_BACKLOG);
-        let (sinks, commands, backfill_commands) = Self::launch_p2p_network(
-            config,
-            network_id,
-            task_executor,
-            backfill_requests_tx,
-            allowlist_tx,
-        )?;
+        let (sinks, commands, backfill_commands, allowlist) =
+            Self::launch_p2p_network(config, network_id, task_executor, backfill_requests_tx)?;
 
         let settlements = attestation.signer.clone().map(|signer| {
             SettlementManager::new(
@@ -1419,8 +1398,8 @@ where
             role_status,
             peer_tips,
             backfill_requests_rx,
-            allowlist_events: Some(allowlist_events),
-            allowlist_relay_targets,
+            allowlist: Some(allowlist),
+            is_rpc_only,
         })
     }
 
@@ -1433,11 +1412,11 @@ where
         network_id: P2pNetworkId,
         task_executor: &reth_tasks::TaskExecutor,
         backfill_requests: tokio::sync::mpsc::Sender<BackfillRequest>,
-        allowlist: tokio::sync::mpsc::Sender<P2pEvent>,
     ) -> eyre::Result<(
         EventSinks,
         tokio::sync::mpsc::Sender<zone_p2p::P2pCommand>,
         tokio::sync::mpsc::Sender<BackfillCommand>,
+        AllowlistPorts,
     )> {
         let handle = spawn_p2p(config, network_id)?;
         let zone_p2p::P2pHandleParts {
@@ -1447,11 +1426,12 @@ where
             commands,
             events,
             backfill,
+            allowlist,
         } = handle.into_parts();
 
         let sinks = EventSinks::default();
         let routers = futures::future::join3(
-            route_events_to_generations(events, sinks.clone(), allowlist),
+            route_events_to_generations(events, sinks.clone()),
             route_backfill_requests(backfill.requests, backfill_requests),
             route_backfill_responses(backfill.responses, sinks.clone()),
         );
@@ -1493,7 +1473,7 @@ where
                 }
             },
         );
-        Ok((sinks, commands, backfill.commands))
+        Ok((sinks, commands, backfill.commands, allowlist))
     }
 
     /// Build the leader-generation sequencer dependencies (activated only while leader).

@@ -2839,6 +2839,34 @@ async fn test_rpc_node_allowlist_write_fails_with_offline_sequencer() -> eyre::R
         );
     }
 
+    // Reads need no signature, so they have their own limit: while every read slot waits on the
+    // offline sequencer, another read is turned away but a write is still relayed.
+    let read_status = || async {
+        rpc.provider()
+            .raw_request::<_, serde_json::Value>("zoneAdmin_getDepositAllowlistStatus".into(), ())
+            .await
+            .expect_err("a read cannot reach the offline sequencer")
+            .to_string()
+    };
+    let (reads, write_error) = tokio::join!(
+        futures::future::join_all((0..4).map(|_| read_status())),
+        async {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let busy = read_status().await;
+            assert!(busy.contains("too many allowlist requests"), "{busy}");
+            send_set(rpc, &write)
+                .await
+                .expect_err("a write cannot reach the offline sequencer")
+                .to_string()
+        }
+    );
+    for error in reads.iter().chain([&write_error]) {
+        assert!(
+            error.contains("no acknowledgement from sequencers"),
+            "unexpected relay error: {error}"
+        );
+    }
+
     Ok(())
 }
 

@@ -93,7 +93,6 @@ jsonrpsee.workspace = true
 k256.workspace = true
 metrics.workspace = true
 parking_lot.workspace = true
-rand.workspace = true
 serde = { workspace = true, features = ["alloc"] }
 serde_json = { workspace = true, default-features = true }
 tempfile.workspace = true

@@ -24,7 +24,7 @@ pub(crate) const TRANSACTION_CHANNEL: u64 = 3;
 pub(crate) const SETTLEMENT_PROPOSAL_CHANNEL: u64 = 4;
 /// Follower-to-leader settlement signature channel.
 pub(crate) const SETTLEMENT_SIGNATURE_CHANNEL: u64 = 5;
-/// Deposit allowlist updates relayed to the quorum, and their acknowledgements.
+/// Deposit allowlist requests relayed to the quorum, and their responses.
 pub(crate) const ALLOWLIST_CHANNEL: u64 = 6;
 /// Commonware derives receive capacity from this burst size and the retained peer count.
 /// Forwarded transactions are retried from the sender's pool, so a small per-peer burst bounds
@@ -35,9 +35,9 @@ pub(crate) const TRANSACTION_BURST: u32 = 4;
 /// larger frame.
 pub(crate) const MAX_ALLOWLIST_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
 
-/// Largest allowlist update or acknowledgement payload that fits in one frame after its tag
-/// byte. Senders must check payloads against it.
-pub const MAX_ALLOWLIST_PAYLOAD_SIZE: usize = MAX_ALLOWLIST_MESSAGE_SIZE - 1;
+/// Largest allowlist request or response payload that fits in one frame after its header.
+pub const MAX_ALLOWLIST_PAYLOAD_SIZE: usize =
+    MAX_ALLOWLIST_MESSAGE_SIZE - crate::protocol::ALLOWLIST_HEADER_LEN;
 
 /// Maximum raw EIP-2718 transaction frame accepted from another sequencer.
 ///
@@ -213,7 +213,7 @@ pub(crate) fn transaction_quota() -> Quota {
     Quota::per_second(NZU32!(1024)).allow_burst(NZU32!(TRANSACTION_BURST))
 }
 
-/// Allowlist updates are operator writes that each wait for every quorum acknowledgement.
+/// Allowlist requests are operator calls that each wait for every quorum member's response.
 pub(crate) fn allowlist_quota() -> Quota {
     Quota::per_second(NZU32!(16)).allow_burst(NZU32!(4))
 }

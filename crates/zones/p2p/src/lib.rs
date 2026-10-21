@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
+mod allowlist;
 mod backfill;
 mod capabilities;
 mod identity;
@@ -10,6 +11,9 @@ mod protocol;
 mod routing;
 mod runtime;
 
+pub use allowlist::{
+    AllowlistClient, AllowlistPorts, AllowlistRequest, AllowlistRequestError, AllowlistResponses,
+};
 pub use backfill::{BackfillCommand, BackfillPorts, BackfillRequest, BackfillResponse};
 pub use manifest::{
     ForcedRecoveryConfig, ForcedRecoveryState, LeadershipSchedule, LeadershipState,

@@ -29,7 +29,7 @@ use tracing::{info, warn};
 use zone_l1::{FAILED_DECRYPTION, abi::DecryptionData};
 
 mod relay;
-pub(crate) use relay::{AllowlistRelay, apply_relayed_updates};
+pub(crate) use relay::{AllowlistRelay, apply_relayed_requests};
 
 /// File name of the persisted allowlist inside the node data directory.
 pub(crate) const DEPOSIT_ALLOWLIST_FILE_NAME: &str = "deposit-allowlist.json";

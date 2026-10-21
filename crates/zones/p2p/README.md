@@ -299,13 +299,19 @@ to every quorum member on a dedicated channel, so it needs no key. Each member a
 to its own persisted list and acknowledges it. The call returns only after every member
 acknowledges, and fails naming the members that did not; members that already applied a failed
 write keep it, so callers retry the same write, which those members acknowledge without
-reapplying. An rpc-follower relays one request at a time and answers `Busy` when its short
-queue is full. Callers must still send writes one at a time, because writes through different
-rpc-followers can reach sequencers in different orders.
+reapplying. An rpc-follower relays one write at a time and answers `Busy` to a write sent while
+another is in flight. Reads need no signature, so they have a separate limit and cannot keep
+writes from being relayed. Callers must still send writes one at a time, because writes through
+different rpc-followers can reach sequencers in different orders.
+
+The runtime's allowlist coordinator owns delivery. It tags each request with an ID, resends it
+every 500 ms to the members that have not answered, and returns after 10 s with the members
+that did not answer. A quorum member hands each request to its node once and answers resent
+copies from a small per-relayer cache.
 
 Requests and acknowledgements must fit in one 4 MiB frame, so the list is capped at 80,000
-addresses. Senders check sizes before sending, because a receiver blocks a peer that sends an
-oversized frame.
+addresses. The coordinator checks sizes before sending, because a receiver blocks a peer that
+sends an oversized frame.
 
 Upgrade every node before calling these methods through an rpc-follower: Commonware disconnects a
 peer that sends on a channel the receiver does not register.

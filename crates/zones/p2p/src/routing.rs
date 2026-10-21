@@ -153,7 +153,7 @@ impl<'a> RoutingPolicy<'a> {
         self.is_remote_peer(peer) && self.membership.is_quorum_member(self.local)
     }
 
-    /// RPC-only members relay operator allowlist writes to every quorum member.
+    /// RPC-only members relay operator allowlist requests to every quorum member.
     pub(crate) fn may_relay_allowlist_update(&self) -> bool {
         !self.am_i_quorum_member()
     }
@@ -166,10 +166,6 @@ impl<'a> RoutingPolicy<'a> {
         self.am_i_quorum_member()
             && self.is_remote_peer(peer)
             && !self.membership.is_quorum_member(peer)
-    }
-
-    pub(crate) fn may_send_allowlist_ack(&self, peer: &PublicKey) -> bool {
-        self.may_accept_allowlist_update(peer)
     }
 
     pub(crate) fn may_accept_allowlist_ack(&self, peer: &PublicKey) -> bool {
@@ -300,7 +296,6 @@ mod tests {
         let sequencer = RoutingPolicy::new(&sequencer_key, &membership, &schedule);
         assert!(!sequencer.may_relay_allowlist_update());
         assert!(sequencer.may_accept_allowlist_update(&key(4)));
-        assert!(sequencer.may_send_allowlist_ack(&key(4)));
         // Sequencers never take updates from each other or from peers outside the manifest.
         assert!(!sequencer.may_accept_allowlist_update(&key(1)));
         assert!(!sequencer.may_accept_allowlist_update(&key(99)));
