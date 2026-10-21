@@ -7,14 +7,15 @@ use super::analysis::{AccountDelta, Field};
 use crate::shadow_replay::{Boundary, Evidence, ObservedTx, fees::post_fee_slot_change};
 use alloy::{
     consensus::Transaction as _,
-    primitives::{B256, KECCAK256_EMPTY, U256, keccak256},
+    primitives::{Address, B256, KECCAK256_EMPTY, U256, keccak256},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::{
     precompiles::*,
     zones::{
         T13_ZONE_MESSENGER_RUNTIME, T13_ZONE_PORTAL_RUNTIME, T13_ZONE_VERIFIER_RUNTIME,
-        ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME, ZONE_VERIFIER_RUNTIME,
+        T14_ZONE_PORTAL_RUNTIME, ZONE_MESSENGER_RUNTIME, ZONE_PORTAL_RUNTIME,
+        ZONE_VERIFIER_RUNTIME,
     },
 };
 use tempo_precompiles::{storage::StorageAction, tip_fee_manager::amm::compute_amount_out};
@@ -132,32 +133,63 @@ const T13_ZONE_RUNTIME_UPGRADE: Expectation = Expectation {
             ZONE_MESSENGER_ADDRESS => (ZONE_MESSENGER_RUNTIME, T13_ZONE_MESSENGER_RUNTIME),
             _ => return None,
         };
-        let real = ctx.real.pre_block.as_ref()?;
-        let shadow = ctx.shadow.pre_block.as_ref()?;
-
-        // The canonical arm must not change code. The shadow arm activates the new bytecode.
-        if AccountDelta(real.transitions.get(&address))
-            .info(|info| info.code_hash)
-            .is_some()
-        {
-            return None;
-        }
-        let transition = shadow.transitions.get(&address)?;
-        let before = transition
-            .previous_info
-            .as_ref()
-            .map_or(KECCAK256_EMPTY, |info| info.code_hash);
-        let after = transition.info.as_ref()?.code_hash;
-
-        ((before == KECCAK256_EMPTY || before == keccak256(&old_runtime))
-            && after == keccak256(&new_runtime))
-        .then_some(())
+        exact_runtime_upgrade(ctx, address, &[&old_runtime], &new_runtime)
     },
 };
 
+const T14_ZONE_PORTAL_UPGRADE: Expectation = Expectation {
+    id: "t14.zone-portal-upgrade",
+    check: |ctx, field| {
+        if ctx.boundary != Boundary::PreBlock
+            || field.name != "code"
+            || field.slot.is_some()
+            || field.address != Some(ZONE_PORTAL_IMPL_ADDRESS)
+        {
+            return None;
+        }
+        exact_runtime_upgrade(
+            ctx,
+            ZONE_PORTAL_IMPL_ADDRESS,
+            &[&ZONE_PORTAL_RUNTIME, &T13_ZONE_PORTAL_RUNTIME],
+            &T14_ZONE_PORTAL_RUNTIME,
+        )
+    },
+};
+
+fn exact_runtime_upgrade(
+    ctx: &Context<'_>,
+    address: Address,
+    old_runtimes: &[&[u8]],
+    new_runtime: &[u8],
+) -> Option<()> {
+    let real = ctx.real.pre_block.as_ref()?;
+    let shadow = ctx.shadow.pre_block.as_ref()?;
+
+    // The canonical arm may activate an earlier expected runtime on this block, while the shadow
+    // arm advances directly to the candidate runtime.
+    if AccountDelta(real.transitions.get(&address))
+        .info(|info| info.code_hash)
+        .is_some_and(|(_, after)| !old_runtimes.iter().any(|code| after == keccak256(code)))
+    {
+        return None;
+    }
+    let transition = shadow.transitions.get(&address)?;
+    let before = transition
+        .previous_info
+        .as_ref()
+        .map_or(KECCAK256_EMPTY, |info| info.code_hash);
+    let after = transition.info.as_ref()?.code_hash;
+
+    ((before == KECCAK256_EMPTY || old_runtimes.iter().any(|code| before == keccak256(code)))
+        && after == keccak256(new_runtime))
+    .then_some(())
+}
+
 /// Fork-specific checks are ordered oldest-first; baseline fee normalization is added separately.
-const REGISTRY: &[(TempoHardfork, &[Expectation])] =
-    &[(TempoHardfork::T13, &[T13_ZONE_RUNTIME_UPGRADE])];
+const REGISTRY: &[(TempoHardfork, &[Expectation])] = &[
+    (TempoHardfork::T13, &[T13_ZONE_RUNTIME_UPGRADE]),
+    (TempoHardfork::T14, &[T14_ZONE_PORTAL_UPGRADE]),
+];
 
 pub(crate) fn between(
     canonical: TempoHardfork,
@@ -191,7 +223,7 @@ mod tests {
 
     #[test]
     fn accepts_exact_bytecode_upgrades() {
-        let address = ZONE_VERIFIER_ADDRESS;
+        let address = ZONE_PORTAL_IMPL_ADDRESS;
         let transition = |info: Option<AccountInfo>, code_hash| {
             let mut state = reth_revm::db::TransitionState::default();
             state.transitions.insert(
@@ -210,10 +242,10 @@ mod tests {
                 ..Default::default()
             }
         };
-        let real = transition(Some(AccountInfo::default()), KECCAK256_EMPTY);
-        let ctx = |shadow| Context {
+        let unchanged = transition(Some(AccountInfo::default()), KECCAK256_EMPTY);
+        let ctx = |real, shadow| Context {
             boundary: Boundary::PreBlock,
-            real: &real,
+            real,
             shadow,
             base_fee: None,
             tx: None,
@@ -224,10 +256,18 @@ mod tests {
             slot: None,
             fee_associated: false,
         };
-        let upgraded = transition(None, keccak256(&T13_ZONE_VERIFIER_RUNTIME));
-        assert!((T13_ZONE_RUNTIME_UPGRADE.check)(&ctx(&upgraded), &code).is_some());
-        let unexpected = transition(None, keccak256(&ZONE_VERIFIER_RUNTIME));
-        assert!((T13_ZONE_RUNTIME_UPGRADE.check)(&ctx(&unexpected), &code).is_none());
+        let upgraded = transition(None, keccak256(&T13_ZONE_PORTAL_RUNTIME));
+        assert!((T13_ZONE_RUNTIME_UPGRADE.check)(&ctx(&unchanged, &upgraded), &code).is_some());
+        let upgraded = transition(None, keccak256(&T14_ZONE_PORTAL_RUNTIME));
+        assert!((T14_ZONE_PORTAL_UPGRADE.check)(&ctx(&unchanged, &upgraded), &code).is_some());
+        let t13 = transition(None, keccak256(&T13_ZONE_PORTAL_RUNTIME));
+        assert!((T14_ZONE_PORTAL_UPGRADE.check)(&ctx(&t13, &upgraded), &code).is_some());
+        let unexpected_real = transition(None, keccak256("unexpected"));
+        assert!(
+            (T14_ZONE_PORTAL_UPGRADE.check)(&ctx(&unexpected_real, &upgraded), &code).is_none()
+        );
+        let unexpected = transition(None, keccak256(&ZONE_PORTAL_RUNTIME));
+        assert!((T13_ZONE_RUNTIME_UPGRADE.check)(&ctx(&unchanged, &unexpected), &code).is_none());
     }
 
     #[test]
@@ -242,6 +282,8 @@ mod tests {
         assert_eq!(ids(T11, T12), [FEE_STATE.id]);
         assert_eq!(ids(T12, T13), [FEE_STATE.id, T13_ZONE_RUNTIME_UPGRADE.id]);
         assert_eq!(ids(T11, T13), ids(T12, T13));
+        assert_eq!(ids(T13, T14), [FEE_STATE.id, T14_ZONE_PORTAL_UPGRADE.id]);
+        assert_eq!(ids(T12, T14).len(), 3);
         assert_eq!(ids(T12, T12), [FEE_STATE.id]);
         assert_eq!(ids(T13, T12), [FEE_STATE.id]);
     }

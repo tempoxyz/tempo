@@ -746,7 +746,7 @@ interface IZonePortal {
     /// @notice Append-only commitment to enabled token addresses and metadata
     function tokenEnablementHash() external view returns (bytes32);
 
-    /// @notice Whether new deposits and withdrawal processing are paused.
+    /// @notice Whether deposits, settlement, withdrawals, and refund claims are paused.
     function paused() external view returns (bool);
 
     /// @notice Timestamp at which the current Portal pause expires.
@@ -755,10 +755,10 @@ interface IZonePortal {
     /// @notice Timestamp at which permanent abdication of a capability takes effect.
     function abdicationEffectiveAt(Capability capability) external view returns (uint64);
 
-    /// @notice Pause deposits and withdrawal processing for 30 days.
+    /// @notice Pause deposits, settlement, withdrawals, and refund claims for 30 days.
     function pause() external;
 
-    /// @notice Resume deposits and withdrawal processing before the pause expires.
+    /// @notice Resume deposits, settlement, withdrawals, and refund claims before expiry.
     function resume() external;
 
     /// @notice Schedule permanent abdication of a Portal capability. Only callable by admin.
@@ -917,9 +917,12 @@ interface IZonePortal {
 
     function refunds(address token, address owner) external view returns (uint128);
 
+    /// @notice Claim the caller's parked refund for a token while the portal is unpaused.
+    /// @dev Reverts with PortalIsPaused while the portal is paused.
     function claimRefund(address token) external returns (uint128 amount);
 
     /// @notice Submit a batch with an n-of-m certificate for its zone tip.
+    /// @dev Reverts with PortalIsPaused while the portal is paused.
     function submitBatch(
         uint64 tempoBlockNumber,
         uint64 recentTempoBlockNumber,
