@@ -3854,31 +3854,24 @@ fn retired_root_permit_reverts_before_writing() {
 #[test]
 fn retired_root_permit_stays_allowed() {
     let (owner, spender, relayer) = (signer(4), signer(8).address(), signer(9).address());
-    let mut f = Fixture::with_parent(false);
-    // Only the owner's root key is at stake: a committed spender is no authority here.
-    retire(&mut f, spender);
-    let permit = permit_signed(&mut f, owner.address(), &owner, spender, 1_000);
-    let result = send(&mut f, relayer, vec![permit]);
-    assert!(result.status, "{result:?}");
-    assert_eq!(
-        permit_state(&mut f, owner.address(), spender),
-        (U256::ONE, U256::from(100))
-    );
-    assert_eq!(result.logs.len(), 1);
-}
-
-#[test]
-fn retired_root_permit_inactive_before_t14() {
-    let (owner, spender, relayer) = (signer(4), signer(8).address(), signer(9).address());
-    let mut f = Fixture::with_spec(false, TempoHardfork::T13);
-    retire(&mut f, owner.address());
-    let permit = permit_signed(&mut f, owner.address(), &owner, spender, 1_000);
-    let result = send(&mut f, relayer, vec![permit]);
-    assert!(result.status, "{result:?}");
-    assert_eq!(
-        permit_state(&mut f, owner.address(), spender),
-        (U256::ONE, U256::from(100))
-    );
+    // At T14 only the owner's root key is at stake: a committed spender is no authority here.
+    // Before T14 the retirement does not exist, so even a committed owner's permit is good.
+    for (spec, retired) in [
+        (TempoHardfork::T13, owner.address()),
+        (TempoHardfork::T14, spender),
+    ] {
+        let mut f = Fixture::with_spec(false, spec);
+        retire(&mut f, retired);
+        let permit = permit_signed(&mut f, owner.address(), &owner, spender, 1_000);
+        let result = send(&mut f, relayer, vec![permit]);
+        assert!(result.status, "{spec:?}: {result:?}");
+        assert_eq!(
+            permit_state(&mut f, owner.address(), spender),
+            (U256::ONE, U256::from(100)),
+            "{spec:?}"
+        );
+        assert_eq!(result.logs.len(), 1, "{spec:?}");
+    }
 }
 
 fn nonce_of(f: &mut Fixture, account: Address) -> u64 {
@@ -3982,66 +3975,81 @@ fn voucher_setup(
 
 #[test]
 fn retired_root_channel_voucher_reverts() {
+    /// Which root key retires, and how.
+    #[derive(Clone, Copy)]
+    enum Retire {
+        /// The payer is committed and signs for itself.
+        CommitPayer,
+        /// The authorized signer is committed, the payer is not: the signer's root key signed.
+        CommitSigner,
+        /// The payer migrates for real, in a block after the voucher was signed (this harness has
+        /// one block environment; the node test uses real blocks).
+        MigratePayer,
+    }
     let payee = signer(5).address();
+    // (case, payer seed, voucher signer seed, how the root key retires). Seed 1 is the fixture's
+    // own account, the only one a real migration can retire.
+    let cases = [
+        ("payer signs", 4, 4, Retire::CommitPayer),
+        ("signer", 4, 6, Retire::CommitSigner),
+        ("migrated payer", 1, 1, Retire::MigratePayer),
+    ];
     for redeem in [Redeem::Settle, Redeem::Close] {
-        // The payer is committed and signs for itself.
-        let payer = signer(4);
-        let mut f = Fixture::with_parent(false);
-        let (channel, signature) = voucher_setup(&mut f, &payer, &payer);
-        retire(&mut f, payer.address());
-        let before = channel_snapshot(&mut f, &channel);
-        let call = redeem.call(&channel, 60, signature);
-        let result = send(&mut f, payee, vec![call]);
-        assert_reverts_with(&result, voucher_retired(payer.address()), "payer signs");
-        assert_eq!(channel_snapshot(&mut f, &channel), before, "{redeem:?}");
-
-        // The authorized signer is committed, the payer is not: the signer's root key signed.
-        let (payer, delegate) = (signer(4), signer(6));
-        let mut f = Fixture::with_parent(false);
-        let (channel, signature) = voucher_setup(&mut f, &payer, &delegate);
-        retire(&mut f, delegate.address());
-        let before = channel_snapshot(&mut f, &channel);
-        let call = redeem.call(&channel, 60, signature);
-        let result = send(&mut f, payee, vec![call]);
-        assert_reverts_with(&result, voucher_retired(delegate.address()), "signer");
-        assert_eq!(channel_snapshot(&mut f, &channel), before, "{redeem:?}");
-
-        // The same through a real migration of the payer, in a block after the voucher was signed
-        // (this harness has one block environment; the node test uses real blocks).
-        let mut f = Fixture::with_parent(false);
-        let (account, owner) = (f.account, f.owner.clone());
-        let channel = open_channel(&mut f, account, payee, Address::ZERO, 100);
-        let signature = voucher(&mut f, &channel, &owner, 60);
-        let nonce = nonce_of(&mut f, account);
-        migrate(&mut f, nonce, signer(2).address());
-        let before = channel_snapshot(&mut f, &channel);
-        let call = redeem.call(&channel, 60, signature);
-        let result = send(&mut f, payee, vec![call]);
-        assert_reverts_with(&result, voucher_retired(account), "migrated payer");
-        assert_eq!(channel_snapshot(&mut f, &channel), before, "{redeem:?}");
+        for (case, payer_seed, signer_seed, how) in cases {
+            let label = format!("{redeem:?}, {case}");
+            let (payer, voucher_signer) = (signer(payer_seed), signer(signer_seed));
+            let mut f = Fixture::with_parent(false);
+            let (channel, signature) = voucher_setup(&mut f, &payer, &voucher_signer);
+            let retired = match how {
+                Retire::CommitPayer => {
+                    retire(&mut f, payer.address());
+                    payer.address()
+                }
+                Retire::CommitSigner => {
+                    retire(&mut f, voucher_signer.address());
+                    voucher_signer.address()
+                }
+                Retire::MigratePayer => {
+                    assert_eq!(payer.address(), f.account, "{label}");
+                    let nonce = nonce_of(&mut f, payer.address());
+                    migrate(&mut f, nonce, signer(2).address());
+                    payer.address()
+                }
+            };
+            let before = channel_snapshot(&mut f, &channel);
+            let call = redeem.call(&channel, 60, signature);
+            let result = send(&mut f, payee, vec![call]);
+            assert_reverts_with(&result, voucher_retired(retired), &label);
+            assert_eq!(channel_snapshot(&mut f, &channel), before, "{label}");
+        }
     }
 }
 
 #[test]
 fn retired_root_channel_voucher_stays_allowed() {
     let (payer, delegate, payee) = (signer(4), signer(6), signer(5).address());
-    for redeem in [Redeem::Settle, Redeem::Close] {
-        // The payer is committed but its authorized signer is not: only the signer's root key
-        // signed, so the voucher is good.
-        let mut f = Fixture::with_parent(false);
-        let (channel, signature) = voucher_setup(&mut f, &payer, &delegate);
-        retire(&mut f, payer.address());
-        let before = channel_snapshot(&mut f, &channel);
-        let call = redeem.call(&channel, 60, signature);
-        let result = send(&mut f, payee, vec![call]);
-        assert!(result.status, "{redeem:?}: {result:?}");
-        let after = channel_snapshot(&mut f, &channel);
-        assert_eq!(
-            after.payee_balance,
-            before.payee_balance + U256::from(60),
-            "{redeem:?}: payee"
-        );
-        assert_ne!(after, before, "{redeem:?}");
+    // At T14 the payer is committed but its authorized signer is not: only the signer's root key
+    // signed, so the voucher is good. Before T14 the payer's own retired root key is good too.
+    for (spec, voucher_signer) in [
+        (TempoHardfork::T13, &payer),
+        (TempoHardfork::T14, &delegate),
+    ] {
+        for redeem in [Redeem::Settle, Redeem::Close] {
+            let mut f = Fixture::with_spec(false, spec);
+            let (channel, signature) = voucher_setup(&mut f, &payer, voucher_signer);
+            retire(&mut f, payer.address());
+            let before = channel_snapshot(&mut f, &channel);
+            let call = redeem.call(&channel, 60, signature);
+            let result = send(&mut f, payee, vec![call]);
+            assert!(result.status, "{spec:?} {redeem:?}: {result:?}");
+            let after = channel_snapshot(&mut f, &channel);
+            assert_eq!(
+                after.payee_balance,
+                before.payee_balance + U256::from(60),
+                "{spec:?} {redeem:?}: payee"
+            );
+            assert_ne!(after, before, "{spec:?} {redeem:?}");
+        }
     }
 }
 
@@ -4099,24 +4107,6 @@ fn retired_root_channel_voucher_error_order() {
         let call = redeem.call(&channel, 60, valid);
         let result = send(&mut f, payee, vec![call]);
         assert_reverts_with(&result, voucher_retired(payer.address()), "valid");
-    }
-}
-
-#[test]
-fn retired_root_channel_voucher_inactive_before_t14() {
-    let (payer, payee) = (signer(4), signer(5).address());
-    for redeem in [Redeem::Settle, Redeem::Close] {
-        let mut f = Fixture::with_spec(false, TempoHardfork::T13);
-        let (channel, signature) = voucher_setup(&mut f, &payer, &payer);
-        retire(&mut f, payer.address());
-        let before = channel_snapshot(&mut f, &channel);
-        let call = redeem.call(&channel, 60, signature);
-        let result = send(&mut f, payee, vec![call]);
-        assert!(result.status, "{redeem:?}: {result:?}");
-        assert_eq!(
-            channel_snapshot(&mut f, &channel).payee_balance,
-            before.payee_balance + U256::from(60)
-        );
     }
 }
 
