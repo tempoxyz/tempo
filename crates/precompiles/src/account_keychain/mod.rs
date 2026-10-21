@@ -1146,16 +1146,6 @@ impl AccountKeychain {
         Ok(key.is_admin)
     }
 
-    /// Internal predicate for active key status.
-    pub fn is_active_key(&self, account: Address, key_id: Address) -> Result<bool> {
-        let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
-        match self.load_active_key(account, key_id, current_timestamp) {
-            Ok(_) => Ok(true),
-            Err(err) if err.is_system_error() => Err(err),
-            Err(_) => Ok(false),
-        }
-    }
-
     fn ensure_key_authorization_witness_not_burned(
         &self,
         account: Address,
