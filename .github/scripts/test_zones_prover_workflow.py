@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+import random
 import subprocess
 import tempfile
 import unittest
@@ -82,6 +83,7 @@ def run_with_results(name, files, **payload):
         results = Path(directory) / "results"
         results.mkdir()
         for file, content in files.items():
+            (results / file).parent.mkdir(parents=True, exist_ok=True)
             (results / file).write_text(content)
         payload["env"] = {"BENCH_RESULTS_PATH": directory, "BENCH_WORK_DIR": str(results)} | payload.get("env", {})
         return run_script("zones-prover-benchmark.yml", "bench-zones", name,
@@ -154,38 +156,62 @@ class MembershipTests(unittest.TestCase):
             self.assertLess(names.index("Check org membership"), names.index(name))
 
 
+# Run 11 of #8488 (one commit on both sides) moved the deposit p50 by 29.5%. These are its
+# traced deposit latencies (ms), which cluster on block timing.
+DEPOSIT_MS = [122, 934, 733, 1047, 971, 770, 569, 513, 513, 311]
+
+
+def traced_report(deposits, withdrawal=2000.0):
+    """A txgen report.json tracing every journey, as the classifier reads it."""
+    def edge(source, destination, ms):  # The last milestone, not the command finish, ends the edge.
+        return [{"id": source, "finished_offset_ms": 0, "milestones": [{"run_offset_ms": 100}]},
+                {"id": destination, "finished_offset_ms": 0, "milestones": [{"run_offset_ms": 1}, {"run_offset_ms": 100 + ms}]}]
+    return {"completed": len(deposits), "sampled_instances": [
+        {"outcome": "completed", "client_observed_e2e_latency_ms": 6000.0 + d,
+         "steps": edge("offramp", "offramp_processed", withdrawal) + edge("onramp.zone_before", "onramp.zone_deposit.processed", d)}
+        for d in deposits]}
+
+
 class ReportingTests(unittest.TestCase):
-    def test_slack_posts_improvements_to_the_channel_and_otherwise_dms(self):
+    def test_slack_posts_only_significant_p95_improvements_between_distinct_commits(self):
         actor = next(key for key in json.loads((ROOT / ".github/scripts/bench-slack-users.json").read_text())
                      if not key.startswith("_"))
-        rows = [{"key": "withdrawal", "label": "Withdrawal: submit → L1 funds", "end_to_end": True},
-                {"key": "withdrawal_zone_to_l1", "label": "> zone → L1 processed", "end_to_end": False},
-                {"key": "journey", "label": "Full private journey", "end_to_end": True}]
-        latency = lambda ms: {"p50_ms": ms, "p95_ms": ms}
-        metadata = {"baseline": OTHER_SHA, "feature": SHA, "prover": True, "preset": "full-journey",
-                    "tempoHardfork": "t13", "count": 20, "tps": 5, "region": "us-east-1"}
         env = {"SLACK_BENCH_BOT_TOKEN": "token", "SLACK_BENCH_CHANNEL": "CHANNEL", "BENCH_ACTOR": actor,
                "GITHUB_WORKSPACE": str(ROOT)}
-        # Only end-to-end rows gate the channel post; a faster sub-leg alone is informational.
-        for end_to_end_ms, sub_leg_ms, destination, verdict in ((50.0, 100.0, "CHANNEL", "Improvement"),
-                                                                 (100.0, 50.0, "DM", "No Significant Change"),
-                                                                 (100.0, 100.0, "DM", "No Significant Change")):
-            with self.subTest(end_to_end_ms=end_to_end_ms, sub_leg_ms=sub_leg_ms):
-                comparison = {"metadata": metadata, "rows": rows, "latencies": {
-                    "baseline": {"withdrawal": latency(100.0), "withdrawal_zone_to_l1": latency(100.0),
-                                 "journey": latency(7121.0)},
-                    "feature": {"withdrawal": latency(end_to_end_ms), "withdrawal_zone_to_l1": latency(sub_leg_ms),
-                                "journey": latency(7125.4)}}}
-                result = run_with_results("Send Slack notification (success)", {"comparison.json": json.dumps(comparison)},
-                                          env=env)
+        rows = [{"key": key, "label": key, "end_to_end": key != "sub_leg"} for key in ("withdrawal", "deposit", "journey", "sub_leg")]
+        latency = lambda ms: {"p50_ms": ms, "p95_ms": ms}
+        base = traced_report(DEPOSIT_MS * 10)
+        rng = random.Random(35)  # A draw an unsmoothed bootstrap flags as a change.
+        noise = traced_report([rng.choice(DEPOSIT_MS) for _ in range(100)])
+        scaled = lambda factor, n=10: traced_report([d * factor for d in DEPOSIT_MS * n])
+        for name, baseline, feature, verdict, feature_sha in (
+                ("improvement", base, scaled(0.8), "Improvement", SHA),
+                ("regression", base, scaled(1.2), "Regression", SHA),
+                ("same commit", base, scaled(0.8), "Improvement", OTHER_SHA),
+                ("clustered noise", base, noise, "No Significant Change", SHA),
+                ("within floor", base, traced_report(DEPOSIT_MS * 10, withdrawal=1970.0), "No Significant Change", SHA),
+                ("tight row beyond floor", base, traced_report(DEPOSIT_MS * 10, withdrawal=1900.0), "Improvement", SHA),
+                ("under 100 journeys", scaled(1, 2), scaled(0.5, 2), "Unclassified", SHA),
+                ("partial traces", base, dict(scaled(0.6), completed=200), "Unclassified", SHA),
+                ("missing traces", None, None, "Unclassified", SHA)):
+            with self.subTest(name):
+                comparison = {"rows": rows, "metadata": {
+                    "baseline": OTHER_SHA, "feature": feature_sha, "prover": True, "preset": "full-journey",
+                    "tempoHardfork": "t13", "count": 100, "tps": 5, "region": "us-east-1"}, "latencies": {
+                    "baseline": {row["key"]: latency(100.0) for row in rows},
+                    "feature": {row["key"]: latency(50.0) for row in rows}}}
+                files = {"comparison.json": json.dumps(comparison)}
+                if baseline:
+                    files |= {"baseline/report.json": json.dumps(baseline), "feature/report.json": json.dumps(feature)}
+                result = run_with_results("Send Slack notification (success)", files, env=env)
                 [call] = result["calls"]
                 message = json.loads(call["body"])
-                self.assertEqual(message["channel"] == "CHANNEL", destination == "CHANNEL")
+                self.assertEqual(message["channel"] == "CHANNEL", verdict == "Improvement" and feature_sha == SHA)
                 self.assertIn(verdict, message["blocks"][0]["text"]["text"])
+                self.assertEqual(len(result["warnings"]), baseline is None)
                 table = [[cell["text"] for cell in row] for row in message["blocks"][2]["rows"]]
-                self.assertEqual(table[0], ["Latency (s)", "base (p50)", "feat (p50)", "change", "base (p95)", "feat (p95)", "change"])
-                self.assertEqual(table[1][:3], ["Withdrawal: submit → L1 funds", "0.100", f"{end_to_end_ms / 1000:.3f}"])
-                self.assertEqual(table[3][:3], ["Full private journey", "7.121", "7.125"])
+                self.assertEqual(table[:2], [["Latency (s)", "base (p50)", "feat (p50)", "change", "base (p95)", "feat (p95)", "change"],
+                                             ["withdrawal", "0.100", "0.050", "-50.0%", "0.100", "0.050", "-50.0%"]])
         result = run_with_results("Send Slack notification (success)", {}, env=env)
         self.assertEqual((result["calls"], result["warnings"]),
                          ([], ["Could not read comparison.json for Zones Slack notification"]))

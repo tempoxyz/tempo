@@ -21,6 +21,8 @@
 const fs = require('fs');
 const path = require('path');
 
+const { classify: zonesClassify } = require('./bench-zones-classify');
+
 const SLACK_API = 'https://slack.com/api/chat.postMessage';
 
 // Significance thresholds (percentage change)
@@ -625,28 +627,10 @@ async function replayFailure({ core, context, failedStep }) {
   }
 }
 
-// comparison.json lists the rows; only end-to-end legs gate improvements.
-function zonesChanges({ rows, latencies }) {
-  const changes = {};
-  for (const { key, end_to_end: endToEnd } of rows) {
-    for (const quantile of ['p50', 'p95']) {
-      const baseline = latencies.baseline[key][`${quantile}_ms`];
-      const feature = latencies.feature[key][`${quantile}_ms`];
-      const change = changeFromPct(baseline ? (feature / baseline - 1) * 100 : null, true);
-      changes[`${key}_${quantile}`] = endToEnd ? change : { ...change, informational: true };
-    }
-  }
-  return changes;
-}
-
-function fmtZonesChange(change, endToEnd) {
-  const pct = change.pct == null ? '-' : `${change.pct >= 0 ? '+' : ''}${change.pct.toFixed(1)}%`;
-  return endToEnd ? `${pct} ${SIG_EMOJI[change.sig]}` : pct;
-}
-
 function buildZonesSuccessBlocks({ comparison, changes, prNumber, actor, actorSlackId, jobUrl, repo }) {
   const { metadata, latencies } = comparison;
-  const verdict = verdictFromChanges(changes, 'No Significant Change');
+  // No scored row (missing or partial traces, under 100 journeys) is not a measured no-change.
+  const verdict = verdictFromChanges(changes, Object.keys(changes).length ? 'No Significant Change' : 'Unclassified');
   const commitUrl = `https://github.com/${repo}/commit`;
   const metaParts = [];
   if (prNumber) metaParts.push(`*<https://github.com/${repo}/pull/${prNumber}|PR #${prNumber}>*`);
@@ -661,14 +645,11 @@ function buildZonesSuccessBlocks({ comparison, changes, prNumber, actor, actorSl
     `*Prover:* \`${metadata.prover ? 'on' : 'off'}\` | *Preset:* \`${metadata.preset}\` | *Hardfork:* \`${metadata.tempoHardfork}\``,
     `*Journeys:* \`${metadata.count}\` | *Target TPS:* \`${metadata.tps}\` | *Region:* \`${metadata.region}\``,
   ].join('\n');
-  const rows = comparison.rows.map(({ key, label, end_to_end: endToEnd }) => [
-    cell(label),
-    ...['p50', 'p95'].flatMap(quantile => [
-      cell((latencies.baseline[key][`${quantile}_ms`] / 1000).toFixed(3)),
-      cell((latencies.feature[key][`${quantile}_ms`] / 1000).toFixed(3)),
-      cell(fmtZonesChange(changes[`${key}_${quantile}`], endToEnd)),
-    ]),
-  ]);
+  // Raw percentile changes are context; the verdict comes from bench-zones-classify.js.
+  const rows = comparison.rows.map(({ key, label }) => [label, ...['p50', 'p95'].flatMap(quantile => {
+    const [b, f] = ['baseline', 'feature'].map(phase => latencies[phase][key][`${quantile}_ms`]);
+    return [(b / 1000).toFixed(3), (f / 1000).toFixed(3), b ? `${f >= b ? '+' : ''}${((f / b - 1) * 100).toFixed(1)}%` : '-'];
+  })].map(cell));
   const buttons = [{ type: 'button', text: { type: 'plain_text', text: 'CI :github:', emoji: true }, url: jobUrl, action_id: 'ci_button' }];
   if (prNumber) {
     buttons.push({ type: 'button', text: { type: 'plain_text', text: 'Diff :github:', emoji: true }, url: `https://github.com/${repo}/pull/${prNumber}/files`, action_id: 'diff_button' });
@@ -708,18 +689,24 @@ async function zonesSuccess({ core, context }) {
 
   const slackUsers = loadSlackUsers(process.env.GITHUB_WORKSPACE || '.');
   const actorSlackId = slackUsers[actor];
-  const changes = zonesChanges(comparison);
+  let changes = {};
+  try {
+    changes = zonesClassify(comparison.rows, process.env.BENCH_WORK_DIR);
+  } catch (e) {
+    core.warning(`Could not classify Zones latency: ${e.message}`);
+  }
   const blocks = buildZonesSuccessBlocks({ comparison, changes, prNumber, actor, actorSlackId, jobUrl, repo });
   const text = `Tempo Zones bench: baseline vs feature (prover ${comparison.metadata.prover ? 'on' : 'off'})`;
 
   const channel = process.env.SLACK_BENCH_CHANNEL;
   const slackMode = process.env.BENCH_SLACK || 'always';
   let postedToChannel = false;
-  if (channel && hasImprovement(changes)) {
+  // Benchmarking a commit against itself measures noise; never announce it.
+  if (channel && comparison.metadata.baseline !== comparison.metadata.feature && hasImprovement(changes)) {
     await postToSlack(token, channel, blocks, text, core);
     postedToChannel = true;
   } else if (channel) {
-    core.info('No significant Zones improvement, skipping public channel notification');
+    core.info('No significant Zones improvement between distinct commits, skipping public channel notification');
   }
 
   if (slackMode === 'on-win') {
