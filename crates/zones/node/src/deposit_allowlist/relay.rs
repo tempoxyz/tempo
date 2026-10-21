@@ -11,9 +11,10 @@ use std::sync::Arc;
 
 use alloy_primitives::{Address, Bytes};
 use jsonrpsee::{core::RpcResult, types::ErrorObjectOwned};
+use reth_tasks::TaskExecutor;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Semaphore, mpsc};
-use tracing::{info, warn};
+use tokio::sync::{Semaphore, mpsc, oneshot};
+use tracing::{Instrument, info, warn};
 use zone_p2p::{AllowlistClient, AllowlistRequest, AllowlistResponses, P2pPeerId};
 
 use super::{
@@ -54,6 +55,7 @@ pub(crate) struct AllowlistRelay {
     /// Rejects writes the sequencers would reject before they use P2P bandwidth.
     admin: DepositAllowlistAdmin,
     client: AllowlistClient,
+    executor: TaskExecutor,
     /// Held by the one write in flight, so every sequencer receives this node's writes in the
     /// same order.
     write: Arc<Semaphore>,
@@ -61,10 +63,15 @@ pub(crate) struct AllowlistRelay {
 }
 
 impl AllowlistRelay {
-    pub(crate) fn new(client: AllowlistClient, admin: DepositAllowlistAdmin) -> Self {
+    pub(crate) fn new(
+        client: AllowlistClient,
+        admin: DepositAllowlistAdmin,
+        executor: TaskExecutor,
+    ) -> Self {
         Self {
             admin,
             client,
+            executor,
             write: Arc::new(Semaphore::new(1)),
             reads: Arc::new(Semaphore::new(MAX_CONCURRENT_READS)),
         }
@@ -85,14 +92,25 @@ impl AllowlistRelay {
             .map_err(|err| relay_error(err.to_string()))?;
         let mut responses = Vec::with_capacity(answers.len());
         let mut errors = Vec::new();
+        let mut code = jsonrpsee::types::error::INVALID_PARAMS_CODE;
         for (peer, answer) in answers {
             match serde_json::from_slice::<Answer>(&answer) {
                 Ok(Ok(response)) => responses.push((peer, response)),
-                Ok(Err(error)) => errors.push(format!("{peer}: {error}")),
-                Err(err) => errors.push(format!("{peer}: malformed answer: {err}")),
+                Ok(Err(error)) => {
+                    let error = ErrorObjectOwned::from(error);
+                    if error.code() == jsonrpsee::types::error::INTERNAL_ERROR_CODE {
+                        code = error.code();
+                    }
+                    errors.push(format!("{peer}: {}", error.message()));
+                }
+                Err(err) => {
+                    code = jsonrpsee::types::error::INTERNAL_ERROR_CODE;
+                    errors.push(format!("{peer}: malformed answer: {err}"));
+                }
             }
         }
         if !unanswered.is_empty() {
+            code = jsonrpsee::types::error::INTERNAL_ERROR_CODE;
             let unanswered = unanswered
                 .iter()
                 .map(ToString::to_string)
@@ -105,35 +123,43 @@ impl AllowlistRelay {
         if errors.is_empty() {
             Ok(responses)
         } else {
-            Err(relay_error(errors.join("; ")))
+            Err(ErrorObjectOwned::owned(code, errors.join("; "), None::<()>))
         }
     }
 
-    async fn relay_read(&self, request: Request) -> RelayResult {
-        let _permit = self
-            .reads
-            .try_acquire()
+    /// Keep the limit on work in flight even if the RPC caller disconnects.
+    async fn relay_limited(&self, request: Request, limit: &Arc<Semaphore>) -> RelayResult {
+        let permit = limit
+            .clone()
+            .try_acquire_owned()
             .map_err(|_| DepositAllowlistError::Busy)?;
-        self.relay(&request).await
+        let relay = self.clone();
+        let (reply, response) = oneshot::channel();
+        self.executor.spawn_task(async move {
+            let result = relay.relay(&request).await;
+            drop(permit);
+            // A disconnected RPC caller no longer needs the result.
+            if reply.send(result).is_err() {
+                tracing::debug!(target: "zone::allowlist", "Allowlist caller disconnected before relay completed");
+            }
+        }.in_current_span());
+        response
+            .await
+            .map_err(|err| relay_error(format!("allowlist relay task stopped: {err}")))?
+    }
+
+    async fn relay_read(&self, request: Request) -> RelayResult {
+        self.relay_limited(request, &self.reads).await
     }
 
     /// Relay a write, failing fast with `Busy` while another write is in flight.
     async fn relay_write(&self, write: SignedWrite) -> RpcResult<()> {
         self.admin.authorize(&write)?;
-        let permit = self
-            .write
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| DepositAllowlistError::Busy)?;
-        let relay = self.clone();
-        // Runs to completion even if the caller disconnects, keeping the permit until every
-        // sequencer answered or timed out, so the next write cannot overtake this one.
-        let responses = tokio::spawn(async move {
-            let _permit = permit;
-            relay.relay(&Request::Write(write)).await
-        })
-        .await
-        .map_err(|err| relay_error(format!("allowlist relay task failed: {err}")))??;
+        // The task retains the write permit through completion, so cancellation cannot let
+        // a later write overtake it.
+        let responses = self
+            .relay_limited(Request::Write(write), &self.write)
+            .await?;
         let unexpected = responses
             .into_iter()
             .filter(|(_, response)| !matches!(response, Response::Applied(_)))
@@ -299,10 +325,265 @@ fn relay_error(message: String) -> ErrorObjectOwned {
 
 #[cfg(test)]
 mod tests {
-    use zone_p2p::MAX_ALLOWLIST_PAYLOAD_SIZE;
+    use std::{net::TcpListener, time::Duration};
+
+    use alloy::signers::{SignerSync as _, local::PrivateKeySigner};
+    use commonware_codec::Encode as _;
+    use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
+    use zone_p2p::{
+        MAX_ALLOWLIST_PAYLOAD_SIZE, P2pConfig, P2pHandleParts, P2pNetworkId, spawn_p2p,
+    };
 
     use super::*;
-    use crate::deposit_allowlist::MAX_DEPOSIT_ALLOWLIST_LEN;
+    use crate::deposit_allowlist::{MAX_DEPOSIT_ALLOWLIST_LEN, status_of};
+
+    struct RelayFixture {
+        relay: AllowlistRelay,
+        peers: Vec<P2pHandleParts>,
+        _dir: tempfile::TempDir,
+    }
+
+    impl RelayFixture {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let keys = [31, 32, 33, 34].map(PrivateKey::from_seed);
+            let listeners: [_; 4] =
+                std::array::from_fn(|_| TcpListener::bind("127.0.0.1:0").unwrap());
+            let addresses = listeners
+                .each_ref()
+                .map(|listener| listener.local_addr().unwrap());
+            let signer: PrivateKeySigner = format!("0x{:064x}", 31).parse().unwrap();
+            let manifest_path = dir.path().join("manifest.toml");
+            let mut manifest =
+                format!("leader_ed25519_public_key = \"{}\"\n", keys[0].public_key());
+            for (index, key) in keys.iter().enumerate() {
+                manifest.push_str(&format!(
+                    "\n[[nodes]]\nname = \"node-{index}\"\ned25519_public_key = \"{}\"\naddress = \"{}\"\nrpc_only = {}\n",
+                    key.public_key(), addresses[index], index == 3,
+                ));
+                if index != 3 {
+                    let signer: PrivateKeySigner =
+                        format!("0x{:064x}", 31 + index).parse().unwrap();
+                    manifest.push_str(&format!("secp256k1_address = \"{}\"\n", signer.address()));
+                }
+            }
+            std::fs::write(&manifest_path, manifest).unwrap();
+            drop(listeners);
+            let peers = keys
+                .into_iter()
+                .enumerate()
+                .map(|(index, key)| {
+                    let key_path = dir.path().join(format!("ed-{index}.key"));
+                    std::fs::write(&key_path, const_hex::encode(key.encode())).unwrap();
+                    let secp_path = dir.path().join(format!("secp-{index}.key"));
+                    std::fs::write(&secp_path, format!("0x{:064x}", 31 + index)).unwrap();
+                    let config = P2pConfig::load(
+                        &manifest_path,
+                        &key_path,
+                        (index != 3).then_some(&secp_path),
+                        addresses[index],
+                        false,
+                        1,
+                        None,
+                    )
+                    .unwrap();
+                    config
+                        .leadership()
+                        .publish(config.manifest().bootstrap_leadership())
+                        .unwrap();
+                    spawn_p2p(config, P2pNetworkId::new(1, Address::repeat_byte(1)))
+                        .unwrap()
+                        .into_parts()
+                })
+                .collect::<Vec<_>>();
+            let relay = AllowlistRelay::new(
+                peers[3].allowlist.client.clone(),
+                DepositAllowlistAdmin {
+                    address: signer.address(),
+                    zone_chain_id: 1,
+                },
+                TaskExecutor::test(),
+            );
+            Self {
+                relay,
+                peers,
+                _dir: dir,
+            }
+        }
+
+        async fn receive(&mut self) -> Vec<AllowlistRequest> {
+            let mut requests = Vec::new();
+            for peer in &mut self.peers[..3] {
+                requests.push(
+                    tokio::time::timeout(Duration::from_secs(10), peer.allowlist.requests.recv())
+                        .await
+                        .expect("sequencer did not receive request")
+                        .unwrap(),
+                );
+            }
+            requests
+        }
+    }
+
+    impl Drop for RelayFixture {
+        fn drop(&mut self) {
+            for peer in &self.peers {
+                peer.shutdown.cancel();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_reads_keep_their_slots_until_completion() {
+        let mut fixture = RelayFixture::new();
+        let mut requests = Vec::new();
+        for _ in 0..MAX_CONCURRENT_READS {
+            let relay = fixture.relay.clone();
+            let read = tokio::spawn(async move { relay.relay_read(Request::Get).await });
+            requests.extend(fixture.receive().await);
+            read.abort();
+            assert!(read.await.unwrap_err().is_cancelled());
+        }
+        assert_eq!(fixture.relay.reads.available_permits(), 0);
+        assert_eq!(
+            fixture.relay.relay_read(Request::Status).await.unwrap_err(),
+            ErrorObjectOwned::from(DepositAllowlistError::Busy),
+        );
+
+        let relay = fixture.relay.clone();
+        let signer: PrivateKeySigner = format!("0x{:064x}", 31).parse().unwrap();
+        let mut write = SignedWrite {
+            write: Write::Replace { addresses: vec![] },
+            nonce: 1,
+            deadline: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 60,
+            signature: Bytes::new(),
+        };
+        write.signature = Bytes::copy_from_slice(
+            &signer
+                .sign_hash_sync(&write.signing_hash(&relay.admin.domain()))
+                .unwrap()
+                .as_bytes(),
+        );
+        let write = tokio::spawn(async move { relay.relay_write(write).await });
+        for request in fixture.receive().await {
+            request
+                .respond(
+                    serde_json::to_vec(&Answer::Ok(Response::Applied(status_of(None)))).unwrap(),
+                )
+                .await;
+        }
+        tokio::time::timeout(Duration::from_secs(10), write)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        for request in requests {
+            request
+                .respond(serde_json::to_vec(&Answer::Ok(snapshot(vec![]))).unwrap())
+                .await;
+        }
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while fixture.relay.reads.available_permits() != MAX_CONCURRENT_READS {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("completed reads did not release their slots");
+
+        // A missing acknowledgement also releases the read slot after the transport timeout.
+        let relay = fixture.relay.clone();
+        let call = tokio::spawn(async move { relay.relay_read(Request::Status).await });
+        let unanswered = fixture.receive().await;
+        let error = tokio::time::timeout(Duration::from_secs(12), call)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.code(), jsonrpsee::types::error::INTERNAL_ERROR_CODE);
+        assert!(
+            error
+                .message()
+                .contains("no acknowledgement from sequencers")
+        );
+        assert_eq!(
+            fixture.relay.reads.available_permits(),
+            MAX_CONCURRENT_READS
+        );
+        drop(unanswered);
+    }
+
+    #[tokio::test]
+    async fn relay_preserves_sequencer_error_codes() {
+        let mut fixture = RelayFixture::new();
+        for error in [
+            DepositAllowlistError::StaleNonce {
+                nonce: 1,
+                applied: 2,
+            },
+            DepositAllowlistError::Uninitialized,
+            DepositAllowlistError::TooLarge {
+                len: MAX_DEPOSIT_ALLOWLIST_LEN + 1,
+            },
+            DepositAllowlistError::Persist("disk full".to_owned()),
+            DepositAllowlistError::Disabled,
+            DepositAllowlistError::Internal("failed".to_owned()),
+        ] {
+            let expected = ErrorObjectOwned::from(error.clone());
+            let relay = fixture.relay.clone();
+            let call = tokio::spawn(async move { relay.relay_read(Request::Status).await });
+            for request in fixture.receive().await {
+                request
+                    .respond(serde_json::to_vec(&Answer::Err(error.clone())).unwrap())
+                    .await;
+            }
+            let result = tokio::time::timeout(Duration::from_secs(10), call)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(result.code(), expected.code());
+            assert!(result.message().contains(expected.message()), "{result}");
+        }
+        // An internal error wins over caller errors, regardless of response order.
+        let relay = fixture.relay.clone();
+        let call = tokio::spawn(async move { relay.relay_read(Request::Status).await });
+        for (index, request) in fixture.receive().await.into_iter().enumerate() {
+            let error = if index == 1 {
+                DepositAllowlistError::Persist("disk full".to_owned())
+            } else {
+                DepositAllowlistError::Uninitialized
+            };
+            request
+                .respond(serde_json::to_vec(&Answer::Err(error)).unwrap())
+                .await;
+        }
+        let error = tokio::time::timeout(Duration::from_secs(10), call)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.code(), jsonrpsee::types::error::INTERNAL_ERROR_CODE);
+        assert!(error.message().contains("disk full"));
+        assert!(error.message().contains("uninitialized"));
+
+        let relay = fixture.relay.clone();
+        let call = tokio::spawn(async move { relay.relay_read(Request::Status).await });
+        for request in fixture.receive().await {
+            request.respond(b"malformed".to_vec()).await;
+        }
+        let error = tokio::time::timeout(Duration::from_secs(10), call)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.code(), jsonrpsee::types::error::INTERNAL_ERROR_CODE);
+        assert!(error.message().contains("malformed answer"));
+    }
 
     fn full_list() -> Vec<Address> {
         (0..MAX_DEPOSIT_ALLOWLIST_LEN)

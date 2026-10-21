@@ -156,8 +156,13 @@ impl Outstanding {
     }
 }
 
-/// A relayed request's ID and, once the node has answered, the encoded answer frame.
-type AnsweredRequest = (u64, Option<Vec<u8>>);
+/// A relayed request retained only while the relayer can resend it.
+#[derive(Debug)]
+struct AnsweredRequest {
+    id: u64,
+    answer: Option<Vec<u8>>,
+    deadline: Instant,
+}
 
 /// Requests each relayer sent recently, oldest first.
 #[derive(Debug, Default)]
@@ -168,7 +173,7 @@ impl Answered {
         self.0
             .get(peer)?
             .iter()
-            .find_map(|(seen, answer)| (*seen == id).then_some(answer))
+            .find_map(|request| (request.id == id).then_some(&request.answer))
     }
 
     fn insert_pending(&mut self, peer: PublicKey, id: u64) {
@@ -176,17 +181,28 @@ impl Answered {
         if requests.len() == ANSWERS_PER_RELAYER {
             requests.pop_front();
         }
-        requests.push_back((id, None));
+        requests.push_back(AnsweredRequest {
+            id,
+            answer: None,
+            deadline: Instant::now() + REQUEST_TIMEOUT,
+        });
     }
 
     fn complete(&mut self, peer: &PublicKey, id: u64, frame: &[u8]) {
-        if let Some((_, answer)) = self
+        if let Some(request) = self
             .0
             .get_mut(peer)
-            .and_then(|requests| requests.iter_mut().find(|(seen, _)| *seen == id))
+            .and_then(|requests| requests.iter_mut().find(|request| request.id == id))
         {
-            *answer = Some(frame.to_vec());
+            request.answer = Some(frame.to_vec());
         }
+    }
+
+    fn expire(&mut self, now: Instant) {
+        self.0.retain(|_, requests| {
+            requests.retain(|request| now < request.deadline);
+            !requests.is_empty()
+        });
     }
 }
 
@@ -297,6 +313,7 @@ where
     /// their deadline, and drop the ones whose caller is gone.
     fn retry(&mut self) {
         let now = Instant::now();
+        self.answered.expire(now);
         let finished = self
             .outstanding
             .iter()
@@ -424,6 +441,25 @@ mod tests {
     use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
 
     use super::*;
+
+    #[test]
+    fn answered_expires_without_more_requests() {
+        let relayer = PrivateKey::from_seed(1).public_key();
+        let other = PrivateKey::from_seed(2).public_key();
+        let mut answered = Answered::default();
+        answered.insert_pending(relayer.clone(), 1);
+        answered.complete(&relayer, 1, b"snapshot");
+        answered.insert_pending(other.clone(), 2);
+        let deadline = answered.0[&relayer][0].deadline;
+
+        answered.expire(deadline - Duration::from_nanos(1));
+        assert_eq!(answered.get(&relayer, 1), Some(&Some(b"snapshot".to_vec())));
+        answered.expire(deadline);
+        assert_eq!(answered.get(&relayer, 1), None);
+        assert!(!answered.0.contains_key(&relayer));
+        answered.expire(Instant::now() + REQUEST_TIMEOUT);
+        assert!(answered.0.is_empty(), "pending requests must expire too");
+    }
 
     #[test]
     fn answered_keeps_each_relayers_recent_requests() {

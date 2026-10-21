@@ -841,7 +841,7 @@ where
                 );
             } else if let Some(admin) = self.deposit_allowlist_admin {
                 allowlist_rpc = Some(
-                    AllowlistRelay::new(ports.client, admin)
+                    AllowlistRelay::new(ports.client, admin, task_executor.clone())
                         .into_rpc()
                         .remove_context(),
                 );

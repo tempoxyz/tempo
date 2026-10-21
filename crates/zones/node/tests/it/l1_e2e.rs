@@ -2721,8 +2721,17 @@ async fn test_rpc_node_relays_deposit_allowlist_to_every_sequencer() -> eyre::Re
     // sender on any sequencer.
     let error = send_set(rpc, &sign_set(&admin, zone_chain_id, &[first], true, 1)?)
         .await
-        .expect_err("a write with a stale nonce must fail")
-        .to_string();
+        .expect_err("a write with a stale nonce must fail");
+    assert_eq!(
+        error
+            .downcast_ref::<alloy::transports::TransportError>()
+            .unwrap()
+            .as_error_resp()
+            .unwrap()
+            .code,
+        jsonrpsee::types::error::INVALID_PARAMS_CODE,
+    );
+    let error = error.to_string();
     assert_eq!(
         error
             .matches("does not exceed the last applied nonce 2")
