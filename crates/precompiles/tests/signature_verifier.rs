@@ -200,7 +200,7 @@ fn keychain_verification_by_retired_roots_and_stored_key_types() {
         case(T14, Secp256k1, None, Nobody, (false, true)),
         case(T14, Secp256k1, None, Account, (false, false)),
         case(T13, Secp256k1, None, Account, (false, true)),
-        // An access key, retired by a commitment on its own address.
+        // An access key; a commitment on its own address retires it from T14.
         case(T14, Secp256k1, key(Secp256k1), Nobody, (true, false)),
         case(T14, Secp256k1, admin_key(Secp256k1), Nobody, (true, true)),
         case(T14, Secp256k1, key(Secp256k1), Signer, (false, false)),
