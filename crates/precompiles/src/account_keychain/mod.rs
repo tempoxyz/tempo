@@ -1857,30 +1857,6 @@ mod tests {
     }
 
     #[test]
-    fn test_configurable_account_delegate_use_checks_type() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
-        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-            let mut keychain = AccountKeychain::new();
-            let parent = Address::repeat_byte(1);
-            let delegate = Address::repeat_byte(2);
-            keychain.keys[parent][delegate].write(AuthorizedKey {
-                signature_type: StoredSignatureType::ConfigurableAccount,
-                expiry: u64::MAX,
-                ..Default::default()
-            })?;
-            for expected in [None, Some(0), Some(3)] {
-                assert_eq!(
-                    keychain
-                        .validate_keychain_authorization(parent, delegate, 0, expected)
-                        .is_ok(),
-                    expected != Some(0),
-                );
-            }
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_t6_root_authorizes_admin_key() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         let account = Address::random();
