@@ -210,6 +210,23 @@ jobs:
         with:
           scope: tempoxyz/tempo-multi-region-benchmark
           policy: bench-e2e-multi-region
+      # bench.yml checks PR commenters; dispatches and reruns must also come from members.
+      - name: Check org membership
+        if: github.event_name != 'schedule'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+        with:
+          github-token: ${{ steps.benchmark-token.outputs.token }}
+          script: |
+            for (const username of new Set([context.actor, process.env.TRIGGERING_ACTOR])) {
+              try {
+                await github.rest.orgs.checkMembershipForUser({org: 'tempoxyz', username});
+              } catch {
+                core.setFailed(`@${username} must be a tempoxyz member`);
+                return;
+              }
+            }
       - name: Check out benchmark infrastructure
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

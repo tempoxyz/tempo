@@ -34,10 +34,7 @@ and `prover=on|off` labels, so manual runs never overwrite the nightly series.
 
 Keep both repository flags disabled until a manual run succeeds:
 
-1. The benchmark repository's STS policy and the AWS `benchmark-runner` trust must
-   accept this workflow when it is called from `bench.yml` and
-   `bench-zones-scheduled.yml` (see `zones/MIGRATION.md`).
-2. Set `ZONES_PROVER_BENCHMARK_ENABLED=true` and dispatch a smoke run:
+1. Set `ZONES_PROVER_BENCHMARK_ENABLED=true` and dispatch a smoke run:
 
    ```sh
    gh workflow run zones-prover-benchmark.yml --repo tempoxyz/tempo --ref main \
@@ -47,9 +44,9 @@ Keep both repository flags disabled until a manual run succeeds:
    It uses the same workload defaults as PR and nightly runs. Inspect each
    `batch-evidence.json`, the raw reports, and `comparison.json`, and confirm the
    feature's Nitro journal. Repeat with `-f prover=false`.
-3. Import the controller's `scripts/zones_prover/dashboard.json` into the persistent
+2. Import the controller's `scripts/zones_prover/dashboard.json` into the persistent
    benchmark Grafana folder and verify the **manual** series against the artifact. An
    import HTTP success does not verify that the Grafana read datasource is connected to
    the same storage. No-data panels are not zero latency.
-4. Set `ZONES_PROVER_NIGHTLY_ENABLED=true`, then verify the first nightly's Grafana
+3. Set `ZONES_PROVER_NIGHTLY_ENABLED=true`, then verify the first nightly's Grafana
    series and Slack delivery; unit tests do not replace that check.

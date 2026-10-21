@@ -26,6 +26,9 @@ const core = {
   warning: message => result.warnings.push(message),
 };
 const github = {rest: {
+  orgs: {checkMembershipForUser: async ({username}) => {
+    if (!input.members.includes(username)) throw new Error('Not a member');
+  }},
   pulls: {get: async () => ({data: {head: input.head}})},
   issues: {createComment: async ({body}) => { result.comments.push(body); return {data: {id: 1}}; }},
   repos: {
@@ -130,6 +133,23 @@ class RefTests(unittest.TestCase):
         result = resolve_refs(BENCH_PR="7")
         self.assertEqual(result["failures"], ["PR benchmarks require the PR head SHA pinned by the ack job"])
         self.assertEqual(result["outputs"], {})
+
+
+class MembershipTests(unittest.TestCase):
+    def test_actor_and_triggering_actor_must_be_members(self):
+        for actor, trigger, failures in (("member", "member", []),
+                                         ("outsider", "member", ["@outsider must be a tempoxyz member"]),
+                                         ("member", "outsider", ["@outsider must be a tempoxyz member"])):
+            with self.subTest(actor=actor, trigger=trigger):
+                result = run_script("zones-prover-benchmark.yml", "bench-zones", "Check org membership",
+                                    context={"actor": actor}, members=["member"], env={"TRIGGERING_ACTOR": trigger})
+                self.assertEqual(result["failures"], failures)
+
+    def test_membership_is_checked_before_feature_code_or_aws(self):
+        steps = yaml.safe_load((ROOT / ".github/workflows/zones-prover-benchmark.yml").read_text())["jobs"]["bench-zones"]["steps"]
+        names = [step.get("name") for step in steps]
+        for name in ("Mint Earn read token", "Check out feature Tempo with Zones", "Configure AWS benchmark role"):
+            self.assertLess(names.index("Check org membership"), names.index(name))
 
 
 class ReportingTests(unittest.TestCase):
