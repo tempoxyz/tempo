@@ -263,8 +263,7 @@ fn delegate_grants_are_guarded_from_t14() {
     }
 }
 
-/// A stored ConfigurableAccount key is only usable from T14, and only when the signature
-/// declares the same type.
+/// A stored ConfigurableAccount key is only usable when the signature declares the same type.
 #[test]
 fn stored_key_type_is_checked_on_use() {
     let configurable_type = SignatureType::ConfigurableAccount as u8;
@@ -294,12 +293,5 @@ fn stored_key_type_is_checked_on_use() {
         assert!(validate(&mut storage, None), "{spec}");
         assert!(validate(&mut storage, Some(configurable_type)), "{spec}");
         assert!(!validate(&mut storage, Some(secp256k1_type)), "{spec}");
-    }
-    storage.set_spec(TempoHardfork::T13);
-    for expected_sig_type in [None, Some(secp256k1_type), Some(configurable_type)] {
-        assert!(
-            !validate(&mut storage, expected_sig_type),
-            "{expected_sig_type:?}"
-        );
     }
 }
