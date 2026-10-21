@@ -1,6 +1,5 @@
-<!-- Generated from README.md.hbs and the network identity JSON files.
-Install tooling with: npm --prefix scripts/readme ci
-Edit the template or JSON files, then run: npm --prefix scripts/readme run generate -->
+<!-- Generated from README.md.template and the network identity JSON files.
+Edit the template or JSON files, then run: uv run --no-project python scripts/generate_readme.py -->
 
 <br>
 <br>
@@ -40,7 +39,7 @@ You can get started today by integrating with the [Tempo testnet](https://docs.t
 - Low, predictable fees in [stablecoins](https://docs.tempo.xyz/learn/stablecoins)
 
   - Users pay gas directly in USD-stablecoins at launch; the [Fee AMM](https://docs.tempo.xyz/protocol/fees/fee-amm#fee-amm-overview) automatically converts to the validator’s preferred stablecoin.
-  - TIP‑20 transfers target sub‑millidollar costs (<$0.001).
+  - TIP‑20 transfers target sub‑millidollar costs (<$$0.001).
 
 - [Tempo Transactions](https://docs.tempo.xyz/guide/tempo-transaction) (native “smart accounts”)
 
@@ -171,16 +170,16 @@ Our contributor guidelines can be found in [`CONTRIBUTING.md`](https://github.co
 
 These BLS threshold public keys are built into Tempo nodes and used by both follow/RPC nodes and validators to verify consensus finalisation certificates, including those used to authenticate snapshots.
 
-**[Mainnet](./mainnet-network-identity.json) — from epoch {{mainnet.from_epoch}}**
+**[Mainnet](./mainnet-network-identity.json) — from epoch ${mainnet_from_epoch}**
 
 ```text
-{{mainnet.identity}}
+${mainnet_identity}
 ```
 
-**[Testnet (Moderato)](./testnet-network-identity.json) — from epoch {{testnet.from_epoch}}**
+**[Testnet (Moderato)](./testnet-network-identity.json) — from epoch ${testnet_from_epoch}**
 
 ```text
-{{testnet.identity}}
+${testnet_identity}
 ```
 
 See the [network identity loader](./crates/chainspec/src/network_identity.rs) for how these files are loaded. To override them, see [How do I override the network identity?](https://tempo.xyz/developers/docs/guide/node/validator-troubleshooting#my-node-fails-to-start-finalized-tip-certificate-failed-verification-against-the-trusted-network-identity).
@@ -199,26 +198,26 @@ The [`tempoup`](./tempoup) installer performs these checks automatically on ever
 
 ```bash
 TAG=v1.6.0
-ARCHIVE=tempo-${TAG}-x86_64-unknown-linux-gnu.tar.gz
+ARCHIVE=tempo-$${TAG}-x86_64-unknown-linux-gnu.tar.gz
 
-gh release download "$TAG" --repo tempoxyz/tempo \
-  -p "$ARCHIVE" -p "$ARCHIVE.sha256" -p "$ARCHIVE.asc"
+gh release download "$$TAG" --repo tempoxyz/tempo \
+  -p "$$ARCHIVE" -p "$$ARCHIVE.sha256" -p "$$ARCHIVE.asc"
 
-sha256sum -c "$ARCHIVE.sha256"
+sha256sum -c "$$ARCHIVE.sha256"
 
 # Public key + fingerprint:
 # https://docs.tempo.xyz/guide/node/installation#verifying-releases
-gpg --verify "$ARCHIVE.asc" "$ARCHIVE"
+gpg --verify "$$ARCHIVE.asc" "$$ARCHIVE"
 ```
 
 **Path B — Sigstore (requires `gh` installed and authenticated):**
 
 ```bash
 TAG=v1.6.0
-ARCHIVE=tempo-${TAG}-x86_64-unknown-linux-gnu.tar.gz
+ARCHIVE=tempo-$${TAG}-x86_64-unknown-linux-gnu.tar.gz
 
-gh release download "$TAG" --repo tempoxyz/tempo -p "$ARCHIVE"
-gh attestation verify "$ARCHIVE" --repo tempoxyz/tempo \
+gh release download "$$TAG" --repo tempoxyz/tempo -p "$$ARCHIVE"
+gh attestation verify "$$ARCHIVE" --repo tempoxyz/tempo \
   --predicate-type https://slsa.dev/provenance/v1
 ```
 

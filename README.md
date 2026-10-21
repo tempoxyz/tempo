@@ -1,6 +1,5 @@
-<!-- Generated from README.md.hbs and the network identity JSON files.
-Install tooling with: npm --prefix scripts/readme ci
-Edit the template or JSON files, then run: npm --prefix scripts/readme run generate -->
+<!-- Generated from README.md.template and the network identity JSON files.
+Edit the template or JSON files, then run: uv run --no-project python scripts/generate_readme.py -->
 
 <br>
 <br>
