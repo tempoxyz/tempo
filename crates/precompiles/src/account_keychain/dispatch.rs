@@ -15,8 +15,9 @@ impl Precompile for AccountKeychain {
             return err;
         }
 
-        // T11's strict ABI decoder rejected enum value 3 before ConfigurableAccount existed.
-        // All authorization entrypoints put signatureType in the second ABI word.
+        // From T11 the strict ABI decoder reverts on an out-of-range `signatureType`; until T14,
+        // value 3 reverts the same way. Every authorization entrypoint puts `signatureType` in its
+        // second ABI word.
         if self.storage.spec().is_t11()
             && !self.storage.spec().is_t14()
             && [
