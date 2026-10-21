@@ -1136,9 +1136,14 @@ impl AccountKeychain {
             return Ok(true);
         }
 
-        Ok(self
-            .active_key_or_none(account, key_id)?
-            .is_some_and(|key| key.is_admin))
+        let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
+        let key = match self.load_active_key(account, key_id, current_timestamp) {
+            Ok(key) => key,
+            Err(err) if err.is_system_error() => return Err(err),
+            Err(_) => return Ok(false),
+        };
+
+        Ok(key.is_admin)
     }
 
     fn ensure_key_authorization_witness_not_burned(
@@ -1447,8 +1452,11 @@ impl AccountKeychain {
 
         // Silently skip refund if the key was revoked or expired — the fee was already
         // collected and the key is no longer active, so there is nothing to restore.
-        let Some(key) = self.active_key_or_none(account, transaction_key)? else {
-            return Ok(());
+        let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
+        let key = match self.load_active_key(account, transaction_key, current_timestamp) {
+            Ok(key) => key,
+            Err(err) if err.is_system_error() => return Err(err),
+            Err(_) => return Ok(()),
         };
 
         if !key.enforce_limits {
@@ -1564,21 +1572,6 @@ impl AccountKeychain {
 
         // Verify and update spending limits for this access key
         self.verify_and_update_spending(account, transaction_key, token, approval_increase)
-    }
-
-    /// Loads the key at the current timestamp, or `None` when it is missing, revoked or expired.
-    /// System errors are propagated.
-    fn active_key_or_none(
-        &self,
-        account: Address,
-        key_id: Address,
-    ) -> Result<Option<AuthorizedKey>> {
-        let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
-        match self.load_active_key(account, key_id, current_timestamp) {
-            Ok(key) => Ok(Some(key)),
-            Err(err) if err.is_system_error() => Err(err),
-            Err(_) => Ok(None),
-        }
     }
 }
 
