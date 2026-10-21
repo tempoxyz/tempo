@@ -215,14 +215,14 @@ fn delegate_grants_are_guarded_from_t14() {
                     granted,
                     "{spec}, {entrypoint}, {case:?}"
                 );
-                if spec.is_t14() && !granted {
-                    assert_eq!(
-                        AccountKeychainError::abi_decode(&output.bytes).unwrap(),
-                        AccountKeychainError::invalid_key_id(),
-                        "{spec}, {entrypoint}, {case:?}"
-                    );
-                }
                 if !granted {
+                    if spec.is_t14() {
+                        assert_eq!(
+                            AccountKeychainError::abi_decode(&output.bytes).unwrap(),
+                            AccountKeychainError::invalid_key_id(),
+                            "{spec}, {entrypoint}, {case:?}"
+                        );
+                    }
                     assert_eq!(
                         key_expiry(&mut storage, delegate),
                         0,
