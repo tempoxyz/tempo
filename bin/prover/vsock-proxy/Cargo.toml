@@ -12,6 +12,9 @@ workspace = true
 [dependencies]
 clap.workspace = true
 libc.workspace = true
+metrics.workspace = true
+metrics-exporter-prometheus = { workspace = true, features = ["http-listener"] }
+reth-metrics.workspace = true
 tokio.workspace = true
 tokio-vsock.workspace = true
 tracing.workspace = true
