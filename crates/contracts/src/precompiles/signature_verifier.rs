@@ -31,7 +31,7 @@ crate::sol! {
         /// @param hash The message hash that was signed
         /// @param signature The encoded keychain signature
         /// @dev From T14, the inner signature type must match the stored key type.
-        /// @return True if the recovered key is account or an active admin key on account.
+        /// @return True if the recovered key is account or an active admin key on account. From T14, false if the recovered key is a retired root (it has a configuration commitment), including account itself.
         function verifyKeychainAdmin(address account, bytes32 hash, bytes calldata signature) external view returns (bool);
 
         error InvalidFormat();
