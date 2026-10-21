@@ -12,7 +12,7 @@ use alloy_eips::{BlockId, BlockNumberOrTag, Decodable2718, eip7702::Authorizatio
 use evm2::registry::HandlerError;
 use eyre::OptionExt;
 use futures::{FutureExt, StreamExt};
-use jsonrpsee::types::{ErrorObject, error::INVALID_PARAMS_CODE};
+use jsonrpsee::types::ErrorObject;
 use reth_e2e_test_utils::{node::Finality, wait::WAIT_TIMEOUT};
 use reth_ethereum::{
     pool::{
@@ -320,7 +320,11 @@ async fn configurable_account_rpc_historical_state_and_account_overrides() -> ey
         .overrides(code_override)
         .await
         .unwrap_err();
-    assert_rpc_error_code(&error, INVALID_PARAMS_CODE)?;
+    let invalid = ErrorObject::from(EthApiError::InvalidParams(format!(
+        "configurable account {} has code at the requested state",
+        account.address
+    )));
+    assert_rpc_error(&error, invalid.code(), invalid.message())?;
     assert_eq!(commitment(&env, account.address).await?, current);
     assert_eq!(
         env.provider()
@@ -413,7 +417,12 @@ async fn configurable_account_rpc_fill_and_access_list_preserve_authority() -> e
     }
     request.key_authorization_simulation = request.configurable_account_simulation.clone();
     let error = provider.fill_transaction(request).await.unwrap_err();
-    assert_rpc_error_code(&error, INVALID_PARAMS_CODE)?;
+    let invalid = ErrorObject::from(EthApiError::InvalidParams(
+        "fillTransaction requires a real signed grant; use keyAuthorizationSimulation only for \
+         call and estimateGas"
+            .into(),
+    ));
+    assert_rpc_error(&error, invalid.code(), invalid.message())?;
     assert_eq!(commitment(&env, account.address).await?, B256::ZERO);
     tx.gas_limit = estimate;
     let signature = account.sign(&tx)?;

@@ -380,21 +380,12 @@ async fn rejection(
         .expect_err("invalid authorization accepted by RPC")
 }
 
-/// Requires `error` to be a JSON-RPC error response of `code`.
-fn assert_rpc_error_code(error: &TransportError, code: i32) -> eyre::Result<()> {
+/// Requires `error` to be a JSON-RPC error response of `code` with exactly `message`.
+fn assert_rpc_error(error: &TransportError, code: i32, message: &str) -> eyre::Result<()> {
     let payload = error
         .as_error_resp()
         .ok_or_else(|| eyre!("not a JSON-RPC error response: {error:?}"))?;
     assert_eq!(payload.code, i64::from(code), "{error:?}");
-    Ok(())
-}
-
-/// Requires `error` to be a JSON-RPC error response of `code` with exactly `message`.
-fn assert_rpc_error(error: &TransportError, code: i32, message: &str) -> eyre::Result<()> {
-    assert_rpc_error_code(error, code)?;
-    let payload = error
-        .as_error_resp()
-        .expect("checked to be an error response");
     assert_eq!(payload.message, message, "{error:?}");
     Ok(())
 }
