@@ -1,5 +1,6 @@
-<!-- Generated from README.md.in and the network identity JSON files.
-Edit the template or JSON files, then run: uv run python scripts/generate-readme.py -->
+<!-- Generated from README.md.hbs and the network identity JSON files.
+Install tooling with: npm --prefix scripts/readme ci
+Edit the template or JSON files, then run: npm --prefix scripts/readme run generate -->
 
 <br>
 <br>
@@ -170,9 +171,17 @@ Our contributor guidelines can be found in [`CONTRIBUTING.md`](https://github.co
 
 These BLS threshold public keys are built into Tempo nodes and used by both follow/RPC nodes and validators to verify consensus finalisation certificates, including those used to authenticate snapshots.
 
-{{MAINNET_NETWORK_IDENTITY}}
+**[Mainnet](./mainnet-network-identity.json) — from epoch {{mainnet.from_epoch}}**
 
-{{TESTNET_NETWORK_IDENTITY}}
+```text
+{{mainnet.identity}}
+```
+
+**[Testnet (Moderato)](./testnet-network-identity.json) — from epoch {{testnet.from_epoch}}**
+
+```text
+{{testnet.identity}}
+```
 
 See the [network identity loader](./crates/chainspec/src/network_identity.rs) for how these files are loaded. To override them, see [How do I override the network identity?](https://tempo.xyz/developers/docs/guide/node/validator-troubleshooting#my-node-fails-to-start-finalized-tip-certificate-failed-verification-against-the-trusted-network-identity).
 

@@ -306,9 +306,13 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: tempoxyz/gh-actions/vendor/astral-sh/setup-uv@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+      - name: Install README generator dependencies
+        run: npm --prefix scripts/readme ci --ignore-scripts
       - name: Check generated README
-        run: uv run --no-project python scripts/generate-readme.py --check
+        run: npm --prefix scripts/readme run check
 
   lint-success:
     name: lint success
