@@ -13,6 +13,7 @@ use commonware_cryptography::{
     },
     ed25519::PrivateKey,
 };
+use commonware_macros::test_traced;
 use commonware_runtime::{Runner as _, Supervisor as _, deterministic::Runner};
 use commonware_utils::{TryFromIterator as _, ordered, ordered::Quorum as _};
 use rand::{SeedableRng as _, rngs::StdRng};
@@ -1285,7 +1286,7 @@ fn reshare_produces_new_shares() {
 /// before a restart, so the actor replays blocks it already processed. A
 /// replayed ceremony must conclude with the same output, and a replayed
 /// boundary must not enter the next epoch again.
-#[test]
+#[test_traced]
 fn replaying_unacknowledged_blocks_after_restart_is_idempotent() {
     Runner::default().start(|mut context| async move {
         let (state, keys, shares) = dkg_state(&mut context, Epoch::new(1), 2, false);
