@@ -1674,8 +1674,7 @@ struct AtomicSlotState {
     queue_tail: U256,
     paused: bool,
     fee_token_balance: U256,
-    /// Withdrawals that can each append one bounce-back deposit without exceeding
-    /// `MAX_UNPROCESSED_DEPOSITS`.
+    /// Withdrawals that can each bounce back without exceeding `MAX_UNPROCESSED_DEPOSITS`.
     deposit_headroom: usize,
 }
 
@@ -2880,8 +2879,7 @@ mod tests {
         };
         asserter.push_success(&atomic_slot_state(5, 5, false, exact_fee_balance, 0));
         assert!(tip_anchored().await);
-        // A full deposit backlog leaves no bounce-back capacity, and nothing else would stop
-        // the unestimated combined transaction from reverting.
+        // A full deposit backlog leaves no bounce-back capacity.
         let full_backlog = MAX_UNPROCESSED_DEPOSITS as u64;
         asserter.push_success(&atomic_slot_state(5, 5, false, U256::MAX, full_backlog));
         assert!(!tip_anchored().await);
