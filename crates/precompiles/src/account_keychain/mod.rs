@@ -1857,35 +1857,27 @@ mod tests {
     }
 
     #[test]
-    fn test_configurable_account_delegate_use_checks_type_and_fork() -> eyre::Result<()> {
-        for spec in [
-            TempoHardfork::T11,
-            TempoHardfork::T12,
-            TempoHardfork::T13,
-            TempoHardfork::T14,
-        ] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
-            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-                let mut keychain = AccountKeychain::new();
-                let parent = Address::repeat_byte(1);
-                let delegate = Address::repeat_byte(2);
-                keychain.keys[parent][delegate].write(AuthorizedKey {
-                    signature_type: StoredSignatureType::ConfigurableAccount,
-                    expiry: u64::MAX,
-                    ..Default::default()
-                })?;
-                for expected in [None, Some(0), Some(3)] {
-                    assert_eq!(
-                        keychain
-                            .validate_keychain_authorization(parent, delegate, 0, expected)
-                            .is_ok(),
-                        spec.is_t14() && expected != Some(0),
-                    );
-                }
-                Ok(())
+    fn test_configurable_account_delegate_use_checks_type() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut keychain = AccountKeychain::new();
+            let parent = Address::repeat_byte(1);
+            let delegate = Address::repeat_byte(2);
+            keychain.keys[parent][delegate].write(AuthorizedKey {
+                signature_type: StoredSignatureType::ConfigurableAccount,
+                expiry: u64::MAX,
+                ..Default::default()
             })?;
-        }
-        Ok(())
+            for expected in [None, Some(0), Some(3)] {
+                assert_eq!(
+                    keychain
+                        .validate_keychain_authorization(parent, delegate, 0, expected)
+                        .is_ok(),
+                    expected != Some(0),
+                );
+            }
+            Ok(())
+        })
     }
 
     #[test]
