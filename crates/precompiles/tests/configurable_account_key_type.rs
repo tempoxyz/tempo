@@ -20,6 +20,7 @@ use tempo_precompiles::{
     account_keychain::AccountKeychain,
     storage::{StorageActions, StorageCtx, hashmap::HashMapStorageProvider},
 };
+use tempo_primitives::TempoAddressExt;
 
 const PARENT: Address = Address::repeat_byte(0x11);
 const DELEGATE: Address = Address::repeat_byte(0x22);
@@ -195,23 +196,32 @@ enum DelegateCase {
     SelfGrant,
     Bytecode,
     Delegation,
+    Reserved(Address),
 }
 
 /// A grant to a ConfigurableAccount key is accepted from T14 only, and only for a code-free
-/// delegate other than the granting account.
+/// delegate other than the granting account that is not in a reserved address range.
 #[test]
 fn delegate_grants_are_guarded_from_t14() {
+    let mut virtual_address_bytes = [0xAA; 20];
+    virtual_address_bytes[4..14].copy_from_slice(&Address::VIRTUAL_MAGIC);
     for spec in TempoHardfork::VARIANTS.iter().copied() {
         for case in [
             DelegateCase::CodeFree,
             DelegateCase::SelfGrant,
             DelegateCase::Bytecode,
             DelegateCase::Delegation,
+            // An Ethereum precompile, an uncreated TIP-20 and a virtual address carry no code.
+            DelegateCase::Reserved(Address::with_last_byte(1)),
+            DelegateCase::Reserved(Address::new_tip20(1)),
+            DelegateCase::Reserved(Address::from(virtual_address_bytes)),
         ] {
-            let delegate = if case == DelegateCase::SelfGrant {
-                PARENT
-            } else {
-                DELEGATE
+            let delegate = match case {
+                DelegateCase::SelfGrant => PARENT,
+                DelegateCase::Reserved(address) => address,
+                DelegateCase::CodeFree | DelegateCase::Bytecode | DelegateCase::Delegation => {
+                    DELEGATE
+                }
             };
             let calls = authorization_calls(delegate, SignatureType::ConfigurableAccount, u64::MAX);
             // Every fork since T3 rejects the legacy `authorizeKey` selector outright.
@@ -234,7 +244,9 @@ fn delegate_grants_are_guarded_from_t14() {
                             .set_code(delegate, Bytecode::new_eip7702(Address::repeat_byte(0x33)))
                             .unwrap()
                     }),
-                    DelegateCase::CodeFree | DelegateCase::SelfGrant => {}
+                    DelegateCase::CodeFree
+                    | DelegateCase::SelfGrant
+                    | DelegateCase::Reserved(_) => {}
                 }
 
                 let output = call_as_parent(&mut storage, calldata);

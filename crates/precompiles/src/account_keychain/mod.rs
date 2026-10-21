@@ -27,6 +27,7 @@ use tempo_primitives::TempoAddressExt;
 
 use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS,
+    configurable_account::valid_account,
     error::Result,
     has_duplicates_metered,
     storage::{Handler, Mapping, Set},
@@ -280,9 +281,10 @@ impl AccountKeychain {
         }
         if is_delegate_grant {
             // Naming a delegate does not register it or require a configuration witness.
-            if self
-                .storage
-                .with_account_info(key_id, |info| Ok(!info.is_empty_code_hash()))?
+            if !valid_account(key_id, self.storage.spec())
+                || self
+                    .storage
+                    .with_account_info(key_id, |info| Ok(!info.is_empty_code_hash()))?
             {
                 return Err(AccountKeychainError::invalid_key_id().into());
             }
