@@ -329,8 +329,6 @@ pub struct ExpiringNonceReplay {
 /// Reason a precomputed storage-action replay cannot be used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum StorageActionReplayError {
-    #[error("storage action replay is unsupported from T14")]
-    UnsupportedHardfork,
     #[error("transaction execution failed")]
     TransactionExecutionFailed,
     #[error("storage action conflict")]
@@ -339,6 +337,8 @@ pub enum StorageActionReplayError {
     Overflow,
     #[error("storage action underflow")]
     Underflow,
+    #[error("storage action replay is unsupported from T14")]
+    UnsupportedHardfork,
 }
 
 impl StorageActionReplayError {
