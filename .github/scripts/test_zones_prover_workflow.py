@@ -160,7 +160,7 @@ class ReportingTests(unittest.TestCase):
         actor = next(key for key in json.loads((ROOT / ".github/scripts/bench-slack-users.json").read_text())
                      if not key.startswith("_"))
         rows = [{"key": "withdrawal", "label": "Withdrawal: submit → L1 funds", "end_to_end": True},
-                {"key": "withdrawal_zone_to_l1", "label": "↳ Zone → L1 processed", "end_to_end": False}]
+                {"key": "withdrawal_zone_to_l1", "label": "> Zone → L1 processed", "end_to_end": False}]
         latency = lambda ms: {"p50_ms": ms, "p95_ms": ms}
         metadata = {"baseline": OTHER_SHA, "feature": SHA, "prover": True, "preset": "full-journey",
                     "tempoHardfork": "t13", "count": 20, "tps": 5, "region": "us-east-1"}
