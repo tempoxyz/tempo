@@ -110,9 +110,9 @@ impl Precompile for AccountKeychain {
 impl AccountKeychain {
     /// Whether `calldata` authorizes a ConfigurableAccount key from T11 until T14.
     ///
-    /// Authorization calls with `signatureType` `ConfigurableAccount` revert with empty output
-    /// from T11 until T14. Calldata that does not decode as an authorization call, or that
-    /// authorizes another key type, is left to the regular dispatch.
+    /// From T11 the strict ABI decoder reverts on an out-of-range `signatureType`; until T14,
+    /// value 3 reverts the same way. Calldata that does not decode as an authorization call, or
+    /// that authorizes another key type, is left to the regular dispatch.
     fn rejects_configurable_account_type(&self, calldata: &[u8]) -> bool {
         let spec = self.storage.spec();
         if !spec.is_t11() || spec.is_t14() {
