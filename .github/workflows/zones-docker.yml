@@ -359,6 +359,8 @@ jobs:
       version: ${{ steps.release-version.outputs.version }}
       is_release: ${{ steps.release-version.outputs.is_release }}
       is_stable: ${{ steps.release-version.outputs.is_stable }}
+      prover_release: ${{ steps.release-version.outputs.prover_release }}
+      prover_stable: ${{ steps.release-version.outputs.prover_stable }}
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -369,11 +371,11 @@ jobs:
           ref: ${{ needs.resolve-production-build-inputs.outputs.commit_sha }}
           persist-credentials: false
           submodules: recursive
-          fetch-depth: ${{ startsWith(github.ref, 'refs/tags/zones/v') && '0' || '1' }}
+          fetch-depth: ${{ (startsWith(github.ref, 'refs/tags/zones/v') || startsWith(github.ref, 'refs/tags/prover/v')) && '0' || '1' }}
 
       - uses: tempoxyz/gh-actions/vendor/depot/setup-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
-      - name: Validate Zones image release tag
+      - name: Validate Zones or prover image release tag
         id: release-version
         env:
           TAG_REF: ${{ github.ref }}
@@ -381,14 +383,26 @@ jobs:
           set -euo pipefail
 
           # Manual builds from unrelated tags may publish a SHA tag, but must
-          # never publish a Zones release or stable tag.
-          if [[ "$TAG_REF" != refs/tags/zones/v* ]]; then
-            exit 0
-          fi
+          # never publish a release or stable tag. zones/vX.Y.Z versions the
+          # tempo-zone and xtask images; prover/vX.Y.Z (pushed by the Prover
+          # Release workflow) versions the prover and prover-utils images.
+          case "$TAG_REF" in
+            refs/tags/zones/v*)
+              component=zones
+              manifest=bin/tempo-zone/Cargo.toml
+              ;;
+            refs/tags/prover/v*)
+              component=prover
+              manifest=bin/prover/enclave/Cargo.toml
+              ;;
+            *)
+              exit 0
+              ;;
+          esac
 
           tag="${TAG_REF#refs/tags/}"
-          if ! [[ "$tag" =~ ^zones/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
-            echo "Expected a Zones release tag: zones/vX.Y.Z[-prerelease]" >&2
+          if ! [[ "$tag" =~ ^$component/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+            echo "Expected a release tag: $component/vX.Y.Z[-prerelease]" >&2
             exit 1
           fi
 
@@ -407,22 +421,28 @@ jobs:
             exit 1
           fi
 
-          cargo_ver="$(sed -n '/^\[package\]/,/^\[/ s/^version = "\([^"]*\)"$/\1/p' bin/tempo-zone/Cargo.toml)"
+          cargo_ver="$(sed -n '/^\[package\]/,/^\[/ s/^version = "\([^"]*\)"$/\1/p' "$manifest")"
           if [[ -z "$cargo_ver" ]]; then
-            echo "Could not read tempo-zone version" >&2
+            echo "Could not read the version from $manifest" >&2
             exit 1
           fi
-          version="${tag#zones/v}"
+          version="${tag#"$component"/v}"
           if [[ "$version" != "$cargo_ver" && "$version" != "$cargo_ver-"* ]]; then
-            echo "Tag $tag does not match tempo-zone version $cargo_ver" >&2
+            echo "Tag $tag does not match $manifest version $cargo_ver" >&2
             exit 1
           fi
 
+          release_key=is_release
+          stable_key=is_stable
+          if [[ "$component" == prover ]]; then
+            release_key=prover_release
+            stable_key=prover_stable
+          fi
           {
             echo "version=v$version"
-            echo "is_release=true"
+            echo "$release_key=true"
             if [[ "$version" != *-* ]]; then
-              echo "is_stable=true"
+              echo "$stable_key=true"
             fi
           } >> "$GITHUB_OUTPUT"
 
@@ -459,10 +479,10 @@ jobs:
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.is_release == 'true' }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.is_release == 'true' }}
-            type=semver,pattern={{major}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.is_release == 'true' }}
-            type=raw,value=stable,enable=${{ steps.release-version.outputs.is_stable == 'true' }}
+            type=semver,pattern={{version}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.prover_release == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.prover_release == 'true' }}
+            type=semver,pattern={{major}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.prover_release == 'true' }}
+            type=raw,value=stable,enable=${{ steps.release-version.outputs.prover_stable == 'true' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
             type=sha,prefix=sha-
@@ -480,10 +500,10 @@ jobs:
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.is_release == 'true' }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.is_release == 'true' }}
-            type=semver,pattern={{major}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.is_release == 'true' }}
-            type=raw,value=stable,enable=${{ steps.release-version.outputs.is_stable == 'true' }}
+            type=semver,pattern={{version}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.prover_release == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.prover_release == 'true' }}
+            type=semver,pattern={{major}},value=${{ steps.release-version.outputs.version }},enable=${{ steps.release-version.outputs.prover_release == 'true' }}
+            type=raw,value=stable,enable=${{ steps.release-version.outputs.prover_stable == 'true' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
             type=sha,prefix=sha-
@@ -766,10 +786,10 @@ jobs:
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
-            type=semver,pattern={{major}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
-            type=raw,value=stable,enable=${{ needs.build-and-push.outputs.is_stable == 'true' }}
+            type=semver,pattern={{version}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.prover_release == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.prover_release == 'true' }}
+            type=semver,pattern={{major}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.prover_release == 'true' }}
+            type=raw,value=stable,enable=${{ needs.build-and-push.outputs.prover_stable == 'true' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
             type=sha,prefix=sha-
@@ -787,10 +807,10 @@ jobs:
           tags: |
             type=schedule,pattern=nightly
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
-            type=semver,pattern={{major}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.is_release == 'true' }}
-            type=raw,value=stable,enable=${{ needs.build-and-push.outputs.is_stable == 'true' }}
+            type=semver,pattern={{version}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.prover_release == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.prover_release == 'true' }}
+            type=semver,pattern={{major}},value=${{ needs.build-and-push.outputs.version }},enable=${{ needs.build-and-push.outputs.prover_release == 'true' }}
+            type=raw,value=stable,enable=${{ needs.build-and-push.outputs.prover_stable == 'true' }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=edge,branch=main
             type=sha,prefix=sha-

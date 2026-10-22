@@ -43,6 +43,12 @@ release. Docker recipes live under `zones/docker` and build the root workspace.
 The Zones tooling image keeps its `tempo-xtask` entrypoint but contains the
 `tempo-zone-xtask` executable.
 
+Prover images (`tempo-zone-prover` and `tempo-zone-prover-utils`) are versioned
+separately by `prover/vX.Y.Z` tags, which must match the `bin/prover/enclave`
+version. The Prover Release workflow publishes them and drafts a release with the
+enclave's PCRs and image digest; `zones/vX.Y.Z` tags no longer add version tags
+to prover images.
+
 Zones workflows no longer require repository enablement variables. External
 consumers must maintain the following integrations:
 
