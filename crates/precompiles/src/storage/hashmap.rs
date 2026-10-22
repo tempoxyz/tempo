@@ -302,8 +302,9 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         if !self.spec.is_t14() || self.is_static || commitment.is_zero() {
             return Err(TempoPrecompileError::InvalidConfigCommitmentWrite);
         }
+        self.deduct_gas(gas.static_cost())?;
         let previous = self.config_commitment(address)?;
-        self.deduct_gas(gas.cost(previous)?)?;
+        self.deduct_gas(gas.dynamic_cost(previous)?)?;
         self.accounts.entry(address).or_default().extension =
             AccountExtension::from(encode_config_commitment(commitment));
         Ok(())
