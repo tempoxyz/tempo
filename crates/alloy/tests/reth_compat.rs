@@ -166,6 +166,6 @@ fn block_simulation_rejects_a_configurable_grant_with_invalid_approvals() {
         .expect_err("dummy owner approvals must not authorize a grant");
     assert_eq!(
         error.to_string(),
-        "invalid configurable account owner signature at approval 0"
+        "invalid configurable account owner signature"
     );
 }

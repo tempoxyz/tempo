@@ -887,7 +887,7 @@ fn test_aa_gas_value_transfer() {
     );
 
     assert!(matches!(
-        res.as_ref().err().and_then(invalid_transaction),
+        res.as_ref().err(),
         Some(TempoInvalidTransaction::ValueTransferNotAllowedInAATx)
     ));
 }
@@ -1097,8 +1097,7 @@ fn test_key_authorization_gas_with_limits() {
         &create_key_auth(0),
         &genesis_gas_params,
         tempo_chainspec::hardfork::TempoHardfork::default(),
-    )
-    .unwrap();
+    );
     assert_eq!(
         gas_0,
         KEY_AUTH_BASE_GAS + ECRECOVER_GAS,
@@ -1111,8 +1110,7 @@ fn test_key_authorization_gas_with_limits() {
         &create_key_auth(1),
         &genesis_gas_params,
         tempo_chainspec::hardfork::TempoHardfork::default(),
-    )
-    .unwrap();
+    );
     assert_eq!(
         gas_1,
         KEY_AUTH_BASE_GAS + ECRECOVER_GAS + KEY_AUTH_PER_LIMIT_GAS,
@@ -1125,8 +1123,7 @@ fn test_key_authorization_gas_with_limits() {
         &create_key_auth(2),
         &genesis_gas_params,
         tempo_chainspec::hardfork::TempoHardfork::default(),
-    )
-    .unwrap();
+    );
     assert_eq!(
         gas_2,
         KEY_AUTH_BASE_GAS + ECRECOVER_GAS + 2 * KEY_AUTH_PER_LIMIT_GAS,
@@ -1138,8 +1135,7 @@ fn test_key_authorization_gas_with_limits() {
         &create_key_auth(3),
         &genesis_gas_params,
         tempo_chainspec::hardfork::TempoHardfork::default(),
-    )
-    .unwrap();
+    );
     assert_eq!(
         gas_3,
         KEY_AUTH_BASE_GAS + ECRECOVER_GAS + 3 * KEY_AUTH_PER_LIMIT_GAS,
@@ -1158,8 +1154,7 @@ fn test_key_authorization_gas_with_limits() {
             &create_key_auth(num_limits),
             &t1b_gas_params,
             TempoHardfork::T1B,
-        )
-        .unwrap();
+        );
         let expected = ECRECOVER_GAS + sload + sstore * (1 + num_limits as u64) + BUFFER;
         assert_eq!(gas, expected, "T1B with {num_limits} limits");
         assert_eq!(state_gas, 0, "T1B has no state gas");
@@ -1176,8 +1171,7 @@ fn test_key_authorization_gas_with_limits() {
             &create_key_auth(num_limits),
             &t3_gas_params,
             TempoHardfork::T3,
-        )
-        .unwrap();
+        );
         let expected = ECRECOVER_GAS + t3_sload + t3_sstore * num_sstores + BUFFER;
         assert_eq!(gas, expected, "T3 with {num_limits} limits");
         assert_eq!(state_gas, 0, "T3 has no state gas");
@@ -1196,8 +1190,7 @@ fn test_key_authorization_gas_with_limits() {
             &create_key_auth(num_limits),
             &t4_gas_params,
             TempoHardfork::T4,
-        )
-        .unwrap();
+        );
         let expected_state = t4_sstore_state * num_sstores;
         let expected =
             ECRECOVER_GAS + t4_sload + t4_sstore * num_sstores + BUFFER + 5_000 + expected_state;
@@ -1218,11 +1211,9 @@ fn test_key_authorization_gas_with_limits() {
         .with_witness(B256::repeat_byte(0x53));
 
     let (base_t5_gas, base_t5_state_gas) =
-        calculate_key_authorization_gas(&base_t5_key_auth, &t5_gas_params, TempoHardfork::T5)
-            .unwrap();
+        calculate_key_authorization_gas(&base_t5_key_auth, &t5_gas_params, TempoHardfork::T5);
     let (witness_t5_gas, witness_t5_state_gas) =
-        calculate_key_authorization_gas(&witness_t5_key_auth, &t5_gas_params, TempoHardfork::T5)
-            .unwrap();
+        calculate_key_authorization_gas(&witness_t5_key_auth, &t5_gas_params, TempoHardfork::T5);
 
     assert_eq!(
         witness_t5_gas - base_t5_gas,
@@ -1249,23 +1240,19 @@ fn test_key_authorization_gas_with_limits() {
     unbound_admin_t6_key_auth.authorization.is_admin = true;
 
     let (base_t6_gas, base_t6_state_gas) =
-        calculate_key_authorization_gas(&base_t6_key_auth, &t6_gas_params, TempoHardfork::T6)
-            .unwrap();
+        calculate_key_authorization_gas(&base_t6_key_auth, &t6_gas_params, TempoHardfork::T6);
     let (account_bound_t6_gas, account_bound_t6_state_gas) = calculate_key_authorization_gas(
         &account_bound_t6_key_auth,
         &t6_gas_params,
         TempoHardfork::T6,
-    )
-    .unwrap();
+    );
     let (admin_t6_gas, admin_t6_state_gas) =
-        calculate_key_authorization_gas(&admin_t6_key_auth, &t6_gas_params, TempoHardfork::T6)
-            .unwrap();
+        calculate_key_authorization_gas(&admin_t6_key_auth, &t6_gas_params, TempoHardfork::T6);
     let (unbound_admin_t6_gas, unbound_admin_t6_state_gas) = calculate_key_authorization_gas(
         &unbound_admin_t6_key_auth,
         &t6_gas_params,
         TempoHardfork::T6,
-    )
-    .unwrap();
+    );
 
     assert_eq!(
         account_bound_t6_gas - base_t6_gas,
@@ -1313,7 +1300,7 @@ fn test_key_authorization_gas_with_limits() {
         ));
 
     let (gas, state_gas) =
-        calculate_key_authorization_gas(&scoped, &t3_gas_params, TempoHardfork::T3).unwrap();
+        calculate_key_authorization_gas(&scoped, &t3_gas_params, TempoHardfork::T3);
     let expected = ECRECOVER_GAS + t3_sload + t3_sstore * (1 + 12) + BUFFER;
     assert_eq!(
         gas, expected,
@@ -1322,7 +1309,7 @@ fn test_key_authorization_gas_with_limits() {
     assert_eq!(state_gas, 0, "T3 has no state gas");
 
     let (gas, state_gas) =
-        calculate_key_authorization_gas(&scoped, &t4_gas_params, TempoHardfork::T4).unwrap();
+        calculate_key_authorization_gas(&scoped, &t4_gas_params, TempoHardfork::T4);
     // 1 key write + 12 scope slots = 13 SSTOREs:
     // account mode(1) + target insertion rows(3) + selector insertion rows(3)
     // + constrained selector recipient-length(1) + recipients values+positions(2*2).
@@ -1364,7 +1351,7 @@ fn test_key_authorization_gas_with_limits() {
             ));
 
     let (gas, state_gas) =
-        calculate_key_authorization_gas(&multi_scope, &t3_gas_params, TempoHardfork::T3).unwrap();
+        calculate_key_authorization_gas(&multi_scope, &t3_gas_params, TempoHardfork::T3);
     let expected = ECRECOVER_GAS + t3_sload + t3_sstore * 14 + BUFFER;
     assert_eq!(
         gas, expected,
@@ -1373,7 +1360,7 @@ fn test_key_authorization_gas_with_limits() {
     assert_eq!(state_gas, 0, "T3 has no state gas");
 
     let (gas, state_gas) =
-        calculate_key_authorization_gas(&multi_scope, &t4_gas_params, TempoHardfork::T4).unwrap();
+        calculate_key_authorization_gas(&multi_scope, &t4_gas_params, TempoHardfork::T4);
     let expected_state = t4_sstore_state * 12;
     let expected = ECRECOVER_GAS + t4_sload + t4_sstore * 12 + BUFFER + 33_000 + expected_state;
     assert_eq!(
@@ -1391,7 +1378,7 @@ fn test_t4_key_authorization_matches_tip1016_sstore_regular_cost() {
     let params = &evm.version().gas_params;
     let load = u64::from(params[GasId::WarmStorageReadCost])
         + u64::from(params[GasId::ColdStorageAdditionalCost]);
-    let (regular, state) = key_authorization_gas(&authorization, &evm, TempoHardfork::T4).unwrap();
+    let (regular, state) = key_authorization_gas(&authorization, &evm, TempoHardfork::T4);
     assert_eq!(
         regular - ECRECOVER_GAS - load - 2_000 - call_scope_extra_gas(&authorization.authorization),
         20_000
@@ -1406,7 +1393,7 @@ fn test_t7_key_authorization_intrinsic_includes_storage_credit_value() {
     let params = &evm.version().gas_params;
     let load = u64::from(params[GasId::WarmStorageReadCost])
         + u64::from(params[GasId::ColdStorageAdditionalCost]);
-    let (regular, state) = key_authorization_gas(&authorization, &evm, TempoHardfork::T7).unwrap();
+    let (regular, state) = key_authorization_gas(&authorization, &evm, TempoHardfork::T7);
     assert_eq!(params[GasId::SstoreSetWithoutLoadCost], 5_000);
     assert_eq!(
         regular - ECRECOVER_GAS - load - 2_000 - call_scope_extra_gas(&authorization.authorization),
@@ -2423,8 +2410,8 @@ proptest! {
             (tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::default(), false).gas_params, TempoHardfork::default()),
             (tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::T1B, false).gas_params, TempoHardfork::T1B),
         ] {
-            let (gas1, _) = calculate_key_authorization_gas(&make_key_auth(num_limits1), &gas_params, spec).unwrap();
-            let (gas2, _) = calculate_key_authorization_gas(&make_key_auth(num_limits2), &gas_params, spec).unwrap();
+            let (gas1, _) = calculate_key_authorization_gas(&make_key_auth(num_limits1), &gas_params, spec);
+            let (gas2, _) = calculate_key_authorization_gas(&make_key_auth(num_limits2), &gas_params, spec);
 
             if num_limits1 <= num_limits2 {
                 prop_assert!(gas1 <= gas2,
@@ -2472,14 +2459,14 @@ proptest! {
 
         // Pre-T1B: minimum is KEY_AUTH_BASE_GAS + ECRECOVER_GAS
         let genesis_params = tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::default(), false).gas_params;
-        let (gas, _) = calculate_key_authorization_gas(&key_auth, &genesis_params, TempoHardfork::default()).unwrap();
+        let (gas, _) = calculate_key_authorization_gas(&key_auth, &genesis_params, TempoHardfork::default());
         let min_gas = KEY_AUTH_BASE_GAS + ECRECOVER_GAS;
         prop_assert!(gas >= min_gas,
             "Pre-T1B: Key auth gas should be at least {min_gas}, got {gas}");
 
         // T1B: minimum is ECRECOVER_GAS + sload + sstore (0 limits)
         let t1b_params = tempo_chainspec::gas_params::version(SpecId::OSAKA, TempoHardfork::T1B, false).gas_params;
-        let (gas_t1b, _) = calculate_key_authorization_gas(&key_auth, &t1b_params, TempoHardfork::T1B).unwrap();
+        let (gas_t1b, _) = calculate_key_authorization_gas(&key_auth, &t1b_params, TempoHardfork::T1B);
         let sstore = u64::from(t1b_params[GasId::SstoreSetWithoutLoadCost]);
         let sload = u64::from(t1b_params[GasId::WarmStorageReadCost]) + u64::from(t1b_params[GasId::ColdStorageAdditionalCost]);
         let min_t1b = ECRECOVER_GAS + sload + sstore;

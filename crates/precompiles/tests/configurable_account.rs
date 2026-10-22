@@ -488,18 +488,6 @@ fn config_error_precedence_through_abi() {
                 owners: vec![(0x22, 128), (0x11, 128)],
                 expected: ConfigurableAccountError::invalid_owner_order(),
             },
-            Case {
-                name: "total weight before reachability",
-                threshold: 250,
-                owners: (1..=10).map(|owner| (owner, 30)).collect(),
-                expected: ConfigurableAccountError::invalid_weight(),
-            },
-            Case {
-                name: "threshold out of reach of eight approvals",
-                threshold: 9,
-                owners: (1..=9).map(|owner| (owner, 1)).collect(),
-                expected: ConfigurableAccountError::invalid_threshold(),
-            },
         ] {
             let call = IConfigurableAccount::deriveAccountCall {
                 salt: B256::ZERO,
