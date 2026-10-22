@@ -47,21 +47,17 @@ impl BestTransactionsPrewarming {
             stop: prewarm.stop.clone(),
         };
 
-        let prewarm_executor = prewarm.executor();
         prewarm
             .executor()
             .spawn_blocking_named("builder-prewarm", move || {
-                Self::start_prewarming(
-                    prewarm_executor,
-                    BestTransactionsPrewarmingContext {
-                        best_txs,
-                        transactions_tx,
-                        commands_rx,
-                        commands_tx,
-                        prewarm,
-                        next_expiring_nonce_offset: 0,
-                    },
-                );
+                Self::start_prewarming(BestTransactionsPrewarmingContext {
+                    best_txs,
+                    transactions_tx,
+                    commands_rx,
+                    commands_tx,
+                    prewarm,
+                    next_expiring_nonce_offset: 0,
+                });
             });
 
         this
@@ -70,14 +66,12 @@ impl BestTransactionsPrewarming {
     /// Runs the coordinator side of prewarming for a payload build.
     ///
     /// See [`BestTransactionsPrewarming`] for details.
-    fn start_prewarming<Txs, Provider>(
-        executor: TaskExecutor,
-        mut ctx: BestTransactionsPrewarmingContext<Txs, Provider>,
-    ) where
+    fn start_prewarming<Txs, Provider>(mut ctx: BestTransactionsPrewarmingContext<Txs, Provider>)
+    where
         Txs: BestTransactions<Item = BestTransaction>,
         Provider: StateProviderFactory + Clone + 'static,
     {
-        let pool = executor.prewarming_pool();
+        let pool = Arc::clone(&ctx.prewarm.stateful_pool);
 
         pool.in_place_scope(|scope| {
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
