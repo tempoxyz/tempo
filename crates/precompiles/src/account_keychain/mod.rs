@@ -1613,7 +1613,8 @@ impl AccountKeychain {
     /// primitive delegate migrated to configurable ownership and its owner quorum now holds the
     /// grant. A key stored as `ConfigurableAccount` never accepts a primitive signature.
     ///
-    /// Reads the commitment of `key_id` as currently stored, and only when the types differ.
+    /// Reads the commitment of `key_id` as currently stored, and only when the key's stored type is
+    /// primitive and `signature_type` is configurable.
     pub fn accepts_signature_type(
         &self,
         key: &AuthorizedKey,
