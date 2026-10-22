@@ -249,12 +249,6 @@ jobs:
           path: benchmark
           token: ${{ steps.benchmark-token.outputs.token }}
           persist-credentials: false
-      - name: Mint Earn read token
-        id: earn-token
-        uses: tempoxyz/gh-actions/actions/github-sts@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-        with:
-          scope: tempoxyz/earn
-          policy: zones-read
       - name: Check out baseline Tempo with Zones
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -285,7 +279,6 @@ jobs:
           repository: tempoxyz/earn
           ref: main
           path: earn
-          token: ${{ steps.earn-token.outputs.token }}
           persist-credentials: false
       - name: Initialize Earn fixture dependencies
         working-directory: earn

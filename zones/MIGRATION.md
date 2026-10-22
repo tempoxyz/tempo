@@ -30,9 +30,8 @@ The imported dependency configuration and redundant lint/Cross configs are retir
 documentation lives in [docs/PROVER_E2E.md](docs/PROVER_E2E.md).
 
 The root Test workflow builds Earn before Zones and distributes
-`crates/zones/contracts/out` to each Rust test shard. The merged
-[tempoxyz/earn#365](https://github.com/tempoxyz/earn/pull/365) authorizes Tempo
-through Earn’s `zones-read` STS policy.
+`crates/zones/contracts/out` to each Rust test shard. Earn is public, so the
+workflows check it out without a token.
 
 ## Product workflow cutover
 

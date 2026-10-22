@@ -152,7 +152,7 @@ class MembershipTests(unittest.TestCase):
     def test_membership_is_checked_before_feature_code_or_aws(self):
         steps = yaml.safe_load((ROOT / ".github/workflows/zones-prover-benchmark.yml").read_text())["jobs"]["bench-zones"]["steps"]
         names = [step.get("name") for step in steps]
-        for name in ("Mint Earn read token", "Check out feature Tempo with Zones", "Configure AWS benchmark role"):
+        for name in ("Check out feature Tempo with Zones", "Configure AWS benchmark role"):
             self.assertLess(names.index("Check org membership"), names.index(name))
 
 
