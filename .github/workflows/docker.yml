@@ -10,6 +10,7 @@ on:
       - "rc/*"
     tags:
       - "v*.*.*"
+      - "tempo/v*.*.*"
   merge_group:
   workflow_dispatch:
     inputs:
@@ -138,6 +139,18 @@ jobs:
           LABELS
           fi
 
+      - name: Resolve release tag version
+        id: release-tag
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          # Docker semver tags come from vX.Y.Z or tempo/vX.Y.Z; other refs leave
+          # the value empty so metadata-action falls back to the ref.
+          case "$REF" in
+            refs/tags/tempo/v*) echo "version=${REF#refs/tags/tempo/}" >> "$GITHUB_OUTPUT" ;;
+            refs/tags/v*) echo "version=${REF#refs/tags/}" >> "$GITHUB_OUTPUT" ;;
+          esac
+
       - name: Docker metadata for tempo
         id: meta-tempo
         uses: tempoxyz/gh-actions/vendor/docker/metadata-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -152,9 +165,9 @@ jobs:
           tags: |
             type=schedule,pattern=nightly,enable=${{ inputs.pr_number == '' }}
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}},enable=${{ inputs.pr_number == '' }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ inputs.pr_number == '' }}
-            type=semver,pattern={{major}},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{version}},value=${{ steps.release-tag.outputs.version }},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-tag.outputs.version }},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{major}},value=${{ steps.release-tag.outputs.version }},enable=${{ inputs.pr_number == '' }}
             type=raw,value=stable,enable=${{ inputs.pr_number == '' && github.ref_type == 'tag' }}
             type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
             type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
@@ -175,9 +188,9 @@ jobs:
           tags: |
             type=schedule,pattern=nightly,enable=${{ inputs.pr_number == '' }}
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}},enable=${{ inputs.pr_number == '' }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ inputs.pr_number == '' }}
-            type=semver,pattern={{major}},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{version}},value=${{ steps.release-tag.outputs.version }},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-tag.outputs.version }},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{major}},value=${{ steps.release-tag.outputs.version }},enable=${{ inputs.pr_number == '' }}
             type=raw,value=stable,enable=${{ inputs.pr_number == '' && github.ref_type == 'tag' }}
             type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
             type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
@@ -198,9 +211,9 @@ jobs:
           tags: |
             type=schedule,pattern=nightly,enable=${{ inputs.pr_number == '' }}
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}},enable=${{ inputs.pr_number == '' }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ inputs.pr_number == '' }}
-            type=semver,pattern={{major}},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{version}},value=${{ steps.release-tag.outputs.version }},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-tag.outputs.version }},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{major}},value=${{ steps.release-tag.outputs.version }},enable=${{ inputs.pr_number == '' }}
             type=raw,value=stable,enable=${{ inputs.pr_number == '' && github.ref_type == 'tag' }}
             type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
             type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
@@ -221,9 +234,9 @@ jobs:
           tags: |
             type=schedule,pattern=nightly,enable=${{ inputs.pr_number == '' }}
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}},enable=${{ inputs.pr_number == '' }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ inputs.pr_number == '' }}
-            type=semver,pattern={{major}},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{version}},value=${{ steps.release-tag.outputs.version }},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-tag.outputs.version }},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{major}},value=${{ steps.release-tag.outputs.version }},enable=${{ inputs.pr_number == '' }}
             type=raw,value=stable,enable=${{ inputs.pr_number == '' && github.ref_type == 'tag' }}
             type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
             type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
@@ -244,9 +257,9 @@ jobs:
           tags: |
             type=schedule,pattern=nightly,enable=${{ inputs.pr_number == '' }}
             type=raw,value=nightly,enable=${{ github.event.inputs.nightly == 'true' }}
-            type=semver,pattern={{version}},enable=${{ inputs.pr_number == '' }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ inputs.pr_number == '' }}
-            type=semver,pattern={{major}},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{version}},value=${{ steps.release-tag.outputs.version }},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release-tag.outputs.version }},enable=${{ inputs.pr_number == '' }}
+            type=semver,pattern={{major}},value=${{ steps.release-tag.outputs.version }},enable=${{ inputs.pr_number == '' }}
             type=raw,value=stable,enable=${{ inputs.pr_number == '' && github.ref_type == 'tag' }}
             type=raw,value=latest,enable=${{ inputs.pr_number == '' && '{{is_default_branch}}' || 'false' }}
             type=edge,branch=main,enable=${{ inputs.pr_number == '' }}
@@ -280,7 +293,7 @@ jobs:
           targets: ${{ ((inputs.pr_number == '' && github.event_name == 'schedule') || github.event.inputs.nightly == 'true') && 'nightly' || 'default' }}
           project: 0c6tg19qsp
           push: true
-          no-cache: ${{ inputs.pr_number == '' && startsWith(github.ref, 'refs/tags/v') }}
+          no-cache: ${{ inputs.pr_number == '' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/tempo/v')) }}
           pull: ${{ github.event_name != 'merge_group' }}
         env:
           VERGEN_GIT_SHA: ${{ steps.source.outputs.sha }}

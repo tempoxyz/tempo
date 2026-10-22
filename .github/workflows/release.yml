@@ -8,10 +8,11 @@ on:
       - "rc/*"
     tags:
       - "v*.*.*"
+      - "tempo/v*.*.*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to release (e.g., v0.1.0)"
+        description: "Tag to release (e.g., v0.1.0 or tempo/v0.1.0)"
         required: true
         type: string
       profile:
@@ -40,6 +41,7 @@ jobs:
     permissions:
       id-token: write
     outputs:
+      tag: ${{ steps.get_version.outputs.tag }}
       version: ${{ steps.get_version.outputs.version }}
     steps:
       - name: Secure runner
@@ -53,12 +55,18 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            echo "version=$INPUT_TAG" >> "$GITHUB_OUTPUT"
+            tag="$INPUT_TAG"
           elif [[ "$GITHUB_REF" == refs/heads/rc/* ]]; then
-            echo "version=sha-${SHA::7}" >> "$GITHUB_OUTPUT"
+            tag="sha-${SHA::7}"
           else
-            echo "version=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+            tag="${GITHUB_REF#refs/tags/}"
           fi
+          # tempo/vX.Y.Z names the same release as vX.Y.Z: the GitHub release
+          # uses the tag, and artifacts keep the unprefixed version.
+          {
+            echo "tag=$tag"
+            echo "version=${tag#tempo/}"
+          } >> "$GITHUB_OUTPUT"
   check-version:
     name: check version
     runs-on: ubuntu-latest
@@ -282,6 +290,7 @@ jobs:
       - name: Create Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.get-version.outputs.tag }}
           VERSION: ${{ needs.get-version.outputs.version }}
         run: |
           # Determine if this is a prerelease
@@ -291,7 +300,7 @@ jobs:
           fi
 
           # Create draft release with all artifacts
-          gh release create "$VERSION" \
+          gh release create "$TAG" \
             --repo ${{ github.repository }} \
             --title "Release $VERSION" \
             --draft \
