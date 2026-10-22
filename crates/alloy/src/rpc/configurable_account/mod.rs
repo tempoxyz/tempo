@@ -1,15 +1,7 @@
 use alloy_primitives::{Address, Bytes};
 use alloy_rlp::decode_exact;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
-use tempo_primitives::{
-    SignatureType,
-    transaction::{
-        ConfigurableAccountConfig, ConfigurableAccountConfigError, ConfigurableAccountQuorumError,
-        ConfigurableAccountSignatureError,
-    },
-};
-
-mod owners;
+use tempo_primitives::{SignatureType, transaction::ConfigurableAccountConfig};
 
 /// One independently signed configurable role in a simulation.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -38,31 +30,6 @@ pub struct ConfigurableAccountSimulationApproval {
     pub key_data: Option<Bytes>,
 }
 
-/// Why a configurable account simulation spec was rejected.
-///
-/// The `Display` text is returned to RPC callers unchanged.
-#[derive(Debug, thiserror::Error)]
-pub enum ConfigurableAccountSimulationError {
-    /// A grant's signer is not the role account.
-    #[error("configurable account simulation signer does not match the role account")]
-    SignerMismatch,
-    /// The claimed owner quorum is invalid.
-    #[error("{0}")]
-    Quorum(ConfigurableAccountQuorumError),
-    /// The configurable account configuration is invalid for the role account.
-    #[error("{0}")]
-    Config(ConfigurableAccountConfigError),
-    /// An approval's `keyData` is not a 1-, 2-, or 4-byte length hint.
-    #[error("keyData must contain a 1-, 2-, or 4-byte length hint")]
-    InvalidKeyData,
-    /// An approval names the configurable account key type, which owners cannot use.
-    #[error("configurable account owners must use primitive signatures")]
-    NestedConfigurableAccountOwner,
-    /// The mock configurable account signature could not be constructed.
-    #[error("{0}")]
-    Signature(ConfigurableAccountSignatureError),
-}
-
 mod serde_configurable_account_config {
     use super::*;
     pub(super) fn serialize<S: Serializer>(
@@ -78,6 +45,3 @@ mod serde_configurable_account_config {
         decode_exact(&encoded).map_err(D::Error::custom)
     }
 }
-
-#[cfg(test)]
-pub(super) mod tests;

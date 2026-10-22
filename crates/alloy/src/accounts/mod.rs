@@ -11,8 +11,8 @@ mod store;
 
 pub use store::{
     TempoAccessKey, TempoAccountsError, TempoAccountsKeyAuthorization, TempoAccountsStore,
-    TempoAccountsWallet, TempoAuthorizationAccountError, TempoAuthorizationReservation,
-    TempoStoredAccessKey, default_accounts_store_path,
+    TempoAccountsWallet, TempoAuthorizationReservation, TempoStoredAccessKey,
+    default_accounts_store_path,
 };
 
 fn request_uses_create(request: &crate::rpc::TempoTransactionRequest) -> bool {
