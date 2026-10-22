@@ -68,6 +68,8 @@ impl<L1: L1StorageReader> ZoneTxHandler<L1> {
 
         // Mirrored registry values depend on the anchor, but the accepted cache is keyed by slot
         // only. Keep its entries only while they were loaded at this transaction's anchor.
+        // `advanceTempo` changes the anchor mid-transaction, so it must run on an empty cache;
+        // `ZoneBlockPhase` makes it the first transaction of a fresh per-block EVM.
         if self.l1.select_registry_cache_anchor(initial_anchor) {
             request
                 .host
