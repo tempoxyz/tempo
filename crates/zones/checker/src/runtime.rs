@@ -143,21 +143,21 @@ where
     };
     loop {
         // Do not restart a slow backfill job or interrupt verification of a delivered batch.
-        let notification = if snapshot.metadata.verified_zone.number < backfill_target
-            || matches!(&snapshot.metadata.status, Status::Diverged { .. })
-        {
-            ctx.notifications.try_next().await?
-        } else {
-            match tokio::time::timeout(NOTIFICATION_IDLE_TIMEOUT, ctx.notifications.try_next())
-                .await
-            {
+        let notification = if let Some(timeout) = notification_idle_timeout(
+            snapshot.metadata.verified_zone.number,
+            &snapshot.metadata.status,
+            backfill_target,
+        ) {
+            match tokio::time::timeout(timeout, ctx.notifications.try_next()).await {
                 Ok(notification) => notification?,
                 Err(_) => {
                     let head = ctx.provider().chain_info()?;
                     let verified = snapshot.metadata.verified_zone;
-                    if head.best_number > verified.number
-                        || ctx.provider().block_hash(verified.number)? != Some(verified.hash)
-                    {
+                    if notification_gap(
+                        verified,
+                        head.best_number,
+                        ctx.provider().block_hash(verified.number)?,
+                    ) {
                         (snapshot, backfill_target) = recover_notifications(
                             &provider,
                             &mut ctx.notifications,
@@ -178,6 +178,8 @@ where
                     continue;
                 }
             }
+        } else {
+            ctx.notifications.try_next().await?
         };
         let Some(notification) = notification else {
             break;
@@ -186,8 +188,14 @@ where
             snapshot = store.reset(&checkpoint)?;
             metrics.recovery_rebuilds_total.increment(1);
             metrics.update(&snapshot);
-            backfill_target = ctx.provider().chain_info()?.best_number;
-            ctx.catch_up_notifications_with_head(ExExHead::new(bootstrap.zone().into()))?;
+            (snapshot, backfill_target) = recover_notifications(
+                &provider,
+                &mut ctx.notifications,
+                &store,
+                snapshot,
+                &checkpoint,
+                metrics,
+            )?;
             tracing::warn!(target: "zone::checker", "unexpected Zone revert; rebuilding from genesis");
             continue;
         }
@@ -653,6 +661,25 @@ where
     Ok((snapshot, target))
 }
 
+/// Suppress idle recovery while replay is active or verification has stopped on a finding.
+fn notification_idle_timeout(
+    verified: u64,
+    status: &Status,
+    backfill_target: u64,
+) -> Option<Duration> {
+    (verified >= backfill_target && matches!(status, Status::Verifying))
+        .then_some(NOTIFICATION_IDLE_TIMEOUT)
+}
+
+/// A higher canonical head or an orphaned verified cursor requires replay.
+fn notification_gap(
+    verified: BlockRef,
+    canonical_height: u64,
+    verified_canonical_hash: Option<alloy_primitives::B256>,
+) -> bool {
+    canonical_height > verified.number || verified_canonical_hash != Some(verified.hash)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -825,11 +852,16 @@ mod tests {
             // Notification 1025 blocks on the full downstream queue; the final
             // 257 overflow the canonical broadcast before we poll the checker.
             if number <= 1025 {
-                received_receiver.recv().await.unwrap();
+                tokio::time::timeout(Duration::from_secs(10), received_receiver.recv())
+                    .await?
+                    .unwrap();
             }
         }
         for expected in 1..=1025 {
-            let notification = notifications.try_next().await?.unwrap();
+            let notification =
+                tokio::time::timeout(Duration::from_secs(10), notifications.try_next())
+                    .await??
+                    .unwrap();
             let tip = notification_tip(&notification).unwrap();
             assert_eq!(tip.number, expected);
             snapshot = store.apply(CandidateTransition::derive(
@@ -844,7 +876,7 @@ mod tests {
                 &[],
             )?)?;
         }
-        bridge.await?;
+        tokio::time::timeout(Duration::from_secs(10), bridge).await??;
         assert!(
             tokio::time::timeout(Duration::from_millis(10), notifications.try_next(),)
                 .await
@@ -933,6 +965,18 @@ mod tests {
         )?;
         assert_eq!(target, 1);
         assert_eq!(recovered.metadata.verified_zone, genesis_ref);
+        assert_eq!(
+            notification_idle_timeout(
+                recovered.metadata.verified_zone.number,
+                &recovered.metadata.status,
+                target
+            ),
+            None
+        );
+        assert_eq!(
+            notification_idle_timeout(target, &recovered.metadata.status, target),
+            Some(NOTIFICATION_IDLE_TIMEOUT)
+        );
         assert_eq!(store.load()?, recovered);
         Ok(())
     }
@@ -974,5 +1018,37 @@ mod tests {
         assert_eq!(recovered, snapshot);
         assert_eq!(store.load()?, snapshot);
         Ok(())
+    }
+
+    #[test]
+    fn notification_timeout_waits_for_backfill_and_preserves_findings() {
+        assert_eq!(notification_idle_timeout(9, &Status::Verifying, 10), None);
+        assert_eq!(
+            notification_idle_timeout(10, &Status::Verifying, 10),
+            Some(NOTIFICATION_IDLE_TIMEOUT)
+        );
+        assert_eq!(
+            notification_idle_timeout(11, &Status::Verifying, 10),
+            Some(NOTIFICATION_IDLE_TIMEOUT)
+        );
+        let status = Status::Diverged {
+            finding: Finding {
+                zone: BlockRef::new(10, B256::repeat_byte(1)),
+                summary: "persisted finding".into(),
+            },
+        };
+        for verified in [9, 10, 11] {
+            assert_eq!(notification_idle_timeout(verified, &status, 10), None);
+        }
+    }
+
+    #[test]
+    fn notification_gap_requires_missing_blocks_or_an_orphaned_cursor() {
+        let verified = BlockRef::new(10, B256::repeat_byte(1));
+        assert!(!notification_gap(verified, 10, Some(verified.hash)));
+        assert!(notification_gap(verified, 11, Some(verified.hash)));
+        assert!(notification_gap(verified, 10, Some(B256::repeat_byte(2))));
+        assert!(notification_gap(verified, 10, None));
+        assert!(notification_gap(verified, 9, None));
     }
 }

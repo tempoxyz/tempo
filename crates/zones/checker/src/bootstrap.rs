@@ -41,10 +41,6 @@ impl Bootstrap {
         self.identity
     }
 
-    pub(crate) const fn zone(&self) -> persistence::BlockRef {
-        self.zone
-    }
-
     /// Build the empty checkpoint preceding Portal creation.
     pub(crate) fn checkpoint(&self) -> Checkpoint {
         Checkpoint {

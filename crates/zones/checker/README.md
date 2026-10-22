@@ -106,7 +106,9 @@ local canonical history. If blocks are missing, the checker re-arms Reth backfil
 from the last durably verified block, even if live notification forwarding has
 stopped. A changed verified hash rebuilds from authenticated genesis. Recovery
 does not interrupt an active backfill or block verification, advance the verified
-cursor without checking blocks, or clear a persisted divergence.
+cursor without checking blocks, or clear a persisted divergence. A checker with
+an active finding still observes blocks only through live notifications; idle
+replay recovery applies only while verification is active.
 
 ## Failure behavior
 
