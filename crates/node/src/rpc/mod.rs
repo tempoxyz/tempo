@@ -40,7 +40,7 @@ use reth_ethereum::tasks::{
 use reth_evm::{BlockExecutorFactory, ConfigureEvm, Database, EvmEnvFor, TxEnvFor};
 use reth_node_api::{FullNodeComponents, FullNodeTypes, NodeTypes};
 use reth_node_builder::rpc::{EthApiBuilder, EthApiCtx};
-use reth_provider::{ChainSpecProvider, ProviderError};
+use reth_provider::{ChainSpecProvider, ProviderError, StateProvider as _};
 use reth_rpc::{DynRpcConverter, eth::EthApi};
 use reth_rpc_eth_api::{
     EthApiTypes, RpcConverter, RpcNodeCore, RpcNodeCoreExt,
@@ -338,40 +338,7 @@ impl<N> EthFees for TempoEthApi<N> where N: TempoEthApiBounds {}
 
 impl<N> Trace for TempoEthApi<N> where N: TempoEthApiBounds {}
 
-impl<N> EthCall for TempoEthApi<N>
-where
-    N: TempoEthApiBounds,
-{
-    /// Estimates gas for `request`, which `eth_estimateGas` and `eth_fillTransaction` both use.
-    ///
-    /// From T14 a fee payer signature costs one cold account access: the fee payer's account is
-    /// read to check its root key. A request carrying [`FEE_PAYER_SIGNATURE_MARKER`] is sponsored
-    /// by a fee payer that is not known yet, so the estimate adds that access on top of the
-    /// unsponsored estimate and keeps a request gas limit as a bound on the total. Before T14 the
-    /// marker is not handled and the request is estimated as it is.
-    async fn estimate_gas_at(
-        &self,
-        mut request: RpcTxReq<Self::NetworkTypes>,
-        at: BlockId,
-        overrides: EvmOverrides,
-    ) -> Result<U256, Self::Error> {
-        if request.fee_payer_signature != Some(FEE_PAYER_SIGNATURE_MARKER) {
-            return EstimateCall::estimate_gas_at(self, request, at, overrides).await;
-        }
-        let (evm_env, _) = self.evm_env_at(at).await?;
-        if !evm_env.spec.is_t14() {
-            return EstimateCall::estimate_gas_at(self, request, at, overrides).await;
-        }
-        let fee_payer_access = account_access_gas(&evm_env.version.gas_params, true);
-        request.fee_payer_signature = None;
-        request.inner.gas = request
-            .inner
-            .gas
-            .map(|limit| limit.saturating_sub(fee_payer_access));
-        let estimate = EstimateCall::estimate_gas_at(self, request, at, overrides).await?;
-        Ok(estimate.saturating_add(U256::from(fee_payer_access)))
-    }
-}
+impl<N> EthCall for TempoEthApi<N> where N: TempoEthApiBounds {}
 
 impl<N> GetBlockAccessList for TempoEthApi<N> where N: TempoEthApiBounds {}
 
@@ -468,7 +435,43 @@ where
     }
 }
 
-impl<N> EstimateCall for TempoEthApi<N> where N: TempoEthApiBounds {}
+impl<N> EstimateCall for TempoEthApi<N>
+where
+    N: TempoEthApiBounds,
+{
+    /// Estimates gas for `request`, which `eth_estimateGas` and `eth_fillTransaction` both use.
+    ///
+    /// From T14 a fee payer signature costs one cold account access: the fee payer's account is
+    /// read to check its root key. A request carrying [`FEE_PAYER_SIGNATURE_MARKER`] is sponsored
+    /// by a fee payer that is not known yet, so the estimate adds that access on top of the
+    /// unsponsored estimate and keeps a request gas limit as a bound on the total. Before T14 the
+    /// marker is not handled and the request is estimated as it is.
+    async fn estimate_gas_at(
+        &self,
+        mut request: RpcTxReq<Self::NetworkTypes>,
+        at: BlockId,
+        overrides: EvmOverrides,
+    ) -> Result<U256, Self::Error> {
+        let (evm_env, at) = self.evm_env_at(at).await?;
+        let mut fee_payer_access = 0;
+        if request.fee_payer_signature == Some(FEE_PAYER_SIGNATURE_MARKER) && evm_env.spec.is_t14()
+        {
+            fee_payer_access = account_access_gas(&evm_env.version.gas_params, true);
+            request.fee_payer_signature = None;
+            request.inner.gas = request
+                .inner
+                .gas
+                .map(|limit| limit.saturating_sub(fee_payer_access));
+        }
+        let estimate = self
+            .spawn_blocking_io_with_state(at, move |this, state| {
+                this.estimate_gas_with(evm_env, request, state.into_evm_state_provider(), overrides)
+            })
+            .await?;
+        Ok(estimate.saturating_add(U256::from(fee_payer_access)))
+    }
+}
+
 impl<N> EthSubscriptions for TempoEthApi<N> where N: TempoEthApiBounds {}
 impl<N> LoadBlock for TempoEthApi<N> where N: TempoEthApiBounds {}
 impl<N> LoadReceipt for TempoEthApi<N> where N: TempoEthApiBounds {}
