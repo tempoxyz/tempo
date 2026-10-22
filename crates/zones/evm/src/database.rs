@@ -135,10 +135,12 @@ impl<DB: DynDatabase, L1: L1StorageReader> DynDatabase for L1OverlayDB<DB, L1> {
         let anchor = self.anchor()?;
         // The EVM already charges this TIP-403 SLOAD; the host-side L1 fetch must not be charged
         // again.
-        self.l1
+        let value = self
+            .l1
             .read_l1_storage_unmetered(*address, B256::from(*slot), anchor)
-            .map(Into::into)
-            .map_err(|error| DatabaseError::new(error, true))
+            .map_err(|error| DatabaseError::new(error, true))?;
+        self.l1.note_registry_read(anchor);
+        Ok(value.into())
     }
 
     fn get_block_hash(&mut self, number: &U256) -> Result<B256, DatabaseError> {

@@ -59,22 +59,24 @@ impl<L1: L1StorageReader> ZoneTxHandler<L1> {
         self.l1.reset_transaction_state();
         crate::validate_transaction(request.envelope, CONTRACT_DEPLOYER_ALLOWLIST)?;
 
-        // Mirrored registry values depend on the anchor, but the accepted cache is keyed by slot
-        // only. Drop them so an earlier transaction's anchor cannot serve this one.
-        request
-            .host
-            .state_mut()
-            .overlay_db_mut()
-            .cache
-            .storage
-            .remove(&TIP403_REGISTRY_ADDRESS);
-
         // The accepted EVM overlay sits above L1OverlayDB. Snapshot its checkpoint
         // here so mirrored reads cannot fall back to the backing database's old value.
         let initial_anchor = request
             .host
             .state_mut()
             .storage_slot_untracked(&TEMPO_STATE_ADDRESS, &TEMPO_BLOCK_NUMBER_SLOT)?;
+
+        // Mirrored registry values depend on the anchor, but the accepted cache is keyed by slot
+        // only. Keep its entries only while they were loaded at this transaction's anchor.
+        if self.l1.select_registry_cache_anchor(initial_anchor) {
+            request
+                .host
+                .state_mut()
+                .overlay_db_mut()
+                .cache
+                .storage
+                .remove(&TIP403_REGISTRY_ADDRESS);
+        }
         self.l1.begin_transaction(initial_anchor);
 
         let tx_hash = match request.envelope.execution_context() {

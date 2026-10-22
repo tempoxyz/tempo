@@ -685,6 +685,13 @@ mod tests {
             policy.policyId,
             if commit_advance { 0xbbbb } else { 0xaaaa }
         );
+
+        // Transactions at an unchanged anchor keep the cached registry entries.
+        let reads_before = reader.storage_requests().len();
+        for tx in [&counter_tx, &policy_id_tx] {
+            assert!(evm.transact(tx).unwrap().discard().status);
+        }
+        assert_eq!(reader.storage_requests().len(), reads_before);
     }
 
     #[test]
