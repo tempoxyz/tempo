@@ -3,7 +3,7 @@
 //! [`Inner`] implements [`commonware_consensus::Application`]. [`Factory`]
 //! selects an inline or deferred wrapper using the preceding epoch boundary
 //! timestamp. Each wrapper is constructed on first use and shared across epochs.
-//! Marshal's reporter prunes both wrappers' gates.
+//! The epoch manager forwards marshal updates to prune both wrappers' gates.
 //! The wrappers fetch parents, re-propose epoch boundary blocks, check epoch
 //! membership and parent linkage, persist verified blocks, broadcast proposals,
 //! and gate finalize votes on durability. [`Inner`] builds blocks through the
@@ -57,29 +57,8 @@ where
     epocher: ES,
     chainspec: Arc<TempoChainSpec>,
     verification_mode: VerificationMode,
-    immediate: Arc<OnceLock<Application<E, S, A, B, ES>>>,
-    deferred: Arc<OnceLock<Application<E, S, A, B, ES>>>,
-}
-
-impl<E, S, A, B, ES> Clone for Factory<E, S, A, B, ES>
-where
-    E: Rng + Spawner + commonware_runtime::Metrics + Clock,
-    S: CertificateScheme,
-    A: commonware_consensus::Application<E>,
-    B: CertifiableBlock + Clone,
-    ES: Epocher,
-{
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            marshal: self.marshal.clone(),
-            epocher: self.epocher.clone(),
-            chainspec: self.chainspec.clone(),
-            verification_mode: self.verification_mode,
-            immediate: self.immediate.clone(),
-            deferred: self.deferred.clone(),
-        }
-    }
+    immediate: OnceLock<Application<E, S, A, B, ES>>,
+    deferred: OnceLock<Application<E, S, A, B, ES>>,
 }
 
 impl<E, S, A, B, ES> Factory<E, S, A, B, ES>
@@ -109,8 +88,8 @@ where
             epocher,
             chainspec,
             verification_mode,
-            immediate: Arc::new(OnceLock::new()),
-            deferred: Arc::new(OnceLock::new()),
+            immediate: OnceLock::new(),
+            deferred: OnceLock::new(),
         }
     }
 
@@ -159,19 +138,17 @@ where
     }
 }
 
-impl<E, S, A, B, ES> Reporter for Factory<E, S, A, B, ES>
+impl<E, S, A, B, ES> Factory<E, S, A, B, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
     S: CertificateScheme,
     A: commonware_consensus::Application<E, Block = B, Context = Context<B::Digest, S::PublicKey>>
-        + Reporter<Activity = Update<B>>
-        + Sync,
+        + Reporter<Activity = Update<B>>,
     B: CertifiableBlock<Context = <A as commonware_consensus::Application<E>>::Context> + Clone,
     ES: Epocher,
 {
-    type Activity = Update<B>;
-
-    fn report(&mut self, activity: Self::Activity) -> Feedback {
+    /// Prunes initialized wrappers and acknowledges each delivered block once.
+    pub(crate) fn report(&mut self, activity: Update<B>) -> Feedback {
         // Prune initialized wrappers, but acknowledge each delivered block only once.
         if let Update::Tip(..) = &activity {
             for application in [self.immediate.get(), self.deferred.get()]

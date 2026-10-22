@@ -545,13 +545,13 @@ where
             )),
         ));
 
+        let (epoch_manager, epoch_manager_mailbox) =
+            epoch::manager::init(self.context.into_present(), self.epoch_manager_config);
         let marshal = self.marshal.start(
-            Reporters::from((self.epoch_manager_config.application.clone(), reporters)),
+            Reporters::from((epoch_manager_mailbox.clone(), reporters)),
             self.broadcast_mailbox,
             resolver,
         );
-        let (epoch_manager, epoch_manager_mailbox) =
-            epoch::manager::init(self.context.into_present(), self.epoch_manager_config);
         let epoch_manager =
             epoch_manager.start(votes_channel, certificates_channel, resolver_channel);
 
