@@ -1,6 +1,6 @@
 //! Tempo Zone CLI.
 
-use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
+use std::{net::SocketAddr, num::NonZeroUsize, path::PathBuf, sync::Arc, time::Duration};
 
 use alloy_primitives::Address;
 use alloy_provider::{Provider, ProviderBuilder};
@@ -25,7 +25,7 @@ use crate::{
     ZoneSequencerAddOnsConfig,
     deposit_allowlist::{DEPOSIT_ALLOWLIST_FILE_NAME, DepositAllowlistAdmin},
     dev::DevCommand,
-    rpc::auth::DEFAULT_MAX_AUTH_TOKEN_VALIDITY_SECS,
+    rpc::{auth::DEFAULT_MAX_AUTH_TOKEN_VALIDITY_SECS, config::DEFAULT_MAX_CONCURRENT_SIMULATIONS},
     state_bloat::InitZoneFromBinaryDump,
 };
 use zone_checker::{CheckerConfig, CheckerExEx, CheckerMode};
@@ -230,6 +230,7 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
             max_auth_token_validity: Duration::from_secs(
                 args.redacted_rpc_max_auth_token_validity_secs,
             ),
+            max_concurrent_simulations: args.redacted_rpc_max_concurrent_simulations,
         });
         if !additional_decryption_keys.is_empty() {
             node = node.with_deposit_decryption_keys(additional_decryption_keys);
@@ -682,6 +683,15 @@ pub struct ZoneArgs {
         default_value_t = DEFAULT_MAX_AUTH_TOKEN_VALIDITY_SECS
     )]
     pub redacted_rpc_max_auth_token_validity_secs: u64,
+
+    /// Maximum `eth_call`, `eth_estimateGas`, and `eth_fillTransaction` requests the redacted RPC
+    /// runs at once across all callers. Further simulations fail with `-32009` until one finishes.
+    #[arg(
+        long = "redacted-rpc.max-concurrent-simulations",
+        env = "REDACTED_RPC_MAX_CONCURRENT_SIMULATIONS",
+        default_value_t = DEFAULT_MAX_CONCURRENT_SIMULATIONS
+    )]
+    pub redacted_rpc_max_concurrent_simulations: NonZeroUsize,
 
     /// Enable the Zone node in sequencer mode. This advances block production and submits
     /// withdrawal batches.

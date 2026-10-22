@@ -292,6 +292,7 @@ impl TestContext {
             chain_id: CHAIN_ID,
             max_auth_token_validity: zone_rpc::auth::DEFAULT_MAX_AUTH_TOKEN_VALIDITY,
             max_response_size,
+            max_concurrent_simulations: zone_rpc::config::DEFAULT_MAX_CONCURRENT_SIMULATIONS,
             zone_portal: Address::ZERO,
         };
         let addr = start_redacted_rpc(config, api).await.unwrap();

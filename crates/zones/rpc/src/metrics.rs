@@ -37,6 +37,13 @@ pub(crate) struct RedactedRpcAuthMetrics {
 }
 
 #[derive(Metrics, Clone)]
+#[metrics(scope = "tempo_zone_redacted_rpc_simulations")]
+pub(crate) struct RedactedRpcSimulationMetrics {
+    /// Number of simulation requests rejected because the concurrency cap was reached.
+    pub(crate) rejected_total: Counter,
+}
+
+#[derive(Metrics, Clone)]
 #[metrics(scope = "tempo_zone_redacted_rpc_provider")]
 pub(crate) struct ZoneProviderMetrics {
     /// Number of redacted RPC provider token refresh attempts.

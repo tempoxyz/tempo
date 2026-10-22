@@ -1048,9 +1048,11 @@ Fee quotes are caller-independent: `eth_gasPrice` returns the fixed T1 gas price
 - `eth_getTransactionByHash`, `eth_getTransactionReceipt`: return `null` if the caller is not the sender.
 - `eth_sendRawTransaction`, `eth_sendRawTransactionSync`: reject if the transaction sender does not match the authenticated account.
 - `eth_fillTransaction`: fills but does not sign an unsigned transaction, with the same authenticated `from` enforcement as simulation methods.
-- `eth_call`, `eth_estimateGas`: `from` must equal the authenticated account. Account-indexed reads are then protected by the execution-level access controls described in [Privacy Modifications](#privacy-modifications), including for nested calls. State override sets and block override objects are rejected.
+- `eth_call`, `eth_estimateGas`: `from` must equal the authenticated account. Account-indexed reads are then protected by the execution-level access controls described in [Privacy Modifications](#privacy-modifications), including for nested calls. State override sets and block override objects are rejected. The block must be `latest`, `pending` (treated as `latest`), `safe`, or `finalized`; block numbers, `earliest`, and block hashes return `-32602`, because each historical block reads Tempo state at its own anchor and would bypass the shared L1 state cache.
 - `eth_getLogs`, `eth_getFilterLogs`, `eth_getFilterChanges`: filtered to TIP-20 events where the caller is a relevant party (see [Event Filtering](#event-filtering)).
 - `eth_newFilter`, `eth_newBlockFilter`, `eth_uninstallFilter`: allowed, filters are scoped to the authenticated account.
+
+`eth_call`, `eth_estimateGas`, and `eth_fillTransaction` share one node-wide cap on concurrent requests (`--redacted-rpc.max-concurrent-simulations`). Simulations can fetch uncached Tempo state for arbitrary accounts, and authorization tokens are self-signed, so the cap is global rather than per caller. Requests over the cap fail immediately with `-32009` instead of queueing.
 
 Methods outside this allowlist are not classified separately as restricted or disabled. Raw state and full block endpoints, mining and mempool methods, and all `debug_*`, `admin_*`, and `txpool_*` methods return `-32601`. Sequencers and operators use the unrestricted RPC on port 8545 instead of receiving elevated access through an authorization token. Requests for full transactions through the otherwise-allowed `eth_getBlockByNumber` and `eth_getBlockByHash` methods return `-32005` and must likewise use the unrestricted endpoint.
 
@@ -1142,6 +1144,7 @@ There are no state-changing methods via authorization token. Withdrawals require
 | `-32004` | Account mismatch | `from` mismatch on `eth_call` / `eth_estimateGas` |
 | `-32005` | Sequencer only | Full block transactions require the unrestricted operator RPC |
 | `-32006` | Method disabled | WebSocket subscription kind is not available on zones |
+| `-32009` | Server is busy, try again later | The node's concurrent simulation cap is reached |
 | `-32601` | Method not found | Method is not exposed by the redacted RPC allowlist |
 
 Methods where the user explicitly supplies a mismatched parameter return explicit errors (the user already knows the address they provided). Methods that query about other accounts return silent dummy values (`0x0`, `null`, empty results) to avoid revealing "data exists but you can't see it."
