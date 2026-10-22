@@ -166,7 +166,7 @@ impl Setup {
                 success_rate: commonware_utils::probability!(1.0),
             },
             epoch_length: 20,
-            proposal_return_budget: Duration::from_millis(300),
+            proposal_return_budget: Duration::from_millis(100),
             fee_recipient: Address::ZERO,
             with_gossip: false,
         }

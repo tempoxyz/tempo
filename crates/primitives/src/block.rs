@@ -30,6 +30,11 @@ pub struct TempoBlockEnv {
 
     /// Proposer's Ed25519 public key. `Some` only for post-T4 blocks.
     pub proposer_public_key: Option<PublicKey>,
+    /// Configurable account recovery factory explicitly selected by chain configuration. Native
+    /// authorization is unavailable when absent; there is no default production factory address.
+    // TODO: set the canonical TIP-1110 recovery factory for public networks before T14 activation
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub configurable_account_recovery_factory: Option<Address>,
 }
 
 impl Default for TempoBlockEnv {
@@ -39,6 +44,7 @@ impl Default for TempoBlockEnv {
             timestamp_millis_part: 0,
             epoch_length: NonZeroU64::MIN,
             proposer_public_key: None,
+            configurable_account_recovery_factory: None,
         }
     }
 }
@@ -55,6 +61,12 @@ impl TempoBlockEnv {
     /// Returns the epoch containing `height`.
     pub fn epoch(&self, height: u64) -> u64 {
         height / self.epoch_length
+    }
+
+    /// Returns the configurable account recovery factory, treating the zero address as unset.
+    pub fn configurable_account_recovery_factory(&self) -> Option<Address> {
+        self.configurable_account_recovery_factory
+            .filter(|factory| !factory.is_zero())
     }
 }
 

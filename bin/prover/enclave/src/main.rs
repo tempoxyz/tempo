@@ -46,7 +46,7 @@ struct Cli {
     #[arg(long, env = "SPF_PORT", default_value_t = 5000)]
     port: u32,
 
-    /// Maximum accepted CBOR request size in bytes.
+    /// Maximum encoded CBOR request size in bytes. Also allows one CBOR value per 256 bytes.
     #[arg(
         long,
         env = "SPF_MAX_REQUEST_BYTES",

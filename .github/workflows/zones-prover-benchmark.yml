@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       feature-sha:
-        description: Exact 40-character Zones commit to compare with main.
+        description: Exact 40-character Tempo monorepo commit to compare with main.
         type: string
         required: true
       tempo-hardfork:
@@ -25,7 +25,7 @@ on:
         type: choice
         required: true
         default: full-journey
-        options: [full-journey, private-withdrawal, swapped-lifecycle, swapped-redemption]
+        options: [full-journey, full-journey-pathusd-fees, private-withdrawal, swapped-lifecycle, swapped-redemption]
       accounts:
         type: string
         required: true
@@ -47,6 +47,11 @@ on:
         type: string
         required: true
         default: "0"
+      zone-state-bloat-mib:
+        description: Zone PathUSD dump MiB (0-16). Use full-journey-pathusd-fees; start with 1 and L1 bloat 0.
+        type: string
+        required: true
+        default: "0"
 
 permissions: {}
 
@@ -57,7 +62,7 @@ concurrency:
 jobs:
   authorize:
     if: >-
-      github.repository == 'tempoxyz/zones' &&
+      github.repository == 'tempoxyz/tempo' &&
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'workflow_dispatch' ||
        (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
@@ -72,10 +77,10 @@ jobs:
       pr-number: ${{ steps.request.outputs.pr-number }}
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
       - name: Mint benchmark repository read token
         id: benchmark-token
-        uses: tempoxyz/gh-actions/actions/github-sts@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        uses: tempoxyz/gh-actions/actions/github-sts@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           scope: tempoxyz/tempo-multi-region-benchmark
           policy: bench-e2e-multi-region
@@ -111,8 +116,8 @@ jobs:
               const sha = match[1];
               const number = context.issue.number;
               const {data: pr} = await github.rest.pulls.get({...context.repo, pull_number: number});
-              if (pr.head.repo?.full_name !== 'tempoxyz/zones') {
-                core.setFailed('Benchmark PR head must be in tempoxyz/zones');
+              if (pr.head.repo?.full_name !== 'tempoxyz/tempo') {
+                core.setFailed('Benchmark PR head must be in tempoxyz/tempo');
                 return;
               }
               if (pr.head.sha !== sha) {
@@ -148,14 +153,15 @@ jobs:
       BENCH_TPS: ${{ inputs.tps || '5' }}
       BENCH_MAX_CONCURRENT: ${{ inputs.max-concurrent || '4' }}
       BENCH_L1_BLOAT_MIB: ${{ inputs.state-bloat-mib || '0' }}
+      BENCH_ZONE_BLOAT_MIB: ${{ inputs.zone-state-bloat-mib || '0' }}
       BENCH_BATCH_INTERVAL_BLOCKS: "20"
       BENCH_RESULTS_PATH: ${{ github.workspace }}/zones-prover-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
       - name: Mint benchmark repository read token
         id: benchmark-token
-        uses: tempoxyz/gh-actions/actions/github-sts@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        uses: tempoxyz/gh-actions/actions/github-sts@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           scope: tempoxyz/tempo-multi-region-benchmark
           policy: bench-e2e-multi-region
@@ -177,7 +183,7 @@ jobs:
             }
       - name: Mint Earn read token
         id: earn-token
-        uses: tempoxyz/gh-actions/actions/github-sts@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        uses: tempoxyz/gh-actions/actions/github-sts@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           scope: tempoxyz/earn
           policy: zones-read
@@ -189,18 +195,18 @@ jobs:
           path: benchmark
           token: ${{ steps.benchmark-token.outputs.token }}
           persist-credentials: false
-      - name: Check out baseline Zones
+      - name: Check out baseline Tempo with Zones
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: tempoxyz/zones
+          repository: tempoxyz/tempo
           ref: main
           path: baseline-zones
           submodules: recursive
           persist-credentials: false
-      - name: Check out feature Zones
+      - name: Check out feature Tempo with Zones
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: tempoxyz/zones
+          repository: tempoxyz/tempo
           ref: ${{ needs.authorize.outputs.feature-sha }}
           path: feature-zones
           submodules: recursive
@@ -223,23 +229,23 @@ jobs:
           persist-credentials: false
       - name: Initialize Earn fixture dependencies
         working-directory: earn
-        run: git submodule update --init lib/forge-std lib/openzeppelin-contracts lib/openzeppelin-contracts-upgradeable
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        run: git submodule update --init lib/forge-std lib/openzeppelin-contracts
+      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           toolchain: stable
-      - uses: tempoxyz/gh-actions/actions/setup-mold@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
-      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+      - uses: tempoxyz/gh-actions/actions/setup-mold@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+      - uses: tempoxyz/gh-actions/vendor/mozilla-actions/sccache-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           version: v0.15.0
-      - uses: tempoxyz/gh-actions/actions/setup-foundry@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+      - uses: tempoxyz/gh-actions/actions/setup-foundry@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           version: nightly-fc14f674bd853bc817c308a5202faa5be8df05e7
-      - uses: tempoxyz/gh-actions/actions/setup-terraform@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+      - uses: tempoxyz/gh-actions/actions/setup-terraform@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           version: 1.14.7
-      - uses: tempoxyz/gh-actions/vendor/depot/setup-action@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+      - uses: tempoxyz/gh-actions/vendor/depot/setup-action@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
       - name: Configure AWS benchmark role
-        uses: tempoxyz/gh-actions/vendor/aws-actions/configure-aws-credentials@55fe3b63d9612623cc51e6c62d9d62fbcb175fb0 # 2026-09-29T01-25-15Z-55fe3b63
+        uses: tempoxyz/gh-actions/vendor/aws-actions/configure-aws-credentials@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           role-to-assume: arn:aws:iam::934822761402:role/benchmark-runner
           aws-region: ${{ env.BENCH_REGION }}
@@ -267,7 +273,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: zones-prover-${{ github.run_id }}-${{ github.run_attempt }}
+          name: zones-prover-${{ github.run_id }}-${{ github.run_attempt }}-l1-${{ inputs.state-bloat-mib || '0' }}-zone-${{ inputs.zone-state-bloat-mib || '0' }}
           path: |
             ${{ env.BENCH_RESULTS_PATH }}/results
             ${{ env.BENCH_RESULTS_PATH }}/summary.md

@@ -20,13 +20,13 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=zones-
         --bin tempo-zone --features "jemalloc" \
     && RUSTFLAGS="-C link-arg=-fuse-ld=mold ${EXTRA_RUSTFLAGS}" \
     cargo build --locked --profile ${RUST_PROFILE} \
-        --bin tempo-xtask \
+        --bin tempo-zone-xtask \
     && if [ -n "$VERGEN_GIT_SHA" ]; then \
          /app/target/${RUST_PROFILE}/tempo-zone --version | grep -F "$VERGEN_GIT_SHA"; \
        fi
 
 # Solidity contracts compiled for shared runtimes, routers, and zone genesis artifacts.
-# Requires the crates/contracts/lib submodules to be checked out.
+# Requires the crates/zones/contracts/lib submodules to be checked out.
 FROM debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d AS solidity
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl git \
@@ -35,8 +35,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -fsSL https://foundry.paradigm.xyz | bash \
     && /root/.foundry/bin/foundryup --install nightly-fc14f674bd853bc817c308a5202faa5be8df05e7
 ENV PATH="/root/.foundry/bin:${PATH}"
-WORKDIR /app/crates/contracts
-COPY crates/contracts .
+WORKDIR /app/crates/zones/contracts
+COPY crates/zones/contracts .
 RUN forge build --skip test
 
 FROM debian:bookworm-slim@sha256:4724b8cc51e33e398f0e2e15e18d5ec2851ff0c2280647e1310bc1642182655d AS base
@@ -60,8 +60,8 @@ ARG RUST_PROFILE=profiling
 RUN apt-get update && apt-get install -y --no-install-recommends \
     jq \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /app/target/${RUST_PROFILE}/tempo-xtask /usr/local/bin/tempo-xtask
+COPY --from=builder /app/target/${RUST_PROFILE}/tempo-zone-xtask /usr/local/bin/tempo-xtask
 COPY --from=solidity /root/.foundry/bin/cast /usr/local/bin/cast
-COPY --from=solidity /app/crates/contracts/out /app/crates/contracts/out
+COPY --from=solidity /app/crates/zones/contracts/out /app/crates/zones/contracts/out
 WORKDIR /app
 ENTRYPOINT ["/usr/local/bin/tempo-xtask"]
