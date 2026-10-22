@@ -20,6 +20,26 @@ pub fn validate_transaction(
         ));
     }
 
+    // Rotations and migrations on Tempo never reach Zone state, so the Zone cannot trust any
+    // configurable account commitment.
+    if tx.as_aa().is_some_and(|tx| {
+        let tx = tx.inner();
+        tx.signature().is_configurable_account()
+            || tx
+                .signature()
+                .as_keychain()
+                .is_some_and(|keychain| keychain.signature.as_configurable_account().is_some())
+            || tx
+                .tx()
+                .key_authorization
+                .as_ref()
+                .is_some_and(|auth| auth.signature.as_configurable_account().is_some())
+    }) {
+        return Err(TempoInvalidTransaction::CallsValidation(
+            "configurable accounts are not supported",
+        ));
+    }
+
     if contract_creation_deployer(tx)
         .is_some_and(|deployer| !contract_deployer_allowlist.contains(&deployer))
     {
