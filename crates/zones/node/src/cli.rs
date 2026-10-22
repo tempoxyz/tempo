@@ -2,14 +2,16 @@
 
 use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
+use alloy_primitives::Address;
 use alloy_provider::{Provider, ProviderBuilder};
 use alloy_signer_local::PrivateKeySigner;
 use clap::{Arg, ArgAction, Args, CommandFactory, FromArgMatches};
 use reth_chainspec::EthChainSpec as _;
-use reth_ethereum::cli::Cli;
+use reth_cli_runner::CliRunner;
+use reth_ethereum::cli::{Cli, ExtendedCommand};
+use reth_rpc_server_types::DefaultRpcModuleValidator;
 use reth_tracing::tracing::{info, warn};
 use tempo_alloy::TempoNetwork;
-use tempo_evm::consensus::TempoConsensus;
 use tempo_precompiles::zone_factory::portal_address;
 use zeroize::Zeroizing;
 use zone_chainspec::{ZoneChainSpec, ZoneChainSpecParser};
@@ -19,8 +21,12 @@ use zone_p2p::{MAX_TRANSACTION_MESSAGE_SIZE, P2pConfig, Role};
 use zone_payload::DEFAULT_WITHDRAWAL_BATCH_INTERVAL_BLOCKS;
 
 use crate::{
-    ZoneNode, ZoneProverConfig, ZoneRedactedRpcConfig, ZoneSequencerAddOnsConfig, dev::DevCommand,
+    DepositAllowlist, ZoneConsensus, ZoneNode, ZoneProverConfig, ZoneRedactedRpcConfig,
+    ZoneSequencerAddOnsConfig,
+    deposit_allowlist::{DEPOSIT_ALLOWLIST_FILE_NAME, DepositAllowlistAdmin},
+    dev::DevCommand,
     rpc::auth::DEFAULT_MAX_AUTH_TOKEN_VALIDITY_SECS,
+    state_bloat::InitZoneFromBinaryDump,
 };
 use zone_checker::{CheckerConfig, CheckerExEx, CheckerMode};
 use zone_sequencer::{
@@ -44,7 +50,7 @@ const ZONE_LOG_FILTER_DIRECTIVES: &str = concat!(
 /// Tempo Zone CLI entry point.
 pub enum ZoneCli {
     Node {
-        cli: Box<Cli<ZoneChainSpecParser, ZoneArgs>>,
+        cli: Box<ZoneNodeCli>,
         /// How the parsed subcommand reads L1 state while executing zone blocks.
         l1_access: CliL1Access,
     },
@@ -63,9 +69,32 @@ pub enum CliL1Access {
     Offline,
 }
 
+/// Node CLI with Zone chain parsing and offline state import commands.
+pub type ZoneNodeCli =
+    Cli<ZoneChainSpecParser, ZoneArgs, DefaultRpcModuleValidator, ZoneSubcommand>;
+
+/// Additional offline commands supported by the Zone node.
+#[derive(Debug, clap::Subcommand)]
+pub enum ZoneSubcommand {
+    /// Initialize a fresh database with TIP20 bloat committed in Zone genesis.
+    InitFromBinaryDump(Box<InitZoneFromBinaryDump>),
+}
+
+impl ExtendedCommand for ZoneSubcommand {
+    fn execute(self, runner: CliRunner) -> eyre::Result<()> {
+        match self {
+            Self::InitFromBinaryDump(command) => {
+                let runtime = runner.runtime();
+                runner.run_blocking_until_ctrl_c(command.execute(runtime))?;
+                Ok(())
+            }
+        }
+    }
+}
+
 impl ZoneCli {
     fn command() -> clap::Command {
-        let mut command = Cli::<ZoneChainSpecParser, ZoneArgs>::command().about("Tempo Zone");
+        let mut command = ZoneNodeCli::command().about("Tempo Zone");
         for name in BLOCK_EXECUTION_SUBCOMMANDS {
             command = command.mut_subcommand(name, |subcommand| {
                 subcommand.arg(
@@ -137,10 +166,7 @@ impl ZoneCli {
 }
 
 /// Main entry point for the `node` command.
-fn run_node(
-    mut cli: Cli<ZoneChainSpecParser, ZoneArgs>,
-    l1_access: CliL1Access,
-) -> eyre::Result<()> {
+fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
     prepend_log_filter(&mut cli.logs.log_stdout_filter, ZONE_LOG_FILTER_DIRECTIVES);
     prepend_log_filter(&mut cli.logs.log_file_filter, ZONE_LOG_FILTER_DIRECTIVES);
 
@@ -158,10 +184,7 @@ fn run_node(
 
     let components = move |spec: Arc<ZoneChainSpec>| {
         let evm_config = cli_evm_config(spec.clone(), l1_rpc_url.clone());
-        (
-            evm_config,
-            TempoConsensus::new(spec).with_allow_equal_timestamps(true),
-        )
+        (evm_config, ZoneConsensus::new(spec))
     };
 
     cli.run_with_components::<ZoneNode>(components, async move |mut builder, args| {
@@ -212,7 +235,9 @@ fn run_node(
             node = node.with_deposit_decryption_keys(additional_decryption_keys);
         }
 
-        node = configure_sequencing(&args, zone_id, node).await?;
+        let data_dir = builder.config().datadir().data_dir().to_path_buf();
+        let zone_chain_id = builder.config().chain.chain_id();
+        node = configure_sequencing(&args, zone_id, zone_chain_id, &data_dir, node).await?;
 
         // Install or skip the checker ExEx based on the configured mode.
         match args.checker_mode {
@@ -289,6 +314,8 @@ fn cli_evm_config(chain_spec: Arc<ZoneChainSpec>, l1_rpc_url: Option<url::Url>) 
 async fn configure_sequencing(
     args: &ZoneArgs,
     zone_id: u32,
+    zone_chain_id: u64,
+    data_dir: &std::path::Path,
     mut node: ZoneNode,
 ) -> eyre::Result<ZoneNode> {
     let p2p_config =
@@ -347,8 +374,16 @@ async fn configure_sequencing(
         Some(ZoneProverConfig::Shadow { prover_addresses })
     };
 
+    eyre::ensure!(
+        !args.deposit_allowlist || should_sequence_blocks,
+        "--deposits.allowlist requires a sequencer"
+    );
+    let enforced_allowlist_admin = enforced_allowlist_admin(args, zone_chain_id)?;
     if should_sequence_blocks {
         let sequencer_signer = load_sequencer_signer(args.sequencer_key_file.as_deref()).await?;
+        let deposit_allowlist = enforced_allowlist_admin
+            .map(|admin| DepositAllowlist::load(data_dir.join(DEPOSIT_ALLOWLIST_FILE_NAME), admin))
+            .transpose()?;
         node = node.with_sequencer(ZoneSequencerAddOnsConfig {
             sequencer_signer,
             // `None` on an rpc-only node: it holds no individual key, and it is never the
@@ -364,6 +399,13 @@ async fn configure_sequencing(
                 max_batch_gas: args.withdrawal_max_batch_gas,
                 max_in_flight_batches: args.withdrawal_max_in_flight_batches,
             },
+            deposit_allowlist,
+        });
+    }
+    if rpc_only && let Some(address) = args.deposit_allowlist_admin {
+        node = node.with_deposit_allowlist_relay(DepositAllowlistAdmin {
+            address,
+            zone_chain_id,
         });
     }
     if let Some(config) = prover_config {
@@ -373,6 +415,24 @@ async fn configure_sequencing(
         node = node.with_p2p(config);
     }
     Ok(node)
+}
+
+/// The admin of the allowlist this sequencer enforces. Keyed on `--deposits.allowlist` alone, so
+/// a leftover admin setting never enables enforcement.
+fn enforced_allowlist_admin(
+    args: &ZoneArgs,
+    zone_chain_id: u64,
+) -> eyre::Result<Option<DepositAllowlistAdmin>> {
+    if !args.deposit_allowlist {
+        return Ok(None);
+    }
+    let address = args
+        .deposit_allowlist_admin
+        .ok_or_else(|| eyre::eyre!("--deposits.allowlist requires --deposits.allowlist.admin"))?;
+    Ok(Some(DepositAllowlistAdmin {
+        address,
+        zone_chain_id,
+    }))
 }
 
 async fn load_sequencer_signer(
@@ -645,6 +705,22 @@ pub struct ZoneArgs {
         requires = "enable_prover"
     )]
     pub prover_addresses: Vec<HardforkProverAddress>,
+
+    /// Bounce deposits whose L1 sender is not on the allowlist persisted at
+    /// `<datadir>/deposit-allowlist.json`. Until the admin first writes the list, the sequencer
+    /// credits every deposit. Requires `--deposits.allowlist.admin`.
+    #[arg(long = "deposits.allowlist", env = "DEPOSITS_ALLOWLIST")]
+    pub deposit_allowlist: bool,
+
+    /// Address whose EIP-712 signatures authorize `zoneAdmin` allowlist writes. On a sequencer it
+    /// applies with `--deposits.allowlist`; on an rpc_only node it enables relaying those writes
+    /// to the sequencers.
+    #[arg(
+        long = "deposits.allowlist.admin",
+        env = "DEPOSITS_ALLOWLIST_ADMIN",
+        value_name = "ADDRESS"
+    )]
+    pub deposit_allowlist_admin: Option<Address>,
 }
 
 fn prepend_log_filter(filter: &mut String, directives: &str) {
@@ -1176,6 +1252,43 @@ mod tests {
 
         assert_eq!(redacted.zone.redacted_rpc_port, 9544);
         assert_eq!(private.zone.redacted_rpc_port, 9544);
+    }
+
+    #[test]
+    fn deposit_allowlist_is_enforced_only_when_enabled() {
+        let common = ["tempo-zone", "--l1.rpc-url", "ws://localhost:8546"];
+        let admin: Address = "0x00000000000000000000000000000000000000ad"
+            .parse()
+            .unwrap();
+        let admin_arg = admin.to_string();
+        let parse = |extra: &[&str]| {
+            ZoneArgsParser::try_parse_from(common.iter().chain(extra))
+                .unwrap()
+                .zone
+        };
+
+        let error = enforced_allowlist_admin(&parse(&["--deposits.allowlist"]), 1).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "--deposits.allowlist requires --deposits.allowlist.admin"
+        );
+        // An admin left configured after disabling the allowlist does not re-enable it.
+        assert!(
+            enforced_allowlist_admin(&parse(&["--deposits.allowlist.admin", &admin_arg]), 1)
+                .unwrap()
+                .is_none()
+        );
+        let enforced = enforced_allowlist_admin(
+            &parse(&[
+                "--deposits.allowlist",
+                "--deposits.allowlist.admin",
+                &admin_arg,
+            ]),
+            7,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!((enforced.address, enforced.zone_chain_id), (admin, 7));
     }
 
     #[test]

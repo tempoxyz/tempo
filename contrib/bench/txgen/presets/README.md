@@ -39,6 +39,13 @@ Reports resolve aliases to the concrete scenario and record the selected preset.
 The original alias is retained separately as `requested_preset`; workload category
 metadata describes the mix without changing historical transfer-only labels.
 
+`zone-portal-throughput` and `vault-throughput` isolate one public-mix workload for
+L1 saturation runs: they include `public-mix.yml`, run its full fixture setup, and
+select only zone portal deposits/withdrawals or vault deposits/withdrawals (50/50).
+Zone operations settle synthetically on chain 1337; Zone journey latency is measured
+by `derek bench zones` instead. Raise both gas limits to saturate, for example
+`derek bench preset=zone-portal-throughput bloat=100 gas-limit=1T general-gas-limit=1T`.
+
 `tip20-policy` isolates the successful policy-heavy payment case: pathUSD transfers
 to configured receivers in a disjoint account pool, paid in AlphaUSD through the FeeAMM, with protocol nonces.
 It requires at least two selected tokens. Setup installs distinct blacklist leaves

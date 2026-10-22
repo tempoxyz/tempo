@@ -201,8 +201,8 @@ impl StateProofProvider for InMemoryStateProvider {
     }
     fn multiproof_v2(
         &self,
-        _input: TrieInput,
         _targets: MultiProofTargetsV2,
+        _requires_masks: bool,
     ) -> ProviderResult<DecodedMultiProofV2> {
         Err(ProviderError::UnsupportedProvider)
     }
