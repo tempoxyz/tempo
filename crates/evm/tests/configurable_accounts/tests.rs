@@ -62,9 +62,9 @@ use tempo_primitives::{
     account::encode_config_commitment,
     transaction::{
         AccountSignature, CONFIGURABLE_ACCOUNT_CONFIG_DOMAIN, CallScope,
-        ConfigurableAccountStateError, KeyAuthorization, KeychainSignature, KeychainVersion,
-        SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, TempoSignedAuthorization, TokenLimit,
-        calc_gas_balance_spending, derive_p256_address,
+        ConfigurableAccountQuorumError, ConfigurableAccountStateError, KeyAuthorization,
+        KeychainSignature, KeychainVersion, SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY,
+        TempoSignedAuthorization, TokenLimit, calc_gas_balance_spending, derive_p256_address,
         tt_signature::{P256SignatureWithPreHash, WebAuthnSignature, normalize_p256_s},
     },
 };
@@ -5396,4 +5396,289 @@ fn native_delegate_grant_is_bound_to_the_transaction() {
             ),
         }
     }
+}
+
+/// A configurable admin delegate of a primitive or configurable parent can sign an inline grant
+/// of a child key for the parent. The grant is rejected when another configurable account signs
+/// it, when it names another account, or when the delegate is not an admin.
+#[test]
+fn native_admin_delegate_signs_inline_grant() {
+    let factory = Address::repeat_byte(0x71);
+    let owner = signer(2);
+    let config = ConfigurableAccountConfig {
+        salt: B256::repeat_byte(2),
+        version: 0,
+        threshold: 1,
+        owners: vec![ConfigurableAccountOwner {
+            owner: owner.address(),
+            weight: 1,
+        }],
+    };
+    let delegate = config.derive_account(factory).unwrap();
+    let other_owner = signer(3);
+    let other_config = ConfigurableAccountConfig {
+        salt: B256::repeat_byte(3),
+        owners: vec![ConfigurableAccountOwner {
+            owner: other_owner.address(),
+            weight: 1,
+        }],
+        ..config.clone()
+    };
+    let other = other_config.derive_account(factory).unwrap();
+    let child = signer(4).address();
+    let failed = |reason: &str| TempoInvalidTransaction::KeychainValidationFailed {
+        reason: reason.into(),
+    };
+    for parent_native in [false, true] {
+        for (label, admin, unrelated_signer, target, expected) in [
+            ("matching", true, false, None, None),
+            (
+                "unrelated signer",
+                true,
+                true,
+                None,
+                Some(failed(
+                    "admin-signed key authorization must be signed by transaction key",
+                )),
+            ),
+            (
+                "account mismatch",
+                true,
+                false,
+                Some(Address::repeat_byte(0x77)),
+                Some(failed("key authorization account mismatch")),
+            ),
+            (
+                "non-admin delegate",
+                false,
+                false,
+                None,
+                Some(TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys),
+            ),
+        ] {
+            let _case = Case(format!("{label}, parent_native={parent_native}"));
+            let mut f = Fixture::with_parent(parent_native);
+            let parent = f.account;
+            // The parent's root grants the delegate.
+            let mut grant =
+                KeyAuthorization::unrestricted(1, SignatureType::ConfigurableAccount, delegate);
+            if admin {
+                grant = grant.into_admin(parent);
+            }
+            let approval = if parent_native {
+                AccountSignature::ConfigurableAccount(configurable_account_approval(
+                    parent,
+                    &f.config,
+                    &f.owner,
+                    grant.signature_hash(),
+                ))
+            } else {
+                AccountSignature::from(f.owner.sign_hash_sync(&grant.signature_hash()).unwrap())
+            };
+            let tx = TempoTransaction {
+                key_authorization: Some(grant.into_signed(approval)),
+                ..aa_tx(3, vec![f.getter()])
+            };
+            let tx = if parent_native {
+                configurable_account_signed(&f, tx)
+            } else {
+                f.sign_primitive(tx)
+            };
+            let result = f.run(&tx);
+            assert!(result.status, "{result:?}");
+
+            // The delegate signs a grant of the child for the parent and the transaction carrying it.
+            let grant = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, child)
+                .with_account(target.unwrap_or(parent));
+            let approval = if unrelated_signer {
+                configurable_account_approval(
+                    other,
+                    &other_config,
+                    &other_owner,
+                    grant.signature_hash(),
+                )
+            } else {
+                configurable_account_approval(delegate, &config, &owner, grant.signature_hash())
+            };
+            let tx = TempoTransaction {
+                key_authorization: Some(
+                    grant.into_signed(AccountSignature::ConfigurableAccount(approval)),
+                ),
+                ..aa_tx(4, vec![f.getter()])
+            };
+            let digest = KeychainSignature::signing_hash(tx.signature_hash(), parent);
+            let signature = AccountSignature::ConfigurableAccount(configurable_account_approval(
+                delegate, &config, &owner, digest,
+            ));
+            let tx = tx.into_signed(TempoSignature::Keychain(KeychainSignature::new(
+                parent, signature,
+            )));
+            match expected {
+                None => {
+                    let result = f.run(&tx);
+                    assert!(result.status, "{result:?}");
+                    let key = in_storage_ctx(&mut f.evm, || {
+                        AccountKeychain::new().get_key(IAccountKeychain::getKeyCall {
+                            account: parent,
+                            keyId: child,
+                        })
+                    })
+                    .unwrap();
+                    assert_eq!(key.keyId, child);
+                    assert!(!key.isRevoked);
+                }
+                Some(error) => assert_eq!(rejection(&mut f, &tx, parent), error),
+            }
+        }
+    }
+}
+
+/// A configurable account that signs both its transaction and an inline grant is registered and
+/// pays for its creation once. Each role signs its own digest: the grant's approval does not
+/// authorize the transaction.
+#[test]
+fn native_sender_signing_its_own_grant_registers_once() {
+    let params = tempo_gas_params(TempoHardfork::T14);
+    let new_account = BlockGas {
+        regular: u64::from(params.get(GasId::NewAccountCost)),
+        state: params.new_account_state_gas(),
+    };
+    let key = signer(2).address();
+    // An expiring-nonce transaction, for which registration pays the sender's creation.
+    let grant_tx = |f: &mut Fixture| {
+        let grant = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key);
+        let approval =
+            configurable_account_approval(f.account, &f.config, &f.owner, grant.signature_hash());
+        let call = f.getter();
+        TempoTransaction {
+            key_authorization: Some(
+                grant.into_signed(AccountSignature::ConfigurableAccount(approval)),
+            ),
+            ..lane_tx(f, NonceLane::Expiring, vec![call])
+        }
+    };
+    let gas = |empty: bool| {
+        let mut f = Fixture::new();
+        let account = f.account;
+        seed_account(&mut f, account, empty);
+        let tx = grant_tx(&mut f);
+        let tx = configurable_account_signed(&f, tx);
+        let gas = block_gas(&mut f, &tx);
+        assert_eq!(f.commitment(), f.config.commitment().unwrap());
+        gas
+    };
+    assert_eq!(gas(true), gas(false).plus(new_account));
+
+    let mut f = Fixture::new();
+    let account = f.account;
+    let tx = grant_tx(&mut f);
+    let approval = tx
+        .key_authorization
+        .as_ref()
+        .and_then(|grant| grant.signature.as_configurable_account())
+        .unwrap()
+        .clone();
+    let tx = tx.into_signed(TempoSignature::ConfigurableAccount(approval));
+    assert_eq!(
+        rejection(&mut f, &tx, account),
+        TempoInvalidTransaction::ConfigurableAccount(ConfigurableAccountError::Quorum(
+            ConfigurableAccountQuorumError::SignerNotOwner
+        ))
+    );
+}
+
+/// A grant naming a configurable delegate that does not sign charges one access to it, cold or
+/// access-listed. Used by the delegate in the same transaction, the grant costs as much as one
+/// used by a primitive access key: no access beyond the signing key's own.
+#[test]
+fn native_grant_delegate_access_is_charged_once() {
+    /// The signer of the transaction that carries or uses the grant.
+    #[derive(Clone, Copy)]
+    enum GrantUser {
+        /// The parent's root key, granting the configurable delegate.
+        Root,
+        /// The configurable delegate.
+        Delegate,
+        /// A primitive access key.
+        AccessKey,
+    }
+    let params = tempo_gas_params(TempoHardfork::T14);
+    let warm = u64::from(params.get(GasId::WarmStorageReadCost));
+    let cold = warm + params.cold_account_additional_cost();
+    let owner = signer(2);
+    let config = ConfigurableAccountConfig {
+        salt: B256::repeat_byte(2),
+        version: 0,
+        threshold: 1,
+        owners: vec![ConfigurableAccountOwner {
+            owner: owner.address(),
+            weight: 1,
+        }],
+    };
+    let delegate = config.derive_account(Address::repeat_byte(0x71)).unwrap();
+    let access_key = signer(3);
+    // Gas of a transaction signed by `user`, with the grant inline or in an earlier transaction.
+    let gas = |user: GrantUser, inline: bool, listed: bool| {
+        let mut f = Fixture::with_parent(false);
+        let parent = f.account;
+        let grant = match user {
+            GrantUser::Root | GrantUser::Delegate => {
+                KeyAuthorization::unrestricted(1, SignatureType::ConfigurableAccount, delegate)
+            }
+            GrantUser::AccessKey => {
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, access_key.address())
+            }
+        };
+        let approval = f.owner.sign_hash_sync(&grant.signature_hash()).unwrap();
+        let grant = grant.into_signed(approval);
+        let mut nonce = 3;
+        if !inline {
+            let tx = f.sign_primitive(TempoTransaction {
+                key_authorization: Some(grant.clone()),
+                ..aa_tx(nonce, vec![f.getter()])
+            });
+            let result = f.run(&tx);
+            assert!(result.status, "{result:?}");
+            nonce += 1;
+        }
+        let tx = TempoTransaction {
+            key_authorization: inline.then_some(grant),
+            access_list: AccessList(
+                listed
+                    .then_some(AccessListItem {
+                        address: delegate,
+                        storage_keys: Vec::new(),
+                    })
+                    .into_iter()
+                    .collect(),
+            ),
+            ..aa_tx(nonce, vec![f.getter()])
+        };
+        let tx = match user {
+            GrantUser::Root => f.sign_primitive(tx),
+            GrantUser::Delegate => {
+                let digest = KeychainSignature::signing_hash(tx.signature_hash(), parent);
+                let signature = configurable_account_approval(delegate, &config, &owner, digest);
+                tx.into_signed(TempoSignature::Keychain(KeychainSignature::new(
+                    parent,
+                    AccountSignature::ConfigurableAccount(signature),
+                )))
+            }
+            GrantUser::AccessKey => keychain_signed(tx, &access_key, parent),
+        };
+        let result = f.run(&tx);
+        assert!(result.status, "{result:?}");
+        // Before the minimum-gas floor, which hides small differences.
+        result.total_gas_spent
+    };
+    // Listing the delegate costs 2400 and turns its one cold access into a warm one.
+    assert_eq!(
+        gas(GrantUser::Root, true, false) + 2_400 + warm,
+        gas(GrantUser::Root, true, true) + cold
+    );
+    // Using the grant in the transaction that carries it adds the same for both keys.
+    assert_eq!(
+        gas(GrantUser::Delegate, true, false) + gas(GrantUser::AccessKey, false, false),
+        gas(GrantUser::AccessKey, true, false) + gas(GrantUser::Delegate, false, false)
+    );
 }
