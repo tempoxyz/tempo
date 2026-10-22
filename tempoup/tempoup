@@ -329,7 +329,7 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Options:"
             echo "  -v, --version           Print tempoup installer version"
-            echo "  -i, --install <TAG>     Install specific tempo release tag (e.g., v1.0.0 or tempo/v1.17.0)"
+            echo "  -i, --install <VER>     Install specific tempo version (e.g., v1.17.0 or tempo/v1.17.0)"
             echo "  -U, --update            Update tempoup to the latest version"
             echo "  --unsafe-skip-verify    Skip release integrity verification (checksum still required)"
             echo "  -h, --help              Show this help message"
@@ -471,6 +471,23 @@ select_latest_release_tag() {
         LC_ALL=C sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1 | cut -d. -f4-
 }
 
+# Resolve an explicit release to its GitHub tag. Releases are tagged
+# tempo/vN.N.N (earlier ones vN.N.N), so a bare vN.N.N uses the tempo/ tag
+# when that release exists.
+resolve_release_tag() {
+    local tag="$1"
+    if [[ "$tag" =~ ^v[0-9] ]]; then
+        if gh_authenticated; then
+            if gh release view "tempo/$tag" --repo "$REPO" --json tagName >/dev/null 2>&1; then
+                tag="tempo/$tag"
+            fi
+        elif curl -fsSIL -o /dev/null "https://github.com/$REPO/releases/tag/tempo/$tag" 2>/dev/null; then
+            tag="tempo/$tag"
+        fi
+    fi
+    echo "$tag"
+}
+
 # Get latest release tag from GitHub
 get_latest_version() {
     if ! command -v curl >/dev/null 2>&1; then
@@ -563,6 +580,8 @@ main() {
         if [[ -z "$VERSION" ]]; then
             error "Failed to fetch latest version. Try specifying --version manually."
         fi
+    else
+        VERSION=$(resolve_release_tag "$VERSION")
     fi
 
     # Releases may be tagged vN.N.N or tempo/vN.N.N; their assets always use
