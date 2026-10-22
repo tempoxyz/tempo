@@ -35,7 +35,7 @@ use tempo_precompiles::{
     tip403_registry::tip403_registry_slots,
 };
 use tempo_primitives::{
-    TempoSignature, TempoTxEnvelope,
+    TempoTxEnvelope,
     transaction::{InvalidValidAfter, InvalidValidBefore, calc_gas_balance_spending},
 };
 use thiserror::Error;
@@ -274,60 +274,6 @@ impl TempoPooledTransaction {
             account: *self.sender_ref(),
             witness,
         })
-    }
-
-    /// Whether a changed account commitment can stale this transaction's authority.
-    ///
-    /// A configurable account signer matches when its account is in `changed_commitments`, or on
-    /// any `reorg`. A primitive authority matches only when its address is in
-    /// `changed_commitments` (a commitment change retires the bare key, TIP-1112). Primitive
-    /// authorities are the sender of a non-AA or primitive-signed transaction, a primitive key
-    /// authorization signer, a separate fee payer and the key ID of a primitive access key. The
-    /// account that an access key signs for is not one: a nonzero commitment does not revoke its
-    /// grants.
-    pub(crate) fn needs_configurable_revalidation(
-        &self,
-        changed_commitments: &AddressSet,
-        reorg: bool,
-    ) -> bool {
-        let Some(tx) = self.inner().as_aa() else {
-            return changed_commitments.contains(self.sender_ref());
-        };
-        let keychain = tx.signature().as_keychain();
-        let transaction_signer = tx.signature().as_configurable_account().or_else(|| {
-            keychain.and_then(|signature| signature.signature.as_configurable_account())
-        });
-        let grant_signer = tx
-            .tx()
-            .key_authorization
-            .as_ref()
-            .and_then(|authorization| authorization.signature.as_configurable_account());
-        if [transaction_signer, grant_signer]
-            .into_iter()
-            .flatten()
-            .any(|signature| reorg || changed_commitments.contains(&signature.account()))
-        {
-            return true;
-        }
-        // A primitive authority changes only with a commitment, so a bare reorg stops here.
-        if changed_commitments.is_empty() {
-            return false;
-        }
-        let sender =
-            matches!(tx.signature(), TempoSignature::Primitive(_)).then(|| *self.sender_ref());
-        // Recovery fails only for a transaction that validation already rejects.
-        let grant_signer = self
-            .key_authorization_signer_subject()
-            .map(|subject| subject.key_id);
-        let fee_payer = tx
-            .tx()
-            .fee_payer_signature
-            .and_then(|_| self.fee_payer().ok());
-        let access_key = self.keychain_subject().map(|subject| subject.key_id);
-        [sender, grant_signer, fee_payer, access_key]
-            .into_iter()
-            .flatten()
-            .any(|authority| changed_commitments.contains(&authority))
     }
 
     /// Returns the unique identifier for this AA transaction.
@@ -574,6 +520,31 @@ impl TempoPooledTransaction {
             self.fee_payer().unwrap_or(sender),
             |_slot| {},
         );
+    }
+
+    /// Whether any account in `accounts` is an authority of this transaction: the sender (unless
+    /// an access key signs for it), the key authorization signer, a separate fee payer or the
+    /// access key.
+    pub(crate) fn has_authority_in(&self, accounts: &AddressSet) -> bool {
+        let Some(tx) = self.inner().as_aa() else {
+            return accounts.contains(self.sender_ref());
+        };
+        let sender = (!tx.signature().is_keychain()).then(|| *self.sender_ref());
+        // Recovery fails only for a transaction that validation already rejects.
+        let grant_signer = tx
+            .tx()
+            .key_authorization
+            .as_ref()
+            .and_then(|authorization| authorization.recover_account().ok());
+        let fee_payer = tx
+            .tx()
+            .fee_payer_signature
+            .and_then(|_| self.fee_payer().ok());
+        let access_key = self.keychain_subject().map(|subject| subject.key_id);
+        [sender, grant_signer, fee_payer, access_key]
+            .into_iter()
+            .flatten()
+            .any(|authority| accounts.contains(&authority))
     }
 }
 
