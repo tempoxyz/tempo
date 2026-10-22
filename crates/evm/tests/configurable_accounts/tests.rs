@@ -5003,7 +5003,8 @@ fn configurable_account_is_rejected_where_it_cannot_sign() {
         });
         assert_eq!(rejection(&mut f, &tx, account), context, "{spec:?}");
     }
-    // A legacy (V1) keychain signature wrapping a configurable account can only be built in memory.
+    // A legacy (V1) keychain signature wrapping a configurable account can only be built in
+    // memory. V1 is valid only before T1C, where configurable accounts are not yet supported.
     let mut f = Fixture::with_spec(true, TempoHardfork::T1B);
     let account = f.account;
     let tx = aa_tx(3, vec![f.getter()]);
@@ -5011,7 +5012,10 @@ fn configurable_account_is_rejected_where_it_cannot_sign() {
     let mut keychain = KeychainSignature::new(account, approval);
     keychain.version = KeychainVersion::V1;
     let tx = tx.into_signed(TempoSignature::Keychain(keychain));
-    assert_eq!(rejection(&mut f, &tx, account), context);
+    assert_eq!(
+        rejection(&mut f, &tx, account),
+        TempoInvalidTransaction::ConfigurableAccount(ConfigurableAccountError::UnsupportedContext)
+    );
 }
 
 #[test]
