@@ -529,8 +529,8 @@ impl TempoPooledTransaction {
         let Some(tx) = self.inner().as_aa() else {
             return accounts.contains(self.sender_ref());
         };
-        // Recovery fails only for a transaction that validation already rejects.
         let sender = (!tx.signature().is_keychain()).then(|| *self.sender_ref());
+        // Recovery fails only for a transaction that validation already rejects.
         let grant_signer = tx
             .tx()
             .key_authorization
