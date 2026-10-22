@@ -33,7 +33,7 @@ use commonware_cryptography::{
     bls12381::primitives::variant::MinSig, certificate::Scheme as CertificateScheme,
     ed25519::PublicKey,
 };
-use commonware_runtime::{Clock, Spawner};
+use commonware_runtime::{Clock, ContextCell, Spawner};
 use commonware_utils::channel::oneshot;
 use rand_core::Rng;
 use tempo_chainspec::TempoChainSpec;
@@ -52,6 +52,8 @@ where
     B: CertifiableBlock + Clone,
     ES: Epocher,
 {
+    /// Parent context shared by engine startup and lazy wrapper construction.
+    pub(super) context: ContextCell<E>,
     inner: A,
     marshal: Mailbox<S, Standard<B>>,
     epocher: ES,
@@ -76,6 +78,7 @@ where
     ES: Epocher,
 {
     pub(crate) fn new(
+        context: E,
         inner: A,
         marshal: Mailbox<S, Standard<B>>,
         epocher: ES,
@@ -83,6 +86,7 @@ where
         verification_mode: VerificationMode,
     ) -> Self {
         Self {
+            context: ContextCell::new(context),
             inner,
             marshal,
             epocher,
@@ -95,27 +99,23 @@ where
 
     /// Selects verification using the previous epoch boundary timestamp (genesis for epoch zero).
     /// Constructs the selected wrapper on first use; later epochs share its state.
-    /// Calls `context` only when constructing a wrapper.
-    pub(crate) fn for_timestamp(
-        &self,
-        timestamp: u64,
-        context: impl FnOnce() -> E,
-    ) -> Application<E, S, A, B, ES> {
+    /// Creates the application context only when constructing a wrapper.
+    pub(crate) fn for_timestamp(&self, timestamp: u64) -> Application<E, S, A, B, ES> {
         if self
             .verification_mode
             .is_deferred_at(&self.chainspec, timestamp)
         {
-            self.to_deferred(context)
+            self.to_deferred()
         } else {
-            self.to_immediate(context)
+            self.to_immediate()
         }
     }
 
-    fn to_immediate(&self, context: impl FnOnce() -> E) -> Application<E, S, A, B, ES> {
+    fn to_immediate(&self) -> Application<E, S, A, B, ES> {
         self.immediate
             .get_or_init(|| {
                 Application::Immediate(Inline::new(
-                    context(),
+                    self.context.child("application"),
                     self.inner.clone(),
                     self.marshal.clone(),
                     self.epocher.clone(),
@@ -124,11 +124,11 @@ where
             .clone()
     }
 
-    fn to_deferred(&self, context: impl FnOnce() -> E) -> Application<E, S, A, B, ES> {
+    fn to_deferred(&self) -> Application<E, S, A, B, ES> {
         self.deferred
             .get_or_init(|| {
                 Application::Deferred(Deferred::new(
-                    context(),
+                    self.context.child("application"),
                     self.inner.clone(),
                     self.marshal.clone(),
                     self.epocher.clone(),

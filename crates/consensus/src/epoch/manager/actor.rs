@@ -81,8 +81,6 @@ where
     active_epochs: BTreeMap<Epoch, Handle<()>>,
     config: super::Config<TContext, TBlocker>,
     context: ContextCell<TContext>,
-    // Keep application metrics under the original sibling prefix.
-    parent_context: TContext,
     mailbox: mpsc::UnboundedReceiver<Message>,
     metrics: Metrics,
 }
@@ -106,8 +104,6 @@ where
         context: TContext,
         mailbox: mpsc::UnboundedReceiver<Message>,
     ) -> Self {
-        let parent_context = context;
-        let context = parent_context.child("epoch_manager");
         let active_epochs = context.gauge(
             "active_epochs",
             "the number of epochs currently managed by the epoch manager",
@@ -140,7 +136,6 @@ where
         Self {
             config,
             context: ContextCell::new(context),
-            parent_context,
             mailbox,
             metrics: Metrics {
                 active_epochs,
@@ -401,12 +396,7 @@ where
         let certificate = certificates_mux.register(epoch.get()).await.unwrap();
         let resolver = resolver_mux.register(epoch.get()).await.unwrap();
 
-        let application = self
-            .config
-            .application
-            .for_timestamp(boundary_timestamp, || {
-                self.parent_context.child("application")
-            });
+        let application = self.config.application.for_timestamp(boundary_timestamp);
         let deferred = matches!(application, Application::Deferred(_));
         self.metrics
             .deferred_verification
