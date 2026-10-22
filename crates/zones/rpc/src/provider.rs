@@ -42,7 +42,7 @@ pub struct ZoneProviderConfig {
 ///
 /// Call [`provider()`](Self::provider) to get a `DynProvider` with a valid token.
 /// The inner provider is rebuilt transparently when the current token
-/// is within [`REFRESH_BUFFER_SECS`] of expiry.
+/// is within `REFRESH_BUFFER_SECS` of expiry.
 #[derive(Clone)]
 pub struct ZoneProvider {
     config: ZoneProviderConfig,

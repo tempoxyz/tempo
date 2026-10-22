@@ -24,10 +24,10 @@ use futures::{StreamExt as _, TryStreamExt as _, stream};
 use reth_primitives_traits::RecoveredBlock;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::{Block, TempoHeader};
 use tempo_contracts::zones::{
     IZoneInbox as ZoneInbox, IZoneOutbox as ZoneOutbox, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
 };
+use tempo_primitives::{Block, TempoHeader};
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     sync::{mpsc, oneshot},
@@ -48,7 +48,8 @@ use zone_spf::{
 
 use crate::{
     BatchAnchor, BatchData, PreparedBatch, ProverAddresses, ZoneSequencerProvider,
-    metrics::ProverMetrics, proofs::ProofCollectorHandle,
+    metrics::ProverMetrics, proofs::ProofCollectorHandle, prover_config::active_l1_hardfork,
+    settlement::BatchSubmitError,
 };
 
 /// Number of candidates allowed to wait behind the active validation.
@@ -489,6 +490,21 @@ async fn validate_candidate<P: ZoneSequencerProvider>(
                     "On-chain proof verification skipped before T13");
             }
             Ok(ProofVerification::Rejected) => {
+                // L1 may have activated a fork with new PCRs while proving.
+                if context.config.proof_verifier.is_none() {
+                    let current = active_l1_hardfork(
+                        &context.l1_provider,
+                        context.config.chain_spec.as_ref(),
+                    )
+                    .await?;
+                    if current != proof.hardfork {
+                        return Err(BatchSubmitError::ProverHardforkChanged {
+                            proved: proof.hardfork,
+                            current,
+                        }
+                        .into());
+                    }
+                }
                 metrics.proof_verification_failure_total.increment(1);
                 bail!("verifier rejected the proof");
             }

@@ -231,7 +231,7 @@ pub async fn find_last_finalized_marker<TContext, P>(
 ) -> eyre::Result<Option<(u64, Finalization<Scheme<PublicKey, MinSig>, Digest>)>>
 where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Send + 'static,
-    P: BlockIdReader + BlockReader<Block = tempo_primitives::Block> + Send + Sync + ?Sized,
+    P: BlockIdReader + BlockReader<Block = tempo_primitives::Block> + ?Sized,
 {
     let page_cache = CacheRef::from_pooler(context, BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
     let archive =

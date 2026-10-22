@@ -240,7 +240,6 @@ where
 
 impl<DB: Database, I> Deref for TempoEvm<DB, I>
 where
-    DB: Database,
     I: Inspector<TempoContext<DB>>,
 {
     type Target = TempoContext<DB>;
@@ -253,7 +252,6 @@ where
 
 impl<DB: Database, I> DerefMut for TempoEvm<DB, I>
 where
-    DB: Database,
     I: Inspector<TempoContext<DB>>,
 {
     #[inline]
@@ -395,7 +393,7 @@ mod tests {
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageAction, StorageActions, StorageCtx, StorageKey},
         storage_credits::StorageCredits,
-        test_util::TIP20Setup,
+        test_util::{TIP20Setup, set_empty_compound_transfer_policy, set_empty_receive_policies},
         tip_fee_manager::{
             IFeeManager, TipFeeManager,
             amm::{Pool, PoolKey, compute_amount_out},
@@ -1150,6 +1148,21 @@ mod tests {
                     let key = (address, slot);
                     storage_state.apply_sload_value(key, value, "SLOAD", hardfork);
                 }
+                StorageAction::FeeTokenBalanceCheck(
+                    address,
+                    slot,
+                    balance,
+                    required,
+                    sufficient,
+                ) => {
+                    let current = storage_state.apply_sload_value(
+                        (address, slot),
+                        balance,
+                        "FeeTokenBalanceCheck",
+                        hardfork,
+                    );
+                    assert_eq!(current >= required, sufficient);
+                }
                 StorageAction::Sstore(address, slot, sload_value, value) => {
                     let key = (address, slot);
                     storage_state.apply_sload_value(key, sload_value, "SSTORE", hardfork);
@@ -1264,6 +1277,13 @@ mod tests {
                         labels.slot(address, slot)
                     )
                 }
+                StorageAction::FeeTokenBalanceCheck(address, slot, balance, required, sufficient) => {
+                    format!(
+                        "FeeTokenBalanceCheck({}, {}, {balance}, {required}, {sufficient})",
+                        labels.address(address),
+                        labels.slot(address, slot)
+                    )
+                }
                 StorageAction::Sstore(address, slot, sload_value, value) => {
                     format!(
                         "Sstore({}, {}, {sload_value}, {value})",
@@ -1331,9 +1351,12 @@ mod tests {
 
     #[test]
     fn test_tip20_full_evm_storage_actions() {
-        for hardfork in TempoHardfork::VARIANTS {
-            // skip pre-T5 hardforks to avoid clutter
-            if !hardfork.is_t5() {
+        for (hardfork, with_policies) in TempoHardfork::VARIANTS
+            .iter()
+            .flat_map(|hardfork| [(hardfork, false), (hardfork, true)])
+        {
+            // Keep the existing cases since T5 and compare policy-heavy payments across T14.
+            if !hardfork.is_t5() || (with_policies && !hardfork.is_t13()) {
                 continue;
             }
 
@@ -1410,6 +1433,15 @@ mod tests {
                         }
                         .encode_to_slot()?,
                     )?;
+
+                    if with_policies {
+                        // Separate compound policies keep fee checks from warming the
+                        // payment token's policy. Empty blacklists still read every list.
+                        for address in [PATH_USD_ADDRESS, fee_token.address()] {
+                            set_empty_compound_transfer_policy(sender, address)?;
+                        }
+                        set_empty_receive_policies(sender, &[recipient])?;
+                    }
 
                     Ok::<(Address, Address), tempo_precompiles::error::TempoPrecompileError>((
                         fee_token.address(),
@@ -1537,6 +1569,12 @@ mod tests {
                     ExecutionResult::Success { .. },
                     "hardfork: {hardfork:?}"
                 );
+                if with_policies {
+                    insta::assert_snapshot!(
+                        format!("policy_payment_gas_{}", hardfork.name()),
+                        result.result.tx_gas_used()
+                    );
+                }
                 let actions = evm
                     .take_actions()
                     .expect("storage action recording should be enabled");
@@ -1545,6 +1583,26 @@ mod tests {
                 Ok(snapshot_storage_actions(&actions, &labels))
             };
 
+            if with_policies {
+                let snapshot = IndexMap::from([(
+                    "policy_payment",
+                    run_transfer(
+                        &mut evm,
+                        sender,
+                        recipient,
+                        transfer_amount,
+                        0,
+                        U256::ZERO,
+                        fee_token,
+                    )
+                    .unwrap(),
+                )]);
+                insta::assert_yaml_snapshot!(
+                    format!("policy_payment_{}", hardfork.name()),
+                    snapshot
+                );
+                continue;
+            }
             let snapshot = IndexMap::from([
                 // TIP-20 transfer with sequential protocol nonce and a fee token that requires going through feeAMM to pay fees.
                 (

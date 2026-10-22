@@ -11,7 +11,7 @@ use alloy_rpc_types_eth::Filter;
 use alloy_sol_types::SolEvent as _;
 use futures::{StreamExt as _, stream};
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
-use reth_storage_api::{BlockNumReader, StateProviderFactory};
+use reth_storage_api::StateProviderFactory;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::TempoHardforks;
 use tempo_contracts::zones::{ZONE_FACTORY_ADDRESS, ZoneFactory};
@@ -63,7 +63,7 @@ pub(crate) async fn discover<P>(
     config: &CheckerConfig,
 ) -> Result<Bootstrap, AttemptError>
 where
-    P: BlockNumReader + ChainSpecProvider + StateProviderFactory + ?Sized,
+    P: ChainSpecProvider + StateProviderFactory + ?Sized,
     P::ChainSpec: TempoHardforks,
 {
     let context = read_context(provider, l1, config).await?;
@@ -79,7 +79,7 @@ pub(crate) async fn authenticate<P>(
     identity: persistence::Identity,
 ) -> Result<Bootstrap, AttemptError>
 where
-    P: BlockNumReader + ChainSpecProvider + StateProviderFactory + ?Sized,
+    P: ChainSpecProvider + StateProviderFactory + ?Sized,
     P::ChainSpec: TempoHardforks,
 {
     let context = read_context(provider, l1, config).await?;
@@ -129,7 +129,7 @@ async fn read_context<P>(
     config: &CheckerConfig,
 ) -> Result<BootstrapContext, AttemptError>
 where
-    P: BlockNumReader + ChainSpecProvider + StateProviderFactory + ?Sized,
+    P: ChainSpecProvider + StateProviderFactory + ?Sized,
     P::ChainSpec: TempoHardforks,
 {
     let zone_id = config.zone_id;

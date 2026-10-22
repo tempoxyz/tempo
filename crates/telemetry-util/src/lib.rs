@@ -106,6 +106,10 @@ pub trait AsTracingValue<TMarker> {
     fn as_tracing_value(&self, _: private::Token) -> Box<dyn tracing::Value + '_>;
 }
 
+#[expect(
+    unnameable_types,
+    reason = "Private markers seal tracing conversions and distinguish blanket implementations."
+)]
 mod private {
     pub struct Token;
     pub struct Generic;

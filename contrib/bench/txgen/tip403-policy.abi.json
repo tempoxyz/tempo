@@ -1,0 +1,30 @@
+[
+  {
+    "type": "function",
+    "name": "changeTransferPolicyId",
+    "inputs": [{"name": "newPolicyId", "type": "uint64", "internalType": "uint64"}],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "createPolicy",
+    "inputs": [{"name": "admin", "type": "address"}, {"name": "policyType", "type": "uint8"}],
+    "outputs": [{"name": "", "type": "uint64"}],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "createCompoundPolicy",
+    "inputs": [{"name": "senderPolicyId", "type": "uint64"}, {"name": "recipientPolicyId", "type": "uint64"}, {"name": "mintRecipientPolicyId", "type": "uint64"}],
+    "outputs": [{"name": "", "type": "uint64"}],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setReceivePolicy",
+    "inputs": [{"name": "senderPolicyId", "type": "uint64"}, {"name": "tokenFilterId", "type": "uint64"}, {"name": "recoveryAuthority", "type": "address"}],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  }
+]

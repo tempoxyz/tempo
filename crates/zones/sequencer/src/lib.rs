@@ -75,8 +75,6 @@ pub trait ZoneSequencerProvider:
     > + CanonStateSubscriptions<Primitives = TempoPrimitives>
     + StateProviderFactory
     + Clone
-    + Send
-    + Sync
     + 'static
 {
 }
@@ -90,8 +88,6 @@ impl<T> ZoneSequencerProvider for T where
         > + CanonStateSubscriptions<Primitives = TempoPrimitives>
         + StateProviderFactory
         + Clone
-        + Send
-        + Sync
         + 'static
 {
 }
