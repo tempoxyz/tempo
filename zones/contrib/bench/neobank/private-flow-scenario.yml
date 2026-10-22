@@ -162,7 +162,7 @@ scenario:
         from_block: { var: l1_before_offramp.block_number }
         address: "${L1_PORTAL_ADDRESS}"
         abi: ZonePortal
-        event: "${ZONES_BENCH_BATCH_SUBMITTED_EVENT}"
+        event: BatchSubmitted
         where:
           withdrawalBatchIndex: { var: offramp_batch.args.withdrawalBatchIndex }
         max_block_range: 1000
