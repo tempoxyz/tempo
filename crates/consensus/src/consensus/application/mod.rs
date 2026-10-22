@@ -164,7 +164,8 @@ where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
     S: CertificateScheme,
     A: commonware_consensus::Application<E, Block = B, Context = Context<B::Digest, S::PublicKey>>
-        + Reporter<Activity = Update<B>>,
+        + Reporter<Activity = Update<B>>
+        + Sync,
     B: CertifiableBlock<Context = <A as commonware_consensus::Application<E>>::Context> + Clone,
     ES: Epocher,
 {
