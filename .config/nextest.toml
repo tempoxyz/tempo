@@ -24,10 +24,12 @@ priority = 100
 
 # tempo-e2e tests run one test per slot: each mostly waits on the deterministic
 # runtime, and with the small test freezer table and execution cache the whole
-# suite peaks at ~11 GB at -j 16.
+# suite peaks at ~11 GB at -j 16. Set explicitly: default-profile overrides
+# apply after this one and would otherwise reserve 4 slots per test.
 [[profile.ci.overrides]]
 filter = "package(tempo-e2e)"
 failure-output = "never"
+threads-required = 1
 
 # Dedicated profile for live RPC matrix tests (testnet/devnet).
 # These hit rate-limited external endpoints, so we serialize them and allow
