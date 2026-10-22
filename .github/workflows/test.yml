@@ -46,19 +46,12 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
-      - name: Mint read-only Earn token
-        id: earn-token
-        uses: tempoxyz/gh-actions/actions/github-sts@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-        with:
-          scope: tempoxyz/earn
-          policy: zones-read
       - name: Check out Earn contracts
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: tempoxyz/earn
           ref: main
           path: earn
-          token: ${{ steps.earn-token.outputs.token }}
           persist-credentials: false
       - name: Initialize Earn public dependencies
         working-directory: earn
