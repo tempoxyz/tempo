@@ -77,6 +77,17 @@
       {"name":"nextProcessedDepositQueueHash","type":"bytes32","indexed":false},
       {"name":"nextBlockHash","type":"bytes32","indexed":false},
       {"name":"withdrawalQueueHash","type":"bytes32","indexed":false},
+      {"name":"lastProcessedDepositNumber","type":"uint64","indexed":false}
+    ]
+  },
+  {
+    "type":"event", "name":"BatchSubmitted", "anonymous":false,
+    "inputs":[
+      {"name":"withdrawalBatchIndex","type":"uint64","indexed":true},
+      {"name":"withdrawalQueueIndex","type":"uint256","indexed":true},
+      {"name":"nextProcessedDepositQueueHash","type":"bytes32","indexed":false},
+      {"name":"nextBlockHash","type":"bytes32","indexed":false},
+      {"name":"withdrawalQueueHash","type":"bytes32","indexed":false},
       {"name":"lastProcessedDepositNumber","type":"uint64","indexed":false},
       {"name":"lastProcessedEnabledTokenCount","type":"uint64","indexed":false}
     ]
