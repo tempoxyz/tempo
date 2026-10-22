@@ -359,6 +359,7 @@ jsonrpsee = { version = "0.26.0", features = ["server", "client", "macros"] }
 k256 = { version = "0.13.4", features = ["arithmetic", "ecdh"] }
 keccak-const = "0.2.0"
 metrics = "0.24.3"
+metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
 minisign = "0.8"
 minisign-verify = "0.2"
 once_cell = { version = "1.19", default-features = false, features = ["critical-section"] }

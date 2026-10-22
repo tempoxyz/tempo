@@ -1096,6 +1096,35 @@ impl ZoneTestNode {
             true,
             additional_decryption_keys,
             None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// Start a zone node connected to a real L1 whose engine bounces deposits from senders
+    /// missing from `deposit_allowlist`.
+    pub(crate) async fn start_from_l1_with_deposit_allowlist(
+        l1_http_url: &url::Url,
+        l1_ws_url: &url::Url,
+        portal_address: Address,
+        deposit_allowlist: zone_node::DepositAllowlist,
+    ) -> eyre::Result<Self> {
+        let (genesis, _) = build_l1_anchored_genesis(l1_http_url, portal_address).await?;
+
+        Self::launch_with_genesis_and_withdrawal_batch_interval_and_decryption_keys(
+            l1_ws_url.to_string(),
+            portal_address,
+            next_unique_chain_id(),
+            Some(genesis),
+            l1_dev_signer(),
+            8,
+            None,
+            true,
+            Vec::new(),
+            None,
+            Some(deposit_allowlist),
+            None,
         )
         .await
     }
@@ -1277,6 +1306,8 @@ impl ZoneTestNode {
             spawn_engine,
             Vec::new(),
             None,
+            None,
+            None,
         )
         .await
     }
@@ -1293,6 +1324,8 @@ impl ZoneTestNode {
         spawn_engine: bool,
         additional_decryption_keys: Vec<SecretKey>,
         prover_config: Option<ZoneProverConfig>,
+        deposit_allowlist: Option<zone_node::DepositAllowlist>,
+        deposit_allowlist_relay: Option<zone_node::DepositAllowlistAdmin>,
     ) -> eyre::Result<Self> {
         let tasks = Runtime::test();
         let is_local_dummy_l1 = l1_ws_url == DUMMY_L1_URL;
@@ -1373,12 +1406,16 @@ impl ZoneTestNode {
             leadership = Some(schedule);
             let l1_transaction_signer = p2p_config.block_attestation_signer();
             let zone_id = p2p_config.zone_id();
-            // Every multi-sequencer node holds complete sequencer resources; the role
-            // controller decides at runtime whether this node's engine and sequencer
-            // background tasks are active.
-            zone_node = zone_node
-                .with_p2p(p2p_config)
-                .with_sequencer(ZoneSequencerAddOnsConfig {
+            let rpc_only = p2p_config.is_rpc_only();
+            zone_node = zone_node.with_p2p(p2p_config);
+            if let Some(admin) = deposit_allowlist_relay {
+                zone_node = zone_node.with_deposit_allowlist_relay(admin);
+            }
+            // Every quorum member holds complete sequencer resources; the role controller
+            // decides at runtime whether this node's engine and sequencer background tasks are
+            // active. An RPC-only node never sequences, so it holds none.
+            if !rpc_only {
+                zone_node = zone_node.with_sequencer(ZoneSequencerAddOnsConfig {
                     sequencer_signer: sequencer_signer.clone(),
                     l1_transaction_signer,
                     zone_id,
@@ -1386,7 +1423,9 @@ impl ZoneTestNode {
                     batch_anchor_config: Default::default(),
                     withdrawal_poll_interval: Duration::from_secs(5),
                     withdrawal_batch_limits: Default::default(),
+                    deposit_allowlist: deposit_allowlist.clone(),
                 });
+            }
         }
         if let Some(config) = prover_config {
             zone_node = zone_node.with_prover(config);
@@ -1474,7 +1513,8 @@ impl ZoneTestNode {
                 deposit_decryption_keys,
                 portal_address,
                 None,
-            );
+            )
+            .with_deposit_allowlist(deposit_allowlist);
             node_handle
                 .node
                 .task_executor
@@ -3867,6 +3907,7 @@ pub(crate) async fn start_real_p2p_cluster_with_active_nodes(
         None,
         false,
         None,
+        None,
     )
     .await?
     .cluster)
@@ -3903,6 +3944,7 @@ pub(crate) async fn start_real_p2p_cluster_with_settlement_proving(
         None,
         false,
         Some(ZoneProverConfig::Settlement(prover_addresses)),
+        None,
     )
     .await?
     .cluster)
@@ -3920,6 +3962,7 @@ pub(crate) async fn start_real_p2p_cluster_with_l1_proxy(
         L1ProxyMode::All,
         Some(l1_block_time),
         false,
+        None,
         None,
     )
     .await?;
@@ -3944,6 +3987,7 @@ pub(crate) async fn start_real_p2p_cluster_with_per_node_l1_proxies(
         Some(l1_block_time),
         false,
         None,
+        None,
     )
     .await?;
     let proxies: [TcpChaosProxy; 3] = parts
@@ -3965,6 +4009,7 @@ pub(crate) async fn start_real_p2p_network_chaos_cluster(
         L1ProxyMode::PerNode,
         Some(l1_block_time),
         true,
+        None,
         None,
     )
     .await?;
@@ -4006,6 +4051,56 @@ struct RealP2pClusterParts {
     cluster: RealP2pCluster,
     l1_proxies: Vec<TcpChaosProxy>,
     p2p_network: Option<P2pChaosNetwork>,
+    allowlist: Option<DepositAllowlistParts>,
+}
+
+struct DepositAllowlistParts {
+    rpc_node: ZoneTestNode,
+    zone_chain_id: u64,
+    datadir: tempfile::TempDir,
+}
+
+/// Signer the deposit allowlist test cluster accepts `zoneAdmin` writes from.
+pub(crate) fn deposit_allowlist_admin() -> PrivateKeySigner {
+    PrivateKeySigner::from_bytes(&B256::repeat_byte(0xad)).expect("valid test admin key")
+}
+
+/// Three-member P2P quorum whose sequencers enforce a deposit allowlist administered by
+/// [`deposit_allowlist_admin`], plus an RPC-only node that relays `zoneAdmin` calls to them.
+pub(crate) struct DepositAllowlistP2pCluster {
+    pub(crate) cluster: RealP2pCluster,
+    pub(crate) rpc_node: ZoneTestNode,
+    /// EIP-712 domain chain ID for admin signatures.
+    pub(crate) zone_chain_id: u64,
+    _datadir: tempfile::TempDir,
+}
+
+/// Start a real-L1 cluster whose sequencers seed their deposit allowlists with `seed`, launching
+/// only `active_nodes` of the three quorum members, plus one RPC-only node.
+pub(crate) async fn start_real_p2p_cluster_with_deposit_allowlist(
+    withdrawal_batch_interval_blocks: u64,
+    active_nodes: usize,
+    seed: &[Address],
+) -> eyre::Result<DepositAllowlistP2pCluster> {
+    let parts = start_real_p2p_cluster_inner(
+        withdrawal_batch_interval_blocks,
+        active_nodes,
+        L1ProxyMode::Direct,
+        None,
+        false,
+        None,
+        Some(seed),
+    )
+    .await?;
+    let allowlist = parts
+        .allowlist
+        .expect("allowlist cluster constructor must return its RPC node");
+    Ok(DepositAllowlistP2pCluster {
+        cluster: parts.cluster,
+        rpc_node: allowlist.rpc_node,
+        zone_chain_id: allowlist.zone_chain_id,
+        _datadir: allowlist.datadir,
+    })
 }
 
 async fn start_real_p2p_cluster_inner(
@@ -4015,10 +4110,15 @@ async fn start_real_p2p_cluster_inner(
     l1_block_time: Option<Duration>,
     proxy_p2p: bool,
     prover_config: Option<ZoneProverConfig>,
+    deposit_allowlist_seed: Option<&[Address]>,
 ) -> eyre::Result<RealP2pClusterParts> {
     eyre::ensure!(
         (2..=3).contains(&active_nodes),
         "real P2P test cluster requires two or three active nodes, got {active_nodes}"
+    );
+    eyre::ensure!(
+        !(proxy_p2p && deposit_allowlist_seed.is_some()),
+        "the RPC-only node does not support proxied P2P links"
     );
 
     let l1 = match l1_block_time {
@@ -4065,6 +4165,8 @@ async fn start_real_p2p_cluster_inner(
         Ed25519PrivateKey::from_seed(303),
     ];
     let public_keys = identities.each_ref().map(|key| key.public_key());
+    let rpc_identity = Ed25519PrivateKey::from_seed(304);
+    let rpc_address = available_address()?;
     let attestation_keys = [301_u64, 302, 303].map(|key| format!("0x{key:064x}"));
     let attestation_signers = attestation_keys
         .each_ref()
@@ -4124,6 +4226,12 @@ async fn start_real_p2p_cluster_inner(
                 signer.address(),
             ));
         }
+        if deposit_allowlist_seed.is_some() {
+            manifest.push_str(&format!(
+                "\n[[nodes]]\nname = \"rpc\"\ned25519_public_key = \"{}\"\naddress = \"{rpc_address}\"\nrpc_only = true\n",
+                const_hex::encode_prefixed(rpc_identity.public_key().as_ref()),
+            ));
+        }
         std::fs::write(&manifest_path, manifest)?;
         let key_path = config_dir.join(format!("node-{index}.key"));
         std::fs::write(
@@ -4142,7 +4250,46 @@ async fn start_real_p2p_cluster_inner(
             Some(role),
         )?);
     }
+    // Without proxied links every member reads the same manifest, so the RPC node reuses one.
+    let rpc_config = deposit_allowlist_seed
+        .map(|_| {
+            let key_path = config_dir.join("rpc.key");
+            std::fs::write(
+                &key_path,
+                const_hex::encode_prefixed(rpc_identity.encode().as_ref()),
+            )?;
+            P2pConfig::load(
+                config_dir.join("manifest-0.toml"),
+                &key_path,
+                None::<&std::path::Path>,
+                rpc_address,
+                false,
+                zone_id,
+                None,
+            )
+        })
+        .transpose()?;
     let _ = std::fs::remove_dir_all(&config_dir);
+    let allowlist_datadir = tempfile::tempdir()?;
+    let allowlist_admin = zone_node::DepositAllowlistAdmin {
+        address: deposit_allowlist_admin().address(),
+        zone_chain_id: zone_chain_id(l1.provider().get_chain_id().await?, zone_id)?,
+    };
+    let deposit_allowlists = match deposit_allowlist_seed {
+        Some(seed) => (0..active_nodes)
+            .map(|index| {
+                let allowlist = zone_node::DepositAllowlist::load(
+                    allowlist_datadir
+                        .path()
+                        .join(format!("node-{index}-deposit-allowlist.json")),
+                    allowlist_admin,
+                )?;
+                allowlist.replace(seed.to_vec())?;
+                Ok(Some(allowlist))
+            })
+            .collect::<eyre::Result<Vec<_>>>()?,
+        None => vec![None; active_nodes],
+    };
 
     let nodes = try_join_all(configs.into_iter().take(active_nodes).enumerate().map(
         |(index, config)| {
@@ -4162,10 +4309,36 @@ async fn start_real_p2p_cluster_inner(
                 false,
                 additional_decryption_keys,
                 prover_config.clone(),
+                deposit_allowlists[index].clone(),
+                None,
             )
         },
     ))
     .await?;
+    let allowlist = match rpc_config {
+        Some(config) => Some(DepositAllowlistParts {
+            rpc_node:
+                ZoneTestNode::launch_with_genesis_and_withdrawal_batch_interval_and_decryption_keys(
+                    l1.ws_url().to_string(),
+                    portal_address,
+                    chain_id,
+                    Some(genesis.clone()),
+                    PrivateKeySigner::random(),
+                    withdrawal_batch_interval_blocks,
+                    Some(config),
+                    false,
+                    // The harness always installs a decryption key; match the other followers.
+                    vec![SecretKey::from(attestation_signers[0].credential())],
+                    None,
+                    None,
+                    Some(allowlist_admin),
+                )
+                .await?,
+            zone_chain_id: allowlist_admin.zone_chain_id,
+            datadir: allowlist_datadir,
+        }),
+        None => None,
+    };
 
     Ok(RealP2pClusterParts {
         cluster: RealP2pCluster {
@@ -4176,6 +4349,7 @@ async fn start_real_p2p_cluster_inner(
         },
         l1_proxies,
         p2p_network,
+        allowlist,
     })
 }
 

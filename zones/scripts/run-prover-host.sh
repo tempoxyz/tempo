@@ -10,6 +10,7 @@ ENCLAVE_MEMORY_MIB="${ENCLAVE_MEMORY_MIB:-10240}"
 ENCLAVE_CID="${ENCLAVE_CID:-16}"
 TCP_PORT="${PROVER_TCP_PORT:-5000}"
 VSOCK_PORT="${PROVER_VSOCK_PORT:-5000}"
+METRICS_ADDR="${PROVER_METRICS_ADDR:-0.0.0.0:9100}"
 MONITOR_INTERVAL_SECONDS="${MONITOR_INTERVAL_SECONDS:-30}"
 
 enclave_id=""
@@ -79,7 +80,8 @@ fi
 printf 'Tempo Zone prover enclave %s is running at CID %s on vsock port %s\n' \
     "${enclave_id}" "${ENCLAVE_CID}" "${VSOCK_PORT}"
 
-/usr/local/bin/tempo-vsock-proxy "${TCP_PORT}" "${ENCLAVE_CID}" "${VSOCK_PORT}" &
+/usr/local/bin/tempo-vsock-proxy "${TCP_PORT}" "${ENCLAVE_CID}" "${VSOCK_PORT}" \
+    --metrics-addr "${METRICS_ADDR}" &
 proxy_pid=$!
 printf 'Forwarding TCP port %s to enclave CID %s, vsock port %s with VMADDR_FLAG_TO_HOST\n' \
     "${TCP_PORT}" "${ENCLAVE_CID}" "${VSOCK_PORT}"
