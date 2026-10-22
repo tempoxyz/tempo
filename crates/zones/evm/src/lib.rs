@@ -594,7 +594,11 @@ mod tests {
             reader.clone(),
             portal,
         );
-        let mut env = TempoEvmEnv::default();
+        // T9 initializes tokens through the registry, which `enable_tokens` then restores.
+        let mut env = TempoEvmEnv {
+            spec: TempoHardfork::T9,
+            ..Default::default()
+        };
         env.block.timestamp = U256::from(child.inner.timestamp);
         env.block.ext.timestamp_millis_part = child.timestamp_millis_part;
         let mut evm = BlockExecutorFactory::evm_with_env(&config, db, env);
