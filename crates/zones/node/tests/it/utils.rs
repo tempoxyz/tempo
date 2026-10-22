@@ -3916,8 +3916,8 @@ pub(crate) async fn start_real_p2p_cluster_with_active_nodes(
 /// Start a real-L1 cluster whose nodes run settlement proving, so every node persists witnesses
 /// before canonicalization.
 ///
-/// No prover listens on the routed endpoint: proving fails on unavailable PCRs or connection,
-/// and settlement falls back to the `NoProof` verifier.
+/// No prover listens on the routed endpoint: proving fails on unavailable PCRs, which stops
+/// settlement, or on the connection, which falls back to the `NoProof` verifier.
 pub(crate) async fn start_real_p2p_cluster_with_settlement_proving(
     withdrawal_batch_interval_blocks: u64,
     active_nodes: usize,

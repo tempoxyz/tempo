@@ -46,7 +46,7 @@ use crate::{
     SettlementManager, ZoneSequencerProvider,
     abi::{self, NO_QUEUE_INDEX},
     attestation::SettlementCertificate,
-    prover::{SettlementProof, SettlementProver},
+    prover::{MissingProverPolicy, SettlementProof, SettlementProver},
     prover_config::active_l1_hardfork,
     resolve_portal_zone_anchor,
     settlement::{
@@ -673,12 +673,16 @@ impl<P: ZoneSequencerProvider> BatchPreparer<P> {
             }
             ControlFlow::Break(cause) => {
                 if let Some(cause) = cause {
-                    // Only a prover hardfork change skips the fallback (requires re-proving).
+                    // A prover hardfork change requires re-proving, and a missing PCR policy is a
+                    // release configuration error. Neither may fall back to `NoProof`.
                     if matches!(
                         cause.downcast_ref::<BatchSubmitError>(),
                         Some(BatchSubmitError::ProverHardforkChanged { .. })
                     ) {
                         return Err(cause.downcast().expect("checked above"));
+                    }
+                    if cause.downcast_ref::<MissingProverPolicy>().is_some() {
+                        return Err(cause.into());
                     }
                     warn!(error = ?cause, "Settling batch with the `NoProof` verifier fallback");
                     self.metrics.batch_no_proof_fallback_total.increment(1);
@@ -1278,6 +1282,25 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.to_string(), expected_msg);
+    }
+
+    #[tokio::test]
+    async fn missing_prover_policy_skips_no_proof_fallback() {
+        let mut monitor = test_monitor(Asserter::new(), TestZoneProvider::new());
+        let missing = MissingProverPolicy {
+            hardfork: TempoHardfork::T12,
+        };
+        monitor.settlement_prover = Some(SettlementProver::fixed(Err(missing.into())));
+
+        let error = monitor
+            .batch_preparer()
+            .prepare_artifacts(11, prepared(test_batch_data()), Vec::new())
+            .await
+            .unwrap_err();
+        let BatchSubmitError::Other(error) = error else {
+            panic!("expected the missing policy to propagate, got {error}");
+        };
+        assert_eq!(error.downcast_ref::<MissingProverPolicy>(), Some(&missing));
     }
 
     #[tokio::test]

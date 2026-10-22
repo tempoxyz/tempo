@@ -27,6 +27,7 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::zones::{
     IZoneInbox as ZoneInbox, IZoneOutbox as ZoneOutbox, ZONE_INBOX_ADDRESS, ZONE_OUTBOX_ADDRESS,
 };
+use tempo_precompiles::zone_verifier::approved_pcrs;
 use tempo_primitives::{Block, TempoHeader};
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
@@ -51,6 +52,29 @@ use crate::{
     metrics::ProverMetrics, proofs::ProofCollectorHandle, prover_config::active_l1_hardfork,
     settlement::BatchSubmitError,
 };
+
+/// The active L1 hardfork has no compiled-in approved prover PCRs, so a configured remote
+/// prover can never be authenticated.
+///
+/// This is a release configuration error rather than a proving failure: settlement must not
+/// silently replace the configured Nitro proof with the `NoProof` verifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MissingProverPolicy {
+    /// Active L1 hardfork the prover was selected for.
+    pub hardfork: TempoHardfork,
+}
+
+impl std::fmt::Display for MissingProverPolicy {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "no approved prover PCRs for active L1 hardfork {}; refusing the NoProof fallback for a configured prover",
+            self.hardfork
+        )
+    }
+}
+
+impl std::error::Error for MissingProverPolicy {}
 
 /// Number of candidates allowed to wait behind the active validation.
 const SETTLEMENT_PROVER_QUEUE_CAPACITY: usize = 2;
@@ -436,6 +460,9 @@ async fn validate_candidate<P: ZoneSequencerProvider>(
         let (address, hardfork) = addresses
             .resolve(&context.l1_provider, context.config.chain_spec.as_ref())
             .await?;
+        if approved_pcrs(hardfork).is_none() {
+            return Err(MissingProverPolicy { hardfork }.into());
+        }
         let remote = RemoteProverConfig::from_hardfork(address.to_owned(), hardfork)
             .wrap_err("failed to resolve prover PCR policy")?;
         info!(
