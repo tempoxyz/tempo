@@ -62,8 +62,6 @@ build_scenario_report_args() {
         --metadata "phase=$ZONES_BENCH_PHASE"
     )
     destination+=(--metadata "neobank-preset=$ZONES_BENCH_NEOBANK_PRESET")
-    [[ -z "${ZONES_BENCH_SWAP_MECHANISM:-}" ]] ||
-        destination+=(--metadata "swap-mechanism=$ZONES_BENCH_SWAP_MECHANISM")
     [[ -z "${ZONES_BENCH_SWAP_LIQUIDITY:-}" ]] ||
         destination+=(--metadata "swap-liquidity=$ZONES_BENCH_SWAP_LIQUIDITY")
     [[ -z "${ZONES_BENCH_CALLBACK_GAS_LIMIT:-}" ]] ||

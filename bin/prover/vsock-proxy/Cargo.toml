@@ -1,6 +1,6 @@
 [package]
 name = "tempo-vsock-proxy"
-version.workspace = true
+version = "0.3.6"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -12,8 +12,11 @@ workspace = true
 [dependencies]
 clap.workspace = true
 libc.workspace = true
+metrics.workspace = true
+metrics-exporter-prometheus = { workspace = true, features = ["http-listener"] }
+reth-metrics.workspace = true
 tokio.workspace = true
 tokio-vsock.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 vsock.workspace = true

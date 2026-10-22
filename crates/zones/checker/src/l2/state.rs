@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use alloy_eips::BlockNumHash;
 use alloy_primitives::{Address, B256, U256};
 use eyre::WrapErr as _;
-use reth_storage_api::{BlockNumReader, StateProviderFactory, errors::provider::ProviderError};
+use reth_storage_api::{StateProviderFactory, errors::provider::ProviderError};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
     storage::{ContractStorage, StorageActions},
@@ -82,7 +82,7 @@ impl From<AttemptError> for AccountingStateError {
 }
 
 /// Read exact balances and supply for affected accounts at one Zone block.
-pub(crate) fn read_accounting_state<P: StateProviderFactory + BlockNumReader>(
+pub(crate) fn read_accounting_state<P: StateProviderFactory>(
     provider: &P,
     accounts: &BTreeMap<Address, BTreeSet<Address>>,
     block: BlockNumHash,

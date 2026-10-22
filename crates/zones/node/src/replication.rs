@@ -6,9 +6,8 @@ use alloy_rlp::Decodable as _;
 use futures::{StreamExt as _, stream::BoxStream};
 use reth_chain_state::PersistedBlockSubscriptions;
 use reth_primitives_traits::SealedBlock;
-use reth_provider::HeaderProvider;
 use reth_storage_api::{BlockNumReader, BlockReader, StateProviderFactory};
-use tempo_primitives::{Block, TempoHeader};
+use tempo_primitives::Block;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync;
 use tracing::debug;
@@ -60,7 +59,7 @@ pub(crate) trait PersistedBlockSource: Clone + Send + Sync + 'static {
 
 impl<P> PersistedBlockSource for P
 where
-    P: PersistedBlockSubscriptions + BlockReader<Block = Block> + Clone + Send + Sync + 'static,
+    P: PersistedBlockSubscriptions + BlockReader<Block = Block> + Clone + 'static,
 {
     fn last_block_number(&self) -> eyre::Result<u64> {
         Ok(BlockNumReader::last_block_number(self)?)
@@ -380,10 +379,7 @@ fn serve_backfill_page<P>(
     proofs: Option<&ProofCollectorHandle>,
 ) -> eyre::Result<()>
 where
-    P: BlockNumReader
-        + BlockReader<Block = Block>
-        + HeaderProvider<Header = TempoHeader>
-        + StateProviderFactory,
+    P: BlockReader<Block = Block> + StateProviderFactory,
 {
     let tip = provider.last_block_number()?;
     let end = tip.min(start.saturating_add(BACKFILL_PAGE_SIZE.saturating_sub(1)));
@@ -440,14 +436,7 @@ pub(crate) async fn serve_backfill_requests<P>(
     mut requests: mpsc::Receiver<BackfillRequest>,
     proofs: Option<ProofCollectorHandle>,
 ) where
-    P: BlockNumReader
-        + BlockReader<Block = Block>
-        + HeaderProvider<Header = TempoHeader>
-        + StateProviderFactory
-        + Clone
-        + Send
-        + Sync
-        + 'static,
+    P: BlockReader<Block = Block> + StateProviderFactory + Clone + 'static,
 {
     // One worker deliberately serializes page construction and sending, bounding serving
     // concurrency independently of the block import loop.

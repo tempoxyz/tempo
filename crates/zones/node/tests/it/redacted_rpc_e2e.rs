@@ -20,15 +20,20 @@ use alloy_provider::{ProviderBuilder, bindings::IMulticall3};
 use alloy_signer::SignerSync;
 use alloy_sol_types::{SolCall, SolError};
 use futures::{SinkExt, StreamExt};
-use p256::ecdsa::SigningKey as P256SigningKey;
-use rand::thread_rng;
+use p256::{ecdsa::SigningKey as P256SigningKey, elliptic_curve::rand_core::OsRng};
 use serde_json::{Value, json};
 use std::{collections::HashSet, time::Duration};
 use tempo_chainspec::spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE};
-use tempo_contracts::precompiles::{
-    IAccountKeychain, INonce, IStorageCredits, ITIP20 as ContractTip20, ITIP403Registry,
-    TIP403_REGISTRY_ADDRESS,
-    account_keychain::IAccountKeychain::SignatureType as KeyInfoSignatureType,
+use tempo_contracts::{
+    precompiles::{
+        IAccountKeychain, INonce, IStorageCredits, ITIP20 as ContractTip20, ITIP403Registry,
+        TIP403_REGISTRY_ADDRESS,
+        account_keychain::IAccountKeychain::SignatureType as KeyInfoSignatureType,
+    },
+    zones::{
+        IZoneInbox, TEMPO_STATE_ADDRESS, TempoState, Unauthorized, ZONE_INBOX_ADDRESS,
+        ZONE_TOKEN_ADDRESS,
+    },
 };
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
@@ -37,10 +42,6 @@ use tempo_precompiles::{
 use tempo_primitives::{
     TempoTxEnvelope,
     transaction::{Call, TempoTransaction},
-};
-use tempo_contracts::zones::{
-    IZoneInbox, TEMPO_STATE_ADDRESS, TempoState, Unauthorized, ZONE_INBOX_ADDRESS,
-    ZONE_TOKEN_ADDRESS,
 };
 use tokio_tungstenite::{
     connect_async,
@@ -65,8 +66,8 @@ fn signed_sponsored_raw_transaction(
 ) -> eyre::Result<String> {
     let mut transaction = TempoTransaction {
         chain_id,
-        max_priority_fee_per_gas: TEMPO_T0_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_T0_BASE_FEE as u128,
+        max_priority_fee_per_gas: u128::from(TEMPO_T0_BASE_FEE),
+        max_fee_per_gas: u128::from(TEMPO_T0_BASE_FEE),
         gas_limit: 500_000,
         calls: vec![Call {
             to: TxKind::Call(signer.address()),
@@ -318,8 +319,8 @@ async fn test_non_secp_auth_tokens() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let ctx = start_zone_with_redacted_rpc().await?;
-    let p256_signer = P256SigningKey::random(&mut thread_rng());
-    let webauthn_signer = P256SigningKey::random(&mut thread_rng());
+    let p256_signer = P256SigningKey::random(&mut OsRng);
+    let webauthn_signer = P256SigningKey::random(&mut OsRng);
 
     for token in [
         ctx.p256_token(&p256_signer),
@@ -347,8 +348,8 @@ async fn test_invalid_non_secp_auth_tokens_are_rejected() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let ctx = start_zone_with_redacted_rpc().await?;
-    let p256_signer = P256SigningKey::random(&mut thread_rng());
-    let webauthn_signer = P256SigningKey::random(&mut thread_rng());
+    let p256_signer = P256SigningKey::random(&mut OsRng);
+    let webauthn_signer = P256SigningKey::random(&mut OsRng);
 
     let bad_p256 = corrupt_token_hex(&ctx.p256_token(&p256_signer));
     let (status, _) = ctx
@@ -376,7 +377,7 @@ async fn test_keychain_auth_tokens_v1_and_v2() -> eyre::Result<()> {
 
     let mut ctx = start_zone_with_redacted_rpc().await?;
     let root_signer = PrivateKeySigner::random();
-    let access_signer = P256SigningKey::random(&mut thread_rng());
+    let access_signer = P256SigningKey::random(&mut OsRng);
 
     ctx.inject_deposit(
         PATH_USD_ADDRESS,
@@ -429,7 +430,7 @@ async fn test_keychain_auth_rejection_cases() -> eyre::Result<()> {
     let mut ctx = start_zone_with_redacted_rpc().await?;
 
     let missing_root = PrivateKeySigner::random();
-    let missing_access = P256SigningKey::random(&mut thread_rng());
+    let missing_access = P256SigningKey::random(&mut OsRng);
     let (missing_token, _) = ctx.keychain_p256_token(missing_root.address(), &missing_access, 0x04);
     let (status, _) = ctx
         .call_raw("eth_blockNumber", serde_json::json!([]), &missing_token)
@@ -441,7 +442,7 @@ async fn test_keychain_auth_rejection_cases() -> eyre::Result<()> {
     );
 
     let revoked_root = PrivateKeySigner::random();
-    let revoked_access = P256SigningKey::random(&mut thread_rng());
+    let revoked_access = P256SigningKey::random(&mut OsRng);
     ctx.inject_deposit(
         PATH_USD_ADDRESS,
         address!("0x0000000000000000000000000000000000002222"),
@@ -466,7 +467,7 @@ async fn test_keychain_auth_rejection_cases() -> eyre::Result<()> {
     assert_eq!(status.as_u16(), 403, "revoked key should return 403");
 
     let mismatch_root = PrivateKeySigner::random();
-    let mismatch_access = P256SigningKey::random(&mut thread_rng());
+    let mismatch_access = P256SigningKey::random(&mut OsRng);
     ctx.inject_deposit(
         PATH_USD_ADDRESS,
         address!("0x0000000000000000000000000000000000004444"),
@@ -744,7 +745,7 @@ async fn test_tip20_eth_call_privacy() -> eyre::Result<()> {
         .connect_http(ctx.zone.http_url().clone());
     let approve_pending = ContractTip20::new(PATH_USD_ADDRESS, &owner_provider)
         .approve(spender, U256::from(allowance_amount))
-        .gas_price(TEMPO_T0_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
         .gas(TIP20_TX_GAS)
         .send()
         .await?;
@@ -1332,13 +1333,13 @@ async fn test_ws_logs_subscription_is_sender_scoped() -> eyre::Result<()> {
 
     let owner_pending = ContractTip20::new(PATH_USD_ADDRESS, &owner_provider)
         .approve(spender, U256::from(111u64))
-        .gas_price(TEMPO_T0_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
         .gas(TIP20_TX_GAS)
         .send()
         .await?;
     let outsider_pending = ContractTip20::new(PATH_USD_ADDRESS, &outsider_provider)
         .approve(spender, U256::from(222u64))
-        .gas_price(TEMPO_T0_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T0_BASE_FEE))
         .gas(TIP20_TX_GAS)
         .send()
         .await?;
@@ -1430,9 +1431,12 @@ async fn test_zone_metadata_methods() -> eyre::Result<()> {
         "expiresAt should be a quantity string",
     );
 
+    let tempo_state = TempoState::new(TEMPO_STATE_ADDRESS, ctx.zone.provider());
+    let tempo_block_before = tempo_state.tempoBlockNumber().call().await?;
     let zone_info = ctx
         .call_as_user("zone_getZoneInfo", serde_json::json!([]), &user_signer)
         .await?;
+    let tempo_block_after = tempo_state.tempoBlockNumber().call().await?;
     assert_eq!(
         zone_info["result"]["zoneId"].as_str().unwrap(),
         format!("0x{:x}", ctx.config.zone_id),
@@ -1452,13 +1456,16 @@ async fn test_zone_metadata_methods() -> eyre::Result<()> {
         zone_info["result"]["chainId"].as_str().unwrap(),
         format!("0x{:x}", ctx.config.chain_id),
     );
-    let tempo_block_number = TempoState::new(TEMPO_STATE_ADDRESS, ctx.zone.provider())
-        .tempoBlockNumber()
-        .call()
-        .await?;
-    assert_eq!(
-        zone_info["result"]["tempoBlockNumber"],
-        format!("0x{tempo_block_number:x}"),
+    let tempo_block_number = u64::from_str_radix(
+        zone_info["result"]["tempoBlockNumber"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("0x"),
+        16,
+    )?;
+    assert!(
+        (tempo_block_before..=tempo_block_after).contains(&tempo_block_number),
+        "tempoBlockNumber {tempo_block_number} outside [{tempo_block_before}, {tempo_block_after}]",
     );
 
     Ok(())

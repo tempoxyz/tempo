@@ -1,6 +1,6 @@
 //! Privacy policy enforcement helpers.
 //!
-//! Shared by [`ZoneRpcApi`] implementations.
+//! Shared by [`ZoneRpcApi`](crate::ZoneRpcApi) implementations.
 
 use alloy_consensus::transaction::SignerRecoverable;
 use alloy_eips::eip2718::Decodable2718;

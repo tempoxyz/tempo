@@ -24,7 +24,7 @@ use crate::monitor;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
-pub struct SimpleArbArgs {
+pub(crate) struct SimpleArbArgs {
     /// RPC endpoint for the node
     #[arg(short, long, required = true)]
     rpc_url: String,
@@ -75,7 +75,7 @@ async fn fetch_all_pairs<P: Provider>(provider: P) -> eyre::Result<HashSet<(Addr
 }
 
 impl SimpleArbArgs {
-    pub async fn run(self) -> eyre::Result<()> {
+    pub(crate) async fn run(self) -> eyre::Result<()> {
         tracing_subscriber::FmtSubscriber::builder()
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
             .init();

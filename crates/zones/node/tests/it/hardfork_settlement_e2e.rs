@@ -12,7 +12,13 @@ use alloy_sol_types::{SolCall, SolError};
 use reth_chainspec::EthChainSpec;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TempoChainSpec};
-use tempo_contracts::precompiles::ITIP20;
+use tempo_contracts::{
+    precompiles::ITIP20,
+    zones::{
+        IZoneInbox, IZoneOutbox, TEMPO_STATE_ADDRESS, TempoState, ZONE_INBOX_ADDRESS,
+        ZONE_OUTBOX_ADDRESS, ZonePortal,
+    },
+};
 use tempo_precompiles::{
     PATH_USD_ADDRESS,
     storage::{
@@ -20,10 +26,6 @@ use tempo_precompiles::{
     },
 };
 use tempo_primitives::TempoHeader;
-use tempo_contracts::zones::{
-    IZoneInbox, IZoneOutbox, TEMPO_STATE_ADDRESS, TempoState, ZONE_INBOX_ADDRESS,
-    ZONE_OUTBOX_ADDRESS, ZonePortal,
-};
 use zone_chainspec::test_utils::set_tempo_fork;
 use zone_rpc::types::ZoneExecutionWitness;
 use zone_sequencer::{BatchData, BatchSubmitter};
@@ -40,7 +42,7 @@ use crate::utils::{
 #[tokio::test(flavor = "multi_thread")]
 async fn test_t13_migrates_and_settles_existing_portal() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
-    let activation = now_secs() + 60;
+    let activation = now_secs() + 30;
     let mut portal_address = Address::ZERO;
     let l1 = L1TestNode::start_with(|cfg| {
         let mut genesis = cfg.chain.genesis().clone();

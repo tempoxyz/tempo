@@ -145,10 +145,13 @@ impl<DB: Database> ProtocolFeeManager<DB> for ValidatorTokenLookupFailsFeeManage
         _journal: &mut Journal<DB>,
         tx: &TempoTxEnv,
         _fee_payer: Address,
+        _max_fee: U256,
         _spec: TempoHardfork,
         _actions: StorageActions,
-    ) -> tempo_precompiles::error::Result<Address> {
-        Ok(tx.fee_token.unwrap_or(DEFAULT_FEE_TOKEN))
+    ) -> tempo_precompiles::error::Result<ResolvedFeeToken> {
+        Ok(ResolvedFeeToken::Selected(
+            tx.fee_token.unwrap_or(DEFAULT_FEE_TOKEN),
+        ))
     }
 
     fn get_validator_token(

@@ -65,7 +65,7 @@ impl FilterExt for Filter {
 }
 
 impl MonitorConfig {
-    pub fn new(rpc_url: Url, poll_interval: u64, target_tokens: AddressSet) -> Self {
+    pub(crate) fn new(rpc_url: Url, poll_interval: u64, target_tokens: AddressSet) -> Self {
         Self {
             rpc_url,
             poll_interval,
@@ -75,7 +75,7 @@ impl MonitorConfig {
 
     /// Fetches token metadata, discovers existing pools, and returns an initialized `Monitor`.
     #[instrument(name = "monitor::init", skip(self))]
-    pub async fn init(self) -> Result<Monitor> {
+    pub(crate) async fn init(self) -> Result<Monitor> {
         let provider = Arc::new(
             ProviderBuilder::new()
                 .connect(self.rpc_url.as_str())
@@ -279,7 +279,7 @@ impl Monitor {
                 "token_a_name" => token_a.name.to_string(),
                 "token_b_name" => token_b.name.to_string()
             )
-            .set((token_a_balance / 10u128.pow(token_a.decimals as u32)) as f64);
+            .set((token_a_balance / 10u128.pow(u32::from(token_a.decimals))) as f64);
 
             gauge!(
                 "tempo_fee_amm_validator_token_reserves",
@@ -288,7 +288,7 @@ impl Monitor {
                 "token_a_name" => token_a.name.to_string(),
                 "token_b_name" => token_b.name.to_string()
             )
-            .set((token_b_balance / 10u128.pow(token_b.decimals as u32)) as f64);
+            .set((token_b_balance / 10u128.pow(u32::from(token_b.decimals))) as f64);
         }
     }
 
@@ -309,7 +309,7 @@ impl Monitor {
 }
 
 #[handler]
-pub async fn prometheus_metrics(handle: poem::web::Data<&PrometheusHandle>) -> Response {
+pub(crate) async fn prometheus_metrics(handle: poem::web::Data<&PrometheusHandle>) -> Response {
     let metrics = handle.render();
     Response::builder()
         .header("content-type", "text/plain")

@@ -9,10 +9,10 @@ use alloy_sol_types::SolCall as _;
 use alloy_transport::{RpcError, TransportError, TransportErrorKind};
 use eyre::{OptionExt as _, Result, WrapErr as _, ensure};
 use tempo_alloy::TempoNetwork;
-use tempo_primitives::TempoTxEnvelope;
 use tempo_contracts::zones::{
     BatchSubmitted, TokenEnablementTransition, legacySubmitBatchCall, submitBatchCall,
 };
+use tempo_primitives::TempoTxEnvelope;
 use tokio::sync::mpsc::Receiver;
 use tracing::{error, info, warn};
 use zone_l1::FinalizedBatchSubmission;

@@ -7,9 +7,9 @@ use alloy::{
 };
 use eyre::{WrapErr as _, ensure};
 use tempo_alloy::TempoNetwork;
-use tempo_contracts::precompiles::ITIP20 as TIP20Token;
-use tempo_contracts::zones::{
-    IZoneInbox, ZONE_FACTORY_ADDRESS, ZONE_INBOX_ADDRESS, ZoneFactory, ZonePortal,
+use tempo_contracts::{
+    precompiles::ITIP20 as TIP20Token,
+    zones::{IZoneInbox, ZONE_FACTORY_ADDRESS, ZONE_INBOX_ADDRESS, ZoneFactory, ZonePortal},
 };
 use zone_primitives::constants::zone_chain_id;
 

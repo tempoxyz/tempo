@@ -27,7 +27,7 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
     NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager, storage::StorageKey, tip20::tip20_slots,
 };
-use tempo_primitives::transaction::TIP20_PAYMENT_PREFIX;
+use tempo_primitives::TempoAddressExt;
 
 /// Magic bytes for the state bloat binary format (8 bytes)
 const MAGIC: &[u8; 8] = b"TEMPOSB\x00";
@@ -61,6 +61,10 @@ pub struct GenerateStateBloat {
     #[arg(long, default_value_t = *TempoHardfork::VARIANTS.last().unwrap())]
     nonce_ring_hardfork: TempoHardfork,
 
+    /// Omit the expiring nonce ring, e.g. for dumps committed into a derived chain's genesis.
+    #[arg(long, conflicts_with = "nonce_ring_hardfork")]
+    no_nonce_ring: bool,
+
     /// Token IDs to generate storage for (can be specified multiple times)
     /// Uses reserved TIP20 addresses: 0x20C0...{token_id}
     #[arg(short, long, default_values_t = vec![0u64])]
@@ -92,6 +96,7 @@ impl GenerateStateBloat {
             mnemonic_file,
             size,
             nonce_ring_hardfork,
+            no_nonce_ring,
             token: tokens,
             out,
             balance,
@@ -152,11 +157,15 @@ impl GenerateStateBloat {
         println!("  Tokens: {num_tokens}");
         println!("  Accounts per token: {accounts_per_token}");
         println!("  Estimated TIP20 size: {estimated_size_mib:.2} MiB");
-        let capacity = nonce_ring_hardfork.expiring_nonce_set_capacity();
-        println!(
-            "  Nonce ring: {capacity} entries ({nonce_ring_hardfork}), {:.2} MiB additional",
-            f64::from(capacity) * 128.0 / (1024.0 * 1024.0)
-        );
+        let ring_capacity =
+            (!no_nonce_ring).then(|| nonce_ring_hardfork.expiring_nonce_set_capacity());
+        match ring_capacity {
+            Some(capacity) => println!(
+                "  Nonce ring: {capacity} entries ({nonce_ring_hardfork}), {:.2} MiB additional",
+                f64::from(capacity) * 128.0 / (1024.0 * 1024.0)
+            ),
+            None => println!("  Nonce ring: omitted"),
+        }
         println!("  Chunk size: {chunk_size} entries ({num_chunks} chunks)");
         println!("  Output: {out_display}");
 
@@ -166,7 +175,8 @@ impl GenerateStateBloat {
         let seed = keccak256(mnemonic.as_bytes());
 
         // Step 2: Generate token addresses
-        let token_addresses: Vec<Address> = tokens.iter().map(|&id| token_address(id)).collect();
+        let token_addresses: Vec<Address> =
+            tokens.iter().copied().map(Address::new_tip20).collect();
 
         println!("\nToken addresses:");
         for (id, addr) in tokens.iter().zip(&token_addresses) {
@@ -250,7 +260,9 @@ impl GenerateStateBloat {
         }
 
         pb.finish_with_message("done");
-        write_nonce_ring(&mut writer, 0..capacity)?;
+        if let Some(capacity) = ring_capacity {
+            write_nonce_ring(&mut writer, 0..capacity)?;
+        }
         writer.flush()?;
 
         let file_size = std::fs::metadata(&out)?.len();
@@ -287,15 +299,6 @@ fn write_nonce_ring(writer: &mut impl Write, indices: std::ops::Range<u32>) -> e
     }
     // The default zero pointer is the next position after filling the whole ring.
     Ok(())
-}
-
-/// Compute a reserved TIP20 token address from a token ID.
-/// Reserved addresses use the TIP20 prefix with the token ID in the last 8 bytes.
-fn token_address(token_id: u64) -> Address {
-    let mut bytes = [0u8; 20];
-    bytes[..12].copy_from_slice(&TIP20_PAYMENT_PREFIX);
-    bytes[12..].copy_from_slice(&token_id.to_be_bytes());
-    Address::from(bytes)
 }
 
 /// Fast address derivation using keccak256(seed || index).
@@ -338,7 +341,7 @@ fn write_header(writer: &mut impl Write, address: Address, pair_count: u64) -> e
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::{B256, address};
+    use alloy::primitives::B256;
     use clap::Parser;
     use std::io::{BufReader, Seek};
     use tempo_precompiles::storage::{
@@ -415,15 +418,6 @@ mod tests {
     }
 
     #[test]
-    fn test_token_address() {
-        let addr = token_address(0);
-        assert_eq!(addr, address!("0x20C0000000000000000000000000000000000000"));
-
-        let addr = token_address(1);
-        assert_eq!(addr, address!("0x20C0000000000000000000000000000000000001"));
-    }
-
-    #[test]
     fn test_header_size() {
         let mut buf = Vec::new();
         write_header(&mut buf, Address::ZERO, 100).unwrap();
@@ -461,6 +455,40 @@ mod tests {
     struct GeneratorCli {
         #[command(flatten)]
         args: GenerateStateBloat,
+    }
+
+    #[tokio::test]
+    async fn no_nonce_ring_writes_only_tip20_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("state.bin");
+        let args = [
+            "generate",
+            "--size",
+            "1",
+            "--signable-count",
+            "1",
+            "--no-nonce-ring",
+            "--out",
+        ];
+        let args = args.into_iter().chain([output.to_str().unwrap()]);
+        GeneratorCli::parse_from(args.clone())
+            .args
+            .run()
+            .await
+            .unwrap();
+        let entries = crate::read_dump(
+            std::fs::read(&output).unwrap().as_slice(),
+            |address, _, _| {
+                assert_ne!(address, NONCE_PRECOMPILE_ADDRESS);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(entries, 16_383);
+        let error = GeneratorCli::try_parse_from(args.chain(["--nonce-ring-hardfork", "T10"]))
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[tokio::test]

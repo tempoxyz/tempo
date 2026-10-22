@@ -9,8 +9,8 @@
 
 use crate::utils::{L1TestNode, ZoneAccount, ZoneTestNode, batch_count, spawn_sequencer};
 use alloy::primitives::{Address, U256};
-use tempo_precompiles::PATH_USD_ADDRESS;
 use tempo_contracts::zones::{IZoneOutbox, ZONE_OUTBOX_ADDRESS, ZONE_TOKEN_ADDRESS, ZonePortal};
+use tempo_precompiles::PATH_USD_ADDRESS;
 
 /// Longer timeout for real L1 tests.
 const L1_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -417,7 +417,7 @@ async fn test_batch_only_restart_no_withdrawals() -> eyre::Result<()> {
     let _seq2 = spawn_sequencer(&l1, &zone, portal_address, l1.dev_signer()).await;
 
     // Wait for more zone blocks to be produced and batched
-    // The zone produces blocks as L1 blocks arrive (every 500ms in dev mode),
+    // The zone produces blocks as L1 blocks arrive (every 250ms in dev mode),
     // so just waiting a bit should produce new blocks to batch.
     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 

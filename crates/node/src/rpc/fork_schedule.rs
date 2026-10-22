@@ -38,7 +38,6 @@ where
     P: ChainSpecProvider<ChainSpec: Hardforks + TempoHardforks>
         + BlockNumReader
         + HeaderProvider
-        + Send
         + Sync
         + 'static,
 {

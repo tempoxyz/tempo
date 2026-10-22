@@ -30,4 +30,15 @@ assert equal (txgen-workload-metadata-args $default.scenario_id $default.spec_pa
 for preset in [tip20 tip20_existing_recipients mix dex mpp neobank-deposit neobank-swap neobank-withdraw zones vault-deposit vault-withdraw] {
     assert equal (txgen-workload-metadata-args $preset "") ["-m" "workload_mix_weighting=gas"]
 }
-print "Preset alias, transfer compatibility, state-bloat setup, and workload metadata checks passed"
+# The policy preset uses distinct issuer and receiver lists on the current layout.
+let policy_spec = (txgen-resolve-bench-spec tip20-policy)
+assert equal $policy_spec.kind static
+assert ("tip20-policy" in $TXGEN_HELPER_ALWAYS_FUND_PRESETS)
+assert equal (open $policy_spec.spec_path).merge.templates.tip20_transfer.fee_token (txgen-tip20-token-address 1)
+let policy = (txgen-tip20-policy-calls 2 17)
+assert equal ($policy.admin_calls | where function == changeTransferPolicyId | get args) [["20"] ["24"]]
+assert equal ($policy.admin_calls | where function == createCompoundPolicy | get args) [[17 18 19] [21 22 23]]
+assert equal ($policy.admin_calls | where function == createPolicy | length) 8
+assert equal $policy.receive_call.function setReceivePolicy
+assert equal $policy.receive_call.args [25 26 "0x0000000000000000000000000000000000000000"]
+print "Preset, policy setup, state-bloat, and workload metadata checks passed"

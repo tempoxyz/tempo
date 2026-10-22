@@ -15,8 +15,8 @@ use tempo_nitro_attestation::parse_attestation;
 use tempo_precompiles::{
     Precompile,
     signature_verifier::SignatureVerifier,
-    storage::{StorageCtx, hashmap::HashMapStorageProvider},
-    test_util::TIP20Setup,
+    storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
+    test_util::{TIP20Setup, set_empty_compound_transfer_policy, set_empty_receive_policies},
     tip20::{ISSUER_ROLE, ITIP20, PAUSE_ROLE, UNPAUSE_ROLE},
     tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
     zone_factory::portal_address,
@@ -403,6 +403,31 @@ fn tip20_mutate(c: &mut Criterion) {
                     },
                 )
                 .unwrap();
+
+            let amount = U256::ONE;
+            b.iter(|| {
+                let token = black_box(&mut token);
+                let from = black_box(from);
+                let call = black_box(ITIP20::transferCall { to, amount });
+                let result = token.transfer(from, call).unwrap();
+                black_box(result);
+            });
+        });
+    });
+
+    c.bench_function("tip20_transfer_with_policies", |b| {
+        let admin = Address::ZERO;
+        let from = Address::repeat_byte(1u8);
+        let to = Address::repeat_byte(2u8);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("TestToken", "TEST", admin)
+                .with_issuer(admin)
+                .with_mint(from, U256::from(u128::MAX))
+                .apply()
+                .unwrap();
+            set_empty_compound_transfer_policy(admin, token.address()).unwrap();
+            set_empty_receive_policies(admin, &[to]).unwrap();
 
             let amount = U256::ONE;
             b.iter(|| {

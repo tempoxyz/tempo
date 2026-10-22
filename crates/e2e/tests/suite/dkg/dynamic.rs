@@ -117,10 +117,13 @@ impl AssertValidatorIsAdded {
                 let players = added_metrics
                     .value::<u64>("_dkg_manager_ceremony_players")
                     .unwrap() as u32;
+                let epoch_dealers = added_metrics
+                    .value::<u64>("_epoch_manager_latest_participants")
+                    .unwrap() as u32;
 
                 if added_epoch >= player_epoch.get() && added_epoch < dealer_epoch.get() {
                     assert_eq!(how_many_initial + 1, players);
-                    assert_eq!(how_many_initial, dealers);
+                    assert_eq!(how_many_initial, epoch_dealers);
                 }
 
                 if added_epoch >= dealer_epoch.get() {
@@ -208,9 +211,12 @@ impl AssertValidatorIsRemoved {
                 let players = network_metrics
                     .value::<u64>("_dkg_manager_ceremony_players")
                     .unwrap() as u32;
+                let epoch_dealers = network_metrics
+                    .value::<u64>("_epoch_manager_latest_participants")
+                    .unwrap() as u32;
                 if network_epoch < removed_epoch.get() && network_epoch >= removal_epoch.get() {
                     assert_eq!(how_many_initial - 1, players);
-                    assert_eq!(how_many_initial, dealers);
+                    assert_eq!(how_many_initial, epoch_dealers);
                 }
 
                 if network_epoch >= removed_epoch.get() {

@@ -11,7 +11,7 @@ use reth_chainspec::ChainSpecProvider;
 use reth_exex::{ExExContext, ExExHead, ExExNotification};
 use reth_node_api::{FullNodeComponents, NodePrimitives, NodeTypes};
 use reth_primitives_traits::RecoveredBlock;
-use reth_storage_api::{BlockHashReader as _, BlockNumReader, StateProviderFactory};
+use reth_storage_api::{BlockHashReader as _, StateProviderFactory};
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::TempoHardforks;
 use tempo_primitives::{TempoPrimitives, TempoReceipt};
@@ -43,7 +43,6 @@ pub(crate) async fn run<Node>(
 ) -> eyre::Result<()>
 where
     Node: FullNodeComponents<Types: NodeTypes<Primitives = TempoPrimitives>>,
-    Node::Provider: BlockNumReader + ChainSpecProvider + StateProviderFactory,
     <Node::Provider as ChainSpecProvider>::ChainSpec: TempoHardforks,
 {
     let metrics = CheckerMetrics::default();
@@ -93,7 +92,6 @@ async fn run_inner<Node>(
 ) -> eyre::Result<()>
 where
     Node: FullNodeComponents<Types: NodeTypes<Primitives = TempoPrimitives>>,
-    Node::Provider: BlockNumReader + ChainSpecProvider + StateProviderFactory,
     <Node::Provider as ChainSpecProvider>::ChainSpec: TempoHardforks,
 {
     tracing::info!(target: "zone::checker", "checker started");
@@ -340,7 +338,7 @@ async fn process_notification<P>(
     context: &mut VerificationContext<'_>,
 ) -> Result<Box<Snapshot>, BlockError>
 where
-    P: BlockNumReader + ChainSpecProvider + StateProviderFactory,
+    P: ChainSpecProvider + StateProviderFactory,
     P::ChainSpec: TempoHardforks,
 {
     let mut current = snapshot;
@@ -390,7 +388,7 @@ async fn verify_block<P>(
     receipts: &[TempoReceipt],
 ) -> Result<Snapshot, BlockError>
 where
-    P: BlockNumReader + ChainSpecProvider + StateProviderFactory,
+    P: ChainSpecProvider + StateProviderFactory,
     P::ChainSpec: TempoHardforks,
 {
     let (config, metrics) = (context.config, context.metrics);
