@@ -1,0 +1,11 @@
+# Allow only the sync-evm2 workflow on tempo's main branch to mint a
+# short-lived token that pushes ci/evm2-sync and opens a pull request into
+# klkvr/evm2. `workflows: write` is required because the merged main commits
+# can touch .github/workflows files.
+subject: repo:tempoxyz@211589300/tempo@994992847:ref:refs/heads/main
+claim_pattern:
+  job_workflow_ref: tempoxyz/tempo/\.github/workflows/sync-evm2\.yml@refs/heads/main
+permissions:
+  contents: write
+  pull_requests: write
+  workflows: write

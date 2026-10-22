@@ -1,0 +1,97 @@
+# Daily workflow that merges main into the long-lived EVM2 integration branch.
+#
+# Opens a pull request from `ci/evm2-sync` into `klkvr/evm2` so main never drifts
+# far from it. When main merges cleanly, the branch holds the merge commit. When
+# it conflicts, the branch holds main's tip and the pull request lists the
+# conflicting files to resolve by hand. Land it with a merge commit, not a squash,
+# so the next sync starts from main's history. While a sync pull request is open,
+# the workflow leaves it alone.
+
+name: Sync main into EVM2
+
+on:
+  schedule:
+    - cron: "0 4 * * 1-5"
+  workflow_dispatch:
+
+concurrency:
+  group: sync-evm2
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  sync:
+    name: Sync main into klkvr/evm2
+    if: ${{ github.repository == 'tempoxyz/tempo' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      id-token: write
+    env:
+      BASE: klkvr/evm2
+      SYNC: ci/evm2-sync
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Fetch GitHub token via STS
+        id: github-sts
+        uses: tempoxyz/gh-actions/actions/github-sts@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          policy: sync-evm2
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2 # zizmor: ignore[artipacked]
+        with:
+          token: ${{ steps.github-sts.outputs.token }}
+          ref: klkvr/evm2
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Merge main and open the sync pull request
+        env:
+          GH_TOKEN: ${{ steps.github-sts.outputs.token }}
+        run: |
+          set -euo pipefail
+
+          existing=$(gh pr list --head "$SYNC" --base "$BASE" --state open --json url --jq '.[0].url // empty')
+          if [ -n "$existing" ]; then
+            echo "Sync pull request still open: $existing" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          git fetch origin main
+          behind=$(git rev-list --count "HEAD..origin/main")
+          if [ "$behind" -eq 0 ]; then
+            echo "$BASE already contains main." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          main_sha=$(git rev-parse origin/main)
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+
+          body=$(mktemp)
+          if git merge --no-ff --no-edit -m "chore(evm): merge main into $BASE" origin/main; then
+            {
+              echo "Merges $behind commits from main (\`$main_sha\`) into \`$BASE\`. They merged without conflicts."
+              echo
+              echo "Land this with a merge commit, not a squash, so the next sync starts from main's history."
+            } > "$body"
+          else
+            conflicts=$(git diff --name-only --diff-filter=U)
+            git merge --abort
+            git checkout --detach origin/main
+            {
+              echo "Merges $behind commits from main (\`$main_sha\`) into \`$BASE\`. These files conflict and need resolving by hand:"
+              echo
+              while IFS= read -r file; do echo "- \`$file\`"; done <<< "$conflicts"
+              echo
+              echo "Resolve them on this branch: check it out, run \`git merge origin/$BASE\`, fix the conflicts and push."
+              echo "Land this with a merge commit, not a squash, so the next sync starts from main's history."
+            } > "$body"
+          fi
+
+          git push --force origin "HEAD:refs/heads/$SYNC"
+          url=$(gh pr create --base "$BASE" --head "$SYNC" --title "chore(evm): sync main into $BASE" --body-file "$body")
+          echo "Opened $url" | tee -a "$GITHUB_STEP_SUMMARY"
