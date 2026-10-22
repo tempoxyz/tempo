@@ -9,7 +9,7 @@ use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{EvmStateProviderBox, StateProvider, StateProviderFactory};
-use reth_tasks::{TaskExecutor, WorkerPool, WorkerRunId};
+use reth_tasks::{TaskExecutor, WorkerState};
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
@@ -82,7 +82,9 @@ impl BestTransactionsPrewarming {
         pool.in_place_scope(|scope| {
             let prewarm = ctx.prewarm.clone();
             scope.spawn(move |_| {
-                pool.init::<PrewarmEvmState>(&prewarm.run_id, |_| prewarm.evm_for_ctx());
+                prewarm
+                    .worker_state
+                    .init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
             });
 
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
@@ -165,8 +167,6 @@ impl BestTransactionsPrewarming {
                 }
             }
         });
-
-        pool.clear(&ctx.prewarm.run_id);
     }
 
     /// Prewarms a transaction by executing it on top of the latest state.
@@ -182,72 +182,73 @@ impl BestTransactionsPrewarming {
     where
         Provider: StateProviderFactory + Clone + 'static,
     {
-        let replay = WorkerPool::with_worker_mut(|worker| {
-            if prewarm.parallel && !is_parallel_candidate(&tx) {
-                return None;
-            }
+        if prewarm.parallel && !is_parallel_candidate(&tx) {
+            return PrewarmedTransaction::without_replay(tx);
+        }
 
-            let evm = worker
-                .get_or_init(&prewarm.run_id, || prewarm.evm_for_ctx())
-                .as_mut()?;
+        let replay = prewarm.worker_state.get_or_init(
+            || prewarm.evm_for_ctx(),
+            |state| {
+                let evm = state.as_mut()?;
 
-            if prewarm.is_stopped() {
-                return None;
-            }
-
-            let mut tx_env = tx.transaction.clone_tx_env();
-            if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
-                tempo_tx_env.expiring_nonce_idx = expiring_nonce_offset;
-            }
-
-            let result = match evm.transact_raw(tx_env) {
-                Ok(result) => result.result,
-                Err(err) => {
-                    // Discard actions recorded by the failed transaction before reusing this worker.
-                    evm.clear_actions();
-                    trace!(
-                        target: "payload_builder",
-                        %err,
-                        "Failed to prewarm transaction by execution"
-                    );
-
+                if prewarm.is_stopped() {
                     return None;
                 }
-            };
 
-            trace!(target: "payload_builder", "Prewarmed transaction");
+                let mut tx_env = tx.transaction.clone_tx_env();
+                if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
+                    tempo_tx_env.expiring_nonce_idx = expiring_nonce_offset;
+                }
 
-            if !prewarm.parallel {
-                return None;
-            }
+                let result = match evm.transact_raw(tx_env) {
+                    Ok(result) => result.result,
+                    Err(err) => {
+                        // Discard actions recorded by the failed transaction before reusing this worker.
+                        evm.clear_actions();
+                        trace!(
+                            target: "payload_builder",
+                            %err,
+                            "Failed to prewarm transaction by execution"
+                        );
 
-            let actions = evm.take_actions()?;
-            let expiring_nonce = tx
-                .transaction
-                .is_expiring_nonce()
-                .then(|| {
-                    let valid_before = tx.transaction.inner().valid_before()?;
-                    Some(ExpiringNonceReplay {
-                        hash: tx.transaction.expiring_nonce_hash()?,
-                        valid_before,
+                        return None;
+                    }
+                };
+
+                trace!(target: "payload_builder", "Prewarmed transaction");
+
+                if !prewarm.parallel {
+                    return None;
+                }
+
+                let actions = evm.take_actions()?;
+                let expiring_nonce = tx
+                    .transaction
+                    .is_expiring_nonce()
+                    .then(|| {
+                        let valid_before = tx.transaction.inner().valid_before()?;
+                        Some(ExpiringNonceReplay {
+                            hash: tx.transaction.expiring_nonce_hash()?,
+                            valid_before,
+                        })
                     })
-                })
-                .flatten();
+                    .flatten();
 
-            trace!(
-                target: "payload_builder",
-                actions = actions.len(),
-                expiring_nonce = expiring_nonce.is_some(),
-                "Generated replay for transaction"
-            );
+                trace!(
+                    target: "payload_builder",
+                    actions = actions.len(),
+                    expiring_nonce = expiring_nonce.is_some(),
+                    "Generated replay for transaction"
+                );
 
-            Some(Box::new(StorageActionReplay {
-                result,
-                actions,
-                validator_fee: evm.validator_fee(),
-                expiring_nonce,
-            }))
-        });
+                Some(Box::new(StorageActionReplay {
+                    result,
+                    actions,
+                    validator_fee: evm.validator_fee(),
+                    expiring_nonce,
+                }))
+            },
+        );
 
         PrewarmedTransaction { tx, replay }
     }
@@ -359,7 +360,7 @@ pub(crate) struct PrewarmingExecutionContext<Provider> {
     cache: Option<SavedCache>,
     evm_env: EvmEnvFor<TempoEvmConfig>,
     stop: Arc<AtomicBool>,
-    run_id: WorkerRunId,
+    worker_state: Arc<WorkerState>,
     parallel: bool,
 }
 
@@ -375,6 +376,7 @@ where
         evm_env: EvmEnvFor<TempoEvmConfig>,
         parallel: bool,
     ) -> Self {
+        let worker_state = Arc::new(WorkerState::new(Arc::clone(executor.prewarming_pool())));
         Self {
             provider,
             executor,
@@ -382,7 +384,7 @@ where
             cache,
             evm_env,
             stop: Arc::new(AtomicBool::new(false)),
-            run_id: WorkerRunId::default(),
+            worker_state,
             parallel,
         }
     }
@@ -513,6 +515,7 @@ mod tests {
         Recovered, SealedHeader, transaction::error::InvalidTransactionError,
     };
     use reth_storage_api::noop::NoopProvider;
+    use reth_tasks::WorkerPool;
     use reth_transaction_pool::{
         TransactionOrigin, ValidPoolTransaction, identifier::TransactionId,
     };
@@ -744,6 +747,7 @@ mod tests {
         let evm_env = evm_config
             .next_evm_env(&parent_header, &attributes)
             .expect("test next block env");
+        let worker_state = Arc::new(WorkerState::new(Arc::clone(executor.prewarming_pool())));
         PrewarmingExecutionContext {
             provider,
             executor,
@@ -751,7 +755,7 @@ mod tests {
             cache: None,
             evm_env,
             stop: Arc::default(),
-            run_id: WorkerRunId::default(),
+            worker_state,
             parallel,
         }
     }
@@ -1033,20 +1037,23 @@ mod tests {
         let mut context = prewarming_context(executor, true);
         context.evm_env.block_env.basefee = 0;
 
-        let pool = WorkerPool::new(1, "prewarm-actions-test");
-        pool.init::<PrewarmEvmState>(&context.run_id, |_| context.evm_for_ctx());
+        let pool = Arc::new(WorkerPool::new(1, "prewarm-actions-test"));
+        context.worker_state = Arc::new(WorkerState::new(Arc::clone(&pool)));
+        context
+            .worker_state
+            .init::<PrewarmEvmState>(|_| context.evm_for_ctx());
 
         pool.install_fn(|| {
             let failed_action =
                 StorageAction::Sstore(Address::random(), U256::ONE, U256::from(2), U256::from(3));
-            WorkerPool::with_worker_mut(|worker| {
-                let evm = worker
-                    .get_mut::<PrewarmEvmState>(&context.run_id)
-                    .as_mut()
-                    .expect("prewarm EVM");
-                // Model an action recorded before the failed execution returned an error.
-                assert_eq!(evm.replace_actions(vec![failed_action]), Some(Vec::new()));
-            });
+            context.worker_state.get_or_init(
+                || context.evm_for_ctx(),
+                |state| {
+                    let evm = state.as_mut().expect("prewarm EVM");
+                    // Model an action recorded before the failed execution returned an error.
+                    assert_eq!(evm.replace_actions(vec![failed_action]), Some(Vec::new()));
+                },
+            );
 
             let sender = Address::random();
             let failed = BestTransactionsPrewarming::prewarm_transaction(
@@ -1055,13 +1062,13 @@ mod tests {
                 None,
             );
             assert!(failed.replay.is_none());
-            WorkerPool::with_worker_mut(|worker| {
-                let evm = worker
-                    .get_mut::<PrewarmEvmState>(&context.run_id)
-                    .as_mut()
-                    .expect("prewarm EVM");
-                assert_eq!(evm.take_actions(), Some(Vec::new()));
-            });
+            context.worker_state.get_or_init(
+                || context.evm_for_ctx(),
+                |state| {
+                    let evm = state.as_mut().expect("prewarm EVM");
+                    assert_eq!(evm.take_actions(), Some(Vec::new()));
+                },
+            );
 
             let successful = BestTransactionsPrewarming::prewarm_transaction(
                 context.clone(),
@@ -1072,8 +1079,6 @@ mod tests {
             assert!(!replay.actions.is_empty());
             assert!(!replay.actions.contains(&failed_action));
         });
-
-        pool.clear(&context.run_id);
     }
 
     #[test]
@@ -1166,9 +1171,11 @@ mod tests {
         first.evm_env.block_env.beneficiary = Address::repeat_byte(1);
         let mut second = prewarming_context(executor, false);
         second.evm_env.block_env.beneficiary = Address::repeat_byte(2);
-        let pool = WorkerPool::new(1, "prewarm-run-test");
-        let foreign_run = WorkerRunId::default();
-        pool.init(&foreign_run, |_| String::from("validation worker state"));
+        let pool = Arc::new(WorkerPool::new(1, "prewarm-run-test"));
+        first.worker_state = Arc::new(WorkerState::new(Arc::clone(&pool)));
+        second.worker_state = Arc::new(WorkerState::new(Arc::clone(&pool)));
+        let foreign = WorkerState::new(Arc::clone(&pool));
+        foreign.init(|_| String::from("validation worker state"));
 
         pool.install_fn(|| {
             for context in [&first, &second] {
@@ -1179,11 +1186,8 @@ mod tests {
                     None,
                 );
                 assert_eq!(warmed.tx.hash(), tx.hash());
-                WorkerPool::with_worker(|worker| {
-                    let evm = worker
-                        .get::<PrewarmEvmState>(&context.run_id)
-                        .as_ref()
-                        .unwrap();
+                context.worker_state.get(|state: &PrewarmEvmState| {
+                    let evm = state.as_ref().unwrap();
                     assert_eq!(
                         evm.block().beneficiary,
                         context.evm_env.block_env.beneficiary
@@ -1192,20 +1196,15 @@ mod tests {
             }
         });
 
-        pool.clear(&first.run_id);
+        drop(first);
         pool.install_fn(|| {
-            WorkerPool::with_worker(|worker| {
+            second.worker_state.get(|state: &PrewarmEvmState| {
                 assert_eq!(
-                    worker
-                        .get::<PrewarmEvmState>(&second.run_id)
-                        .as_ref()
-                        .unwrap()
-                        .block()
-                        .beneficiary,
+                    state.as_ref().unwrap().block().beneficiary,
                     second.evm_env.block_env.beneficiary,
                 );
             })
         });
-        pool.clear(&second.run_id);
+        drop(second);
     }
 }
