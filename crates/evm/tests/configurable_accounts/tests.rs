@@ -5195,3 +5195,201 @@ fn native_commitment_mismatch_reads_as_the_state_error() {
         ConfigurableAccountStateError::CommitmentMismatch { expected, actual }.to_string()
     );
 }
+
+/// A threshold above eight is met by eight approvals whose weights reach it.
+#[test]
+fn native_threshold_above_eight_is_met_by_eight_approvals() {
+    let mut f = Fixture::new();
+    let mut owners = (1..=9).map(signer).collect::<Vec<_>>();
+    owners.sort_by_key(PrivateKeySigner::address);
+    let config = ConfigurableAccountConfig {
+        salt: B256::repeat_byte(9),
+        version: 0,
+        threshold: 9,
+        owners: owners
+            .iter()
+            .enumerate()
+            .map(|(index, owner)| ConfigurableAccountOwner {
+                owner: owner.address(),
+                weight: if index == 0 { 2 } else { 1 },
+            })
+            .collect(),
+    };
+    let account = config.derive_account(Address::repeat_byte(0x71)).unwrap();
+    seed_account(&mut f, account, false);
+    let tx = aa_tx(0, vec![f.getter()]);
+    let digest = configurable_account_digest(tx.signature_hash(), account, config.version);
+    let approvals = owners[..8]
+        .iter()
+        .map(|owner| PrimitiveSignature::Secp256k1(owner.sign_hash_sync(&digest).unwrap()))
+        .collect();
+    let signature =
+        ConfigurableAccountSignature::try_new(account, config.clone(), approvals).unwrap();
+    let result = f.run_as(
+        account,
+        &tx.into_signed(TempoSignature::ConfigurableAccount(signature)),
+    );
+    assert!(result.status, "{result:?}");
+    assert_eq!(
+        decode_config_commitment(&f.info(account).unwrap().extension, TempoHardfork::T14).unwrap(),
+        config.commitment().unwrap()
+    );
+}
+
+/// A transaction rejected for too little intrinsic gas or an unpaid fee does not register the
+/// account's configuration; the first valid one does.
+#[test]
+fn native_rejected_transaction_does_not_register() {
+    let mut f = Fixture::new();
+    let account = f.account;
+    let low_gas = configurable_account_signed(
+        &f,
+        TempoTransaction {
+            gas_limit: 21_000,
+            ..aa_tx(3, vec![f.getter()])
+        },
+    );
+    let error = handler_rejection(&mut f, &low_gas, account);
+    assert!(
+        matches!(error, HandlerError::IntrinsicGasTooLow { .. }),
+        "{error:?}"
+    );
+    // The account holds no fee token, so collecting the fee fails after validation.
+    let unpaid = configurable_account_signed(
+        &f,
+        TempoTransaction {
+            max_fee_per_gas: 1_000_000_000_000,
+            fee_token: Some(PATH_USD_ADDRESS),
+            ..aa_tx(3, vec![f.getter()])
+        },
+    );
+    let error = rejection(&mut f, &unpaid, account);
+    assert!(
+        matches!(error, TempoInvalidTransaction::CollectFeePreTx(_)),
+        "{error:?}"
+    );
+    assert!(f.commitment().is_zero());
+    let result = f.run(&f.signed(3, vec![f.getter()]));
+    assert!(result.status, "{result:?}");
+    assert_eq!(f.commitment(), f.config.commitment().unwrap());
+}
+
+/// A registered parent with code cannot act through its access keys.
+#[test]
+fn native_committed_keychain_parent_with_code_is_rejected() {
+    let mut f = Fixture::new();
+    let account = f.account;
+    let key = signer(2);
+    let grant = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key.address());
+    let approval = AccountSignature::ConfigurableAccount(configurable_account_approval(
+        account,
+        &f.config,
+        &f.owner,
+        grant.signature_hash(),
+    ));
+    let tx = configurable_account_signed(
+        &f,
+        TempoTransaction {
+            key_authorization: Some(grant.into_signed(approval)),
+            ..aa_tx(3, vec![f.getter()])
+        },
+    );
+    let result = f.run(&tx);
+    assert!(result.status, "{result:?}");
+    let result = f.run(&keychain_tx(&f, &key, 4, vec![f.getter()]));
+    assert!(result.status, "{result:?}");
+
+    f.update_account(account, |info| {
+        *info = info
+            .clone()
+            .with_code(Bytecode::new_eip7702(Address::repeat_byte(0x74)));
+    });
+    let tx = keychain_tx(&f, &key, 5, vec![f.getter()]);
+    assert_eq!(
+        rejection(&mut f, &tx, account),
+        TempoInvalidTransaction::ConfigurableAccount(ConfigurableAccountError::InvalidAccount {
+            account
+        })
+    );
+}
+
+/// A grant that a configurable delegate uses in the same transaction must name that delegate
+/// and its key type, and be signed by the parent.
+#[test]
+fn native_delegate_grant_is_bound_to_the_transaction() {
+    let owner = signer(2);
+    let other = signer(3);
+    let config = ConfigurableAccountConfig {
+        salt: B256::repeat_byte(2),
+        version: 0,
+        threshold: 1,
+        owners: vec![ConfigurableAccountOwner {
+            owner: owner.address(),
+            weight: 1,
+        }],
+    };
+    let delegate = config.derive_account(Address::repeat_byte(0x71)).unwrap();
+    for (label, key_id, key_type, unrelated_signer, expected) in [
+        (
+            "matching",
+            delegate,
+            SignatureType::ConfigurableAccount,
+            false,
+            None,
+        ),
+        (
+            "wrong target",
+            other.address(),
+            SignatureType::ConfigurableAccount,
+            false,
+            Some("root-signed key authorization must use root transaction signature"),
+        ),
+        (
+            "wrong type",
+            delegate,
+            SignatureType::Secp256k1,
+            false,
+            Some("key authorization key_type does not match the keychain signature type"),
+        ),
+        (
+            "unrelated signer",
+            delegate,
+            SignatureType::ConfigurableAccount,
+            true,
+            Some("admin-signed key authorization must be signed by transaction key"),
+        ),
+    ] {
+        let _case = Case(label.into());
+        let mut f = Fixture::with_parent(false);
+        let parent = f.account;
+        let grant = KeyAuthorization::unrestricted(1, key_type, key_id).with_account(parent);
+        let grant_signer = if unrelated_signer { &other } else { &f.owner };
+        let approval = grant_signer
+            .sign_hash_sync(&grant.signature_hash())
+            .unwrap();
+        let tx = TempoTransaction {
+            key_authorization: Some(grant.into_signed(approval)),
+            ..aa_tx(3, vec![f.getter()])
+        };
+        let digest = KeychainSignature::signing_hash(tx.signature_hash(), parent);
+        let signature = AccountSignature::ConfigurableAccount(configurable_account_approval(
+            delegate, &config, &owner, digest,
+        ));
+        let tx = tx.into_signed(TempoSignature::Keychain(KeychainSignature::new(
+            parent, signature,
+        )));
+        match expected {
+            None => {
+                let result = f.run(&tx);
+                assert!(result.status, "{label}: {result:?}");
+            }
+            Some(reason) => assert_eq!(
+                rejection(&mut f, &tx, parent),
+                TempoInvalidTransaction::KeychainValidationFailed {
+                    reason: reason.into()
+                },
+                "{label}"
+            ),
+        }
+    }
+}
