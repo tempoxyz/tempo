@@ -7,7 +7,8 @@ use tempo_primitives::{SignatureType, transaction::ConfigurableAccountConfig};
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigurableAccountSimulationSpec {
-    /// Signing account for a grant; omitted for a direct parent signature.
+    /// Signing account. For a grant: the parent (the default) or an admin. For the outer
+    /// signature: the role account (the sender, or the `keyId` delegate), checked when set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signer: Option<Address>,
     /// Full configuration at the requested state, encoded as RLP bytes.
