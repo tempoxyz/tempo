@@ -3,8 +3,6 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-#[cfg(test)]
-mod budget;
 mod encode;
 mod metrics;
 mod prewarming;
@@ -455,10 +453,14 @@ where
             } else {
                 PayloadTransactions::Prewarming(StateAwareBestTransactions::new(
                     BestTransactionsPrewarming::new(prewarm_ctx, raw_best_txs),
+                    hardfork.fallback_fee_tokens(),
                 ))
             }
         } else {
-            PayloadTransactions::Sequential(StateAwareBestTransactions::new(Box::new(raw_best_txs)))
+            PayloadTransactions::Sequential(StateAwareBestTransactions::new(
+                Box::new(raw_best_txs),
+                hardfork.fallback_fee_tokens(),
+            ))
         };
         self.metrics
             .pool_fetch_duration_seconds

@@ -236,7 +236,9 @@ pub(crate) struct Actor<TContext, TExecutionLayer, TMarshal> {
     /// consensus round. Initialized from the local finalized state.
     delivered_finalized_tip: (Round, Height, Digest),
     /// The latest finalized tip announced by consensus, which may still
-    /// need to be delivered to the execution layer.
+    /// need to be delivered to the execution layer. Never below the finalized
+    /// blocks received from the marshal actor: each counts as a tip in the
+    /// round it was proposed in.
     network_finalized_tip: (Round, Height, Digest),
 
     /// The parent selected by the latest consensus context, independently of
@@ -1204,15 +1206,22 @@ where
             }
             Command::Finalize(finalized) => match *finalized {
                 Update::Tip(round, height, digest) => {
-                    self.record_convergence_target(round, (round.view(), digest));
-                    if round > self.network_finalized_tip.0 {
-                        if digest != self.network_finalized_tip.2 {
-                            self.pending_head.executed = None;
-                        }
-                        self.network_finalized_tip = (round, height, digest);
-                    }
+                    self.record_finalized_tip(round, height, digest);
                 }
                 Update::Block(block, acknowledgement) => {
+                    // Marshal reports a tip before the blocks up to it, except
+                    // after a crash: its block archive can keep a finalized
+                    // block whose finalization was lost, and marshal delivers
+                    // that block without a tip. The block proves its own
+                    // finality, so it is reported as a tip too, before its
+                    // delivery can move local finality past the tip. Blocks
+                    // at or below the tip were proposed no later than the
+                    // tip's round, so round order ignores them.
+                    self.record_finalized_tip(
+                        block.context().round,
+                        block.height(),
+                        block.digest(),
+                    );
                     self.pending_finalizations.push_back(FinalizedBlockRequest {
                         cause,
                         block,
@@ -1249,6 +1258,18 @@ where
             debug!(%round, "verification replaced a pending one for the same round");
         }
         self.queued_verifications.insert(round, verification);
+    }
+
+    /// Records a finalized tip, which also selects the finalized block as the
+    /// convergence target. Tips are ordered by round.
+    fn record_finalized_tip(&mut self, round: Round, height: Height, digest: Digest) {
+        self.record_convergence_target(round, (round.view(), digest));
+        if round > self.network_finalized_tip.0 {
+            if digest != self.network_finalized_tip.2 {
+                self.pending_head.executed = None;
+            }
+            self.network_finalized_tip = (round, height, digest);
+        }
     }
 
     /// Records the newest observed consensus round and its convergence target.

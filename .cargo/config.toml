@@ -1,3 +1,5 @@
+include = [{ path = "orb.toml", optional = true }]
+
 [alias]
 zone-xtask = "run --package tempo-xtask --bin tempo-zone-xtask --"
 x = "run --package tempo-xtask --bin tempo-xtask --"

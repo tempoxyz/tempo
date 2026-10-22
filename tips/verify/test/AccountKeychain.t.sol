@@ -650,6 +650,68 @@ contract AccountKeychainTest is TempoTest {
         assertEq(uint8(IAccountKeychain.SignatureType.WebAuthn), 2);
     }
 
+    /// @dev tempo-std's `SignatureType` enum has no `ConfigurableAccount`, so type 3 is sent and
+    ///      read back as a raw uint8.
+    struct RawKeyInfo {
+        uint8 signatureType;
+        address keyId;
+        uint64 expiry;
+        bool enforceLimits;
+        bool isRevoked;
+    }
+
+    function _authorizeKeyRaw(
+        address keyId,
+        uint8 signatureType
+    )
+        internal
+        returns (bool, bytes memory)
+    {
+        IAccountKeychain.KeyRestrictions memory config = IAccountKeychain.KeyRestrictions({
+            expiry: uint64(block.timestamp + 1 days),
+            enforceLimits: false,
+            limits: new IAccountKeychain.TokenLimit[](0),
+            allowAnyCalls: true,
+            allowedCalls: new IAccountKeychain.CallScope[](0)
+        });
+        return address(keychain)
+            .call(
+                abi.encodeWithSignature(
+                    "authorizeKey(address,uint8,(uint64,bool,(address,uint256,uint64)[],bool,(address,(bytes4,address[])[])[]))",
+                    keyId,
+                    signatureType,
+                    config
+                )
+            );
+    }
+
+    function test_AuthorizeKey_ConfigurableAccount() public {
+        vm.skip(!_isT14OrLater(), "ConfigurableAccount keys are accepted from T14");
+
+        vm.startPrank(alice, alice);
+
+        // A code-free keyId other than the caller is accepted and stored as type 3
+        (bool success,) = _authorizeKeyRaw(aliceAccessKey, 3);
+        assertTrue(success, "ConfigurableAccount key should be accepted");
+
+        (bool ok, bytes memory ret) = address(keychain)
+            .staticcall(abi.encodeCall(IAccountKeychain.getKey, (alice, aliceAccessKey)));
+        assertTrue(ok);
+        RawKeyInfo memory info = abi.decode(ret, (RawKeyInfo));
+        assertEq(info.signatureType, 3);
+        assertEq(info.keyId, aliceAccessKey);
+        assertGt(info.expiry, 0);
+        assertFalse(info.isRevoked);
+
+        // A precompile address is rejected
+        bytes memory returnData;
+        (success, returnData) = _authorizeKeyRaw(KEYCHAIN, 3);
+        assertFalse(success, "precompile keyId should be rejected");
+        assertEq(bytes4(returnData), IAccountKeychain.InvalidKeyId.selector);
+
+        vm.stopPrank();
+    }
+
     function test_AuthorizeKey_AllSignatureTypes() public {
         IAccountKeychain.KeyRestrictions memory config = IAccountKeychain.KeyRestrictions({
             expiry: uint64(block.timestamp + 1 days),

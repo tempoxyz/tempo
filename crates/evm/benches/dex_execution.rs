@@ -9,8 +9,8 @@ mod common;
 
 use alloy_consensus::transaction::Recovered;
 use alloy_evm::{Evm, EvmFactory};
-use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
-use alloy_sol_types::{SolCall, SolValue};
+use alloy_primitives::{Address, B256, Bytes, U256};
+use alloy_sol_types::SolCall;
 use common::{
     DEFAULT_ACCOUNT_COUNT, DEFAULT_BLOCK_TIMESTAMP, execute_txs, fixture_from_seeded_db,
     hardfork_bench_cases, txgen_signers,
@@ -30,10 +30,10 @@ use tempo_precompiles::{
     storage::{StorageActions, StorageCtx},
     tip_fee_manager::TipFeeManager,
     tip20::{ISSUER_ROLE, TIP20Token},
-    tip20_factory::TIP20Factory,
+    tip20_factory::{TIP20Factory, compute_tip20_address},
     tip403_registry::TIP403Registry,
 };
-use tempo_primitives::{TempoAddressExt, TempoTxEnvelope};
+use tempo_primitives::TempoTxEnvelope;
 
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
@@ -175,14 +175,6 @@ fn sign_dex_calls(
         .expect("generated DEX benchmark transaction should recover")
 }
 
-fn compute_tip20_address(sender: Address, salt: B256) -> Address {
-    let hash = keccak256((sender, salt).abi_encode());
-    let mut address_bytes = [0u8; 20];
-    address_bytes[..12].copy_from_slice(&Address::TIP20_PREFIX);
-    address_bytes[12..].copy_from_slice(&hash[..8]);
-    Address::from(address_bytes)
-}
-
 fn dex_bench_workloads() -> Vec<DexBenchWorkload> {
     let signers = txgen_signers(DEFAULT_ACCOUNT_COUNT);
     let participants: Vec<_> = signers.iter().map(|signer| signer.address()).collect();
@@ -190,7 +182,7 @@ fn dex_bench_workloads() -> Vec<DexBenchWorkload> {
         .first()
         .copied()
         .unwrap_or_else(|| Address::repeat_byte(0x01));
-    let base_token = compute_tip20_address(admin, DEX_BASE_TOKEN_SALT);
+    let (base_token, _) = compute_tip20_address(admin, DEX_BASE_TOKEN_SALT);
     let quote_token = PATH_USD_ADDRESS;
     let amount = DEX_ORDER_AMOUNT;
     let fill = amount / 4;
