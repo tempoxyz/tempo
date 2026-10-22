@@ -23,8 +23,8 @@ use tempo_primitives::transaction::{
     MAX_CONFIGURABLE_ACCOUNT_SIGNATURES, PrimitiveSignature, SIGNATURE_TYPE_CONFIGURABLE_ACCOUNT,
     SignatureType, TempoSignature, configurable_account_digest, derive_p256_address,
     tt_signature::{
-        P256SignatureWithPreHash, SIGNATURE_TYPE_KEYCHAIN, SIGNATURE_TYPE_WEBAUTHN,
-        WebAuthnSignature, normalize_p256_s,
+        P256SignatureWithPreHash, SIGNATURE_TYPE_KEYCHAIN, SIGNATURE_TYPE_KEYCHAIN_V2,
+        SIGNATURE_TYPE_WEBAUTHN, WebAuthnSignature, normalize_p256_s,
     },
 };
 
@@ -637,6 +637,43 @@ fn sixty_five_byte_owners_remain_untyped() {
         let decoded = ConfigurableAccountSignature::decode(&mut encoded.as_slice()).unwrap();
         assert_eq!(decoded.signatures(), [expected]);
     }
+}
+
+#[test]
+fn signature_bytes_dispatch_on_length_then_type_byte() {
+    let too_short = "Signature data too short: expected type identifier + signature data";
+    for first in [
+        SIGNATURE_TYPE_KEYCHAIN,
+        SIGNATURE_TYPE_KEYCHAIN_V2,
+        SIGNATURE_TYPE_CONFIGURABLE_ACCOUNT,
+    ] {
+        assert_eq!(TempoSignature::from_bytes(&[first]), Err(too_short));
+        assert_eq!(
+            decode_exact::<AccountSignature>(alloy_rlp::encode(Bytes::from(vec![first]))),
+            Err(RlpError::Custom(too_short))
+        );
+        let lone_inner = [
+            &[SIGNATURE_TYPE_KEYCHAIN_V2][..],
+            indexed_owner(3).as_slice(),
+            &[first],
+        ]
+        .concat();
+        assert_eq!(TempoSignature::from_bytes(&lone_inner), Err(too_short));
+
+        let mut untyped = owner_approval().to_bytes().to_vec();
+        untyped[0] = first;
+        assert_eq!(
+            TempoSignature::from_bytes(&untyped),
+            Ok(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                Signature::try_from(untyped.as_slice()).unwrap()
+            )))
+        );
+    }
+
+    assert_eq!(
+        TempoSignature::from_bytes(&[SIGNATURE_TYPE_CONFIGURABLE_ACCOUNT, 0xff, 0xff]),
+        Err("Invalid configurable account signature RLP")
+    );
 }
 
 #[test]
