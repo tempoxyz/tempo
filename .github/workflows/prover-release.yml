@@ -4,6 +4,9 @@ name: Prover Release
 # tempo-zone-prover-utils images with that version, then drafts a GitHub
 # release carrying the enclave's PCR measurements and image digest.
 #
+# Before anything is drafted, the enclave is rebuilt on Depot and on a separate
+# GitHub-hosted runner, and both must reproduce the published PCRs.
+#
 # Manual runs publish when started from a prover/vX.Y.Z tag ("Use workflow
 # from"). A dry run builds and measures the prover from any ref and publishes
 # nothing: no image tags and no release.
@@ -66,13 +69,18 @@ jobs:
     with:
       production_image_verify_only: ${{ needs.resolve.outputs.dry_run == 'true' }}
 
-  dry-run-summary:
-    name: Report dry-run PCRs
-    needs: [resolve, images]
-    if: needs.resolve.outputs.dry_run == 'true'
+  measurements:
+    name: Read prover measurements
+    needs: images
     runs-on: ubuntu-latest
     permissions:
       id-token: write
+    outputs:
+      pcr0: ${{ steps.read.outputs.pcr0 }}
+      pcr1: ${{ steps.read.outputs.pcr1 }}
+      pcr2: ${{ steps.read.outputs.pcr2 }}
+      builder_image: ${{ steps.read.outputs.builder_image }}
+      genesis_sha256: ${{ steps.read.outputs.genesis_sha256 }}
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -84,24 +92,111 @@ jobs:
           path: measurements
           merge-multiple: true
 
+      - name: Read measurements and build inputs
+        id: read
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          identity=measurements/identity.json
+          [[ "$(jq -er '.sha' "$identity")" == "$COMMIT_SHA" ]] || {
+            echo "Measurements were not produced for $COMMIT_SHA" >&2
+            exit 1
+          }
+          builder_image="$(jq -er '.eif_builder_image' "$identity")"
+          [[ "$builder_image" =~ ^[a-z0-9][a-z0-9./:_-]*@sha256:[0-9a-f]{64}$ ]] || {
+            echo "EIF builder image is not digest-pinned: $builder_image" >&2
+            exit 1
+          }
+          genesis_sha256="$(jq -er '.genesis_sha256' "$identity")"
+          [[ "$genesis_sha256" =~ ^[0-9a-f]{64}$ ]]
+          {
+            for index in 0 1 2; do
+              echo "pcr$index=$(jq -er ".Measurements.PCR$index" measurements/measurements.json)"
+            done
+            echo "builder_image=$builder_image"
+            echo "genesis_sha256=$genesis_sha256"
+          } >> "$GITHUB_OUTPUT"
+
+  verify-eif:
+    name: Rebuild the prover EIF on two hosts
+    needs: measurements
+    uses: tempoxyz/gh-actions/.github/workflows/reproducible-eif-verify.yml@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+    permissions:
+      contents: read
+      packages: read
+      id-token: write
+    with:
+      ref: ${{ github.sha }}
+      build-definitions-sha: ${{ github.sha }}
+      build-definition-paths: |
+        .dockerignore
+        zones/docker/Dockerfile.reproducible
+        zones/docker/Dockerfile.prover-package
+        zones/scripts/package-prover-eif.sh
+        zones/scripts/reproducible-eif-build.sh
+      build-script: zones/scripts/reproducible-eif-build.sh
+      eif-builder-image: ${{ needs.measurements.outputs.builder_image }}
+      # Zones Docker Build's default genesis, which the images job embeds.
+      build-input-url: https://devnet-assets.tempoxyz.dev/tempo-devnet-nextfork.json
+      build-input-sha256: ${{ needs.measurements.outputs.genesis_sha256 }}
+      depot-project: 0c6tg19qsp
+      artifact-name: prover-release-eif-verification
+
+  confirm-pcrs:
+    name: Confirm reproduced PCRs
+    needs: [measurements, verify-eif]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Compare the published and reproduced PCRs
+        env:
+          MEASURED: ${{ format('{0} {1} {2}', needs.measurements.outputs.pcr0, needs.measurements.outputs.pcr1, needs.measurements.outputs.pcr2) }}
+          REPRODUCED: ${{ format('{0} {1} {2}', needs.verify-eif.outputs.pcr0, needs.verify-eif.outputs.pcr1, needs.verify-eif.outputs.pcr2) }}
+        run: |
+          set -euo pipefail
+          if [[ "$MEASURED" != "$REPRODUCED" ]]; then
+            echo "::error::Reproduced PCRs ($REPRODUCED) differ from the published image's ($MEASURED)"
+            exit 1
+          fi
+
+  dry-run-summary:
+    name: Report dry-run PCRs
+    needs: [resolve, measurements, confirm-pcrs]
+    if: needs.resolve.outputs.dry_run == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
       - name: Summarize measurements
+        env:
+          PCR0: ${{ needs.measurements.outputs.pcr0 }}
+          PCR1: ${{ needs.measurements.outputs.pcr1 }}
+          PCR2: ${{ needs.measurements.outputs.pcr2 }}
         run: |
           set -euo pipefail
           {
             echo "## Prover dry run for ${GITHUB_SHA}"
             echo
-            echo "Nothing was published."
+            echo "Nothing was published. Two independent EIF builds reproduced these PCRs."
             echo
             echo "| PCR | Value |"
             echo "| --- | --- |"
-            for index in 0 1 2; do
-              echo "| PCR$index | $(jq -er ".Measurements.PCR$index" measurements/measurements.json) |"
-            done
+            echo "| PCR0 | $PCR0 |"
+            echo "| PCR1 | $PCR1 |"
+            echo "| PCR2 | $PCR2 |"
           } >> "$GITHUB_STEP_SUMMARY"
 
   release:
     name: Draft prover release
-    needs: [resolve, images]
+    needs: [resolve, images, confirm-pcrs]
     if: needs.resolve.outputs.dry_run == 'false'
     runs-on: ubuntu-latest
     permissions:
