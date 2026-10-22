@@ -374,14 +374,18 @@ jobs:
             "$TEMPO_SIDECAR_TAGS"
             "$TEMPO_XTASK_TAGS"
           )
-          sign_failures=0
+          # Each reference is signed independently, so sign them concurrently.
+          pids=()
           for tags in "${images[@]}"; do
             while IFS= read -r image; do
               [ -n "$image" ] || continue
-              if ! sign_image "$image"; then
-                sign_failures=$((sign_failures + 1))
-              fi
+              sign_image "$image" &
+              pids+=("$!")
             done <<< "$tags"
+          done
+          sign_failures=0
+          for pid in "${pids[@]}"; do
+            wait "$pid" || sign_failures=$((sign_failures + 1))
           done
 
           if [ "$sign_failures" -ne 0 ]; then
