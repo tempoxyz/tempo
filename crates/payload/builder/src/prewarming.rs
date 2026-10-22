@@ -9,7 +9,7 @@ use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{EvmStateProviderBox, StateProvider, StateProviderFactory};
-use reth_tasks::{TaskExecutor, WorkerState};
+use reth_tasks::{TaskExecutor, WorkerStatefulPool};
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
@@ -83,7 +83,7 @@ impl BestTransactionsPrewarming {
             let prewarm = ctx.prewarm.clone();
             scope.spawn(move |_| {
                 prewarm
-                    .worker_state
+                    .stateful_pool
                     .init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
             });
 
@@ -186,7 +186,7 @@ impl BestTransactionsPrewarming {
             return PrewarmedTransaction::without_replay(tx);
         }
 
-        let replay = prewarm.worker_state.get_or_init(
+        let replay = prewarm.stateful_pool.get_or_init(
             || prewarm.evm_for_ctx(),
             |state| {
                 let evm = state.as_mut()?;
@@ -360,7 +360,7 @@ pub(crate) struct PrewarmingExecutionContext<Provider> {
     cache: Option<SavedCache>,
     evm_env: EvmEnvFor<TempoEvmConfig>,
     stop: Arc<AtomicBool>,
-    worker_state: Arc<WorkerState>,
+    stateful_pool: Arc<WorkerStatefulPool>,
     parallel: bool,
 }
 
@@ -376,7 +376,7 @@ where
         evm_env: EvmEnvFor<TempoEvmConfig>,
         parallel: bool,
     ) -> Self {
-        let worker_state = Arc::new(WorkerState::new(Arc::clone(executor.prewarming_pool())));
+        let stateful_pool = WorkerStatefulPool::new(Arc::clone(executor.prewarming_pool()));
         Self {
             provider,
             executor,
@@ -384,7 +384,7 @@ where
             cache,
             evm_env,
             stop: Arc::new(AtomicBool::new(false)),
-            worker_state,
+            stateful_pool,
             parallel,
         }
     }
@@ -747,7 +747,7 @@ mod tests {
         let evm_env = evm_config
             .next_evm_env(&parent_header, &attributes)
             .expect("test next block env");
-        let worker_state = Arc::new(WorkerState::new(Arc::clone(executor.prewarming_pool())));
+        let stateful_pool = WorkerStatefulPool::new(Arc::clone(executor.prewarming_pool()));
         PrewarmingExecutionContext {
             provider,
             executor,
@@ -755,7 +755,7 @@ mod tests {
             cache: None,
             evm_env,
             stop: Arc::default(),
-            worker_state,
+            stateful_pool,
             parallel,
         }
     }
@@ -1038,15 +1038,15 @@ mod tests {
         context.evm_env.block_env.basefee = 0;
 
         let pool = Arc::new(WorkerPool::new(1, "prewarm-actions-test"));
-        context.worker_state = Arc::new(WorkerState::new(Arc::clone(&pool)));
+        context.stateful_pool = WorkerStatefulPool::new(Arc::clone(&pool));
         context
-            .worker_state
+            .stateful_pool
             .init::<PrewarmEvmState>(|_| context.evm_for_ctx());
 
         pool.install_fn(|| {
             let failed_action =
                 StorageAction::Sstore(Address::random(), U256::ONE, U256::from(2), U256::from(3));
-            context.worker_state.get_or_init(
+            context.stateful_pool.get_or_init(
                 || context.evm_for_ctx(),
                 |state| {
                     let evm = state.as_mut().expect("prewarm EVM");
@@ -1062,7 +1062,7 @@ mod tests {
                 None,
             );
             assert!(failed.replay.is_none());
-            context.worker_state.get_or_init(
+            context.stateful_pool.get_or_init(
                 || context.evm_for_ctx(),
                 |state| {
                     let evm = state.as_mut().expect("prewarm EVM");
@@ -1172,9 +1172,9 @@ mod tests {
         let mut second = prewarming_context(executor, false);
         second.evm_env.block_env.beneficiary = Address::repeat_byte(2);
         let pool = Arc::new(WorkerPool::new(1, "prewarm-run-test"));
-        first.worker_state = Arc::new(WorkerState::new(Arc::clone(&pool)));
-        second.worker_state = Arc::new(WorkerState::new(Arc::clone(&pool)));
-        let foreign = WorkerState::new(Arc::clone(&pool));
+        first.stateful_pool = WorkerStatefulPool::new(Arc::clone(&pool));
+        second.stateful_pool = WorkerStatefulPool::new(Arc::clone(&pool));
+        let foreign = WorkerStatefulPool::new(Arc::clone(&pool));
         foreign.init(|_| String::from("validation worker state"));
 
         pool.install_fn(|| {
@@ -1186,7 +1186,7 @@ mod tests {
                     None,
                 );
                 assert_eq!(warmed.tx.hash(), tx.hash());
-                context.worker_state.get(|state: &PrewarmEvmState| {
+                context.stateful_pool.get(|state: &PrewarmEvmState| {
                     let evm = state.as_ref().unwrap();
                     assert_eq!(
                         evm.block().beneficiary,
@@ -1198,7 +1198,7 @@ mod tests {
 
         drop(first);
         pool.install_fn(|| {
-            second.worker_state.get(|state: &PrewarmEvmState| {
+            second.stateful_pool.get(|state: &PrewarmEvmState| {
                 assert_eq!(
                     state.as_ref().unwrap().block().beneficiary,
                     second.evm_env.block_env.beneficiary,
