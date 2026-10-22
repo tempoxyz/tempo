@@ -758,11 +758,19 @@ fn prepare_keychain(
             .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
         if signer != aa.signer() {
             let signature_type: u8 = key_authorization.signature.key_type().into();
-            let signer_is_admin = state.loaded_key.as_ref().is_some_and(|loaded| {
-                loaded.key_id == signer
-                    && loaded.key.signature_type as u8 == signature_type
-                    && loaded.key.is_admin
-            });
+            let signer_is_admin = match state.loaded_key.as_ref() {
+                Some(loaded) if loaded.key_id == signer && loaded.key.is_admin => {
+                    StorageCtx::enter_evm_without_tip1060_accounting(host, || {
+                        AccountKeychain::new().accepts_signature_type(
+                            &loaded.key,
+                            signer,
+                            signature_type,
+                        )
+                    })
+                    .map_err(keychain_error)?
+                }
+                _ => false,
+            };
             if !signer_is_admin {
                 return Err(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
                     expected: aa.signer(),
