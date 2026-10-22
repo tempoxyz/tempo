@@ -282,7 +282,6 @@ impl AccountKeychain {
         }
         if is_delegate_grant {
             // Naming a delegate does not register it or require a configuration witness.
-            // Its direct owner quorum is checked when the grant is used.
             if !valid_account(key_id, self.storage.spec())
                 || self
                     .storage
