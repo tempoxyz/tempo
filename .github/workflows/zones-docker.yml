@@ -832,7 +832,7 @@ jobs:
       (github.repository == 'tempoxyz/tempo' &&
       (github.event_name == 'push' || github.event_name == 'schedule' ||
       (github.event_name == 'workflow_dispatch' && inputs.reproducible_verify != true && inputs.reproducible_eif_verify != true)))
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-latest-16
     permissions:
       id-token: write
       contents: read
