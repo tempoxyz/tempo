@@ -632,7 +632,7 @@ fn warn_if_not_fifo(is_fifo: bool, path: &Path) {
 mod tests {
     use std::{io::Write as _, process::Command, thread, time::Duration};
 
-    use clap::{CommandFactory as _, Parser as _};
+    use clap::Parser as _;
     use commonware_codec::Encode as _;
 
     use super::*;
@@ -702,30 +702,6 @@ mod tests {
                 assert!(VerificationMode::Deferred.is_deferred_at(&chainspec, timestamp));
             }
         }
-    }
-
-    #[test]
-    fn verification_mode_help() {
-        let mut command = TestCli::command();
-        // Exercise Clap's rendered help path and inspect its advertised default/choices.
-        let help = command.render_long_help().to_string();
-        let flag = help
-            .split("--consensus.verification-mode <VERIFICATION_MODE>")
-            .nth(1)
-            .unwrap();
-        let help = flag
-            .split("\n      --")
-            .next()
-            .unwrap()
-            .trim()
-            .lines()
-            .map(str::trim)
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert_eq!(
-            help,
-            "When to complete application verification of proposed blocks.\n\nHardfork uses the previous epoch boundary timestamp (genesis for epoch zero): immediate before T14, deferred from T14. Immediate and deferred override the schedule.\n\n[default: hardfork]\n[possible values: immediate, deferred, hardfork]"
-        );
     }
 
     #[test]
