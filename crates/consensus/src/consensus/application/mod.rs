@@ -27,7 +27,7 @@ use commonware_consensus::{
         standard::{Deferred, Inline, Standard},
     },
     simplex::{Plan, scheme::bls12381_threshold::vrf::Scheme, types::Context},
-    types::{FixedEpocher, Round},
+    types::{Epocher, Round},
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_runtime::{Clock, Spawner};
@@ -41,22 +41,24 @@ use crate::{
 };
 
 /// Selects and lazily constructs the two shared verification wrappers.
-pub(crate) struct Application<E>
+pub(crate) struct Application<E, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
+    ES: Epocher,
 {
     inner: Inner,
     marshal: Mailbox<Scheme<PublicKey, MinSig>, Standard<Block>>,
-    epocher: FixedEpocher,
+    epocher: ES,
     chainspec: Arc<TempoChainSpec>,
     verification_mode: VerificationMode,
-    immediate: Arc<OnceLock<EpochApplication<E>>>,
-    deferred: Arc<OnceLock<EpochApplication<E>>>,
+    immediate: Arc<OnceLock<EpochApplication<E, ES>>>,
+    deferred: Arc<OnceLock<EpochApplication<E, ES>>>,
 }
 
-impl<E> Clone for Application<E>
+impl<E, ES> Clone for Application<E, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
+    ES: Epocher,
 {
     fn clone(&self) -> Self {
         Self {
@@ -71,14 +73,15 @@ where
     }
 }
 
-impl<E> Application<E>
+impl<E, ES> Application<E, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
+    ES: Epocher,
 {
     pub(crate) fn new(
         inner: Inner,
         marshal: Mailbox<Scheme<PublicKey, MinSig>, Standard<Block>>,
-        epocher: FixedEpocher,
+        epocher: ES,
         chainspec: Arc<TempoChainSpec>,
         verification_mode: VerificationMode,
     ) -> Self {
@@ -100,7 +103,7 @@ where
         &self,
         timestamp: u64,
         context: impl FnOnce() -> E,
-    ) -> EpochApplication<E> {
+    ) -> EpochApplication<E, ES> {
         if self
             .verification_mode
             .is_deferred_at(&self.chainspec, timestamp)
@@ -111,7 +114,7 @@ where
         }
     }
 
-    fn to_immediate(&self, context: impl FnOnce() -> E) -> EpochApplication<E> {
+    fn to_immediate(&self, context: impl FnOnce() -> E) -> EpochApplication<E, ES> {
         self.immediate
             .get_or_init(|| {
                 EpochApplication::Immediate(Inline::new(
@@ -124,7 +127,7 @@ where
             .clone()
     }
 
-    fn to_deferred(&self, context: impl FnOnce() -> E) -> EpochApplication<E> {
+    fn to_deferred(&self, context: impl FnOnce() -> E) -> EpochApplication<E, ES> {
         self.deferred
             .get_or_init(|| {
                 EpochApplication::Deferred(Deferred::new(
@@ -138,9 +141,10 @@ where
     }
 }
 
-impl<E> Reporter for Application<E>
+impl<E, ES> Reporter for Application<E, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
+    ES: Epocher,
 {
     type Activity = Update<Block>;
 
@@ -159,17 +163,19 @@ where
 }
 
 /// Verification policy fixed for the lifetime of a simplex epoch.
-pub(crate) enum EpochApplication<E>
+pub(crate) enum EpochApplication<E, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
+    ES: Epocher,
 {
-    Deferred(Deferred<E, Scheme<PublicKey, MinSig>, Inner, Block, FixedEpocher>),
-    Immediate(Inline<E, Scheme<PublicKey, MinSig>, Inner, Block, FixedEpocher>),
+    Deferred(Deferred<E, Scheme<PublicKey, MinSig>, Inner, Block, ES>),
+    Immediate(Inline<E, Scheme<PublicKey, MinSig>, Inner, Block, ES>),
 }
 
-impl<E> Clone for EpochApplication<E>
+impl<E, ES> Clone for EpochApplication<E, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
+    ES: Epocher,
 {
     fn clone(&self) -> Self {
         match self {
@@ -179,9 +185,10 @@ where
     }
 }
 
-impl<E> Automaton for EpochApplication<E>
+impl<E, ES> Automaton for EpochApplication<E, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
+    ES: Epocher,
 {
     type Context = Context<Digest, PublicKey>;
     type Digest = Digest;
@@ -205,9 +212,10 @@ where
     }
 }
 
-impl<E> CertifiableAutomaton for EpochApplication<E>
+impl<E, ES> CertifiableAutomaton for EpochApplication<E, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
+    ES: Epocher,
 {
     async fn certify(&mut self, round: Round, payload: Self::Digest) -> oneshot::Receiver<bool> {
         match self {
@@ -217,9 +225,10 @@ where
     }
 }
 
-impl<E> Relay for EpochApplication<E>
+impl<E, ES> Relay for EpochApplication<E, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
+    ES: Epocher,
 {
     type PublicKey = PublicKey;
     type Digest = Digest;
@@ -233,9 +242,10 @@ where
     }
 }
 
-impl<E> Reporter for EpochApplication<E>
+impl<E, ES> Reporter for EpochApplication<E, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
+    ES: Epocher,
 {
     type Activity = Update<Block>;
 
