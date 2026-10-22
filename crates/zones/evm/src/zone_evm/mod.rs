@@ -10,8 +10,8 @@ use crate::executor::ZoneTransactionKind;
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::B256;
 use evm2::{
-    TxResult,
-    registry::{AnyTxHandler, HandlerResult, TxHandler, TxRegistry, TxRequest},
+    AnyError, TxResult,
+    registry::{AnyTxHandler, HandlerError, HandlerResult, TxHandler, TxRegistry, TxRequest},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::{ExecutionContext, TempoEvmTypes, TempoTxEnv, tempo_tx_registry};
@@ -20,6 +20,8 @@ use zone_precompiles::{
     tx_context,
 };
 use zone_primitives::constants::{CONTRACT_DEPLOYER_ALLOWLIST, TEMPO_STATE_ADDRESS};
+
+use crate::database::validate_journal;
 
 /// Wraps Tempo's handlers with Zone transaction validation and transaction-local L1 context.
 pub(crate) fn zone_tx_registry<L1: L1StorageReader>(
@@ -119,7 +121,10 @@ impl<L1: L1StorageReader> TxHandler<TempoEvmTypes, TempoTxEnv, TxResult<TempoEvm
     ) -> HandlerResult<TxResult<TempoEvmTypes>> {
         let _context = self.enter(&mut request)?;
         let transaction = Recovered::new_unchecked(request.envelope.clone(), request.tx.signer());
-        self.inner.execute(&transaction, request.host)
+        let result = self.inner.execute(&transaction, request.host)?;
+        validate_journal(request.host.state())
+            .map_err(|error| HandlerError::Fatal(AnyError::new(error)))?;
+        Ok(result)
     }
 }
 

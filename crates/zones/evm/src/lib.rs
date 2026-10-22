@@ -611,6 +611,7 @@ mod tests {
             reader.clone(),
             portal,
         );
+        // T9 initializes tokens through the registry, which `enable_tokens` then restores.
         let mut env = TempoEvmEnv {
             spec: TempoHardfork::T9,
             ..Default::default()
