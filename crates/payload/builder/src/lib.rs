@@ -7,6 +7,7 @@ mod budget;
 mod encode;
 mod metrics;
 mod prewarming;
+mod recovery;
 
 pub use budget::DEFAULT_BUILD_TIME_MULTIPLIER;
 use crossbeam_channel::Sender;
@@ -633,22 +634,37 @@ where
                 best_txs.on_new_result(result);
             };
 
-            let execution_result = if let Some(replay) = pool_tx.replay.take() {
-                parallel_transactions_executed += 1;
-                executor.execute_transaction_with_actions(
-                    tx.transaction.executable(),
-                    *replay,
-                    result_closure,
-                )
-            } else {
-                executor.invalidate_expiring_nonce_cache();
-                executor
-                    .execute_transaction_with_result_closure(
+            let execution_result = recovery::catch_transaction_panic(*tx.hash(), || {
+                if let Some(replay) = pool_tx.replay.take() {
+                    parallel_transactions_executed += 1;
+                    executor.execute_transaction_with_actions(
                         tx.transaction.executable(),
+                        *replay,
                         result_closure,
                     )
-                    .map(|_| ())
-            };
+                } else {
+                    executor.invalidate_expiring_nonce_cache();
+                    executor
+                        .execute_transaction_with_result_closure(
+                            tx.transaction.executable(),
+                            result_closure,
+                        )
+                        .map(|_| ())
+                }
+            })
+            .map_err(|panic| -> PayloadBuilderError {
+                let removed = self
+                    .pool
+                    .remove_transactions_and_descendants(vec![*tx.hash()]);
+                tracing::error!(
+                    target: "payload_builder",
+                    tx_hash = %tx.hash(),
+                    error = %panic,
+                    removed_transactions = removed.len(),
+                    "transaction execution panicked; evicting transaction and descendants and failing payload build"
+                );
+                panic.into()
+            })?;
 
             if let Err(err) = execution_result {
                 match err {

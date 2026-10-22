@@ -15,7 +15,9 @@ use reth_transaction_pool::{
 };
 use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::TempoEvm};
 use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
-use tracing::{instrument, trace};
+use tracing::{instrument, trace, warn};
+
+use crate::recovery;
 
 pub(crate) type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<EvmStateProviderBox>>>;
 
@@ -183,68 +185,80 @@ impl BestTransactionsPrewarming {
         Provider: StateProviderFactory + Clone + 'static,
     {
         let replay = WorkerPool::with_worker_mut(|worker| {
-            if prewarm.parallel && !is_parallel_candidate(&tx) {
-                return None;
-            }
-
-            let evm = worker.get_or_init(|| prewarm.evm_for_ctx()).as_mut()?;
-
-            if prewarm.is_stopped() {
-                return None;
-            }
-
-            let mut tx_env = tx.transaction.clone_tx_env();
-            if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
-                tempo_tx_env.expiring_nonce_idx = expiring_nonce_offset;
-            }
-
-            let result = match evm.transact_raw(tx_env) {
-                Ok(result) => result.result,
-                Err(err) => {
-                    // Discard actions recorded by the failed transaction before reusing this worker.
-                    evm.clear_actions();
-                    trace!(
-                        target: "payload_builder",
-                        %err,
-                        "Failed to prewarm transaction by execution"
-                    );
-
+            let result = recovery::catch_transaction_panic(*tx.hash(), || {
+                if prewarm.parallel && !is_parallel_candidate(&tx) {
                     return None;
                 }
-            };
 
-            trace!(target: "payload_builder", "Prewarmed transaction");
+                let evm = worker.get_or_init(|| prewarm.evm_for_ctx()).as_mut()?;
 
-            if !prewarm.parallel {
-                return None;
-            }
+                if prewarm.is_stopped() {
+                    return None;
+                }
 
-            let actions = evm.take_actions()?;
-            let expiring_nonce = tx
-                .transaction
-                .is_expiring_nonce()
-                .then(|| {
-                    let valid_before = tx.transaction.inner().valid_before()?;
-                    Some(ExpiringNonceReplay {
-                        hash: tx.transaction.expiring_nonce_hash()?,
-                        valid_before,
+                let mut tx_env = tx.transaction.clone_tx_env();
+                if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
+                    tempo_tx_env.expiring_nonce_idx = expiring_nonce_offset;
+                }
+
+                let result = match evm.transact_raw(tx_env) {
+                    Ok(result) => result.result,
+                    Err(err) => {
+                        // Discard actions recorded by the failed transaction before reusing this worker.
+                        evm.clear_actions();
+                        trace!(
+                            target: "payload_builder",
+                            %err,
+                            "Failed to prewarm transaction by execution"
+                        );
+
+                        return None;
+                    }
+                };
+
+                trace!(target: "payload_builder", "Prewarmed transaction");
+
+                if !prewarm.parallel {
+                    return None;
+                }
+
+                let actions = evm.take_actions()?;
+                let expiring_nonce = tx
+                    .transaction
+                    .is_expiring_nonce()
+                    .then(|| {
+                        let valid_before = tx.transaction.inner().valid_before()?;
+                        Some(ExpiringNonceReplay {
+                            hash: tx.transaction.expiring_nonce_hash()?,
+                            valid_before,
+                        })
                     })
-                })
-                .flatten();
+                    .flatten();
 
-            trace!(
-                target: "payload_builder",
-                actions = actions.len(),
-                expiring_nonce = expiring_nonce.is_some(),
-                "Generated replay for transaction"
-            );
+                trace!(
+                    target: "payload_builder",
+                    actions = actions.len(),
+                    expiring_nonce = expiring_nonce.is_some(),
+                    "Generated replay for transaction"
+                );
 
-            Some(Box::new(StorageActionReplay {
-                result,
-                actions,
-                validator_fee: evm.validator_fee(),
-                expiring_nonce,
-            }))
+                Some(Box::new(StorageActionReplay {
+                    result,
+                    actions,
+                    validator_fee: evm.validator_fee(),
+                    expiring_nonce,
+                }))
+            });
+
+            match result {
+                Ok(replay) => replay,
+                Err(error) => {
+                    // The worker EVM may contain partial journal changes and recorded actions.
+                    worker.clear();
+                    warn!(target: "payload_builder", %error, "prewarming panicked; discarding worker and falling back to payload execution");
+                    None
+                }
+            }
         });
 
         PrewarmedTransaction { tx, replay }
@@ -504,10 +518,11 @@ mod tests {
     use super::*;
     use alloy_consensus::{BlockHeader, Header, Signed, TxLegacy};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
-    use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
+    use reth_evm::{ConfigureEvm, NextBlockEnvAttributes, precompiles::DynPrecompile};
     use reth_primitives_traits::{
         Recovered, SealedHeader, transaction::error::InvalidTransactionError,
     };
+    use reth_revm::precompile::PrecompileId;
     use reth_storage_api::noop::NoopProvider;
     use reth_transaction_pool::{
         TransactionOrigin, ValidPoolTransaction, identifier::TransactionId,
@@ -1020,6 +1035,51 @@ mod tests {
             let log = log.lock().unwrap();
             log.no_updates == 1 && log.skip_blobs == vec![true]
         });
+    }
+
+    #[test]
+    fn panicked_prewarm_discards_worker_before_reuse() {
+        let mut context = prewarming_context(TaskExecutor::test(), true);
+        context.evm_env.block_env.basefee = 0;
+        let tx = test_payment_tx(Address::random(), 500_000);
+        let mut token = [0u8; 20];
+        token[..2].copy_from_slice(&[0x20, 0xc0]);
+        let target = Address::from(token);
+        let pool = WorkerPool::new(1, "prewarm-panic-test");
+        pool.init::<PrewarmEvmState>(|_| {
+            let mut evm = context.evm_for_ctx().unwrap();
+            evm.precompiles_mut().apply_precompile(&target, |_| {
+                Some(DynPrecompile::new_stateful(
+                    PrecompileId::Custom("panic-test".into()),
+                    move |mut input| {
+                        input
+                            .internals
+                            .sstore(target, U256::ZERO, U256::ONE)
+                            .unwrap();
+                        panic!("injected prewarm panic after storage write");
+                    },
+                ))
+            });
+            Some(evm)
+        });
+
+        pool.install_fn(|| {
+            let result = BestTransactionsPrewarming::prewarm_transaction(context.clone(), tx, None);
+            assert!(result.replay.is_none());
+            WorkerPool::with_worker_mut(|worker| {
+                worker.init::<PrewarmEvmState>(|existing| {
+                    assert!(existing.is_none(), "panicked worker must be discarded");
+                    context.evm_for_ctx()
+                });
+            });
+            let result = BestTransactionsPrewarming::prewarm_transaction(
+                context,
+                test_payment_tx(Address::random(), 500_000),
+                None,
+            );
+            assert!(result.replay.is_some());
+        });
+        pool.clear();
     }
 
     #[test]
