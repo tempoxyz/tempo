@@ -83,7 +83,7 @@ mod subscriber;
 #[cfg(test)]
 mod tests;
 
-pub use block::{L1BlockDeposits, PreparedL1Block};
+pub use block::{FAILED_DECRYPTION, L1BlockDeposits, PreparedL1Block};
 pub use deposit::{Deposit, L1Deposit, WithdrawalBounceBackDeposit};
 pub use encryption_keys::{
     BoundPublicKeyFingerprint, EncryptionKeyPublicStatus, EncryptionKeyRing, PublicKeyFingerprint,

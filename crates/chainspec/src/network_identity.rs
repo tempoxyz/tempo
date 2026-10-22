@@ -1,54 +1,47 @@
 //! Compiled network identities.
 
+use std::sync::OnceLock;
+
 use alloy_primitives::hex;
 use commonware_codec::ReadExt as _;
 use commonware_cryptography::bls12381::primitives::variant::{MinSig, Variant};
 use eyre::Context;
+use serde::{Deserialize, Deserializer, de::Error as _};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
-
-const TESTNET_NETWORK_IDENTITY_EPOCH: u64 = 1747;
-const TESTNET_NETWORK_IDENTITY: [u8; 96] = hex!(
-    "0x967ae1a6d3ddbe5cb0fe5e6fc58e74249787b4a277619b549fed6609d0466054"
-    "0dd2449cd7174def35e40f544e5ad72d15d064191a205ed6e0c49619c68f9751"
-    "08b614d0d51def9a8416a10a07c4193bea0cbbc4252ec1b33f21095a5d7aa590"
-);
-
-const MAINNET_NETWORK_IDENTITY_EPOCH: u64 = 0;
-const MAINNET_NETWORK_IDENTITY: [u8; 96] = hex!(
-    "0xa217bb85001d4dcf8e5c50136f77af88cb2cab1857279b91c6240f41cca95c4f"
-    "43f6dcab3e0dfb87dafb3ecbeb6251e90a5df2e6c47432482821cd8b84665ee4"
-    "642589d2d9628a92b03e2bbfb00e006d038cd98def76d2a41b7c228c05f5a193"
-);
 
 /// This holds the key that is known to be active. The genesis-derived
 /// value must be updated with a newer identity after a full DKG rotation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NetworkIdentity {
     /// First epoch for which `identity` is expected to verify finalizations.
     pub from_epoch: u64,
     /// BLS threshold public key.
+    #[serde(deserialize_with = "deserialize_identity")]
     pub identity: <MinSig as Variant>::Public,
 }
 
 impl NetworkIdentity {
     pub(crate) fn mainnet() -> Self {
-        let identity = <MinSig as Variant>::Public::read(&mut MAINNET_NETWORK_IDENTITY.as_ref())
-            .expect("valid network identity");
+        static IDENTITY: OnceLock<NetworkIdentity> = OnceLock::new();
 
-        Self {
-            identity,
-            from_epoch: MAINNET_NETWORK_IDENTITY_EPOCH,
-        }
+        IDENTITY
+            .get_or_init(|| {
+                serde_json::from_str(env!("TEMPO_MAINNET_NETWORK_IDENTITY"))
+                    .expect("valid mainnet network identity")
+            })
+            .clone()
     }
 
     pub(crate) fn testnet() -> Self {
-        let identity = <MinSig as Variant>::Public::read(&mut TESTNET_NETWORK_IDENTITY.as_ref())
-            .expect("valid network identity");
+        static IDENTITY: OnceLock<NetworkIdentity> = OnceLock::new();
 
-        Self {
-            identity,
-            from_epoch: TESTNET_NETWORK_IDENTITY_EPOCH,
-        }
+        IDENTITY
+            .get_or_init(|| {
+                serde_json::from_str(env!("TEMPO_TESTNET_NETWORK_IDENTITY"))
+                    .expect("valid testnet network identity")
+            })
+            .clone()
     }
 
     pub(crate) fn from_extra_data(extra_data: &[u8]) -> eyre::Result<Self> {
@@ -63,27 +56,57 @@ impl NetworkIdentity {
     }
 }
 
+fn deserialize_identity<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<<MinSig as Variant>::Public, D::Error> {
+    let bytes = hex::deserialize::<_, [u8; 96]>(deserializer)?;
+    <MinSig as Variant>::Public::read(&mut bytes.as_ref()).map_err(D::Error::custom)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use commonware_codec::Encode as _;
 
     #[test]
-    fn compiled_identity_decodes() {
-        let identity = NetworkIdentity::testnet();
+    fn compiled_identities_match_files() {
+        for (identity, json) in [
+            (
+                NetworkIdentity::mainnet(),
+                env!("TEMPO_MAINNET_NETWORK_IDENTITY"),
+            ),
+            (
+                NetworkIdentity::testnet(),
+                env!("TEMPO_TESTNET_NETWORK_IDENTITY"),
+            ),
+        ] {
+            let published = serde_json::from_str::<serde_json::Value>(json).unwrap();
 
-        assert_eq!(identity.from_epoch, TESTNET_NETWORK_IDENTITY_EPOCH);
-        assert_eq!(
-            identity.identity.encode().as_ref(),
-            TESTNET_NETWORK_IDENTITY.as_ref()
-        );
+            assert_eq!(
+                identity.from_epoch,
+                published["from_epoch"].as_u64().unwrap()
+            );
+            assert_eq!(
+                hex::encode_prefixed(identity.identity.encode()),
+                published["identity"]
+            );
+        }
+    }
 
-        let identity = NetworkIdentity::mainnet();
+    #[test]
+    fn deserialize_rejects_invalid_identity() {
+        for (encoded, expected) in [
+            ("0x00".to_owned(), "invalid string length"),
+            ("gg".repeat(96), "invalid character 'g' at position 0"),
+            (
+                "00".repeat(96),
+                "Validation Error: Context(G2), Message(Bad encoding)",
+            ),
+        ] {
+            let json = serde_json::json!({ "from_epoch": 2042, "identity": encoded });
+            let error = serde_json::from_value::<NetworkIdentity>(json).unwrap_err();
 
-        assert_eq!(identity.from_epoch, MAINNET_NETWORK_IDENTITY_EPOCH);
-        assert_eq!(
-            identity.identity.encode().as_ref(),
-            MAINNET_NETWORK_IDENTITY.as_ref()
-        );
+            assert_eq!(error.to_string(), expected);
+        }
     }
 }

@@ -16,5 +16,5 @@ pub use protocol::{
     VerifierMode, VerifierModeError, VerifyRequest, VerifyResponse, nitro_batch_attestation_hash,
 };
 
-/// Allows batch witnesses up to 2 GiB to bound untrusted frame allocations.
+/// Default encoded request limit, also used to derive the CBOR value-count limit.
 pub const DEFAULT_MAX_REQUEST_BYTES: usize = 2 * 1024 * 1024 * 1024;

@@ -30,6 +30,8 @@ pub use subblock::{SubBlockMetadata, SubBlockVersion};
 
 extern crate alloc;
 
+pub mod account;
+
 use once_cell as _;
 
 /// Tempo block.

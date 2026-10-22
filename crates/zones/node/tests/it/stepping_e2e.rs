@@ -612,16 +612,51 @@ async fn test_boundary_ancestry_submission_uses_recent_anchor() -> eyre::Result<
     )
     .await?;
 
-    let first_step_tempo = genesis_block + SHORT_EIP2935_EFFECTIVE_WINDOW;
-    zone.wait_for_tempo_block_number(first_step_tempo, SHORT_STEPPING_TIMEOUT)
-        .await?;
+    let zone_provider = zone.provider();
+    let outbox = IZoneOutbox::new(ZONE_OUTBOX_ADDRESS, &zone_provider);
+    let tempo_state = TempoState::new(TEMPO_STATE_ADDRESS, &zone_provider);
+    let first_boundary_tempo = poll_until(
+        SHORT_STEPPING_TIMEOUT,
+        Duration::from_millis(50),
+        "first finalized zone batch boundary",
+        || {
+            let outbox = &outbox;
+            let tempo_state = &tempo_state;
+            async move {
+                let events = outbox.BatchFinalized_filter().from_block(0).query().await?;
+                let Some((_, log)) = events.first() else {
+                    return Ok(None);
+                };
+                let zone_block = log
+                    .block_number
+                    .ok_or_else(|| eyre::eyre!("BatchFinalized log missing block number"))?;
+                let tempo_block_number = tempo_state
+                    .tempoBlockNumber()
+                    .block(BlockId::number(zone_block))
+                    .call()
+                    .await?;
+                Ok(Some(tempo_block_number))
+            }
+        },
+    )
+    .await?;
 
-    let l1_tip = l1.provider().get_block_number().await?;
-    eyre::ensure!(
-        l1_tip.saturating_sub(first_step_tempo) > SHORT_EIP2935_HISTORY_WINDOW,
-        "test precondition not met: first configured boundary tempo {first_step_tempo} is only {} blocks behind L1 tip {l1_tip}",
-        l1_tip.saturating_sub(first_step_tempo),
-    );
+    poll_until(
+        SHORT_STEPPING_TIMEOUT,
+        Duration::from_millis(50),
+        "first finalized zone batch boundary aged past configured history window",
+        || {
+            let provider = l1.provider();
+            async move {
+                let current = provider.get_block_number().await?;
+                Ok(
+                    (current.saturating_sub(first_boundary_tempo) > SHORT_EIP2935_HISTORY_WINDOW)
+                        .then_some(current),
+                )
+            }
+        },
+    )
+    .await?;
 
     let seq = spawn_sequencer_with_config(
         &l1,
