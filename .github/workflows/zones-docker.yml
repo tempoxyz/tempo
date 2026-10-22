@@ -85,6 +85,11 @@ on:
         required: false
         type: string
         default: ""
+      production_image_verify_only:
+        description: "Build and verify images without publishing tags (honored for workflow_dispatch callers)"
+        required: false
+        type: boolean
+        default: false
   schedule:
     - cron: "5 9 * * *"
     - cron: "30 20 * * *"
