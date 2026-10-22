@@ -143,34 +143,3 @@ async fn test_next_available_nonce_for_2d_key_includes_pending_txs() -> eyre::Re
 
     Ok(())
 }
-
-#[tokio::test(flavor = "multi_thread")]
-async fn test_fill_transaction_chain_id_mismatch_keeps_reth_error() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
-    let setup = TestNodeBuilder::new().build_http_only().await?;
-    let provider = ProviderBuilder::new().connect_http(setup.http_url);
-    let chain_id = provider.get_chain_id().await?;
-
-    let request = TransactionRequest {
-        from: Some(test_signer(0).address()),
-        to: Some(TxKind::Call(Address::random())),
-        chain_id: Some(chain_id + 1),
-        ..Default::default()
-    };
-    let err = provider
-        .fill_transaction(request)
-        .await
-        .expect_err("a wrong chain id must be rejected");
-    assert_eq!(
-        err.as_error_resp()
-            .unwrap_or_else(|| panic!("{err}"))
-            .message,
-        format!(
-            "chainId does not match node's (have={}, want={chain_id})",
-            chain_id + 1
-        )
-    );
-
-    Ok(())
-}

@@ -105,9 +105,7 @@ fn simulated_webauthn_approvals_charge_worst_case_data() {
                 .gas_limit(5_000_000),
             fee_token: Some(PATH_USD_ADDRESS),
             key_type: Some(SignatureType::ConfigurableAccount),
-            configurable_account_simulation_signature: Some(spec.mock_signature(account).unwrap()),
             configurable_account_simulation: Some(spec),
-            configurable_account_simulation_prepared: true,
             ..Default::default()
         };
         let mut env = evm_env(&evm_config());

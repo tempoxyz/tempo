@@ -11,7 +11,6 @@ use alloy::{
     network::{EthereumWallet, ReceiptResponse},
     primitives::{Address, B256, Bytes, Signature, U256},
     providers::{Provider, ProviderBuilder},
-    rpc::types::TransactionRequest,
     signers::{SignerSync, local::PrivateKeySigner},
     sol_types::SolCall,
 };
@@ -21,7 +20,6 @@ use reth_e2e_test_utils::wallet::test_signer;
 use reth_ethereum::network::{NetworkSyncUpdater, SyncState};
 use reth_node_api::BuiltPayload;
 use reth_primitives_traits::transaction::TxHashRef;
-use reth_provider::{AccountReader, StateProviderFactory};
 use reth_transaction_pool::TransactionPool;
 use tempo_alloy::{TempoNetwork, provider::TempoProviderBuilderExt, rpc::TempoTransactionReceipt};
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
@@ -38,7 +36,7 @@ use tempo_precompiles::{
     tip20::ITIP20::{self},
 };
 use tempo_primitives::{
-    SignatureType, TempoTransaction, TempoTxEnvelope,
+    TempoTransaction, TempoTxEnvelope,
     transaction::{
         KeyAuthorization, SignedKeyAuthorization,
         tempo_transaction::Call,
@@ -290,68 +288,6 @@ impl super::types::TestEnv for Localnet {
         assert!(receipt.status(), "Receipt status mismatch for {tx_hash}");
         Ok(serde_json::to_value(receipt)?)
     }
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn test_fill_uses_fee_token_gas_allowance() -> eyre::Result<()> {
-    let mut env = Localnet::new().await?;
-    let signer = PrivateKeySigner::random();
-    env.fund_account(signer.address()).await?;
-    // eth_getBalance returns a wallet-compatibility placeholder; inspect real state.
-    let account = env
-        .setup
-        .node
-        .inner
-        .provider
-        .latest()?
-        .basic_account(&signer.address())?;
-    assert!(account.is_none_or(|account| account.balance.is_zero()));
-    assert!(
-        ITIP20::new(DEFAULT_FEE_TOKEN, &env.provider)
-            .balanceOf(signer.address())
-            .call()
-            .await?
-            > U256::ZERO
-    );
-
-    let request = TempoTransactionRequest {
-        inner: TransactionRequest::default()
-            .from(signer.address())
-            .max_fee_per_gas(u128::from(TEMPO_T1_BASE_FEE) * 2)
-            .max_priority_fee_per_gas(u128::from(TEMPO_T1_BASE_FEE)),
-        calls: vec![create_transfer_call(
-            DEFAULT_FEE_TOKEN,
-            Address::random(),
-            U256::ONE,
-        )],
-        key_type: Some(SignatureType::Secp256k1),
-        fee_token: Some(DEFAULT_FEE_TOKEN),
-        ..Default::default()
-    };
-    let provider = env.setup.node.rpc_provider_for::<TempoNetwork>();
-    let filled = provider.fill_transaction(request.clone()).await?;
-    let tx = filled
-        .tx
-        .as_aa()
-        .ok_or_eyre("filled transaction is not AA")?
-        .tx();
-    assert!(tx.gas_limit > 21_000);
-    assert_eq!(tx.nonce, 0);
-    assert_eq!(tx.fee_token, Some(DEFAULT_FEE_TOKEN));
-
-    // Ordinary fill must retain explicitly supplied gas, even when it is too low to execute.
-    let explicit = TempoTransactionRequest {
-        inner: request.inner.clone().gas_limit(1),
-        ..request
-    };
-    let filled = provider.fill_transaction(explicit).await?;
-    let tx = filled
-        .tx
-        .as_aa()
-        .ok_or_eyre("filled transaction is not AA")?
-        .tx();
-    assert_eq!(tx.gas_limit, 1);
-    Ok(())
 }
 
 /// From T14 a fee payer signature costs one cold account access, which the node's estimate includes
