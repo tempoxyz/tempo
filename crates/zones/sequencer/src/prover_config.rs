@@ -14,11 +14,19 @@ use eyre::{Context as _, Result, ensure};
 use reth_metrics::metrics::Gauge;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::{TempoHardforks, hardfork::TempoHardfork};
+use tempo_precompiles::zone_verifier::approved_pcrs;
 use zone_chainspec::ZoneChainSpec;
 
 /// Readiness monitors endpoints for forks activating within 72 hours, inclusive.
 const PROVER_UPGRADE_LOOKAHEAD_SECS: u64 = 72 * 60 * 60;
 const PROVER_UPGRADE_CHECK_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Whether the compiled-in verifier policy approves prover measurements for a hardfork.
+type HasApprovedPcrs = fn(TempoHardfork) -> bool;
+
+fn has_approved_pcrs(hardfork: TempoHardfork) -> bool {
+    approved_pcrs(hardfork).is_some()
+}
 
 /// One explicit hardfork-to-prover assignment, written as `T13=HOST:PORT`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,6 +87,7 @@ impl ProverAddresses {
         self.monitor_upgrade_readiness_with_gauge(
             chain_spec,
             crate::metrics::ProverMetrics::default().missing_hardfork_prover,
+            has_approved_pcrs,
         )
         .await;
     }
@@ -99,16 +108,22 @@ impl ProverAddresses {
             .ok_or_else(|| eyre::eyre!("no prover configured for active L1 hardfork {hardfork}"))
     }
 
+    /// A fork is covered only by an assignment whose prover the node can authenticate.
+    fn covers(&self, hardfork: TempoHardfork, has_pcrs: HasApprovedPcrs) -> bool {
+        self.0.contains_key(&hardfork) && has_pcrs(hardfork)
+    }
+
     fn missing_upcoming_hardfork(
         &self,
         chain_spec: &impl TempoHardforks,
         active: TempoHardfork,
         now: u64,
+        has_pcrs: HasApprovedPcrs,
     ) -> Option<(TempoHardfork, u64)> {
         let deadline = now.saturating_add(PROVER_UPGRADE_LOOKAHEAD_SECS);
         TempoHardfork::VARIANTS.iter().copied().find_map(|fork| {
             let activation = chain_spec.tempo_fork_activation(fork).as_timestamp()?;
-            (fork > active && activation <= deadline && !self.0.contains_key(&fork))
+            (fork > active && activation <= deadline && !self.covers(fork, has_pcrs))
                 .then_some((fork, activation))
         })
     }
@@ -117,15 +132,19 @@ impl ProverAddresses {
         &self,
         chain_spec: Arc<ZoneChainSpec>,
         gauge: Gauge,
+        has_pcrs: HasApprovedPcrs,
     ) {
         let mut interval = tokio::time::interval(PROVER_UPGRADE_CHECK_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
             match SystemTime::now().duration_since(UNIX_EPOCH) {
-                Ok(now) => {
-                    self.record_upgrade_readiness(chain_spec.as_ref(), now.as_secs(), &gauge)
-                }
+                Ok(now) => self.record_upgrade_readiness(
+                    chain_spec.as_ref(),
+                    now.as_secs(),
+                    &gauge,
+                    has_pcrs,
+                ),
                 Err(error) => {
                     tracing::warn!(%error, "Cannot check upcoming prover hardforks: system clock precedes Unix epoch")
                 }
@@ -133,11 +152,19 @@ impl ProverAddresses {
         }
     }
 
-    fn record_upgrade_readiness(&self, chain_spec: &impl TempoHardforks, now: u64, gauge: &Gauge) {
+    /// Report the active fork or a fork activating within the lookahead as missing when it has no
+    /// assignment, or when its assigned prover has no approved PCRs and could never authenticate.
+    fn record_upgrade_readiness(
+        &self,
+        chain_spec: &impl TempoHardforks,
+        now: u64,
+        gauge: &Gauge,
+        has_pcrs: HasApprovedPcrs,
+    ) {
         let active = chain_spec.tempo_hardfork_at(now);
-        let missing = !self.0.contains_key(&active)
+        let missing = !self.covers(active, has_pcrs)
             || self
-                .missing_upcoming_hardfork(chain_spec, active, now)
+                .missing_upcoming_hardfork(chain_spec, active, now, has_pcrs)
                 .is_some();
         gauge.set(if missing { 1.0 } else { 0.0 });
     }
@@ -251,9 +278,9 @@ mod tests {
                 activation - 1,
                 activation,
             ] {
-                addresses.record_upgrade_readiness(&spec, now, &gauge);
+                addresses.record_upgrade_readiness(&spec, now, &gauge, |_| true);
             }
-            routed(before, after).record_upgrade_readiness(&spec, activation, &gauge);
+            routed(before, after).record_upgrade_readiness(&spec, activation, &gauge, |_| true);
             assert_eq!(*recorded.0.lock().unwrap(), vec![0.0, 1.0, 1.0, 1.0, 0.0]);
         }
     }
@@ -269,7 +296,7 @@ mod tests {
             let gauge = Gauge::from_arc(recorded.clone());
             let task = tokio::spawn(async move {
                 addresses
-                    .monitor_upgrade_readiness_with_gauge(chain_spec, gauge)
+                    .monitor_upgrade_readiness_with_gauge(chain_spec, gauge, |_| true)
                     .await;
             });
             tokio::task::yield_now().await;
@@ -282,6 +309,29 @@ mod tests {
             assert_eq!(*recorded.0.lock().unwrap(), vec![0.0, 0.0]);
             task.abort();
             assert!(task.await.unwrap_err().is_cancelled());
+        }
+    }
+
+    #[test]
+    fn assignments_without_approved_pcrs_are_reported_missing() {
+        for (before, after) in TRANSITIONS {
+            let activation = 400_000;
+            let spec = scheduled(after, activation);
+            let addresses = routed(before, after);
+            let recorded = Arc::new(RecordedGauge::default());
+            let gauge = Gauge::from_arc(recorded.clone());
+            // Both forks have endpoints. Only the PCR table decides readiness here.
+            let only_before: HasApprovedPcrs = match before {
+                TempoHardfork::T12 => |fork| fork == TempoHardfork::T12,
+                _ => |fork| fork == TempoHardfork::T13,
+            };
+            let window = activation - PROVER_UPGRADE_LOOKAHEAD_SECS;
+            addresses.record_upgrade_readiness(&spec, window - 1, &gauge, only_before);
+            addresses.record_upgrade_readiness(&spec, window, &gauge, only_before);
+            addresses.record_upgrade_readiness(&spec, activation, &gauge, only_before);
+            addresses.record_upgrade_readiness(&spec, activation, &gauge, |_| false);
+            addresses.record_upgrade_readiness(&spec, activation, &gauge, |_| true);
+            assert_eq!(*recorded.0.lock().unwrap(), vec![0.0, 1.0, 1.0, 1.0, 0.0]);
         }
     }
 
