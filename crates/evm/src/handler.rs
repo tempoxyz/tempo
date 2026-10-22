@@ -703,9 +703,10 @@ fn prepare_keychain(
         //   the loaded admin/signature-type facts below when the sidecar signer is the same key
         let timestamp = host.block().timestamp.saturating_to::<u64>();
 
-        // Extract the signature type from the inner signature to validate it matches
-        // the key_type stored in the keychain. This prevents using a signature of one
-        // type to authenticate as a key registered with a different type.
+        // Extract the signature type from the inner signature to validate it against
+        // the key_type stored in the keychain: a signature must have the key's stored type,
+        // except a migrated delegate's owner quorum on its primitive grant (see
+        // `AccountKeychain::accepts_signature_type`).
         // Only validate signature type on T1+ to maintain backward compatibility
         // with historical blocks during re-execution.
         let expected_signature_type = (key_authorization.is_some()
@@ -758,11 +759,19 @@ fn prepare_keychain(
             .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
         if signer != aa.signer() {
             let signature_type: u8 = key_authorization.signature.key_type().into();
-            let signer_is_admin = state.loaded_key.as_ref().is_some_and(|loaded| {
-                loaded.key_id == signer
-                    && loaded.key.signature_type as u8 == signature_type
-                    && loaded.key.is_admin
-            });
+            let signer_is_admin = match state.loaded_key.as_ref() {
+                Some(loaded) if loaded.key_id == signer && loaded.key.is_admin => {
+                    StorageCtx::enter_evm_without_tip1060_accounting(host, || {
+                        AccountKeychain::new().accepts_signature_type(
+                            &loaded.key,
+                            signer,
+                            signature_type,
+                        )
+                    })
+                    .map_err(keychain_error)?
+                }
+                _ => false,
+            };
             if !signer_is_admin {
                 return Err(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
                     expected: aa.signer(),
