@@ -160,6 +160,7 @@ mod tests {
         let chain_spec = Arc::new(ZoneChainSpec::from_genesis(genesis).unwrap());
         let consensus = ZoneConsensus::new(chain_spec.clone());
         let parent = SealedHeader::seal_slow(chain_spec.genesis_header().clone());
+        let timestamp = parent.inner.timestamp + 1;
         let header = TempoHeader {
             inner: Header {
                 parent_hash: parent.hash(),
@@ -168,8 +169,8 @@ mod tests {
                 withdrawals_root: Some(EMPTY_ROOT_HASH),
                 number: parent.inner.number + 1,
                 gas_limit: parent.inner.gas_limit,
-                timestamp: parent.inner.timestamp + 1,
-                base_fee_per_gas: Some(0),
+                timestamp,
+                base_fee_per_gas: chain_spec.next_block_base_fee(parent.header(), timestamp),
                 blob_gas_used: Some(0),
                 excess_blob_gas: Some(0),
                 parent_beacon_block_root: Some(B256::ZERO),
