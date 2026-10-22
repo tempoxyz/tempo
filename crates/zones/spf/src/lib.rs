@@ -9,7 +9,7 @@ use alloy_primitives::{B256, U256, keccak256};
 use reth_chainspec::EthChainSpec as _;
 use reth_consensus_common::validation::validate_against_parent_gas_limit;
 use reth_evm::execute::BlockAssemblerInput;
-use reth_primitives_traits::SealedHeader;
+use reth_primitives_traits::{SealedHeader, constants::MAXIMUM_GAS_LIMIT_BLOCK};
 use reth_storage_api::noop::NoopProvider;
 use revm::{Database as _, database::State, database_interface::bal::EvmDatabaseError};
 use tempo_evm::{TempoBlockAssembler, TempoEvmConfig};
@@ -350,13 +350,21 @@ fn validate_zone_block_timestamp(
     Ok(())
 }
 
-/// Validates the witness-controlled gas limit using the same parent-relative rule as Zone nodes.
+/// Validates the witness-controlled gas limit using the same bounds as Zone nodes.
 fn validate_zone_block_gas_limit(
     block: &ZoneBlock,
     block_index: usize,
     parent: &TempoHeader,
     chain_spec: &zone_chainspec::ZoneChainSpec,
 ) -> Result<(), Error> {
+    if block.gas_limit > MAXIMUM_GAS_LIMIT_BLOCK {
+        return Err(Error::InvalidGasLimit {
+            block_index,
+            parent: parent.inner.gas_limit,
+            actual: block.gas_limit,
+        });
+    }
+
     let mut child = parent.clone();
     child.inner.number = block.number;
     child.inner.timestamp = block.timestamp;
@@ -981,6 +989,29 @@ mod tests {
                 })
             );
         }
+    }
+
+    #[test]
+    fn rejects_gas_limit_above_absolute_maximum() {
+        let config = test_config();
+        let parent = TempoHeader {
+            inner: Header {
+                gas_limit: MAXIMUM_GAS_LIMIT_BLOCK,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut block = empty_zone_block(0, 0);
+        block.gas_limit = MAXIMUM_GAS_LIMIT_BLOCK + 1;
+
+        assert_eq!(
+            validate_zone_block_gas_limit(&block, 3, &parent, config.chain_spec().as_ref()),
+            Err(Error::InvalidGasLimit {
+                block_index: 3,
+                parent: MAXIMUM_GAS_LIMIT_BLOCK,
+                actual: MAXIMUM_GAS_LIMIT_BLOCK + 1,
+            })
+        );
     }
 
     #[test]
