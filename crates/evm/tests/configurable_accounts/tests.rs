@@ -2527,6 +2527,78 @@ fn migrate(f: &mut Fixture, nonce: u64, owner: Address) -> ConfigurableAccountCo
     config
 }
 
+/// Migrates the primitive account `key`, which is not the fixture's account, with
+/// `upgradeAccount` to a configuration owned by `owner`.
+fn migrate_key(
+    f: &mut Fixture,
+    key: &PrivateKeySigner,
+    nonce: u64,
+    owner: &PrivateKeySigner,
+) -> ConfigurableAccountConfig {
+    let config = ConfigurableAccountConfig {
+        salt: keccak256(
+            [
+                CONFIGURABLE_ACCOUNT_UPGRADE_DOMAIN,
+                key.address().as_slice(),
+            ]
+            .concat(),
+        ),
+        version: 1,
+        threshold: 1,
+        owners: owner_set(vec![owner.address()]),
+    };
+    let tx = aa_tx(nonce, vec![Fixture::upgrade(&config)]);
+    let signature = key.sign_hash_sync(&tx.signature_hash()).unwrap();
+    let result = f.run_as(key.address(), &tx.into_signed(signature.into()));
+    assert!(result.status, "{result:?}");
+    let info = f.info(key.address()).unwrap();
+    assert_eq!(
+        decode_config_commitment(&info.extension, TempoHardfork::T14).unwrap(),
+        config.commitment().unwrap()
+    );
+    config
+}
+
+/// `tx` signed as an access key of `parent` by the configurable account `delegate`, whose owner
+/// quorum under `config` is `owner`.
+fn delegate_keychain_signed(
+    tx: TempoTransaction,
+    parent: Address,
+    delegate: Address,
+    config: &ConfigurableAccountConfig,
+    owner: &PrivateKeySigner,
+) -> AASigned {
+    let digest = KeychainSignature::signing_hash(tx.signature_hash(), parent);
+    let signature = AccountSignature::ConfigurableAccount(configurable_account_approval(
+        delegate, config, owner, digest,
+    ));
+    tx.into_signed(TempoSignature::Keychain(KeychainSignature::new(
+        parent, signature,
+    )))
+}
+
+/// A transaction of the fixture's account, signed by its root, that grants `key` as `key_type`.
+fn grant_tx(f: &Fixture, nonce: u64, key_type: SignatureType, key: Address) -> AASigned {
+    let grant = KeyAuthorization::unrestricted(1, key_type, key);
+    let signature = f.owner.sign_hash_sync(&grant.signature_hash()).unwrap();
+    f.sign_primitive(TempoTransaction {
+        key_authorization: Some(grant.into_signed(signature)),
+        ..aa_tx(nonce, vec![f.getter()])
+    })
+}
+
+/// Asserts that `error` is the keychain's signature type mismatch.
+fn assert_type_mismatch(error: TempoInvalidTransaction) {
+    assert!(
+        matches!(
+            &error,
+            TempoInvalidTransaction::KeychainValidationFailed { reason }
+                if reason.contains("SignatureTypeMismatch")
+        ),
+        "{error:?}"
+    );
+}
+
 /// The environment of `tx` sent by `sender`, optionally as a plain RPC simulation request.
 fn env_of<T>(tx: &T, sender: Address, simulation: bool) -> Recovered<TempoTxEnv>
 where
@@ -2810,29 +2882,64 @@ fn retired_root_rejects_delegated_roles() {
         "{error:?}"
     );
 
-    // The treasury granted the primitive key B, then B migrates.
+    // The treasury A granted the primitive key B an allowance of 100, then B migrates for real.
     let mut f = Fixture::with_parent(false);
     let key = signer(6);
-    grant_key(&mut f, 3, &key, false, 0);
+    let new_owner = signer(8);
     let account = f.account;
-    let tx = keychain_tx(&f, &key, 4, vec![f.getter()]);
-    let output = f
-        .evm
-        .transact(&env_of(&tx, account, false))
+    fund(&mut f, account, 1_000);
+    let grant = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key.address())
+        .with_limits(vec![TokenLimit {
+            token: PATH_USD_ADDRESS,
+            limit: U256::from(100),
+            period: 0,
+        }]);
+    let approval = f.owner.sign_hash_sync(&grant.signature_hash()).unwrap();
+    let tx = f.sign_primitive(TempoTransaction {
+        key_authorization: Some(grant.into_signed(approval)),
+        ..aa_tx(3, vec![f.getter()])
+    });
+    let result = f.run(&tx);
+    assert!(result.status, "{result:?}");
+    let remaining = |f: &mut Fixture| {
+        in_storage_ctx(&mut f.evm, || {
+            AccountKeychain::new().get_remaining_limit(IAccountKeychain::getRemainingLimitCall {
+                account,
+                keyId: key.address(),
+                token: PATH_USD_ADDRESS,
+            })
+        })
         .unwrap()
-        .detach();
-    assert!(output.result.status, "{:?}", output.result);
-    retire(&mut f, key.address());
+    };
+    let spend = |amount: u64| Call {
+        to: TxKind::Call(PATH_USD_ADDRESS),
+        value: U256::ZERO,
+        input: ITIP20::transferCall {
+            to: Address::repeat_byte(0x66),
+            amount: U256::from(amount),
+        }
+        .abi_encode()
+        .into(),
+    };
+    let tx = keychain_tx(&f, &key, 4, vec![spend(30)]);
+    let result = f.run(&tx);
+    assert!(result.status, "{result:?}");
+    assert_eq!(remaining(&mut f), U256::from(70));
+
+    seed_eoa(&mut f, key.address(), 0);
+    let key_config = migrate_key(&mut f, &key, 0, &new_owner);
+
+    // Its retired root no longer signs for A, whether recovered or named by a simulation.
+    let tx = keychain_tx(&f, &key, 5, vec![spend(20)]);
     let expected = retired(key.address(), RootKeyRole::AccessKey);
     assert_eq!(rejection(&mut f, &tx, account), expected);
-    // Simulation replaces the recovered key ID with the request's override.
     let error = transact_err(&mut f, &simulation_env(&tx, account, Some(key.address())));
     assert!(
         error.external_ref::<TempoInvalidTransaction>() == Some(&expected),
         "{error:?}"
     );
     // The override also names the key when another key signed the request.
-    let placeholder = keychain_tx(&f, &signer(7), 4, vec![f.getter()]);
+    let placeholder = keychain_tx(&f, &signer(7), 5, vec![f.getter()]);
     let error = transact_err(
         &mut f,
         &simulation_env(&placeholder, account, Some(key.address())),
@@ -2841,18 +2948,105 @@ fn retired_root_rejects_delegated_roles() {
         error.external_ref::<TempoInvalidTransaction>() == Some(&expected),
         "{error:?}"
     );
-    // The treasury cannot register the retired key ID again: the grant is rejected as a reuse.
-    let regrant = f.sign_primitive(TempoTransaction {
-        key_authorization: Some(grant_by(&f.owner, key.address())),
-        ..aa_tx(4, vec![f.getter()])
-    });
-    assert_eq!(
-        rejection(&mut f, &regrant, account),
-        TempoInvalidTransaction::KeychainPrecompileError {
-            reason: TempoPrecompileError::from(AccountKeychainError::key_already_exists())
-                .to_string()
-        }
+
+    // Its owner quorum uses the same grant: the limit and the spent counter carry over.
+    let tx = delegate_keychain_signed(
+        aa_tx(5, vec![spend(20)]),
+        account,
+        key.address(),
+        &key_config,
+        &new_owner,
     );
+    let result = f.run(&tx);
+    assert!(result.status, "{result:?}");
+    assert_eq!(remaining(&mut f), U256::from(50));
+
+    // The treasury cannot register the migrated key ID again, as either type: the grant is
+    // rejected as a reuse.
+    for key_type in [SignatureType::Secp256k1, SignatureType::ConfigurableAccount] {
+        let regrant = grant_tx(&f, 6, key_type, key.address());
+        assert_eq!(
+            rejection(&mut f, &regrant, account),
+            TempoInvalidTransaction::KeychainPrecompileError {
+                reason: TempoPrecompileError::from(AccountKeychainError::key_already_exists())
+                    .to_string()
+            },
+            "{key_type:?}"
+        );
+    }
+
+    // A primitive grant whose key ID has no commitment does not accept a quorum signature: its
+    // delegate has not migrated.
+    let unmigrated_owner = signer(9);
+    let unmigrated_config = ConfigurableAccountConfig {
+        salt: B256::repeat_byte(9),
+        version: 0,
+        threshold: 1,
+        owners: owner_set(vec![unmigrated_owner.address()]),
+    };
+    let unmigrated = unmigrated_config
+        .derive_account(Address::repeat_byte(0x71))
+        .unwrap();
+    let tx = grant_tx(&f, 6, SignatureType::Secp256k1, unmigrated);
+    let result = f.run(&tx);
+    assert!(result.status, "{result:?}");
+    let tx = delegate_keychain_signed(
+        aa_tx(7, vec![f.getter()]),
+        account,
+        unmigrated,
+        &unmigrated_config,
+        &unmigrated_owner,
+    );
+    assert_type_mismatch(rejection(&mut f, &tx, account));
+
+    // A configurable delegate grant does not accept a primitive signature that recovers to its
+    // key ID.
+    let primitive_delegate = signer(10);
+    let tx = grant_tx(
+        &f,
+        7,
+        SignatureType::ConfigurableAccount,
+        primitive_delegate.address(),
+    );
+    let result = f.run(&tx);
+    assert!(result.status, "{result:?}");
+    let tx = keychain_tx(&f, &primitive_delegate, 8, vec![f.getter()]);
+    assert_type_mismatch(rejection(&mut f, &tx, account));
+}
+
+/// A primitive admin access key that migrated signs grants for its parent through its owner
+/// quorum.
+#[test]
+fn migrated_admin_delegate_signs_grants_through_its_quorum() {
+    let mut f = Fixture::with_parent(false);
+    let admin = signer(4);
+    let new_owner = signer(8);
+    let child = signer(7).address();
+    let account = f.account;
+    grant_key(&mut f, 3, &admin, true, 0);
+    seed_eoa(&mut f, admin.address(), 0);
+    let config = migrate_key(&mut f, &admin, 0, &new_owner);
+
+    let grant =
+        KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, child).with_account(account);
+    let approval =
+        configurable_account_approval(admin.address(), &config, &new_owner, grant.signature_hash());
+    let tx = TempoTransaction {
+        key_authorization: Some(grant.into_signed(AccountSignature::ConfigurableAccount(approval))),
+        ..aa_tx(4, vec![f.getter()])
+    };
+    let tx = delegate_keychain_signed(tx, account, admin.address(), &config, &new_owner);
+    let result = f.run(&tx);
+    assert!(result.status, "{result:?}");
+    let key = in_storage_ctx(&mut f.evm, || {
+        AccountKeychain::new().get_key(IAccountKeychain::getKeyCall {
+            account,
+            keyId: child,
+        })
+    })
+    .unwrap();
+    assert_eq!(key.keyId, child);
+    assert!(!key.isRevoked);
 }
 
 #[test]
