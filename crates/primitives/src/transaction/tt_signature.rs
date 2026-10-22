@@ -573,6 +573,16 @@ impl<'a> arbitrary::Arbitrary<'a> for KeychainSignature {
     }
 }
 
+/// Returns the leading type identifier of typed signature bytes.
+///
+/// The untyped 65-byte secp256k1 encoding and inputs without a payload have none.
+fn type_identifier(data: &[u8]) -> Option<u8> {
+    match data {
+        [type_id, _, ..] if data.len() != SECP256K1_SIGNATURE_LENGTH => Some(*type_id),
+        _ => None,
+    }
+}
+
 /// Primitive or configurable account approval; excludes keychain envelopes.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -588,22 +598,18 @@ pub enum AccountSignature {
 impl AccountSignature {
     /// Decodes a direct approval, rejecting recursive keychain envelopes.
     fn from_bytes(data: &[u8]) -> Result<Self, AccountSignatureError> {
-        if data.len() != SECP256K1_SIGNATURE_LENGTH {
-            match data.first() {
-                Some(&SIGNATURE_TYPE_KEYCHAIN | &SIGNATURE_TYPE_KEYCHAIN_V2) => {
-                    return Err(AccountSignatureError::Keychain);
-                }
-                Some(&SIGNATURE_TYPE_CONFIGURABLE_ACCOUNT) if data.len() > 1 => {
-                    return decode_exact::<ConfigurableAccountSignature>(&data[1..])
-                        .map(Self::ConfigurableAccount)
-                        .map_err(AccountSignatureError::InvalidConfigurableAccount);
-                }
-                _ => {}
+        match type_identifier(data) {
+            Some(SIGNATURE_TYPE_KEYCHAIN | SIGNATURE_TYPE_KEYCHAIN_V2) => {
+                Err(AccountSignatureError::Keychain)
             }
-        }
-        match PrimitiveSignature::from_bytes(data) {
-            Ok(signature) => Ok(Self::Primitive(signature)),
-            Err(message) => Err(AccountSignatureError::Primitive(message)),
+            Some(SIGNATURE_TYPE_CONFIGURABLE_ACCOUNT) => {
+                decode_exact::<ConfigurableAccountSignature>(&data[1..])
+                    .map(Self::ConfigurableAccount)
+                    .map_err(AccountSignatureError::InvalidConfigurableAccount)
+            }
+            _ => PrimitiveSignature::from_bytes(data)
+                .map(Self::Primitive)
+                .map_err(AccountSignatureError::Primitive),
         }
     }
 
@@ -807,25 +813,8 @@ impl TempoSignature {
             return Err("Signature data is empty");
         }
 
-        if data.len() > 1
-            && data.len() != SECP256K1_SIGNATURE_LENGTH
-            && data[0] == SIGNATURE_TYPE_CONFIGURABLE_ACCOUNT
-        {
-            return match AccountSignature::from_bytes(data)? {
-                AccountSignature::Primitive(signature) => Ok(Self::Primitive(signature)),
-                AccountSignature::ConfigurableAccount(signature) => {
-                    Ok(Self::ConfigurableAccount(signature))
-                }
-            };
-        }
-
-        // Check if this is a Keychain signature before delegating to
-        // PrimitiveSignature. The exact 65-byte secp256k1 path remains untyped for
-        // backwards compatibility.
-        if data.len() > 1
-            && data.len() != SECP256K1_SIGNATURE_LENGTH
-            && (data[0] == SIGNATURE_TYPE_KEYCHAIN || data[0] == SIGNATURE_TYPE_KEYCHAIN_V2)
-        {
+        // Check if this is a Keychain signature before decoding a direct approval.
+        if let Some(SIGNATURE_TYPE_KEYCHAIN | SIGNATURE_TYPE_KEYCHAIN_V2) = type_identifier(data) {
             let version = if data[0] == SIGNATURE_TYPE_KEYCHAIN {
                 KeychainVersion::V1
             } else {
@@ -852,9 +841,7 @@ impl TempoSignature {
             }));
         }
 
-        // For all non-Keychain signatures, delegate to PrimitiveSignature
-        let primitive = PrimitiveSignature::from_bytes(data)?;
-        Ok(Self::Primitive(primitive))
+        Ok(AccountSignature::from_bytes(data)?.into())
     }
 
     /// Encode signature to bytes
@@ -1066,6 +1053,17 @@ impl From<Signature> for TempoSignature {
 impl From<PrimitiveSignature> for TempoSignature {
     fn from(signature: PrimitiveSignature) -> Self {
         Self::Primitive(signature)
+    }
+}
+
+impl From<AccountSignature> for TempoSignature {
+    fn from(signature: AccountSignature) -> Self {
+        match signature {
+            AccountSignature::Primitive(signature) => Self::Primitive(signature),
+            AccountSignature::ConfigurableAccount(signature) => {
+                Self::ConfigurableAccount(signature)
+            }
+        }
     }
 }
 
