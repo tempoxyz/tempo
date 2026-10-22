@@ -1,6 +1,7 @@
 //! Tempo EVM Handler implementation.
 
 mod config;
+pub(crate) mod configurable_account;
 
 pub use self::config::{
     TempoBlockEnv, TempoBlockExt, TempoConfig, TempoConfigSelector, TempoEvmExt, TempoEvmTypes,
@@ -11,8 +12,9 @@ use self::config::{TempoFeeContext, TempoHandlerHooks};
 use crate::{
     FeePaymentError, TempoAaTx, TempoInvalidTransaction, TempoTxEnv,
     signature_gas::{
-        calldata_tokens, primitive_signature_verification_gas, tempo_signature_verification_gas,
+        account_signature_verification_gas, calldata_tokens, tempo_signature_verification_gas,
     },
+    transaction_error::ConfigurableAccountError,
 };
 use alloy_primitives::{Address, KECCAK256_EMPTY, TxKind, U256};
 use evm2::{
@@ -83,7 +85,7 @@ const KEY_AUTH_EXTRA_EVENT_BUFFER: u64 = 1_500;
 /// - No permanent state growth, so the 20k penalty doesn't apply
 ///
 /// Total: 2*2100 + 100 + 3*2900 = 13,000 gas
-const EXPIRING_NONCE_GAS: u64 = 2 * COLD_SLOAD_COST + 100 + 3 * WARM_SSTORE_RESET;
+pub const EXPIRING_NONCE_GAS: u64 = 2 * COLD_SLOAD_COST + 100 + 3 * WARM_SSTORE_RESET;
 
 /// Counts the scope storage rows that pay the dynamic SSTORE-set path for the active spec.
 ///
@@ -213,7 +215,7 @@ fn calculate_key_authorization_gas(
     // All signature types pay ECRECOVER_GAS (3k) as the baseline since
     // primitive_signature_verification_gas assumes ecrecover is already in base 21k.
     // For KeyAuthorization, we're doing an additional signature verification.
-    let sig_gas = ECRECOVER_GAS + primitive_signature_verification_gas(&key_auth.signature);
+    let sig_gas = ECRECOVER_GAS + account_signature_verification_gas(&key_auth.signature);
 
     let num_limits = key_auth
         .authorization
@@ -492,6 +494,9 @@ fn validate_key_authorization(
     let Some(key_auth) = tx.key_authorization.as_ref() else {
         return Ok(());
     };
+    if aa.grant_delegate().is_some() && !spec.is_t14() {
+        return Err(ConfigurableAccountError::UnsupportedContext.into());
+    }
 
     let access_key = access_key_id(aa)?;
     let same_tx_auth_use = access_key == Some(key_auth.key_id);
@@ -504,7 +509,7 @@ fn validate_key_authorization(
         && signed
             .signature()
             .as_keychain()
-            .is_some_and(|signature| key_auth.key_type != signature.signature.signature_type())
+            .is_some_and(|signature| key_auth.key_type != signature.signature.key_type())
     {
         return Err(TempoInvalidTransaction::KeychainValidationFailed {
             reason: "key authorization key_type does not match the keychain signature type".into(),
@@ -541,7 +546,7 @@ fn validate_key_authorization(
     }
 
     let signer = key_auth
-        .recover_signer()
+        .recover_account()
         .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
     if !spec.is_t6() && signer != aa.signer() {
         return Err(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
@@ -593,8 +598,7 @@ fn validate_key_authorization(
                         .into(),
                 });
             }
-            if key_auth.signature.signature_type() != keychain_signature.signature.signature_type()
-            {
+            if key_auth.signature.key_type() != keychain_signature.signature.key_type() {
                 return Err(TempoInvalidTransaction::KeychainValidationFailed {
                     reason: "admin-signed key authorization signature type does not match transaction key signature type".into(),
                 });
@@ -699,14 +703,15 @@ fn prepare_keychain(
         //   the loaded admin/signature-type facts below when the sidecar signer is the same key
         let timestamp = host.block().timestamp.saturating_to::<u64>();
 
-        // Extract the signature type from the inner signature to validate it matches
-        // the key_type stored in the keychain. This prevents using a signature of one
-        // type to authenticate as a key registered with a different type.
+        // Extract the signature type from the inner signature to validate it against
+        // the key_type stored in the keychain: a signature must have the key's stored type,
+        // except a migrated delegate's owner quorum on its primitive grant (see
+        // `AccountKeychain::accepts_signature_type`).
         // Only validate signature type on T1+ to maintain backward compatibility
         // with historical blocks during re-execution.
         let expected_signature_type = (key_authorization.is_some()
             || host.config_spec_id().is_t1())
-        .then_some(u8::from(keychain_signature.signature.signature_type()));
+        .then_some(u8::from(keychain_signature.signature.key_type()));
         let loaded = StorageCtx::enter_evm_without_tip1060_accounting(host, || {
             let mut keychain = AccountKeychain::new();
             let key = keychain
@@ -750,15 +755,23 @@ fn prepare_keychain(
         && let Some(key_authorization) = key_authorization
     {
         let signer = key_authorization
-            .recover_signer()
+            .recover_account()
             .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
         if signer != aa.signer() {
-            let signature_type: u8 = key_authorization.signature.signature_type().into();
-            let signer_is_admin = state.loaded_key.as_ref().is_some_and(|loaded| {
-                loaded.key_id == signer
-                    && loaded.key.signature_type as u8 == signature_type
-                    && loaded.key.is_admin
-            });
+            let signature_type: u8 = key_authorization.signature.key_type().into();
+            let signer_is_admin = match state.loaded_key.as_ref() {
+                Some(loaded) if loaded.key_id == signer && loaded.key.is_admin => {
+                    StorageCtx::enter_evm_without_tip1060_accounting(host, || {
+                        AccountKeychain::new().accepts_signature_type(
+                            &loaded.key,
+                            signer,
+                            signature_type,
+                        )
+                    })
+                    .map_err(keychain_error)?
+                }
+                _ => false,
+            };
             if !signer_is_admin {
                 return Err(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
                     expected: aa.signer(),
@@ -961,6 +974,11 @@ fn apply_one_authorization(
     let Ok(authority) = authorization.recover_authority() else {
         return Ok(None);
     };
+    // T14: a configurable account's root key is retired, so it can no longer delegate.
+    let spec = host.config_spec_id();
+    if configurable_account::retired_authority(host, authority, spec)? {
+        return Ok(None);
+    }
     let mut account = host.state_mut().account(&authority)?;
     account.warm();
     // Historically, the sender was touched before authorization processing, making even an
@@ -1337,7 +1355,9 @@ struct PreparedAa {
     floor_gas: u64,
     state_refund: u64,
     regular_refund: u64,
-    // Preserve the existing terminal OOG result from key authorization processing.
+    // Preserve the existing terminal OOG result from key authorization processing. Only `Some`
+    // when key-authorization gas is metered (T1/T1A), so later forks always reach
+    // `register_commitments`.
     result: Option<TxResult<TempoEvmTypes>>,
 }
 
@@ -1353,6 +1373,15 @@ fn prepare_aa(
         return Err(TempoInvalidTransaction::SubblockTransactionsDisabled.into());
     }
 
+    // A configurable-account quorum cannot sign an EIP-7702 delegation.
+    if tx.tempo_authorization_list.iter().any(|authorization| {
+        authorization
+            .signature()
+            .primitive_signature_type()
+            .is_none()
+    }) {
+        return Err(ConfigurableAccountError::InvalidSignatureContext.into());
+    }
     // Validate AA transaction structure (calls list, CREATE rules)
     validate_calls(&tx.calls, !tx.tempo_authorization_list.is_empty())
         .map_err(TempoInvalidTransaction::from)?;
@@ -1430,9 +1459,17 @@ fn prepare_aa(
         timestamp,
     )?;
 
+    // Configurable-account state checks load more accounts, so transaction warmth goes first.
+    warm_base_accounts(request.host, caller, tx.calls[0].to);
+    warm_access_list(request.host, &tx.access_list);
+    let (native_gas, native_state_gas) =
+        configurable_account::validate_state(request.host, request.envelope, spec)?;
+
     // Route to the AA gas calculation and validation path.
     let (mut intrinsic, mut initial_state_gas, floor_gas) =
         intrinsic_gas(request.host, request.tx.inner())?;
+    intrinsic = intrinsic.saturating_add(native_gas);
+    initial_state_gas = initial_state_gas.saturating_add(native_state_gas);
     let (nonce_gas, nonce_state_gas) = nonce_intrinsic_gas(request.host, request.tx.inner());
 
     // For T0+, include 2D nonce gas in validation (charged upfront)
@@ -1481,13 +1518,12 @@ fn prepare_aa(
 
     validate_execution_gas_limit_cap(request.host.version(), tx.gas_limit, intrinsic, floor_gas)?;
 
-    warm_base_accounts(request.host, caller, tx.calls[0].to);
-    warm_access_list(request.host, &tx.access_list);
-
     // Collect fees for the transaction.
     let fee_context = TempoHandlerHooks::resolve_fee_context(request.host, request.envelope)?;
 
     let create_nonce = apply_nonce(request.host, request.envelope, request.tx.inner())?;
+    // Owner quorums are verified after the nonce checks and before the access-key checks.
+    configurable_account::verify(request.envelope.execution_context(), request.tx.inner())?;
 
     // For Keychain signatures, validate the acting access key before fee collection when it
     // already exists. Same-tx auth+use is the exception: that key is registered only after fees
@@ -1594,6 +1630,7 @@ fn execute_aa(
             )
         };
     reservoir += state_refund;
+    configurable_account::register_commitments(request.host, request.tx.inner())?;
     let mut result = execute_batch(
         request.host,
         caller,

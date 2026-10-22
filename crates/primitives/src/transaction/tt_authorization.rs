@@ -1,3 +1,4 @@
+use alloy_consensus::crypto::RecoveryError;
 use alloy_eips::eip7702::{Authorization, RecoveredAuthority, RecoveredAuthorization};
 use alloy_primitives::{Address, B256};
 use alloy_rlp::{BufMut, Decodable, Encodable, Header, Result as RlpResult, length_of_length};
@@ -73,6 +74,9 @@ impl TempoSignedAuthorization {
     ///
     /// Implementers should check that the authority has no code.
     pub fn recover_authority(&self) -> Result<Address, alloy_consensus::crypto::RecoveryError> {
+        if self.signature.primitive_signature_type().is_none() {
+            return Err(RecoveryError::new());
+        }
         let sig_hash = self.signature_hash();
         self.signature.recover_signer(&sig_hash)
     }
@@ -285,7 +289,10 @@ impl Deref for RecoveredTempoAuthorization {
 pub mod tests {
 
     use super::*;
-    use crate::TempoSignature;
+    use crate::transaction::{
+        ConfigurableAccountSignature, KeychainSignature, PrimitiveSignature,
+        tt_signature::tests::current_config,
+    };
     use alloc::vec::Vec;
     use alloy_primitives::{U256, keccak256};
     use alloy_signer::SignerSync;
@@ -422,5 +429,36 @@ pub mod tests {
         let bad_lazy = RecoveredTempoAuthorization::new(bad_signed);
         assert!(bad_lazy.authority().is_some());
         assert_ne!(bad_lazy.authority().unwrap(), expected_address);
+
+        // Neither direct nor delegated configurable account may supply an authorization-list
+        // authority.
+        let configurable_account = ConfigurableAccountSignature::try_new(
+            Address::repeat_byte(0x22),
+            current_config(expected_address),
+            vec![PrimitiveSignature::default()],
+        )
+        .unwrap();
+        for signature in [
+            TempoSignature::ConfigurableAccount(configurable_account.clone()),
+            TempoSignature::Keychain(KeychainSignature::new(
+                expected_address,
+                configurable_account,
+            )),
+        ] {
+            let signed =
+                TempoSignedAuthorization::new_unchecked(bad_lazy.inner().clone(), signature);
+            assert!(signed.recover_authority().is_err());
+            assert!(signed.clone().into_recovered().authority().is_none());
+            assert!(
+                RecoveredTempoAuthorization::new(signed.clone())
+                    .authority()
+                    .is_none()
+            );
+            assert!(
+                RecoveredTempoAuthorization::recover(signed)
+                    .authority()
+                    .is_none()
+            );
+        }
     }
 }

@@ -17,6 +17,7 @@ use alloy::{
 use alloy_primitives::TxKind;
 use core::num::NonZeroU64;
 use eyre::WrapErr;
+use reth_revm::context_interface::cfg::gas::COLD_ACCOUNT_ACCESS_COST;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
 use tempo_node::rpc::TempoTransactionRequest;
@@ -24,8 +25,8 @@ use tempo_precompiles::tip20::ITIP20::{self, transferCall};
 use tempo_primitives::{
     SignatureType, TempoTransaction,
     transaction::{
-        CallScope, KeyAuthorization, SelectorRule, SignedKeyAuthorization,
-        TEMPO_EXPIRING_NONCE_KEY, TokenLimit,
+        CallScope, FEE_PAYER_SIGNATURE_MARKER, KeyAuthorization, SelectorRule,
+        SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, TokenLimit,
         tempo_transaction::Call,
         tt_signature::{
             KeychainSignature, P256SignatureWithPreHash, PrimitiveSignature, TempoSignature,
@@ -462,7 +463,9 @@ fn create_key_authorization_inner(
     witness: Option<B256>,
 ) -> eyre::Result<SignedKeyAuthorization> {
     // Infer key_type from the access key signature
-    let key_type = access_key_signature.signature_type();
+    let key_type = access_key_signature
+        .primitive_signature_type()
+        .expect("primitive access-key fixture");
 
     let mut key_auth = KeyAuthorization::unrestricted(chain_id, key_type, access_key_addr);
     key_auth.expiry = expiry;
@@ -833,6 +836,7 @@ pub(crate) async fn configure_fee_payer_context(
     // Callers fund the fee payer right before this.
     let balance_before =
         settled_balance(provider, token, fee_payer_addr, |bal| !bal.is_zero()).await?;
+    add_fee_payer_access_gas(tx);
     sign_fee_payer(tx, signer_addr, fee_payer_signer)?;
 
     Ok(Some(FeePayerContext {
@@ -914,6 +918,17 @@ pub(crate) async fn assert_batch_recipient_balances(
     )
     .await?;
     Ok(())
+}
+
+/// Raises the gas limit of a transaction that a fee payer is about to sign.
+///
+/// From T14 a fee payer signature costs one cold account access: the sponsor's account is read to
+/// check that its root key is still active. Callers that take their gas limit from the RPC send
+/// [`FEE_PAYER_SIGNATURE_MARKER`] with the request instead
+/// (see [`fill_sponsored_gas_limit`]), so the estimate includes that charge; this is for callers
+/// that set the limit by hand. Before T14 the extra limit only goes unused.
+fn add_fee_payer_access_gas(tx: &mut TempoTransaction) {
+    tx.gas_limit += COLD_ACCOUNT_ACCESS_COST;
 }
 
 pub(crate) fn sign_fee_payer(
@@ -1255,6 +1270,51 @@ pub(crate) async fn fill_transaction_from_case(
     let tx = parse_filled_tx(&filled)?;
 
     Ok((tx, request_context))
+}
+
+/// Fills `request` with `eth_fillTransaction`.
+pub(crate) async fn fill_request(
+    provider: &impl Provider,
+    request: &TempoTransactionRequest,
+) -> eyre::Result<TempoTransaction> {
+    let filled = legacy_compat::raw_request(provider, "eth_fillTransaction", request)
+        .await
+        .map_err(normalize_tempo_rpc_error)?;
+    parse_filled_tx(&filled)
+}
+
+/// The request for `test_case` when a fee payer that has not signed yet sponsors it: it carries
+/// [`FEE_PAYER_SIGNATURE_MARKER`]. Only T14 and later accept the marker.
+pub(crate) fn sponsored_fill_request(
+    test_case: &FillTestCase,
+    signer_addr: Address,
+    current_timestamp: u64,
+    max_expiry_secs: u64,
+) -> TempoTransactionRequest {
+    let mut request = build_fill_request_context(
+        test_case,
+        signer_addr,
+        Address::random(),
+        current_timestamp,
+        max_expiry_secs,
+    )
+    .request;
+    request.set_fee_payer_signature(FEE_PAYER_SIGNATURE_MARKER);
+    request
+}
+
+/// The gas limit `eth_fillTransaction` returns for the sponsored request of `test_case`, which
+/// includes the fee payer's cold account access.
+pub(crate) async fn fill_sponsored_gas_limit(
+    provider: &impl Provider,
+    test_case: &FillTestCase,
+    signer_addr: Address,
+    current_timestamp: u64,
+    max_expiry_secs: u64,
+) -> eyre::Result<u64> {
+    let request =
+        sponsored_fill_request(test_case, signer_addr, current_timestamp, max_expiry_secs);
+    Ok(fill_request(provider, &request).await?.gas_limit)
 }
 
 pub(crate) fn assert_fill_request_expectations(

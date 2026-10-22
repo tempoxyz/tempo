@@ -1,5 +1,8 @@
 use evm2::interpreter::gas::{COLD_SLOAD_COST, STANDARD_TOKEN_COST};
-use tempo_primitives::transaction::{PrimitiveSignature, TempoSignature};
+use tempo_precompiles::{ECRECOVER_GAS, signature_verifier::configurable_account_verification_gas};
+use tempo_primitives::transaction::{
+    AccountSignature, ConfigurableAccountSignature, PrimitiveSignature, TempoSignature,
+};
 
 /// Additional gas for P256 signature verification.
 ///
@@ -28,6 +31,17 @@ pub(crate) fn primitive_signature_verification_gas(signature: &PrimitiveSignatur
     }
 }
 
+/// Verification cost beyond the baseline signature charge, without keychain processing.
+#[inline]
+pub(crate) fn account_signature_verification_gas(signature: &AccountSignature) -> u64 {
+    match signature {
+        AccountSignature::Primitive(signature) => primitive_signature_verification_gas(signature),
+        AccountSignature::ConfigurableAccount(signature) => {
+            configurable_account_signature_verification_gas(signature)
+        }
+    }
+}
+
 /// Calculates the gas cost for verifying an AA signature.
 ///
 /// For keychain signatures, adds key validation overhead to the inner signature cost. Returns the
@@ -37,7 +51,11 @@ pub(crate) fn tempo_signature_verification_gas(signature: &TempoSignature) -> u6
     match signature {
         TempoSignature::Primitive(prim_sig) => primitive_signature_verification_gas(prim_sig),
         TempoSignature::Keychain(keychain_sig) => {
-            primitive_signature_verification_gas(&keychain_sig.signature) + KEYCHAIN_VALIDATION_GAS
+            account_signature_verification_gas(&keychain_sig.signature)
+                .saturating_add(KEYCHAIN_VALIDATION_GAS)
+        }
+        TempoSignature::ConfigurableAccount(signature) => {
+            configurable_account_signature_verification_gas(signature)
         }
     }
 }
@@ -47,4 +65,13 @@ pub(crate) fn calldata_tokens(input: &[u8]) -> u64 {
         .iter()
         .map(|byte| if *byte == 0 { 1 } else { 4 })
         .sum()
+}
+
+/// Owner quorum verification cost beyond the baseline signature charge.
+fn configurable_account_signature_verification_gas(
+    signature: &ConfigurableAccountSignature,
+) -> u64 {
+    // Only a `u64` overflow fails; saturating keeps such a transaction unaffordable.
+    configurable_account_verification_gas(signature)
+        .map_or(u64::MAX, |gas| gas.saturating_sub(ECRECOVER_GAS))
 }

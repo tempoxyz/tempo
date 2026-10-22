@@ -14,6 +14,7 @@ use reth_tasks::{TaskExecutor, WorkerPool};
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
+use tempo_chainspec::TempoHardfork;
 use tempo_evm::{ExpiringNonceReplay, StorageActionReplay, TempoEvmConfig, evm::TempoEvm};
 use tempo_transaction_pool::{StateAwarePoolTransaction, best::BestTransaction};
 use tracing::{instrument, trace};
@@ -184,7 +185,7 @@ impl BestTransactionsPrewarming {
         Provider: StateProviderFactory + Clone + 'static,
     {
         let replay = WorkerPool::with_worker_mut(|worker| {
-            if prewarm.parallel && !is_parallel_candidate(&tx) {
+            if prewarm.parallel && !is_parallel_candidate(&tx, prewarm.evm_env.spec) {
                 return None;
             }
 
@@ -495,10 +496,12 @@ fn is_invalidated_buffered_transaction(
     }
 }
 
-/// Returns true if the transaction is a candidate for parallel prewarming.
-fn is_parallel_candidate(tx: &BestTransaction) -> bool {
-    // Payment lane transactions
-    tx.transaction.is_payment()
+/// Returns true if the transaction is a candidate for parallel prewarming in a block at `spec`.
+fn is_parallel_candidate(tx: &BestTransaction, spec: TempoHardfork) -> bool {
+    // Storage action replay is unsupported from T14
+    !spec.is_t14()
+        // Payment lane transactions
+        && tx.transaction.is_payment()
         // 2D or expiring nonces, no protocol nonces
         && tx
             .transaction

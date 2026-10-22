@@ -1,8 +1,10 @@
 //! Tempo-specific transaction validation errors.
 
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, B256, U256};
 use evm2::registry::HandlerError;
-use tempo_primitives::transaction::{KeyAuthorizationChainIdError, KeychainVersionError};
+use tempo_primitives::transaction::{
+    ConfigurableAccountQuorumError, KeyAuthorizationChainIdError, KeychainVersionError,
+};
 
 /// Tempo-specific invalid transaction errors.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
@@ -233,6 +235,22 @@ pub enum TempoInvalidTransaction {
     /// This wraps validation errors from the shared validate_calls function.
     #[error("{0}")]
     CallsValidation(&'static str),
+
+    /// Native account authorization failure.
+    #[error(transparent)]
+    ConfigurableAccount(#[from] ConfigurableAccountError),
+
+    /// A primitive key acted alone in `role` for an account with a nonzero configuration
+    /// commitment (TIP-1112).
+    ///
+    /// State-dependent: a migration can be undone by a reorg, so the transaction is not bad.
+    #[error("root key of {account} is retired and cannot act as {role}")]
+    RootKeyRetired {
+        /// Account whose bare primitive authority is retired.
+        account: Address,
+        /// Authority role the retired key tried to fill.
+        role: RootKeyRole,
+    },
 }
 
 impl TempoInvalidTransaction {
@@ -277,14 +295,90 @@ impl TempoInvalidTransaction {
             | Self::KeychainValidationFailed { .. }
             | Self::CollectFeePreTx(_)
             | Self::NonceManagerError(_)
-            | Self::V2KeychainBeforeActivation => false,
+            | Self::V2KeychainBeforeActivation
+            | Self::RootKeyRetired { .. } => false,
+
+            Self::ConfigurableAccount(error) => match error {
+                ConfigurableAccountError::AccountMismatch { .. }
+                | ConfigurableAccountError::InvalidSignatureContext
+                | ConfigurableAccountError::Quorum(_) => true,
+                ConfigurableAccountError::UnsupportedContext
+                | ConfigurableAccountError::InvalidAccount { .. }
+                | ConfigurableAccountError::ConfigurationCommitmentMismatch { .. } => false,
+            },
         }
+    }
+}
+
+/// Native account authorization failure (TIP-1112).
+#[derive(Clone, Debug, PartialEq, Eq, Hash, thiserror::Error)]
+pub enum ConfigurableAccountError {
+    /// Native authorization is not active in this execution context.
+    #[error("configurable account is unavailable in this execution context")]
+    UnsupportedContext,
+    /// A native signature appears in a role that forbids it.
+    #[error("configurable account signature is forbidden in this transaction role")]
+    InvalidSignatureContext,
+    /// The account cannot hold a native configuration.
+    #[error("invalid configurable account {account}")]
+    InvalidAccount {
+        /// Rejected account.
+        account: Address,
+    },
+    /// The native signature names an account other than the transaction sender.
+    #[error("configurable account signer mismatch: expected {expected}, actual {actual}")]
+    AccountMismatch {
+        /// Transaction sender.
+        expected: Address,
+        /// Account named by the native signature.
+        actual: Address,
+    },
+    /// The supplied configuration does not match the stored commitment.
+    #[error("account configuration commitment mismatch: expected {expected}, actual {actual}")]
+    ConfigurationCommitmentMismatch {
+        /// Stored commitment.
+        expected: B256,
+        /// Commitment of the supplied configuration.
+        actual: B256,
+    },
+    /// The approvals do not satisfy the configuration's quorum.
+    #[error("{0}")]
+    Quorum(ConfigurableAccountQuorumError),
+}
+
+/// Authority role a primitive key can fill in a transaction (TIP-1112).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RootKeyRole {
+    /// Direct transaction sender.
+    Sender,
+    /// Signer of a primitive-signed key authorization.
+    KeyAuthorizationSigner,
+    /// Fee payer.
+    FeePayer,
+    /// Access key identity of a keychain signature.
+    AccessKey,
+}
+
+impl core::fmt::Display for RootKeyRole {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::Sender => "the transaction sender",
+            Self::KeyAuthorizationSigner => "a key authorization signer",
+            Self::FeePayer => "the fee payer",
+            Self::AccessKey => "an access key",
+        })
     }
 }
 
 impl From<TempoInvalidTransaction> for HandlerError {
     fn from(error: TempoInvalidTransaction) -> Self {
         Self::external(error)
+    }
+}
+
+impl From<ConfigurableAccountError> for HandlerError {
+    fn from(error: ConfigurableAccountError) -> Self {
+        TempoInvalidTransaction::ConfigurableAccount(error).into()
     }
 }
 

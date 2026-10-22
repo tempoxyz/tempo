@@ -1,7 +1,7 @@
 use super::{tempo_transaction::MAX_WEBAUTHN_SIGNATURE_LENGTH, tt_signature::PrimitiveSignature};
 use alloc::vec::Vec;
 use alloy_primitives::{Address, B256, Keccak256, b256, keccak256};
-use alloy_rlp::{Decodable, Error as RlpError};
+use alloy_rlp::{BufMut, Decodable, Encodable, Error as RlpError};
 
 /// Tempo signature type byte for configurable account signatures.
 pub const SIGNATURE_TYPE_CONFIGURABLE_ACCOUNT: u8 = 0x05;
@@ -386,6 +386,29 @@ impl ConfigurableAccountSignature {
             }
         }
         Ok(())
+    }
+
+    /// Writes the type-prefixed signature encoding.
+    pub(crate) fn encode_bytes_into(&self, out: &mut dyn BufMut) {
+        out.put_u8(SIGNATURE_TYPE_CONFIGURABLE_ACCOUNT);
+        Encodable::encode(self, out);
+    }
+
+    /// Length of [`Self::encode_bytes_into`].
+    pub(crate) fn encoded_length(&self) -> usize {
+        1 + Encodable::length(self)
+    }
+
+    /// Returns a heuristic for the in-memory size of the signature.
+    pub(crate) fn size(&self) -> usize {
+        size_of::<Self>()
+            + self.config.owners.capacity() * size_of::<ConfigurableAccountOwner>()
+            + self.signatures.capacity() * size_of::<PrimitiveSignature>()
+            + self
+                .signatures
+                .iter()
+                .map(|signature| signature.size() - size_of::<PrimitiveSignature>())
+                .sum::<usize>()
     }
 }
 

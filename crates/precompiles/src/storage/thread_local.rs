@@ -343,6 +343,22 @@ impl StorageCtx {
         Self::try_with_storage(|s| s.set_config_commitment(address, commitment, gas))
     }
 
+    /// Reads the already-warm execution caller without charging account access twice.
+    pub(crate) fn with_warm_caller_info<T>(
+        address: Address,
+        mut f: impl FnMut(&AccountInfo) -> Result<T>,
+    ) -> Result<T> {
+        let mut result = None;
+        Self::try_with_storage(|s| {
+            s.with_warm_caller_info(address, &mut |info| result = Some(f(info)))
+        })?;
+        result.ok_or_else(|| {
+            TempoPrecompileError::Fatal(
+                "storage provider did not invoke the account callback".to_string(),
+            )
+        })?
+    }
+
     /// Returns whether `address` is a retired root key (TIP-1112): from T14, an address with a
     /// nonzero configuration commitment no longer acts through its own key. Reads the commitment
     /// at call time, so a migration earlier in the block counts.

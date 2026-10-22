@@ -1,6 +1,6 @@
 use crate::{TempoEvmTypes, TempoInvalidTransaction, TempoTxEnv};
 use alloy_consensus::transaction::Recovered;
-use alloy_primitives::{Address, Bytes, LogData, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, LogData, TxKind, U256};
 use alloy_sol_types::SolCall;
 use core::marker::PhantomData;
 use evm2::{
@@ -11,7 +11,10 @@ use evm2::{
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
     error::{Result as TempoResult, TempoPrecompileError},
-    storage::{Handler, PrecompileStorageProvider, StorageAction, StorageActions, StorageCtx},
+    storage::{
+        ConfigCommitmentWriteGas, Handler, PrecompileStorageProvider, StorageAction,
+        StorageActions, StorageCtx, account_config_commitment,
+    },
     tip20::{ITIP20, TIP20Token},
 };
 use tempo_primitives::{TempoAddressExt, TempoBlockEnv, TempoTxEnvelope};
@@ -441,6 +444,30 @@ where
 
     fn set_tip1060_storage_credits(&mut self, _enabled: bool) {
         // Read-only storage never runs TIP-1060 accounting.
+    }
+
+    fn config_commitment(&mut self, address: Address) -> TempoResult<B256> {
+        let info = self.state.basic(address)?;
+        account_config_commitment(&info, self.spec)
+    }
+
+    fn set_config_commitment(
+        &mut self,
+        _: Address,
+        _: B256,
+        _: ConfigCommitmentWriteGas,
+    ) -> TempoResult<()> {
+        // Read-only context rejects every write; the caller sees a revert, not a panic.
+        Err(TempoPrecompileError::InvalidConfigCommitmentWrite)
+    }
+
+    fn with_warm_caller_info(
+        &mut self,
+        address: Address,
+        f: &mut dyn FnMut(&AccountInfo),
+    ) -> TempoResult<()> {
+        // Read-only context charges no gas and tracks no warm set, so every read is already free.
+        self.with_account_info(address, f)
     }
 }
 

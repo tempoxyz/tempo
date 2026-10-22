@@ -3,14 +3,21 @@ pub mod dispatch;
 use crate::{
     SIGNATURE_VERIFIER_ADDRESS,
     account_keychain::{AccountKeychain, AuthorizedKey},
-    error::Result,
+    configurable_account::{initial_account_proof_gas, valid_account},
+    error::{Result, TempoPrecompileError},
+    storage::{account_config_commitment, keccak_cost},
 };
-use alloy::primitives::{Address, B256, Bytes};
+use alloy::{
+    primitives::{Address, B256, Bytes, KECCAK256_EMPTY},
+    rlp::{self, Encodable},
+};
+use evm2::interpreter::gas::STANDARD_TOKEN_COST;
 use tempo_contracts::precompiles::SignatureVerifierError;
 use tempo_precompiles_macros::contract;
 use tempo_primitives::transaction::{
-    SignatureType,
-    tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature},
+    ConfigurableAccountSignature, SignatureType,
+    configurable_account::CONFIGURABLE_ACCOUNT_SIGNATURE_DOMAIN,
+    tt_signature::{AccountSignature, KeychainSignature, PrimitiveSignature, TempoSignature},
 };
 use tracing::trace;
 
@@ -37,10 +44,10 @@ impl SignatureVerifier {
             .map_err(|_| SignatureVerifierError::invalid_format())?;
 
         // Charge verification gas before performing verification.
-        let verify_gas = match sig.signature_type() {
-            SignatureType::Secp256k1 => SECP256K1_VERIFY_GAS,
-            SignatureType::P256 => P256_VERIFY_GAS,
-            SignatureType::WebAuthn => WEBAUTHN_VERIFY_GAS,
+        let verify_gas = match &sig {
+            PrimitiveSignature::Secp256k1(_) => SECP256K1_VERIFY_GAS,
+            PrimitiveSignature::P256(_) => P256_VERIFY_GAS,
+            PrimitiveSignature::WebAuthn(_) => WEBAUTHN_VERIFY_GAS,
         };
         self.storage.deduct_gas(verify_gas)?;
 
@@ -91,6 +98,57 @@ impl SignatureVerifier {
             .is_some_and(|key| key.is_admin))
     }
 
+    fn verify_configurable_account(
+        &self,
+        account: Address,
+        hash: B256,
+        bytes: &[u8],
+    ) -> Result<bool> {
+        let signature = TempoSignature::from_bytes(bytes).map_err(|error| {
+            trace!(%error, "malformed configurable account signature");
+            SignatureVerifierError::invalid_format()
+        })?;
+        let Some(signature) = signature.as_configurable_account() else {
+            return Err(SignatureVerifierError::invalid_format().into());
+        };
+        let config = signature.config();
+        let spec = self.storage.spec();
+        let (commitment, has_code) = self.storage.with_account_info(account, |info| {
+            Ok((
+                account_config_commitment(info, spec)?,
+                info.code_hash != KECCAK256_EMPTY,
+            ))
+        })?;
+
+        let initial_proof_gas = if commitment.is_zero() {
+            initial_account_proof_gas(config)?
+        } else {
+            0
+        };
+        let verification_gas = configurable_account_verification_gas(signature)?
+            .checked_add(initial_proof_gas)
+            .ok_or(TempoPrecompileError::OutOfGas)?;
+        self.storage.deduct_gas(verification_gas)?;
+        if signature.account() != account || !valid_account(account, spec) || has_code {
+            return Ok(false);
+        }
+        let factory = self
+            .storage
+            .with_block_env(|block_env| block_env.ext.configurable_account_recovery_factory());
+        if signature
+            .validate_account_commitment(commitment, factory)
+            .is_err()
+        {
+            return Ok(false);
+        }
+
+        signature.verify_approvals(hash).map_err(|error| {
+            trace!(%error, "invalid configurable account approvals");
+            SignatureVerifierError::invalid_signature()
+        })?;
+        Ok(true)
+    }
+
     /// Returns the active access key, or `None` when the keychain rejects it.
     fn active_key(
         &self,
@@ -129,14 +187,16 @@ impl SignatureVerifier {
         if keychain_sig.is_legacy() {
             return Err(SignatureVerifierError::invalid_format().into());
         }
+        let AccountSignature::Primitive(signature) = &keychain_sig.signature else {
+            return Err(SignatureVerifierError::invalid_format().into());
+        };
 
         let signing_hash = KeychainSignature::signing_hash(hash, keychain_sig.user_address);
-        let inner = &keychain_sig.signature;
-        let key_id = self.recover(signing_hash, inner.to_bytes())?;
+        let key_id = self.recover(signing_hash, signature.to_bytes())?;
         Ok(RecoveredKeychainKey {
             account: keychain_sig.user_address,
             key_id,
-            signature_type: inner.signature_type(),
+            signature_type: signature.signature_type(),
         })
     }
 }
@@ -151,6 +211,49 @@ struct RecoveredKeychainKey {
     signature_type: SignatureType,
 }
 
+/// Full configurable account verification cost for a registered account, before account access.
+/// Initial address derivation is charged separately when the stored commitment is zero.
+///
+/// Fails with `OutOfGas` if the cost overflows `u64`.
+pub fn configurable_account_verification_gas(
+    signature: &ConfigurableAccountSignature,
+) -> Result<u64> {
+    let mut witness = rlp::encode(signature.account());
+    signature.config().encode(&mut witness);
+    signature
+        .signatures()
+        .iter()
+        .map(primitive_verification_gas)
+        .chain([
+            calldata_gas(&witness),
+            keccak_cost(signature.config().commitment_preimage_len())?,
+            keccak_cost(CONFIGURABLE_ACCOUNT_SIGNATURE_DOMAIN.len() + 32 + 20 + 8)?,
+        ])
+        .try_fold(0u64, u64::checked_add)
+        .ok_or(TempoPrecompileError::OutOfGas)
+}
+
+/// Full primitive verification cost, including `WebAuthn` data calldata.
+///
+/// Unlike `tempo_evm`'s `primitive_signature_verification_gas`, this does not subtract the
+/// ecrecover baseline already covered by ordinary intrinsic gas.
+fn primitive_verification_gas(signature: &PrimitiveSignature) -> u64 {
+    match signature {
+        PrimitiveSignature::Secp256k1(_) => SECP256K1_VERIFY_GAS,
+        PrimitiveSignature::P256(_) => P256_VERIFY_GAS,
+        PrimitiveSignature::WebAuthn(sig) => WEBAUTHN_VERIFY_GAS + calldata_gas(&sig.webauthn_data),
+    }
+}
+
+/// Istanbul calldata cost of `input`: one token per zero byte, four per nonzero byte.
+fn calldata_gas(input: &[u8]) -> u64 {
+    input
+        .iter()
+        .map(|byte| if *byte == 0 { 1 } else { 4 })
+        .sum::<u64>()
+        * u64::from(STANDARD_TOKEN_COST)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,12 +261,48 @@ mod tests {
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_primitives::transaction::tt_signature::{
-        SIGNATURE_TYPE_P256, SIGNATURE_TYPE_WEBAUTHN,
+    use tempo_primitives::transaction::{
+        ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
+        tt_signature::{SIGNATURE_TYPE_P256, SIGNATURE_TYPE_WEBAUTHN},
     };
 
     fn sign_recover(hash: B256, signature: Vec<u8>) -> Result<Address> {
         SignatureVerifier::new().recover(hash, Bytes::from(signature))
+    }
+
+    #[test]
+    fn keychain_verification_rejects_configurable_account() -> eyre::Result<()> {
+        let account = Address::repeat_byte(1);
+        let configurable_account = ConfigurableAccountSignature::try_new(
+            Address::repeat_byte(2),
+            ConfigurableAccountConfig {
+                salt: B256::ZERO,
+                version: 1,
+                threshold: 1,
+                owners: vec![ConfigurableAccountOwner {
+                    owner: Address::repeat_byte(3),
+                    weight: 1,
+                }],
+            },
+            vec![PrimitiveSignature::default()],
+        )
+        .unwrap();
+        let signature =
+            TempoSignature::Keychain(KeychainSignature::new(account, configurable_account));
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
+        StorageCtx::enter(&mut storage, || {
+            let verifier = SignatureVerifier::new();
+            for result in [
+                verifier.verify_keychain(account, B256::ZERO, signature.to_bytes()),
+                verifier.verify_keychain_admin(account, B256::ZERO, signature.to_bytes()),
+            ] {
+                assert_eq!(
+                    result.unwrap_err(),
+                    SignatureVerifierError::invalid_format().into()
+                );
+            }
+            Ok(())
+        })
     }
 
     #[test]

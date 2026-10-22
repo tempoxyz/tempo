@@ -4,7 +4,7 @@ pub mod dispatch;
 
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::{ConfigCommitmentWriteGas, Handler, keccak_cost},
+    storage::{ConfigCommitmentWriteGas, Handler, account_config_commitment, keccak_cost},
 };
 use alloy::primitives::{Address, B256, KECCAK256_EMPTY};
 pub use tempo_chainspec::is_valid_native_account as valid_account;
@@ -146,10 +146,13 @@ impl ConfigurableAccount {
             }
             UpgradeEligibility::PrimitiveRoot => {}
         }
-        let has_code = self
-            .storage
-            .with_account_info(sender, |info| Ok(info.code_hash != KECCAK256_EMPTY))?;
-        let commitment = self.storage.config_commitment(sender)?;
+        let spec = self.storage.spec();
+        let (has_code, commitment) = self.storage.with_account_info(sender, |info| {
+            Ok((
+                info.code_hash != KECCAK256_EMPTY,
+                account_config_commitment(info, spec)?,
+            ))
+        })?;
         if has_code {
             return Err(ConfigurableAccountError::account_has_code().into());
         }
@@ -183,6 +186,11 @@ impl ConfigurableAccount {
         self.storage
             .with_block_env(|block_env| block_env.ext.configurable_account_recovery_factory())
             .ok_or_else(|| ConfigurableAccountError::invalid_config().into())
+    }
+
+    /// One-time storage initialization.
+    pub fn initialize(&mut self) -> Result<()> {
+        self.__initialize()
     }
 }
 

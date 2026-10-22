@@ -40,6 +40,8 @@ pub enum SignatureType {
     Secp256k1 = 0,
     P256 = 1,
     WebAuthn = 2,
+    /// A configurable delegate authenticated by its primitive owner quorum (T14).
+    ConfigurableAccount = 3,
 }
 
 impl From<SignatureType> for u8 {
@@ -48,6 +50,7 @@ impl From<SignatureType> for u8 {
             SignatureType::Secp256k1 => 0,
             SignatureType::P256 => 1,
             SignatureType::WebAuthn => 2,
+            SignatureType::ConfigurableAccount => 3,
         }
     }
 }
@@ -60,6 +63,7 @@ impl From<SignatureType> for AbiSignatureType {
             SignatureType::Secp256k1 => Self::Secp256k1,
             SignatureType::P256 => Self::P256,
             SignatureType::WebAuthn => Self::WebAuthn,
+            SignatureType::ConfigurableAccount => Self::ConfigurableAccount,
         }
     }
 }
@@ -72,6 +76,7 @@ impl TryFrom<AbiSignatureType> for SignatureType {
             AbiSignatureType::Secp256k1 => Ok(Self::Secp256k1),
             AbiSignatureType::P256 => Ok(Self::P256),
             AbiSignatureType::WebAuthn => Ok(Self::WebAuthn),
+            AbiSignatureType::ConfigurableAccount => Ok(Self::ConfigurableAccount),
             _ => Err(sig_type as u8),
         }
     }
@@ -94,6 +99,7 @@ impl alloy_rlp::Decodable for SignatureType {
             0 => Ok(Self::Secp256k1),
             1 => Ok(Self::P256),
             2 => Ok(Self::WebAuthn),
+            3 => Ok(Self::ConfigurableAccount),
             _ => Err(alloy_rlp::Error::Custom("Invalid signature type")),
         }
     }
@@ -1340,19 +1346,25 @@ mod tests {
         // Secp256k1 (detected by 65-byte length, no type identifier)
         let sig1_bytes = vec![0u8; SECP256K1_SIGNATURE_LENGTH];
         let sig1 = TempoSignature::from_bytes(&sig1_bytes).unwrap();
-        assert_eq!(sig1.signature_type(), SignatureType::Secp256k1);
+        assert_eq!(
+            sig1.primitive_signature_type(),
+            Some(SignatureType::Secp256k1)
+        );
 
         // P256
         let mut sig2_bytes = vec![SIGNATURE_TYPE_P256];
         sig2_bytes.extend_from_slice(&[0u8; P256_SIGNATURE_LENGTH]);
         let sig2 = TempoSignature::from_bytes(&sig2_bytes).unwrap();
-        assert_eq!(sig2.signature_type(), SignatureType::P256);
+        assert_eq!(sig2.primitive_signature_type(), Some(SignatureType::P256));
 
         // WebAuthn
         let mut sig3_bytes = vec![SIGNATURE_TYPE_WEBAUTHN];
         sig3_bytes.extend_from_slice(&[0u8; 200]);
         let sig3 = TempoSignature::from_bytes(&sig3_bytes).unwrap();
-        assert_eq!(sig3.signature_type(), SignatureType::WebAuthn);
+        assert_eq!(
+            sig3.primitive_signature_type(),
+            Some(SignatureType::WebAuthn)
+        );
     }
 
     #[test]
@@ -2557,6 +2569,7 @@ mod compact_tests {
             (SignatureType::Secp256k1, 0x00u8),
             (SignatureType::P256, 0x01),
             (SignatureType::WebAuthn, 0x02),
+            (SignatureType::ConfigurableAccount, 0x03),
         ] {
             let mut buf = vec![];
             let len = variant.to_compact(&mut buf);

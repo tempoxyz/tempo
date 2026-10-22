@@ -3,7 +3,9 @@ use super::*;
 mod regressions;
 use crate::{
     FeeTokenResolver, ProtocolFeeContext, ProtocolFeeManager, ResolvedFeeToken, TempoBlockEnv,
-    TempoEvmExt, TempoEvmTx, TempoFeeManager, signature_gas::P256_VERIFY_GAS, tempo_tx_registry,
+    TempoEvmExt, TempoEvmTx, TempoFeeManager,
+    signature_gas::{P256_VERIFY_GAS, primitive_signature_verification_gas},
+    tempo_tx_registry,
 };
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::{B256, Bytes, Signature};

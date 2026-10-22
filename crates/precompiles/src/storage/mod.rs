@@ -27,7 +27,7 @@ use evm2::{
     interpreter::gas::{KECCAK256, KECCAK256WORD},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_primitives::TempoBlockEnv;
+use tempo_primitives::{TempoBlockEnv, account::decode_config_commitment};
 
 use crate::error::{Result, TempoPrecompileError};
 
@@ -48,12 +48,23 @@ pub enum ConfigCommitmentWriteGas {
 }
 
 impl ConfigCommitmentWriteGas {
-    fn cost(self, previous: B256) -> Result<u64> {
+    /// Gas charged before the previous commitment is read: the cheaper of the two writes.
+    fn static_cost(self) -> u64 {
+        match self {
+            Self::Intrinsic => 0,
+            Self::Precompile => CONFIG_COMMITMENT_UPDATE_GAS,
+        }
+    }
+
+    /// Gas charged once the previous commitment is known, on top of [`Self::static_cost`].
+    fn dynamic_cost(self, previous: B256) -> Result<u64> {
         match self {
             Self::Intrinsic if previous.is_zero() => Ok(0),
             Self::Intrinsic => Err(TempoPrecompileError::InvalidConfigCommitmentWrite),
-            Self::Precompile if previous.is_zero() => Ok(CONFIG_COMMITMENT_REGISTRATION_GAS),
-            Self::Precompile => Ok(CONFIG_COMMITMENT_UPDATE_GAS),
+            Self::Precompile if previous.is_zero() => {
+                Ok(CONFIG_COMMITMENT_REGISTRATION_GAS - CONFIG_COMMITMENT_UPDATE_GAS)
+            }
+            Self::Precompile => Ok(0),
         }
     }
 }
@@ -225,12 +236,8 @@ pub trait PrecompileStorageProvider {
         Ok(recovered.ok().filter(|addr| !addr.is_zero()))
     }
 
-    /// Reads the commitment with normal account-access gas.
-    /// Providers that cannot store commitments report zero for every account.
-    fn config_commitment(&mut self, address: Address) -> Result<B256> {
-        self.with_account_info(address, &mut |_| {})?;
-        Ok(B256::ZERO)
-    }
+    /// Reads the commitment from the account extension with normal account-access gas.
+    fn config_commitment(&mut self, address: Address) -> Result<B256>;
 
     /// Writes an authorized nonzero commitment through the account journal.
     /// Callers must validate registration, rotation, or migration authority first.
@@ -239,12 +246,20 @@ pub trait PrecompileStorageProvider {
     /// Providers that cannot store commitments reject every write.
     fn set_config_commitment(
         &mut self,
-        _address: Address,
-        _commitment: B256,
-        _gas: ConfigCommitmentWriteGas,
-    ) -> Result<()> {
-        Err(TempoPrecompileError::InvalidConfigCommitmentWrite)
-    }
+        address: Address,
+        commitment: B256,
+        gas: ConfigCommitmentWriteGas,
+    ) -> Result<()>;
+
+    /// Reads the warm transaction caller without a second account-access charge.
+    /// Normal transaction setup has already loaded this caller. Production rejects a cold
+    /// account; this is not a generic cache-only read, and callers must have checked that
+    /// `address` is the transaction origin.
+    fn with_warm_caller_info(
+        &mut self,
+        address: Address,
+        f: &mut dyn FnMut(&AccountInfo),
+    ) -> Result<()>;
 }
 
 /// Storage operations for a given (contract) address.
@@ -311,4 +326,13 @@ pub fn keccak_cost(len: usize) -> Result<u64> {
         .checked_mul(num_words)
         .and_then(|w| w.checked_add(u64::from(KECCAK256)))
         .ok_or(TempoPrecompileError::OutOfGas)
+}
+
+/// Decodes the TIP-1108 commitment carried in `info`'s account extension under `hardfork`.
+///
+/// A malformed extension is a node invariant violation, so it fails with
+/// [`TempoPrecompileError::Fatal`].
+pub fn account_config_commitment(info: &AccountInfo, hardfork: TempoHardfork) -> Result<B256> {
+    decode_config_commitment(&info.extension, hardfork)
+        .map_err(|err| TempoPrecompileError::Fatal(err.to_string()))
 }

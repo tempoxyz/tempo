@@ -24,10 +24,11 @@ use reth_execution_types::StateUpdate;
 use std::sync::Arc;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
-    ADDRESS_REGISTRY_ADDRESS, CURRENT_COMMITTEE_ADDRESS, ICurrentCommittee, INITIAL_FACTORY_OWNER,
-    InitialZoneFactoryAccount, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
-    STORAGE_CREDITS_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
-    initial_zone_factory_state, t13_zone_factory_state,
+    ADDRESS_REGISTRY_ADDRESS, CONFIGURABLE_ACCOUNT_ADDRESS, CURRENT_COMMITTEE_ADDRESS,
+    ICurrentCommittee, INITIAL_FACTORY_OWNER, InitialZoneFactoryAccount,
+    RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STORAGE_CREDITS_ADDRESS,
+    TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS, initial_zone_factory_state,
+    t13_zone_factory_state,
 };
 use tempo_primitives::{SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType};
 use tracing::trace;
@@ -284,6 +285,35 @@ impl<'a> TempoBlockExecutor<'a> {
             };
             state.insert_storage(address, slot, original, value);
         }
+        self.inner.commit_pending_state(&state);
+        Ok(())
+    }
+
+    /// Reserves the configured recovery address before native transactions can execute.
+    ///
+    /// Installs `0xEF` marker bytecode and raises the nonce to at least one, preserving the
+    /// balance and storage.
+    fn reserve_configurable_account_recovery_factory(
+        &mut self,
+        address: Address,
+    ) -> Result<(), BlockExecutionError> {
+        let original = match self.evm_mut().state_mut().account_info_untracked(&address) {
+            Ok(info) => info,
+            Err(error) => return Err(map_database_error(error)),
+        };
+        let account = original.clone().unwrap_or_default();
+        let nonce = account.nonce.max(1);
+        let current = account
+            .with_nonce(nonce)
+            .with_code(Bytecode::new_raw(Bytes::from_static(&[0xef])));
+        if original
+            .as_ref()
+            .is_some_and(|info| info.code_hash == current.code_hash && info.nonce == nonce)
+        {
+            return Ok(());
+        }
+        let mut state = PendingState::default();
+        state.insert_account(address, original, Some(current));
         self.inner.commit_pending_state(&state);
         Ok(())
     }
@@ -603,6 +633,17 @@ impl<'a> BlockExecutor for TempoBlockExecutor<'a> {
         }
         if self.evm().config_spec_id().is_t10() {
             self.deploy_zone_factory_at_boundary()?;
+        }
+        if self.evm().config_spec_id().is_t14() {
+            self.deploy_precompile_at_boundary(CONFIGURABLE_ACCOUNT_ADDRESS, &[])?;
+            if let Some(factory) = self
+                .evm()
+                .block()
+                .ext
+                .configurable_account_recovery_factory()
+            {
+                self.reserve_configurable_account_recovery_factory(factory)?;
+            }
         }
         // Chains starting at T13 supply their runtime code in genesis. Preserve those
         // allocations (including locally compiled contracts on test chains). Chains
