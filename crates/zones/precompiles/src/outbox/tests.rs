@@ -12,10 +12,11 @@ use revm::{
     precompile::{PrecompileHalt, PrecompileResult, PrecompileStatus},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::zones::IZoneOutbox as ZoneOutboxAbi;
+use tempo_contracts::{precompiles::ITIP403Registry, zones::IZoneOutbox as ZoneOutboxAbi};
 use tempo_precompiles::{
     storage::{StorageCtx, StorageKey},
     test_util::TIP20Setup,
+    tip403_registry::TIP403Registry,
     zone_factory::portal::{self, ZonePortalStorage},
 };
 use zone_primitives::constants::TEMPO_STATE_ADDRESS;
@@ -1325,8 +1326,6 @@ fn forced_withdrawal_aborts_when_advance_cannot_fund_debit_allotment() -> eyre::
 /// An attempt that needs one more unit of gas than its bound rolls back as `DebitFailed`.
 #[test]
 fn forced_debit_worst_case_fits_its_bound_at_t14() -> eyre::Result<()> {
-    use tempo_contracts::precompiles::ITIP403Registry;
-    use tempo_precompiles::tip403_registry::TIP403Registry;
     let mut h = Harness::new()?;
     h.ctx.cfg.spec = TempoHardfork::T14;
     h.ctx.cfg.gas_params = tempo_revm::gas_params::tempo_gas_params(TempoHardfork::T14);
