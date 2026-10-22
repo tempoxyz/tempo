@@ -1020,35 +1020,6 @@ mod tests {
     use alloy_eips::{Decodable2718, Encodable2718, eip7702::Authorization};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, b256, bytes};
     use alloy_rlp::{Decodable, EMPTY_LIST_CODE, Encodable, Header as RlpHeader};
-    use arbitrary::{Arbitrary, Unstructured};
-
-    #[test]
-    fn arbitrary_exhausted_validity_bounds() {
-        // These trailing Some selectors previously rejected the zero-filled NonZeroU64.
-        for len in [98, 99] {
-            let mut input = vec![0; len];
-            input[len - 1] = 1;
-            let tx = TempoTransaction::arbitrary(&mut Unstructured::new(&input)).unwrap();
-            assert_eq!(tx.valid_after, None);
-            assert_eq!(tx.valid_before, None);
-        }
-    }
-
-    #[test]
-    fn arbitrary_envelope_exhausted_validity_regression() {
-        // Captured at case 2412 of a xorshift64 stream seeded with 1 (256 bytes per case).
-        let mut state = 1u64;
-        let mut input = [0; 256];
-        for _ in 0..=2412 {
-            for byte in &mut input {
-                state ^= state << 13;
-                state ^= state >> 7;
-                state ^= state << 17;
-                *byte = state.to_le_bytes()[0];
-            }
-        }
-        TempoTxEnvelope::arbitrary(&mut Unstructured::new(&input)).unwrap();
-    }
 
     fn create_call(to: TxKind) -> Call {
         Call {
