@@ -3929,8 +3929,8 @@ pub(crate) async fn start_real_p2p_cluster_with_settlement_proving(
             address: "127.0.0.1:1".to_owned(),
         })
         .collect();
-    let prover_addresses =
-        zone_sequencer::ProverAddresses::new(unreachable)?.expect("hardforks are non-empty");
+    let prover_addresses = zone_sequencer::ProverAddresses::new_without_pcr_check(unreachable)?
+        .expect("hardforks are non-empty");
     Ok(start_real_p2p_cluster_inner(
         withdrawal_batch_interval_blocks,
         active_nodes,

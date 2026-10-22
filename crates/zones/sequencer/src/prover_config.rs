@@ -14,6 +14,7 @@ use eyre::{Context as _, Result, ensure};
 use reth_metrics::metrics::Gauge;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::{TempoHardforks, hardfork::TempoHardfork};
+use tempo_precompiles::zone_verifier::approved_pcrs;
 use zone_chainspec::ZoneChainSpec;
 
 /// Readiness monitors endpoints for forks activating within 72 hours, inclusive.
@@ -54,9 +55,26 @@ impl FromStr for HardforkProverAddress {
 pub struct ProverAddresses(BTreeMap<TempoHardfork, String>);
 
 impl ProverAddresses {
-    /// Build the endpoint routing table, rejecting empty addresses and duplicate assignments.
-    /// Returns `None` when no remote endpoints are configured.
+    /// Build the endpoint routing table, rejecting empty addresses, duplicate assignments and
+    /// hardforks without compiled-in approved prover PCRs, which could never authenticate a
+    /// prover. Returns `None` when no remote endpoints are configured.
     pub fn new(assignments: Vec<HardforkProverAddress>) -> Result<Option<Self>> {
+        Self::build(assignments, |hardfork| approved_pcrs(hardfork).is_some())
+    }
+
+    /// Build the routing table without requiring approved PCRs for the assigned hardforks.
+    ///
+    /// Only for tests that route to provers they never reach; [`Self::new`] is the node's
+    /// constructor.
+    #[doc(hidden)]
+    pub fn new_without_pcr_check(assignments: Vec<HardforkProverAddress>) -> Result<Option<Self>> {
+        Self::build(assignments, |_| true)
+    }
+
+    fn build(
+        assignments: Vec<HardforkProverAddress>,
+        has_approved_pcrs: impl Fn(TempoHardfork) -> bool,
+    ) -> Result<Option<Self>> {
         if assignments.is_empty() {
             return Ok(None);
         }
@@ -66,6 +84,10 @@ impl ProverAddresses {
             ensure!(
                 !address.trim().is_empty(),
                 "prover address must not be empty"
+            );
+            ensure!(
+                has_approved_pcrs(hardfork),
+                "no approved prover PCRs for L1 hardfork {hardfork}, so the prover at {address} could never be authenticated; add the measurements to crates/precompiles/src/zone_verifier/pcrs.json"
             );
             let prev = addresses.insert(hardfork, address);
             ensure!(prev.is_none(), "duplicate prover address for {hardfork}");
@@ -239,10 +261,7 @@ mod tests {
         for (before, after) in TRANSITIONS {
             let activation = 400_000;
             let spec = scheduled(after, activation);
-            let addresses =
-                ProverAddresses::new(vec![format!("{before}=old:5000").parse().unwrap()])
-                    .unwrap()
-                    .unwrap();
+            let addresses = approved(vec![format!("{before}=old:5000").parse().unwrap()]);
             let recorded = Arc::new(RecordedGauge::default());
             let gauge = Gauge::from_arc(recorded.clone());
             for now in [
@@ -292,12 +311,50 @@ mod tests {
     }
 
     fn routed(before: TempoHardfork, after: TempoHardfork) -> ProverAddresses {
-        ProverAddresses::new(vec![
+        approved(vec![
             format!("{before}=old:5000").parse().unwrap(),
             format!("{after}=new:5000").parse().unwrap(),
         ])
-        .unwrap()
-        .unwrap()
+    }
+
+    /// Routing table for tests that need assignments independent of the compiled PCR table.
+    fn approved(assignments: Vec<HardforkProverAddress>) -> ProverAddresses {
+        ProverAddresses::build(assignments, |_| true)
+            .unwrap()
+            .unwrap()
+    }
+
+    #[test]
+    fn assignments_without_approved_pcrs_are_rejected() {
+        for (before, after) in TRANSITIONS {
+            let assignments: Vec<HardforkProverAddress> = vec![
+                format!("{before}=old:5000").parse().unwrap(),
+                format!("{after}=new:5000").parse().unwrap(),
+            ];
+            let error = ProverAddresses::build(assignments.clone(), |fork| fork == before)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.starts_with(&format!(
+                    "no approved prover PCRs for L1 hardfork {after}, so the prover at new:5000"
+                )),
+                "{error}"
+            );
+            assert!(ProverAddresses::build(assignments, |_| true).is_ok());
+        }
+    }
+
+    #[test]
+    fn node_constructor_requires_the_compiled_pcr_table() {
+        for hardfork in TempoHardfork::VARIANTS.iter().copied() {
+            let result =
+                ProverAddresses::new(vec![format!("{hardfork}=prover:5000").parse().unwrap()]);
+            assert_eq!(
+                result.is_ok(),
+                approved_pcrs(hardfork).is_some(),
+                "{hardfork}"
+            );
+        }
     }
 
     #[test]
@@ -313,10 +370,13 @@ mod tests {
             assert_eq!(config.address_for(after).unwrap(), "new:5000");
             assert!(config.address_for(TempoHardfork::T11).is_err());
             assert!(
-                ProverAddresses::new(vec![
-                    format!("{after}=a:1").parse().unwrap(),
-                    format!("{after}=b:2").parse().unwrap()
-                ])
+                ProverAddresses::build(
+                    vec![
+                        format!("{after}=a:1").parse().unwrap(),
+                        format!("{after}=b:2").parse().unwrap()
+                    ],
+                    |_| true
+                )
                 .is_err()
             );
             for invalid in [
@@ -339,9 +399,7 @@ mod tests {
             let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
                 .connect_mocked_client(asserter.clone())
                 .erased();
-            let config = ProverAddresses::new(vec![format!("{before}=old:5000").parse().unwrap()])
-                .unwrap()
-                .unwrap();
+            let config = approved(vec![format!("{before}=old:5000").parse().unwrap()]);
             assert_eq!(
                 config
                     .resolve(&provider, &scheduled(after, 100_001))
