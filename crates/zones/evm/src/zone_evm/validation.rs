@@ -36,26 +36,25 @@ pub fn validate_transaction(
     }
 
     // Configurable accounts stay blocked until zones sync configurations (TIP-1114 Zones).
-    let uses_configurable_account = tx.as_aa().is_some_and(|aa| {
-        // An outer or keychain-inner signature without a primitive type is a configurable account.
-        aa.signature().primitive_signature_type().is_none()
-            || aa.tx().key_authorization.as_ref().is_some_and(|auth| {
-                auth.key_type == SignatureType::ConfigurableAccount
-                    || auth.signature.as_configurable_account().is_some()
-            })
-    });
     if spec.is_t14()
-        && (uses_configurable_account
-            || tx.calls().any(|(kind, input)| {
-                kind == TxKind::Call(CONFIGURABLE_ACCOUNT_ADDRESS)
-                    && matches!(
-                        input.first_chunk(),
-                        Some(
-                            &IConfigurableAccount::updateConfigCall::SELECTOR
-                                | &IConfigurableAccount::upgradeAccountCall::SELECTOR
-                        )
+        && (tx.as_aa().is_some_and(|aa| {
+            // An outer or keychain-inner signature without a primitive type is a configurable
+            // account.
+            aa.signature().primitive_signature_type().is_none()
+                || aa.tx().key_authorization.as_ref().is_some_and(|auth| {
+                    auth.key_type == SignatureType::ConfigurableAccount
+                        || auth.signature.as_configurable_account().is_some()
+                })
+        }) || tx.calls().any(|(kind, input)| {
+            kind == TxKind::Call(CONFIGURABLE_ACCOUNT_ADDRESS)
+                && matches!(
+                    input.first_chunk(),
+                    Some(
+                        &IConfigurableAccount::updateConfigCall::SELECTOR
+                            | &IConfigurableAccount::upgradeAccountCall::SELECTOR
                     )
-            }))
+                )
+        }))
     {
         return Err(ConfigurableAccountError::UnsupportedContext.into());
     }
