@@ -41,7 +41,8 @@ jobs:
       pull-requests: read
     outputs:
       should_run: ${{ contains(fromJSON(steps.filter.outputs.changes), 'specs') }}
-      foundry_smoke: ${{ contains(fromJSON(steps.filter.outputs.changes), 'foundry_smoke') }}
+      foundry_smoke: ${{ contains(fromJSON(steps.filter.outputs.changes), 'foundry_smoke') && steps.foundry.outputs.supported == 'true' }}
+      foundry_supported: ${{ steps.foundry.outputs.supported }}
     steps:
       - name: Secure runner
         uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
@@ -50,6 +51,17 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      # Foundry builds against tempo-revm. Branches without crates/revm, such as
+      # the EVM2 integration branch, cannot patch Foundry until it supports them.
+      - name: Check Foundry compatibility
+        id: foundry
+        run: |
+          if [[ -f crates/revm/Cargo.toml ]]; then
+            echo "supported=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "supported=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping Foundry jobs: crates/revm (tempo-revm) is absent, and Foundry depends on it."
+          fi
       - uses: tempoxyz/gh-actions/actions/changed-paths@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         id: filter
         with:
@@ -92,7 +104,7 @@ jobs:
       - name: Skip Foundry resolver smoke
         if: needs.check-specs-changes.outputs.foundry_smoke != 'true'
         run: |
-          echo "Skipping Foundry resolver smoke: no dependency-sensitive files changed."
+          echo "Skipping Foundry resolver smoke: no dependency-sensitive files changed, or this branch has no tempo-revm."
 
       - name: Checkout tempo
         if: needs.check-specs-changes.outputs.foundry_smoke == 'true'
@@ -256,7 +268,7 @@ jobs:
   foundry-build:
     name: Build patched Forge
     needs: [check-specs-changes, check-precompiles]
-    if: github.repository == 'tempoxyz/tempo' && needs.check-specs-changes.outputs.should_run == 'true'
+    if: github.repository == 'tempoxyz/tempo' && needs.check-specs-changes.outputs.should_run == 'true' && needs.check-specs-changes.outputs.foundry_supported == 'true'
     runs-on: depot-ubuntu-latest-8
     timeout-minutes: 60
     permissions:
