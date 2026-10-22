@@ -522,7 +522,7 @@ These verify correct behavior when the specific function is called:
 
 #### Signature Type Validation
 
-- **TEMPO-KEY19**: Invalid signature type rejection - enum values >= 3 are invalid and revert with `InvalidSignatureType`.
+- **TEMPO-KEY19**: Invalid signature type rejection - enum values >= 4 (>= 3 before T14, where `ConfigurableAccount = 3` is not yet accepted) are invalid and revert with `InvalidSignatureType`.
 
 #### Transaction Context
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Prepares an Amp orb for building and testing Tempo. Idempotent; safe to rerun on a warm snapshot.
+# Prepares an Amp orb for building and testing Tempo and Zones, including the local zone services
+# in .amp/services.yaml. Idempotent; safe to rerun on a warm snapshot.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -18,8 +19,8 @@ step() {
 }
 
 install_apt_packages() {
-  # Build deps from Dockerfile.chef, plus shellcheck for tempoup tests.
-  local packages=(build-essential pkg-config libssl-dev clang libclang-dev mold shellcheck)
+  # Build deps from Dockerfile.chef, plus shellcheck for tempoup tests and jq for .amp services.
+  local packages=(build-essential ca-certificates curl git jq pkg-config libssl-dev clang libclang-dev mold shellcheck)
   local missing=()
   for pkg in "${packages[@]}"; do
     dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed" || missing+=("$pkg")
@@ -106,6 +107,24 @@ SOURCE_DATE_EPOCH = "1700000000"
 EOF
 }
 
+install_foundry() {
+  # Anvil runs the local Tempo L1; forge builds the zone contracts.
+  if [[ ! -x "$HOME/.foundry/bin/foundryup" ]]; then
+    curl --proto '=https' --tlsv1.2 -sSfL https://foundry.paradigm.xyz | bash
+  fi
+  export PATH="$HOME/.foundry/bin:$PATH"
+  # shellcheck disable=SC1091
+  source .amp/versions.env
+  if ! anvil --version 2>/dev/null | grep -q "${FOUNDRY_VERSION#v}"; then
+    foundryup --install "$FOUNDRY_VERSION"
+  fi
+  local marker="# tempo foundry"
+  if ! grep -Fqx "$marker" "$HOME/.bash_profile" 2>/dev/null; then
+    # shellcheck disable=SC2016
+    printf '\n%s\nexport PATH="$HOME/.foundry/bin:$PATH"\n' "$marker" >>"$HOME/.bash_profile"
+  fi
+}
+
 install_archil() {
   # FUSE client for the shared Archil disk that .agents/resume mounts.
   if ! command -v archil >/dev/null; then
@@ -121,6 +140,11 @@ step "sccache" install_sccache
 step "build cache" configure_build_cache
 step "cargo-nextest" install_nextest
 step "just" install_just
+step "foundry" install_foundry
+step "submodules" git submodule update --init --recursive --depth 1
+# Pulls service images and the pinned explorer checkout; Amp starts the services.
+step "zone services" bash .amp/setup
+step "zone contracts" forge build --root crates/zones/contracts --skip test --no-lint
 # Fetch only queries rustc; it must work before Archil is mounted, without starting sccache.
 step "cargo fetch" env RUSTC_WRAPPER= cargo fetch --locked
 # Drop disposable outputs from old snapshots, without following an existing remote target link.

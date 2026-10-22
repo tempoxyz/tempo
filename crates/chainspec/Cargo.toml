@@ -39,6 +39,7 @@ commonware-codec = { workspace = true, optional = true }
 commonware-cryptography = { workspace = true, optional = true }
 
 [dev-dependencies]
+tempo-contracts.workspace = true
 
 [features]
 default = ["std", "serde", "reth", "cli"]
@@ -54,12 +55,14 @@ std = [
     "reth-network-peers?/std",
     "serde/std",
     "serde_json/std",
+    "tempo-contracts/std",
     "tempo-primitives/std",
 ]
 serde = [
     "tempo-hardfork/serde",
     "alloy-eips/serde",
     "alloy-primitives/serde",
+    "tempo-contracts/serde",
     "tempo-primitives/serde"
 ]
 evm = ["dep:alloy-evm", "tempo-hardfork/evm", "tempo-primitives/evm"]

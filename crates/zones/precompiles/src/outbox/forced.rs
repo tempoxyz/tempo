@@ -112,15 +112,26 @@ impl ZoneOutbox {
         gas: u64,
     ) -> ZoneResult<Result<(), ForcedExitReason>> {
         let start = self.storage.gas_used();
-        if self.storage.gas_limit() - start < gas {
+        let remaining = self
+            .storage
+            .gas_limit()
+            .checked_sub(start)
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
+        if remaining < gas {
             return Err(TempoPrecompileError::OutOfGas.into());
         }
         let checkpoint = self.storage.checkpoint();
         // The attempt is a bounded sequence of native operations metered on the advance's gas, so
         // it is classified after it ends. Since the advance has `gas` left, running out of gas
         // inside the attempt means it used more than `gas`.
-        match self.debit(request) {
-            Ok(()) if self.storage.gas_used() - start <= gas => {
+        let result = self.debit(request);
+        let used = self
+            .storage
+            .gas_used()
+            .checked_sub(start)
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
+        match result {
+            Ok(()) if used <= gas => {
                 checkpoint.commit();
                 Ok(Ok(()))
             }
