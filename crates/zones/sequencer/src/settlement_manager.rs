@@ -24,7 +24,7 @@ use crate::{
         AttestationDomain, SettlementAttestation, SettlementCertificate,
         SignedSettlementAttestation,
     },
-    settlement::BatchSubmitError,
+    settlement::{BatchSubmitError, wait_for_l1_block},
 };
 
 const SETTLEMENT_REBROADCAST_INTERVAL: Duration = Duration::from_millis(500);
@@ -215,21 +215,14 @@ impl SettlementManager {
 
     async fn validate_anchor(&self, prepared: &PreparedBatch) -> Result<(), BatchSubmitError> {
         let anchor_number = prepared.anchor_block_number();
-        let current = self
-            .l1_provider
-            .get_block_number()
-            .await
-            .map_err(|error| eyre::eyre!(error))?;
         if anchor_number < prepared.batch.tempo_block_number {
             return Err(BatchSubmitError::PreparedAnchorInvalid(eyre::eyre!(
                 "prepared L1 anchor predates the batch Tempo block"
             )));
         }
-        if anchor_number > current {
-            return Err(BatchSubmitError::PreparedAnchorInvalid(eyre::eyre!(
-                "prepared L1 anchor block is ahead of the current L1 tip"
-            )));
-        }
+        let current = wait_for_l1_block(&self.l1_provider, anchor_number)
+            .await
+            .map_err(BatchSubmitError::PreparedAnchorInvalid)?;
         if current.saturating_sub(anchor_number) >= self.anchor_config.history_window() {
             return Err(BatchSubmitError::PreparedAnchorInvalid(eyre::eyre!(
                 "prepared L1 anchor block fell outside the EIP-2935 history window"
