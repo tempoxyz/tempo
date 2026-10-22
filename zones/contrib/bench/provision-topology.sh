@@ -226,7 +226,7 @@ cleanup_pid_file() {
 # Reclaims ADDR:PORT endpoints (ADDR * for a wildcard bind) from stale listeners of
 # the exact benchmark binary, signalling each owner once; fails on any other owner.
 stop_stale_listeners() {
-    local expected="$1" label="$2" endpoint addr port filter line pid alive signal deadline
+    local expected="$1" label="$2" endpoint addr port filter line pid sent signal deadline
     shift 2
     local -A pids=()
     for endpoint in "$@"; do
@@ -245,16 +245,23 @@ stop_stale_listeners() {
     done
     (( ${#pids[@]} )) || return 0
 
-    # Wait for the PIDs themselves: an exiting process reads an empty cmdline
-    # while it still holds its sockets.
+    # Track the PIDs themselves: an exiting process reads an empty cmdline while
+    # it still holds its sockets. Drop a PID once it is gone or reused by anything
+    # else (a non-empty cmdline that is not the benchmark binary).
     for signal in INT KILL; do
-        echo "stopping stale $label listeners with SIG$signal (PIDs ${!pids[*]})" >&2
-        kill -"$signal" "${!pids[@]}" 2>/dev/null || true
+        sent=""
         deadline=$((SECONDS + 30))
         while (( SECONDS < deadline )); do
-            alive=0
-            for pid in "${!pids[@]}"; do kill -0 "$pid" 2>/dev/null && alive=1; done
-            (( alive )) || return 0
+            for pid in "${!pids[@]}"; do
+                kill -0 "$pid" 2>/dev/null && { process_matches "$pid" "$expected" ||
+                    [[ -z "$(tr -d '\0' <"/proc/$pid/cmdline" 2>/dev/null)" ]]; } || unset "pids[$pid]"
+            done
+            (( ${#pids[@]} )) || return 0
+            if [[ -z "$sent" ]]; then
+                echo "stopping stale $label listeners with SIG$signal (PIDs ${!pids[*]})" >&2
+                kill -"$signal" "${!pids[@]}" 2>/dev/null || true
+                sent=1
+            fi
             sleep 1
         done
     done
