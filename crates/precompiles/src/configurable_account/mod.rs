@@ -187,6 +187,11 @@ impl ConfigurableAccount {
             .with_block_env(|block_env| block_env.ext.configurable_account_recovery_factory())
             .ok_or_else(|| ConfigurableAccountError::invalid_config().into())
     }
+
+    /// One-time storage initialization.
+    pub fn initialize(&mut self) -> Result<()> {
+        self.__initialize()
+    }
 }
 
 /// What the transaction allows `upgradeAccount` to do, as decided by the handler before execution.
