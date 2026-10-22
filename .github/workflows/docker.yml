@@ -9,7 +9,6 @@ on:
       - main
       - "rc/*"
     tags:
-      - "v*.*.*"
       - "tempo/v*.*.*"
   merge_group:
   workflow_dispatch:
@@ -144,11 +143,10 @@ jobs:
         env:
           REF: ${{ github.ref }}
         run: |
-          # Docker semver tags come from vX.Y.Z or tempo/vX.Y.Z; other refs leave
-          # the value empty so metadata-action falls back to the ref.
+          # Docker semver tags come from tempo/vX.Y.Z; other refs leave the value
+          # empty so metadata-action falls back to the ref.
           case "$REF" in
             refs/tags/tempo/v*) echo "version=${REF#refs/tags/tempo/}" >> "$GITHUB_OUTPUT" ;;
-            refs/tags/v*) echo "version=${REF#refs/tags/}" >> "$GITHUB_OUTPUT" ;;
           esac
 
       - name: Docker metadata for tempo
@@ -293,7 +291,7 @@ jobs:
           targets: ${{ ((inputs.pr_number == '' && github.event_name == 'schedule') || github.event.inputs.nightly == 'true') && 'nightly' || 'default' }}
           project: 0c6tg19qsp
           push: true
-          no-cache: ${{ inputs.pr_number == '' && (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/tempo/v')) }}
+          no-cache: ${{ inputs.pr_number == '' && startsWith(github.ref, 'refs/tags/tempo/v') }}
           pull: ${{ github.event_name != 'merge_group' }}
         env:
           VERGEN_GIT_SHA: ${{ steps.source.outputs.sha }}

@@ -7,12 +7,11 @@ on:
     branches:
       - "rc/*"
     tags:
-      - "v*.*.*"
       - "tempo/v*.*.*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to release (e.g., v0.1.0 or tempo/v0.1.0)"
+        description: "Tag to release (e.g., tempo/v1.17.0)"
         required: true
         type: string
       profile:
@@ -61,8 +60,8 @@ jobs:
           else
             tag="${GITHUB_REF#refs/tags/}"
           fi
-          # tempo/vX.Y.Z names the same release as vX.Y.Z: the GitHub release
-          # uses the tag, and artifacts keep the unprefixed version.
+          # Releases are tagged tempo/vX.Y.Z (earlier ones vX.Y.Z): the GitHub
+          # release uses the tag, and artifacts keep the unprefixed vX.Y.Z.
           {
             echo "tag=$tag"
             echo "version=${tag#tempo/}"

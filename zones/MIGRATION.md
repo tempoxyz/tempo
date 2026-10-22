@@ -37,7 +37,8 @@ through Earn’s `zones-read` STS policy.
 ## Product workflow cutover
 
 Zones releases use `zones/vX.Y.Z` tags and keep version 0.3.6 in their manifests;
-Tempo uses `vX.Y.Z` or `tempo/vX.Y.Z` tags and the root workspace version. Zones release assets
+Tempo uses `tempo/vX.Y.Z` tags (earlier releases used `vX.Y.Z`) and the root
+workspace version. Zones release assets
 use the slash-free `vX.Y.Z` version and never become the repository's latest
 release. Docker recipes live under `zones/docker` and build the root workspace.
 The Zones tooling image keeps its `tempo-xtask` entrypoint but contains the
