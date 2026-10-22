@@ -292,7 +292,6 @@ where
             epoch_strategy: epoch_strategy.clone(),
         });
         let application = application::Application::new(
-            context.child("application"),
             application,
             marshal_mailbox.clone(),
             epoch_strategy.clone(),
@@ -550,10 +549,8 @@ where
             self.broadcast_mailbox,
             resolver,
         );
-        let (epoch_manager, epoch_manager_mailbox) = epoch::manager::init(
-            self.context.child("epoch_manager"),
-            self.epoch_manager_config,
-        );
+        let (epoch_manager, epoch_manager_mailbox) =
+            epoch::manager::init(self.context.into_present(), self.epoch_manager_config);
         let epoch_manager =
             epoch_manager.start(votes_channel, certificates_channel, resolver_channel);
 

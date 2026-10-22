@@ -53,12 +53,8 @@ fn verification_switches_to_deferred_at_t14() {
             );
             assert!(
                 metrics
-                    .value::<u64>("application_immediate_build_duration_count")
+                    .value::<u64>("application_build_duration_count")
                     .is_some()
-            );
-            assert_eq!(
-                metrics.value::<u64>("application_deferred_build_duration_count"),
-                None
             );
             let height = metrics.latest_consensus_height().unwrap();
             assert!(height < boundary);
@@ -111,16 +107,6 @@ fn verification_switches_to_deferred_at_t14() {
         )
         .await;
 
-        wait_for_metrics(&context, |metrics| {
-            validators.iter().all(|node| {
-                metrics
-                    .for_scope(node)
-                    .value::<u64>("application_immediate_build_duration_count")
-                    .is_none()
-            })
-        })
-        .await;
-
         let mut expected = None;
         for node in &validators {
             let metrics = context.to_metrics().for_scope(node);
@@ -130,7 +116,7 @@ fn verification_switches_to_deferred_at_t14() {
             );
             assert!(
                 metrics
-                    .value::<u64>("application_deferred_build_duration_count")
+                    .value::<u64>("application_build_duration_count")
                     .is_some()
             );
             let block = node

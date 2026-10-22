@@ -42,7 +42,6 @@ pub(crate) struct Application<E>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
 {
-    context: Arc<E>,
     inner: Inner,
     marshal: Mailbox<Scheme<PublicKey, MinSig>, Standard<Block>>,
     epocher: FixedEpocher,
@@ -55,7 +54,6 @@ where
 {
     fn clone(&self) -> Self {
         Self {
-            context: self.context.clone(),
             inner: self.inner.clone(),
             marshal: self.marshal.clone(),
             epocher: self.epocher.clone(),
@@ -69,13 +67,11 @@ where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
 {
     pub(crate) fn new(
-        context: E,
         inner: Inner,
         marshal: Mailbox<Scheme<PublicKey, MinSig>, Standard<Block>>,
         epocher: FixedEpocher,
     ) -> Self {
         Self {
-            context: Arc::new(context),
             inner,
             marshal,
             epocher,
@@ -84,11 +80,9 @@ where
     }
 
     /// Constructs an immediate wrapper and registers it for finalized-tip reports.
-    pub(crate) fn to_immediate(&self, epoch: Epoch) -> EpochApplication<E> {
+    pub(crate) fn to_immediate(&self, context: E, epoch: Epoch) -> EpochApplication<E> {
         let application = EpochApplication::Immediate(Inline::new(
-            self.context
-                .child("immediate")
-                .with_attribute("epoch", epoch),
+            context,
             self.inner.clone(),
             self.marshal.clone(),
             self.epocher.clone(),
@@ -98,11 +92,9 @@ where
     }
 
     /// Constructs a deferred wrapper and registers it for finalized-tip reports.
-    pub(crate) fn to_deferred(&self, epoch: Epoch) -> EpochApplication<E> {
+    pub(crate) fn to_deferred(&self, context: E, epoch: Epoch) -> EpochApplication<E> {
         let application = EpochApplication::Deferred(Deferred::new(
-            self.context
-                .child("deferred")
-                .with_attribute("epoch", epoch),
+            context,
             self.inner.clone(),
             self.marshal.clone(),
             self.epocher.clone(),

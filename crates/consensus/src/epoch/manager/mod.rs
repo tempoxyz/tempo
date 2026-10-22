@@ -41,6 +41,7 @@ where
     pub(crate) inactive_time_before_leader_skip: Duration,
 }
 
+/// Initializes the epoch manager from the consensus engine's parent context.
 pub(crate) fn init<TContext, TBlocker>(
     context: TContext,
     config: Config<TContext, TBlocker>,
