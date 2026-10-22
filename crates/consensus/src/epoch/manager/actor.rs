@@ -64,7 +64,7 @@ use tempo_primitives::TempoHeader;
 use tracing::{Level, Span, debug, error, error_span, info, instrument, warn, warn_span};
 
 use crate::{
-    consensus::{Digest, application::EpochApplication},
+    consensus::{Digest, application::Application},
     epoch::manager::ingress::{EpochTransition, Exit},
     storage::FinalizedBlocksProvider as _,
 };
@@ -401,7 +401,7 @@ where
             .for_timestamp(boundary_timestamp, || {
                 self.parent_context.child("application")
             });
-        let deferred = matches!(application, EpochApplication::Deferred(_));
+        let deferred = matches!(application, Application::Deferred(_));
         self.metrics
             .deferred_verification
             .metric()

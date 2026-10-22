@@ -1,6 +1,6 @@
 //! The interface between the consensus layer and the execution layer.
 //!
-//! [`Inner`] implements [`commonware_consensus::Application`]. [`Application`]
+//! [`Inner`] implements [`commonware_consensus::Application`]. [`Factory`]
 //! selects an inline or deferred wrapper using the preceding epoch boundary
 //! timestamp. Each wrapper is constructed on first use and shared across epochs.
 //! Marshal's reporter prunes both wrappers' gates.
@@ -40,11 +40,11 @@ use tempo_chainspec::TempoChainSpec;
 
 use crate::{VerificationMode, consensus::block::Block};
 
-pub(crate) type Application<TContext> =
-    Marshaled<TContext, Scheme<PublicKey, MinSig>, Inner, Block, FixedEpocher>;
+pub(crate) type TempoFactory<TContext> =
+    Factory<TContext, Scheme<PublicKey, MinSig>, Inner, Block, FixedEpocher>;
 
 /// Selects and lazily constructs the two shared verification wrappers.
-pub(crate) struct Marshaled<E, S, A, B, ES>
+pub(crate) struct Factory<E, S, A, B, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
     S: CertificateScheme,
@@ -57,11 +57,11 @@ where
     epocher: ES,
     chainspec: Arc<TempoChainSpec>,
     verification_mode: VerificationMode,
-    immediate: Arc<OnceLock<EpochApplication<E, S, A, B, ES>>>,
-    deferred: Arc<OnceLock<EpochApplication<E, S, A, B, ES>>>,
+    immediate: Arc<OnceLock<Application<E, S, A, B, ES>>>,
+    deferred: Arc<OnceLock<Application<E, S, A, B, ES>>>,
 }
 
-impl<E, S, A, B, ES> Clone for Marshaled<E, S, A, B, ES>
+impl<E, S, A, B, ES> Clone for Factory<E, S, A, B, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
     S: CertificateScheme,
@@ -82,7 +82,7 @@ where
     }
 }
 
-impl<E, S, A, B, ES> Marshaled<E, S, A, B, ES>
+impl<E, S, A, B, ES> Factory<E, S, A, B, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
     S: CertificateScheme,
@@ -121,7 +121,7 @@ where
         &self,
         timestamp: u64,
         context: impl FnOnce() -> E,
-    ) -> EpochApplication<E, S, A, B, ES> {
+    ) -> Application<E, S, A, B, ES> {
         if self
             .verification_mode
             .is_deferred_at(&self.chainspec, timestamp)
@@ -132,10 +132,10 @@ where
         }
     }
 
-    fn to_immediate(&self, context: impl FnOnce() -> E) -> EpochApplication<E, S, A, B, ES> {
+    fn to_immediate(&self, context: impl FnOnce() -> E) -> Application<E, S, A, B, ES> {
         self.immediate
             .get_or_init(|| {
-                EpochApplication::Immediate(Inline::new(
+                Application::Immediate(Inline::new(
                     context(),
                     self.inner.clone(),
                     self.marshal.clone(),
@@ -145,10 +145,10 @@ where
             .clone()
     }
 
-    fn to_deferred(&self, context: impl FnOnce() -> E) -> EpochApplication<E, S, A, B, ES> {
+    fn to_deferred(&self, context: impl FnOnce() -> E) -> Application<E, S, A, B, ES> {
         self.deferred
             .get_or_init(|| {
-                EpochApplication::Deferred(Deferred::new(
+                Application::Deferred(Deferred::new(
                     context(),
                     self.inner.clone(),
                     self.marshal.clone(),
@@ -159,7 +159,7 @@ where
     }
 }
 
-impl<E, S, A, B, ES> Reporter for Marshaled<E, S, A, B, ES>
+impl<E, S, A, B, ES> Reporter for Factory<E, S, A, B, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
     S: CertificateScheme,
@@ -186,7 +186,7 @@ where
 }
 
 /// Verification policy fixed for the lifetime of a simplex epoch.
-pub(crate) enum EpochApplication<E, S, A, B, ES>
+pub(crate) enum Application<E, S, A, B, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
     S: CertificateScheme,
@@ -198,7 +198,7 @@ where
     Immediate(Inline<E, S, A, B, ES>),
 }
 
-impl<E, S, A, B, ES> Clone for EpochApplication<E, S, A, B, ES>
+impl<E, S, A, B, ES> Clone for Application<E, S, A, B, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
     S: CertificateScheme,
@@ -214,7 +214,7 @@ where
     }
 }
 
-impl<E, S, A, B, ES> Automaton for EpochApplication<E, S, A, B, ES>
+impl<E, S, A, B, ES> Automaton for Application<E, S, A, B, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
     S: CertificateScheme,
@@ -250,7 +250,7 @@ where
     }
 }
 
-impl<E, S, A, B, ES> CertifiableAutomaton for EpochApplication<E, S, A, B, ES>
+impl<E, S, A, B, ES> CertifiableAutomaton for Application<E, S, A, B, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
     S: CertificateScheme,
@@ -272,7 +272,7 @@ where
     }
 }
 
-impl<E, S, A, B, ES> Relay for EpochApplication<E, S, A, B, ES>
+impl<E, S, A, B, ES> Relay for Application<E, S, A, B, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
     S: CertificateScheme,
@@ -292,7 +292,7 @@ where
     }
 }
 
-impl<E, S, A, B, ES> Reporter for EpochApplication<E, S, A, B, ES>
+impl<E, S, A, B, ES> Reporter for Application<E, S, A, B, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
     S: CertificateScheme,
