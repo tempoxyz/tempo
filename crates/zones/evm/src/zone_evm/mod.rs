@@ -15,7 +15,8 @@ use evm2::{
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::{ExecutionContext, TempoEvmTypes, TempoTxEnv, tempo_tx_registry};
 use zone_precompiles::{
-    L1State, L1StorageReader, tempo_state::TEMPO_BLOCK_NUMBER_SLOT, tx_context,
+    L1State, L1StorageReader, TIP403_REGISTRY_ADDRESS, tempo_state::TEMPO_BLOCK_NUMBER_SLOT,
+    tx_context,
 };
 use zone_primitives::constants::{CONTRACT_DEPLOYER_ALLOWLIST, TEMPO_STATE_ADDRESS};
 
@@ -57,6 +58,16 @@ impl<L1: L1StorageReader> ZoneTxHandler<L1> {
     ) -> HandlerResult<ZoneTxContext<L1>> {
         self.l1.reset_transaction_state();
         crate::validate_transaction(request.envelope, CONTRACT_DEPLOYER_ALLOWLIST)?;
+
+        // Mirrored registry values depend on the anchor, but the accepted cache is keyed by slot
+        // only. Drop them so an earlier transaction's anchor cannot serve this one.
+        request
+            .host
+            .state_mut()
+            .overlay_db_mut()
+            .cache
+            .storage
+            .remove(&TIP403_REGISTRY_ADDRESS);
 
         // The accepted EVM overlay sits above L1OverlayDB. Snapshot its checkpoint
         // here so mirrored reads cannot fall back to the backing database's old value.
