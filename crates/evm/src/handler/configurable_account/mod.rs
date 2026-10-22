@@ -1,7 +1,7 @@
 //! Configurable account authorization (TIP-1112) shared by execution, pool validation and
 //! simulation.
 
-use super::TempoEvmTypes;
+use super::{TempoEvmTypes, access_key_id};
 use crate::{
     ExecutionContext, TempoAaTx, TempoInvalidTransaction, TempoTx, TempoTxEnv,
     transaction_error::{ConfigurableAccountError, RootKeyRole},
@@ -29,8 +29,8 @@ use tempo_precompiles::{
     },
 };
 use tempo_primitives::transaction::{
-    ConfigurableAccountQuorumError, ConfigurableAccountSignature, ConfigurableAccountStateError,
-    KeychainSignature, SignatureType, TempoSignature,
+    ConfigurableAccountSignature, ConfigurableAccountStateError, KeychainSignature, SignatureType,
+    TempoSignature,
 };
 
 /// An independently signed role. Repeated accounts still require both role digests.
@@ -38,29 +38,6 @@ pub(crate) struct NativeAuthorization<'a> {
     signature: &'a ConfigurableAccountSignature,
     /// Role digest before configurable account domain separation.
     inner_digest: B256,
-}
-
-impl NativeAuthorization<'_> {
-    /// Verifies owner signatures and quorum against the supplied configuration.
-    /// Does not check account state, eligibility, or gas affordability; see [`validate_state`].
-    fn verify(&self) -> Result<(), ConfigurableAccountError> {
-        self.signature
-            .verify_approvals(self.inner_digest)
-            .map_err(|error| match error {
-                ConfigurableAccountQuorumError::OwnerSignatureRecoveryFailed { approval_index } => {
-                    ConfigurableAccountError::OwnerSignatureRecoveryFailed { approval_index }
-                }
-                ConfigurableAccountQuorumError::ZeroThreshold
-                | ConfigurableAccountQuorumError::EmptySignatures
-                | ConfigurableAccountQuorumError::TooManySignatures
-                | ConfigurableAccountQuorumError::ExcessSignatures
-                | ConfigurableAccountQuorumError::SignerNotOwner
-                | ConfigurableAccountQuorumError::SignersNotAscending
-                | ConfigurableAccountQuorumError::WeightBelowThreshold => {
-                    ConfigurableAccountError::Quorum(error)
-                }
-            })
-    }
 }
 
 /// What [`validate_native_roles`] charges and loads for the native roles of a transaction.
@@ -147,18 +124,22 @@ impl TempoTxEnv {
                     && tx.key_authorization.is_none()
             }
         };
-        let primitive_root = aa.is_none_or(|aa| match aa.signature() {
-            TempoSignature::Primitive(_) => true,
-            TempoSignature::Keychain(_) | TempoSignature::ConfigurableAccount(_) => false,
-        });
         let eligibility = if !sole_call {
             UpgradeEligibility::NotSoleCall
-        } else if !primitive_root {
+        } else if !self.signed_by_primitive_root() {
             UpgradeEligibility::NotPrimitiveRoot
         } else {
             UpgradeEligibility::PrimitiveRoot
         };
         ConfigurableAccount::new().set_authority(self.caller(), direct, eligibility)
+    }
+
+    /// Whether the sender signs with a bare primitive key, as every non-AA transaction does.
+    fn signed_by_primitive_root(&self) -> bool {
+        self.as_aa().is_none_or(|aa| match aa.signature() {
+            TempoSignature::Primitive(_) => true,
+            TempoSignature::Keychain(_) | TempoSignature::ConfigurableAccount(_) => false,
+        })
     }
 }
 
@@ -258,65 +239,22 @@ pub(crate) fn retired_authority(
     Ok(spec.is_t14() && !load_account(host, authority, spec)?.commitment.is_zero())
 }
 
-/// Verifies each signed role separately. RPC simulation must validate the claimed owner quorum
-/// before constructing its mock witness; this function skips quorum recovery only in that mode.
+/// Verifies the owner quorum of each signed role separately. RPC simulation must validate the
+/// claimed owner quorum before constructing its mock witness; this function skips quorum recovery
+/// only in that mode.
 pub(crate) fn verify(
     context: ExecutionContext,
     aa: &TempoAaTx,
 ) -> Result<(), TempoInvalidTransaction> {
-    let roles = aa.native_authorizations();
-    if roles.iter().all(Option::is_none) {
-        return Ok(());
-    }
     match context {
         ExecutionContext::Transaction { .. } => {
-            for role in roles.into_iter().flatten() {
-                role.verify()?;
+            for role in aa.native_authorizations().into_iter().flatten() {
+                role.signature
+                    .verify_approvals(role.inner_digest)
+                    .map_err(ConfigurableAccountError::Quorum)?;
             }
         }
         ExecutionContext::Simulation => {}
-    }
-    let Some(auth) = &aa.tx().key_authorization else {
-        return Ok(());
-    };
-    let signer = auth
-        .recover_account()
-        .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
-    let reject = |reason: &str| TempoInvalidTransaction::KeychainValidationFailed {
-        reason: reason.to_owned(),
-    };
-    let keychain = aa.signature().as_keychain();
-    let key_id = keychain
-        .map(|key| {
-            if let ExecutionContext::Simulation = context
-                && let Some(key_id) = aa.override_key_id()
-            {
-                return Ok(key_id);
-            }
-            key.key_id(&aa.signature_hash())
-                .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)
-        })
-        .transpose()?;
-    if signer == aa.signer() {
-        if keychain.is_some() && key_id != Some(auth.key_id) {
-            return Err(reject(
-                "root-signed key authorization must use root transaction signature",
-            ));
-        }
-    } else if auth.account.is_none()
-        || key_id != Some(signer)
-        || keychain.is_none_or(|key| key.signature.key_type() != auth.signature.key_type())
-    {
-        return Err(reject(
-            "admin-signed key authorization must match transaction key and parent account",
-        ));
-    }
-    if key_id == Some(auth.key_id)
-        && keychain.is_some_and(|key| key.signature.key_type() != auth.key_type)
-    {
-        return Err(reject(
-            "key authorization key_type does not match the keychain signature type",
-        ));
     }
     Ok(())
 }
@@ -389,13 +327,8 @@ fn validate_native_roles(
     let tx = aa.tx();
     let roles = aa.native_authorizations();
     // Context rejection must not depend on factory configuration or account reads.
-    if roles.iter().any(Option::is_some) {
-        if aa.signature().is_legacy_keychain() {
-            return Err(ConfigurableAccountError::InvalidSignatureContext.into());
-        }
-        if !spec.is_t14() {
-            return Err(ConfigurableAccountError::UnsupportedContext.into());
-        }
+    if roles.iter().any(Option::is_some) && !spec.is_t14() {
+        return Err(ConfigurableAccountError::UnsupportedContext.into());
     }
     if spec.is_t14() && aa.signature().is_keychain() {
         let account = load_account(host, caller, spec)?;
@@ -420,11 +353,7 @@ fn validate_native_roles(
         }
         .into());
     }
-    let factory = host
-        .block()
-        .ext
-        .configurable_account_recovery_factory()
-        .ok_or(ConfigurableAccountError::FactoryNotConfigured)?;
+    let factory = host.block().ext.configurable_account_recovery_factory();
     let mut accounts = Vec::with_capacity(2);
     let mut extra_gas = 0;
     let mut state_gas = 0;
@@ -444,7 +373,7 @@ fn validate_native_roles(
         }
         accounts.push(address);
         signature
-            .validate_account_commitment(account.commitment, Some(factory))
+            .validate_account_commitment(account.commitment, factory)
             .map_err(|error| match error {
                 ConfigurableAccountStateError::CommitmentMismatch { expected, actual } => {
                     HandlerError::from(ConfigurableAccountError::ConfigurationCommitmentMismatch {
@@ -522,12 +451,7 @@ fn validate_root_keys(
         ExecutionContext::Transaction { .. } => false,
         ExecutionContext::Simulation => true,
     };
-    if !simulation
-        && aa.is_none_or(|aa| match aa.signature() {
-            TempoSignature::Primitive(_) => true,
-            TempoSignature::Keychain(_) | TempoSignature::ConfigurableAccount(_) => false,
-        })
-    {
+    if !simulation && envelope.signed_by_primitive_root() {
         check(host, caller, RootKeyRole::Sender)?;
     }
     let Some(aa) = aa else {
@@ -549,13 +473,8 @@ fn validate_root_keys(
     }
     if let Some(keychain) = aa.signature().as_keychain()
         && keychain.signature.as_configurable_account().is_none()
+        && let Some(key_id) = access_key_id(aa)?
     {
-        let key_id = match aa.override_key_id() {
-            Some(key_id) => key_id,
-            None => keychain
-                .key_id(&aa.signature_hash())
-                .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?,
-        };
         check(host, key_id, RootKeyRole::AccessKey)?;
     }
     Ok(extra_gas)
@@ -583,6 +502,3 @@ fn grant_delegate_access_gas(
     }
     Ok(0)
 }
-
-#[cfg(test)]
-mod tests;

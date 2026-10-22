@@ -283,12 +283,10 @@ impl TempoInvalidTransaction {
             | Self::CallsValidation(_) => true,
 
             Self::ConfigurableAccount(error) => match error {
-                ConfigurableAccountError::OwnerSignatureRecoveryFailed { .. }
-                | ConfigurableAccountError::AccountMismatch { .. }
+                ConfigurableAccountError::AccountMismatch { .. }
                 | ConfigurableAccountError::InvalidSignatureContext
                 | ConfigurableAccountError::Quorum(_) => true,
                 ConfigurableAccountError::UnsupportedContext
-                | ConfigurableAccountError::FactoryNotConfigured
                 | ConfigurableAccountError::InvalidAccount { .. }
                 | ConfigurableAccountError::ConfigurationCommitmentMismatch { .. } => false,
             },
@@ -321,9 +319,6 @@ pub enum ConfigurableAccountError {
     /// A native signature appears in a role that forbids it.
     #[error("configurable account signature is forbidden in this transaction role")]
     InvalidSignatureContext,
-    /// The configurable account recovery factory is not configured.
-    #[error("recovery factory is not configured")]
-    FactoryNotConfigured,
     /// The account cannot hold a native configuration.
     #[error("invalid configurable account {account}")]
     InvalidAccount {
@@ -345,12 +340,6 @@ pub enum ConfigurableAccountError {
         expected: B256,
         /// Commitment of the supplied configuration.
         actual: B256,
-    },
-    /// An owner signature could not be recovered.
-    #[error("invalid configurable account owner signature at approval {approval_index}")]
-    OwnerSignatureRecoveryFailed {
-        /// Index of the failing approval.
-        approval_index: usize,
     },
     /// The approvals do not satisfy the configuration's quorum.
     #[error("{0}")]
