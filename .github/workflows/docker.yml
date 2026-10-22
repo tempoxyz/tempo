@@ -345,6 +345,7 @@ jobs:
           TEMPO_LOCALNET_TAGS: ${{ steps.meta-tempo-localnet.outputs.tags }}
           TEMPO_SIDECAR_TAGS: ${{ steps.meta-tempo-sidecar.outputs.tags }}
           TEMPO_XTASK_TAGS: ${{ steps.meta-tempo-xtask.outputs.tags }}
+          BUILD_METADATA: ${{ steps.build-and-push.outputs.metadata }}
         run: |
           set -euo pipefail
           sign_image() {
@@ -367,21 +368,26 @@ jobs:
             done
           }
 
-          images=(
-            "$TEMPO_TAGS"
-            "$TEMPO_DEVNET_TAGS"
-            "$TEMPO_LOCALNET_TAGS"
-            "$TEMPO_SIDECAR_TAGS"
-            "$TEMPO_XTASK_TAGS"
-          )
-          # Each reference is signed independently, so sign them concurrently.
+          # cosign signs digests, not tags: every tag of a repository shares one
+          # signature, so sign each repository's digest once, all concurrently.
+          refs=()
+          for target in tempo tempo-devnet tempo-localnet tempo-sidecar tempo-xtask; do
+            tags_var="${target^^}_TAGS"
+            tags_var="${tags_var//-/_}"
+            digest="$(jq -r --arg target "$target" '.[$target]["containerimage.digest"] // empty' <<< "$BUILD_METADATA")"
+            if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "No image digest for $target in build metadata" >&2
+              exit 1
+            fi
+            while IFS= read -r repo; do
+              [ -n "$repo" ] && refs+=("$repo@$digest")
+            done < <(sed -n 's/:[^:/]*$//p' <<< "${!tags_var}" | sort -u)
+          done
+
           pids=()
-          for tags in "${images[@]}"; do
-            while IFS= read -r image; do
-              [ -n "$image" ] || continue
-              sign_image "$image" &
-              pids+=("$!")
-            done <<< "$tags"
+          for ref in "${refs[@]}"; do
+            sign_image "$ref" &
+            pids+=("$!")
           done
           sign_failures=0
           for pid in "${pids[@]}"; do
@@ -389,7 +395,7 @@ jobs:
           done
 
           if [ "$sign_failures" -ne 0 ]; then
-            echo "Failed to sign $sign_failures image reference(s)" >&2
+            echo "Failed to sign $sign_failures image digest(s)" >&2
             exit 1
           fi
 
