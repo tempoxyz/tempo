@@ -20,44 +20,53 @@ use std::sync::{Arc, OnceLock};
 
 use commonware_actor::Feedback;
 use commonware_consensus::{
-    Automaton, CertifiableAutomaton, Relay, Reporter,
+    Automaton, CertifiableAutomaton, CertifiableBlock, Relay, Reporter,
     marshal::{
         Update,
         core::Mailbox,
         standard::{Deferred, Inline, Standard},
     },
     simplex::{Plan, scheme::bls12381_threshold::vrf::Scheme, types::Context},
-    types::{Epocher, Round},
+    types::{Epocher, FixedEpocher, Round},
 };
-use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
+use commonware_cryptography::{
+    bls12381::primitives::variant::MinSig, certificate::Scheme as CertificateScheme,
+    ed25519::PublicKey,
+};
 use commonware_runtime::{Clock, Spawner};
 use commonware_utils::channel::oneshot;
 use rand_core::Rng;
 use tempo_chainspec::TempoChainSpec;
 
-use crate::{
-    VerificationMode,
-    consensus::{Digest, block::Block},
-};
+use crate::{VerificationMode, consensus::block::Block};
+
+pub(crate) type Application<TContext> =
+    Marshaled<TContext, Scheme<PublicKey, MinSig>, Inner, Block, FixedEpocher>;
 
 /// Selects and lazily constructs the two shared verification wrappers.
-pub(crate) struct Application<E, ES>
+pub(crate) struct Marshaled<E, S, A, B, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
+    S: CertificateScheme,
+    A: commonware_consensus::Application<E>,
+    B: CertifiableBlock + Clone,
     ES: Epocher,
 {
-    inner: Inner,
-    marshal: Mailbox<Scheme<PublicKey, MinSig>, Standard<Block>>,
+    inner: A,
+    marshal: Mailbox<S, Standard<B>>,
     epocher: ES,
     chainspec: Arc<TempoChainSpec>,
     verification_mode: VerificationMode,
-    immediate: Arc<OnceLock<EpochApplication<E, ES>>>,
-    deferred: Arc<OnceLock<EpochApplication<E, ES>>>,
+    immediate: Arc<OnceLock<EpochApplication<E, S, A, B, ES>>>,
+    deferred: Arc<OnceLock<EpochApplication<E, S, A, B, ES>>>,
 }
 
-impl<E, ES> Clone for Application<E, ES>
+impl<E, S, A, B, ES> Clone for Marshaled<E, S, A, B, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
+    S: CertificateScheme,
+    A: commonware_consensus::Application<E>,
+    B: CertifiableBlock + Clone,
     ES: Epocher,
 {
     fn clone(&self) -> Self {
@@ -73,14 +82,23 @@ where
     }
 }
 
-impl<E, ES> Application<E, ES>
+impl<E, S, A, B, ES> Marshaled<E, S, A, B, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
+    S: CertificateScheme,
+    A: commonware_consensus::Application<
+            E,
+            Block = B,
+            SigningScheme = S,
+            Context = Context<B::Digest, S::PublicKey>,
+            Input = (),
+        >,
+    B: CertifiableBlock<Context = <A as commonware_consensus::Application<E>>::Context> + Clone,
     ES: Epocher,
 {
     pub(crate) fn new(
-        inner: Inner,
-        marshal: Mailbox<Scheme<PublicKey, MinSig>, Standard<Block>>,
+        inner: A,
+        marshal: Mailbox<S, Standard<B>>,
         epocher: ES,
         chainspec: Arc<TempoChainSpec>,
         verification_mode: VerificationMode,
@@ -103,7 +121,7 @@ where
         &self,
         timestamp: u64,
         context: impl FnOnce() -> E,
-    ) -> EpochApplication<E, ES> {
+    ) -> EpochApplication<E, S, A, B, ES> {
         if self
             .verification_mode
             .is_deferred_at(&self.chainspec, timestamp)
@@ -114,7 +132,7 @@ where
         }
     }
 
-    fn to_immediate(&self, context: impl FnOnce() -> E) -> EpochApplication<E, ES> {
+    fn to_immediate(&self, context: impl FnOnce() -> E) -> EpochApplication<E, S, A, B, ES> {
         self.immediate
             .get_or_init(|| {
                 EpochApplication::Immediate(Inline::new(
@@ -127,7 +145,7 @@ where
             .clone()
     }
 
-    fn to_deferred(&self, context: impl FnOnce() -> E) -> EpochApplication<E, ES> {
+    fn to_deferred(&self, context: impl FnOnce() -> E) -> EpochApplication<E, S, A, B, ES> {
         self.deferred
             .get_or_init(|| {
                 EpochApplication::Deferred(Deferred::new(
@@ -141,12 +159,16 @@ where
     }
 }
 
-impl<E, ES> Reporter for Application<E, ES>
+impl<E, S, A, B, ES> Reporter for Marshaled<E, S, A, B, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
+    S: CertificateScheme,
+    A: commonware_consensus::Application<E, Block = B, Context = Context<B::Digest, S::PublicKey>>
+        + Reporter<Activity = Update<B>>,
+    B: CertifiableBlock<Context = <A as commonware_consensus::Application<E>>::Context> + Clone,
     ES: Epocher,
 {
-    type Activity = Update<Block>;
+    type Activity = Update<B>;
 
     fn report(&mut self, activity: Self::Activity) -> Feedback {
         // Prune initialized wrappers, but acknowledge each delivered block only once.
@@ -163,18 +185,24 @@ where
 }
 
 /// Verification policy fixed for the lifetime of a simplex epoch.
-pub(crate) enum EpochApplication<E, ES>
+pub(crate) enum EpochApplication<E, S, A, B, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
+    S: CertificateScheme,
+    A: commonware_consensus::Application<E>,
+    B: CertifiableBlock + Clone,
     ES: Epocher,
 {
-    Deferred(Deferred<E, Scheme<PublicKey, MinSig>, Inner, Block, ES>),
-    Immediate(Inline<E, Scheme<PublicKey, MinSig>, Inner, Block, ES>),
+    Deferred(Deferred<E, S, A, B, ES>),
+    Immediate(Inline<E, S, A, B, ES>),
 }
 
-impl<E, ES> Clone for EpochApplication<E, ES>
+impl<E, S, A, B, ES> Clone for EpochApplication<E, S, A, B, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
+    S: CertificateScheme,
+    A: commonware_consensus::Application<E>,
+    B: CertifiableBlock + Clone,
     ES: Epocher,
 {
     fn clone(&self) -> Self {
@@ -185,13 +213,22 @@ where
     }
 }
 
-impl<E, ES> Automaton for EpochApplication<E, ES>
+impl<E, S, A, B, ES> Automaton for EpochApplication<E, S, A, B, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
+    S: CertificateScheme,
+    A: commonware_consensus::Application<
+            E,
+            Block = B,
+            SigningScheme = S,
+            Context = Context<B::Digest, S::PublicKey>,
+            Input = (),
+        >,
+    B: CertifiableBlock<Context = <A as commonware_consensus::Application<E>>::Context> + Clone,
     ES: Epocher,
 {
-    type Context = Context<Digest, PublicKey>;
-    type Digest = Digest;
+    type Context = Context<B::Digest, S::PublicKey>;
+    type Digest = B::Digest;
 
     async fn propose(&mut self, context: Self::Context) -> oneshot::Receiver<Self::Digest> {
         match self {
@@ -212,9 +249,18 @@ where
     }
 }
 
-impl<E, ES> CertifiableAutomaton for EpochApplication<E, ES>
+impl<E, S, A, B, ES> CertifiableAutomaton for EpochApplication<E, S, A, B, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
+    S: CertificateScheme,
+    A: commonware_consensus::Application<
+            E,
+            Block = B,
+            SigningScheme = S,
+            Context = Context<B::Digest, S::PublicKey>,
+            Input = (),
+        >,
+    B: CertifiableBlock<Context = <A as commonware_consensus::Application<E>>::Context> + Clone,
     ES: Epocher,
 {
     async fn certify(&mut self, round: Round, payload: Self::Digest) -> oneshot::Receiver<bool> {
@@ -225,14 +271,17 @@ where
     }
 }
 
-impl<E, ES> Relay for EpochApplication<E, ES>
+impl<E, S, A, B, ES> Relay for EpochApplication<E, S, A, B, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
+    S: CertificateScheme,
+    A: commonware_consensus::Application<E, Block = B, Context = Context<B::Digest, S::PublicKey>>,
+    B: CertifiableBlock<Context = <A as commonware_consensus::Application<E>>::Context> + Clone,
     ES: Epocher,
 {
-    type PublicKey = PublicKey;
-    type Digest = Digest;
-    type Plan = Plan<PublicKey>;
+    type PublicKey = S::PublicKey;
+    type Digest = B::Digest;
+    type Plan = Plan<S::PublicKey>;
 
     fn broadcast(&mut self, payload: Self::Digest, plan: Self::Plan) -> Feedback {
         match self {
@@ -242,12 +291,16 @@ where
     }
 }
 
-impl<E, ES> Reporter for EpochApplication<E, ES>
+impl<E, S, A, B, ES> Reporter for EpochApplication<E, S, A, B, ES>
 where
     E: Rng + Spawner + commonware_runtime::Metrics + Clock,
+    S: CertificateScheme,
+    A: commonware_consensus::Application<E, Block = B, Context = Context<B::Digest, S::PublicKey>>
+        + Reporter<Activity = Update<B>>,
+    B: CertifiableBlock<Context = <A as commonware_consensus::Application<E>>::Context> + Clone,
     ES: Epocher,
 {
-    type Activity = Update<Block>;
+    type Activity = Update<B>;
 
     fn report(&mut self, activity: Self::Activity) -> Feedback {
         match self {

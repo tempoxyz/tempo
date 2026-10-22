@@ -291,7 +291,7 @@ where
             proposal_return_budget: self.proposal_return_budget,
             epoch_strategy: epoch_strategy.clone(),
         });
-        let application = application::Application::new(
+        let application = application::Marshaled::new(
             application,
             marshal_mailbox.clone(),
             epoch_strategy.clone(),
