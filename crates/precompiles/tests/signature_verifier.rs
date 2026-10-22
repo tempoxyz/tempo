@@ -1,13 +1,12 @@
 //! Keychain signature verification against retired roots and stored key types, and the
-//! configurable account selectors.
+//! configurable account selector.
 
 use alloy::{
-    primitives::{Address, B256, Bytes, keccak256},
-    sol_types::{SolCall, SolError, SolValue},
+    primitives::{Address, B256, Bytes},
+    sol_types::{SolCall, SolValue},
 };
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
-use evm2::precompiles::{PrecompileError, PrecompileResult};
 use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
 use tempo_chainspec::hardfork::TempoHardfork::{self, T13, T14};
 use tempo_contracts::precompiles::{
@@ -15,7 +14,7 @@ use tempo_contracts::precompiles::{
         KeyRestrictions,
         SignatureType::{self, P256, Secp256k1},
     },
-    ISignatureVerifier, UnknownFunctionSelector,
+    ISignatureVerifier,
 };
 use tempo_precompiles::{
     Precompile,
@@ -23,12 +22,18 @@ use tempo_precompiles::{
     signature_verifier::SignatureVerifier,
     storage::{ConfigCommitmentWriteGas, StorageCtx, hashmap::HashMapStorageProvider},
 };
-use tempo_primitives::transaction::{
-    ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
-    configurable_account_digest,
-    tt_signature::{
-        KeychainSignature, P256SignatureWithPreHash, PrimitiveSignature, TempoSignature,
-        derive_p256_address, normalize_p256_s,
+use tempo_primitives::{
+    MAX_WEBAUTHN_SIGNATURE_LENGTH,
+    transaction::{
+        ConfigurableAccountConfig, ConfigurableAccountOwner, ConfigurableAccountSignature,
+        configurable_account::{
+            MAX_CONFIGURABLE_ACCOUNT_OWNERS, MAX_CONFIGURABLE_ACCOUNT_SIGNATURES,
+        },
+        configurable_account_digest,
+        tt_signature::{
+            KeychainSignature, P256SignatureWithPreHash, PrimitiveSignature, TempoSignature,
+            derive_p256_address, normalize_p256_s,
+        },
     },
 };
 
@@ -331,58 +336,47 @@ fn implicit_root_admin_status_ends_with_the_commitment_from_t14() {
     }
 }
 
-fn selector(signature: &str) -> [u8; 4] {
-    keccak256(signature)[..4].try_into().unwrap()
-}
-
-/// Calls the verifier with the selector of `selector_signature` and the arguments of a
-/// `(address,bytes32,bytes)` verification over a single-owner configurable account.
-fn call_with_selector(selector_signature: &str) -> PrecompileResult {
-    let owner = Key::random(Secp256k1);
+#[test]
+fn verify_configurable_account_accepts_calldata_beyond_the_primitive_cap_at_t14() {
+    // Eight P256 approvals over a full owner list encode longer than any primitive signature.
+    let mut signers: Vec<Key> = (0..MAX_CONFIGURABLE_ACCOUNT_SIGNATURES)
+        .map(|_| Key::random(P256))
+        .collect();
+    signers.sort_by_key(Key::address);
+    let fillers = u8::try_from(MAX_CONFIGURABLE_ACCOUNT_OWNERS - signers.len()).unwrap();
+    let mut owners: Vec<ConfigurableAccountOwner> = signers
+        .iter()
+        .map(Key::address)
+        .chain((1..=fillers).map(Address::with_last_byte))
+        .map(|owner| ConfigurableAccountOwner { owner, weight: 1 })
+        .collect();
+    owners.sort_by_key(|owner| owner.owner);
     let config = ConfigurableAccountConfig {
         salt: B256::ZERO,
         version: 0,
-        threshold: 1,
-        owners: vec![ConfigurableAccountOwner {
-            owner: owner.address(),
-            weight: 1,
-        }],
+        threshold: u8::try_from(signers.len()).unwrap(),
+        owners,
     };
     let account = config.derive_account(FACTORY).unwrap();
-    let approval = owner.sign(configurable_account_digest(HASH, account, config.version));
+    let digest = configurable_account_digest(HASH, account, config.version);
+    let approvals = signers.iter().map(|signer| signer.sign(digest)).collect();
     let signature = TempoSignature::ConfigurableAccount(
-        ConfigurableAccountSignature::try_new(account, config, vec![approval]).unwrap(),
+        ConfigurableAccountSignature::try_new(account, config, approvals).unwrap(),
     )
     .to_bytes();
+    assert!(signature.len() > (MAX_WEBAUTHN_SIGNATURE_LENGTH + 1).next_multiple_of(32));
 
-    let mut calldata = selector(selector_signature).to_vec();
-    ISignatureVerifier::verifyConfigurableAccountCall {
+    let calldata = ISignatureVerifier::verifyConfigurableAccountCall {
         account,
         hash: HASH,
         signature,
     }
-    .abi_encode_raw(&mut calldata);
-
+    .abi_encode();
     let mut storage = HashMapStorageProvider::new_with_spec(1, T14);
     storage.set_configurable_account_recovery_factory(FACTORY);
-    StorageCtx::enter(&mut storage, || {
+    let output = StorageCtx::enter(&mut storage, || {
         SignatureVerifier::new().call(&calldata, Address::ZERO)
     })
-}
-
-#[test]
-fn verify_configurable_account_selector_is_dispatched_at_t14() {
-    let output = call_with_selector("verifyConfigurableAccount(address,bytes32,bytes)")
-        .unwrap_or_else(|error| panic!("{error:?}"));
+    .unwrap_or_else(|error| panic!("{error:?}"));
     assert!(bool::abi_decode(output.bytes()).unwrap());
-}
-
-#[test]
-fn verify_multisig_selector_is_unknown_at_t14() {
-    match call_with_selector("verifyMultisig(address,bytes32,bytes)") {
-        Err(PrecompileError::Revert(bytes)) => {
-            assert!(UnknownFunctionSelector::abi_decode(&bytes).is_ok())
-        }
-        other => panic!("expected unknown selector revert, got {other:?}"),
-    }
 }
