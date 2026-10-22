@@ -5621,7 +5621,7 @@ fn native_admin_delegate_signs_inline_grant() {
             owner: other_owner.address(),
             weight: 1,
         }],
-        ..config.clone()
+        ..config
     };
     let other = other_config.derive_account(factory).unwrap();
     let child = signer(4).address();
