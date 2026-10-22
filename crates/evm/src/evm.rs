@@ -393,19 +393,17 @@ mod tests {
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageAction, StorageActions, StorageCtx, StorageKey},
         storage_credits::StorageCredits,
-        test_util::TIP20Setup,
+        test_util::{TIP20Setup, set_empty_compound_transfer_policy, set_empty_receive_policies},
         tip_fee_manager::{
             IFeeManager, TipFeeManager,
             amm::{Pool, PoolKey, compute_amount_out},
             slots as fee_manager_slots,
         },
         tip20::{
-            ITIP20, TIP20Token, rewards::__packing_user_reward_info as user_reward_info_slots,
+            ITIP20, rewards::__packing_user_reward_info as user_reward_info_slots,
             slots as tip20_slots,
         },
-        tip403_registry::{
-            ITIP403Registry, PolicyType, TIP403Registry, slots as tip403_registry_slots,
-        },
+        tip403_registry::slots as tip403_registry_slots,
         zone_factory::{ZONE_CREATION_GAS, ZoneFactory, portal_address},
     };
     use tempo_primitives::{TempoAddressExt, transaction::Call};
@@ -1150,6 +1148,21 @@ mod tests {
                     let key = (address, slot);
                     storage_state.apply_sload_value(key, value, "SLOAD", hardfork);
                 }
+                StorageAction::FeeTokenBalanceCheck(
+                    address,
+                    slot,
+                    balance,
+                    required,
+                    sufficient,
+                ) => {
+                    let current = storage_state.apply_sload_value(
+                        (address, slot),
+                        balance,
+                        "FeeTokenBalanceCheck",
+                        hardfork,
+                    );
+                    assert_eq!(current >= required, sufficient);
+                }
                 StorageAction::Sstore(address, slot, sload_value, value) => {
                     let key = (address, slot);
                     storage_state.apply_sload_value(key, sload_value, "SSTORE", hardfork);
@@ -1260,6 +1273,13 @@ mod tests {
                 StorageAction::Sload(address, slot, value) => {
                     format!(
                         "Sload({}, {}, {value})",
+                        labels.address(address),
+                        labels.slot(address, slot)
+                    )
+                }
+                StorageAction::FeeTokenBalanceCheck(address, slot, balance, required, sufficient) => {
+                    format!(
+                        "FeeTokenBalanceCheck({}, {}, {balance}, {required}, {sufficient})",
                         labels.address(address),
                         labels.slot(address, slot)
                     )
@@ -1415,47 +1435,12 @@ mod tests {
                     )?;
 
                     if with_policies {
-                        let mut registry = TIP403Registry::new();
                         // Separate compound policies keep fee checks from warming the
                         // payment token's policy. Empty blacklists still read every list.
-                        let blacklist = |registry: &mut TIP403Registry| {
-                            registry.create_policy(
-                                sender,
-                                ITIP403Registry::createPolicyCall {
-                                    policyType: PolicyType::BLACKLIST,
-                                    admin: sender,
-                                },
-                            )
-                        };
                         for address in [PATH_USD_ADDRESS, fee_token.address()] {
-                            let sender_policy = blacklist(&mut registry)?;
-                            let recipient_policy = blacklist(&mut registry)?;
-                            let mint_policy = blacklist(&mut registry)?;
-                            let policy_id = registry.create_compound_policy(
-                                sender,
-                                ITIP403Registry::createCompoundPolicyCall {
-                                    senderPolicyId: sender_policy,
-                                    recipientPolicyId: recipient_policy,
-                                    mintRecipientPolicyId: mint_policy,
-                                },
-                            )?;
-                            TIP20Token::from_address(address)?.change_transfer_policy_id(
-                                sender,
-                                ITIP20::changeTransferPolicyIdCall {
-                                    newPolicyId: policy_id,
-                                },
-                            )?;
+                            set_empty_compound_transfer_policy(sender, address)?;
                         }
-                        let receive_policies =
-                            [blacklist(&mut registry)?, blacklist(&mut registry)?];
-                        registry.set_receive_policy(
-                            recipient,
-                            ITIP403Registry::setReceivePolicyCall {
-                                senderPolicyId: receive_policies[0],
-                                tokenFilterId: receive_policies[1],
-                                recoveryAuthority: Address::ZERO,
-                            },
-                        )?;
+                        set_empty_receive_policies(sender, &[recipient])?;
                     }
 
                     Ok::<(Address, Address), tempo_precompiles::error::TempoPrecompileError>((

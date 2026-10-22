@@ -1093,6 +1093,7 @@ where
         context.schedule.clone(),
         context.local_ed25519_public_key.clone(),
     ))
+    .with_deposit_allowlist(sequencer.config.deposit_allowlist.clone())
 }
 
 #[cfg(test)]
