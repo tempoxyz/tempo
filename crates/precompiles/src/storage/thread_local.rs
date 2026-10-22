@@ -352,7 +352,11 @@ impl StorageCtx {
         Self::try_with_storage(|s| {
             s.with_warm_caller_info(address, &mut |info| result = Some(f(info)))
         })?;
-        result.expect("provider invokes account callback")
+        result.ok_or_else(|| {
+            TempoPrecompileError::Fatal(
+                "storage provider did not invoke the account callback".to_string(),
+            )
+        })?
     }
 
     /// Returns whether `address` is a retired root key (TIP-1112): from T14, an address with a

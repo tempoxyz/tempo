@@ -18,7 +18,6 @@ workspace = true
 
 [dependencies]
 tempo-hardfork.workspace = true
-tempo-contracts.workspace = true
 tempo-primitives.workspace = true
 
 reth-cli = { workspace = true, optional = true }
@@ -38,6 +37,9 @@ paste.workspace = true
 commonware-codec = { workspace = true, optional = true }
 commonware-cryptography = { workspace = true, optional = true }
 evm2 = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempo-contracts.workspace = true
 
 [features]
 default = ["std", "serde", "reth", "cli"]

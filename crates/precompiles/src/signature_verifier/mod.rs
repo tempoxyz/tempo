@@ -129,10 +129,7 @@ impl SignatureVerifier {
             .checked_add(initial_proof_gas)
             .ok_or(TempoPrecompileError::OutOfGas)?;
         self.storage.deduct_gas(verification_gas)?;
-        if signature.account() != account
-            || !valid_account(account, self.storage.spec())
-            || has_code
-        {
+        if signature.account() != account || !valid_account(account, spec) || has_code {
             return Ok(false);
         }
         let factory = self

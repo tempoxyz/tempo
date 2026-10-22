@@ -7,7 +7,7 @@ use crate::{
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use alloy_eips::eip7840::BlobParams;
 use alloy_genesis::Genesis;
-use alloy_primitives::{Address, B256, U256, bytes};
+use alloy_primitives::{Address, B256, U256};
 use core::num::NonZeroU64;
 use once_cell as _;
 #[cfg(not(feature = "std"))]
@@ -20,7 +20,6 @@ use reth_chainspec::{
 use reth_network_peers::NodeRecord;
 #[cfg(feature = "std")]
 use std::sync::LazyLock;
-use tempo_contracts::precompiles::CONFIGURABLE_ACCOUNT_ADDRESS;
 use tempo_hardfork::TempoHardfork;
 use tempo_primitives::TempoHeader;
 
@@ -207,33 +206,9 @@ impl TempoChainSpec {
     }
 
     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
-    ///
-    /// When T14 is active at genesis, initializes absent or empty code at the configurable
-    /// account address with the `0xEF` marker. If a nonzero recovery factory is configured, also
-    /// replaces its code with `0xEF` and raises its nonce to at least one, preserving its balance
-    /// and storage. These protocol reservations are applied before computing the genesis state
-    /// root.
-    pub fn from_genesis(mut genesis: Genesis) -> Self {
+    pub fn from_genesis(genesis: Genesis) -> Self {
         // Extract Tempo genesis info from extra_fields
         let info = TempoGenesisInfo::extract_from(&genesis);
-
-        if info.t14_time.is_some_and(|time| time <= genesis.timestamp) {
-            let marker = genesis
-                .alloc
-                .entry(CONFIGURABLE_ACCOUNT_ADDRESS)
-                .or_default();
-            if marker.code.as_ref().is_none_or(|code| code.is_empty()) {
-                marker.code = Some(bytes!("ef"));
-            }
-            if let Some(factory) = info
-                .configurable_account_recovery_factory
-                .filter(|factory| !factory.is_zero())
-            {
-                let account = genesis.alloc.entry(factory).or_default();
-                account.code = Some(bytes!("ef"));
-                account.nonce = Some(account.nonce.map_or(1, |nonce| nonce.max(1)));
-            }
-        }
 
         // Create base chainspec from genesis (already has ordered Ethereum hardforks)
         let mut base_spec = ChainSpec::from_genesis(genesis);
