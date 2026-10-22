@@ -821,9 +821,11 @@ def txgen-prepare-public-mix-preset [spec_path: string, count: int, accounts: in
     let output = ($output_dir | path join public-mix.yml)
     # Match the other public-mix workloads without account-nonce dependencies.
     # Setup and standalone vault/zone presets retain their ordered nonce lanes.
+    # Use 63 random bits so the bounds fit Nushell's signed integers.
     let templates = ($deposits.templates | merge $withdrawals.templates | merge $zone_spec.templates
         | items { |name, template|
-            {name: $name, value: ($template | upsert expiring_nonce true | upsert valid_for_secs 25)}
+            {name: $name, value: ($template | upsert expiring_nonce true | upsert valid_for_secs 25
+                | upsert nonce {uniform: [0 9223372036854775807]})}
         } | transpose -r -d)
     {include: $spec_path, accounts: {users: {range: [0 $accounts]}},
         setup: {steps: ($vault_setup | append $users | append $zone_spec.setup.steps)},

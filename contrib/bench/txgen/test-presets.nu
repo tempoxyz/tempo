@@ -41,4 +41,19 @@ assert equal ($policy.admin_calls | where function == createCompoundPolicy | get
 assert equal ($policy.admin_calls | where function == createPolicy | length) 8
 assert equal $policy.receive_call.function setReceivePolicy
 assert equal $policy.receive_call.args [25 26 "0x0000000000000000000000000000000000000000"]
-print "Preset, policy setup, state-bloat, and workload metadata checks passed"
+
+# Each repeated vault/zone selection needs its own expiring-nonce discriminator.
+let rendered_dir = (^mktemp -d | str trim)
+let rendered_path = (txgen-prepare-public-mix-preset $public_mix.spec_path 100 3 2 1337 --out-dir $rendered_dir)
+let rendered = (open $rendered_path)
+assert equal ($rendered.templates | columns | length) 12
+for template in ($rendered.templates | values) {
+    assert equal $template.expiring_nonce true
+    assert equal $template.valid_for_secs 25
+    assert ($template.nonce? != null)
+    assert equal $template.nonce.uniform.0 0
+    assert ($template.nonce.uniform.1 >= 1000000000000000000)
+}
+assert equal (txgen-prepare-public-mix-preset $rendered_path 100 3 2 1337) $rendered_path
+rm -r $rendered_dir
+print "Preset, policy setup, state-bloat, workload metadata, and nonce checks passed"
