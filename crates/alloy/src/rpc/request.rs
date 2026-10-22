@@ -8,10 +8,7 @@ use core::num::NonZeroU64;
 use serde::{Deserialize, Serialize};
 use tempo_primitives::{
     AASigned, SignatureType, TempoTransaction, TempoTxEnvelope,
-    transaction::{
-        Call, ConfigurableAccountSignature, SignedKeyAuthorization, TempoSignedAuthorization,
-        TempoTypedTransaction,
-    },
+    transaction::{Call, SignedKeyAuthorization, TempoSignedAuthorization, TempoTypedTransaction},
 };
 
 use super::ConfigurableAccountSimulationSpec;
@@ -55,17 +52,8 @@ pub struct TempoTransactionRequest {
     #[serde(default)]
     pub key_type: Option<SignatureType>,
 
-    /// Optional `WebAuthn` data-length hint for gas estimation, not authenticator bytes.
-    ///
-    /// For an explicit `WebAuthn` key type, 1-, 2-, or 4-byte big-endian unsigned integers
-    /// select the modeled data length, excluding the signature and public-key fields.
-    /// Omission defaults to 800. Ordinary requests also default unsupported byte lengths;
-    /// native owner approvals reject lengths other than 1, 2, or 4. The length is clamped to the
-    /// generated authenticator/client-data template minimum and a maximum of 8192 bytes
-    /// for ordinary requests, or 1920 bytes for configurable account owner approvals.
-    /// Other algorithms ignore this hint. A native owner approval with an omitted
-    /// [`key_type`](super::ConfigurableAccountSimulationApproval::key_type) also ignores it and
-    /// conservatively models maximum-size `WebAuthn` data instead.
+    /// Optional key-specific data for gas estimation (e.g., webauthn authenticator data).
+    /// Required when key_type is WebAuthn to calculate calldata gas costs.
     #[serde(default)]
     pub key_data: Option<Bytes>,
 
@@ -98,16 +86,6 @@ pub struct TempoTransactionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_authorization_simulation: Option<ConfigurableAccountSimulationSpec>,
 
-    /// Dummy outer approval installed by state-aware RPC preprocessing.
-    #[doc(hidden)]
-    #[serde(skip)]
-    pub configurable_account_simulation_signature: Option<ConfigurableAccountSignature>,
-
-    /// Routing marker set after state-aware preprocessing; never authorizes skipping grant crypto.
-    #[doc(hidden)]
-    #[serde(skip)]
-    pub configurable_account_simulation_prepared: bool,
-
     /// Transaction valid before timestamp in seconds (for expiring nonces, [TIP-1009]).
     /// Transaction can only be included in a block before this timestamp.
     ///
@@ -137,17 +115,6 @@ pub struct TempoTransactionRequest {
 }
 
 impl TempoTransactionRequest {
-    /// Whether block simulation would need configurable authorization at each evolving position.
-    pub fn has_configurable_simulation(&self) -> bool {
-        self.key_type == Some(SignatureType::ConfigurableAccount)
-            || self.configurable_account_simulation.is_some()
-            || self.key_authorization_simulation.is_some()
-            || self.configurable_account_simulation_signature.is_some()
-            || self
-                .key_authorization
-                .as_ref()
-                .is_some_and(|auth| auth.signature.as_configurable_account().is_some())
-    }
     /// Returns whether this request contains fields that require Tempo AA transaction semantics.
     pub(crate) fn has_aa_fields(&self) -> bool {
         !self.calls.is_empty()
@@ -160,7 +127,6 @@ impl TempoTransactionRequest {
             || self.key_data.is_some()
             || self.configurable_account_simulation.is_some()
             || self.key_authorization_simulation.is_some()
-            || self.configurable_account_simulation_signature.is_some()
             || self.valid_before.is_some()
             || self.valid_after.is_some()
             || self.fee_payer_signature.is_some()
@@ -505,8 +471,6 @@ impl From<TempoTransaction> for TempoTransactionRequest {
             key_authorization: tx.key_authorization,
             configurable_account_simulation: None,
             key_authorization_simulation: None,
-            configurable_account_simulation_signature: None,
-            configurable_account_simulation_prepared: false,
             valid_before: tx.valid_before,
             valid_after: tx.valid_after,
             fee_payer_signature: tx.fee_payer_signature,
