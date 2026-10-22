@@ -13,6 +13,8 @@ Subcommands currently supported:
   `set-gateway`: ZonePortal admin calls, signed by `ADMIN_KEY` or written as Safe proposals.
 - `generate-zone-genesis`: generates a Zone L2 genesis file.
 - `pause-portal`: pauses new deposits, Zone block production, and L1 withdrawal processing for 30 days.
+- `rollback-zone`: previews or applies an offline rollback of a Zone node to a
+  canonical block number or hash, retaining that block.
 
 `create-zone` derives Tempo fork activations from its L1 RPC before sending any
 transactions. `generate-zone-genesis` requires either `--l1-rpc-url <url>` or an
@@ -95,3 +97,43 @@ from accounts used for bridge correctness checks.
 
 The importer builds genesis allocations in memory; choose a dump size that fits the
 benchmark host. It does not impose a Nitro-specific size limit.
+
+## Offline Zone rollback
+
+Stop the Zone node and back up its complete data directory before applying a
+rollback. Pass the same genesis, datadir, configuration, and any external storage
+paths used by the node:
+
+```bash
+cargo zone-xtask rollback-zone \
+  --chain zone-genesis.json --datadir zone-data --to-block 12345
+
+# Apply the displayed rollback; a full canonical block hash is also accepted.
+cargo zone-xtask rollback-zone \
+  --chain zone-genesis.json --datadir zone-data --to-block 12345 --execute
+```
+
+The default is a read-only preview. The command rejects a missing database,
+genesis mismatch, inconsistent storage, unknown or noncanonical hash, target
+above the current head, or target whose unwind data has been pruned. Execution
+acquires Reth's storage writer lock and rechecks the plan before using its block
+and execution unwind to remove every descendant, restore state and indexes,
+and reset pipeline checkpoints. Zone safe/finalized markers move to the retained
+head. Block zero and an already-current target are supported.
+
+Before removing blocks, execution atomically saves their user transactions in
+the node's transaction backup, preserving existing pending transactions and
+deduplicating reverted entries. System transactions are excluded. On restart,
+the node's normal backup loader resubmits these transactions to the txpool,
+subject to validation against the rolled-back state; expired or otherwise
+invalid transactions may be rejected. Keep transaction backups enabled when
+restarting. If the node uses `--txpool.transactions-backup <path>`, pass the same
+option to `rollback-zone`; otherwise the data directory's default backup is used.
+An unreadable or malformed existing backup or a failed backup write aborts before
+the unwind. A dry run leaves the backup untouched.
+
+This changes one node's local storage only; it does not undo batches or
+withdrawals already accepted on Tempo. Coordinate the same retained block hash
+across recovering nodes before restarting them. Existing proof witnesses remain
+available; the proof collector checks their block hashes and replaces stale
+witnesses when collecting the new canonical chain.

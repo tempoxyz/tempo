@@ -54,6 +54,11 @@ reth-db.workspace = true
 reth-db-api.workspace = true
 reth-provider.workspace = true
 reth-primitives-traits.workspace = true
+reth-chainspec.workspace = true
+reth-cli-commands.workspace = true
+reth-tasks.workspace = true
+reth-fs-util.workspace = true
+reth-transaction-pool.workspace = true
 reth-network-peers = { workspace = true, features = ["secp256k1"] }
 revm.workspace = true
 secp256k1 = { workspace = true, features = ["rand"] }
@@ -68,6 +73,8 @@ zone-precompiles = { workspace = true, features = ["std"] }
 zone-p2p.workspace = true
 zone-rpc.workspace = true
 zone-sequencer.workspace = true
+zone-chainspec = { workspace = true, features = ["cli"] }
+zone-node.workspace = true
 alloy-rlp.workspace = true
 alloy-rpc-types-eth.workspace = true
 futures.workspace = true
@@ -77,7 +84,10 @@ zeroize.workspace = true
 rustls = { version = "0.23", features = ["aws-lc-rs"] }
 
 [dev-dependencies]
-zone-chainspec.workspace = true
+reth-chain-state.workspace = true
+reth-prune-types.workspace = true
+reth-trie-common.workspace = true
+tempo-transaction-pool.workspace = true
 tempfile.workspace = true
 
 [[bin]]

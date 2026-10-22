@@ -247,6 +247,7 @@ reth-execution-cache = { git = "https://github.com/paradigmxyz/reth", rev = "f46
 reth-execution-types = { git = "https://github.com/paradigmxyz/reth", rev = "f4676ea" }
 reth-evm = { git = "https://github.com/paradigmxyz/reth", rev = "f4676ea" }
 reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "f4676ea" }
+reth-fs-util = { git = "https://github.com/paradigmxyz/reth", rev = "f4676ea" }
 reth-metrics = { git = "https://github.com/paradigmxyz/reth", rev = "f4676ea" }
 reth-network-api = { git = "https://github.com/paradigmxyz/reth", rev = "f4676ea" }
 reth-network-p2p = { git = "https://github.com/paradigmxyz/reth", rev = "f4676ea" }

@@ -15,6 +15,7 @@ use crate::{
     install_reference_zone_factory::InstallReferenceZoneFactory,
     portal_access::{EnableToken, SetAccessMode, SetAllowedAccount, SetGateway, SetGatewayMode},
     portal_pause::PausePortal,
+    rollback_zone::RollbackZone,
     set_encryption_key::SetEncryptionKey,
     spam_deposits::SpamDeposits,
     verify_closed_loop::VerifyClosedLoop,
@@ -41,6 +42,7 @@ mod genesis_forks;
 mod install_reference_zone_factory;
 mod portal_access;
 mod portal_pause;
+mod rollback_zone;
 mod safe;
 mod set_encryption_key;
 mod spam_deposits;
@@ -85,6 +87,7 @@ async fn main() -> eyre::Result<()> {
             .run()
             .wrap_err("failed to install reference ZoneFactory"),
         Action::PausePortal(args) => args.run().await.wrap_err("failed to pause portal"),
+        Action::RollbackZone(args) => args.run().await.wrap_err("failed to roll back zone"),
         Action::SetAccessMode(args) => args.run().await.wrap_err("failed to set access mode"),
         Action::SetAllowedAccount(args) => {
             args.run().await.wrap_err("failed to update account role")
@@ -135,6 +138,7 @@ enum Action {
     GenerateZoneGenesis(GenerateZoneGenesis),
     InstallReferenceZoneFactory(InstallReferenceZoneFactory),
     PausePortal(PausePortal),
+    RollbackZone(RollbackZone),
     SetAccessMode(SetAccessMode),
     SetAllowedAccount(SetAllowedAccount),
     SetGateway(SetGateway),
