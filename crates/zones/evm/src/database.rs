@@ -5,7 +5,7 @@ use std::fmt;
 
 use alloy_primitives::{Address, B256, U256};
 use evm2::{
-    DatabaseError, PendingState,
+    DatabaseError, JournalEntry, PendingState,
     bytecode::Bytecode,
     evm::{
         AccountChangeRef, AccountInfo, DynDatabase, StateChangeSink, StateChangeSource,
@@ -76,6 +76,25 @@ impl<DB: DynDatabase, L1: L1StorageReader> L1OverlayDB<DB, L1> {
         u64::try_from(value)
             .map_err(|_| DatabaseError::new(ZoneDbError::AnchorOverflow(value), true))
     }
+}
+
+/// Rejects registry storage writes recorded in the in-flight transaction's journal.
+///
+/// Handlers run before the transaction state is finalized into a [`PendingState`], so this is the
+/// check available to every execution path. It only sees storage writes; the block executor's
+/// [`validate_pending_state`] also covers account changes and wipes.
+pub(crate) fn validate_journal(journal: &[JournalEntry]) -> Result<(), ZoneDbError> {
+    for entry in journal {
+        if let JournalEntry::StorageChange { address, key, .. } = entry
+            && *address == TIP403_REGISTRY_ADDRESS
+        {
+            return Err(ZoneDbError::L1Write {
+                address: *address,
+                slot: *key,
+            });
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_pending_state(state: &PendingState) -> Result<(), ZoneDbError> {

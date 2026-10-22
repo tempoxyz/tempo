@@ -339,15 +339,18 @@ mod tests {
     use alloy_consensus::{Header, Sealable as _, Signed, TxLegacy};
     use alloy_primitives::{Address, B256, Bytes, Log, Signature, U256};
     use alloy_sol_types::{SolCall, SolEvent};
-    use evm2::{TxResult, TxResultWithState, evm::InMemoryDB};
+    use evm2::{EvmFeatures, TxResult, TxResultWithState, evm::InMemoryDB, registry::HandlerError};
     use reth_chainspec::EthChainSpec as _;
-    use reth_evm::{BlockExecutor, BlockExecutorFactory};
+    use reth_evm::{BlockExecutor, BlockExecutorFactory, InternalBlockExecutionError};
     use reth_evm_ethereum::{EthBlockExecutionCtx, EthTransactionResultWithState};
     use reth_primitives_traits::Recovered;
     use tempo_chainspec::{hardfork::TempoHardfork, spec::DEV};
-    use tempo_contracts::zones::{
-        ChaumPedersenProof, DecryptionData, IZoneInbox, IZoneOutbox, LegacyTempoAdvanced,
-        TempoAdvanced,
+    use tempo_contracts::{
+        precompiles::{ITIP403Registry, TIP403_REGISTRY_ADDRESS},
+        zones::{
+            ChaumPedersenProof, DecryptionData, IZoneInbox, IZoneOutbox, LegacyTempoAdvanced,
+            TempoAdvanced,
+        },
     };
     use tempo_evm::{TempoBlockExecutionCtx, TempoEvmEnv, TempoEvmTypes, TempoTxEnv};
     use tempo_precompiles::{
@@ -371,7 +374,7 @@ mod tests {
     };
     use zone_primitives::constants::{TEMPO_STATE_ADDRESS, zone_chain_id};
 
-    use crate::ZoneEvmConfig;
+    use crate::{ZoneDbError, ZoneEvmConfig};
 
     fn system_tx(to: Address, input: Bytes) -> TempoTxEnvelope {
         TempoTxEnvelope::Legacy(Signed::new_unhashed(
@@ -1028,6 +1031,86 @@ mod tests {
             finish_error.to_string(),
             "zone block is missing its advanceTempo system transaction"
         );
+    }
+
+    #[test]
+    fn direct_and_block_execution_reject_zero_sender_tip403_writes() {
+        let mut db = InMemoryDB::default();
+        db.insert_account_storage(&TEMPO_STATE_ADDRESS, &TEMPO_BLOCK_NUMBER_SLOT, &U256::ZERO);
+        let mut zone_genesis = DEV.genesis().clone();
+        zone_genesis.config.chain_id = zone_chain_id(DEV.chain_id(), 1).unwrap();
+        let chain_spec = std::sync::Arc::new(ZoneChainSpec::from_genesis(zone_genesis).unwrap());
+        let config = ZoneEvmConfig::new(chain_spec.clone(), MockL1Reader::default(), Address::ZERO);
+        let mut env = TempoEvmEnv {
+            spec: TempoHardfork::T7,
+            ..Default::default()
+        };
+        // Zero-sender operator simulations run without fee charging.
+        env.version.features.remove(EvmFeatures::BALANCE_CHECK);
+        env.version.features.remove(EvmFeatures::BALANCE_TOP_UP);
+        env.version.features.remove(EvmFeatures::FEE_CHARGE);
+        let evm = config.evm_with_env(db, env);
+        let ctx = TempoBlockExecutionCtx {
+            inner: EthBlockExecutionCtx {
+                parent_hash: B256::ZERO,
+                parent_beacon_block_root: None,
+                ommers: &[],
+                withdrawals: None,
+                extra_data: Bytes::new(),
+                tx_count_hint: Some(1),
+                slot_number: None,
+            },
+            general_gas_limit: 0,
+            shared_gas_limit: 0,
+            consensus_context: None,
+        };
+        let mut executor = ZoneBlockExecutor::new(evm, ctx, &chain_spec);
+        executor.phase = ZoneBlockPhase::Executing;
+
+        let create_policy = ITIP403Registry::createPolicyCall {
+            admin: Address::repeat_byte(0x11),
+            policyType: ITIP403Registry::PolicyType::WHITELIST,
+        };
+        let envelope = TempoTxEnvelope::AA(
+            TempoTransaction {
+                calls: vec![Call {
+                    to: TIP403_REGISTRY_ADDRESS.into(),
+                    value: U256::ZERO,
+                    input: create_policy.abi_encode().into(),
+                }],
+                chain_id: 1,
+                fee_token: Some(DEFAULT_FEE_TOKEN),
+                gas_limit: 1_000_000,
+                ..Default::default()
+            }
+            .into_signed(TempoSignature::from(Signature::test_signature())),
+        );
+        let tx = Recovered::new_unchecked(envelope, Address::ZERO);
+
+        let direct = executor
+            .evm_mut()
+            .call_tx(&Recovered::new_unchecked(tx.clone().into(), Address::ZERO))
+            .unwrap_err();
+        let is_registry_write = |error: &HandlerError| {
+            matches!(
+                error,
+                HandlerError::Fatal(error) if matches!(
+                    error.downcast_ref::<ZoneDbError>(),
+                    Some(ZoneDbError::L1Write {
+                        address: TIP403_REGISTRY_ADDRESS,
+                        ..
+                    })
+                )
+            )
+        };
+        assert!(is_registry_write(&direct), "{direct}");
+
+        let block = executor.execute_transaction_without_commit(tx).unwrap_err();
+        let Some(InternalBlockExecutionError::EVM { error, .. }) = block.as_internal() else {
+            panic!("unexpected block execution error: {block}");
+        };
+        let block = error.downcast_ref::<HandlerError>();
+        assert!(block.is_some_and(is_registry_write), "{block:?}");
     }
 
     #[test]
