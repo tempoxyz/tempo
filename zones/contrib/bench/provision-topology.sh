@@ -231,12 +231,17 @@ stop_stale_listener() {
     local pid deadline
 
     mapfile -t pids < <(lsof -nP -t -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | sort -u || true)
-    (( ${#pids[@]} == 0 )) && return 0
+    if (( ${#pids[@]} == 0 )); then
+        # lsof only sees this user's processes; ss sees every listener.
+        [[ -z "$(ss -Hltn "sport = :$port" 2>/dev/null)" ]] ||
+            die "TCP port $port is held by another user's process; refusing to start $label"
+        return 0
+    fi
 
     for pid in "${pids[@]}"; do
         [[ "$pid" =~ ^[0-9]+$ ]] || continue
         process_matches "$pid" "$expected" ||
-            die "TCP port $port is owned by PID $pid, not a stale $label process; refusing to signal it"
+            die "TCP port $port is owned by PID $pid ($(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | cut -c1-200)), not a stale $label process; refusing to signal it"
         echo "stopping stale $label listener on TCP port $port (PID $pid)" >&2
         kill -INT "$pid" 2>/dev/null || true
     done
@@ -528,6 +533,7 @@ provision_up() {
     require_command curl
     require_command jq
     require_command lsof
+    require_command ss
     require_command mktemp
     require_command taskset
 
@@ -546,10 +552,15 @@ provision_up() {
 
     # A cancelled workflow can prevent its checkout-scoped teardown from
     # running. Only reclaim listeners owned by the exact benchmark binaries;
-    # fail rather than signal an unrelated process.
-    stop_stale_listener 8545 "$TEMPO_BIN" "Tempo validator A"
-    stop_stale_listener 8645 "$TEMPO_BIN" "Tempo validator B"
-    stop_stale_listener 8546 "$ZONE_BIN" "Zone"
+    # fail rather than signal an unrelated process. Covers every TCP port the
+    # topology binds below (RPC, metrics, consensus, p2p, authrpc).
+    local port
+    for port in 8545 9001 8000 8001 8002 8003 8004 8645 9101 8100 8101 8102 8103 8104; do
+        stop_stale_listener "$port" "$TEMPO_BIN" "Tempo validator"
+    done
+    for port in 8546 8544 9201; do
+        stop_stale_listener "$port" "$ZONE_BIN" "Zone"
+    done
 
     local account_start="${ZONES_BENCH_ACCOUNT_START:-16}"
     local accounts="${ZONES_BENCH_ACCOUNTS:-100}"
