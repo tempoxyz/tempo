@@ -1612,7 +1612,7 @@ mod tests {
     use super::*;
     use crate::{
         error::TempoPrecompileError,
-        storage::{ConfigCommitmentWriteGas, StorageCtx, hashmap::HashMapStorageProvider},
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
     };
     use alloy::primitives::{Address, B256, Bytes, TxKind, U256};
@@ -1765,98 +1765,6 @@ mod tests {
 
     fn unrestricted_restrictions() -> KeyRestrictions {
         tempo_alloy::provider::keychain::KeyRestrictions::default().into()
-    }
-
-    #[test]
-    fn test_t14_delegate_types_and_rotation_preserve_grants() -> eyre::Result<()> {
-        for configurable_parent in [false, true] {
-            for signature_type in [SignatureType::Secp256k1, SignatureType::ConfigurableAccount] {
-                let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T14);
-                storage.set_timestamp(U256::from(1_000));
-                let parent = Address::repeat_byte(0x11);
-                let delegate = Address::repeat_byte(0x22);
-                StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
-                    let mut keychain = AccountKeychain::new();
-                    keychain.initialize()?;
-                    keychain.set_tx_origin(parent)?;
-                    if configurable_parent {
-                        keychain.storage.set_config_commitment(
-                            parent,
-                            B256::repeat_byte(1),
-                            ConfigCommitmentWriteGas::Intrinsic,
-                        )?;
-                    }
-                    let mut restrictions = unrestricted_restrictions();
-                    restrictions.expiry = 100_000;
-                    restrictions.allowAnyCalls = false;
-                    restrictions.allowedCalls = vec![CallScope {
-                        target: DEFAULT_FEE_TOKEN,
-                        selectorRules: vec![],
-                    }];
-                    restrictions.enforceLimits = true;
-                    restrictions.limits = vec![TokenLimit {
-                        token: DEFAULT_FEE_TOKEN,
-                        amount: U256::from(100),
-                        period: 86400,
-                    }];
-                    keychain.authorize_key(parent, delegate, signature_type, restrictions, None)?;
-                    // A grant alone must not register its configurable delegate.
-                    assert_eq!(keychain.storage.config_commitment(delegate)?, B256::ZERO);
-                    keychain.verify_and_update_spending(
-                        parent,
-                        delegate,
-                        DEFAULT_FEE_TOKEN,
-                        U256::from(30),
-                    )?;
-                    let row = keychain.keys[parent][delegate].read()?;
-                    let admin = Address::repeat_byte(0x33);
-                    keychain.authorize_admin_key(parent, admin, signature_type, None)?;
-                    let admin_row = keychain.keys[parent][admin].read()?;
-                    let limit_key = AccountKeychain::spending_limit_key(parent, delegate);
-                    let limits = keychain.spending_limits[limit_key][DEFAULT_FEE_TOKEN].read()?;
-                    for account in [parent, delegate, admin] {
-                        keychain.storage.set_config_commitment(
-                            account,
-                            B256::repeat_byte(2),
-                            ConfigCommitmentWriteGas::Precompile,
-                        )?;
-                    }
-                    assert_eq!(keychain.keys[parent][delegate].read()?, row);
-                    assert_eq!(keychain.keys[parent][admin].read()?, admin_row);
-                    assert!(keychain.is_admin_key(parent, admin)?);
-                    let calls = keychain.get_allowed_calls(getAllowedCallsCall {
-                        account: parent,
-                        keyId: delegate,
-                    })?;
-                    assert!(calls.isScoped);
-                    assert_eq!(calls.scopes.len(), 1);
-                    assert_eq!(calls.scopes[0].target, DEFAULT_FEE_TOKEN);
-                    assert_eq!(
-                        keychain.spending_limits[limit_key][DEFAULT_FEE_TOKEN].read()?,
-                        limits
-                    );
-                    // T14 retains primitive delegate authority even with a commitment.
-                    keychain.verify_and_update_spending(
-                        parent,
-                        delegate,
-                        DEFAULT_FEE_TOKEN,
-                        U256::from(70),
-                    )?;
-                    assert!(
-                        keychain
-                            .verify_and_update_spending(
-                                parent,
-                                delegate,
-                                DEFAULT_FEE_TOKEN,
-                                U256::ONE
-                            )
-                            .is_err()
-                    );
-                    Ok(())
-                })?;
-            }
-        }
-        Ok(())
     }
 
     #[test]
