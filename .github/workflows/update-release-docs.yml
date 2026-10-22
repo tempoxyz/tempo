@@ -1,0 +1,66 @@
+name: Update release docs
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published node release tag to document (e.g. v1.16.1)
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release-docs-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  update-docs:
+    if: github.repository == 'tempoxyz/tempo'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Secure runner
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+
+      - name: Read published node release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Skipping non-node release tag: $RELEASE_TAG"
+            exit 0
+          fi
+          gh release view "$RELEASE_TAG" --repo tempoxyz/tempo \
+            --json tagName,body,publishedAt,isDraft,isPrerelease,url > "$RUNNER_TEMP/tempo-release.json"
+          jq -e '.isDraft == false and .publishedAt != null' "$RUNNER_TEMP/tempo-release.json" > /dev/null
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      # Execute the reviewed helper from main, including for manual backfills.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        if: steps.release.outputs.ready == 'true'
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Fetch docs GitHub token via STS
+        if: steps.release.outputs.ready == 'true'
+        id: docs-token
+        uses: tempoxyz/gh-actions/actions/github-sts@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
+        with:
+          scope: tempoxyz/docs
+          policy: tempo-releases
+
+      - name: Open docs release PR
+        if: steps.release.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ steps.docs-token.outputs.token }}
+        run: node .github/scripts/update-release-docs.js "$RUNNER_TEMP/tempo-release.json"
