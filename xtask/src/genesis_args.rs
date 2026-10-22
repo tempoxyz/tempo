@@ -161,6 +161,10 @@ pub(crate) struct GenesisArgs {
     /// Tempo hardfork schedule. Individual `--<fork>-time` flags default to genesis (0).
     #[command(flatten)]
     hardforks: TempoHardforkArgs,
+
+    /// Development-only TIP-1110 recovery factory address for configurable accounts.
+    #[arg(long, value_name = "ADDRESS")]
+    configurable_account_recovery_factory: Option<Address>,
 }
 
 #[derive(Clone, Debug)]
@@ -489,6 +493,19 @@ impl GenesisArgs {
         }
         insert_zone_state_at_genesis(&self.hardforks, &mut genesis_alloc);
 
+        if let Some(factory) = self.configurable_account_recovery_factory
+            && self.hardforks.active_at_genesis(TempoHardfork::T14)
+        {
+            // Same state the T14 block executor reserves, so block 1 leaves it unchanged.
+            println!("Reserving configurable account recovery factory (T14 active at genesis)");
+            let marker = predeployed_contract(&[0xef]);
+            let account = genesis_alloc
+                .entry(factory)
+                .or_insert_with(|| marker.clone());
+            account.code = marker.code;
+            account.nonce = account.nonce.max(marker.nonce);
+        }
+
         let mut chain_config = ethereum_chain_config(self.chain_id);
         chain_config
             .extra_fields
@@ -499,6 +516,11 @@ impl GenesisArgs {
                 .insert_value("generalGasLimit".to_string(), general_gas_limit)?;
         }
         self.hardforks.write_to(&mut chain_config);
+        if let Some(factory) = self.configurable_account_recovery_factory {
+            chain_config
+                .extra_fields
+                .insert_value("configurableAccountRecoveryFactory".to_string(), factory)?;
+        }
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
@@ -945,6 +967,25 @@ mod tests {
             genesis.alloc[&tempo_precompiles::CONFIGURABLE_ACCOUNT_ADDRESS].code,
             Some(Bytes::from_static(&[0xef]))
         );
+    }
+
+    #[tokio::test]
+    async fn recovery_factory_is_configured_and_reserved_only_when_t14_is_at_genesis() {
+        let factory = Address::repeat_byte(0x11);
+        for (t14_time, reserved) in [(0, Some(predeployed_contract(&[0xef]))), (100, None)] {
+            let genesis = generate(&format!(
+                "--t14-time {t14_time} --configurable-account-recovery-factory {factory}"
+            ))
+            .await;
+
+            assert_eq!(genesis.alloc.get(&factory), reserved.as_ref(), "{t14_time}");
+            assert_eq!(
+                tempo_chainspec::TempoChainSpec::from_genesis(genesis)
+                    .info
+                    .configurable_account_recovery_factory(),
+                Some(factory)
+            );
+        }
     }
 
     #[tokio::test]
