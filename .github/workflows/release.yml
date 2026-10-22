@@ -148,7 +148,7 @@ jobs:
           BIN_FEATURES: ${{ matrix.binary.features }}
           BUILD_PROFILE: ${{ steps.profile.outputs.profile }}
           TARGET: ${{ matrix.platform.target }}
-        run: cargo build --locked --bin "$BIN_NAME" --features "$BIN_FEATURES" --profile "$BUILD_PROFILE" --target "$TARGET"
+        run: cargo build --locked -p "$BIN_NAME" --bin "$BIN_NAME" --features "$BIN_FEATURES" --profile "$BUILD_PROFILE" --target "$TARGET"
 
       - name: Prepare binary
         id: prepare

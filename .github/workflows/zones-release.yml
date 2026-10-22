@@ -536,7 +536,7 @@ jobs:
           CARGO_TARGET_DIR: target
           TARGET: ${{ matrix.platform.target }}
         run: >-
-          cargo build --locked --bin tempo-zone --features "asm-keccak,jemalloc"
+          cargo build --locked -p tempo-zone --bin tempo-zone --features "asm-keccak,jemalloc"
           --profile maxperf --target "$TARGET"
 
       - name: Prepare binary

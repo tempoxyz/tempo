@@ -77,7 +77,7 @@ ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
     JEMALLOC_OVERRIDE=/usr/lib/x86_64-linux-gnu/libjemalloc.a \
     RUSTFLAGS="-C symbol-mangling-version=v0 -C strip=none -C link-arg=-Wl,--build-id=none -C link-arg=-fuse-ld=mold -C metadata= --remap-path-prefix /app=. --remap-path-prefix /usr/local/cargo/registry=/registry --remap-path-prefix /usr/local/rustup=/rustup"
 
-RUN cargo build --locked --bin tempo \
+RUN cargo build --locked -p tempo --bin tempo \
         --features asm-keccak,jemalloc,otlp \
         --profile reproducible \
         --target x86_64-unknown-linux-gnu

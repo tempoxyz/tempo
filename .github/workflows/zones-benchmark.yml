@@ -666,12 +666,13 @@ jobs:
       - name: Build real L1 and Zone binaries
         run: |
           set -euo pipefail
+          # Build each package separately so workspace peers do not unify extra features.
           cargo build --target-dir "$ZONES_BENCH_TARGET_DIR" \
-            --locked --profile profiling \
-            -p tempo-zone -p tempo-zone-prover-utils -p tempo-xtask \
-            --bin tempo-zone --bin tempo-zone-prover-utils \
-            --bin tempo-xtask --bin tempo-zone-xtask
-          # Build L1 alone so workspace peers do not unify extra features into it.
+            --locked --profile profiling -p tempo-zone --bin tempo-zone
+          cargo build --target-dir "$ZONES_BENCH_TARGET_DIR" \
+            --locked --profile profiling -p tempo-zone-prover-utils --bin tempo-zone-prover-utils
+          cargo build --target-dir "$ZONES_BENCH_TARGET_DIR" \
+            --locked --profile profiling -p tempo-xtask --bin tempo-xtask --bin tempo-zone-xtask
           cargo build --target-dir "$ZONES_BENCH_TARGET_DIR" \
             --locked --profile profiling -p tempo --bin tempo
           {

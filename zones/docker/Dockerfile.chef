@@ -39,8 +39,16 @@ COPY --from=planner /app/recipe.json recipe.json
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=zones-${TARGETARCH}-${RUST_PROFILE}-${CACHE_FAMILY}-registry \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked,id=zones-${TARGETARCH}-${RUST_PROFILE}-${CACHE_FAMILY}-git \
     --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=zones-${TARGETARCH}-${RUST_PROFILE}-${CACHE_FAMILY}-sccache \
-    set -eu; set --; \
-    for binary in $RUST_BINARIES; do set -- "$@" --bin "$binary"; done; \
-    RUSTFLAGS="-C link-arg=-fuse-ld=mold ${EXTRA_RUSTFLAGS}" \
-    cargo chef cook --locked --profile ${RUST_PROFILE} --features "${RUST_FEATURES}" --recipe-path recipe.json "$@" \
-    && sccache --show-stats
+    set -eu; \
+    for binary in $RUST_BINARIES; do \
+        package="$binary"; \
+        features="$RUST_FEATURES"; \
+        if [ "$binary" = "tempo-zone-xtask" ]; then \
+            package=tempo-xtask; \
+            features=""; \
+        fi; \
+        RUSTFLAGS="-C link-arg=-fuse-ld=mold ${EXTRA_RUSTFLAGS}" \
+        cargo chef cook --locked --profile ${RUST_PROFILE} -p "$package" --bin "$binary" \
+            --features "$features" --recipe-path recipe.json; \
+    done; \
+    sccache --show-stats
