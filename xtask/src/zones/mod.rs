@@ -24,6 +24,7 @@ use crate::{
 };
 use clap::Parser as _;
 use eyre::Context;
+use tempo_state_bloat::GenerateStateBloat;
 
 mod admin;
 mod benchmark_results;
@@ -103,6 +104,10 @@ async fn main() -> eyre::Result<()> {
             .await
             .wrap_err("Portal backing verification failed"),
         Action::ZoneInfo(args) => args.run().await.wrap_err("failed to fetch zone info"),
+        Action::GenerateStateBloat(args) => args
+            .run()
+            .await
+            .wrap_err("failed to generate state bloat file"),
     }
 }
 
@@ -143,4 +148,5 @@ enum Action {
     VerifyClosedLoop(VerifyClosedLoop),
     VerifyPortalBacking(VerifyPortalBacking),
     ZoneInfo(ZoneInfoCmd),
+    GenerateStateBloat(GenerateStateBloat),
 }

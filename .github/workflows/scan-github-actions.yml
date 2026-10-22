@@ -6,6 +6,7 @@ on:
       - ".github/**"
       - "zones/docker/**"
       - "zones/contrib/bench/l1-snapshot.sh"
+      - "zones/contrib/bench/validate-spf-range.py"
   push:
     branches:
       - main
@@ -13,6 +14,7 @@ on:
       - ".github/**"
       - "zones/docker/**"
       - "zones/contrib/bench/l1-snapshot.sh"
+      - "zones/contrib/bench/validate-spf-range.py"
   schedule:
     - cron: "17 9 * * 1"
   workflow_dispatch:
@@ -27,12 +29,12 @@ jobs:
       contents: read
     steps:
       - name: Secure runner
-        uses: tempoxyz/gh-actions/actions/secure-runner@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
+        uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
 
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
-      - uses: tempoxyz/gh-actions/vendor/astral-sh/setup-uv@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
+      - uses: tempoxyz/gh-actions/vendor/astral-sh/setup-uv@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
         with:
           version: "0.12.16"
           enable-cache: false
@@ -50,7 +52,7 @@ jobs:
   scan:
     name: Scan GitHub Actions
     if: ${{ github.event_name != 'schedule' || github.repository == 'tempoxyz/tempo' }}
-    uses: tempoxyz/gh-actions/.github/workflows/scan-github-actions.yml@947d9a3ccb2425a9c94d563fd721cc0e33c89e26 # 2026-10-15T00-15-06Z-947d9a3c
+    uses: tempoxyz/gh-actions/.github/workflows/scan-github-actions.yml@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
     permissions:
       id-token: write
       actions: read

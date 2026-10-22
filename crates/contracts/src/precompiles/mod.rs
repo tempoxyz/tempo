@@ -1,6 +1,7 @@
 pub mod account_keychain;
 pub mod address_registry;
 pub mod common_errors;
+pub mod configurable_account;
 pub mod current_committee;
 pub mod nonce;
 pub mod receive_policy_guard;
@@ -20,6 +21,7 @@ pub mod zone_verifier;
 pub use account_keychain::*;
 pub use address_registry::*;
 pub use common_errors::*;
+pub use configurable_account::*;
 pub use current_committee::*;
 pub use nonce::*;
 pub use receive_policy_guard::*;
@@ -62,6 +64,8 @@ pub const RECEIVE_POLICY_GUARD_ADDRESS: Address =
 pub const STORAGE_CREDITS_ADDRESS: Address = address!("0x1060000000000000000000000000000000000000");
 pub const CURRENT_COMMITTEE_ADDRESS: Address =
     address!("0xC077E00000000000000000000000000000000000");
+pub const CONFIGURABLE_ACCOUNT_ADDRESS: Address =
+    address!("AACC000000000000000000000000000000000000");
 
 /// Fixed system precompile addresses and corresponding activation hardfork
 pub const SYSTEM_PRECOMPILES: &[(Address, TempoHardfork)] = &[

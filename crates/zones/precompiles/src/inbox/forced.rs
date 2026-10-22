@@ -4,7 +4,8 @@ use crate::outbox::ForcedWithdrawalRequest;
 use exithatch::ForcedExitReason as Reason;
 use zone_primitives::constants::decode_l1_chain_id;
 
-/// Internal classification only; never persisted or included in settlement.
+/// Not part of settlement. Authenticated results are reported in the Zone-local
+/// `ForcedExitProcessed` log, so changing a classification changes what accounts see.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum ForcedExitResult {
     Exited { amount: u128 },
