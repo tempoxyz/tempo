@@ -1,0 +1,8 @@
+target/
+# Git-ignored local data and secrets; a fresh clone has none, a developer's checkout might.
+scripts/logs/
+scripts/data/
+localnet/
+**/.env
+**/.envrc
+**/.env*.local
