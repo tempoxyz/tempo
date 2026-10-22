@@ -637,7 +637,7 @@ mod tests {
 
     use super::*;
     use reth_ethereum::chainspec::ForkCondition;
-    use tempo_chainspec::{TempoHardfork, spec::PRESTO};
+    use tempo_chainspec::TempoHardfork;
 
     const SIGNING_KEY_HEX: &str =
         "0x7848b5d711bc9883996317a3f9c90269d56771005d540a19184939c9e8d0db2a";
@@ -705,21 +705,22 @@ mod tests {
 
     #[test]
     fn verification_mode_resolves_t14_and_overrides() {
-        let mut chainspec = PRESTO.as_ref().clone();
-        chainspec.inner.hardforks.remove(&TempoHardfork::T14);
-        // An unscheduled fork keeps the original immediate verification policy.
-        assert!(!VerificationMode::Hardfork.is_deferred_at(&chainspec, u64::MAX));
-        chainspec
-            .inner
-            .hardforks
-            .insert(TempoHardfork::T14, ForkCondition::Timestamp(100));
-        for (timestamp, deferred) in [(99, false), (100, true), (101, true)] {
-            assert_eq!(
-                VerificationMode::Hardfork.is_deferred_at(&chainspec, timestamp),
-                deferred
-            );
-            assert!(!VerificationMode::Immediate.is_deferred_at(&chainspec, timestamp));
-            assert!(VerificationMode::Deferred.is_deferred_at(&chainspec, timestamp));
+        for mut chainspec in [TempoChainSpec::mainnet(), TempoChainSpec::moderato()] {
+            chainspec.inner.hardforks.remove(&TempoHardfork::T14);
+            // An unscheduled fork keeps the original immediate verification policy.
+            assert!(!VerificationMode::Hardfork.is_deferred_at(&chainspec, u64::MAX));
+            chainspec
+                .inner
+                .hardforks
+                .insert(TempoHardfork::T14, ForkCondition::Timestamp(100));
+            for (timestamp, deferred) in [(99, false), (100, true), (101, true)] {
+                assert_eq!(
+                    VerificationMode::Hardfork.is_deferred_at(&chainspec, timestamp),
+                    deferred
+                );
+                assert!(!VerificationMode::Immediate.is_deferred_at(&chainspec, timestamp));
+                assert!(VerificationMode::Deferred.is_deferred_at(&chainspec, timestamp));
+            }
         }
     }
 
