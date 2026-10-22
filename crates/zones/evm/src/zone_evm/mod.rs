@@ -102,7 +102,7 @@ impl<L1: L1StorageReader> TxHandler<TempoEvmTypes, TempoTxEnv, TxResult<TempoEvm
         let _context = self.enter(&mut request)?;
         let transaction = Recovered::new_unchecked(request.envelope.clone(), request.tx.signer());
         let result = self.inner.execute(&transaction, request.host)?;
-        validate_journal(request.host.state().journal())
+        validate_journal(request.host.state())
             .map_err(|error| HandlerError::Fatal(AnyError::new(error)))?;
         Ok(result)
     }
