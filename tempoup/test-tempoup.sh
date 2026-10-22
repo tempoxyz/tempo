@@ -287,6 +287,13 @@ latest="$(RELEASES_FIXTURE="$RELEASES_FIXTURE" run_tempoup '
 [[ "$latest" == "v1.13.1" ]] || fail "anonymous latest release selection returned $latest"
 ok "anonymous release selection excludes prereleases and drafts before numeric sorting"
 
+latest="$(run_tempoup '
+    printf "%s\n" v1.16.1 tempo/v1.17.0 tempo/v1.10.0 zones/v9.0.0 tempo/v2.0.0-rc.1 |
+        select_latest_release_tag
+')"
+[[ "$latest" == "tempo/v1.17.0" ]] || fail "prefixed latest release selection returned $latest"
+ok "release selection orders v and tempo/v tags by version"
+
 if output="$(run_tempoup '
     gh_authenticated() { return 1; }
     command() {

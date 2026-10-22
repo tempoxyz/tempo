@@ -3,6 +3,7 @@
 subject_pattern:
   - repo:tempoxyz@211589300/tempo@994992847:ref:refs/heads/.+
   - repo:tempoxyz@211589300/tempo@994992847:ref:refs/tags/v[0-9]+\.[0-9]+\.[0-9]+
+  - repo:tempoxyz@211589300/tempo@994992847:ref:refs/tags/tempo/v[0-9]+\.[0-9]+\.[0-9]+
   - repo:tempoxyz@211589300/tempo@994992847:pull_request
 permissions:
   contents: read
