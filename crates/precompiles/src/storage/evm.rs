@@ -675,6 +675,7 @@ where
         if !self.spec.is_t14() || self.is_static || commitment.is_zero() {
             return Err(TempoPrecompileError::InvalidConfigCommitmentWrite);
         }
+        self.deduct_gas(gas.static_cost())?;
         // The authorization read already charged account access (or was intrinsic).
         let spec = self.spec;
         let (previous, creates_account) = {
@@ -684,7 +685,7 @@ where
                 None => (B256::ZERO, true),
             }
         };
-        self.deduct_gas(gas.cost(previous)?)?;
+        self.deduct_gas(gas.dynamic_cost(previous)?)?;
         // The write makes an empty account permanent; an intrinsic write was priced with the
         // transaction, creation included.
         if creates_account && gas == ConfigCommitmentWriteGas::Precompile {
