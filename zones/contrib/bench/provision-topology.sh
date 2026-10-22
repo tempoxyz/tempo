@@ -223,48 +223,42 @@ cleanup_pid_file() {
     rm -f -- "$pid_file"
 }
 
-stop_stale_listener() {
-    local port="$1"
-    local expected="$2"
-    local label="$3"
-    local -a pids=()
-    local pid deadline
-
-    mapfile -t pids < <(lsof -nP -t -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | sort -u || true)
-    if (( ${#pids[@]} == 0 )); then
-        # lsof only sees this user's processes; ss sees every listener.
-        [[ -z "$(ss -Hltn "sport = :$port" 2>/dev/null)" ]] ||
-            die "TCP port $port is held by another user's process; refusing to start $label"
-        return 0
-    fi
-
-    for pid in "${pids[@]}"; do
-        [[ "$pid" =~ ^[0-9]+$ ]] || continue
-        process_matches "$pid" "$expected" ||
-            die "TCP port $port is owned by PID $pid ($(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | cut -c1-200)), not a stale $label process; refusing to signal it"
-        echo "stopping stale $label listener on TCP port $port (PID $pid)" >&2
-        kill -INT "$pid" 2>/dev/null || true
+# Reclaims ADDR:PORT endpoints (ADDR * for a wildcard bind) from stale listeners of
+# the exact benchmark binary, signalling each owner once; fails on any other owner.
+stop_stale_listeners() {
+    local expected="$1" label="$2" endpoint addr port filter line pid alive signal deadline
+    shift 2
+    local -A pids=()
+    for endpoint in "$@"; do
+        addr="${endpoint%:*}" port="${endpoint##*:}"
+        filter="( src $addr:$port or src 0.0.0.0:$port or src [::]:$port )"
+        [[ "$addr" == "*" ]] && filter="sport = :$port"
+        while IFS= read -r line; do
+            # ss only reports the owning PID for this user's processes.
+            [[ "$line" =~ pid=([0-9]+) ]] ||
+                die "TCP $endpoint is held by another user's process; refusing to start $label"
+            pid="${BASH_REMATCH[1]}"
+            process_matches "$pid" "$expected" ||
+                die "TCP $endpoint is owned by PID $pid ($(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | cut -c1-200)), not a stale $label process; refusing to signal it"
+            pids[$pid]=1
+        done < <(ss -Hltnp "$filter")
     done
+    (( ${#pids[@]} )) || return 0
 
-    deadline=$((SECONDS + 30))
-    while (( SECONDS < deadline )); do
-        for pid in "${pids[@]}"; do
-            if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null \
-                && process_matches "$pid" "$expected"; then
-                sleep 1
-                continue 2
-            fi
+    # Wait for the PIDs themselves: an exiting process reads an empty cmdline
+    # while it still holds its sockets.
+    for signal in INT KILL; do
+        echo "stopping stale $label listeners with SIG$signal (PIDs ${!pids[*]})" >&2
+        kill -"$signal" "${!pids[@]}" 2>/dev/null || true
+        deadline=$((SECONDS + 30))
+        while (( SECONDS < deadline )); do
+            alive=0
+            for pid in "${!pids[@]}"; do kill -0 "$pid" 2>/dev/null && alive=1; done
+            (( alive )) || return 0
+            sleep 1
         done
-        return 0
     done
-
-    for pid in "${pids[@]}"; do
-        if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null \
-            && process_matches "$pid" "$expected"; then
-            echo "forcing stale $label listener to stop on TCP port $port (PID $pid)" >&2
-            kill -KILL "$pid" 2>/dev/null || true
-        fi
-    done
+    die "stale $label listeners (PIDs ${!pids[*]}) did not exit"
 }
 
 provision_on_exit() {
@@ -532,7 +526,6 @@ provision_up() {
     require_command cast
     require_command curl
     require_command jq
-    require_command lsof
     require_command ss
     require_command mktemp
     require_command taskset
@@ -552,15 +545,12 @@ provision_up() {
 
     # A cancelled workflow can prevent its checkout-scoped teardown from
     # running. Only reclaim listeners owned by the exact benchmark binaries;
-    # fail rather than signal an unrelated process. Covers every TCP port the
-    # topology binds below (RPC, metrics, consensus, p2p, authrpc).
-    local port
-    for port in 8545 9001 8000 8001 8002 8003 8004 8645 9101 8100 8101 8102 8103 8104; do
-        stop_stale_listener "$port" "$TEMPO_BIN" "Tempo validator"
-    done
-    for port in 8546 8544 9201; do
-        stop_stale_listener "$port" "$ZONE_BIN" "Zone"
-    done
+    # fail rather than signal an unrelated process. Covers every TCP listener
+    # the topology starts below (RPC, metrics, consensus, p2p, authrpc).
+    stop_stale_listeners "$TEMPO_BIN" "Tempo validator" \
+        127.0.0.1:8545 127.0.0.1:9001 127.0.0.2:8000 127.0.0.2:8002 '*:8001' 127.0.0.1:8003 \
+        127.0.0.1:8645 127.0.0.1:9101 127.0.0.3:8100 127.0.0.3:8102 '*:8101' 127.0.0.1:8103
+    stop_stale_listeners "$ZONE_BIN" "Zone" 127.0.0.1:8546 127.0.0.1:9201 '*:8544'
 
     local account_start="${ZONES_BENCH_ACCOUNT_START:-16}"
     local accounts="${ZONES_BENCH_ACCOUNTS:-100}"
