@@ -4,6 +4,7 @@ use crate::tempo_transaction::helpers::{
 };
 use alloy::{
     consensus::{BlockHeader, SignableTransaction, TxEip1559, TxLegacy},
+    primitives::Signature,
     rpc::types::{
         simulate::{SimBlock, SimulatePayload, SimulatedBlock},
         state::StateOverridesBuilder,
@@ -526,6 +527,46 @@ async fn configurable_account_rpc_fill_and_access_list_preserve_authority() -> e
     assert_eq!(
         commitment(&env, account.address).await?,
         account.config.commitment().unwrap()
+    );
+    Ok(())
+}
+
+/// `keyAuthorizationSimulation` lets a wallet estimate a transaction that grants a delegate and
+/// uses it before the parent's owners sign the grant; the estimate covers the signed transaction.
+#[tokio::test(flavor = "multi_thread")]
+async fn configurable_account_rpc_simulated_grant_estimate_covers_the_signed_grant()
+-> eyre::Result<()> {
+    let mut env = environment().await?;
+    let mut parent = ConfigurableAccount::new(0x1a, 2);
+    let delegate = ConfigurableAccount::new(0x2a, 2);
+    env.fund_account(parent.address).await?;
+    let grant = KeyAuthorization::unrestricted(
+        env.chain_id(),
+        SignatureType::ConfigurableAccount,
+        delegate.address,
+    )
+    .with_account(parent.address);
+    let mut tx = parent.transaction(&env, vec![noop()]);
+    let mut request = TempoTransactionRequest::from(tx.clone());
+    request.inner.from = Some(parent.address);
+    request.key_id = Some(delegate.address);
+    request.configurable_account_simulation = delegate
+        .simulation_request()
+        .configurable_account_simulation;
+    // No owner has signed the grant yet: the simulated quorum replaces this placeholder.
+    request.set_key_authorization(grant.clone().into_signed(Signature::test_signature()));
+    request.key_authorization_simulation =
+        parent.simulation_request().configurable_account_simulation;
+    let estimate = tempo_provider(&env).estimate_gas(request).latest().await?;
+
+    let grant_signature = parent.quorum(grant.signature_hash(), false)?;
+    tx.key_authorization = Some(grant.into_signed(grant_signature));
+    tx.gas_limit = estimate;
+    let signature = delegate.as_delegate(&tx, parent.address, false)?;
+    parent.submit(&mut env, tx, signature, true).await?;
+    assert_eq!(
+        commitment(&env, parent.address).await?,
+        parent.config.commitment().unwrap()
     );
     Ok(())
 }
