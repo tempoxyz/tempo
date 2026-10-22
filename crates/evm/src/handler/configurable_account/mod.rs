@@ -34,7 +34,7 @@ use tempo_primitives::transaction::{
 };
 
 /// An independently signed role. Repeated accounts still require both role digests.
-pub(crate) struct NativeAuthorization<'a> {
+struct NativeAuthorization<'a> {
     signature: &'a ConfigurableAccountSignature,
     /// Role digest before configurable account domain separation.
     inner_digest: B256,
@@ -59,7 +59,7 @@ struct LoadedAccount {
 
 impl TempoAaTx {
     /// Outer (direct or delegated) role, then inline grant role; either slot may be absent.
-    pub(crate) fn native_authorizations(&self) -> [Option<NativeAuthorization<'_>>; 2] {
+    fn native_authorizations(&self) -> [Option<NativeAuthorization<'_>>; 2] {
         let signature_hash = self.signature_hash();
         let outer =
             match self.signature() {
@@ -343,7 +343,8 @@ fn validate_native_roles(
             accounts: Vec::new(),
         });
     }
-    // Grant signers may be admin access keys; later checks bind them to the caller.
+    // Grant signers may be admin access keys; key authorization validation binds them to the
+    // caller.
     if let Some(signature) = aa.signature().as_configurable_account()
         && signature.account() != caller
     {
