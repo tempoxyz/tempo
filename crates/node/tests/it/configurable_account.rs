@@ -1,4 +1,4 @@
-//! Gas of the simulated configurable-account owner approvals that RPC preprocessing builds.
+//! Gas of the simulated configurable-account owner approvals that RPC simulation builds.
 //!
 //! The test runs a request through the production [`TempoEvmConfig`] EVM for a T14 chain with the
 //! recovery factory configured.

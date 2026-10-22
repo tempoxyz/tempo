@@ -15,7 +15,6 @@ use alloy_eips::{BlockId, BlockNumberOrTag, Decodable2718, eip7702::Authorizatio
 use evm2::registry::HandlerError;
 use eyre::OptionExt;
 use futures::{FutureExt, StreamExt};
-use jsonrpsee::types::ErrorObject;
 use reth_e2e_test_utils::{node::Finality, wait::WAIT_TIMEOUT};
 use reth_ethereum::{
     pool::{
@@ -25,7 +24,7 @@ use reth_ethereum::{
     primitives::SignerRecoverable,
 };
 use reth_node_builder::BuiltPayload;
-use reth_rpc_eth_types::{EthApiError, RpcInvalidTransactionError};
+use reth_rpc_eth_types::RpcInvalidTransactionError;
 use serde_json::{from_value, json};
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, IAccountKeychain, ITIP20};
@@ -33,8 +32,8 @@ use tempo_evm::transaction_error::ConfigurableAccountError;
 use tempo_primitives::{
     account::encode_config_commitment,
     transaction::{
-        ConfigurableAccountQuorumError, ConfigurableAccountStateError, KeyAuthorization,
-        SignedKeyAuthorization, TempoSignedAuthorization, TokenLimit, calc_gas_balance_spending,
+        ConfigurableAccountQuorumError, KeyAuthorization, SignedKeyAuthorization,
+        TempoSignedAuthorization, TokenLimit, calc_gas_balance_spending,
     },
 };
 use tempo_transaction_pool::transaction::TempoPoolTransactionError;
@@ -360,16 +359,17 @@ async fn configurable_account_rpc_historical_state_and_account_overrides() -> ey
         .latest()
         .await
         .unwrap_err();
-    let mismatch = ConfigurableAccountStateError::CommitmentMismatch {
-        expected: current,
-        actual: initial,
-    };
-    let invalid = EthApiError::InvalidParams(format!(
-        "{mismatch} for {} at the requested state",
-        account.address
-    ));
-    let invalid = ErrorObject::from(invalid);
-    assert_rpc_error(&stale, invalid.code(), invalid.message())?;
+    assert_rpc_error(
+        &stale,
+        EthRpcErrorCode::TransactionRejected.code(),
+        &TempoInvalidTransaction::ConfigurableAccount(
+            ConfigurableAccountError::ConfigurationCommitmentMismatch {
+                expected: current,
+                actual: initial,
+            },
+        )
+        .to_string(),
+    )?;
     let historical_gas = provider
         .estimate_gas(old_request)
         .block(historical_block)
@@ -399,11 +399,14 @@ async fn configurable_account_rpc_historical_state_and_account_overrides() -> ey
         .overrides(code_override)
         .await
         .unwrap_err();
-    let invalid = ErrorObject::from(EthApiError::InvalidParams(format!(
-        "configurable account {} has code at the requested state",
-        account.address
-    )));
-    assert_rpc_error(&error, invalid.code(), invalid.message())?;
+    assert_rpc_error(
+        &error,
+        EthRpcErrorCode::TransactionRejected.code(),
+        &TempoInvalidTransaction::ConfigurableAccount(ConfigurableAccountError::InvalidAccount {
+            account: account.address,
+        })
+        .to_string(),
+    )?;
     assert_eq!(commitment(&env, account.address).await?, current);
     assert_eq!(
         env.provider()
@@ -486,7 +489,6 @@ async fn configurable_account_rpc_fill_and_access_list_preserve_authority() -> e
         panic!("configurable fill must retain the AA transaction type");
     };
     assert_eq!(unsigned.tx().key_authorization.as_ref(), Some(&grant));
-    assert_eq!(unsigned.signature(), &TempoSignature::default());
     for field in [
         "configurableAccountSimulation",
         "keyAuthorizationSimulation",
@@ -494,14 +496,29 @@ async fn configurable_account_rpc_fill_and_access_list_preserve_authority() -> e
     ] {
         assert!(filled["tx"].get(field).is_none(), "{filled}");
     }
+    // A simulated grant quorum replaces the attached grant's signature with mock approvals.
     request.key_authorization_simulation = request.configurable_account_simulation.clone();
-    let error = provider.fill_transaction(request).await.unwrap_err();
-    let invalid = ErrorObject::from(EthApiError::InvalidParams(
-        "fillTransaction requires a real signed grant; use keyAuthorizationSimulation only for \
-         call and estimateGas"
-            .into(),
-    ));
-    assert_rpc_error(&error, invalid.code(), invalid.message())?;
+    let filled = provider.fill_transaction(request).await?;
+    let simulated = filled
+        .tx
+        .as_aa()
+        .ok_or_eyre("configurable fill must retain the AA transaction type")?
+        .tx()
+        .key_authorization
+        .as_ref()
+        .ok_or_eyre("the fill keeps the grant")?;
+    assert_eq!(simulated.authorization, grant.authorization);
+    assert_ne!(
+        simulated, &grant,
+        "the mock approvals replace the signed ones"
+    );
+    let quorum = simulated
+        .signature
+        .as_configurable_account()
+        .ok_or_eyre("the grant carries the mock quorum")?;
+    assert_eq!(quorum.account(), account.address);
+    assert_eq!(quorum.config(), &account.config);
+    assert_eq!(quorum.signatures().len(), account.owners.len());
     assert_eq!(commitment(&env, account.address).await?, B256::ZERO);
     tx.gas_limit = estimate;
     let signature = account.sign(&tx)?;
