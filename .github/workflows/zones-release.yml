@@ -256,7 +256,7 @@ jobs:
   rebuild-linux-x86_64-release:
     name: Clean rebuild canonical Linux x86_64 binary
     needs: resolve-release
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-latest-16
     permissions:
       contents: read
       id-token: write
