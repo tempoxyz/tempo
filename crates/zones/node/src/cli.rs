@@ -1,6 +1,6 @@
 //! Tempo Zone CLI.
 
-use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use alloy_primitives::Address;
 use alloy_provider::{Provider, ProviderBuilder};
@@ -12,16 +12,14 @@ use reth_cli_runner::CliRunner;
 use reth_ethereum::cli::{Cli, ExtendedCommand};
 use reth_rpc_server_types::DefaultRpcModuleValidator;
 use reth_tracing::tracing::{info, warn};
-use tempo_alloy::{TempoNetwork, provider::TempoProviderExt, rpc::ForkSchedule};
-use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_alloy::TempoNetwork;
 use tempo_precompiles::zone_factory::portal_address;
 use zeroize::Zeroizing;
-use zone_chainspec::{ZoneChainSpec, ZoneChainSpecParser, tempo_chain_spec_for_l1};
+use zone_chainspec::{ZoneChainSpec, ZoneChainSpecParser};
 use zone_evm::ZoneEvmConfig;
 use zone_l1::state::{L1StateCache, L1StateProvider, L1StateProviderConfig};
 use zone_p2p::{MAX_TRANSACTION_MESSAGE_SIZE, P2pConfig, Role};
 use zone_payload::DEFAULT_WITHDRAWAL_BATCH_INTERVAL_BLOCKS;
-use zone_primitives::constants::decode_l1_chain_id;
 
 use crate::{
     DepositAllowlist, ZoneConsensus, ZoneNode, ZoneProverConfig, ZoneRedactedRpcConfig,
@@ -40,7 +38,7 @@ use zone_sequencer::{
 const MAX_LOGS_PER_RESPONSE: u64 = 1_000_000;
 const MAX_BLOCKS_PER_FILTER: u64 = 1_000_000;
 const L1_OFFLINE: &str = "l1.offline";
-/// Bound on reading the parent fork schedule at startup.
+/// Bound on connecting to L1 and reading its fork schedule at startup.
 const L1_FORK_SCHEDULE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Subcommands that build the CLI EVM config to execute zone blocks.
 const BLOCK_EXECUTION_SUBCOMMANDS: [&str; 3] = ["import", "re-execute", "stage"];
@@ -199,7 +197,21 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
             warn!(target: "reth::cli", "--block.interval-ms is deprecated, has no effect, and will be removed in the next release");
         }
 
-        inherit_l1_fork_schedule(&mut builder.config_mut().chain, &args.l1_rpc_url).await?;
+        let chain = &mut builder.config_mut().chain;
+        let genesis = chain.genesis().clone();
+        *chain = Arc::new(
+            tokio::time::timeout(L1_FORK_SCHEDULE_TIMEOUT, async {
+                let l1 = ProviderBuilder::new_with_network::<TempoNetwork>()
+                    .connect(&args.l1_rpc_url)
+                    .await
+                    .wrap_err("failed connecting to the L1 RPC")?;
+                ZoneChainSpec::from_genesis_with_l1_rpc(genesis, &l1)
+                    .await
+                    .wrap_err("failed resolving the Zone fork schedule")
+            })
+            .await
+            .wrap_err("timed out resolving the Zone fork schedule")??,
+        );
 
         let zone_id = builder.config().chain.zone_id();
         validate_deprecated_zone_id(args.zone_id, zone_id)?;
@@ -276,68 +288,6 @@ fn run_node(mut cli: ZoneNodeCli, l1_access: CliL1Access) -> eyre::Result<()> {
             }
         }
     })
-}
-
-/// Replaces the Tempo fork schedule of a Zone whose parent schedule is not compiled in with the
-/// one its L1 reports through `tempo_forkSchedule`.
-///
-/// Devnet L1s get their schedule from genesis files at runtime, so the Zone genesis may not match
-/// it. The schedule is read once at startup; an L1 schedule change needs a Zone restart.
-async fn inherit_l1_fork_schedule(
-    chain: &mut Arc<ZoneChainSpec>,
-    l1_rpc_url: &str,
-) -> eyre::Result<()> {
-    let parent_chain_id = decode_l1_chain_id(chain.chain_id())?;
-    if tempo_chain_spec_for_l1(parent_chain_id).is_some() {
-        return Ok(());
-    }
-
-    let schedule = tokio::time::timeout(L1_FORK_SCHEDULE_TIMEOUT, async {
-        let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-            .connect(l1_rpc_url)
-            .await
-            .wrap_err("failed connecting to the L1 RPC")?;
-        let l1_chain_id = provider
-            .get_chain_id()
-            .await
-            .wrap_err("failed reading the L1 chain ID")?;
-        eyre::ensure!(
-            l1_chain_id == parent_chain_id,
-            "L1 RPC chain ID {l1_chain_id} does not match zone parent chain ID {parent_chain_id}"
-        );
-        provider
-            .get_fork_schedule()
-            .await
-            .wrap_err("failed reading tempo_forkSchedule from the L1 RPC")
-    })
-    .await
-    .wrap_err("timed out reading the L1 fork schedule")??;
-    let activations = l1_tempo_fork_activations(schedule)?;
-
-    info!(target: "reth::cli", ?activations, "Inherited Tempo fork schedule from L1");
-    *chain = Arc::new(chain.with_l1_tempo_forks(&activations));
-    Ok(())
-}
-
-/// Collects the activation timestamps of an L1 fork schedule.
-///
-/// Fails on forks this binary does not know, since the Zone could not follow them.
-fn l1_tempo_fork_activations(schedule: ForkSchedule) -> eyre::Result<BTreeMap<TempoHardfork, u64>> {
-    let mut activations = BTreeMap::new();
-    for fork in schedule.schedule {
-        let hardfork = fork.name.parse::<TempoHardfork>().wrap_err_with(|| {
-            format!(
-                "L1 schedules unsupported Tempo fork {}; update the zone binary",
-                fork.name
-            )
-        })?;
-        eyre::ensure!(
-            activations.insert(hardfork, fork.activation_time).is_none(),
-            "L1 schedules Tempo fork {} twice",
-            fork.name
-        );
-    }
-    Ok(activations)
 }
 
 /// Rejects block-executing subcommands that would otherwise run without L1 access implicitly.
@@ -959,56 +909,6 @@ mod tests {
                 "{args:?}"
             );
         }
-    }
-
-    #[test]
-    fn l1_fork_schedule_activations_reject_unknown_and_duplicate_forks() {
-        let schedule = |forks: serde_json::Value| -> ForkSchedule {
-            serde_json::from_value(serde_json::json!({ "active": "T0", "schedule": forks }))
-                .unwrap()
-        };
-
-        assert_eq!(
-            l1_tempo_fork_activations(schedule(serde_json::json!([
-                { "name": "T0", "activationTime": 0, "active": true },
-                { "name": "T13", "activationTime": 500, "active": false }
-            ])))
-            .unwrap(),
-            BTreeMap::from([(TempoHardfork::T0, 0), (TempoHardfork::T13, 500)])
-        );
-        assert_eq!(
-            l1_tempo_fork_activations(schedule(serde_json::json!([
-                { "name": "T999", "activationTime": 500, "active": false }
-            ])))
-            .unwrap_err()
-            .to_string(),
-            "L1 schedules unsupported Tempo fork T999; update the zone binary"
-        );
-        assert_eq!(
-            l1_tempo_fork_activations(schedule(serde_json::json!([
-                { "name": "T0", "activationTime": 0, "active": true },
-                { "name": "T0", "activationTime": 0, "active": true }
-            ])))
-            .unwrap_err()
-            .to_string(),
-            "L1 schedules Tempo fork T0 twice"
-        );
-    }
-
-    #[tokio::test]
-    async fn known_l1_keeps_its_compiled_fork_schedule() {
-        let parent = tempo_chainspec::spec::MODERATO.clone();
-        let mut genesis = parent.genesis().clone();
-        genesis.config.chain_id =
-            zone_primitives::constants::zone_chain_id(parent.chain_id(), 11).unwrap();
-        let spec = Arc::new(ZoneChainSpec::from_genesis(genesis).unwrap());
-        let mut chain = spec.clone();
-
-        // An unreachable URL proves no RPC is attempted for a known parent.
-        inherit_l1_fork_schedule(&mut chain, "ws://127.0.0.1:1")
-            .await
-            .unwrap();
-        assert!(Arc::ptr_eq(&chain, &spec));
     }
 
     #[test]

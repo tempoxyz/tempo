@@ -81,15 +81,17 @@ just zone-up my-zone
 
 ### Custom L1 fork schedules
 
-For custom L1 chain IDs, `node` reads the L1's `tempo_forkSchedule` once at
-startup and uses it in place of the Tempo fork activations in the supplied Zone
-genesis; forks the L1 does not schedule stay inactive. Scheduling a fork on a
-devnet L1 therefore only needs a Zone restart. Startup fails if the L1 is
-unreachable, reports another chain ID, or schedules a fork the binary does not
-know. Ethereum fork activations, and every fork for `re-execute`, still come from
-the supplied genesis without inheriting the binary's DEV defaults. `ZONE_L1_DEV_CHAIN_IDS` is ignored and can be removed
-after upgrading to a binary with this behavior. Mainnet, Moderato, and local
-development chain IDs 1337/31337 retain their existing parent-schedule inheritance.
+For custom L1 chain IDs, `node` and `tempo-zone-prover-utils generate-input` read
+the L1's `tempo_forkSchedule` once at startup and use it in place of the Tempo
+fork activations in the supplied Zone genesis; forks the L1 does not schedule stay
+inactive. Scheduling a fork on a devnet L1 therefore only needs a Zone restart.
+Startup fails if the L1 is unreachable, reports another chain ID, or schedules a
+fork the binary does not know. Ethereum fork activations, and every fork for
+`re-execute`, `import` and `stage`, still come from the supplied genesis without
+inheriting the binary's DEV defaults. `ZONE_L1_DEV_CHAIN_IDS` is ignored and can
+be removed after upgrading to a binary with this behavior. Mainnet, Moderato, and
+local development chain IDs 1337/31337 retain their existing parent-schedule
+inheritance.
 
 Zone nodes derive their L1 ZonePortal address from the zone ID encoded in the
 genesis chain ID, using Tempo's deterministic ZoneFactory address scheme. The
